@@ -34,7 +34,9 @@ impl Pane {
     pub fn start(id: PaneId, api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         let (cols, rows) = (cols.max(2), rows.max(1));
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
-        Ok(Pane { id, screen: Screen::new(cols as usize, rows as usize), pty: Some(pty), exited: None, error: None, profile: String::new() })
+        let mut screen = Screen::new(cols as usize, rows as usize);
+        screen.pty_backed = true;
+        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new() })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.

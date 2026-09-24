@@ -48,6 +48,9 @@ function global:prompt {
     $global:__TandemCount++
     $global:__TandemAid = "$global:__TandemSalt-$global:__TandemCount"
     $out += (__TandemLocation)
+    # Start the prompt on a fresh line (iTerm2's Place Prompt at First Column; under ConPTY
+    # the terminal cannot add the line itself).
+    if ($Host.UI.RawUI.CursorPosition.X -gt 0) { $out += "`r`n" }
     $out += (__TandemOsc "133;A;aid=$global:__TandemAid")
     $original = & $global:__TandemOriginalPrompt
     return $out + $original + (__TandemOsc "133;B;aid=$global:__TandemAid")

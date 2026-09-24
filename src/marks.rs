@@ -344,7 +344,7 @@ impl Screen {
         if !matches!(kind, PromptKind::Initial | PromptKind::Unknown) {
             return;
         }
-        if fresh_line && self.place_prompt_first_column && self.cursor_point().column.0 > 0 {
+        if fresh_line && self.place_prompt_first_column && !self.pty_backed && self.cursor_point().column.0 > 0 {
             self.feed_raw(b"\r\n");
         }
         let line = self.cursor_point().line.0;
@@ -579,6 +579,12 @@ mod tests {
         s.feed(b"no newline\x1b]133;A\x07$ ");
         let line = s.marks_in_order()[0].0;
         assert_eq!((line, s.line_text(line).as_str()), (1, "$"));
+        // Under ConPTY the terminal cannot add a line ConPTY never sees; the mark goes on the
+        // cursor's row, and the shell script starts its prompt on a fresh line itself.
+        let mut pty = Screen::new(40, 10);
+        pty.pty_backed = true;
+        pty.feed(b"no newline\x1b]133;A\x07$ ");
+        assert_eq!(pty.marks_in_order()[0].0, 0);
         let mut off = Screen::new(40, 10);
         off.place_prompt_first_column = false;
         off.feed(b"no newline\x1b]133;A\x07$ ");

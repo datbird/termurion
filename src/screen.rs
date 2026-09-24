@@ -87,6 +87,9 @@ pub struct Screen {
     pub shell: crate::marks::Shell,
     /// The profile's Place Prompt at First Column.
     pub place_prompt_first_column: bool,
+    /// Output comes through ConPTY, whose own screen must match this one, so the terminal
+    /// never moves the cursor on its own (no fresh line for a prompt).
+    pub pty_backed: bool,
 }
 
 impl Screen {
@@ -108,6 +111,7 @@ impl Screen {
             marks: crate::marks::Marks::default(),
             shell: crate::marks::Shell::default(),
             place_prompt_first_column: true,
+            pty_backed: false,
         }
     }
 
