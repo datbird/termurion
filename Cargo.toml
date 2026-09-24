@@ -36,3 +36,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# alacritty_terminal with row marks (crates/alacritty_terminal/TANDEM-PATCHES.md).
+[patch.crates-io]
+alacritty_terminal = { path = "crates/alacritty_terminal" }
