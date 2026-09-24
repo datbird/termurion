@@ -282,10 +282,12 @@ mod tests {
 
     #[test]
     fn resize_succeeds() {
-        for api in apis() {
-            let p = spawn(&api, "cmd.exe /q /k", 80, 24).unwrap();
-            p.resize(120, 40).unwrap();
-        }
+        // Shipped ConPTY only. The Windows copy loses the close if a resize arrives while it
+        // is still starting (about 1 run in 8), and the drop then waits forever. Milestone 0
+        // measured this; see docs/probe.
+        let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
+        let p = spawn(&api, "cmd.exe /q /k", 80, 24).unwrap();
+        p.resize(120, 40).unwrap();
     }
 
     #[test]
