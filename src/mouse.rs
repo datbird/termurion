@@ -106,8 +106,8 @@ pub fn encode(modes: Modes, ev: Event) -> Option<Vec<u8>> {
 /// Maps a pixel position to a cell, clamped to the grid so drags outside the
 /// window still land on an edge cell.
 pub fn cell_at(x: f64, y: f64, cell_w: f64, cell_h: f64, cols: u32, rows: u32) -> (u32, u32) {
-    let col = (x / cell_w).floor().clamp(0.0, (cols - 1) as f64) as u32;
-    let row = (y / cell_h).floor().clamp(0.0, (rows - 1) as f64) as u32;
+    let col = (x / cell_w).floor().clamp(0.0, cols.saturating_sub(1) as f64) as u32;
+    let row = (y / cell_h).floor().clamp(0.0, rows.saturating_sub(1) as f64) as u32;
     (col, row)
 }
 
@@ -202,6 +202,12 @@ mod tests {
     #[test]
     fn cell_at_maps_pixels() {
         assert_eq!(cell_at(25.0, 41.0, 10.0, 20.0, 80, 24), (2, 2));
+    }
+
+    #[test]
+    fn cell_at_handles_an_empty_grid() {
+        // A minimized window or a squeezed pane can have 0 columns or rows.
+        assert_eq!(cell_at(5.0, 5.0, 10.0, 20.0, 0, 0), (0, 0));
     }
 
     #[test]

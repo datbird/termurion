@@ -291,6 +291,22 @@ mod tests {
     }
 
     #[test]
+    fn reader_survives_a_zero_byte_write() {
+        let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
+        assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
+        let (rx, reader) = start_reader(r);
+        let mut n = 0u32;
+        unsafe {
+            WriteFile(w, b"".as_ptr(), 0, &mut n, null_mut());
+            WriteFile(w, b"x".as_ptr(), 1, &mut n, null_mut());
+            CloseHandle(w);
+        }
+        reader.join().unwrap();
+        let got: Vec<u8> = rx.try_iter().flatten().collect();
+        assert_eq!(got, b"x");
+    }
+
+    #[test]
     fn bad_command_is_an_error() {
         let err = spawn(&apis()[0], "no-such-program-xyz.exe", 80, 24).err().unwrap();
         assert!(err.contains("CreateProcessW"), "{err}");
