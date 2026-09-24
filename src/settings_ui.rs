@@ -104,6 +104,12 @@ impl SettingsWindow {
         Ok(SettingsWindow { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, selected: None, tab: 0, mode, window })
     }
 
+    /// Shows this profile in the editor (Edit Session).
+    pub fn select(&mut self, guid: &str) {
+        self.selected = Some(guid.to_string());
+        self.window.request_redraw();
+    }
+
     pub fn focus(&self) {
         self.window.focus_window();
     }

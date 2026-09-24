@@ -45,13 +45,22 @@ const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 /// How long after the last settings edit the file is written.
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
+mod menu;
+
 pub enum UserEvent {
+    /// A pane has output, or its shell exited.
     Wake,
+    /// A Win chord from the keyboard hook.
+    Chord(crate::menus::Chord),
+    /// A menu item was clicked (its id).
+    Menu(String),
 }
 
 struct Tab {
     layout: Layout,
     focused: PaneId,
+    /// Maximize Active Pane: this pane fills the tab.
+    zoomed: Option<PaneId>,
 }
 
 enum Drag {
@@ -75,6 +84,10 @@ struct Gpu {
 
 pub struct App {
     notify: Notify,
+    proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>,
+    menu_bar: Option<menu::MenuBar>,
+    /// Make Text Bigger and Smaller, in points, on top of the profile font size.
+    font_offset: f32,
     api: Api,
     shell: String,
     gpu: Option<Gpu>,
@@ -122,9 +135,10 @@ pub fn run() {
         Ok(l) => l,
         Err(e) => return message_box(&format!("Could not start the event loop: {e}")),
     };
-    let proxy: Mutex<EventLoopProxy<UserEvent>> = Mutex::new(event_loop.create_proxy());
+    let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
+    let wake = proxy.clone();
     let notify: Notify = Arc::new(move || {
-        let _ = proxy.lock().unwrap().send_event(UserEvent::Wake);
+        let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
     });
 
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
@@ -154,6 +168,9 @@ pub fn run() {
     };
     let mut app = App {
         notify,
+        proxy,
+        menu_bar: None,
+        font_offset: 0.0,
         api,
         shell: default_shell(),
         gpu: None,
@@ -225,8 +242,24 @@ impl App {
     }
 
     fn start_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
-        let (cols, rows) = self.grid_size(rect);
         let id = self.next_id;
+        let started = self.start_pane_as(id, rect, guid);
+        if started {
+            self.next_id += 1;
+        }
+        started.then_some(id)
+    }
+
+    /// Restart Session: a new shell in the same pane, with the same profile.
+    fn restart_pane(&mut self, id: PaneId) {
+        let Some(rect) = self.pane_rect(id) else { return };
+        let guid = self.panes.get(&id).map(|p| p.profile.clone());
+        self.panes.remove(&id);
+        self.start_pane_as(id, rect, guid.as_deref());
+    }
+
+    fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
+        let (cols, rows) = self.grid_size(rect);
         let p = self.profile(guid);
         let cmd = profile::command_line(&p, &self.shell);
         let (cwd, warning) = profile::start_dir(&p);
@@ -239,13 +272,12 @@ impl App {
                 pane.screen.set_palette(Palette::from_profile(&p, self.dark()));
                 pane.screen.set_look(Look::from_profile(&p));
                 pane.profile = p.guid();
-                self.next_id += 1;
                 self.panes.insert(id, pane);
-                Some(id)
+                true
             }
             Err(e) => {
                 self.banners.set("start", format!("Could not start {cmd}: {e}"));
-                None
+                false
             }
         }
     }
@@ -318,6 +350,7 @@ impl App {
             normal.family = g.renderer.resolve_family(&normal.family);
             alt = alt.map(|a| g.renderer.resolve_family(&a));
         }
+        normal.size_pt = (normal.size_pt + self.font_offset).clamp(4.0, 128.0);
         let sig = format!("{normal:?} {alt:?} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale());
         // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
         if sig == self.font_sig {
@@ -349,7 +382,7 @@ impl App {
     fn new_tab(&mut self, guid: Option<&str>) {
         let area = self.content_area();
         if let Some(id) = self.start_pane(area, guid) {
-            self.tabs.push(Tab { layout: Layout::new(id), focused: id });
+            self.tabs.push(Tab { layout: Layout::new(id), focused: id, zoomed: None });
             self.active = self.tabs.len() - 1;
             self.relayout();
         }
@@ -368,6 +401,7 @@ impl App {
             let tab = &mut self.tabs[self.active];
             tab.layout.split(target, axis, id);
             tab.focused = id;
+            tab.zoomed = None;
             self.relayout();
         }
     }
@@ -396,10 +430,11 @@ impl App {
     fn relayout(&mut self) {
         let area = self.content_area();
         let (cw, ch) = self.cell();
+        let _ = area;
         let sizes: Vec<(PaneId, (u16, u16))> = self
             .tabs
             .iter()
-            .flat_map(|t| t.layout.rects(area, GAP))
+            .flat_map(|t| self.visible(t))
             .map(|(id, rect)| (id, self.grid_size(rect)))
             .collect();
         for (id, (cols, rows)) in sizes {
@@ -423,12 +458,13 @@ impl App {
     }
 
     fn pane_rect(&self, id: PaneId) -> Option<Rect> {
-        self.tabs.get(self.active)?.layout.rect_of(id, self.content_area(), GAP)
+        let tab = self.tabs.get(self.active)?;
+        self.visible(tab).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
     }
 
     fn pane_at(&self, x: f32, y: f32) -> Option<(PaneId, Rect)> {
         let tab = self.tabs.get(self.active)?;
-        tab.layout.rects(self.content_area(), GAP).into_iter().find(|(_, r)| r.contains(x, y))
+        self.visible(tab).into_iter().find(|(_, r)| r.contains(x, y))
     }
 
     /// The cell under (x, y) in pane `rect`, and which half of the cell it is in.
@@ -583,6 +619,7 @@ impl App {
                 self.drag = Drag::Select { pane: id };
             }
             Button::Middle => self.paste(),
+            Button::Right => self.show_context_menu(),
             _ => {}
         }
         self.redraw();
@@ -709,12 +746,14 @@ impl App {
         }
         let area = self.content_area();
         if let Some(tab) = self.tabs.get(self.active) {
-            for (id, rect) in tab.layout.rects(area, GAP) {
+            for (id, rect) in self.visible(tab) {
                 if let Some(p) = self.panes.get(&id) {
                     scene::pane(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on);
                 }
             }
-            scene::dividers(&mut frame, &tab.layout.dividers(area, GAP));
+            if tab.zoomed.is_none() {
+                scene::dividers(&mut frame, &tab.layout.dividers(area, GAP));
+            }
         }
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
@@ -830,6 +869,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.apply_fonts();
         self.size_window();
         self.new_tab(None);
+        self.install_menus();
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -863,7 +903,12 @@ impl ApplicationHandler<UserEvent> for App {
         event_loop.set_control_flow(ControlFlow::WaitUntil(next));
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: UserEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Chord(c) => return self.run_chord(&c, event_loop),
+            UserEvent::Menu(id) => return self.run_menu_id(&id, event_loop),
+            UserEvent::Wake => {}
+        }
         let mut changed = false;
         let mut exited = Vec::new();
         for (id, p) in self.panes.iter_mut() {
@@ -876,6 +921,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.close_pane(id, event_loop);
         }
         if changed {
+            self.sync_checks();
             self.redraw();
         }
     }
@@ -924,6 +970,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(f) => {
                 self.focused = f;
+                // Focus reporting (DECSET 1004): tell the app the window gained or lost focus.
+                if let Some(p) = self.focused_pane() {
+                    if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {
+                        p.input(if f { b"\x1b[I" } else { b"\x1b[O" });
+                    }
+                }
                 self.redraw();
             }
             WindowEvent::ModifiersChanged(m) => {
