@@ -20,7 +20,8 @@ pub const DONE: &[&str] = &[
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
     "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:",
-    "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size", "maximizePane:",
+    "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
+    "returnToDefaultSize:|Restore Text and Session Size", "maximizePane:",
     "editCurrentSession:", "reset:", "resetCharset:", "terminalStateReset:",
     "terminalStateToggleAlternateScreen:", "terminalStateToggleFocusReporting:",
     "terminalStateToggleMouseReporting:", "terminalStateTogglePasteBracketing:",
@@ -64,6 +65,7 @@ fn owner(item: &Item) -> u8 {
     } else if has("Find") || has("Marks") || sel("Mark") || sel("Annotation") || sel("Note") || sel("fold") || sel("Filter")
         || sel("Selection") || sel("jumpTo") || sel("CurrentCommand") || sel("LastCommand") || sel("openSelection")
         || sel("clearTo") || sel("Timestamps") || sel("CursorGuide") || sel("findCursor") || sel("zoom")
+        || sel("installShellIntegration")
     {
         4
     } else if sel("Trigger") || sel("Coprocess") || sel("Notify") || sel("Logging") && has("Log") {
