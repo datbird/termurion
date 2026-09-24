@@ -42,6 +42,8 @@ const GAP: f32 = 1.0;
 const WHEEL_LINES: f32 = 3.0;
 /// Half a cursor blink cycle.
 const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
+/// How long after the last settings edit the file is written.
+const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub enum UserEvent {
     Wake,
@@ -87,11 +89,15 @@ pub struct App {
     wheel_acc: f32,
     focused: bool,
     tab_rects: Vec<Rect>,
-    banner: Option<String>,
+    banners: Banners,
     clipboard: Option<arboard::Clipboard>,
     store: Store,
     settings: Option<SettingsWindow>,
     profiles_win: Option<SettingsWindow>,
+    /// When unsaved settings edits are due to be written.
+    save_due: Option<Instant>,
+    /// The font settings the renderer last loaded.
+    font_sig: String,
     /// Cursor blink phase, and when it last flipped.
     blink_on: bool,
     last_blink: Instant,
@@ -122,21 +128,28 @@ pub fn run() {
     });
 
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
-    let (api, banner) = match conpty::load(&Source::Shipped(exe_dir)) {
-        Ok(api) => (api, None),
+    let mut banners = Banners::default();
+    let api = match conpty::load(&Source::Shipped(exe_dir)) {
+        Ok(api) => api,
         Err(e) => match conpty::load(&Source::Inbox) {
-            Ok(api) => (api, Some(format!("Shipped ConPTY did not load ({e}). Using the Windows copy."))),
+            Ok(api) => {
+                banners.set("conpty", format!("Shipped ConPTY did not load ({e}). Using the Windows copy."));
+                api
+            }
             Err(e2) => return message_box(&format!("No ConPTY: {e}; {e2}")),
         },
     };
 
     let path = store::default_path();
-    let (store, banner) = match Store::load(&path) {
-        Ok(s) => (s, banner),
+    let store = match Store::load(&path) {
+        Ok(s) => s,
         Err(e) => {
-            // Never overwrite a settings file we could not read: save to a side file instead.
+            // Never overwrite a settings file we could not read: work in a side file instead,
+            // and keep the edits already made there in an earlier session.
             let side = path.with_extension("toml.recovered");
-            (Store::fresh(&side), Some(format!("Settings not loaded ({e}). Using defaults; changes save to {}.", side.display())))
+            let store = Store::load(&side).unwrap_or_else(|_| Store::fresh(&side));
+            banners.set("settings", format!("Settings not loaded ({e}). Changes save to {}.", side.display()));
+            store
         }
     };
     let mut app = App {
@@ -155,10 +168,12 @@ pub fn run() {
         wheel_acc: 0.0,
         focused: true,
         tab_rects: Vec::new(),
-        banner,
+        banners,
         clipboard: arboard::Clipboard::new().ok(),
         store,
         settings: None,
+        save_due: None,
+        font_sig: String::new(),
         profiles_win: None,
         blink_on: true,
         last_blink: Instant::now(),
@@ -185,7 +200,7 @@ impl App {
     fn content_area(&self) -> Rect {
         let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let top = self.tab_height();
-        let bottom = if self.banner.is_some() { self.cell().1 + 8.0 } else { 0.0 };
+        let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
         Rect { x: 0.0, y: top, w, h: (h - top - bottom).max(1.0) }
     }
 
@@ -215,8 +230,9 @@ impl App {
         let p = self.profile(guid);
         let cmd = profile::command_line(&p, &self.shell);
         let (cwd, warning) = profile::start_dir(&p);
-        if let Some(w) = warning {
-            self.banner = Some(w);
+        match warning {
+            Some(w) => self.banners.set("directory", w),
+            None => self.banners.clear("directory"),
         }
         match Pane::start(id, &self.api, &cmd, Some(&cwd), cols, rows, self.notify.clone()) {
             Ok(mut pane) => {
@@ -228,7 +244,7 @@ impl App {
                 Some(id)
             }
             Err(e) => {
-                self.banner = Some(format!("Could not start {cmd}: {e}"));
+                self.banners.set("start", format!("Could not start {cmd}: {e}"));
                 None
             }
         }
@@ -248,7 +264,7 @@ impl App {
                 Mode::Settings => self.settings = Some(s),
                 Mode::Profiles => self.profiles_win = Some(s),
             },
-            Err(e) => self.banner = Some(format!("Could not open the window: {e}")),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
     }
 
@@ -262,21 +278,34 @@ impl App {
                 How::SplitRight => self.split(Axis::Row, Some(&guid)),
                 How::SplitDown => self.split(Axis::Column, Some(&guid)),
             },
-            Edit::Error(e) => self.banner = Some(e),
+            Edit::Error(e) => self.banners.set("import", e),
             Edit::Changed(_) | Edit::Imported(_) => {
-                if let Err(e) = self.store.save() {
-                    self.banner = Some(format!("Could not save settings: {e}"));
-                }
-                let dark = self.dark();
-                for pane in self.panes.values_mut() {
-                    let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
-                    pane.screen.set_palette(Palette::from_profile(p, dark));
-                    pane.screen.set_look(Look::from_profile(p));
-                }
+                // Saving waits for a pause in editing, so a color drag does not write the file every frame.
+                self.save_due = Some(Instant::now() + SAVE_DELAY);
+                self.refresh_panes();
                 self.apply_fonts();
             }
         }
         self.relayout();
+    }
+
+    /// Rebuilds every pane's colors and cursor from its profile and the system appearance.
+    fn refresh_panes(&mut self) {
+        let dark = self.dark();
+        for pane in self.panes.values_mut() {
+            let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
+            pane.screen.set_palette(Palette::from_profile(p, dark));
+            pane.screen.set_look(Look::from_profile(p));
+        }
+        self.redraw();
+    }
+
+    fn save_now(&mut self) {
+        self.save_due = None;
+        match self.store.save() {
+            Ok(()) => self.banners.clear("save"),
+            Err(e) => self.banners.set("save", format!("Could not save settings: {e}")),
+        }
     }
 
     /// Takes the renderer's fonts from the default profile. A font that is not
@@ -285,12 +314,20 @@ impl App {
         let p = self.store.default_profile().clone();
         let normal = p.font("Normal Font");
         let alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
+        let sig = format!("{normal:?} {alt:?} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale());
+        // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
+        if sig == self.font_sig {
+            return;
+        }
+        self.font_sig = sig;
         let Some(g) = self.gpu.as_mut() else { return };
         let px = normal.size_pt * 4.0 / 3.0 * g.window.scale_factor() as f32;
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
         let missing: Vec<String> = std::iter::once(normal.family).chain(alt).filter(|f| !g.renderer.has_family(f)).collect();
-        if !missing.is_empty() {
-            self.banner = Some(format!("Font not installed: {}. Text uses a fallback font.", missing.join(", ")));
+        if missing.is_empty() {
+            self.banners.clear("font");
+        } else {
+            self.banners.set("font", format!("Font not installed: {}. Text uses a fallback font.", missing.join(", ")));
         }
     }
 
@@ -409,7 +446,7 @@ impl App {
         let Some(text) = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) else { return };
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
-                self.banner = Some(format!("Copy failed: {e}"));
+                self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
         }
     }
@@ -418,7 +455,7 @@ impl App {
         let text = match self.clipboard.as_mut().map(|cb| cb.get_text()) {
             Some(Ok(t)) => t,
             Some(Err(e)) => {
-                self.banner = Some(format!("Paste failed: {e}"));
+                self.banners.set("clipboard", format!("Paste failed: {e}"));
                 return self.redraw();
             }
             None => return,
@@ -675,7 +712,7 @@ impl App {
             }
             scene::dividers(&mut frame, &tab.layout.dividers(area, GAP));
         }
-        let error = self.banner.clone().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
+        let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
             scene::banner(&mut frame, &text, Rect { x: 0.0, y: 0.0, w, h }, cell);
@@ -705,7 +742,7 @@ impl App {
             wgpu::CurrentSurfaceTexture::Lost => {
                 match gpu.instance.create_surface(gpu.window.clone()) {
                     Ok(s) => gpu.surface = s,
-                    Err(e) => self.banner = Some(format!("Lost the window surface: {e}")),
+                    Err(e) => self.banners.set("gpu", format!("Lost the window surface: {e}")),
                 }
                 if let Some(gpu) = self.gpu.as_mut() {
                     gpu.surface.configure(&gpu.device, &gpu.config);
@@ -714,14 +751,14 @@ impl App {
                 return;
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                self.banner = Some("GPU validation error".into());
+                self.banners.set("gpu", "GPU validation error");
                 return;
             }
         };
         let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (w, h) = (gpu.config.width, gpu.config.height);
         if let Err(e) = gpu.renderer.draw(&frame, &view, w, h) {
-            self.banner = Some(e);
+            self.banners.set("gpu", e);
         }
         if let Some(gpu) = self.gpu.as_ref() {
             gpu.queue.present(texture);
@@ -793,6 +830,9 @@ impl ApplicationHandler<UserEvent> for App {
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.save_due.is_some_and(|t| Instant::now() >= t) {
+            self.save_now();
+        }
         let blinks = self
             .tabs
             .get(self.active)
@@ -804,7 +844,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.blink_on = true;
                 self.redraw();
             }
-            event_loop.set_control_flow(ControlFlow::Wait);
+            match self.save_due {
+                Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
+                None => event_loop.set_control_flow(ControlFlow::Wait),
+            }
             return;
         }
         if Instant::now() >= self.last_blink + BLINK {
@@ -812,7 +855,8 @@ impl ApplicationHandler<UserEvent> for App {
             self.last_blink = Instant::now();
             self.redraw();
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(self.last_blink + BLINK));
+        let next = self.save_due.map_or(self.last_blink + BLINK, |t| t.min(self.last_blink + BLINK));
+        event_loop.set_control_flow(ControlFlow::WaitUntil(next));
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: UserEvent) {
@@ -851,7 +895,11 @@ impl ApplicationHandler<UserEvent> for App {
             return;
         }
         match event {
+            WindowEvent::ThemeChanged(_) => self.refresh_panes(),
             WindowEvent::CloseRequested => {
+                if self.save_due.is_some() {
+                    self.save_now();
+                }
                 self.panes.clear();
                 event_loop.exit();
             }
@@ -963,5 +1011,48 @@ mod tests {
         let rects = [r(0.0), r(10.0), r(20.0)];
         assert_eq!(tab_hit(&rects, 3, 25.0, 5.0), Some(2));
         assert_eq!(tab_hit(&rects, 2, 25.0, 5.0), None);
+    }
+}
+
+/// Messages in the banner, one slot per source, so one message cannot hide another
+/// and a fixed problem can clear its own slot.
+#[derive(Default)]
+struct Banners {
+    slots: std::collections::BTreeMap<&'static str, String>,
+}
+
+impl Banners {
+    fn set(&mut self, slot: &'static str, text: impl Into<String>) {
+        self.slots.insert(slot, text.into());
+    }
+
+    fn clear(&mut self, slot: &'static str) {
+        self.slots.remove(slot);
+    }
+
+    fn text(&self) -> Option<String> {
+        (!self.slots.is_empty()).then(|| self.slots.values().cloned().collect::<Vec<_>>().join("  |  "))
+    }
+}
+
+#[cfg(test)]
+mod banner_tests {
+    use super::*;
+
+    #[test]
+    fn a_later_message_does_not_hide_an_earlier_one() {
+        let mut b = Banners::default();
+        b.set("settings", "Settings not loaded");
+        b.set("font", "Font not installed: Monaco");
+        let t = b.text().unwrap();
+        assert!(t.contains("Settings not loaded") && t.contains("Monaco"), "{t}");
+    }
+
+    #[test]
+    fn a_fixed_problem_clears_its_slot() {
+        let mut b = Banners::default();
+        b.set("font", "Font not installed");
+        b.clear("font");
+        assert_eq!(b.text(), None);
     }
 }

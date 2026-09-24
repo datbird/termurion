@@ -216,6 +216,7 @@ impl SettingsWindow {
                     }
                 });
                 ui.separator();
+                let is_default = selected == store.default_guid;
                 let Some(profile) = store.get_mut(&selected) else { return };
                 if profile.bool("Use Separate Colors for Light and Dark Mode") && schema::TABS[tab] == "Colors" {
                     ui.label(format!("Editing the {} mode colors (Windows is in {} mode).", if dark { "Dark" } else { "Light" }, if dark { "dark" } else { "light" }));
@@ -227,7 +228,7 @@ impl SettingsWindow {
                             ui.strong(section);
                         }
                         for s in list {
-                            if control(ui, profile, s, dark) {
+                            if control(ui, profile, s, dark, is_default) {
                                 edit = Edit::Changed(selected.clone());
                             }
                         }
@@ -294,8 +295,14 @@ pub fn edit_key(profile: &Profile, s: &Setting, dark: bool) -> String {
     }
 }
 
-/// One control for one setting. Returns true when the user changed it.
-fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) -> bool {
+/// Font settings follow the default profile until each pane can have its own renderer.
+pub const FONT_KEYS: [&str; 5] = ["Normal Font", "Non Ascii Font", "Use Non-ASCII Font", "Horizontal Spacing", "Vertical Spacing"];
+
+/// One control for one setting. Returns true when a change is committed: at once for
+/// checkboxes, pickers, and colors; when a drag ends for sliders; when the field loses
+/// focus (or Enter) for text. Uncommitted edits still update the profile in memory.
+fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is_default: bool) -> bool {
+    let font_locked = !is_default && FONT_KEYS.contains(&s.key.as_str());
     let key = edit_key(profile, s, dark);
     let current = if key == s.key {
         profile.get(&s.key)
@@ -304,13 +311,15 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) ->
         profile.values.get(&key).cloned().or(stock).or_else(|| profile.get(&s.key))
     };
     let mut changed = None;
+    let mut commit = false;
     ui.horizontal(|ui| {
-        ui.add_enabled_ui(!s.macos_only, |ui| {
+        ui.add_enabled_ui(!s.macos_only && !font_locked, |ui| {
             match s.kind {
                 Kind::Bool => {
                     let mut b = current.as_ref().and_then(|v| v.as_bool()).unwrap_or(false);
                     if ui.checkbox(&mut b, &s.label).changed() {
                         changed = Some(Value::Boolean(b));
+                        commit = true;
                     }
                 }
                 Kind::Int => {
@@ -320,9 +329,11 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) ->
                     if let (Some(a), Some(b)) = (s.min_f64(), s.max_f64()) {
                         w = w.range(a as i64..=b as i64);
                     }
-                    if ui.add(w).changed() {
+                    let r = ui.add(w);
+                    if r.changed() {
                         changed = Some(Value::Integer(i));
                     }
+                    commit = r.drag_stopped() || (r.changed() && !r.dragged());
                 }
                 Kind::Float => {
                     ui.label(&s.label);
@@ -334,19 +345,23 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) ->
                     if r.changed() {
                         changed = Some(Value::Float(f));
                     }
+                    commit = r.drag_stopped() || (r.changed() && !r.dragged());
                 }
                 Kind::String | Kind::Font => {
                     ui.label(&s.label);
                     let mut text = current.as_ref().and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    if ui.text_edit_singleline(&mut text).changed() {
+                    let r = ui.text_edit_singleline(&mut text);
+                    if r.changed() {
                         changed = Some(Value::String(text));
                     }
+                    commit = r.lost_focus();
                 }
                 Kind::Color => {
                     ui.label(&s.label);
                     let mut c = current.as_ref().map(rgb_of).unwrap_or([0, 0, 0]);
                     if ui.color_edit_button_srgb(&mut c).changed() {
                         changed = Some(value_of_rgb(c));
+                        commit = true;
                     }
                 }
                 Kind::Enum => {
@@ -357,6 +372,7 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) ->
                         for c in &s.choices {
                             if ui.selectable_label(Some(&c.value) == now.as_ref(), &c.label).clicked() {
                                 changed = Some(c.value.clone());
+                                commit = true;
                             }
                         }
                     });
@@ -372,15 +388,18 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool) ->
             }
         })
         .response
-        .on_hover_text(if s.macos_only { format!("{} (macOS only, no Windows equivalent)", s.help) } else { s.help.clone() });
+        .on_hover_text(if s.macos_only {
+            format!("{} (macOS only, no Windows equivalent)", s.help)
+        } else if font_locked {
+            format!("{} Fonts follow the default profile for now; per-profile fonts come later.", s.help)
+        } else {
+            s.help.clone()
+        });
     });
-    match changed {
-        Some(v) => {
-            profile.set(&key, v);
-            true
-        }
-        None => false,
+    if let Some(v) = changed {
+        profile.set(&key, v);
     }
+    commit
 }
 
 #[cfg(test)]
