@@ -21,3 +21,6 @@ pub mod pane;
 
 #[cfg(windows)]
 pub mod render;
+
+#[cfg(windows)]
+pub mod app;

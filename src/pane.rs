@@ -1,7 +1,5 @@
 //! One terminal pane: a shell in a pty, and its screen.
 
-use std::sync::Arc;
-
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::TermMode;
 
@@ -104,6 +102,7 @@ impl Drop for Pane {
 mod tests {
     use super::*;
     use crate::conpty::{self, Source, dev_vendor_dir};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     fn start(cmd: &str) -> Pane {
