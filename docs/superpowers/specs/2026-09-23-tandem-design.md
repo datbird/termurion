@@ -107,9 +107,11 @@ Window, tabs, and splits:
 
 Keys:
 
-- iTerm2 uses Cmd for app shortcuts. Tandem maps Cmd to **Ctrl+Shift** by default
-  (for example Cmd+T becomes Ctrl+Shift+T, Cmd+D becomes Ctrl+Shift+D).
-  Plain Ctrl keys stay with the shell. A Windows override can change the mapping.
+- **Decided 2026-09-24 (Robert): Cmd is the Win key.** Cmd = Win, Option = Alt, Ctrl = Ctrl, Shift =
+  Shift, so every iTerm2 shortcut has one exact Windows chord (Cmd+D is Win+D, Opt+Cmd+Left is
+  Alt+Win+Left). Windows claims many Win chords for itself, so while a Tandem window has focus a
+  low-level keyboard hook takes Win chords for Tandem (Win+L still locks; Windows does not allow that
+  one to be taken). Ctrl+Shift+C and Ctrl+Shift+V stay as extra copy and paste keys, a Windows habit.
 - Option maps to Alt. The profile's "Left/Right Option key sends" setting applies to Alt.
 - The profile's `Keyboard Map` entries apply, translated with the same modifier map.
 
@@ -211,6 +213,4 @@ milestone 2 on is in `docs/parity/00-roadmap.md`, ordered from the feature inven
 
 ## 8. Open items for review
 
-1. **Cmd mapping.** Cmd becomes Ctrl+Shift. Bumbles shares one keyboard between the Mac and Windows,
-   so a different mapping may fit his hands better.
-2. **Name.** "Tandem" is a working name.
+1. **Name.** "Tandem" is a working name.
