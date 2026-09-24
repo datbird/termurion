@@ -26,7 +26,10 @@ use crate::conpty::Api;
 pub struct Pty {
     api: Api,
     hpc: HPCON,
-    input: HANDLE,
+    /// Input goes through a writer thread, so a child that is slow to read never
+    /// blocks the caller. Dropping the sender ends the thread, which closes the pipe.
+    writer: Option<mpsc::Sender<Vec<u8>>>,
+    write_error: Arc<std::sync::Mutex<Option<String>>>,
     process: HANDLE,
     output: Receiver<Vec<u8>>,
     reader: Option<JoinHandle<()>>,
@@ -75,7 +78,8 @@ pub fn spawn_notify(api: &Api, cmdline: &str, cols: u16, rows: u16, notify: Noti
     check_size(cols, rows)?;
     let (hpc, input, output, process) = unsafe { start(api, cmdline, cols, rows)? };
     let (rx, reader_done, reader) = start_reader(output, notify.clone());
-    let pty = Pty { api: api.clone(), hpc, input, process, output: rx, reader: Some(reader), reader_done };
+    let (writer, write_error) = start_writer(input);
+    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, process, output: rx, reader: Some(reader), reader_done };
     watch_exit(pty.process, notify)?;
     Ok(pty)
 }
@@ -185,6 +189,33 @@ unsafe fn start(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<(HPCON
     }
 }
 
+/// Writes input on its own thread. The thread owns the input handle and closes it
+/// when the sender is dropped or a write fails.
+fn start_writer(input: HANDLE) -> (mpsc::Sender<Vec<u8>>, Arc<std::sync::Mutex<Option<String>>>) {
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let error = Arc::new(std::sync::Mutex::new(None));
+    let seen = error.clone();
+    let raw = input as usize;
+    std::thread::spawn(move || {
+        let input = raw as HANDLE;
+        'chunks: for chunk in rx {
+            let mut done = 0;
+            while done < chunk.len() {
+                let mut n = 0u32;
+                let rest = &chunk[done..];
+                let ok = unsafe { WriteFile(input, rest.as_ptr(), rest.len() as u32, &mut n, null_mut()) };
+                if ok == 0 {
+                    *seen.lock().unwrap() = Some(os_err("WriteFile"));
+                    break 'chunks;
+                }
+                done += n as usize;
+            }
+        }
+        unsafe { CloseHandle(input) };
+    });
+    (tx, error)
+}
+
 /// Drains ConPTY output on its own thread, so ConPTY never blocks on a full pipe.
 fn start_reader(output: HANDLE, notify: Notify) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
@@ -210,18 +241,15 @@ fn start_reader(output: HANDLE, notify: Notify) -> (Receiver<Vec<u8>>, Receiver<
 }
 
 impl Pty {
+    /// Queues `bytes` for the child. Returns at once. A failed earlier write is reported here.
     pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
-        let mut done = 0;
-        while done < bytes.len() {
-            let mut n = 0u32;
-            let rest = &bytes[done..];
-            let ok = unsafe { WriteFile(self.input, rest.as_ptr(), rest.len() as u32, &mut n, null_mut()) };
-            if ok == 0 {
-                return Err(os_err("WriteFile"));
-            }
-            done += n as usize;
+        if let Some(e) = self.write_error.lock().unwrap().clone() {
+            return Err(e);
         }
-        Ok(())
+        match &self.writer {
+            Some(w) => w.send(bytes.to_vec()).map_err(|_| "the pty writer has stopped".to_string()),
+            None => Err("the pty is closed".to_string()),
+        }
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
@@ -314,10 +342,9 @@ impl Drop for Pty {
     fn drop(&mut self) {
         // Closing the pseudoconsole ends the child and closes the output pipe. The
         // reader thread keeps draining meanwhile, so the close cannot block on a full pipe.
-        unsafe {
-            (self.api.close)(self.hpc);
-            CloseHandle(self.input);
-        }
+        unsafe { (self.api.close)(self.hpc) };
+        // The writer thread closes the input pipe once its queue ends or a write fails.
+        self.writer.take();
         if let Some(reader) = self.reader.take() {
             if self.reader_done.recv_timeout(CLOSE_WAIT).is_err() && !self.force_reader_stop(&reader) {
                 eprintln!("tandem: the pty reader did not stop; leaving it running");
@@ -477,6 +504,15 @@ mod tests {
         assert!(err.contains("size"), "{err}");
         let p = spawn(&shipped(), "cmd.exe /q /k", 80, 24).unwrap();
         assert!(p.resize(80, 0).unwrap_err().contains("size"));
+    }
+
+    #[test]
+    fn write_does_not_block_when_the_child_is_not_reading() {
+        // ping never reads its input, so a large write fills the pipe.
+        let p = spawn(&shipped(), "ping -n 8 127.0.0.1", 80, 24).unwrap();
+        let t = Instant::now();
+        p.write(&vec![b'a'; 32 << 20]).unwrap();
+        assert!(t.elapsed() < secs(1), "write blocked for {:?}", t.elapsed());
     }
 
     #[test]
