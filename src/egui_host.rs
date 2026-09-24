@@ -1,0 +1,136 @@
+//! One egui window: its surface, egui state, and renderer. The settings window and the
+//! prompt window draw through it.
+
+use std::sync::Arc;
+
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{Window, WindowId};
+
+pub struct EguiHost {
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    ctx: egui::Context,
+    state: egui_winit::State,
+    renderer: egui_wgpu::Renderer,
+    pub window: Arc<Window>,
+}
+
+impl EguiHost {
+    #[allow(clippy::too_many_arguments)]
+    pub fn open(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        title: &str,
+        w: f64,
+        h: f64,
+    ) -> Result<EguiHost, String> {
+        let attrs = Window::default_attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
+        let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
+        let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
+        let caps = surface.get_capabilities(adapter);
+        let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+        let size = window.inner_size();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        surface.configure(device, &config);
+        let ctx = egui::Context::default();
+        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, None);
+        let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
+        Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window })
+    }
+
+    pub fn id(&self) -> WindowId {
+        self.window.id()
+    }
+
+    pub fn focus(&self) {
+        self.window.focus_window();
+    }
+
+    /// The window's Win32 handle.
+    pub fn hwnd(&self) -> Option<isize> {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match self.window.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+            _ => None,
+        }
+    }
+
+    /// Feeds a window event to egui. Returns true when the window should redraw.
+    pub fn event(&mut self, event: &WindowEvent) -> bool {
+        if let WindowEvent::Resized(s) = event {
+            if s.width > 0 && s.height > 0 {
+                self.config.width = s.width;
+                self.config.height = s.height;
+                self.surface.configure(&self.device, &self.config);
+            }
+        }
+        let r = self.state.on_window_event(&self.window, event);
+        if r.repaint {
+            self.window.request_redraw();
+        }
+        r.repaint
+    }
+
+    /// Runs one egui frame with `f` and draws it.
+    pub fn paint(&mut self, f: impl FnMut(&mut egui::Ui)) {
+        let input = self.state.take_egui_input(&self.window);
+        let out = self.ctx.run_ui(input, f);
+        self.state.handle_platform_output(&self.window, out.platform_output);
+        let jobs = self.ctx.tessellate(out.shapes, out.pixels_per_point);
+        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: out.pixels_per_point };
+        for (id, deltas) in &out.textures_delta.set {
+            for delta in deltas {
+                self.renderer.update_texture(&self.device, &self.queue, *id, delta);
+            }
+        }
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) => f,
+            _ => {
+                self.surface.configure(&self.device, &self.config);
+                self.window.request_redraw();
+                return;
+            }
+        };
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("settings") });
+        let extra = self.renderer.update_buffers(&self.device, &self.queue, &mut encoder, &jobs, &screen);
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("settings"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let mut pass = pass.forget_lifetime();
+            self.renderer.render(&mut pass, &jobs, &screen);
+        }
+        self.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
+        self.queue.present(frame);
+        for id in &out.textures_delta.free {
+            self.renderer.free_texture(id);
+        }
+    }
+}

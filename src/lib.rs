@@ -43,6 +43,12 @@ pub mod app;
 #[cfg(windows)]
 pub mod settings_ui;
 
+#[cfg(windows)]
+pub mod egui_host;
+
+#[cfg(windows)]
+pub mod prompt_ui;
+
 pub mod settings_keys;
 
 #[cfg(windows)]

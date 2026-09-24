@@ -1,12 +1,10 @@
 //! The settings window, laid out like iTerm2's profile editor: a profile list on the
 //! left, the eight tabs across the top, and one control per schema setting.
 
-use std::sync::Arc;
-
 use toml::Value;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
 
 use crate::globals::Globals;
 use crate::mouse::Mods;
@@ -77,20 +75,13 @@ pub enum Mode {
 }
 
 pub struct SettingsWindow {
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    ctx: egui::Context,
-    state: egui_winit::State,
-    renderer: egui_wgpu::Renderer,
+    host: crate::egui_host::EguiHost,
     selected: Option<String>,
     tab: usize,
     mode: Mode,
     page: Page,
     keys: KeysState,
     mods: Mods,
-    window: Arc<Window>,
 }
 
 impl SettingsWindow {
@@ -99,65 +90,35 @@ impl SettingsWindow {
             Mode::Settings => ("Tandem Settings", 980.0, 720.0),
             Mode::Profiles => ("Profiles", 420.0, 460.0),
         };
-        let attrs = Window::default_attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
-        let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
-        let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
-        let caps = surface.get_capabilities(adapter);
-        let format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
-        let size = window.inner_size();
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width: size.width.max(1),
-            height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-            color_space: wgpu::SurfaceColorSpace::Auto,
-        };
-        surface.configure(device, &config);
-        let ctx = egui::Context::default();
-        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, None);
-        let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
+        let host = crate::egui_host::EguiHost::open(event_loop, instance, adapter, device, queue, title, w, h)?;
         if mode == Mode::Settings {
-            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(h) = window.window_handle() {
-                if let RawWindowHandle::Win32(h) = h.as_raw() {
-                    crate::winkeys::set_settings_window(h.hwnd.get());
-                }
+            if let Some(h) = host.hwnd() {
+                crate::winkeys::set_settings_window(h);
             }
         }
         Ok(SettingsWindow {
-            surface,
-            config,
-            device: device.clone(),
-            queue: queue.clone(),
-            ctx,
-            state,
-            renderer,
+            host,
             selected: None,
             tab: 0,
             mode,
             page: Page::Profiles,
             keys: KeysState::default(),
             mods: Mods::default(),
-            window,
         })
     }
 
     /// Shows this profile in the editor (Edit Session).
     pub fn select(&mut self, guid: &str) {
         self.selected = Some(guid.to_string());
-        self.window.request_redraw();
+        self.host.window.request_redraw();
     }
 
     pub fn focus(&self) {
-        self.window.focus_window();
+        self.host.focus();
     }
 
     pub fn id(&self) -> WindowId {
-        self.window.id()
+        self.host.id()
     }
 
     /// A binding editor is waiting for a key press.
@@ -169,7 +130,7 @@ impl SettingsWindow {
     pub fn record_chord(&mut self, c: &crate::menus::Chord) {
         self.keys.deliver(crate::keyroute::press_from_chord(c).stroke);
         crate::winkeys::set_recording(self.keys.recording());
-        self.window.request_redraw();
+        self.host.window.request_redraw();
     }
 
     /// Feeds a window event to egui. Returns true when the window should redraw.
@@ -186,37 +147,25 @@ impl SettingsWindow {
                         crate::winkeys::set_recording(self.keys.recording());
                     }
                 }
-                self.window.request_redraw();
+                self.host.window.request_redraw();
                 return true;
             }
         }
-        if let WindowEvent::Resized(s) = event {
-            if s.width > 0 && s.height > 0 {
-                self.config.width = s.width;
-                self.config.height = s.height;
-                self.surface.configure(&self.device, &self.config);
-            }
-        }
-        let r = self.state.on_window_event(&self.window, event);
-        if r.repaint {
-            self.window.request_redraw();
-        }
-        r.repaint
+        self.host.event(event)
     }
 
     pub fn redraw(&mut self, store: &mut Store, globals: &mut Globals) -> Edit {
-        let input = self.state.take_egui_input(&self.window);
         let mut edit = Edit::None;
         let selected = self.selected.get_or_insert_with(|| store.default_guid.clone()).clone();
         let mut tab = self.tab;
         let mut pick = None;
-        let dark = self.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
+        let dark = self.host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
         let mode = self.mode;
         let mut page = self.page;
         let keys = &mut self.keys;
         keys.leader = crate::keystroke::parse(&globals.string("Leader"));
         let profiles: Vec<(String, String)> = store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
-        let out = self.ctx.run_ui(input, |ui| {
+        self.host.paint(|ui| {
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -364,47 +313,6 @@ impl SettingsWindow {
         crate::winkeys::set_recording(self.keys.recording());
         if let Some(g) = pick {
             self.selected = Some(g);
-        }
-        self.state.handle_platform_output(&self.window, out.platform_output);
-        let jobs = self.ctx.tessellate(out.shapes, out.pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor { size_in_pixels: [self.config.width, self.config.height], pixels_per_point: out.pixels_per_point };
-        for (id, deltas) in &out.textures_delta.set {
-            for delta in deltas {
-                self.renderer.update_texture(&self.device, &self.queue, *id, delta);
-            }
-        }
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) => f,
-            _ => {
-                self.surface.configure(&self.device, &self.config);
-                self.window.request_redraw();
-                return edit;
-            }
-        };
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("settings") });
-        let extra = self.renderer.update_buffers(&self.device, &self.queue, &mut encoder, &jobs, &screen);
-        {
-            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("settings"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let mut pass = pass.forget_lifetime();
-            self.renderer.render(&mut pass, &jobs, &screen);
-        }
-        self.queue.submit(extra.into_iter().chain(Some(encoder.finish())));
-        self.queue.present(frame);
-        for id in &out.textures_delta.free {
-            self.renderer.free_texture(id);
         }
         edit
     }
