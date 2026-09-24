@@ -25,7 +25,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | iTerm2 > Secure Keyboard Entry | Opt+Cmd+S | Enables Secure Keyboard Entry to block other apps from reading keystrokes. (milestone 13) | missing |
 | iTerm2 > Make iTerm2 Default Term | Ctrl+Shift+Cmd+\ | Registers iTerm2 as the default terminal app for the OS. (milestone 13) | missing |
 | iTerm2 > Make Terminal Default Term | Ctrl+Opt+Shift+Cmd+\ | Restores Terminal.app as the default terminal app. (milestone 13) | missing |
-| iTerm2 > Install Shell Integration | no shortcut | Installs the shell integration script into the user's shell rc file. (milestone 4) | missing |
+| iTerm2 > Install Shell Integration | no shortcut | Installs the shell integration script into the user's shell rc file. (milestone 4) | have |
 | iTerm2 > Install Claude Code Integration | no shortcut | Installs hooks for Claude Code terminal integration. (milestone 13) | missing |
 | iTerm2 > Reinstall Claude Code Integration | no shortcut | Reinstalls the Claude Code integration hooks. (milestone 13) | missing |
 | iTerm2 > Uninstall Claude Code Integration | no shortcut | Removes the Claude Code integration hooks. (milestone 13) | missing |
@@ -111,8 +111,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. (milestone 4) | missing |
 | Edit > Select All | Cmd+A | Selects all text in the current session's scrollback. | have |
 | Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. (milestone 4) | missing |
-| Edit > Select Output of Last Command | Cmd+A | Selects the output of the most recently run shell command, needs shell integration marks. (milestone 4) | missing |
-| Edit > Select Current Command | no shortcut | Selects the command currently being typed at the prompt. (milestone 4) | missing |
+| Edit > Select Output of Last Command | Cmd+A | Selects the output of the most recently run shell command, needs shell integration marks. (milestone 4) | have |
+| Edit > Select Current Command | no shortcut | Selects the command currently being typed at the prompt. (milestone 4) | have |
 | Edit > Find > Find... | Cmd+F | Opens the in-session find bar. (milestone 4) | missing |
 | Edit > Find > Find Next | Cmd+G | Jumps to the next find match. (milestone 4) | missing |
 | Edit > Find > Find Previous | Cmd+G | Jumps to the previous find match. (milestone 4) | missing |
@@ -124,20 +124,20 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Find > Find All Smart Selection Matches | Opt+Cmd+U | Highlights all matches of the active Smart Selection rule. (milestone 4) | missing |
 | Edit > Find > Pick Result to Open | Opt+Cmd+O | Shows shortcut labels over found links and paths so one can be opened by key. (milestone 4) | missing |
 | Edit > Find > Filter | Opt+Cmd+F | Filters the visible buffer to only lines matching a query. (milestone 4) | missing |
-| Edit > Marks and Annotations > Set Mark | Cmd+M | Drops a scroll position mark at the current line. (milestone 4) | missing |
-| Edit > Marks and Annotations > Jump to Mark | Cmd+J | Scrolls to the last saved mark. (milestone 4) | missing |
-| Edit > Marks and Annotations > Next Mark | Shift+Cmd+Down | Jumps to the next mark below in the scrollback. (milestone 4) | missing |
-| Edit > Marks and Annotations > Previous Mark | Shift+Cmd+Up | Jumps to the previous mark above in the scrollback. (milestone 4) | missing |
+| Edit > Marks and Annotations > Set Mark | Cmd+M | Drops a scroll position mark at the current line. (milestone 4) | have |
+| Edit > Marks and Annotations > Jump to Mark | Cmd+J | Scrolls to the last saved mark. (milestone 4) | have |
+| Edit > Marks and Annotations > Next Mark | Shift+Cmd+Down | Jumps to the next mark below in the scrollback. (milestone 4) | have |
+| Edit > Marks and Annotations > Previous Mark | Shift+Cmd+Up | Jumps to the previous mark above in the scrollback. (milestone 4) | have |
 | Edit > Marks and Annotations > Add Annotation at Cursor | Opt+Cmd+M | Adds a free-text sticky annotation attached to the cursor line. (milestone 4) | missing |
 | Edit > Marks and Annotations > Annotate Selection | no shortcut | Adds a free-text annotation attached to the current selection. (milestone 4) | missing |
 | Edit > Marks and Annotations > Next Annotation | Opt+Shift+Cmd+Down | Jumps to the next annotation below. (milestone 4) | missing |
 | Edit > Marks and Annotations > Previous Annotation | Opt+Shift+Cmd+Up | Jumps to the previous annotation above. (milestone 4) | missing |
-| Edit > Marks and Annotations > Alerts > Alert on Next Mark | Opt+Cmd+A | Arms a one-shot alert that fires the next time a mark is created. (milestone 4) | missing |
-| Edit > Marks and Annotations > Alerts > Alert on Marks in Offscreen Sessions | no shortcut | Extends mark alerts to sessions not currently visible. (milestone 4) | missing |
-| Edit > Marks and Annotations > Alerts > Show Modal Alert Box | no shortcut | Sets mark alerts to show a modal dialog. (milestone 4) | missing |
-| Edit > Marks and Annotations > Alerts > Post Notification | no shortcut | Sets mark alerts to post a macOS notification. (milestone 4) | missing |
-| Edit > Marks and Annotations > Alerts > Play a Sound | no shortcut | Sets mark alerts to play a sound. (milestone 4) | missing |
-| Edit > Set Named Mark | Opt+Cmd+M | Creates a mark with a user-supplied name for later lookup. (milestone 4) | missing |
+| Edit > Marks and Annotations > Alerts > Alert on Next Mark | Opt+Cmd+A | Arms a one-shot alert that fires the next time a mark is created. (milestone 4) | have |
+| Edit > Marks and Annotations > Alerts > Alert on Marks in Offscreen Sessions | no shortcut | Extends mark alerts to sessions not currently visible. (milestone 4) | have |
+| Edit > Marks and Annotations > Alerts > Show Modal Alert Box | no shortcut | Sets mark alerts to show a modal dialog. (milestone 4) | have |
+| Edit > Marks and Annotations > Alerts > Post Notification | no shortcut | Sets mark alerts to post a macOS notification. (milestone 4) | have |
+| Edit > Marks and Annotations > Alerts > Play a Sound | no shortcut | Sets mark alerts to play a sound. (milestone 4) | have |
+| Edit > Set Named Mark | Opt+Cmd+M | Creates a mark with a user-supplied name for later lookup. (milestone 4) | have |
 | Edit > Named Marks | no shortcut | Dynamic submenu listing named marks in the current session. | missing |
 | Edit > Fold Selected Lines | Cmd+L | Collapses the selected lines into a single foldable summary line. (milestone 4) | missing |
 | Edit > Fold All | Opt+Shift+Cmd+L | Collapses all foldable regions detected in the buffer. (milestone 4) | missing |
@@ -145,7 +145,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Clear Instant Replay | Opt+Cmd+K | Clears the Instant Replay history buffer. (milestone 10) | missing |
 | Edit > Clear Scrollback Buffer | Cmd+K | Clears the scrollback history, keeping the visible screen. | have |
 | Edit > Clear to Start of Selection | Cmd+L | Clears the buffer from the top down to the start of the current selection. (milestone 4) | missing |
-| Edit > Clear to Last Mark | Opt+Cmd+L | Clears the buffer up to the most recent mark. (milestone 4) | missing |
+| Edit > Clear to Last Mark | Opt+Cmd+L | Clears the buffer up to the most recent mark. (milestone 4) | have |
 
 ### View menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
@@ -341,12 +341,12 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; MultipartFile=... | Same as File= but data arrives in chunks via FilePart/FileEnd. | missing |
 | OSC 1337 ; FilePart=... | Appends a base64 chunk to an in-progress multipart file transfer. | missing |
 | OSC 1337 ; FileEnd | Ends a multipart file transfer. | missing |
-| OSC 1337 ; SetMark | Places a manual mark at the current line for mark navigation. | missing |
+| OSC 1337 ; SetMark | Places a manual mark at the current line for mark navigation. | have |
 | OSC 1337 ; StealFocus | Brings the iTerm2 window/tab to the foreground, trusted only. | missing |
 | OSC 1337 ; ClearScrollback | Clears the scrollback buffer. | missing |
-| OSC 1337 ; CurrentDir=&lt;path&gt; | Reports current working directory for shell integration, trusted only. | missing |
-| OSC 1337 ; RemoteHost=&lt;user@host&gt; | Reports remote user/host for shell integration, for example after ssh, trusted only. | missing |
-| OSC 1337 ; ShellIntegrationVersion=&lt;n&gt; | Announces shell integration script version and shell type. | missing |
+| OSC 1337 ; CurrentDir=&lt;path&gt; | Reports current working directory for shell integration, trusted only. | have |
+| OSC 1337 ; RemoteHost=&lt;user@host&gt; | Reports remote user/host for shell integration, for example after ssh, trusted only. | have |
+| OSC 1337 ; ShellIntegrationVersion=&lt;n&gt; | Announces shell integration script version and shell type. | have |
 | OSC 1337 ; SetProfile=&lt;name&gt; | Switches the session's profile on the fly, trusted only. | missing |
 | OSC 1337 ; AddNote / AddAnnotation=&lt;text&gt; | Adds a visible annotation bound to the current text. | missing |
 | OSC 1337 ; AddHiddenNote / AddHiddenAnnotation=&lt;text&gt; | Adds a hidden annotation. | missing |
@@ -358,7 +358,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; SetBackgroundImageFile=&lt;path&gt; | Sets the session's background image, trusted only. | missing |
 | OSC 1337 ; SetProfileProperty=&lt;key&gt;=&lt;base64 JSON&gt; | Changes a single profile property at runtime, trusted only. | missing |
 | OSC 1337 ; SetBadgeFormat=&lt;base64&gt; | Sets the session badge text/template shown in the corner of the pane. | missing |
-| OSC 1337 ; SetUserVar=&lt;name&gt;=&lt;base64 value&gt; | Sets a user-defined variable exposed to status bar, badges, and scripting. | missing |
+| OSC 1337 ; SetUserVar=&lt;name&gt;=&lt;base64 value&gt; | Sets a user-defined variable exposed to status bar, badges, and scripting. | have |
 | OSC 1337 ; ReportCellSize (query) | Terminal reports character cell size in points and scale factor. | missing |
 | OSC 1337 ; SetWindowFrame=x;y;w;h | Sets the window's frame in points. | missing |
 | OSC 1337 ; ReportWindowFrame (query) | Terminal reports current window frame in points. | missing |
@@ -384,14 +384,15 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; RequestUpload=&lt;params&gt; (trusted) | Asks the user to pick a local file to upload/send to the shell. | missing |
 | OSC 1337 (bare, terminal-to-host report) | Terminal reports its iTerm2 version string as a DSR-style query. | missing |
 | OSC 21337 (tab status) | Sets a structured tab status key/value payload shown in the tab. | missing |
-| OSC 133 ; A / N / P (FTCS_PROMPT_START) | Marks the start of a shell prompt, optionally forcing a fresh line, carries k=&lt;kind&gt; and aid=&lt;id&gt;. Basis of iTerm2's command marks and prompt navigation. | missing |
-| OSC 133 ; B (FTCS_COMMAND_START) | Marks the end of the prompt and start of the typed command. | missing |
-| OSC 133 ; C (FTCS_COMMAND_EXECUTED) | Marks the end of the typed command and start of its output. | missing |
-| OSC 133 ; D[;exit][;aid=] (FTCS_COMMAND_FINISHED) | Marks command completion and reports its exit code, used for command marks, red/green gutter marks, and jump to prior command. | missing |
+| OSC 133 ; A / N / P (FTCS_PROMPT_START) | Marks the start of a shell prompt, optionally forcing a fresh line, carries k=&lt;kind&gt; and aid=&lt;id&gt;. Basis of iTerm2's command marks and prompt navigation. | have |
+| OSC 133 ; B (FTCS_COMMAND_START) | Marks the end of the prompt and start of the typed command. | have |
+| OSC 133 ; C (FTCS_COMMAND_EXECUTED) | Marks the end of the typed command and start of its output. | have |
+| OSC 133 ; D[;exit][;aid=] (FTCS_COMMAND_FINISHED) | Marks command completion and reports its exit code, used for command marks, red/green gutter marks, and jump to prior command. | have |
 | OSC 133 ; E (semantic text start) | Marks the start of semantic text of a given type, for example filename, directory, pid. | missing |
 | OSC 133 ; F (semantic text end) | Marks the end of semantic text. | missing |
 | OSC 133 ; G (progress) | Updates or clears a progress indicator/percentage shown for the running command. | missing |
 | OSC 133 ; H (terminal command) | Sends an arbitrary terminal command token to the delegate. | missing |
+| OSC 7 ; file://user@host/path | Reports the current directory, user, and host as a URL; iTerm2's current shell scripts use it instead of 1337;CurrentDir and RemoteHost. Without a machineID it also marks a prompt. | have |
 | OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | partial, alacritty_terminal parses OSC 8 hyperlinks and exposes hovered/clicked URLs, but Tandem has not wired click-to-open or hyperlink styling in its own renderer yet |
 | OSC 52 (PASTE64) set/query clipboard | Reads or writes the system clipboard, and other X11-style selections, via a base64 payload. | partial, alacritty_terminal parses OSC 52 set/query, but Tandem has not confirmed it wires the result to the Windows clipboard or enables it by policy |
 | DECRQSS / DECRPSS (SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP) | Request/report current terminal settings, graphic rendition, conformance level, cursor style, protection attribute, margins, page size, as an ANSI-standard report-settings sequence. | missing |
@@ -432,14 +433,14 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### shell integration
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Shell integration | Install scripts for bash/zsh/fish/tcsh/xonsh | Shell-specific hook scripts that install prompt/precmd/preexec hooks. | missing | Windows shells such as PowerShell and cmd have no equivalent hook mechanism shipped; would need a PowerShell profile script. |
-| Shell integration | FinalTerm-style prompt marks (OSC 133) | Marks prompt-start, command-start, command-output-start, and command-end so the terminal knows prompt/command/output boundaries. | missing | |
-| Shell integration | Current directory reporting | Shell reports cwd on every prompt so the terminal always knows the working directory, independent of parsing prompt text. | missing | |
-| Shell integration | Remote host reporting | Shell reports user@host so the terminal can track SSH hops and label tabs/panes accordingly, and offer host-based profile switching. | missing | |
-| Shell integration | User-defined variables | Lets shell scripts publish arbitrary key/value variables consumable by status bar components, badges, and triggers. | missing | |
-| Shell integration | Shell integration version handshake | Reports the installed shell integration script's version and shell name so the app can warn about outdated installs. | missing | |
-| Shell integration | Command history capture | Captures each command typed, via prompt marks, and its associated host/directory for the Command History toolbelt tool and search. | missing | |
-| Shell integration | Command status marks (success/failure coloring) | Colors the mark for a finished command based on its exit code, surfaced in the scrollbar and Command History tool. | missing | |
+| Shell integration | Install scripts for bash/zsh/fish/tcsh/xonsh | Shell-specific hook scripts that install prompt/precmd/preexec hooks. | have | PowerShell: Tandem ships its own script (Install Shell Integration). bash, zsh, fish (WSL, Git Bash, ssh): iTerm2's own installer. cmd.exe has no prompt hooks. |
+| Shell integration | FinalTerm-style prompt marks (OSC 133) | Marks prompt-start, command-start, command-output-start, and command-end so the terminal knows prompt/command/output boundaries. | have |  |
+| Shell integration | Current directory reporting | Shell reports cwd on every prompt so the terminal always knows the working directory, independent of parsing prompt text. | have | OSC 7 and 1337;CurrentDir. |
+| Shell integration | Remote host reporting | Shell reports user@host so the terminal can track SSH hops and label tabs/panes accordingly, and offer host-based profile switching. | have | Host and user are tracked; host-based profile switching comes in milestone 6. |
+| Shell integration | User-defined variables | Lets shell scripts publish arbitrary key/value variables consumable by status bar components, badges, and triggers. | have | Stored per session; badges and the status bar that show them come in milestones 6 and 9. |
+| Shell integration | Shell integration version handshake | Reports the installed shell integration script's version and shell name so the app can warn about outdated installs. | have | Version and shell are stored; there is no upgrade prompt. |
+| Shell integration | Command history capture | Captures each command typed, via prompt marks, and its associated host/directory for the Command History toolbelt tool and search. | partial | Each command, directory, host, time, and code is recorded per session; the Command History tool comes in milestone 9. |
+| Shell integration | Command status marks (success/failure coloring) | Colors the mark for a finished command based on its exit code, surfaced in the scrollbar and Command History tool. | have | Blue, yellow, or red in the left margin. |
 | Shell integration | Automatic profile switching by hostname | Switches to a different saved profile automatically when remote host reporting detects an SSH session to a known host. | missing | |
 | Shell integration | it2git status variables | A shell hook script that publishes git branch/dirty state as user variables for status bar/prompt use. | missing | |
 | Shell integration | imgcat | Displays an image file inline in the terminal using the proprietary inline-image protocol. | missing | |
@@ -545,17 +546,17 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Captured output | Captured Output toolbelt list | Displays all captured snippets in one list, click-to-jump to the source line in the buffer. | missing | |
 | Annotations | Inline annotation | A user- or trigger-attached note bound to a range of terminal text, shown inline and editable, independent of triggers. | missing | |
 | Annotations | Annotation from Named Mark | Auto-generates annotation text describing a named mark. | missing | |
-| Marks and navigation | Command mark (prompt-based) | A mark automatically placed at each shell prompt via shell integration, carrying the command text, start/end time, and exit code. | missing | |
-| Marks and navigation | Exit-code coloring | Colors a command mark green/red based on success/failure of the exit code, visible in the scrollbar gutter. | missing | |
-| Marks and navigation | Manual mark | A mark the user places explicitly, not tied to a command, for bookmarking a scrollback position. | missing | |
-| Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | missing | |
+| Marks and navigation | Command mark (prompt-based) | A mark automatically placed at each shell prompt via shell integration, carrying the command text, start/end time, and exit code. | have |  |
+| Marks and navigation | Exit-code coloring | Colors a command mark green/red based on success/failure of the exit code, visible in the scrollbar gutter. | have | In the left margin (Tandem has no scrollbar). |
+| Marks and navigation | Manual mark | A mark the user places explicitly, not tied to a command, for bookmarking a scrollback position. | have |  |
+| Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | have | The Named Marks tool comes in milestone 9. |
 | Marks and navigation | Image mark | A mark type used to anchor an inline image's position in the buffer. | missing | Depends on inline-image support, which Tandem also lacks. |
 | Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | missing | |
 | Marks and navigation | Block mark / Button mark | Marks used by block-based UI, for example clickable inline buttons in output such as AI suggestions. | missing | |
-| Marks and navigation | Next/previous mark navigation | Keyboard commands to jump the viewport to the next or previous mark in scrollback. | missing | Tandem has scrollback but no mark concept to navigate between; plain scroll-by-page exists instead. |
-| Marks and navigation | Mark rendering in scrollbar | Draws small colored tick marks in the scrollbar gutter representing command marks, for an at-a-glance command timeline. | missing | |
-| Marks and navigation | Select output of last/given command | Uses command mark ranges to select exactly the output of one command for copy. | missing | |
-| Marks and navigation | Clear buffer up to mark | Clears scrollback history up to, but not including, a specific mark. | missing | |
+| Marks and navigation | Next/previous mark navigation | Keyboard commands to jump the viewport to the next or previous mark in scrollback. | have | Tandem has scrollback but no mark concept to navigate between; plain scroll-by-page exists instead. |
+| Marks and navigation | Mark rendering in scrollbar | Draws small colored tick marks in the scrollbar gutter representing command marks, for an at-a-glance command timeline. | partial | Marks show in the left margin; Tandem has no scrollbar. |
+| Marks and navigation | Select output of last/given command | Uses command mark ranges to select exactly the output of one command for copy. | have |  |
+| Marks and navigation | Clear buffer up to mark | Clears scrollback history up to, but not including, a specific mark. | have |  |
 
 ### find
 | Subsystem | Feature | What it does | Tandem status | Windows note |

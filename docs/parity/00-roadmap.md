@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 50 | 184 | 80 |
+| `01-profile-settings.md` | 314 | 52 | 182 | 80 |
 | `02-global-settings.md` | 820 | 98 | 53 | 669 |
-| `03-features-and-menus.md` | 632 | 62 | 6 | 564 |
-| Total | 1,766 | 210 | 243 | 1,313 |
+| `03-features-and-menus.md` | 633 | 100 | 8 | 525 |
+| Total | 1,767 | 250 | 243 | 1,274 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -18,7 +18,10 @@ command, and directory take effect; iTerm2 import; the Profiles window), and mil
 iTerm2's menu bar and right-click menu, about 60 commands, Win as Cmd; 3b: global and profile key
 bindings with all 77 action codes, the Leader, presets, pointer bindings with all 32 actions,
 modifier remapping, number shortcuts, and the profile Keys options). Actions and settings that
-need a later feature are stored and name their milestone.
+need a later feature are stored and name their milestone. Milestone 4a: shell integration (OSC 133, OSC 7,
+the 1337 shell keys, a PowerShell script, iTerm2's installer for bash and zsh), prompt, manual,
+and named marks on their rows (a small alacritty_terminal patch), the mark commands and alerts,
+mark indicators, and Reuse previous session's directory.
 
 ## Order
 
