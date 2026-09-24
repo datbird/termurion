@@ -8,8 +8,8 @@ use toml::Value;
 use crate::profile::Profile;
 
 /// Weight and style words iTerm2's PostScript names carry after the family.
-const STYLE_WORDS: [&str; 12] =
-    ["Regular", "Book", "Medium", "Bold", "Italic", "Light", "Thin", "SemiBold", "ExtraBold", "Black", "Oblique", "Normal"];
+const STYLE_WORDS: [&str; 13] =
+    ["Regular", "Book", "Medium", "Bold", "Italic", "BoldItalic", "Light", "Thin", "SemiBold", "ExtraBold", "Black", "Oblique", "Normal"];
 
 /// "MesloLGS-NF-Regular" becomes "MesloLGS NF". A trailing style word is dropped,
 /// and the other dashes become spaces.
@@ -83,16 +83,6 @@ fn from_json(v: &serde_json::Value) -> Option<Value> {
     })
 }
 
-/// Fonts arrive as PostScript names. Store them as family names Windows can find.
-fn fix_fonts(mut p: Profile) -> Profile {
-    for key in ["Normal Font", "Non Ascii Font"] {
-        if let Some(Value::String(s)) = p.values.get(key).cloned() {
-            let spec = crate::profile::parse_font(&s);
-            p.set(key, Value::String(format!("{} {}", family_from_postscript(&spec.family), spec.size_pt)));
-        }
-    }
-    p
-}
 
 pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
     let root = plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|e| format!("not an iTerm2 settings file: {e}"))?;
@@ -104,7 +94,7 @@ pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
     Ok(bookmarks
         .iter()
         .filter_map(|b| match from_plist(b) {
-            Some(Value::Table(t)) => Some(fix_fonts(Profile { values: t.into_iter().collect() })),
+            Some(Value::Table(t)) => Some(Profile { values: t.into_iter().collect() }),
             _ => None,
         })
         .collect::<Vec<_>>())
@@ -123,7 +113,7 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
     Ok(list
         .iter()
         .filter_map(|b| match from_json(b) {
-            Some(Value::Table(t)) => Some(fix_fonts(Profile { values: t.into_iter().collect() })),
+            Some(Value::Table(t)) => Some(Profile { values: t.into_iter().collect() }),
             _ => None,
         })
         .collect::<Vec<_>>())
@@ -192,7 +182,9 @@ mod tests {
 
     #[test]
     fn postscript_font_names_become_family_names() {
-        assert_eq!(work().font("Normal Font").family, "MesloLGS NF");
+        // Import keeps iTerm2's exact name; the renderer resolves it against installed fonts.
+        assert_eq!(work().font("Normal Font").family, "MesloLGS-NF-Regular");
+        assert_eq!(family_from_postscript("JetBrainsMono-BoldItalic"), "JetBrainsMono");
         assert_eq!(family_from_postscript("Monaco"), "Monaco");
         assert_eq!(family_from_postscript("FiraCode-Retina"), "FiraCode Retina");
         assert_eq!(family_from_postscript("JetBrainsMono-Bold"), "JetBrainsMono");

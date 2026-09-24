@@ -312,8 +312,12 @@ impl App {
     /// installed is named in the banner.
     fn apply_fonts(&mut self) {
         let p = self.store.default_profile().clone();
-        let normal = p.font("Normal Font");
-        let alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
+        let mut normal = p.font("Normal Font");
+        let mut alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
+        if let Some(g) = self.gpu.as_ref() {
+            normal.family = g.renderer.resolve_family(&normal.family);
+            alt = alt.map(|a| g.renderer.resolve_family(&a));
+        }
         let sig = format!("{normal:?} {alt:?} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale());
         // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
         if sig == self.font_sig {

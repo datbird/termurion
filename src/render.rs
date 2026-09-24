@@ -159,6 +159,30 @@ impl Renderer {
         self.buffers.clear();
     }
 
+    /// The installed family for an iTerm2 font name, which is usually a PostScript
+    /// name ("JetBrainsMono-Regular"). Tries a family name, then the installed fonts'
+    /// PostScript names, then a guess from the dashes.
+    pub fn resolve_family(&self, name: &str) -> String {
+        let db = self.font_system.db();
+        if let Some(f) = db.faces().flat_map(|f| f.families.iter()).find(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            return f.0.clone();
+        }
+        if let Some(face) = db.faces().find(|f| f.post_script_name.eq_ignore_ascii_case(name)) {
+            if let Some((family, _)) = face.families.first() {
+                return family.clone();
+            }
+        }
+        // "CascadiaMono-Regular" or "JetBrainsMono-Bold": drop the style word, then match
+        // family names with spaces removed ("Cascadia Mono", "JetBrains Mono").
+        let guess = crate::import::family_from_postscript(name);
+        let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace() && *c != '-').collect::<String>().to_lowercase();
+        let want = squash(&guess);
+        db.faces()
+            .flat_map(|f| f.families.iter())
+            .find(|(n, _)| squash(n) == want)
+            .map_or(guess, |(n, _)| n.clone())
+    }
+
     /// True when a font family with this name is installed.
     pub fn has_family(&self, name: &str) -> bool {
         self.font_system.db().faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
@@ -347,6 +371,16 @@ mod tests {
         let right = (0..w).rev().find(|&x| lit(x)).unwrap() as f32 + 1.0;
         let want = n as f32 * r.cell.0;
         assert!((right - want).abs() < r.cell.0 / 2.0, "text ends at {right} px, cells end at {want} px (cell {:?})", r.cell);
+    }
+
+    #[test]
+    fn postscript_names_resolve_to_installed_families() {
+        let (device, queue) = device();
+        let r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        assert_eq!(r.resolve_family("CascadiaMono-Regular"), "Cascadia Mono");
+        assert_eq!(r.resolve_family("Cascadia Mono"), "Cascadia Mono");
+        // Not installed: the dash heuristic is the best guess.
+        assert_eq!(r.resolve_family("MesloLGS-NF-Regular"), "MesloLGS NF");
     }
 
     #[test]
