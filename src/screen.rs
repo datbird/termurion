@@ -63,7 +63,7 @@ impl Look {
 
 impl Default for Look {
     fn default() -> Self {
-        Look::from_profile(&crate::profile::Profile::default())
+        Look::from_profile(&crate::profile::Profile::stock())
     }
 }
 

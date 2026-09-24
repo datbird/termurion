@@ -206,6 +206,16 @@ mod tests {
     }
 
     #[test]
+    fn imported_plain_colors_reach_the_palette() {
+        // Profiles from before iTerm2 3.5 have no Light/Dark keys. iTerm2 then reads the
+        // plain colors, so the palette must too.
+        let json = r#"{"Profiles":[{"Name":"Sol","Guid":"S-1","Foreground Color":{"Red Component":0.5,"Green Component":0.6,"Blue Component":0.7}}]}"#;
+        let p = from_dynamic_json(json).unwrap().remove(0);
+        let pal = crate::palette::Palette::from_profile(&p, true);
+        assert_eq!(pal.fg, rgb(128, 153, 179));
+    }
+
+    #[test]
     fn imports_dynamic_profiles_json() {
         let json = r#"{"Profiles":[{"Name":"Dyn","Guid":"D-1","Rows":40,"Foreground Color":{"Red Component":0,"Green Component":1,"Blue Component":0}}]}"#;
         let p = from_dynamic_json(json).unwrap().remove(0);

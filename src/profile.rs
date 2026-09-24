@@ -51,8 +51,27 @@ fn to_rgb(v: &Value) -> Option<Rgb> {
 }
 
 impl Profile {
-    pub fn new(name: &str) -> Profile {
+    /// The values iTerm2 gives a new profile (its DefaultBookmark), with no Guid or name.
+    /// `Profile::default()` is an empty profile: every key reads iTerm2's missing-key value,
+    /// which is how an imported profile's absent keys behave.
+    pub fn stock() -> Profile {
         let mut p = Profile::default();
+        for s in schema::profile() {
+            if let Some(v) = &s.seed {
+                p.set(&s.key, v.clone());
+            }
+            if let Some(v) = &s.seed_light {
+                p.set(&format!("{} (Light)", s.key), v.clone());
+            }
+            if let Some(v) = &s.seed_dark {
+                p.set(&format!("{} (Dark)", s.key), v.clone());
+            }
+        }
+        p
+    }
+
+    pub fn new(name: &str) -> Profile {
+        let mut p = Profile::stock();
         p.set(GUID, Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
         p.set(NAME, Value::String(name.to_string()));
         p.set("Normal Font", Value::String(WINDOWS_FONT.into()));
@@ -160,7 +179,7 @@ mod tests {
 
     #[test]
     fn light_and_dark_colors() {
-        let mut p = Profile::default();
+        let mut p = Profile::stock();
         p.set("Foreground Color", color_value(rgb(1, 1, 1)));
         p.set("Foreground Color (Dark)", color_value(rgb(9, 9, 9)));
         // iTerm2's stock profile keeps separate Light and Dark colors, so switch that off first.
@@ -191,9 +210,17 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_key_reads_iterm2s_fallback_not_the_new_profile_seed() {
+        // iTerm2 reads NO for a missing "Use Separate Colors" key, though new profiles start with YES.
+        assert!(!Profile::default().bool("Use Separate Colors for Light and Dark Mode"));
+        assert!(Profile::stock().bool("Use Separate Colors for Light and Dark Mode"));
+        assert!(Profile::new("x").bool("Use Separate Colors for Light and Dark Mode"));
+    }
+
+    #[test]
     fn stock_dark_colors_come_from_the_schema() {
         // iTerm2's stock profile keeps separate colors; its Dark background is 0.081 0.099 0.121.
-        let p = Profile::default();
+        let p = Profile::stock();
         assert_eq!(p.color_for("Background Color", true), rgb(21, 25, 31));
         assert_eq!(p.color_for("Background Color", false), rgb(250, 250, 250));
     }

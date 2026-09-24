@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn color_edits_target_the_current_mode_variant() {
         let fg = crate::schema::find("Foreground Color").unwrap();
-        let mut p = Profile::default();
+        let mut p = Profile::stock();
         assert_eq!(edit_key(&p, fg, true), "Foreground Color (Dark)");
         assert_eq!(edit_key(&p, fg, false), "Foreground Color (Light)");
         p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(false));

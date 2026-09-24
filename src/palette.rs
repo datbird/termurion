@@ -28,7 +28,7 @@ pub struct Palette {
 impl Default for Palette {
     /// iTerm2's stock default profile colors, from the schema.
     fn default() -> Self {
-        Palette::from_profile(&crate::profile::Profile::default(), true)
+        Palette::from_profile(&crate::profile::Profile::stock(), true)
     }
 }
 

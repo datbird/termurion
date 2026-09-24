@@ -36,9 +36,14 @@ pub struct Setting {
     #[serde(rename = "type")]
     pub kind: Kind,
     pub default: Option<toml::Value>,
-    /// Stock values of the "(Light)" and "(Dark)" variants, for light_dark keys.
+    /// iTerm2's values for a missing "(Light)" or "(Dark)" variant key.
     pub default_light: Option<toml::Value>,
     pub default_dark: Option<toml::Value>,
+    /// What a new profile starts with, when it differs from `default` (iTerm2's
+    /// DefaultBookmark.plist). `default` is what iTerm2 reads for a missing key.
+    pub seed: Option<toml::Value>,
+    pub seed_light: Option<toml::Value>,
+    pub seed_dark: Option<toml::Value>,
     pub min: Option<toml::Value>,
     pub max: Option<toml::Value>,
     #[serde(default)]
