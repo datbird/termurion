@@ -7,6 +7,8 @@ pub enum Button {
     Right,
     WheelUp,
     WheelDown,
+    WheelLeft,
+    WheelRight,
     /// Motion with no button held.
     None,
 }
@@ -65,7 +67,7 @@ pub fn app_owns_mouse(modes: Modes, mods: Mods) -> bool {
 
 /// Returns the bytes to send the app for `ev`, or None when the app did not ask for it.
 pub fn encode(modes: Modes, ev: Event) -> Option<Vec<u8>> {
-    let wheel = matches!(ev.button, Button::WheelUp | Button::WheelDown);
+    let wheel = matches!(ev.button, Button::WheelUp | Button::WheelDown | Button::WheelLeft | Button::WheelRight);
     let reported = match (modes.tracking, ev.action) {
         (Tracking::Off, _) => false,
         (_, Action::Press) => ev.button != Button::None,
@@ -85,6 +87,8 @@ pub fn encode(modes: Modes, ev: Event) -> Option<Vec<u8>> {
         Button::None => 3,
         Button::WheelUp => 64,
         Button::WheelDown => 65,
+        Button::WheelLeft => 66,
+        Button::WheelRight => 67,
     };
     let mods = 4 * ev.mods.shift as u32 + 8 * ev.mods.alt as u32 + 16 * ev.mods.ctrl as u32;
     let motion = if ev.action == Action::Motion { 32 } else { 0 };
@@ -125,6 +129,15 @@ mod tests {
     const SGR_DRAG: Modes = Modes { tracking: Tracking::Drag, sgr: true };
     const SGR_ANY: Modes = Modes { tracking: Tracking::Any, sgr: true };
     const LEGACY_CLICK: Modes = Modes { tracking: Tracking::Click, sgr: false };
+
+    #[test]
+    fn horizontal_wheel_reports_66_and_67() {
+        let modes = Modes { tracking: Tracking::Click, sgr: true };
+        let ev = |button| Event { button, action: Action::Press, mods: Mods::default(), col: 0, row: 0 };
+        assert_eq!(encode(modes, ev(Button::WheelLeft)).unwrap(), b"\x1b[<66;1;1M");
+        assert_eq!(encode(modes, ev(Button::WheelRight)).unwrap(), b"\x1b[<67;1;1M");
+        assert_eq!(encode(modes, Event { action: Action::Release, ..ev(Button::WheelLeft) }), None);
+    }
 
     #[test]
     fn off_sends_nothing() {
