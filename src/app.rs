@@ -356,16 +356,15 @@ impl App {
         if ev.state != ElementState::Pressed {
             return;
         }
-        if let Some(base) = to_key(&ev.key_without_modifiers(), None) {
-            if let Some(action) = keys::shortcut(&base, self.mods) {
-                return self.action(action, event_loop);
-            }
+        let base = to_key(&ev.key_without_modifiers(), None);
+        if let Some(action) = base.as_ref().and_then(|b| keys::shortcut(b, self.mods)) {
+            return self.action(action, event_loop);
         }
         let Some(key) = to_key(&ev.logical_key, ev.text.as_deref()) else { return };
         let mods = self.mods;
         let Some(pane) = self.focused_pane() else { return };
         let app_cursor = pane.screen.term().mode().contains(TermMode::APP_CURSOR);
-        if let Some(bytes) = keys::encode(&key, mods, app_cursor) {
+        if let Some(bytes) = keys::press_bytes(&key, base.as_ref(), ev.text.as_deref(), mods, app_cursor) {
             pane.scroll(Scroll::Bottom);
             pane.input(&bytes);
         }

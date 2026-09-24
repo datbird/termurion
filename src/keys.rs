@@ -112,6 +112,29 @@ pub fn encode(key: &Key, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
     })
 }
 
+/// The bytes for a key press, given the key (`key`), the same key with no
+/// modifiers (`base`), and the text Windows produced for the press (`text`).
+/// That text already holds dead-key and AltGr results, so for character keys it
+/// wins, except when Ctrl makes a control code. Windows reports AltGr as Ctrl+Alt;
+/// it is AltGr when the text differs from the base key.
+pub fn press_bytes(key: &Key, base: Option<&Key>, text: Option<&str>, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
+    let typed = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+    if let (Key::Text(_), Some(t)) = (key, typed) {
+        let altgr = mods.ctrl && mods.alt && base != Some(&Key::Text(t.to_lowercase()));
+        if altgr {
+            return Some(t.as_bytes().to_vec());
+        }
+        if !mods.ctrl {
+            let mut bytes = t.as_bytes().to_vec();
+            if mods.alt {
+                bytes.insert(0, 0x1b);
+            }
+            return Some(bytes);
+        }
+    }
+    encode(key, mods, app_cursor)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     NewTab,
@@ -225,6 +248,37 @@ mod tests {
         assert_eq!(enc(Key::F(5), NONE), b"\x1b[15~");
         assert_eq!(enc(Key::F(12), NONE), b"\x1b[24~");
         assert_eq!(encode(&Key::F(13), NONE, false), None);
+    }
+
+    fn press(key: &str, base: &str, text: &str, m: Mods) -> Vec<u8> {
+        press_bytes(&t(key), Some(&t(base)), Some(text), m, false).unwrap()
+    }
+
+    #[test]
+    fn altgr_sends_the_typed_character() {
+        // German layout: AltGr+Q types @. Windows reports AltGr as Ctrl+Alt.
+        let altgr = Mods { ctrl: true, alt: true, shift: false };
+        assert_eq!(press("@", "q", "@", altgr), b"@");
+        assert_eq!(press("{", "7", "{", altgr), b"{");
+    }
+
+    #[test]
+    fn ctrl_alt_letter_is_still_a_control_key() {
+        let ctrl_alt = Mods { ctrl: true, alt: true, shift: false };
+        assert_eq!(press("a", "a", "a", ctrl_alt), b"\x1b\x01");
+    }
+
+    #[test]
+    fn composed_text_wins_over_the_key() {
+        assert_eq!(press("e", "e", "\u{e9}", NONE), "\u{e9}".as_bytes());
+        assert_eq!(press("A", "a", "A", SHIFT), b"A");
+    }
+
+    #[test]
+    fn alt_and_ctrl_keep_their_meaning() {
+        assert_eq!(press("x", "x", "x", ALT), b"\x1bx");
+        assert_eq!(press("c", "c", "c", CTRL), b"\x03");
+        assert_eq!(press_bytes(&Key::Enter, None, Some("\r"), NONE, false).unwrap(), b"\r");
     }
 
     #[test]
