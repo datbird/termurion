@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Copies this repo to EXTREME and runs cargo there.
+# Usage: scripts/xt test --lib mouse
+set -euo pipefail
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+mount_root=/home/tbird/aiplayground/mount/extreme
+dest="$mount_root/c/Users/datbi/src/tandem"
+win='C:\Users\datbi\src\tandem'
+if ! mountpoint -q "$mount_root"; then
+    echo "xt: $mount_root is not mounted. Run: systemctl --user restart sshfs-extreme" >&2
+    exit 2
+fi
+mkdir -p "$dest"
+# -rt, not -a: the Windows side cannot take Linux owners or modes.
+# target/ and vendor/ live only on EXTREME, and excluded paths survive --delete.
+rsync -rt --delete --exclude target/ --exclude vendor/ --exclude .git/ --exclude .superpowers/ "$repo/" "$dest/"
+ssh extreme "cd '$win'; cargo $*; exit \$LASTEXITCODE"
