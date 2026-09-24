@@ -5,7 +5,7 @@ Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
-| 1 | In a PowerShell tab: iTerm2 > Install Shell Integration > Yes (the box says it sets the execution policy to RemoteSigned for your user only if scripts are blocked). The command runs, and each new prompt gets a blue bar in the left margin. Open a new PowerShell tab: its prompts have bars too (the profile loads the script). Your own Enter and prompt (oh-my-posh, starship) still work, and a failed command still shows as failed in them. |
+| 1 | In a PowerShell tab: iTerm2 > Install Shell Integration > Yes (the box says it sets the execution policy to RemoteSigned for your user only if scripts are blocked). The command runs, and each new prompt gets a blue bar in the left margin. Open a new PowerShell tab: its prompts have bars too (the profile loads the script). Your own Enter and prompt (oh-my-posh, starship) still work, and a failed command still shows as failed in them. | |
 | 2 | Run `cmd /c exit 3`: the next prompt's bar for that command turns red. Run `dir`: blue. | |
 | 3 | In a WSL tab: Install Shell Integration > Yes types iTerm2's curl installer. After it finishes, open a new WSL tab: prompts have bars. | |
 | 4 | Run a few commands, then Win+Shift+Up and Win+Shift+Down: the view jumps between commands, with the command selected; at the ends it wraps. | |
