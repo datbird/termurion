@@ -216,7 +216,10 @@ impl Screen {
     fn new_mark(&mut self, line: i32, kind: Kind) -> u32 {
         self.marks.next_id = self.marks.next_id.wrapping_add(1).max(1);
         let id = self.marks.next_id;
-        self.set_row_mark(line, id);
+        match kind {
+            Kind::Prompt => self.set_row_mark(line, id),
+            Kind::Manual => self.set_row_manual(line, id),
+        }
         self.marks.records.insert(id, Mark::new(id, kind));
         self.marks.made = true;
         id
@@ -248,10 +251,11 @@ impl Screen {
         let grid = self.term.grid();
         let offset = grid.display_offset() as i32;
         (0..grid.screen_lines())
-            .filter_map(|row| {
-                let id = grid[Line(row as i32 - offset)].mark();
-                Some((row, self.marks.records.get(&id)?.clone())).filter(|_| id != 0)
+            .flat_map(|row| {
+                let r = &grid[Line(row as i32 - offset)];
+                [(row, r.mark()), (row, r.manual())]
             })
+            .filter_map(|(row, id)| Some((row, self.marks.records.get(&id)?.clone())).filter(|_| id != 0))
             .collect()
     }
 
@@ -604,6 +608,18 @@ mod tests {
         s.feed(b"\x1b[?1049l");
         assert_eq!(s.marks_in_order().len(), 1);
         assert_eq!(s.marks.records.len(), 1);
+    }
+
+    #[test]
+    fn a_manual_mark_shares_a_row_with_a_prompt_mark() {
+        let mut s = Screen::new(40, 10);
+        prompt(&mut s, "ls", 1);
+        let line = s.marks_in_order()[0].0;
+        s.set_manual_mark(line, Some("here".into()));
+        let marks = s.marks_in_order();
+        assert_eq!(marks.len(), 2, "{marks:?}");
+        assert!(marks.iter().any(|(_, m)| m.command == "ls" && m.code == Some(1)));
+        assert!(marks.iter().any(|(_, m)| m.name.as_deref() == Some("here")));
     }
 
     #[test]

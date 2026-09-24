@@ -4,7 +4,8 @@ This is alacritty_terminal 0.26.0 from crates.io (Apache-2.0, see LICENSE-APACHE
 through `[patch.crates-io]` in Tandem's Cargo.toml. The `tests/` directory (46 MB of ref
 test data) is left out. Changes:
 
-1. `grid/row.rs`: `Row` has a `mark: u32` field with `mark()` and `set_mark()`. Tandem stores
+1. `grid/row.rs`: `Row` has `mark: u32` and `manual: u32` fields with `mark()`, `set_mark()`,
+   `manual()`, and `set_manual()` (a row can hold a prompt mark and a manual mark). Tandem stores
    shell-integration and manual marks there, so a mark moves with its row through scrolling,
    scrollback, and reflow. `Row::reset` clears it, so a recycled row starts unmarked.
 2. `grid/resize.rs`: when widening merges a wrapped continuation row into the row above,

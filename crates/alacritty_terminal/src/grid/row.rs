@@ -27,6 +27,10 @@ pub struct Row<T> {
     /// through scrolling and reflow, and a reset clears it.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) mark: u32,
+
+    /// Tandem patch: a second mark id (manual marks), so a row can hold both kinds.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) manual: u32,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -57,7 +61,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0, mark: 0 }
+        Row { inner, occ: 0, mark: 0, manual: 0 }
     }
 
     /// Increase the number of columns in the row.
@@ -113,6 +117,7 @@ impl<T: Default> Row<T> {
 
         self.occ = 0;
         self.mark = 0;
+        self.manual = 0;
     }
 }
 
@@ -120,7 +125,7 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ, mark: 0 }
+        Row { inner: vec, occ, mark: 0, manual: 0 }
     }
 
     /// Tandem patch: the mark id on this row, 0 for none.
@@ -133,6 +138,18 @@ impl<T> Row<T> {
     #[inline]
     pub fn set_mark(&mut self, mark: u32) {
         self.mark = mark;
+    }
+
+    /// Tandem patch: the manual mark id on this row, 0 for none.
+    #[inline]
+    pub fn manual(&self) -> u32 {
+        self.manual
+    }
+
+    /// Tandem patch: puts a manual mark id on this row (0 removes it).
+    #[inline]
+    pub fn set_manual(&mut self, mark: u32) {
+        self.manual = mark;
     }
 
     #[inline]

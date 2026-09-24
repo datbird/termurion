@@ -202,6 +202,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     if last_row.mark == 0 {
                         last_row.mark = row.mark;
                     }
+                    if last_row.manual == 0 {
+                        last_row.manual = row.manual;
+                    }
                     continue;
                 }
 
@@ -210,6 +213,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 // Tandem patch: a mark on a merged-away continuation row moves up.
                 if last_row.mark == 0 {
                     last_row.mark = row.mark;
+                }
+                if last_row.manual == 0 {
+                    last_row.manual = row.manual;
                 }
                 if i < self.display_offset {
                     // Since we removed a line, rotate down the viewport.

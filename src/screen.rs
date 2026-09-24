@@ -201,12 +201,27 @@ impl Screen {
         }
     }
 
-    /// Every marked row, top first: (grid line, mark id).
+    /// Puts a manual mark id on a row, beside any prompt mark there.
+    pub fn set_row_manual(&mut self, line: i32, id: u32) {
+        let grid = self.term.primary_grid_mut();
+        if line >= -(grid.history_size() as i32) && line < grid.screen_lines() as i32 {
+            grid[Line(line)].set_manual(id);
+        }
+    }
+
+    /// Every mark on a row, top first: (grid line, mark id). A row's prompt mark comes
+    /// before its manual mark.
     pub fn row_marks(&self) -> Vec<(i32, u32)> {
         // Marks live on the main screen, also while a full-screen app has the alternate one.
         let grid = self.term.primary_grid();
         let top = -(grid.history_size() as i32);
-        (top..grid.screen_lines() as i32).filter_map(|l| Some((l, grid[Line(l)].mark())).filter(|(_, id)| *id != 0)).collect()
+        (top..grid.screen_lines() as i32)
+            .flat_map(|l| {
+                let row = &grid[Line(l)];
+                [(l, row.mark()), (l, row.manual())]
+            })
+            .filter(|(_, id)| *id != 0)
+            .collect()
     }
 
     /// One logical line's text starting at `line`: its row and the rows it wraps onto,
