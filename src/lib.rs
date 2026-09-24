@@ -28,3 +28,6 @@ pub mod render;
 
 #[cfg(windows)]
 pub mod app;
+
+#[cfg(windows)]
+pub mod settings_ui;

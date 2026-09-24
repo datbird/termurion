@@ -30,6 +30,7 @@ use crate::render::Renderer;
 use crate::screen::Look;
 use crate::store::{self, Store};
 use crate::scene::{self, Frame, rgba};
+use crate::settings_ui::{Edit, SettingsWindow};
 
 const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
@@ -60,6 +61,7 @@ enum Drag {
 
 struct Gpu {
     surface: wgpu::Surface<'static>,
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -88,6 +90,7 @@ pub struct App {
     banner: Option<String>,
     clipboard: Option<arboard::Clipboard>,
     store: Store,
+    settings: Option<SettingsWindow>,
     /// Cursor blink phase, and when it last flipped.
     blink_on: bool,
     last_blink: Instant,
@@ -154,6 +157,7 @@ pub fn run() {
         banner,
         clipboard: arboard::Clipboard::new().ok(),
         store,
+        settings: None,
         blink_on: true,
         last_blink: Instant::now(),
     };
@@ -223,6 +227,38 @@ impl App {
                 None
             }
         }
+    }
+
+    fn open_settings(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(s) = &self.settings {
+            return s.focus();
+        }
+        let Some(g) = self.gpu.as_ref() else { return };
+        match SettingsWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+            Ok(s) => self.settings = Some(s),
+            Err(e) => self.banner = Some(format!("Could not open settings: {e}")),
+        }
+    }
+
+    /// Saves after an edit in the settings window and applies it to every open pane.
+    fn apply_edit(&mut self, edit: Edit) {
+        match edit {
+            Edit::None => return,
+            Edit::Error(e) => self.banner = Some(e),
+            Edit::Changed(_) | Edit::Imported(_) => {
+                if let Err(e) = self.store.save() {
+                    self.banner = Some(format!("Could not save settings: {e}"));
+                }
+                let dark = self.dark();
+                for pane in self.panes.values_mut() {
+                    let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
+                    pane.screen.set_palette(Palette::from_profile(p, dark));
+                    pane.screen.set_look(Look::from_profile(p));
+                }
+                self.apply_fonts();
+            }
+        }
+        self.relayout();
     }
 
     /// Takes the renderer's fonts from the default profile. A font that is not
@@ -414,6 +450,7 @@ impl App {
             Action::ScrollPageDown => self.focused_pane().map_or((), |p| p.scroll(Scroll::PageDown)),
             Action::ScrollTop => self.focused_pane().map_or((), |p| p.scroll(Scroll::Top)),
             Action::ScrollBottom => self.focused_pane().map_or((), |p| p.scroll(Scroll::Bottom)),
+            Action::OpenSettings => self.open_settings(event_loop),
             _ => {}
         }
         self.relayout();
@@ -776,7 +813,20 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.settings.as_ref().is_some_and(|s| s.id() == id) {
+            match event {
+                WindowEvent::CloseRequested => self.settings = None,
+                WindowEvent::RedrawRequested => {
+                    let edit = self.settings.as_mut().unwrap().redraw(&mut self.store);
+                    self.apply_edit(edit);
+                }
+                other => {
+                    self.settings.as_mut().unwrap().event(&other);
+                }
+            }
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => {
                 self.panes.clear();
@@ -843,7 +893,7 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, St
     };
     surface.configure(&device, &config);
     let renderer = Renderer::new(&device, &queue, format, FONT, FONT_PX * window.scale_factor() as f32);
-    Ok(Gpu { surface, device, queue, config, renderer, instance, window })
+    Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, window })
 }
 
 /// The active tab index after tab `closed` is removed, leaving `remaining` tabs.

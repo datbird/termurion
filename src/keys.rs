@@ -153,6 +153,7 @@ pub enum Action {
     ScrollPageDown,
     ScrollTop,
     ScrollBottom,
+    OpenSettings,
 }
 
 /// The app shortcut for a key, if any. `key` must be the key with no modifiers
@@ -176,6 +177,7 @@ pub fn shortcut(key: &Key, mods: Mods) -> Option<Action> {
         (_, "[") if cmd_shift => Action::PrevTab,
         (_, "c") if cmd => Action::Copy,
         (_, "v") if cmd => Action::Paste,
+        (_, ",") if cmd => Action::OpenSettings,
         (_, d) if cmd && d.len() == 1 && matches!(d.as_bytes()[0], b'1'..=b'9') => {
             Action::SelectTab((d.as_bytes()[0] - b'1') as usize)
         }
