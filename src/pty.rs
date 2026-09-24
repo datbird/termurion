@@ -4,18 +4,19 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::AsRawHandle;
 use std::ptr::{null, null_mut};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{COORD, HPCON};
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetExitCodeProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    GetCurrentProcess, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
     STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
@@ -35,6 +36,25 @@ pub struct Pty {
 /// How long Drop waits for ConPTY to close the output pipe before it ends the child.
 const CLOSE_WAIT: Duration = Duration::from_secs(2);
 
+/// Called from background threads when a pty has new output or its child exits.
+pub type Notify = Arc<dyn Fn() + Send + Sync>;
+
+/// The result of a non-blocking read.
+pub enum Read {
+    Data(Vec<u8>),
+    Empty,
+    /// The output pipe closed. ConPTY closes it only after the pseudoconsole closes,
+    /// so a child exit shows up in `exit_code`, not here.
+    Closed,
+}
+
+fn check_size(cols: u16, rows: u16) -> Result<(), String> {
+    if cols == 0 || rows == 0 || cols > i16::MAX as u16 || rows > i16::MAX as u16 {
+        return Err(format!("bad pty size {cols}x{rows}"));
+    }
+    Ok(())
+}
+
 // SAFETY: the raw handles are process-wide kernel handles, valid on any thread. Pty is
 // not Sync, so only one thread uses them at a time.
 unsafe impl Send for Pty {}
@@ -48,9 +68,38 @@ fn coord(cols: u16, rows: u16) -> COORD {
 }
 
 pub fn spawn(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<Pty, String> {
+    spawn_notify(api, cmdline, cols, rows, Arc::new(|| {}))
+}
+
+pub fn spawn_notify(api: &Api, cmdline: &str, cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
+    check_size(cols, rows)?;
     let (hpc, input, output, process) = unsafe { start(api, cmdline, cols, rows)? };
-    let (rx, reader_done, reader) = start_reader(output);
-    Ok(Pty { api: api.clone(), hpc, input, process, output: rx, reader: Some(reader), reader_done })
+    let (rx, reader_done, reader) = start_reader(output, notify.clone());
+    let pty = Pty { api: api.clone(), hpc, input, process, output: rx, reader: Some(reader), reader_done };
+    watch_exit(pty.process, notify)?;
+    Ok(pty)
+}
+
+/// Calls `notify` once the child exits. It waits on its own copy of the process
+/// handle, so the Pty can close its copy at any time.
+fn watch_exit(process: HANDLE, notify: Notify) -> Result<(), String> {
+    let mut copy: HANDLE = null_mut();
+    let ok = unsafe {
+        DuplicateHandle(GetCurrentProcess(), process, GetCurrentProcess(), &mut copy, 0, 0, DUPLICATE_SAME_ACCESS)
+    };
+    if ok == 0 {
+        return Err(os_err("DuplicateHandle"));
+    }
+    let raw = copy as usize;
+    std::thread::spawn(move || {
+        let copy = raw as HANDLE;
+        unsafe {
+            WaitForSingleObject(copy, INFINITE);
+            CloseHandle(copy);
+        }
+        notify();
+    });
+    Ok(())
 }
 
 /// Creates the pseudoconsole and the child. Returns (pseudoconsole, our input
@@ -137,7 +186,7 @@ unsafe fn start(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<(HPCON
 }
 
 /// Drains ConPTY output on its own thread, so ConPTY never blocks on a full pipe.
-fn start_reader(output: HANDLE) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
+fn start_reader(output: HANDLE, notify: Notify) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     // HANDLE is a raw pointer and not Send. The thread owns this handle from here on.
@@ -151,9 +200,11 @@ fn start_reader(output: HANDLE) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<
             if ok == 0 || n == 0 || tx.send(buf[..n as usize].to_vec()).is_err() {
                 break;
             }
+            notify();
         }
         unsafe { CloseHandle(output) };
         let _ = done_tx.send(());
+        notify();
     });
     (rx, done_rx, reader)
 }
@@ -174,11 +225,25 @@ impl Pty {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        check_size(cols, rows)?;
         let hr = unsafe { (self.api.resize)(self.hpc, coord(cols, rows)) };
         if hr != 0 {
             return Err(format!("ResizePseudoConsole failed: HRESULT {hr:#010x}"));
         }
         Ok(())
+    }
+
+    pub fn try_read(&self) -> Read {
+        match self.output.try_recv() {
+            Ok(chunk) => Read::Data(chunk),
+            Err(TryRecvError::Empty) => Read::Empty,
+            Err(TryRecvError::Disconnected) => Read::Closed,
+        }
+    }
+
+    /// The child's exit code, or None while it runs.
+    pub fn exit_code(&self) -> Option<u32> {
+        self.wait_exit(Duration::ZERO)
     }
 
     /// Returns the next chunk of output, or None if nothing came within `wait`.
@@ -269,6 +334,8 @@ impl Drop for Pty {
 mod tests {
     use super::*;
     use crate::conpty::{self, Source, dev_vendor_dir};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
@@ -330,7 +397,7 @@ mod tests {
     fn reader_survives_a_zero_byte_write() {
         let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
         assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
-        let (rx, _done, reader) = start_reader(r);
+        let (rx, _done, reader) = start_reader(r, Arc::new(|| {}));
         let mut n = 0u32;
         unsafe {
             WriteFile(w, b"".as_ptr(), 0, &mut n, null_mut());
@@ -361,6 +428,55 @@ mod tests {
             drop(p);
             assert!(start.elapsed() < secs(5), "run {run}: drop took {:?}", start.elapsed());
         }
+    }
+
+    fn shipped() -> Api {
+        conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap()
+    }
+
+    #[test]
+    fn notify_fires_on_output_and_exit() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = count.clone();
+        let p = spawn_notify(&shipped(), "cmd.exe /c echo notify-me", 80, 24, Arc::new(move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        }))
+        .unwrap();
+        assert_eq!(p.wait_exit(secs(10)), Some(0));
+        let end = Instant::now() + secs(5);
+        while count.load(Ordering::SeqCst) < 2 && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(count.load(Ordering::SeqCst) >= 2, "notify ran {} times", count.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn try_read_returns_output_without_blocking() {
+        let p = spawn(&shipped(), "cmd.exe /q /k echo try-read", 80, 24).unwrap();
+        let mut all = Vec::new();
+        let end = Instant::now() + secs(10);
+        while !text(&all).contains("try-read") && Instant::now() < end {
+            match p.try_read() {
+                Read::Data(d) => all.extend(d),
+                Read::Empty => std::thread::sleep(Duration::from_millis(20)),
+                Read::Closed => panic!("output closed early"),
+            }
+        }
+        assert!(text(&all).contains("try-read"), "{:?}", text(&all));
+    }
+
+    #[test]
+    fn exit_code_is_none_while_running() {
+        let p = spawn(&shipped(), "cmd.exe /q /k", 80, 24).unwrap();
+        assert_eq!(p.exit_code(), None);
+    }
+
+    #[test]
+    fn zero_size_is_an_error() {
+        let err = spawn(&shipped(), "cmd.exe /q /k", 0, 24).err().unwrap();
+        assert!(err.contains("size"), "{err}");
+        let p = spawn(&shipped(), "cmd.exe /q /k", 80, 24).unwrap();
+        assert!(p.resize(80, 0).unwrap_err().contains("size"));
     }
 
     #[test]
