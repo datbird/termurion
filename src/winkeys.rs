@@ -5,7 +5,7 @@
 //! harmless key is sent with each taken chord, so the Start menu does not open after it.
 //! The same hook remaps modifiers (Keys > Remap Modifiers) while a Tandem window is in front.
 
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -124,6 +124,12 @@ struct Hook {
 static HOOK: OnceLock<Hook> = OnceLock::new();
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
 static SETTINGS: AtomicIsize = AtomicIsize::new(0);
+/// The settings window is recording a keystroke: every Win chord goes to it.
+static RECORDING: AtomicBool = AtomicBool::new(false);
+
+pub fn set_recording(on: bool) {
+    RECORDING.store(on, Ordering::Relaxed);
+}
 
 /// The settings window counts as Tandem for remapping.
 pub fn set_settings_window(hwnd: isize) {
@@ -205,16 +211,19 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 return 1;
             }
             if kb.dwExtraInfo != MAGIC {
+                let fg = unsafe { GetForegroundWindow() } as isize;
+                let recording = RECORDING.load(Ordering::Relaxed) && fg == SETTINGS.load(Ordering::Relaxed);
                 let e = KeyEvent {
                     vk: kb.vkCode as u16,
                     down,
                     win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
-                    focused: unsafe { GetForegroundWindow() } as isize == WINDOW.load(Ordering::Relaxed),
+                    focused: fg == WINDOW.load(Ordering::Relaxed) || recording,
                     shift: held(0x10),
                     alt: held(0x12),
                     ctrl: held(0x11),
                 };
-                let verdict = h.gate.lock().unwrap().on_key(e, &*h.bound);
+                let bound = |c: &Chord| recording || (h.bound)(c);
+                let verdict = h.gate.lock().unwrap().on_key(e, &bound);
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
                         mask_start_menu();

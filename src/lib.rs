@@ -41,5 +41,7 @@ pub mod app;
 #[cfg(windows)]
 pub mod settings_ui;
 
+pub mod settings_keys;
+
 #[cfg(windows)]
 pub mod winkeys;

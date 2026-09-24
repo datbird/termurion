@@ -2,7 +2,8 @@
 //! other forms), how a press is matched against a table, and a Windows label for each.
 //! Flags use macOS values; Cmd is Win and Option is Alt (spec 3.4).
 
-use winit::keyboard::KeyCode;
+use winit::event::KeyEvent;
+use winit::keyboard::{Key as WKey, KeyCode, KeyLocation, NamedKey, PhysicalKey};
 
 use crate::keys::Key;
 use crate::mouse::Mods;
@@ -220,6 +221,59 @@ pub fn mac_keycode(code: KeyCode) -> Option<u16> {
         F19 => 0x50, F20 => 0x5A,
         _ => return None,
     })
+}
+
+/// The Tandem key for a winit key, with `text` for keys winit does not name.
+pub fn key_of(key: &WKey, text: Option<&str>) -> Option<Key> {
+    Some(match key {
+        WKey::Named(n) => match n {
+            NamedKey::Enter => Key::Enter,
+            NamedKey::Backspace => Key::Backspace,
+            NamedKey::Tab => Key::Tab,
+            NamedKey::Escape => Key::Escape,
+            NamedKey::ArrowUp => Key::Up,
+            NamedKey::ArrowDown => Key::Down,
+            NamedKey::ArrowLeft => Key::Left,
+            NamedKey::ArrowRight => Key::Right,
+            NamedKey::Home => Key::Home,
+            NamedKey::End => Key::End,
+            NamedKey::PageUp => Key::PageUp,
+            NamedKey::PageDown => Key::PageDown,
+            NamedKey::Insert => Key::Insert,
+            NamedKey::Delete => Key::Delete,
+            NamedKey::Space => Key::Text(" ".into()),
+            NamedKey::F1 => Key::F(1),
+            NamedKey::F2 => Key::F(2),
+            NamedKey::F3 => Key::F(3),
+            NamedKey::F4 => Key::F(4),
+            NamedKey::F5 => Key::F(5),
+            NamedKey::F6 => Key::F(6),
+            NamedKey::F7 => Key::F(7),
+            NamedKey::F8 => Key::F(8),
+            NamedKey::F9 => Key::F(9),
+            NamedKey::F10 => Key::F(10),
+            NamedKey::F11 => Key::F(11),
+            NamedKey::F12 => Key::F(12),
+            _ => return None,
+        },
+        WKey::Character(s) => Key::Text(s.to_string()),
+        _ => return text.map(|t| Key::Text(t.to_string())),
+    })
+}
+
+/// The keystroke for a key press, as the settings recorder and the app build it:
+/// the Shift-applied character, the modifiers, the numeric pad flag, and the keycode.
+pub fn from_key_event(ev: &KeyEvent, mods: Mods) -> Option<Keystroke> {
+    let key = key_of(&ev.logical_key, ev.text.as_deref())?;
+    let keypad = ev.location == KeyLocation::Numpad;
+    let code = match ev.physical_key {
+        PhysicalKey::Code(c) => Some(c),
+        _ => None,
+    };
+    let flags = from_mods(mods) | if keypad { NUMPAD } else { 0 };
+    let ch = mac_char(&key, mods.shift, keypad && key == Key::Enter);
+    let modified = ev.text.as_deref().and_then(|t| t.chars().next()).map_or(ch, |c| c as u32);
+    Some(Keystroke::new(ch, flags, code.and_then(mac_keycode), modified))
 }
 
 #[cfg(test)]

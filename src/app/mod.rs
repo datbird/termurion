@@ -13,7 +13,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key as WKey, KeyCode, KeyLocation, ModifiersKeyState, NamedKey, PhysicalKey};
+use winit::keyboard::{KeyCode, KeyLocation, ModifiersKeyState, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
 
@@ -22,7 +22,7 @@ use crate::globals::{self, Globals};
 use crate::input::{self, Clicks, Wheel};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
-use crate::keystroke::{self, Keystroke};
+use crate::keystroke;
 use crate::mru::Mru;
 use crate::pointer::{self, Down, Up};
 use crate::layout::{Axis, Layout, PaneId, Rect};
@@ -375,7 +375,11 @@ impl App {
                 How::SplitDown => self.split(Axis::Column, Some(&guid)),
             },
             Edit::Error(e) => self.banners.set("import", e),
+            Edit::GlobalsChanged => self.save_globals(),
             Edit::Changed(_) | Edit::Imported(_) => {
+                if matches!(edit, Edit::Imported(_)) {
+                    self.save_globals();
+                }
                 // Saving waits for a pause in editing, so a color drag does not write the file every frame.
                 self.save_due = Some(Instant::now() + SAVE_DELAY);
                 self.refresh_panes();
@@ -716,17 +720,14 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
-        let base = to_key(&ev.key_without_modifiers(), None);
-        let Some(key) = to_key(&ev.logical_key, ev.text.as_deref()) else { return };
+        let base = keystroke::key_of(&ev.key_without_modifiers(), None);
+        let Some(key) = keystroke::key_of(&ev.logical_key, ev.text.as_deref()) else { return };
+        let Some(stroke) = keystroke::from_key_event(ev, self.mods) else { return };
         let keypad = ev.location == KeyLocation::Numpad;
         let code = match ev.physical_key {
             PhysicalKey::Code(c) => Some(c),
             _ => None,
         };
-        let flags = keystroke::from_mods(self.mods) | if keypad { keystroke::NUMPAD } else { 0 };
-        let ch = keystroke::mac_char(&key, self.mods.shift, keypad && key == Key::Enter);
-        let modified = ev.text.as_deref().and_then(|t| t.chars().next()).map_or(ch, |c| c as u32);
-        let stroke = Keystroke::new(ch, flags, code.and_then(keystroke::mac_keycode), modified);
         let digit = if self.globals.bool("UseVirtualKeyCodesForDetectingDigits") {
             code.and_then(us_digit)
         } else {
@@ -1165,42 +1166,6 @@ fn us_digit(code: KeyCode) -> Option<u8> {
     })
 }
 
-fn to_key(key: &WKey, text: Option<&str>) -> Option<Key> {
-    Some(match key {
-        WKey::Named(n) => match n {
-            NamedKey::Enter => Key::Enter,
-            NamedKey::Backspace => Key::Backspace,
-            NamedKey::Tab => Key::Tab,
-            NamedKey::Escape => Key::Escape,
-            NamedKey::ArrowUp => Key::Up,
-            NamedKey::ArrowDown => Key::Down,
-            NamedKey::ArrowLeft => Key::Left,
-            NamedKey::ArrowRight => Key::Right,
-            NamedKey::Home => Key::Home,
-            NamedKey::End => Key::End,
-            NamedKey::PageUp => Key::PageUp,
-            NamedKey::PageDown => Key::PageDown,
-            NamedKey::Insert => Key::Insert,
-            NamedKey::Delete => Key::Delete,
-            NamedKey::Space => Key::Text(" ".into()),
-            NamedKey::F1 => Key::F(1),
-            NamedKey::F2 => Key::F(2),
-            NamedKey::F3 => Key::F(3),
-            NamedKey::F4 => Key::F(4),
-            NamedKey::F5 => Key::F(5),
-            NamedKey::F6 => Key::F(6),
-            NamedKey::F7 => Key::F(7),
-            NamedKey::F8 => Key::F(8),
-            NamedKey::F9 => Key::F(9),
-            NamedKey::F10 => Key::F(10),
-            NamedKey::F11 => Key::F(11),
-            NamedKey::F12 => Key::F(12),
-            _ => return None,
-        },
-        WKey::Character(s) => Key::Text(s.to_string()),
-        _ => return text.map(|t| Key::Text(t.to_string())),
-    })
-}
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -1261,7 +1226,12 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Chord(c) => return self.run_chord(&c, event_loop),
+            UserEvent::Chord(c) => {
+                if let Some(s) = self.settings.as_mut().filter(|s| s.recording()) {
+                    return s.record_chord(&c);
+                }
+                return self.run_chord(&c, event_loop);
+            }
             UserEvent::Menu(id) => return self.run_menu_id(&id, event_loop),
             UserEvent::Wake => {}
         }
@@ -1289,9 +1259,12 @@ impl ApplicationHandler<UserEvent> for App {
                 continue;
             }
             match event {
-                WindowEvent::CloseRequested => *slot = None,
+                WindowEvent::CloseRequested => {
+                    *slot = None;
+                    crate::winkeys::set_recording(false);
+                }
                 WindowEvent::RedrawRequested => {
-                    let edit = slot.as_mut().unwrap().redraw(&mut self.store);
+                    let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals);
                     self.apply_edit(edit);
                 }
                 other => {

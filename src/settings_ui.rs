@@ -8,8 +8,11 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
+use crate::globals::Globals;
+use crate::mouse::Mods;
 use crate::profile::{self, Profile};
 use crate::schema::{self, Kind, Setting};
+use crate::settings_keys::{self, KeysState};
 use crate::store::Store;
 
 pub fn sections(tab: &str) -> Vec<(String, Vec<&'static Setting>)> {
@@ -43,7 +46,20 @@ pub enum Edit {
     Error(String),
     /// Open a session with this profile Guid.
     Open(String, How),
+    /// A global setting changed (Keys or Pointer).
+    GlobalsChanged,
 }
+
+/// The settings window's panes, as iTerm2's toolbar lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Page {
+    Profiles,
+    Keys,
+    Pointer,
+}
+
+/// Panes that arrive with later milestones.
+const LATER_PAGES: [(&str, u8); 4] = [("General", 13), ("Appearance", 13), ("Arrangements", 7), ("Advanced", 13)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum How {
@@ -71,6 +87,9 @@ pub struct SettingsWindow {
     selected: Option<String>,
     tab: usize,
     mode: Mode,
+    page: Page,
+    keys: KeysState,
+    mods: Mods,
     window: Arc<Window>,
 }
 
@@ -101,7 +120,30 @@ impl SettingsWindow {
         let ctx = egui::Context::default();
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, None);
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(SettingsWindow { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, selected: None, tab: 0, mode, window })
+        if mode == Mode::Settings {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(h) = window.window_handle() {
+                if let RawWindowHandle::Win32(h) = h.as_raw() {
+                    crate::winkeys::set_settings_window(h.hwnd.get());
+                }
+            }
+        }
+        Ok(SettingsWindow {
+            surface,
+            config,
+            device: device.clone(),
+            queue: queue.clone(),
+            ctx,
+            state,
+            renderer,
+            selected: None,
+            tab: 0,
+            mode,
+            page: Page::Profiles,
+            keys: KeysState::default(),
+            mods: Mods::default(),
+            window,
+        })
     }
 
     /// Shows this profile in the editor (Edit Session).
@@ -118,8 +160,36 @@ impl SettingsWindow {
         self.window.id()
     }
 
+    /// A binding editor is waiting for a key press.
+    pub fn recording(&self) -> bool {
+        self.keys.recording()
+    }
+
+    /// A Win chord the keyboard hook took while recording.
+    pub fn record_chord(&mut self, c: &crate::menus::Chord) {
+        self.keys.deliver(crate::keyroute::press_from_chord(c).stroke);
+        crate::winkeys::set_recording(self.keys.recording());
+        self.window.request_redraw();
+    }
+
     /// Feeds a window event to egui. Returns true when the window should redraw.
     pub fn event(&mut self, event: &WindowEvent) -> bool {
+        if let WindowEvent::ModifiersChanged(m) = event {
+            let s = m.state();
+            self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+        }
+        if let WindowEvent::KeyboardInput { event: k, .. } = event {
+            if self.keys.recording() {
+                if k.state == winit::event::ElementState::Pressed {
+                    if let Some(stroke) = crate::keystroke::from_key_event(k, self.mods) {
+                        self.keys.deliver(stroke);
+                        crate::winkeys::set_recording(self.keys.recording());
+                    }
+                }
+                self.window.request_redraw();
+                return true;
+            }
+        }
         if let WindowEvent::Resized(s) = event {
             if s.width > 0 && s.height > 0 {
                 self.config.width = s.width;
@@ -134,7 +204,7 @@ impl SettingsWindow {
         r.repaint
     }
 
-    pub fn redraw(&mut self, store: &mut Store) -> Edit {
+    pub fn redraw(&mut self, store: &mut Store, globals: &mut Globals) -> Edit {
         let input = self.state.take_egui_input(&self.window);
         let mut edit = Edit::None;
         let selected = self.selected.get_or_insert_with(|| store.default_guid.clone()).clone();
@@ -142,7 +212,36 @@ impl SettingsWindow {
         let mut pick = None;
         let dark = self.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
         let mode = self.mode;
+        let mut page = self.page;
+        let keys = &mut self.keys;
+        let profiles: Vec<(String, String)> = store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let out = self.ctx.run_ui(input, |ui| {
+            if mode == Mode::Settings {
+                egui::Panel::top("pages").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for (p, name) in [(Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Pointer, "Pointer")] {
+                            if ui.selectable_label(page == p, name).clicked() {
+                                page = p;
+                            }
+                        }
+                        for (name, m) in LATER_PAGES {
+                            ui.add_enabled(false, egui::Button::new(name)).on_disabled_hover_text(format!("Comes in milestone {m}."));
+                        }
+                    });
+                });
+                if page != Page::Profiles {
+                    egui::CentralPanel::default().show(ui, |ui| {
+                        let changed = match page {
+                            Page::Keys => settings_keys::keys_page(ui, globals, keys, &profiles),
+                            _ => settings_keys::pointer_page(ui, globals, keys, &profiles),
+                        };
+                        if changed {
+                            edit = Edit::GlobalsChanged;
+                        }
+                    });
+                    return;
+                }
+            }
             if mode == Mode::Profiles {
                 egui::CentralPanel::default().show(ui, |ui| {
                     ui.heading("Profiles");
@@ -206,7 +305,18 @@ impl SettingsWindow {
                                     store.profiles.retain(|q| q.guid() != p.guid());
                                     store.add(p);
                                 }
-                                Edit::Imported(n)
+                                // A full settings plist also carries the global key and pointer settings.
+                                let is_plist = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"));
+                                match is_plist.then(|| crate::import::globals_from_file(&path)) {
+                                    Some(Err(e)) => Edit::Error(e),
+                                    Some(Ok(values)) => {
+                                        for (k, v) in values {
+                                            globals.set(&k, v);
+                                        }
+                                        Edit::Imported(n)
+                                    }
+                                    None => Edit::Imported(n),
+                                }
                             }
                             Err(e) => Edit::Error(e),
                         };
@@ -229,11 +339,17 @@ impl SettingsWindow {
                 }
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (section, list) in sections(schema::TABS[tab]) {
-                        if !section.is_empty() {
+                        if !section.is_empty() && section != "Key Mappings" {
                             ui.add_space(8.0);
-                            ui.strong(section);
+                            ui.strong(&section);
                         }
                         for s in list {
+                            if s.key == "Keyboard Map" {
+                                if settings_keys::profile_key_mappings(ui, profile, keys, &profiles) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
                             if control(ui, profile, s, dark, is_default) {
                                 edit = Edit::Changed(selected.clone());
                             }
@@ -243,6 +359,8 @@ impl SettingsWindow {
             });
         });
         self.tab = tab;
+        self.page = page;
+        crate::winkeys::set_recording(self.keys.recording());
         if let Some(g) = pick {
             self.selected = Some(g);
         }
