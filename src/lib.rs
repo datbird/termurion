@@ -7,4 +7,6 @@ pub mod screen;
 pub mod conpty;
 
 #[cfg(windows)]
+pub mod probe;
+#[cfg(windows)]
 pub mod pty;
