@@ -13,13 +13,18 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key as WKey, NamedKey};
+use winit::keyboard::{Key as WKey, KeyCode, KeyLocation, ModifiersKeyState, NamedKey, PhysicalKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
 
 use crate::conpty::{self, Api, Source};
+use crate::globals::{self, Globals};
 use crate::input::{self, Clicks, Wheel};
-use crate::keys::{self, Action, Key};
+use crate::keyroute::{self, Route};
+use crate::keys::{self, Action, AltSide, Key, KeyOptions};
+use crate::keystroke::{self, Keystroke};
+use crate::mru::Mru;
+use crate::pointer::{self, Down, Up};
 use crate::layout::{Axis, Layout, PaneId, Rect};
 use crate::mouse::{self, Button, Mods, Tracking};
 use crate::pane::Pane;
@@ -45,6 +50,7 @@ const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 /// How long after the last settings edit the file is written.
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
+mod actions;
 mod menu;
 
 pub enum UserEvent {
@@ -57,10 +63,20 @@ pub enum UserEvent {
 }
 
 struct Tab {
+    /// Stable across moves, for the most-recently-used order.
+    id: u64,
     layout: Layout,
     focused: PaneId,
     /// Maximize Active Pane: this pane fills the tab.
     zoomed: Option<PaneId>,
+}
+
+/// A press whose pointer binding runs when the button comes up.
+struct PointerDown {
+    button: u8,
+    clicks: u8,
+    pane: PaneId,
+    cell: (u32, u32),
 }
 
 enum Drag {
@@ -90,6 +106,28 @@ pub struct App {
     font_offset: f32,
     /// Keys > Remap Modifiers, read by the keyboard hook's thread.
     remap_tags: Arc<std::sync::RwLock<crate::remap::Tags>>,
+    /// What the keyboard hook needs to decide which Win chords Tandem takes.
+    route_snapshot: Arc<std::sync::RwLock<keyroute::Snapshot>>,
+    /// Global bindings to Do Not Remap Modifiers, for the hook.
+    exempt_map: Arc<std::sync::RwLock<toml::Table>>,
+    globals: Globals,
+    /// The Leader was pressed; the next key carries the Leader flag.
+    leader_on: bool,
+    mru: Mru,
+    next_tab_id: u64,
+    /// The modifiers of a Cycle Tabs chord; letting go of them ends the cycle.
+    mru_mods: Option<Mods>,
+    alt_side: AltSide,
+    pointer_clicks: pointer::Clicks,
+    /// The last press for the pointer multi-click count: when, button, where, count.
+    pointer_last: Option<(Instant, u8, (f32, f32), u8)>,
+    /// A press that runs a pointer binding on release.
+    pointer_down: Option<PointerDown>,
+    /// Toggle Mouse Reporting: a pane's own choice over its profile's.
+    mouse_override: HashMap<PaneId, bool>,
+    /// An Alt single click in a pane at a cell, which may move the cursor on release.
+    alt_click: Option<(PaneId, (u32, u32))>,
+    wheel_acc_x: f32,
     api: Api,
     shell: String,
     gpu: Option<Gpu>,
@@ -168,12 +206,35 @@ pub fn run() {
             store
         }
     };
+    let gpath = globals::default_path();
+    let globals = match Globals::load(&gpath) {
+        Ok(g) => g,
+        Err(e) => {
+            let side = gpath.with_extension("toml.recovered");
+            banners.set("globals", format!("Settings not loaded ({e}). Changes save to {}.", side.display()));
+            Globals::load(&side).unwrap_or_else(|_| Globals::empty(&side))
+        }
+    };
     let mut app = App {
         notify,
         proxy,
         menu_bar: None,
         font_offset: 0.0,
-        remap_tags: Arc::new(std::sync::RwLock::new(crate::remap::Tags::identity())),
+        remap_tags: Arc::new(std::sync::RwLock::new(crate::remap::Tags::from_globals(&globals))),
+        route_snapshot: Arc::new(std::sync::RwLock::new(keyroute::Snapshot::default())),
+        exempt_map: Arc::new(std::sync::RwLock::new(toml::Table::new())),
+        globals,
+        leader_on: false,
+        mru: Mru::default(),
+        next_tab_id: 1,
+        mru_mods: None,
+        alt_side: AltSide::Left,
+        pointer_clicks: pointer::Clicks::default(),
+        pointer_last: None,
+        pointer_down: None,
+        mouse_override: HashMap::new(),
+        alt_click: None,
+        wheel_acc_x: 0.0,
         api,
         shell: default_shell(),
         gpu: None,
@@ -385,7 +446,8 @@ impl App {
     fn new_tab(&mut self, guid: Option<&str>) {
         let area = self.content_area();
         if let Some(id) = self.start_pane(area, guid) {
-            self.tabs.push(Tab { layout: Layout::new(id), focused: id, zoomed: None });
+            self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None });
+            self.next_tab_id += 1;
             self.active = self.tabs.len() - 1;
             self.relayout();
         }
@@ -419,7 +481,8 @@ impl App {
                     tab.focused = tab.layout.panes()[0];
                 }
             } else {
-                self.tabs.remove(t);
+                let gone = self.tabs.remove(t);
+                self.mru.forget(gone.id);
                 self.active = active_after_close(self.active, t, self.tabs.len());
             }
         }
@@ -431,6 +494,10 @@ impl App {
     }
 
     fn relayout(&mut self) {
+        if let Some(t) = self.tabs.get(self.active) {
+            self.mru.touch(t.id);
+        }
+        self.refresh_route();
         let area = self.content_area();
         let (cw, ch) = self.cell();
         let _ = area;
@@ -555,6 +622,92 @@ impl App {
         self.relayout();
     }
 
+    fn focused_profile(&self) -> Option<&Profile> {
+        let t = self.tabs.get(self.active)?;
+        self.panes.get(&t.focused).and_then(|p| self.store.get(&p.profile))
+    }
+
+    /// Runs `f` with the key routing inputs: the focused profile's map, the global map,
+    /// the Leader, and the number shortcut settings.
+    fn with_route<R>(&self, f: impl FnOnce(&keyroute::Context) -> R) -> R {
+        let profile_map = self.focused_profile().and_then(|p| p.get("Keyboard Map")).and_then(|v| v.as_table().cloned()).unwrap_or_default();
+        let global_map = self.globals.table("GlobalKeyMap");
+        let ctx = keyroute::Context {
+            profile_map: &profile_map,
+            global_map: &global_map,
+            language_agnostic: self.globals.bool("LanguageAgnosticKeyBindings"),
+            leader: keystroke::parse(&self.globals.string("Leader")),
+            leader_on: self.leader_on,
+            switch_tab: self.globals.int("SwitchTabModifier"),
+            switch_pane: self.globals.int("SwitchPaneModifier"),
+            switch_window: self.globals.int("SwitchWindowModifier"),
+        };
+        f(&ctx)
+    }
+
+    /// Hands the keyboard hook what it needs after a focus, profile, or settings change.
+    fn refresh_route(&self) {
+        *self.route_snapshot.write().unwrap() = self.with_route(keyroute::Snapshot::new);
+        let exempt: toml::Table = self
+            .globals
+            .table("GlobalKeyMap")
+            .into_iter()
+            .filter(|(_, v)| crate::keyaction::Binding::from_value(v).is_some_and(|b| b.action == 22))
+            .collect();
+        *self.exempt_map.write().unwrap() = exempt;
+        *self.remap_tags.write().unwrap() = crate::remap::Tags::from_globals(&self.globals);
+    }
+
+    fn save_globals(&mut self) {
+        match self.globals.save() {
+            Ok(()) => self.banners.clear("globals"),
+            Err(e) => self.banners.set("globals", format!("Could not save settings: {e}")),
+        }
+        self.refresh_route();
+    }
+
+    /// Mouse reporting is allowed for a pane: its Toggle Mouse Reporting choice, else its
+    /// profile's "Mouse Reporting".
+    fn mouse_allowed(&self, id: PaneId) -> bool {
+        self.mouse_override.get(&id).copied().unwrap_or_else(|| {
+            self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Mouse Reporting"))
+        })
+    }
+
+    /// The pane's mouse modes, or none when mouse reporting is off for it.
+    fn modes(&self, id: PaneId) -> mouse::Modes {
+        match self.panes.get(&id) {
+            Some(p) if self.mouse_allowed(id) => p.screen.mouse_modes(),
+            _ => mouse::Modes::default(),
+        }
+    }
+
+    fn pointer_prefs(&self) -> pointer::Prefs {
+        pointer::Prefs { pass_on_control_click: self.globals.bool("PassOnControlClick"), report_right_click: self.globals.bool("ReportRightClick") }
+    }
+
+    /// The multi-click count for a press of `button` here: 1 to 4.
+    fn os_clicks(&mut self, button: u8) -> u8 {
+        let now = Instant::now();
+        let (x, y) = self.cursor;
+        let near = 4.0 * self.scale();
+        let count = match self.pointer_last {
+            Some((t, b, (px, py), n)) if b == button && now.duration_since(t) <= input::MULTI_CLICK && (x - px).abs() <= near && (y - py).abs() <= near => (n + 1).min(4),
+            _ => 1,
+        };
+        self.pointer_last = Some((now, button, (x, y), count));
+        count
+    }
+
+    /// What a key sends to the terminal, with the focused profile's Keys options.
+    fn key_bytes(&self, key: &Key, base: Option<&Key>, text: Option<&str>, keypad: bool) -> Option<Vec<u8>> {
+        let t = self.tabs.get(self.active)?;
+        let pane = self.panes.get(&t.focused)?;
+        let mode = *pane.screen.term().mode();
+        let opts = self.store.get(&pane.profile).map_or(KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false }, KeyOptions::from_profile);
+        keys::press_bytes_with(key, base, text, self.mods, self.alt_side, mode.contains(TermMode::APP_CURSOR), mode.contains(TermMode::APP_KEYPAD), keypad, &opts)
+    }
+
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
         if ev.state != ElementState::Pressed {
             return;
@@ -562,15 +715,97 @@ impl App {
         // Typing shows the cursor at once and restarts the blink.
         self.blink_on = true;
         self.last_blink = Instant::now();
+        self.banners.clear("action");
         let base = to_key(&ev.key_without_modifiers(), None);
-        if let Some(action) = base.as_ref().and_then(|b| keys::shortcut(b, self.mods)) {
+        let Some(key) = to_key(&ev.logical_key, ev.text.as_deref()) else { return };
+        let keypad = ev.location == KeyLocation::Numpad;
+        let code = match ev.physical_key {
+            PhysicalKey::Code(c) => Some(c),
+            _ => None,
+        };
+        let flags = keystroke::from_mods(self.mods) | if keypad { keystroke::NUMPAD } else { 0 };
+        let ch = keystroke::mac_char(&key, self.mods.shift, keypad && key == Key::Enter);
+        let modified = ev.text.as_deref().and_then(|t| t.chars().next()).map_or(ch, |c| c as u32);
+        let stroke = Keystroke::new(ch, flags, code.and_then(keystroke::mac_keycode), modified);
+        let digit = if self.globals.bool("UseVirtualKeyCodesForDetectingDigits") {
+            code.and_then(us_digit)
+        } else {
+            match &key {
+                Key::Text(s) => s.chars().next().and_then(|c| c.to_digit(10)).map(|d| d as u8),
+                _ => None,
+            }
+        };
+        let fallback = self.key_bytes(&key, base.as_ref(), ev.text.as_deref(), keypad);
+        self.dispatch(keyroute::Press { stroke, digit }, fallback, Some((key, base)), None, event_loop);
+    }
+
+    /// Runs a key press: the Leader, number shortcuts, key mappings, then the terminal
+    /// (or, for a Win chord from the hook, its menu command).
+    pub(super) fn dispatch(
+        &mut self,
+        press: keyroute::Press,
+        fallback: Option<Vec<u8>>,
+        typed: Option<(Key, Option<Key>)>,
+        chord: Option<&crate::menus::Chord>,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let was_leader = self.leader_on;
+        let route = self.with_route(|c| keyroute::route(c, &press));
+        self.leader_on = false;
+        match route {
+            Route::LeaderOn => self.leader_on = true,
+            // One window until milestone 7: window 1 is this one.
+            Route::SelectWindow(_) => {}
+            Route::SelectPane(d) => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    let panes = t.layout.panes();
+                    let i = if d == 9 { panes.len() - 1 } else { d as usize - 1 };
+                    if let Some(id) = panes.get(i) {
+                        t.focused = *id;
+                        t.zoomed = None;
+                    }
+                }
+            }
+            Route::SelectTab(d) => {
+                let i = if d == 9 { self.tabs.len().saturating_sub(1) } else { d as usize - 1 };
+                if i < self.tabs.len() {
+                    self.active = i;
+                }
+            }
+            Route::Binding(b) => self.run_key_action(&b, fallback, chord, event_loop),
+            Route::Terminal => {
+                if let Some(c) = chord {
+                    if let Some(item) = crate::commands::command_for_chord(c) {
+                        self.run_command(item, event_loop);
+                    }
+                } else if let Some((key, base)) = typed {
+                    self.to_terminal(&key, base.as_ref(), fallback, event_loop);
+                    if was_leader {
+                        self.refresh_route();
+                    }
+                    return;
+                }
+            }
+        }
+        self.relayout();
+    }
+
+    /// A key with no binding: the Windows extras, movement-key scrolling, else the pane.
+    fn to_terminal(&mut self, key: &Key, base: Option<&Key>, bytes: Option<Vec<u8>>, event_loop: &ActiveEventLoop) {
+        if let Some(action) = base.and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);
         }
-        let Some(key) = to_key(&ev.logical_key, ev.text.as_deref()) else { return };
         let mods = self.mods;
+        let movement = self.focused_profile().is_some_and(|p| p.bool("Movement Keys Scroll Outside Interactive Apps"));
         let Some(pane) = self.focused_pane() else { return };
-        let app_cursor = pane.screen.term().mode().contains(TermMode::APP_CURSOR);
-        if let Some(bytes) = keys::press_bytes(&key, base.as_ref(), ev.text.as_deref(), mods, app_cursor) {
+        if movement {
+            let alt_screen = pane.screen.term().mode().contains(TermMode::ALT_SCREEN);
+            if let Some(scroll) = keys::movement_scroll(key, mods, alt_screen, pane.exited.is_some()) {
+                pane.scroll(scroll);
+                return self.redraw();
+            }
+        }
+        if let Some(bytes) = bytes {
             pane.scroll(Scroll::Bottom);
             pane.input(&bytes);
         }
@@ -595,17 +830,32 @@ impl App {
             }
         }
         let Some((id, rect)) = self.pane_at(x, y) else { return };
-        self.tabs[self.active].focused = id;
+        let b = button_number(button);
+        // A left click always focuses its pane; right and middle only when the setting says so.
+        if b == 0 || self.globals.bool("FocusOnRightOrMiddleClick") {
+            self.tabs[self.active].focused = id;
+            self.refresh_route();
+        }
         let (col, row, side) = self.cell_at(id, rect, x, y);
         let mods = self.mods;
-        let modes = self.panes[&id].screen.mouse_modes();
-        let mb = match button {
-            MouseButton::Left => Button::Left,
-            MouseButton::Middle => Button::Middle,
-            MouseButton::Right => Button::Right,
-            _ => return,
+        let modes = self.modes(id);
+        let mb = match b {
+            0 => Some(Button::Left),
+            1 => Some(Button::Right),
+            2 => Some(Button::Middle),
+            _ => None,
         };
-        if mouse::app_owns_mouse(modes, mods) {
+        let reportable = mb.is_some() && mouse::app_owns_mouse(modes, mods);
+        let app_tracking = modes.tracking != Tracking::Off;
+        let os = self.os_clicks(b);
+        let clicks = self.pointer_clicks.press(b, os);
+        let map = self.globals.table("PointerActions");
+        let down = pointer::on_down(b, clicks, mods, reportable, app_tracking, &map, &self.pointer_prefs());
+        if down == Down::Bound {
+            self.pointer_down = Some(PointerDown { button: b, clicks, pane: id, cell: (col, row) });
+            return self.redraw();
+        }
+        if let (true, Some(mb)) = (reportable, mb) {
             let ev = mouse::Event { button: mb, action: mouse::Action::Press, mods, col, row };
             if let Some(bytes) = mouse::encode(modes, ev) {
                 self.panes.get_mut(&id).unwrap().input(&bytes);
@@ -613,28 +863,65 @@ impl App {
             self.drag = Drag::App { pane: id, button: mb };
             return self.redraw();
         }
-        match mb {
-            Button::Left => {
+        match b {
+            0 => {
                 let count = self.clicks.press(Instant::now(), col, row);
                 let point = self.grid_point(id, col, row);
                 let ty = input::selection_type(count, mods);
                 self.panes.get_mut(&id).unwrap().screen.term_mut().selection = Some(Selection::new(ty, point, side));
                 self.drag = Drag::Select { pane: id };
+                let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
+                self.alt_click = (count == 1 && alt_only).then_some((id, (col, row)));
             }
-            Button::Middle => self.paste(),
-            Button::Right => self.show_context_menu(),
+            // With no binding and no reporting app, a right click opens the menu (iTerm2's native behavior).
+            1 => self.show_context_menu(),
             _ => {}
         }
         self.redraw();
     }
 
-    fn mouse_release(&mut self) {
+    /// Alt-click moves the cursor (Pointer > Alt-click moves cursor), unless the app
+    /// takes clicks or the view is scrolled back.
+    fn alt_click_moves_cursor(&mut self, pane: PaneId, target: (u32, u32)) {
+        if !self.globals.bool("OptionClickMovesCursor") || self.modes(pane).tracking != Tracking::Off {
+            return;
+        }
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let term = p.screen.term();
+        if term.grid().display_offset() != 0 {
+            return;
+        }
+        let c = term.grid().cursor.point;
+        let mode = *term.mode();
+        let bytes = actions::option_click_arrows((c.column.0 as u32, c.line.0.max(0) as u32), target, term.columns() as u32, mode.contains(TermMode::ALT_SCREEN), mode.contains(TermMode::APP_CURSOR));
+        p.input(&bytes);
+    }
+
+    fn mouse_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        let b = button_number(button);
+        if let Some(pd) = self.pointer_down.take() {
+            if pd.button == b {
+                let modes = self.modes(pd.pane);
+                let reportable = b <= 2 && mouse::app_owns_mouse(modes, self.mods);
+                let map = self.globals.table("PointerActions");
+                if let Up::Perform(binding) = pointer::on_up(b, pd.clicks, self.mods, reportable, modes.tracking != Tracking::Off, &map, &self.pointer_prefs()) {
+                    self.run_pointer_action(&binding, pd.pane, pd.cell, event_loop);
+                }
+                self.relayout();
+                return;
+            }
+            self.pointer_down = Some(pd);
+        }
+        let alt_click = self.alt_click.take();
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
                     if let Some(p) = self.panes.get_mut(&pane) {
                         p.screen.term_mut().selection = None;
+                    }
+                    if let Some((p, cell)) = alt_click.filter(|(p, _)| *p == pane) {
+                        self.alt_click_moves_cursor(p, cell);
                     }
                 } else {
                     // iTerm2 copies a selection as soon as it is made.
@@ -647,8 +934,8 @@ impl App {
                 // must still get the release (cell_at clamps to the pane's edge).
                 if let Some(rect) = self.pane_rect(pane) {
                     let (col, row, _) = self.cell_at(pane, rect, x, y);
+                    let modes = self.modes(pane);
                     let p = self.panes.get_mut(&pane).unwrap();
-                    let modes = p.screen.mouse_modes();
                     let ev = mouse::Event { button, action: mouse::Action::Release, mods: self.mods, col, row };
                     if let Some(bytes) = mouse::encode(modes, ev) {
                         p.input(&bytes);
@@ -688,7 +975,12 @@ impl App {
             }
             Drag::None => {
                 if let Some((id, _)) = self.pane_at(x, y) {
-                    if self.panes[&id].screen.mouse_modes().tracking == Tracking::Any {
+                    if self.globals.bool("FocusFollowsMouse") && self.tabs.get(self.active).is_some_and(|t| t.focused != id) {
+                        self.tabs[self.active].focused = id;
+                        self.refresh_route();
+                        self.redraw();
+                    }
+                    if self.modes(id).tracking == Tracking::Any {
                         self.send_motion(id, None, x, y);
                     }
                 }
@@ -699,8 +991,8 @@ impl App {
     fn send_motion(&mut self, pane: PaneId, button: Option<Button>, x: f32, y: f32) {
         let Some(rect) = self.pane_rect(pane) else { return };
         let (col, row, _) = self.cell_at(pane, rect, x, y);
+        let modes = self.modes(pane);
         let p = self.panes.get_mut(&pane).unwrap();
-        let modes = p.screen.mouse_modes();
         let ev = mouse::Event { button: button.unwrap_or(Button::None), action: mouse::Action::Motion, mods: self.mods, col, row };
         if let Some(bytes) = mouse::encode(modes, ev) {
             p.input(&bytes);
@@ -708,11 +1000,14 @@ impl App {
     }
 
     fn wheel(&mut self, delta: MouseScrollDelta) {
-        let ch = self.cell().1;
-        self.wheel_acc += match delta {
-            MouseScrollDelta::LineDelta(_, y) => y * WHEEL_LINES,
-            MouseScrollDelta::PixelDelta(p) => p.y as f32 / ch,
+        let (cw, ch) = self.cell();
+        let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
+            MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
+        self.wheel_acc += dy;
+        self.wheel_acc_x += dx;
+        self.wheel_horizontal();
         let lines = self.wheel_acc.trunc() as i32;
         if lines == 0 {
             return;
@@ -722,14 +1017,40 @@ impl App {
         let Some((id, rect)) = self.pane_at(x, y) else { return };
         let (col, row, _) = self.cell_at(id, rect, x, y);
         let mods = self.mods;
+        let modes = self.modes(id);
         let p = self.panes.get_mut(&id).unwrap();
         let mode = *p.screen.term().mode();
-        let modes = p.screen.mouse_modes();
         match input::wheel(modes, mods, mode.contains(TermMode::ALT_SCREEN), mode.contains(TermMode::APP_CURSOR), lines, col, row) {
             Wheel::Send(bytes) => p.input(&bytes),
             Wheel::Scroll(n) => p.scroll(Scroll::Delta(n)),
         }
         self.redraw();
+    }
+
+    /// Horizontal wheel movement goes to a mouse-reporting app as buttons 66 and 67 when
+    /// "Mouse reporting supports horizontal scrolling" is on. Otherwise it does nothing.
+    fn wheel_horizontal(&mut self) {
+        let steps = self.wheel_acc_x.trunc() as i32;
+        if steps == 0 {
+            return;
+        }
+        self.wheel_acc_x -= steps as f32;
+        if !self.globals.bool("ReportHorizontalScrollEvents") {
+            return;
+        }
+        let (x, y) = self.cursor;
+        let Some((id, rect)) = self.pane_at(x, y) else { return };
+        let (col, row, _) = self.cell_at(id, rect, x, y);
+        let modes = self.modes(id);
+        if !mouse::app_owns_mouse(modes, self.mods) {
+            return;
+        }
+        // Positive x moves the content right: the view scrolls left.
+        let button = if steps > 0 { Button::WheelLeft } else { Button::WheelRight };
+        let ev = mouse::Event { button, action: mouse::Action::Press, mods: self.mods, col, row };
+        if let Some(one) = mouse::encode(modes, ev) {
+            self.panes.get_mut(&id).unwrap().input(&one.repeat(steps.unsigned_abs() as usize));
+        }
     }
 
     fn build_frame(&mut self) -> Frame {
@@ -775,6 +1096,8 @@ impl App {
             .and_then(|p| p.screen.title())
             .unwrap_or("Tandem")
             .to_string();
+        // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
+        let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         let Some(gpu) = self.gpu.as_mut() else { return };
         gpu.window.set_title(&title);
         let texture = match gpu.surface.get_current_texture() {
@@ -810,6 +1133,36 @@ impl App {
             gpu.queue.present(texture);
         }
     }
+}
+
+/// iTerm2's button numbers: 0 left, 1 right, 2 middle, then the others.
+fn button_number(b: MouseButton) -> u8 {
+    match b {
+        MouseButton::Left => 0,
+        MouseButton::Right => 1,
+        MouseButton::Middle => 2,
+        MouseButton::Back => 3,
+        MouseButton::Forward => 4,
+        MouseButton::Other(n) => n.min(255) as u8,
+    }
+}
+
+/// The digit a physical key has on a U.S. keyboard (Emulate U.S. Keyboard).
+fn us_digit(code: KeyCode) -> Option<u8> {
+    use KeyCode::*;
+    Some(match code {
+        Digit0 | Numpad0 => 0,
+        Digit1 | Numpad1 => 1,
+        Digit2 | Numpad2 => 2,
+        Digit3 | Numpad3 => 3,
+        Digit4 | Numpad4 => 4,
+        Digit5 | Numpad5 => 5,
+        Digit6 | Numpad6 => 6,
+        Digit7 | Numpad7 => 7,
+        Digit8 | Numpad8 => 8,
+        Digit9 | Numpad9 => 9,
+        _ => return None,
+    })
 }
 
 fn to_key(key: &WKey, text: Option<&str>) -> Option<Key> {
@@ -984,11 +1337,21 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
                 self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                if s.alt_key() {
+                    self.alt_side = if m.ralt_state() == ModifiersKeyState::Pressed { AltSide::Right } else { AltSide::Left };
+                }
+                // Cycle Tabs ends when the chord's modifiers come up.
+                if let Some(c) = self.mru_mods {
+                    if !((c.ctrl && s.control_key()) || (c.alt && s.alt_key()) || (c.cmd && s.super_key())) {
+                        self.mru_mods = None;
+                        self.mru.commit();
+                    }
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => self.key(&event, event_loop),
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as f32, position.y as f32),
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button),
-            WindowEvent::MouseInput { state: ElementState::Released, .. } => self.mouse_release(),
+            WindowEvent::MouseInput { state: ElementState::Released, button, .. } => self.mouse_release(button, event_loop),
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::RedrawRequested => self.render(),
             _ => {}

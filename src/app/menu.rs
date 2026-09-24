@@ -116,8 +116,15 @@ impl App {
         let send = Box::new(move |c| {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Chord(c));
         });
-        let bound = Box::new(|c: &Chord| commands::command_for_chord(c).is_some());
-        let exempt = Box::new(|_: u16, _: crate::mouse::Mods| false);
+        let snapshot = self.route_snapshot.clone();
+        let bound = Box::new(move |c: &Chord| crate::keyroute::win_chord_bound(&snapshot.read().unwrap(), c));
+        let exempt_map = self.exempt_map.clone();
+        let exempt = Box::new(move |vk: u16, m: crate::mouse::Mods| {
+            let Some(key) = crate::winkeys::vk_to_key(vk) else { return false };
+            let chord = Chord { key, cmd: m.cmd, alt: m.alt, shift: m.shift, ctrl: m.ctrl };
+            crate::keyroute::press_from_chord(&chord).stroke.find(&exempt_map.read().unwrap(), false).is_some()
+        });
+        self.refresh_route();
         if let Err(e) = crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
             self.banners.set("keys", format!("Win chords are unavailable: {e}"));
         }
@@ -142,10 +149,10 @@ impl App {
         }
     }
 
+    /// A Win chord the hook took: key routing first (a mapping beats a menu command).
     pub(super) fn run_chord(&mut self, chord: &Chord, event_loop: &ActiveEventLoop) {
-        if let Some(item) = commands::command_for_chord(chord) {
-            self.run_command(item, event_loop);
-        }
+        self.banners.clear("action");
+        self.dispatch(crate::keyroute::press_from_chord(chord), None, None, Some(chord), event_loop);
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
