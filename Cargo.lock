@@ -3198,6 +3198,7 @@ version = "0.0.1"
 dependencies = [
  "alacritty_terminal",
  "arboard",
+ "base64 0.22.1",
  "bytemuck",
  "egui",
  "egui-wgpu",
