@@ -6,6 +6,7 @@ pub mod keystroke;
 pub mod keyaction;
 pub mod pointer;
 pub mod remap;
+pub mod keyroute;
 pub mod commands;
 pub mod menus;
 pub mod import;
