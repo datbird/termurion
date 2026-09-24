@@ -216,11 +216,10 @@ impl App {
             }
             "newSession:" | "newWindow:" => self.new_tab(None),
             "newSessionAlternate:" => {
-                let at = self.active + 1;
+                let (before, active) = (self.tabs.len(), self.active);
                 self.new_tab(None);
-                if let Some(tab) = self.tabs.pop() {
-                    self.tabs.insert(at.min(self.tabs.len()), tab);
-                    self.active = at.min(self.tabs.len() - 1);
+                if let Some(at) = super::move_new_tab(&mut self.tabs, before, active) {
+                    self.active = at;
                 }
             }
             "newSessionWithSameProfile:" | "newWindowWithSameProfile:" | "duplicateTab:" | "duplicateSession:" => {
@@ -274,9 +273,9 @@ impl App {
                     term.selection = Some(sel);
                 }
             }
-            "clearBuffer:" => self.focused_pane().map_or((), |p| p.screen.clear(false)),
+            "clearBuffer:" => self.focused_pane().map_or((), |p| p.clear()),
             "clearScrollbackBuffer:" => self.focused_pane().map_or((), |p| p.screen.clear(true)),
-            "reset:" | "terminalStateReset:" => self.focused_pane().map_or((), |p| p.screen.term_mut().reset_state()),
+            "reset:" | "terminalStateReset:" => self.focused_pane().map_or((), |p| p.screen.soft_reset()),
             "resetCharset:" => {
                 if let Some(p) = self.focused_pane() {
                     let term = p.screen.term_mut();

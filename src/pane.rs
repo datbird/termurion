@@ -86,6 +86,16 @@ impl Pane {
         }
     }
 
+    /// iTerm2's Clear Buffer: the screen and ConPTY both clear, keeping the cursor line.
+    pub fn clear(&mut self) {
+        self.screen.clear(false);
+        if let Some(pty) = &self.pty {
+            if let Err(e) = pty.clear() {
+                self.error = Some(e);
+            }
+        }
+    }
+
     pub fn scroll(&mut self, scroll: Scroll) {
         self.screen.term_mut().scroll_display(scroll);
     }
@@ -123,6 +133,29 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         false
+    }
+
+    #[test]
+    fn clear_buffer_keeps_conpty_in_step() {
+        let mut p = start("cmd.exe");
+        assert!(pump_until(&mut p, |p| p.screen.text().contains('>')), "no prompt");
+        p.input(b"for /l %i in (1,1,30) do @echo L%i\r");
+        assert!(pump_until(&mut p, |p| {
+            let t = p.screen.all_text();
+            t.contains("L30\n") && t.trim_end().ends_with('>')
+        }), "no output");
+        p.clear();
+        assert!(!p.screen.all_text().contains("L29"));
+        // ConPTY must clear too, or it keeps drawing where its own cursor was: near the
+        // bottom of the screen.
+        // The clear reaches ConPTY on its signal pipe, not in order with typed input, so
+        // give it a moment as a person would.
+        std::thread::sleep(Duration::from_millis(300));
+        p.input(b"echo MARK\r");
+        assert!(pump_until(&mut p, |p| p.screen.all_text().matches("MARK").count() >= 2), "no echo");
+        let rows: Vec<usize> = p.screen.text().lines().enumerate().filter(|(_, l)| l.contains("MARK")).map(|(i, _)| i).collect();
+        assert!(rows.iter().all(|&r| r < 4), "MARK on rows {rows:?}:\n{}", p.screen.all_text());
+        assert!(p.error.is_none(), "{:?}", p.error);
     }
 
     #[test]

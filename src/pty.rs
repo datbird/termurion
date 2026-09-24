@@ -263,6 +263,18 @@ impl Pty {
         Ok(())
     }
 
+    /// Clears ConPTY's own buffer, keeping the cursor row, so it matches a cleared screen.
+    pub fn clear(&self) -> Result<(), String> {
+        let Some(clear) = self.api.clear else {
+            return Err("the Windows copy of ConPTY cannot clear its buffer".to_string());
+        };
+        let hr = unsafe { clear(self.hpc, 1) };
+        if hr != 0 {
+            return Err(format!("ConptyClearPseudoConsole failed: HRESULT {hr:#010x}"));
+        }
+        Ok(())
+    }
+
     pub fn try_read(&self) -> Read {
         match self.output.try_recv() {
             Ok(chunk) => Read::Data(chunk),
@@ -553,3 +565,4 @@ mod tests {
         }
     }
 }
+

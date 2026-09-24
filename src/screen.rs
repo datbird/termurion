@@ -174,15 +174,32 @@ impl Screen {
         out
     }
 
-    /// iTerm2's Clear Scrollback Buffer (`scrollback_only`) or Clear Buffer (everything).
+    /// iTerm2's Clear Scrollback Buffer (`scrollback_only`) or Clear Buffer (everything but
+    /// the cursor line, which moves to the top, as iTerm2 keeps the prompt).
     pub fn clear(&mut self, scrollback_only: bool) {
-        // Clearing the screen pushes its lines into scrollback (xterm behavior), so clear
-        // the screen first, then the scrollback.
+        // Scrolling and clearing push lines into scrollback, so the screen goes first,
+        // then the scrollback.
         if !scrollback_only {
-            self.term.clear_screen(ClearMode::All);
-            self.term.goto(0, 0);
+            let cursor = self.term.grid().cursor.point;
+            if cursor.line.0 > 0 {
+                self.term.scroll_up(cursor.line.0 as usize);
+            }
+            if self.term.screen_lines() > 1 {
+                self.term.goto(1, 0);
+                self.term.clear_screen(ClearMode::Below);
+            }
+            self.term.goto(0, cursor.column.0);
         }
         self.term.clear_screen(ClearMode::Saved);
+    }
+
+    /// iTerm2's Reset (a soft reset, DECSTR): modes, attributes, margins, and charset go back
+    /// to their defaults and the text stays. alacritty has no DECSTR, so the equivalent
+    /// sequences are fed in.
+    pub fn soft_reset(&mut self) {
+        const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
+            \x1b[?2004l\x1b[?1004l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b(B";
+        self.feed(DECSTR);
     }
 
     pub fn mouse_modes(&self) -> Modes {
@@ -289,6 +306,27 @@ mod tests {
         assert!(!t.contains("line0") && t.contains("line5"), "{t:?}");
         s.clear(false);
         assert!(!s.all_text().contains("line5"));
+    }
+
+    #[test]
+    fn clear_buffer_keeps_the_cursor_line_at_the_top() {
+        let mut s = Screen::new(20, 5);
+        s.feed(b"old1\r\nold2\r\nold3\r\nprompt> ");
+        s.clear(false);
+        assert_eq!(s.all_text(), "prompt>\n");
+        let cursor = s.term().grid().cursor.point;
+        assert_eq!((cursor.line.0, cursor.column.0), (0, 8));
+    }
+
+    #[test]
+    fn soft_reset_keeps_the_text_and_drops_the_modes() {
+        let mut s = Screen::new(20, 5);
+        s.feed(b"keep me\r\n\x1b[?1002h\x1b[?1006h\x1b[?25l\x1b[?2004h\x1b[1;31m");
+        s.soft_reset();
+        assert!(s.all_text().contains("keep me"));
+        assert_eq!(s.mouse_modes(), Modes { tracking: Tracking::Off, sgr: false });
+        let mode = *s.term().mode();
+        assert!(mode.contains(TermMode::SHOW_CURSOR) && !mode.contains(TermMode::BRACKETED_PASTE));
     }
 
     #[test]

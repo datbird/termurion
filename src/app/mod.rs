@@ -1034,6 +1034,18 @@ fn usable_size(w: u32, h: u32) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
+/// Moves the tab `new_tab` just added (the last one) to just after `active`, and returns
+/// its new index. None when the tab count did not grow past `before`: nothing opened.
+fn move_new_tab<T>(tabs: &mut Vec<T>, before: usize, active: usize) -> Option<usize> {
+    if tabs.len() <= before {
+        return None;
+    }
+    let tab = tabs.pop()?;
+    let at = (active + 1).min(tabs.len());
+    tabs.insert(at, tab);
+    Some(at)
+}
+
 /// The tab under (x, y), if it still exists.
 fn tab_hit(rects: &[Rect], tabs: usize, x: f32, y: f32) -> Option<usize> {
     rects.iter().position(|r| r.contains(x, y)).filter(|i| *i < tabs)
@@ -1052,6 +1064,17 @@ mod tests {
         // The active tab itself closing moves to the one that took its place, or the last one.
         assert_eq!(active_after_close(2, 2, 2), 1);
         assert_eq!(active_after_close(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn a_new_tab_moves_next_to_the_active_one_only_if_it_opened() {
+        let mut tabs = vec!["a", "b", "c", "new"];
+        assert_eq!(move_new_tab(&mut tabs, 3, 1), Some(2));
+        assert_eq!(tabs, ["a", "b", "new", "c"]);
+        // The shell did not start: no tab was added, so nothing moves.
+        let mut tabs = vec!["a", "b", "c"];
+        assert_eq!(move_new_tab(&mut tabs, 3, 0), None);
+        assert_eq!(tabs, ["a", "b", "c"]);
     }
 
     #[test]

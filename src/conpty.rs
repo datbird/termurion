@@ -13,6 +13,8 @@ use windows_sys::core::HRESULT;
 pub type CreateFn = unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT;
 pub type ResizeFn = unsafe extern "system" fn(HPCON, COORD) -> HRESULT;
 pub type CloseFn = unsafe extern "system" fn(HPCON);
+/// `ConptyClearPseudoConsole(hPC, keepCursorRow)`, shipped conpty.dll only.
+pub type ClearFn = unsafe extern "system" fn(HPCON, i32) -> HRESULT;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -37,6 +39,8 @@ pub struct Api {
     pub create: CreateFn,
     pub resize: ResizeFn,
     pub close: CloseFn,
+    /// None for the Windows copy, which does not export a clear.
+    pub clear: Option<ClearFn>,
 }
 
 pub fn load(want: &Source) -> Result<Api, String> {
@@ -46,6 +50,7 @@ pub fn load(want: &Source) -> Result<Api, String> {
             create: CreatePseudoConsole,
             resize: ResizePseudoConsole,
             close: ClosePseudoConsole,
+            clear: None,
         }),
         Source::Shipped(dir) => load_shipped(dir),
     }
@@ -73,12 +78,14 @@ fn load_shipped(dir: &Path) -> Result<Api, String> {
         let create = get("ConptyCreatePseudoConsole")?;
         let resize = get("ConptyResizePseudoConsole")?;
         let close = get("ConptyClosePseudoConsole")?;
+        let clear = get("ConptyClearPseudoConsole")?;
         type Raw = unsafe extern "system" fn() -> isize;
         Ok(Api {
             source: Source::Shipped(dir.to_path_buf()),
             create: std::mem::transmute::<Raw, CreateFn>(create),
             resize: std::mem::transmute::<Raw, ResizeFn>(resize),
             close: std::mem::transmute::<Raw, CloseFn>(close),
+            clear: Some(std::mem::transmute::<Raw, ClearFn>(clear)),
         })
     }
 }
