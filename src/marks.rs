@@ -20,12 +20,14 @@ pub enum Kind {
     Manual,
 }
 
-/// A place on the grid, relative to a marked row, so it moves with that row.
+/// A place in the text, relative to a marked row: whole lines after the mark's line, then
+/// cells into that line. Reflow moves rows but keeps lines and cells, so this survives a
+/// resize.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Anchor {
     pub mark: u32,
-    pub dy: i32,
-    pub col: usize,
+    pub lines: u32,
+    pub offset: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -198,14 +200,47 @@ impl Screen {
         self.row_marks().into_iter().find(|(_, m)| *m == id).map(|(l, _)| l)
     }
 
+    /// The row continues on the next one (a soft wrap).
+    fn wrapped(&self, line: i32) -> bool {
+        let grid = self.term.primary_grid();
+        let cols = grid.columns();
+        line < grid.screen_lines() as i32 && grid[Line(line)][Column(cols - 1)].flags.contains(alacritty_terminal::term::cell::Flags::WRAPLINE)
+    }
+
+    fn anchor_at(&self, mark: u32, p: Point) -> Option<Anchor> {
+        let m = self.mark_line(mark)?;
+        if p.line.0 < m {
+            return None;
+        }
+        let cols = self.term.primary_grid().columns();
+        let (mut lines, mut start) = (0, m);
+        for r in m..p.line.0 {
+            if !self.wrapped(r) {
+                lines += 1;
+                start = r + 1;
+            }
+        }
+        Some(Anchor { mark, lines, offset: (p.line.0 - start) as usize * cols + p.column.0 })
+    }
+
     fn anchor_here(&self, mark: u32) -> Option<Anchor> {
-        let line = self.mark_line(mark)?;
-        let p = self.cursor_point();
-        Some(Anchor { mark, dy: p.line.0 - line, col: p.column.0 })
+        self.anchor_at(mark, self.cursor_point())
     }
 
     pub fn resolve(&self, a: Anchor) -> Option<Point> {
-        Some(Point::new(Line(self.mark_line(a.mark)? + a.dy), Column(a.col)))
+        let grid = self.term.primary_grid();
+        let (cols, bottom) = (grid.columns(), grid.screen_lines() as i32);
+        let mut r = self.mark_line(a.mark)?;
+        for _ in 0..a.lines {
+            while self.wrapped(r) {
+                r += 1;
+            }
+            r += 1;
+            if r >= bottom + 1 {
+                return None;
+            }
+        }
+        Some(Point::new(Line(r + (a.offset / cols) as i32), Column(a.offset % cols)))
     }
 
     /// The cell before `p` (range ends are inclusive).
@@ -345,10 +380,8 @@ impl Screen {
                 let text = text.trim().to_string();
                 // Output starts at the next line when the cursor is past column 0.
                 let p = self.cursor_point();
-                self.marks.output_start = self.mark_line(cur).map(|l| {
-                    let (line, col) = if p.column.0 > 0 { (p.line.0 + 1, 0) } else { (p.line.0, 0) };
-                    Anchor { mark: cur, dy: line - l, col }
-                });
+                let start_at = if p.column.0 > 0 { Point::new(p.line + 1, Column(0)) } else { Point::new(p.line, Column(0)) };
+                self.marks.output_start = self.anchor_at(cur, start_at);
                 let now = SystemTime::now();
                 if let Some(m) = self.marks.records.get_mut(&cur) {
                     m.command = text.clone();
@@ -620,6 +653,28 @@ mod tests {
         assert_eq!(marks.len(), 2, "{marks:?}");
         assert!(marks.iter().any(|(_, m)| m.command == "ls" && m.code == Some(1)));
         assert!(marks.iter().any(|(_, m)| m.name.as_deref() == Some("here")));
+    }
+
+    #[test]
+    fn ranges_survive_a_resize() {
+        let mut s = Screen::new(20, 12);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07echo abcdefghijklmnopqrstuvwxyz\r\n\x1b]133;C\x07");
+        s.feed(b"0123456789ABCDEFGHIJKLMNOPQRSTUV\r\ntail\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ ");
+        let text = |s: &Screen| {
+            let (a, b) = s.last_output_range().unwrap();
+            s.term().bounds_to_string(a, b).trim_end().to_string()
+        };
+        let cmd = |s: &Screen| {
+            let (a, b) = s.last_command_range().unwrap();
+            s.term().bounds_to_string(a, b).trim_end().to_string()
+        };
+        let (out, command) = (text(&s), cmd(&s));
+        assert_eq!(command, "echo abcdefghijklmnopqrstuvwxyz");
+        for cols in [13, 31, 20] {
+            s.resize(cols, 12);
+            assert_eq!(text(&s), out, "at {cols} columns");
+            assert_eq!(cmd(&s), command, "at {cols} columns");
+        }
     }
 
     #[test]
