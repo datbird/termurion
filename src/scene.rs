@@ -191,6 +191,26 @@ pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), fo
 }
 
 /// Draws the tab bar across `area`. Returns each tab's rectangle, for clicks.
+/// iTerm2's mark colors (iTermTextDrawingHelper), in sRGB.
+fn mark_rgba(c: crate::marks::MarkColor) -> [f32; 4] {
+    use crate::marks::MarkColor::*;
+    let (r, g, b) = match c {
+        Success => (0.538, 0.757, 1.0),
+        Other => (0.857, 0.847, 0.426),
+        Error => (0.987, 0.448, 0.426),
+    };
+    [r, g, b, 1.0]
+}
+
+/// Mark indicators: a bar in the left padding beside each marked row on screen.
+pub fn mark_bars(frame: &mut Frame, marks: &[(usize, crate::marks::MarkColor)], inner: Rect, cell_h: f32, pad: f32) {
+    let w = (pad * 0.75).max(1.0);
+    for (row, color) in marks {
+        let rect = Rect { x: inner.x - pad, y: inner.y + *row as f32 * cell_h, w, h: cell_h };
+        frame.overlay.push(Quad { rect, color: mark_rgba(*color) });
+    }
+}
+
 pub fn tab_bar(frame: &mut Frame, titles: &[String], active: usize, area: Rect, cell: (f32, f32)) -> Vec<Rect> {
     frame.quads.push(Quad { rect: area, color: rgba(TAB_BAR, 1.0) });
     let n = titles.len().max(1) as f32;
@@ -228,6 +248,18 @@ pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn mark_bars_sit_in_the_left_padding() {
+        let mut f = Frame::default();
+        let inner = Rect { x: 10.0, y: 20.0, w: 100.0, h: 100.0 };
+        mark_bars(&mut f, &[(2, crate::marks::MarkColor::Error)], inner, 16.0, 4.0);
+        let q = f.overlay.last().unwrap();
+        assert!(q.rect.x >= 6.0 && q.rect.x + q.rect.w <= 10.0, "{:?}", q.rect);
+        assert_eq!((q.rect.y, q.rect.h), (52.0, 16.0));
+        assert!(q.color[0] > 0.9 && q.color[1] < 0.5);
+    }
+
     use super::*;
     use alacritty_terminal::index::{Column, Line, Point, Side};
     use alacritty_terminal::selection::{Selection, SelectionType};
