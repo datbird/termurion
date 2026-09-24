@@ -1097,18 +1097,13 @@ impl App {
                     scene::pane(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on);
                 }
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));
-                if let Some(p) = self.panes.get_mut(&id) {
-                    let offset = p.screen.term().grid().display_offset() as i32;
-                    let rows = p.screen.term().grid().screen_lines() as i32;
+                if let Some(p) = self.panes.get(&id) {
                     let bars: Vec<(usize, crate::marks::MarkColor)> = p
                         .screen
-                        .marks_in_order()
+                        .visible_marks()
                         .into_iter()
                         .filter(|(_, m)| show || m.name.is_some())
-                        .filter_map(|(line, m)| {
-                            let row = line + offset;
-                            (0..rows).contains(&row).then(|| (row as usize, crate::marks::color(&m)))
-                        })
+                        .map(|(row, m)| (row, crate::marks::color(&m)))
                         .collect();
                     let pad = PAD * self.scale();
                     scene::mark_bars(&mut frame, &bars, self.inner(rect), cell.1, pad);

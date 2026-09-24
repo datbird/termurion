@@ -239,6 +239,22 @@ impl Screen {
         self.marks.records.values().rev().filter(|m| m.kind == Kind::Prompt).nth(1).and_then(|m| m.code)
     }
 
+    /// The marks on rows in view, for the margin indicators: (row on screen, mark). None
+    /// while a full-screen app has the alternate screen. Reads only the rows in view.
+    pub fn visible_marks(&self) -> Vec<(usize, Mark)> {
+        if self.term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN) {
+            return Vec::new();
+        }
+        let grid = self.term.grid();
+        let offset = grid.display_offset() as i32;
+        (0..grid.screen_lines())
+            .filter_map(|row| {
+                let id = grid[Line(row as i32 - offset)].mark();
+                Some((row, self.marks.records.get(&id)?.clone())).filter(|_| id != 0)
+            })
+            .collect()
+    }
+
     /// Every mark still in the buffer, top first. Records whose row is gone are dropped.
     pub fn marks_in_order(&mut self) -> Vec<(i32, Mark)> {
         let rows = self.row_marks();
@@ -296,8 +312,15 @@ impl Screen {
         self.marks.in_command = false;
     }
 
-    /// Acts on one shell-integration OSC at the current cursor position.
+    /// Acts on one shell-integration OSC at the current cursor position. A full-screen app
+    /// on the alternate screen makes no marks; its cursor is not on the main screen.
     pub(crate) fn apply(&mut self, osc: Osc) {
+        let alt = self.term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+        if alt && matches!(osc, Osc::Prompt { .. } | Osc::CommandStart | Osc::OutputStart | Osc::CommandEnd { .. })
+            || alt && matches!(&osc, Osc::Kv(k, _) if k == "SetMark")
+        {
+            return;
+        }
         match osc {
             Osc::Prompt { kind, aid, fresh_line } => self.prompt_start(kind, aid, fresh_line),
             Osc::CommandStart => {
@@ -569,6 +592,18 @@ mod tests {
         let t = s.all_text();
         assert!(t.starts_with("l0\nl1\nl2\n$"), "{t:?}");
         assert!(!t.contains("l3"), "{t:?}");
+    }
+
+    #[test]
+    fn an_alternate_screen_app_keeps_the_marks() {
+        let mut s = Screen::new(40, 10);
+        prompt(&mut s, "vim", 0);
+        s.feed(b"\x1b[?1049hfull screen app\x1b[H\x1b[2J");
+        assert_eq!(s.marks_in_order().len(), 1);
+        assert!(s.visible_marks().is_empty(), "no bars over an alternate-screen app");
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(s.marks_in_order().len(), 1);
+        assert_eq!(s.marks.records.len(), 1);
     }
 
     #[test]

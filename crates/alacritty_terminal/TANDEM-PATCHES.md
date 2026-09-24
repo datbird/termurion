@@ -14,4 +14,7 @@ test data) is left out. Changes:
 3. `grid/resize.rs`: `Grid::cut_from(line)` removes every row from a line to the bottom,
    scrollback included (iTerm2's Clear to Last Mark).
 
+4. `term/mod.rs`: `Term::primary_grid()` and `primary_grid_mut()` give the main screen's grid
+   while the alternate screen is up, so marks survive full-screen apps.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

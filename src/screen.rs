@@ -195,7 +195,7 @@ impl Screen {
 
     /// Puts a mark id on a row (grid line: 0 is the top of the screen, negative is history).
     pub fn set_row_mark(&mut self, line: i32, id: u32) {
-        let grid = self.term.grid_mut();
+        let grid = self.term.primary_grid_mut();
         if line >= -(grid.history_size() as i32) && line < grid.screen_lines() as i32 {
             grid[Line(line)].set_mark(id);
         }
@@ -203,7 +203,8 @@ impl Screen {
 
     /// Every marked row, top first: (grid line, mark id).
     pub fn row_marks(&self) -> Vec<(i32, u32)> {
-        let grid = self.term.grid();
+        // Marks live on the main screen, also while a full-screen app has the alternate one.
+        let grid = self.term.primary_grid();
         let top = -(grid.history_size() as i32);
         (top..grid.screen_lines() as i32).filter_map(|l| Some((l, grid[Line(l)].mark())).filter(|(_, id)| *id != 0)).collect()
     }
