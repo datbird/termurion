@@ -71,7 +71,8 @@ impl App {
             } else {
                 let enabled = !matches!(commands::status(item), Status::Later(_));
                 let parent = &item.path[..item.path.len() - 1];
-                if parent.last().is_some_and(|p| p == "Terminal State") && TOGGLES.iter().any(|t| t.0 == item.label()) {
+                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector);
+                if alert_check || (parent.last().is_some_and(|p| p == "Terminal State") && TOGGLES.iter().any(|t| t.0 == item.label())) {
                     let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, None);
                     checks.insert(item.label().to_string(), c.clone());
                     (parent, Box::new(c))
@@ -147,6 +148,19 @@ impl App {
                 c.set_checked(mode.is_some_and(|m| m.intersects(flag)));
             }
         }
+        let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.screen.marks.alert_next);
+        let action = self.globals.string("Mark Alert Action");
+        for (selector, value) in super::marks_ui::CHECKS {
+            let Some(item) = menus::items().iter().find(|i| i.selector == selector) else { continue };
+            let on = match selector {
+                "toggleAlertOnNextMark:" => alert_next,
+                "toggleAlertOnMarksInOffscreenSessions:" => self.globals.bool("Alert On Marks in Offscreen Sessions"),
+                _ => action == value,
+            };
+            if let Some(c) = bar.checks.get(item.label()) {
+                c.set_checked(on);
+            }
+        }
     }
 
     /// A Win chord the hook took: key routing first (a mapping beats a menu command).
@@ -177,6 +191,10 @@ impl App {
         }
         let label = item.label();
         let window = self.gpu.as_ref().map(|g| g.window.clone());
+        if self.run_mark_command(&item.selector, event_loop) {
+            self.sync_checks();
+            return self.relayout();
+        }
         match item.selector.as_str() {
             "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", env!("CARGO_PKG_VERSION"))),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
@@ -396,6 +414,9 @@ impl App {
     }
 
     fn quit(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(h) = self.hwnd() {
+            crate::notify::remove(h);
+        }
         if self.save_due.is_some() {
             self.save_now();
         }
@@ -415,7 +436,7 @@ fn toggle_fullscreen(window: Option<&Window>) {
     }
 }
 
-fn info_box(text: &str) {
+pub(super) fn info_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONINFORMATION) };

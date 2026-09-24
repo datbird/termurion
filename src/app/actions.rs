@@ -303,6 +303,11 @@ impl App {
                 }
             }
             75 => self.toggle_setting(&b.text),
+            71 => {
+                if let Some(p) = self.focused_pane() {
+                    p.screen.marks.alert_next = !p.screen.marks.alert_next;
+                }
+            }
             _ => {}
         }
     }

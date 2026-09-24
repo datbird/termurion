@@ -231,3 +231,22 @@ type = "dict"
 default = {}
 default_note = "The factory bindings are iTerm2's DefaultPointerActions.plist (schema/keymaps.toml [pointer])."
 help = "Mouse button and click count bindings."
+
+[[setting]]
+key = "Mark Alert Action"
+tab = "Marks"
+section = "Alerts"
+label = "Mark alert"
+type = "enum"
+default = "Post Notification"
+choices = [ { value = "Post Notification", label = "Post Notification" }, { value = "Modal Alert", label = "Show Modal Alert Box" }, { value = "Ring Bell", label = "Play a Sound" } ]
+help = "What Alert on Next Mark does when a mark is set (Edit > Marks and Annotations > Alerts)."
+
+[[setting]]
+key = "Alert On Marks in Offscreen Sessions"
+tab = "Marks"
+section = "Alerts"
+label = "Alert on Marks in Offscreen Sessions"
+type = "bool"
+default = false
+help = "Alerts on every mark in a session that is not in the selected tab."

@@ -378,7 +378,7 @@ pub fn status(code: i64) -> Status {
     match code {
         1 | 3 | 26 | 43 | 44 | 62 => Status::Later(7),
         15 => Status::Later(10),
-        35 | 71 | 72 => Status::Later(6),
+        35 | 72 => Status::Later(6),
         36 | 45..=48 | 57 | 58 | 73 => Status::Later(4),
         40 => Status::Later(13),
         41 | 42 | 63 | 64 => Status::Later(9),

@@ -53,3 +53,6 @@ pub mod settings_keys;
 
 #[cfg(windows)]
 pub mod winkeys;
+
+#[cfg(windows)]
+pub mod notify;

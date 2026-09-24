@@ -97,6 +97,22 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.lines = target;
     }
 
+    /// Tandem patch: removes every row from `line` to the bottom of the screen, scrollback
+    /// included when `line` is in it. Blank rows fill the screen from there down; the rows
+    /// above keep their places.
+    pub fn cut_from(&mut self, line: Line) {
+        let (lines, columns) = (self.lines, self.columns);
+        // Raw storage is bottom first: the bottom screen row is index 0.
+        let mut rows = self.raw.take_all();
+        let remove = ((lines as i64 - line.0 as i64).max(0) as usize).min(rows.len());
+        rows.drain(..remove);
+        let blanks = remove.min(lines).max(lines.saturating_sub(rows.len()));
+        let mut new_raw: Vec<Row<T>> = (0..blanks).map(|_| Row::new(columns)).collect();
+        new_raw.append(&mut rows);
+        self.raw.replace_inner(new_raw);
+        self.display_offset = min(self.display_offset, self.history_size());
+    }
+
     /// Grow number of columns in each row, reflowing if necessary.
     fn grow_columns(&mut self, reflow: bool, columns: usize) {
         // Check if a row needs to be wrapped.

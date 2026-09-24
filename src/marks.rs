@@ -146,7 +146,50 @@ fn parse_location(url: &str) -> Option<(Option<String>, Option<String>, String, 
     Some((user, host, percent_decode(path), machine))
 }
 
+/// The next mark line after `from` (or before it, going back), wrapping around.
+pub fn next_mark(lines: &[i32], from: Option<i32>, forward: bool) -> Option<i32> {
+    let first = *lines.first()?;
+    let last = *lines.last()?;
+    Some(match (from, forward) {
+        (None, true) => first,
+        (None, false) => last,
+        (Some(f), true) => lines.iter().copied().find(|l| *l > f).unwrap_or(first),
+        (Some(f), false) => lines.iter().rev().copied().find(|l| *l < f).unwrap_or(last),
+    })
+}
+
+/// Where Clear to Last Mark starts: after the last mark above the cursor that is not the
+/// current prompt's, or at that mark when it is directly above the cursor. `i32::MIN`
+/// (everything) when there is none.
+pub fn clear_start(marks: &[i32], prompt_line: Option<i32>, cursor: i32) -> i32 {
+    match marks.iter().copied().filter(|l| *l < cursor && Some(*l) != prompt_line).max() {
+        Some(l) if l == cursor - 1 => l,
+        Some(l) => l + 1,
+        None => i32::MIN,
+    }
+}
+
 impl Screen {
+    /// Clears from grid line `line` to the end, then puts the cursor's row (the prompt) back
+    /// at `line` (iTerm2 clearFromAbsoluteLineToEnd).
+    pub fn clear_from(&mut self, line: i32) {
+        let grid = self.term.grid();
+        let top = -(grid.history_size() as i32);
+        let line = line.max(top);
+        let cursor = grid.cursor.point;
+        let saved = grid[cursor.line].clone();
+        let target = line.max(0);
+        let grid = self.term.grid_mut();
+        grid.cut_from(Line(line));
+        grid[Line(target)] = saved;
+        grid.cursor.point = Point::new(Line(target), cursor.column);
+    }
+
+    /// The mark line of the prompt being typed at, if any.
+    pub fn current_prompt_line(&self) -> Option<i32> {
+        self.mark_line(self.marks.current?)
+    }
+
     fn cursor_point(&self) -> Point {
         self.term.grid().cursor.point
     }
@@ -482,6 +525,50 @@ mod tests {
     fn percent_decoding_is_safe() {
         assert_eq!(percent_decode("a%20b%C3%A9"), "a b\u{e9}");
         assert_eq!(percent_decode("%zz%%é%"), "%zz%%é%");
+    }
+
+    #[test]
+    fn next_mark_wraps_both_ways() {
+        let lines = [-40, -10, 3];
+        assert_eq!(next_mark(&lines, None, true), Some(-40));
+        assert_eq!(next_mark(&lines, None, false), Some(3));
+        assert_eq!(next_mark(&lines, Some(-10), true), Some(3));
+        assert_eq!(next_mark(&lines, Some(3), true), Some(-40));
+        assert_eq!(next_mark(&lines, Some(-40), false), Some(3));
+        assert_eq!(next_mark(&[], None, true), None);
+    }
+
+    #[test]
+    fn clear_to_last_mark_picks_the_line_after() {
+        // Marks at -5 and 2; the current prompt's mark is on 8, the cursor on 8.
+        assert_eq!(clear_start(&[-5, 2, 8], Some(8), 8), 3);
+        // A mark directly above the cursor goes too.
+        assert_eq!(clear_start(&[-5, 7, 8], Some(8), 8), 7);
+        // No mark: everything from the top.
+        assert_eq!(clear_start(&[8], Some(8), 8), i32::MIN);
+    }
+
+    #[test]
+    fn clearing_from_a_line_keeps_the_prompt_line() {
+        let mut s = Screen::new(20, 6);
+        s.feed(b"keep\r\nold1\r\nold2\r\n$ typed");
+        s.clear_from(1);
+        assert_eq!(s.all_text(), "keep\n$ typed\n");
+        let c = s.term().grid().cursor.point;
+        assert_eq!((c.line.0, c.column.0), (1, 7));
+    }
+
+    #[test]
+    fn clearing_into_history_truncates_it() {
+        let mut s = Screen::new(20, 3);
+        for i in 0..8 {
+            s.feed(format!("l{i}\r\n").as_bytes());
+        }
+        s.feed(b"$ ");
+        s.clear_from(-3);
+        let t = s.all_text();
+        assert!(t.starts_with("l0\nl1\nl2\n$"), "{t:?}");
+        assert!(!t.contains("l3"), "{t:?}");
     }
 
     #[test]

@@ -11,4 +11,7 @@ test data) is left out. Changes:
    that row takes the continuation's mark if it has none. Narrowing keeps the mark on the
    first part of a split line.
 
+3. `grid/resize.rs`: `Grid::cut_from(line)` removes every row from a line to the bottom,
+   scrollback included (iTerm2's Clear to Last Mark).
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

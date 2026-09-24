@@ -51,6 +51,7 @@ const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod marks_ui;
 mod menu;
 
 pub enum UserEvent {
@@ -128,6 +129,10 @@ pub struct App {
     /// An Alt single click in a pane at a cell, which may move the cursor on release.
     alt_click: Option<(PaneId, (u32, u32))>,
     wheel_acc_x: f32,
+    /// Mark navigation: the mark each pane is at.
+    mark_pos: HashMap<PaneId, u32>,
+    /// The Set Named Mark window, and the pane it names a mark in.
+    prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     api: Api,
     shell: String,
     gpu: Option<Gpu>,
@@ -235,6 +240,8 @@ pub fn run() {
         mouse_override: HashMap::new(),
         alt_click: None,
         wheel_acc_x: 0.0,
+        mark_pos: HashMap::new(),
+        prompt: None,
         api,
         shell: default_shell(),
         gpu: None,
@@ -335,6 +342,7 @@ impl App {
             Ok(mut pane) => {
                 pane.screen.set_palette(Palette::from_profile(&p, self.dark()));
                 pane.screen.set_look(Look::from_profile(&p));
+                pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
                 pane.profile = p.guid();
                 self.panes.insert(id, pane);
                 true
@@ -396,6 +404,7 @@ impl App {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.screen.set_palette(Palette::from_profile(p, dark));
             pane.screen.set_look(Look::from_profile(p));
+            pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
         }
         self.redraw();
     }
@@ -1247,12 +1256,16 @@ impl ApplicationHandler<UserEvent> for App {
             self.close_pane(id, event_loop);
         }
         if changed {
+            self.check_marks();
             self.sync_checks();
             self.redraw();
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.prompt_event(id, &event) {
+            return;
+        }
         for profiles in [false, true] {
             let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
             if !slot.as_ref().is_some_and(|s| s.id() == id) {
