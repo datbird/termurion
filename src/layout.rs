@@ -208,6 +208,55 @@ impl Layout {
         go(&mut self.root, pane, axis, toward_second, fraction).unwrap_or(false)
     }
 
+    /// Exchanges two panes' places. False unless both are here.
+    pub fn swap(&mut self, a: PaneId, b: PaneId) -> bool {
+        fn go(n: &mut Node, a: PaneId, b: PaneId) {
+            match n {
+                Node::Leaf(id) if *id == a => *id = b,
+                Node::Leaf(id) if *id == b => *id = a,
+                Node::Leaf(_) => {}
+                Node::Split { a: first, b: second, .. } => {
+                    go(first, a, b);
+                    go(second, a, b);
+                }
+            }
+        }
+        let panes = self.panes();
+        if a == b || !panes.contains(&a) || !panes.contains(&b) {
+            return false;
+        }
+        go(&mut self.root, a, b);
+        true
+    }
+
+    /// Grows `pane` along `axis` by `by` of the nearest split on that axis (negative
+    /// shrinks it). False when no split on that axis holds the pane.
+    pub fn grow(&mut self, pane: PaneId, axis: Axis, by: f32) -> bool {
+        fn go(n: &mut Node, pane: PaneId, axis: Axis, by: f32) -> Option<bool> {
+            let Node::Split { axis: a, ratio, a: first, b: second } = n else {
+                return if *n == Node::Leaf(pane) { Some(false) } else { None };
+            };
+            let (in_first, done) = match go(first, pane, axis, by) {
+                Some(d) => (true, d),
+                None => (false, go(second, pane, axis, by)?),
+            };
+            if done || *a != axis {
+                return Some(done);
+            }
+            *ratio = (*ratio + if in_first { by } else { -by }).clamp(0.1, 0.9);
+            Some(true)
+        }
+        go(&mut self.root, pane, axis, by).unwrap_or(false)
+    }
+
+    /// The pane after (or before) `from` in reading order, wrapping. None with one pane.
+    pub fn next(&self, from: PaneId, forward: bool) -> Option<PaneId> {
+        let panes = self.panes();
+        let n = panes.len();
+        let i = panes.iter().position(|p| *p == from)?;
+        (n > 1).then(|| panes[if forward { (i + 1) % n } else { (i + n - 1) % n }])
+    }
+
     /// Sets the split ratio at `path`, kept between 0.1 and 0.9.
     pub fn set_ratio(&mut self, path: &[bool], ratio: f32) {
         let mut n = &mut self.root;
@@ -263,6 +312,42 @@ pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn swapping_panes_keeps_the_shape() {
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        l.split(2, Axis::Column, 3);
+        let area = Rect { x: 0.0, y: 0.0, w: 100.0, h: 50.0 };
+        let before: Vec<Rect> = l.rects(area, 0.0).into_iter().map(|(_, r)| r).collect();
+        assert!(l.swap(1, 3));
+        assert_eq!(l.panes(), [3, 2, 1]);
+        assert_eq!(l.rects(area, 0.0).into_iter().map(|(_, r)| r).collect::<Vec<_>>(), before);
+        assert!(!l.swap(1, 9));
+    }
+
+    #[test]
+    fn grow_moves_the_divider_toward_the_neighbor() {
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        let area = Rect { x: 0.0, y: 0.0, w: 100.0, h: 50.0 };
+        assert!(l.grow(2, Axis::Row, 0.1));
+        let w2 = l.rect_of(2, area, 0.0).unwrap().w;
+        assert!((w2 - 60.0).abs() < 0.01, "{w2}");
+        assert!(l.grow(1, Axis::Row, -0.1));
+        assert!((l.rect_of(1, area, 0.0).unwrap().w - 30.0).abs() < 0.01);
+        assert!(!l.grow(2, Axis::Column, 0.1));
+    }
+
+    #[test]
+    fn next_pane_wraps() {
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        assert_eq!(l.next(1, true), Some(2));
+        assert_eq!(l.next(2, true), Some(1));
+        assert_eq!(l.next(1, false), Some(2));
+        assert_eq!(Layout::new(1).next(1, true), None);
+    }
+
     use super::*;
 
     const AREA: Rect = Rect { x: 0.0, y: 0.0, w: 101.0, h: 51.0 };
