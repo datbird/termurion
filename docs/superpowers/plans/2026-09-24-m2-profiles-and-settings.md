@@ -818,9 +818,10 @@ pub fn p3_to_srgb(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
         if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
     };
     let (r, g, b) = (lin(r), lin(g), lin(b));
-    let sr = 1.2249 * r - 0.2247 * g + 0.0000 * b;
-    let sg = -0.0420 * r + 1.0419 * g + 0.0000 * b;
-    let sb = -0.0197 * r - 0.0786 * g + 1.0979 * b;
+    // Linear Display P3 to linear sRGB. Each row sums to 1, so grays stay gray.
+    let sr = 1.2249401 * r - 0.2249404 * g;
+    let sg = -0.0420569 * r + 1.0420571 * g;
+    let sb = -0.0196376 * r - 0.0786361 * g + 1.0982735 * b;
     let round = |v: f64| (v * 1e6).round() / 1e6;
     (round(enc(sr)), round(enc(sg)), round(enc(sb)))
 }
