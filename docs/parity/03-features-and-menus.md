@@ -1,0 +1,776 @@
+# iTerm2 features and menus
+
+Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainMenu.xib` for every menu command, and `sources/VT100/VT100Terminal.m` plus related parser files (`VT100SixelParser.m`, `InlineImages/KittyImageCommand.swift`, `Keyboard/iTermModernKeyMapper.swift`, `DragAndDrop/KittyDnD*.swift`) for escape sequences. Subsystem behavior comes from reading the matching source files directly: `TmuxController.m`, `TmuxGateway.m`, the shell integration scripts and utilities, `iTermStatusBar*Component*`, `Tool*.m`/`Tool*.swift`, the trigger action classes, `PasswordManager*`, `Composer*`, `FindViewController`/`iTermFindDriver`, `PasteSpecial*`/`PasteboardHistory*`, `OpenQuickly*`, `Arrangement*`, hotkey window classes, `iTermAI`/`AILiveHarness`, and `proto/api.proto`.
+
+## 1. Menu commands
+
+### iTerm2 menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| iTerm2 > About iTerm2 | no shortcut | Shows the About panel with version and build info. | missing |
+| iTerm2 > Show Tip of the Day | no shortcut | Shows a tip of the day dialog on startup or on demand. | missing |
+| iTerm2 > Companion Device Settings | no shortcut | Opens settings for pairing a companion mobile device with iTerm2. | missing |
+| iTerm2 > Suppressed Alerts... | no shortcut | Lists alert dialogs the user chose to suppress and lets them re-enable. | missing |
+| iTerm2 > Check for Updates... | no shortcut | Manually checks the Sparkle updater for a new iTerm2 build. | missing |
+| iTerm2 > Toggle Debug Logging | no shortcut | Turns internal debug log capture on or off. | missing |
+| iTerm2 > Save Retrospective Debug Logs | no shortcut | Dumps recent internal debug logs to a file for bug reports. | missing |
+| iTerm2 > Copy Performance Stats | no shortcut | Copies GPU and CPU performance counters to the clipboard. | missing |
+| iTerm2 > Capture GPU Frame | Ctrl+Opt+Cmd+G | Captures a single Metal GPU frame for renderer debugging. | missing |
+| iTerm2 > Check Settings Control Truncation | no shortcut | Debug tool that scans the Preferences UI for truncated control text. | missing |
+| iTerm2 > Preferences... | Cmd+, | Opens the Preferences/Settings window. | missing |
+| iTerm2 > Services | no shortcut | macOS system Services submenu, populated dynamically by the OS. | missing |
+| iTerm2 > Hide iTerm2 | Cmd+H | Hides the application. | missing |
+| iTerm2 > Hide Others | Opt+Cmd+H | Hides all other applications. | missing |
+| iTerm2 > Show All | no shortcut | Unhides all hidden applications. | missing |
+| iTerm2 > Secure Keyboard Entry | Opt+Cmd+S | Enables Secure Keyboard Entry to block other apps from reading keystrokes. | missing |
+| iTerm2 > Make iTerm2 Default Term | Ctrl+Shift+Cmd+\ | Registers iTerm2 as the default terminal app for the OS. | missing |
+| iTerm2 > Make Terminal Default Term | Ctrl+Opt+Shift+Cmd+\ | Restores Terminal.app as the default terminal app. | missing |
+| iTerm2 > Install Shell Integration | no shortcut | Installs the shell integration script into the user's shell rc file. | missing |
+| iTerm2 > Install Claude Code Integration | no shortcut | Installs hooks for Claude Code terminal integration. | missing |
+| iTerm2 > Reinstall Claude Code Integration | no shortcut | Reinstalls the Claude Code integration hooks. | missing |
+| iTerm2 > Uninstall Claude Code Integration | no shortcut | Removes the Claude Code integration hooks. | missing |
+| iTerm2 > Remove Recent Profiles from Dock Menu | no shortcut | Clears the recently used profile list shown in the Dock menu. | missing |
+| iTerm2 > Quit iTerm2 | Cmd+Q | Quits the application. | have |
+
+### Shell menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| Shell > New Window | Cmd+N | Opens a new terminal window with the default profile. | have |
+| Shell > New Window with Current Profile | Opt+Cmd+N | Opens a new window reusing the current session's profile. | missing |
+| Shell > New Tab | Cmd+T | Opens a new tab with the default profile. | have |
+| Shell > New Tab Next to Current Tab | Opt+Cmd+T | Opens a new tab immediately to the right of the current one. | partial |
+| Shell > New Tab with Current Profile | Opt+Cmd+T | Opens a new tab reusing the current session's profile. | missing |
+| Shell > Duplicate Window | no shortcut | Opens a new window cloning the current window's layout. | missing |
+| Shell > Duplicate Tab | no shortcut | Opens a new tab cloning the current tab's split layout. | missing |
+| Shell > Split Horizontally with Current Profile | Cmd+D | Splits the current pane into top and bottom using the current profile. | have |
+| Shell > Split Vertically with Current Profile | Cmd+D | Splits the current pane into left and right using the current profile. | have |
+| Shell > Split Horizontally... | Opt+Cmd+H | Splits the pane top and bottom, prompting for which profile to use. | partial |
+| Shell > Split Vertically... | Opt+Cmd+V | Splits the pane left and right, prompting for which profile to use. | partial |
+| Shell > Save Contents... | no shortcut | Saves the full scrollback contents of the session to a file. | missing |
+| Shell > Save Selected Text... | Cmd+S | Saves the current text selection to a file. | missing |
+| Shell > Close | Cmd+W | Closes the current session or pane. | have |
+| Shell > Close Terminal Window | Cmd+W | Closes the entire terminal window. | have |
+| Shell > Close All Panes in Tab | Opt+Cmd+W | Closes every pane in the current tab. | partial |
+| Shell > Undo Close | Cmd+T | Reopens the most recently closed session. | missing |
+| Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. | missing |
+| Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. | missing |
+| Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. | missing |
+| Shell > Broadcast Input > Send Input to Current Session Only | Opt+Cmd+I | Turns off input broadcasting, typing goes only to the active pane. | missing |
+| Shell > Broadcast Input > Broadcast Input to All Panes in All Tabs | Cmd+I | Sends typed input to every pane in every tab of the window. | missing |
+| Shell > Broadcast Input > Broadcast Input to All Panes in Current Tab | Opt+Cmd+I | Sends typed input to every pane in the current tab. | missing |
+| Shell > Broadcast Input > Toggle Broadcast Input to Current Session | Ctrl+Opt+Cmd+I | Adds or removes just the current session from the broadcast set. | missing |
+| Shell > Broadcast Input > Show Background Pattern Indicator | no shortcut | Shows a background tint on panes receiving broadcast input. | missing |
+| Shell > Broadcast Input > Current Session is Broadcast Source | no shortcut | Marks the current session as the source pane for broadcasting. | missing |
+| Shell > Toggle Buffer Input | no shortcut | Buffers keystrokes typed while a command is running instead of discarding them. | missing |
+| Shell > tmux > Detach | Ctrl+Cmd+D | Detaches from the attached tmux session, leaving it running server side. | missing |
+| Shell > tmux > Force Detach | no shortcut | Forcibly detaches from tmux even if the gateway is unresponsive. | missing |
+| Shell > tmux > New Tmux Window | Ctrl+Cmd+N | Creates a new window inside the attached tmux session. | missing |
+| Shell > tmux > New Tmux Tab | Ctrl+Cmd+T | Creates a new tab or pane inside the attached tmux session. | missing |
+| Shell > tmux > Pause Pane | Ctrl+Cmd+P | Pauses output updates for a tmux pane to save bandwidth. | missing |
+| Shell > tmux > Dashboard | no shortcut | Opens a dashboard listing all attached tmux sessions and windows. | missing |
+| Shell > ssh > Disconnect | no shortcut | Disconnects the built in SSH integration session. | missing |
+| Shell > ssh > Download Files... | no shortcut | Downloads files from the remote host over the SSH integration channel. | missing |
+| Shell > ssh > Remote host can control iTerm2 | no shortcut | Lets escape sequences from the remote SSH host control iTerm2 features. | missing |
+| Shell > Page Setup... | Cmd+P | Opens the macOS page setup dialog for printing. | missing |
+| Shell > Print > Screen | Cmd+P | Prints the visible screen contents. | missing |
+| Shell > Print > Selection | Opt+Cmd+P | Prints the current text selection. | missing |
+| Shell > Print > Buffer | Opt+Cmd+P | Prints the full scrollback buffer. | missing |
+
+### Edit menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| Edit > Undo | Cmd+Z | Undoes the last editable action, for example in the Composer or a text field. | missing |
+| Edit > Redo | Cmd+Z | Redoes the last undone editable action. | missing |
+| Edit > Cut | Cmd+X | Cuts selected text in editable fields, not the terminal grid. | missing |
+| Edit > Copy | Cmd+C | Copies the current selection to the clipboard. | have |
+| Edit > Copy with Styles | Opt+Cmd+C | Copies the selection to the clipboard preserving colors and font styling. | missing |
+| Edit > Copy with Control Sequences | no shortcut | Copies the selection including the raw escape sequences that produced it. | missing |
+| Edit > Copy Mode | Cmd+C | Enters keyboard driven vi-like selection mode for copying text. | missing |
+| Edit > Paste | Cmd+V | Pastes clipboard contents into the session. | have |
+| Edit > Paste Special > Advanced Paste... | Opt+Cmd+V | Opens a dialog with paste transform options such as escaping, encoding, and tab conversion. | missing |
+| Edit > Paste Special > Paste Selection | Cmd+V | Pastes the current selection, similar to middle-click paste on X11. | have |
+| Edit > Paste Special > Paste File Base64-Encoded | no shortcut | Pastes a file's contents as a base64-encoded string. | missing |
+| Edit > Paste Special > Paste Slowly | no shortcut | Pastes character by character with a delay, for flaky serial links. | missing |
+| Edit > Paste Special > Paste Faster | no shortcut | Increases the speed used by slow paste. | missing |
+| Edit > Paste Special > Paste Slowly Faster | no shortcut | Increases the per-character delay speed of slow paste. | missing |
+| Edit > Paste Special > Paste Slower | no shortcut | Decreases the speed used by slow paste. | missing |
+| Edit > Paste Special > Paste Slowly Slower | no shortcut | Decreases the per-character delay speed of slow paste. | missing |
+| Edit > Paste Special > Warn Before Multi-Line Paste | no shortcut | Toggles a confirmation prompt before pasting multiple lines. | missing |
+| Edit > Paste Special > Limit Multi-Line Paste Warning to Shell Prompt | no shortcut | Restricts the multi-line paste warning to only fire at a shell prompt. | missing |
+| Edit > Paste Special > Prompt to Convert Tabs to Spaces when Pasting | no shortcut | Toggles a prompt offering to convert tabs to spaces on paste. | missing |
+| Edit > Paste Special > Warn Before Pasting One Line Ending in a Newline at Shell Prompt | no shortcut | Toggles a warning for a single line paste that ends with a newline at the prompt. | missing |
+| Edit > Replace Selection > Render Selection Natively | Opt+Cmd+E | Renders the selected text as an image or markup instead of raw text. | missing |
+| Edit > Replace Selection > Replace with Pretty-Printed JSON | no shortcut | Reformats the selected JSON text with indentation. | missing |
+| Edit > Replace Selection > Replace with Base 64-Encoded Value | no shortcut | Replaces the selection with its base64-encoded form. | missing |
+| Edit > Replace Selection > Replace with Base 64-Decoded Value | no shortcut | Replaces the selection with its base64-decoded form. | missing |
+| Edit > Engage Artificial Intelligence | Cmd+Y | Opens an AI prompt to turn a natural-language request into a shell command. | missing |
+| Edit > Explain Output with AI | Opt+Cmd+Y | Sends recent terminal output to AI and shows an explanation. | missing |
+| Edit > Snippets | no shortcut | Dynamic submenu listing saved text snippets to insert into the session. | missing |
+| Edit > Actions | no shortcut | Dynamic submenu listing saved actions, macro-like keystroke, text, or script triggers. | missing |
+| Edit > Open Selection | Opt+Cmd+O | Opens the current selection as a URL or file path. | missing |
+| Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. | missing |
+| Edit > Select All | Cmd+A | Selects all text in the current session's scrollback. | partial |
+| Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. | missing |
+| Edit > Select Output of Last Command | Cmd+A | Selects the output of the most recently run shell command, needs shell integration marks. | missing |
+| Edit > Select Current Command | no shortcut | Selects the command currently being typed at the prompt. | missing |
+| Edit > Find > Find... | Cmd+F | Opens the in-session find bar. | missing |
+| Edit > Find > Find Next | Cmd+G | Jumps to the next find match. | missing |
+| Edit > Find > Find Previous | Cmd+G | Jumps to the previous find match. | missing |
+| Edit > Find > Use Selection for Find | Cmd+E | Loads the current selection as the find query. | missing |
+| Edit > Find > Clear Find | Opt+Cmd+E | Clears the find query and highlights. | missing |
+| Edit > Find > Find Globally... | Cmd+F | Searches across all open sessions at once. | missing |
+| Edit > Find > Select Matches | no shortcut | Selects all text matching the current find query. | missing |
+| Edit > Find > Find URLs | Opt+Cmd+U | Highlights all URLs detected in the buffer for quick opening. | missing |
+| Edit > Find > Find All Smart Selection Matches | Opt+Cmd+U | Highlights all matches of the active Smart Selection rule. | missing |
+| Edit > Find > Pick Result to Open | Opt+Cmd+O | Shows shortcut labels over found links and paths so one can be opened by key. | missing |
+| Edit > Find > Filter | Opt+Cmd+F | Filters the visible buffer to only lines matching a query. | missing |
+| Edit > Marks and Annotations > Set Mark | Cmd+M | Drops a scroll position mark at the current line. | missing |
+| Edit > Marks and Annotations > Jump to Mark | Cmd+J | Scrolls to the last saved mark. | missing |
+| Edit > Marks and Annotations > Next Mark | Shift+Cmd+Down | Jumps to the next mark below in the scrollback. | missing |
+| Edit > Marks and Annotations > Previous Mark | Shift+Cmd+Up | Jumps to the previous mark above in the scrollback. | missing |
+| Edit > Marks and Annotations > Add Annotation at Cursor | Opt+Cmd+M | Adds a free-text sticky annotation attached to the cursor line. | missing |
+| Edit > Marks and Annotations > Annotate Selection | no shortcut | Adds a free-text annotation attached to the current selection. | missing |
+| Edit > Marks and Annotations > Next Annotation | Opt+Shift+Cmd+Down | Jumps to the next annotation below. | missing |
+| Edit > Marks and Annotations > Previous Annotation | Opt+Shift+Cmd+Up | Jumps to the previous annotation above. | missing |
+| Edit > Marks and Annotations > Alerts > Alert on Next Mark | Opt+Cmd+A | Arms a one-shot alert that fires the next time a mark is created. | missing |
+| Edit > Marks and Annotations > Alerts > Alert on Marks in Offscreen Sessions | no shortcut | Extends mark alerts to sessions not currently visible. | missing |
+| Edit > Marks and Annotations > Alerts > Show Modal Alert Box | no shortcut | Sets mark alerts to show a modal dialog. | missing |
+| Edit > Marks and Annotations > Alerts > Post Notification | no shortcut | Sets mark alerts to post a macOS notification. | missing |
+| Edit > Marks and Annotations > Alerts > Play a Sound | no shortcut | Sets mark alerts to play a sound. | missing |
+| Edit > Set Named Mark | Opt+Cmd+M | Creates a mark with a user-supplied name for later lookup. | missing |
+| Edit > Named Marks | no shortcut | Dynamic submenu listing named marks in the current session. | missing |
+| Edit > Fold Selected Lines | Cmd+L | Collapses the selected lines into a single foldable summary line. | missing |
+| Edit > Fold All | Opt+Shift+Cmd+L | Collapses all foldable regions detected in the buffer. | missing |
+| Edit > Clear Buffer | Cmd+K | Clears the visible screen and scrollback. | missing |
+| Edit > Clear Instant Replay | Opt+Cmd+K | Clears the Instant Replay history buffer. | missing |
+| Edit > Clear Scrollback Buffer | Cmd+K | Clears the scrollback history, keeping the visible screen. | partial |
+| Edit > Clear to Start of Selection | Cmd+L | Clears the buffer from the top down to the start of the current selection. | missing |
+| Edit > Clear to Last Mark | Opt+Cmd+L | Clears the buffer up to the most recent mark. | missing |
+
+### View menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| View > Show Tabs in Fullscreen | Cmd+U | Toggles whether the tab bar is shown while in full screen mode. | missing |
+| View > Toggle Full Screen | Ctrl+Cmd+F | Toggles native full screen mode for the window. | missing |
+| View > Toolbelt > Show Toolbelt | Cmd+B | Shows or hides the Toolbelt sidebar of utility panels. | missing |
+| View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. | missing |
+| View > Use Transparency | Cmd+U | Toggles background transparency for the window. | missing |
+| View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. | missing |
+| View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. | missing |
+| View > Zoom Out | no shortcut | Reverses Zoom In on Selection. | missing |
+| View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. | missing |
+| View > Show Annotations | Cmd+\ | Shows or hides annotation markers in the buffer. | missing |
+| View > Show Clippings | Shift+Cmd+= | Shows the Clippings/Snippets quick-insert panel. | missing |
+| View > Show Inline Chat | Shift+Cmd+, | Shows an inline AI chat panel attached to the session. | missing |
+| View > Show Composer | Shift+Cmd+. | Shows the Composer, a multi-line command editor above the prompt. | missing |
+| View > Show Cursor Guide | Opt+Cmd+; | Shows a horizontal highlight line tracking the cursor's row. | missing |
+| View > Show Session Note | Opt+Cmd+G | Shows a free-text note panel attached to the session. | missing |
+| View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. | missing |
+| View > Auto Command Completion | Opt+Cmd+Y | Toggles automatic command-history-based autocomplete suggestions. | missing |
+| View > Auto Composer | Opt+Shift+Cmd+. | Toggles automatically opening the Composer for multi-line input. | missing |
+| View > Open Quickly | Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. | missing |
+| View > Maximize Active Pane | no shortcut | Temporarily expands the focused pane to fill the tab, hiding siblings. | missing |
+| View > Make Text Bigger | Cmd++ | Increases the session font size. | missing |
+| View > Make Text Normal Size | Cmd+0 | Resets the font size to the profile default. | missing |
+| View > Restore Text and Session Size | Opt+Cmd+0 | Resets both font size and window dimensions to profile defaults. | missing |
+| View > Make Text Smaller | Cmd+- | Decreases the session font size. | missing |
+| View > Size Changes Update Profile | no shortcut | Toggles whether font size changes are saved back to the profile. | missing |
+| View > Start Instant Replay | Opt+Cmd+B | Opens Instant Replay, a scrubber for rewinding the screen's visual history. | missing |
+
+### Session menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| Session > Edit Session... | Cmd+I | Opens the profile/session editor for the current session. | missing |
+| Session > Run Coprocess... | Opt+Cmd+R | Runs a local command piped to and from the session's I/O. | missing |
+| Session > Stop Coprocess | Opt+Cmd+R | Stops the running coprocess. | missing |
+| Session > Restart Session | no shortcut | Restarts the session's shell or command without closing the pane. | missing |
+| Session > Duplicate Session | no shortcut | Opens a new session cloning the current one's profile and directory. | missing |
+| Session > Open Autocomplete... | Cmd+; | Opens the shell integration based command autocomplete popup. | missing |
+| Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. | missing |
+| Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. | missing |
+| Session > Open Paste History... | Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. | missing |
+| Session > Open AI Chat... | Ctrl+Cmd+Y | Opens an AI chat window scoped to the current session. | missing |
+| Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. | missing |
+| Session > Triggers > Edit Triggers | no shortcut | Opens the trigger list editor for the current profile. | missing |
+| Session > Triggers > Enable Triggers in Interactive Apps | no shortcut | Allows triggers to fire even while a full-screen interactive app such as vim is running. | missing |
+| Session > Triggers > Enable All | no shortcut | Enables every trigger for the profile. | missing |
+| Session > Triggers > Disable All | no shortcut | Disables every trigger for the profile. | missing |
+| Session > Reset | Cmd+R | Sends a terminal reset, clearing modes and screen state. | partial |
+| Session > Reset Character Set | no shortcut | Resets the terminal's character set designation to default. | missing |
+| Session > Move Session > Move Session to Window | no shortcut | Moves the current session/pane out into a new window. | missing |
+| Session > Move Session > Move Session to Tab | no shortcut | Moves the current session/pane out into a new tab. | missing |
+| Session > Move Session > Move Session to Split Pane | no shortcut | Moves the current session into a split position picked interactively. | missing |
+| Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. | missing |
+| Session > Log > Import Recording | no shortcut | Loads a previously exported session recording for playback. | missing |
+| Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. | missing |
+| Session > Make Screenshot... | no shortcut | Captures a screenshot of the session content. | missing |
+| Session > Terminal State > Alternate Screen | no shortcut | Manually toggles the alternate screen buffer mode. | partial |
+| Session > Terminal State > Focus Reporting | no shortcut | Manually toggles DECSET focus in/out event reporting. | missing |
+| Session > Terminal State > Mouse Reporting | no shortcut | Manually toggles mouse tracking/reporting mode. | partial |
+| Session > Terminal State > Paste Bracketing | no shortcut | Manually toggles bracketed paste mode. | partial |
+| Session > Terminal State > Application Cursor | no shortcut | Manually toggles DECCKM application cursor key mode. | partial |
+| Session > Terminal State > Application Keypad | no shortcut | Manually toggles application keypad mode. | partial |
+| Session > Terminal State > Standard Key Reporting Mode | no shortcut | Sets keyboard protocol to legacy/standard key reporting. | missing |
+| Session > Terminal State > modifyOtherKeys Mode 1 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 1. | missing |
+| Session > Terminal State > modifyOtherKeys Mode 2 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 2. | missing |
+| Session > Terminal State > CSI u Mode | no shortcut | Enables the CSI u (fixterms) keyboard protocol. | missing |
+| Session > Terminal State > Raw Key Reporting Mode | no shortcut | Enables raw keyboard event reporting. | missing |
+| Session > Terminal State > Disambiguate Escape | no shortcut | Enables the kitty keyboard protocol's escape key disambiguation flag. | missing |
+| Session > Terminal State > Report All Event Types | no shortcut | Enables the kitty keyboard protocol's key-up/repeat event reporting. | missing |
+| Session > Terminal State > Report Alternate Keys | no shortcut | Enables kitty keyboard protocol reporting of alternate keys (shifted symbols). | missing |
+| Session > Terminal State > Report All Keys as Escape Codes | no shortcut | Enables kitty keyboard protocol full escape-code key reporting. | missing |
+| Session > Terminal State > Report Associated Text | no shortcut | Enables kitty keyboard protocol reporting of the text a key event produces. | missing |
+| Session > Terminal State > Literal Controls | no shortcut | Toggles literal, non-interpreted, handling of control characters. | missing |
+| Session > Terminal State > Emulation Level > VT100 | no shortcut | Restricts terminal emulation to VT100-level feature set. | missing |
+| Session > Terminal State > Emulation Level > VT200 | no shortcut | Restricts terminal emulation to VT200-level feature set. | missing |
+| Session > Terminal State > Emulation Level > VT300 | no shortcut | Restricts terminal emulation to VT300-level feature set. | missing |
+| Session > Terminal State > Emulation Level > VT400 | no shortcut | Restricts terminal emulation to VT400-level feature set. | missing |
+| Session > Terminal State > Emulation Level > VT500 | no shortcut | Restricts terminal emulation to VT500-level feature set. | missing |
+| Session > Terminal State > Reset | no shortcut | Resets all terminal state toggles to their defaults. | missing |
+| Session > Bury Session | Opt+Cmd+B | Hides the session from the tab bar while it keeps running, listed under Buried Sessions. | missing |
+| Session > Buried Sessions | no shortcut | Dynamic submenu listing buried sessions to bring back. | missing |
+
+### Scripts menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| Scripts > Manage > New Python Script | no shortcut | Creates a new Python API automation script from a template. | missing |
+| Scripts > Manage > Open Python REPL | no shortcut | Opens an interactive Python REPL connected to the running iTerm2 via the API. | missing |
+| Scripts > Manage > Manage Dependencies... | no shortcut | Opens the editor for Python package dependencies used by scripts. | missing |
+| Scripts > Manage > Install Python Runtime | no shortcut | Downloads and installs the bundled Python runtime used to run scripts. | missing |
+| Scripts > Manage > Install Already-Downloaded Python Runtime | no shortcut | Installs a Python runtime package already present on disk. | missing |
+| Scripts > Manage > Reveal Scripts in Finder | no shortcut | Opens the Scripts folder in Finder. | missing |
+| Scripts > Manage > Import... | no shortcut | Imports a script bundle into the Scripts folder. | missing |
+| Scripts > Manage > Export... | no shortcut | Exports a script as a shareable bundle. | missing |
+| Scripts > Manage > Console | Opt+Cmd+J | Opens the Script Console showing output and errors from running scripts. | missing |
+| Scripts (dynamic list) | no shortcut | The Scripts menu also lists installed scripts directly as runnable items, populated at runtime. | missing |
+
+### Profiles menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| Profiles > Open Profiles... | Cmd+O | Opens the Profiles window listing all saved profiles. | missing |
+| Profiles > Press Option for New Window | no shortcut | Informational hint item, not an action, showing that holding Option changes profile launch behavior. | missing |
+| Profiles > Open In New Window | no shortcut | Header above the dynamically inserted list of profiles, each launchable in a new window or tab. | missing |
+
+### Toolbelt menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| Toolbelt (menu location) | no shortcut | In this iTerm2 build the Toolbelt commands live under View > Toolbelt rather than a standalone top-level menu; see Show Toolbelt and Set Default Width in the View menu above. | missing |
+
+### Window menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| Window > Minimize | Cmd+M | Minimizes the window to the Dock. | have |
+| Window > Zoom | Shift+Cmd+0 | Zooms/maximizes the window. | have |
+| Window > Arrangements > Save Window Arrangement | Cmd+S | Saves the current set of windows, tabs, and splits as a named arrangement. | missing |
+| Window > Arrangements > Save Current Window as Arrangement | Opt+Cmd+S | Saves just the current window as a named arrangement. | missing |
+| Window > Arrangements > Load Arrangement from File... | no shortcut | Loads a window arrangement from a file on disk. | missing |
+| Window > Arrangements > Restore Window Arrangement | no shortcut | Dynamic submenu listing saved arrangements to restore as windows. | missing |
+| Window > Arrangements > Restore Window Arrangement as Tabs | no shortcut | Dynamic submenu listing saved arrangements to restore merged into tabs of the current window. | missing |
+| Window > Arrangements > Change Profile in Arrangement... | no shortcut | Bulk changes which profile a saved arrangement's sessions use. | missing |
+| Window > Edit Window Title | no shortcut | Opens an editor to set a custom window title override. | missing |
+| Window > Tab > Edit Tab Title | no shortcut | Opens an editor to set a custom tab title override. | missing |
+| Window > Tab > Select Tab > Select Next Tab | Shift+Cmd+] | Switches focus to the next tab. | have |
+| Window > Tab > Select Tab > Select Previous Tab | Shift+Cmd+[ | Switches focus to the previous tab. | have |
+| Window > Tab > Select Tab > Select Next Tab Group | Ctrl+Shift+Cmd+] | Switches focus to the next tab group. | missing |
+| Window > Tab > Select Tab > Select Previous Tab Group | Ctrl+Shift+Cmd+[ | Switches focus to the previous tab group. | missing |
+| Window > Tab > Move Tab > Move Tab to New Window | no shortcut | Pulls the current tab out into its own new window. | missing |
+| Window > Tab > Move Tab > Move Tab Left | Opt+Shift+Cmd+[ | Reorders the current tab one position to the left. | missing |
+| Window > Tab > Move Tab > Move Tab Right | Opt+Shift+Cmd+] | Reorders the current tab one position to the right. | missing |
+| Window > Tab > Add Tab to New Group... | no shortcut | Creates a new tab group containing the current tab. | missing |
+| Window > Tab > Remove Tab from Group | no shortcut | Removes the current tab from its tab group. | missing |
+| Window > Split Pane > Select Split Pane > Select Pane Above | Opt+Cmd+Up | Moves focus to the pane directly above. | have |
+| Window > Split Pane > Select Split Pane > Select Pane Below | Opt+Cmd+Down | Moves focus to the pane directly below. | have |
+| Window > Split Pane > Select Split Pane > Select Pane Left | Opt+Cmd+Left | Moves focus to the pane to the left. | have |
+| Window > Split Pane > Select Split Pane > Select Pane Right | Opt+Cmd+Right | Moves focus to the pane to the right. | have |
+| Window > Split Pane > Select Split Pane > Next Pane | Cmd+] | Moves focus to the next pane in tab order. | have |
+| Window > Split Pane > Select Split Pane > Previous Pane | Cmd+[ | Moves focus to the previous pane in tab order. | have |
+| Window > Split Pane > Select Split Pane > Previous Peer | Opt+Cmd+[ | Moves focus to the previous peer session in a workgroup. | missing |
+| Window > Split Pane > Select Split Pane > Next Peer | Opt+Cmd+] | Moves focus to the next peer session in a workgroup. | missing |
+| Window > Split Pane > Resize Split Pane > Move Divider Up | Ctrl+Cmd+Up | Resizes the pane by nudging its divider up via keyboard. | partial |
+| Window > Split Pane > Resize Split Pane > Move Divider Down | Ctrl+Cmd+Down | Resizes the pane by nudging its divider down via keyboard. | partial |
+| Window > Split Pane > Resize Split Pane > Move Divider Left | Ctrl+Cmd+Left | Resizes the pane by nudging its divider left via keyboard. | partial |
+| Window > Split Pane > Resize Split Pane > Move Divider Right | Ctrl+Cmd+Right | Resizes the pane by nudging its divider right via keyboard. | partial |
+| Window > Split Pane > Lock Split Pane Width | no shortcut | Locks the current pane's width so window resizes do not change it. | missing |
+| Window > Window Style > Normal | no shortcut | Sets the window style to a normal title-barred window. | have |
+| Window > Window Style > Full Screen | no shortcut | Sets the window style to native full screen. | missing |
+| Window > Window Style > Maximized | no shortcut | Sets the window style to maximized, fills the screen and keeps chrome. | missing |
+| Window > Window Style > No Title Bar | no shortcut | Sets the window style to borderless with no title bar. | missing |
+| Window > Window Style > Centered | no shortcut | Sets the window style to a centered floating panel. | missing |
+| Window > Window Style > Centered, No Title Bar | no shortcut | Sets the window style to a centered borderless panel. | missing |
+| Window > Window Style > Full-Width Bottom of Screen | no shortcut | Docks the window along the full bottom edge of the screen. | missing |
+| Window > Window Style > Full-Width Top of Screen | no shortcut | Docks the window along the full top edge of the screen. | missing |
+| Window > Window Style > Full-Height Left of Screen | no shortcut | Docks the window along the full left edge of the screen. | missing |
+| Window > Window Style > Full-Height Right of Screen | no shortcut | Docks the window along the full right edge of the screen. | missing |
+| Window > Window Style > Bottom of Screen | no shortcut | Docks the window at the bottom of the screen at its natural size. | missing |
+| Window > Window Style > Top of Screen | no shortcut | Docks the window at the top of the screen at its natural size. | missing |
+| Window > Window Style > Left of Screen | no shortcut | Docks the window at the left of the screen at its natural size. | missing |
+| Window > Window Style > Right of Screen | no shortcut | Docks the window at the right of the screen at its natural size. | missing |
+| Window > Lock Size | no shortcut | Prevents the window from being resized. | missing |
+| Window > Lock Layout | no shortcut | Prevents the split pane layout from being changed. | missing |
+| Window > Notify on Status Change | no shortcut | Posts a notification when a background session's status changes, such as bell, idle, or done. | missing |
+| Window > Arrange Windows > Merge All Windows | no shortcut | Merges all open windows' tabs into a single window. | missing |
+| Window > Arrange Windows > Arrange Windows Horizontally | no shortcut | Tiles all open windows horizontally across the screen. | missing |
+| Window > Arrange Windows > Arrange Split Panes Evenly | no shortcut | Resets all split dividers in the tab to equal sizes. | missing |
+| Window > Resize Window > Decrease Height | Opt+Cmd+Up | Shrinks the window height by one row via keyboard. | missing |
+| Window > Resize Window > Increase Height | Opt+Cmd+Down | Grows the window height by one row via keyboard. | missing |
+| Window > Resize Window > Decrease Width | no shortcut | Shrinks the window width by one column via keyboard. | missing |
+| Window > Resize Window > Increase Width | no shortcut | Grows the window width by one column via keyboard. | missing |
+| Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. | missing |
+| Window > AI Chats | Cmd+Y | Opens the window listing all AI chat conversations. | missing |
+| Window > Cockpit | Opt+Cmd+C | Opens the Cockpit window, a command and session overview dashboard. | missing |
+| Window > Pin Hotkey Window | Shift+Cmd+- | Pins the hotkey (Quake-style dropdown) window so it stays open. | missing |
+| Window > Bring All To Front | no shortcut | Brings all of the app's windows to the front. | partial |
+
+### Help menu
+| Menu > Item | Default shortcut | What it does | Tandem status |
+|---|---|---|---|
+| Help > iTerm2 Help | Cmd+? | Opens the iTerm2 help/documentation. | missing |
+| Help > Copy Mode Shortcuts | no shortcut | Shows a cheat sheet of Copy Mode keyboard shortcuts. | missing |
+| Help > Open Source Licenses | no shortcut | Shows license text for bundled open source components. | missing |
+| Help > GPU Renderer Availability | no shortcut | Shows diagnostic info on which GPU renderer is active and why. | missing |
+
+Note: MainMenu.xib also defines a Web menu (Open Location, Back, Forward, Reload Page, History) for iTerm2's built in browser feature. That menu falls outside the ten requested menus and is not listed here.
+
+## 2. Escape sequences and protocols
+
+Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engine is alacritty_terminal, which already parses OSC 8 hyperlinks and OSC 52 clipboard payloads at the protocol level, so those two rows are marked partial rather than missing; everything else below is missing.
+
+| Sequence | What it does | Tandem status |
+|---|---|---|
+| OSC 1337 ; File=... (inline images) | Displays or downloads an inline image or arbitrary file. Args include name, size, width, height, preserveAspectRatio, inline, type, mode, inset. Core of iTerm2 inline image support (imgcat). | missing |
+| OSC 1337 ; MultipartFile=... | Same as File= but data arrives in chunks via FilePart/FileEnd. | missing |
+| OSC 1337 ; FilePart=... | Appends a base64 chunk to an in-progress multipart file transfer. | missing |
+| OSC 1337 ; FileEnd | Ends a multipart file transfer. | missing |
+| OSC 1337 ; SetMark | Places a manual mark at the current line for mark navigation. | missing |
+| OSC 1337 ; StealFocus | Brings the iTerm2 window/tab to the foreground, trusted only. | missing |
+| OSC 1337 ; ClearScrollback | Clears the scrollback buffer. | missing |
+| OSC 1337 ; CurrentDir=&lt;path&gt; | Reports current working directory for shell integration, trusted only. | missing |
+| OSC 1337 ; RemoteHost=&lt;user@host&gt; | Reports remote user/host for shell integration, for example after ssh, trusted only. | missing |
+| OSC 1337 ; ShellIntegrationVersion=&lt;n&gt; | Announces shell integration script version and shell type. | missing |
+| OSC 1337 ; SetProfile=&lt;name&gt; | Switches the session's profile on the fly, trusted only. | missing |
+| OSC 1337 ; AddNote / AddAnnotation=&lt;text&gt; | Adds a visible annotation bound to the current text. | missing |
+| OSC 1337 ; AddHiddenNote / AddHiddenAnnotation=&lt;text&gt; | Adds a hidden annotation. | missing |
+| OSC 1337 ; HighlightCursorLine[=bool] | Toggles cursor line highlighting from the shell. | missing |
+| OSC 1337 ; ClearCapturedOutput | Clears the captured output list, a trigger feature. | missing |
+| OSC 1337 ; CopyToClipboard=&lt;dest&gt; ... OSC 1337 ; EndCopy | Legacy iTerm2 copy-to-pasteboard sequence, streams text until EndCopy, trusted only. | missing |
+| OSC 1337 ; Copy=&lt;mode&gt;[;uid] ... | Copies arbitrary pasteboard data, monolithic or segmented, into the system clipboard, trusted only. | missing |
+| OSC 1337 ; RequestAttention=fireworks\|once\|flash\|1\|0 | Bounces the dock icon, flashes the screen, or fires a fireworks animation to get user attention. | missing |
+| OSC 1337 ; SetBackgroundImageFile=&lt;path&gt; | Sets the session's background image, trusted only. | missing |
+| OSC 1337 ; SetProfileProperty=&lt;key&gt;=&lt;base64 JSON&gt; | Changes a single profile property at runtime, trusted only. | missing |
+| OSC 1337 ; SetBadgeFormat=&lt;base64&gt; | Sets the session badge text/template shown in the corner of the pane. | missing |
+| OSC 1337 ; SetUserVar=&lt;name&gt;=&lt;base64 value&gt; | Sets a user-defined variable exposed to status bar, badges, and scripting. | missing |
+| OSC 1337 ; ReportCellSize (query) | Terminal reports character cell size in points and scale factor. | missing |
+| OSC 1337 ; SetWindowFrame=x;y;w;h | Sets the window's frame in points. | missing |
+| OSC 1337 ; ReportWindowFrame (query) | Terminal reports current window frame in points. | missing |
+| OSC 1337 ; ReportScreenFrames (query, trusted) | Terminal reports frames of all connected screens. | missing |
+| OSC 1337 ; UnicodeVersion=push\|pop\|&lt;n&gt; | Pushes/pops or sets the Unicode width calculation version for wide character handling. | missing |
+| OSC 1337 ; SetColors=&lt;name&gt;=&lt;color&gt;,... | Sets one or more named ANSI/theme colors at once. | missing |
+| OSC 1337 ; SetKeyLabel=&lt;key&gt;=&lt;label&gt; | Sets the on screen label for a Touch Bar key. | missing |
+| OSC 1337 ; PushKeyLabels / PopKeyLabels | Saves/restores a set of Touch Bar key labels. | missing |
+| OSC 1337 ; Disinter | Detaches (disinters) a session from its buried state. | missing |
+| OSC 1337 ; ReportVariable=&lt;base64 name&gt; (trusted) | Terminal reports the value of a named session variable. | missing |
+| OSC 1337 ; Custom=&lt;params&gt;:&lt;payload&gt; (trusted) | Fires a user-defined custom escape-sequence trigger with key/value params and a payload. | missing |
+| OSC 1337 ; Notification=&lt;text&gt; | Posts a rich user notification (toast). | missing |
+| OSC 1337 ; Capabilities (query, trusted) | Terminal reports its capability set. | missing |
+| OSC 1337 ; Env=&lt;name&gt;=&lt;base64 value&gt; | Updates a tracked environment variable for the session, trusted only. | missing |
+| OSC 1337 ; it2ssh=&lt;params&gt; | Begins iTerm2's own SSH integration (Conductor) session. | missing |
+| OSC 1337 ; SendConductor=&lt;data&gt; | Sends data to the Conductor SSH integration channel. | missing |
+| OSC 1337 ; EndSSH=&lt;id&gt; | Ends an SSH integration session, trusted only. | missing |
+| OSC 1337 ; OpenURL=&lt;id&gt;:&lt;base64 url&gt; (trusted) | Asks iTerm2 to open a URL in the default browser. | missing |
+| OSC 1337 ; wrap=a=start;cmd=...;uid=... (trusted) | Wraps a command for iTerm2's command wrapping/AI or Conductor pipeline. | missing |
+| OSC 1337 ; ExecFailed | Signals that exec of a wrapped command failed. | missing |
+| OSC 1337 ; Block / UpdateBlock | Marks a folded/collapsible output block, start/end, fold/unfold, for command output blocks. | missing |
+| OSC 1337 ; Button=type=copy\|custom;... | Inserts an inline clickable button, for example a copy-output button, in a command-output block. | missing |
+| OSC 1337 ; RequestUpload=&lt;params&gt; (trusted) | Asks the user to pick a local file to upload/send to the shell. | missing |
+| OSC 1337 (bare, terminal-to-host report) | Terminal reports its iTerm2 version string as a DSR-style query. | missing |
+| OSC 21337 (tab status) | Sets a structured tab status key/value payload shown in the tab. | missing |
+| OSC 133 ; A / N / P (FTCS_PROMPT_START) | Marks the start of a shell prompt, optionally forcing a fresh line, carries k=&lt;kind&gt; and aid=&lt;id&gt;. Basis of iTerm2's command marks and prompt navigation. | missing |
+| OSC 133 ; B (FTCS_COMMAND_START) | Marks the end of the prompt and start of the typed command. | missing |
+| OSC 133 ; C (FTCS_COMMAND_EXECUTED) | Marks the end of the typed command and start of its output. | missing |
+| OSC 133 ; D[;exit][;aid=] (FTCS_COMMAND_FINISHED) | Marks command completion and reports its exit code, used for command marks, red/green gutter marks, and jump to prior command. | missing |
+| OSC 133 ; E (semantic text start) | Marks the start of semantic text of a given type, for example filename, directory, pid. | missing |
+| OSC 133 ; F (semantic text end) | Marks the end of semantic text. | missing |
+| OSC 133 ; G (progress) | Updates or clears a progress indicator/percentage shown for the running command. | missing |
+| OSC 133 ; H (terminal command) | Sends an arbitrary terminal command token to the delegate. | missing |
+| OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | partial, alacritty_terminal parses OSC 8 hyperlinks and exposes hovered/clicked URLs, but Tandem has not wired click-to-open or hyperlink styling in its own renderer yet |
+| OSC 52 (PASTE64) set/query clipboard | Reads or writes the system clipboard, and other X11-style selections, via a base64 payload. | partial, alacritty_terminal parses OSC 52 set/query, but Tandem has not confirmed it wires the result to the Windows clipboard or enables it by policy |
+| DECRQSS / DECRPSS (SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP) | Request/report current terminal settings, graphic rendition, conformance level, cursor style, protection attribute, margins, page size, as an ANSI-standard report-settings sequence. | missing |
+| Sixel graphics (DECSIXEL, via VT100SixelParser/VT100DCSParser) | Parses and renders sixel bitmap graphics sent by an application, for example img2sixel. | missing |
+| Kitty graphics protocol (transmit, put, delete, animate, compose, query) | Parses and renders the kitty terminal graphics protocol for inline images and animations, rendered via a dedicated Metal renderer. | missing |
+| Kitty keyboard protocol (progressive enhancement, CSI u key reporting) | Disambiguated keyboard reporting mode used by some modern CLI apps. | missing |
+| Synchronized output, DEC private mode 2026 (BSU/ESU) | Suppresses screen redraws between begin and end markers so a full-screen app can update atomically without tearing. | missing |
+| DEC private mode 996/997 (dark-mode query) | Application asks the terminal whether the OS is in dark or light mode; terminal replies with mode 997. | missing |
+| CSI ? Ps c (DA1/DA2/DA3) with iTerm2 extensions | Extended device-attributes reporting including iTerm2's emulation level, up to VT400 class, and macro-space/checksum reports. | missing |
+| Kitty drag-and-drop file protocol | iTerm2-specific extension layered on drag-and-drop for transferring files over SSH sessions using a kitty-protocol-derived encoding. | missing |
+
+## 3. Subsystems
+
+### tmux integration
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| tmux integration | tmux -CC control mode | Attaches to a tmux session over a control-mode connection so tmux windows appear as native windows/tabs instead of a text UI. | missing | |
+| tmux integration | Session dashboard | Lists all tmux sessions on the server with a picker to attach, rename, or create a new one. | missing | |
+| tmux integration | Window to tab/window mapping | Maps each tmux window to a native window or tab, tracks window IDs, opens new tmux windows automatically. | missing | |
+| tmux integration | Pane layout sync | Parses tmux's layout string and reproduces the split-pane geometry natively, keeps it in sync as tmux panes are added, closed, or resized. | missing | |
+| tmux integration | Detach and reattach | Cleanly detaches the control client from tmux without killing the tmux session, and reattaches later restoring layout. | missing | |
+| tmux integration | Window/session/pane rename sync | Propagates tmux renames of windows, sessions, and panes to the native UI, and lets the user rename back into tmux. | missing | |
+| tmux integration | Per-window and per-tab settings persistence | Saves and restores window affinities, origins, hidden windows, and per-window/per-tab overrides such as font and key mappings, across attach cycles. | missing | |
+| tmux integration | Hidden windows | Lets a tmux window exist on the server but stay hidden from the native window list; can be revealed later. | missing | |
+| tmux integration | tmux status bar passthrough | Mirrors tmux's own status line content into iTerm2 when tmux driven status text changes. | missing | |
+| tmux integration | tmux option monitor | Watches tmux global/session/window options, for example pane-border-status, and reacts live. | missing | |
+| tmux integration | Copy mode bridging | Lets iTerm2 exit/enter tmux copy mode and reconcile it with native scrollback/selection. | missing | |
+| tmux integration | Pane pause/buffer management | Pauses/unpauses individual tmux panes and monitors buffer size to avoid unbounded growth while paused. | missing | |
+| tmux integration | Break pane out to window/tab | Moves a tmux pane into its own new window or tab, or docks it next to a sibling, both directions. | missing | |
+| tmux integration | Window/pane hotkeys | Lets a tmux pane carry its own quick-access hotkey binding independent of the main app hotkey window. | missing | |
+| tmux integration | Tab color from tmux | Reads/writes a tmux pane's associated tab color string so tab coloring matches tmux state. | missing | |
+| tmux integration | Client tracking / multi-client awareness | Tracks other attached tmux clients and reacts to their session/window changes, for example someone else attaching on another machine. | missing | |
+| tmux integration | OSC 4/10/11/52 responder election | Decides whether iTerm2 or tmux itself is the designated responder for color and clipboard OSC queries when multiple clients are attached. | missing | Tandem's alacritty_terminal core answers OSC 4/10/11 directly; there is no tmux passthrough layer to arbitrate. |
+| tmux integration | Local vs remote tmux detection | Distinguishes a tmux server running on the local machine from one reached over SSH, to decide default behaviors such as default TERM and local file access. | missing | |
+| tmux integration | User variables over tmux | Carries iTerm2 shell integration user variables through the tmux control protocol, since tmux would otherwise swallow OSC 1337. | missing | |
+| tmux integration | Gateway ping/keepalive and version guessing | Sends periodic pings and probes tmux server version/capabilities, for example UTF-8 support, to adapt protocol handling. | missing | |
+
+### shell integration
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Shell integration | Install scripts for bash/zsh/fish/tcsh/xonsh | Shell-specific hook scripts that install prompt/precmd/preexec hooks. | missing | Windows shells such as PowerShell and cmd have no equivalent hook mechanism shipped; would need a PowerShell profile script. |
+| Shell integration | FinalTerm-style prompt marks (OSC 133) | Marks prompt-start, command-start, command-output-start, and command-end so the terminal knows prompt/command/output boundaries. | missing | |
+| Shell integration | Current directory reporting | Shell reports cwd on every prompt so the terminal always knows the working directory, independent of parsing prompt text. | missing | |
+| Shell integration | Remote host reporting | Shell reports user@host so the terminal can track SSH hops and label tabs/panes accordingly, and offer host-based profile switching. | missing | |
+| Shell integration | User-defined variables | Lets shell scripts publish arbitrary key/value variables consumable by status bar components, badges, and triggers. | missing | |
+| Shell integration | Shell integration version handshake | Reports the installed shell integration script's version and shell name so the app can warn about outdated installs. | missing | |
+| Shell integration | Command history capture | Captures each command typed, via prompt marks, and its associated host/directory for the Command History toolbelt tool and search. | missing | |
+| Shell integration | Command status marks (success/failure coloring) | Colors the mark for a finished command based on its exit code, surfaced in the scrollbar and Command History tool. | missing | |
+| Shell integration | Automatic profile switching by hostname | Switches to a different saved profile automatically when remote host reporting detects an SSH session to a known host. | missing | |
+| Shell integration | it2git status variables | A shell hook script that publishes git branch/dirty state as user variables for status bar/prompt use. | missing | |
+| Shell integration | imgcat | Displays an image file inline in the terminal using the proprietary inline-image protocol. | missing | |
+| Shell integration | it2cat | Generic inline-file display for any file, same proprietary protocol as imgcat. | missing | |
+| Shell integration | it2dl | Downloads a file or directory from a remote/local session straight into the user's Downloads folder via the terminal transport. | missing | |
+| Shell integration | it2ul | Uploads a file from the local machine into the session, opposite direction of it2dl, using a proprietary upload sequence. | missing | |
+| Shell integration | it2copy | Copies stdin to the system clipboard via OSC 52, working through SSH/tmux hops. | partial | Tandem's alacritty_terminal core already parses OSC 52 for basic clipboard writes, but there is no it2copy equivalent utility or SSH/tmux-safe wrapping since Tandem has no tmux layer. |
+| Shell integration | it2setcolor | Sets terminal foreground/background/ANSI palette colors from the shell via escape sequences. | missing | |
+| Shell integration | it2check | Checks whether the current terminal understands iTerm2 proprietary escape codes before a script uses them. | missing | |
+| Shell integration | it2attention | Requests user attention, dock bounce or fireworks animation, from a shell script. | missing | |
+| Shell integration | it2universion | Reports/queries the terminal's declared Unicode version for width calculations. | missing | |
+| Shell integration | it2getvar | Reads back a user-defined or built-in session variable from the shell. | missing | |
+| Shell integration | it2profile | Switches the current session's profile from a shell command. | missing | |
+| Shell integration | it2setkeylabel | Sets Touch Bar function-key labels from the shell. | missing | macOS Touch Bar only; not applicable on Windows. |
+| Shell integration | it2ssh | A wrapper around ssh that propagates shell integration state across the SSH hop automatically. | missing | |
+| Shell integration | it2tip | Shows an interactive contextual tip/hint in the terminal. | missing | |
+| Shell integration | it2api | Python API CLI wrapper for scripting the app from the command line. | missing | |
+| Shell integration | it2cli | A newer Swift-based CLI that embeds the utilities as one binary. | missing | |
+
+### status bar
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Status bar | Status bar framework | An optional bar at top or bottom of a session showing a configurable, ordered row of components with per-component settings and priorities. | missing | |
+| Status bar | Battery Level component | Shows current battery charge percentage/state. | missing | |
+| Status bar | CPU Utilization component | Shows live CPU usage as text or a graphic/sparkline. | missing | |
+| Status bar | Memory Utilization component | Shows live memory usage. | missing | |
+| Status bar | Network Throughput component | Shows live network send/receive rates. | missing | |
+| Status bar | Clock component | Shows the current time/date, configurable format. | missing | |
+| Status bar | Custom Action component | A clickable button that runs a user-defined action, shell command, menu item, or script function, when clicked. | missing | |
+| Status bar | Action Menu component | A dropdown menu of user-defined quick actions. | missing | |
+| Status bar | Snippets Menu component | A dropdown menu to pick from saved text snippets and send them to the session. | missing | |
+| Status bar | Triggers Menu component | A dropdown to quickly enable/disable/manage triggers for the current profile from the status bar. | missing | |
+| Status bar | git state component | Shows current branch and dirty/clean state for the working directory, via shell integration git reporting. | missing | |
+| Status bar | Hostname component | Shows the remote or local hostname, sourced from shell integration remote host reporting. | missing | |
+| Status bar | Username component | Shows the current username, sourced from shell integration remote host reporting. | missing | |
+| Status bar | Job Name component | Shows the name of the foreground process running in the session. | missing | |
+| Status bar | Working Directory component | Shows the current directory, sourced from shell integration current directory reporting. | missing | |
+| Status bar | Search Tool component | Embeds a find/search field directly in the status bar instead of an overlay. | missing | |
+| Status bar | Filter component | Filters/hides scrollback lines that do not match a live query. | missing | |
+| Status bar | Composer component | Embeds the multi-line Composer text-entry box in the status bar. | missing | |
+| Status bar | Fixed-size Spacer component | A layout spacer of fixed width, for arranging other components. | missing | |
+| Status bar | Spring component | A flexible/expanding layout spacer, for arranging other components. | missing | |
+| Status bar | Interpolated String component | Shows arbitrary text built from an interpolated string expression referencing session variables. | missing | |
+| Status bar | Call Script Function component | Shows text/value returned by a registered Python API script function, refreshed live. | missing | |
+| Status bar | Setup/configure UI | A drag-and-drop editor for choosing, ordering, and configuring which components appear per profile. | missing | |
+
+### toolbelt
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Toolbelt | Toolbelt panel | A dockable sidebar panel hosting a stack of tool widgets, shown/hidden per window. | missing | |
+| Toolbelt | Actions tool | Lists user-defined quick actions, same actions as the status bar Action Menu, for one-click invocation. | missing | |
+| Toolbelt | Captured Output tool | Lists text captured by Capture Output triggers, with click-to-jump to the source line. | missing | |
+| Toolbelt | Command History tool | Lists commands run in the session, from shell integration prompt marks, searchable, grouped by host. | missing | |
+| Toolbelt | Named Marks tool | Lists user-named marks (bookmarked lines) for quick navigation. | missing | |
+| Toolbelt | Session Status tool | Shows live status/state info about the current session. | missing | |
+| Toolbelt | Recent Directories tool | Lists recently visited, and optionally starred/pinned, working directories, click to cd or open. | missing | |
+| Toolbelt | Jobs tool | Lists running child processes/jobs in the current session, with the ability to signal/kill them. | missing | |
+| Toolbelt | Notes tool | A free-form notes pane, either global or scoped per session. | missing | |
+| Toolbelt | Paste History tool | Lists recently pasted text snippets for reuse, disabled automatically when secure keyboard entry is on. | missing | |
+| Toolbelt | Profiles tool | Lists all saved profiles with buttons to open one in a new tab, window, or split. | missing | |
+| Toolbelt | Snippets tool | Lists saved reusable text snippets to insert into the session. | missing | |
+| Toolbelt | Codecierge tool | An AI assistant panel that suggests or walks through commands, part of iTerm2's AI features. | missing | |
+| Toolbelt | Dynamic web tools | User-added tools that embed an arbitrary web page inside the toolbelt as a persistent panel. | missing | |
+
+### triggers
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Triggers | Trigger engine | Per-profile list of regex-matched rules evaluated against incoming terminal text, each firing an action. | missing | |
+| Triggers | Show Alert trigger | Pops a modal alert dialog with text derived from the match. | missing | |
+| Triggers | Capture Output trigger | Captures the matching line into the Captured Output toolbelt tool. | missing | |
+| Triggers | Run Coprocess trigger | Launches an external command as a coprocess piped to/from the session on match. | missing | |
+| Triggers | Annotate trigger | Attaches an annotation to the matching text automatically. | missing | |
+| Triggers | Set Mark trigger | Drops a mark at the matching line for later navigation. | missing | |
+| Triggers | Make Hyperlink trigger | Turns matching text into a clickable hyperlink automatically. | missing | Tandem's core has no OSC 8 hyperlink rendering to attach this to. |
+| Triggers | Bounce Dock Icon trigger | Bounces the app icon in the Dock on match, to get attention. | missing | macOS Dock only; a Windows equivalent would be taskbar flash. |
+| Triggers | Report Directory trigger | Feeds a matched directory string into iTerm2's own cwd tracking, an alternative to shell integration reporting. | missing | |
+| Triggers | Ring Bell trigger | Plays the terminal bell sound on match. | missing | |
+| Triggers | Invoke Script Function trigger | Calls a registered Python API script function with the match as an argument. | missing | |
+| Triggers | Highlight Line trigger | Colors the whole matching line's background/foreground. | missing | |
+| Triggers | Highlight Text trigger | Colors just the matched substring. | missing | |
+| Triggers | Run Command trigger | Runs a shell command, not attached as a coprocess, when the pattern matches. | missing | |
+| Triggers | Report User & Host trigger | Feeds a matched user@host string into iTerm2's own host tracking, an alternative to shell integration remote host reporting. | missing | |
+| Triggers | Prompt Detected trigger | Manually marks a matching line as a shell prompt for terminals without shell integration installed. | missing | |
+| Triggers | Stop Processing Triggers trigger | Halts evaluation of any further triggers on the current line. | missing | |
+| Triggers | Set Title trigger | Sets the session's title from the match. | missing | |
+| Triggers | Open Password Manager trigger | Opens the password manager automatically on match, for example detecting a login prompt. | missing | |
+| Triggers | Post Notification trigger | Posts a system notification on match. | missing | |
+| Triggers | Send Text trigger | Sends literal text back into the session as if typed, on match, for example auto-answering a prompt. | missing | |
+| Triggers | Fold trigger | Collapses matched lines into a folded/hidden block in scrollback. | missing | |
+| Triggers | Inject Data trigger | Injects data into the terminal's input stream as if it arrived from the pty, on match. | missing | |
+| Triggers | Set Named Mark trigger | Creates a named mark from the match, for the Named Marks toolbelt tool. | missing | |
+| Triggers | Set Profile Boolean trigger | Flips a boolean profile setting on match. | missing | |
+| Triggers | Set Tab Status trigger | Sets tab status/badge indicators from the match. | missing | |
+| Triggers | Set User Variable trigger | Sets an arbitrary user variable from the match, same namespace as shell integration SetUserVar. | missing | |
+| Triggers | Change Style (SGR) trigger | Applies an SGR text style/color change based on the match. | missing | |
+| Triggers | Enter/Exit Workgroup trigger | Groups sessions into a workgroup context based on matched text, used with AI/browser features. | missing | |
+| Triggers | Buffer Input trigger | Buffers subsequent input until a condition is met, based on the match. | missing | |
+
+### captured output, annotations, marks and navigation
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Captured output | Capture Output pipeline | Text matched by a Capture Output trigger is stored as a record tied to the originating command mark. | missing | |
+| Captured output | Captured Output toolbelt list | Displays all captured snippets in one list, click-to-jump to the source line in the buffer. | missing | |
+| Annotations | Inline annotation | A user- or trigger-attached note bound to a range of terminal text, shown inline and editable, independent of triggers. | missing | |
+| Annotations | Annotation from Named Mark | Auto-generates annotation text describing a named mark. | missing | |
+| Marks and navigation | Command mark (prompt-based) | A mark automatically placed at each shell prompt via shell integration, carrying the command text, start/end time, and exit code. | missing | |
+| Marks and navigation | Exit-code coloring | Colors a command mark green/red based on success/failure of the exit code, visible in the scrollbar gutter. | missing | |
+| Marks and navigation | Manual mark | A mark the user places explicitly, not tied to a command, for bookmarking a scrollback position. | missing | |
+| Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | missing | |
+| Marks and navigation | Image mark | A mark type used to anchor an inline image's position in the buffer. | missing | Depends on inline-image support, which Tandem also lacks. |
+| Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | missing | |
+| Marks and navigation | Block mark / Button mark | Marks used by block-based UI, for example clickable inline buttons in output such as AI suggestions. | missing | |
+| Marks and navigation | Next/previous mark navigation | Keyboard commands to jump the viewport to the next or previous mark in scrollback. | missing | Tandem has scrollback but no mark concept to navigate between; plain scroll-by-page exists instead. |
+| Marks and navigation | Mark rendering in scrollbar | Draws small colored tick marks in the scrollbar gutter representing command marks, for an at-a-glance command timeline. | missing | |
+| Marks and navigation | Select output of last/given command | Uses command mark ranges to select exactly the output of one command for copy. | missing | |
+| Marks and navigation | Clear buffer up to mark | Clears scrollback history up to, but not including, a specific mark. | missing | |
+
+### find
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Find | Find bar | Opens the in-pane find bar. | missing | |
+| Find | Find Next / Find Previous | Moves to next/previous match. | missing | |
+| Find | Smart case sensitivity | Default mode, case-insensitive unless the query has an uppercase letter. | missing | |
+| Find | Case-sensitive substring mode | Forces exact-case plain substring matching. | missing | |
+| Find | Case-insensitive substring mode | Forces case-insensitive plain substring matching. | missing | |
+| Find | Case-sensitive regex mode | Query is treated as a regular expression, case sensitive. | missing | |
+| Find | Case-insensitive regex mode | Query is treated as a regular expression, case insensitive. | missing | |
+| Find | Use Selection for Find | Populates the find query from the current text selection. | missing | |
+| Find | Clear Find | Clears the find query and highlighted matches. | missing | |
+| Find | Find Globally | Searches across all sessions/tabs/windows at once, not just the active pane. | missing | |
+| Find | Select Matches | Converts all current find matches into multiple text selections. | missing | |
+| Find | Find URLs | Special search mode that highlights only URL-shaped text. | missing | |
+| Find | Find All Smart Selection Matches | Highlights every match of the active Smart Selection rule. | missing | |
+| Find | Pick Result to Open | Lets you choose one match and open it, for example as a URL or file. | missing | |
+| Find | Filter mode | Hides all scrollback lines that do not match the query, showing only matching lines. | missing | |
+| Find | Filter progress indicator | Shows progress while a filter search runs over large scrollback. | missing | |
+| Find | Jump to Selection | Scrolls the viewport to the current selection/match. | missing | |
+
+### paste special / paste history
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Paste special | Tab transform | Converts tabs to spaces, configurable count, or leaves them, before paste. | missing | |
+| Paste special | Convert newlines | Rewrites line endings before paste. | missing | |
+| Paste special | Remove newlines | Strips all newlines, joining pasted text into one line. | missing | |
+| Paste special | Escape shell characters with backslash | Backslash-escapes shell metacharacters so pasted text is treated literally by the shell. | missing | |
+| Paste special | Remove control codes | Strips control characters from the pasted text. | missing | |
+| Paste special | Bracketed paste mode toggle | Chooses whether to wrap the paste in bracketed-paste escape sequences. | missing | |
+| Paste special | Base64 encode | Encodes the pasted payload as base64, for use with shell functions that decode it. | missing | |
+| Paste special | Regex substitution | Applies a user-defined regex find/replace to the pasted text before sending. | missing | |
+| Paste special | Wait for prompt | Delays each chunk of a multi-line paste until a shell prompt is detected, requires shell integration. | missing | |
+| Paste special | Convert Unicode punctuation | Normalizes smart quotes/dashes to plain ASCII equivalents. | missing | |
+| Paste special | Chunked/slow paste with delay | Splits large pastes into chunks with a configurable delay between them, to avoid overwhelming the shell. | missing | |
+| Paste history | Paste History popup | Shows a searchable list of everything previously pasted. | missing | |
+| Paste history | Paste History toolbelt tool | Toolbelt panel listing past pastes, selectable to re-paste. | missing | Tandem has no toolbelt. |
+| Paste history | Erase paste history | Clears all remembered paste entries. | missing | |
+| Paste | Plain paste (Ctrl+V / middle-click) | Directly injects clipboard text into the pty with no transform. | partial | Tandem has plain paste, but none of the transform/chunking options above. |
+
+### open quickly
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Open Quickly | Command palette launcher | Opens a fuzzy-search overlay across many item kinds at once. | missing | |
+| Open Quickly | Search sessions | Jumps to any currently open session by title/content. | missing | |
+| Open Quickly | Search windows | Jumps to any open window. | missing | |
+| Open Quickly | Search profiles | Opens a new session/tab from a matching profile. | missing | |
+| Open Quickly | Change profile in place | Re-applies a different profile's settings to the current session. | missing | |
+| Open Quickly | Search saved arrangements | Restores a saved window arrangement by name. | missing | |
+| Open Quickly | Search help topics | Jumps to a help/documentation entry. | missing | |
+| Open Quickly | Search scripts | Runs an installed Python/AppleScript automation script. | missing | |
+| Open Quickly | Search color presets | Applies a color preset to the current session. | missing | |
+| Open Quickly | Search actions | Runs a user-defined Action, a saved key-action. | missing | |
+| Open Quickly | Search snippets | Inserts a saved text snippet. | missing | |
+| Open Quickly | Search script invocations | Runs a saved script function invocation. | missing | |
+| Open Quickly | Search named marks | Jumps to a scrollback location the user bookmarked with a name. | missing | |
+| Open Quickly | Search menu items | Finds and triggers any application menu command by name. | missing | |
+| Open Quickly | Search bookmarks/URLs | Opens a saved URL bookmark. | missing | |
+
+### profiles window (launcher)
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Profiles window | Open Profiles window | Opens a picker listing all saved profiles. | missing | Tandem has no profiles concept. |
+| Profiles window | Open in new tab / window / pane | From the picker, launches the selected profile into a new tab, new window, vertical split, or horizontal split. | missing | |
+| Profiles window | Tag filter sidebar | Filters the profile list by user-defined tags. | missing | |
+| Profiles window | Search field | Live-filters the profile list by typed text. | missing | |
+| Profiles window | Edit Profiles shortcut | Jumps straight from the picker into the profile's settings pane. | missing | |
+| Profiles window | Close after opening | Option to auto-dismiss the picker once a profile has been opened. | missing | |
+| Profiles window | New tabs open in new window | Toggle changes whether picking a profile opens a new tab in the current window or always a new window. | missing | |
+
+### session restoration
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Session restoration | Restore windows/tabs/panes on relaunch | Recreates the full window/tab/split layout automatically the next time the app starts. | missing | |
+| Session restoration | Restore scrollback contents | Optionally restores the actual on-screen and scrollback text, not just an empty pane layout. | missing | |
+| Session restoration | Restore working directory per pane | Each restored pane returns to, or attempts to cd back into, its prior working directory, via shell integration. | missing | |
+| Session restoration | Keep windows within current displays | When restoring, clamps window frames so they stay on currently connected monitors. | missing | |
+| Session restoration | Reattach to still-running shell after crash | A job-server process keeps the shell alive independent of the app, so a crash or relaunch can reattach to the same live pty instead of losing the session. | missing | |
+| Session restoration | Restore notice on quit | Quit confirmation tells the user their layout will come back next launch. | missing | |
+
+### arrangements
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Arrangements | Save Window Arrangement | Saves the layout of all windows as the default arrangement. | missing | |
+| Arrangements | Save Current Window as Arrangement | Saves just the frontmost window as a named arrangement. | missing | |
+| Arrangements | Load Arrangement from File | Imports an arrangement saved to disk. | missing | |
+| Arrangements | Restore Window Arrangement (by name) | Lists every saved arrangement by name for one-click restore. | missing | |
+| Arrangements | Restore Window Arrangement as Tabs | Restores a saved multi-window arrangement collapsed into tabs of a single window. | missing | |
+| Arrangements | Change Profile in Arrangement | Bulk-reassigns all sessions in a saved arrangement to a different profile before/at restore. | missing | |
+| Arrangements | Arrangement trust gate | Prompts before running any startup commands embedded in an untrusted imported arrangement. | missing | |
+
+### hotkey windows
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Hotkey windows | Global hotkey summon/dismiss | A system-wide key combo shows or hides a dedicated terminal window from any app. | missing | Needs a Windows global hotkey API, RegisterHotKey or a low-level keyboard hook, in place of macOS Carbon hotkeys/event tap. |
+| Hotkey windows | Per-profile hotkey binding | Any profile can be assigned its own dedicated hotkey window. | missing | |
+| Hotkey windows | Modifier-only activation | Can trigger on holding a modifier key alone, for example double-tap Option, instead of a full chord. | missing | Would map to a different low-level hook approach on Windows. |
+| Hotkey windows | Auto-hide on focus loss | Window disappears automatically when it loses focus. | missing | |
+| Hotkey windows | Show on app activation | Auto-hidden hotkey window reappears when the app is activated again. | missing | |
+| Hotkey windows | Animated show/hide | Slide/fade animation when the hotkey window appears or disappears. | missing | |
+| Hotkey windows | Floating (always-on-top) | Keeps the hotkey window above all other windows. | missing | Maps to a Windows topmost window style. |
+| Hotkey windows | Alternate shortcuts | A hotkey window can respond to more than one key combination. | missing | |
+| Hotkey windows | Dock icon preference | Controls whether the app shows in the Dock while only a hotkey window is open. | missing | Maps to taskbar visibility on Windows. |
+| Hotkey windows | Multiple independent hotkey windows | Several different profiles can each have their own hotkey window active simultaneously. | missing | |
+
+### AI / chat features
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| AI features | AI Chats window | A dedicated chat sidebar/window for conversing with an LLM about the terminal session. | missing | |
+| AI features | Multi-provider support | Supports OpenAI, Gemini, DeepSeek, Ollama (local), Apple Intelligence, and other providers, selectable per chat. | missing | |
+| AI features | Explain this output | Sends recent terminal output to the AI and asks it to explain what happened or why a command failed. | missing | |
+| AI features | AI-generated tab titles | Uses the AI to propose a short descriptive title for a tab based on its activity. | missing | |
+| AI features | Command safety checker | Screens AI-suggested shell commands for danger, for example destructive rm, before allowing them to run. | missing | |
+| AI features | Terminal hard rules / guardrails | Hard-coded limits on what an AI agent is allowed to do to the terminal, regardless of provider. | missing | |
+| AI features | Agentic tool calling into the terminal | Exposes tools letting the AI check prompt state, run commands, read command history/output/screen contents, get terminal size, detect SSH, get cwd, set clipboard, insert text at cursor, read a man page, create a file, search/load a web page, and restart the session. | missing | |
+| AI features | Streaming responses | Chat responses stream token by token instead of waiting for the full reply. | missing | |
+| AI features | Custom API headers / keys | Lets the user supply custom auth headers and API keys per provider. | missing | |
+| AI features | Withheld-key advice | Warns the user when no API key is configured and explains how to add one. | missing | |
+| AI features | Chat history persistence | Chats and messages are stored in a local database and browsable later. | missing | |
+| AI features | In-chat find | Search within AI chat transcripts. | missing | |
+
+### Python API
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Python API | Session/window/tab control | Create tabs, split panes, send text, list sessions, activate/focus a session or window, close, reorder tabs, set tab layout. | missing | |
+| Python API | Screen/buffer reading | Read the on-screen grid contents, capture a screenshot of a session, get the current shell prompt, list recent prompts. | missing | |
+| Python API | Variables | Get, set, and monitor iTerm2/session/user-defined variables in real time. | missing | |
+| Python API | Profiles | List profiles, read/write individual profile properties, react to profile-change events. | missing | |
+| Python API | Notifications and monitors | Subscribe to keystroke events, and filter/suppress them, prompt events, and other async notifications. | missing | |
+| Python API | Server-originated RPC / registered functions | Register Python functions that iTerm2 itself can call, for example from triggers or status bar, and invoke arbitrary registered functions. | missing | |
+| Python API | Status bar components | Register a custom status bar component driven entirely from a Python script. | missing | |
+| Python API | Color presets | Apply or enumerate color presets programmatically. | missing | |
+| Python API | Preferences | Read and write app-level preferences via the API. | missing | |
+| Python API | Broadcast domains | Get and set which sessions are grouped into a broadcast-input domain. | missing | |
+| Python API | tmux integration control | Drive tmux integration mode, attach, list, and so on, through the API. | missing | |
+| Python API | Menu items | Trigger any application menu command by identifier. | missing | |
+| Python API | Session restart | Restart a session's underlying shell process. | missing | |
+| Python API | Saved arrangements | Save/restore window arrangements via script. | missing | |
+| Python API | Selection | Read or set the current text selection in a session. | missing | |
+| Python API | Inject | Feed synthetic data into a session as if it were program output. | missing | |
+| Python API | Generic property get/set | Generic get/set for object properties not covered by a specific message type. | missing | |
+| Python API | Transactions | Batch multiple API calls into a single atomic transaction. | missing | |
+
+### Instant Replay
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Instant Replay | Time-travel scrollback (DVR) | Records a rolling video-like buffer of every pane's screen state so you can scrub backward in time, independent of normal scrollback. | missing | |
+| Instant Replay | Step backward/forward | Steps one frame back or forward through recorded frames. | missing | |
+| Instant Replay | Scrub bar / seek | Drag a slider to jump to any point in the recorded timeline. | missing | |
+| Instant Replay | Export replay range | Exports a saved range of frames from the DVR buffer. | missing | |
+| Instant Replay | Clear Instant Replay buffer | Wipes the DVR recording. | missing | |
+| Instant Replay | Per-pane independent buffers | Each session has its own DVR instance tied to its grid, not a global recording. | missing | |
+
+### password manager
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Password manager | Local encrypted store (Keychain) | Stores account/password pairs in the macOS Keychain by default. | missing | Would need Windows Credential Manager or DPAPI-backed store instead of Keychain. |
+| Password manager | 1Password integration | Reads accounts/passwords/OTP from a running 1Password app via its CLI/API. | missing | |
+| Password manager | LastPass integration | Reads accounts and can send OTP codes from LastPass. | missing | |
+| Password manager | Bitwarden integration | Reads accounts from Bitwarden CLI. | missing | |
+| Password manager | KeePassXC integration | Reads accounts from a local KeePassXC database. | missing | |
+| Password manager | Keeper integration | Reads accounts from Keeper password manager. | missing | |
+| Password manager | Generic command-line adapter | Lets a user plug in any external password tool via a shell adapter. | missing | |
+| Password manager | Send password into session | Selecting an entry types/pastes the password into the focused pane, with a masked echo probe so it does not print to screen. | missing | |
+| Password manager | OTP / TOTP autofill | Reads a one-time-password field and can type it after the password. | missing | |
+| Password manager | Trigger-driven auto-open | A trigger can be configured to open the password manager automatically when a password prompt is detected. | missing | |
+| Password manager | Re-authentication gate | Requires the user to re-authenticate before reusing access to stored credentials after a timeout. | missing | |
+| Password manager | Broadcast-safe password entry | Temporarily suspends broadcast-to-all-panes while typing a password so it is not sent to every pane. | missing | |
+
+### Composer
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Composer | Multi-line command input | A floating or docked text box for composing multi-line commands before sending them to the shell. | missing | |
+| Composer | Syntax highlighting | Highlights shell syntax in the composer text as you type. | missing | |
+| Composer | Command history search | Opens history filtered by a typed prefix, browsable from the composer. | missing | |
+| Composer | Autocomplete / suggestions | Shows a ghost-text suggestion and a completions popup window while typing. | missing | |
+| Composer | Send vs enqueue | Can send the composed text immediately or enqueue it to run after the current command finishes. | missing | |
+| Composer | Send to Advanced Paste | Routes composed text through Paste Special instead of a plain send. | missing | |
+| Composer | Copy with styles / control sequences | Special copy commands preserve formatting or literal control sequences from the composer buffer. | missing | |
+| Composer | Status bar composer component | A compact composer can live embedded in the status bar as well as its own window. | missing | |
+
+### broadcast input modes
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Broadcast input | Send Input to Current Session Only | Turns broadcasting off, restores normal single-pane typing. | missing | |
+| Broadcast input | Broadcast to All Panes in All Tabs | Every keystroke is sent to every pane in every tab of the window. | missing | |
+| Broadcast input | Broadcast to All Panes in Current Tab | Every keystroke is sent to every pane in the current tab. | missing | |
+| Broadcast input | Toggle Broadcast Input to Current Session | Adds/removes just the current session from the active broadcast domain. | missing | |
+| Broadcast input | Background pattern indicator | Optional diagonal stripe overlay rendered on panes currently receiving broadcast input, so it is visually obvious. | missing | |
+| Broadcast input | Broadcast source designation | Marks a specific session as the source pane whose input gets mirrored elsewhere. | missing | |
+
+### utilities scripts
+| Subsystem | Feature | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Utilities | imgcat | Displays an image inline in the terminal using the iTerm2 inline-image protocol. | missing | |
+| Utilities | imgls | Directory listing supplemented with inline image thumbnails and dimensions. | missing | |
+| Utilities | it2api | Python-based CLI front end for driving the Python API, for example listing sessions, from the command line. | missing | |
+| Utilities | it2attention | Requests user attention: bounces the dock icon, fires a fireworks visual effect, or a one-off bounce. | missing | |
+| Utilities | it2cat | Prints a file to the terminal using the inline-image/file-transfer OSC protocol. | missing | |
+| Utilities | it2check | Probes whether the terminal understands iTerm2's proprietary escape sequences before using them, via a device-status report. | missing | |
+| Utilities | it2copy | Copies stdin to the system clipboard using the OSC 52/1337 copy sequence. | missing | |
+| Utilities | it2dl | Downloads a file or directory from the remote/session to the local machine via the file-transfer protocol. | missing | |
+| Utilities | it2getvar | Reads an iTerm2 session variable's value from the shell. | missing | |
+| Utilities | it2git | Reports current git repo status as user-defined variables for status bar display. | missing | |
+| Utilities | it2profile | Changes the current session's profile from the shell. | missing | |
+| Utilities | it2setcolor | Sets terminal color scheme/individual colors from the shell. | missing | |
+| Utilities | it2setkeylabel | Sets Touch Bar function-key labels from the shell. | missing | macOS Touch Bar only; not applicable on Windows. |
+| Utilities | it2ssh | Wrapper around ssh that carries iTerm2 shell-integration/session state through to the remote host. | missing | |
+| Utilities | it2tip | Shows a rotating did-you-know tip about iTerm2 features. | missing | |
+| Utilities | it2ul | Uploads a file or directory from the local machine into the session via the file-transfer protocol. | missing | |
+| Utilities | it2universion | Sets/pushes/pops the terminal's reported unicode version, for compatibility with apps sensitive to grapheme width rules. | missing | |
+
+## Counts
+
+Total rows: 634 (menu commands: 285, escape sequences and protocols: 65, subsystems: 284).
+
+By Tandem status: missing 592, partial 21, have 21.

@@ -1,0 +1,1142 @@
+# iTerm2 global settings
+
+This inventory covers iTerm2's application-wide (non-profile) settings: the General, Appearance, Keys, Pointer, Arrangements, and Advanced tabs of the Preferences window. It was built from sources/Settings/iTermPreferences.h and .m (kPreferenceKey* constants and their defaults), sources/Settings/iTermAdvancedSettingsModel.m (the DEFINE_BOOL/INT/FLOAT/STRING/INT_ENUM macros behind the Advanced tab), sources/Settings/GeneralPreferencesViewController.m, AppearancePreferencesViewController.m, KeysPreferencesViewController.m, PointerPreferencesViewController.m, PointerPrefsController.m/.h, iTermKeyBindingAction.h/.m, WindowArrangements.h, and the shared sources/Settings/Base.lproj/PreferencePanel.xib, which gives the exact sub-tab layout and control labels.
+
+Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. As of this writing Tandem has tabs, splits with draggable dividers and inactive-pane dimming, a GPU renderer, Cmd shortcuts mapped to Ctrl+Shift (new tab, close, split right/down, next/prev pane, directional pane focus, next/prev/select tab, copy, paste, scroll page/top/bottom), mouse reporting, drag/double/triple/block selection, copy on select, middle-click paste, and wheel routing. Tandem has no settings UI, no hotkey window, no arrangements, no pointer-binding configuration, no status bar, and no tmux integration, so almost every row below is missing as a configurable setting; a row is marked partial where Tandem's hard-coded behavior already matches what the setting controls, and have where the underlying feature is already present and working.
+
+
+## General
+
+
+### Startup
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Open profiles window | OpenBookmark | At launch, opens the profiles/bookmarks window instead of a terminal window. | missing |  |
+| Window restoration mode | OpenArrangementAtStartup / OpenNoWindowsAtStartup | Three-way choice at startup: use system window restoration, open the default saved window arrangement, or open no windows. | missing | Windows has no system session-restore equivalent to key off of. |
+| Always open at least one terminal window at startup | AlwaysOpenWindowAtStartup | Forces at least one terminal window even if system restoration would otherwise open none. | missing |  |
+| Restore windows to same Spaces | RestoreWindowsToSameSpaces | When restoring windows, puts each one back on the macOS Space it was on. | missing | macOS Spaces concept; no direct Windows virtual-desktop equivalent wired up. |
+
+
+### Closing
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Quit when all windows are closed | QuitWhenAllWindowsClosed | Quits the app automatically once the last window is closed instead of staying resident. | missing |  |
+| Confirm closing multiple sessions | ConfirmClosingMultipleTabs | Shows a confirmation dialog when closing a window or tab would close more than one session at once. | missing |  |
+| Confirm "Quit iTerm2 (Cmd+Q)" | PromptOnQuit | Shows a confirmation dialog before quitting the application. | missing |  |
+| Even if there are no windows | PromptOnQuitEvenIfThereAreNoWindows | Extends the quit confirmation to apply even when no windows are open. | missing |  |
+| Disable all confirmations on system shutdown, restart, and log out | NeverBlockSystemShutdown | Lets macOS shut down, restart, or log out without iTerm2 blocking or prompting. | missing | Windows shutdown/logoff has its own app-close notification model. |
+
+
+### Magic
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Composer leader key | n/a (iTermShortcutInputView, not a plain pref key) | Assigns a prefix keystroke that starts the Composer / command-input overlay. | missing |  |
+| Auto Composer | kPreferenceAutoComposer | Automatically opens the Composer overlay for multi-line command editing as you type. | missing |  |
+| Auto Command History | kPreferenceAutoCommandHistory | Automatically opens the command-history search overlay as you type at the prompt. | missing | Requires shell integration, which Tandem does not inject. |
+
+
+### AI
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Enable generative AI features | EnableAI | Master switch for all AI features (chat, command suggestions, safety checks). | missing |  |
+| Selected AI vendor | AIVendor | Chooses which AI provider (OpenAI, Anthropic, Gemini, DeepSeek, Llama, Apple, etc) backs the built-in AI features. | missing |  |
+| Use recommended AI model | UseRecommendedAIModel | Lets iTerm2 auto-pick a good default model for the chosen vendor instead of a manual model list. | missing |  |
+| Manual AI model configurations | AIManualModelConfigurations | User-entered list of custom model id/endpoint/limit entries when not using the recommended model. | missing |  |
+| AI economy model name | AIEconomyModelName | Names a cheaper model to use for frequent low-stakes background judgements (command safety, idle detection). | missing |  |
+| Ollama regular / economy model | AIOllamaRegularModel / AIOllamaEconomyModel | Explicit model tag picks when the local Ollama vendor is active and models are discovered from the local server. | missing |  |
+| AI API key | AIAPIKey | API key/credential used to authenticate to the selected AI provider. | missing |  |
+| AI model | AIModel | The model identifier sent with each AI request (default gpt-4o-mini). | missing |  |
+| AI token limit | AITokenLimit | Maximum context tokens iTerm2 will send to the model in a request. | missing |  |
+| AI response token limit | AIResponseTokenLimit | Maximum tokens iTerm2 will request back in a model response. | missing |  |
+| AI request timeout | AITimeout | Seconds to wait for an AI API response before giving up (default 1200). | missing |  |
+| AI vector store | AIVectorStore | Selects a hosted vector store id used for retrieval-augmented AI features. | missing |  |
+| Zero data retention | AIZeroDataRetention | Marks the configured provider org as zero-data-retention, changing how conversation state is sent (no server-side stored state). | missing |  |
+| Custom AI headers enabled / Custom AI headers | AICustomHeadersEnabled / AICustomHeaders | Adds user-defined HTTP headers (name/value pairs) to every AI API request. | missing |  |
+| Automatically update available AI models from live online database | AIModelUpdatesEnabled | Periodically downloads an updated AI model catalog from iterm2.com. | missing |  |
+| Use AI to check safety of commands before running them | AISafetyCheck | Runs an AI judgement pass on commands before executing them, to flag risky ones. | missing |  |
+| Offer AI command suggestion in Composer & Auto Composer | AICompletion | Shows AI-generated command completions while typing in the Composer. | missing |  |
+| AI permission: check terminal state | AIPermissionCheckTerminalState | Ask/Allow/Never policy for whether the AI agent may read the current terminal screen contents. | missing |  |
+| AI permission: run commands | AIPermissionRunCommands | Ask/Allow/Never policy for whether the AI agent may run shell commands on your behalf. | missing |  |
+| AI permission: view history | AIPermissionViewHistory | Ask/Allow/Never policy for whether the AI agent may read scrollback history. | missing |  |
+| AI permission: write to clipboard | AIPermissionWriteToClipboard | Ask/Allow/Never policy for whether the AI agent may write to the system clipboard. | missing |  |
+| AI permission: control terminal | AIPermissionControlTerminal | Ask/Allow/Never policy for whether the AI agent may send keystrokes/input to the terminal. | missing |  |
+| AI permission: view man pages | AIPermissionViewManpages | Ask/Allow/Never policy for whether the AI agent may read local man pages for context. | missing |  |
+| AI permission: write to filesystem | AIPermissionWriteToFilesystem | Ask/Allow/Never policy for whether the AI agent may write files. | missing |  |
+| AI permission: act in web browser | AIPermissionActInWebBrowser | Ask/Allow/Never policy for whether the AI agent may act inside iTerm2's built-in web browser feature. | missing |  |
+| AITerm URL / legacy API / API kind | AITermURL / AITermUseLegacyAPI / AITermAPI | Custom endpoint URL and API-shape selection (Completions/Chat/Responses/Gemini/etc) for a self-hosted or alternate AI backend. | missing |  |
+| Install AI plugin | kPhonyPreferenceKeyInstallAIPlugin (synthetic) | Button that downloads/reveals a helper plugin used for some AI integrations; not a stored preference. | missing |  |
+
+### AI > Prompts
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Engage AI prompt template | AIPrompt | Template text sent to the model for the "Engage AI" inline command-generation feature. | missing |  |
+| AI Chat prompt template | AIPromptAIChat | Base template for a general AI Chat session. | missing |  |
+| AI Chat (read-only terminal) prompt | AIPromptAIChatReadOnlyTerminal | Template variant used when AI Chat has read-only access to the terminal. | missing |  |
+| AI Chat (read-write terminal) prompt | AIPromptAIChatReadWriteTerminal | Template variant used when AI Chat has read-write access to the terminal. | missing |  |
+| AI Chat (browser) prompt | AIPromptAIChatBrowser | Template variant used when AI Chat can act in the built-in web browser. | missing |  |
+| AI Chat (read-only terminal + browser) prompt | AIPromptAIChatReadOnlyTerminalBrowser | Template variant combining read-only terminal access with browser access. | missing |  |
+| AI Chat (read-write terminal + browser) prompt | AIPromptAIChatReadWriteTerminalBrowser | Template variant combining read-write terminal access with browser access. | missing |  |
+| AI Chat orchestration prompt | AIPromptAIChatOrchestration | Template used when the AI is coordinating multiple sub-tasks/tools. | missing |  |
+| Code review prompt / system prompt | AIPromptCodeReview / AIPromptCodeReviewSystem | User and system prompt templates for the AI code-review feature. | missing |  |
+| Chat list icon prompt | AIPromptChatIcon | Template used to generate a short icon/title label for a chat entry. | missing |  |
+
+
+### AI > Features
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Hosted Code Interpreter | AIFeatureHostedCodeInterpreter | Per-model toggle enabling the provider's hosted code-execution tool. | missing |  |
+| Hosted File Search | AIFeatureHostedFileSearch | Per-model toggle enabling the provider's hosted file-search/retrieval tool. | missing |  |
+| Hosted Web Search | AIFeatureHostedWebSearch | Per-model toggle enabling the provider's hosted web-search tool. | missing |  |
+| Function Calling | AIFeatureFunctionCalling | Per-model toggle enabling tool/function calling for that model. | missing |  |
+| Streaming Responses | AIFeatureStreamingResponses | Per-model toggle enabling incremental streamed responses instead of waiting for the full reply. | missing |  |
+| Vector store | AIVectorStore | Per-model selection of a hosted vector store id for retrieval. | missing |  |
+
+
+### Software Update
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Check for updates automatically | CheckForUpdatesAutomatically | Periodically checks iterm2.com for a newer version. | missing |  |
+| Update to Beta test releases | CheckForTestReleases | Includes pre-release/beta builds when checking for updates. | missing |  |
+
+
+### Selection
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Copy to clipboard on selection | SelectionCopiesText | Automatically copies selected text to the clipboard (copy-on-select). | have | Tandem already copies on select by default. |
+| Copied text includes trailing newline | CopyLastNewline | Includes a trailing newline when the last selected line is copied. | missing |  |
+| Applications in terminal may access clipboard | AllowClipboardAccessFromTerminal | Lets programs read/write the system clipboard via terminal escape sequences (OSC 52). | missing |  |
+| Word-selection character list mode | CharactersConsideredPartOfAWordForSelectionMode | Chooses whether double-click word selection uses a literal character list or a regular expression. | missing |  |
+| Characters considered part of a word for selection | CharactersConsideredPartOfAWordForSelection | The literal set of extra non-alphanumeric characters treated as part of a word for double-click selection. | missing | Tandem's double-click selection uses its own fixed word-boundary rule. |
+| Word selection regex pattern | WordSelectionRegexPattern | Regular expression defining word boundaries for double-click selection, when regex mode is chosen. | missing |  |
+| Triple-click selects entire wrapped lines | TripleClickSelectsFullWrappedLines | Makes triple-click select a full soft-wrapped logical line instead of just the visual row. | partial | Tandem has triple-click line selection; wrapped-line awareness is not confirmed. |
+| Double-click performs smart selection | DoubleClickPerformsSmartSelection | Uses the Smart Selection rule engine (regex-based) for double-click instead of plain word selection. | missing | Tandem has double-click word selection but no Smart Selection rule engine. |
+| Automatically enter copy mode on Shift+Arrow key with selection | EnterCopyModeAutomatically | Starts keyboard-driven copy mode when Shift+Arrow extends a selection. | missing |  |
+| Clicking on a command selects it to restrict Find and Filter | ClickToSelectCommand | Clicking a shell-integration command mark selects that command's output range for Find/Filter scoping. | missing | Depends on shell integration marks, which Tandem does not have. |
+| When pasting a dropped filename, wrap it in double quotes | WrapDroppedFilenamesInQuotesWhenPasting | Adds surrounding double quotes when a file dropped onto the terminal is pasted as a path. | missing |  |
+
+
+### Window
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| New window placement | WindowPlacement | Chooses how new windows are positioned: system default, smart placement, a saved size+position, or position only. | missing |  |
+| Adjust window when changing font size | AdjustWindowForFontSizeChange | Resizes the window to keep the same character grid when the font size changes. | missing |  |
+| Zoom maximizes vertically only | MaximizeVerticallyOnly | Makes the green zoom button grow the window's height only, not its width. | missing | Windows has no direct green-button zoom equivalent; maps loosely to maximize. |
+| Native full screen windows | LionStyleFullscreen | Uses macOS's native full-screen Space instead of iTerm2's own borderless full-screen mode. | missing | macOS-specific full-screen Spaces concept; Windows has its own fullscreen model. |
+| Each tab may have its own window title | SeparateWindowTitlePerTab | Lets the window title track the frontmost tab's title instead of a single fixed window title. | missing |  |
+
+
+### Settings
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Instant Replay memory usage limit | InstantReplayMemoryMegabytes | Megabytes of memory reserved per session for the Instant Replay scrollback-video-like history. | missing | Tandem has no Instant Replay feature. |
+| Save copy/paste and command history to disk | SavePasteAndCommandHistory | Persists paste history and (with shell integration) command history to disk between launches. | missing |  |
+| Add Bonjour hosts to Profiles | AddBonjourHostsToProfiles | Automatically creates dynamic profiles for SSH hosts discovered via Bonjour/mDNS. | missing |  |
+| Ignore non-critical shell integration updates | NotifyOnlyForCriticalShellIntegrationUpdates | Suppresses shell-integration-outdated nags except for critical/breaking updates. | missing |  |
+| Load settings from a custom folder or URL | LoadPrefsFromCustomFolder | Loads and optionally syncs the whole preferences domain from a folder or URL instead of the local plist. | missing |  |
+| Custom folder | CustomFolder | Path or URL of the custom preferences sync location, when enabled. | missing |  |
+| Custom Python API Scripts Folder | UseCustomScriptsFolder / CustomScriptsFolder | Overrides where iTerm2 looks for user Python API scripts, instead of the default Scripts folder. | missing |  |
+| Automatically / never remind about losing changes to a custom-folder prefs file | NeverRemindPrefsChangesLostForFileSelection / NeverRemindPrefsChangesLostForFileHaveSelection | Controls whether iTerm2 warns that unsynced local preference edits will be lost when custom-folder sync is enabled. | missing |  |
+| Indicate non-default values | IndicateNonDefaultValues | Highlights preference controls in the UI whose value differs from the shipped default. | missing | Tandem has no settings UI to apply this to. |
+| GPU rendering | UseMetal | Master switch for the GPU-accelerated (Metal) renderer versus CPU/software rendering. | have | Tandem already always uses a GPU renderer (wgpu), just not Metal specifically. |
+| Disable GPU rendering when unplugged / in Low Power Mode / prefer integrated GPU / maximize throughput | DisableMetalWhenUnplugged / DisableInLowPowerMode / PreferIntegratedGPU / MaximizeThroughput | Advanced GPU sub-settings (opened from a separate sheet) that trade battery life for rendering throughput and pick which GPU to use. | missing | macOS battery/GPU-switching concepts; Windows has laptop battery states but no equivalent wiring yet. |
+| Enable Python API | EnableAPIServer | Turns on the local scripting/automation API server that Python/AppleScript clients connect to. | missing |  |
+| Require "Automation" permission for Python API | APIAuthentication | Chooses between requiring per-script AppleScript-style authorization prompts or another auth method for API clients. | missing | macOS Automation permission model; no Windows analog implemented. |
+| Enable support for right-to-left scripts | Bidi | Turns on bidirectional (RTL/LTR mixed) text layout support. | missing |  |
+| Use SSH integration for ssh: URLs | SshIntegrationForURLs | Routes clicked ssh:// links through iTerm2's built-in SSH integration instead of spawning a plain ssh command. | missing |  |
+
+
+### tmux
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Open tmux windows as | OpenTmuxWindowsIn | Chooses whether attaching to tmux opens its windows as native macOS windows, tabs in a new window, or tabs in the existing window. | missing | Tandem has no tmux integration at all. |
+| Open tmux windows as tabs in the attaching window | OpenTmuxWindowsAsTabsInAttachingWindow | Variant placement rule that reuses the window used to attach for new tmux windows opened as tabs. | missing |  |
+| Open unrecognized tmux windows in | OpenUnrecognizedTmuxWindowsIn | Placement rule (windows vs tabs) for tmux windows iTerm2 cannot otherwise classify. | missing |  |
+| tmux dashboard window/session limit | TmuxDashboardLimit | Maximum number of items shown before the tmux attach dashboard switches to a scrollable/filtered view. | missing |  |
+| Automatically bury the tmux client session after connecting | AutoHideTmuxClientSession | Hides the raw tmux control-mode session window once the native integration takes over. | missing |  |
+| Use "tmux" profile rather than profile of the connecting session | UseTmuxProfile | Applies a dedicated profile named "tmux" to tmux panes instead of inheriting the profile used to connect. | missing |  |
+| Status bar shows tmux status bar content, not native components | UseTmuxStatusBar | Renders the remote tmux status-bar content in iTerm2's status bar instead of iTerm2's own status bar components. | missing | Tandem has no status bar yet. |
+| Pause a tmux pane if it would take more than this many seconds to catch up | TmuxPauseModeAgeLimit | Threshold, in seconds of buffered output, before a lagging tmux pane is auto-paused. | missing |  |
+| Unpause automatically | TmuxUnpauseAutomatically | Automatically resumes a paused tmux pane instead of requiring a manual action. | missing |  |
+| Warn before pausing | TmuxWarnBeforePausing | Shows a warning dialog before automatically pausing a lagging tmux pane. | missing |  |
+| Mirror tmux paste buffer to local clipboard | TmuxSyncClipboard | Keeps the tmux paste buffer and the local system clipboard in sync. | missing |  |
+| Ask Each Time (send clipboard contents to tmux) | PhonyAllowSendingClipboardContents | Policy for whether the local clipboard contents may be sent up to the remote tmux server. | missing |  |
+
+
+### Experimental
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Experimental Features | n/a - surfaces a curated subset of the Advanced tab's SECTION_EXPERIMENTAL entries | A shortcut list of a few actively-developed experimental toggles, pulled from Advanced Settings so they don't require hunting through the full Advanced list. | missing | See the Advanced > Experimental Features rows below for the actual settings. |
+
+
+## Appearance
+
+
+### General
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Tab style | TabStyle | Chooses the tab bar's visual theme: Light, Dark, Light High Contrast, Dark High Contrast, Automatic, Minimal, or Compact. | missing | Tandem's tab bar has one fixed look. |
+| Tab position | TabPosition | Places the tab bar at the top, bottom, left, or right of the window. | partial | Tandem's tabs are fixed at the top. |
+| Status bar position | StatusBarPosition | Places the status bar at the top or bottom of the window. | missing | Tandem has no status bar. |
+| Separate status bars per pane | SeparateStatusBarsPerPane | Gives each split pane its own status bar instead of one shared per tab. | missing |  |
+| Side margins | SideMargins | Pixel padding on the left/right edge of the terminal content area (default 5). | missing | Tandem currently uses its own fixed content padding. |
+| Top/bottom margins | TopBottomMargins | Pixel padding on the top/bottom edge of the terminal content area (default 2). | missing |  |
+| Hide menu item icons | MenuActionImages (inverted) | Removes icons from menu items app-wide for a plainer menu bar. | missing | macOS menu bar concept; no Windows equivalent. |
+
+
+### Windows
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Auto-hide menu bar in non-native fullscreen | HideMenuBarInFullscreen | Hides the macOS menu bar while an iTerm2 window is in borderless fullscreen. | missing | macOS menu bar concept; no Windows equivalent. |
+| Exclude from Dock and Cmd-Tab Application Switcher | UIElement | Runs iTerm2 as a background UIElement app, hidden from the Dock and app switcher. | missing | macOS Dock/app-switcher concept; Windows equivalent would be taskbar/Alt-Tab visibility. |
+| ...but only if all windows are hotkey windows | UIElementRequiresHotkeys | Narrows the Dock/switcher exclusion to only apply while every open window is a hotkey window. | missing |  |
+| Show window number in title bar | ShowWindowNumber | Prefixes the window title with its iTerm2 window number. | missing |  |
+| Heavy border around windows in light mode | ShowWindowBorder | Draws a thicker window border when using a light system appearance. | missing |  |
+| Hide scrollbars | HideScrollbar | Hides the per-pane scrollbar. | missing |  |
+| Disable transparency for non-native fullscreen windows by default | DisableFullscreenTransparencyByDefault | Turns off window transparency automatically when a window enters borderless fullscreen. | missing |  |
+| Show line under title bar when the tab bar is not visible | EnableDivisionView | Draws a thin divider line below the title bar when the tab bar is hidden. | missing |  |
+| Show proxy icon in window title bar | EnableProxyIcon | Shows the draggable document/folder proxy icon in the title bar, pointing at the session's working directory. | missing | macOS proxy-icon concept; Windows title bars have no equivalent. |
+| Dim background windows | DimBackgroundWindows | Dims whole windows that are not key/focused. | missing |  |
+
+
+### Tabs
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Show tab bar even when there is only one tab | HideTabBar (inverted) | Keeps the tab bar visible with a single tab instead of auto-hiding it. | have | Tandem's tab bar is currently always shown. |
+| Show tab numbers | HideTabNumber (inverted) | Shows each tab's number alongside its title. | missing |  |
+| Preserve window size when tab bar shows or hides | PreserveWindowSizeWhenTabBarVisibilityChanges | Keeps the window's pixel size fixed as the tab bar appears/disappears, instead of growing/shrinking the content area. | missing |  |
+| ...but only if it would cause the window to go off-screen | PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges | Narrows size preservation to only kick in when the alternative would push the window off-screen. | missing |  |
+| Tabs have close buttons | TabsHaveCloseButton | Shows a close (x) button on each tab. | missing | Tandem tabs are closed via keyboard shortcut only, no close button. |
+| Show activity indicator | HideTabActivityIndicator (inverted) | Shows a spinner/indicator on a tab whose session has recent unseen output. | missing |  |
+| Show new-output indicator | ShowNewOutputIndicator | Shows a dot/badge on a tab that produced output while not focused. | missing |  |
+| Flash tab bar when switching tabs in fullscreen | FlashTabBarInFullscreen | Briefly reveals the tab bar overlay whenever the active tab changes in fullscreen. | missing |  |
+| New tabs open at end of tab bar | NewTabsOpenAtEndOfTabBar | Appends new tabs at the end instead of next to the current tab. | have | Tandem currently appends new tabs at the end. |
+| Show tab bar in fullscreen | ShowFullscreenTabBar | Keeps the tab bar visible while in fullscreen instead of auto-hiding it. | missing |  |
+| Stretch tabs to fill bar | StretchTabsToFillBar | Expands tabs to fill the full width of the tab bar instead of using a fixed/compact width. | missing |  |
+| Tab bar scrolls when tabs don't fit | ScrollableSideTabBar | Makes a vertical (side) tab bar scrollable instead of shrinking tabs to fit. | missing |  |
+| Support basic HTML tags in tab titles | HTMLTabTitles | Renders a small set of HTML formatting tags inside tab title text. | missing |  |
+
+
+### Panes
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Show per-pane title bars | ShowPaneTitles | Shows a small title bar above each split pane. | missing |  |
+| ...even if there is only one pane | ShowPaneTitlesEvenIfOnlyOnePane | Keeps the per-pane title bar visible even when a tab has just one pane. | missing |  |
+| Separate background images per pane | PerPaneBackgroundImage | Lets each split pane show its own profile background image instead of one shared image spanning the window. | missing |  |
+
+
+### Dimming
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Dimming affects only text, not background | DimOnlyText | Restricts the inactive-pane dimming effect to text, leaving the background color undimmed. | missing | Tandem's inactive-pane dimming currently dims the whole pane. |
+| Dimming amount | DimmingAmount | Slider (0 to 1) controlling how strong the inactive-pane/background dimming effect is. | partial | Tandem dims inactive panes with a fixed amount, not adjustable. |
+| Dim inactive split panes | DimInactiveSplitPanes | Turns on dimming for split panes that don't have keyboard focus. | have | This is exactly Tandem's existing inactive-pane dimming feature. |
+
+
+### Other application-wide settings
+
+(Stored as top-level preferences but set from a menu command or a dialog rather than a Preferences tab.)
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Toolbelt default width | DefaultToolbeltWidth | Default pixel width of the Toolbelt side panel (default 250). | missing | Tandem has no Toolbelt panel. |
+| Left (side) tab bar width | LeftTabBarWidth | Pixel width of the tab bar when positioned on the left/right side of the window (default 150). | missing |  |
+| Size changes affect profile | SizeChangesAffectProfile | When resizing a window, also updates the profile's saved default size. | missing |  |
+| Alert on marks in offscreen sessions | AlertOnMarksInOffscreenSessions | Shows a system notification when a shell-integration success/failure mark appears in a session that isn't visible. | missing | Requires shell integration marks. |
+| Disable transparency for key window | DisableTransparencyForKeyWindow | Forces the focused (key) window to be fully opaque even if its profile uses transparency. | missing |  |
+| Paste Special: chunk size / chunk delay | PasteSpecialChunkSize / PasteSpecialChunkDelay | Default byte chunk size and inter-chunk delay used when pasting large amounts of text slowly. | missing |  |
+| Paste Special: spaces per tab | PasteSpecialSpacesPerTab | Default number of spaces substituted for a tab character during Paste Special. | missing |  |
+| Paste Special: tab transform | PasteSpecialTabTransform | Default choice for how tabs are transformed during Paste Special (leave as-is, convert to spaces, or escape). | missing |  |
+| Paste Special: escape shell characters with backslash | PasteSpecialEscapeShellCharsWithBackslash | Default on/off for backslash-escaping shell metacharacters during Paste Special. | missing |  |
+| Paste Special: convert Unicode punctuation | PasteSpecialConvertUnicodePunctuation | Default on/off for converting smart quotes and similar Unicode punctuation to plain ASCII during Paste Special. | missing |  |
+| Paste Special: convert DOS newlines | PasteSpecialConvertDosNewlines | Default on/off for converting CRLF line endings to LF during Paste Special. | missing |  |
+| Paste Special: remove control codes | PasteSpecialRemoveControlCodes | Default on/off for stripping control characters during Paste Special. | missing |  |
+| Paste Special: use bracketed paste mode | PasteSpecialBracketedPasteMode | Default on/off for wrapping the pasted text in bracketed-paste escape sequences. | have | Tandem already supports bracketed paste mode for normal paste. |
+| Paste Special: use regex substitution / regex / substitution | PasteSpecialUseRegexSubstitution / PasteSpecialRegex / PasteSpecialSubstitution | Default on/off and pattern/replacement text for an optional regex find-and-replace pass during Paste Special. | missing |  |
+| Paste warning: number of spaces per tab | PasteWarningNumberOfSpacesPerTab | Spaces-per-tab value used when iTerm2 warns about pasting text containing tabs. | missing |  |
+| Actions | Actions | User-defined list of reusable Action snippets (send text, run command, etc) available from the Actions menu/toolbelt. | missing |  |
+| Snippets | Snippets | User-defined list of reusable text Snippets available from the Snippets menu/toolbelt/Composer. | missing |  |
+
+
+## Keys
+
+
+### Key Bindings
+
+A table of global keystroke to action bindings (add/remove rows, each with a key, modifiers, and an action). Includes a Leader-key sequence recorder and a Portability field for cross-machine key equivalence, plus the two rows below.
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Global key binding table | n/a (table; per-row storage, not a single key) | The list of custom global keystroke-to-action bindings shown in this tab; each row picks a key chord and one of the action types listed further below. | missing |  |
+| Leader key | n/a (iTermShortcutInputView) | A configurable prefix keystroke; binding an action to a Leader sequence requires pressing the leader chord first, tmux-prefix style. | missing |  |
+| Interpret key bindings based on physical key, ignoring input language | LanguageAgnosticKeyBindings | Matches key bindings by physical keyboard position (like a game's WASD binding) instead of by the character the current input language produces. | missing |  |
+| Repair Broken Bindings | n/a (button, runs a repair routine) | One-shot action that fixes key bindings left in a broken state by a prior iTerm2 bug or migration. | missing |  |
+
+
+### Navigation Shortcuts
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Shortcut to select a tab | SwitchTabModifier | Modifier held with a number key to switch directly to tab N (No Shortcut, Option+Number, Cmd+Number, Opt+Cmd+Number, or Control+Number). | have | Tandem maps Ctrl+Shift+Tab / Ctrl+Shift+1-9-style tab selection already, though not user-remappable. |
+| Shortcut to choose a split pane | SwitchPaneModifier | Modifier held with a number key to jump directly to split pane N. | missing |  |
+| Shortcut to activate a window | SwitchWindowModifier | Modifier held with a number key to switch directly to window N (default Option+Cmd+Number). | missing |  |
+| Emulate U.S. Keyboard | EmulateUSKeyboard | Forces number-key navigation shortcuts to use U.S. keyboard positions regardless of the active input layout. | missing |  |
+
+
+### Hotkey
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Create a Dedicated Hotkey Window... | n/a (button, opens profile-hotkey-window setup) | Opens a flow to designate a profile as a dedicated Hotkey Window (a Quake-style dropdown/global-summon terminal). | missing | Tandem has no hotkey window feature. |
+| Show/hide all windows with a system-wide hotkey | HotkeyEnabled | Turns on a single global hotkey that shows/hides all iTerm2 windows at once, independent of any per-profile hotkey window. | missing |  |
+| App Hotkey | HotKeyCode / HotkeyCharacter / HotkeyModifiers | The actual key chord bound to the show/hide-all-windows global hotkey. | missing |  |
+| Open Quickly Hotkey | OpenQuicklyHotKeyCode / OpenQuicklyHotkeyCharacter / OpenQuicklyHotkeyModifiers | A global hotkey that opens the Open Quickly command palette without first activating iTerm2. | missing |  |
+| When set, the Open Quickly window can be opened even when another app is active | n/a (explanatory text tied to the Open Quickly hotkey) | Describes that the Open Quickly hotkey works system-wide, not just while iTerm2 is frontmost. | missing |  |
+| Hotkey Window | n/a (per-profile flag surfaced here as a shortcut link) | Jumps to the profile editor's Keys tab to configure which profile is the hotkey window and its dropdown behavior. | missing |  |
+| Remap modifiers globally | RemapModifiersGlobally | Applies the Keys > Remap Modifiers mapping system-wide (via an event tap) instead of only while iTerm2 is frontmost. | missing |  |
+| Haptic feedback for Esc | EnableHapticFeedbackForEsc | Triggers a trackpad haptic tap when pressing Esc, as tactile confirmation. | missing | macOS trackpad haptics; no Windows equivalent hardware. |
+| Sound for Esc | EnableSoundForEsc | Plays a sound when Esc is pressed, as audible confirmation. | missing |  |
+| Visual indicator for Esc | VisualIndicatorForEsc | Flashes a visual indicator on screen when Esc is pressed. | missing |  |
+
+
+### Remap Modifiers
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Remap left control key to | LeftControlRemapping | Reassigns what the physical Left Control key sends: Control, Option, Command, Function, or another Control/none. | missing | Windows has no per-side Ctrl/Alt/Win remapping layer in Tandem. |
+| Remap right control key to | RightControlRemapping | Reassigns what the physical Right Control key sends. | missing |  |
+| Remap left option key to | LeftOptionRemapping | Reassigns what the physical Left Option/Alt key sends. | missing |  |
+| Remap right option key to | RightOptionRemapping | Reassigns what the physical Right Option/Alt key sends. | missing |  |
+| Remap left command key to | LeftCommandRemapping | Reassigns what the physical Left Command/Win key sends. | missing |  |
+| Remap right command key to | RightCommandRemapping | Reassigns what the physical Right Command/Win key sends. | missing |  |
+| Remap fn key to | FunctionRemapping | Reassigns what the physical Function (fn) key sends. | missing |  |
+| Remap modifiers globally (checkbox shown again here) | RemapModifiersGlobally | Same setting as on the Hotkey tab; applies the remapping system-wide via an event tap. | missing |  |
+| Reset to Defaults | n/a (button) | Resets all seven modifier remapping popups back to their shipped defaults. | missing |  |
+
+
+### System (Input Locale)
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Force keyboard | ForceKeyboard | Forces iTerm2 to use a specific keyboard input layout instead of the system's active one. | missing | macOS keyboard-layout concept; Windows uses its own input-locale switching. |
+| Only force once per session when it first receives keyboard focus | ForceKeyboardOncePerSession | Narrows Force Keyboard to apply only the first time a new session gets keyboard focus, rather than continuously. | missing |  |
+| Keyboard locale | KeyboardLocale | The specific keyboard layout/locale forced onto sessions when Force Keyboard is enabled. | missing |  |
+| Respect shortcuts from System Settings > Keyboard > Keyboard Shortcuts > Keyboard | AllowSymbolicHotKeys | Lets macOS-level symbolic keyboard shortcuts (e.g. input-source switching) take priority over iTerm2's own key handling. | missing | macOS System Settings concept; no direct Windows equivalent. |
+
+
+### Deprecated / legacy keys
+
+Still declared for migration/back-compat but no longer exposed as live controls.
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| (legacy) Control key remapping | ControlRemapping_Deprecated | Pre-split single Control-remapping value, superseded by separate Left/Right Control remapping keys. | missing |  |
+| (legacy) Hotkey toggles window | HotKeyTogglesWindow_Deprecated | Old single-hotkey-window flag from before multiple hotkey windows were supported. | missing |  |
+| (legacy) Hotkey profile GUID | HotkeyProfileGuid_Deprecated | Old pointer to which profile was the single hotkey window, before migration to per-profile hotkey flags. | missing |  |
+| (legacy) Hotkey auto-hides | HotkeyAutoHides_Deprecated | Old single-hotkey-window auto-hide flag, superseded by the per-profile setting. | missing |  |
+| Migrated from single to multi hotkey window | HotkeyMigratedFromSingleToMulti | One-time internal flag marking that the single-to-multiple-hotkey-window migration already ran. | missing |  |
+
+
+### Global key binding action types
+
+Every action selectable for a row in the Key Bindings table (also used by per-profile key mappings). 75 action types in the KEY_ACTION_* enum, from sources/Keyboard/iTermKeyBindingAction.h.
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Next Tab | KEY_ACTION_NEXT_SESSION | Switches to the next tab. | partial | Tandem has this bound to a fixed Ctrl+Shift shortcut, not user-configurable. |
+| Next Window | KEY_ACTION_NEXT_WINDOW | Switches to the next iTerm2 window. | missing |  |
+| Previous Tab | KEY_ACTION_PREVIOUS_SESSION | Switches to the previous tab. | partial | Fixed Ctrl+Shift shortcut, not configurable. |
+| Previous Window | KEY_ACTION_PREVIOUS_WINDOW | Switches to the previous iTerm2 window. | missing |  |
+| Scroll To End | KEY_ACTION_SCROLL_END | Scrolls the pane to the bottom. | partial | Tandem has a fixed scroll-to-bottom shortcut. |
+| Scroll To Top | KEY_ACTION_SCROLL_HOME | Scrolls the pane to the top. | partial | Tandem has a fixed scroll-to-top shortcut. |
+| Scroll One Line Down | KEY_ACTION_SCROLL_LINE_DOWN | Scrolls the pane down by one line. | missing |  |
+| Scroll One Line Up | KEY_ACTION_SCROLL_LINE_UP | Scrolls the pane up by one line. | missing |  |
+| Scroll One Page Down | KEY_ACTION_SCROLL_PAGE_DOWN | Scrolls the pane down by one page. | partial | Tandem has a fixed scroll-page shortcut. |
+| Scroll One Page Up | KEY_ACTION_SCROLL_PAGE_UP | Scrolls the pane up by one page. | partial | Tandem has a fixed scroll-page shortcut. |
+| Send Escape Sequence... | KEY_ACTION_ESCAPE_SEQUENCE | Sends a literal escape sequence typed into the binding. | missing |  |
+| Send Hex Code... | KEY_ACTION_HEX_CODE | Sends one or more literal hex byte codes. | missing |  |
+| Send Text... | KEY_ACTION_TEXT | Sends literal text, optionally with placeholders for Tab/Esc/etc. | missing |  |
+| Ignore | KEY_ACTION_IGNORE | Swallows the keystroke; nothing is sent to the terminal. | missing |  |
+| Unsupported Command (deprecated) | KEY_ACTION_IR_FORWARD | Formerly stepped Instant Replay forward; deprecated. | missing |  |
+| Start Instant Replay | KEY_ACTION_IR_BACKWARD | Opens Instant Replay to scrub backward through recent screen history. | missing | Tandem has no Instant Replay feature. |
+| Send ^H Backspace | KEY_ACTION_SEND_C_H_BACKSPACE | Sends the ASCII BS (0x08) character for Backspace. | missing |  |
+| Send ^? Backspace | KEY_ACTION_SEND_C_QM_BACKSPACE | Sends the ASCII DEL (0x7F) character for Backspace. | missing |  |
+| Select Split Pane on Left | KEY_ACTION_SELECT_PANE_LEFT | Moves focus to the split pane to the left. | partial | Tandem has directional pane focus on a fixed shortcut. |
+| Select Split Pane on Right | KEY_ACTION_SELECT_PANE_RIGHT | Moves focus to the split pane to the right. | partial | Tandem has directional pane focus on a fixed shortcut. |
+| Select Split Pane Above | KEY_ACTION_SELECT_PANE_ABOVE | Moves focus to the split pane above. | partial | Tandem has directional pane focus on a fixed shortcut. |
+| Select Split Pane Below | KEY_ACTION_SELECT_PANE_BELOW | Moves focus to the split pane below. | partial | Tandem has directional pane focus on a fixed shortcut. |
+| Do Not Remap Modifiers | KEY_ACTION_DO_NOT_REMAP_MODIFIERS | Marks this one binding as exempt from the Remap Modifiers settings. | missing |  |
+| Toggle Fullscreen | KEY_ACTION_TOGGLE_FULLSCREEN | Enters or exits fullscreen. | missing |  |
+| Remap Modifiers in iTerm2 Only | KEY_ACTION_REMAP_LOCALLY | Applies modifier remapping only while iTerm2 is frontmost, overriding the global setting for this binding. | missing |  |
+| Select Menu Item... | KEY_ACTION_SELECT_MENU_ITEM | Invokes an arbitrary named app menu item. | missing |  |
+| New Window with Profile... | KEY_ACTION_NEW_WINDOW_WITH_PROFILE | Opens a new window using a chosen profile. | missing |  |
+| New Tab with Profile... | KEY_ACTION_NEW_TAB_WITH_PROFILE | Opens a new tab using a chosen profile. | partial | Tandem opens new tabs, but always with the same hard-coded profile. |
+| Split Horizontally with Profile... | KEY_ACTION_SPLIT_HORIZONTALLY_WITH_PROFILE | Splits the pane horizontally using a chosen profile. | partial | Tandem splits panes, but always with the same hard-coded profile. |
+| Split Vertically with Profile... | KEY_ACTION_SPLIT_VERTICALLY_WITH_PROFILE | Splits the pane vertically using a chosen profile. | partial | Tandem splits panes, but always with the same hard-coded profile. |
+| Next Pane | KEY_ACTION_NEXT_PANE | Moves focus to the next split pane in order. | partial | Fixed Ctrl+Shift shortcut, not configurable. |
+| Previous Pane | KEY_ACTION_PREVIOUS_PANE | Moves focus to the previous split pane in order. | partial | Fixed Ctrl+Shift shortcut, not configurable. |
+| Cycle Tabs Forward | KEY_ACTION_NEXT_MRU_TAB | Cycles tabs in most-recently-used order, forward. | missing |  |
+| Cycle Tabs Backward | KEY_ACTION_PREVIOUS_MRU_TAB | Cycles tabs in most-recently-used order, backward. | missing |  |
+| Move Tab Left | KEY_ACTION_MOVE_TAB_LEFT | Moves the current tab one position to the left. | missing |  |
+| Move Tab Right | KEY_ACTION_MOVE_TAB_RIGHT | Moves the current tab one position to the right. | missing |  |
+| Run Coprocess... | KEY_ACTION_RUN_COPROCESS | Launches a coprocess (a program piped to/from the session). | missing |  |
+| Find Regular Expression... | KEY_ACTION_FIND_REGEX | Runs Find using a fixed regular expression. | missing |  |
+| Set Profile... | KEY_ACTION_SET_PROFILE | Switches the current session to a different profile. | missing |  |
+| Send Text (vim paste-safe) | KEY_ACTION_VIM_TEXT | Sends text wrapped so vim treats it as a paste, not typed keystrokes. | missing |  |
+| Load Color Preset... | KEY_ACTION_LOAD_COLOR_PRESET | Applies a saved color preset to the current session. | missing |  |
+| Paste Special... | KEY_ACTION_PASTE_SPECIAL | Pastes the clipboard using Paste Special's transform rules. | missing | Tandem has plain paste but no Paste Special transform pipeline. |
+| Paste Special from Selection... | KEY_ACTION_PASTE_SPECIAL_FROM_SELECTION | Pastes the current selection (not the clipboard) using Paste Special's transform rules. | missing |  |
+| Toggle Pin Hotkey Window | KEY_ACTION_TOGGLE_HOTKEY_WINDOW_PINNING | Pins/unpins a hotkey window so it stays open when it loses focus. | missing | Tandem has no hotkey window. |
+| Undo | KEY_ACTION_UNDO | Undoes the last undoable terminal action (e.g. closing a session). | missing |  |
+| Move End of Selection Left | KEY_ACTION_MOVE_END_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its end point left, keyboard-driven. | missing |  |
+| Move End of Selection Right | KEY_ACTION_MOVE_END_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its end point right, keyboard-driven. | missing |  |
+| Move Start of Selection Left | KEY_ACTION_MOVE_START_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its start point left, keyboard-driven. | missing |  |
+| Move Start of Selection Right | KEY_ACTION_MOVE_START_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its start point right, keyboard-driven. | missing |  |
+| Decrease Height | KEY_ACTION_DECREASE_HEIGHT | Shrinks the current split pane's height. | missing | Tandem has draggable dividers but no keyboard resize action. |
+| Increase Height | KEY_ACTION_INCREASE_HEIGHT | Grows the current split pane's height. | missing |  |
+| Decrease Width | KEY_ACTION_DECREASE_WIDTH | Shrinks the current split pane's width. | missing |  |
+| Increase Width | KEY_ACTION_INCREASE_WIDTH | Grows the current split pane's width. | missing |  |
+| Swap With Split Pane on Left | KEY_ACTION_SWAP_PANE_LEFT | Swaps the current pane's contents with the pane to its left. | missing |  |
+| Swap With Split Pane on Right | KEY_ACTION_SWAP_PANE_RIGHT | Swaps the current pane's contents with the pane to its right. | missing |  |
+| Swap With Split Pane Above | KEY_ACTION_SWAP_PANE_ABOVE | Swaps the current pane's contents with the pane above. | missing |  |
+| Swap With Split Pane Below | KEY_ACTION_SWAP_PANE_BELOW | Swaps the current pane's contents with the pane below. | missing |  |
+| Toggle Mouse Reporting | KEY_ACTION_TOGGLE_MOUSE_REPORTING | Turns mouse-reporting-to-app on or off for the session. | missing | Tandem supports mouse reporting but has no toggle binding. |
+| Invoke Script Function... | KEY_ACTION_INVOKE_SCRIPT_FUNCTION | Calls a registered Python API script function. | missing |  |
+| Duplicate Tab | KEY_ACTION_DUPLICATE_TAB | Opens a new tab that is a copy of the current one (same profile/directory). | missing |  |
+| Move to Split Pane | KEY_ACTION_MOVE_TO_SPLIT_PANE | Moves the current session into an adjacent split pane. | missing |  |
+| Send Snippet... | KEY_ACTION_SEND_SNIPPET | Sends a saved Snippet's text. | missing | Tandem has no Snippets feature. |
+| Open Composer | KEY_ACTION_COMPOSE | Opens the Composer overlay for multi-line command editing. | missing |  |
+| Send tmux Command... | KEY_ACTION_SEND_TMUX_COMMAND | Sends a literal tmux control-mode command to the attached tmux server. | missing | Tandem has no tmux integration. |
+| Run Sequence of Actions | KEY_ACTION_SEQUENCE | Runs an ordered list of other key-binding actions as one binding. | missing |  |
+| Swap with Next Pane | KEY_ACTION_SWAP_WITH_NEXT_PANE | Swaps the current pane's contents with the next pane in order. | missing |  |
+| Swap with Previous Pane | KEY_ACTION_SWAP_WITH_PREVIOUS_PANE | Swaps the current pane's contents with the previous pane in order. | missing |  |
+| Copy Selection or Send ^C | KEY_ACTION_COPY_OR_SEND | Copies the selection if there is one, otherwise sends Ctrl-C. | partial | Tandem has a fixed Copy shortcut but not this selection-aware dual behavior. |
+| Paste or Send ^V | KEY_ACTION_PASTE_OR_SEND | Pastes the clipboard if there is content, otherwise sends the literal key. | partial | Tandem has a fixed Paste shortcut but not this dual behavior. |
+| Alert on Next Mark | KEY_ACTION_ALERT_ON_NEXT_MARK | Shows a notification the next time a shell-integration mark appears in this session. | missing | Requires shell integration. |
+| Copy Interpolated String... | KEY_ACTION_COPY_INTERPOLATED_STRING | Evaluates a string with session variable interpolation and copies the result to the clipboard. | missing |  |
+| Enter Copy Mode | KEY_ACTION_COPY_MODE | Enters keyboard-driven Copy Mode for selecting text without the mouse. | missing | Tandem's selection is mouse-driven; no keyboard copy mode. |
+| Bypass Terminal | KEY_ACTION_BYPASS | Sends the keystroke through to the OS/window manager instead of the terminal program. | missing |  |
+| Toggle Setting... | KEY_ACTION_TOGGLE_SETTING | Flips a chosen boolean preference on/off as the bound action. | missing |  |
+| Send Text (vim paste-safe, no broadcast) | KEY_ACTION_VIM_TEXT_NO_BROADCAST | Same as the vim paste-safe Send Text action, but exempt from Broadcast Input. | missing |  |
+
+
+## Pointer
+
+
+### General
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Cmd-Click opens filename/URL (semantic history) | CmdClickOpensURLs | Makes Cmd-click open the clicked path or URL via Semantic History instead of just moving the cursor. | missing | Tandem has no Semantic History feature; Cmd has no Windows equivalent modifier. |
+| Ctrl-Click reported to apps, does not open menu | ControlLeftClickBypassesContextMenu | Sends a Control-click straight to the running program (e.g. for mouse reporting) instead of opening iTerm2's context menu. | missing |  |
+| Right click reported to apps, does not open menu | RightClickClickBypassesContextMenu | Sends a right-click straight to the running program instead of opening iTerm2's context menu. | missing | Tandem routes some clicks to mouse-reporting apps already; a dedicated bypass toggle is not exposed. |
+| Option-Click moves cursor | OptionClickMovesCursor | Lets Option-click reposition the cursor on the current line, for apps that support cursor-repositioning reports. | missing |  |
+| Three-finger tap emulates middle click | ThreeFingerEmulatesMiddle | Maps a three-finger trackpad tap to a middle-click (paste). | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
+| Focus follows mouse | FocusFollowsMouse | Moves keyboard focus to whichever pane/window the mouse is over, without clicking. | missing |  |
+| Focus window after right or middle click | FocusOnRightOrMiddleClick | Also focuses the window on a right- or middle-click, not just a left-click. | missing |  |
+| Mouse reporting supports horizontal scrolling | ReportHorizontalScrollEvents | Includes horizontal wheel/trackpad scroll in the mouse-reporting events sent to the running program. | missing | Tandem's wheel routing currently only confirmed for vertical scroll. |
+
+Five more keys declared in the Pointer section of iTermPreferences.h are actually shown on the General > Selection sub-tab, not here: Triple-click selects entire wrapped lines, Double-click performs smart selection, Automatically enter copy mode on Shift+Arrow with selection, Clicking on a command selects it, and Wrap dropped filenames in quotes when pasting. See the General > Selection table above.
+
+
+
+### Bindings
+
+A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a trackpad gesture, to one action. Each row below is one of the 32 available pointer actions (from sources/Settings/PointerPrefsController.h) or one of the 6 gesture types.
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Ignore | kIgnoreAction | Swallows the click/gesture; nothing happens. | missing |  |
+| Invoke Script Function... | kInvokeScriptFunction | Calls a registered Python API script function. | missing |  |
+| Paste from Clipboard... | kPasteFromClipboardPointerAction | Pastes the system clipboard. | partial | Tandem's middle-click paste does this by default, not configurable per button/gesture. |
+| Paste from Selection... | kPasteFromSelectionPointerAction | Pastes the current selection (primary-selection style paste). | missing |  |
+| Extend Selection | kExtendSelectionPointerAction | Extends the existing selection to the clicked point. | missing |  |
+| Open URL/Semantic History | kOpenTargetPointerAction | Opens the clicked path or URL via Semantic History. | missing | Tandem has no Semantic History feature. |
+| Open URL in background | kOpenTargetInBackgroundPointerAction | Opens the clicked URL without bringing its app to the foreground. | missing |  |
+| Smart Selection | kSmartSelectionPointerAction | Runs the Smart Selection regex rule engine at the clicked point. | missing | Tandem has no Smart Selection rule engine. |
+| Smart Selection Ignoring Newlines | kSmartSelectionIgnoringNewlinesPointerAction | Runs Smart Selection but lets matches span across line breaks. | missing |  |
+| Open Context Menu | kContextMenuPointerAction | Opens iTerm2's right-click context menu. | missing |  |
+| Next Tab | kNextTabPointerAction | Switches to the next tab. | missing | Bound to a keyboard shortcut in Tandem, not a gesture. |
+| Previous Tab | kPrevTabPointerAction | Switches to the previous tab. | missing |  |
+| Next Window | kNextWindowPointerAction | Switches to the next iTerm2 window. | missing |  |
+| Previous Window | kPrevWindowPointerAction | Switches to the previous iTerm2 window. | missing |  |
+| Move Pane | kMovePanePointerAction | Starts a drag to move the session into a different split pane slot. | missing |  |
+| Send Escape Sequence... | kSendEscapeSequencePointerAction | Sends a literal escape sequence. | missing |  |
+| Send Hex Code... | kSendHexCodePointerAction | Sends one or more literal hex byte codes. | missing |  |
+| Send Text... | kSendTextPointerAction | Sends literal text. | missing |  |
+| Select Pane Left | kSelectPaneLeftPointerAction | Moves focus to the split pane on the left. | partial | Tandem has directional pane focus on a keyboard shortcut, not a pointer binding. |
+| Select Pane Right | kSelectPaneRightPointerAction | Moves focus to the split pane on the right. | partial | Same as above. |
+| Select Pane Above | kSelectPaneAbovePointerAction | Moves focus to the split pane above. | partial | Same as above. |
+| Select Pane Below | kSelectPaneBelowPointerAction | Moves focus to the split pane below. | partial | Same as above. |
+| New Window With Profile... | kNewWindowWithProfilePointerAction | Opens a new window using a chosen profile. | missing |  |
+| New Tab With Profile... | kNewTabWithProfilePointerAction | Opens a new tab using a chosen profile. | missing |  |
+| New Vertical Split With Profile... | kNewVerticalSplitWithProfilePointerAction | Splits vertically using a chosen profile. | missing |  |
+| New Horizontal Split With Profile... | kNewHorizontalSplitWithProfilePointerAction | Splits horizontally using a chosen profile. | missing |  |
+| QuickLook | kQuickLookAction | Opens a macOS Quick Look preview of the clicked file. | missing | macOS Quick Look has no Windows equivalent wired up. |
+| Select Menu Item | kSelectMenuItemPointerAction | Invokes a chosen app menu item. | missing |  |
+| Copy Link Address | kCopyLinkAddressPointerAction | Copies the clicked URL/path to the clipboard without opening it. | missing |  |
+| Select Next Pane | kSelectNextPanePointerAction | Moves focus to the next split pane in order. | partial | Matches Tandem's next-pane keyboard shortcut in spirit, not as a pointer binding. |
+| Select Previous Pane | kSelectPreviousPanePointerAction | Moves focus to the previous split pane in order. | partial | Matches Tandem's previous-pane keyboard shortcut in spirit, not as a pointer binding. |
+| Copy or Paste | kCopyOrPastePointerAction | Copies the selection if there is one, otherwise pastes the clipboard. | partial | Tandem's copy-on-select plus middle-click paste covers similar ground via two separate fixed behaviors. |
+
+Gesture types (trackpad), in addition to the button+click-count+modifier combos above:
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Three-finger tap | kThreeFingerClickGesture | A three-finger trackpad tap. | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
+| Three-finger swipe right | kThreeFingerSwipeRight | A three-finger trackpad swipe to the right; default action Next Tab. | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
+| Three-finger swipe left | kThreeFingerSwipeLeft | A three-finger trackpad swipe to the left; default action Previous Tab. | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
+| Three-finger swipe up | kThreeFingerSwipeUp | A three-finger trackpad swipe upward; default action Next Window. | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
+| Three-finger swipe down | kThreeFingerSwipeDown | A three-finger trackpad swipe downward; default action Previous Window. | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
+| Force Touch click | kForceTouchSingleClick | A pressure-sensitive Force Touch click on supported trackpads. | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
+
+| Button + click-count + modifier binding | n/a (e.g. "Button,1,1,," plist key format) | The general binding shape: mouse button number, click count (1-3), and an optional modifier mask, each mapped to one action above. | missing |  |
+
+
+## Arrangements
+
+This tab is not backed by kPreferenceKey settings; it manages the saved-window-arrangement store (sources/Settings/WindowArrangements.h/.m) used by Window > Save Window Arrangement / Restore Window Arrangement and by the Startup > window-restoration-mode popup above.
+
+
+### Arrangements
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Saved arrangements list | n/a (named blobs in the WindowArrangements store) | Lists every saved window arrangement by name, each one a full snapshot of windows/tabs/splits/profiles/sizes. | missing | Tandem has no session/window-layout save or restore feature. |
+| Preview | n/a | Shows a miniature preview of the selected saved arrangement's window/tab/split layout. | missing |  |
+| Set Default | n/a (setDefault: action) | Marks the selected arrangement as the one opened by "Open Default Window Arrangement" at startup. | missing |  |
+| Delete | n/a (deleteSelectedArrangement: action) | Deletes the selected saved arrangement. | missing |  |
+
+
+### Workgroups
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Workgroups | n/a (iTermWorkgroupTabView / shared workgroup store) | A newer, separate arrangement-sharing surface for team/shared window layouts, distinct from the local per-user saved arrangements list. | missing | Not evaluated in depth; out of scope for a single-user Windows terminal today. |
+
+
+## Advanced
+
+The Advanced tab is a single long searchable list of hundreds of individually named settings, each declared with a DEFINE_BOOL / DEFINE_INT / DEFINE_INT_ENUM / DEFINE_FLOAT / DEFINE_STRING macro in iTermAdvancedSettingsModel.m. There is no settings UI or advanced-settings system in Tandem at all, so status below reflects only whether the underlying behavior the setting controls already exists in Tandem's hard-coded implementation (partial) or an exact live default (have), versus not existing at all (missing).
+
+
+### Tabs
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| openProfilesInNewWindow | openProfilesInNewWindow (bool, default NO) | Choosing a profile from the “Profiles” menu opens a new window. | missing |  |
+| useUnevenTabs | useUnevenTabs (bool, default NO) | Uneven tab widths allowed. | missing |  |
+| minTabWidth | minTabWidth (int, default 75) | Minimum tab width when using uneven tab widths. | missing |  |
+| minCompactTabWidth | minCompactTabWidth (int, default 60) | Minimum tab width when using uneven tab widths for compact tabs. | missing |  |
+| optimumTabWidth | optimumTabWidth (int, default 175) | Preferred tab width when tabs are equally sized. | missing |  |
+| scrollableTabWidth | scrollableTabWidth (int, default 120) | Tab width when the tab bar is scrollable. | missing |  |
+| moveLeftAfterClosingTab | moveLeftAfterClosingTab (bool, default NO) | Select the tab to the left when closing a tab? If disabled, the tab to the right of the closing tab will be selected. | missing |  |
+| navigatePanesInReadingOrder | navigatePanesInReadingOrder (bool, default YES) | Next Pane and Previous Pane commands use reading order, not the time of last use. | missing |  |
+| tabAutoShowHoldTime | tabAutoShowHoldTime (float, default 1.0) | How long in seconds to show tabs in fullscreen. | missing |  |
+| tabFlashAnimationDuration | tabFlashAnimationDuration (float, default 0.25) | Animation duration for fade in/out animation of tabs in full screen, in seconds. | missing |  |
+| allowDragOfTabIntoNewWindow | allowDragOfTabIntoNewWindow (bool, default YES) | Allow a tab to be dragged and dropped outside any existing tab bar to create a new window. | missing |  |
+| allowDragOnAddTabButton | allowDragOnAddTabButton (bool, default YES) | Allow dragging window by the Add Tab button in the tab bar? | missing |  |
+| minimumTabDragDistance | minimumTabDragDistance (int, default 10) | How far must the mouse move before a tab drag is initiated? You must restart iTerm2 after changing this setting for it to take effect. | missing |  |
+| tabTitlesUseSmartTruncation | tabTitlesUseSmartTruncation (bool, default YES) | Use “smart truncation” for tab titles. | missing |  |
+| middleClickClosesTab | middleClickClosesTab (bool, default YES) | Should middle-click on a tab in the tab bar close the tab? | missing |  |
+| coloredSelectedTabOutlineStrength | coloredSelectedTabOutlineStrength (float, default 0.5) | How prominent should the outline around the selected tab be drawn when there are colored tabs in a window? Takes a value in 0 to 3, where 0 means no outline and 3 means a very prominent outline. | missing |  |
+| minimalEdgeDragSize | minimalEdgeDragSize (float, default 12) | In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. | missing |  |
+| pinnedTabWidth | pinnedTabWidth (int, default 64) | Width of pinned tabs in pixels. | missing |  |
+| compactEdgeDragSize | compactEdgeDragSize (float, default 10) | In the Compact theme, you can move the window by dragging starting in a region on the edge near the window border. | missing |  |
+| minimalTabStyleBackgroundColorDifference | minimalTabStyleBackgroundColorDifference (float, default 0.05) | In the Minimal theme, how different should the background color of the selected tab be from the others? Takes a value in 0 to 1, where 0 is no difference and 1 very different. | missing |  |
+| minimalTabStyleOutlineStrength | minimalTabStyleOutlineStrength (float, default 0.2) | In the Minimal theme, how prominent should the tab outline be? Takes a value in 0 to 1, where 0 is invisible and 1 is very prominent. | missing |  |
+| minimalSplitPaneDividerProminence | minimalSplitPaneDividerProminence (float, default 0.15) | In the Minimal theme, how prominent should split pane dividers be? Takes a value in 0 to 1, where 0 is invisible and 1 is very prominent. | partial |  |
+| coloredUnselectedTabTextProminence | coloredUnselectedTabTextProminence (float, default 0.5) | How prominent should the text in a non-selected tab be when there are colored tabs in a window? Takes a value in 0 to 1, the alpha value. | missing |  |
+| minimalTextLegibilityAdjustment | minimalTextLegibilityAdjustment (float, default 1.0) | How much should contrast be increased for text in tabs in the Minimal theme? Choose a value larger than 1 to increase contrast. | missing |  |
+| minimalTabStyleTreatLeftInsetAsPartOfFirstTab | minimalTabStyleTreatLeftInsetAsPartOfFirstTab (bool, default NO) | In the Minimal theme, should the area left of the tab bar be treated as part of the first tab? | missing |  |
+| compactMinimalTabBarHeight | compactMinimalTabBarHeight (float, default 38) | Tab bar height (points) for the Minimal theme. | missing |  |
+| defaultTabBarHeight | defaultTabBarHeight (float, default 24) | Default tab bar height This does not affect the minimal or compact themes. | missing |  |
+| doubleClickTabToEdit | doubleClickTabToEdit (bool, default YES) | Should double-clicking a tab open a window to edit its title? | missing |  |
+| duplicatedTabsOpenAdjacentToOriginal | duplicatedTabsOpenAdjacentToOriginal (bool, default YES) | When you duplicate a tab, should the copy open immediately to the right of the original tab? When disabled, duplicated tabs follow the general “New tabs are added” placement setting instead. | missing |  |
+| minimumTabLabelWidth | minimumTabLabelWidth (float, default 35) | Minimum width for tab labels. | missing |  |
+| disregardDockSettingToOpenTabsInsteadOfWindows | disregardDockSettingToOpenTabsInsteadOfWindows (bool, default YES) | Ignore System Settings > Dock > Prefer tabs when opening documents? When set to No, asking to open a window will open a tab instead when system settings is configured to prefer tabs over windows. | missing |  |
+| convertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme | convertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme (bool, default YES) | In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window? This also affects windows without titlebars in any theme. | missing |  |
+| highVisibility | highVisibility (bool, default YES) | High Contrast modes maximize visibility. | missing |  |
+| drawBottomLineForHorizontalTabBar | drawBottomLineForHorizontalTabBar (bool, default YES) | Draw bottom line for horizontal tabbar in Regular, Dark and Light theme? | missing |  |
+| disableTabBarTooltips | disableTabBarTooltips (bool, default NO) | Disable tab bar tooltips? | missing |  |
+| useCustomTabBarFontSize | useCustomTabBarFontSize (bool, default NO) | Use custom font size for tab labels? See also advanced setting “Custom tab label font size”. | missing |  |
+| customTabBarFontSize | customTabBarFontSize (float, default 11.0) | Custom tab label font size For this to take effect, turn on “Use custom font size for tab labels?”. | missing |  |
+| minimalSelectedTabUnderlineProminence | minimalSelectedTabUnderlineProminence (float, default 1) | Prominence of selected tab underline indicator in the Minimal theme when there is at least one colored tab. | missing |  |
+| allowInteractiveSwipeBetweenTabs | allowInteractiveSwipeBetweenTabs (bool, default YES) | Allow two-finger interactive swipe between tabs? The system preference Trackpad > More Gestures > Swipe between pages controls this globally. | missing |  |
+| selectsTabsOnMouseDown | selectsTabsOnMouseDown (bool, default YES) | Select tabs on mouse-down? Changing this setting will not affect existing windows. | missing |  |
+| minimalDeslectedColoredTabAlpha | minimalDeslectedColoredTabAlpha (float, default 0.5) | Alpha value for tab color for non-selected colored tabs in the Minimal theme. | missing |  |
+| tabColorMenuOptions | tabColorMenuOptions (string, default @"#fb6b62 #f6ac47 #f0dc4f #b5d749 #5fa3f8 #c18ed9 #787878") | Colors for tab color menu item. | missing |  |
+| removeAddTabButton | removeAddTabButton (bool, default NO) | Remove the “new tab” button from horizontal tab bars? | missing |  |
+| addTabButtonUsesCurrentProfile | addTabButtonUsesCurrentProfile (bool, default NO) | Should the “new tab” button in the tab bar use the current session’s profile? When enabled, clicking the “+” button opens a new tab with the current session’s profile instead of the default profile. | missing |  |
+| lightModeInactiveTabDarkness | lightModeInactiveTabDarkness (float, default 0.07) | Darkness (in [0…1]) for non-selected tabs in non-Minimal theme in light mode. | missing |  |
+| darkModeInactiveTabDarkness | darkModeInactiveTabDarkness (float, default 0.5) | Darkness (in [0…1]) for non-selected tabs in non-Minimal theme in dark mode. | missing |  |
+| saveProfilesToRecentDocuments | saveProfilesToRecentDocuments (bool, default NO) | Add items to Recents (in the dock icon's menu) to reopen recently used profiles as tabs? | missing |  |
+| placeTabsInTitlebarAccessoryInFullScreen | placeTabsInTitlebarAccessoryInFullScreen (bool, default YES) | Place the tabbar in the window's titlebar in full screen mode (macOS 13+ only)? This can be disabled to work around a bug in macOS where tabs may not be visible in full screen. | missing |  |
+| defaultIconsUsingLetters | defaultIconsUsingLetters (bool, default YES) | Use the running command's first letter as the tab's default icon if there isn't a built in one. | missing |  |
+| tabCloseButtonsAlwaysVisible | tabCloseButtonsAlwaysVisible (bool, default NO) | Should tab close buttons always remain visible? | missing |  |
+| useSequoiaStyleTabs | useSequoiaStyleTabs (bool, default NO) | Use Sequoia-style tabs in Tahoe and later? | missing |  |
+| splitPaneSourceFillColor | splitPaneSourceFillColor (string, default @"#008000") | Color of source pane fill when moving/swapping a split pane. | partial |  |
+| splitPaneSourceBorderColor | splitPaneSourceBorderColor (string, default @"#ffffff") | Color of source pane outer border when moving/swapping a split pane. | partial |  |
+| splitPaneSourceInnerBorderColor | splitPaneSourceInnerBorderColor (string, default @"#000000") | Color of source pane inner border when moving/swapping a split pane. | partial |  |
+| splitPaneTargetDropFillColor | splitPaneTargetDropFillColor (string, default @"#800000") | Color of drop target fill when dragging a split pane. | partial |  |
+| splitPaneTargetDropBorderColor | splitPaneTargetDropBorderColor (string, default @"#ffffff") | Color of drop target outer border when dragging a split pane. | partial |  |
+| splitPaneTargetDropInnerBorderColor | splitPaneTargetDropInnerBorderColor (string, default @"#000000") | Color of drop target inner border when dragging a split pane. | partial |  |
+
+### Mouse
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| alternateMouseScrollStringForUp | alternateMouseScrollStringForUp (string, default @"") | Scroll wheel up sends the specified text when in alternate screen mode. | partial |  |
+| alternateMouseScrollStringForDown | alternateMouseScrollStringForDown (string, default @"") | Scroll wheel down sends the specified text when in alternate screen mode. | partial |  |
+| alternateMouseScroll | alternateMouseScroll (bool, default NO) | Scroll wheel sends arrow keys when in alternate screen mode. | partial |  |
+| pinchToChangeFontSizeDisabled | pinchToChangeFontSizeDisabled (bool, default NO) | Disable changing font size in response to a pinch gesture. | missing |  |
+| useSystemCursorWhenPossible | useSystemCursorWhenPossible (bool, default UseSystemCursorWhenPossibleDefault()) | Use system cursor icons when possible. | missing |  |
+| alwaysAcceptFirstMouse | alwaysAcceptFirstMouse (bool, default YES) | Always accept first mouse event on terminal windows. | partial |  |
+| autodetectMouseReportingStuck | autodetectMouseReportingStuck (bool, default YES) | Automatically detect when mouse reporting got stuck on? This watches for parts of mouse reporting control sequences being printed to the screen. | partial |  |
+| reportOnFirstMouse | reportOnFirstMouse (bool, default NO) | Send mouse reports when you click in a window that isn't already frontmouse? | partial |  |
+| doubleReportScrollWheel | doubleReportScrollWheel (bool, default NO) | Double-report scroll wheel events to work around tmux scrolling bug. | partial |  |
+| stealKeyFocus | stealKeyFocus (bool, default NO) | When Focus Follows Mouse is enabled, steal key focus even when inactive. | missing |  |
+| aggressiveFocusFollowsMouse | aggressiveFocusFollowsMouse (bool, default NO) | When Focus Follows Mouse is enabled, activate the window under the cursor when iTerm2 becomes active? | missing |  |
+| cmdClickWhenInactiveInvokesSemanticHistory | cmdClickWhenInactiveInvokesSemanticHistory (bool, default NO) | ⌘-click in an active pane while iTerm2 isn't the active app invokes Semantic History. | missing |  |
+| enableUnderlineSemanticHistoryOnCmdHover | enableUnderlineSemanticHistoryOnCmdHover (bool, default YES) | Underline Semantic History-selectable items under the cursor while holding ⌘? | missing |  |
+| enableCmdClickPromptForShowCommandInfo | enableCmdClickPromptForShowCommandInfo (bool, default YES) | ⌘-click in the prompt shows the Command Info window. | missing |  |
+| sensitiveScrollWheel | sensitiveScrollWheel (bool, default NO) | Scroll on any scroll wheel movement, no matter how small? | partial |  |
+| scrollWheelAcceleration | scrollWheelAcceleration (float, default 1) | Speed up scroll gestures by this factor. | missing |  |
+| fractionOfCharacterSelectingNextNeighbor | fractionOfCharacterSelectingNextNeighbor (float, default 0.35) | Fraction of character’s width on its right side that can be used to select the character to its right. | missing |  |
+| naturalScrollingAffectsHorizontalMouseReporting | naturalScrollingAffectsHorizontalMouseReporting (bool, default NO) | Horizontal scrolling is reversed when “Natural scrolling” is enabled in System Settings. | partial |  |
+| horizontalScrollingSensitivity | horizontalScrollingSensitivity (float, default 0.1) | Sensitivity of mouse wheel for horizontal scrolling. | partial |  |
+| useDoubleClickDelayForCommandSelection | useDoubleClickDelayForCommandSelection (bool, default NO) | Wait to be sure it's not a double click before selecting a command. | partial |  |
+| requireOptionToDragSplitPaneTitleBar | requireOptionToDragSplitPaneTitleBar (bool, default NO) | Require Option to be pressed to drag a split pane by its title bar? This helps prevent accidental drags. | partial |  |
+
+### Terminal
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| bounceOnInactiveBell | bounceOnInactiveBell (bool, default NO) | Bounce dock icon when the bell rings while another app is active? | missing |  |
+| traditionalVisualBell | traditionalVisualBell (bool, default NO) | Visual bell flashes the whole screen, not just a bell icon. | missing |  |
+| indicatorFlashInitialAlpha | indicatorFlashInitialAlpha (float, default 0.5) | Initial alpha value when flashing the visual bell or search wraparound indicator. | missing |  |
+| timeBetweenBlinks | timeBetweenBlinks (float, default 0.5) | Cursor blink speed (seconds). | missing |  |
+| doNotSetCtype | doNotSetCtype (bool, default NO) | Never set the CTYPE environment variable. | missing |  |
+| debugShowPromptMarkRangesInLegacyRenderer | debugShowPromptMarkRangesInLegacyRenderer (bool, default NO) | Debug: highlight prompt mark prompt/command/excluded ranges in the legacy (non-GPU) renderer. | missing |  |
+| smartCursorColorBgThreshold | smartCursorColorBgThreshold (float, default 0.5) | Threshold for Smart Cursor Color for background color (0 to 1). | missing |  |
+| smartCursorColorFgThreshold | smartCursorColorFgThreshold (float, default 0.75) | Threshold for Smart Cursor Color for text color (0 to 1). | missing |  |
+| findUrlsRegex | findUrlsRegex (string, default @"https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\\-]+(\\.[a-z0-9A-Z\\-]+)*"               @"((:[0-9]+)?)(/[a-zA-Z0-9;:/\\.\\-_+%~?&amp;@=#\\(\\)]*)?") | Regular expression for “Find URLs” command. | missing |  |
+| findURLsRespectsSoftBoundaries | findURLsRespectsSoftBoundaries (bool, default YES) | When using “Find URLs”, extend results across soft boundaries like tmux pane dividers. | missing |  |
+| echoProbeDuration | echoProbeDuration (float, default 0.5) | Amount of time to wait while testing if echo is on (seconds). | missing |  |
+| disablePasswordManagerAnimations | disablePasswordManagerAnimations (bool, default NO) | Disable animations for showing/hiding password manager. | missing |  |
+| noSyncSilenceAnnoyingBellAutomatically | noSyncSilenceAnnoyingBellAutomatically (bool, default NO) | Automatically silence bell when it rings too much. | missing |  |
+| noSyncVariablesToReport | noSyncVariablesToReport (string, default @"") | Variables to report via control sequence This is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. | missing |  |
+| restoreWindowContents | restoreWindowContents (bool, default YES) | Restore window contents at startup. | missing |  |
+| numberOfLinesForAccessibility | numberOfLinesForAccessibility (int, default 1000) | Maximum number of lines of history to expose to Accessibility. | missing |  |
+| triggerRadius | triggerRadius (int, default 3) | Number of screen lines to match against trigger regular expressions. | missing |  |
+| allowIdempotentTriggers | allowIdempotentTriggers (bool, default NO) | Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled. | missing |  |
+| idempotentTriggerModeRateLimit | idempotentTriggerModeRateLimit (float, default 0.25) | When evaluating idempotent triggers in interactive apps, wait this long (in seconds) between updates. | missing |  |
+| requireCmdForDraggingText | requireCmdForDraggingText (bool, default NO) | To drag images or selected text, you must hold ⌘. | missing |  |
+| focusReportingEnabled | focusReportingEnabled (bool, default YES) | Apps may turn on Focus Reporting. | missing |  |
+| useColorfgbgFallback | useColorfgbgFallback (bool, default YES) | Use fallback for COLORFGBG if no exact match found? The COLORFGBG variable indicates the ANSI colors that match the foreground and background colors. | missing |  |
+| zeroWidthSpaceAdvancesCursor | zeroWidthSpaceAdvancesCursor (bool, default YES) | Zero-Width Space (U+200B) advances cursor? While a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. | missing |  |
+| stripZeroWidthFormatCharactersOnPaste | stripZeroWidthFormatCharactersOnPaste (bool, default NO) | Strip zero-width bidi/format characters when pasting? Characters like the Zero-Width Non-Joiner (U+200C, the Persian half-space), ZWJ, LRM, and RLM are invisible but macOS classifies them as control characters, so line editors like zsh render them as a visible <200c> at the prompt. | missing |  |
+| fullHeightCursor | fullHeightCursor (bool, default NO) | Cursor occupies line spacing area. | missing |  |
+| underlineCursorOffset | underlineCursorOffset (float, default 0) | Vertical offset for underline cursor. | missing |  |
+| preventEscapeSequenceFromClearingHistory | preventEscapeSequenceFromClearingHistory (bool?, default nil) | Prevent CSI 3 J from clearing scrollback history? This is also known as the terminfo E3 capability. | partial |  |
+| preventEscapeSequenceFromChangingProfile | preventEscapeSequenceFromChangingProfile (bool?, default nil) | Prevent control sequences from changing the current profile? | missing |  |
+| warnAboutSecureKeyboardInputWithOpenCommand | warnAboutSecureKeyboardInputWithOpenCommand (bool, default YES) | Warn if the `open` command appears to fail when secure keyboard input is enabled? | missing |  |
+| maxHistoryLinesToRestore | maxHistoryLinesToRestore (int, default 20000) | Maximum number of lines of history to restore. | missing |  |
+| verticalBarCursorWidth | verticalBarCursorWidth (float, default 1) | Width of vertical bar cursor. | missing |  |
+| acceptOSC7 | acceptOSC7 (bool, default YES) | Accept OSC 7 to set username, hostname, and path. | missing |  |
+| detectPasswordInput | detectPasswordInput (bool, default YES) | Show key at cursor at password prompt? | missing |  |
+| detectPasswordInputDebounce | detectPasswordInputDebounce (float, default 0.2) | How long (seconds) terminal echo must remain disabled before iTerm2 treats it as a password prompt. | missing |  |
+| tabsWrapAround | tabsWrapAround (bool, default NO) | Tabs wrap around to the next line. | missing |  |
+| sshSchemePath | sshSchemePath (string, default @"ssh") | Command to run when handling an ssh:// URL. | missing |  |
+| defaultTabStopWidth | defaultTabStopWidth (int, default 8) | Default tab stop width for new sessions. | missing |  |
+| convertItalicsToReverseVideoForTmux | convertItalicsToReverseVideoForTmux (bool, default YES) | Convert italics to reverse video in tmux integration? This is effective when the default TERM reported by tmux matches *screen*. | missing |  |
+| convertItalicsToReverseVideoForTmuxBugwardsCompatible | convertItalicsToReverseVideoForTmuxBugwardsCompatible (bool, default NO) | Convert italics to reverse video in tmux integration, even when TERM matches *tmux*? This was the default behavior for a long time, but it was incorrect. | missing |  |
+| bellRateLimit | bellRateLimit (float, default 0.1) | Minimum time between beeping or flashing screen on bell, in seconds. | missing |  |
+| translateScreenToXterm | translateScreenToXterm (bool, default YES) | Support TERM=screen Most notably, this fixes italics replacing inverse text. | missing |  |
+| shouldSetTerminfoDirs | shouldSetTerminfoDirs (bool, default YES) | Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs? iTerm2 ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). | missing |  |
+| xtermVersion | xtermVersion (int, default 2500) | xterm version for secondary device attributes (SDA). | missing |  |
+| p3 | p3 (bool, default YES) | Use P3 as default color space? If No, sRGB will be used. | missing |  |
+| fileDropCoprocess | fileDropCoprocess (string, default @"") | When files are dropped into a terminal window, execute a silent coprocess. | missing |  |
+| maxURLLength | maxURLLength (int, default 2097152) | Maximum length for OSC 8 URLs. | missing |  |
+| defaultWideMode | defaultWideMode (bool, default NO) | When rendering natively, use wide mode by default? | missing |  |
+| bufferDepth | bufferDepth (int, default 40) | Maximum number of chunks to buffer. | missing |  |
+
+### Hotkey
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| hotkeyTermAnimationDuration | hotkeyTermAnimationDuration (float, default 0.25) | Duration in seconds of the hotkey window animation. | missing |  |
+| openQuicklyAnimationDuration | openQuicklyAnimationDuration (float, default 0.12) | Duration in seconds of the Open Quickly window height animation. | missing |  |
+| dockIconTogglesWindow | dockIconTogglesWindow (bool, default NO) | If the only window is a hotkey window, then clicking the dock icon shows or hides it. | missing |  |
+| hotkeyWindowFloatsAboveOtherWindows | hotkeyWindowFloatsAboveOtherWindows (bool, default NO) | The hotkey window floats above other windows even when another application is active. | missing |  |
+| hotKeyDoubleTapMaxDelay | hotKeyDoubleTapMaxDelay (float, default 0.3) | The maximum amount of time allowed between presses of a modifier key when performing a modifier double-tap. | missing |  |
+| hotKeyDoubleTapMinDelay | hotKeyDoubleTapMinDelay (float, default 0.01) | The minimum amount of time required between presses of a modifier key when performing a modifier double-tap. | missing |  |
+| showPinnedIndicator | showPinnedIndicator (bool, default NO) | Show indicator for pinned hotkey windows. | missing |  |
+
+### General
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| searchCommand | searchCommand (string, default @"https://google.com/search?q=%@") | Template for URL of search engine. | missing |  |
+| searchSuggestURL | searchSuggestURL (string, default @"https://suggestqueries.google.com/complete/search?client=firefox&q=%@") | Template of URL for typeahead search suggestions. | missing |  |
+| autocompleteMaxOptions | autocompleteMaxOptions (int, default 20) | Number of autocomplete options to present. | missing |  |
+| minRunningTime | minRunningTime (float, default 10) | Grace period for automatic quitting after the last window is closed. | missing |  |
+| updateScreenParamsDelay | updateScreenParamsDelay (float, default 1) | Delay after changing number of screens/resolution until refresh (seconds). | missing |  |
+| disableAppNap | disableAppNap (bool, default NO) | Disable App Nap. | missing |  |
+| preventSleepOnBatteryToo | preventSleepOnBatteryToo (bool, default NO) | Prevent system idle sleep on battery too, for profiles with “Prevent sleep” enabled? By default the “Prevent sleep” profile setting only prevents idle sleep while connected to power. | missing |  |
+| idleTimeSeconds | idleTimeSeconds (float, default 2) | Time in seconds before a session is considered idle. | missing |  |
+| findDelaySeconds | findDelaySeconds (float, default 1) | Time to wait before performing Find action on 1- or 2- character queries. | missing |  |
+| maximumBytesToProvideToServices | maximumBytesToProvideToServices (int, default 100000) | Maximum number of bytes of selection to provide to Services. | missing |  |
+| maximumBytesToProvideToPythonAPI | maximumBytesToProvideToPythonAPI (int, default 100) | Maximum number of bytes of selection to provide to Python API. | missing |  |
+| useOpenDirectory | useOpenDirectory (bool, default YES) | Use Open Directory to determine the user shell. | missing |  |
+| disableDECRQCRA | disableDECRQCRA (bool, default YES) | Disable DECRQCRA? This control sequence allows an app running in the terminal to read its contents. | missing |  |
+| disablePotentiallyInsecureEscapeSequences | disablePotentiallyInsecureEscapeSequences (bool, default NO) | Disable potentially insecure escape sequences. | missing |  |
+| performDictionaryLookupOnQuickLook | performDictionaryLookupOnQuickLook (bool, default YES) | Perform dictionary lookups on force press. | missing |  |
+| webUserAgent | webUserAgent (string, default @"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15") | User agent for web views. | missing |  |
+| jiggleTTYSizeOnClearBuffer | jiggleTTYSizeOnClearBuffer (bool, default NO) | Redraw the screen after the Clear Buffer menu item is selected. | missing |  |
+| saveScrollBufferWhenClearing | saveScrollBufferWhenClearing (bool, default YES) | Save scroll buffer when clearing screen. | missing |  |
+| saveScrollbackWhenCursorMovesAbovePrompt | saveScrollbackWhenCursorMovesAbovePrompt (bool, default YES) | Save the screen to scrollback when an app moves the cursor above the prompt. | missing |  |
+| indicateBellsInDockBadgeLabel | indicateBellsInDockBadgeLabel (bool, default YES) | Indicate the number of bells rung while the app is inactive in the dock icon’s badge label. | missing |  |
+| showSuiteNameInDockIcon | showSuiteNameInDockIcon (bool, default YES) | Overlay the suite name on the dock icon when launched with -suite. | missing |  |
+| downloadsDirectory | downloadsDirectory (string, default @"") | Downloads folder. | missing |  |
+| noSyncSuppressDownloadConfirmation | noSyncSuppressDownloadConfirmation (bool, default NO) | Suppress confirmation of terminal-initiated downloads? | missing |  |
+| viewManPageCommand | viewManPageCommand (string, default @"man %@ // sleep 3") | Command to view man pages. | missing |  |
+| hideStuckTooltips | hideStuckTooltips (bool, default YES) | Hide stuck tooltips. | missing |  |
+| openFileOverridesSendText | openFileOverridesSendText (bool, default YES) | Should opening a script with iTerm2 disable the default profile's “Send Text at Start” setting? If you use “open iTerm2 file.command” or drag a script onto iTerm2's icon and this setting is enabled then the script will be executed in lieu of the profile's “Send Text at Start” setting. | missing |  |
+| statusBarIcon | statusBarIcon (bool, default YES) | Add status bar icon when excluded from dock? When you turn on “Exclude from Dock and ⌘-Tab Application Switcher” a status bar icon is added to the menu bar so you can switch the setting back off. | missing |  |
+| statusBarHeight | statusBarHeight (float, default 21) | Height of the status bar in points. | missing |  |
+| wrapFocus | wrapFocus (bool, default YES) | Should split pane navigation by direction wrap around? | missing |  |
+| openUntitledFile | openUntitledFile (bool, default YES) | Open a new window when you click the dock icon and no windows are already open, and also on app launch when no other windows are open? | missing |  |
+| openNewWindowAtStartup | openNewWindowAtStartup (bool, default YES) | Open a window at startup? This is useful if you wish to use the system window restoration settings but not create a new window if none would be restored. | missing |  |
+| timeToWaitForEmojiPanel | timeToWaitForEmojiPanel (float, default 1) | How long to wait for the emoji panel to open in seconds? Floating hotkey windows adjust their level when the emoji panel is open. | missing |  |
+| timeoutForStringEvaluation | timeoutForStringEvaluation (float, default 10) | Timeout (seconds) for evaluating RPCs. | missing |  |
+| pathToFTP | pathToFTP (string, default @"ftp") | Path to ftp for opening ftp: URLs. | missing |  |
+| pathToTelnet | pathToTelnet (string, default @"telnet") | Path to telnet for opening telnet: URLs. | missing |  |
+| fallbackLCCType | fallbackLCCType (string, default @"") | Value to set LC_CTYPE to if the machine‘s combination of country and language are not supported. | missing |  |
+| useVirtualKeyCodesForDetectingDigits | useVirtualKeyCodesForDetectingDigits (bool, default NO) | Treat the top row of keys like number keys on an English keyboard for the purposes of switching panes, tabs, and windows with modifier+number. | missing |  |
+| hotkeyWindowsExcludedFromCycling | hotkeyWindowsExcludedFromCycling (bool, default NO) | Hotkey windows are excluded from Cycle Through Windows. | missing |  |
+| swapFindNextPrevious | swapFindNextPrevious (bool, default YES) | Swap Find Next and Find Previous. | missing |  |
+| pinEditSession | pinEditSession (bool, default NO) | Pin Edit Session window to the session it originally edited. | missing |  |
+| remapModifiersWithoutEventTap | remapModifiersWithoutEventTap (bool, default NO) | Disable remapping modifiers for system shortcuts. | missing |  |
+| alertsIndicateShortcuts | alertsIndicateShortcuts (bool, default NO) | Buttons in modal alerts indicate keyboard shortcuts. | missing |  |
+| showHintsInSplitPaneMenuItems | showHintsInSplitPaneMenuItems (bool, default NO) | Show hints in split pane menu items to indicate horizontal vs vertical semantics. | missing |  |
+| useOldStyleDropDownViews | useOldStyleDropDownViews (bool, default NO) | Use old-style find and paste progress indicator views. | missing |  |
+| synchronizeQueryWithFindPasteboard | synchronizeQueryWithFindPasteboard (bool, default YES) | Synchronize search queries across windows and applications. | missing |  |
+| dynamicProfilesPath | dynamicProfilesPath (string, default @"") | Path to folder with dynamic profiles. | missing |  |
+| dynamicProfilesNotificationLatency | dynamicProfilesNotificationLatency (float, default 0.1) | Delay between detecting a change to dynamic profiles and acting on it. | missing |  |
+| addDynamicTagToDynamicProfiles | addDynamicTagToDynamicProfiles (bool, default NO) | Add a 'Dynamic' tag to dynamic profiles. | missing |  |
+| gitSearchPath | gitSearchPath (string, default @"") | $PATH used when running git for the status bar component. | missing |  |
+| screenshotMaxPixelHeight | screenshotMaxPixelHeight (int, default 30000) | Maximum pixel height for a single screenshot file. | missing |  |
+| screenshotSaveLocation | screenshotSaveLocation (string, default @"") | Folder where the “Save” button in the screenshot window writes files. | missing |  |
+| gitTimeout | gitTimeout (float, default 4) | Timeout in seconds when running git for the status bar component. | missing |  |
+| preferredBaseDir | preferredBaseDir (string, default @"") | Folder for config files. | missing |  |
+| maximumNumberOfTriggerCommands | maximumNumberOfTriggerCommands (int, default 16) | Maximum number of trigger-launched commands that can run at once. | missing |  |
+| smartSelectionRadius | smartSelectionRadius (int, default 2) | Maximum number of lines before and after the click location to include in smart selection. | missing |  |
+| wordSelectionRegexRadius | wordSelectionRegexRadius (int, default 500) | Maximum number of characters before and after the click location to search when applying word selection regex patterns. | missing |  |
+| alertTriggerRateLimit | alertTriggerRateLimit (float, default 1) | Rate limit for Alert triggers. | missing |  |
+| userNotificationTriggerRateLimit | userNotificationTriggerRateLimit (float, default 0) | Rate limit for Notification triggers. | missing |  |
+| silentUserNotifications | silentUserNotifications (bool, default NO) | System notifications should be silent. | missing |  |
+| simpleNotifications | simpleNotifications (bool, default NO) | Omit session identifier from notifications. | missing |  |
+| commandHistoryUsePower | commandHistoryUsePower (float, default 3) | When sorting command history for auto command completion: how much should number of uses of a command contribute to its score? A higher score moves the command closer to the top of the list. | missing |  |
+| commandHistoryAgePower | commandHistoryAgePower (float, default 1) | When sorting command history for auto command completion: how much should the time-since-last-use of a command contribute to its score? A higher score moves the command closer to the top of the list. | missing |  |
+| performSQLiteIntegrityCheck | performSQLiteIntegrityCheck (bool, default YES) | Perform restorable state integrity checks? | missing |  |
+| lastpassGroups | lastpassGroups (string, default @"") | Comma-separated list of LastPass groups for the password manager to look in for passwords. | missing |  |
+| onePasswordAccount | onePasswordAccount (string, default @"") | 1Password account name. | missing |  |
+| excludeUtunFromNetworkUtilization | excludeUtunFromNetworkUtilization (bool, default YES) | Exclude utun interfaces from network utilization? This is useful if you use a VPN and only want to see the traffic that goes over Wi-Fi or Ethernet. | missing |  |
+| noSyncDownloadPrefsTimeout | noSyncDownloadPrefsTimeout (float, default 5.0) | Timeout for downloading settings. | missing |  |
+| showButtonsForSelectedCommand | showButtonsForSelectedCommand (bool, default YES) | Show buttons at the top of a selected command? When you select a command by single clicking the command line or its output, buttons are shown on the top right with options like Copy and Share. | missing |  |
+| enableZoomMenu | enableZoomMenu (bool, default YES) | Allow the standard system menu on window Zoom buttons to open? macOS has a bug that makes the app hang. | missing |  |
+| menuTipDelay | menuTipDelay (float, default 1.0) | Time to wait before showing tips in the main menu. | missing |  |
+| revealExportedSettingsAndData | revealExportedSettingsAndData (bool, default YES) | Reveal file created by “Export All Settings and Data” in finder upon completion. | missing |  |
+| dryRunEraseAllSettingsAndData | dryRunEraseAllSettingsAndData (bool, default NO) | Dry-run “Erase All Settings and Data”. | missing |  |
+| generativeAIAllowed | generativeAIAllowed (bool, default YES) | Allow the use of large language model APIs? The purpose of this setting is to make it easy for managed environments to disable the use of LLMs. | missing |  |
+| companionPairingAllowed | companionPairingAllowed (bool, default YES) | Allow pairing a companion iOS device? Off by default while this feature is in development. | missing |  |
+| companionRelayOrigin | companionRelayOrigin (string, default @"https://relay.iterm2.com") | Relay origin for companion iOS device pairing. | missing |  |
+| companionResolverURL | companionResolverURL (string, default @"https://resolver.iterm2.com/shardmap.json") | Shard-map URL for companion iOS device pairing. | missing |  |
+| llmPlatform | llmPlatform (string, default @"OpenAI") | LLM Platform. | missing |  |
+| aiModelCatalogURL | aiModelCatalogURL (string, default @"https://iterm2.com/downloads/ai/manifest.json") | URL to check for updates to the AI model catalog. | missing |  |
+
+### Drawing
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| zippyTextDrawing | zippyTextDrawing (bool, default YES) | Use zippy text drawing algorithm? This draws non-ASCII text more quickly but with lower fidelity. | missing |  |
+| lowFiCombiningMarks | lowFiCombiningMarks (bool, default NO) | Prefer speed to accuracy for characters with combining marks? | missing |  |
+| useAdaptiveFrameRate | useAdaptiveFrameRate (bool, default YES) | Use adaptive framerate. | missing |  |
+| disableAdaptiveFrameRateInInteractiveApps | disableAdaptiveFrameRateInInteractiveApps (bool, default YES) | Disable adaptive framerate in interactive apps. | missing |  |
+| slowFrameRate | slowFrameRate (float, default 15.0) | When adaptive framerate is enabled, refresh at this rate during high throughput conditions (FPS). | partial |  |
+| metalSlowFrameRate | metalSlowFrameRate (float, default 30.0) | When adaptive framerate is enabled and using the Metal renderer, refresh at this rate during high throughput conditions (FPS). | partial |  |
+| activeUpdateCadence | activeUpdateCadence (float, default 60.0) | Maximum frame rate (FPS) when adaptive framerate is disabled. | missing |  |
+| adaptiveFrameRateThroughputThreshold | adaptiveFrameRateThroughputThreshold (int, default 10000) | Throughput threshold for adaptive frame rate. | missing |  |
+| maximumFrameRate | maximumFrameRate (float, default 60.0) | Frame rate (FPS) when adaptive framerate is enabled and throughput is low but not 0. | missing |  |
+| lowPowerModeFrameRate | lowPowerModeFrameRate (float, default 30.0) | Maximum frame rate (FPS) when low power mode is enabled. | missing |  |
+| dwcLineCache | dwcLineCache (bool, default YES) | Enable cache of double-width character locations? This should improve performance. | missing |  |
+| useGCDUpdateTimer | useGCDUpdateTimer (bool, default YES) | Use GCD-based update timer instead of NSTimer. | missing |  |
+| drawOutlineAroundCursor | drawOutlineAroundCursor (bool, default NO) | Draw outline around underline and vertical bar cursors using background color. | missing |  |
+| disableCustomBoxDrawing | disableCustomBoxDrawing (bool, default NO) | Use your typeface’s box-drawing characters instead of iTerm2’s custom drawing code. | missing |  |
+| minimumWeightDifferenceForBoldFont | minimumWeightDifferenceForBoldFont (int, default 4) | Minimum weight difference between regular and bold font. | missing |  |
+| underlineCursorHeight | underlineCursorHeight (float, default 2) | Thickness of underline cursor. | missing |  |
+| preferSpeedToFullLigatureSupport | preferSpeedToFullLigatureSupport (bool, default YES) | Improves drawing performance at the expense of disallowing alphanumeric characters to belong to ligatures. | missing |  |
+| enableContextualAlternates | enableContextualAlternates (bool, default YES) | Enable contextual alternates (calt) for ligature-capable fonts. | missing |  |
+| forceAntialiasingOnRetina | forceAntialiasingOnRetina (bool, default NO) | Force text to be anti-aliased on Retina displays. | missing |  |
+| makeSomePowerlineSymbolsWide | makeSomePowerlineSymbolsWide (bool, default YES) | Draw certain Powerline symbols double-width? This matches how most “nerd” fonts render them, but your favorite one might not do this. | missing |  |
+| useLowPowerGPUWhenUnplugged | useLowPowerGPUWhenUnplugged (bool, default NO) | Metal renderer uses integrated GPU when not connected to power? For this to be effective you must disable “Disable Metal renderer when not connected to power”. | partial |  |
+| underlineHyperlinks | underlineHyperlinks (bool, default YES) | Underline OSC 8 hyperlinks. | missing |  |
+| solidUnderlines | solidUnderlines (bool, default NO) | Use solid underlines? When disabled, underlines break near text that would intersect them. | missing |  |
+| useMultiPassUnderlineRenderer | useMultiPassUnderlineRenderer (bool, default YES) | Use multi-pass underline renderer? Fixes underline gaps with ligature fonts. | partial |  |
+| showMetalFPSmeter | showMetalFPSmeter (bool, default NO) | Show FPS meter Requires Metal renderer. | partial |  |
+| allowHDR | allowHDR (bool, default NO) | Allow HDR effects When enabled, iTerm2 may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. | missing |  |
+| metalRedrawPeriod | metalRedrawPeriod (float, default 0.5) | GPU renderer redraws at least this often, in seconds. | partial |  |
+| animateGraphStatusBarComponents | animateGraphStatusBarComponents (bool, default YES) | Animate graph-based status bar components? Turn this off to reduce CPU/GPU usage in WindowServer. | partial |  |
+| disableTopRightIndicators | disableTopRightIndicators (bool, default NO) | Disable indicator icons that appear in the top right of a session? This includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging. | missing |  |
+| nativeRenderingCSSLight | nativeRenderingCSSLight (string, default @"") | Path to CSS file to customize native drawing (for light background colors). | missing |  |
+| nativeRenderingCSSDark | nativeRenderingCSSDark (string, default @"") | Path to CSS file to customize native drawing (for dark background colors). | missing |  |
+| supportPowerlineExtendedSymbols | supportPowerlineExtendedSymbols (bool, default YES) | Include extended symbols when drawing Powerline natively. | missing |  |
+| alwaysUseLineStyleMarks | alwaysUseLineStyleMarks (bool, default NO) | Always use line-style marks? | missing |  |
+| alphaForDeselectedCommandShade | alphaForDeselectedCommandShade (float, default 0.25) | Alpha value for shade that covers areas outside the currently selected command. | missing |  |
+| showURLPreviewForSemanticHistory | showURLPreviewForSemanticHistory (bool, default YES) | Show URL preview on cmd-hover for semantic history matches. | missing |  |
+| cursorAnimationMinDistance | cursorAnimationMinDistance (float, default 150.0) | When animated cursor movement is enabled, only perform animation if the cursor moves at least this distance in points. | missing |  |
+| cursorSmearAnimationDuration | cursorSmearAnimationDuration (float, default 0.1) | Duration in seconds for the “Animate large movements” cursor animation. | missing |  |
+| cursorSlideAnimationDuration | cursorSlideAnimationDuration (float, default 0.05) | Duration in seconds for smooth cursor slide animation. | missing |  |
+| cursorSlideAnimationMaxCells | cursorSlideAnimationMaxCells (int, default 1) | Maximum horizontal distance in cells for smooth cursor slide animation. | missing |  |
+
+### Semantic History
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| ignoreHardNewlinesInURLs | ignoreHardNewlinesInURLs (bool, default NO) | Ignore hard newlines for the purposes of locating URLs and file names for Semantic History. | missing |  |
+| URLCharacterSet | URLCharacterSet (string, default @".?\\/:;$%=&_-,+~#@!*'(（)）/[]") | Non-alphanumeric characters considered part of a URL or file name for Semantic History. | missing |  |
+| URLCharacterSetExclusions | URLCharacterSetExclusions (string, default @"¬") | Characters never considered part of a URL. | missing |  |
+| filenameCharacterSet | filenameCharacterSet (string, default @"$@") | Non-alphanumeric characters considered part of a filename. | missing |  |
+| maxSemanticHistoryPrefixOrSuffix | maxSemanticHistoryPrefixOrSuffix (int, default 2000) | Maximum number of bytes of text before and after click location to take into account. | missing |  |
+| pathsToIgnore | pathsToIgnore (string, default @"") | Paths to ignore for Semantic History. | missing |  |
+| showYellowMarkForJobStoppedBySignal | showYellowMarkForJobStoppedBySignal (bool, default YES) | Use a yellow for a Shell Integration prompt mark when the job is stopped by a signal. | missing |  |
+| conservativeURLGuessing | conservativeURLGuessing (bool, default NO) | URLs must contain a scheme? Enable this to reduce the number of false positives that semantic history thinks are a URL. | missing |  |
+| requireSlashInURLGuess | requireSlashInURLGuess (bool, default YES) | Only consider a two+ part domain-name to be a URL if it also contains a slash. | missing |  |
+| trailingPunctuationMarks | trailingPunctuationMarks (string, default @"!?…)].\"';:,") | Characters to ignore at the end of a URL. | missing |  |
+| defaultURLScheme | defaultURLScheme (string, default @"https") | Default URL scheme. | missing |  |
+| urlHandlerCommand | urlHandlerCommand (string, default @"") | Command to run when opening a clicked URL, instead of asking the OS to open it. | missing |  |
+| restrictSemanticHistoryPrefixAndSuffixToLogicalWindow | restrictSemanticHistoryPrefixAndSuffixToLogicalWindow (bool, default YES) | Respect soft boundaries for computing the prefix and suffix text passed to semantic history commands? Due to a long-standing bug this did not used to be respected. | missing |  |
+| enableSemanticHistoryOnNetworkMounts | enableSemanticHistoryOnNetworkMounts (bool, default NO) | Enable semantic history for network-mounted filesystems? Only enable this if you know your network-mounted filesystems are really fast and reliable. | missing |  |
+| prioritizeSmartSelectionActions | prioritizeSmartSelectionActions (bool, default NO) | Check smart selection actions before existing files on cmd-click? | missing |  |
+| disableSmartSelectionActionsOnClick | disableSmartSelectionActionsOnClick (bool, default NO) | Disable performing the first matching Smart Selection’s Action on cmd-click? | missing |  |
+
+### Debugging
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| startDebugLoggingAutomatically | startDebugLoggingAutomatically (bool, default NO) | Start debug logging automatically when iTerm2 is launched. | missing |  |
+| appendToExistingDebugLog | appendToExistingDebugLog (bool, default NO) | Append to existing debug log rather than replacing it. | missing |  |
+| logDrawingPerformance | logDrawingPerformance (bool, default NO) | Log stats about text drawing performance to console. | missing |  |
+| showDirtyRectsInLegacyRenderer | showDirtyRectsInLegacyRenderer (bool, default NO) | Outline dirty rects in the legacy renderer with random colors. | missing |  |
+| logRestorableStateSize | logRestorableStateSize (bool, default NO) | Log restorable state size info to /tmp/statesize.*.txt. | missing |  |
+| showBlockBoundaries | showBlockBoundaries (bool, default NO) | Show line buffer block boundaries (issue 6207). | missing |  |
+| logToSyslog | logToSyslog (bool, default NO) | Debug logs also write to the system log. | missing |  |
+| logForegroundJobAncestryDiagnostics | logForegroundJobAncestryDiagnostics (bool, default NO) | Log a detailed trace when a session’s foreground-job ancestor list unexpectedly shrinks. | missing |  |
+| fakeFullyQualifiedDomainName | fakeFullyQualifiedDomainName (string, default @"") | Override the local hostname used for localhost detection. | missing |  |
+| fakeBootSessionUUID | fakeBootSessionUUID (string, default @"") | Override this machine’s identity used for OSC 7 machineID localhost detection. | missing |  |
+| aiChatVerboseConsoleLogging | aiChatVerboseConsoleLogging (bool, default NO) | Log AI chat traffic to the system console. | missing |  |
+| aiChatRawWireLogging | aiChatRawWireLogging (bool, default NO) | Log raw AI API requests and responses to disk. | missing |  |
+| logAITabTitleCorpus | logAITabTitleCorpus (bool, default NO) | Log AI tab-title generations to a corpus file. | missing |  |
+| alternateSSHIntegrationScript | alternateSSHIntegrationScript (string, default @"") | Alternate SSH integration python script. | missing |  |
+
+### Session
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| runJobsInServers | runJobsInServers (bool, default YES) | Enable session restoration. | missing |  |
+| bootstrapDaemon | bootstrapDaemon (bool, default YES) | Allow sessions to survive logging out and back in. | missing |  |
+| killJobsInServersOnQuit | killJobsInServersOnQuit (bool, default YES) | User-initiated Quit (⌘Q) of iTerm2 will kill all running jobs. | missing |  |
+| suppressRestartAnnouncement | suppressRestartAnnouncement (bool, default NO) | Suppress the Restart Session offer. | missing |  |
+| showSessionRestoredBanner | showSessionRestoredBanner (bool, default YES) | When restoring a session without restoring a running job, draw a banner saying “Session Contents Restored” below the restored contents. | missing |  |
+| autoLogFormat | autoLogFormat (string, default @"\\(creationTimeString).\\(profileName).\\(termid).\\(iterm2.pid).\\(autoLogId).log") | Format for automatic session log filenames. | missing |  |
+| autologAppends | autologAppends (bool, default YES) | Automatic session logging appends to existing files. | missing |  |
+| logTimestampFormat | logTimestampFormat (string, default @"yyyy-MM-dd hh.mm.ss.SSS") | Format for log timestamps. | missing |  |
+| focusNewSplitPaneWithFocusFollowsMouse | focusNewSplitPaneWithFocusFollowsMouse (bool, default YES) | When focus follows mouse is enabled, should new split panes automatically be focused? | missing |  |
+| NoSyncSuppressRestartSessionConfirmationAlert | NoSyncSuppressRestartSessionConfirmationAlert (bool, default NO) | Suppress restart session confirmation alert. | missing |  |
+| showAutomaticProfileSwitchingBanner | showAutomaticProfileSwitchingBanner (bool, default YES) | Show a “Switched to profile” message when Automatic Profile Switching activates. | missing |  |
+| preserveFontSizeOnAutomaticProfileSwitch | preserveFontSizeOnAutomaticProfileSwitch (bool, default YES) | Preserve font zoom level when Automatic Profile Switching changes profiles. | missing |  |
+| autoLockSessionNameOnEdit | autoLockSessionNameOnEdit (bool, default YES) | Auto-lock session name after editing it. | missing |  |
+| aiGeneratedTabTitles | aiGeneratedTabTitles (bool, default NO) | Name tabs after the work on screen, using on-device AI? When enabled, the session variable “aiTitle” holds a short name for the task visible in the session, which you can show by adding the “AI-generated name” title component or using \\(session.aiTitle) in a custom title format. | missing |  |
+| timeoutForDaemonAttachment | timeoutForDaemonAttachment (float, default 10) | How long to wait when trying to attach to an iTerm daemon at startup when restoring windows (in seconds)? | missing |  |
+| logTimestampsWithPlainText | logTimestampsWithPlainText (bool, default YES) | When logging plain text, include timestamps for each line? | missing |  |
+| composerClearSequence | composerClearSequence (string, default @"0x15 0x0b") | Hex codes to send to clear the command line when entering the composer. | missing |  |
+| alwaysUseStatusBarComposer | alwaysUseStatusBarComposer (bool, default NO) | Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present. | missing |  |
+| successSound | successSound (string, default @"") | When Alert on Next Mark is configured to play a sound, use a file with this name for successful completion of the previous command. | missing |  |
+| errorSound | errorSound (string, default @"") | When Alert on Next Mark is configured to play a sound, use a file with this name for erroneous completion of the previous command. | missing |  |
+| sessionEndMessageText | sessionEndMessageText (string, default @"") | Text displayed when a session ends. | missing |  |
+| sessionEndMessageDividerCharacter | sessionEndMessageDividerCharacter (string, default @"") | Character to use for divider lines in session end messages. | missing |  |
+| sessionRestartedMessageText | sessionRestartedMessageText (string, default @"Session Restarted") | Text displayed when a session is restarted. | missing |  |
+| sessionFinishedMessageText | sessionFinishedMessageText (string, default @"Finished") | Text displayed when a short-lived session finishes. | missing |  |
+
+### Windows
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| openFileInNewWindows | openFileInNewWindows (bool, default NO) | DEPRECATED: Use “How should new instances be opened” instead. | partial |  |
+| openFileInSplitPanes | openFileInSplitPanes (bool, default NO) | DEPRECATED: Use “How should new instances be opened” instead. | partial |  |
+| openFileInVerticalSplitPane | openFileInVerticalSplitPane (bool, default YES) | DEPRECATED: Use “How should new instances be opened” instead. | partial |  |
+| newInstanceOpenStyle | newInstanceOpenStyle (int, default -1) | How should new instances be opened when triggered by scripts or external applications? -1: Use legacy settings (default) 0: New Window 1: New Tab 2: Vertical Split Pane 3: Horizontal Split Pane This provides a unified setting for controlling external instance creation. | partial |  |
+| disableWindowSizeSnap | disableWindowSizeSnap (bool, default NO) | Terminal windows resize smoothly. | missing |  |
+| profilesWindowJoinsActiveSpace | profilesWindowJoinsActiveSpace (bool, default NO) | If the Profiles window is open, it always moves to join the active Space. | missing |  |
+| darkThemeHasBlackTitlebar | darkThemeHasBlackTitlebar (bool, default YES) | Dark themes give terminal windows black title bars by default. | missing |  |
+| fontChangeAffectsBroadcastingSessions | fontChangeAffectsBroadcastingSessions (bool, default NO) | Should growing or shrinking the font in a session that's broadcasting input affect all session that broadcast input? This only applies to changing the font size with Make Text Bigger, Make Text Normal Size, and Make Text Smaller. | missing |  |
+| serializeOpeningMultipleFullScreenWindows | serializeOpeningMultipleFullScreenWindows (bool, default YES) | When opening multiple fullscreen windows, enter fullscreen one window at a time. | missing |  |
+| trackingRunloopForLiveResize | trackingRunloopForLiveResize (bool, default YES) | Use a tracking runloop for live resizing. | missing |  |
+| disableWindowShadowWhenTransparencyOnMojave | disableWindowShadowWhenTransparencyOnMojave (bool, default YES) | Disable the window shadow on Mojave when the window has a transparent session to improve performance. | missing |  |
+| disableWindowShadowWhenTransparencyPreMojave | disableWindowShadowWhenTransparencyPreMojave (bool, default YES) | Disable the window shadow on High Sierra and earlier when the window has a transparent session to prevent text shadows. | missing |  |
+| restoreWindowsWithinScreens | restoreWindowsWithinScreens (bool, default YES) | When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays. | missing |  |
+| extraSpaceBeforeCompactTopTabBar | extraSpaceBeforeCompactTopTabBar (float, default 0) | Amount of extra space (in points) between stoplight buttons and inline tab bar. | missing |  |
+| compactTabBarStoplightButtonsWidth | compactTabBarStoplightButtonsWidth (float, default 75) | Width (in points) reserved for the window buttons (close/minimize/zoom) before the inline tab bar. | missing |  |
+| workAroundMultiDisplayOSBug | workAroundMultiDisplayOSBug (bool, default YES) | Work around a macOS bug where the OS moves windows to the first display for no good reason. | missing |  |
+| disableDocumentedEditedIndicator | disableDocumentedEditedIndicator (bool, default NO) | Disable documented edited indicator (black dot in close button). | missing |  |
+| showWindowTitleWhenTabBarInvisible | showWindowTitleWhenTabBarInvisible (bool, default YES) | Show window title when the tab bar is not visible? When disabled, the tab's title will be shown where the window title would normally go. | missing |  |
+| showWindowNameBesideTabs | showWindowNameBesideTabs (enum, default iTermWindowNameBesideTabsModeWhenCustom) | Show the window name beside the tabs in the Compact and Minimal themes? Those themes have no title bar, so the window name is otherwise only visible when the tab bar is hidden. | missing |  |
+| squareWindowCorners | squareWindowCorners (bool, default NO) | Windows have square corners. | missing |  |
+| windowBorderColor | windowBorderColor (string, default @"") | Border color for focused windows. | missing |  |
+| windowBorderColorUnfocused | windowBorderColorUnfocused (string, default @"") | Border color for unfocused windows. | missing |  |
+| useShortcutAccessoryViewController | useShortcutAccessoryViewController (bool, default YES) | Show window number in titlebar accessory? | missing |  |
+| includeShortcutInWindowsMenu | includeShortcutInWindowsMenu (bool, default YES) | Include keyboard shortcut for windows in Window menu? | missing |  |
+| toolbeltFontSize | toolbeltFontSize (float, default 0) | Toolbelt font size in points. | missing |  |
+| toolbeltFont | toolbeltFont (string, default @"Menlo") | Toolbelt font family name. | missing |  |
+| fakeNotchHeight | fakeNotchHeight (float, default 0) | Simulated notch height. | missing |  |
+| splitPaneColor | splitPaneColor (string, default @"") | Custom color for split pane dividers. | partial |  |
+| splitPaneDividerWidth | splitPaneDividerWidth (float, default 0) | Custom width for split pane dividers in points (1-5). | partial |  |
+| paneTitleBarBackgroundColor | paneTitleBarBackgroundColor (string, default @"") | Custom background color for pane title bars. | missing |  |
+| paneTitleBarTextColor | paneTitleBarTextColor (string, default @"") | Custom text color for pane title bars. | missing |  |
+| bordersOnlyInLightMode | bordersOnlyInLightMode (bool, default YES) | Opaque windows have a border only in light mode. | missing |  |
+| allowLiveResize | allowLiveResize (bool, default YES) | Allow window resizing by dragging edges and corners? | missing |  |
+| showSecureKeyboardEntryIndicator | showSecureKeyboardEntryIndicator (bool, default YES) | Show secure keyboard entry indicator? | missing |  |
+| leftAlignTitleBarMinimalTahoe | leftAlignTitleBarMinimalTahoe (bool, default YES) | Left-align title bar in Minimal and Compact themes in macOS 26 and later? | missing |  |
+
+### Tmux Integration
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| noSyncNewWindowOrTabFromTmuxOpensTmux | noSyncNewWindowOrTabFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of tab/window to open in tmux integration. | missing |  |
+| noSyncNewWindowFromTmuxOpensTmux | noSyncNewWindowFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of window to open in tmux integration. | missing |  |
+| noSyncNewTabFromTmuxOpensTmux | noSyncNewTabFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of tab to open in tmux integration. | missing |  |
+| tolerateUnrecognizedTmuxCommands | tolerateUnrecognizedTmuxCommands (bool, default NO) | Tolerate unrecognized commands from server. | missing |  |
+| useBlackFillerColorForTmuxInFullScreen | useBlackFillerColorForTmuxInFullScreen (bool, default NO) | Use black for filler area in tmux windows in full screen. | missing |  |
+| tmuxWindowsShouldCloseAfterDetach | tmuxWindowsShouldCloseAfterDetach (bool?, default nil) | Close tmux windows after detaching? This only takes effect when “Settings > Profiles > Session > After a session ends” is set to “No Action”. | missing |  |
+| disableTmuxWindowPositionRestoration | disableTmuxWindowPositionRestoration (bool, default NO) | Disable window position restoration in tmux integration. | missing |  |
+| disableTmuxWindowResizing | disableTmuxWindowResizing (bool, default YES) | Don't automatically resize tmux windows. | missing |  |
+| anonymousTmuxWindowsOpenInCurrentWindow | anonymousTmuxWindowsOpenInCurrentWindow (enum, default iTermOpenAnonymousTmuxWindowLocationFocusedWindow) | Where should new tmux windows not created by iTerm2 open? “Focused window” (the default) attaches the window as a tab of whichever iTerm2 window currently has keyboard focus. | missing |  |
+| pollForTmuxForegroundJob | pollForTmuxForegroundJob (bool, default NO) | Poll for foreground job name in tmux integration with tmux < 3.2? This enables tab icons but can cause a lot of background traffic. | missing |  |
+| tmuxTitlePrefix | tmuxTitlePrefix (string, default @"↣ ") | Insert this string at the start of tab and window titles to indicate tmux integration. | missing |  |
+| tmuxIncludeClientNameInWindowTitle | tmuxIncludeClientNameInWindowTitle (bool, default YES) | When using tmux integration, should the tmux client name (typically the name of the attaching session or the host name) appear in brackets in the window title? | missing |  |
+| rememberTmuxWindowSizes | rememberTmuxWindowSizes (bool, default YES) | Remember window sizes in tmux integration? Requires tmux 2.9 or later. | missing |  |
+| tmuxWindowsOpenInBackground | tmuxWindowsOpenInBackground (bool, default NO) | Open tmux windows and tabs in the background? When enabled, attaching with tmux -CC (or when tmux creates a new window) will reveal the window or tab without moving keyboard focus to it. | missing |  |
+
+### SSH Integration
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | missing |  |
+| validCharactersInSSHUserNames | validCharactersInSSHUserNames (string, default @"_-+.") | Valid characters in SSH user names Alphanumerics are always valid. | missing |  |
+
+### Warnings
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| neverWarnAboutMeta | neverWarnAboutMeta (bool, default NO) | Suppress a warning when ⌥ Key Acts as Meta is enabled in Settings > Profiles > Keys. | missing |  |
+| neverWarnAboutSpaces | neverWarnAboutSpaces (bool, default NO) | Suppress a warning about how to configure Spaces when setting a window's Space. | missing |  |
+| neverWarnAboutOverrides | neverWarnAboutOverrides (bool, default NO) | Suppress a warning about a change to a Profile key setting that overrides a global setting. | missing |  |
+| neverWarnAboutPossibleOverrides | neverWarnAboutPossibleOverrides (bool, default NO) | Suppress a warning about a change to a global key that's overridden by a Profile. | missing |  |
+| noSyncNeverRemindPrefsChangesLostForUrl | noSyncNeverRemindPrefsChangesLostForUrl (bool, default NO) | Suppress changed-setting warning when settings are loaded from a URL. | missing |  |
+| noSyncNeverRemindPrefsChangesLostForFile | noSyncNeverRemindPrefsChangesLostForFile (bool, default NO) | Suppress changed-setting warning when settings are loaded from a custom folder. | missing |  |
+| noSyncSuppressAnnyoingBellOffer | noSyncSuppressAnnyoingBellOffer (bool, default NO) | Suppress offer to silence bell when it rings too much. | missing |  |
+| suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline | suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline (bool, default NO) | Suppress warning about multi-line paste when pasting a single line ending with a newline. | missing |  |
+| suppressMultilinePasteWarningWhenNotAtShellPrompt | suppressMultilinePasteWarningWhenNotAtShellPrompt (bool, default NO) | Suppress warning about multi-line paste when not at prompt. | missing |  |
+| noSyncSuppressBroadcastInputWarning | noSyncSuppressBroadcastInputWarning (bool, default NO) | Suppress warning about broadcasting input. | missing |  |
+| noSyncSuppressCaptureOutputRequiresShellIntegrationWarning | noSyncSuppressCaptureOutputRequiresShellIntegrationWarning (bool, default NO) | Suppress warning “Shell Integration is required for Capture Output.”. | missing |  |
+| noSyncSuppressCaptureOutputToolNotVisibleWarning | noSyncSuppressCaptureOutputToolNotVisibleWarning (bool, default NO) | Suppress warning that the Captured Output tool is not visible. | missing |  |
+| closingTmuxWindowKillsTmuxWindows | closingTmuxWindowKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux window. | missing |  |
+| closingTmuxTabKillsTmuxWindows | closingTmuxTabKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux tab. | missing |  |
+| aboutToPasteTabsWithCancel | aboutToPasteTabsWithCancel (bool, default NO) | Suppress warning when pasting tabs with offer to convert them to spaces or perform advanced paste. | missing |  |
+| shortLivedSessionDuration | shortLivedSessionDuration (float, default 3) | Warn about short-lived sessions that live less than this many seconds. | missing |  |
+| noSyncDoNotWarnBeforeMultilinePaste | noSyncDoNotWarnBeforeMultilinePaste (bool, default NO) | Suppress warning about multi-line pastes (or a single line ending in a newline). | missing |  |
+| noSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt | noSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt (bool, default NO) | Suppress warning about pasting a single line ending in a newline when at the shell prompt. | missing |  |
+| noSyncReplaceProfileWarning | noSyncReplaceProfileWarning (bool, default NO) | Suppress warning about copying a session's settings over a Profile. | missing |  |
+| noSyncTurnOffFocusReportingOnHostChange | noSyncTurnOffFocusReportingOnHostChange (bool?, default nil) | Always turn off focus reporting when host changes? | missing |  |
+| noSyncTurnOffMouseReportingOnHostChange | noSyncTurnOffMouseReportingOnHostChange (bool?, default nil) | Always turn off mouse reporting when host changes? | missing |  |
+| noSyncTurnOffBracketedPasteOnHostChange | noSyncTurnOffBracketedPasteOnHostChange (bool?, default nil) | Always turn off paste bracketing when host changes? | missing |  |
+| noSyncSuppressClipboardAccessDeniedWarning | noSyncSuppressClipboardAccessDeniedWarning (bool, default NO) | Suppress the notification that the terminal attempted to access the clipboard but it was denied? | missing |  |
+| noSyncSuppressMissingProfileInArrangementWarning | noSyncSuppressMissingProfileInArrangementWarning (bool, default NO) | Suppress the notification that a restored session’s profile no longer exists? | missing |  |
+| noSyncSuppressBadPWDInArrangementWarning | noSyncSuppressBadPWDInArrangementWarning (bool, default NO) | Suppress the notification that a saved arrangement has a bad initial working directory. | missing |  |
+| noSyncNeverAskAboutMouseReportingFrustration | noSyncNeverAskAboutMouseReportingFrustration (bool, default NO) | Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Cmd-C when mouse reporting is on? | missing |  |
+| noSyncNeverAskAboutDEC2048Frustration | noSyncNeverAskAboutDEC2048Frustration (bool, default NO) | Suppress the notification asking if you want to disable resize reporting. | missing |  |
+| noSyncDontWarnAboutTmuxPause | noSyncDontWarnAboutTmuxPause (bool, default NO) | Suppress announcement that tmux will pause a session. | missing |  |
+| noSyncClearAllBroadcast | noSyncClearAllBroadcast (bool?, default nil) | Send Clear Session to all broadcasted-to sessions? | missing |  |
+| noSyncSuppressSendSignal | noSyncSuppressSendSignal (bool, default NO) | Suppress warning about sending a signal to terminate a job. | missing |  |
+| noSyncConfirmRemoveAnnotation | noSyncConfirmRemoveAnnotation (bool, default NO) | Suppress confirmation to remove annotation? | missing |  |
+| noSyncDisableOpenURL | noSyncDisableOpenURL (bool, default NO) | Disable control sequence to open URLs? | missing |  |
+| noSyncOpenLinksInApp | noSyncOpenLinksInApp (bool, default NO) | Open links using the in-app browser? | missing |  |
+| noSyncBrowserUpsell | noSyncBrowserUpsell (bool, default NO) | Suppress the browser plugin upsell when clicking links? | missing |  |
+
+### Pasteboard
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| trimWhitespaceOnCopy | trimWhitespaceOnCopy (bool, default YES) | Trim whitespace when copying to pasteboard. | partial |  |
+| quickPasteBytesPerCall | quickPasteBytesPerCall (int, default 667) | Number of bytes to paste in each chunk when pasting normally. | partial |  |
+| quickPasteDelayBetweenCalls | quickPasteDelayBetweenCalls (float, default 0.01530456) | Delay in seconds between chunks when pasting normally. | missing |  |
+| slowPasteBytesPerCall | slowPasteBytesPerCall (int, default 16) | Number of bytes to paste in each chunk when pasting slowly. | partial |  |
+| slowPasteDelayBetweenCalls | slowPasteDelayBetweenCalls (float, default 0.125) | Delay in seconds between chunks when pasting slowly. | missing |  |
+| copyWithStylesByDefault | copyWithStylesByDefault (bool, default NO) | Copy to pasteboard on selection includes color and font style. | partial |  |
+| copyBackgroundColor | copyBackgroundColor (bool, default YES) | Exclude the default background color when text is copied with color and font style? When off, the default background color will be left unset. | missing |  |
+| pasteHistoryMaxOptions | pasteHistoryMaxOptions (int, default 20) | Number of entries to save in Paste History. | partial |  |
+| clippingSeparator | clippingSeparator (string, default @"\\n--\\n") | Separator inserted between multiple clippings when sending or copying them. | partial |  |
+| workgroupAutoSendSubmitDelay | workgroupAutoSendSubmitDelay (float, default 0.501) | Delay in seconds before the Return that submits an auto-sent code review. | missing |  |
+| disallowCopyEmptyString | disallowCopyEmptyString (bool, default NO) | Disallow copying empty string to pasteboard. | partial |  |
+| typingClearsSelection | typingClearsSelection (bool, default YES) | Pressing a key will remove the selection. | partial |  |
+| pastingClearsSelection | pastingClearsSelection (bool, default YES) | Pasting text will remove the selection. | partial |  |
+| promptForPasteWhenNotAtPrompt | promptForPasteWhenNotAtPrompt (bool, default NO) | Warn before pasting when not at shell prompt? | missing |  |
+| excludeBackgroundColorsFromCopiedStyle | excludeBackgroundColorsFromCopiedStyle (bool, default NO) | Exclude all background colors when text is copied with color and font style? This includes both the default background color and non-default background colors. | missing |  |
+| includePasteHistoryInAdvancedPaste | includePasteHistoryInAdvancedPaste (bool, default YES) | Include paste history in the advanced paste menu. | partial |  |
+| advancedPasteWaitsForPromptByDefault | advancedPasteWaitsForPromptByDefault (bool, default YES) | Should Advanced Paste automatically enable “Wait for shell prompt before pasting each line” by default when shell integration is detected? | partial |  |
+| alwaysWarnBeforePastingOverSize | alwaysWarnBeforePastingOverSize (int, default -1) | When pasting more than this many characters, require confirmation. | missing |  |
+| saveToPasteHistoryWhenSecureInputEnabled | saveToPasteHistoryWhenSecureInputEnabled (bool, default NO) | Save to paste history when secure keyboard input is enabled? | partial |  |
+
+### Tip of the Day
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| noSyncTipsDisabled | noSyncTipsDisabled (bool, default NO) | Disable the Tip of the Day? | missing |  |
+| timeBetweenTips | timeBetweenTips (float, default 24 * 60 * 60) | Time between tips (in seconds). | missing |  |
+
+### Badge
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| badgeFont | badgeFont (string, default @"Helvetica") | Font to use for the badge. | missing |  |
+| badgeFontIsBold | badgeFontIsBold (bool, default YES) | Should the badge render in bold type? | missing |  |
+| badgeMaxWidthFraction | badgeMaxWidthFraction (float, default 0.5) | Maximum width of the badge As a fraction of the width of the terminal, between 0 and 1.0. | missing |  |
+| badgeMaxHeightFraction | badgeMaxHeightFraction (float, default 0.2) | Maximum height of the badge As a fraction of the height of the terminal, between 0 and 1.0. | missing |  |
+| badgeRightMargin | badgeRightMargin (int, default 10) | Default value for right margin for the badge How much space to leave between the right edge of the badge and the right edge of the terminal. | missing |  |
+| badgeTopMargin | badgeTopMargin (int, default 10) | Default value for the top margin for the badge How much space to leave between the top edge of the badge and the top edge of the terminal. | missing |  |
+
+### Web Browser
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| webKitAdblockEnabled | webKitAdblockEnabled (bool, default NO) | Enable ad blocking in the web browser? When enabled, downloads and applies ad blocking rules from the configured URL. | missing |  |
+| adblockListURL | adblockListURL (string, default @"https://easylist-downloads.adblockplus.org/easylist_content_blocker.json") | URL for ad blocking filter list This should be a JSON file in WebKit content blocker format. | missing |  |
+| browserProxyEnabled | browserProxyEnabled (bool, default NO) | Enable HTTP proxy for web browser? When enabled, routes all browser traffic through the configured proxy server. | missing |  |
+| browserProxyHost | browserProxyHost (string, default @"127.0.0.1") | HTTP proxy hostname or IP address The address of the proxy server to use for browser connections. | missing |  |
+| browserProxyPort | browserProxyPort (int, default 8118) | HTTP proxy port The port number of the proxy server. | missing |  |
+| webInstantReplayFrameRate | webInstantReplayFrameRate (float, default 60.0) | Instant replay frame rate for web browser sessions. | missing |  |
+| browserPluginPathHint | browserPluginPathHint (string, default @"") | Location of browser plugin if it cannot be auto-detected. | missing |  |
+
+### Experimental Features
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| killSessionsOnLogout | killSessionsOnLogout (bool, default NO) | Kill sessions on logout. | missing |  |
+| useExperimentalFontMetrics | useExperimentalFontMetrics (bool, default NO) | Use a more theoretically correct technique to measure line height. | missing |  |
+| fastForegroundJobUpdates | fastForegroundJobUpdates (bool, default YES) | Enable low-latency updates of the current foreground job. | missing |  |
+| tmuxVariableWindowSizesSupported | tmuxVariableWindowSizesSupported (bool, default YES) | Allow variable window sizes in tmux integration. | missing |  |
+| aggressiveBaseCharacterDetection | aggressiveBaseCharacterDetection (bool, default YES) | Detect base unicode characters with lookup table. | missing |  |
+| escapeWithQuotes | escapeWithQuotes (bool, default NO) | Escape file names with single quotes instead of backslashes. | missing |  |
+| fontsForGenerousRounding | fontsForGenerousRounding (string, default @"consolas") | List of fonts to use alternate rounding algorithm for line height calculation. | missing |  |
+| experimentalKeyHandling | experimentalKeyHandling (bool, default NO) | Improved support for input method editors like AquaSKK. | missing |  |
+| allowSendingFunctionKeysToCocoa | allowSendingFunctionKeysToCocoa (bool, default YES_IF_BETA_ELSE_NO) | Allow function keys to be handled by macOS text input system. | missing |  |
+| disableMetalWhenIdle | disableMetalWhenIdle (bool, default NO) | Disable metal renderer when idle to save CPU utilization? Requires Metal renderer. | missing |  |
+| extendBackgroundColorIntoMargins | extendBackgroundColorIntoMargins (bool, default YES) | Extend background color into margins in alternate screen mode? | missing |  |
+| supportREPCode | supportREPCode (bool, default YES) | Enable support for REP (Repeat previous character) escape sequence? | missing |  |
+| proportionalScrollWheelReporting | proportionalScrollWheelReporting (bool, default YES) | Report multiple mouse scroll events when scrolling quickly? | missing |  |
+| useModernScrollWheelAccumulator | useModernScrollWheelAccumulator (bool, default YES) | Use modern scroll wheel accumulator. | missing |  |
+| resetSGROnPrompt | resetSGROnPrompt (bool, default YES) | Reset colors at shell prompt? Uses shell integration to detect a shell prompt and, if enabled, resets colors to their defaults. | missing |  |
+| retinaInlineImages | retinaInlineImages (bool, default YES) | Show inline images at Retina resolution. | missing |  |
+| throttleMetalConcurrentFrames | throttleMetalConcurrentFrames (bool, default YES) | Reduce number of frames in flight when GPU can't produce drawables quickly. | missing |  |
+| metalSynchronizedDrawing | metalSynchronizedDrawing (bool, default NO) | Use synchronized Metal drawable presentation? Defers drawable acquisition until rendering completes, presents synchronously with Core Animation, and acquires drawables on the private render queue. | missing |  |
+| metalRowOutputCacheEnabled | metalRowOutputCacheEnabled (bool, default NO) | Cache per-row GPU build output? Skips rebuilding the glyph and color data for rows whose content and configuration have not changed since the last frame. | missing |  |
+| sshURLsSupportPath | sshURLsSupportPath (bool, default YES) | SSH URLs respect the path. | missing |  |
+| useDivorcedProfileToSplit | useDivorcedProfileToSplit (bool, default YES) | When splitting a pane, use the profile with local modifications, not the backing profile. | missing |  |
+| synergyModifierRemappingEnabled | synergyModifierRemappingEnabled (bool, default YES) | Support modifier remapping for keystrokes originated by Synergy. | missing |  |
+| shouldSetLCTerminal | shouldSetLCTerminal (bool, default YES) | Set LC_TERMINAL=iTerm2. | missing |  |
+| clearBellIconAggressively | clearBellIconAggressively (bool, default YES) | Clear bell icon when a session becomes active. | missing |  |
+| workAroundNumericKeypadBug | workAroundNumericKeypadBug (bool, default YES) | Treat the equals sign on the numeric keypad as a key on the numeric keypad. | missing |  |
+| enableCharacterAccentMenu | enableCharacterAccentMenu (bool, default NO) | Enable character accent menu. | missing |  |
+| accelerateUploads | accelerateUploads (bool, default YES) | Make uploads with it2ul really fast. | missing |  |
+| multiserver | multiserver (bool, default YES) | Enable multi-server daemon. | missing |  |
+| useRestorableStateController | useRestorableStateController (bool, default YES) | Enable restorable state controller? This makes window restoration more reliable. | missing |  |
+| fixMouseWheel | fixMouseWheel (bool, default YES) | Mouse wheel always scrolls when scroll bars are visible. | missing |  |
+| oscColorReport16Bits | oscColorReport16Bits (bool, default YES) | Report 16-bit color values to OSC 4 and 10 through 19. | missing |  |
+| showLocationsInScrollbar | showLocationsInScrollbar (bool, default YES) | Show search result and prompt locations in scroll bar. | missing |  |
+| showMarksInScrollbar | showMarksInScrollbar (bool, default YES) | Show prompt locations in scroll bar? Changing this setting will not affect existing sessions until you restart. | missing |  |
+| allowTabbarInTitlebarAccessoryBigSur | allowTabbarInTitlebarAccessoryBigSur (bool, default NO) | Make the tab bar a titlebar accessory view in Big Sur? | missing |  |
+| storeStateInSqlite | storeStateInSqlite (bool, default YES) | Store window restoration state in SQLite. | missing |  |
+| useNewContentFormat | useNewContentFormat (bool, default YES) | Save unlimited amount of window contents. | missing |  |
+| vs16Supported | vs16Supported (bool, default NO) | Support variation selector 16 making emoji fullwidth in all modes? | missing |  |
+| vs16SupportedInPrimaryScreen | vs16SupportedInPrimaryScreen (bool, default YES) | Support variation selector 16 making emoji fullwidth outside of alternate screen mode? | missing |  |
+| fastTrackpad | fastTrackpad (bool, default YES) | Trackpad scrolls fast? Set to No for legacy scrolling speed. | missing |  |
+| supportDecsetMetaSendsEscape | supportDecsetMetaSendsEscape (bool, default YES_IF_BETA_ELSE_NO) | Support DECSET 1036? This allows apps in the terminal to control whether the option key sends esc+ or acts like a regular option key. | missing |  |
+| fastTriggerRegexes | fastTriggerRegexes (bool, default YES) | Fast regular expression evaluation for triggers. | missing |  |
+| postFakeFlagsChangedEvents | postFakeFlagsChangedEvents (bool, default NO) | Post fake flags-changed events when remapping modifiers with an event tap. | missing |  |
+| fullWidthFlags | fullWidthFlags (bool, default YES) | Lone regional indicators render full-width. | missing |  |
+| preconvertStringsOnParserThread | preconvertStringsOnParserThread (bool, default YES) | Pre-convert non-ASCII strings to screen characters on the parser thread. | missing |  |
+| asyncPreconvertStrings | asyncPreconvertStrings (bool, default YES) | Pre-convert long non-ASCII strings on a background queue. | missing |  |
+| asyncPreconvertMinStringLength | asyncPreconvertMinStringLength (int, default 128) | Minimum string length (in UTF-16 code units) to dispatch for async pre-conversion. | missing |  |
+| asyncPreconvertMaxOutstandingBytes | asyncPreconvertMaxOutstandingBytes (int, default 1048576) | Maximum bytes of outstanding async pre-conversions. | missing |  |
+| logNonASCIIStringLengthHistogram | logNonASCIIStringLengthHistogram (bool, default NO) | Log a histogram of non-ASCII string lengths periodically. | missing |  |
+| aiModernModelPrefixes | aiModernModelPrefixes (string, default @"gpt-") | AI model name substrings that use the modern 'completions' API. | missing |  |
+| aiProxy | aiProxy (string, default @"") | Host and port for proxy for AI requests. | missing |  |
+| ollamaNumCtx | ollamaNumCtx (int, default 0) | Ollama context window size (num_ctx) for native /api/chat requests. | missing |  |
+| ollamaKeepAlive | ollamaKeepAlive (string, default @"30m") | Ollama keep_alive for native /api/chat requests. | missing |  |
+| addUtilitiesToPATH | addUtilitiesToPATH (bool, default YES) | Add path to iTerm2 utilities to $PATH for new sessions? | missing |  |
+| autoSearch | autoSearch (bool, default NO) | Automatically search for selected text after making a selection? | missing |  |
+| smartLoggingWithAutoComposer | smartLoggingWithAutoComposer (bool, default NO) | Enable more compact logging when using auto composer? This will avoid logging raw data in your prompt and your interactions with it. | missing |  |
+| disclaimChildren | disclaimChildren (bool, default NO) | Disclaim ownership of children. | missing |  |
+| usePosixSpawn | usePosixSpawn (bool, default YES_IF_BETA_ELSE_NO) | Use posix_spawn instead of fork and exec to launch sessions? This is a newer launch mechanism that avoids a slow file-descriptor-closing step. | missing |  |
+| restoreKeyModeAutomaticallyOnHostChange | restoreKeyModeAutomaticallyOnHostChange (bool, default YES) | Automatically restore keyboard mode when an ssh session ends? | missing |  |
+| chaseAnchoredScreen | chaseAnchoredScreen (bool, default NO) | Aggressively keep windows on the screen they were configured to be on. | missing |  |
+| codeciergeGhostRidingPrompt | codeciergeGhostRidingPrompt (string, default @"You operate a terminal emulator for me. My goal is $GOAL. $CONTEXT. Ask clarifying questions as needed and run commands using the execute function when you're ready. When I've reached my goal, remind me to click the End Task button.") | Prompt to send to LLM for Codecierge when it is able to execute commands automatically. | missing |  |
+| codeciergeCommandWarningCount | codeciergeCommandWarningCount (int, default 10) | After this many commands, make codecierge confirm that you intend to keep it enabled. | missing |  |
+| codeciergeRegularPrompt | codeciergeRegularPrompt (string, default @"You help a me in a terminal emulator. My goal is $GOAL. $CONTEXT. Start by suggesting a command. Don't overwhelm me with too much information: just go one step at a time. When I've reached my goal, remind me to click the End Task button.") | Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically. | missing |  |
+| aquaSKKBugfixEnabled | aquaSKKBugfixEnabled (bool, default NO) | Enable AquaSKK bugfix? | missing |  |
+| channelsEnabled | channelsEnabled (bool, default NO) | Enable Channels feature? | missing |  |
+| rightJustifyRTLLines | rightJustifyRTLLines (bool, default YES) | Right-justify lines in paragraphs with base writing direction of right-to-left? Requires BOTH “right-to-left text support” and “auto-detect paragraph writing detection” to be enabled. | missing |  |
+| detectParagraphDirection | detectParagraphDirection (bool, default NO) | Auto-detect paragraph writing direction based on the first strong directional character? Requires right-to-left text support to be enabled. | missing |  |
+| disableBidiInAlternateScreen | disableBidiInAlternateScreen (bool, default NO) | Do not reorder right-to-left text in the alternate screen? Full-screen apps (editors and some CLIs) position their own text and may already order it for display, so reordering it again fights their layout. | missing |  |
+| browserProfiles | browserProfiles (bool, default YES) | Enable browser-style profiles? You must restart iTerm2 for this to take effect. | missing |  |
+| companionStreamFrameNumbers | companionStreamFrameNumbers (bool, default NO) | Stamp frame numbers into the iTerm2 Buddy live stream? Draws a monotonic counter onto each streamed video frame, for debugging the phone’s live session view. | missing |  |
+| companionStreamMaxLeadMilliseconds | companionStreamMaxLeadMilliseconds (int, default 500) | iTerm2 Buddy live stream: maximum capture-time lead, in milliseconds. | missing |  |
+| companionStreamMaxQueueDepth | companionStreamMaxQueueDepth (int, default 4) | iTerm2 Buddy live stream: maximum phone decode-queue depth. | missing |  |
+| companionStreamBitrateMultiplier | companionStreamBitrateMultiplier (float, default 1.0) | iTerm2 Buddy live stream: video bitrate multiplier. | missing |  |
+| companionWakeupCoalesceInterval | companionWakeupCoalesceInterval (float, default 5.0) | iTerm2 Buddy push notifications: minimum seconds between wakeup pushes. | missing |  |
+
+### Scripting
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| pythonRuntimeDownloadURL | pythonRuntimeDownloadURL (string, default iTermDefaultPythonRuntimeDownloadURL()) | URL to check for new versions of the Python scripting runtime. | missing |  |
+| uvManifestDownloadURL | uvManifestDownloadURL (string, default @"https://iterm2.com/downloads/uv/manifest.json") | URL of the uv download manifest (used when the Python runtime is provisioned with uv). | missing |  |
+| pythonRuntimeBetaDownloadURL | pythonRuntimeBetaDownloadURL (string, default @"https://iterm2.com/downloads/pyenv/betamanifest.json") | URL to check for new Beta versions of the Python scripting runtime. | missing |  |
+| laxNilPolicyInInterpolatedStrings | laxNilPolicyInInterpolatedStrings (bool, default YES) | Should references to undefined variables in interpolated strings be converted to empty string? When enabled, an expression in an interpolated string that references an undefined variable will be treated as an empty string. | missing |  |
+| pythonRuntimeUsesUV | pythonRuntimeUsesUV (bool, default YES) | Use uv to provision the Python runtime for API scripts? When enabled, iTerm2 uses uv to download Python and build per-script environments instead of the bundled Python runtime. | missing |  |
+| setCookie | setCookie (bool, default NO) | Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation? This will only affect sessions created after changing this setting. | missing |  |
+| setIT2AppPath | setIT2AppPath (bool, default NO) | Set IT2_APP_PATH environment variable on new sessions, pointing at this iTerm2 build’s app bundle? This disambiguates the AppleScript target when multiple iTerm2 builds with the same bundle identifier are running, so that the “it2” CLI requests its cookie from this iTerm2 instance. | missing |  |
+
+
+## Row counts
+
+Total rows: 820.
+
+By status: have 7, partial 73, missing 740.

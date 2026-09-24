@@ -4,26 +4,31 @@ Status: draft for review, 2026-09-23. "Tandem" is a working name.
 
 ## 1. Goal
 
-Robert uses iTerm2 on his Mac. He wants his Windows terminal to look and behave the same,
-so he does not switch habits between machines. He tried Ghostty and does not like it as much.
+Robert uses iTerm2 on his Mac. He wants a Windows terminal that matches iTerm2 one to one:
+every feature he uses today, and the ones he does not use yet. He tried Ghostty and does not
+like it as much. iTerm2 stays the terminal on the Mac.
 
-Tandem is a new Windows-only terminal app. It copies iTerm2 behavior and reads iTerm2's
-own settings file. iTerm2 stays the terminal on the Mac.
+Revised 2026-09-24. Robert: "I dont care if there is a mechanism to keep the settings synced.
+Thats not the point. The point is being able to one-to-one match the current features and even
+others I am not using yet." Settings sync is therefore not a goal.
 
 ### Success criteria
 
-1. A profile, color, or font change in iTerm2 on the Mac shows up in Tandem without manual steps.
-2. The mouse works the iTerm2 way in plain shells, tmux, vim, and htop. No lost clicks, no stuck selections.
-3. `tmux -CC` shows tmux windows and panes as native Tandem tabs and splits.
-4. One global key shows and hides a drop-down Tandem window.
-5. iTerm2 triggers and shell integration work: marks, current directory, inline images, badges.
+1. Every iTerm2 feature in `docs/parity/` has a Windows equivalent in Tandem, or a written
+   reason why the feature cannot exist on Windows (for example the Touch Bar).
+2. Someone who knows iTerm2 finds each setting, menu command, and shortcut where they expect it,
+   with Cmd mapped as in section 3.4.
+3. The mouse works the iTerm2 way in plain shells, tmux, vim, and htop.
 
-### Not in scope
+### Scope
 
-- A Mac or Linux build. iTerm2 already covers the Mac.
-- iTerm2's Python API, status bar, toolbelt, Instant Replay, AI features, and password manager.
-- A full settings editor. iTerm2 on the Mac is where settings get edited (see section 4).
-- Any code from Windows Terminal. The one exception is the ConPTY DLL (section 3.1).
+- The target is the whole feature list in `docs/parity/`: profiles and settings, menus, tmux
+  integration, shell integration, triggers, status bar, toolbelt, Instant Replay, the password
+  manager, Composer, the Python API, AI features, and the rest.
+- Tandem has its own settings window, laid out like iTerm2's. Importing an iTerm2 settings file
+  is an optional one-time convenience, not a sync.
+- Not in scope: a Mac or Linux build, and code copied from Windows Terminal or iTerm2 (the
+  ConPTY DLL is the one exception, section 3.1).
 
 ## 2. Architecture
 
@@ -35,7 +40,7 @@ Tandem is one Rust program with five parts. Each part has one job and a small in
 | `core` | Parses escape codes, holds the screen and scrollback | `alacritty_terminal` crate |
 | `render` | Draws cells, cursor, selection, and images on the GPU | wgpu and glyphon (cosmic-text) |
 | `ui` | Windows, tabs, splits, mouse, keys, hotkey window | winit plus direct Win32 calls |
-| `settings` | Reads iTerm2's settings file and Windows overrides | `plist` crate |
+| `settings` | Tandem's own profiles and settings, plus an optional iTerm2 import | TOML files, `plist` crate for import |
 
 Two feature parts sit on top of `core` and `ui`:
 
@@ -170,45 +175,13 @@ Shell integration:
 
 ## 4. Settings
 
-### 4.1 Source of truth: iTerm2 on the Mac
+Superseded 2026-09-24. Tandem keeps its own profiles and global settings in `%APPDATA%\Tandem`,
+edited in a settings window laid out like iTerm2's (Profiles, Appearance, Keys, Pointer,
+Arrangements, Advanced). A one-time import can read an iTerm2 `com.googlecode.iterm2.plist` or
+Dynamic Profiles JSON. The full list of settings to match is in `docs/parity/01-profile-settings.md`
+and `docs/parity/02-global-settings.md`.
 
-iTerm2 can load and save its settings in a chosen folder
-(Settings > General > Settings > "Load settings from a custom folder or URL").
-We point that at a folder both machines sync. Tandem watches
-`com.googlecode.iterm2.plist` in that folder and reloads on change.
-
-Tandem reads these parts of the file:
-
-- `New Bookmarks`: the profiles, by `Guid`. Colors (`Ansi 0 Color` and the rest), fonts (`Normal Font`,
-  `Non Ascii Font`), cursor, transparency, blur, `Keyboard Map`, `Triggers`, `Smart Selection Rules`,
-  and the mouse options.
-- The default profile and the hotkey window profile.
-- Global keys and mouse options.
-
-Tandem never writes this file.
-
-The sync transport is Syncthing by default, since it already runs on his machines.
-The Mac is a work machine, so this needs his check (section 8).
-
-### 4.2 Windows overrides
-
-Some profile values cannot carry over, such as `/bin/zsh` or a font that is not installed on Windows.
-A small file, `%APPDATA%\Tandem\overrides.toml`, fixes those per profile `Guid`:
-
-```toml
-[profile."5C9C1A5E-...-GUID"]
-command = "pwsh.exe -NoLogo"
-font = "MesloLGS NF"
-
-[keys]
-cmd = "ctrl+shift"
-```
-
-### 4.3 Errors
-
-- A bad or half-written plist: Tandem keeps the last good settings and shows a banner with the parse error.
-- A font that is not installed and has no override: a banner names the font. Tandem uses Consolas until it is fixed.
-- Every banner stays until the problem is fixed or dismissed. Nothing fails silently.
+Errors in a settings file keep the last good settings and show a banner with the parse error.
 
 ## 5. Build and test
 
@@ -227,16 +200,8 @@ cmd = "ctrl+shift"
 
 ## 6. Milestones
 
-Risk goes first. Each milestone ends with something he can run.
-
-| # | Milestone | Done when |
-|---|---|---|
-| 0 | ConPTY and mouse probe | A scripted probe (no window) runs a console app, tmux, vim, and htop under ConPTY, and every mouse mode passes with the shipped ConPTY |
-| 1 | Terminal basics | Tabs, splits, renderer, keys, copy and paste |
-| 2 | iTerm2 settings | Profiles, colors, and fonts load from the synced plist and reload live |
-| 3 | Hotkey window | The global key shows and hides the drop-down window |
-| 4 | Triggers and shell integration | Triggers, marks, badges, and inline images work |
-| 5 | tmux -CC | tmux windows and panes appear as native tabs and splits |
+Milestones 0 (ConPTY and mouse probe) and 1 (terminal basics) are done. The roadmap from
+milestone 2 on is in `docs/parity/00-roadmap.md`, ordered from the feature inventory.
 
 ## 7. Licensing
 
@@ -246,8 +211,6 @@ Risk goes first. Each milestone ends with something he can run.
 
 ## 8. Open items for review
 
-1. **Settings sync.** Syncthing between the work Mac and EXTREME. Is that allowed on the work Mac,
-   or should the sync go another way (for example a private git repo)?
-2. **Cmd mapping.** Cmd becomes Ctrl+Shift. Bumbles shares one keyboard between the Mac and Windows,
+1. **Cmd mapping.** Cmd becomes Ctrl+Shift. Bumbles shares one keyboard between the Mac and Windows,
    so a different mapping may fit his hands better.
-3. **Name.** "Tandem" is a working name.
+2. **Name.** "Tandem" is a working name.
