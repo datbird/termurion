@@ -119,10 +119,7 @@ impl App {
             "previousMark:" => self.step_mark(id, false),
             "clearToLastMark:" => {
                 if let Some(p) = self.panes.get_mut(&id) {
-                    let lines: Vec<i32> = p.screen.marks_in_order().iter().map(|(l, _)| *l).collect();
-                    let cursor = p.screen.term().grid().cursor.point.line.0;
-                    let start = marks::clear_start(&lines, p.screen.current_prompt_line(), cursor);
-                    p.screen.clear_from(start);
+                    p.clear_to_last_mark();
                     p.scroll(Scroll::Bottom);
                 }
             }

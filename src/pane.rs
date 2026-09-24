@@ -86,6 +86,21 @@ impl Pane {
         }
     }
 
+    /// iTerm2's Clear to Last Mark: clears from after the last mark above the prompt, then
+    /// clears ConPTY's buffer too (keeping the cursor row), so both agree.
+    pub fn clear_to_last_mark(&mut self) {
+        let lines: Vec<i32> = self.screen.marks_in_order().iter().map(|(l, _)| *l).collect();
+        let cursor = self.screen.term().grid().cursor.point.line.0;
+        let start = crate::marks::clear_start(&lines, self.screen.current_prompt_line(), cursor);
+        self.screen.clear_from(start);
+        self.screen.term_mut().selection = None;
+        if let Some(pty) = &self.pty {
+            if let Err(e) = pty.clear() {
+                self.error = Some(e);
+            }
+        }
+    }
+
     /// iTerm2's Clear Buffer: the screen and ConPTY both clear, keeping the cursor line.
     pub fn clear(&mut self) {
         self.screen.clear(false);
@@ -170,6 +185,28 @@ mod tests {
         assert_eq!(p.screen.marks_in_order().len(), 1, "{}", p.screen.all_text());
         assert!(p.screen.shell.cwd.as_deref().is_some_and(|c| c.contains(':')), "{:?}", p.screen.shell.cwd);
         assert_eq!(p.screen.shell.shell.as_deref(), Some("powershell"));
+    }
+
+    #[test]
+    fn clear_to_last_mark_keeps_conpty_in_step() {
+        let mut p = start("cmd.exe");
+        assert!(pump_until(&mut p, |p| p.screen.text().contains('>')), "no prompt");
+        p.input(b"for /l %i in (1,1,30) do @echo L%i\r");
+        assert!(pump_until(&mut p, |p| {
+            let t = p.screen.all_text();
+            t.contains("L30\n") && t.trim_end().ends_with('>')
+        }), "no output");
+        let top = -(p.screen.term().grid().history_size() as i32);
+        let line = (top..24).find(|l| p.screen.line_text(*l) == "L20").expect("L20 row");
+        p.screen.set_manual_mark(line, None);
+        p.clear_to_last_mark();
+        let t = p.screen.all_text();
+        assert!(t.contains("L20\n") && !t.contains("L21"), "{t}");
+        std::thread::sleep(Duration::from_millis(300));
+        p.input(b"echo MARK\r");
+        assert!(pump_until(&mut p, |p| p.screen.all_text().matches("MARK").count() >= 2), "no echo");
+        let rows: Vec<usize> = p.screen.text().lines().enumerate().filter(|(_, l)| l.contains("MARK")).map(|(i, _)| i).collect();
+        assert!(rows.iter().all(|&r| r < 4), "MARK on rows {rows:?}:\n{}", p.screen.all_text());
     }
 
     #[test]

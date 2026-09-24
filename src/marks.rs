@@ -8,6 +8,7 @@ use std::time::SystemTime;
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::vte::ansi::Handler;
 
 use crate::osc::{Osc, PromptKind};
 use crate::screen::Screen;
@@ -172,19 +173,35 @@ pub fn clear_start(marks: &[i32], prompt_line: Option<i32>, cursor: i32) -> i32 
 }
 
 impl Screen {
-    /// Clears from grid line `line` to the end, then puts the cursor's row (the prompt) back
-    /// at `line` (iTerm2 clearFromAbsoluteLineToEnd).
+    /// Clears from grid line `line` to the end (iTerm2 clearFromAbsoluteLineToEnd). The
+    /// cursor's row (the prompt) goes to the top of the screen, and the rows kept above move
+    /// into history, so the screen matches ConPTY after its own clear (which keeps only the
+    /// cursor row). The current prompt's mark moves onto that row when its own row went.
     pub fn clear_from(&mut self, line: i32) {
         let grid = self.term.grid();
         let top = -(grid.history_size() as i32);
         let line = line.max(top);
         let cursor = grid.cursor.point;
-        let saved = grid[cursor.line].clone();
-        let target = line.max(0);
+        let mut saved = grid[cursor.line].clone();
+        let cur = self.marks.current;
+        // A prompt mark above the cursor row (a two-line prompt) moves down to it.
+        if let Some(cur) = cur.filter(|_| saved.mark() == 0) {
+            if let Some(ml) = self.mark_line(cur).filter(|ml| *ml >= line && *ml < cursor.line.0) {
+                let skipped = self.anchor_at(cur, Point::new(cursor.line, Column(0))).map_or(0, |a| a.lines);
+                for a in [&mut self.marks.command_start, &mut self.marks.output_start].into_iter().flatten() {
+                    a.lines = a.lines.saturating_sub(skipped);
+                }
+                let _ = ml;
+                saved.set_mark(cur);
+            }
+        }
+        self.term.grid_mut().cut_from(Line(line));
+        if line > 0 {
+            self.term.scroll_up(line as usize);
+        }
         let grid = self.term.grid_mut();
-        grid.cut_from(Line(line));
-        grid[Line(target)] = saved;
-        grid.cursor.point = Point::new(Line(target), cursor.column);
+        grid[Line(0)] = saved;
+        grid.cursor.point = Point::new(Line(0), cursor.column);
     }
 
     /// The mark line of the prompt being typed at, if any.
@@ -614,8 +631,11 @@ mod tests {
         s.feed(b"keep\r\nold1\r\nold2\r\n$ typed");
         s.clear_from(1);
         assert_eq!(s.all_text(), "keep\n$ typed\n");
+        // The prompt goes to the top of the screen (where ConPTY's clear puts it); the kept
+        // rows move into history.
         let c = s.term().grid().cursor.point;
-        assert_eq!((c.line.0, c.column.0), (1, 7));
+        assert_eq!((c.line.0, c.column.0), (0, 7));
+        assert_eq!(s.line_text(-1), "keep");
     }
 
     #[test]
@@ -675,6 +695,20 @@ mod tests {
             assert_eq!(text(&s), out, "at {cols} columns");
             assert_eq!(cmd(&s), command, "at {cols} columns");
         }
+    }
+
+    #[test]
+    fn a_two_line_prompt_keeps_its_mark_after_a_clear() {
+        let mut s = Screen::new(40, 10);
+        prompt(&mut s, "ls", 0);
+        s.feed(b"\x1b]133;A\x07info line\r\n$ \x1b]133;B\x07ty");
+        let first = s.marks_in_order()[0].0;
+        s.clear_from(first + 1);
+        let marks = s.marks_in_order();
+        let (line, m) = marks.last().unwrap();
+        assert_eq!((*line, m.command.as_str()), (0, ""));
+        s.feed(b"\r\n\x1b]133;C\x07");
+        assert_eq!(s.marks_in_order().last().unwrap().1.command, "ty");
     }
 
     #[test]
