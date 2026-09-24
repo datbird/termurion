@@ -33,7 +33,7 @@ Tandem is one Rust program with five parts. Each part has one job and a small in
 |---|---|---|
 | `pty` | Starts shells and moves bytes to and from them | ConPTY |
 | `core` | Parses escape codes, holds the screen and scrollback | `alacritty_terminal` crate |
-| `render` | Draws cells, cursor, selection, and images on the GPU | wgpu (DX12) and DirectWrite |
+| `render` | Draws cells, cursor, selection, and images on the GPU | wgpu and glyphon (cosmic-text) |
 | `ui` | Windows, tabs, splits, mouse, keys, hotkey window | winit plus direct Win32 calls |
 | `settings` | Reads iTerm2's settings file and Windows overrides | `plist` crate |
 
@@ -86,7 +86,9 @@ In tmux mode, one `pty` runs `tmux -CC` and `tmuxcc` feeds every pane's `core` f
 ### 3.3 render
 
 - wgpu on the DX12 backend draws a grid of cells from a glyph atlas.
-- DirectWrite rasterizes glyphs. This gives the native Windows text look and handles font fallback and emoji.
+- glyphon (cosmic-text and swash) shapes and rasterizes glyphs, with font fallback and emoji. It uses
+  grayscale smoothing, which is closer to iTerm2's CoreText look than ClearType. (Changed from DirectWrite
+  in milestone 1; DirectWrite stays an option if text looks wrong on Windows.)
 - Supports iTerm2 profile visuals: ANSI and bright colors, cursor style and color, bold and italic fonts,
   line spacing, window transparency, and blur (DWM acrylic).
 - Draws inline images from `core` image cells.
