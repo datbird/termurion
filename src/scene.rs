@@ -127,20 +127,38 @@ pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), fo
                 frame.quads.push(Quad { rect: r, color: rgba(bg, 1.0) });
             }
         }
-        // Text spans.
-        let mut spans: Vec<Span> = Vec::new();
-        for c in cells {
+        // Text pieces. An ASCII run shares one piece. Any other character gets its own
+        // piece at its cell's x, because fallback fonts (CJK, emoji) are not monospace
+        // and would push the text after them off the grid.
+        let flush = |piece: &mut Option<(usize, Vec<Span>)>, frame: &mut Frame| {
+            if let Some((start, mut spans)) = piece.take() {
+                while spans.last().is_some_and(|s| s.text.trim_end().is_empty()) {
+                    spans.pop();
+                }
+                if !spans.is_empty() {
+                    frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect });
+                }
+            }
+        };
+        let mut piece: Option<(usize, Vec<Span>)> = None;
+        for (col, c) in cells.iter().enumerate() {
+            if c.text.is_empty() {
+                continue;
+            }
+            let ascii = c.text.is_ascii();
+            if !ascii {
+                flush(&mut piece, frame);
+            }
+            let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
             match spans.last_mut() {
                 Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
                 _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic }),
             }
+            if !ascii {
+                flush(&mut piece, frame);
+            }
         }
-        while spans.last().is_some_and(|s| s.text.trim_end().is_empty()) {
-            spans.pop();
-        }
-        if !spans.is_empty() {
-            frame.rows.push(TextRow { x: rect.x, y, spans, clip: rect });
-        }
+        flush(&mut piece, frame);
     }
 
     if let Some((row, col)) = cursor {
@@ -278,7 +296,20 @@ mod tests {
         let s = screen("\u{4e2d}x".as_bytes());
         let mut f = Frame::default();
         pane(&mut f, &s, RECT, CELL, true);
-        assert!(row_text(&f, 0).starts_with("\u{4e2d}x"), "{:?}", row_text(&f, 0));
+        let all: String = f.rows.iter().flat_map(|r| r.spans.iter().map(|s| s.text.as_str())).collect();
+        assert!(all.starts_with("\u{4e2d}x"), "{all:?}");
+    }
+
+    #[test]
+    fn non_ascii_text_is_placed_on_its_own_cell() {
+        // Fallback fonts are not monospace, so a wide or non-ASCII glyph gets its own
+        // row piece at its cell's x, and the text after it starts at its own cell too.
+        let s = screen("a\u{4e2d}x".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true);
+        let at = |text: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text.trim_end() == text)).map(|r| r.x);
+        assert_eq!(at("\u{4e2d}"), Some(10.0), "{:?}", f.rows);
+        assert_eq!(at("x"), Some(30.0), "{:?}", f.rows);
     }
 
     #[test]
