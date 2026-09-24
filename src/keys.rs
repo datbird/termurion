@@ -48,7 +48,8 @@ fn mod_param(m: Mods, e: Enc) -> u8 {
 fn with_alt(mut v: Vec<u8>, mods: Mods, e: Enc) -> Vec<u8> {
     if mods.alt {
         match e.alt_sends {
-            0 => {}
+            // Normal on macOS types the Option layer's character. Windows has none (AltGr
+            // text arrives as text), so Normal sends Esc+, as Windows terminals do.
             1 => {
                 if let Some(b) = v.first_mut() {
                     *b |= 0x80;
@@ -158,7 +159,7 @@ pub enum AltSide {
 /// The profile's Keys options that change what a key sends.
 #[derive(Clone, Copy, Debug)]
 pub struct KeyOptions {
-    /// Option Key Sends: 0 Normal, 1 Meta (high bit), 2 Esc+.
+    /// Option Key Sends: 0 Normal, 1 Meta (high bit), 2 Esc+. Normal acts as Esc+ on Windows.
     pub left_option: i64,
     pub right_option: i64,
     /// Treat Option as Alt: Alt counts 2 in xterm's modifier parameter; off, it counts 8 (Meta).
@@ -319,10 +320,11 @@ mod tests {
     }
 
     #[test]
-    fn option_normal_sends_plain_text() {
+    fn option_normal_acts_as_esc_plus_on_windows() {
+        // Windows has no Option character layer (AltGr does that job), so Normal sends Esc+.
         let o = KeyOptions { left_option: 0, ..OPTS };
-        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Left, false, false, &o), Some(b"b".to_vec()));
-        assert_eq!(with(Key::Backspace, None, ALT, AltSide::Left, false, false, &o), Some(vec![0x7f]));
+        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Left, false, false, &o), Some(b"\x1bb".to_vec()));
+        assert_eq!(with(Key::Backspace, None, ALT, AltSide::Left, false, false, &o), Some(vec![0x1b, 0x7f]));
     }
 
     #[test]
@@ -339,9 +341,9 @@ mod tests {
 
     #[test]
     fn each_side_uses_its_own_setting() {
-        let o = KeyOptions { left_option: 0, right_option: 2, ..OPTS };
+        let o = KeyOptions { left_option: 1, right_option: 2, ..OPTS };
         assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Right, false, false, &o), Some(b"\x1bb".to_vec()));
-        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Left, false, false, &o), Some(b"b".to_vec()));
+        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Left, false, false, &o), Some(vec![b'b' | 0x80]));
     }
 
     #[test]

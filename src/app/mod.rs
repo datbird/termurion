@@ -1299,6 +1299,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(f) => {
                 self.focused = f;
+                // iTerm2 drops a pending Leader when the app goes to the background.
+                if !f && self.leader_on {
+                    self.leader_on = false;
+                    self.refresh_route();
+                }
                 // Focus reporting (DECSET 1004): tell the app the window gained or lost focus.
                 if let Some(p) = self.focused_pane() {
                     if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {

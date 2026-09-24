@@ -39,6 +39,27 @@ pub(super) fn option_click_arrows(cursor: (u32, u32), target: (u32, u32), cols: 
     out.into_bytes()
 }
 
+/// Which pane a pointer action works on. iTerm2 runs it in the clicked session, whether
+/// or not the click focused it (Focus window after right or middle click).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Target {
+    /// Text in or out of the clicked pane; focus stays where it was.
+    Clicked,
+    /// The context menu's commands act on the focused pane, so the clicked pane takes focus.
+    FocusClicked,
+    /// Tab and pane navigation, new tabs and splits: from the focused pane, as usual.
+    Focused,
+}
+
+pub(super) fn pointer_target(action: &str) -> Target {
+    match action {
+        "kContextMenuPointerAction" | "kSelectMenuItemPointerAction" => Target::FocusClicked,
+        "kPasteFromClipboardPointerAction" | "kPasteFromSelectionPointerAction" | "kExtendSelectionPointerAction"
+        | "kSendEscapeSequencePointerAction" | "kSendHexCodePointerAction" | "kSendTextPointerAction" | "kCopyOrPastePointerAction" => Target::Clicked,
+        _ => Target::Focused,
+    }
+}
+
 /// Toggle Setting's parameter: {"key": ..., "isProfile": ..., "label": ...}.
 pub(super) fn toggle_target(json: &str) -> Option<(String, bool)> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
@@ -291,6 +312,25 @@ impl App {
         if let Status::Later(m) = pointer::status(b) {
             return self.later(pointer::name(&b.action), m);
         }
+        let target = pointer_target(&b.action);
+        let before = self.focused_pane_id();
+        if target != Target::Focused {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                t.focused = pane;
+            }
+        }
+        self.run_pointer_action_here(b, pane, cell, event_loop);
+        // Text actions leave focus where it was; the click itself did not move it.
+        if target == Target::Clicked {
+            if let (Some(t), Some(prev)) = (self.tabs.get_mut(self.active), before) {
+                if t.layout.panes().contains(&prev) {
+                    t.focused = prev;
+                }
+            }
+        }
+    }
+
+    fn run_pointer_action_here(&mut self, b: &PointerBinding, pane: PaneId, cell: (u32, u32), event_loop: &ActiveEventLoop) {
         let text = |b: &PointerBinding| keyaction::expand(&b.argument, b.escaping());
         match b.action.as_str() {
             "kPasteFromClipboardPointerAction" => self.paste(),
@@ -350,6 +390,15 @@ mod tests {
         assert_eq!(option_click_arrows((5, 1), (2, 2), 80, false, false).len(), 77 * 3);
         assert_eq!(option_click_arrows((5, 1), (2, 2), 80, true, false), b"\x1b[D\x1b[D\x1b[D\x1b[B");
         assert_eq!(option_click_arrows((1, 3), (4, 1), 80, true, false), b"\x1b[A\x1b[A\x1b[C\x1b[C\x1b[C");
+    }
+
+    #[test]
+    fn pointer_actions_act_on_the_clicked_pane() {
+        assert_eq!(pointer_target("kPasteFromClipboardPointerAction"), Target::Clicked);
+        assert_eq!(pointer_target("kSendTextPointerAction"), Target::Clicked);
+        assert_eq!(pointer_target("kCopyOrPastePointerAction"), Target::Clicked);
+        assert_eq!(pointer_target("kContextMenuPointerAction"), Target::FocusClicked);
+        assert_eq!(pointer_target("kNextTabPointerAction"), Target::Focused);
     }
 
     #[test]

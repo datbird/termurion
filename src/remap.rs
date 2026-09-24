@@ -85,6 +85,8 @@ pub struct Remapper {
     active: Vec<(u16, Vec<u16>)>,
     /// Physical modifier keys that are down, remapped or not.
     physical: Vec<u16>,
+    /// A Do Not Remap Modifiers key is down: the physical modifiers were injected.
+    exempt: bool,
 }
 
 impl Remapper {
@@ -93,6 +95,13 @@ impl Remapper {
     }
 
     pub fn on_key(&mut self, vk: u16, scan: u32, down: bool, focused: bool, tags: &Tags) -> Verdict {
+        // AltGr's fake Left Control is never ours, even while a real Left Control is remapped.
+        if vk == LCTRL && scan == ALTGR_FAKE_CTRL_SCAN {
+            return Verdict::Pass;
+        }
+        // A key that was already down (it went down while another app was in front) keeps
+        // passing through; remapping its repeat would leave the original key stuck down.
+        let was_down = self.physical.contains(&vk);
         if matches!(vk, LCTRL | RCTRL | LALT | RALT | LWIN | RWIN | LSHIFT | RSHIFT) {
             self.physical.retain(|k| *k != vk);
             if down {
@@ -102,12 +111,17 @@ impl Remapper {
         if let Some(i) = self.active.iter().position(|(k, _)| *k == vk) {
             let keys = self.active[i].1.clone();
             if down {
-                return Verdict::Replace(keys.into_iter().map(|k| (k, true)).collect());
+                // During an exempt key the physical key is down already; swallow its repeat.
+                return Verdict::Replace(if self.exempt { vec![] } else { keys.into_iter().map(|k| (k, true)).collect() });
             }
             self.active.remove(i);
+            if self.exempt {
+                // Its physical down was injected for the exempt key; that is what comes up.
+                return Verdict::Replace(vec![(vk, false)]);
+            }
             return Verdict::Replace(keys.into_iter().rev().map(|k| (k, false)).collect());
         }
-        if !down || !focused || (vk == LCTRL && scan == ALTGR_FAKE_CTRL_SCAN) {
+        if !down || !focused || was_down {
             return Verdict::Pass;
         }
         let Some(tag) = tags.tag_for(vk) else { return Verdict::Pass };
@@ -127,7 +141,8 @@ impl Remapper {
 
     /// Keys to inject for a key bound to Do Not Remap Modifiers: the remapped modifiers
     /// come up, the physical ones go down, then the key.
-    pub fn exempt_down(&self, vk: u16) -> Vec<(u16, bool)> {
+    pub fn exempt_down(&mut self, vk: u16) -> Vec<(u16, bool)> {
+        self.exempt = true;
         let mut out: Vec<(u16, bool)> = self.active.iter().flat_map(|(_, t)| t.iter().rev().map(|k| (*k, false))).collect();
         out.extend(self.active.iter().map(|(k, _)| (*k, true)));
         out.push((vk, true));
@@ -135,7 +150,8 @@ impl Remapper {
     }
 
     /// The reverse of `exempt_down`, for the key's release.
-    pub fn exempt_up(&self, vk: u16) -> Vec<(u16, bool)> {
+    pub fn exempt_up(&mut self, vk: u16) -> Vec<(u16, bool)> {
+        self.exempt = false;
         let mut out = vec![(vk, false)];
         out.extend(self.active.iter().map(|(k, _)| (*k, false)));
         out.extend(self.active.iter().flat_map(|(_, t)| t.iter().map(|k| (*k, true))));
@@ -209,6 +225,25 @@ mod tests {
     fn other_keys_pass() {
         let mut r = Remapper::default();
         assert_eq!(r.on_key(0x41, 0x1E, true, true, &swapped()), Verdict::Pass);
+    }
+
+    #[test]
+    fn a_key_held_before_focus_arrives_is_never_remapped() {
+        let mut r = Remapper::default();
+        assert_eq!(r.on_key(0x5B, 0x5B, true, false, &swapped()), Verdict::Pass);
+        // Auto-repeat after Tandem came to the front.
+        assert_eq!(r.on_key(0x5B, 0x5B, true, true, &swapped()), Verdict::Pass);
+        assert_eq!(r.on_key(0x5B, 0x5B, false, true, &swapped()), Verdict::Pass);
+    }
+
+    #[test]
+    fn releasing_the_modifier_first_during_an_exempt_key_releases_it() {
+        let mut r = Remapper::default();
+        r.on_key(0xA2, 0x1D, true, true, &swapped());
+        r.exempt_down(0x43);
+        // Left Control comes up before C: the injected physical Left Control must come up.
+        assert_eq!(r.on_key(0xA2, 0x1D, false, true, &swapped()), Verdict::Replace(vec![(0xA2, false)]));
+        assert_eq!(r.exempt_up(0x43), vec![(0x43, false)]);
     }
 
     #[test]
