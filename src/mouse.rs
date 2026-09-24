@@ -93,9 +93,10 @@ pub fn encode(modes: Modes, ev: Event) -> Option<Vec<u8>> {
         return Some(format!("\x1b[<{};{x};{y}{end}", button + mods + motion).into_bytes());
     }
 
-    // Legacy encoding: each value is one byte offset by 32, so 223 is the largest
-    // position, and a release does not say which button.
-    if x > 223 || y > 223 {
+    // Legacy encoding: each value is one byte offset by 32, and a release does not
+    // say which button. ConPTY replaces input bytes above 127 with U+FFFD, so 95 is
+    // the largest position that arrives intact (measured in milestone 0).
+    if x > 95 || y > 95 {
         return None;
     }
     let cb = if ev.action == Action::Release { 3 + mods } else { button + mods + motion };
@@ -177,9 +178,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_past_223_is_dropped() {
-        assert_eq!(encode(LEGACY_CLICK, ev(Button::Left, Action::Press, 223, 0)), None);
-        assert!(encode(LEGACY_CLICK, ev(Button::Left, Action::Press, 222, 0)).is_some());
+    fn legacy_past_column_95_is_dropped() {
+        // ConPTY turns any input byte above 127 into U+FFFD, so 95 + 32 = 127 is the last safe position.
+        assert_eq!(encode(LEGACY_CLICK, ev(Button::Left, Action::Press, 95, 0)), None);
+        assert_eq!(encode(LEGACY_CLICK, ev(Button::Left, Action::Press, 0, 95)), None);
+        assert!(encode(LEGACY_CLICK, ev(Button::Left, Action::Press, 94, 94)).is_some());
     }
 
     #[test]

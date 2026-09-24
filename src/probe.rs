@@ -59,7 +59,18 @@ type Scenario = Box<dyn Fn(&Api) -> Result<String, String>>;
 
 /// Runs every scenario whose name contains `filter`. Ok(detail) passes, Err(detail) fails.
 pub fn run_all(api: &Api, filter: &str) -> Vec<Outcome> {
-    let mut list: Vec<(&str, Scenario)> = vec![("win-console", Box::new(win_console_mouse))];
+    let sgr = |tracking| Modes { tracking, sgr: true };
+    let legacy = Modes { tracking: Tracking::Click, sgr: false };
+    let mut list: Vec<(&str, Scenario)> = vec![
+        ("win-console", Box::new(win_console_mouse)),
+        ("wsl-1000-sgr", Box::new(move |a| wsl_raw_mouse(a, &["1000", "1006"], sgr(Tracking::Click), 10, 5))),
+        ("wsl-1002-sgr", Box::new(move |a| wsl_raw_mouse(a, &["1002", "1006"], sgr(Tracking::Drag), 10, 5))),
+        ("wsl-1003-sgr", Box::new(move |a| wsl_raw_mouse(a, &["1003", "1006"], sgr(Tracking::Any), 10, 5))),
+        ("wsl-1000-legacy", Box::new(move |a| wsl_raw_mouse(a, &["1000"], legacy, 10, 5))),
+        // Legacy bytes past 127 are not valid UTF-8, and ConPTY turns them into U+FFFD.
+        // The encoder must send nothing here.
+        ("wsl-1000-legacy-col150", Box::new(move |a| wsl_raw_mouse(a, &["1000"], legacy, 150, 5))),
+    ];
     list.retain(|(name, _)| name.contains(filter));
     list.iter()
         .map(|(name, run)| {
@@ -96,6 +107,55 @@ fn press_release(s: &Session, modes: Modes, col: u32, row: u32) -> Result<(), St
     Ok(())
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A raw WSL program turns on `dec` modes and prints what it receives. Every event
+/// the encoder produces must arrive byte for byte.
+fn wsl_raw_mouse(api: &Api, dec: &[&str], want: Modes, col: u32, row: u32) -> Result<String, String> {
+    let script = wsl_path(&repo_dir().join("probe").join("mouse_echo.py"));
+    let mut s = Session::start(api, &format!("wsl.exe -d {DISTRO} -e python3 {script} {}", dec.join(" ")))?;
+    if !s.pump_until(Duration::from_secs(10), |sc| sc.text().contains("READY") && sc.mouse_modes() == want) {
+        return Err(format!(
+            "terminal saw modes {:?}, wanted {want:?}. Screen: {:?}",
+            s.screen.mouse_modes(),
+            s.screen.text().trim_end()
+        ));
+    }
+    let none = Mods::default();
+    let events = [
+        Event { button: Button::Left, action: Action::Press, mods: none, col, row },
+        Event { button: Button::Left, action: Action::Motion, mods: none, col: col + 1, row },
+        Event { button: Button::None, action: Action::Motion, mods: none, col: col + 2, row },
+        Event { button: Button::Left, action: Action::Release, mods: none, col: col + 1, row },
+        Event { button: Button::WheelUp, action: Action::Press, mods: none, col, row },
+    ];
+    let mut expected = Vec::new();
+    for ev in events {
+        if let Some(bytes) = mouse::encode(want, ev) {
+            s.send(&bytes)?;
+            expected.push(format!("GOT {}", hex(&bytes)));
+        }
+    }
+    if expected.is_empty() {
+        s.send(b"q")?;
+        return Ok("the encoder sent nothing, as ConPTY would corrupt these positions".into());
+    }
+    let all = s.pump_until(Duration::from_secs(5), |sc| {
+        let text = sc.text();
+        expected.iter().all(|e| text.contains(e.as_str()))
+    });
+    s.send(b"q")?;
+    if all {
+        return Ok(format!("{} events arrived intact", expected.len()));
+    }
+    let text = s.screen.text();
+    let missing: Vec<&String> = expected.iter().filter(|e| !text.contains(e.as_str())).collect();
+    let got: Vec<&str> = text.lines().map(str::trim_end).filter(|l| l.starts_with("GOT")).collect();
+    Err(format!("missing {missing:?}; the app got {got:?}"))
+}
+
 /// A Windows console app reads mouse input with ReadConsoleInputW. ConPTY must ask
 /// the terminal for mouse reports, then turn the reports into console events.
 fn win_console_mouse(api: &Api) -> Result<String, String> {
@@ -126,6 +186,11 @@ fn win_console_mouse(api: &Api) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_is_lowercase_pairs() {
+        assert_eq!(hex(b"\x1b[<0;1;1M"), "1b5b3c303b313b314d");
+    }
 
     #[test]
     fn wsl_path_maps_drive_letters() {
