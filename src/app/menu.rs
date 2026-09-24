@@ -117,7 +117,8 @@ impl App {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Chord(c));
         });
         let bound = Box::new(|c: &Chord| commands::command_for_chord(c).is_some());
-        if let Err(e) = crate::winkeys::install(hwnd, send, bound) {
+        let exempt = Box::new(|_: u16, _: crate::mouse::Mods| false);
+        if let Err(e) = crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
             self.banners.set("keys", format!("Win chords are unavailable: {e}"));
         }
         self.menu_bar = Some(MenuBar { _menu: menu, context, checks });

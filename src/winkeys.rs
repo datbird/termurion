@@ -3,14 +3,15 @@
 //! them to the app as Cmd chords. Only chords with an enabled Tandem command are taken;
 //! the rest stay with Windows. Win+L is never taken (Windows does not allow it), and a
 //! harmless key is sent with each taken chord, so the Start menu does not open after it.
+//! The same hook remaps modifiers (Keys > Remap Modifiers) while a Tandem window is in front.
 
-use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MAPVK_VK_TO_CHAR, MapVirtualKeyW, SendInput,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MAPVK_VK_TO_CHAR,
+    MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN,
@@ -18,6 +19,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::menus::{Chord, ChordKey};
+use crate::mouse::Mods;
+use crate::remap::{Remapper, Tags};
 
 const VK_LWIN: u16 = 0x5B;
 const VK_RWIN: u16 = 0x5C;
@@ -110,10 +113,22 @@ struct Hook {
     gate: Mutex<Gate>,
     send: Box<dyn Fn(Chord) + Send + Sync>,
     bound: Box<dyn Fn(&Chord) -> bool + Send + Sync>,
+    remapper: Mutex<Remapper>,
+    tags: Arc<RwLock<Tags>>,
+    /// True when a key with these physical modifiers is bound to Do Not Remap Modifiers.
+    exempt: Box<dyn Fn(u16, Mods) -> bool + Send + Sync>,
+    /// The key whose press went through with its physical modifiers.
+    exempting: Mutex<Option<u16>>,
 }
 
 static HOOK: OnceLock<Hook> = OnceLock::new();
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
+static SETTINGS: AtomicIsize = AtomicIsize::new(0);
+
+/// The settings window counts as Tandem for remapping.
+pub fn set_settings_window(hwnd: isize) {
+    SETTINGS.store(hwnd, Ordering::Relaxed);
+}
 /// Marks the mask key Tandem sends, so the hook passes it and nothing else injected.
 /// Other software (a KVM tool such as bumbles) injects real keystrokes; those are handled.
 const MAGIC: usize = 0x5441_4E44;
@@ -133,14 +148,66 @@ fn mask_start_menu() {
     unsafe { SendInput(2, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
 }
 
+/// Injects keys, marked so the hook passes them. Right-side and Win keys are extended keys.
+fn inject(keys: &[(u16, bool)]) {
+    let inputs: Vec<INPUT> = keys
+        .iter()
+        .map(|&(vk, down)| {
+            let extended = matches!(vk, 0xA3 | 0xA5 | VK_LWIN | VK_RWIN);
+            let flags = if down { 0 } else { KEYEVENTF_KEYUP } | if extended { KEYEVENTF_EXTENDEDKEY } else { 0 };
+            let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
+            INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: vk, wScan: scan, dwFlags: flags, time: 0, dwExtraInfo: MAGIC } } }
+        })
+        .collect();
+    if !inputs.is_empty() {
+        unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+    }
+}
+
+fn is_modifier(vk: u16) -> bool {
+    matches!(vk, 0x10..=0x12 | 0xA0..=0xA5 | VK_LWIN | VK_RWIN)
+}
+
+/// Remapping, and Do Not Remap Modifiers. True when the event was swallowed.
+fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
+    let vk = kb.vkCode as u16;
+    let fg = unsafe { GetForegroundWindow() } as isize;
+    let focused = fg == WINDOW.load(Ordering::Relaxed) || fg == SETTINGS.load(Ordering::Relaxed);
+    let tags = *h.tags.read().unwrap();
+    let mut r = h.remapper.lock().unwrap();
+    if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags) {
+        inject(&keys);
+        return true;
+    }
+    if is_modifier(vk) {
+        return false;
+    }
+    let mut exempting = h.exempting.lock().unwrap();
+    if down && r.active() && (*exempting == Some(vk) || (h.exempt)(vk, r.physical_mods())) {
+        *exempting = Some(vk);
+        inject(&r.exempt_down(vk));
+        return true;
+    }
+    if !down && *exempting == Some(vk) {
+        *exempting = None;
+        inject(&r.exempt_up(vk));
+        return true;
+    }
+    false
+}
+
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         if let Some(h) = HOOK.get() {
             let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
+            let down = wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN;
+            if kb.dwExtraInfo != MAGIC && remap(h, kb, down) {
+                return 1;
+            }
             if kb.dwExtraInfo != MAGIC {
                 let e = KeyEvent {
                     vk: kb.vkCode as u16,
-                    down: wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN,
+                    down,
                     win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
                     focused: unsafe { GetForegroundWindow() } as isize == WINDOW.load(Ordering::Relaxed),
                     shift: held(0x10),
@@ -164,10 +231,18 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 /// Installs the hook for Tandem's main window, on a thread of its own: a low-level hook
 /// runs on the installing thread's message loop, and every keystroke on the machine waits
 /// for it, so it must never wait for Tandem's drawing. `bound` says which chords Tandem
-/// takes; taken chords go to `send`.
-pub fn install(hwnd: isize, send: Box<dyn Fn(Chord) + Send + Sync>, bound: Box<dyn Fn(&Chord) -> bool + Send + Sync>) -> Result<(), String> {
+/// takes; taken chords go to `send`. `tags` are the Remap Modifiers settings, and `exempt`
+/// says which keys are bound to Do Not Remap Modifiers.
+pub fn install(
+    hwnd: isize,
+    send: Box<dyn Fn(Chord) + Send + Sync>,
+    bound: Box<dyn Fn(&Chord) -> bool + Send + Sync>,
+    tags: Arc<RwLock<Tags>>,
+    exempt: Box<dyn Fn(u16, Mods) -> bool + Send + Sync>,
+) -> Result<(), String> {
     WINDOW.store(hwnd, Ordering::Relaxed);
-    if HOOK.set(Hook { gate: Mutex::new(Gate::default()), send, bound }).is_err() {
+    let hook = Hook { gate: Mutex::new(Gate::default()), send, bound, remapper: Mutex::new(Remapper::default()), tags, exempt, exempting: Mutex::new(None) };
+    if HOOK.set(hook).is_err() {
         return Ok(());
     }
     let (tx, rx) = std::sync::mpsc::channel();

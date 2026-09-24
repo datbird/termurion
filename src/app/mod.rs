@@ -88,6 +88,8 @@ pub struct App {
     menu_bar: Option<menu::MenuBar>,
     /// Make Text Bigger and Smaller, in points, on top of the profile font size.
     font_offset: f32,
+    /// Keys > Remap Modifiers, read by the keyboard hook's thread.
+    remap_tags: Arc<std::sync::RwLock<crate::remap::Tags>>,
     api: Api,
     shell: String,
     gpu: Option<Gpu>,
@@ -171,6 +173,7 @@ pub fn run() {
         proxy,
         menu_bar: None,
         font_offset: 0.0,
+        remap_tags: Arc::new(std::sync::RwLock::new(crate::remap::Tags::identity())),
         api,
         shell: default_shell(),
         gpu: None,
