@@ -22,6 +22,8 @@ pub struct Span {
     pub color: Rgb,
     pub bold: bool,
     pub italic: bool,
+    /// Draw with the profile's non-ASCII font, when it has one.
+    pub alt_font: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,14 +71,15 @@ struct CellLook {
 }
 
 /// Draws one pane's visible screen into `rect`.
-pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), focused: bool) {
+/// `cursor_on` is the blink phase: false hides the cursor.
+pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), focused: bool, cursor_on: bool) {
     let (cw, ch) = cell;
     let palette = &screen.palette;
     let term = screen.term();
     let (cols, lines) = (term.columns(), term.screen_lines());
     let content = term.renderable_content();
     let cursor = point_to_viewport(content.display_offset, content.cursor.point)
-        .filter(|_| content.cursor.shape != CursorShape::Hidden)
+        .filter(|_| cursor_on && content.cursor.shape != CursorShape::Hidden)
         .map(|p| (p.line, p.column.0));
     let block_cursor = focused && content.cursor.shape == CursorShape::Block;
 
@@ -91,7 +94,7 @@ pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), fo
         let c = indexed.cell;
         let (mut fg, mut bg) = palette.cell(c.fg, c.bg, c.flags);
         if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
-            (fg, bg) = (palette.selected_text, palette.selection);
+            (fg, bg) = (palette.selected_text.unwrap_or(fg), palette.selection);
         }
         if block_cursor && cursor == Some((row, col)) {
             (fg, bg) = (palette.cursor_text, palette.cursor);
@@ -152,7 +155,7 @@ pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), fo
             let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
             match spans.last_mut() {
                 Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
-                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic }),
+                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii }),
             }
             if !ascii {
                 flush(&mut piece, frame);
@@ -202,7 +205,7 @@ pub fn tab_bar(frame: &mut Frame, titles: &[String], active: usize, area: Rect, 
         let text: String = title.chars().take(fit).collect();
         let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
         let y = r.y + ((r.h - cell.1) / 2.0).floor();
-        frame.rows.push(TextRow { x: r.x + cell.0, y, spans: vec![Span { text, color, bold: false, italic: false }], clip: r });
+        frame.rows.push(TextRow { x: r.x + cell.0, y, spans: vec![Span { text, color, bold: false, italic: false, alt_font: false }], clip: r });
         rects.push(r);
     }
     rects
@@ -219,7 +222,7 @@ pub fn dividers(frame: &mut Frame, dividers: &[Divider]) {
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
     let r = Rect { x: area.x, y: area.y + area.h - cell.1 - 8.0, w: area.w, h: cell.1 + 8.0 };
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
-    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false };
+    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r });
 }
 
@@ -246,7 +249,7 @@ mod tests {
     fn a_red_background_makes_a_quad() {
         let s = screen(b"\x1b[41mX");
         let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, true);
+        pane(&mut f, &s, RECT, CELL, true, true);
         let red = rgba(s.palette.ansi[1], 1.0);
         assert!(f.quads.iter().any(|q| q.color == red && q.rect == Rect { x: 0.0, y: 0.0, w: 10.0, h: 20.0 }), "{:?}", f.quads);
     }
@@ -255,7 +258,7 @@ mod tests {
     fn rows_carry_the_text() {
         let s = screen(b"hello\r\nworld");
         let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, true);
+        pane(&mut f, &s, RECT, CELL, true, true);
         assert_eq!(row_text(&f, 0).trim_end(), "hello");
         assert_eq!(row_text(&f, 1).trim_end(), "world");
         assert_eq!((f.rows[1].x, f.rows[1].y), (0.0, 20.0));
@@ -265,7 +268,7 @@ mod tests {
     fn focused_block_cursor_is_a_quad() {
         let s = screen(b"ab");
         let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, true);
+        pane(&mut f, &s, RECT, CELL, true, true);
         let cursor = rgba(s.palette.cursor, 1.0);
         assert!(f.quads.iter().any(|q| q.color == cursor && q.rect.x == 20.0 && q.rect.y == 0.0));
     }
@@ -274,7 +277,7 @@ mod tests {
     fn unfocused_pane_is_dimmed_and_cursor_hollow() {
         let s = screen(b"ab");
         let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, false);
+        pane(&mut f, &s, RECT, CELL, false, true);
         assert!(f.overlay.iter().any(|q| q.rect == RECT));
         assert!(!f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)));
     }
@@ -286,7 +289,7 @@ mod tests {
         sel.update(Point::new(Line(0), Column(1)), Side::Right);
         s.term_mut().selection = Some(sel);
         let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, true);
+        pane(&mut f, &s, RECT, CELL, true, true);
         let sel = rgba(s.palette.selection, 1.0);
         assert!(f.quads.iter().any(|q| q.color == sel && q.rect == Rect { x: 0.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
     }
@@ -295,7 +298,7 @@ mod tests {
     fn wide_char_spacer_is_skipped() {
         let s = screen("\u{4e2d}x".as_bytes());
         let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, true);
+        pane(&mut f, &s, RECT, CELL, true, true);
         let all: String = f.rows.iter().flat_map(|r| r.spans.iter().map(|s| s.text.as_str())).collect();
         assert!(all.starts_with("\u{4e2d}x"), "{all:?}");
     }
@@ -306,10 +309,29 @@ mod tests {
         // row piece at its cell's x, and the text after it starts at its own cell too.
         let s = screen("a\u{4e2d}x".as_bytes());
         let mut f = Frame::default();
-        pane(&mut f, &s, RECT, CELL, true);
+        pane(&mut f, &s, RECT, CELL, true, true);
         let at = |text: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text.trim_end() == text)).map(|r| r.x);
         assert_eq!(at("\u{4e2d}"), Some(10.0), "{:?}", f.rows);
         assert_eq!(at("x"), Some(30.0), "{:?}", f.rows);
+    }
+
+    #[test]
+    fn the_cursor_blinks_off() {
+        let s = screen(b"ab");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, false);
+        assert!(!f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)));
+    }
+
+    #[test]
+    fn non_ascii_pieces_use_the_alternate_font() {
+        let s = screen("a\u{4e2d}".as_bytes());
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, true);
+        let wide = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text == "\u{4e2d}").unwrap();
+        assert!(wide.alt_font);
+        let a = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text == "a").unwrap();
+        assert!(!a.alt_font);
     }
 
     #[test]

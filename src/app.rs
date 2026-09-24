@@ -12,7 +12,7 @@ use alacritty_terminal::term::{TermMode, viewport_to_point};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WKey, NamedKey};
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 use winit::window::{Window, WindowId};
@@ -24,7 +24,11 @@ use crate::layout::{Axis, Layout, PaneId, Rect};
 use crate::mouse::{self, Button, Mods, Tracking};
 use crate::pane::Pane;
 use crate::pty::Notify;
+use crate::palette::Palette;
+use crate::profile::{self, Profile};
 use crate::render::Renderer;
+use crate::screen::Look;
+use crate::store::{self, Store};
 use crate::scene::{self, Frame, rgba};
 
 const FONT: &str = "Cascadia Mono";
@@ -35,6 +39,8 @@ const PAD: f32 = 4.0;
 const GAP: f32 = 1.0;
 /// Lines scrolled per wheel notch.
 const WHEEL_LINES: f32 = 3.0;
+/// Half a cursor blink cycle.
+const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 
 pub enum UserEvent {
     Wake,
@@ -81,6 +87,10 @@ pub struct App {
     tab_rects: Vec<Rect>,
     banner: Option<String>,
     clipboard: Option<arboard::Clipboard>,
+    store: Store,
+    /// Cursor blink phase, and when it last flipped.
+    blink_on: bool,
+    last_blink: Instant,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -116,6 +126,15 @@ pub fn run() {
         },
     };
 
+    let path = store::default_path();
+    let (store, banner) = match Store::load(&path) {
+        Ok(s) => (s, banner),
+        Err(e) => {
+            // Never overwrite a settings file we could not read: save to a side file instead.
+            let side = path.with_extension("toml.recovered");
+            (Store::fresh(&side), Some(format!("Settings not loaded ({e}). Using defaults; changes save to {}.", side.display())))
+        }
+    };
     let mut app = App {
         notify,
         api,
@@ -134,6 +153,9 @@ pub fn run() {
         tab_rects: Vec::new(),
         banner,
         clipboard: arboard::Clipboard::new().ok(),
+        store,
+        blink_on: true,
+        last_blink: Instant::now(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
@@ -172,25 +194,66 @@ impl App {
         ((inner.w / cw).floor().max(2.0) as u16, (inner.h / ch).floor().max(1.0) as u16)
     }
 
-    fn start_pane(&mut self, rect: Rect) -> Option<PaneId> {
+    /// The profile with this Guid, or the default profile.
+    fn profile(&self, guid: Option<&str>) -> Profile {
+        guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone()
+    }
+
+    fn dark(&self) -> bool {
+        self.gpu.as_ref().and_then(|g| g.window.theme()).is_none_or(|t| t == winit::window::Theme::Dark)
+    }
+
+    fn start_pane(&mut self, rect: Rect, guid: Option<&str>) -> Option<PaneId> {
         let (cols, rows) = self.grid_size(rect);
         let id = self.next_id;
-        match Pane::start(id, &self.api, &self.shell, cols, rows, self.notify.clone()) {
-            Ok(pane) => {
+        let p = self.profile(guid);
+        let cmd = profile::command_line(&p, &self.shell);
+        let cwd = profile::working_dir(&p);
+        match Pane::start(id, &self.api, &cmd, cwd.as_deref(), cols, rows, self.notify.clone()) {
+            Ok(mut pane) => {
+                pane.screen.set_palette(Palette::from_profile(&p, self.dark()));
+                pane.screen.set_look(Look::from_profile(&p));
+                pane.profile = p.guid();
                 self.next_id += 1;
                 self.panes.insert(id, pane);
                 Some(id)
             }
             Err(e) => {
-                self.banner = Some(format!("Could not start {}: {e}", self.shell));
+                self.banner = Some(format!("Could not start {cmd}: {e}"));
                 None
             }
         }
     }
 
+    /// Takes the renderer's fonts from the default profile. A font that is not
+    /// installed is named in the banner.
+    fn apply_fonts(&mut self) {
+        let p = self.store.default_profile().clone();
+        let normal = p.font("Normal Font");
+        let alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
+        let Some(g) = self.gpu.as_mut() else { return };
+        let px = normal.size_pt * 4.0 / 3.0 * g.window.scale_factor() as f32;
+        g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
+        let missing: Vec<String> = std::iter::once(normal.family).chain(alt).filter(|f| !g.renderer.has_family(f)).collect();
+        if !missing.is_empty() {
+            self.banner = Some(format!("Font not installed: {}. Text uses a fallback font.", missing.join(", ")));
+        }
+    }
+
+    /// Sizes the window to the default profile's Columns and Rows.
+    fn size_window(&mut self) {
+        let p = self.store.default_profile().clone();
+        let (cw, ch) = self.cell();
+        let pad = 2.0 * PAD * self.scale();
+        let (w, h) = (p.int("Columns").max(10) as f32 * cw + pad, p.int("Rows").max(4) as f32 * ch + pad);
+        if let Some(g) = self.gpu.as_ref() {
+            let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.ceil() as u32, h.ceil() as u32));
+        }
+    }
+
     fn new_tab(&mut self) {
         let area = self.content_area();
-        if let Some(id) = self.start_pane(area) {
+        if let Some(id) = self.start_pane(area, None) {
             self.tabs.push(Tab { layout: Layout::new(id), focused: id });
             self.active = self.tabs.len() - 1;
             self.relayout();
@@ -206,7 +269,7 @@ impl App {
             Axis::Row => Rect { w: rect.w / 2.0, ..rect },
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },
         };
-        if let Some(id) = self.start_pane(half) {
+        if let Some(id) = self.start_pane(half, None) {
             let tab = &mut self.tabs[self.active];
             tab.layout.split(target, axis, id);
             tab.focused = id;
@@ -360,6 +423,9 @@ impl App {
         if ev.state != ElementState::Pressed {
             return;
         }
+        // Typing shows the cursor at once and restarts the blink.
+        self.blink_on = true;
+        self.last_blink = Instant::now();
         let base = to_key(&ev.key_without_modifiers(), None);
         if let Some(action) = base.as_ref().and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);
@@ -548,7 +614,7 @@ impl App {
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in tab.layout.rects(area, GAP) {
                 if let Some(p) = self.panes.get(&id) {
-                    scene::pane(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused);
+                    scene::pane(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on);
                 }
             }
             scene::dividers(&mut frame, &tab.layout.dividers(area, GAP));
@@ -664,7 +730,33 @@ impl ApplicationHandler<UserEvent> for App {
                 return event_loop.exit();
             }
         }
+        self.apply_fonts();
+        self.size_window();
         self.new_tab();
+    }
+
+    /// Runs the cursor blink when the focused pane's profile asks for it.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let blinks = self
+            .tabs
+            .get(self.active)
+            .and_then(|t| self.panes.get(&t.focused))
+            .and_then(|p| self.store.get(&p.profile))
+            .is_some_and(|p| p.bool("Blinking Cursor"));
+        if !blinks || !self.focused {
+            if !self.blink_on {
+                self.blink_on = true;
+                self.redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+        if Instant::now() >= self.last_blink + BLINK {
+            self.blink_on = !self.blink_on;
+            self.last_blink = Instant::now();
+            self.redraw();
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.last_blink + BLINK));
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: UserEvent) {
@@ -701,9 +793,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.relayout();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                if let Some(g) = self.gpu.as_mut() {
-                    g.renderer.set_font_px(FONT_PX * scale_factor as f32);
-                }
+                let _ = scale_factor;
+                self.apply_fonts();
                 self.relayout();
             }
             WindowEvent::Focused(f) => {

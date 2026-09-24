@@ -93,7 +93,8 @@ impl Profile {
     pub fn color_for(&self, key: &str, dark: bool) -> Rgb {
         if self.bool("Use Separate Colors for Light and Dark Mode") {
             let variant = format!("{key} ({})", if dark { "Dark" } else { "Light" });
-            if let Some(c) = self.values.get(&variant).and_then(to_rgb) {
+            let stock = schema::find(key).and_then(|s| if dark { s.default_dark.as_ref() } else { s.default_light.as_ref() });
+            if let Some(c) = self.values.get(&variant).or(stock).and_then(to_rgb) {
                 return c;
             }
         }
@@ -110,6 +111,22 @@ impl Profile {
 
     pub fn name(&self) -> String {
         self.string(NAME)
+    }
+}
+
+/// The command line a profile starts. "Login Shell" means the Windows default shell.
+pub fn command_line(p: &Profile, default_shell: &str) -> String {
+    match p.string("Custom Command").as_str() {
+        "Yes" | "Custom Shell" if !p.string("Command").trim().is_empty() => p.string("Command"),
+        _ => default_shell.to_string(),
+    }
+}
+
+/// The starting directory, or None for the user's home (iTerm2's default).
+pub fn working_dir(p: &Profile) -> Option<std::path::PathBuf> {
+    match p.string("Custom Directory").as_str() {
+        "Yes" if !p.string("Working Directory").trim().is_empty() => Some(p.string("Working Directory").into()),
+        _ => None,
     }
 }
 
@@ -151,7 +168,34 @@ mod tests {
         assert_eq!(p.color_for("Foreground Color", true), rgb(1, 1, 1));
         p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(true));
         assert_eq!(p.color_for("Foreground Color", true), rgb(9, 9, 9));
-        assert_eq!(p.color_for("Foreground Color", false), rgb(1, 1, 1));
+        // With separate colors on, an unset variant reads iTerm2's stock Light value, not the plain key.
+        assert_eq!(p.color_for("Foreground Color", false), rgb(16, 16, 16));
+    }
+
+    #[test]
+    fn command_line_follows_custom_command() {
+        let mut p = Profile::default();
+        assert_eq!(command_line(&p, "pwsh.exe"), "pwsh.exe");
+        p.set("Custom Command", toml::Value::String("Yes".into()));
+        p.set("Command", toml::Value::String("wsl.exe -d Ubuntu".into()));
+        assert_eq!(command_line(&p, "pwsh.exe"), "wsl.exe -d Ubuntu");
+    }
+
+    #[test]
+    fn working_dir_follows_custom_directory() {
+        let mut p = Profile::default();
+        assert_eq!(working_dir(&p), None);
+        p.set("Custom Directory", toml::Value::String("Yes".into()));
+        p.set("Working Directory", toml::Value::String("C:\\Work".into()));
+        assert_eq!(working_dir(&p), Some(std::path::PathBuf::from("C:\\Work")));
+    }
+
+    #[test]
+    fn stock_dark_colors_come_from_the_schema() {
+        // iTerm2's stock profile keeps separate colors; its Dark background is 0.081 0.099 0.121.
+        let p = Profile::default();
+        assert_eq!(p.color_for("Background Color", true), rgb(21, 25, 31));
+        assert_eq!(p.color_for("Background Color", false), rgb(250, 250, 250));
     }
 
     #[test]

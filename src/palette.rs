@@ -8,7 +8,7 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
     Rgb { r, g, b }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Palette {
     pub ansi: [Rgb; 16],
     pub fg: Rgb,
@@ -17,30 +17,18 @@ pub struct Palette {
     pub cursor: Rgb,
     pub cursor_text: Rgb,
     pub selection: Rgb,
-    pub selected_text: Rgb,
+    /// None keeps a selected cell's own text color, iTerm2's default.
+    pub selected_text: Option<Rgb>,
     /// iTerm2's "Use bright colors for bold text".
     pub bright_bold: bool,
+    /// Opacity of faint (dim) text over its background.
+    pub faint_alpha: f32,
 }
 
 impl Default for Palette {
-    /// iTerm2's default profile colors.
+    /// iTerm2's stock default profile colors, from the schema.
     fn default() -> Self {
-        Palette {
-            ansi: [
-                rgb(0x00, 0x00, 0x00), rgb(0xc9, 0x1b, 0x00), rgb(0x00, 0xc2, 0x00), rgb(0xc7, 0xc4, 0x00),
-                rgb(0x02, 0x25, 0xc7), rgb(0xca, 0x30, 0xc7), rgb(0x00, 0xc5, 0xc7), rgb(0xc7, 0xc7, 0xc7),
-                rgb(0x67, 0x67, 0x67), rgb(0xff, 0x6d, 0x67), rgb(0x5f, 0xf9, 0x67), rgb(0xfe, 0xfb, 0x67),
-                rgb(0x68, 0x71, 0xff), rgb(0xff, 0x76, 0xff), rgb(0x5f, 0xfd, 0xff), rgb(0xff, 0xfe, 0xfe),
-            ],
-            fg: rgb(0xc7, 0xc7, 0xc7),
-            bg: rgb(0x00, 0x00, 0x00),
-            bold: rgb(0xff, 0xff, 0xff),
-            cursor: rgb(0xc7, 0xc7, 0xc7),
-            cursor_text: rgb(0x00, 0x00, 0x00),
-            selection: rgb(0xc1, 0xde, 0xff),
-            selected_text: rgb(0x00, 0x00, 0x00),
-            bright_bold: true,
-        }
+        Palette::from_profile(&crate::profile::Profile::default(), true)
     }
 }
 
@@ -50,6 +38,29 @@ fn dim(c: Rgb) -> Rgb {
 }
 
 impl Palette {
+    /// The palette a profile describes. `dark` picks the Dark variants when the
+    /// profile keeps separate Light and Dark colors.
+    pub fn from_profile(p: &crate::profile::Profile, dark: bool) -> Palette {
+        let c = |k: &str| p.color_for(k, dark);
+        let mut ansi = [rgb(0, 0, 0); 16];
+        for (i, slot) in ansi.iter_mut().enumerate() {
+            *slot = c(&format!("Ansi {i} Color"));
+        }
+        let fg = c("Foreground Color");
+        Palette {
+            ansi,
+            fg,
+            bg: c("Background Color"),
+            bold: if p.bool("Use Bright Bold") { c("Bold Color") } else { fg },
+            cursor: c("Cursor Color"),
+            cursor_text: c("Cursor Text Color"),
+            selection: c("Selection Color"),
+            selected_text: p.bool("Use Selected Text Color").then(|| c("Selected Text Color")),
+            bright_bold: p.bool("Brighten Bold Text"),
+            faint_alpha: p.float("Faint Text Alpha") as f32,
+        }
+    }
+
     /// A 256-color index: 16 ANSI colors, a 6x6x6 cube, then 24 grays.
     pub fn indexed(&self, i: u8) -> Rgb {
         match i {
@@ -96,10 +107,12 @@ impl Palette {
             Color::Indexed(i) if bold && self.bright_bold && i < 8 => self.ansi[i as usize + 8],
             c => self.color(c),
         };
-        if flags.contains(Flags::DIM) {
-            f = dim(f);
-        }
         let mut b = self.color(bg);
+        if flags.contains(Flags::DIM) {
+            let a = self.faint_alpha;
+            let mix = |f: u8, b: u8| (f as f32 * a + b as f32 * (1.0 - a)).round() as u8;
+            f = rgb(mix(f.r, b.r), mix(f.g, b.g), mix(f.b, b.b));
+        }
         if flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut f, &mut b);
         }
@@ -116,7 +129,32 @@ mod tests {
 
     #[test]
     fn named_red_is_itermish() {
-        assert_eq!(Palette::default().color(Color::Named(NamedColor::Red)), rgb(0xc9, 0x1b, 0x00));
+        assert_eq!(Palette::default().color(Color::Named(NamedColor::Red)), rgb(0xb4, 0x3c, 0x2a));
+    }
+
+    #[test]
+    fn palette_reads_the_profile() {
+        let mut p = crate::profile::Profile::default();
+        // The stock profile keeps separate Light and Dark colors; test the single set.
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(false));
+        p.set("Ansi 4 Color", crate::profile::color_value(rgb(1, 2, 3)));
+        p.set("Brighten Bold Text", toml::Value::Boolean(false));
+        let pal = Palette::from_profile(&p, true);
+        assert_eq!(pal.ansi[4], rgb(1, 2, 3));
+        assert!(!pal.bright_bold);
+        assert!(pal.selected_text.is_some());
+        p.set("Use Selected Text Color", toml::Value::Boolean(false));
+        assert_eq!(Palette::from_profile(&p, true).selected_text, None);
+    }
+
+    #[test]
+    fn faint_text_uses_the_profile_alpha() {
+        let mut p = crate::profile::Profile::default();
+        p.set("Faint Text Alpha", toml::Value::Float(0.5));
+        let pal = Palette::from_profile(&p, true);
+        let (fg, _) = pal.cell(Color::Named(NamedColor::Foreground), Color::Named(NamedColor::Background), Flags::DIM);
+        let half = |f: u8, b: u8| (f as f32 * 0.5 + b as f32 * 0.5).round() as u8;
+        assert_eq!(fg, rgb(half(pal.fg.r, pal.bg.r), half(pal.fg.g, pal.bg.g), half(pal.fg.b, pal.bg.b)));
     }
 
     #[test]
@@ -131,7 +169,10 @@ mod tests {
 
     #[test]
     fn dim_named_is_two_thirds() {
-        assert_eq!(Palette::default().color(Color::Named(NamedColor::DimRed)), rgb(0x86, 0x12, 0x00));
+        let p = Palette::default();
+        let red = p.ansi[1];
+        let d = |v: u8| (v as u16 * 2 / 3) as u8;
+        assert_eq!(p.color(Color::Named(NamedColor::DimRed)), rgb(d(red.r), d(red.g), d(red.b)));
     }
 
     #[test]

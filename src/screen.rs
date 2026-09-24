@@ -7,7 +7,7 @@ use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::{Config, TermMode};
-use alacritty_terminal::vte::ansi::Processor;
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
 
 use crate::mouse::{Modes, Tracking};
 use crate::palette::Palette;
@@ -40,6 +40,41 @@ impl Dimensions for GridSize {
     }
 }
 
+/// The profile settings the terminal core needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    pub cursor_shape: CursorShape,
+    pub cursor_blink: bool,
+    pub scrollback: usize,
+}
+
+impl Look {
+    pub fn from_profile(p: &crate::profile::Profile) -> Look {
+        let cursor_shape = match p.int("Cursor Type") {
+            0 => CursorShape::Underline,
+            1 => CursorShape::Beam,
+            _ => CursorShape::Block,
+        };
+        // alacritty_terminal keeps at most 100,000 lines; that is Tandem's "unlimited".
+        let scrollback = if p.bool("Unlimited Scrollback") { 100_000 } else { p.int("Scrollback Lines").clamp(0, 100_000) as usize };
+        Look { cursor_shape, cursor_blink: p.bool("Blinking Cursor"), scrollback }
+    }
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look::from_profile(&crate::profile::Profile::default())
+    }
+}
+
+fn config(look: Look) -> Config {
+    Config {
+        scrolling_history: look.scrollback,
+        default_cursor_style: CursorStyle { shape: look.cursor_shape, blinking: look.cursor_blink },
+        ..Config::default()
+    }
+}
+
 pub struct Screen {
     term: Term<Listener>,
     parser: Processor,
@@ -51,10 +86,21 @@ pub struct Screen {
 
 impl Screen {
     pub fn new(cols: usize, rows: usize) -> Self {
+        Screen::with_look(cols, rows, Palette::default(), Look::default())
+    }
+
+    pub fn with_look(cols: usize, rows: usize, palette: Palette, look: Look) -> Self {
         let (tx, events) = mpsc::channel();
-        let config = Config { scrolling_history: 10_000, ..Config::default() };
-        let term = Term::new(config, &GridSize { cols, rows }, Listener(tx));
-        Self { term, parser: Processor::new(), events, palette: Palette::default(), title: None, cell_px: (0, 0) }
+        let term = Term::new(config(look), &GridSize { cols, rows }, Listener(tx));
+        Self { term, parser: Processor::new(), events, palette, title: None, cell_px: (0, 0) }
+    }
+
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
+    }
+
+    pub fn set_look(&mut self, look: Look) {
+        self.term.set_options(config(look));
     }
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
@@ -146,7 +192,9 @@ mod tests {
     fn answers_background_color_query() {
         let mut s = Screen::new(80, 24);
         let reply = String::from_utf8(s.feed(b"\x1b]11;?\x07")).unwrap();
-        assert!(reply.contains("rgb:0000/0000/0000"), "{reply:?}");
+        let bg = s.palette.bg;
+        let want = format!("rgb:{0:02x}{0:02x}/{1:02x}{1:02x}/{2:02x}{2:02x}", bg.r, bg.g, bg.b);
+        assert!(reply.contains(&want), "{reply:?} vs {want}");
     }
 
     #[test]
@@ -169,6 +217,26 @@ mod tests {
         let mut s = Screen::new(80, 24);
         s.resize(100, 30);
         assert_eq!((s.term().columns(), s.term().screen_lines()), (100, 30));
+    }
+
+    #[test]
+    fn look_follows_the_profile() {
+        let mut p = crate::profile::Profile::default();
+        p.set("Cursor Type", toml::Value::Integer(1));
+        p.set("Blinking Cursor", toml::Value::Boolean(true));
+        p.set("Scrollback Lines", toml::Value::Integer(5000));
+        let look = Look::from_profile(&p);
+        assert_eq!((look.cursor_shape, look.cursor_blink, look.scrollback), (CursorShape::Beam, true, 5000));
+        p.set("Unlimited Scrollback", toml::Value::Boolean(true));
+        assert_eq!(Look::from_profile(&p).scrollback, 100_000);
+    }
+
+    #[test]
+    fn the_profile_cursor_shape_is_used() {
+        let mut p = crate::profile::Profile::default();
+        p.set("Cursor Type", toml::Value::Integer(0));
+        let s = Screen::with_look(80, 24, Palette::default(), Look::from_profile(&p));
+        assert_eq!(s.term().renderable_content().cursor.shape, CursorShape::Underline);
     }
 
     #[test]

@@ -435,6 +435,8 @@ default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark v
 help = "Default text color (has separate Light/Dark variant when enabled)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.062745, g = 0.062745, b = 0.062745, a = 1.0 }
+default_dark = { r = 0.861979, g = 0.862, b = 0.861989, a = 1.0 }
 
 [[setting]]
 key = "Background Color"
@@ -447,6 +449,8 @@ default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark v
 help = "Default terminal background color (has separate Light/Dark variant when enabled)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.98, g = 0.98, b = 0.98, a = 1.0 }
+default_dark = { r = 0.080688, g = 0.099111, b = 0.121033, a = 1.0 }
 
 [[setting]]
 key = "Use Bright Bold"
@@ -470,6 +474,8 @@ default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark v
 help = "Color used for bold text when the custom bold color option is on."
 light_dark = true
 macos_only = false
+default_light = { r = 0.062745, g = 0.062745, b = 0.062745, a = 1.0 }
+default_dark = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
 
 [[setting]]
 key = "Brighten Bold Text"
@@ -493,6 +499,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across Light and Da
 help = "Color for clickable hyperlink and URL text."
 light_dark = true
 macos_only = false
+default_light = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
+default_dark = { r = 0.198024, g = 0.557898, b = 0.933716, a = 1.0 }
 
 [[setting]]
 key = "Match Background Color"
@@ -517,6 +525,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across Light and Da
 help = "Background color of selected text."
 light_dark = true
 macos_only = false
+default_light = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
+default_dark = { r = 0.701961, g = 0.843137, b = 1.0, a = 1.0 }
 
 [[setting]]
 key = "Use Selected Text Color"
@@ -540,6 +550,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across Light and Da
 help = "Text color drawn over a selection, when enabled."
 light_dark = true
 macos_only = false
+default_light = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
+default_dark = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
 
 [[setting]]
 key = "Cursor Color"
@@ -552,6 +564,8 @@ default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark v
 help = "Color of the text cursor; disabled when Smart Cursor Color is on with a box cursor."
 light_dark = true
 macos_only = false
+default_light = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
+default_dark = { r = 0.999976, g = 1.0, b = 0.999987, a = 1.0 }
 
 [[setting]]
 key = "Cursor Text Color"
@@ -564,6 +578,8 @@ default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark v
 help = "Color of text drawn under or over the cursor."
 light_dark = true
 macos_only = false
+default_light = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 }
+default_dark = { r = 0.0, g = 0.0, b = 0.0, a = 1.0 }
 
 [[setting]]
 key = "Smart Cursor Color"
@@ -599,6 +615,8 @@ default_note = "Stock DefaultBookmark.plist value (Light variant matches; Dark v
 help = "Color of the badge text overlay drawn in the corner of the terminal."
 light_dark = true
 macos_only = false
+default_light = { r = 0.746139, g = 0.116106, b = 0.116106, a = 0.5 }
+default_dark = { r = 0.978744, g = 0.652186, b = 0.652186, a = 0.5 }
 
 [[setting]]
 key = "Use Tab Color"
@@ -689,6 +707,8 @@ default_note = "iTermProfilePreferences.m default shown here; DefaultBookmark.pl
 help = "Color and opacity of the cursor guide row highlight."
 light_dark = true
 macos_only = false
+default_light = { r = 0.523383, g = 0.772177, b = 0.853193, a = 0.25 }
+default_dark = { r = 0.376496, g = 0.802326, b = 0.94099, a = 0.25 }
 
 [[setting]]
 key = "Use Theme Mark Colors"
@@ -773,6 +793,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 0 (Black)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.078431, g = 0.098039, b = 0.117647, a = 1.0 }
+default_dark = { r = 0.078431, g = 0.098039, b = 0.117647, a = 1.0 }
 
 [[setting]]
 key = "Ansi 1 Color"
@@ -785,6 +807,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 1 (Red)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
+default_dark = { r = 0.707443, g = 0.236601, b = 0.163, a = 1.0 }
 
 [[setting]]
 key = "Ansi 2 Color"
@@ -797,6 +821,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 2 (Green)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
+default_dark = { r = 0.0, g = 0.760784, b = 0.0, a = 1.0 }
 
 [[setting]]
 key = "Ansi 3 Color"
@@ -809,6 +835,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 3 (Yellow)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
+default_dark = { r = 0.780586, g = 0.769595, b = 0.0, a = 1.0 }
 
 [[setting]]
 key = "Ansi 4 Color"
@@ -821,6 +849,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 4 (Blue)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
+default_dark = { r = 0.154043, g = 0.264744, b = 0.782162, a = 1.0 }
 
 [[setting]]
 key = "Ansi 5 Color"
@@ -833,6 +863,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 5 (Magenta)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
+default_dark = { r = 0.752197, g = 0.249317, b = 0.744944, a = 1.0 }
 
 [[setting]]
 key = "Ansi 6 Color"
@@ -845,6 +877,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 6 (Cyan)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
+default_dark = { r = 0.0, g = 0.774259, b = 0.781662, a = 1.0 }
 
 [[setting]]
 key = "Ansi 7 Color"
@@ -857,6 +891,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 7 (White)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
+default_dark = { r = 0.78104, g = 0.781058, b = 0.781048, a = 1.0 }
 
 [[setting]]
 key = "Ansi 8 Color"
@@ -869,6 +905,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 8 (Bright Black)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.407818, g = 0.407828, b = 0.407822, a = 1.0 }
+default_dark = { r = 0.407818, g = 0.407828, b = 0.407822, a = 1.0 }
 
 [[setting]]
 key = "Ansi 9 Color"
@@ -881,6 +919,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 9 (Bright Red)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.865952, g = 0.475241, b = 0.458332, a = 1.0 }
+default_dark = { r = 0.865952, g = 0.475241, b = 0.458332, a = 1.0 }
 
 [[setting]]
 key = "Ansi 10 Color"
@@ -893,6 +933,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 10 (Bright Green)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.345007, g = 0.904282, b = 0.565419, a = 1.0 }
+default_dark = { r = 0.345007, g = 0.904282, b = 0.565419, a = 1.0 }
 
 [[setting]]
 key = "Ansi 11 Color"
@@ -905,6 +947,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 11 (Bright Yellow)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.925903, g = 0.883378, b = 0.0, a = 1.0 }
+default_dark = { r = 0.925903, g = 0.883378, b = 0.0, a = 1.0 }
 
 [[setting]]
 key = "Ansi 12 Color"
@@ -917,6 +961,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 12 (Bright Blue)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.653491, g = 0.670447, b = 0.948532, a = 1.0 }
+default_dark = { r = 0.653491, g = 0.670447, b = 0.948532, a = 1.0 }
 
 [[setting]]
 key = "Ansi 13 Color"
@@ -929,6 +975,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 13 (Bright Magenta)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.882156, g = 0.492727, b = 0.882156, a = 1.0 }
+default_dark = { r = 0.882156, g = 0.492727, b = 0.882156, a = 1.0 }
 
 [[setting]]
 key = "Ansi 14 Color"
@@ -941,6 +989,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 14 (Bright Cyan)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.375975, g = 0.992633, b = 1.0, a = 1.0 }
+default_dark = { r = 0.375975, g = 0.992633, b = 1.0, a = 1.0 }
 
 [[setting]]
 key = "Ansi 15 Color"
@@ -953,6 +1003,8 @@ default_note = "Stock DefaultBookmark.plist value; identical across base, Light,
 help = "ANSI palette slot 15 (Bright White)."
 light_dark = true
 macos_only = false
+default_light = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
+default_dark = { r = 0.999996, g = 1.0, b = 1.0, a = 1.0 }
 
 [[setting]]
 key = "Normal Font"

@@ -26,13 +26,15 @@ pub struct Pane {
     pty: Option<Pty>,
     pub exited: Option<u32>,
     pub error: Option<String>,
+    /// The Guid of the profile this pane runs.
+    pub profile: String,
 }
 
 impl Pane {
-    pub fn start(id: PaneId, api: &Api, cmdline: &str, cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
+    pub fn start(id: PaneId, api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         let (cols, rows) = (cols.max(2), rows.max(1));
-        let pty = pty::spawn_notify(api, cmdline, cols, rows, notify)?;
-        Ok(Pane { id, screen: Screen::new(cols as usize, rows as usize), pty: Some(pty), exited: None, error: None })
+        let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
+        Ok(Pane { id, screen: Screen::new(cols as usize, rows as usize), pty: Some(pty), exited: None, error: None, profile: String::new() })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -108,7 +110,7 @@ mod tests {
 
     fn start(cmd: &str) -> Pane {
         let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
-        Pane::start(1, &api, cmd, 80, 24, Arc::new(|| {})).unwrap()
+        Pane::start(1, &api, cmd, None, 80, 24, Arc::new(|| {})).unwrap()
     }
 
     fn pump_until(p: &mut Pane, done: impl Fn(&Pane) -> bool) -> bool {

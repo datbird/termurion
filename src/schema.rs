@@ -36,6 +36,9 @@ pub struct Setting {
     #[serde(rename = "type")]
     pub kind: Kind,
     pub default: Option<toml::Value>,
+    /// Stock values of the "(Light)" and "(Dark)" variants, for light_dark keys.
+    pub default_light: Option<toml::Value>,
+    pub default_dark: Option<toml::Value>,
     pub min: Option<toml::Value>,
     pub max: Option<toml::Value>,
     #[serde(default)]

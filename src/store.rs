@@ -31,10 +31,7 @@ impl Store {
     pub fn load(path: &Path) -> Result<Store, String> {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let p = Profile::new("Default");
-                return Ok(Store { default_guid: p.guid(), profiles: vec![p], path: path.to_path_buf() });
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Store::fresh(path)),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         let file: FileFormat = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -44,6 +41,12 @@ impl Store {
         }
         let default_guid = if profiles.iter().any(|p| p.guid() == file.default) { file.default } else { profiles[0].guid() };
         Ok(Store { profiles, default_guid, path: path.to_path_buf() })
+    }
+
+    /// One "Default" profile, saved at `path`.
+    pub fn fresh(path: &Path) -> Store {
+        let p = Profile::new("Default");
+        Store { default_guid: p.guid(), profiles: vec![p], path: path.to_path_buf() }
     }
 
     pub fn save(&self) -> Result<(), String> {

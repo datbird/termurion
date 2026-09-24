@@ -108,6 +108,9 @@ pub struct Renderer {
     /// One text buffer per row slot, with the spans it last shaped.
     buffers: Vec<(Buffer, Vec<Span>, f32)>,
     family: String,
+    alt_family: Option<String>,
+    h_spacing: f32,
+    v_spacing: f32,
     font_px: f32,
     pub cell: (f32, f32),
 }
@@ -129,6 +132,9 @@ impl Renderer {
             text,
             buffers: Vec::new(),
             family: family.to_string(),
+            alt_family: None,
+            h_spacing: 1.0,
+            v_spacing: 1.0,
             font_px,
             cell: (0.0, 0.0),
         };
@@ -141,7 +147,7 @@ impl Renderer {
     /// would drift away from the text along a row (the cursor landed two cells short).
     pub fn set_font_px(&mut self, px: f32) {
         self.font_px = px;
-        let line = (px * 1.2).round();
+        let line = (px * 1.2 * self.v_spacing).round();
         let n = 100;
         let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, line));
         b.set_size(None, None);
@@ -149,8 +155,23 @@ impl Renderer {
         b.set_text(&"M".repeat(n), &Attrs::new().family(Family::Name(&self.family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         let w = b.layout_runs().next().map(|r| r.line_w / n as f32).filter(|w| *w > 0.0).unwrap_or(px * 0.6);
-        self.cell = (w, line);
+        self.cell = (w * self.h_spacing, line);
         self.buffers.clear();
+    }
+
+    /// True when a font family with this name is installed.
+    pub fn has_family(&self, name: &str) -> bool {
+        self.font_system.db().faces().any(|f| f.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
+    }
+
+    /// Sets the fonts and size. Spacing multiplies the cell width and height, as
+    /// iTerm2's horizontal and vertical spacing do.
+    pub fn set_fonts(&mut self, normal: &str, non_ascii: Option<&str>, px: f32, h_spacing: f32, v_spacing: f32) {
+        self.family = normal.to_string();
+        self.alt_family = non_ascii.map(str::to_string);
+        self.h_spacing = h_spacing;
+        self.v_spacing = v_spacing;
+        self.set_font_px(px);
     }
 
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
@@ -168,9 +189,10 @@ impl Renderer {
             buffer.set_wrap(Wrap::None);
             buffer.set_monospace_width(Some(cw));
             let base = Attrs::new().family(Family::Name(&self.family));
+            let alt = self.alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
             let spans = row.spans.iter().map(|s| {
-                let attrs = base
-                    .clone()
+                let start = if s.alt_font { alt.clone().unwrap_or_else(|| base.clone()) } else { base.clone() };
+                let attrs = start
                     .color(Color::rgb(s.color.r, s.color.g, s.color.b))
                     .weight(if s.bold { Weight::BOLD } else { Weight::NORMAL })
                     .style(if s.italic { Style::Italic } else { Style::Normal });
@@ -314,7 +336,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
             }],
             overlay: vec![],
@@ -351,7 +373,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
             }],
             overlay: vec![],
