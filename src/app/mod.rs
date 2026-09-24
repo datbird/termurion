@@ -333,7 +333,7 @@ impl App {
         let (cols, rows) = self.grid_size(rect);
         let p = self.profile(guid);
         let cmd = profile::command_line(&p, &self.shell);
-        let (cwd, warning) = profile::start_dir(&p);
+        let (cwd, warning) = profile::start_dir_with(&p, self.previous_dir().as_deref());
         match warning {
             Some(w) => self.banners.set("directory", w),
             None => self.banners.clear("directory"),
@@ -352,6 +352,18 @@ impl App {
                 false
             }
         }
+    }
+
+    /// The focused session's directory, from shell integration, when it is on this machine
+    /// (iTerm2 prefers the local directory for a new session).
+    fn previous_dir(&self) -> Option<std::path::PathBuf> {
+        let t = self.tabs.get(self.active)?;
+        let shell = &self.panes.get(&t.focused)?.screen.shell;
+        let here = std::env::var("COMPUTERNAME").unwrap_or_default();
+        if shell.host.as_ref().is_some_and(|h| !h.eq_ignore_ascii_case(&here) && !h.eq_ignore_ascii_case("localhost")) {
+            return None;
+        }
+        profile::local_path(shell.cwd.as_deref()?)
     }
 
     fn open_settings(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {

@@ -165,7 +165,24 @@ pub fn command_line(p: &Profile, default_shell: &str) -> String {
 /// unusable. Home is %USERPROFILE%; "~" expands to it. A directory that does not exist
 /// (an imported macOS path, for example) falls back to home, as iTerm2 does.
 pub fn start_dir(p: &Profile) -> (std::path::PathBuf, Option<String>) {
+    start_dir_with(p, None)
+}
+
+/// A reported directory as a Windows path: "/C:/Users/rob" (OSC 7 URL form) or
+/// "C:\Users\rob". None for a path that is not a Windows path (a remote Unix one).
+pub fn local_path(reported: &str) -> Option<std::path::PathBuf> {
+    let s = reported.strip_prefix('/').filter(|r| r.as_bytes().get(1) == Some(&b':')).unwrap_or(reported);
+    let b = s.as_bytes();
+    (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':').then(|| std::path::PathBuf::from(s.replace('/', "\\")))
+}
+
+/// `start_dir`, with the directory of the session a new one comes from ("Reuse previous
+/// session's directory"). A missing or unusable directory falls back to home.
+pub fn start_dir_with(p: &Profile, previous: Option<&std::path::Path>) -> (std::path::PathBuf, Option<String>) {
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    if p.string("Custom Directory") == "Recycle" {
+        return (previous.filter(|d| d.is_dir()).map(|d| d.to_path_buf()).unwrap_or(home), None);
+    }
     let wanted = p.string("Working Directory");
     if p.string("Custom Directory") != "Yes" || wanted.trim().is_empty() {
         return (home, None);
@@ -185,6 +202,30 @@ pub fn start_dir(p: &Profile) -> (std::path::PathBuf, Option<String>) {
 mod tests {
     use super::*;
     use crate::palette::rgb;
+
+    #[test]
+    fn recycle_uses_the_previous_directory() {
+        let mut p = Profile::default();
+        p.set("Custom Directory", toml::Value::String("Recycle".into()));
+        let dir = std::env::temp_dir();
+        assert_eq!(start_dir_with(&p, Some(&dir)).0, dir);
+    }
+
+    #[test]
+    fn recycle_falls_back_home() {
+        let mut p = Profile::default();
+        p.set("Custom Directory", toml::Value::String("Recycle".into()));
+        let home = start_dir(&Profile::default()).0;
+        assert_eq!(start_dir_with(&p, None).0, home);
+        assert_eq!(start_dir_with(&p, Some(std::path::Path::new("Z:\\no\\such\\dir"))).0, home);
+    }
+
+    #[test]
+    fn url_paths_become_windows_paths() {
+        assert_eq!(local_path("/C:/Users/rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
+        assert_eq!(local_path("C:\\Users\\rob"), Some(std::path::PathBuf::from("C:\\Users\\rob")));
+        assert_eq!(local_path("/home/rob"), None);
+    }
 
     #[test]
     fn unset_keys_read_the_schema_default() {
