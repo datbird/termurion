@@ -154,6 +154,7 @@ pub enum Action {
     ScrollTop,
     ScrollBottom,
     OpenSettings,
+    OpenProfiles,
 }
 
 /// The app shortcut for a key, if any. `key` must be the key with no modifiers
@@ -178,6 +179,7 @@ pub fn shortcut(key: &Key, mods: Mods) -> Option<Action> {
         (_, "c") if cmd => Action::Copy,
         (_, "v") if cmd => Action::Paste,
         (_, ",") if cmd => Action::OpenSettings,
+        (_, "o") if cmd => Action::OpenProfiles,
         (_, d) if cmd && d.len() == 1 && matches!(d.as_bytes()[0], b'1'..=b'9') => {
             Action::SelectTab((d.as_bytes()[0] - b'1') as usize)
         }
@@ -299,6 +301,11 @@ mod tests {
         assert_eq!(shortcut(&Key::Tab, CTRL), Some(Action::NextTab));
         assert_eq!(shortcut(&Key::PageUp, SHIFT), Some(Action::ScrollPageUp));
         assert_eq!(shortcut(&Key::Home, CMD), Some(Action::ScrollTop));
+    }
+
+    #[test]
+    fn cmd_o_opens_profiles() {
+        assert_eq!(shortcut(&t("o"), CMD), Some(Action::OpenProfiles));
     }
 
     #[test]

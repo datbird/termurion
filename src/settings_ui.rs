@@ -41,6 +41,23 @@ pub enum Edit {
     Changed(String),
     Imported(usize),
     Error(String),
+    /// Open a session with this profile Guid.
+    Open(String, How),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum How {
+    Tab,
+    Window,
+    SplitRight,
+    SplitDown,
+}
+
+/// The settings editor, or iTerm2's Profiles window (Cmd+O): a list to start sessions from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Settings,
+    Profiles,
 }
 
 pub struct SettingsWindow {
@@ -53,12 +70,17 @@ pub struct SettingsWindow {
     renderer: egui_wgpu::Renderer,
     selected: Option<String>,
     tab: usize,
+    mode: Mode,
     window: Arc<Window>,
 }
 
 impl SettingsWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Self, String> {
-        let attrs = Window::default_attributes().with_title("Tandem Settings").with_inner_size(winit::dpi::LogicalSize::new(980.0, 720.0));
+    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, mode: Mode) -> Result<Self, String> {
+        let (title, w, h) = match mode {
+            Mode::Settings => ("Tandem Settings", 980.0, 720.0),
+            Mode::Profiles => ("Profiles", 420.0, 460.0),
+        };
+        let attrs = Window::default_attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
         let caps = surface.get_capabilities(adapter);
@@ -79,7 +101,7 @@ impl SettingsWindow {
         let ctx = egui::Context::default();
         let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, None);
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
-        Ok(SettingsWindow { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, selected: None, tab: 0, window })
+        Ok(SettingsWindow { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, selected: None, tab: 0, mode, window })
     }
 
     pub fn focus(&self) {
@@ -113,7 +135,33 @@ impl SettingsWindow {
         let mut tab = self.tab;
         let mut pick = None;
         let dark = self.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
+        let mode = self.mode;
         let out = self.ctx.run_ui(input, |ui| {
+            if mode == Mode::Profiles {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.heading("Profiles");
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        for p in &store.profiles {
+                            let r = ui.selectable_label(p.guid() == selected, p.name());
+                            if r.clicked() {
+                                pick = Some(p.guid());
+                            }
+                            if r.double_clicked() {
+                                edit = Edit::Open(p.guid(), How::Tab);
+                            }
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        for (label, how) in [("New Tab", How::Tab), ("New Window", How::Window), ("Split Right", How::SplitRight), ("Split Down", How::SplitDown)] {
+                            if ui.button(label).clicked() {
+                                edit = Edit::Open(selected.clone(), how);
+                            }
+                        }
+                    });
+                });
+                return;
+            }
             egui::Panel::left("profiles").default_size(220.0).show(ui, |ui| {
                 ui.heading("Profiles");
                 for p in &store.profiles {

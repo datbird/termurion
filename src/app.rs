@@ -30,7 +30,7 @@ use crate::render::Renderer;
 use crate::screen::Look;
 use crate::store::{self, Store};
 use crate::scene::{self, Frame, rgba};
-use crate::settings_ui::{Edit, SettingsWindow};
+use crate::settings_ui::{Edit, How, Mode, SettingsWindow};
 
 const FONT: &str = "Cascadia Mono";
 /// 12 pt, iTerm2's default size, at 96 dpi.
@@ -91,6 +91,7 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     store: Store,
     settings: Option<SettingsWindow>,
+    profiles_win: Option<SettingsWindow>,
     /// Cursor blink phase, and when it last flipped.
     blink_on: bool,
     last_blink: Instant,
@@ -158,6 +159,7 @@ pub fn run() {
         clipboard: arboard::Clipboard::new().ok(),
         store,
         settings: None,
+        profiles_win: None,
         blink_on: true,
         last_blink: Instant::now(),
     };
@@ -229,14 +231,21 @@ impl App {
         }
     }
 
-    fn open_settings(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(s) = &self.settings {
+    fn open_settings(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {
+        let slot = match mode {
+            Mode::Settings => &self.settings,
+            Mode::Profiles => &self.profiles_win,
+        };
+        if let Some(s) = slot {
             return s.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match SettingsWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
-            Ok(s) => self.settings = Some(s),
-            Err(e) => self.banner = Some(format!("Could not open settings: {e}")),
+        match SettingsWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, mode) {
+            Ok(s) => match mode {
+                Mode::Settings => self.settings = Some(s),
+                Mode::Profiles => self.profiles_win = Some(s),
+            },
+            Err(e) => self.banner = Some(format!("Could not open the window: {e}")),
         }
     }
 
@@ -244,6 +253,12 @@ impl App {
     fn apply_edit(&mut self, edit: Edit) {
         match edit {
             Edit::None => return,
+            Edit::Open(guid, how) => match how {
+                // Separate windows arrive in milestone 7; until then a new window opens a tab.
+                How::Tab | How::Window => self.new_tab(Some(&guid)),
+                How::SplitRight => self.split(Axis::Row, Some(&guid)),
+                How::SplitDown => self.split(Axis::Column, Some(&guid)),
+            },
             Edit::Error(e) => self.banner = Some(e),
             Edit::Changed(_) | Edit::Imported(_) => {
                 if let Err(e) = self.store.save() {
@@ -287,16 +302,16 @@ impl App {
         }
     }
 
-    fn new_tab(&mut self) {
+    fn new_tab(&mut self, guid: Option<&str>) {
         let area = self.content_area();
-        if let Some(id) = self.start_pane(area, None) {
+        if let Some(id) = self.start_pane(area, guid) {
             self.tabs.push(Tab { layout: Layout::new(id), focused: id });
             self.active = self.tabs.len() - 1;
             self.relayout();
         }
     }
 
-    fn split(&mut self, axis: Axis) {
+    fn split(&mut self, axis: Axis, guid: Option<&str>) {
         let Some(tab) = self.tabs.get(self.active) else { return };
         let target = tab.focused;
         let area = self.content_area();
@@ -305,7 +320,7 @@ impl App {
             Axis::Row => Rect { w: rect.w / 2.0, ..rect },
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },
         };
-        if let Some(id) = self.start_pane(half, None) {
+        if let Some(id) = self.start_pane(half, guid) {
             let tab = &mut self.tabs[self.active];
             tab.layout.split(target, axis, id);
             tab.focused = id;
@@ -413,14 +428,14 @@ impl App {
     fn action(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         let n = self.tabs.len();
         match action {
-            Action::NewTab => self.new_tab(),
+            Action::NewTab => self.new_tab(None),
             Action::ClosePane => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
                     self.close_pane(id, event_loop);
                 }
             }
-            Action::SplitRight => self.split(Axis::Row),
-            Action::SplitDown => self.split(Axis::Column),
+            Action::SplitRight => self.split(Axis::Row, None),
+            Action::SplitDown => self.split(Axis::Column, None),
             Action::NextPane | Action::PrevPane => {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     let panes = tab.layout.panes();
@@ -450,7 +465,8 @@ impl App {
             Action::ScrollPageDown => self.focused_pane().map_or((), |p| p.scroll(Scroll::PageDown)),
             Action::ScrollTop => self.focused_pane().map_or((), |p| p.scroll(Scroll::Top)),
             Action::ScrollBottom => self.focused_pane().map_or((), |p| p.scroll(Scroll::Bottom)),
-            Action::OpenSettings => self.open_settings(event_loop),
+            Action::OpenSettings => self.open_settings(event_loop, Mode::Settings),
+            Action::OpenProfiles => self.open_settings(event_loop, Mode::Profiles),
             _ => {}
         }
         self.relayout();
@@ -769,7 +785,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.apply_fonts();
         self.size_window();
-        self.new_tab();
+        self.new_tab(None);
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
@@ -814,15 +830,19 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.settings.as_ref().is_some_and(|s| s.id() == id) {
+        for profiles in [false, true] {
+            let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
+            if !slot.as_ref().is_some_and(|s| s.id() == id) {
+                continue;
+            }
             match event {
-                WindowEvent::CloseRequested => self.settings = None,
+                WindowEvent::CloseRequested => *slot = None,
                 WindowEvent::RedrawRequested => {
-                    let edit = self.settings.as_mut().unwrap().redraw(&mut self.store);
+                    let edit = slot.as_mut().unwrap().redraw(&mut self.store);
                     self.apply_edit(edit);
                 }
                 other => {
-                    self.settings.as_mut().unwrap().event(&other);
+                    slot.as_mut().unwrap().event(&other);
                 }
             }
             return;
