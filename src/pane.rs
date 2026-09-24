@@ -10,13 +10,14 @@ use crate::screen::Screen;
 
 /// The bytes to send for a paste. Newlines become carriage returns, as a typed
 /// Enter would. Bracketed paste wraps the text so the app knows it was pasted,
-/// and drops any end marker inside it so a paste cannot break out and run commands.
+/// and removes every ESC from it, so no end marker can form inside and a paste
+/// cannot break out and run commands.
 pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     let text = text.replace("\r\n", "\r").replace('\n', "\r");
     if !bracketed {
         return text.into_bytes();
     }
-    format!("\x1b[200~{}\x1b[201~", text.replace("\x1b[201~", "")).into_bytes()
+    format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', "")).into_bytes()
 }
 
 pub struct Pane {
@@ -134,7 +135,13 @@ mod tests {
 
     #[test]
     fn bracketed_paste_strips_the_end_marker() {
-        assert_eq!(paste_bytes("a\x1b[201~rm -rf x\n", true), b"\x1b[200~arm -rf x\r\x1b[201~");
+        assert_eq!(paste_bytes("a\x1b[201~rm -rf x\n", true), b"\x1b[200~a[201~rm -rf x\r\x1b[201~");
+    }
+
+    #[test]
+    fn bracketed_paste_strips_a_nested_end_marker() {
+        // One pass of removal would join the halves into a live end marker.
+        assert_eq!(paste_bytes("\x1b[20\x1b[201~1~rm -rf x", true), b"\x1b[200~[20[201~1~rm -rf x\x1b[201~");
     }
 
     #[test]
