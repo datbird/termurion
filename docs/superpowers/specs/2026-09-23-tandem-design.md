@@ -64,8 +64,14 @@ In tmux mode, one `pty` runs `tmux -CC` and `tmuxcc` feeds every pane's `core` f
 
 - Uses ConPTY through the `windows` crate.
 - Ships `conpty.dll` and `OpenConsole.exe` from Microsoft's ConPTY NuGet package (MIT) beside the exe.
+  Pinned version: `Microsoft.Windows.Console.ConPTY` 1.24.260710001.
   The copy of ConPTY built into Windows lags behind and has a history of mouse input bugs.
-  The shipped copy gets the newest fixes, including passthrough mode.
+  The shipped copy gets the newest fixes. (Current ConPTY has no separate "passthrough mode" flag.
+  Its only creation flags are cursor inheritance and glyph width.)
+- `conpty.dll` starts `OpenConsole.exe` from its own folder. If that exe is missing, ConPTY quietly uses
+  the Windows copy. Tandem checks that both files exist before it loads the DLL.
+- Tandem has its own ConPTY code, not the one in `alacritty_terminal`. The Alacritty code falls back
+  to the Windows copy without saying so, which breaks the next rule.
 - If the shipped DLL fails to load, Tandem says so in a visible banner, then uses the built-in ConPTY.
   It does not switch without telling you.
 - Shells come from the profile's Windows override (section 4.2). Default: `pwsh.exe`.
@@ -223,7 +229,7 @@ Risk goes first. Each milestone ends with something he can run.
 
 | # | Milestone | Done when |
 |---|---|---|
-| 0 | ConPTY and mouse probe | A bare window runs pwsh, tmux in WSL, vim, and htop, and every mouse mode passes a test |
+| 0 | ConPTY and mouse probe | A scripted probe (no window) runs a console app, tmux, vim, and htop under ConPTY, and every mouse mode passes with the shipped ConPTY |
 | 1 | Terminal basics | Tabs, splits, renderer, keys, copy and paste |
 | 2 | iTerm2 settings | Profiles, colors, and fonts load from the synced plist and reload live |
 | 3 | Hotkey window | The global key shows and hides the drop-down window |
