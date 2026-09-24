@@ -157,6 +157,39 @@ impl Screen {
         reply
     }
 
+    /// Puts a mark id on a row (grid line: 0 is the top of the screen, negative is history).
+    pub fn set_row_mark(&mut self, line: i32, id: u32) {
+        let grid = self.term.grid_mut();
+        if line >= -(grid.history_size() as i32) && line < grid.screen_lines() as i32 {
+            grid[Line(line)].set_mark(id);
+        }
+    }
+
+    /// Every marked row, top first: (grid line, mark id).
+    pub fn row_marks(&self) -> Vec<(i32, u32)> {
+        let grid = self.term.grid();
+        let top = -(grid.history_size() as i32);
+        (top..grid.screen_lines() as i32).filter_map(|l| Some((l, grid[Line(l)].mark())).filter(|(_, id)| *id != 0)).collect()
+    }
+
+    /// One logical line's text starting at `line`: its row and the rows it wraps onto,
+    /// trailing spaces trimmed.
+    pub fn line_text(&self, line: i32) -> String {
+        let grid = self.term.grid();
+        let mut out = String::new();
+        let mut l = line;
+        while l < grid.screen_lines() as i32 {
+            let row = &grid[Line(l)];
+            out.extend((0..grid.columns()).map(|c| row[Column(c)].c));
+            let wrapped = row[Column(grid.columns() - 1)].flags.contains(alacritty_terminal::term::cell::Flags::WRAPLINE);
+            if !wrapped {
+                break;
+            }
+            l += 1;
+        }
+        out.trim_end().to_string()
+    }
+
     /// The whole buffer as text, oldest line first, trailing spaces trimmed.
     pub fn all_text(&self) -> String {
         let grid = self.term.grid();
@@ -306,6 +339,43 @@ mod tests {
         assert!(!t.contains("line0") && t.contains("line5"), "{t:?}");
         s.clear(false);
         assert!(!s.all_text().contains("line5"));
+    }
+
+    #[test]
+    fn a_mark_moves_into_history_with_its_row() {
+        let mut s = Screen::new(20, 3);
+        s.feed(b"prompt> ");
+        s.set_row_mark(0, 7);
+        for i in 0..5 {
+            s.feed(format!("\r\nout{i}").as_bytes());
+        }
+        let marks = s.row_marks();
+        assert_eq!(marks.len(), 1);
+        let (line, id) = marks[0];
+        assert_eq!(id, 7);
+        assert!(line < 0, "{line}");
+        assert!(s.line_text(line).starts_with("prompt>"));
+    }
+
+    #[test]
+    fn a_mark_survives_reflow() {
+        let mut s = Screen::new(10, 5);
+        s.feed(b"$ ");
+        s.set_row_mark(0, 3);
+        s.feed(b"abcdefghijklmnop\r\nnext");
+        s.resize(6, 5);
+        s.resize(30, 5);
+        let (line, id) = s.row_marks()[0];
+        assert_eq!(id, 3);
+        assert!(s.line_text(line).starts_with("$ abcdefghijklmnop"), "{:?}", s.line_text(line));
+    }
+
+    #[test]
+    fn a_cleared_row_loses_its_mark() {
+        let mut s = Screen::new(20, 3);
+        s.set_row_mark(1, 5);
+        s.feed(b"\x1b[H\x1b[J");
+        assert!(s.row_marks().is_empty());
     }
 
     #[test]
