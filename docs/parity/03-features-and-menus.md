@@ -7,247 +7,247 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 ### iTerm2 menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| iTerm2 > About iTerm2 | no shortcut | Shows the About panel with version and build info. | missing |
-| iTerm2 > Show Tip of the Day | no shortcut | Shows a tip of the day dialog on startup or on demand. | missing |
-| iTerm2 > Companion Device Settings | no shortcut | Opens settings for pairing a companion mobile device with iTerm2. | missing |
-| iTerm2 > Suppressed Alerts... | no shortcut | Lists alert dialogs the user chose to suppress and lets them re-enable. | missing |
-| iTerm2 > Check for Updates... | no shortcut | Manually checks the Sparkle updater for a new iTerm2 build. | missing |
-| iTerm2 > Toggle Debug Logging | no shortcut | Turns internal debug log capture on or off. | missing |
-| iTerm2 > Save Retrospective Debug Logs | no shortcut | Dumps recent internal debug logs to a file for bug reports. | missing |
-| iTerm2 > Copy Performance Stats | no shortcut | Copies GPU and CPU performance counters to the clipboard. | missing |
-| iTerm2 > Capture GPU Frame | Ctrl+Opt+Cmd+G | Captures a single Metal GPU frame for renderer debugging. | missing |
-| iTerm2 > Check Settings Control Truncation | no shortcut | Debug tool that scans the Preferences UI for truncated control text. | missing |
-| iTerm2 > Preferences... | Cmd+, | Opens the Preferences/Settings window. | missing |
+| iTerm2 > About iTerm2 | no shortcut | Shows the About panel with version and build info. | have |
+| iTerm2 > Show Tip of the Day | no shortcut | Shows a tip of the day dialog on startup or on demand. (milestone 13) | missing |
+| iTerm2 > Companion Device Settings | no shortcut | Opens settings for pairing a companion mobile device with iTerm2. (milestone 13) | missing |
+| iTerm2 > Suppressed Alerts... | no shortcut | Lists alert dialogs the user chose to suppress and lets them re-enable. (milestone 13) | missing |
+| iTerm2 > Check for Updates... | no shortcut | Manually checks the Sparkle updater for a new iTerm2 build. (milestone 13) | missing |
+| iTerm2 > Toggle Debug Logging | no shortcut | Turns internal debug log capture on or off. (milestone 6) | missing |
+| iTerm2 > Save Retrospective Debug Logs | no shortcut | Dumps recent internal debug logs to a file for bug reports. (milestone 13) | missing |
+| iTerm2 > Copy Performance Stats | no shortcut | Copies GPU and CPU performance counters to the clipboard. (milestone 13) | missing |
+| iTerm2 > Capture GPU Frame | Ctrl+Opt+Cmd+G | Captures a single Metal GPU frame for renderer debugging. (milestone 13) | missing |
+| iTerm2 > Check Settings Control Truncation | no shortcut | Debug tool that scans the Preferences UI for truncated control text. (milestone 13) | missing |
+| iTerm2 > Preferences... | Cmd+, | Opens the Preferences/Settings window. | have |
 | iTerm2 > Services | no shortcut | macOS system Services submenu, populated dynamically by the OS. | missing |
-| iTerm2 > Hide iTerm2 | Cmd+H | Hides the application. | missing |
-| iTerm2 > Hide Others | Opt+Cmd+H | Hides all other applications. | missing |
-| iTerm2 > Show All | no shortcut | Unhides all hidden applications. | missing |
-| iTerm2 > Secure Keyboard Entry | Opt+Cmd+S | Enables Secure Keyboard Entry to block other apps from reading keystrokes. | missing |
-| iTerm2 > Make iTerm2 Default Term | Ctrl+Shift+Cmd+\ | Registers iTerm2 as the default terminal app for the OS. | missing |
-| iTerm2 > Make Terminal Default Term | Ctrl+Opt+Shift+Cmd+\ | Restores Terminal.app as the default terminal app. | missing |
-| iTerm2 > Install Shell Integration | no shortcut | Installs the shell integration script into the user's shell rc file. | missing |
-| iTerm2 > Install Claude Code Integration | no shortcut | Installs hooks for Claude Code terminal integration. | missing |
-| iTerm2 > Reinstall Claude Code Integration | no shortcut | Reinstalls the Claude Code integration hooks. | missing |
-| iTerm2 > Uninstall Claude Code Integration | no shortcut | Removes the Claude Code integration hooks. | missing |
-| iTerm2 > Remove Recent Profiles from Dock Menu | no shortcut | Clears the recently used profile list shown in the Dock menu. | missing |
+| iTerm2 > Hide iTerm2 | Cmd+H | Hides the application. | have |
+| iTerm2 > Hide Others | Opt+Cmd+H | Hides all other applications. (milestone 13) | missing |
+| iTerm2 > Show All | no shortcut | Unhides all hidden applications. (milestone 13) | missing |
+| iTerm2 > Secure Keyboard Entry | Opt+Cmd+S | Enables Secure Keyboard Entry to block other apps from reading keystrokes. (milestone 13) | missing |
+| iTerm2 > Make iTerm2 Default Term | Ctrl+Shift+Cmd+\ | Registers iTerm2 as the default terminal app for the OS. (milestone 13) | missing |
+| iTerm2 > Make Terminal Default Term | Ctrl+Opt+Shift+Cmd+\ | Restores Terminal.app as the default terminal app. (milestone 13) | missing |
+| iTerm2 > Install Shell Integration | no shortcut | Installs the shell integration script into the user's shell rc file. (milestone 4) | missing |
+| iTerm2 > Install Claude Code Integration | no shortcut | Installs hooks for Claude Code terminal integration. (milestone 13) | missing |
+| iTerm2 > Reinstall Claude Code Integration | no shortcut | Reinstalls the Claude Code integration hooks. (milestone 13) | missing |
+| iTerm2 > Uninstall Claude Code Integration | no shortcut | Removes the Claude Code integration hooks. (milestone 13) | missing |
+| iTerm2 > Remove Recent Profiles from Dock Menu | no shortcut | Clears the recently used profile list shown in the Dock menu. (milestone 13) | missing |
 | iTerm2 > Quit iTerm2 | Cmd+Q | Quits the application. | have |
 
 ### Shell menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Shell > New Window | Cmd+N | Opens a new terminal window with the default profile. | have |
-| Shell > New Window with Current Profile | Opt+Cmd+N | Opens a new window reusing the current session's profile. | missing |
+| Shell > New Window | Cmd+N | Opens a new terminal window with the default profile. Tandem: Opens a tab until separate windows arrive in milestone 7. | partial |
+| Shell > New Window with Current Profile | Opt+Cmd+N | Opens a new window reusing the current session's profile. Tandem: Opens a tab until separate windows arrive in milestone 7. | partial |
 | Shell > New Tab | Cmd+T | Opens a new tab with the default profile. | have |
-| Shell > New Tab Next to Current Tab | Opt+Cmd+T | Opens a new tab immediately to the right of the current one. | partial |
-| Shell > New Tab with Current Profile | Opt+Cmd+T | Opens a new tab reusing the current session's profile. | missing |
-| Shell > Duplicate Window | no shortcut | Opens a new window cloning the current window's layout. | missing |
-| Shell > Duplicate Tab | no shortcut | Opens a new tab cloning the current tab's split layout. | missing |
+| Shell > New Tab Next to Current Tab | Opt+Cmd+T | Opens a new tab immediately to the right of the current one. | have |
+| Shell > New Tab with Current Profile | Opt+Cmd+T | Opens a new tab reusing the current session's profile. | have |
+| Shell > Duplicate Window | no shortcut | Opens a new window cloning the current window's layout. (milestone 7) | missing |
+| Shell > Duplicate Tab | no shortcut | Opens a new tab cloning the current tab's split layout. | have |
 | Shell > Split Horizontally with Current Profile | Cmd+D | Splits the current pane into top and bottom using the current profile. | have |
 | Shell > Split Vertically with Current Profile | Cmd+D | Splits the current pane into left and right using the current profile. | have |
-| Shell > Split Horizontally... | Opt+Cmd+H | Splits the pane top and bottom, prompting for which profile to use. | partial |
-| Shell > Split Vertically... | Opt+Cmd+V | Splits the pane left and right, prompting for which profile to use. | partial |
-| Shell > Save Contents... | no shortcut | Saves the full scrollback contents of the session to a file. | missing |
-| Shell > Save Selected Text... | Cmd+S | Saves the current text selection to a file. | missing |
+| Shell > Split Horizontally... | Opt+Cmd+H | Splits the pane top and bottom, prompting for which profile to use. | have |
+| Shell > Split Vertically... | Opt+Cmd+V | Splits the pane left and right, prompting for which profile to use. | have |
+| Shell > Save Contents... | no shortcut | Saves the full scrollback contents of the session to a file. | have |
+| Shell > Save Selected Text... | Cmd+S | Saves the current text selection to a file. | have |
 | Shell > Close | Cmd+W | Closes the current session or pane. | have |
 | Shell > Close Terminal Window | Cmd+W | Closes the entire terminal window. | have |
-| Shell > Close All Panes in Tab | Opt+Cmd+W | Closes every pane in the current tab. | partial |
-| Shell > Undo Close | Cmd+T | Reopens the most recently closed session. | missing |
-| Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. | missing |
-| Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. | missing |
-| Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. | missing |
-| Shell > Broadcast Input > Send Input to Current Session Only | Opt+Cmd+I | Turns off input broadcasting, typing goes only to the active pane. | missing |
-| Shell > Broadcast Input > Broadcast Input to All Panes in All Tabs | Cmd+I | Sends typed input to every pane in every tab of the window. | missing |
-| Shell > Broadcast Input > Broadcast Input to All Panes in Current Tab | Opt+Cmd+I | Sends typed input to every pane in the current tab. | missing |
-| Shell > Broadcast Input > Toggle Broadcast Input to Current Session | Ctrl+Opt+Cmd+I | Adds or removes just the current session from the broadcast set. | missing |
-| Shell > Broadcast Input > Show Background Pattern Indicator | no shortcut | Shows a background tint on panes receiving broadcast input. | missing |
-| Shell > Broadcast Input > Current Session is Broadcast Source | no shortcut | Marks the current session as the source pane for broadcasting. | missing |
-| Shell > Toggle Buffer Input | no shortcut | Buffers keystrokes typed while a command is running instead of discarding them. | missing |
-| Shell > tmux > Detach | Ctrl+Cmd+D | Detaches from the attached tmux session, leaving it running server side. | missing |
-| Shell > tmux > Force Detach | no shortcut | Forcibly detaches from tmux even if the gateway is unresponsive. | missing |
-| Shell > tmux > New Tmux Window | Ctrl+Cmd+N | Creates a new window inside the attached tmux session. | missing |
-| Shell > tmux > New Tmux Tab | Ctrl+Cmd+T | Creates a new tab or pane inside the attached tmux session. | missing |
-| Shell > tmux > Pause Pane | Ctrl+Cmd+P | Pauses output updates for a tmux pane to save bandwidth. | missing |
-| Shell > tmux > Dashboard | no shortcut | Opens a dashboard listing all attached tmux sessions and windows. | missing |
-| Shell > ssh > Disconnect | no shortcut | Disconnects the built in SSH integration session. | missing |
-| Shell > ssh > Download Files... | no shortcut | Downloads files from the remote host over the SSH integration channel. | missing |
-| Shell > ssh > Remote host can control iTerm2 | no shortcut | Lets escape sequences from the remote SSH host control iTerm2 features. | missing |
-| Shell > Page Setup... | Cmd+P | Opens the macOS page setup dialog for printing. | missing |
-| Shell > Print > Screen | Cmd+P | Prints the visible screen contents. | missing |
-| Shell > Print > Selection | Opt+Cmd+P | Prints the current text selection. | missing |
-| Shell > Print > Buffer | Opt+Cmd+P | Prints the full scrollback buffer. | missing |
+| Shell > Close All Panes in Tab | Opt+Cmd+W | Closes every pane in the current tab. | have |
+| Shell > Undo Close | Cmd+T | Reopens the most recently closed session. (milestone 7) | missing |
+| Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. (milestone 7) | missing |
+| Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. (milestone 7) | missing |
+| Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. (milestone 7) | missing |
+| Shell > Broadcast Input > Send Input to Current Session Only | Opt+Cmd+I | Turns off input broadcasting, typing goes only to the active pane. (milestone 7) | missing |
+| Shell > Broadcast Input > Broadcast Input to All Panes in All Tabs | Cmd+I | Sends typed input to every pane in every tab of the window. (milestone 7) | missing |
+| Shell > Broadcast Input > Broadcast Input to All Panes in Current Tab | Opt+Cmd+I | Sends typed input to every pane in the current tab. (milestone 7) | missing |
+| Shell > Broadcast Input > Toggle Broadcast Input to Current Session | Ctrl+Opt+Cmd+I | Adds or removes just the current session from the broadcast set. (milestone 7) | missing |
+| Shell > Broadcast Input > Show Background Pattern Indicator | no shortcut | Shows a background tint on panes receiving broadcast input. (milestone 7) | missing |
+| Shell > Broadcast Input > Current Session is Broadcast Source | no shortcut | Marks the current session as the source pane for broadcasting. (milestone 7) | missing |
+| Shell > Toggle Buffer Input | no shortcut | Buffers keystrokes typed while a command is running instead of discarding them. (milestone 5) | missing |
+| Shell > tmux > Detach | Ctrl+Cmd+D | Detaches from the attached tmux session, leaving it running server side. (milestone 8) | missing |
+| Shell > tmux > Force Detach | no shortcut | Forcibly detaches from tmux even if the gateway is unresponsive. (milestone 8) | missing |
+| Shell > tmux > New Tmux Window | Ctrl+Cmd+N | Creates a new window inside the attached tmux session. (milestone 8) | missing |
+| Shell > tmux > New Tmux Tab | Ctrl+Cmd+T | Creates a new tab or pane inside the attached tmux session. (milestone 8) | missing |
+| Shell > tmux > Pause Pane | Ctrl+Cmd+P | Pauses output updates for a tmux pane to save bandwidth. (milestone 8) | missing |
+| Shell > tmux > Dashboard | no shortcut | Opens a dashboard listing all attached tmux sessions and windows. (milestone 8) | missing |
+| Shell > ssh > Disconnect | no shortcut | Disconnects the built in SSH integration session. (milestone 5) | missing |
+| Shell > ssh > Download Files... | no shortcut | Downloads files from the remote host over the SSH integration channel. (milestone 5) | missing |
+| Shell > ssh > Remote host can control iTerm2 | no shortcut | Lets escape sequences from the remote SSH host control iTerm2 features. (milestone 5) | missing |
+| Shell > Page Setup... | Cmd+P | Opens the macOS page setup dialog for printing. (milestone 5) | missing |
+| Shell > Print > Screen | Cmd+P | Prints the visible screen contents. (milestone 5) | missing |
+| Shell > Print > Selection | Opt+Cmd+P | Prints the current text selection. (milestone 5) | missing |
+| Shell > Print > Buffer | Opt+Cmd+P | Prints the full scrollback buffer. (milestone 5) | missing |
 
 ### Edit menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Edit > Undo | Cmd+Z | Undoes the last editable action, for example in the Composer or a text field. | missing |
-| Edit > Redo | Cmd+Z | Redoes the last undone editable action. | missing |
-| Edit > Cut | Cmd+X | Cuts selected text in editable fields, not the terminal grid. | missing |
+| Edit > Undo | Cmd+Z | Undoes the last editable action, for example in the Composer or a text field. (milestone 5) | missing |
+| Edit > Redo | Cmd+Z | Redoes the last undone editable action. (milestone 5) | missing |
+| Edit > Cut | Cmd+X | Cuts selected text in editable fields, not the terminal grid. (milestone 5) | missing |
 | Edit > Copy | Cmd+C | Copies the current selection to the clipboard. | have |
-| Edit > Copy with Styles | Opt+Cmd+C | Copies the selection to the clipboard preserving colors and font styling. | missing |
-| Edit > Copy with Control Sequences | no shortcut | Copies the selection including the raw escape sequences that produced it. | missing |
-| Edit > Copy Mode | Cmd+C | Enters keyboard driven vi-like selection mode for copying text. | missing |
+| Edit > Copy with Styles | Opt+Cmd+C | Copies the selection to the clipboard preserving colors and font styling. (milestone 5) | missing |
+| Edit > Copy with Control Sequences | no shortcut | Copies the selection including the raw escape sequences that produced it. (milestone 5) | missing |
+| Edit > Copy Mode | Cmd+C | Enters keyboard driven vi-like selection mode for copying text. (milestone 5) | missing |
 | Edit > Paste | Cmd+V | Pastes clipboard contents into the session. | have |
-| Edit > Paste Special > Advanced Paste... | Opt+Cmd+V | Opens a dialog with paste transform options such as escaping, encoding, and tab conversion. | missing |
+| Edit > Paste Special > Advanced Paste... | Opt+Cmd+V | Opens a dialog with paste transform options such as escaping, encoding, and tab conversion. (milestone 9) | missing |
 | Edit > Paste Special > Paste Selection | Cmd+V | Pastes the current selection, similar to middle-click paste on X11. | have |
-| Edit > Paste Special > Paste File Base64-Encoded | no shortcut | Pastes a file's contents as a base64-encoded string. | missing |
-| Edit > Paste Special > Paste Slowly | no shortcut | Pastes character by character with a delay, for flaky serial links. | missing |
-| Edit > Paste Special > Paste Faster | no shortcut | Increases the speed used by slow paste. | missing |
-| Edit > Paste Special > Paste Slowly Faster | no shortcut | Increases the per-character delay speed of slow paste. | missing |
-| Edit > Paste Special > Paste Slower | no shortcut | Decreases the speed used by slow paste. | missing |
-| Edit > Paste Special > Paste Slowly Slower | no shortcut | Decreases the per-character delay speed of slow paste. | missing |
-| Edit > Paste Special > Warn Before Multi-Line Paste | no shortcut | Toggles a confirmation prompt before pasting multiple lines. | missing |
-| Edit > Paste Special > Limit Multi-Line Paste Warning to Shell Prompt | no shortcut | Restricts the multi-line paste warning to only fire at a shell prompt. | missing |
-| Edit > Paste Special > Prompt to Convert Tabs to Spaces when Pasting | no shortcut | Toggles a prompt offering to convert tabs to spaces on paste. | missing |
-| Edit > Paste Special > Warn Before Pasting One Line Ending in a Newline at Shell Prompt | no shortcut | Toggles a warning for a single line paste that ends with a newline at the prompt. | missing |
-| Edit > Replace Selection > Render Selection Natively | Opt+Cmd+E | Renders the selected text as an image or markup instead of raw text. | missing |
-| Edit > Replace Selection > Replace with Pretty-Printed JSON | no shortcut | Reformats the selected JSON text with indentation. | missing |
-| Edit > Replace Selection > Replace with Base 64-Encoded Value | no shortcut | Replaces the selection with its base64-encoded form. | missing |
-| Edit > Replace Selection > Replace with Base 64-Decoded Value | no shortcut | Replaces the selection with its base64-decoded form. | missing |
-| Edit > Engage Artificial Intelligence | Cmd+Y | Opens an AI prompt to turn a natural-language request into a shell command. | missing |
-| Edit > Explain Output with AI | Opt+Cmd+Y | Sends recent terminal output to AI and shows an explanation. | missing |
+| Edit > Paste Special > Paste File Base64-Encoded | no shortcut | Pastes a file's contents as a base64-encoded string. (milestone 9) | missing |
+| Edit > Paste Special > Paste Slowly | no shortcut | Pastes character by character with a delay, for flaky serial links. (milestone 9) | missing |
+| Edit > Paste Special > Paste Faster | no shortcut | Increases the speed used by slow paste. (milestone 9) | missing |
+| Edit > Paste Special > Paste Slowly Faster | no shortcut | Increases the per-character delay speed of slow paste. (milestone 9) | missing |
+| Edit > Paste Special > Paste Slower | no shortcut | Decreases the speed used by slow paste. (milestone 9) | missing |
+| Edit > Paste Special > Paste Slowly Slower | no shortcut | Decreases the per-character delay speed of slow paste. (milestone 9) | missing |
+| Edit > Paste Special > Warn Before Multi-Line Paste | no shortcut | Toggles a confirmation prompt before pasting multiple lines. (milestone 9) | missing |
+| Edit > Paste Special > Limit Multi-Line Paste Warning to Shell Prompt | no shortcut | Restricts the multi-line paste warning to only fire at a shell prompt. (milestone 9) | missing |
+| Edit > Paste Special > Prompt to Convert Tabs to Spaces when Pasting | no shortcut | Toggles a prompt offering to convert tabs to spaces on paste. (milestone 9) | missing |
+| Edit > Paste Special > Warn Before Pasting One Line Ending in a Newline at Shell Prompt | no shortcut | Toggles a warning for a single line paste that ends with a newline at the prompt. (milestone 9) | missing |
+| Edit > Replace Selection > Render Selection Natively | Opt+Cmd+E | Renders the selected text as an image or markup instead of raw text. (milestone 4) | missing |
+| Edit > Replace Selection > Replace with Pretty-Printed JSON | no shortcut | Reformats the selected JSON text with indentation. (milestone 4) | missing |
+| Edit > Replace Selection > Replace with Base 64-Encoded Value | no shortcut | Replaces the selection with its base64-encoded form. (milestone 4) | missing |
+| Edit > Replace Selection > Replace with Base 64-Decoded Value | no shortcut | Replaces the selection with its base64-decoded form. (milestone 4) | missing |
+| Edit > Engage Artificial Intelligence | Cmd+Y | Opens an AI prompt to turn a natural-language request into a shell command. (milestone 12) | missing |
+| Edit > Explain Output with AI | Opt+Cmd+Y | Sends recent terminal output to AI and shows an explanation. (milestone 12) | missing |
 | Edit > Snippets | no shortcut | Dynamic submenu listing saved text snippets to insert into the session. | missing |
 | Edit > Actions | no shortcut | Dynamic submenu listing saved actions, macro-like keystroke, text, or script triggers. | missing |
-| Edit > Open Selection | Opt+Cmd+O | Opens the current selection as a URL or file path. | missing |
-| Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. | missing |
-| Edit > Select All | Cmd+A | Selects all text in the current session's scrollback. | partial |
-| Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. | missing |
-| Edit > Select Output of Last Command | Cmd+A | Selects the output of the most recently run shell command, needs shell integration marks. | missing |
-| Edit > Select Current Command | no shortcut | Selects the command currently being typed at the prompt. | missing |
-| Edit > Find > Find... | Cmd+F | Opens the in-session find bar. | missing |
-| Edit > Find > Find Next | Cmd+G | Jumps to the next find match. | missing |
-| Edit > Find > Find Previous | Cmd+G | Jumps to the previous find match. | missing |
-| Edit > Find > Use Selection for Find | Cmd+E | Loads the current selection as the find query. | missing |
-| Edit > Find > Clear Find | Opt+Cmd+E | Clears the find query and highlights. | missing |
-| Edit > Find > Find Globally... | Cmd+F | Searches across all open sessions at once. | missing |
-| Edit > Find > Select Matches | no shortcut | Selects all text matching the current find query. | missing |
-| Edit > Find > Find URLs | Opt+Cmd+U | Highlights all URLs detected in the buffer for quick opening. | missing |
-| Edit > Find > Find All Smart Selection Matches | Opt+Cmd+U | Highlights all matches of the active Smart Selection rule. | missing |
-| Edit > Find > Pick Result to Open | Opt+Cmd+O | Shows shortcut labels over found links and paths so one can be opened by key. | missing |
-| Edit > Find > Filter | Opt+Cmd+F | Filters the visible buffer to only lines matching a query. | missing |
-| Edit > Marks and Annotations > Set Mark | Cmd+M | Drops a scroll position mark at the current line. | missing |
-| Edit > Marks and Annotations > Jump to Mark | Cmd+J | Scrolls to the last saved mark. | missing |
-| Edit > Marks and Annotations > Next Mark | Shift+Cmd+Down | Jumps to the next mark below in the scrollback. | missing |
-| Edit > Marks and Annotations > Previous Mark | Shift+Cmd+Up | Jumps to the previous mark above in the scrollback. | missing |
-| Edit > Marks and Annotations > Add Annotation at Cursor | Opt+Cmd+M | Adds a free-text sticky annotation attached to the cursor line. | missing |
-| Edit > Marks and Annotations > Annotate Selection | no shortcut | Adds a free-text annotation attached to the current selection. | missing |
-| Edit > Marks and Annotations > Next Annotation | Opt+Shift+Cmd+Down | Jumps to the next annotation below. | missing |
-| Edit > Marks and Annotations > Previous Annotation | Opt+Shift+Cmd+Up | Jumps to the previous annotation above. | missing |
-| Edit > Marks and Annotations > Alerts > Alert on Next Mark | Opt+Cmd+A | Arms a one-shot alert that fires the next time a mark is created. | missing |
-| Edit > Marks and Annotations > Alerts > Alert on Marks in Offscreen Sessions | no shortcut | Extends mark alerts to sessions not currently visible. | missing |
-| Edit > Marks and Annotations > Alerts > Show Modal Alert Box | no shortcut | Sets mark alerts to show a modal dialog. | missing |
-| Edit > Marks and Annotations > Alerts > Post Notification | no shortcut | Sets mark alerts to post a macOS notification. | missing |
-| Edit > Marks and Annotations > Alerts > Play a Sound | no shortcut | Sets mark alerts to play a sound. | missing |
-| Edit > Set Named Mark | Opt+Cmd+M | Creates a mark with a user-supplied name for later lookup. | missing |
+| Edit > Open Selection | Opt+Cmd+O | Opens the current selection as a URL or file path. (milestone 4) | missing |
+| Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. (milestone 4) | missing |
+| Edit > Select All | Cmd+A | Selects all text in the current session's scrollback. | have |
+| Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. (milestone 4) | missing |
+| Edit > Select Output of Last Command | Cmd+A | Selects the output of the most recently run shell command, needs shell integration marks. (milestone 4) | missing |
+| Edit > Select Current Command | no shortcut | Selects the command currently being typed at the prompt. (milestone 4) | missing |
+| Edit > Find > Find... | Cmd+F | Opens the in-session find bar. (milestone 4) | missing |
+| Edit > Find > Find Next | Cmd+G | Jumps to the next find match. (milestone 4) | missing |
+| Edit > Find > Find Previous | Cmd+G | Jumps to the previous find match. (milestone 4) | missing |
+| Edit > Find > Use Selection for Find | Cmd+E | Loads the current selection as the find query. (milestone 4) | missing |
+| Edit > Find > Clear Find | Opt+Cmd+E | Clears the find query and highlights. (milestone 4) | missing |
+| Edit > Find > Find Globally... | Cmd+F | Searches across all open sessions at once. (milestone 4) | missing |
+| Edit > Find > Select Matches | no shortcut | Selects all text matching the current find query. (milestone 4) | missing |
+| Edit > Find > Find URLs | Opt+Cmd+U | Highlights all URLs detected in the buffer for quick opening. (milestone 4) | missing |
+| Edit > Find > Find All Smart Selection Matches | Opt+Cmd+U | Highlights all matches of the active Smart Selection rule. (milestone 4) | missing |
+| Edit > Find > Pick Result to Open | Opt+Cmd+O | Shows shortcut labels over found links and paths so one can be opened by key. (milestone 4) | missing |
+| Edit > Find > Filter | Opt+Cmd+F | Filters the visible buffer to only lines matching a query. (milestone 4) | missing |
+| Edit > Marks and Annotations > Set Mark | Cmd+M | Drops a scroll position mark at the current line. (milestone 4) | missing |
+| Edit > Marks and Annotations > Jump to Mark | Cmd+J | Scrolls to the last saved mark. (milestone 4) | missing |
+| Edit > Marks and Annotations > Next Mark | Shift+Cmd+Down | Jumps to the next mark below in the scrollback. (milestone 4) | missing |
+| Edit > Marks and Annotations > Previous Mark | Shift+Cmd+Up | Jumps to the previous mark above in the scrollback. (milestone 4) | missing |
+| Edit > Marks and Annotations > Add Annotation at Cursor | Opt+Cmd+M | Adds a free-text sticky annotation attached to the cursor line. (milestone 4) | missing |
+| Edit > Marks and Annotations > Annotate Selection | no shortcut | Adds a free-text annotation attached to the current selection. (milestone 4) | missing |
+| Edit > Marks and Annotations > Next Annotation | Opt+Shift+Cmd+Down | Jumps to the next annotation below. (milestone 4) | missing |
+| Edit > Marks and Annotations > Previous Annotation | Opt+Shift+Cmd+Up | Jumps to the previous annotation above. (milestone 4) | missing |
+| Edit > Marks and Annotations > Alerts > Alert on Next Mark | Opt+Cmd+A | Arms a one-shot alert that fires the next time a mark is created. (milestone 4) | missing |
+| Edit > Marks and Annotations > Alerts > Alert on Marks in Offscreen Sessions | no shortcut | Extends mark alerts to sessions not currently visible. (milestone 4) | missing |
+| Edit > Marks and Annotations > Alerts > Show Modal Alert Box | no shortcut | Sets mark alerts to show a modal dialog. (milestone 4) | missing |
+| Edit > Marks and Annotations > Alerts > Post Notification | no shortcut | Sets mark alerts to post a macOS notification. (milestone 4) | missing |
+| Edit > Marks and Annotations > Alerts > Play a Sound | no shortcut | Sets mark alerts to play a sound. (milestone 4) | missing |
+| Edit > Set Named Mark | Opt+Cmd+M | Creates a mark with a user-supplied name for later lookup. (milestone 4) | missing |
 | Edit > Named Marks | no shortcut | Dynamic submenu listing named marks in the current session. | missing |
-| Edit > Fold Selected Lines | Cmd+L | Collapses the selected lines into a single foldable summary line. | missing |
-| Edit > Fold All | Opt+Shift+Cmd+L | Collapses all foldable regions detected in the buffer. | missing |
-| Edit > Clear Buffer | Cmd+K | Clears the visible screen and scrollback. | missing |
-| Edit > Clear Instant Replay | Opt+Cmd+K | Clears the Instant Replay history buffer. | missing |
-| Edit > Clear Scrollback Buffer | Cmd+K | Clears the scrollback history, keeping the visible screen. | partial |
-| Edit > Clear to Start of Selection | Cmd+L | Clears the buffer from the top down to the start of the current selection. | missing |
-| Edit > Clear to Last Mark | Opt+Cmd+L | Clears the buffer up to the most recent mark. | missing |
+| Edit > Fold Selected Lines | Cmd+L | Collapses the selected lines into a single foldable summary line. (milestone 4) | missing |
+| Edit > Fold All | Opt+Shift+Cmd+L | Collapses all foldable regions detected in the buffer. (milestone 4) | missing |
+| Edit > Clear Buffer | Cmd+K | Clears the visible screen and scrollback. | have |
+| Edit > Clear Instant Replay | Opt+Cmd+K | Clears the Instant Replay history buffer. (milestone 10) | missing |
+| Edit > Clear Scrollback Buffer | Cmd+K | Clears the scrollback history, keeping the visible screen. | have |
+| Edit > Clear to Start of Selection | Cmd+L | Clears the buffer from the top down to the start of the current selection. (milestone 4) | missing |
+| Edit > Clear to Last Mark | Opt+Cmd+L | Clears the buffer up to the most recent mark. (milestone 4) | missing |
 
 ### View menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| View > Show Tabs in Fullscreen | Cmd+U | Toggles whether the tab bar is shown while in full screen mode. | missing |
-| View > Toggle Full Screen | Ctrl+Cmd+F | Toggles native full screen mode for the window. | missing |
-| View > Toolbelt > Show Toolbelt | Cmd+B | Shows or hides the Toolbelt sidebar of utility panels. | missing |
-| View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. | missing |
-| View > Use Transparency | Cmd+U | Toggles background transparency for the window. | missing |
-| View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. | missing |
-| View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. | missing |
-| View > Zoom Out | no shortcut | Reverses Zoom In on Selection. | missing |
-| View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. | missing |
-| View > Show Annotations | Cmd+\ | Shows or hides annotation markers in the buffer. | missing |
-| View > Show Clippings | Shift+Cmd+= | Shows the Clippings/Snippets quick-insert panel. | missing |
-| View > Show Inline Chat | Shift+Cmd+, | Shows an inline AI chat panel attached to the session. | missing |
-| View > Show Composer | Shift+Cmd+. | Shows the Composer, a multi-line command editor above the prompt. | missing |
-| View > Show Cursor Guide | Opt+Cmd+; | Shows a horizontal highlight line tracking the cursor's row. | missing |
-| View > Show Session Note | Opt+Cmd+G | Shows a free-text note panel attached to the session. | missing |
-| View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. | missing |
-| View > Auto Command Completion | Opt+Cmd+Y | Toggles automatic command-history-based autocomplete suggestions. | missing |
-| View > Auto Composer | Opt+Shift+Cmd+. | Toggles automatically opening the Composer for multi-line input. | missing |
-| View > Open Quickly | Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. | missing |
-| View > Maximize Active Pane | no shortcut | Temporarily expands the focused pane to fill the tab, hiding siblings. | missing |
-| View > Make Text Bigger | Cmd++ | Increases the session font size. | missing |
-| View > Make Text Normal Size | Cmd+0 | Resets the font size to the profile default. | missing |
-| View > Restore Text and Session Size | Opt+Cmd+0 | Resets both font size and window dimensions to profile defaults. | missing |
-| View > Make Text Smaller | Cmd+- | Decreases the session font size. | missing |
-| View > Size Changes Update Profile | no shortcut | Toggles whether font size changes are saved back to the profile. | missing |
-| View > Start Instant Replay | Opt+Cmd+B | Opens Instant Replay, a scrubber for rewinding the screen's visual history. | missing |
+| View > Show Tabs in Fullscreen | Cmd+U | Toggles whether the tab bar is shown while in full screen mode. (milestone 7) | missing |
+| View > Toggle Full Screen | Ctrl+Cmd+F | Toggles native full screen mode for the window. | have |
+| View > Toolbelt > Show Toolbelt | Cmd+B | Shows or hides the Toolbelt sidebar of utility panels. (milestone 9) | missing |
+| View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. (milestone 9) | missing |
+| View > Use Transparency | Cmd+U | Toggles background transparency for the window. (milestone 7) | missing |
+| View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. (milestone 7) | missing |
+| View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. (milestone 4) | missing |
+| View > Zoom Out | no shortcut | Reverses Zoom In on Selection. (milestone 4) | missing |
+| View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. (milestone 4) | missing |
+| View > Show Annotations | Cmd+\ | Shows or hides annotation markers in the buffer. (milestone 4) | missing |
+| View > Show Clippings | Shift+Cmd+= | Shows the Clippings/Snippets quick-insert panel. (milestone 9) | missing |
+| View > Show Inline Chat | Shift+Cmd+, | Shows an inline AI chat panel attached to the session. (milestone 12) | missing |
+| View > Show Composer | Shift+Cmd+. | Shows the Composer, a multi-line command editor above the prompt. (milestone 9) | missing |
+| View > Show Cursor Guide | Opt+Cmd+; | Shows a horizontal highlight line tracking the cursor's row. (milestone 4) | missing |
+| View > Show Session Note | Opt+Cmd+G | Shows a free-text note panel attached to the session. (milestone 4) | missing |
+| View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. (milestone 4) | missing |
+| View > Auto Command Completion | Opt+Cmd+Y | Toggles automatic command-history-based autocomplete suggestions. (milestone 9) | missing |
+| View > Auto Composer | Opt+Shift+Cmd+. | Toggles automatically opening the Composer for multi-line input. (milestone 9) | missing |
+| View > Open Quickly | Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. (milestone 9) | missing |
+| View > Maximize Active Pane | no shortcut | Temporarily expands the focused pane to fill the tab, hiding siblings. | have |
+| View > Make Text Bigger | Cmd++ | Increases the session font size. Tandem: Changes every pane, since all panes share one font until per-pane fonts arrive. | partial |
+| View > Make Text Normal Size | Cmd+0 | Resets the font size to the profile default. | have |
+| View > Restore Text and Session Size | Opt+Cmd+0 | Resets both font size and window dimensions to profile defaults. | have |
+| View > Make Text Smaller | Cmd+- | Decreases the session font size. Tandem: Changes every pane, since all panes share one font until per-pane fonts arrive. | partial |
+| View > Size Changes Update Profile | no shortcut | Toggles whether font size changes are saved back to the profile. (milestone 7) | missing |
+| View > Start Instant Replay | Opt+Cmd+B | Opens Instant Replay, a scrubber for rewinding the screen's visual history. (milestone 10) | missing |
 
 ### Session menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Session > Edit Session... | Cmd+I | Opens the profile/session editor for the current session. | missing |
-| Session > Run Coprocess... | Opt+Cmd+R | Runs a local command piped to and from the session's I/O. | missing |
-| Session > Stop Coprocess | Opt+Cmd+R | Stops the running coprocess. | missing |
-| Session > Restart Session | no shortcut | Restarts the session's shell or command without closing the pane. | missing |
-| Session > Duplicate Session | no shortcut | Opens a new session cloning the current one's profile and directory. | missing |
-| Session > Open Autocomplete... | Cmd+; | Opens the shell integration based command autocomplete popup. | missing |
-| Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. | missing |
-| Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. | missing |
-| Session > Open Paste History... | Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. | missing |
-| Session > Open AI Chat... | Ctrl+Cmd+Y | Opens an AI chat window scoped to the current session. | missing |
-| Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. | missing |
-| Session > Triggers > Edit Triggers | no shortcut | Opens the trigger list editor for the current profile. | missing |
-| Session > Triggers > Enable Triggers in Interactive Apps | no shortcut | Allows triggers to fire even while a full-screen interactive app such as vim is running. | missing |
-| Session > Triggers > Enable All | no shortcut | Enables every trigger for the profile. | missing |
-| Session > Triggers > Disable All | no shortcut | Disables every trigger for the profile. | missing |
-| Session > Reset | Cmd+R | Sends a terminal reset, clearing modes and screen state. | partial |
-| Session > Reset Character Set | no shortcut | Resets the terminal's character set designation to default. | missing |
-| Session > Move Session > Move Session to Window | no shortcut | Moves the current session/pane out into a new window. | missing |
-| Session > Move Session > Move Session to Tab | no shortcut | Moves the current session/pane out into a new tab. | missing |
-| Session > Move Session > Move Session to Split Pane | no shortcut | Moves the current session into a split position picked interactively. | missing |
-| Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. | missing |
-| Session > Log > Import Recording | no shortcut | Loads a previously exported session recording for playback. | missing |
-| Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. | missing |
-| Session > Make Screenshot... | no shortcut | Captures a screenshot of the session content. | missing |
-| Session > Terminal State > Alternate Screen | no shortcut | Manually toggles the alternate screen buffer mode. | partial |
-| Session > Terminal State > Focus Reporting | no shortcut | Manually toggles DECSET focus in/out event reporting. | missing |
-| Session > Terminal State > Mouse Reporting | no shortcut | Manually toggles mouse tracking/reporting mode. | partial |
-| Session > Terminal State > Paste Bracketing | no shortcut | Manually toggles bracketed paste mode. | partial |
-| Session > Terminal State > Application Cursor | no shortcut | Manually toggles DECCKM application cursor key mode. | partial |
-| Session > Terminal State > Application Keypad | no shortcut | Manually toggles application keypad mode. | partial |
-| Session > Terminal State > Standard Key Reporting Mode | no shortcut | Sets keyboard protocol to legacy/standard key reporting. | missing |
-| Session > Terminal State > modifyOtherKeys Mode 1 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 1. | missing |
-| Session > Terminal State > modifyOtherKeys Mode 2 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 2. | missing |
-| Session > Terminal State > CSI u Mode | no shortcut | Enables the CSI u (fixterms) keyboard protocol. | missing |
-| Session > Terminal State > Raw Key Reporting Mode | no shortcut | Enables raw keyboard event reporting. | missing |
-| Session > Terminal State > Disambiguate Escape | no shortcut | Enables the kitty keyboard protocol's escape key disambiguation flag. | missing |
-| Session > Terminal State > Report All Event Types | no shortcut | Enables the kitty keyboard protocol's key-up/repeat event reporting. | missing |
-| Session > Terminal State > Report Alternate Keys | no shortcut | Enables kitty keyboard protocol reporting of alternate keys (shifted symbols). | missing |
-| Session > Terminal State > Report All Keys as Escape Codes | no shortcut | Enables kitty keyboard protocol full escape-code key reporting. | missing |
-| Session > Terminal State > Report Associated Text | no shortcut | Enables kitty keyboard protocol reporting of the text a key event produces. | missing |
-| Session > Terminal State > Literal Controls | no shortcut | Toggles literal, non-interpreted, handling of control characters. | missing |
-| Session > Terminal State > Emulation Level > VT100 | no shortcut | Restricts terminal emulation to VT100-level feature set. | missing |
-| Session > Terminal State > Emulation Level > VT200 | no shortcut | Restricts terminal emulation to VT200-level feature set. | missing |
-| Session > Terminal State > Emulation Level > VT300 | no shortcut | Restricts terminal emulation to VT300-level feature set. | missing |
-| Session > Terminal State > Emulation Level > VT400 | no shortcut | Restricts terminal emulation to VT400-level feature set. | missing |
-| Session > Terminal State > Emulation Level > VT500 | no shortcut | Restricts terminal emulation to VT500-level feature set. | missing |
-| Session > Terminal State > Reset | no shortcut | Resets all terminal state toggles to their defaults. | missing |
-| Session > Bury Session | Opt+Cmd+B | Hides the session from the tab bar while it keeps running, listed under Buried Sessions. | missing |
+| Session > Edit Session... | Cmd+I | Opens the profile/session editor for the current session. | have |
+| Session > Run Coprocess... | Opt+Cmd+R | Runs a local command piped to and from the session's I/O. (milestone 6) | missing |
+| Session > Stop Coprocess | Opt+Cmd+R | Stops the running coprocess. (milestone 6) | missing |
+| Session > Restart Session | no shortcut | Restarts the session's shell or command without closing the pane. | have |
+| Session > Duplicate Session | no shortcut | Opens a new session cloning the current one's profile and directory. | have |
+| Session > Open Autocomplete... | Cmd+; | Opens the shell integration based command autocomplete popup. (milestone 9) | missing |
+| Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. (milestone 9) | missing |
+| Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. (milestone 9) | missing |
+| Session > Open Paste History... | Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. (milestone 9) | missing |
+| Session > Open AI Chat... | Ctrl+Cmd+Y | Opens an AI chat window scoped to the current session. (milestone 12) | missing |
+| Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. (milestone 6) | missing |
+| Session > Triggers > Edit Triggers | no shortcut | Opens the trigger list editor for the current profile. (milestone 6) | missing |
+| Session > Triggers > Enable Triggers in Interactive Apps | no shortcut | Allows triggers to fire even while a full-screen interactive app such as vim is running. (milestone 6) | missing |
+| Session > Triggers > Enable All | no shortcut | Enables every trigger for the profile. (milestone 6) | missing |
+| Session > Triggers > Disable All | no shortcut | Disables every trigger for the profile. (milestone 6) | missing |
+| Session > Reset | Cmd+R | Sends a terminal reset, clearing modes and screen state. | have |
+| Session > Reset Character Set | no shortcut | Resets the terminal's character set designation to default. | have |
+| Session > Move Session > Move Session to Window | no shortcut | Moves the current session/pane out into a new window. (milestone 7) | missing |
+| Session > Move Session > Move Session to Tab | no shortcut | Moves the current session/pane out into a new tab. (milestone 7) | missing |
+| Session > Move Session > Move Session to Split Pane | no shortcut | Moves the current session into a split position picked interactively. (milestone 7) | missing |
+| Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. (milestone 6) | missing |
+| Session > Log > Import Recording | no shortcut | Loads a previously exported session recording for playback. (milestone 10) | missing |
+| Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. (milestone 10) | missing |
+| Session > Make Screenshot... | no shortcut | Captures a screenshot of the session content. (milestone 5) | missing |
+| Session > Terminal State > Alternate Screen | no shortcut | Manually toggles the alternate screen buffer mode. | have |
+| Session > Terminal State > Focus Reporting | no shortcut | Manually toggles DECSET focus in/out event reporting. | have |
+| Session > Terminal State > Mouse Reporting | no shortcut | Manually toggles mouse tracking/reporting mode. | have |
+| Session > Terminal State > Paste Bracketing | no shortcut | Manually toggles bracketed paste mode. | have |
+| Session > Terminal State > Application Cursor | no shortcut | Manually toggles DECCKM application cursor key mode. | have |
+| Session > Terminal State > Application Keypad | no shortcut | Manually toggles application keypad mode. | have |
+| Session > Terminal State > Standard Key Reporting Mode | no shortcut | Sets keyboard protocol to legacy/standard key reporting. (milestone 5) | missing |
+| Session > Terminal State > modifyOtherKeys Mode 1 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 1. (milestone 5) | missing |
+| Session > Terminal State > modifyOtherKeys Mode 2 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 2. (milestone 5) | missing |
+| Session > Terminal State > CSI u Mode | no shortcut | Enables the CSI u (fixterms) keyboard protocol. (milestone 5) | missing |
+| Session > Terminal State > Raw Key Reporting Mode | no shortcut | Enables raw keyboard event reporting. (milestone 5) | missing |
+| Session > Terminal State > Disambiguate Escape | no shortcut | Enables the kitty keyboard protocol's escape key disambiguation flag. (milestone 5) | missing |
+| Session > Terminal State > Report All Event Types | no shortcut | Enables the kitty keyboard protocol's key-up/repeat event reporting. (milestone 5) | missing |
+| Session > Terminal State > Report Alternate Keys | no shortcut | Enables kitty keyboard protocol reporting of alternate keys (shifted symbols). (milestone 5) | missing |
+| Session > Terminal State > Report All Keys as Escape Codes | no shortcut | Enables kitty keyboard protocol full escape-code key reporting. (milestone 5) | missing |
+| Session > Terminal State > Report Associated Text | no shortcut | Enables kitty keyboard protocol reporting of the text a key event produces. (milestone 5) | missing |
+| Session > Terminal State > Literal Controls | no shortcut | Toggles literal, non-interpreted, handling of control characters. (milestone 5) | missing |
+| Session > Terminal State > Emulation Level > VT100 | no shortcut | Restricts terminal emulation to VT100-level feature set. (milestone 5) | missing |
+| Session > Terminal State > Emulation Level > VT200 | no shortcut | Restricts terminal emulation to VT200-level feature set. (milestone 5) | missing |
+| Session > Terminal State > Emulation Level > VT300 | no shortcut | Restricts terminal emulation to VT300-level feature set. (milestone 5) | missing |
+| Session > Terminal State > Emulation Level > VT400 | no shortcut | Restricts terminal emulation to VT400-level feature set. (milestone 5) | missing |
+| Session > Terminal State > Emulation Level > VT500 | no shortcut | Restricts terminal emulation to VT500-level feature set. (milestone 5) | missing |
+| Session > Terminal State > Reset | no shortcut | Resets all terminal state toggles to their defaults. | have |
+| Session > Bury Session | Opt+Cmd+B | Hides the session from the tab bar while it keeps running, listed under Buried Sessions. (milestone 7) | missing |
 | Session > Buried Sessions | no shortcut | Dynamic submenu listing buried sessions to bring back. | missing |
 
 ### Scripts menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Scripts > Manage > New Python Script | no shortcut | Creates a new Python API automation script from a template. | missing |
-| Scripts > Manage > Open Python REPL | no shortcut | Opens an interactive Python REPL connected to the running iTerm2 via the API. | missing |
-| Scripts > Manage > Manage Dependencies... | no shortcut | Opens the editor for Python package dependencies used by scripts. | missing |
-| Scripts > Manage > Install Python Runtime | no shortcut | Downloads and installs the bundled Python runtime used to run scripts. | missing |
-| Scripts > Manage > Install Already-Downloaded Python Runtime | no shortcut | Installs a Python runtime package already present on disk. | missing |
-| Scripts > Manage > Reveal Scripts in Finder | no shortcut | Opens the Scripts folder in Finder. | missing |
-| Scripts > Manage > Import... | no shortcut | Imports a script bundle into the Scripts folder. | missing |
-| Scripts > Manage > Export... | no shortcut | Exports a script as a shareable bundle. | missing |
-| Scripts > Manage > Console | Opt+Cmd+J | Opens the Script Console showing output and errors from running scripts. | missing |
+| Scripts > Manage > New Python Script | no shortcut | Creates a new Python API automation script from a template. (milestone 11) | missing |
+| Scripts > Manage > Open Python REPL | no shortcut | Opens an interactive Python REPL connected to the running iTerm2 via the API. (milestone 11) | missing |
+| Scripts > Manage > Manage Dependencies... | no shortcut | Opens the editor for Python package dependencies used by scripts. (milestone 11) | missing |
+| Scripts > Manage > Install Python Runtime | no shortcut | Downloads and installs the bundled Python runtime used to run scripts. (milestone 11) | missing |
+| Scripts > Manage > Install Already-Downloaded Python Runtime | no shortcut | Installs a Python runtime package already present on disk. (milestone 11) | missing |
+| Scripts > Manage > Reveal Scripts in Finder | no shortcut | Opens the Scripts folder in Finder. (milestone 11) | missing |
+| Scripts > Manage > Import... | no shortcut | Imports a script bundle into the Scripts folder. (milestone 11) | missing |
+| Scripts > Manage > Export... | no shortcut | Exports a script as a shareable bundle. (milestone 11) | missing |
+| Scripts > Manage > Console | Opt+Cmd+J | Opens the Script Console showing output and errors from running scripts. (milestone 11) | missing |
 | Scripts (dynamic list) | no shortcut | The Scripts menu also lists installed scripts directly as runnable items, populated at runtime. | missing |
 
 ### Profiles menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Profiles > Open Profiles... | Cmd+O | Opens the Profiles window listing all saved profiles. | missing |
+| Profiles > Open Profiles... | Cmd+O | Opens the Profiles window listing all saved profiles. | have |
 | Profiles > Press Option for New Window | no shortcut | Informational hint item, not an action, showing that holding Option changes profile launch behavior. | missing |
 | Profiles > Open In New Window | no shortcut | Header above the dynamically inserted list of profiles, each launchable in a new window or tab. | missing |
 
@@ -261,73 +261,73 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 |---|---|---|---|
 | Window > Minimize | Cmd+M | Minimizes the window to the Dock. | have |
 | Window > Zoom | Shift+Cmd+0 | Zooms/maximizes the window. | have |
-| Window > Arrangements > Save Window Arrangement | Cmd+S | Saves the current set of windows, tabs, and splits as a named arrangement. | missing |
-| Window > Arrangements > Save Current Window as Arrangement | Opt+Cmd+S | Saves just the current window as a named arrangement. | missing |
-| Window > Arrangements > Load Arrangement from File... | no shortcut | Loads a window arrangement from a file on disk. | missing |
+| Window > Arrangements > Save Window Arrangement | Cmd+S | Saves the current set of windows, tabs, and splits as a named arrangement. (milestone 7) | missing |
+| Window > Arrangements > Save Current Window as Arrangement | Opt+Cmd+S | Saves just the current window as a named arrangement. (milestone 7) | missing |
+| Window > Arrangements > Load Arrangement from File... | no shortcut | Loads a window arrangement from a file on disk. (milestone 7) | missing |
 | Window > Arrangements > Restore Window Arrangement | no shortcut | Dynamic submenu listing saved arrangements to restore as windows. | missing |
 | Window > Arrangements > Restore Window Arrangement as Tabs | no shortcut | Dynamic submenu listing saved arrangements to restore merged into tabs of the current window. | missing |
-| Window > Arrangements > Change Profile in Arrangement... | no shortcut | Bulk changes which profile a saved arrangement's sessions use. | missing |
-| Window > Edit Window Title | no shortcut | Opens an editor to set a custom window title override. | missing |
-| Window > Tab > Edit Tab Title | no shortcut | Opens an editor to set a custom tab title override. | missing |
+| Window > Arrangements > Change Profile in Arrangement... | no shortcut | Bulk changes which profile a saved arrangement's sessions use. (milestone 7) | missing |
+| Window > Edit Window Title | no shortcut | Opens an editor to set a custom window title override. (milestone 7) | missing |
+| Window > Tab > Edit Tab Title | no shortcut | Opens an editor to set a custom tab title override. (milestone 7) | missing |
 | Window > Tab > Select Tab > Select Next Tab | Shift+Cmd+] | Switches focus to the next tab. | have |
 | Window > Tab > Select Tab > Select Previous Tab | Shift+Cmd+[ | Switches focus to the previous tab. | have |
-| Window > Tab > Select Tab > Select Next Tab Group | Ctrl+Shift+Cmd+] | Switches focus to the next tab group. | missing |
-| Window > Tab > Select Tab > Select Previous Tab Group | Ctrl+Shift+Cmd+[ | Switches focus to the previous tab group. | missing |
-| Window > Tab > Move Tab > Move Tab to New Window | no shortcut | Pulls the current tab out into its own new window. | missing |
-| Window > Tab > Move Tab > Move Tab Left | Opt+Shift+Cmd+[ | Reorders the current tab one position to the left. | missing |
-| Window > Tab > Move Tab > Move Tab Right | Opt+Shift+Cmd+] | Reorders the current tab one position to the right. | missing |
-| Window > Tab > Add Tab to New Group... | no shortcut | Creates a new tab group containing the current tab. | missing |
-| Window > Tab > Remove Tab from Group | no shortcut | Removes the current tab from its tab group. | missing |
+| Window > Tab > Select Tab > Select Next Tab Group | Ctrl+Shift+Cmd+] | Switches focus to the next tab group. (milestone 7) | missing |
+| Window > Tab > Select Tab > Select Previous Tab Group | Ctrl+Shift+Cmd+[ | Switches focus to the previous tab group. (milestone 7) | missing |
+| Window > Tab > Move Tab > Move Tab to New Window | no shortcut | Pulls the current tab out into its own new window. (milestone 7) | missing |
+| Window > Tab > Move Tab > Move Tab Left | Opt+Shift+Cmd+[ | Reorders the current tab one position to the left. | have |
+| Window > Tab > Move Tab > Move Tab Right | Opt+Shift+Cmd+] | Reorders the current tab one position to the right. | have |
+| Window > Tab > Add Tab to New Group... | no shortcut | Creates a new tab group containing the current tab. (milestone 7) | missing |
+| Window > Tab > Remove Tab from Group | no shortcut | Removes the current tab from its tab group. (milestone 7) | missing |
 | Window > Split Pane > Select Split Pane > Select Pane Above | Opt+Cmd+Up | Moves focus to the pane directly above. | have |
 | Window > Split Pane > Select Split Pane > Select Pane Below | Opt+Cmd+Down | Moves focus to the pane directly below. | have |
 | Window > Split Pane > Select Split Pane > Select Pane Left | Opt+Cmd+Left | Moves focus to the pane to the left. | have |
 | Window > Split Pane > Select Split Pane > Select Pane Right | Opt+Cmd+Right | Moves focus to the pane to the right. | have |
 | Window > Split Pane > Select Split Pane > Next Pane | Cmd+] | Moves focus to the next pane in tab order. | have |
 | Window > Split Pane > Select Split Pane > Previous Pane | Cmd+[ | Moves focus to the previous pane in tab order. | have |
-| Window > Split Pane > Select Split Pane > Previous Peer | Opt+Cmd+[ | Moves focus to the previous peer session in a workgroup. | missing |
-| Window > Split Pane > Select Split Pane > Next Peer | Opt+Cmd+] | Moves focus to the next peer session in a workgroup. | missing |
-| Window > Split Pane > Resize Split Pane > Move Divider Up | Ctrl+Cmd+Up | Resizes the pane by nudging its divider up via keyboard. | partial |
-| Window > Split Pane > Resize Split Pane > Move Divider Down | Ctrl+Cmd+Down | Resizes the pane by nudging its divider down via keyboard. | partial |
-| Window > Split Pane > Resize Split Pane > Move Divider Left | Ctrl+Cmd+Left | Resizes the pane by nudging its divider left via keyboard. | partial |
-| Window > Split Pane > Resize Split Pane > Move Divider Right | Ctrl+Cmd+Right | Resizes the pane by nudging its divider right via keyboard. | partial |
-| Window > Split Pane > Lock Split Pane Width | no shortcut | Locks the current pane's width so window resizes do not change it. | missing |
+| Window > Split Pane > Select Split Pane > Previous Peer | Opt+Cmd+[ | Moves focus to the previous peer session in a workgroup. (milestone 7) | missing |
+| Window > Split Pane > Select Split Pane > Next Peer | Opt+Cmd+] | Moves focus to the next peer session in a workgroup. (milestone 7) | missing |
+| Window > Split Pane > Resize Split Pane > Move Divider Up | Ctrl+Cmd+Up | Resizes the pane by nudging its divider up via keyboard. | have |
+| Window > Split Pane > Resize Split Pane > Move Divider Down | Ctrl+Cmd+Down | Resizes the pane by nudging its divider down via keyboard. | have |
+| Window > Split Pane > Resize Split Pane > Move Divider Left | Ctrl+Cmd+Left | Resizes the pane by nudging its divider left via keyboard. | have |
+| Window > Split Pane > Resize Split Pane > Move Divider Right | Ctrl+Cmd+Right | Resizes the pane by nudging its divider right via keyboard. | have |
+| Window > Split Pane > Lock Split Pane Width | no shortcut | Locks the current pane's width so window resizes do not change it. (milestone 7) | missing |
 | Window > Window Style > Normal | no shortcut | Sets the window style to a normal title-barred window. | have |
-| Window > Window Style > Full Screen | no shortcut | Sets the window style to native full screen. | missing |
-| Window > Window Style > Maximized | no shortcut | Sets the window style to maximized, fills the screen and keeps chrome. | missing |
-| Window > Window Style > No Title Bar | no shortcut | Sets the window style to borderless with no title bar. | missing |
-| Window > Window Style > Centered | no shortcut | Sets the window style to a centered floating panel. | missing |
-| Window > Window Style > Centered, No Title Bar | no shortcut | Sets the window style to a centered borderless panel. | missing |
-| Window > Window Style > Full-Width Bottom of Screen | no shortcut | Docks the window along the full bottom edge of the screen. | missing |
-| Window > Window Style > Full-Width Top of Screen | no shortcut | Docks the window along the full top edge of the screen. | missing |
-| Window > Window Style > Full-Height Left of Screen | no shortcut | Docks the window along the full left edge of the screen. | missing |
-| Window > Window Style > Full-Height Right of Screen | no shortcut | Docks the window along the full right edge of the screen. | missing |
-| Window > Window Style > Bottom of Screen | no shortcut | Docks the window at the bottom of the screen at its natural size. | missing |
-| Window > Window Style > Top of Screen | no shortcut | Docks the window at the top of the screen at its natural size. | missing |
-| Window > Window Style > Left of Screen | no shortcut | Docks the window at the left of the screen at its natural size. | missing |
-| Window > Window Style > Right of Screen | no shortcut | Docks the window at the right of the screen at its natural size. | missing |
-| Window > Lock Size | no shortcut | Prevents the window from being resized. | missing |
-| Window > Lock Layout | no shortcut | Prevents the split pane layout from being changed. | missing |
-| Window > Notify on Status Change | no shortcut | Posts a notification when a background session's status changes, such as bell, idle, or done. | missing |
-| Window > Arrange Windows > Merge All Windows | no shortcut | Merges all open windows' tabs into a single window. | missing |
-| Window > Arrange Windows > Arrange Windows Horizontally | no shortcut | Tiles all open windows horizontally across the screen. | missing |
-| Window > Arrange Windows > Arrange Split Panes Evenly | no shortcut | Resets all split dividers in the tab to equal sizes. | missing |
-| Window > Resize Window > Decrease Height | Opt+Cmd+Up | Shrinks the window height by one row via keyboard. | missing |
-| Window > Resize Window > Increase Height | Opt+Cmd+Down | Grows the window height by one row via keyboard. | missing |
-| Window > Resize Window > Decrease Width | no shortcut | Shrinks the window width by one column via keyboard. | missing |
-| Window > Resize Window > Increase Width | no shortcut | Grows the window width by one column via keyboard. | missing |
-| Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. | missing |
-| Window > AI Chats | Cmd+Y | Opens the window listing all AI chat conversations. | missing |
-| Window > Cockpit | Opt+Cmd+C | Opens the Cockpit window, a command and session overview dashboard. | missing |
-| Window > Pin Hotkey Window | Shift+Cmd+- | Pins the hotkey (Quake-style dropdown) window so it stays open. | missing |
-| Window > Bring All To Front | no shortcut | Brings all of the app's windows to the front. | partial |
+| Window > Window Style > Full Screen | no shortcut | Sets the window style to native full screen. | have |
+| Window > Window Style > Maximized | no shortcut | Sets the window style to maximized, fills the screen and keeps chrome. | have |
+| Window > Window Style > No Title Bar | no shortcut | Sets the window style to borderless with no title bar. (milestone 7) | missing |
+| Window > Window Style > Centered | no shortcut | Sets the window style to a centered floating panel. (milestone 7) | missing |
+| Window > Window Style > Centered, No Title Bar | no shortcut | Sets the window style to a centered borderless panel. (milestone 7) | missing |
+| Window > Window Style > Full-Width Bottom of Screen | no shortcut | Docks the window along the full bottom edge of the screen. (milestone 7) | missing |
+| Window > Window Style > Full-Width Top of Screen | no shortcut | Docks the window along the full top edge of the screen. (milestone 7) | missing |
+| Window > Window Style > Full-Height Left of Screen | no shortcut | Docks the window along the full left edge of the screen. (milestone 7) | missing |
+| Window > Window Style > Full-Height Right of Screen | no shortcut | Docks the window along the full right edge of the screen. (milestone 7) | missing |
+| Window > Window Style > Bottom of Screen | no shortcut | Docks the window at the bottom of the screen at its natural size. (milestone 7) | missing |
+| Window > Window Style > Top of Screen | no shortcut | Docks the window at the top of the screen at its natural size. (milestone 7) | missing |
+| Window > Window Style > Left of Screen | no shortcut | Docks the window at the left of the screen at its natural size. (milestone 7) | missing |
+| Window > Window Style > Right of Screen | no shortcut | Docks the window at the right of the screen at its natural size. (milestone 7) | missing |
+| Window > Lock Size | no shortcut | Prevents the window from being resized. (milestone 7) | missing |
+| Window > Lock Layout | no shortcut | Prevents the split pane layout from being changed. (milestone 7) | missing |
+| Window > Notify on Status Change | no shortcut | Posts a notification when a background session's status changes, such as bell, idle, or done. (milestone 6) | missing |
+| Window > Arrange Windows > Merge All Windows | no shortcut | Merges all open windows' tabs into a single window. (milestone 7) | missing |
+| Window > Arrange Windows > Arrange Windows Horizontally | no shortcut | Tiles all open windows horizontally across the screen. (milestone 7) | missing |
+| Window > Arrange Windows > Arrange Split Panes Evenly | no shortcut | Resets all split dividers in the tab to equal sizes. | have |
+| Window > Resize Window > Decrease Height | Opt+Cmd+Up | Shrinks the window height by one row via keyboard. (milestone 7) | missing |
+| Window > Resize Window > Increase Height | Opt+Cmd+Down | Grows the window height by one row via keyboard. (milestone 7) | missing |
+| Window > Resize Window > Decrease Width | no shortcut | Shrinks the window width by one column via keyboard. (milestone 7) | missing |
+| Window > Resize Window > Increase Width | no shortcut | Grows the window width by one column via keyboard. (milestone 7) | missing |
+| Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. (milestone 10) | missing |
+| Window > AI Chats | Cmd+Y | Opens the window listing all AI chat conversations. (milestone 12) | missing |
+| Window > Cockpit | Opt+Cmd+C | Opens the Cockpit window, a command and session overview dashboard. (milestone 12) | missing |
+| Window > Pin Hotkey Window | Shift+Cmd+- | Pins the hotkey (Quake-style dropdown) window so it stays open. (milestone 7) | missing |
+| Window > Bring All To Front | no shortcut | Brings all of the app's windows to the front. | have |
 
 ### Help menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Help > iTerm2 Help | Cmd+? | Opens the iTerm2 help/documentation. | missing |
-| Help > Copy Mode Shortcuts | no shortcut | Shows a cheat sheet of Copy Mode keyboard shortcuts. | missing |
-| Help > Open Source Licenses | no shortcut | Shows license text for bundled open source components. | missing |
-| Help > GPU Renderer Availability | no shortcut | Shows diagnostic info on which GPU renderer is active and why. | missing |
+| Help > iTerm2 Help | Cmd+? | Opens the iTerm2 help/documentation. | have |
+| Help > Copy Mode Shortcuts | no shortcut | Shows a cheat sheet of Copy Mode keyboard shortcuts. (milestone 13) | missing |
+| Help > Open Source Licenses | no shortcut | Shows license text for bundled open source components. (milestone 13) | missing |
+| Help > GPU Renderer Availability | no shortcut | Shows diagnostic info on which GPU renderer is active and why. (milestone 13) | missing |
 
 Note: MainMenu.xib also defines a Web menu (Open Location, Back, Forward, Reload Page, History) for iTerm2's built in browser feature. That menu falls outside the ten requested menus and is not listed here.
 
@@ -771,6 +771,9 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 
 ## Counts
 
-Total rows: 634 (menu commands: 285, escape sequences and protocols: 65, subsystems: 284).
+Updated after milestone 3a (2026-09-24).
 
-By Tandem status: missing 592, partial 21, have 21.
+- Rows: 632
+- have: 62
+- partial: 6
+- missing: 564

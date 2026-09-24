@@ -92,11 +92,12 @@ fn owner(item: &Item) -> u8 {
 }
 
 pub fn status(item: &Item) -> Status {
-    if in_list(DONE, item) {
-        return Status::Done;
-    }
+    // A partial note wins over DONE: the command runs, and the note says how it differs.
     if let Some((_, note)) = PARTIAL.iter().find(|(sel, _)| item.selector == *sel) {
         return Status::Partial(note);
+    }
+    if in_list(DONE, item) {
+        return Status::Done;
     }
     Status::Later(owner(item))
 }
@@ -124,6 +125,15 @@ mod tests {
             if let Status::Later(m) = s {
                 assert!((4..=13).contains(&m), "{} -> milestone {m}", i.id());
             }
+        }
+    }
+
+    /// Prints every command's status for the parity inventory: `cargo test --lib dump_statuses -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_statuses() {
+        for i in items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty()) {
+            println!("STATUS\t{}\t{:?}", i.id(), status(i));
         }
     }
 
