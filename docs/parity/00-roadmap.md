@@ -6,15 +6,19 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 42 | 190 | 82 |
-| `02-global-settings.md` | 820 | 7 | 73 | 740 |
+| `01-profile-settings.md` | 314 | 50 | 184 | 80 |
+| `02-global-settings.md` | 820 | 100 | 51 | 669 |
 | `03-features-and-menus.md` | 632 | 62 | 6 | 564 |
-| Total | 1,766 | 111 | 269 | 1,386 |
+| Total | 1,766 | 212 | 241 | 1,313 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
 saved and editable in the settings window; colors, fonts, spacing, cursor, scrollback, window size,
-command, and directory take effect; iTerm2 import; the Profiles window).
+command, and directory take effect; iTerm2 import; the Profiles window), and milestone 3 (3a:
+iTerm2's menu bar and right-click menu, about 60 commands, Win as Cmd; 3b: global and profile key
+bindings with all 77 action codes, the Leader, presets, pointer bindings with all 32 actions,
+modifier remapping, number shortcuts, and the profile Keys options). Actions and settings that
+need a later feature are stored and name their milestone.
 
 ## Order
 
@@ -38,7 +42,8 @@ the command system, or shows up in a menu, so those come first.
 
 ## Windows notes that apply everywhere
 
-- Cmd maps to Ctrl+Shift and Cmd+Shift to Ctrl+Shift+Alt (spec 3.4). Option maps to Alt.
+- Cmd is the Win key and Option is Alt (spec 3.4, Robert's choice in milestone 3a). A keyboard
+  hook takes Win chords while Tandem is in front; chords Tandem does not use stay with Windows.
 - macOS-only rows (Touch Bar, Services menu, Spaces, Secure Keyboard Entry, Sparkle updates) get a
   Windows equivalent where one exists, or a written reason in the inventory.
 - Each milestone updates the status column of the rows it closes, so the table above stays true.

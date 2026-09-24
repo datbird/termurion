@@ -283,20 +283,20 @@ A table of global keystroke to action bindings (add/remove rows, each with a key
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Global key binding table | n/a (table; per-row storage, not a single key) | The list of custom global keystroke-to-action bindings shown in this tab; each row picks a key chord and one of the action types listed further below. | missing |  |
-| Leader key | n/a (iTermShortcutInputView) | A configurable prefix keystroke; binding an action to a Leader sequence requires pressing the leader chord first, tmux-prefix style. | missing |  |
-| Interpret key bindings based on physical key, ignoring input language | LanguageAgnosticKeyBindings | Matches key bindings by physical keyboard position (like a game's WASD binding) instead of by the character the current input language produces. | missing |  |
-| Repair Broken Bindings | n/a (button, runs a repair routine) | One-shot action that fixes key bindings left in a broken state by a prior iTerm2 bug or migration. | missing |  |
+| Global key binding table | n/a (table; per-row storage, not a single key) | The list of custom global keystroke-to-action bindings shown in this tab; each row picks a key chord and one of the action types listed further below. | have |  |
+| Leader key | n/a (iTermShortcutInputView) | A configurable prefix keystroke; binding an action to a Leader sequence requires pressing the leader chord first, tmux-prefix style. | have |  |
+| Interpret key bindings based on physical key, ignoring input language | LanguageAgnosticKeyBindings | Matches key bindings by physical keyboard position (like a game's WASD binding) instead of by the character the current input language produces. | have |  |
+| Repair Broken Bindings | n/a (button, runs a repair routine) | One-shot action that fixes key bindings left in a broken state by a prior iTerm2 bug or migration. | have | Nothing to repair: Tandem never wrote the broken form iTerm2 repairs. |
 
 
 ### Navigation Shortcuts
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Shortcut to select a tab | SwitchTabModifier | Modifier held with a number key to switch directly to tab N (No Shortcut, Option+Number, Cmd+Number, Opt+Cmd+Number, or Control+Number). | have | Tandem maps Ctrl+Shift+Tab / Ctrl+Shift+1-9-style tab selection already, though not user-remappable. |
-| Shortcut to choose a split pane | SwitchPaneModifier | Modifier held with a number key to jump directly to split pane N. | missing |  |
-| Shortcut to activate a window | SwitchWindowModifier | Modifier held with a number key to switch directly to window N (default Option+Cmd+Number). | missing |  |
-| Emulate U.S. Keyboard | EmulateUSKeyboard | Forces number-key navigation shortcuts to use U.S. keyboard positions regardless of the active input layout. | missing |  |
+| Shortcut to select a tab | SwitchTabModifier | Modifier held with a number key to switch directly to tab N (No Shortcut, Option+Number, Cmd+Number, Opt+Cmd+Number, or Control+Number). | have |  |
+| Shortcut to choose a split pane | SwitchPaneModifier | Modifier held with a number key to jump directly to split pane N. | have |  |
+| Shortcut to activate a window | SwitchWindowModifier | Modifier held with a number key to switch directly to window N (default Option+Cmd+Number). | partial | Taken and saved; one window until milestone 7. |
+| Emulate U.S. Keyboard | UseVirtualKeyCodesForDetectingDigits | Forces number-key navigation shortcuts to use U.S. keyboard positions regardless of the active input layout. | have |  |
 
 
 ### Hotkey
@@ -309,7 +309,7 @@ A table of global keystroke to action bindings (add/remove rows, each with a key
 | Open Quickly Hotkey | OpenQuicklyHotKeyCode / OpenQuicklyHotkeyCharacter / OpenQuicklyHotkeyModifiers | A global hotkey that opens the Open Quickly command palette without first activating iTerm2. | missing |  |
 | When set, the Open Quickly window can be opened even when another app is active | n/a (explanatory text tied to the Open Quickly hotkey) | Describes that the Open Quickly hotkey works system-wide, not just while iTerm2 is frontmost. | missing |  |
 | Hotkey Window | n/a (per-profile flag surfaced here as a shortcut link) | Jumps to the profile editor's Keys tab to configure which profile is the hotkey window and its dropdown behavior. | missing |  |
-| Remap modifiers globally | RemapModifiersGlobally | Applies the Keys > Remap Modifiers mapping system-wide (via an event tap) instead of only while iTerm2 is frontmost. | missing |  |
+| Remap modifiers globally | RemapModifiersGlobally | Applies the Keys > Remap Modifiers mapping system-wide (via an event tap) instead of only while iTerm2 is frontmost. | have | iTerm2 remaps only while it is active either way; Tandem does the same. |
 | Haptic feedback for Esc | EnableHapticFeedbackForEsc | Triggers a trackpad haptic tap when pressing Esc, as tactile confirmation. | missing | macOS trackpad haptics; no Windows equivalent hardware. |
 | Sound for Esc | EnableSoundForEsc | Plays a sound when Esc is pressed, as audible confirmation. | missing |  |
 | Visual indicator for Esc | VisualIndicatorForEsc | Flashes a visual indicator on screen when Esc is pressed. | missing |  |
@@ -319,15 +319,15 @@ A table of global keystroke to action bindings (add/remove rows, each with a key
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Remap left control key to | LeftControlRemapping | Reassigns what the physical Left Control key sends: Control, Option, Command, Function, or another Control/none. | missing | Windows has no per-side Ctrl/Alt/Win remapping layer in Tandem. |
-| Remap right control key to | RightControlRemapping | Reassigns what the physical Right Control key sends. | missing |  |
-| Remap left option key to | LeftOptionRemapping | Reassigns what the physical Left Option/Alt key sends. | missing |  |
-| Remap right option key to | RightOptionRemapping | Reassigns what the physical Right Option/Alt key sends. | missing |  |
-| Remap left command key to | LeftCommandRemapping | Reassigns what the physical Left Command/Win key sends. | missing |  |
-| Remap right command key to | RightCommandRemapping | Reassigns what the physical Right Command/Win key sends. | missing |  |
-| Remap fn key to | FunctionRemapping | Reassigns what the physical Function (fn) key sends. | missing |  |
-| Remap modifiers globally (checkbox shown again here) | RemapModifiersGlobally | Same setting as on the Hotkey tab; applies the remapping system-wide via an event tap. | missing |  |
-| Reset to Defaults | n/a (button) | Resets all seven modifier remapping popups back to their shipped defaults. | missing |  |
+| Remap left control key to | LeftControl | Reassigns what the physical Left Control key sends: Control, Option, Command, Function, or another Control/none. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
+| Remap right control key to | RightControl | Reassigns what the physical Right Control key sends. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
+| Remap left option key to | LeftOption | Reassigns what the physical Left Option/Alt key sends. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
+| Remap right option key to | RightOption | Reassigns what the physical Right Option/Alt key sends. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
+| Remap left command key to | LeftCommand | Reassigns what the physical Left Command/Win key sends. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
+| Remap right command key to | RightCommand | Reassigns what the physical Right Command/Win key sends. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
+| Remap fn key to | FunctionKey | Reassigns what the physical Function (fn) key sends. | missing | Windows cannot see the fn key. |
+| Remap modifiers globally (checkbox shown again here) | RemapModifiersGlobally | Same setting as on the Hotkey tab; applies the remapping system-wide via an event tap. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
+| Reset to Defaults | n/a (button) | Resets all seven modifier remapping popups back to their shipped defaults. | have |  |
 
 
 ### System (Input Locale)
@@ -359,81 +359,81 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Next Tab | KEY_ACTION_NEXT_SESSION | Switches to the next tab. | partial | Tandem has this bound to a fixed Ctrl+Shift shortcut, not user-configurable. |
-| Next Window | KEY_ACTION_NEXT_WINDOW | Switches to the next iTerm2 window. | missing |  |
-| Previous Tab | KEY_ACTION_PREVIOUS_SESSION | Switches to the previous tab. | partial | Fixed Ctrl+Shift shortcut, not configurable. |
-| Previous Window | KEY_ACTION_PREVIOUS_WINDOW | Switches to the previous iTerm2 window. | missing |  |
-| Scroll To End | KEY_ACTION_SCROLL_END | Scrolls the pane to the bottom. | partial | Tandem has a fixed scroll-to-bottom shortcut. |
-| Scroll To Top | KEY_ACTION_SCROLL_HOME | Scrolls the pane to the top. | partial | Tandem has a fixed scroll-to-top shortcut. |
-| Scroll One Line Down | KEY_ACTION_SCROLL_LINE_DOWN | Scrolls the pane down by one line. | missing |  |
-| Scroll One Line Up | KEY_ACTION_SCROLL_LINE_UP | Scrolls the pane up by one line. | missing |  |
-| Scroll One Page Down | KEY_ACTION_SCROLL_PAGE_DOWN | Scrolls the pane down by one page. | partial | Tandem has a fixed scroll-page shortcut. |
-| Scroll One Page Up | KEY_ACTION_SCROLL_PAGE_UP | Scrolls the pane up by one page. | partial | Tandem has a fixed scroll-page shortcut. |
-| Send Escape Sequence... | KEY_ACTION_ESCAPE_SEQUENCE | Sends a literal escape sequence typed into the binding. | missing |  |
-| Send Hex Code... | KEY_ACTION_HEX_CODE | Sends one or more literal hex byte codes. | missing |  |
-| Send Text... | KEY_ACTION_TEXT | Sends literal text, optionally with placeholders for Tab/Esc/etc. | missing |  |
-| Ignore | KEY_ACTION_IGNORE | Swallows the keystroke; nothing is sent to the terminal. | missing |  |
-| Unsupported Command (deprecated) | KEY_ACTION_IR_FORWARD | Formerly stepped Instant Replay forward; deprecated. | missing |  |
-| Start Instant Replay | KEY_ACTION_IR_BACKWARD | Opens Instant Replay to scrub backward through recent screen history. | missing | Tandem has no Instant Replay feature. |
-| Send ^H Backspace | KEY_ACTION_SEND_C_H_BACKSPACE | Sends the ASCII BS (0x08) character for Backspace. | missing |  |
-| Send ^? Backspace | KEY_ACTION_SEND_C_QM_BACKSPACE | Sends the ASCII DEL (0x7F) character for Backspace. | missing |  |
-| Select Split Pane on Left | KEY_ACTION_SELECT_PANE_LEFT | Moves focus to the split pane to the left. | partial | Tandem has directional pane focus on a fixed shortcut. |
-| Select Split Pane on Right | KEY_ACTION_SELECT_PANE_RIGHT | Moves focus to the split pane to the right. | partial | Tandem has directional pane focus on a fixed shortcut. |
-| Select Split Pane Above | KEY_ACTION_SELECT_PANE_ABOVE | Moves focus to the split pane above. | partial | Tandem has directional pane focus on a fixed shortcut. |
-| Select Split Pane Below | KEY_ACTION_SELECT_PANE_BELOW | Moves focus to the split pane below. | partial | Tandem has directional pane focus on a fixed shortcut. |
-| Do Not Remap Modifiers | KEY_ACTION_DO_NOT_REMAP_MODIFIERS | Marks this one binding as exempt from the Remap Modifiers settings. | missing |  |
-| Toggle Fullscreen | KEY_ACTION_TOGGLE_FULLSCREEN | Enters or exits fullscreen. | missing |  |
-| Remap Modifiers in iTerm2 Only | KEY_ACTION_REMAP_LOCALLY | Applies modifier remapping only while iTerm2 is frontmost, overriding the global setting for this binding. | missing |  |
-| Select Menu Item... | KEY_ACTION_SELECT_MENU_ITEM | Invokes an arbitrary named app menu item. | missing |  |
-| New Window with Profile... | KEY_ACTION_NEW_WINDOW_WITH_PROFILE | Opens a new window using a chosen profile. | missing |  |
-| New Tab with Profile... | KEY_ACTION_NEW_TAB_WITH_PROFILE | Opens a new tab using a chosen profile. | partial | Tandem opens new tabs, but always with the same hard-coded profile. |
-| Split Horizontally with Profile... | KEY_ACTION_SPLIT_HORIZONTALLY_WITH_PROFILE | Splits the pane horizontally using a chosen profile. | partial | Tandem splits panes, but always with the same hard-coded profile. |
-| Split Vertically with Profile... | KEY_ACTION_SPLIT_VERTICALLY_WITH_PROFILE | Splits the pane vertically using a chosen profile. | partial | Tandem splits panes, but always with the same hard-coded profile. |
-| Next Pane | KEY_ACTION_NEXT_PANE | Moves focus to the next split pane in order. | partial | Fixed Ctrl+Shift shortcut, not configurable. |
-| Previous Pane | KEY_ACTION_PREVIOUS_PANE | Moves focus to the previous split pane in order. | partial | Fixed Ctrl+Shift shortcut, not configurable. |
-| Cycle Tabs Forward | KEY_ACTION_NEXT_MRU_TAB | Cycles tabs in most-recently-used order, forward. | missing |  |
-| Cycle Tabs Backward | KEY_ACTION_PREVIOUS_MRU_TAB | Cycles tabs in most-recently-used order, backward. | missing |  |
-| Move Tab Left | KEY_ACTION_MOVE_TAB_LEFT | Moves the current tab one position to the left. | missing |  |
-| Move Tab Right | KEY_ACTION_MOVE_TAB_RIGHT | Moves the current tab one position to the right. | missing |  |
-| Run Coprocess... | KEY_ACTION_RUN_COPROCESS | Launches a coprocess (a program piped to/from the session). | missing |  |
-| Find Regular Expression... | KEY_ACTION_FIND_REGEX | Runs Find using a fixed regular expression. | missing |  |
-| Set Profile... | KEY_ACTION_SET_PROFILE | Switches the current session to a different profile. | missing |  |
-| Send Text (vim paste-safe) | KEY_ACTION_VIM_TEXT | Sends text wrapped so vim treats it as a paste, not typed keystrokes. | missing |  |
-| Load Color Preset... | KEY_ACTION_LOAD_COLOR_PRESET | Applies a saved color preset to the current session. | missing |  |
-| Paste Special... | KEY_ACTION_PASTE_SPECIAL | Pastes the clipboard using Paste Special's transform rules. | missing | Tandem has plain paste but no Paste Special transform pipeline. |
-| Paste Special from Selection... | KEY_ACTION_PASTE_SPECIAL_FROM_SELECTION | Pastes the current selection (not the clipboard) using Paste Special's transform rules. | missing |  |
-| Toggle Pin Hotkey Window | KEY_ACTION_TOGGLE_HOTKEY_WINDOW_PINNING | Pins/unpins a hotkey window so it stays open when it loses focus. | missing | Tandem has no hotkey window. |
-| Undo | KEY_ACTION_UNDO | Undoes the last undoable terminal action (e.g. closing a session). | missing |  |
-| Move End of Selection Left | KEY_ACTION_MOVE_END_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its end point left, keyboard-driven. | missing |  |
-| Move End of Selection Right | KEY_ACTION_MOVE_END_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its end point right, keyboard-driven. | missing |  |
-| Move Start of Selection Left | KEY_ACTION_MOVE_START_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its start point left, keyboard-driven. | missing |  |
-| Move Start of Selection Right | KEY_ACTION_MOVE_START_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its start point right, keyboard-driven. | missing |  |
-| Decrease Height | KEY_ACTION_DECREASE_HEIGHT | Shrinks the current split pane's height. | missing | Tandem has draggable dividers but no keyboard resize action. |
-| Increase Height | KEY_ACTION_INCREASE_HEIGHT | Grows the current split pane's height. | missing |  |
-| Decrease Width | KEY_ACTION_DECREASE_WIDTH | Shrinks the current split pane's width. | missing |  |
-| Increase Width | KEY_ACTION_INCREASE_WIDTH | Grows the current split pane's width. | missing |  |
-| Swap With Split Pane on Left | KEY_ACTION_SWAP_PANE_LEFT | Swaps the current pane's contents with the pane to its left. | missing |  |
-| Swap With Split Pane on Right | KEY_ACTION_SWAP_PANE_RIGHT | Swaps the current pane's contents with the pane to its right. | missing |  |
-| Swap With Split Pane Above | KEY_ACTION_SWAP_PANE_ABOVE | Swaps the current pane's contents with the pane above. | missing |  |
-| Swap With Split Pane Below | KEY_ACTION_SWAP_PANE_BELOW | Swaps the current pane's contents with the pane below. | missing |  |
-| Toggle Mouse Reporting | KEY_ACTION_TOGGLE_MOUSE_REPORTING | Turns mouse-reporting-to-app on or off for the session. | missing | Tandem supports mouse reporting but has no toggle binding. |
-| Invoke Script Function... | KEY_ACTION_INVOKE_SCRIPT_FUNCTION | Calls a registered Python API script function. | missing |  |
-| Duplicate Tab | KEY_ACTION_DUPLICATE_TAB | Opens a new tab that is a copy of the current one (same profile/directory). | missing |  |
-| Move to Split Pane | KEY_ACTION_MOVE_TO_SPLIT_PANE | Moves the current session into an adjacent split pane. | missing |  |
-| Send Snippet... | KEY_ACTION_SEND_SNIPPET | Sends a saved Snippet's text. | missing | Tandem has no Snippets feature. |
-| Open Composer | KEY_ACTION_COMPOSE | Opens the Composer overlay for multi-line command editing. | missing |  |
-| Send tmux Command... | KEY_ACTION_SEND_TMUX_COMMAND | Sends a literal tmux control-mode command to the attached tmux server. | missing | Tandem has no tmux integration. |
-| Run Sequence of Actions | KEY_ACTION_SEQUENCE | Runs an ordered list of other key-binding actions as one binding. | missing |  |
-| Swap with Next Pane | KEY_ACTION_SWAP_WITH_NEXT_PANE | Swaps the current pane's contents with the next pane in order. | missing |  |
-| Swap with Previous Pane | KEY_ACTION_SWAP_WITH_PREVIOUS_PANE | Swaps the current pane's contents with the previous pane in order. | missing |  |
-| Copy Selection or Send ^C | KEY_ACTION_COPY_OR_SEND | Copies the selection if there is one, otherwise sends Ctrl-C. | partial | Tandem has a fixed Copy shortcut but not this selection-aware dual behavior. |
-| Paste or Send ^V | KEY_ACTION_PASTE_OR_SEND | Pastes the clipboard if there is content, otherwise sends the literal key. | partial | Tandem has a fixed Paste shortcut but not this dual behavior. |
-| Alert on Next Mark | KEY_ACTION_ALERT_ON_NEXT_MARK | Shows a notification the next time a shell-integration mark appears in this session. | missing | Requires shell integration. |
-| Copy Interpolated String... | KEY_ACTION_COPY_INTERPOLATED_STRING | Evaluates a string with session variable interpolation and copies the result to the clipboard. | missing |  |
-| Enter Copy Mode | KEY_ACTION_COPY_MODE | Enters keyboard-driven Copy Mode for selecting text without the mouse. | missing | Tandem's selection is mouse-driven; no keyboard copy mode. |
-| Bypass Terminal | KEY_ACTION_BYPASS | Sends the keystroke through to the OS/window manager instead of the terminal program. | missing |  |
-| Toggle Setting... | KEY_ACTION_TOGGLE_SETTING | Flips a chosen boolean preference on/off as the bound action. | missing |  |
-| Send Text (vim paste-safe, no broadcast) | KEY_ACTION_VIM_TEXT_NO_BROADCAST | Same as the vim paste-safe Send Text action, but exempt from Broadcast Input. | missing |  |
+| Next Tab | KEY_ACTION_NEXT_SESSION | Switches to the next tab. | have |  |
+| Next Window | KEY_ACTION_NEXT_WINDOW | Switches to the next iTerm2 window. | missing | Comes in milestone 7. |
+| Previous Tab | KEY_ACTION_PREVIOUS_SESSION | Switches to the previous tab. | have |  |
+| Previous Window | KEY_ACTION_PREVIOUS_WINDOW | Switches to the previous iTerm2 window. | missing | Comes in milestone 7. |
+| Scroll To End | KEY_ACTION_SCROLL_END | Scrolls the pane to the bottom. | have |  |
+| Scroll To Top | KEY_ACTION_SCROLL_HOME | Scrolls the pane to the top. | have |  |
+| Scroll One Line Down | KEY_ACTION_SCROLL_LINE_DOWN | Scrolls the pane down by one line. | have |  |
+| Scroll One Line Up | KEY_ACTION_SCROLL_LINE_UP | Scrolls the pane up by one line. | have |  |
+| Scroll One Page Down | KEY_ACTION_SCROLL_PAGE_DOWN | Scrolls the pane down by one page. | have |  |
+| Scroll One Page Up | KEY_ACTION_SCROLL_PAGE_UP | Scrolls the pane up by one page. | have |  |
+| Send Escape Sequence... | KEY_ACTION_ESCAPE_SEQUENCE | Sends a literal escape sequence typed into the binding. | have |  |
+| Send Hex Code... | KEY_ACTION_HEX_CODE | Sends one or more literal hex byte codes. | have |  |
+| Send Text... | KEY_ACTION_TEXT | Sends literal text, optionally with placeholders for Tab/Esc/etc. | have |  |
+| Ignore | KEY_ACTION_IGNORE | Swallows the keystroke; nothing is sent to the terminal. | have |  |
+| Unsupported Command (deprecated) | KEY_ACTION_IR_FORWARD | Formerly stepped Instant Replay forward; deprecated. | have | Does nothing, as in iTerm2 (retired). |
+| Start Instant Replay | KEY_ACTION_IR_BACKWARD | Opens Instant Replay to scrub backward through recent screen history. | missing | Comes in milestone 10. |
+| Send ^H Backspace | KEY_ACTION_SEND_C_H_BACKSPACE | Sends the ASCII BS (0x08) character for Backspace. | have |  |
+| Send ^? Backspace | KEY_ACTION_SEND_C_QM_BACKSPACE | Sends the ASCII DEL (0x7F) character for Backspace. | have |  |
+| Select Split Pane on Left | KEY_ACTION_SELECT_PANE_LEFT | Moves focus to the split pane to the left. | have |  |
+| Select Split Pane on Right | KEY_ACTION_SELECT_PANE_RIGHT | Moves focus to the split pane to the right. | have |  |
+| Select Split Pane Above | KEY_ACTION_SELECT_PANE_ABOVE | Moves focus to the split pane above. | have |  |
+| Select Split Pane Below | KEY_ACTION_SELECT_PANE_BELOW | Moves focus to the split pane below. | have |  |
+| Do Not Remap Modifiers | KEY_ACTION_DO_NOT_REMAP_MODIFIERS | Marks this one binding as exempt from the Remap Modifiers settings. | have | Guides the modifier remapper. |
+| Toggle Fullscreen | KEY_ACTION_TOGGLE_FULLSCREEN | Enters or exits fullscreen. | have |  |
+| Remap Modifiers in iTerm2 Only | KEY_ACTION_REMAP_LOCALLY | Applies modifier remapping only while iTerm2 is frontmost, overriding the global setting for this binding. | have | Remapping is always local on Windows, so this acts like a normal remap. |
+| Select Menu Item... | KEY_ACTION_SELECT_MENU_ITEM | Invokes an arbitrary named app menu item. | have |  |
+| New Window with Profile... | KEY_ACTION_NEW_WINDOW_WITH_PROFILE | Opens a new window using a chosen profile. | missing | Comes in milestone 7. |
+| New Tab with Profile... | KEY_ACTION_NEW_TAB_WITH_PROFILE | Opens a new tab using a chosen profile. | have |  |
+| Split Horizontally with Profile... | KEY_ACTION_SPLIT_HORIZONTALLY_WITH_PROFILE | Splits the pane horizontally using a chosen profile. | have |  |
+| Split Vertically with Profile... | KEY_ACTION_SPLIT_VERTICALLY_WITH_PROFILE | Splits the pane vertically using a chosen profile. | have |  |
+| Next Pane | KEY_ACTION_NEXT_PANE | Moves focus to the next split pane in order. | have |  |
+| Previous Pane | KEY_ACTION_PREVIOUS_PANE | Moves focus to the previous split pane in order. | have |  |
+| Cycle Tabs Forward | KEY_ACTION_NEXT_MRU_TAB | Cycles tabs in most-recently-used order, forward. | have |  |
+| Cycle Tabs Backward | KEY_ACTION_PREVIOUS_MRU_TAB | Cycles tabs in most-recently-used order, backward. | have |  |
+| Move Tab Left | KEY_ACTION_MOVE_TAB_LEFT | Moves the current tab one position to the left. | have |  |
+| Move Tab Right | KEY_ACTION_MOVE_TAB_RIGHT | Moves the current tab one position to the right. | have |  |
+| Run Coprocess... | KEY_ACTION_RUN_COPROCESS | Launches a coprocess (a program piped to/from the session). | missing | Comes in milestone 6. |
+| Find Regular Expression... | KEY_ACTION_FIND_REGEX | Runs Find using a fixed regular expression. | missing | Comes in milestone 4. |
+| Set Profile... | KEY_ACTION_SET_PROFILE | Switches the current session to a different profile. | have |  |
+| Send Text (vim paste-safe) | KEY_ACTION_VIM_TEXT | Sends text wrapped so vim treats it as a paste, not typed keystrokes. | have |  |
+| Load Color Preset... | KEY_ACTION_LOAD_COLOR_PRESET | Applies a saved color preset to the current session. | missing | Comes in milestone 13. |
+| Paste Special... | KEY_ACTION_PASTE_SPECIAL | Pastes the clipboard using Paste Special's transform rules. | missing | Comes in milestone 9. |
+| Paste Special from Selection... | KEY_ACTION_PASTE_SPECIAL_FROM_SELECTION | Pastes the current selection (not the clipboard) using Paste Special's transform rules. | missing | Comes in milestone 9. |
+| Toggle Pin Hotkey Window | KEY_ACTION_TOGGLE_HOTKEY_WINDOW_PINNING | Pins/unpins a hotkey window so it stays open when it loses focus. | missing | Comes in milestone 7. |
+| Undo | KEY_ACTION_UNDO | Undoes the last undoable terminal action (e.g. closing a session). | missing | Comes in milestone 7. |
+| Move End of Selection Left | KEY_ACTION_MOVE_END_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its end point left, keyboard-driven. | missing | Comes in milestone 4. |
+| Move End of Selection Right | KEY_ACTION_MOVE_END_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its end point right, keyboard-driven. | missing | Comes in milestone 4. |
+| Move Start of Selection Left | KEY_ACTION_MOVE_START_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its start point left, keyboard-driven. | missing | Comes in milestone 4. |
+| Move Start of Selection Right | KEY_ACTION_MOVE_START_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its start point right, keyboard-driven. | missing | Comes in milestone 4. |
+| Decrease Height | KEY_ACTION_DECREASE_HEIGHT | Shrinks the current split pane's height. | have |  |
+| Increase Height | KEY_ACTION_INCREASE_HEIGHT | Grows the current split pane's height. | have |  |
+| Decrease Width | KEY_ACTION_DECREASE_WIDTH | Shrinks the current split pane's width. | have |  |
+| Increase Width | KEY_ACTION_INCREASE_WIDTH | Grows the current split pane's width. | have |  |
+| Swap With Split Pane on Left | KEY_ACTION_SWAP_PANE_LEFT | Swaps the current pane's contents with the pane to its left. | have |  |
+| Swap With Split Pane on Right | KEY_ACTION_SWAP_PANE_RIGHT | Swaps the current pane's contents with the pane to its right. | have |  |
+| Swap With Split Pane Above | KEY_ACTION_SWAP_PANE_ABOVE | Swaps the current pane's contents with the pane above. | have |  |
+| Swap With Split Pane Below | KEY_ACTION_SWAP_PANE_BELOW | Swaps the current pane's contents with the pane below. | have |  |
+| Toggle Mouse Reporting | KEY_ACTION_TOGGLE_MOUSE_REPORTING | Turns mouse-reporting-to-app on or off for the session. | have |  |
+| Invoke Script Function... | KEY_ACTION_INVOKE_SCRIPT_FUNCTION | Calls a registered Python API script function. | missing | Comes in milestone 11. |
+| Duplicate Tab | KEY_ACTION_DUPLICATE_TAB | Opens a new tab that is a copy of the current one (same profile/directory). | have |  |
+| Move to Split Pane | KEY_ACTION_MOVE_TO_SPLIT_PANE | Moves the current session into an adjacent split pane. | missing | Comes in milestone 7. |
+| Send Snippet... | KEY_ACTION_SEND_SNIPPET | Sends a saved Snippet's text. | missing | Comes in milestone 9. |
+| Open Composer | KEY_ACTION_COMPOSE | Opens the Composer overlay for multi-line command editing. | missing | Comes in milestone 9. |
+| Send tmux Command... | KEY_ACTION_SEND_TMUX_COMMAND | Sends a literal tmux control-mode command to the attached tmux server. | missing | Comes in milestone 8. |
+| Run Sequence of Actions | KEY_ACTION_SEQUENCE | Runs an ordered list of other key-binding actions as one binding. | have |  |
+| Swap with Next Pane | KEY_ACTION_SWAP_WITH_NEXT_PANE | Swaps the current pane's contents with the next pane in order. | have |  |
+| Swap with Previous Pane | KEY_ACTION_SWAP_WITH_PREVIOUS_PANE | Swaps the current pane's contents with the previous pane in order. | have |  |
+| Copy Selection or Send ^C | KEY_ACTION_COPY_OR_SEND | Copies the selection if there is one, otherwise sends Ctrl-C. | have |  |
+| Paste or Send ^V | KEY_ACTION_PASTE_OR_SEND | Pastes the clipboard if there is content, otherwise sends the literal key. | have |  |
+| Alert on Next Mark | KEY_ACTION_ALERT_ON_NEXT_MARK | Shows a notification the next time a shell-integration mark appears in this session. | missing | Comes in milestone 6. |
+| Copy Interpolated String... | KEY_ACTION_COPY_INTERPOLATED_STRING | Evaluates a string with session variable interpolation and copies the result to the clipboard. | missing | Comes in milestone 6. |
+| Enter Copy Mode | KEY_ACTION_COPY_MODE | Enters keyboard-driven Copy Mode for selecting text without the mouse. | missing | Comes in milestone 4. |
+| Bypass Terminal | KEY_ACTION_BYPASS | Sends the keystroke through to the OS/window manager instead of the terminal program. | have |  |
+| Toggle Setting... | KEY_ACTION_TOGGLE_SETTING | Flips a chosen boolean preference on/off as the bound action. | have |  |
+| Send Text (vim paste-safe, no broadcast) | KEY_ACTION_VIM_TEXT_NO_BROADCAST | Same as the vim paste-safe Send Text action, but exempt from Broadcast Input. | have |  |
 
 
 ## Pointer
@@ -443,14 +443,14 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Cmd-Click opens filename/URL (semantic history) | CmdClickOpensURLs | Makes Cmd-click open the clicked path or URL via Semantic History instead of just moving the cursor. | missing | Tandem has no Semantic History feature; Cmd has no Windows equivalent modifier. |
-| Ctrl-Click reported to apps, does not open menu | ControlLeftClickBypassesContextMenu | Sends a Control-click straight to the running program (e.g. for mouse reporting) instead of opening iTerm2's context menu. | missing |  |
-| Right click reported to apps, does not open menu | RightClickClickBypassesContextMenu | Sends a right-click straight to the running program instead of opening iTerm2's context menu. | missing | Tandem routes some clicks to mouse-reporting apps already; a dedicated bypass toggle is not exposed. |
-| Option-Click moves cursor | OptionClickMovesCursor | Lets Option-click reposition the cursor on the current line, for apps that support cursor-repositioning reports. | missing |  |
-| Three-finger tap emulates middle click | ThreeFingerEmulatesMiddle | Maps a three-finger trackpad tap to a middle-click (paste). | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
-| Focus follows mouse | FocusFollowsMouse | Moves keyboard focus to whichever pane/window the mouse is over, without clicking. | missing |  |
-| Focus window after right or middle click | FocusOnRightOrMiddleClick | Also focuses the window on a right- or middle-click, not just a left-click. | missing |  |
-| Mouse reporting supports horizontal scrolling | ReportHorizontalScrollEvents | Includes horizontal wheel/trackpad scroll in the mouse-reporting events sent to the running program. | missing | Tandem's wheel routing currently only confirmed for vertical scroll. |
+| Cmd-Click opens filename/URL (semantic history) | CommandSelection | Makes Cmd-click open the clicked path or URL via Semantic History instead of just moving the cursor. | missing | Saved; Semantic History comes in milestone 4. Cmd is Win. |
+| Ctrl-Click reported to apps, does not open menu | PassOnControlClick | Sends a Control-click straight to the running program (e.g. for mouse reporting) instead of opening iTerm2's context menu. | have |  |
+| Right click reported to apps, does not open menu | ReportRightClick | Sends a right-click straight to the running program instead of opening iTerm2's context menu. | have |  |
+| Option-Click moves cursor | OptionClickMovesCursor | Lets Option-click reposition the cursor on the current line, for apps that support cursor-repositioning reports. | have | Option is Alt. |
+| Three-finger tap emulates middle click | ThreeFingerEmulates | Maps a three-finger trackpad tap to a middle-click (paste). | missing | macOS trackpad gesture; Windows keeps three-finger gestures for itself. |
+| Focus follows mouse | FocusFollowsMouse | Moves keyboard focus to whichever pane/window the mouse is over, without clicking. | have | Panes follow the mouse; Windows does not let an app take window focus on hover. |
+| Focus window after right or middle click | FocusOnRightOrMiddleClick | Also focuses the window on a right- or middle-click, not just a left-click. | have |  |
+| Mouse reporting supports horizontal scrolling | ReportHorizontalScrollEvents | Includes horizontal wheel/trackpad scroll in the mouse-reporting events sent to the running program. | have |  |
 
 Five more keys declared in the Pointer section of iTermPreferences.h are actually shown on the General > Selection sub-tab, not here: Triple-click selects entire wrapped lines, Double-click performs smart selection, Automatically enter copy mode on Shift+Arrow with selection, Clicking on a command selects it, and Wrap dropped filenames in quotes when pasting. See the General > Selection table above.
 
@@ -462,38 +462,38 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Ignore | kIgnoreAction | Swallows the click/gesture; nothing happens. | missing |  |
-| Invoke Script Function... | kInvokeScriptFunction | Calls a registered Python API script function. | missing |  |
-| Paste from Clipboard... | kPasteFromClipboardPointerAction | Pastes the system clipboard. | partial | Tandem's middle-click paste does this by default, not configurable per button/gesture. |
-| Paste from Selection... | kPasteFromSelectionPointerAction | Pastes the current selection (primary-selection style paste). | missing |  |
-| Extend Selection | kExtendSelectionPointerAction | Extends the existing selection to the clicked point. | missing |  |
-| Open URL/Semantic History | kOpenTargetPointerAction | Opens the clicked path or URL via Semantic History. | missing | Tandem has no Semantic History feature. |
-| Open URL in background | kOpenTargetInBackgroundPointerAction | Opens the clicked URL without bringing its app to the foreground. | missing |  |
-| Smart Selection | kSmartSelectionPointerAction | Runs the Smart Selection regex rule engine at the clicked point. | missing | Tandem has no Smart Selection rule engine. |
-| Smart Selection Ignoring Newlines | kSmartSelectionIgnoringNewlinesPointerAction | Runs Smart Selection but lets matches span across line breaks. | missing |  |
-| Open Context Menu | kContextMenuPointerAction | Opens iTerm2's right-click context menu. | missing |  |
-| Next Tab | kNextTabPointerAction | Switches to the next tab. | missing | Bound to a keyboard shortcut in Tandem, not a gesture. |
-| Previous Tab | kPrevTabPointerAction | Switches to the previous tab. | missing |  |
-| Next Window | kNextWindowPointerAction | Switches to the next iTerm2 window. | missing |  |
-| Previous Window | kPrevWindowPointerAction | Switches to the previous iTerm2 window. | missing |  |
-| Move Pane | kMovePanePointerAction | Starts a drag to move the session into a different split pane slot. | missing |  |
-| Send Escape Sequence... | kSendEscapeSequencePointerAction | Sends a literal escape sequence. | missing |  |
-| Send Hex Code... | kSendHexCodePointerAction | Sends one or more literal hex byte codes. | missing |  |
-| Send Text... | kSendTextPointerAction | Sends literal text. | missing |  |
-| Select Pane Left | kSelectPaneLeftPointerAction | Moves focus to the split pane on the left. | partial | Tandem has directional pane focus on a keyboard shortcut, not a pointer binding. |
-| Select Pane Right | kSelectPaneRightPointerAction | Moves focus to the split pane on the right. | partial | Same as above. |
-| Select Pane Above | kSelectPaneAbovePointerAction | Moves focus to the split pane above. | partial | Same as above. |
-| Select Pane Below | kSelectPaneBelowPointerAction | Moves focus to the split pane below. | partial | Same as above. |
-| New Window With Profile... | kNewWindowWithProfilePointerAction | Opens a new window using a chosen profile. | missing |  |
-| New Tab With Profile... | kNewTabWithProfilePointerAction | Opens a new tab using a chosen profile. | missing |  |
-| New Vertical Split With Profile... | kNewVerticalSplitWithProfilePointerAction | Splits vertically using a chosen profile. | missing |  |
-| New Horizontal Split With Profile... | kNewHorizontalSplitWithProfilePointerAction | Splits horizontally using a chosen profile. | missing |  |
-| QuickLook | kQuickLookAction | Opens a macOS Quick Look preview of the clicked file. | missing | macOS Quick Look has no Windows equivalent wired up. |
-| Select Menu Item | kSelectMenuItemPointerAction | Invokes a chosen app menu item. | missing |  |
-| Copy Link Address | kCopyLinkAddressPointerAction | Copies the clicked URL/path to the clipboard without opening it. | missing |  |
-| Select Next Pane | kSelectNextPanePointerAction | Moves focus to the next split pane in order. | partial | Matches Tandem's next-pane keyboard shortcut in spirit, not as a pointer binding. |
-| Select Previous Pane | kSelectPreviousPanePointerAction | Moves focus to the previous split pane in order. | partial | Matches Tandem's previous-pane keyboard shortcut in spirit, not as a pointer binding. |
-| Copy or Paste | kCopyOrPastePointerAction | Copies the selection if there is one, otherwise pastes the clipboard. | partial | Tandem's copy-on-select plus middle-click paste covers similar ground via two separate fixed behaviors. |
+| Ignore | kIgnoreAction | Swallows the click/gesture; nothing happens. | have |  |
+| Invoke Script Function... | kInvokeScriptFunction | Calls a registered Python API script function. | missing | Comes in milestone 11. |
+| Paste from Clipboard... | kPasteFromClipboardPointerAction | Pastes the system clipboard. | partial | Plain paste works; a paste-special configuration comes in milestone 9. |
+| Paste from Selection... | kPasteFromSelectionPointerAction | Pastes the current selection (primary-selection style paste). | partial | Plain paste works; a paste-special configuration comes in milestone 9. |
+| Extend Selection | kExtendSelectionPointerAction | Extends the existing selection to the clicked point. | have |  |
+| Open URL/Semantic History | kOpenTargetPointerAction | Opens the clicked path or URL via Semantic History. | missing | Comes in milestone 4. |
+| Open URL in background | kOpenTargetInBackgroundPointerAction | Opens the clicked URL without bringing its app to the foreground. | missing | Comes in milestone 4. |
+| Smart Selection | kSmartSelectionPointerAction | Runs the Smart Selection regex rule engine at the clicked point. | missing | Comes in milestone 4. |
+| Smart Selection Ignoring Newlines | kSmartSelectionIgnoringNewlinesPointerAction | Runs Smart Selection but lets matches span across line breaks. | missing | Comes in milestone 4. |
+| Open Context Menu | kContextMenuPointerAction | Opens iTerm2's right-click context menu. | have |  |
+| Next Tab | kNextTabPointerAction | Switches to the next tab. | have |  |
+| Previous Tab | kPrevTabPointerAction | Switches to the previous tab. | have |  |
+| Next Window | kNextWindowPointerAction | Switches to the next iTerm2 window. | missing | Comes in milestone 7. |
+| Previous Window | kPrevWindowPointerAction | Switches to the previous iTerm2 window. | missing | Comes in milestone 7. |
+| Move Pane | kMovePanePointerAction | Starts a drag to move the session into a different split pane slot. | missing | Comes in milestone 7. |
+| Send Escape Sequence... | kSendEscapeSequencePointerAction | Sends a literal escape sequence. | have |  |
+| Send Hex Code... | kSendHexCodePointerAction | Sends one or more literal hex byte codes. | have |  |
+| Send Text... | kSendTextPointerAction | Sends literal text. | have |  |
+| Select Pane Left | kSelectPaneLeftPointerAction | Moves focus to the split pane on the left. | have |  |
+| Select Pane Right | kSelectPaneRightPointerAction | Moves focus to the split pane on the right. | have |  |
+| Select Pane Above | kSelectPaneAbovePointerAction | Moves focus to the split pane above. | have |  |
+| Select Pane Below | kSelectPaneBelowPointerAction | Moves focus to the split pane below. | have |  |
+| New Window With Profile... | kNewWindowWithProfilePointerAction | Opens a new window using a chosen profile. | missing | Comes in milestone 7. |
+| New Tab With Profile... | kNewTabWithProfilePointerAction | Opens a new tab using a chosen profile. | have |  |
+| New Vertical Split With Profile... | kNewVerticalSplitWithProfilePointerAction | Splits vertically using a chosen profile. | have |  |
+| New Horizontal Split With Profile... | kNewHorizontalSplitWithProfilePointerAction | Splits horizontally using a chosen profile. | have |  |
+| QuickLook | kQuickLookAction | Opens a macOS Quick Look preview of the clicked file. | missing | Comes in milestone 4. QuickLook has no Windows equivalent yet. |
+| Select Menu Item | kSelectMenuItemPointerAction | Invokes a chosen app menu item. | have |  |
+| Copy Link Address | kCopyLinkAddressPointerAction | Copies the clicked URL/path to the clipboard without opening it. | missing | Comes in milestone 4. |
+| Select Next Pane | kSelectNextPanePointerAction | Moves focus to the next split pane in order. | have |  |
+| Select Previous Pane | kSelectPreviousPanePointerAction | Moves focus to the previous split pane in order. | have |  |
+| Copy or Paste | kCopyOrPastePointerAction | Copies the selection if there is one, otherwise pastes the clipboard. | have |  |
 
 Gesture types (trackpad), in addition to the button+click-count+modifier combos above:
 
@@ -506,7 +506,7 @@ Gesture types (trackpad), in addition to the button+click-count+modifier combos 
 | Three-finger swipe down | kThreeFingerSwipeDown | A three-finger trackpad swipe downward; default action Previous Window. | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
 | Force Touch click | kForceTouchSingleClick | A pressure-sensitive Force Touch click on supported trackpads. | missing | macOS trackpad gesture; no Windows precision-touchpad equivalent wired up. |
 
-| Button + click-count + modifier binding | n/a (e.g. "Button,1,1,," plist key format) | The general binding shape: mouse button number, click count (1-3), and an optional modifier mask, each mapped to one action above. | missing |  |
+| Button + click-count + modifier binding | n/a (e.g. "Button,1,1,," plist key format) | The general binding shape: mouse button number, click count (1-3), and an optional modifier mask, each mapped to one action above. | have |  |
 
 
 ## Arrangements
