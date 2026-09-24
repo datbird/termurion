@@ -5,6 +5,7 @@ It holds the factory global key map, the default pointer bindings, and the three
 key mapping presets. Usage: scripts/gen-keymaps.py [path/to/iTerm2]
 """
 import plistlib
+import re
 import sys
 
 ref = sys.argv[1] if len(sys.argv) > 1 else "/home/tbird/gitrepos/iterm2-ref"
@@ -43,5 +44,31 @@ tables(out, "pointer", load("DefaultPointerActions.plist"))
 presets = load("PresetKeyMappings.plist")
 for name in sorted(presets):
     tables(out, f"preset.{q(name)}", presets[name])
+# The action menu of iTerm2's key binding editor: groups of (action code, menu title).
+enum = {}
+header = open(f"{ref}/sources/Keyboard/iTermKeyBindingAction.h").read()
+for name, value in re.findall(r"\b(KEY_(?:ACTION_\w+|FIND_AGAIN_\w+))\s*=\s*(-?\d+)", header):
+    enum[name] = int(value)
+editor = open(f"{ref}/sources/Settings/iTermEditKeyActionWindowController.m").read()
+default = r'NSLocalizedStringWithDefaultValue\(@"EditKeyAction\.(\w+)", nil, \[NSBundle mainBundle\], @"((?:[^"\\]|\\.)*)"'
+seen = set()
+for m in re.finditer(r"iTermSearchable(ComboViewGroup|ComboViewItem) alloc\] initWithLabel:" + default, editor):
+    kind, _, label = m.groups()
+    tail = re.match(r"[^\]]*?tag:(KEY_\w+)\]", editor[m.end():])
+    tag = tail.group(1) if tail and kind == "ComboViewItem" else None
+    label = label.replace("\u2026", "...").replace("…", "...").replace("“", '"').replace("”", '"')
+    if kind == "ComboViewGroup":
+        if label in seen:
+            group = None
+            continue
+        seen.add(label)
+        group = label
+        out.append("[[action_group]]")
+        out.append(f"name = {q(label)}")
+        out.append("items = [")
+        out.append("]")
+        out.append("")
+    elif group is not None and tag in enum:
+        out.insert(len(out) - 2, f"  [{enum[tag]}, {q(label)}],")
 open("schema/keymaps.toml", "w").write("\n".join(out))
 print(sum(1 for l in out if l.startswith("[")), "tables")

@@ -3,6 +3,7 @@
 pub mod mouse;
 pub mod globals;
 pub mod keystroke;
+pub mod keyaction;
 pub mod commands;
 pub mod menus;
 pub mod import;

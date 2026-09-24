@@ -280,3 +280,184 @@
 [preset."Terminal.app Compatibility"."0xf72b-0x40000"]
 "Action" = 4
 "Text" = ""
+
+[[action_group]]
+name = "General"
+items = [
+  [13, "Ignore"],
+  [74, "Bypass Terminal"],
+  [25, "Select Menu Item..."],
+]
+
+[[action_group]]
+name = "Modifier Remapping"
+items = [
+  [22, "Do Not Remap Modifiers"],
+  [24, "Remap Modifiers in iTerm2 Only"],
+]
+
+[[action_group]]
+name = "Recent Tabs"
+items = [
+  [32, "Cycle Tabs Forward"],
+  [39, "Cycle Tabs Backward"],
+]
+
+[[action_group]]
+name = "Miscellaneous"
+items = [
+  [35, "Run Coprocess"],
+  [15, "Start Instant Replay"],
+  [44, "Undo"],
+  [65, "Send tmux Command"],
+  [71, "Alert on Next Mark"],
+]
+
+[[action_group]]
+name = "New Tab or Window"
+items = [
+  [26, "New Window with Profile"],
+  [27, "New Tab with Profile"],
+  [61, "Duplicate Tab"],
+]
+
+[[action_group]]
+name = "Split"
+items = [
+  [28, "Split Horizontally with Profile"],
+  [29, "Split Vertically with Profile"],
+]
+
+[[action_group]]
+name = "Profile"
+items = [
+  [37, "Change Profile"],
+  [40, "Load Color Preset"],
+]
+
+[[action_group]]
+name = "Navigate Tabs"
+items = [
+  [0, "Next Tab"],
+  [2, "Previous Tab"],
+]
+
+[[action_group]]
+name = "Reorder Tabs"
+items = [
+  [33, "Move Tab Left"],
+  [34, "Move Tab Right"],
+]
+
+[[action_group]]
+name = "Navigate Windows"
+items = [
+  [1, "Next Window"],
+  [3, "Previous Window"],
+]
+
+[[action_group]]
+name = "Navigate Panes"
+items = [
+  [30, "Next Pane"],
+  [31, "Previous Pane"],
+  [20, "Select Split Pane Above"],
+  [21, "Select Split Pane Below"],
+  [18, "Select Split Pane On Left"],
+  [19, "Select Split Pane On Right"],
+]
+
+[[action_group]]
+name = "Resize Pane"
+items = [
+  [49, "Decrease Height"],
+  [50, "Increase Height"],
+  [51, "Decrease Width"],
+  [52, "Increase Width"],
+]
+
+[[action_group]]
+name = "Scroll"
+items = [
+  [4, "Scroll to End"],
+  [5, "Scroll to Top"],
+  [6, "Scroll One Line Down"],
+  [7, "Scroll One Line Up"],
+  [8, "Scroll One Page Down"],
+  [9, "Scroll One Page Up"],
+]
+
+[[action_group]]
+name = "Split Panes"
+items = [
+  [55, "Swap With Split Pane Above"],
+  [56, "Swap With Split Pane Below"],
+  [53, "Swap With Split Pane on Left"],
+  [54, "Swap With Split Pane on Right"],
+  [67, "Swap With Next Pane"],
+  [68, "Swap With Previous Pane"],
+  [62, "Move Session to Split Pane"],
+]
+
+[[action_group]]
+name = "Send Keystrokes"
+items = [
+  [16, "Send ^H Backspace"],
+  [17, "Send ^? Backspace"],
+  [10, "Send Escape Sequence"],
+  [11, "Send Hex Code"],
+  [12, "Send Text"],
+  [38, "Send Text with \"vim\" Special Chars"],
+  [76, "Send Text without Broadcasting"],
+  [63, "Send Snippet"],
+  [64, "Compose..."],
+]
+
+[[action_group]]
+name = "Search"
+items = [
+  [36, "Find Regular Expression..."],
+  [57, "Find Again Down"],
+  [58, "Find Again Up"],
+]
+
+[[action_group]]
+name = "Pasteboard"
+items = [
+  [41, "Paste..."],
+  [42, "Paste from Selection..."],
+  [69, "Copy or Send ^C"],
+  [70, "Paste or Send ^V"],
+  [72, "Copy Interpolated String"],
+  [73, "Copy Mode Commands"],
+]
+
+[[action_group]]
+name = "Toggles"
+items = [
+  [23, "Toggle Fullscreen"],
+  [43, "Toggle Pin Hotkey Window"],
+  [59, "Toggle Mouse Reporting"],
+  [75, "Toggle Setting"],
+]
+
+[[action_group]]
+name = "Selection"
+items = [
+  [47, "Move Start of Selection Back"],
+  [48, "Move Start of Selection Forward"],
+  [45, "Move End of Selection Back"],
+  [46, "Move End of Selection Forward"],
+]
+
+[[action_group]]
+name = "Scripting"
+items = [
+  [60, "Invoke Script Function..."],
+]
+
+[[action_group]]
+name = "Composition"
+items = [
+  [66, "Sequence..."],
+]
