@@ -136,15 +136,20 @@ impl Renderer {
         r
     }
 
-    /// Sets the font size and measures the cell: the advance of "M" by 1.2 lines.
+    /// Sets the font size and measures the cell: the font's own advance, by 1.2 lines.
+    /// The width is not rounded. Glyphs advance by the exact width, so a rounded cell
+    /// would drift away from the text along a row (the cursor landed two cells short).
     pub fn set_font_px(&mut self, px: f32) {
         self.font_px = px;
         let line = (px * 1.2).round();
+        let n = 100;
         let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, line));
-        b.set_text("M", &Attrs::new().family(Family::Name(&self.family)), Shaping::Advanced, None);
+        b.set_size(None, None);
+        b.set_wrap(Wrap::None);
+        b.set_text(&"M".repeat(n), &Attrs::new().family(Family::Name(&self.family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
-        let w = b.layout_runs().next().and_then(|r| r.glyphs.first().map(|g| g.w)).unwrap_or(px * 0.6);
-        self.cell = (w.round().max(1.0), line);
+        let w = b.layout_runs().next().map(|r| r.line_w / n as f32).filter(|w| *w > 0.0).unwrap_or(px * 0.6);
+        self.cell = (w, line);
         self.buffers.clear();
     }
 
@@ -281,6 +286,45 @@ mod tests {
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
         data
+    }
+
+    #[test]
+    fn text_advance_matches_the_cell_width() {
+        // The cursor and backgrounds use `cell`. If glyphs advance by a different width,
+        // text drifts away from them along the row.
+        let (device, queue) = device();
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let mut r = Renderer::new(&device, &queue, format, "Cascadia Mono", 16.0);
+        let (w, h) = (512u32, 32u32);
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        let n = 40;
+        let frame = Frame {
+            clear: rgba(rgb(0, 0, 0), 1.0),
+            quads: vec![],
+            rows: vec![TextRow {
+                x: 0.0,
+                y: 0.0,
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false }],
+                clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
+            }],
+            overlay: vec![],
+        };
+        r.draw(&frame, &view, w, h).unwrap();
+        let px = read(&device, &queue, &tex, w, h);
+        let lit = |x: u32| (0..h).any(|y| px[((y * w + x) * 4) as usize] > 128);
+        let right = (0..w).rev().find(|&x| lit(x)).unwrap() as f32 + 1.0;
+        let want = n as f32 * r.cell.0;
+        assert!((right - want).abs() < r.cell.0 / 2.0, "text ends at {right} px, cells end at {want} px (cell {:?})", r.cell);
     }
 
     #[test]
