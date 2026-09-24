@@ -8,6 +8,7 @@ pub mod pointer;
 pub mod remap;
 pub mod keyroute;
 pub mod mru;
+pub mod osc;
 pub mod commands;
 pub mod menus;
 pub mod import;

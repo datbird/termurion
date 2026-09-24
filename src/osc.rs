@@ -1,0 +1,235 @@
+//! Finds the OSC sequences alacritty does not handle (133 prompt marks, 7 location,
+//! 1337 key=value) in the pty output, and where each one ends, so the screen can act
+//! on it at the exact cursor position. The bytes still go to alacritty unchanged.
+
+/// The longest payload kept. Longer ones (an inline image, say) are not ours and are dropped.
+const LIMIT: usize = 64 * 1024;
+
+/// OSC payload prefixes Tandem acts on.
+const WANTED: [&[u8]; 3] = [b"133;", b"7;", b"1337;"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptKind {
+    Initial,
+    Secondary,
+    Continuation,
+    Right,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Osc {
+    /// 133;A, N (fresh line), or P (no fresh line).
+    Prompt { kind: PromptKind, aid: Option<String>, fresh_line: bool },
+    /// 133;B: the prompt ended; the command starts at the cursor.
+    CommandStart,
+    /// 133;C: the command was entered; output starts.
+    OutputStart,
+    /// 133;D: the command finished.
+    CommandEnd { code: Option<i32>, aid: Option<String> },
+    /// OSC 7: a file:// URL with the user, host, and directory.
+    Location(String),
+    /// OSC 1337 key=value.
+    Kv(String, String),
+}
+
+#[derive(Default)]
+enum State {
+    #[default]
+    Ground,
+    Esc,
+    Osc { buf: Vec<u8>, keep: bool, esc: bool },
+}
+
+#[derive(Default)]
+pub struct Scanner {
+    state: State,
+}
+
+fn could_be_wanted(buf: &[u8]) -> bool {
+    WANTED.iter().any(|w| buf.starts_with(w) || w.starts_with(buf))
+}
+
+impl Scanner {
+    /// The events in `bytes`, each with the offset just past its terminator.
+    pub fn scan(&mut self, bytes: &[u8]) -> Vec<(usize, Osc)> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            match &mut self.state {
+                State::Ground => {
+                    if b == 0x1b {
+                        self.state = State::Esc;
+                    }
+                }
+                State::Esc => {
+                    self.state = match b {
+                        b']' => State::Osc { buf: Vec::new(), keep: true, esc: false },
+                        0x1b => State::Esc,
+                        _ => State::Ground,
+                    };
+                }
+                State::Osc { buf, keep, esc } => {
+                    if *esc {
+                        if b == b'\\' {
+                            let done = std::mem::take(buf);
+                            let keep = *keep;
+                            self.state = State::Ground;
+                            if keep {
+                                if let Some(ev) = finish(&done) {
+                                    out.push((i + 1, ev));
+                                }
+                            }
+                        } else {
+                            // ESC and something else: the OSC is cut off, and a new escape starts.
+                            self.state = State::Esc;
+                            continue;
+                        }
+                    } else {
+                        match b {
+                            0x07 => {
+                                let done = std::mem::take(buf);
+                                let keep = *keep;
+                                self.state = State::Ground;
+                                if keep {
+                                    if let Some(ev) = finish(&done) {
+                                        out.push((i + 1, ev));
+                                    }
+                                }
+                            }
+                            0x1b => *esc = true,
+                            0x18 | 0x1a => self.state = State::Ground,
+                            _ => {
+                                if *keep {
+                                    buf.push(b);
+                                    if buf.len() > LIMIT || !could_be_wanted(buf) {
+                                        *keep = false;
+                                        buf.clear();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+}
+
+fn finish(buf: &[u8]) -> Option<Osc> {
+    if !WANTED.iter().any(|w| buf.starts_with(w)) {
+        return None;
+    }
+    parse(&String::from_utf8_lossy(buf))
+}
+
+fn arg<'a>(args: &[&'a str], key: &str) -> Option<&'a str> {
+    args.iter().find_map(|a| a.strip_prefix(key).and_then(|r| r.strip_prefix('=')))
+}
+
+/// Reads one OSC payload (the part between `ESC ]` and the terminator).
+pub fn parse(payload: &str) -> Option<Osc> {
+    let (head, rest) = payload.split_once(';')?;
+    match head {
+        "133" => {
+            let args: Vec<&str> = rest.split(';').collect();
+            let letter = args[0];
+            if letter.chars().count() != 1 {
+                return None;
+            }
+            let aid = arg(&args, "aid").map(str::to_string);
+            Some(match letter {
+                "A" | "N" | "P" => {
+                    let kind = match arg(&args, "k") {
+                        None | Some("") | Some("i") => PromptKind::Initial,
+                        Some("s") => PromptKind::Secondary,
+                        Some("c") => PromptKind::Continuation,
+                        Some("r") => PromptKind::Right,
+                        Some(_) => PromptKind::Unknown,
+                    };
+                    Osc::Prompt { kind, aid, fresh_line: letter != "P" }
+                }
+                "B" => Osc::CommandStart,
+                "C" => Osc::OutputStart,
+                "D" => {
+                    // A bare D does nothing; otherwise the first integer argument is the code.
+                    if args.len() < 2 {
+                        return None;
+                    }
+                    let code = args[1..].iter().filter(|a| !a.contains('=')).find_map(|a| a.trim().parse().ok()).unwrap_or(0);
+                    Osc::CommandEnd { code: Some(code), aid }
+                }
+                _ => return None,
+            })
+        }
+        "7" => Some(Osc::Location(rest.to_string())),
+        "1337" => {
+            let (k, v) = rest.split_once('=').unwrap_or((rest, ""));
+            Some(Osc::Kv(k.to_string(), v.to_string()))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_133_7_and_1337() {
+        let mut s = Scanner::default();
+        let ev = s.scan(b"a\x1b]133;A;aid=1\x07b\x1b]7;file://h/x\x1b\\c\x1b]1337;CurrentDir=/tmp\x07");
+        assert_eq!(ev.len(), 3);
+        assert_eq!(ev[0].0, 15);
+        assert!(matches!(&ev[0].1, Osc::Prompt { kind: PromptKind::Initial, aid: Some(a), fresh_line: true } if a == "1"));
+        assert!(matches!(&ev[1].1, Osc::Location(u) if u == "file://h/x"));
+        assert!(matches!(&ev[2].1, Osc::Kv(k, v) if k == "CurrentDir" && v == "/tmp"));
+    }
+
+    #[test]
+    fn an_osc_split_across_reads_is_one_event() {
+        let mut s = Scanner::default();
+        assert!(s.scan(b"\x1b]13").is_empty());
+        let ev = s.scan(b"3;A\x07rest");
+        assert_eq!(ev.len(), 1);
+        assert_eq!(ev[0].0, 4);
+        // A terminator split between ESC and backslash.
+        let mut s = Scanner::default();
+        assert!(s.scan(b"\x1b]133;B\x1b").is_empty());
+        assert_eq!(s.scan(b"\\").len(), 1);
+    }
+
+    #[test]
+    fn other_oscs_are_skipped() {
+        let mut s = Scanner::default();
+        assert!(s.scan(b"\x1b]0;title\x07\x1b]8;;http://x\x1b\\").is_empty());
+        assert!(s.scan(b"\x1b]1337x\x07").is_empty());
+    }
+
+    #[test]
+    fn a_huge_payload_is_dropped() {
+        let mut s = Scanner::default();
+        let mut big = b"\x1b]1337;File=".to_vec();
+        big.extend(std::iter::repeat_n(b'A', 70_000));
+        big.push(7);
+        big.extend(b"\x1b]133;C\x07");
+        let ev = s.scan(&big);
+        assert_eq!(ev.len(), 1);
+        assert!(matches!(ev[0].1, Osc::OutputStart));
+    }
+
+    #[test]
+    fn command_end_takes_the_first_integer() {
+        assert!(matches!(parse("133;D;2;aid=4"), Some(Osc::CommandEnd { code: Some(2), aid: Some(a) }) if a == "4"));
+        assert!(matches!(parse("133;D;aid=4"), Some(Osc::CommandEnd { code: Some(0), .. })));
+        assert!(parse("133;D").is_none());
+        assert!(matches!(parse("133;A;k=s"), Some(Osc::Prompt { kind: PromptKind::Secondary, .. })));
+        assert!(matches!(parse("133;P"), Some(Osc::Prompt { fresh_line: false, .. })));
+        assert!(matches!(parse("133;B"), Some(Osc::CommandStart)));
+        assert!(matches!(parse("1337;SetMark"), Some(Osc::Kv(k, v)) if k == "SetMark" && v.is_empty()));
+        assert!(matches!(parse("1337;SetUserVar=a=Yg=="), Some(Osc::Kv(k, v)) if k == "SetUserVar" && v == "a=Yg=="));
+    }
+}
