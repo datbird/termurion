@@ -14,3 +14,6 @@ pub mod conpty;
 pub mod probe;
 #[cfg(windows)]
 pub mod pty;
+
+#[cfg(windows)]
+pub mod pane;
