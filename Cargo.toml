@@ -12,6 +12,7 @@ glyphon = "0.12"
 pollster = "0.4"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+uuid = { version = "1", features = ["v4"] }
 wgpu = "30"
 winit = "0.30"
 

@@ -1,6 +1,7 @@
 //! Tandem: an iTerm2-style terminal for Windows.
 
 pub mod mouse;
+pub mod profile;
 pub mod schema;
 pub mod scene;
 pub mod input;
