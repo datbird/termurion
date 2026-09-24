@@ -164,6 +164,50 @@ impl Layout {
         out
     }
 
+    /// Puts every divider back in the middle of its split.
+    pub fn even(&mut self) {
+        fn go(n: &mut Node) {
+            if let Node::Split { ratio, a, b, .. } = n {
+                *ratio = 0.5;
+                go(a);
+                go(b);
+            }
+        }
+        go(&mut self.root);
+    }
+
+    /// Moves the divider on `dir`'s side of `pane` by `fraction` of its split, toward `dir`.
+    /// Returns false when `pane` has no divider on that side.
+    pub fn nudge(&mut self, pane: PaneId, dir: Dir, fraction: f32) -> bool {
+        let axis = match dir {
+            Dir::Left | Dir::Right => Axis::Row,
+            Dir::Up | Dir::Down => Axis::Column,
+        };
+        let toward_second = matches!(dir, Dir::Right | Dir::Down);
+        // Walk down to the pane, remembering each split on the right axis where the pane
+        // sits on the side that faces `dir`. The deepest one is the adjacent divider.
+        fn go(n: &mut Node, pane: PaneId, axis: Axis, toward_second: bool, fraction: f32) -> Option<bool> {
+            let Node::Split { axis: a, ratio, a: first, b: second } = n else {
+                return if *n == Node::Leaf(pane) { Some(false) } else { None };
+            };
+            let in_first = go(first, pane, axis, toward_second, fraction);
+            let (found, moved) = match in_first {
+                Some(m) => (true, m),
+                None => match go(second, pane, axis, toward_second, fraction) {
+                    Some(m) => (false, m),
+                    None => return None,
+                },
+            };
+            if moved || *a != axis || found != toward_second {
+                return Some(moved);
+            }
+            let step = if toward_second { fraction } else { -fraction };
+            *ratio = (*ratio + step).clamp(0.1, 0.9);
+            Some(true)
+        }
+        go(&mut self.root, pane, axis, toward_second, fraction).unwrap_or(false)
+    }
+
     /// Sets the split ratio at `path`, kept between 0.1 and 0.9.
     pub fn set_ratio(&mut self, path: &[bool], ratio: f32) {
         let mut n = &mut self.root;
@@ -206,6 +250,14 @@ impl Layout {
             })
             .min_by(|(_, a), (_, b)| dist(a).total_cmp(&dist(b)))
             .map(|(id, _)| *id)
+    }
+}
+
+/// The rectangles a tab shows: only the zoomed pane when one is zoomed and still here.
+pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f32) -> Vec<(PaneId, Rect)> {
+    match zoomed.filter(|z| layout.panes().contains(z)) {
+        Some(z) => vec![(z, area)],
+        None => layout.rects(area, gap),
     }
 }
 
@@ -282,6 +334,36 @@ mod tests {
         l.split(1, Axis::Row, 2);
         assert_eq!(l.rect_of(2, AREA, 1.0), Some(r(51.0, 0.0, 50.0, 51.0)));
         assert_eq!(l.rect_of(9, AREA, 1.0), None);
+    }
+
+    #[test]
+    fn even_resets_every_split() {
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        l.set_ratio(&[], 0.2);
+        l.even();
+        assert_eq!(l.rects(AREA, 1.0)[0].1.w, 50.0);
+    }
+
+    #[test]
+    fn nudge_moves_the_divider_next_to_the_pane() {
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        assert!(l.nudge(1, Dir::Right, 0.1));
+        assert_eq!(l.rects(AREA, 1.0)[0].1.w, 60.0);
+        assert!(l.nudge(2, Dir::Left, 0.2));
+        assert_eq!(l.rects(AREA, 1.0)[0].1.w, 40.0);
+        assert!(!l.nudge(1, Dir::Up, 0.1), "no horizontal divider to move");
+    }
+
+    #[test]
+    fn closing_the_zoomed_pane_unzooms() {
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        assert_eq!(visible_rects(&l, Some(2), AREA, 1.0), vec![(2, AREA)]);
+        l.remove(2);
+        // The zoomed pane is gone: the tab shows what is left.
+        assert_eq!(visible_rects(&l, Some(2), AREA, 1.0), vec![(1, AREA)]);
     }
 
     #[test]

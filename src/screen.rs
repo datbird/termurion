@@ -7,7 +7,7 @@ use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::{Config, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
+use alacritty_terminal::vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, Processor};
 
 use crate::mouse::{Modes, Tracking};
 use crate::palette::Palette;
@@ -157,6 +157,34 @@ impl Screen {
         reply
     }
 
+    /// The whole buffer as text, oldest line first, trailing spaces trimmed.
+    pub fn all_text(&self) -> String {
+        let grid = self.term.grid();
+        let top = -(grid.history_size() as i32);
+        let mut out = String::new();
+        for line in top..grid.screen_lines() as i32 {
+            let row = &grid[Line(line)];
+            let text: String = (0..grid.columns()).map(|c| row[Column(c)].c).collect();
+            out.push_str(text.trim_end());
+            out.push('\n');
+        }
+        let trimmed = out.trim_end_matches('\n').len();
+        out.truncate(trimmed);
+        out.push('\n');
+        out
+    }
+
+    /// iTerm2's Clear Scrollback Buffer (`scrollback_only`) or Clear Buffer (everything).
+    pub fn clear(&mut self, scrollback_only: bool) {
+        // Clearing the screen pushes its lines into scrollback (xterm behavior), so clear
+        // the screen first, then the scrollback.
+        if !scrollback_only {
+            self.term.clear_screen(ClearMode::All);
+            self.term.goto(0, 0);
+        }
+        self.term.clear_screen(ClearMode::Saved);
+    }
+
     pub fn mouse_modes(&self) -> Modes {
         let mode = self.term.mode();
         let tracking = if mode.contains(TermMode::MOUSE_MOTION) {
@@ -237,6 +265,30 @@ mod tests {
         p.set("Cursor Type", toml::Value::Integer(0));
         let s = Screen::with_look(80, 24, Palette::default(), Look::from_profile(&p));
         assert_eq!(s.term().renderable_content().cursor.shape, CursorShape::Underline);
+    }
+
+    #[test]
+    fn all_text_includes_scrollback() {
+        let mut s = Screen::new(20, 3);
+        for i in 0..6 {
+            s.feed(format!("line{i}\r\n").as_bytes());
+        }
+        let t = s.all_text();
+        assert!(t.starts_with("line0\nline1\n"), "{t:?}");
+        assert!(t.contains("line5"));
+    }
+
+    #[test]
+    fn clear_scrollback_keeps_the_screen() {
+        let mut s = Screen::new(20, 3);
+        for i in 0..6 {
+            s.feed(format!("line{i}\r\n").as_bytes());
+        }
+        s.clear(true);
+        let t = s.all_text();
+        assert!(!t.contains("line0") && t.contains("line5"), "{t:?}");
+        s.clear(false);
+        assert!(!s.all_text().contains("line5"));
     }
 
     #[test]
