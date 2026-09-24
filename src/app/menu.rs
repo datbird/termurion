@@ -436,6 +436,31 @@ mod install_tests {
     use super::*;
 
     #[test]
+    fn the_pwsh_install_command_allows_scripts_and_quotes_the_path() {
+        let c = pwsh_install_command(std::path::Path::new(r"C:\Users\o'brien\$x\tandem_shell_integration.ps1"));
+        assert!(c.contains("(Get-ExecutionPolicy) -in 'Restricted','AllSigned'"), "{c}");
+        assert!(c.contains("Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force"), "{c}");
+        assert!(c.contains(r"Add-Content $PROFILE '. ''C:\Users\o''''brien\$x\tandem_shell_integration.ps1'''"), "{c}");
+        assert!(c.ends_with('\r'));
+    }
+
+    #[test]
+    fn the_pwsh_install_command_adds_one_line_to_the_profile() {
+        let dir = std::env::temp_dir().join(format!("tandem-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("tandem_shell_integration.ps1");
+        std::fs::write(&script, "$global:TandemLoaded = 1").unwrap();
+        let profile = dir.join("profile.ps1");
+        let cmd = pwsh_install_command(&script).trim_end().to_string();
+        let run = format!("$PROFILE = '{}'; {cmd}; {cmd}; if ($global:TandemLoaded) {{ 'loaded' }}", profile.display());
+        let out = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NoLogo", "-Command", &run]).output().unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).contains("loaded"), "{}", String::from_utf8_lossy(&out.stderr));
+        let text = std::fs::read_to_string(&profile).unwrap();
+        assert_eq!(text.matches("tandem_shell_integration.ps1").count(), 1, "{text}");
+    }
+
+    #[test]
     fn install_command_depends_on_the_shell() {
         assert_eq!(install_plan("pwsh.exe -NoLogo"), Plan::Pwsh);
         assert_eq!(install_plan("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"), Plan::Pwsh);
@@ -467,6 +492,18 @@ pub(super) fn install_plan(cmdline: &str) -> Plan {
     }
 }
 
+/// The command typed into PowerShell: allow local scripts for this user if the policy
+/// blocks them, add one line that loads the script to $PROFILE, and load it now. Paths
+/// go in single quotes, so nothing in them is expanded.
+pub(super) fn pwsh_install_command(script: &std::path::Path) -> String {
+    let q = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    let path = q(&script.display().to_string());
+    let line = q(&format!(". {path}"));
+    format!(
+        "if ((Get-ExecutionPolicy) -in 'Restricted','AllSigned') {{ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force }}; if (!(Test-Path $PROFILE)) {{ New-Item -ItemType File -Force $PROFILE | Out-Null }}; if (!(Select-String -Quiet -SimpleMatch 'tandem_shell_integration.ps1' $PROFILE)) {{ Add-Content $PROFILE {line} }}; . {path}\r"
+    )
+}
+
 const PWSH_SCRIPT: &str = include_str!("../../resources/shell_integration/tandem_shell_integration.ps1");
 
 fn ask(text: &str) -> bool {
@@ -493,16 +530,13 @@ impl App {
             Plan::Pwsh => {
                 let dir = std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("shell_integration");
                 let path = dir.join("tandem_shell_integration.ps1");
-                if !ask(&format!("Tandem will save its PowerShell script to\n{}\nand add a line that loads it to your PowerShell profile ($PROFILE). Continue?", path.display())) {
+                if !ask(&format!("Tandem will save its PowerShell script to\n{}\nand add a line that loads it to your PowerShell profile ($PROFILE).\n\nIf PowerShell's execution policy blocks scripts (Restricted or AllSigned), Tandem also sets it to RemoteSigned for your user only. Continue?", path.display())) {
                     return;
                 }
                 if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, PWSH_SCRIPT)) {
                     return self.banners.set("install", format!("Could not save {}: {e}", path.display()));
                 }
-                let p = path.display().to_string().replace('\'', "''");
-                format!(
-                    "if (!(Test-Path $PROFILE)) {{ New-Item -ItemType File -Force $PROFILE | Out-Null }}; if (!(Select-String -Quiet -SimpleMatch 'tandem_shell_integration.ps1' $PROFILE)) {{ Add-Content $PROFILE \". '{p}'\" }}; . '{p}'\r"
-                )
+                pwsh_install_command(&path)
             }
         };
         if let Some(pane) = self.focused_pane() {
