@@ -23,6 +23,8 @@ pub struct Mods {
     pub shift: bool,
     pub alt: bool,
     pub ctrl: bool,
+    /// The Win key, standing in for Cmd.
+    pub cmd: bool,
 }
 
 /// Which DEC mouse tracking mode the app turned on.
@@ -167,13 +169,13 @@ mod tests {
 
     #[test]
     fn modifiers_add_bits() {
-        let e = Event { mods: Mods { shift: true, alt: false, ctrl: true }, ..ev(Button::Left, Action::Press, 0, 0) };
+        let e = Event { mods: Mods { shift: true, alt: false, ctrl: true, cmd: false }, ..ev(Button::Left, Action::Press, 0, 0) };
         assert_eq!(encode(SGR_CLICK, e).unwrap(), b"\x1b[<20;1;1M");
     }
 
     #[test]
     fn legacy_release_keeps_modifiers() {
-        let e = Event { mods: Mods { shift: true, alt: false, ctrl: false }, ..ev(Button::Left, Action::Release, 0, 0) };
+        let e = Event { mods: Mods { shift: true, alt: false, ctrl: false, cmd: false }, ..ev(Button::Left, Action::Release, 0, 0) };
         assert_eq!(encode(LEGACY_CLICK, e).unwrap(), vec![0x1b, b'[', b'M', 32 + 3 + 4, 33, 33]);
     }
 

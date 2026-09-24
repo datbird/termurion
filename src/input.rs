@@ -76,7 +76,7 @@ mod tests {
     use super::*;
     use crate::mouse::Tracking;
 
-    const NONE: Mods = Mods { shift: false, alt: false, ctrl: false };
+    const NONE: Mods = Mods { shift: false, alt: false, ctrl: false, cmd: false };
 
     #[test]
     fn clicks_count_up_to_three() {
@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(selection_type(1, NONE), SelectionType::Simple);
         assert_eq!(selection_type(2, NONE), SelectionType::Semantic);
         assert_eq!(selection_type(3, NONE), SelectionType::Lines);
-        assert_eq!(selection_type(1, Mods { ctrl: true, alt: true, shift: false }), SelectionType::Block);
+        assert_eq!(selection_type(1, Mods { ctrl: true, alt: true, shift: false, cmd: false }), SelectionType::Block);
     }
 
     #[test]

@@ -437,10 +437,4 @@ mod tests {
         assert_eq!(rgb_of(&v), [255, 128, 0]);
     }
 
-    #[test]
-    fn cmd_comma_opens_settings() {
-        use crate::keys::{Action, Key, shortcut};
-        use crate::mouse::Mods;
-        assert_eq!(shortcut(&Key::Text(",".into()), Mods { ctrl: true, shift: true, alt: false }), Some(Action::OpenSettings));
-    }
 }

@@ -160,44 +160,26 @@ pub enum Action {
 /// The app shortcut for a key, if any. `key` must be the key with no modifiers
 /// applied (so Ctrl+Shift+T arrives as "t" or "T").
 pub fn shortcut(key: &Key, mods: Mods) -> Option<Action> {
-    let cmd = mods.ctrl && mods.shift && !mods.alt;
-    let cmd_shift = mods.ctrl && mods.shift && mods.alt;
-    let shift_only = mods.shift && !mods.ctrl && !mods.alt;
+    // iTerm2's Cmd chords are Win chords from the menu table (menus.rs). These are the
+    // Windows extras: Ctrl+Shift+C and V, Ctrl+Tab, and Shift+PageUp and PageDown.
+    let ctrl_shift = mods.ctrl && mods.shift && !mods.alt && !mods.cmd;
+    let shift_only = mods.shift && !mods.ctrl && !mods.alt && !mods.cmd;
     let text = match key {
         Key::Text(s) => s.to_lowercase(),
         _ => String::new(),
     };
     Some(match (key, text.as_str()) {
-        (_, "t") if cmd => Action::NewTab,
-        (_, "w") if cmd => Action::ClosePane,
-        (_, "d") if cmd => Action::SplitRight,
-        (_, "d") if cmd_shift => Action::SplitDown,
-        (_, "]") if cmd => Action::NextPane,
-        (_, "[") if cmd => Action::PrevPane,
-        (_, "]") if cmd_shift => Action::NextTab,
-        (_, "[") if cmd_shift => Action::PrevTab,
-        (_, "c") if cmd => Action::Copy,
-        (_, "v") if cmd => Action::Paste,
-        (_, ",") if cmd => Action::OpenSettings,
-        (_, "o") if cmd => Action::OpenProfiles,
-        (_, d) if cmd && d.len() == 1 && matches!(d.as_bytes()[0], b'1'..=b'9') => {
-            Action::SelectTab((d.as_bytes()[0] - b'1') as usize)
-        }
-        (Key::Tab, _) if mods.ctrl && !mods.alt => {
+        (_, "c") if ctrl_shift => Action::Copy,
+        (_, "v") if ctrl_shift => Action::Paste,
+        (Key::Tab, _) if mods.ctrl && !mods.alt && !mods.cmd => {
             if mods.shift {
                 Action::PrevTab
             } else {
                 Action::NextTab
             }
         }
-        (Key::Left, _) if cmd_shift => Action::Focus(Dir::Left),
-        (Key::Right, _) if cmd_shift => Action::Focus(Dir::Right),
-        (Key::Up, _) if cmd_shift => Action::Focus(Dir::Up),
-        (Key::Down, _) if cmd_shift => Action::Focus(Dir::Down),
         (Key::PageUp, _) if shift_only => Action::ScrollPageUp,
         (Key::PageDown, _) if shift_only => Action::ScrollPageDown,
-        (Key::Home, _) if cmd => Action::ScrollTop,
-        (Key::End, _) if cmd => Action::ScrollBottom,
         _ => return None,
     })
 }
@@ -206,12 +188,11 @@ pub fn shortcut(key: &Key, mods: Mods) -> Option<Action> {
 mod tests {
     use super::*;
 
-    const NONE: Mods = Mods { shift: false, alt: false, ctrl: false };
-    const CTRL: Mods = Mods { shift: false, alt: false, ctrl: true };
-    const ALT: Mods = Mods { shift: false, alt: true, ctrl: false };
-    const SHIFT: Mods = Mods { shift: true, alt: false, ctrl: false };
-    const CMD: Mods = Mods { shift: true, alt: false, ctrl: true };
-    const CMD_SHIFT: Mods = Mods { shift: true, alt: true, ctrl: true };
+    const NONE: Mods = Mods { shift: false, alt: false, ctrl: false, cmd: false };
+    const CTRL: Mods = Mods { shift: false, alt: false, ctrl: true, cmd: false };
+    const ALT: Mods = Mods { shift: false, alt: true, ctrl: false, cmd: false };
+    const SHIFT: Mods = Mods { shift: true, alt: false, ctrl: false, cmd: false };
+    const CTRL_SHIFT: Mods = Mods { shift: true, alt: false, ctrl: true, cmd: false };
 
     fn t(s: &str) -> Key {
         Key::Text(s.into())
@@ -261,14 +242,14 @@ mod tests {
     #[test]
     fn altgr_sends_the_typed_character() {
         // German layout: AltGr+Q types @. Windows reports AltGr as Ctrl+Alt.
-        let altgr = Mods { ctrl: true, alt: true, shift: false };
+        let altgr = Mods { ctrl: true, alt: true, shift: false, cmd: false };
         assert_eq!(press("@", "q", "@", altgr), b"@");
         assert_eq!(press("{", "7", "{", altgr), b"{");
     }
 
     #[test]
     fn ctrl_alt_letter_is_still_a_control_key() {
-        let ctrl_alt = Mods { ctrl: true, alt: true, shift: false };
+        let ctrl_alt = Mods { ctrl: true, alt: true, shift: false, cmd: false };
         assert_eq!(press("a", "a", "a", ctrl_alt), b"\x1b\x01");
     }
 
@@ -286,26 +267,12 @@ mod tests {
     }
 
     #[test]
-    fn cmd_shortcuts() {
-        assert_eq!(shortcut(&t("t"), CMD), Some(Action::NewTab));
-        assert_eq!(shortcut(&t("T"), CMD), Some(Action::NewTab));
-        assert_eq!(shortcut(&t("w"), CMD), Some(Action::ClosePane));
-        assert_eq!(shortcut(&t("d"), CMD), Some(Action::SplitRight));
-        assert_eq!(shortcut(&t("d"), CMD_SHIFT), Some(Action::SplitDown));
-        assert_eq!(shortcut(&t("]"), CMD), Some(Action::NextPane));
-        assert_eq!(shortcut(&t("]"), CMD_SHIFT), Some(Action::NextTab));
-        assert_eq!(shortcut(&t("3"), CMD), Some(Action::SelectTab(2)));
-        assert_eq!(shortcut(&t("c"), CMD), Some(Action::Copy));
-        assert_eq!(shortcut(&t("v"), CMD), Some(Action::Paste));
-        assert_eq!(shortcut(&Key::Left, CMD_SHIFT), Some(Action::Focus(Dir::Left)));
+    fn windows_extras() {
+        assert_eq!(shortcut(&t("c"), CTRL_SHIFT), Some(Action::Copy));
+        assert_eq!(shortcut(&t("v"), CTRL_SHIFT), Some(Action::Paste));
         assert_eq!(shortcut(&Key::Tab, CTRL), Some(Action::NextTab));
         assert_eq!(shortcut(&Key::PageUp, SHIFT), Some(Action::ScrollPageUp));
-        assert_eq!(shortcut(&Key::Home, CMD), Some(Action::ScrollTop));
-    }
-
-    #[test]
-    fn cmd_o_opens_profiles() {
-        assert_eq!(shortcut(&t("o"), CMD), Some(Action::OpenProfiles));
+        assert_eq!(shortcut(&t("t"), CTRL_SHIFT), None, "Cmd chords come from the menu table now");
     }
 
     #[test]

@@ -928,7 +928,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
-                self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key() };
+                self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
             }
             WindowEvent::KeyboardInput { event, .. } => self.key(&event, event_loop),
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as f32, position.y as f32),
