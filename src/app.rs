@@ -225,7 +225,7 @@ impl App {
                 }
             } else {
                 self.tabs.remove(t);
-                self.active = self.active.min(self.tabs.len().saturating_sub(1));
+                self.active = active_after_close(self.active, t, self.tabs.len());
             }
         }
         if self.tabs.is_empty() {
@@ -262,6 +262,10 @@ impl App {
     fn focused_pane(&mut self) -> Option<&mut Pane> {
         let id = self.tabs.get(self.active)?.focused;
         self.panes.get_mut(&id)
+    }
+
+    fn pane_rect(&self, id: PaneId) -> Option<Rect> {
+        self.tabs.get(self.active)?.layout.rect_of(id, self.content_area(), GAP)
     }
 
     fn pane_at(&self, x: f32, y: f32) -> Option<(PaneId, Rect)> {
@@ -372,7 +376,7 @@ impl App {
 
     fn mouse_press(&mut self, button: MouseButton) {
         let (x, y) = self.cursor;
-        if let Some(i) = self.tab_rects.iter().position(|r| r.contains(x, y)) {
+        if let Some(i) = tab_hit(&self.tab_rects, self.tabs.len(), x, y) {
             self.active = i;
             return self.redraw();
         }
@@ -436,7 +440,9 @@ impl App {
             }
             Drag::App { pane, button } => {
                 let (x, y) = self.cursor;
-                if let Some((_, rect)) = self.pane_at(x, y).filter(|(id, _)| *id == pane) {
+                // Look the pane up by id: the button may come up outside it, and the app
+                // must still get the release (cell_at clamps to the pane's edge).
+                if let Some(rect) = self.pane_rect(pane) {
                     let (col, row, _) = self.cell_at(pane, rect, x, y);
                     let p = self.panes.get_mut(&pane).unwrap();
                     let modes = p.screen.mouse_modes();
@@ -456,8 +462,7 @@ impl App {
         match &self.drag {
             Drag::Select { pane } => {
                 let pane = *pane;
-                let area = self.content_area();
-                let Some((_, rect)) = self.tabs[self.active].layout.rects(area, GAP).into_iter().find(|(id, _)| *id == pane) else { return };
+                let Some(rect) = self.pane_rect(pane) else { return };
                 let (col, row, side) = self.cell_at(pane, rect, x, y);
                 let point = self.grid_point(pane, col, row);
                 if let Some(sel) = self.panes.get_mut(&pane).and_then(|p| p.screen.term_mut().selection.as_mut()) {
@@ -489,7 +494,7 @@ impl App {
     }
 
     fn send_motion(&mut self, pane: PaneId, button: Option<Button>, x: f32, y: f32) {
-        let Some((_, rect)) = self.pane_at(x, y).filter(|(id, _)| *id == pane) else { return };
+        let Some(rect) = self.pane_rect(pane) else { return };
         let (col, row, _) = self.cell_at(pane, rect, x, y);
         let p = self.panes.get_mut(&pane).unwrap();
         let modes = p.screen.mouse_modes();
@@ -686,9 +691,11 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
+                // Minimizing reports 0x0. Keep every pty at its size, or ConPTY reflows the screen.
+                let Some((w, h)) = usable_size(size.width, size.height) else { return };
                 if let Some(g) = self.gpu.as_mut() {
-                    g.config.width = size.width.max(1);
-                    g.config.height = size.height.max(1);
+                    g.config.width = w;
+                    g.config.height = h;
                     g.surface.configure(&g.device, &g.config);
                 }
                 self.relayout();
@@ -746,4 +753,51 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, St
     surface.configure(&device, &config);
     let renderer = Renderer::new(&device, &queue, format, FONT, FONT_PX * window.scale_factor() as f32);
     Ok(Gpu { surface, device, queue, config, renderer, instance, window })
+}
+
+/// The active tab index after tab `closed` is removed, leaving `remaining` tabs.
+fn active_after_close(active: usize, closed: usize, remaining: usize) -> usize {
+    let active = if closed < active { active - 1 } else { active };
+    active.min(remaining.saturating_sub(1))
+}
+
+/// The surface size to use, or None while the window is minimized (0 wide or high).
+fn usable_size(w: u32, h: u32) -> Option<(u32, u32)> {
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+/// The tab under (x, y), if it still exists.
+fn tab_hit(rects: &[Rect], tabs: usize, x: f32, y: f32) -> Option<usize> {
+    rects.iter().position(|r| r.contains(x, y)).filter(|i| *i < tabs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_an_earlier_tab_keeps_the_same_tab_active() {
+        // On tab 2 of 3 (index 1), tab index 0 closes: the user stays on the same tab, now index 0.
+        assert_eq!(active_after_close(1, 0, 2), 0);
+        // A later tab closing does not move the user.
+        assert_eq!(active_after_close(0, 2, 2), 0);
+        // The active tab itself closing moves to the one that took its place, or the last one.
+        assert_eq!(active_after_close(2, 2, 2), 1);
+        assert_eq!(active_after_close(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn a_minimized_window_has_no_usable_size() {
+        assert_eq!(usable_size(0, 0), None);
+        assert_eq!(usable_size(800, 0), None);
+        assert_eq!(usable_size(800, 600), Some((800, 600)));
+    }
+
+    #[test]
+    fn a_stale_tab_rect_is_not_a_hit() {
+        let r = |x: f32| Rect { x, y: 0.0, w: 10.0, h: 10.0 };
+        let rects = [r(0.0), r(10.0), r(20.0)];
+        assert_eq!(tab_hit(&rects, 3, 25.0, 5.0), Some(2));
+        assert_eq!(tab_hit(&rects, 2, 25.0, 5.0), None);
+    }
 }

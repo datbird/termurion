@@ -142,6 +142,10 @@ impl Layout {
         out
     }
 
+    pub fn rect_of(&self, id: PaneId, area: Rect, gap: f32) -> Option<Rect> {
+        self.rects(area, gap).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+    }
+
     pub fn dividers(&self, area: Rect, gap: f32) -> Vec<Divider> {
         fn go(n: &Node, r: Rect, gap: f32, path: &mut Vec<bool>, out: &mut Vec<Divider>) {
             if let Node::Split { axis, ratio, a, b } = n {
@@ -270,6 +274,14 @@ mod tests {
         assert_eq!(l.neighbor(2, Dir::Down, AREA), Some(3));
         assert_eq!(l.neighbor(3, Dir::Up, AREA), Some(2));
         assert_eq!(l.neighbor(1, Dir::Left, AREA), None);
+    }
+
+    #[test]
+    fn rect_of_finds_a_pane_by_id() {
+        let mut l = Layout::new(1);
+        l.split(1, Axis::Row, 2);
+        assert_eq!(l.rect_of(2, AREA, 1.0), Some(r(51.0, 0.0, 50.0, 51.0)));
+        assert_eq!(l.rect_of(9, AREA, 1.0), None);
     }
 
     #[test]

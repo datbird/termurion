@@ -21,3 +21,17 @@ with a note on anything that feels unlike iTerm2.
 
 Not in milestone 1 (later milestones): your iTerm2 profile colors and font, the right-click menu,
 quad-click smart selection, Ctrl-click to open links, the hotkey window, triggers, and tmux -CC.
+
+## Deferred review items for milestone 2
+
+The final review's Critical and Important items are fixed. These smaller items wait:
+
+1. Banners ("Copy failed", "GPU validation error") never clear, no space is reserved for a pane error, and dividers and dimming draw over the banner.
+2. `Pane::pump` drains all waiting output in one go. Heavy output could delay drawing. Add a budget.
+3. The dimming of an unfocused pane leaves its 4 px padding undimmed.
+4. The window title is set on every frame.
+5. A divider drag keeps its path if the layout changes during the drag.
+6. If the GPU offers no sRGB format, colors draw too dark.
+7. The block cursor is one cell wide on a wide character. The divider gap does not scale with the display.
+8. With very many tabs, a tab can get narrower than one cell.
+9. Not in scope yet: IME (CJK typing), focus reporting (DECSET 1004), the right-click menu.
