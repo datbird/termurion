@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 alacritty_terminal = "=0.26.0"
 arboard = "3"
+base64 = "0.22"
 bytemuck = "1"
 egui = "0.36"
 egui-wgpu = "0.36"

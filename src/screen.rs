@@ -76,12 +76,17 @@ fn config(look: Look) -> Config {
 }
 
 pub struct Screen {
-    term: Term<Listener>,
+    pub(crate) term: Term<Listener>,
     parser: Processor,
     events: Receiver<Event>,
     pub palette: Palette,
     title: Option<String>,
     cell_px: (u16, u16),
+    osc: crate::osc::Scanner,
+    pub marks: crate::marks::Marks,
+    pub shell: crate::marks::Shell,
+    /// The profile's Place Prompt at First Column.
+    pub place_prompt_first_column: bool,
 }
 
 impl Screen {
@@ -92,7 +97,23 @@ impl Screen {
     pub fn with_look(cols: usize, rows: usize, palette: Palette, look: Look) -> Self {
         let (tx, events) = mpsc::channel();
         let term = Term::new(config(look), &GridSize { cols, rows }, Listener(tx));
-        Self { term, parser: Processor::new(), events, palette, title: None, cell_px: (0, 0) }
+        Self {
+            term,
+            parser: Processor::new(),
+            events,
+            palette,
+            title: None,
+            cell_px: (0, 0),
+            osc: crate::osc::Scanner::default(),
+            marks: crate::marks::Marks::default(),
+            shell: crate::marks::Shell::default(),
+            place_prompt_first_column: true,
+        }
+    }
+
+    /// A screen with `lines` of scrollback.
+    pub fn with_scrollback(cols: usize, rows: usize, lines: usize) -> Self {
+        Screen::with_look(cols, rows, Palette::default(), Look { scrollback: lines, ..Look::default() })
     }
 
     pub fn set_palette(&mut self, palette: Palette) {
@@ -126,6 +147,21 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // Shell-integration OSCs act where they appear in the stream, so the output is fed in
+        // pieces that end at each one.
+        let events = self.osc.scan(bytes);
+        let mut reply = Vec::new();
+        let mut at = 0;
+        for (end, osc) in events {
+            reply.extend(self.feed_raw(&bytes[at..end]));
+            at = end;
+            self.apply(osc);
+        }
+        reply.extend(self.feed_raw(&bytes[at..]));
+        reply
+    }
+
+    pub(crate) fn feed_raw(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.parser.advance(&mut self.term, bytes);
         let mut reply = Vec::new();
         while let Ok(event) = self.events.try_recv() {
