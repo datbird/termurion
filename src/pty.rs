@@ -2,6 +2,7 @@
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::AsRawHandle;
 use std::ptr::{null, null_mut};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
@@ -10,12 +11,13 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{COORD, HPCON};
+use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
     GetExitCodeProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW, UpdateProcThreadAttribute, WaitForSingleObject,
+    STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::conpty::Api;
@@ -27,7 +29,15 @@ pub struct Pty {
     process: HANDLE,
     output: Receiver<Vec<u8>>,
     reader: Option<JoinHandle<()>>,
+    reader_done: Receiver<()>,
 }
+
+/// How long Drop waits for ConPTY to close the output pipe before it ends the child.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
+
+// SAFETY: the raw handles are process-wide kernel handles, valid on any thread. Pty is
+// not Sync, so only one thread uses them at a time.
+unsafe impl Send for Pty {}
 
 fn os_err(what: &str) -> String {
     format!("{what} failed: {}", std::io::Error::last_os_error())
@@ -39,8 +49,8 @@ fn coord(cols: u16, rows: u16) -> COORD {
 
 pub fn spawn(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<Pty, String> {
     let (hpc, input, output, process) = unsafe { start(api, cmdline, cols, rows)? };
-    let (rx, reader) = start_reader(output);
-    Ok(Pty { api: api.clone(), hpc, input, process, output: rx, reader: Some(reader) })
+    let (rx, reader_done, reader) = start_reader(output);
+    Ok(Pty { api: api.clone(), hpc, input, process, output: rx, reader: Some(reader), reader_done })
 }
 
 /// Creates the pseudoconsole and the child. Returns (pseudoconsole, our input
@@ -127,8 +137,9 @@ unsafe fn start(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<(HPCON
 }
 
 /// Drains ConPTY output on its own thread, so ConPTY never blocks on a full pipe.
-fn start_reader(output: HANDLE) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
+fn start_reader(output: HANDLE) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     // HANDLE is a raw pointer and not Send. The thread owns this handle from here on.
     let raw = output as usize;
     let reader = std::thread::spawn(move || {
@@ -142,8 +153,9 @@ fn start_reader(output: HANDLE) -> (Receiver<Vec<u8>>, JoinHandle<()>) {
             }
         }
         unsafe { CloseHandle(output) };
+        let _ = done_tx.send(());
     });
-    (rx, reader)
+    (rx, done_rx, reader)
 }
 
 impl Pty {
@@ -214,6 +226,25 @@ impl Pty {
     }
 }
 
+impl Pty {
+    /// The Windows copy of ConPTY can ignore the close (milestone 0 results), so the
+    /// output pipe never ends. End the child, then cancel the reader's blocked read until
+    /// the reader exits. Returns false if it never does.
+    fn force_reader_stop(&self, reader: &JoinHandle<()>) -> bool {
+        eprintln!("tandem: ConPTY ignored the close; ending the child");
+        unsafe { TerminateProcess(self.process, 1) };
+        let thread = reader.as_raw_handle() as HANDLE;
+        for _ in 0..50 {
+            // A cancel only hits a read in progress, so repeat it until the reader is out.
+            unsafe { CancelSynchronousIo(thread) };
+            if self.reader_done.recv_timeout(Duration::from_millis(20)).is_ok() {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 impl Drop for Pty {
     fn drop(&mut self) {
         // Closing the pseudoconsole ends the child and closes the output pipe. The
@@ -221,11 +252,16 @@ impl Drop for Pty {
         unsafe {
             (self.api.close)(self.hpc);
             CloseHandle(self.input);
-            CloseHandle(self.process);
         }
         if let Some(reader) = self.reader.take() {
+            if self.reader_done.recv_timeout(CLOSE_WAIT).is_err() && !self.force_reader_stop(&reader) {
+                eprintln!("tandem: the pty reader did not stop; leaving it running");
+                unsafe { CloseHandle(self.process) };
+                return;
+            }
             let _ = reader.join();
         }
+        unsafe { CloseHandle(self.process) };
     }
 }
 
@@ -294,7 +330,7 @@ mod tests {
     fn reader_survives_a_zero_byte_write() {
         let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
         assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
-        let (rx, reader) = start_reader(r);
+        let (rx, _done, reader) = start_reader(r);
         let mut n = 0u32;
         unsafe {
             WriteFile(w, b"".as_ptr(), 0, &mut n, null_mut());
@@ -304,6 +340,27 @@ mod tests {
         reader.join().unwrap();
         let got: Vec<u8> = rx.try_iter().flatten().collect();
         assert_eq!(got, b"x");
+    }
+
+    #[test]
+    fn pty_can_move_to_another_thread() {
+        // Milestone 1 closes panes off the UI thread.
+        fn assert_send<T: Send>() {}
+        assert_send::<Pty>();
+    }
+
+    #[test]
+    fn inbox_drop_after_early_resize_is_bounded() {
+        // The Windows copy loses the close if a resize arrives while it starts (about 1 run
+        // in 8, milestone 0 results). Drop must still return.
+        let api = conpty::load(&Source::Inbox).unwrap();
+        for run in 0..20 {
+            let p = spawn(&api, "cmd.exe /q /k", 80, 24).unwrap();
+            p.resize(120, 40).unwrap();
+            let start = Instant::now();
+            drop(p);
+            assert!(start.elapsed() < secs(5), "run {run}: drop took {:?}", start.elapsed());
+        }
     }
 
     #[test]
