@@ -120,6 +120,17 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
     .map(unique)
 }
 
+/// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
+/// keys Tandem's global schema knows. Other keys are left out.
+pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
+    let root = plist::Value::from_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
+    Ok(crate::schema::global()
+        .iter()
+        .filter_map(|s| Some((s.key.clone(), from_plist(dict.get(&s.key)?)?)))
+        .collect())
+}
+
 pub fn from_file(path: &Path) -> Result<Vec<Profile>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     match path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
@@ -132,6 +143,22 @@ pub fn from_file(path: &Path) -> Result<Vec<Profile>, String> {
 mod tests {
     use super::*;
     use crate::palette::rgb;
+
+    #[test]
+    fn imports_global_keys_only() {
+        let path = std::env::temp_dir().join(format!("tandem-import-globals-{}.plist", std::process::id()));
+        std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>GlobalKeyMap</key><dict><key>0x61-0x100000</key><dict><key>Action</key><integer>13</integer><key>Text</key><string></string></dict></dict>
+  <key>LeftCommand</key><integer>11</integer>
+  <key>NSWindow Frame</key><string>0 0 10 10</string>
+</dict></plist>"#).unwrap();
+        let mut got = globals_from_file(&path).unwrap();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["GlobalKeyMap", "LeftCommand"]);
+        assert_eq!(got[1].1.as_integer(), Some(11));
+        assert_eq!(got[0].1["0x61-0x100000"]["Action"].as_integer(), Some(13));
+    }
 
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -91,10 +91,39 @@ pub fn find(key: &str) -> Option<&'static Setting> {
     profile().iter().find(|s| s.key == key)
 }
 
+/// Global settings (iTerm2 user defaults), from schema/global.toml.
+pub fn global() -> &'static [Setting] {
+    static SETTINGS: OnceLock<Vec<Setting>> = OnceLock::new();
+    SETTINGS.get_or_init(|| {
+        toml::from_str::<File>(include_str!("../schema/global.toml"))
+            .expect("schema/global.toml must parse; the globals tests check it")
+            .setting
+    })
+}
+
+pub fn find_global(key: &str) -> Option<&'static Setting> {
+    global().iter().find(|s| s.key == key)
+}
+
+/// True when a setting's default has the shape its kind needs.
+pub fn default_fits(s: &Setting) -> bool {
+    let Some(d) = &s.default else { return true };
+    match s.kind {
+        Kind::Bool => d.is_bool(),
+        Kind::Int => d.is_integer(),
+        Kind::Float => d.is_float() || d.is_integer(),
+        Kind::String | Kind::Font => d.is_str(),
+        Kind::Color => d.as_table().is_some_and(|t| ["r", "g", "b"].iter().all(|c| t.get(*c).is_some_and(|v| v.is_float() || v.is_integer()))),
+        Kind::Enum => s.choices.is_empty() || s.choices.iter().any(|c| &c.value == d),
+        Kind::List => d.is_array(),
+        Kind::Dict => d.is_table(),
+        Kind::Data => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use toml::Value;
 
     #[test]
     fn loads_every_setting() {
@@ -119,21 +148,8 @@ mod tests {
     #[test]
     fn defaults_match_their_kind() {
         for s in profile() {
-            let Some(d) = &s.default else { continue };
-            let ok = match s.kind {
-                Kind::Bool => d.is_bool(),
-                Kind::Int => d.is_integer(),
-                Kind::Float => d.is_float() || d.is_integer(),
-                Kind::String | Kind::Font => d.is_str(),
-                Kind::Color => d.as_table().is_some_and(|t| ["r", "g", "b"].iter().all(|c| t.get(*c).is_some_and(|v| v.is_float() || v.is_integer()))),
-                Kind::Enum => s.choices.is_empty() || s.choices.iter().any(|c| &c.value == d),
-                Kind::List => d.is_array(),
-                Kind::Dict => d.is_table(),
-                Kind::Data => true,
-            };
-            assert!(ok, "{}: default {d:?} does not fit {:?}", s.key, s.kind);
+            assert!(default_fits(s), "{}: default {:?} does not fit {:?}", s.key, s.default, s.kind);
         }
-        let _ = Value::Boolean(true);
     }
 
     #[test]

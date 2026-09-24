@@ -1,0 +1,233 @@
+# Tandem global setting schema (iTerm2 user defaults), same shape as schema/profile.toml.
+# Defaults are iTerm2's, from sources/Settings/iTermPreferences.m (defaultValueMap).
+# Milestone 3b covers the Keys and Pointer panes; milestone 13 completes the rest.
+
+[[setting]]
+key = "GlobalKeyMap"
+tab = "Keys"
+section = "Key Bindings"
+label = "Key bindings"
+type = "dict"
+default = {}
+default_note = "The factory map is iTerm2's DefaultGlobalKeyMap.plist (schema/keymaps.toml [global])."
+help = "Global keystroke to action bindings."
+
+[[setting]]
+key = "Leader"
+tab = "Keys"
+section = "Key Bindings"
+label = "Leader"
+type = "string"
+default = ""
+help = "A prefix keystroke; bindings made after it need the leader first, tmux-prefix style."
+
+[[setting]]
+key = "LanguageAgnosticKeyBindings"
+tab = "Keys"
+section = "Key Bindings"
+label = "Interpret key bindings based on physical key, ignoring input language"
+type = "bool"
+default = false
+help = "Matches key bindings by physical key position instead of by the character the input language produces."
+
+[[setting]]
+key = "SwitchTabModifier"
+tab = "Keys"
+section = "Navigation Shortcuts"
+label = "Shortcut to select a tab"
+type = "enum"
+default = 4
+choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
+help = "Modifier held with a number key to switch to tab N."
+
+[[setting]]
+key = "SwitchPaneModifier"
+tab = "Keys"
+section = "Navigation Shortcuts"
+label = "Shortcut to choose a split pane"
+type = "enum"
+default = 9
+choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
+help = "Modifier held with a number key to jump to split pane N."
+
+[[setting]]
+key = "SwitchWindowModifier"
+tab = "Keys"
+section = "Navigation Shortcuts"
+label = "Shortcut to activate a window"
+type = "enum"
+default = 6
+choices = [ { value = 9, label = "No Shortcut" }, { value = 5, label = "Alt+Number" }, { value = 4, label = "Win+Number" }, { value = 6, label = "Win+Alt+Number" }, { value = 1, label = "Ctrl+Number" } ]
+help = "Modifier held with a number key to switch to window N."
+
+[[setting]]
+key = "UseVirtualKeyCodesForDetectingDigits"
+tab = "Keys"
+section = "Navigation Shortcuts"
+label = "Emulate U.S. Keyboard"
+type = "bool"
+default = false
+help = "Number shortcuts use the U.S. positions of the digit keys, whatever the input layout."
+
+[[setting]]
+key = "LeftControl"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Remap left Control key to"
+type = "enum"
+default = 11
+choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
+help = "What the physical left Control key acts as."
+
+[[setting]]
+key = "RightControl"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Remap right Control key to"
+type = "enum"
+default = 12
+choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
+help = "What the physical right Control key acts as."
+
+[[setting]]
+key = "LeftOption"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Remap left Alt key to"
+type = "enum"
+default = 2
+choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
+help = "What the physical left Alt (Option) key acts as."
+
+[[setting]]
+key = "RightOption"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Remap right Alt key to"
+type = "enum"
+default = 3
+choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
+help = "What the physical right Alt (Option) key acts as."
+
+[[setting]]
+key = "LeftCommand"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Remap left Win key to"
+type = "enum"
+default = 7
+choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
+help = "What the physical left Win (Command) key acts as."
+
+[[setting]]
+key = "RightCommand"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Remap right Win key to"
+type = "enum"
+default = 8
+choices = [ { value = 11, label = "Left Control" }, { value = 12, label = "Right Control" }, { value = 2, label = "Left Alt" }, { value = 3, label = "Right Alt" }, { value = 7, label = "Left Win" }, { value = 8, label = "Right Win" }, { value = 9, label = "None" } ]
+help = "What the physical right Win (Command) key acts as."
+
+[[setting]]
+key = "FunctionKey"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Remap fn key to"
+type = "enum"
+default = 10
+choices = [ { value = 10, label = "Function" } ]
+macos_only = true
+help = "Windows cannot see the fn key."
+
+[[setting]]
+key = "RemapModifiersGlobally"
+tab = "Keys"
+section = "Remap Modifiers"
+label = "Remap modifiers globally"
+type = "bool"
+default = true
+help = "iTerm2 applies the remapping only while it is the active app either way; Tandem does the same."
+
+[[setting]]
+key = "CommandSelection"
+tab = "Pointer"
+section = "General"
+label = "Win-click opens filename/URL"
+type = "bool"
+default = true
+help = "Win-click opens the clicked path or URL (Semantic History, milestone 4)."
+
+[[setting]]
+key = "PassOnControlClick"
+tab = "Pointer"
+section = "General"
+label = "Ctrl-click reported to apps, does not open menu"
+type = "bool"
+default = false
+help = "A Ctrl-click goes to a mouse-reporting app instead of opening the context menu."
+
+[[setting]]
+key = "ReportRightClick"
+tab = "Pointer"
+section = "General"
+label = "Right click reported to apps, does not open menu"
+type = "bool"
+default = false
+help = "A right click goes to a mouse-reporting app instead of running its binding."
+
+[[setting]]
+key = "OptionClickMovesCursor"
+tab = "Pointer"
+section = "General"
+label = "Alt-click moves cursor"
+type = "bool"
+default = true
+help = "An Alt-click moves the cursor to the clicked cell with arrow keys."
+
+[[setting]]
+key = "ThreeFingerEmulates"
+tab = "Pointer"
+section = "General"
+label = "Three-finger tap emulates middle click"
+type = "bool"
+default = false
+macos_only = true
+help = "macOS trackpad gesture; Windows keeps three-finger gestures for itself."
+
+[[setting]]
+key = "FocusFollowsMouse"
+tab = "Pointer"
+section = "General"
+label = "Focus follows mouse"
+type = "bool"
+default = false
+help = "The pane under the pointer takes keyboard focus without a click."
+
+[[setting]]
+key = "FocusOnRightOrMiddleClick"
+tab = "Pointer"
+section = "General"
+label = "Focus window after right or middle click"
+type = "bool"
+default = false
+help = "A right or middle click also focuses the clicked pane."
+
+[[setting]]
+key = "ReportHorizontalScrollEvents"
+tab = "Pointer"
+section = "General"
+label = "Mouse reporting supports horizontal scrolling"
+type = "bool"
+default = true
+help = "Horizontal wheel movement goes to mouse-reporting apps."
+
+[[setting]]
+key = "PointerActions"
+tab = "Pointer"
+section = "Bindings"
+label = "Pointer bindings"
+type = "dict"
+default = {}
+default_note = "The factory bindings are iTerm2's DefaultPointerActions.plist (schema/keymaps.toml [pointer])."
+help = "Mouse button and click count bindings."
