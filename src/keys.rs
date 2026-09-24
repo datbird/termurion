@@ -1,5 +1,6 @@
-//! Turns key presses into the bytes a terminal app expects, and maps iTerm2's
-//! Cmd shortcuts (Cmd is Ctrl+Shift, Cmd+Shift is Ctrl+Shift+Alt).
+//! Turns key presses into the bytes a terminal app expects, with the profile's Keys
+//! options (Option Key Sends, Treat Option as Alt, Application Keypad), and the
+//! Windows-only shortcuts. iTerm2's Cmd chords are Win chords (menus.rs, winkeys.rs).
 
 use crate::layout::Dir;
 use crate::mouse::Mods;
@@ -28,9 +29,35 @@ fn has_mods(m: Mods) -> bool {
     m.shift || m.alt || m.ctrl
 }
 
-/// xterm's modifier parameter: 1 + shift + 2*alt + 4*ctrl.
-fn mod_param(m: Mods) -> u8 {
-    1 + m.shift as u8 + 2 * m.alt as u8 + 4 * m.ctrl as u8
+/// How Alt changes a key: iTerm2's Option Key Sends (0 Normal, 1 Meta, 2 Esc+), and the
+/// value Alt adds to xterm's modifier parameter (2 as Alt, 8 as Meta).
+#[derive(Clone, Copy)]
+struct Enc {
+    alt_sends: i64,
+    alt_param: u8,
+}
+
+const XTERM: Enc = Enc { alt_sends: 2, alt_param: 2 };
+
+/// xterm's modifier parameter: 1 + shift + 2*alt (8 with Meta semantics) + 4*ctrl.
+fn mod_param(m: Mods, e: Enc) -> u8 {
+    1 + m.shift as u8 + e.alt_param * m.alt as u8 + 4 * m.ctrl as u8
+}
+
+/// Applies Option Key Sends to the bytes of a key pressed with Alt.
+fn with_alt(mut v: Vec<u8>, mods: Mods, e: Enc) -> Vec<u8> {
+    if mods.alt {
+        match e.alt_sends {
+            0 => {}
+            1 => {
+                if let Some(b) = v.first_mut() {
+                    *b |= 0x80;
+                }
+            }
+            _ => v.insert(0, 0x1b),
+        }
+    }
+    v
 }
 
 fn ctrl_byte(c: char) -> Option<u8> {
@@ -48,9 +75,9 @@ fn ctrl_byte(c: char) -> Option<u8> {
     }
 }
 
-fn tilde(code: u8, mods: Mods) -> Vec<u8> {
+fn tilde(code: u8, mods: Mods, e: Enc) -> Vec<u8> {
     if has_mods(mods) {
-        format!("\x1b[{code};{}~", mod_param(mods)).into_bytes()
+        format!("\x1b[{code};{}~", mod_param(mods, e)).into_bytes()
     } else {
         format!("\x1b[{code}~").into_bytes()
     }
@@ -58,12 +85,11 @@ fn tilde(code: u8, mods: Mods) -> Vec<u8> {
 
 /// The bytes for a key press, or None if the key sends nothing.
 pub fn encode(key: &Key, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
-    let alt_prefix = |mut v: Vec<u8>| {
-        if mods.alt {
-            v.insert(0, 0x1b);
-        }
-        v
-    };
+    encode_with(key, mods, app_cursor, XTERM)
+}
+
+fn encode_with(key: &Key, mods: Mods, app_cursor: bool, e: Enc) -> Option<Vec<u8>> {
+    let alt_prefix = |v: Vec<u8>| with_alt(v, mods, e);
     Some(match key {
         Key::Text(s) if s.is_empty() => return None,
         Key::Text(s) => {
@@ -88,26 +114,26 @@ pub fn encode(key: &Key, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
                 _ => 'F',
             };
             if has_mods(mods) {
-                format!("\x1b[1;{}{c}", mod_param(mods)).into_bytes()
+                format!("\x1b[1;{}{c}", mod_param(mods, e)).into_bytes()
             } else if app_cursor {
                 format!("\x1bO{c}").into_bytes()
             } else {
                 format!("\x1b[{c}").into_bytes()
             }
         }
-        Key::PageUp => tilde(5, mods),
-        Key::PageDown => tilde(6, mods),
-        Key::Insert => tilde(2, mods),
-        Key::Delete => tilde(3, mods),
+        Key::PageUp => tilde(5, mods, e),
+        Key::PageDown => tilde(6, mods, e),
+        Key::Insert => tilde(2, mods, e),
+        Key::Delete => tilde(3, mods, e),
         Key::F(n @ 1..=4) => {
             let c = ['P', 'Q', 'R', 'S'][(*n - 1) as usize];
             if has_mods(mods) {
-                format!("\x1b[1;{}{c}", mod_param(mods)).into_bytes()
+                format!("\x1b[1;{}{c}", mod_param(mods, e)).into_bytes()
             } else {
                 format!("\x1bO{c}").into_bytes()
             }
         }
-        Key::F(n @ 5..=12) => tilde([15, 17, 18, 19, 20, 21, 23, 24][(*n - 5) as usize], mods),
+        Key::F(n @ 5..=12) => tilde([15, 17, 18, 19, 20, 21, 23, 24][(*n - 5) as usize], mods, e),
         Key::F(_) => return None,
     })
 }
@@ -118,6 +144,76 @@ pub fn encode(key: &Key, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
 /// wins, except when Ctrl makes a control code. Windows reports AltGr as Ctrl+Alt;
 /// it is AltGr when the text differs from the base key.
 pub fn press_bytes(key: &Key, base: Option<&Key>, text: Option<&str>, mods: Mods, app_cursor: bool) -> Option<Vec<u8>> {
+    let xterm = KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false };
+    press_bytes_with(key, base, text, mods, AltSide::Left, app_cursor, false, false, &xterm)
+}
+
+/// Which Alt key is down; each side has its own Option Key Sends setting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AltSide {
+    Left,
+    Right,
+}
+
+/// The profile's Keys options that change what a key sends.
+#[derive(Clone, Copy, Debug)]
+pub struct KeyOptions {
+    /// Option Key Sends: 0 Normal, 1 Meta (high bit), 2 Esc+.
+    pub left_option: i64,
+    pub right_option: i64,
+    /// Treat Option as Alt: Alt counts 2 in xterm's modifier parameter; off, it counts 8 (Meta).
+    pub option_is_alt: bool,
+    /// Application Keypad Allowed: apps may put the keypad in application mode.
+    pub app_keypad_allowed: bool,
+}
+
+impl KeyOptions {
+    pub fn from_profile(p: &crate::profile::Profile) -> KeyOptions {
+        let left = p.int("Option Key Sends");
+        // A missing right-side setting follows the left one (PTYSession).
+        let right = p.values.get("Right Option Key Sends").and_then(|v| v.as_integer()).unwrap_or(left);
+        KeyOptions { left_option: left, right_option: right, option_is_alt: p.bool("Treat Option as Alt"), app_keypad_allowed: p.bool("Application Keypad Allowed") }
+    }
+}
+
+/// The SS3 final byte for a keypad key in application keypad mode (VT100Output keypadDataForString:).
+fn keypad_code(key: &Key) -> Option<char> {
+    Some(match key {
+        Key::Enter => 'M',
+        Key::Text(s) => match s.as_str() {
+            "0" => 'p', "1" => 'q', "2" => 'r', "3" => 's', "4" => 't', "5" => 'u', "6" => 'v', "7" => 'w',
+            "8" => 'x', "9" => 'y', "-" => 'm', "+" => 'k', "." => 'n', "/" => 'o', "*" => 'j', "=" => 'X',
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// `press_bytes` with the profile's Keys options. `keypad` is a key on the numeric keypad,
+/// and `app_keypad` is the terminal's application keypad mode (DECKPAM).
+#[allow(clippy::too_many_arguments)]
+pub fn press_bytes_with(
+    key: &Key,
+    base: Option<&Key>,
+    text: Option<&str>,
+    mods: Mods,
+    side: AltSide,
+    app_cursor: bool,
+    app_keypad: bool,
+    keypad: bool,
+    opts: &KeyOptions,
+) -> Option<Vec<u8>> {
+    let alt_sends = match side {
+        AltSide::Left => opts.left_option,
+        AltSide::Right => opts.right_option,
+    };
+    let e = Enc { alt_sends, alt_param: if opts.option_is_alt { 2 } else { 8 } };
+    if keypad && app_keypad && opts.app_keypad_allowed {
+        if let Some(c) = keypad_code(key) {
+            let m = if has_mods(mods) { mod_param(mods, e).to_string() } else { String::new() };
+            return Some(format!("\x1bO{m}{c}").into_bytes());
+        }
+    }
     let typed = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
     if let (Key::Text(_), Some(t)) = (key, typed) {
         let altgr = mods.ctrl && mods.alt && base != Some(&Key::Text(t.to_lowercase()));
@@ -125,14 +221,28 @@ pub fn press_bytes(key: &Key, base: Option<&Key>, text: Option<&str>, mods: Mods
             return Some(t.as_bytes().to_vec());
         }
         if !mods.ctrl {
-            let mut bytes = t.as_bytes().to_vec();
-            if mods.alt {
-                bytes.insert(0, 0x1b);
-            }
-            return Some(bytes);
+            return Some(with_alt(t.as_bytes().to_vec(), mods, e));
         }
     }
-    encode(key, mods, app_cursor)
+    encode_with(key, mods, app_cursor, e)
+}
+
+/// Movement Keys Scroll Outside Interactive Apps: with no modifiers and no alternate
+/// screen, Page Up and Down, Home and End scroll; Up and Down scroll once the session ended.
+pub fn movement_scroll(key: &Key, mods: Mods, alt_screen: bool, exited: bool) -> Option<alacritty_terminal::grid::Scroll> {
+    use alacritty_terminal::grid::Scroll;
+    if has_mods(mods) || mods.cmd || alt_screen {
+        return None;
+    }
+    Some(match key {
+        Key::PageUp => Scroll::PageUp,
+        Key::PageDown => Scroll::PageDown,
+        Key::Home => Scroll::Top,
+        Key::End => Scroll::Bottom,
+        Key::Up if exited => Scroll::Delta(1),
+        Key::Down if exited => Scroll::Delta(-1),
+        _ => return None,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +306,82 @@ mod tests {
 
     fn t(s: &str) -> Key {
         Key::Text(s.into())
+    }
+
+    const OPTS: KeyOptions = KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false };
+
+    fn with(key: Key, text: Option<&str>, mods: Mods, side: AltSide, app_keypad: bool, keypad: bool, o: &KeyOptions) -> Option<Vec<u8>> {
+        let base = match &key {
+            Key::Text(s) => Some(Key::Text(s.to_lowercase())),
+            k => Some(k.clone()),
+        };
+        press_bytes_with(&key, base.as_ref(), text, mods, side, false, app_keypad, keypad, o)
+    }
+
+    #[test]
+    fn option_normal_sends_plain_text() {
+        let o = KeyOptions { left_option: 0, ..OPTS };
+        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Left, false, false, &o), Some(b"b".to_vec()));
+        assert_eq!(with(Key::Backspace, None, ALT, AltSide::Left, false, false, &o), Some(vec![0x7f]));
+    }
+
+    #[test]
+    fn option_meta_sets_the_high_bit() {
+        let o = KeyOptions { left_option: 1, ..OPTS };
+        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Left, false, false, &o), Some(vec![b'b' | 0x80]));
+    }
+
+    #[test]
+    fn option_esc_plus_prefixes_escape() {
+        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Left, false, false, &OPTS), Some(b"\x1bb".to_vec()));
+        assert_eq!(with(t("a"), None, Mods { ctrl: true, ..ALT }, AltSide::Left, false, false, &OPTS), Some(vec![0x1b, 0x01]));
+    }
+
+    #[test]
+    fn each_side_uses_its_own_setting() {
+        let o = KeyOptions { left_option: 0, right_option: 2, ..OPTS };
+        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Right, false, false, &o), Some(b"\x1bb".to_vec()));
+        assert_eq!(with(t("b"), Some("b"), ALT, AltSide::Left, false, false, &o), Some(b"b".to_vec()));
+    }
+
+    #[test]
+    fn meta_style_option_changes_the_modifier_parameter() {
+        let o = KeyOptions { option_is_alt: false, ..OPTS };
+        assert_eq!(with(Key::F(1), None, ALT, AltSide::Left, false, false, &o), Some(b"\x1b[1;9P".to_vec()));
+        assert_eq!(with(Key::F(1), None, ALT, AltSide::Left, false, false, &OPTS), Some(b"\x1b[1;3P".to_vec()));
+        assert_eq!(with(Key::Up, None, Mods { shift: true, ..ALT }, AltSide::Left, false, false, &o), Some(b"\x1b[1;10A".to_vec()));
+    }
+
+    #[test]
+    fn keypad_needs_permission_for_application_mode() {
+        let allowed = KeyOptions { app_keypad_allowed: true, ..OPTS };
+        assert_eq!(with(t("5"), Some("5"), NONE, AltSide::Left, true, true, &allowed), Some(b"\x1bOu".to_vec()));
+        assert_eq!(with(t("5"), Some("5"), NONE, AltSide::Left, true, true, &OPTS), Some(b"5".to_vec()));
+        assert_eq!(with(Key::Enter, None, NONE, AltSide::Left, true, true, &allowed), Some(b"\x1bOM".to_vec()));
+        assert_eq!(with(t("+"), Some("+"), SHIFT, AltSide::Left, true, true, &allowed), Some(b"\x1bO2k".to_vec()));
+        // Application mode off: a keypad digit is just the digit.
+        assert_eq!(with(t("5"), Some("5"), NONE, AltSide::Left, false, true, &allowed), Some(b"5".to_vec()));
+    }
+
+    #[test]
+    fn movement_keys_scroll_only_outside_apps() {
+        use alacritty_terminal::grid::Scroll;
+        assert!(matches!(movement_scroll(&Key::PageUp, NONE, false, false), Some(Scroll::PageUp)));
+        assert!(matches!(movement_scroll(&Key::Home, NONE, false, false), Some(Scroll::Top)));
+        assert!(movement_scroll(&Key::PageUp, NONE, true, false).is_none());
+        assert!(movement_scroll(&Key::PageUp, SHIFT, false, false).is_none());
+        assert!(movement_scroll(&Key::Up, NONE, false, false).is_none());
+        assert!(matches!(movement_scroll(&Key::Up, NONE, false, true), Some(Scroll::Delta(1))));
+    }
+
+    #[test]
+    fn options_read_the_profile() {
+        let mut p = crate::profile::Profile::stock();
+        p.set("Option Key Sends", toml::Value::Integer(2));
+        let o = KeyOptions::from_profile(&p);
+        assert_eq!((o.left_option, o.right_option, o.option_is_alt, o.app_keypad_allowed), (2, 2, true, false));
+        p.set("Right Option Key Sends", toml::Value::Integer(1));
+        assert_eq!(KeyOptions::from_profile(&p).right_option, 1);
     }
 
     fn enc(k: Key, m: Mods) -> Vec<u8> {
