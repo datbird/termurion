@@ -124,6 +124,11 @@ impl Profile {
         parse_font(&self.string(key))
     }
 
+    /// Gives this profile a new Guid.
+    pub fn renew_guid(&mut self) {
+        self.set(GUID, Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
+    }
+
     pub fn guid(&self) -> String {
         self.string(GUID)
     }

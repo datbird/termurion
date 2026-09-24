@@ -107,7 +107,14 @@ pub fn from_plist_bytes(bytes: &[u8]) -> Result<Vec<Profile>, String> {
             Some(Value::Table(t)) => Some(fix_fonts(Profile { values: t.into_iter().collect() })),
             _ => None,
         })
-        .collect())
+        .collect::<Vec<_>>())
+    .map(unique)
+}
+
+/// Imported profiles may lack a Guid or repeat one; give each a unique Guid.
+fn unique(mut list: Vec<Profile>) -> Vec<Profile> {
+    crate::store::ensure_unique_guids(&mut list);
+    list
 }
 
 pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
@@ -119,7 +126,8 @@ pub fn from_dynamic_json(text: &str) -> Result<Vec<Profile>, String> {
             Some(Value::Table(t)) => Some(fix_fonts(Profile { values: t.into_iter().collect() })),
             _ => None,
         })
-        .collect())
+        .collect::<Vec<_>>())
+    .map(unique)
 }
 
 pub fn from_file(path: &Path) -> Result<Vec<Profile>, String> {
@@ -213,6 +221,14 @@ mod tests {
         let p = from_dynamic_json(json).unwrap().remove(0);
         let pal = crate::palette::Palette::from_profile(&p, true);
         assert_eq!(pal.fg, rgb(128, 153, 179));
+    }
+
+    #[test]
+    fn imported_profiles_without_a_guid_get_one() {
+        let json = r#"{"Profiles":[{"Name":"NoId"},{"Name":"AlsoNoId"}]}"#;
+        let list = from_dynamic_json(json).unwrap();
+        assert!(list.iter().all(|p| !p.guid().is_empty()));
+        assert_ne!(list[0].guid(), list[1].guid());
     }
 
     #[test]

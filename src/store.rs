@@ -22,6 +22,18 @@ struct FileFormat {
     profile: Vec<BTreeMap<String, Value>>,
 }
 
+/// Gives a new Guid to any profile with none, or with one an earlier profile already has.
+/// Profiles are found by Guid, so a repeat would make two rows act as one.
+pub fn ensure_unique_guids(profiles: &mut [Profile]) {
+    let mut seen = std::collections::HashSet::new();
+    for p in profiles.iter_mut() {
+        if p.guid().is_empty() || !seen.insert(p.guid()) {
+            p.renew_guid();
+            seen.insert(p.guid());
+        }
+    }
+}
+
 pub fn default_path() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     base.join("Tandem").join("profiles.toml")
@@ -35,7 +47,8 @@ impl Store {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         let file: FileFormat = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-        let profiles: Vec<Profile> = file.profile.into_iter().map(|values| Profile { values }).collect();
+        let mut profiles: Vec<Profile> = file.profile.into_iter().map(|values| Profile { values }).collect();
+        ensure_unique_guids(&mut profiles);
         if profiles.is_empty() {
             return Err(format!("{}: no profiles", path.display()));
         }
@@ -106,12 +119,13 @@ impl Store {
         if self.profiles.len() < 2 {
             return false;
         }
-        let before = self.profiles.len();
-        self.profiles.retain(|p| p.guid() != guid);
+        // Remove exactly one profile. Guids are unique after load, but never delete more than one.
+        let Some(i) = self.profiles.iter().position(|p| p.guid() == guid) else { return false };
+        self.profiles.remove(i);
         if self.default_guid == guid {
             self.default_guid = self.profiles[0].guid();
         }
-        self.profiles.len() < before
+        true
     }
 }
 
@@ -165,6 +179,21 @@ mod tests {
         std::fs::write(&path, "this is [not toml").unwrap();
         let err = Store::load(&path).err().unwrap();
         assert!(err.contains("profiles.toml"), "{err}");
+    }
+
+    #[test]
+    fn duplicate_and_missing_guids_are_made_unique_on_load() {
+        // A hand-copied [[profile]] block repeats a Guid; a hand-written one may have none.
+        let path = scratch("dupes");
+        std::fs::write(&path, "default = \"A\"\n[[profile]]\nGuid = \"A\"\nName = \"one\"\n[[profile]]\nGuid = \"A\"\nName = \"two\"\n[[profile]]\nName = \"three\"\n").unwrap();
+        let mut s = Store::load(&path).unwrap();
+        let ids: std::collections::HashSet<String> = s.profiles.iter().map(|p| p.guid()).collect();
+        assert_eq!(ids.len(), 3);
+        assert!(!ids.contains(""));
+        assert_eq!(s.default_profile().name(), "one");
+        let second = s.profiles[1].guid();
+        assert!(s.delete(&second));
+        assert_eq!(s.profiles.len(), 2);
     }
 
     #[test]
