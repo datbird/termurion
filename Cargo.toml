@@ -6,6 +6,12 @@ publish = false
 
 [dependencies]
 alacritty_terminal = "=0.26.0"
+arboard = "3"
+bytemuck = "1"
+glyphon = "0.12"
+pollster = "0.4"
+wgpu = "30"
+winit = "0.30"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -17,4 +23,5 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }

@@ -18,3 +18,6 @@ pub mod pty;
 
 #[cfg(windows)]
 pub mod pane;
+
+#[cfg(windows)]
+pub mod render;
