@@ -212,6 +212,26 @@ mod tests {
     }
 
     #[test]
+    fn the_pwsh_script_keeps_the_prompt_state() {
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/tandem_shell_integration.ps1");
+        // A prompt that shows the last status, as starship and oh-my-posh do; a failed
+        // command; then the prompt drawn twice with no command between (PSReadLine's
+        // InvokePrompt does that).
+        let body = format!(
+            "function prompt {{ if ($?) {{ 'ok> ' }} else {{ 'fail> ' }} }}; . '{}'; Write-Error x -ErrorAction SilentlyContinue; prompt; prompt; Start-Sleep -Milliseconds 300",
+            script.display()
+        );
+        let mut p = start(&format!("powershell.exe -NoProfile -NoLogo -Command \"{body}\""));
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "powershell did not finish");
+        p.pump();
+        let text = p.screen.all_text();
+        assert!(text.contains("fail>"), "the original prompt lost the failure: {text}");
+        // The second drawing sent no command end, so the first prompt has no code.
+        let marks = p.screen.marks_in_order();
+        assert!(marks.iter().all(|(_, m)| m.code.is_none()), "{marks:?}");
+    }
+
+    #[test]
     fn plain_paste_uses_carriage_returns() {
         assert_eq!(paste_bytes("a\r\nb\nc", false), b"a\rb\rc");
     }

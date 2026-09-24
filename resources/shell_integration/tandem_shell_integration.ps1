@@ -11,6 +11,7 @@ $global:__TandemCount = 0
 $global:__TandemAid = ''
 $global:__TandemFirst = $true
 $global:__TandemRan = $false
+$global:__TandemHistory = (Get-History -Count 1).Id
 $global:__TandemOriginalPrompt = $function:prompt
 
 function global:__TandemOsc([string]$body) {
@@ -38,30 +39,45 @@ function global:prompt {
     $code = 0
     if (-not $ok) { if ($global:LASTEXITCODE) { $code = $global:LASTEXITCODE } else { $code = 1 } }
     $out = ''
-    if (-not $global:__TandemFirst) {
-        # Enter was not pressed (Ctrl+C at the prompt): end the command the way bash does.
-        if (-not $global:__TandemRan) { $out += (__TandemOsc "133;C;aid=$global:__TandemAid") }
-        $out += (__TandemOsc "133;D;$code;aid=$global:__TandemAid")
+    # A command ran since the last prompt when a line was read (PSConsoleHostReadLine below)
+    # or history grew. Otherwise this is the same prompt drawn again (PSReadLine
+    # InvokePrompt): same aid, and no command end.
+    $historyId = (Get-History -Count 1).Id
+    $ran = $global:__TandemRan -or ($historyId -ne $global:__TandemHistory)
+    $global:__TandemHistory = $historyId
+    if ($global:__TandemFirst -or $ran) {
+        if (-not $global:__TandemFirst) {
+            # No line was read (no PSReadLine): mark where output ended, as bash does.
+            if (-not $global:__TandemRan) { $out += (__TandemOsc "133;C;aid=$global:__TandemAid") }
+            $out += (__TandemOsc "133;D;$code;aid=$global:__TandemAid")
+        }
+        $global:__TandemCount++
+        $global:__TandemAid = "$global:__TandemSalt-$global:__TandemCount"
     }
     $global:__TandemFirst = $false
     $global:__TandemRan = $false
-    $global:__TandemCount++
-    $global:__TandemAid = "$global:__TandemSalt-$global:__TandemCount"
     $out += (__TandemLocation)
     # Start the prompt on a fresh line (iTerm2's Place Prompt at First Column; under ConPTY
     # the terminal cannot add the line itself).
     if ($Host.UI.RawUI.CursorPosition.X -gt 0) { $out += "`r`n" }
     $out += (__TandemOsc "133;A;aid=$global:__TandemAid")
-    $original = & $global:__TandemOriginalPrompt
+    # Give the original prompt the failed state, so prompts that show it (starship,
+    # oh-my-posh) still see it.
+    if (-not $ok) { Write-Error 'failed' -ErrorAction Ignore }
+    $original = $global:__TandemOriginalPrompt.Invoke() -join ''
     return $out + $original + (__TandemOsc "133;B;aid=$global:__TandemAid")
 }
 
-# The command starts when Enter accepts the line.
-if (Get-Command Set-PSReadLineKeyHandler -ErrorAction SilentlyContinue) {
-    Set-PSReadLineKeyHandler -Chord Enter -ScriptBlock {
+# The command starts when a line is read: wrap PSReadLine's reader, so the whole line
+# (several lines, or with the cursor mid-line) is the command, and the user's own key
+# bindings stay as they are.
+if (Get-Command PSConsoleHostReadLine -ErrorAction SilentlyContinue) {
+    $global:__TandemOriginalReadLine = $function:PSConsoleHostReadLine
+    function global:PSConsoleHostReadLine {
+        $line = & $global:__TandemOriginalReadLine
         $global:__TandemRan = $true
         [Console]::Write((__TandemOsc "133;C;aid=$global:__TandemAid"))
-        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+        return $line
     }
 }
 
