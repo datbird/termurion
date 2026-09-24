@@ -159,6 +159,20 @@ mod tests {
     }
 
     #[test]
+    fn the_pwsh_script_emits_prompt_marks() {
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/shell_integration/tandem_shell_integration.ps1");
+        // Windows PowerShell 5.1 is on every Windows machine, and is the older of the two
+        // PowerShells the script supports.
+        let cmd = format!("powershell.exe -NoProfile -NoLogo -Command \". '{}'; prompt; Start-Sleep -Milliseconds 300\"", script.display());
+        let mut p = start(&cmd);
+        assert!(pump_until(&mut p, |p| p.exited.is_some()), "pwsh did not finish");
+        p.pump();
+        assert_eq!(p.screen.marks_in_order().len(), 1, "{}", p.screen.all_text());
+        assert!(p.screen.shell.cwd.as_deref().is_some_and(|c| c.contains(':')), "{:?}", p.screen.shell.cwd);
+        assert_eq!(p.screen.shell.shell.as_deref(), Some("powershell"));
+    }
+
+    #[test]
     fn plain_paste_uses_carriage_returns() {
         assert_eq!(paste_bytes("a\r\nb\nc", false), b"a\rb\rc");
     }

@@ -390,6 +390,7 @@ impl App {
                 }
             }
             "saveContents:" | "saveDocumentAs:" => self.save_text(item.selector == "saveDocumentAs:"),
+            "installShellIntegration:" => self.install_shell_integration(),
             "showHelp:" => {
                 let _ = std::process::Command::new("explorer.exe").arg("https://iterm2.com/documentation.html").spawn();
             }
@@ -427,6 +428,87 @@ impl App {
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
         visible_rects(&tab.layout, tab.zoomed, self.content_area(), GAP)
+    }
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+
+    #[test]
+    fn install_command_depends_on_the_shell() {
+        assert_eq!(install_plan("pwsh.exe -NoLogo"), Plan::Pwsh);
+        assert_eq!(install_plan("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"), Plan::Pwsh);
+        assert_eq!(install_plan("wsl.exe -d Ubuntu"), Plan::Curl);
+        assert_eq!(install_plan("C:\\Program Files\\Git\\bin\\bash.exe --login"), Plan::Curl);
+        assert_eq!(install_plan("cmd.exe"), Plan::Unsupported);
+    }
+}
+
+/// How Install Shell Integration sets up a shell.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Plan {
+    /// Tandem's PowerShell script, loaded from $PROFILE.
+    Pwsh,
+    /// iTerm2's own installer, for bash, zsh, and fish (WSL, Git Bash, ssh).
+    Curl,
+    /// cmd.exe and others have no prompt hooks.
+    Unsupported,
+}
+
+pub(super) fn install_plan(cmdline: &str) -> Plan {
+    let c = cmdline.to_lowercase();
+    if c.contains("pwsh") || c.contains("powershell") {
+        Plan::Pwsh
+    } else if ["wsl", "bash", "zsh", "fish", "ssh"].iter().any(|s| c.contains(s)) {
+        Plan::Curl
+    } else {
+        Plan::Unsupported
+    }
+}
+
+const PWSH_SCRIPT: &str = include_str!("../../resources/shell_integration/tandem_shell_integration.ps1");
+
+fn ask(text: &str) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Install Shell Integration").as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
+}
+
+impl App {
+    /// iTerm2 > Install Shell Integration, for the focused pane's shell.
+    fn install_shell_integration(&mut self) {
+        let Some(guid) = self.focused_guid() else { return };
+        let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell);
+        let typed = match install_plan(&cmdline) {
+            Plan::Unsupported => {
+                return info_box("This shell has no prompt hooks, so it cannot have shell integration. Use PowerShell (pwsh), or bash, zsh, or fish in WSL.");
+            }
+            Plan::Curl => {
+                if !ask("Tandem will type iTerm2's installer into this session:\n\ncurl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash\n\nIt adds iTerm2's script to your shell's startup file. Continue?") {
+                    return;
+                }
+                "curl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash\r".to_string()
+            }
+            Plan::Pwsh => {
+                let dir = std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("shell_integration");
+                let path = dir.join("tandem_shell_integration.ps1");
+                if !ask(&format!("Tandem will save its PowerShell script to\n{}\nand add a line that loads it to your PowerShell profile ($PROFILE). Continue?", path.display())) {
+                    return;
+                }
+                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, PWSH_SCRIPT)) {
+                    return self.banners.set("install", format!("Could not save {}: {e}", path.display()));
+                }
+                let p = path.display().to_string().replace('\'', "''");
+                format!(
+                    "if (!(Test-Path $PROFILE)) {{ New-Item -ItemType File -Force $PROFILE | Out-Null }}; if (!(Select-String -Quiet -SimpleMatch 'tandem_shell_integration.ps1' $PROFILE)) {{ Add-Content $PROFILE \". '{p}'\" }}; . '{p}'\r"
+                )
+            }
+        };
+        if let Some(pane) = self.focused_pane() {
+            pane.scroll(Scroll::Bottom);
+            pane.input(typed.as_bytes());
+        }
     }
 }
 

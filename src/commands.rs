@@ -26,7 +26,7 @@ pub const DONE: &[&str] = &[
     "terminalStateToggleAlternateScreen:", "terminalStateToggleFocusReporting:",
     "terminalStateToggleMouseReporting:", "terminalStateTogglePasteBracketing:",
     "terminalStateToggleApplicationCursor:", "terminalStateToggleApplicationKeypad:|Application Keypad",
-    "showBookmarkWindow:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
+    "showBookmarkWindow:", "installShellIntegration:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
     "previousMark:", "clearToLastMark:", "selectOutputOfLastCommand:", "selectCurrentCommand:",
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",
     "enableMarkAlertPostsNotification:", "enableMarkAlertRingsBell:", "performMiniaturize:", "performZoom:", "nextTab:", "previousTab:", "moveTabLeft:",
