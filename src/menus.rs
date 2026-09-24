@@ -139,6 +139,13 @@ pub fn command_for(chord: &Chord) -> Option<&'static Item> {
         .copied()
 }
 
+/// Every command with this chord, in menu order, alternates last.
+pub fn items_for(chord: &Chord) -> Vec<&'static Item> {
+    let commands = items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty());
+    let (normal, alternates): (Vec<_>, Vec<_>) = commands.partition(|i| !i.alternate);
+    normal.into_iter().chain(alternates).filter(|i| i.chord().as_ref() == Some(chord)).collect()
+}
+
 /// "Win+Shift+D": how Windows menus show a chord.
 pub fn chord_label(c: &Chord) -> String {
     let mut parts: Vec<String> = Vec::new();

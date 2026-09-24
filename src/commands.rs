@@ -1,7 +1,7 @@
 //! Which iTerm2 menu commands work in Tandem now, and which milestone brings the rest.
 //! A command owned by a later milestone shows disabled; it never half-works.
 
-use crate::menus::Item;
+use crate::menus::{self, Chord, ChordKey, Item};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -91,6 +91,37 @@ fn owner(item: &Item) -> u8 {
     }
 }
 
+/// iTerm2's right-click menu, by menu item id. An empty entry is a separator.
+pub const CONTEXT: [&str; 12] = [
+    "Edit > Copy",
+    "Edit > Paste",
+    "",
+    "Shell > Split Vertically with Current Profile",
+    "Shell > Split Horizontally with Current Profile",
+    "",
+    "View > Maximize Active Pane",
+    "Edit > Select All",
+    "Edit > Clear Buffer",
+    "",
+    "Session > Edit Session...",
+    "Shell > Close",
+];
+
+/// Extra chords for commands whose iTerm2 chord is awkward on a Windows keyboard:
+/// Cmd+= for Make Text Bigger (iTerm2's is Cmd++, which is Shift+= here).
+const EXTRA_CHORDS: [(Chord, &str); 1] =
+    [(Chord { key: ChordKey::Char('='), cmd: true, alt: false, shift: false, ctrl: false }, "View > Make Text Bigger")];
+
+/// The command a chord runs: the first item in menu order with this chord that works now
+/// (alternates last). None when every item with the chord belongs to a later milestone,
+/// so the keyboard hook leaves the chord to Windows.
+pub fn command_for_chord(chord: &Chord) -> Option<&'static Item> {
+    if let Some((_, id)) = EXTRA_CHORDS.iter().find(|(c, _)| c == chord) {
+        return menus::by_id(id);
+    }
+    menus::items_for(chord).into_iter().find(|i| !matches!(status(i), Status::Later(_)))
+}
+
 pub fn status(item: &Item) -> Status {
     // A partial note wins over DONE: the command runs, and the note says how it differs.
     if let Some((_, note)) = PARTIAL.iter().find(|(sel, _)| item.selector == *sel) {
@@ -134,6 +165,33 @@ mod tests {
     fn dump_statuses() {
         for i in items().iter().filter(|i| !i.separator && !i.submenu && !i.selector.is_empty()) {
             println!("STATUS\t{}\t{:?}", i.id(), status(i));
+        }
+    }
+
+    fn win(key: crate::menus::ChordKey, shift: bool) -> crate::menus::Chord {
+        crate::menus::Chord { key, cmd: true, alt: false, shift, ctrl: false }
+    }
+
+    #[test]
+    fn a_shared_chord_goes_to_the_command_that_works() {
+        // Show Clippings (Shift+Cmd+=) comes first in the menu but arrives in milestone 9;
+        // Make Text Bigger (Cmd++) works now and gets the chord.
+        use crate::menus::ChordKey::Char;
+        assert_eq!(command_for_chord(&win(Char('='), true)).unwrap().selector, "biggerFont:");
+        assert_eq!(command_for_chord(&win(Char('='), false)).unwrap().selector, "biggerFont:");
+    }
+
+    #[test]
+    fn a_chord_for_a_later_milestone_stays_with_windows() {
+        use crate::menus::ChordKey::Char;
+        assert!(command_for_chord(&win(Char('f'), false)).is_none(), "Find is milestone 4");
+        assert_eq!(command_for_chord(&win(Char('t'), false)).unwrap().selector, "newSession:");
+    }
+
+    #[test]
+    fn every_context_menu_id_resolves() {
+        for id in CONTEXT {
+            assert!(id.is_empty() || crate::menus::by_id(id).is_some(), "{id}");
         }
     }
 

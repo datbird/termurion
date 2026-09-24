@@ -27,21 +27,6 @@ const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
     ("Application Keypad", "\x1b=", "\x1b>", TermMode::APP_KEYPAD),
 ];
 
-/// iTerm2's right-click menu, by menu item id. An empty entry is a separator.
-const CONTEXT: [&str; 12] = [
-    "Edit > Copy",
-    "Edit > Paste",
-    "",
-    "Shell > Split Vertically with Current Profile",
-    "Shell > Split Horizontally with Current Profile",
-    "",
-    "View > Maximize Active Pane",
-    "Edit > Select All",
-    "Edit > Clear Buffer",
-    "",
-    "Session > Edit Session...",
-    "Shell > Close",
-];
 
 /// How far one Move Divider command moves a divider, as a share of its split.
 const NUDGE: f32 = 0.05;
@@ -110,7 +95,7 @@ impl App {
         }
 
         let context = Menu::new();
-        for id in CONTEXT {
+        for id in commands::CONTEXT {
             let result = match menus::by_id(id) {
                 None => context.append(&PredefinedMenuItem::separator()),
                 Some(item) => {
@@ -128,9 +113,11 @@ impl App {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(e.id.0));
         }));
         let proxy = self.proxy.clone();
-        if let Err(e) = crate::winkeys::install(hwnd, Box::new(move |c| {
+        let send = Box::new(move |c| {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Chord(c));
-        })) {
+        });
+        let bound = Box::new(|c: &Chord| commands::command_for_chord(c).is_some());
+        if let Err(e) = crate::winkeys::install(hwnd, send, bound) {
             self.banners.set("keys", format!("Win chords are unavailable: {e}"));
         }
         self.menu_bar = Some(MenuBar { _menu: menu, context, checks });
@@ -155,7 +142,7 @@ impl App {
     }
 
     pub(super) fn run_chord(&mut self, chord: &Chord, event_loop: &ActiveEventLoop) {
-        if let Some(item) = menus::command_for(chord) {
+        if let Some(item) = commands::command_for_chord(chord) {
             self.run_command(item, event_loop);
         }
     }

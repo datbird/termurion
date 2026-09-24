@@ -1,8 +1,8 @@
 //! Win chords for Tandem. Windows keeps many Win chords for itself (Win+D, Win+T), so
 //! a low-level keyboard hook takes Win chords while a Tandem window has focus and sends
-//! them to the app as Cmd chords. Win+L is never taken (Windows does not allow it), and
-//! a harmless key is sent before Win comes up, so the Start menu does not open after a
-//! chord Tandem used.
+//! them to the app as Cmd chords. Only chords with an enabled Tandem command are taken;
+//! the rest stay with Windows. Win+L is never taken (Windows does not allow it), and a
+//! harmless key is sent with each taken chord, so the Start menu does not open after it.
 
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -13,7 +13,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, MAPVK_VK_TO_CHAR, MapVirtualKeyW, SendInput,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetForegroundWindow, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN,
+    CallNextHookEx, GetForegroundWindow, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN,
     WM_SYSKEYDOWN,
 };
 
@@ -58,57 +58,76 @@ pub enum Verdict {
     Pass,
     /// Tandem takes the key; on a key down, this is the chord to run.
     Take(Option<Chord>),
-    /// Let Win come up, but first send the mask key so the Start menu stays closed.
-    PassAndMaskStart,
+}
+
+/// One key event as the hook sees it, with the live state of Win and the other modifiers.
+#[derive(Clone, Copy, Debug)]
+pub struct KeyEvent {
+    pub vk: u16,
+    pub down: bool,
+    /// Win is physically down now (read live, so a Win release the hook missed,
+    /// after Win+L for example, cannot stick).
+    pub win_held: bool,
+    /// A Tandem window is in front.
+    pub focused: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub ctrl: bool,
 }
 
 /// The hook's decisions, kept apart from Win32 so they can be tested.
 #[derive(Default)]
 pub struct Gate {
-    win_down: bool,
-    took_any: bool,
+    /// Keys whose key-down Tandem took; their key-ups are taken too.
+    taken: std::collections::HashSet<u16>,
 }
 
 impl Gate {
-    /// `mods` is (shift, alt, ctrl) as held now.
-    pub fn on_key(&mut self, vk: u16, down: bool, foreground_is_tandem: bool, mods: (bool, bool, bool)) -> Verdict {
-        if vk == VK_LWIN || vk == VK_RWIN {
-            self.win_down = down;
-            if !down && std::mem::take(&mut self.took_any) {
-                return Verdict::PassAndMaskStart;
-            }
+    /// `bound` says whether Tandem has an enabled command for a chord. Unbound Win chords
+    /// (Win+Shift+S, snapping, virtual desktops) stay with Windows.
+    pub fn on_key(&mut self, e: KeyEvent, bound: &dyn Fn(&Chord) -> bool) -> Verdict {
+        if e.vk == VK_LWIN || e.vk == VK_RWIN {
             return Verdict::Pass;
+        }
+        if !e.down {
+            return if self.taken.remove(&e.vk) { Verdict::Take(None) } else { Verdict::Pass };
         }
         // Win+L locks the workstation; Windows never lets an app take it.
-        if !self.win_down || !foreground_is_tandem || vk == 0x4C {
+        if !e.win_held || !e.focused || e.vk == 0x4C {
             return Verdict::Pass;
         }
-        let Some(key) = vk_to_key(vk) else { return Verdict::Pass };
-        if !down {
-            return Verdict::Take(None);
+        let Some(key) = vk_to_key(e.vk) else { return Verdict::Pass };
+        let chord = Chord { key, cmd: true, alt: e.alt, shift: e.shift, ctrl: e.ctrl };
+        if !bound(&chord) {
+            return Verdict::Pass;
         }
-        self.took_any = true;
-        let (shift, alt, ctrl) = mods;
-        Verdict::Take(Some(Chord { key, cmd: true, alt, shift, ctrl }))
+        self.taken.insert(e.vk);
+        Verdict::Take(Some(chord))
     }
 }
 
 struct Hook {
     gate: Mutex<Gate>,
     send: Box<dyn Fn(Chord) + Send + Sync>,
+    bound: Box<dyn Fn(&Chord) -> bool + Send + Sync>,
 }
 
 static HOOK: OnceLock<Hook> = OnceLock::new();
 static WINDOW: AtomicIsize = AtomicIsize::new(0);
+/// Marks the mask key Tandem sends, so the hook passes it and nothing else injected.
+/// Other software (a KVM tool such as bumbles) injects real keystrokes; those are handled.
+const MAGIC: usize = 0x5441_4E44;
 
 fn held(vk: i32) -> bool {
     unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
 }
 
+/// Sends a harmless key while Win is down, so Windows does not open the Start menu when
+/// Win comes up after a chord Tandem took (the pattern AutoHotkey uses).
 fn mask_start_menu() {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_MASK, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
+        Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_MASK, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: MAGIC } },
     };
     let inputs = [key(0), key(KEYEVENTF_KEYUP)];
     unsafe { SendInput(2, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
@@ -118,21 +137,23 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code == HC_ACTION as i32 {
         if let Some(h) = HOOK.get() {
             let kb = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-            // Our own mask key (and any other injected key) passes untouched.
-            if kb.flags & LLKHF_INJECTED == 0 {
-                let down = wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN;
-                let focused = unsafe { GetForegroundWindow() } as isize == WINDOW.load(Ordering::Relaxed);
-                let mods = (held(0x10), held(0x12), held(0x11));
-                let verdict = h.gate.lock().unwrap().on_key(kb.vkCode as u16, down, focused, mods);
-                match verdict {
-                    Verdict::Pass => {}
-                    Verdict::PassAndMaskStart => mask_start_menu(),
-                    Verdict::Take(chord) => {
-                        if let Some(c) = chord {
-                            (h.send)(c);
-                        }
-                        return 1;
+            if kb.dwExtraInfo != MAGIC {
+                let e = KeyEvent {
+                    vk: kb.vkCode as u16,
+                    down: wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN,
+                    win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
+                    focused: unsafe { GetForegroundWindow() } as isize == WINDOW.load(Ordering::Relaxed),
+                    shift: held(0x10),
+                    alt: held(0x12),
+                    ctrl: held(0x11),
+                };
+                let verdict = h.gate.lock().unwrap().on_key(e, &*h.bound);
+                if let Verdict::Take(chord) = verdict {
+                    if let Some(c) = chord {
+                        mask_start_menu();
+                        (h.send)(c);
                     }
+                    return 1;
                 }
             }
         }
@@ -140,18 +161,30 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
-/// Installs the hook for Tandem's main window. Chords go to `send`, which must be quick:
-/// Windows removes a low-level hook that is slow to answer.
-pub fn install(hwnd: isize, send: Box<dyn Fn(Chord) + Send + Sync>) -> Result<(), String> {
+/// Installs the hook for Tandem's main window, on a thread of its own: a low-level hook
+/// runs on the installing thread's message loop, and every keystroke on the machine waits
+/// for it, so it must never wait for Tandem's drawing. `bound` says which chords Tandem
+/// takes; taken chords go to `send`.
+pub fn install(hwnd: isize, send: Box<dyn Fn(Chord) + Send + Sync>, bound: Box<dyn Fn(&Chord) -> bool + Send + Sync>) -> Result<(), String> {
     WINDOW.store(hwnd, Ordering::Relaxed);
-    if HOOK.set(Hook { gate: Mutex::new(Gate::default()), send }).is_err() {
+    if HOOK.set(Hook { gate: Mutex::new(Gate::default()), send, bound }).is_err() {
         return Ok(());
     }
-    let h = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), std::ptr::null_mut(), 0) };
-    if h.is_null() {
-        return Err(format!("SetWindowsHookExW failed: {}", std::io::Error::last_os_error()));
-    }
-    Ok(())
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("tandem-winkeys".into())
+        .spawn(move || {
+            let h = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), std::ptr::null_mut(), 0) };
+            if h.is_null() {
+                let _ = tx.send(Err(format!("SetWindowsHookExW failed: {}", std::io::Error::last_os_error())));
+                return;
+            }
+            let _ = tx.send(Ok(()));
+            let mut msg: MSG = unsafe { std::mem::zeroed() };
+            while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {}
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]
@@ -159,8 +192,17 @@ mod tests {
     use super::*;
     use crate::menus::ChordKey;
 
-    const VK_LWIN: u16 = 0x5B;
-    const NONE: (bool, bool, bool) = (false, false, false);
+    fn key(vk: u16, down: bool) -> KeyEvent {
+        KeyEvent { vk, down, win_held: true, focused: true, shift: false, alt: false, ctrl: false }
+    }
+
+    fn all(_: &Chord) -> bool {
+        true
+    }
+
+    fn none(_: &Chord) -> bool {
+        false
+    }
 
     #[test]
     fn keys_map_to_chord_keys() {
@@ -173,38 +215,50 @@ mod tests {
     }
 
     #[test]
+    fn a_bound_chord_is_taken_and_its_key_up_too() {
+        let mut g = Gate::default();
+        assert!(matches!(g.on_key(key(0x44, true), &all), Verdict::Take(Some(_))));
+        assert_eq!(g.on_key(key(0x44, false), &all), Verdict::Take(None));
+    }
+
+    #[test]
     fn only_the_focused_tandem_window_takes_win_chords() {
         let mut g = Gate::default();
-        assert_eq!(g.on_key(VK_LWIN, true, true, NONE), Verdict::Pass);
-        assert!(matches!(g.on_key(0x44, true, true, NONE), Verdict::Take(Some(_))));
-        assert_eq!(g.on_key(0x44, false, true, NONE), Verdict::Take(None));
-        let mut other = Gate::default();
-        other.on_key(VK_LWIN, true, false, NONE);
-        assert_eq!(other.on_key(0x44, true, false, NONE), Verdict::Pass);
+        assert_eq!(g.on_key(KeyEvent { focused: false, ..key(0x44, true) }, &all), Verdict::Pass);
+    }
+
+    #[test]
+    fn a_missed_win_release_does_not_stick() {
+        // After Win+L the lock screen eats the Win key-up. The live key state says Win is up.
+        let mut g = Gate::default();
+        assert_eq!(g.on_key(KeyEvent { win_held: false, ..key(0x44, true) }, &all), Verdict::Pass);
+    }
+
+    #[test]
+    fn unbound_win_chords_stay_with_windows() {
+        // Win+Shift+S (screenshot) and friends: Tandem has no command there.
+        let mut g = Gate::default();
+        assert_eq!(g.on_key(key(0x53, true), &none), Verdict::Pass);
+        assert_eq!(g.on_key(key(0x53, false), &none), Verdict::Pass);
     }
 
     #[test]
     fn win_l_is_never_taken() {
         let mut g = Gate::default();
-        g.on_key(VK_LWIN, true, true, NONE);
-        assert_eq!(g.on_key(0x4C, true, true, NONE), Verdict::Pass);
+        assert_eq!(g.on_key(key(0x4C, true), &all), Verdict::Pass);
     }
 
     #[test]
-    fn start_menu_is_masked_only_after_a_taken_chord() {
+    fn win_itself_always_passes() {
         let mut g = Gate::default();
-        g.on_key(VK_LWIN, true, true, NONE);
-        assert_eq!(g.on_key(VK_LWIN, false, true, NONE), Verdict::Pass);
-        g.on_key(VK_LWIN, true, true, NONE);
-        g.on_key(0x44, true, true, NONE);
-        assert_eq!(g.on_key(VK_LWIN, false, true, NONE), Verdict::PassAndMaskStart);
+        assert_eq!(g.on_key(key(0x5B, true), &all), Verdict::Pass);
+        assert_eq!(g.on_key(key(0x5B, false), &all), Verdict::Pass);
     }
 
     #[test]
     fn the_chord_carries_the_other_modifiers() {
         let mut g = Gate::default();
-        g.on_key(VK_LWIN, true, true, NONE);
-        let Verdict::Take(Some(c)) = g.on_key(0x44, true, true, (true, false, false)) else { panic!() };
+        let Verdict::Take(Some(c)) = g.on_key(KeyEvent { shift: true, ..key(0x44, true) }, &all) else { panic!() };
         assert_eq!(c, crate::menus::Chord { key: ChordKey::Char('d'), cmd: true, alt: false, shift: true, ctrl: false });
     }
 }
