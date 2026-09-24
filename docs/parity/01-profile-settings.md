@@ -271,7 +271,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key (plist key) | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Option Key Sends (Left) | Option Key Sends | Chooses what the left Option key sends: Normal, Meta, or Esc+. | have | Alt is Option; left and right Alt each follow their own setting. |
+| Option Key Sends (Left) | Option Key Sends | Chooses what the left Option key sends: Normal, Meta, or Esc+. | have | Alt is Option; left and right Alt each follow their own setting. Normal acts as Esc+ (Windows has no Option character layer). |
 | Option Key Sends (Right) | Right Option Key Sends | Same popup for the right-hand Option key, letting the two sides differ. | have | Missing right-side value follows the left, as in iTerm2. |
 | Left Option Key Independently Changeable | Left Option Key Changeable | Unlocks the left Option key's own dropdown instead of mirroring the right. | partial | macOS-only concept. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Right Option Key Independently Changeable | Right Option Key Changeable | Unlocks the right Option key's own dropdown instead of mirroring the left. | partial | macOS-only concept. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |

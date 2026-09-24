@@ -309,7 +309,7 @@ A table of global keystroke to action bindings (add/remove rows, each with a key
 | Open Quickly Hotkey | OpenQuicklyHotKeyCode / OpenQuicklyHotkeyCharacter / OpenQuicklyHotkeyModifiers | A global hotkey that opens the Open Quickly command palette without first activating iTerm2. | missing |  |
 | When set, the Open Quickly window can be opened even when another app is active | n/a (explanatory text tied to the Open Quickly hotkey) | Describes that the Open Quickly hotkey works system-wide, not just while iTerm2 is frontmost. | missing |  |
 | Hotkey Window | n/a (per-profile flag surfaced here as a shortcut link) | Jumps to the profile editor's Keys tab to configure which profile is the hotkey window and its dropdown behavior. | missing |  |
-| Remap modifiers globally | RemapModifiersGlobally | Applies the Keys > Remap Modifiers mapping system-wide (via an event tap) instead of only while iTerm2 is frontmost. | have | iTerm2 remaps only while it is active either way; Tandem does the same. |
+| Remap modifiers globally | RemapModifiersGlobally | Applies the Keys > Remap Modifiers mapping system-wide (via an event tap) instead of only while iTerm2 is frontmost. | partial | Saved and shown; Tandem remaps while it is in front whatever the setting, and does not yet stop when it is off. |
 | Haptic feedback for Esc | EnableHapticFeedbackForEsc | Triggers a trackpad haptic tap when pressing Esc, as tactile confirmation. | missing | macOS trackpad haptics; no Windows equivalent hardware. |
 | Sound for Esc | EnableSoundForEsc | Plays a sound when Esc is pressed, as audible confirmation. | missing |  |
 | Visual indicator for Esc | VisualIndicatorForEsc | Flashes a visual indicator on screen when Esc is pressed. | missing |  |
@@ -326,7 +326,7 @@ A table of global keystroke to action bindings (add/remove rows, each with a key
 | Remap left command key to | LeftCommand | Reassigns what the physical Left Command/Win key sends. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
 | Remap right command key to | RightCommand | Reassigns what the physical Right Command/Win key sends. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
 | Remap fn key to | FunctionKey | Reassigns what the physical Function (fn) key sends. | missing | Windows cannot see the fn key. |
-| Remap modifiers globally (checkbox shown again here) | RemapModifiersGlobally | Same setting as on the Hotkey tab; applies the remapping system-wide via an event tap. | have | Option is Alt and Command is Win. Works while a Tandem window is in front, as in iTerm2. |
+| Remap modifiers globally (checkbox shown again here) | RemapModifiersGlobally | Same setting as on the Hotkey tab; applies the remapping system-wide via an event tap. | partial | Saved and shown; Tandem remaps while it is in front whatever the setting, and does not yet stop when it is off. |
 | Reset to Defaults | n/a (button) | Resets all seven modifier remapping popups back to their shipped defaults. | have |  |
 
 

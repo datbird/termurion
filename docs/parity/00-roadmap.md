@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 50 | 184 | 80 |
-| `02-global-settings.md` | 820 | 100 | 51 | 669 |
+| `02-global-settings.md` | 820 | 98 | 53 | 669 |
 | `03-features-and-menus.md` | 632 | 62 | 6 | 564 |
-| Total | 1,766 | 212 | 241 | 1,313 |
+| Total | 1,766 | 210 | 243 | 1,313 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
