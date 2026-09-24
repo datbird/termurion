@@ -70,6 +70,9 @@ pub fn run_all(api: &Api, filter: &str) -> Vec<Outcome> {
         // Legacy bytes past 127 are not valid UTF-8, and ConPTY turns them into U+FFFD.
         // The encoder must send nothing here.
         ("wsl-1000-legacy-col150", Box::new(move |a| wsl_raw_mouse(a, &["1000"], legacy, 150, 5))),
+        ("vim-click", Box::new(vim_click)),
+        ("tmux-wheel", Box::new(tmux_wheel)),
+        ("htop", Box::new(htop_mouse)),
     ];
     list.retain(|(name, _)| name.contains(filter));
     list.iter()
@@ -154,6 +157,91 @@ fn wsl_raw_mouse(api: &Api, dec: &[&str], want: Modes, col: u32, row: u32) -> Re
     let missing: Vec<&String> = expected.iter().filter(|e| !text.contains(e.as_str())).collect();
     let got: Vec<&str> = text.lines().map(str::trim_end).filter(|l| l.starts_with("GOT")).collect();
     Err(format!("missing {missing:?}; the app got {got:?}"))
+}
+
+/// Runs a command in WSL outside ConPTY and returns its stdout.
+fn wsl(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("wsl.exe")
+        .args(["-d", DISTRO, "-e"])
+        .args(args)
+        .output()
+        .map_err(|e| format!("wsl.exe: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("wsl {args:?} failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// A click in vim moves the cursor. vim then writes the cursor position to a file.
+fn vim_click(api: &Api) -> Result<String, String> {
+    wsl(&["rm", "-f", "/tmp/tandem_vim_pos"])?;
+    let file = wsl_path(&repo_dir().join("probe").join("vim_target.txt"));
+    let mut s = Session::start(
+        api,
+        &format!("wsl.exe -d {DISTRO} -e vim -u NONE -N -c \"set mouse=a ttymouse=sgr\" {file}"),
+    )?;
+    if !s.pump_until(Duration::from_secs(10), |sc| {
+        sc.text().contains("line 01") && sc.mouse_modes().tracking != Tracking::Off
+    }) {
+        return Err(format!("vim never turned on mouse tracking; modes {:?}", s.screen.mouse_modes()));
+    }
+    let modes = s.screen.mouse_modes();
+    // Column 4, row 2 (0-based) is line 3, column 5 in vim.
+    press_release(&s, modes, 4, 2)?;
+    std::thread::sleep(Duration::from_millis(300));
+    s.send(b":call writefile([line('.') . ',' . col('.')], '/tmp/tandem_vim_pos')\r:qa!\r")?;
+    s.pty.wait_exit(Duration::from_secs(5)).ok_or("vim did not exit")?;
+    let pos = wsl(&["cat", "/tmp/tandem_vim_pos"])?;
+    if pos.trim() == "3,5" {
+        Ok(format!("cursor moved to 3,5; modes {modes:?}"))
+    } else {
+        Err(format!("cursor at {:?}, wanted 3,5; modes {modes:?}", pos.trim()))
+    }
+}
+
+/// With tmux mouse on, a wheel-up over a pane enters copy mode.
+fn tmux_wheel(api: &Api) -> Result<String, String> {
+    // The probe uses its own tmux socket. No server running is the normal case here.
+    let _ = wsl(&["tmux", "-L", "tandemprobe", "kill-server"]);
+    let mut s = Session::start(
+        api,
+        &format!("wsl.exe -d {DISTRO} -e tmux -L tandemprobe -f /dev/null new-session -s probe ; set -g mouse on"),
+    )?;
+    let on = s.pump_until(Duration::from_secs(10), |sc| sc.mouse_modes().tracking != Tracking::Off);
+    let modes = s.screen.mouse_modes();
+    let result = if !on {
+        Err(format!("tmux never turned on mouse tracking; modes {modes:?}"))
+    } else {
+        let ev = Event { button: Button::WheelUp, action: Action::Press, mods: Mods::default(), col: 10, row: 10 };
+        s.send(&mouse::encode(modes, ev).ok_or("the encoder dropped the wheel event")?)?;
+        let end = Instant::now() + Duration::from_secs(3);
+        let mut in_mode = String::new();
+        while Instant::now() < end {
+            in_mode = wsl(&["tmux", "-L", "tandemprobe", "display", "-p", "-t", "probe", "#{pane_in_mode}"])?;
+            if in_mode.trim() == "1" {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if in_mode.trim() == "1" {
+            Ok(format!("wheel entered copy mode; modes {modes:?}"))
+        } else {
+            Err(format!("pane_in_mode is {:?} after the wheel; modes {modes:?}", in_mode.trim()))
+        }
+    };
+    let _ = wsl(&["tmux", "-L", "tandemprobe", "kill-server"]);
+    result
+}
+
+/// htop turns on mouse tracking when it starts.
+fn htop_mouse(api: &Api) -> Result<String, String> {
+    wsl(&["which", "htop"]).map_err(|_| "htop is not installed in WSL (Task 7 step 1)".to_string())?;
+    let mut s = Session::start(api, &format!("wsl.exe -d {DISTRO} -e htop"))?;
+    let on = s.pump_until(Duration::from_secs(10), |sc| sc.mouse_modes().tracking != Tracking::Off);
+    let modes = s.screen.mouse_modes();
+    s.send(b"q")?;
+    s.pty.wait_exit(Duration::from_secs(5)).ok_or("htop did not exit on q")?;
+    if on { Ok(format!("modes {modes:?}")) } else { Err("htop never turned on mouse tracking".into()) }
 }
 
 /// A Windows console app reads mouse input with ReadConsoleInputW. ConPTY must ask
