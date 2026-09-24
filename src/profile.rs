@@ -120,8 +120,23 @@ impl Profile {
         self.color(key)
     }
 
+    /// A font, with its size kept between 4 and 128 points.
     pub fn font(&self, key: &str) -> FontSpec {
-        parse_font(&self.string(key))
+        let mut f = parse_font(&self.string(key));
+        f.size_pt = f.size_pt.clamp(4.0, 128.0);
+        f
+    }
+
+    /// A bool that may have Light and Dark variants, read like `color_for`.
+    pub fn bool_for(&self, key: &str, dark: bool) -> bool {
+        if self.bool("Use Separate Colors for Light and Dark Mode") {
+            let variant = format!("{key} ({})", if dark { "Dark" } else { "Light" });
+            let stock = schema::find(key).and_then(|s| if dark { s.default_dark.as_ref() } else { s.default_light.as_ref() });
+            if let Some(b) = self.values.get(&variant).or(stock).and_then(|v| v.as_bool()) {
+                return b;
+            }
+        }
+        self.bool(key)
     }
 
     /// Gives this profile a new Guid.
@@ -146,11 +161,23 @@ pub fn command_line(p: &Profile, default_shell: &str) -> String {
     }
 }
 
-/// The starting directory, or None for the user's home (iTerm2's default).
-pub fn working_dir(p: &Profile) -> Option<std::path::PathBuf> {
-    match p.string("Custom Directory").as_str() {
-        "Yes" if !p.string("Working Directory").trim().is_empty() => Some(p.string("Working Directory").into()),
-        _ => None,
+/// The directory a session starts in, and a warning when the profile's directory is
+/// unusable. Home is %USERPROFILE%; "~" expands to it. A directory that does not exist
+/// (an imported macOS path, for example) falls back to home, as iTerm2 does.
+pub fn start_dir(p: &Profile) -> (std::path::PathBuf, Option<String>) {
+    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let wanted = p.string("Working Directory");
+    if p.string("Custom Directory") != "Yes" || wanted.trim().is_empty() {
+        return (home, None);
+    }
+    let dir = match wanted.trim().strip_prefix('~') {
+        Some(rest) => home.join(rest.trim_start_matches(['/', '\\'])),
+        None => std::path::PathBuf::from(wanted.trim()),
+    };
+    if dir.is_dir() {
+        (dir, None)
+    } else {
+        (home, Some(format!("Start directory {wanted} does not exist; using your home folder.")))
     }
 }
 
@@ -206,12 +233,12 @@ mod tests {
     }
 
     #[test]
-    fn working_dir_follows_custom_directory() {
+    fn start_dir_follows_custom_directory() {
         let mut p = Profile::default();
-        assert_eq!(working_dir(&p), None);
         p.set("Custom Directory", toml::Value::String("Yes".into()));
-        p.set("Working Directory", toml::Value::String("C:\\Work".into()));
-        assert_eq!(working_dir(&p), Some(std::path::PathBuf::from("C:\\Work")));
+        let dir = std::env::temp_dir();
+        p.set("Working Directory", toml::Value::String(dir.to_string_lossy().into_owned()));
+        assert_eq!(start_dir(&p), (dir, None));
     }
 
     #[test]
@@ -235,6 +262,45 @@ mod tests {
         assert_eq!(parse_font("MesloLGS NF 13"), FontSpec { family: "MesloLGS NF".into(), size_pt: 13.0 });
         assert_eq!(parse_font("Cascadia Mono 12.5"), FontSpec { family: "Cascadia Mono".into(), size_pt: 12.5 });
         assert_eq!(parse_font("Consolas"), FontSpec { family: "Consolas".into(), size_pt: 12.0 });
+    }
+
+    #[test]
+    fn font_sizes_stay_in_a_usable_range() {
+        // A half-typed size ("Cascadia Mono 1") must not shrink the font to nothing.
+        let mut p = Profile::default();
+        p.set("Normal Font", toml::Value::String("Cascadia Mono 1".into()));
+        assert_eq!(p.font("Normal Font").size_pt, 4.0);
+        p.set("Normal Font", toml::Value::String("Cascadia Mono 999".into()));
+        assert_eq!(p.font("Normal Font").size_pt, 128.0);
+    }
+
+    #[test]
+    fn start_dir_is_home_by_default_and_expands_tilde() {
+        let home = std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        let mut p = Profile::default();
+        assert_eq!(start_dir(&p), (home.clone(), None));
+        p.set("Custom Directory", toml::Value::String("Yes".into()));
+        p.set("Working Directory", toml::Value::String("~".into()));
+        assert_eq!(start_dir(&p), (home.clone(), None));
+    }
+
+    #[test]
+    fn a_missing_start_dir_falls_back_to_home_with_a_warning() {
+        let home = std::path::PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+        let mut p = Profile::default();
+        p.set("Custom Directory", toml::Value::String("Yes".into()));
+        p.set("Working Directory", toml::Value::String("/Users/robert/src".into()));
+        let (dir, warning) = start_dir(&p);
+        assert_eq!(dir, home);
+        assert!(warning.unwrap().contains("/Users/robert/src"));
+    }
+
+    #[test]
+    fn bools_with_light_and_dark_variants() {
+        let mut p = Profile::stock();
+        p.set("Brighten Bold Text (Dark)", toml::Value::Boolean(false));
+        assert!(!p.bool_for("Brighten Bold Text", true));
+        assert!(!crate::palette::Palette::from_profile(&p, true).bright_bold);
     }
 
     #[test]

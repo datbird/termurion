@@ -51,12 +51,12 @@ impl Palette {
             ansi,
             fg,
             bg: c("Background Color"),
-            bold: if p.bool("Use Bright Bold") { c("Bold Color") } else { fg },
+            bold: if p.bool_for("Use Bright Bold", dark) { c("Bold Color") } else { fg },
             cursor: c("Cursor Color"),
             cursor_text: c("Cursor Text Color"),
             selection: c("Selection Color"),
             selected_text: p.bool("Use Selected Text Color").then(|| c("Selected Text Color")),
-            bright_bold: p.bool("Brighten Bold Text"),
+            bright_bold: p.bool_for("Brighten Bold Text", dark),
             faint_alpha: p.float("Faint Text Alpha") as f32,
         }
     }

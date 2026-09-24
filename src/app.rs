@@ -214,8 +214,11 @@ impl App {
         let id = self.next_id;
         let p = self.profile(guid);
         let cmd = profile::command_line(&p, &self.shell);
-        let cwd = profile::working_dir(&p);
-        match Pane::start(id, &self.api, &cmd, cwd.as_deref(), cols, rows, self.notify.clone()) {
+        let (cwd, warning) = profile::start_dir(&p);
+        if let Some(w) = warning {
+            self.banner = Some(w);
+        }
+        match Pane::start(id, &self.api, &cmd, Some(&cwd), cols, rows, self.notify.clone()) {
             Ok(mut pane) => {
                 pane.screen.set_palette(Palette::from_profile(&p, self.dark()));
                 pane.screen.set_look(Look::from_profile(&p));
