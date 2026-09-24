@@ -127,6 +127,10 @@ pub struct KeysState {
     pub pointer_editor: Option<PointerEditor>,
     pub leader_recording: bool,
     pub leader_recorded: Option<Keystroke>,
+    /// The Leader, so the recorder can take "Leader, then a key" as one keystroke.
+    pub leader: Option<Keystroke>,
+    /// The recorder has seen the Leader and waits for the key after it.
+    leader_seen: bool,
 }
 
 impl KeysState {
@@ -140,6 +144,14 @@ impl KeysState {
             self.leader_recording = false;
             self.leader_recorded = Some(k);
         } else if let Some(e) = self.key_editor.as_mut().filter(|e| e.recording) {
+            if !self.leader_seen && self.leader.as_ref().is_some_and(|l| l.same_key(&k)) {
+                self.leader_seen = true;
+                return;
+            }
+            let mut k = k;
+            if std::mem::take(&mut self.leader_seen) {
+                k.flags |= keystroke::LEADER;
+            }
             e.recording = false;
             e.stroke = Some(k);
         }
@@ -506,6 +518,7 @@ pub fn keys_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profile
         g.set("Leader", Value::String(k.serialized()));
         changed = true;
     }
+    st.leader = keystroke::parse(&g.string("Leader"));
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.strong("Key Bindings");
         let mut map = g.table("GlobalKeyMap");
@@ -737,6 +750,19 @@ mod tests {
         assert_eq!(rows(&map), [("0x9-0x40000".to_string(), "Ctrl+Tab".to_string(), "Cycle Tabs Forward".to_string())]);
         let hex: toml::Table = toml::from_str("\"0x7f-0x80000\" = { Action = 11, Text = \"0x1b 0x7f\" }").unwrap();
         assert_eq!(rows(&hex)[0].2, "Send Hex Code: 0x1b 0x7f");
+    }
+
+    #[test]
+    fn the_recorder_takes_a_leader_sequence() {
+        let ctrl_b = Keystroke::new(0x62, keystroke::CONTROL, None, 0x62);
+        let mut st = KeysState { leader: Some(ctrl_b.clone()), ..KeysState::default() };
+        st.key_editor = Some(KeyEditor { target: Target::Global, old_key: None, stroke: None, binding: Binding::new(-1, ""), recording: true });
+        st.deliver(ctrl_b);
+        assert!(st.recording());
+        st.deliver(Keystroke::new(0x73, 0, None, 0x73));
+        let e = st.key_editor.as_ref().unwrap();
+        assert!(!e.recording);
+        assert_eq!(e.stroke.as_ref().unwrap().label(), "Leader, S");
     }
 
     #[test]

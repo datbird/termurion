@@ -214,6 +214,7 @@ impl SettingsWindow {
         let mode = self.mode;
         let mut page = self.page;
         let keys = &mut self.keys;
+        keys.leader = crate::keystroke::parse(&globals.string("Leader"));
         let profiles: Vec<(String, String)> = store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let out = self.ctx.run_ui(input, |ui| {
             if mode == Mode::Settings {
