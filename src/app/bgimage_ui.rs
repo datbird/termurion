@@ -27,7 +27,7 @@ pub(super) struct PaneBackground {
 
 impl App {
     /// A profile's image, mode, and blend now; None without an image.
-    fn background_of(&mut self, pane: PaneId) -> Option<(Arc<Loaded>, Mode, f32)> {
+    pub(super) fn background_of(&mut self, pane: PaneId) -> Option<(Arc<Loaded>, Mode, f32)> {
         let p = self.profile_of(pane)?;
         let mode = Mode::from_int(p.int("Background Image Mode"));
         let blend = p.float("Blend") as f32;

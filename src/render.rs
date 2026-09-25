@@ -276,6 +276,8 @@ pub struct Renderer {
     v_spacing: f32,
     font_px: f32,
     pub cell: (f32, f32),
+    /// The texture format the pipelines draw into.
+    format: wgpu::TextureFormat,
 }
 
 impl Renderer {
@@ -298,6 +300,7 @@ impl Renderer {
             text,
             buffers: Vec::new(),
             family: family.to_string(),
+            format,
             alt_family: None,
             h_spacing: 1.0,
             v_spacing: 1.0,
@@ -367,6 +370,62 @@ impl Renderer {
     /// How many image textures were uploaded (tests).
     pub fn uploads(&self) -> usize {
         self.images.uploads
+    }
+
+    /// Draws a frame into an offscreen texture and returns its pixels as RGBA, row by row.
+    pub fn draw_offscreen(&mut self, frame: &Frame, w: u32, h: u32) -> Result<Vec<u8>, String> {
+        let max = self.device.limits().max_texture_dimension_2d;
+        if w == 0 || h == 0 || w > max || h > max {
+            return Err(format!("an image of {w} x {h} pixels is larger than the graphics card allows ({max})"));
+        }
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        self.draw(frame, &view, w, h)?;
+        // Rows are copied out padded to 256 bytes, then the padding is dropped.
+        let row = w * 4;
+        let padded = row.div_ceil(256) * 256;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("offscreen read"),
+            size: (padded * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(Some(enc.finish()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("waiting for the graphics card: {e:?}"))?;
+        rx.recv().map_err(|e| e.to_string())?.map_err(|e| format!("reading the image back: {e:?}"))?;
+        let data = buf.slice(..).get_mapped_range().map_err(|e| format!("reading the image back: {e:?}"))?.to_vec();
+        let bgra = matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut out = Vec::with_capacity((row * h) as usize);
+        for y in 0..h as usize {
+            let line = &data[y * padded as usize..y * padded as usize + row as usize];
+            if bgra {
+                for p in line.chunks_exact(4) {
+                    out.extend_from_slice(&[p[2], p[1], p[0], p[3]]);
+                }
+            } else {
+                out.extend_from_slice(line);
+            }
+        }
+        Ok(out)
     }
 
     pub fn draw(&mut self, frame: &Frame, view: &wgpu::TextureView, width: u32, height: u32) -> Result<(), String> {
@@ -532,6 +591,25 @@ mod tests {
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         let data = buf.slice(..).get_mapped_range().unwrap().to_vec();
         data
+    }
+
+    #[test]
+    fn renders_a_range_offscreen() {
+        let (device, queue) = device();
+        // The window's usual format: BGRA comes back as RGBA.
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Bgra8UnormSrgb, "Cascadia Mono", 16.0);
+        let frame = Frame {
+            clear: rgba(rgb(0, 0, 255), 1.0),
+            quads: vec![Quad { rect: Rect { x: 0.0, y: 0.0, w: 10.0, h: 5.0 }, color: rgba(rgb(255, 0, 0), 1.0) }],
+            ..Default::default()
+        };
+        // 300 wide: rows are not a multiple of 256 bytes, so padding must be removed.
+        let px = r.draw_offscreen(&frame, 300, 20).unwrap();
+        assert_eq!(px.len(), 300 * 20 * 4);
+        assert_eq!(&px[0..4], &[255, 0, 0, 255], "a red quad at the top left, in RGBA order");
+        let at = |x: usize, y: usize| &px[(y * 300 + x) * 4..(y * 300 + x) * 4 + 4];
+        assert_eq!(at(299, 19), &[0, 0, 255, 255], "the clear color elsewhere");
+        assert_eq!(at(20, 2), &[0, 0, 255, 255]);
     }
 
     #[test]

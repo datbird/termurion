@@ -61,6 +61,7 @@ mod infobar_ui;
 mod keyproto_ui;
 mod fold_ui;
 mod labels_ui;
+mod screenshot_ui;
 mod semantic_ui;
 mod session_ui;
 mod seltools_ui;

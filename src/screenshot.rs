@@ -73,6 +73,30 @@ pub fn parts(lines: usize, line_px: usize, width_px: usize, max_px: usize) -> Ve
     (0..lines).step_by(per).map(|s| s..(s + per).min(lines)).collect()
 }
 
+/// A screen holding `count` rows of `from` starting at grid line `first` (negative is
+/// history), with its palette and images, and no cursor: one batch of a screenshot.
+pub fn slice(from: &crate::screen::Screen, first: i32, count: usize) -> crate::screen::Screen {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::Line;
+    let g = from.term().grid();
+    let cols = g.columns();
+    let (top, bottom) = (-(g.history_size() as i32), g.screen_lines() as i32 - 1);
+    let count = count.max(1);
+    let look = crate::screen::Look { scrollback: 0, ..crate::screen::Look::default() };
+    let mut s = crate::screen::Screen::with_look(cols, count, from.palette.clone(), look);
+    s.feed(b"\x1b[?25l");
+    let rows = (first..first + count as i32).map(|l| if (top..=bottom).contains(&l) { g[Line(l)].clone() } else { alacritty_terminal::grid::Row::new(cols) }).collect();
+    s.splice_rows(0, count as i32 - 1, rows);
+    s.images = from.images.clone();
+    s
+}
+
+/// Batches of at most `max` lines covering `first..=last`.
+pub fn batches(first: usize, last: usize, max: usize) -> Vec<(usize, usize)> {
+    let max = max.max(1);
+    (first..=last).step_by(max).map(|s| (s, (s + max - 1).min(last))).collect()
+}
+
 /// The default file name, from the local time.
 pub fn file_name(y: u16, mo: u16, d: u16, h: u16, mi: u16, s: u16) -> String {
     format!("Tandem-Screenshot-{y:04}-{mo:02}-{d:02}-{h:02}-{mi:02}-{s:02}.png")
@@ -128,6 +152,27 @@ mod tests {
         assert_eq!(wide[0], 0..450);
         assert_eq!(parts(0, 20, 800, MAX_PX), Vec::<Range<usize>>::new());
         assert_eq!(parts(3, 50000, 800, MAX_PX), vec![0..1, 1..2, 2..3], "at least one line a part");
+    }
+
+    #[test]
+    fn a_slice_holds_the_lines() {
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Line};
+        let mut s = crate::screen::Screen::with_scrollback(8, 3, 100);
+        for i in 0..6 {
+            s.feed(format!("\x1b[31mrow{i}\x1b[0m\r\n").as_bytes());
+        }
+        let first = -(s.term().grid().history_size() as i32);
+        let b = slice(&s, first + 1, 3);
+        assert_eq!(b.term().screen_lines(), 3);
+        assert_eq!(b.term().columns(), 8);
+        let text = |l: i32| (0..8).map(|c| b.term().grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string();
+        assert_eq!((text(0), text(1), text(2)), ("row1".to_string(), "row2".to_string(), "row3".to_string()));
+        assert_eq!(b.term().grid()[Line(0)][Column(0)].fg, s.term().grid()[Line(first + 1)][Column(0)].fg, "styles come along");
+        assert_eq!(b.term().grid().history_size(), 0);
+        assert!(!b.term().mode().contains(alacritty_terminal::term::TermMode::SHOW_CURSOR), "no cursor");
+        assert_eq!(batches(0, 2499, 1000), vec![(0, 999), (1000, 1999), (2000, 2499)]);
+        assert_eq!(batches(5, 5, 1000), vec![(5, 5)]);
     }
 
     #[test]
