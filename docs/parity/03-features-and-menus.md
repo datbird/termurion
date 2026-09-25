@@ -636,12 +636,12 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### session restoration
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Session restoration | Restore windows/tabs/panes on relaunch | Recreates the full window/tab/split layout automatically the next time the app starts. | missing | |
-| Session restoration | Restore scrollback contents | Optionally restores the actual on-screen and scrollback text, not just an empty pane layout. | missing | |
-| Session restoration | Restore working directory per pane | Each restored pane returns to, or attempts to cd back into, its prior working directory, via shell integration. | missing | |
-| Session restoration | Keep windows within current displays | When restoring, clamps window frames so they stay on currently connected monitors. | missing | |
-| Session restoration | Reattach to still-running shell after crash | A job-server process keeps the shell alive independent of the app, so a crash or relaunch can reattach to the same live pty instead of losing the session. | missing | |
-| Session restoration | Restore notice on quit | Quit confirmation tells the user their layout will come back next launch. | missing | |
+| Session restoration | Restore windows/tabs/panes on relaunch | Recreates the full window/tab/split layout automatically the next time the app starts. | have |  |
+| Session restoration | Restore scrollback contents | Optionally restores the actual on-screen and scrollback text, not just an empty pane layout. | have |  |
+| Session restoration | Restore working directory per pane | Each restored pane returns to, or attempts to cd back into, its prior working directory, via shell integration. | have |  |
+| Session restoration | Keep windows within current displays | When restoring, clamps window frames so they stay on currently connected monitors. | have |  |
+| Session restoration | Reattach to still-running shell after crash | A job-server process keeps the shell alive independent of the app, so a crash or relaunch can reattach to the same live pty instead of losing the session. | have |  |
+| Session restoration | Restore notice on quit | Quit confirmation tells the user their layout will come back next launch. | have |  |
 
 ### arrangements
 | Subsystem | Feature | What it does | Tandem status | Windows note |

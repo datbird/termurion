@@ -19,6 +19,28 @@ pub struct Welcome {
     pub sessions: Vec<Live>,
 }
 
+/// Why Tandem could not use the host.
+#[derive(Debug)]
+pub enum HostError {
+    /// Another Tandem is attached: this one is a second copy.
+    Busy(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for HostError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            HostError::Busy(s) | HostError::Failed(s) => f.write_str(s),
+        }
+    }
+}
+
+impl From<String> for HostError {
+    fn from(s: String) -> HostError {
+        HostError::Failed(s)
+    }
+}
+
 /// How long a launch or an attach waits for the host's answer.
 const REPLY_WAIT: Duration = Duration::from_secs(10);
 
@@ -86,7 +108,7 @@ fn wake(slot: &Incoming) {
 }
 
 /// Reads the host's messages until the connection ends, then marks every session lost.
-fn read_loop(inner: Arc<Inner>, welcome: mpsc::Sender<Result<Welcome, String>>) {
+fn read_loop(inner: Arc<Inner>, welcome: mpsc::Sender<Result<Welcome, HostError>>) {
     let mut welcome = Some(welcome);
     let mut d = Decoder::default();
     let mut buf = vec![0u8; 64 * 1024];
@@ -111,16 +133,17 @@ fn read_loop(inner: Arc<Inner>, welcome: mpsc::Sender<Result<Welcome, String>>) 
     inner.pipe.shutdown();
 }
 
-fn dispatch(inner: &Inner, m: Msg, welcome: &mut Option<mpsc::Sender<Result<Welcome, String>>>) {
+fn dispatch(inner: &Inner, m: Msg, welcome: &mut Option<mpsc::Sender<Result<Welcome, HostError>>>) {
     match m {
         Msg::Welcome { instance, host_pid, sessions, .. } => {
             if let Some(w) = welcome.take() {
                 let _ = w.send(Ok(Welcome { instance, host_pid, sessions }));
             }
         }
-        Msg::Refused { reason } => {
+        Msg::Refused { busy, reason } => {
             if let Some(w) = welcome.take() {
-                let _ = w.send(Err(reason));
+                let text = format!("the session host refused Tandem: {reason}");
+                let _ = w.send(Err(if busy { HostError::Busy(text) } else { HostError::Failed(text) }));
             }
         }
         Msg::Launched { tag, id, pid } => {
@@ -179,7 +202,7 @@ fn dispatch(inner: &Inner, m: Msg, welcome: &mut Option<mpsc::Sender<Result<Welc
 impl Client {
     /// Connects to the host at `pipe` and says hello. None when no host listens there. The
     /// host must run as this user.
-    pub fn connect(pipe: &str, wait: Duration) -> Result<Option<(Client, Welcome)>, String> {
+    pub fn connect(pipe: &str, wait: Duration) -> Result<Option<(Client, Welcome)>, HostError> {
         let Some(p) = crate::winpipe::connect(pipe, wait)? else { return Ok(None) };
         p.server_is_this_user()?;
         let pipe = Arc::new(p);
@@ -213,13 +236,13 @@ impl Client {
         client.inner.send(&Msg::Hello { version: VERSION })?;
         match rx.recv_timeout(wait.max(REPLY_WAIT)) {
             Ok(Ok(w)) => Ok(Some((client, w))),
-            Ok(Err(reason)) => {
+            Ok(Err(e)) => {
                 client.close();
-                Err(format!("the session host refused Tandem: {reason}"))
+                Err(e)
             }
             Err(_) => {
                 client.close();
-                Err("the session host did not answer".into())
+                Err(HostError::Failed("the session host did not answer".into()))
             }
         }
     }
@@ -377,7 +400,7 @@ pub fn start_host_process(exe_dir: &Path) -> Result<(), String> {
 }
 
 /// Connects to this user's host, starting it when none runs, waiting up to `wait`.
-pub fn connect_or_start(exe_dir: &Path, wait: Duration) -> Result<(Client, Welcome), String> {
+pub fn connect_or_start(exe_dir: &Path, wait: Duration) -> Result<(Client, Welcome), HostError> {
     let pipe = crate::winpipe::host_pipe_name()?;
     if let Some(c) = Client::connect(&pipe, Duration::from_secs(1))? {
         return Ok(c);
@@ -389,7 +412,7 @@ pub fn connect_or_start(exe_dir: &Path, wait: Duration) -> Result<(Client, Welco
             return Ok(c);
         }
         if std::time::Instant::now() >= end {
-            return Err(format!("tandem-host did not start within {} s", wait.as_secs_f64()));
+            return Err(HostError::Failed(format!("tandem-host did not start within {} s", wait.as_secs_f64())));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -446,6 +469,17 @@ mod tests {
         p.write(b"x").unwrap();
         p.resize(100, 30).unwrap();
         assert_eq!(p.exit_code(), None);
+    }
+
+    #[test]
+    fn a_busy_host_says_so() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let _first = connect(&name);
+        match Client::connect(&name, Duration::from_secs(5)) {
+            Err(HostError::Busy(_)) => {}
+            Err(e) => panic!("not busy: {e}"),
+            Ok(_) => panic!("a second Tandem was let in"),
+        }
     }
 
     #[test]

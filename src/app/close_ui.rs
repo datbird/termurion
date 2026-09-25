@@ -85,7 +85,7 @@ impl App {
                 if reasons.is_empty() {
                     return true;
                 }
-                return confirm(self.hwnd(), "Quit Tandem?", &close_rules::quit_text(&reasons));
+                return confirm(self.hwnd(), "Quit Tandem?", &close_rules::quit_text(&reasons, self.keep_jobs_on_quit()));
             }
         };
         let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none())).count();

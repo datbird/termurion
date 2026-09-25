@@ -175,14 +175,14 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
                 let Msg::Hello { version } = m else { break 'read };
                 let mut h = host.lock().unwrap();
                 let refuse = if h.client.is_some() {
-                    Some("another Tandem is attached to the session host".to_string())
+                    Some((true, "another Tandem is attached to the session host".to_string()))
                 } else if version != VERSION {
-                    Some(format!("the session host speaks version {VERSION}, not {version}"))
+                    Some((false, format!("the session host speaks version {VERSION}, not {version}")))
                 } else {
                     None
                 };
-                if let Some(reason) = refuse {
-                    let _ = out.send(encode(&Msg::Refused { reason }));
+                if let Some((busy, reason)) = refuse {
+                    let _ = out.send(encode(&Msg::Refused { busy, reason }));
                     break 'read;
                 }
                 h.client = Some(Client { conn, out: out.clone() });

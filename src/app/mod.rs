@@ -415,11 +415,15 @@ pub fn run() {
     };
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
     // a change needs a restart, as in iTerm2).
+    // A second Tandem (the host serves the first) neither restores nor saves windows: the
+    // saved state belongs to the first.
+    let mut second_copy = false;
     let (host, host_welcome) = if globals.bool("runJobsInServers") {
         let wait = std::time::Duration::from_secs_f64(globals.get("timeoutForDaemonAttachment").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(10.0).clamp(1.0, 120.0));
         match crate::host_client::connect_or_start(&exe_dir, wait) {
             Ok((c, w)) => (Some(c), Some(w)),
             Err(e) => {
+                second_copy = matches!(e, crate::host_client::HostError::Busy(_));
                 banners.set("host", format!("Shells run inside Tandem this time, so they end with it: {e}"));
                 (None, None)
             }
@@ -550,7 +554,7 @@ pub fn run() {
         settings: None,
         save_due: None,
         state_debounce: Default::default(),
-        state_frozen: false,
+        state_frozen: second_copy,
         focus_lost: false,
         font_sig: String::new(),
         profiles_win: None,
@@ -909,6 +913,8 @@ impl App {
             // The window's last tab closed: the window goes; the last window ends Tandem.
             if !self.drop_current_window() {
                 self.save_empty_state();
+                // The last window closed: its shells end (iTerm2), and the host hears it.
+                self.leave_host(false);
                 if self.save_due.is_some() {
                     self.save_now();
                 }
@@ -1776,7 +1782,8 @@ impl ApplicationHandler<UserEvent> for App {
         // Open default window arrangement (policy 1): that arrangement. Either way the first
         // window fills this one, and the others open as new windows.
         let system_policy = !self.globals.bool("OpenArrangementAtStartup") && !self.globals.bool("OpenNoWindowsAtStartup");
-        let mut saved = if system_policy { self.saved_windows() } else { None };
+        // `state_frozen` at launch: a second copy of Tandem, which leaves the state to the first.
+        let mut saved = if system_policy && !self.state_frozen { self.saved_windows() } else { None };
         let has_saved = saved.is_some();
         // Sessions still running in the host: the saved ones they belong to take them over,
         // and the rest open in one new window (iTerm2's orphan adoption).

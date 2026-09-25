@@ -154,7 +154,17 @@ pub fn quit_reasons(profile_reasons: &[String], windows: usize, sessions: usize,
 /// The quit question's text, formatted as iTerm2's compound reason: lowest priority first,
 /// a repeated reason once, each with a bullet, and the Settings footer after each Prompt
 /// Before Closing group (iTerm2 shows this in a disclosure).
-pub fn quit_text(reasons: &[Reason]) -> String {
+/// Whether Quit leaves the shells running in the session host for the next launch
+/// (iTerm2's shouldLeaveSessionsRunningOnQuit, without the update-restart case).
+pub fn keep_jobs(run_in_servers: bool, restore_contents: bool, system_policy: bool, kill_on_quit: bool) -> bool {
+    run_in_servers && restore_contents && system_policy && !kill_on_quit
+}
+
+pub fn quit_body(keep: bool) -> &'static str {
+    if keep { "Sessions will be restored automatically when Tandem is relaunched." } else { "All sessions will be closed." }
+}
+
+pub fn quit_text(reasons: &[Reason], keep: bool) -> String {
     let mut sorted: Vec<&Reason> = reasons.iter().collect();
     sorted.sort_by_key(|r| r.priority);
     sorted.dedup_by(|a, b| a.text == b.text);
@@ -174,7 +184,7 @@ pub fn quit_text(reasons: &[Reason]) -> String {
     if let Some(f) = previous.and_then(footer) {
         lines.push(f.to_string());
     }
-    format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{}", lines.join("\n"))
+    format!("{}\n\nYou are being prompted because:\n\n{}", quit_body(keep), lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -183,6 +193,19 @@ mod tests {
 
     fn n(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn quit_body_follows_kept_jobs() {
+        assert!(keep_jobs(true, true, true, false));
+        assert!(!keep_jobs(true, true, true, true), "Quit ends jobs by default");
+        assert!(!keep_jobs(false, true, true, false), "no host");
+        assert!(!keep_jobs(true, false, true, false), "no contents restored");
+        assert!(!keep_jobs(true, true, false, false), "another startup policy");
+        assert_eq!(quit_body(true), "Sessions will be restored automatically when Tandem is relaunched.");
+        assert_eq!(quit_body(false), "All sessions will be closed.");
+        let r = [Reason { kind: ReasonKind::Message, priority: 100, text: "x".into() }];
+        assert!(quit_text(&r, true).starts_with("Sessions will be restored automatically"));
     }
 
     #[test]
@@ -227,7 +250,7 @@ mod tests {
     fn quit_asks_for_the_right_reasons() {
         let q = |profile: &[&str], windows, sessions, on, even, multi, last| quit_reasons(&n(profile), windows, sessions, QuitPrefs { prompt_on_quit: on, even_if_no_windows: even, confirm_multiple: multi }, last);
         assert!(q(&[], 1, 1, false, false, true, false).is_empty(), "Confirm Quit off, one session: no question");
-        assert_eq!(quit_text(&q(&[], 1, 1, true, false, true, false)), format!("All sessions will be closed.\n\nYou are being prompted because:\n\n\u{2022} {CONFIRM_QUIT}"));
+        assert_eq!(quit_text(&q(&[], 1, 1, true, false, true, false), false), format!("All sessions will be closed.\n\nYou are being prompted because:\n\n\u{2022} {CONFIRM_QUIT}"));
         assert!(q(&[], 0, 0, true, false, true, false).is_empty(), "no windows");
         assert_eq!(q(&[], 0, 0, true, true, true, false).len(), 1);
         assert!(q(&[], 1, 1, true, false, true, true).is_empty(), "closing the last window skips Confirm Quit");
@@ -236,7 +259,7 @@ mod tests {
         let r = q(&[always, blocked, always], 2, 3, true, false, true, false);
         let footer = "You can change this setting in Settings > Profiles > Session";
         let expect = format!("\u{2022} {blocked}\n{footer}\n\n\u{2022} {always}\n{footer}\n\n\u{2022} {CONFIRM_MULTIPLE}\n\u{2022} {CONFIRM_QUIT}");
-        assert_eq!(quit_text(&r), format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{expect}"), "iTerm2's order (lowest priority first), one of each, bullets, and the profile footer");
+        assert_eq!(quit_text(&r, false), format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{expect}"), "iTerm2's order (lowest priority first), one of each, bullets, and the profile footer");
     }
 
     #[test]

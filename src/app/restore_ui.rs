@@ -47,6 +47,28 @@ impl App {
         self.state_frozen = true;
     }
 
+    /// Whether this Quit leaves the shells running in the host for the next launch.
+    pub(super) fn keep_jobs_on_quit(&self) -> bool {
+        let g = &self.globals;
+        let system_policy = !g.bool("OpenArrangementAtStartup") && !g.bool("OpenNoWindowsAtStartup");
+        self.host.is_some() && crate::close_rules::keep_jobs(true, g.bool("restoreWindowContents"), system_policy, g.bool("killJobsInServersOnQuit"))
+    }
+
+    /// Tandem is ending: with `keep`, every hosted shell stays in the host; otherwise the host
+    /// ends them all. Either way the frames reach the host before Tandem exits.
+    pub(super) fn leave_host(&mut self, keep: bool) {
+        let Some(host) = self.host.take() else { return };
+        if keep {
+            for p in self.panes.values_mut() {
+                p.detach();
+            }
+        } else {
+            host.kill_all();
+        }
+        self.panes.clear();
+        host.close();
+    }
+
     fn restore_contents(&self) -> Contents {
         if self.globals.bool("restoreWindowContents") {
             Contents::Styled(self.globals.int("maxHistoryLinesToRestore").clamp(0, 10_000_000) as usize)

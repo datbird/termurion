@@ -25,7 +25,8 @@ pub struct Live {
 pub enum Msg {
     Hello { version: u32 },
     Welcome { version: u32, host_pid: u32, instance: String, sessions: Vec<Live> },
-    Refused { reason: String },
+    /// `busy`: another Tandem is attached (this one is a second copy).
+    Refused { busy: bool, reason: String },
     Launch { tag: u64, cmdline: String, cwd: String, env: Vec<String>, cols: u16, rows: u16 },
     Launched { tag: u64, id: u64, pid: u32 },
     LaunchFailed { tag: u64, error: String },
@@ -137,7 +138,7 @@ pub fn encode(m: &Msg) -> Vec<u8> {
             }
             &mut w
         }
-        Msg::Refused { reason } => w.u8(2).str(reason),
+        Msg::Refused { busy, reason } => w.u8(2).u8(*busy as u8).str(reason),
         Msg::Launch { tag, cmdline, cwd, env, cols, rows } => {
             w.u8(3).u64(*tag).str(cmdline).str(cwd).u32(env.len() as u32);
             for e in env {
@@ -180,7 +181,7 @@ fn decode(payload: &[u8]) -> Result<Msg, String> {
             }
             Msg::Welcome { version, host_pid, instance, sessions }
         }
-        2 => Msg::Refused { reason: r.str()? },
+        2 => Msg::Refused { busy: r.bool()?, reason: r.str()? },
         3 => {
             let (tag, cmdline, cwd) = (r.u64()?, r.str()?, r.str()?);
             let n = r.count()?;
@@ -293,7 +294,7 @@ mod tests {
         vec![
             Msg::Hello { version: 1 },
             Msg::Welcome { version: 1, host_pid: 42, instance: "abc".into(), sessions: vec![live.clone(), Live { exited: None, ..live }] },
-            Msg::Refused { reason: "another Tandem is attached".into() },
+            Msg::Refused { busy: true, reason: "another Tandem is attached".into() },
             Msg::Launch { tag: 5, cmdline: "cmd.exe".into(), cwd: String::new(), env: vec!["A=1".into(), "B=".into()], cols: 100, rows: 30 },
             Msg::Launched { tag: 5, id: 9, pid: 77 },
             Msg::LaunchFailed { tag: 5, error: "no such file".into() },

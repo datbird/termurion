@@ -607,6 +607,7 @@ impl App {
         }
         // Before any window closes, so the saved state holds every window.
         self.save_state_for_quit();
+        let keep = self.keep_jobs_on_quit();
         self.save_all_window_frames();
         self.clear_undo();
         if let Some(h) = self.hwnd() {
@@ -615,6 +616,7 @@ impl App {
         if self.save_due.is_some() {
             self.save_now();
         }
+        self.leave_host(keep);
         self.panes.clear();
         event_loop.exit();
     }

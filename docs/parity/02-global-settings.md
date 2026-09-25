@@ -13,7 +13,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | Open profiles window | OpenBookmark | At launch, opens the profiles/bookmarks window instead of a terminal window. | have | Milestone 7b. |
-| Window restoration mode | OpenArrangementAtStartup / OpenNoWindowsAtStartup | Three-way choice at startup: use system window restoration, open the default saved window arrangement, or open no windows. | partial | Milestone 7b: saved as iTerm2's two keys; the default arrangement opens with 7c, hotkey windows with 7e; until then one window opens. |
+| Window restoration mode | OpenArrangementAtStartup / OpenNoWindowsAtStartup | Three-way choice at startup: use system window restoration, open the default saved window arrangement, or open no windows. | partial | Milestone 7d: policy 0 restores the windows saved at the last run (Windows has no system setting, so it always restores); the default arrangement opens with 7c; hotkey windows come with 7e. |
 | Always open at least one terminal window at startup | AlwaysOpenWindowAtStartup | Forces at least one terminal window even if system restoration would otherwise open none. | partial | Milestone 7b: saved; it matters once hotkey windows (7e) can stop the startup window, and one always opens until then. |
 | Restore windows to same Spaces | RestoreWindowsToSameSpaces | When restoring windows, puts each one back on the macOS Space it was on. | missing | macOS Spaces concept; no direct Windows virtual-desktop equivalent wired up. |
 
@@ -642,7 +642,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | disablePasswordManagerAnimations | disablePasswordManagerAnimations (bool, default NO) | Disable animations for showing/hiding password manager. | missing |  |
 | noSyncSilenceAnnoyingBellAutomatically | noSyncSilenceAnnoyingBellAutomatically (bool, default NO) | Automatically silence bell when it rings too much. | have | Milestone 6b. |
 | noSyncVariablesToReport | noSyncVariablesToReport (string, default @"") | Variables to report via control sequence This is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. | missing |  |
-| restoreWindowContents | restoreWindowContents (bool, default YES) | Restore window contents at startup. | missing |  |
+| restoreWindowContents | restoreWindowContents (bool, default YES) | Restore window contents at startup. | have | Milestone 7d: styled text (SGR only), capped by maxHistoryLinesToRestore; both grids, modes, and marks are not restored. |
 | numberOfLinesForAccessibility | numberOfLinesForAccessibility (int, default 1000) | Maximum number of lines of history to expose to Accessibility. | missing |  |
 | triggerRadius | triggerRadius (int, default 3) | Number of screen lines to match against trigger regular expressions. | missing |  |
 | allowIdempotentTriggers | allowIdempotentTriggers (bool, default NO) | Evaluate idempotent triggers periodically in interactive apps, even when triggers in interactive apps are disabled. | missing |  |
@@ -657,7 +657,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | preventEscapeSequenceFromClearingHistory | preventEscapeSequenceFromClearingHistory (bool?, default nil) | Prevent CSI 3 J from clearing scrollback history? This is also known as the terminfo E3 capability. | partial |  |
 | preventEscapeSequenceFromChangingProfile | preventEscapeSequenceFromChangingProfile (bool?, default nil) | Prevent control sequences from changing the current profile? | missing |  |
 | warnAboutSecureKeyboardInputWithOpenCommand | warnAboutSecureKeyboardInputWithOpenCommand (bool, default YES) | Warn if the `open` command appears to fail when secure keyboard input is enabled? | missing |  |
-| maxHistoryLinesToRestore | maxHistoryLinesToRestore (int, default 20000) | Maximum number of lines of history to restore. | missing |  |
+| maxHistoryLinesToRestore | maxHistoryLinesToRestore (int, default 20000) | Maximum number of lines of history to restore. | have | Milestone 7d. |
 | verticalBarCursorWidth | verticalBarCursorWidth (float, default 1) | Width of vertical bar cursor. | missing |  |
 | acceptOSC7 | acceptOSC7 (bool, default YES) | Accept OSC 7 to set username, hostname, and path. | missing |  |
 | detectPasswordInput | detectPasswordInput (bool, default YES) | Show key at cursor at password prompt? | missing |  |
@@ -860,11 +860,11 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| runJobsInServers | runJobsInServers (bool, default YES) | Enable session restoration. | missing |  |
+| runJobsInServers | runJobsInServers (bool, default YES) | Enable session restoration. | have | Milestone 7d: shells run in tandem-host.exe (one per user, a named pipe only this user can open); read at launch. |
 | bootstrapDaemon | bootstrapDaemon (bool, default YES) | Allow sessions to survive logging out and back in. | missing |  |
-| killJobsInServersOnQuit | killJobsInServersOnQuit (bool, default YES) | User-initiated Quit (⌘Q) of iTerm2 will kill all running jobs. | missing |  |
+| killJobsInServersOnQuit | killJobsInServersOnQuit (bool, default YES) | User-initiated Quit (⌘Q) of iTerm2 will kill all running jobs. | have | Milestone 7d: on by default; off keeps the shells running in tandem-host for the next launch, and the quit question says so. |
 | suppressRestartAnnouncement | suppressRestartAnnouncement (bool, default NO) | Suppress the Restart Session offer. | missing |  |
-| showSessionRestoredBanner | showSessionRestoredBanner (bool, default YES) | When restoring a session without restoring a running job, draw a banner saying “Session Contents Restored” below the restored contents. | missing |  |
+| showSessionRestoredBanner | showSessionRestoredBanner (bool, default YES) | When restoring a session without restoring a running job, draw a banner saying “Session Contents Restored” below the restored contents. | have | Milestone 7d: a full-width gray line with the short date and time. |
 | autoLogFormat | autoLogFormat (string, default @"\\(creationTimeString).\\(profileName).\\(termid).\\(iterm2.pid).\\(autoLogId).log") | Format for automatic session log filenames. | missing |  |
 | autologAppends | autologAppends (bool, default YES) | Automatic session logging appends to existing files. | missing |  |
 | logTimestampFormat | logTimestampFormat (string, default @"yyyy-MM-dd hh.mm.ss.SSS") | Format for log timestamps. | missing |  |
@@ -874,7 +874,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | preserveFontSizeOnAutomaticProfileSwitch | preserveFontSizeOnAutomaticProfileSwitch (bool, default YES) | Preserve font zoom level when Automatic Profile Switching changes profiles. | partial | Milestone 6c: saved; every pane shares one font size until per-pane fonts arrive, so a switch never changes it. |
 | autoLockSessionNameOnEdit | autoLockSessionNameOnEdit (bool, default YES) | Auto-lock session name after editing it. | missing |  |
 | aiGeneratedTabTitles | aiGeneratedTabTitles (bool, default NO) | Name tabs after the work on screen, using on-device AI? When enabled, the session variable “aiTitle” holds a short name for the task visible in the session, which you can show by adding the “AI-generated name” title component or using \\(session.aiTitle) in a custom title format. | missing |  |
-| timeoutForDaemonAttachment | timeoutForDaemonAttachment (float, default 10) | How long to wait when trying to attach to an iTerm daemon at startup when restoring windows (in seconds)? | missing |  |
+| timeoutForDaemonAttachment | timeoutForDaemonAttachment (float, default 10) | How long to wait when trying to attach to an iTerm daemon at startup when restoring windows (in seconds)? | have | Milestone 7d: how long Tandem waits for tandem-host at launch. |
 | logTimestampsWithPlainText | logTimestampsWithPlainText (bool, default YES) | When logging plain text, include timestamps for each line? | missing |  |
 | composerClearSequence | composerClearSequence (string, default @"0x15 0x0b") | Hex codes to send to clear the command line when entering the composer. | missing |  |
 | alwaysUseStatusBarComposer | alwaysUseStatusBarComposer (bool, default NO) | Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present. | missing |  |
@@ -901,7 +901,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | trackingRunloopForLiveResize | trackingRunloopForLiveResize (bool, default YES) | Use a tracking runloop for live resizing. | missing |  |
 | disableWindowShadowWhenTransparencyOnMojave | disableWindowShadowWhenTransparencyOnMojave (bool, default YES) | Disable the window shadow on Mojave when the window has a transparent session to improve performance. | missing |  |
 | disableWindowShadowWhenTransparencyPreMojave | disableWindowShadowWhenTransparencyPreMojave (bool, default YES) | Disable the window shadow on High Sierra and earlier when the window has a transparent session to prevent text shadows. | missing |  |
-| restoreWindowsWithinScreens | restoreWindowsWithinScreens (bool, default YES) | When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays. | missing |  |
+| restoreWindowsWithinScreens | restoreWindowsWithinScreens (bool, default YES) | When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays. | have | Milestone 7d: iTerm2's shift into the displays, plus a move onto the first display for a window on none; work areas stand in for full frames. |
 | extraSpaceBeforeCompactTopTabBar | extraSpaceBeforeCompactTopTabBar (float, default 0) | Amount of extra space (in points) between stoplight buttons and inline tab bar. | missing |  |
 | compactTabBarStoplightButtonsWidth | compactTabBarStoplightButtonsWidth (float, default 75) | Width (in points) reserved for the window buttons (close/minimize/zoom) before the inline tab bar. | missing |  |
 | workAroundMultiDisplayOSBug | workAroundMultiDisplayOSBug (bool, default YES) | Work around a macOS bug where the OS moves windows to the first display for no good reason. | missing |  |
