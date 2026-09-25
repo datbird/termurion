@@ -316,6 +316,24 @@ default = false
 help = "Documents shown rendered in place (Render Selection Natively, OSC 1337 Block render=1, File= text) start without wrapping, scrolled sideways."
 
 [[setting]]
+key = "nativeRenderingCSSDark"
+tab = "Advanced"
+section = "General"
+label = "Rendered code theme (dark background)"
+type = "string"
+default = ""
+help = "A CSS file of highlight.js class colors for documents shown rendered in place on a dark background. ${fg}, ${bg}, and ${red} and the other ANSI color names fill in from the profile. Empty: the built-in theme."
+
+[[setting]]
+key = "nativeRenderingCSSLight"
+tab = "Advanced"
+section = "General"
+label = "Rendered code theme (light background)"
+type = "string"
+default = ""
+help = "As the dark one, for a light background."
+
+[[setting]]
 key = "screenshotSaveLocation"
 tab = "Advanced"
 section = "General"

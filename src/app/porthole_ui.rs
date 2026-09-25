@@ -17,7 +17,7 @@ use crate::scene::PORTHOLE_MARGIN;
 /// A porthole's layout and what it was made for, and its sideways scroll (Wide).
 pub(super) struct PView {
     pub layout: Layout,
-    key: (u32, u32, bool, String, bool),
+    key: (u32, u32, bool, String, bool, String),
     pub scroll_x: f32,
     /// This frame's selection and find marks, from the text's top left.
     pub marks: Vec<(Rect, crate::palette::Rgb, f32)>,
@@ -54,10 +54,10 @@ fn span_rects(layout: &Layout, a: Pos, b: Pos, measure: &dyn Fn(&str, Face, f32)
 /// A drawn porthole: its pane and id, its controls, and its frame.
 pub(super) type PortholeHit = (PaneId, u32, scene::PortholeControls, Rect);
 
-/// The document laid out with the renderer's fonts.
-fn lay(renderer: &mut Renderer, p: &Porthole, palette: &crate::palette::Palette, dark: bool, width: f32, cell_h: f32) -> Layout {
+/// The document laid out with the renderer's fonts, in a highlight theme.
+fn lay(renderer: &mut Renderer, p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &render::Theme, width: f32, cell_h: f32) -> Layout {
     let lang = p.detected.language.clone().unwrap_or(Language::Plain);
-    let doc = render::render(&p.text, &lang, palette, dark);
+    let doc = render::render_themed(&p.text, &lang, palette, dark, theme);
     let r = RefCell::new(renderer);
     let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width(t, f == Face::Prose, s);
     render::layout(&doc, width, cell_h, &measure, p.wide)
@@ -80,8 +80,10 @@ impl App {
         let width = text_width(screen.term().columns(), cell.0);
         let palette = screen.palette.clone();
         let dark = screen.is_dark();
+        // Colors do not change the rows, so the built-in theme counts them.
+        let theme = render::Theme::builtin(&palette, dark);
         let renderer = RefCell::new(&mut gpu.renderer);
-        let rows_for = |ph: &Porthole| rows_needed(lay(&mut renderer.borrow_mut(), ph, &palette, dark, width, cell.1).height, cell.1);
+        let rows_for = |ph: &Porthole| rows_needed(lay(&mut renderer.borrow_mut(), ph, &palette, dark, &theme, width, cell.1).height, cell.1);
         let id = screen.render_range(first, last, source, &rows_for);
         if let Some(ph) = id.and_then(|i| screen.portholes.get_mut(&i)) {
             ph.sized = true;
@@ -117,10 +119,15 @@ impl App {
         }
     }
 
-    fn porthole_key(&self, s: &crate::screen::Screen, p: &Porthole) -> (u32, u32, bool, String, bool) {
+    fn porthole_key(&self, s: &crate::screen::Screen, p: &Porthole) -> (u32, u32, bool, String, bool, String) {
         let cell = self.cell();
         let lang = p.detected.language.as_ref().map_or("Plain text".to_string(), |l| l.name());
-        (text_width(s.term().columns(), cell.0).to_bits(), cell.1.to_bits(), s.is_dark(), lang, p.wide)
+        (text_width(s.term().columns(), cell.0).to_bits(), cell.1.to_bits(), s.is_dark(), lang, p.wide, self.css_setting(s.is_dark()))
+    }
+
+    /// The highlight theme file set for a dark or light background ("" for the template).
+    fn css_setting(&self, dark: bool) -> String {
+        self.globals.string(if dark { "nativeRenderingCSSDark" } else { "nativeRenderingCSSLight" })
     }
 
     /// Lays out the portholes in view whose width, font, or look changed.
@@ -139,8 +146,12 @@ impl App {
                 if self.porthole_views.get(&(pane, *pid)).is_some_and(|v| v.key == key) {
                     continue;
                 }
+                let (theme, error) = render::load_theme(&key.5, &s.palette, s.is_dark());
+                if let Some(e) = error {
+                    self.banners.set("porthole-css", e);
+                }
                 let Some(gpu) = self.gpu.as_mut() else { return };
-                let layout = lay(&mut gpu.renderer, ph, &s.palette, s.is_dark(), text_width(s.term().columns(), cell.0), cell.1);
+                let layout = lay(&mut gpu.renderer, ph, &s.palette, s.is_dark(), &theme, text_width(s.term().columns(), cell.0), cell.1);
                 // The terminal estimated this one's rows; the window's fonts decide once.
                 if !ph.sized {
                     resize.push((pane, *pid, rows_needed(layout.height, cell.1)));

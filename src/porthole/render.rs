@@ -67,11 +67,16 @@ pub struct Doc {
 }
 
 pub fn render(text: &str, language: &Language, palette: &Palette, dark: bool) -> Doc {
+    render_themed(text, language, palette, dark, &Theme::builtin(palette, dark))
+}
+
+/// `render` with a highlight theme of its own.
+pub fn render_themed(text: &str, language: &Language, palette: &Palette, dark: bool, theme: &Theme) -> Doc {
     match language {
-        Language::Markdown => markdown(text, palette, dark),
+        Language::Markdown => markdown(text, palette, theme),
         Language::Json => json(text, palette, dark),
         Language::Plain => Doc { blocks: plain_lines(text, palette.fg, 0.0, false) },
-        Language::Code(name) => Doc { blocks: code_lines(text, name, palette, dark, 0.0, false) },
+        Language::Code(name) => Doc { blocks: code_lines(text, name, palette, theme, 0.0, false) },
     }
 }
 
@@ -88,107 +93,192 @@ fn plain_lines(text: &str, fg: Rgb, indent: f32, code_bg: bool) -> Vec<Block> {
         .collect()
 }
 
-/// iTerm2's highlight classes, grouped by the color its templates give them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Class {
-    Comment,
-    /// variable, tag, name, regexp, link, meta.
-    Tag,
-    /// number, built_in, literal, type, params, deletion.
-    Number,
-    /// title, section, attribute.
-    Title,
-    /// string, symbol, bullet, addition.
-    String,
-    /// keyword, selector-tag.
-    Keyword,
-    Emphasis,
-    Strong,
-    /// Operators and everything unnamed: the text color.
-    Plain,
-}
-
-/// Scope prefixes to classes, the more specific first.
-fn scope_classes() -> &'static [(Scope, Class)] {
-    static TABLE: OnceLock<Vec<(Scope, Class)>> = OnceLock::new();
+/// Syntect scope prefixes to highlight.js class names (iTerm2's themes are written for
+/// them), the more specific first. An empty name is the text color.
+fn scope_classes() -> &'static [(Scope, &'static str)] {
+    static TABLE: OnceLock<Vec<(Scope, &'static str)>> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let rules: &[(&str, Class)] = &[
-            ("comment", Class::Comment),
-            ("string.regexp", Class::Tag),
-            ("string", Class::String),
-            ("constant.character", Class::String),
-            ("markup.inserted", Class::String),
-            ("constant.numeric", Class::Number),
-            ("constant.language", Class::Number),
-            ("support.type", Class::Number),
-            ("support.class", Class::Number),
-            ("support.function", Class::Number),
-            ("variable.parameter", Class::Number),
-            ("markup.deleted", Class::Number),
-            ("storage.type.function", Class::Keyword),
-            ("storage.type.struct", Class::Keyword),
-            ("storage.type.enum", Class::Keyword),
-            ("storage.type.class", Class::Keyword),
-            ("storage.type.trait", Class::Keyword),
-            ("storage.type.impl", Class::Keyword),
-            ("storage.type.module", Class::Keyword),
-            ("storage.type.type", Class::Keyword),
-            ("storage.type.union", Class::Keyword),
-            ("storage.type.interface", Class::Keyword),
-            ("storage.type.namespace", Class::Keyword),
-            ("storage.type", Class::Number),
-            ("storage.modifier", Class::Keyword),
-            ("keyword.operator", Class::Plain),
-            ("keyword", Class::Keyword),
-            ("entity.other.attribute-name.id", Class::Tag),
-            ("entity.other.attribute-name.class", Class::Tag),
-            ("entity.other.attribute-name", Class::Title),
-            ("entity.name.tag", Class::Tag),
-            ("entity.name", Class::Title),
-            ("markup.heading", Class::Title),
-            ("markup.underline.link", Class::Tag),
-            ("meta.preprocessor", Class::Tag),
-            ("variable.language", Class::Tag),
-            ("markup.bold", Class::Strong),
-            ("markup.italic", Class::Emphasis),
+        let rules: &[(&str, &str)] = &[
+            ("comment", "comment"),
+            ("string.regexp", "regexp"),
+            ("string", "string"),
+            ("constant.character", "string"),
+            ("markup.inserted", "addition"),
+            ("constant.numeric", "number"),
+            ("constant.language", "literal"),
+            ("support.type", "type"),
+            ("support.class", "type"),
+            ("support.function", "built_in"),
+            ("variable.parameter", "params"),
+            ("markup.deleted", "deletion"),
+            ("storage.type.function", "keyword"),
+            ("storage.type.struct", "keyword"),
+            ("storage.type.enum", "keyword"),
+            ("storage.type.class", "keyword"),
+            ("storage.type.trait", "keyword"),
+            ("storage.type.impl", "keyword"),
+            ("storage.type.module", "keyword"),
+            ("storage.type.type", "keyword"),
+            ("storage.type.union", "keyword"),
+            ("storage.type.interface", "keyword"),
+            ("storage.type.namespace", "keyword"),
+            ("storage.type", "type"),
+            ("storage.modifier", "keyword"),
+            ("keyword.operator", ""),
+            ("keyword", "keyword"),
+            ("entity.other.attribute-name.id", "selector-id"),
+            ("entity.other.attribute-name.class", "selector-class"),
+            ("entity.other.attribute-name", "attribute"),
+            ("entity.name.tag", "tag"),
+            ("entity.name.section", "section"),
+            ("entity.name", "title"),
+            ("markup.heading", "section"),
+            ("markup.underline.link", "link"),
+            ("meta.preprocessor", "meta"),
+            ("variable.language", "variable"),
+            ("markup.bold", "strong"),
+            ("markup.italic", "emphasis"),
         ];
         rules.iter().map(|(s, c)| (Scope::new(s).expect("a valid scope"), *c)).collect()
     })
 }
 
-fn classify(stack: &ScopeStack) -> Class {
+fn classify(stack: &ScopeStack) -> &'static str {
     for scope in stack.as_slice().iter().rev() {
         if let Some((_, c)) = scope_classes().iter().find(|(p, _)| p.is_prefix_of(*scope)) {
-            return *c;
+            return c;
         }
     }
-    Class::Plain
+    ""
 }
 
-/// A class's color and style, from iTerm2's dark or light template.
-pub fn class_style(class: Class, palette: &Palette, dark: bool) -> (Rgb, bool, bool) {
-    let a = |i: usize| palette.ansi[i];
-    match (class, dark) {
-        (Class::Comment, true) => (a(6), false, false),
-        (Class::Comment, false) => (a(8), false, false),
-        (Class::Tag, true) => (a(9), false, false),
-        (Class::Tag, false) => (a(1), false, false),
-        (Class::Number, true) => (a(12), false, false),
-        (Class::Number, false) => (a(4), false, false),
-        (Class::Title, true) => (a(11), false, false),
-        (Class::Title, false) => (a(3), false, false),
-        (Class::String, true) => (a(10), false, false),
-        (Class::String, false) => (a(2), false, false),
-        (Class::Keyword, true) => (a(13), false, false),
-        (Class::Keyword, false) => (a(5), false, false),
-        (Class::Emphasis, _) => (palette.fg, false, true),
-        (Class::Strong, _) => (palette.fg, true, false),
-        (Class::Plain, _) => (palette.fg, false, false),
+/// Highlight colors by highlight.js class: from a CSS file, or the built-in templates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Theme {
+    fg: Rgb,
+    classes: std::collections::HashMap<String, (Option<Rgb>, bool, bool)>,
+}
+
+/// Tandem's two templates, iTerm2's class groups: `${name}` is a profile color.
+const DARK_CSS: &str = "
+.hljs { color: ${fg}; }
+.hljs-comment, .hljs-quote { color: ${cyan}; }
+.hljs-variable, .hljs-template-variable, .hljs-tag, .hljs-name, .hljs-selector-id, .hljs-selector-class, .hljs-regexp, .hljs-link, .hljs-meta { color: ${brightRed}; }
+.hljs-number, .hljs-built_in, .hljs-literal, .hljs-type, .hljs-params, .hljs-deletion { color: ${brightBlue}; }
+.hljs-title, .hljs-section, .hljs-attribute { color: ${brightYellow}; }
+.hljs-string, .hljs-symbol, .hljs-bullet, .hljs-addition { color: ${brightGreen}; }
+.hljs-keyword, .hljs-selector-tag { color: ${brightMagenta}; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: bold; }
+";
+
+const LIGHT_CSS: &str = "
+.hljs { color: ${fg}; }
+.hljs-comment, .hljs-quote { color: ${brightBlack}; }
+.hljs-variable, .hljs-template-variable, .hljs-tag, .hljs-name, .hljs-selector-id, .hljs-selector-class, .hljs-regexp, .hljs-link, .hljs-meta { color: ${red}; }
+.hljs-number, .hljs-built_in, .hljs-literal, .hljs-type, .hljs-params, .hljs-deletion { color: ${blue}; }
+.hljs-title, .hljs-section, .hljs-attribute { color: ${yellow}; }
+.hljs-string, .hljs-symbol, .hljs-bullet, .hljs-addition { color: ${green}; }
+.hljs-keyword, .hljs-selector-tag { color: ${magenta}; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: bold; }
+";
+
+const COLOR_NAMES: [&str; 16] = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+];
+
+fn parse_hex(v: &str) -> Option<Rgb> {
+    let h = v.trim().strip_prefix('#')?;
+    let n = |s: &str| u8::from_str_radix(s, 16).ok();
+    match h.len() {
+        3 => {
+            let d = |i: usize| n(&h[i..i + 1]).map(|x| x * 17);
+            Some(rgb(d(0)?, d(1)?, d(2)?))
+        }
+        6 => Some(rgb(n(&h[0..2])?, n(&h[2..4])?, n(&h[4..6])?)),
+        _ => None,
+    }
+}
+
+impl Theme {
+    /// iTerm2's template for a dark or light background, in the profile's colors.
+    pub fn builtin(palette: &Palette, dark: bool) -> Theme {
+        Theme::from_css(if dark { DARK_CSS } else { LIGHT_CSS }, palette)
+    }
+
+    /// A theme from CSS: `${fg}`, `${bg}`, and the 16 color names fill in from the profile;
+    /// rules `.hljs-<class>[, ...] { color; font-weight: bold; font-style: italic }` count,
+    /// anything else is ignored.
+    pub fn from_css(css: &str, palette: &Palette) -> Theme {
+        let hex = |c: Rgb| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b);
+        let mut css = css.replace("${fg}", &hex(palette.fg)).replace("${bg}", &hex(palette.bg)).replace("${fontFamily}", "monospace");
+        for (i, name) in COLOR_NAMES.iter().enumerate() {
+            css = css.replace(&format!("${{{name}}}"), &hex(palette.ansi[i]));
+        }
+        // Comments out.
+        let mut clean = String::new();
+        let mut rest = css.as_str();
+        while let Some(i) = rest.find("/*") {
+            clean.push_str(&rest[..i]);
+            rest = rest[i + 2..].split_once("*/").map_or("", |(_, r)| r);
+        }
+        clean.push_str(rest);
+        let mut t = Theme { fg: palette.fg, classes: std::collections::HashMap::new() };
+        for rule in clean.split('}') {
+            let Some((selectors, body)) = rule.split_once('{') else { continue };
+            let (mut color, mut bold, mut italic) = (None, false, false);
+            for decl in body.split(';') {
+                let Some((k, v)) = decl.split_once(':') else { continue };
+                match (k.trim(), v.trim()) {
+                    ("color", v) => color = parse_hex(v),
+                    ("font-weight", v) => bold = v == "bold" || v.parse::<u32>().is_ok_and(|w| w >= 600),
+                    ("font-style", v) => italic = v == "italic",
+                    _ => {}
+                }
+            }
+            for sel in selectors.split(',') {
+                match sel.trim() {
+                    ".hljs" => {
+                        if let Some(c) = color {
+                            t.fg = c;
+                        }
+                    }
+                    s => {
+                        if let Some(class) = s.strip_prefix(".hljs-") {
+                            t.classes.insert(class.to_string(), (color, bold, italic));
+                        }
+                    }
+                }
+            }
+        }
+        t
+    }
+
+    /// A class's color, bold, and italic.
+    pub fn style(&self, class: &str) -> (Rgb, bool, bool) {
+        match self.classes.get(class) {
+            Some((c, b, i)) => (c.unwrap_or(self.fg), *b, *i),
+            None => (self.fg, false, false),
+        }
+    }
+}
+
+/// The theme for a CSS file setting (`nativeRenderingCSSDark` or `...Light`): the built-in
+/// template when the setting is empty, and also, with the error, when the file cannot be read.
+pub fn load_theme(path: &str, palette: &Palette, dark: bool) -> (Theme, Option<String>) {
+    if path.trim().is_empty() {
+        return (Theme::builtin(palette, dark), None);
+    }
+    match std::fs::read_to_string(path) {
+        Ok(css) => (Theme::from_css(&css, palette), None),
+        Err(e) => (Theme::builtin(palette, dark), Some(format!("Could not read the highlight theme {path}: {e}"))),
     }
 }
 
 /// Source lines highlighted with a syntect grammar; plain lines when it has none.
-fn code_lines(text: &str, syntax: &str, palette: &Palette, dark: bool, indent: f32, code_bg: bool) -> Vec<Block> {
+fn code_lines(text: &str, syntax: &str, palette: &Palette, theme: &Theme, indent: f32, code_bg: bool) -> Vec<Block> {
     let set = detect::syntaxes();
     let Some(syntax) = set.find_syntax_by_name(syntax) else { return plain_lines(text, palette.fg, indent, code_bg) };
     let mut state = ParseState::new(syntax);
@@ -213,7 +303,7 @@ fn code_lines(text: &str, syntax: &str, palette: &Palette, dark: bool, indent: f
             if piece.is_empty() {
                 continue;
             }
-            let (color, bold, italic) = class_style(classify(&stack), palette, dark);
+            let (color, bold, italic) = theme.style(classify(&stack));
             let run = Run { bold, italic, ..Run::new(piece, color, Face::Code) };
             match b.runs.last_mut() {
                 Some(last) if last.same_style(&run) => last.text.push_str(&run.text),
@@ -325,7 +415,7 @@ const HEADING_SCALES: [f32; 6] = [2.0, 1.5, 1.3, 1.0, 0.8, 0.7];
 
 /// Markdown in the prose font, every style in the default foreground (iTerm2), code in the
 /// profile's font, fenced code highlighted by its info string.
-fn markdown(text: &str, palette: &Palette, dark: bool) -> Doc {
+fn markdown(text: &str, palette: &Palette, theme: &Theme) -> Doc {
     let fg = palette.fg;
     let mut out: Vec<Block> = Vec::new();
     let mut cur: Option<Block> = None;
@@ -444,7 +534,7 @@ fn markdown(text: &str, palette: &Palette, dark: bool) -> Doc {
                     let lang = detect::for_type_hint(&info).and_then(|c| c.into_iter().next()).unwrap_or_else(|| detect::guess(body, &[]));
                     let ind = indent(quote, &lists);
                     let lines = match &lang {
-                        Language::Code(name) => code_lines(body, name, palette, dark, ind, true),
+                        Language::Code(name) => code_lines(body, name, palette, theme, ind, true),
                         _ => plain_lines(body, fg, ind, true),
                     };
                     out.extend(lines);
@@ -934,5 +1024,33 @@ mod tests {
         let ll = layout(&link, 1000.0, 20.0, &measure, false);
         assert_eq!(ll.link_at(Pos { line: 0, col: 1 }), Some("https://x.org"));
         assert_eq!(ll.link_at(Pos { line: 0, col: 9 }), None);
+    }
+
+    #[test]
+    fn css_placeholders_and_rules() {
+        let p = Palette::default();
+        let css = ".hljs { color: ${fg}; background: ${bg}; }\n/* a comment */\n.hljs-keyword,\n.hljs-selector-tag { color: ${red}; font-weight: bold }\n.hljs-string{color:#0f0;font-style:italic}\n.hljs-number { color: #123456 }";
+        let t = Theme::from_css(css, &p);
+        assert_eq!(t.style("keyword"), (p.ansi[1], true, false));
+        assert_eq!(t.style("selector-tag"), (p.ansi[1], true, false));
+        assert_eq!(t.style("string"), (crate::palette::rgb(0, 255, 0), false, true), "#rgb and italic");
+        assert_eq!(t.style("number"), (crate::palette::rgb(0x12, 0x34, 0x56), false, false));
+        assert_eq!(t.style("title"), (p.fg, false, false), "unnamed classes use the text color");
+        let doc = render_themed("fn main() {}", &Language::Code("Rust".into()), &p, true, &t);
+        assert_eq!(run(&doc, "fn").color, p.ansi[1]);
+        assert!(run(&doc, "fn").bold);
+    }
+
+    #[test]
+    fn bad_css_falls_to_template() {
+        let p = Palette::default();
+        let (t, err) = load_theme("C:\\no\\such\\file.css", &p, true);
+        assert!(err.is_some_and(|e| e.contains("file.css")));
+        assert_eq!(t, Theme::builtin(&p, true));
+        let (t, err) = load_theme("", &p, false);
+        assert!(err.is_none());
+        assert_eq!(t, Theme::builtin(&p, false));
+        assert_eq!(Theme::builtin(&p, true).style("keyword"), (p.ansi[13], false, false), "the dark template");
+        assert_eq!(Theme::builtin(&p, false).style("comment"), (p.ansi[8], false, false), "the light template");
     }
 }
