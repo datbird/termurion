@@ -2316,8 +2316,9 @@ tab = "Session"
 section = ""
 label = "Jobs to Ignore"
 type = "list"
-default = []
-help = "Job or process names that do not count as \"still running\" for the prompt-before-closing check."
+default = ["ssh", "telnet", "plink"]
+default_note = "iTerm2 seeds rlogin, ssh, slogin, telnet into every profile; Tandem seeds the Windows remote-login programs. conhost and OpenConsole are always ignored."
+help = "Job or process names that do not count as \"still running\" for the prompt-before-closing check (case does not matter, .exe is optional)."
 light_dark = false
 macos_only = false
 

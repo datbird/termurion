@@ -365,12 +365,12 @@ impl App {
                 self.split(Axis::Column, g.as_deref());
             }
             "closeCurrentSession:" => {
-                if let Some(id) = self.focused_id() {
+                if let Some(id) = self.focused_id().filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_pane(id, event_loop);
                 }
             }
             "closeCurrentTab:" => {
-                if let Some(t) = self.tabs.get(self.active) {
+                if let Some(t) = self.tabs.get(self.active).filter(|_| self.confirm_close(close_ui::Closing::Tab(self.active))) {
                     for id in t.layout.panes() {
                         self.close_pane(id, event_loop);
                     }
@@ -549,6 +549,9 @@ impl App {
     }
 
     fn quit(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.confirm_close(close_ui::Closing::Window) {
+            return;
+        }
         if let Some(h) = self.hwnd() {
             crate::notify::remove(h);
         }

@@ -78,6 +78,7 @@ mod prompted_ui;
 mod triggers_ui;
 mod requests_ui;
 mod jobs_ui;
+mod close_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -848,7 +849,7 @@ impl App {
         match action {
             Action::NewTab => self.new_tab(None),
             Action::ClosePane => {
-                if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
+                if let Some(id) = self.tabs.get(self.active).map(|t| t.focused).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_pane(id, event_loop);
                 }
             }
@@ -1716,6 +1717,9 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             WindowEvent::ThemeChanged(_) => self.refresh_panes(),
             WindowEvent::CloseRequested => {
+                if !self.confirm_close(close_ui::Closing::Window) {
+                    return;
+                }
                 if self.save_due.is_some() {
                     self.save_now();
                 }
