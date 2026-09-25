@@ -938,6 +938,27 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0 });
 }
 
+/// Text already in the frame stops at `r` (a popup drawn over it): each row crossing `r`
+/// keeps its part left of `r` and gets a copy for its part right of it. Overlay quads draw
+/// after all text, so a popup's box is a normal quad plus this.
+pub fn cut_out(frame: &mut Frame, r: Rect) {
+    let mut extra = Vec::new();
+    for row in frame.rows.iter_mut() {
+        let c = row.clip;
+        if c.y >= r.y + r.h || c.y + c.h <= r.y || c.x >= r.x + r.w || c.x + c.w <= r.x {
+            continue;
+        }
+        let right = r.x + r.w;
+        if c.x + c.w > right {
+            let mut copy = row.clone();
+            copy.clip = Rect { x: right, w: c.x + c.w - right, ..c };
+            extra.push(copy);
+        }
+        row.clip = Rect { w: (r.x - c.x).max(0.0), ..c };
+    }
+    frame.rows.extend(extra);
+}
+
 /// The completion list at the cursor (Autocomplete, Auto Command Completion): rows with
 /// the chosen one marked, and a footer. `at`: the cell below the cursor's top-left corner.
 pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, footer: Option<&str>, at: (f32, f32), bounds: Rect, cell: (f32, f32)) {
@@ -957,12 +978,13 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     }
     let x = at.0.min(bounds.x + bounds.w - w).max(bounds.x);
     let r = Rect { x, y, w, h };
-    frame.overlay.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
+    cut_out(frame, r);
+    frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
     let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
     for (i, text) in visible.iter().enumerate() {
         let ry = y + 2.0 + i as f32 * cell.1;
         if first + i == selected {
-            frame.overlay.push(Quad { rect: Rect { x, y: ry, w, h: cell.1 }, color: rgba(BAR_BUTTON, 1.0) });
+            frame.quads.push(Quad { rect: Rect { x, y: ry, w, h: cell.1 }, color: rgba(BAR_BUTTON, 1.0) });
         }
         frame.rows.push(TextRow { x: x + cell.0, y: ry, spans: vec![span(text.clone())], clip: r, scale: 1.0 });
     }
@@ -1073,6 +1095,25 @@ mod broadcast_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn popups_over_text_keep_their_own_text() {
+        // Overlay quads draw after all text, so a popup's box must not be one: the terminal
+        // text under the box is cut out instead, and the popup's own text shows.
+        let mut f = Frame::default();
+        let span = Span { text: "terminal".into(), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+        let under = Rect { x: 0.0, y: 0.0, w: 400.0, h: 16.0 };
+        f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: under, scale: 1.0 });
+        let bounds = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 0.0), bounds, (8.0, 16.0));
+        assert!(f.overlay.is_empty());
+        let boxes: Vec<Rect> = f.quads.iter().map(|q| q.rect).collect();
+        let b = boxes[0];
+        // The terminal row is split around the box: left part and right part.
+        assert_eq!(f.rows[0].clip, Rect { x: 0.0, y: 0.0, w: b.x, h: 16.0 });
+        assert_eq!(f.rows[1].clip, Rect { x: b.x + b.w, y: 0.0, w: 400.0 - b.x - b.w, h: 16.0 });
+        assert!(f.rows.iter().any(|r| r.spans[0].text == "one"));
+    }
 
     #[test]
     fn mark_bars_sit_in_the_left_padding() {
