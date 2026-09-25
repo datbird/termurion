@@ -165,7 +165,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    _ => {}
+                    NewWindow::Profile(_) | NewWindow::Arrangement(_) => {}
                 }
                 self.relayout();
                 return Err(e);
@@ -182,21 +182,15 @@ impl App {
         self.registry.open(key(id));
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
-            NewWindow::Profiles(gs) => gs.first().cloned().flatten(),
             NewWindow::Tab(t) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
+            NewWindow::Arrangement(w) => self.first_arrangement_guid(w),
         };
         self.apply_fonts();
         self.size_window(first_guid.as_deref());
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
-            NewWindow::Profiles(guids) => {
-                for g in &guids {
-                    self.new_tab(g.as_deref());
-                }
-                self.active = 0;
-            }
             NewWindow::Tab(tab) => {
                 self.tabs.push(tab);
                 self.active = 0;
@@ -206,6 +200,11 @@ impl App {
                 self.tabs.extend(tabs);
                 self.active = 0;
                 self.relayout();
+            }
+            NewWindow::Arrangement(w) => {
+                if let Err(e) = self.apply_arrangement_window(&w) {
+                    self.banners.set("arrangement", e);
+                }
             }
         }
         self.install_menus();
@@ -385,12 +384,12 @@ impl App {
 pub(super) enum NewWindow {
     /// One tab of a profile (the default one when None).
     Profile(Option<String>),
-    /// A tab for each profile (Duplicate Window).
-    Profiles(Vec<Option<String>>),
     /// A tab moved from another window.
     Tab(Tab),
     /// Tabs brought back by Undo Close.
     Tabs(Vec<Tab>),
+    /// A window table from an arrangement.
+    Arrangement(crate::arrangement::Value),
 }
 
 impl App {
@@ -495,14 +494,15 @@ impl App {
         self.redraw();
     }
 
-    /// Shell > Duplicate Window: a new window with a tab for each of this window's tabs, in
-    /// the profile of its focused session.
+    /// Shell > Duplicate Window: the window saved as an arrangement (without contents) and
+    /// opened again, with its splits, profiles, and folders.
     pub(super) fn duplicate_window(&mut self) {
-        let guids: Vec<Option<String>> = self.tabs.iter().map(|t| self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile))).collect();
-        if !guids.is_empty() {
-            self.pending_windows.push(NewWindow::Profiles(guids));
-            self.redraw();
+        if self.tabs.is_empty() {
+            return;
         }
+        let snap = self.snapshot_window(false);
+        self.pending_windows.push(NewWindow::Arrangement(snap));
+        self.redraw();
     }
 }
 

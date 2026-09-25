@@ -225,6 +225,8 @@ pub struct App {
     /// changed).
     arrange_prompt: Option<(crate::prompt_ui::PromptWindow, bool)>,
     menus_dirty: bool,
+    /// The folder the next pane starts in, for a restored arrangement's session.
+    start_dir_override: Option<crate::arrangement::Folder>,
     /// Undo Close: closed things waiting, and the close being collected now.
     undo: crate::undo_close::Stack<undo_ui::Undone>,
     undo_capture: Option<undo_ui::Capture>,
@@ -454,6 +456,7 @@ pub fn run() {
         title_prompt: None,
         arrange_prompt: None,
         menus_dirty: false,
+        start_dir_override: None,
         undo: Default::default(),
         undo_capture: None,
         pending_windows: Vec::new(),
@@ -595,7 +598,16 @@ impl App {
         let (cols, rows) = self.grid_size(rect);
         let p = self.profile(guid);
         let cmd = profile::command_line(&p, &self.shell);
-        let (cwd, warning) = profile::start_dir_with(&p, self.previous_dir().as_deref());
+        // A restored arrangement names each session's folder.
+        let (cwd, warning) = match &self.start_dir_override {
+            Some(crate::arrangement::Folder::Forced(d)) if std::path::Path::new(d).is_dir() => (PathBuf::from(d), None),
+            Some(crate::arrangement::Folder::Forced(d)) => {
+                let (c, _) = profile::start_dir_with(&p, None);
+                (c, Some(format!("The folder {d} from the arrangement does not exist; the profile's folder is used.")))
+            }
+            Some(crate::arrangement::Folder::Previous(d)) => profile::start_dir_with(&p, Some(std::path::Path::new(d))),
+            _ => profile::start_dir_with(&p, self.previous_dir().as_deref()),
+        };
         match warning {
             Some(w) => self.banners.set("directory", w),
             None => self.banners.clear("directory"),
@@ -1705,7 +1717,24 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.apply_fonts();
         self.size_window(None);
-        self.new_tab(None);
+        // Open default window arrangement: its first window fills this one, the others open
+        // as new windows.
+        let startup_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
+        match startup_arrangement {
+            Some(mut windows) => {
+                let first = windows.remove(0);
+                if let Err(e) = self.apply_arrangement_window(&first) {
+                    self.banners.set("arrangement", e);
+                }
+                if self.tabs.is_empty() {
+                    self.new_tab(None);
+                }
+                for w in windows {
+                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w));
+                }
+            }
+            None => self.new_tab(None),
+        }
         self.install_menus();
         self.place_window();
         self.apply_window_profile(None);

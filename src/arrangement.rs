@@ -232,6 +232,37 @@ pub fn date_names(t: (u16, u16, u16, u16, u16, u16)) -> (String, String, String)
     (format!("{month} {d}, {y}"), format!("{h12}:{mi:02} {ampm}"), format!("{h12}:{mi:02}:{s:02} {ampm}"))
 }
 
+
+/// The profile to start a session with: by Guid, then by Name. None: the default profile
+/// (the caller says so).
+pub fn resolve_profile(session: &Value, profiles: &[(String, String)]) -> Option<String> {
+    let (guid, name, _) = profile_of(session)?;
+    profiles.iter().find(|(g, _)| *g == guid && !guid.is_empty()).or_else(|| profiles.iter().find(|(_, n)| *n == name && !name.is_empty())).map(|(g, _)| g.clone())
+}
+
+/// A restored session's folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Folder {
+    /// Contents came with it: this folder, whatever the profile says.
+    Forced(String),
+    /// The profile's working-directory rule decides, with this as the previous folder.
+    Previous(String),
+    None,
+}
+
+pub fn folder_for(session: &Value) -> Folder {
+    match session.get("Working Directory").and_then(|v| v.as_str()) {
+        Some(d) if contents(session).is_some() => Folder::Forced(d.into()),
+        Some(d) => Folder::Previous(d.into()),
+        None => Folder::None,
+    }
+}
+
+/// The text saved "with contents".
+pub fn contents(session: &Value) -> Option<&str> {
+    session.get("Tandem Contents").and_then(|v| v.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +358,30 @@ mod tests {
         assert_eq!(w.get("Size Locked").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(w.get("Tabs").and_then(|v| v.as_array()).map(Vec::len), Some(2));
         assert_eq!(date_names((2026, 9, 27, 14, 5, 33)), ("Sep 27, 2026".to_string(), "2:05 PM".to_string(), "2:05:33 PM".to_string()));
+    }
+
+    #[test]
+    fn missing_profiles_fall_back() {
+        let mut p = Table::new();
+        p.insert("Guid".into(), Value::String("gone".into()));
+        p.insert("Name".into(), Value::String("Build".into()));
+        let v = session(80, 24, p, "s", None);
+        let profiles = vec![("G1".to_string(), "Default".to_string()), ("G2".to_string(), "Build".to_string())];
+        assert_eq!(resolve_profile(&v, &profiles), Some("G2".to_string()), "a profile found by name when its Guid is gone");
+        assert_eq!(resolve_profile(&v, &profiles[..1]), None, "neither: the caller uses the default profile and says so");
+        let mut q = Table::new();
+        q.insert("Guid".into(), Value::String("G1".into()));
+        assert_eq!(resolve_profile(&session(1, 1, q, "t", None), &profiles), Some("G1".to_string()));
+    }
+
+    #[test]
+    fn folders_follow_the_profile_rule() {
+        let plain = session(80, 24, Table::new(), "s", Some(r"C:\src"));
+        assert_eq!(folder_for(&plain), Folder::Previous(r"C:\src".into()), "the profile's rule decides, with this as the previous folder");
+        let mut with = plain.clone();
+        with.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&with), Folder::Forced(r"C:\src".into()), "contents force the folder");
+        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None)), Folder::None);
+        assert_eq!(contents(&with), Some("x"));
     }
 }

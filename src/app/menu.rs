@@ -71,6 +71,10 @@ pub(super) struct MenuBar {
     /// The Profiles menu, its fixed items, and the profiles listed after them.
     pub(super) profiles: Option<(Submenu, usize)>,
     pub(super) profile_items: Vec<(String, String)>,
+    /// Window > Arrangements > Restore Window Arrangement and ... as Tabs, and what they list.
+    pub(super) restore: Option<Submenu>,
+    pub(super) restore_tabs: Option<Submenu>,
+    pub(super) arrangement_items: Vec<(String, bool)>,
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -151,7 +155,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new() });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new() });
         self.sync_checks();
     }
 
@@ -237,6 +241,8 @@ impl App {
         let action = self.globals.string("Mark Alert Action");
         self.refresh_named_marks();
         self.refresh_profiles_menu();
+        self.refresh_arrangement_menus();
+        self.menus_dirty = false;
         let Some(bar) = &self.menu_bar else { return };
         for selector in super::seltools_ui::CHECKED {
             let Some(item) = menus::items().iter().find(|i| i.selector == *selector) else { continue };
@@ -264,6 +270,9 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
+        if self.arrangement_picked(id) {
+            return;
+        }
         if let Some(guid) = id.strip_prefix(PROFILE_ID) {
             return self.open_profile_from_menu(guid);
         }

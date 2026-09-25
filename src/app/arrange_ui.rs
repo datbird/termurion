@@ -21,6 +21,7 @@ impl App {
         self.globals.set(arrangements::DEFAULT_KEY, default.unwrap_or_else(|| Value::String(String::new())));
         self.save_globals();
         self.menus_dirty = true;
+        self.sync_checks();
     }
 
     /// One session's table.
@@ -171,4 +172,161 @@ pub(super) fn yes_no(owner: Option<isize>, title: &str, text: &str) -> bool {
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let owner = owner.map_or(std::ptr::null_mut(), |h| h as *mut core::ffi::c_void);
     unsafe { MessageBoxW(owner, wide(text).as_ptr(), wide(title).as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }
+}
+
+/// Menu ids of the Restore Window Arrangement submenus' entries.
+pub(super) const RESTORE_ID: &str = "arrangement-restore:";
+pub(super) const RESTORE_TABS_ID: &str = "arrangement-tabs:";
+
+impl App {
+    fn profile_list(&self) -> Vec<(String, String)> {
+        self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect()
+    }
+
+    /// The profile of an arrangement window's first session (for the window's size and style).
+    pub(super) fn first_arrangement_guid(&self, w: &Value) -> Option<String> {
+        let tab = w.get("Tabs")?.as_array()?.first()?;
+        let tree = arrangement::tree_of(tab.get("Root")?).ok()?;
+        let first = tree.leaves().first().map(|v| (*v).clone())?;
+        arrangement::resolve_profile(&first, &self.profile_list())
+    }
+
+    /// Builds one tab of an arrangement in the current window: a pane per session.
+    fn build_tab(&mut self, t: &Value) -> Result<Tab, String> {
+        let root = t.get("Root").ok_or("a tab in the arrangement has no panes")?;
+        let tree = arrangement::tree_of(root)?;
+        let profiles = self.profile_list();
+        let area = self.content_area();
+        let mut started: Vec<PaneId> = Vec::new();
+        let mut failed = None;
+        let mut missing = false;
+        let ids = tree.map(&mut |session| {
+            if failed.is_some() {
+                return 0;
+            }
+            let guid = arrangement::resolve_profile(&session, &profiles);
+            missing |= guid.is_none();
+            self.start_dir_override = Some(arrangement::folder_for(&session));
+            let id = self.start_pane(area, guid.as_deref());
+            self.start_dir_override = None;
+            match id {
+                Some(id) => {
+                    if let (Some(text), Some(p)) = (arrangement::contents(&session), self.panes.get_mut(&id)) {
+                        // The saved text comes back as the session's history.
+                        p.screen.feed(text.replace('\n', "\r\n").as_bytes());
+                        p.screen.feed(b"\r\n");
+                    }
+                    started.push(id);
+                    id
+                }
+                None => {
+                    failed = Some(self.banners.text().unwrap_or_else(|| "a session could not start".to_string()));
+                    0
+                }
+            }
+        });
+        if let Some(e) = failed {
+            for id in started {
+                self.panes.remove(&id);
+            }
+            return Err(e);
+        }
+        if missing {
+            self.banners.set("arrangement", "A profile in the arrangement no longer exists; the default profile is used.");
+        }
+        let layout = Layout::from_tree(ids);
+        let focused = layout.panes()[0];
+        let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: t.get("Title Override").and_then(|v| v.as_str()).map(str::to_string) };
+        self.next_tab_id += 1;
+        Ok(tab)
+    }
+
+    /// Fills the current (new) window from an arrangement window table: its tabs, selected
+    /// tab, title, locks, style, and frame.
+    pub(super) fn apply_arrangement_window(&mut self, w: &Value) -> Result<(), String> {
+        let tabs = w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+        for t in &tabs {
+            let tab = self.build_tab(t)?;
+            self.tabs.push(tab);
+        }
+        let f = arrangement::window_facts(w);
+        self.active = f.selected_tab.min(self.tabs.len().saturating_sub(1));
+        self.win_title = f.title;
+        self.win_locks = crate::winmodel::Locks { size: f.size_locked, layout: f.layout_locked && !f.size_locked };
+        if let Some(g) = &self.gpu {
+            if f.w > 0.0 && f.h > 0.0 {
+                g.window.set_outer_position(winit::dpi::PhysicalPosition::new(f.x.round() as i32, f.y.round() as i32));
+                let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+                let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
+                let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new((f.w as u32).saturating_sub(dw).max(1), (f.h as u32).saturating_sub(dh).max(1)));
+            }
+            g.window.set_resizable(!self.win_locks.size);
+        }
+        if f.style != crate::frames::NORMAL {
+            self.apply_window_style(f.style, false);
+        }
+        self.relayout();
+        Ok(())
+    }
+
+    /// Window > Arrangements > Restore Window Arrangement (each saved window a new window)
+    /// or Restore Window Arrangement as Tabs (every saved tab in this window).
+    pub(super) fn restore_arrangement(&mut self, name: &str, as_tabs: bool) {
+        let Some(windows) = self.arrangements().get(name).cloned() else { return };
+        if as_tabs {
+            if let Some(w) = self.last_window {
+                self.enter(w);
+            }
+            for w in &windows {
+                for t in w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
+                    match self.build_tab(&t) {
+                        Ok(tab) => {
+                            self.tabs.push(tab);
+                            self.active = self.tabs.len() - 1;
+                        }
+                        Err(e) => self.banners.set("arrangement", format!("Could not restore a tab: {e}")),
+                    }
+                }
+            }
+            self.relayout();
+        } else {
+            for w in windows {
+                self.pending_windows.push(super::windows_ui::NewWindow::Arrangement(w));
+            }
+        }
+        self.redraw();
+    }
+
+    /// The Restore submenus list every arrangement (the default marked).
+    pub(super) fn refresh_arrangement_menus(&mut self) {
+        let store = self.arrangements();
+        let default = store.default_name().map(str::to_string);
+        let items: Vec<(String, bool)> = store.names().iter().map(|n| (n.to_string(), Some(n.to_string()) == default)).collect();
+        let Some(bar) = &mut self.menu_bar else { return };
+        if bar.arrangement_items == items && !self.menus_dirty {
+            return;
+        }
+        for (sub, prefix) in [(&bar.restore, RESTORE_ID), (&bar.restore_tabs, RESTORE_TABS_ID)] {
+            let Some(sub) = sub else { continue };
+            while sub.remove_at(0).is_some() {}
+            for (name, is_default) in &items {
+                let label = if *is_default { format!("{name} (default)") } else { name.clone() };
+                let _ = sub.append(&muda::MenuItem::with_id(format!("{prefix}{name}"), label.replace('&', "&&"), true, None));
+            }
+        }
+        bar.arrangement_items = items;
+    }
+
+    /// A pick from the Restore submenus. False for other ids.
+    pub(super) fn arrangement_picked(&mut self, id: &str) -> bool {
+        if let Some(name) = id.strip_prefix(RESTORE_ID) {
+            self.restore_arrangement(name, false);
+            return true;
+        }
+        if let Some(name) = id.strip_prefix(RESTORE_TABS_ID) {
+            self.restore_arrangement(name, true);
+            return true;
+        }
+        false
+    }
 }
