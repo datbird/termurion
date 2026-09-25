@@ -486,3 +486,21 @@ label = "Dim background windows"
 type = "bool"
 default = false
 help = "Windows that do not have the keyboard focus are dimmed. Off: only their inactive split panes dim."
+
+[[setting]]
+key = "OnlyWhenMoreTabs"
+tab = "General"
+section = "Closing"
+label = "Confirm closing multiple sessions"
+type = "bool"
+default = true
+help = "Closing a tab or window with more than one running session asks first."
+
+[[setting]]
+key = "moveLeftAfterClosingTab"
+tab = "Advanced"
+section = "General"
+label = "Select the tab to the left after closing a tab"
+type = "bool"
+default = false
+help = "After the selected tab closes, the tab to its left is selected instead of the one to its right."

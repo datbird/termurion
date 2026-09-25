@@ -815,7 +815,7 @@ impl App {
             } else {
                 let gone = self.tabs.remove(t);
                 self.mru.forget(gone.id);
-                self.active = active_after_close(self.active, t, self.tabs.len());
+                self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
             }
         }
         if self.tabs.is_empty() {
@@ -1948,12 +1948,6 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, St
     Ok(Gpu { surface, adapter, device, queue, config, renderer, instance, window })
 }
 
-/// The active tab index after tab `closed` is removed, leaving `remaining` tabs.
-fn active_after_close(active: usize, closed: usize, remaining: usize) -> usize {
-    let active = if closed < active { active - 1 } else { active };
-    active.min(remaining.saturating_sub(1))
-}
-
 /// The surface size to use, or None while the window is minimized (0 wide or high).
 fn usable_size(w: u32, h: u32) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
@@ -1996,12 +1990,13 @@ mod tests {
     #[test]
     fn closing_an_earlier_tab_keeps_the_same_tab_active() {
         // On tab 2 of 3 (index 1), tab index 0 closes: the user stays on the same tab, now index 0.
-        assert_eq!(active_after_close(1, 0, 2), 0);
+        use crate::close_rules::active_after_close;
+        assert_eq!(active_after_close(1, 0, 2, false), 0);
         // A later tab closing does not move the user.
-        assert_eq!(active_after_close(0, 2, 2), 0);
+        assert_eq!(active_after_close(0, 2, 2, false), 0);
         // The active tab itself closing moves to the one that took its place, or the last one.
-        assert_eq!(active_after_close(2, 2, 2), 1);
-        assert_eq!(active_after_close(0, 0, 0), 0);
+        assert_eq!(active_after_close(2, 2, 2, false), 1);
+        assert_eq!(active_after_close(0, 0, 0, false), 0);
     }
 
     #[test]

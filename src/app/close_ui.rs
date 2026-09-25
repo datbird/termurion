@@ -46,19 +46,46 @@ impl App {
         out
     }
 
-    /// True when the panes may close: nothing to ask about, or the user chose OK.
+    /// The programs running under the panes' shells (not the shells), for the question.
+    fn job_names(&self, panes: &[PaneId]) -> Vec<String> {
+        let mut out = Vec::new();
+        for id in panes {
+            let Some(p) = self.panes.get(id).filter(|p| p.exited.is_none()) else { continue };
+            let Some(Ok(procs)) = p.shell_pid().map(crate::jobwatch::descendants_now) else { continue };
+            out.extend(procs.iter().map(|q| crate::proctree::strip_exe(&q.name).to_string()).filter(|n| !n.eq_ignore_ascii_case("conhost") && !n.eq_ignore_ascii_case("OpenConsole")));
+        }
+        out
+    }
+
+    /// True when the panes may close: nothing to ask about, or the user chose OK. A
+    /// session alone in its tab closes as its tab (iTerm2).
     pub(super) fn confirm_close(&self, what: Closing) -> bool {
-        let (title, panes) = match what {
-            Closing::Session(id) => (close_prompt::session_title(&self.session_title(id)), vec![id]),
-            Closing::Tab(i) => (close_prompt::tab_title(i + 1), self.tabs.get(i).map(|t| t.layout.panes()).unwrap_or_default()),
-            Closing::Window => (close_prompt::window_title(self.window_number() + 1), self.tabs.iter().flat_map(|t| t.layout.panes()).collect()),
-            Closing::App => ("Quit Tandem?".to_string(), self.panes.keys().copied().collect()),
+        use crate::close_rules::{self, Kind};
+        let tab_of = |id: PaneId| self.tabs.iter().position(|t| t.layout.panes().contains(&id));
+        let what = match what {
+            Closing::Session(id) if tab_of(id).is_some_and(|i| self.tabs[i].layout.panes().len() == 1) => Closing::Tab(tab_of(id).unwrap_or(0)),
+            w => w,
         };
-        let reasons = self.close_reasons(&panes);
-        if reasons.is_empty() {
+        let (kind, title, panes) = match what {
+            Closing::Session(id) => (Kind::Session, close_prompt::session_title(&self.session_title(id)), vec![id]),
+            Closing::Tab(i) => (Kind::Tab, close_prompt::tab_title(i + 1), self.tabs.get(i).map(|t| t.layout.panes()).unwrap_or_default()),
+            Closing::Window => (Kind::Window, close_prompt::window_title(self.window_number() + 1), self.tabs.iter().flat_map(|t| t.layout.panes()).collect()),
+            Closing::App => {
+                let panes: Vec<PaneId> = self.panes.keys().copied().collect();
+                let reasons = self.close_reasons(&panes);
+                if reasons.is_empty() {
+                    return true;
+                }
+                return confirm(self.hwnd(), "Quit Tandem?", &close_prompt::message(&reasons));
+            }
+        };
+        let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none())).count();
+        let has_reason = !self.close_reasons(&panes).is_empty();
+        if !close_rules::must_ask(kind, running, has_reason, self.globals.bool("OnlyWhenMoreTabs")) {
             return true;
         }
-        confirm(self.hwnd(), &title, &close_prompt::message(&reasons))
+        let names = close_rules::counted(&self.job_names(&panes));
+        confirm(self.hwnd(), &title, &close_rules::body(close_rules::subject(kind, panes.len()), &names))
     }
 }
 
