@@ -132,7 +132,11 @@ impl Layout {
         fn go(t: Tree<PaneId>) -> Node {
             match t {
                 Tree::Leaf(p) => Node::Leaf(p),
-                Tree::Split { axis, ratio, a, b } => Node::Split { axis, ratio: ratio.clamp(0.05, 0.95), a: Box::new(go(*a)), b: Box::new(go(*b)) },
+                Tree::Split { axis, ratio, a, b } => {
+                    // A broken file can give NaN or infinite sizes.
+                    let ratio = if ratio.is_finite() { ratio.clamp(0.02, 0.98) } else { 0.5 };
+                    Node::Split { axis, ratio, a: Box::new(go(*a)), b: Box::new(go(*b)) }
+                }
             }
         }
         Layout { root: go(t) }
@@ -506,5 +510,12 @@ mod tests {
         assert!(r(0.0, 0.0, 10.0, 10.0).contains(9.9, 0.0));
         assert!(!r(0.0, 0.0, 10.0, 10.0).contains(10.0, 0.0));
         assert_eq!(r(0.0, 0.0, 10.0, 10.0).inset(2.0), r(2.0, 2.0, 6.0, 6.0));
+    }
+
+    #[test]
+    fn bad_ratios_are_made_safe() {
+        let t = Tree::Split { axis: Axis::Row, ratio: f32::NAN, a: Box::new(Tree::Leaf(1)), b: Box::new(Tree::Leaf(2)) };
+        let Tree::Split { ratio, .. } = Layout::from_tree(t).tree() else { panic!() };
+        assert_eq!(ratio, 0.5);
     }
 }

@@ -36,13 +36,18 @@ fn flatten<'a>(t: &'a Tree<Value>, axis: Axis, share: f64, out: &mut Vec<(&'a Tr
     }
 }
 
-fn node_at(t: &Tree<Value>, x: f64, y: f64, w: f64, h: f64) -> Value {
+fn node_at(t: &Tree<Value>, x: f64, y: f64, w: f64, h: f64, active: Option<usize>, index: &mut usize) -> Value {
     let mut out = Table::new();
     match t {
         Tree::Leaf(session) => {
             out.insert("View Type".into(), Value::String("SessionView".into()));
             out.insert("frame".into(), frame(x, y, w, h));
             out.insert("Session".into(), session.clone());
+            // iTerm2 marks the active session on its view.
+            if active == Some(*index) {
+                out.insert("Is Active".into(), Value::Boolean(true));
+            }
+            *index += 1;
         }
         Tree::Split { axis, .. } => {
             let mut kids = Vec::new();
@@ -54,12 +59,12 @@ fn node_at(t: &Tree<Value>, x: f64, y: f64, w: f64, h: f64) -> Value {
                 .map(|(k, share)| {
                     let v = if vertical {
                         let cw = (w * share).round();
-                        let n = node_at(k, offset, 0.0, cw, h);
+                        let n = node_at(k, offset, 0.0, cw, h, active, index);
                         offset += cw;
                         n
                     } else {
                         let ch = (h * share).round();
-                        let n = node_at(k, 0.0, offset, w, ch);
+                        let n = node_at(k, 0.0, offset, w, ch, active, index);
                         offset += ch;
                         n
                     };
@@ -78,33 +83,90 @@ fn node_at(t: &Tree<Value>, x: f64, y: f64, w: f64, h: f64) -> Value {
 /// A tab's `Root`: iTerm2's node tree for a layout whose leaves are session tables, laid
 /// out in `w` by `h` pixels. Runs of same-axis splits become one n-ary splitter.
 pub fn node(t: &Tree<Value>, w: f64, h: f64) -> Value {
-    node_at(t, 0.0, 0.0, w, h)
+    node_with_active(t, w, h, None)
+}
+
+/// `node`, with the `active`-th session (in reading order) marked active.
+pub fn node_with_active(t: &Tree<Value>, w: f64, h: f64, active: Option<usize>) -> Value {
+    node_at(t, 0.0, 0.0, w, h, active, &mut 0)
+}
+
+/// The active session's place in reading order.
+pub fn active_leaf(root: &Value) -> Option<usize> {
+    fn walk(v: &Value, i: &mut usize, depth: usize) -> Option<usize> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        match v.get("View Type").and_then(|t| t.as_str()) {
+            Some("SessionView") => {
+                let here = *i;
+                *i += 1;
+                v.get("Is Active").and_then(|b| b.as_bool()).unwrap_or(false).then_some(here)
+            }
+            _ => v.get("Subviews").and_then(|s| s.as_array())?.iter().find_map(|s| walk(s, i, depth + 1)),
+        }
+    }
+    walk(root, &mut 0, 0)
+}
+
+/// Splits and panes an arrangement may hold: far past any real tab, short of the stack.
+const MAX_DEPTH: usize = 32;
+const MAX_PANES: usize = 64;
+
+/// Saved text as plain text: control characters (escape sequences' starts) go, so restored
+/// contents cannot act on the terminal.
+pub fn inert_text(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() || matches!(c, '\r' | '\n' | '\t')).collect()
+}
+
+/// A folder as saved: a local folder reported by OSC 7 ("/C:/x") as a Windows path; other
+/// paths as they are.
+pub fn saved_folder(cwd: &str) -> String {
+    crate::profile::local_path(cwd).map_or_else(|| cwd.to_string(), |p| p.display().to_string())
 }
 
 /// The layout a `Root` describes: n-ary splitters become nested binary splits, each share
-/// from the subviews' frames. The leaves are the session tables.
+/// from the subviews' frames. The leaves are the session tables. Too deep or too many panes
+/// is refused.
 pub fn tree_of(v: &Value) -> Result<Tree<Value>, String> {
+    let mut panes = 0;
+    tree_at(v, 0, &mut panes)
+}
+
+fn tree_at(v: &Value, depth: usize, panes: &mut usize) -> Result<Tree<Value>, String> {
+    if depth > MAX_DEPTH {
+        return Err("the arrangement's splits are nested too deeply".into());
+    }
     match v.get("View Type").and_then(|t| t.as_str()) {
-        Some("SessionView") => v.get("Session").cloned().map(Tree::Leaf).ok_or_else(|| "a pane in the arrangement has no session".to_string()),
+        Some("SessionView") => {
+            *panes += 1;
+            if *panes > MAX_PANES {
+                return Err(format!("a tab in the arrangement has more than {MAX_PANES} panes"));
+            }
+            v.get("Session").cloned().map(Tree::Leaf).ok_or_else(|| "a pane in the arrangement has no session".to_string())
+        }
         Some("Splitter") => {
             let vertical = v.get("isVertical").and_then(|b| b.as_bool()).unwrap_or(false);
             let axis = if vertical { Axis::Row } else { Axis::Column };
             let subs = v.get("Subviews").and_then(|s| s.as_array()).ok_or_else(|| "a split in the arrangement has no panes".to_string())?;
+            if subs.len() > MAX_PANES {
+                return Err(format!("a tab in the arrangement has more than {MAX_PANES} panes"));
+            }
             let mut kids: Vec<(Tree<Value>, f64)> = Vec::new();
             for s in subs {
                 let (w, h) = frame_size(s);
-                kids.push((tree_of(s)?, if vertical { w } else { h }.max(1.0)));
+                let size = if vertical { w } else { h };
+                kids.push((tree_at(s, depth + 1, panes)?, if size.is_finite() { size.max(1.0) } else { 1.0 }));
             }
-            fn join(mut kids: Vec<(Tree<Value>, f64)>, axis: Axis) -> Option<Tree<Value>> {
-                if kids.len() <= 1 {
-                    return kids.pop().map(|k| k.0);
-                }
-                let total: f64 = kids.iter().map(|k| k.1).sum();
-                let (first, size) = kids.remove(0);
-                let rest = join(kids, axis)?;
-                Some(Tree::Split { axis, ratio: (size / total) as f32, a: Box::new(first), b: Box::new(rest) })
+            // Folded from the right: the first child and the rest, without recursion.
+            let mut it = kids.into_iter().rev();
+            let (mut acc, mut acc_size) = it.next().ok_or_else(|| "a split in the arrangement has no panes".to_string())?;
+            for (t, size) in it {
+                let total = size + acc_size;
+                acc = Tree::Split { axis, ratio: (size / total) as f32, a: Box::new(t), b: Box::new(acc) };
+                acc_size = total;
             }
-            join(kids, axis).ok_or_else(|| "a split in the arrangement has no panes".to_string())
+            Ok(acc)
         }
         _ => Err("not an arrangement pane or split".to_string()),
     }
@@ -200,6 +262,16 @@ pub fn window(f: WindowFacts, tabs: Vec<Value>) -> Value {
 }
 
 /// A window table's facts, for restoring.
+/// The frame a window is saved with: a minimized window (Windows parks it at -32000) has no
+/// useful frame, so it is saved without one and restores where placement puts it.
+pub fn saved_frame(pos: (i32, i32), size: (u32, u32), minimized: bool) -> (f64, f64, f64, f64) {
+    // Windows parks a minimized window at -32000; no monitor reaches that far.
+    if minimized || pos.0 <= -32000 || pos.1 <= -32000 {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    (pos.0 as f64, pos.1 as f64, size.0 as f64, size.1 as f64)
+}
+
 pub fn window_facts(w: &Value) -> WindowFacts {
     let f = |k: &str| num(w.get(k)).unwrap_or(0.0);
     let b = |k: &str| w.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
@@ -339,6 +411,13 @@ pub fn change_profile(windows: &mut [Value], profile: &Table) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimized_windows_save_no_frame() {
+        assert_eq!(saved_frame((10, 20), (800, 600), false), (10.0, 20.0, 800.0, 600.0));
+        assert_eq!(saved_frame((-32000, -32000), (160, 28), true), (0.0, 0.0, 0.0, 0.0));
+        assert_eq!(saved_frame((-32000, -32000), (160, 28), false), (0.0, 0.0, 0.0, 0.0), "parked, even when the flag is not known");
+    }
     use crate::layout::{Axis, Tree};
 
     fn s(name: &str) -> Value {
@@ -512,5 +591,56 @@ mod tests {
                 assert_eq!(profile_of(s).map(|x| x.0), Some("NEW".to_string()));
             }
         }
+    }
+
+    fn view(name: &str) -> Value {
+        let mut t = Table::new();
+        t.insert("View Type".into(), Value::String("SessionView".into()));
+        t.insert("frame".into(), frame(0.0, 0.0, 10.0, 10.0));
+        t.insert("Session".into(), s(name));
+        Value::Table(t)
+    }
+
+    #[test]
+    fn a_wide_splitter_does_not_overflow() {
+        let mut root = Table::new();
+        root.insert("View Type".into(), Value::String("Splitter".into()));
+        root.insert("isVertical".into(), Value::Boolean(true));
+        root.insert("Subviews".into(), Value::Array((0..10_000).map(|i| view(&i.to_string())).collect()));
+        assert!(tree_of(&Value::Table(root)).is_err(), "more panes than a tab can hold is refused, without recursing 10k deep");
+    }
+
+    #[test]
+    fn deep_nesting_is_refused() {
+        let mut v = view("x");
+        for _ in 0..200 {
+            let mut t = Table::new();
+            t.insert("View Type".into(), Value::String("Splitter".into()));
+            t.insert("isVertical".into(), Value::Boolean(false));
+            t.insert("Subviews".into(), Value::Array(vec![v, view("y")]));
+            v = Value::Table(t);
+        }
+        assert!(tree_of(&v).is_err());
+    }
+
+    #[test]
+    fn restored_text_is_inert() {
+        assert_eq!(inert_text("ok\x1b]52;c;SGVsbG8=\x07 done\r\nnext\ttab\x05"), "ok]52;c;SGVsbG8= done\r\nnext\ttab");
+    }
+
+    #[test]
+    fn osc7_folders_are_saved_as_windows_paths() {
+        assert_eq!(saved_folder("/C:/Users/me"), r"C:\Users\me");
+        assert_eq!(saved_folder(r"C:\src"), r"C:\src");
+        assert_eq!(saved_folder("/home/me"), "/home/me", "a remote POSIX path is kept");
+    }
+
+    #[test]
+    fn the_active_pane_is_marked_on_its_view() {
+        let tree = Tree::Split { axis: Axis::Row, ratio: 0.5, a: Box::new(Tree::Leaf(s("a"))), b: Box::new(Tree::Leaf(s("b"))) };
+        let root = node_with_active(&tree, 100.0, 100.0, Some(1));
+        assert_eq!(active_leaf(&root), Some(1));
+        let subs = root.get("Subviews").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(subs[1].get("Is Active").and_then(|v| v.as_bool()), Some(true), "iTerm2 marks the SessionView");
     }
 }

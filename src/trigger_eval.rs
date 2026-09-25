@@ -247,6 +247,18 @@ impl Screen {
     }
 
     /// After output: each logical line that ended since the last check, once.
+    /// Saved text (an arrangement's contents) as plain history: control characters go, so no
+    /// escape sequence acts; triggers are off while it goes in and never check its lines.
+    pub fn feed_inert(&mut self, text: &str) {
+        let list = std::mem::take(&mut self.triggers.list);
+        let text = crate::arrangement::inert_text(text).replace("\r\n", "\n").replace('\n', "\r\n");
+        let queued = self.requests.len();
+        let _ = self.feed(text.as_bytes());
+        self.requests.truncate(queued);
+        self.triggers.list = list;
+        self.triggers.next = self.triggers.next.max(self.cursor_row());
+    }
+
     pub(crate) fn run_triggers_after_feed(&mut self) {
         let cursor = self.cursor_row();
         let alt = self.term.mode().contains(TermMode::ALT_SCREEN);
@@ -609,6 +621,20 @@ mod tests {
 
     fn alerts(s: &mut Screen) -> usize {
         s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Alert { .. }))).count()
+    }
+
+    #[test]
+    fn restored_text_fires_nothing() {
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig("Reply", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed_inert("Reply one\nReply two\x1b]0;evil\x07\n");
+        assert_eq!(alerts(&mut s), 0, "saved text is not new output");
+        assert!(s.take_requests().is_empty(), "no escape sequence acts");
+        assert_ne!(s.title(), Some("evil"));
+        s.feed(b"\r\n");
+        assert_eq!(alerts(&mut s), 0, "the restored lines are not checked later either");
+        s.feed(b"Reply three\r\n");
+        assert_eq!(alerts(&mut s), 1, "new output still fires");
     }
 
     #[test]

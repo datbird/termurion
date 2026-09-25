@@ -1732,11 +1732,14 @@ impl ApplicationHandler<UserEvent> for App {
         // Open default window arrangement: its first window fills this one, the others open
         // as new windows.
         let startup_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
+        let has_arrangement = startup_arrangement.is_some();
+        let mut arranged = false;
         match startup_arrangement {
             Some(mut windows) => {
                 let first = windows.remove(0);
-                if let Err(e) = self.apply_arrangement_window(&first) {
-                    self.banners.set("arrangement", e);
+                match self.apply_arrangement_window(&first) {
+                    Ok(()) => arranged = !self.tabs.is_empty(),
+                    Err(e) => self.banners.set("arrangement", e),
                 }
                 if self.tabs.is_empty() {
                     self.new_tab(None);
@@ -1748,18 +1751,26 @@ impl ApplicationHandler<UserEvent> for App {
             None => self.new_tab(None),
         }
         self.install_menus();
-        self.place_window();
-        self.apply_window_profile(None);
-        // Startup: arrangements (7c) and hotkey windows (7e) are not here yet, so the
-        // first window always opens; the Profiles window follows Open profiles window.
+        // A window the default arrangement filled keeps its frame, style, and locks.
+        let steps = crate::winmodel::open_steps(arranged);
+        if steps.place {
+            self.place_window();
+        } else {
+            self.claim_slot();
+        }
+        if steps.profile_window {
+            self.apply_window_profile(None);
+        }
+        // Startup: hotkey windows (7e) are not here yet, so the first window always opens;
+        // the Profiles window follows Open profiles window.
         let g = &self.globals;
         let policy = if g.bool("OpenArrangementAtStartup") { crate::startup::DEFAULT_ARRANGEMENT } else if g.bool("OpenNoWindowsAtStartup") { crate::startup::HOTKEY_ONLY } else { crate::startup::SYSTEM };
         let prefs = crate::startup::StartupPrefs { open_profiles_window: g.bool("OpenBookmark"), policy, always_open: g.bool("AlwaysOpenWindowAtStartup"), open_new_window: g.bool("openNewWindowAtStartup") };
-        if crate::startup::plan(prefs, false, false).profiles_window {
+        if crate::startup::plan(prefs, has_arrangement, false).profiles_window {
             self.open_settings(event_loop, Mode::Profiles);
         }
         let style = self.store.default_profile().int("Window Type");
-        if style != crate::frames::NORMAL {
+        if steps.profile_style && style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
     }

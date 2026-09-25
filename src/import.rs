@@ -51,6 +51,17 @@ fn color_table(get: impl Fn(&str) -> Option<f64>, space: Option<&str>) -> Option
 }
 
 pub(crate) fn from_plist(v: &plist::Value) -> Option<Value> {
+    from_plist_at(v, 0)
+}
+
+/// Nesting deeper than any real file is dropped (a crafted file cannot exhaust the stack).
+const MAX_NESTING: usize = 64;
+
+fn from_plist_at(v: &plist::Value, depth: usize) -> Option<Value> {
+    if depth > MAX_NESTING {
+        return None;
+    }
+    let from_plist = |v: &plist::Value| from_plist_at(v, depth + 1);
     Some(match v {
         plist::Value::Boolean(b) => Value::Boolean(*b),
         plist::Value::Integer(i) => Value::Integer(i.as_signed().unwrap_or(i64::MAX)),

@@ -240,9 +240,30 @@ impl<S> Parked<S> {
     }
 }
 
+/// What opening a window does after its tabs exist. A window from an arrangement keeps the
+/// arrangement's frame, style, and locks; any other window is placed by the placement policy
+/// and takes its profile's style and window settings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpenSteps {
+    pub place: bool,
+    pub profile_style: bool,
+    pub profile_window: bool,
+}
+
+pub fn open_steps(from_arrangement: bool) -> OpenSteps {
+    let own = !from_arrangement;
+    OpenSteps { place: own, profile_style: own, profile_window: own }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arranged_windows_keep_their_frame() {
+        assert_eq!(open_steps(true), OpenSteps { place: false, profile_style: false, profile_window: false });
+        assert_eq!(open_steps(false), OpenSteps { place: true, profile_style: true, profile_window: true });
+    }
 
     #[test]
     fn numbers_reuse_the_lowest_free() {

@@ -30,7 +30,9 @@ impl App {
         let s = p.own();
         let grid = s.term().grid();
         let profile = self.store.get(&p.profile).map(|pr| pr.values.clone().into_iter().collect()).unwrap_or_default();
-        let mut v = arrangement::session(grid.columns() as u16, grid.screen_lines() as u16, profile, &id.to_string(), s.shell.cwd.as_deref());
+        // OSC 7 reports "/C:/x"; the arrangement keeps a folder a shell can start in.
+        let cwd = s.shell.cwd.as_deref().map(arrangement::saved_folder);
+        let mut v = arrangement::session(grid.columns() as u16, grid.screen_lines() as u16, profile, &id.to_string(), cwd.as_deref());
         if with_contents {
             let text = s.all_text();
             let lines: Vec<&str> = text.lines().collect();
@@ -51,20 +53,21 @@ impl App {
             .enumerate()
             .map(|(i, t)| {
                 let tree = t.layout.tree().map(&mut |id| self.session_value(id, with_contents));
-                arrangement::tab(arrangement::node(&tree, area.w as f64, area.h as f64), i == self.active, t.title.as_deref())
+                let active = t.layout.panes().iter().position(|p| *p == t.focused);
+                arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), i == self.active, t.title.as_deref())
             })
             .collect();
-        let (pos, size) = self.gpu.as_ref().map_or(((0, 0), (0, 0)), |g| {
+        let (x, y, w, h) = self.gpu.as_ref().map_or((0.0, 0.0, 0.0, 0.0), |g| {
             let p = g.window.outer_position().unwrap_or_default();
             let s = g.window.outer_size();
-            ((p.x, p.y), (s.width, s.height))
+            arrangement::saved_frame((p.x, p.y), (s.width, s.height), g.window.is_minimized().unwrap_or(false))
         });
         let profile = self.tabs.first().and_then(|t| self.panes.get(&t.focused)).and_then(|p| self.store.get(&p.profile)).unwrap_or_else(|| self.store.default_profile());
         let facts = WindowFacts {
-            x: pos.0 as f64,
-            y: pos.1 as f64,
-            w: size.0 as f64,
-            h: size.1 as f64,
+            x,
+            y,
+            w,
+            h,
             style: self.win_style,
             selected_tab: self.active,
             title: self.win_title.clone(),
@@ -212,9 +215,8 @@ impl App {
             match id {
                 Some(id) => {
                     if let (Some(text), Some(p)) = (arrangement::contents(&session), self.panes.get_mut(&id)) {
-                        // The saved text comes back as the session's history.
-                        p.screen.feed(text.replace('\n', "\r\n").as_bytes());
-                        p.screen.feed(b"\r\n");
+                        // The saved text comes back as the session's history, as plain text.
+                        p.screen.feed_inert(&format!("{text}\n"));
                     }
                     started.push(id);
                     id
@@ -227,7 +229,9 @@ impl App {
         });
         if let Some(e) = failed {
             for id in started {
-                self.panes.remove(&id);
+                if let Some(pid) = self.panes.remove(&id).and_then(|p| p.shell_pid()) {
+                    self.jobs.forget(pid);
+                }
             }
             return Err(e);
         }
@@ -235,7 +239,8 @@ impl App {
             self.banners.set("arrangement", "A profile in the arrangement no longer exists; the default profile is used.");
         }
         let layout = Layout::from_tree(ids);
-        let focused = layout.panes()[0];
+        let panes = layout.panes();
+        let focused = arrangement::active_leaf(root).and_then(|i| panes.get(i).copied()).unwrap_or(panes[0]);
         let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: t.get("Title Override").and_then(|v| v.as_str()).map(str::to_string) };
         self.next_tab_id += 1;
         Ok(tab)
@@ -299,11 +304,17 @@ impl App {
 
     /// The Restore submenus list every arrangement (the default marked).
     pub(super) fn refresh_arrangement_menus(&mut self) {
+        // The store changes only through a save or a settings edit, both of which mark the
+        // menus dirty; a window's bar is filled once when it is new.
+        if self.menu_bar.as_ref().is_none_or(|b| b.arrangements_filled) && !self.menus_dirty {
+            return;
+        }
         let store = self.arrangements();
         let default = store.default_name().map(str::to_string);
         let items: Vec<(String, bool)> = store.names().iter().map(|n| (n.to_string(), Some(n.to_string()) == default)).collect();
         let Some(bar) = &mut self.menu_bar else { return };
-        if bar.arrangement_items == items && !self.menus_dirty {
+        bar.arrangements_filled = true;
+        if bar.arrangement_items == items {
             return;
         }
         for (sub, prefix) in [(&bar.restore, RESTORE_ID), (&bar.restore_tabs, RESTORE_TABS_ID)] {

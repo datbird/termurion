@@ -189,6 +189,7 @@ impl App {
         self.apply_fonts();
         self.size_window(first_guid.as_deref());
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
+        let arranged = matches!(first, NewWindow::Arrangement(_));
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
             NewWindow::Tab(tab) => {
@@ -208,12 +209,20 @@ impl App {
             }
         }
         self.install_menus();
-        self.place_window();
-        if style != crate::frames::NORMAL {
+        // An arrangement's window has its own frame, style, and locks.
+        let steps = crate::winmodel::open_steps(arranged);
+        if steps.place {
+            self.place_window();
+        } else {
+            self.claim_slot();
+        }
+        if steps.profile_style && style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
         // After the style, so a Maximized or Full Screen style does not restore it again.
-        self.apply_window_profile(first_guid.as_deref());
+        if steps.profile_window {
+            self.apply_window_profile(first_guid.as_deref());
+        }
         if self.tabs.is_empty() {
             // The shell did not start: the window closes again (keeping no frame for its
             // slot), the one before comes back, and the banner says why.
@@ -590,11 +599,17 @@ impl App {
 
     /// Where a new window goes: New window placement, the profile's saved slot, and its
     /// Screen setting.
-    pub(super) fn place_window(&mut self) {
-        use crate::placement::{self, Rect as R};
+    /// Takes the window's profile slot (its frame is kept there when it closes).
+    pub(super) fn claim_slot(&mut self) -> (String, u32) {
         let guid = self.tabs.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)).unwrap_or_else(|| self.store.default_guid.clone());
         let slot = self.slots.take(&guid);
         self.win_slot = Some((guid.clone(), slot));
+        (guid, slot)
+    }
+
+    pub(super) fn place_window(&mut self) {
+        use crate::placement::{self, Rect as R};
+        let (guid, slot) = self.claim_slot();
         let monitors: Vec<R> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(to_rect).collect());
         let Some(g) = self.gpu.as_ref() else { return };
         let current = Self::outer_rect(g);
