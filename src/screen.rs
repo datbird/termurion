@@ -158,6 +158,9 @@ pub struct Screen {
     feeds: u32,
     /// Key reporting chosen in the menu (on top of the program's requests).
     pub keys: KeyState,
+    /// Mode 2031 (color scheme reports) and the scheme last reported.
+    color_reports: bool,
+    last_dark: bool,
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -214,6 +217,8 @@ impl Screen {
             next_fold: 0,
             feeds: 0,
             keys: KeyState::new(look.csi_u),
+            color_reports: false,
+            last_dark: true,
         }
     }
 
@@ -224,6 +229,8 @@ impl Screen {
 
     pub fn set_palette(&mut self, palette: Palette) {
         self.palette = palette;
+        let report = self.color_scheme_change();
+        self.replies.extend(report);
     }
 
     pub fn set_look(&mut self, look: Look) {
@@ -269,10 +276,25 @@ impl Screen {
         for (end, osc) in events {
             reply.extend(self.feed_raw(&bytes[at..end]));
             at = end;
-            self.apply(osc);
+            match osc {
+                // The DCS form of synchronized output starts and ends it as mode 2026 does.
+                crate::osc::Osc::Sync(on) => {
+                    let bsu: &[u8] = if on { b"\x1b[?2026h" } else { b"\x1b[?2026l" };
+                    reply.extend(self.feed_raw(bsu));
+                }
+                osc => {
+                    // What Tandem does for an event acts on the screen as the bytes before it
+                    // left it, so a synchronized update in progress is drawn first.
+                    if self.sync_deadline().is_some() {
+                        reply.extend(self.flush_sync());
+                    }
+                    self.apply(osc);
+                }
+            }
             reply.append(&mut self.replies);
         }
         reply.extend(self.feed_raw(&bytes[at..]));
+        reply.extend(self.color_scheme_change());
         reply
     }
 
@@ -316,6 +338,48 @@ impl Screen {
             KeyMode::Mok2 => 2,
             _ => 0,
         };
+    }
+
+    /// When a synchronized update that has not ended must be drawn anyway.
+    pub fn sync_deadline(&self) -> Option<std::time::Instant> {
+        self.parser.sync_timeout().sync_timeout()
+    }
+
+    /// Ends a synchronized update now (its time ran out). Returns the replies it produced.
+    pub fn flush_sync(&mut self) -> Vec<u8> {
+        self.parser.stop_sync(&mut self.term);
+        let mut reply = self.drain_events();
+        reply.extend(self.color_scheme_change());
+        reply
+    }
+
+    /// Whether the pane's background is dark, as iTerm2 judges it for `CSI ? 996 n`.
+    pub fn is_dark(&self) -> bool {
+        use alacritty_terminal::vte::ansi::NamedColor;
+        let bg = self.term.colors()[NamedColor::Background as usize].unwrap_or(self.palette.bg);
+        let brightness = 0.299 * bg.r as f32 + 0.587 * bg.g as f32 + 0.114 * bg.b as f32;
+        brightness < 128.0
+    }
+
+    /// Mode 2031: turns color scheme reports on or off.
+    pub(crate) fn set_color_scheme_reports(&mut self, on: bool) {
+        self.color_reports = on;
+        self.last_dark = self.is_dark();
+    }
+
+    /// The color scheme report owed after the background crossed between dark and light.
+    fn color_scheme_change(&mut self) -> Vec<u8> {
+        let dark = self.is_dark();
+        if !self.color_reports || dark == self.last_dark {
+            return Vec::new();
+        }
+        self.last_dark = dark;
+        crate::reports::color_scheme(dark)
+    }
+
+    /// Replies owed outside `feed` (a color scheme report after a profile change).
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.replies)
     }
 
     /// The emulation level (100 to 500), which device attributes report.
@@ -503,6 +567,11 @@ impl Screen {
         if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty()) {
             self.prune_tags();
         }
+        self.drain_events()
+    }
+
+    /// The replies the terminal's events ask for, and the title changes they carry.
+    fn drain_events(&mut self) -> Vec<u8> {
         let mut reply = Vec::new();
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -1055,5 +1124,67 @@ mod tests {
         assert_eq!(row(1), "c");
         assert!(s.term.grid()[Line(0)][Column(1)].flags.contains(Flags::INVERSE));
         assert!(!s.term.grid()[Line(0)][Column(3)].flags.contains(Flags::INVERSE));
+    }
+    use alacritty_terminal::vte::ansi::Rgb;
+
+    fn row_text(s: &Screen, l: i32) -> String {
+        (0..s.term.columns()).map(|c| s.term.grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string()
+    }
+
+    #[test]
+    fn an_unended_sync_flushes() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[?2026hhello");
+        assert_eq!(row_text(&s, 0), "", "held while the update runs");
+        let due = s.sync_deadline().expect("a deadline");
+        assert!(due > std::time::Instant::now());
+        s.flush_sync();
+        assert_eq!(row_text(&s, 0), "hello");
+        assert_eq!(s.sync_deadline(), None);
+        s.feed(b"\x1b[?2026hab\x1b[?2026l");
+        assert_eq!(row_text(&s, 0), "helloab");
+        assert_eq!(s.sync_deadline(), None);
+    }
+
+    #[test]
+    fn dcs_sync_brackets_work() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1bP=1s\x1b\\abc");
+        assert_eq!(row_text(&s, 0), "");
+        assert!(s.sync_deadline().is_some());
+        s.feed(b"\x1bP=2s\x1b\\");
+        assert_eq!(row_text(&s, 0), "abc");
+        assert_eq!(s.sync_deadline(), None);
+        // A query inside an update sees the state before it.
+        let reply = s.feed(b"\x1b[?2026h\x1b[1m\x1bP$qm\x1b\\");
+        assert_eq!(String::from_utf8(reply).unwrap(), "\x1bP1$r0;1m\x1b\\");
+    }
+
+    #[test]
+    fn dark_mode_query_follows_the_background() {
+        let mut s = Screen::new(20, 4);
+        s.palette.bg = Rgb { r: 0, g: 0, b: 0 };
+        assert_eq!(s.feed(b"\x1b[?996n"), b"\x1b[?997;1n");
+        s.feed(b"\x1b]11;rgb:ffff/ffff/ffff\x07");
+        assert_eq!(s.feed(b"\x1b[?996n"), b"\x1b[?997;2n");
+        let mut light = Screen::new(20, 4);
+        light.palette.bg = Rgb { r: 250, g: 250, b: 240 };
+        assert_eq!(light.feed(b"\x1b[?996n"), b"\x1b[?997;2n");
+    }
+
+    #[test]
+    fn mode_2031_reports_changes() {
+        let mut s = Screen::new(20, 4);
+        s.palette.bg = Rgb { r: 0, g: 0, b: 0 };
+        assert_eq!(s.feed(b"\x1b[?2031h"), b"");
+        assert_eq!(s.feed(b"\x1b]11;rgb:ffff/ffff/ffff\x07"), b"\x1b[?997;2n");
+        assert_eq!(s.feed(b"\x1b]11;rgb:eeee/eeee/eeee\x07"), b"", "still light");
+        assert_eq!(s.feed(b"\x1b]111\x07"), b"\x1b[?997;1n", "back to the profile's dark color");
+        let mut light = Palette::default();
+        light.bg = Rgb { r: 250, g: 250, b: 250 };
+        s.set_palette(light);
+        assert_eq!(s.take_replies(), b"\x1b[?997;2n", "a profile change reports too");
+        s.feed(b"\x1b[?2031l");
+        assert_eq!(s.feed(b"\x1b]11;rgb:ffff/ffff/ffff\x07"), b"");
     }
 }

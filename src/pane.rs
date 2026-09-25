@@ -141,6 +141,29 @@ impl Pane {
         }
         self.screen.set_palette(palette);
         self.screen.set_look(look);
+        // A background that crossed between dark and light is reported (mode 2031).
+        let reply = self.screen.take_replies();
+        if !reply.is_empty() {
+            self.input(&reply);
+        }
+    }
+
+    /// When the pane's synchronized update must be drawn anyway.
+    pub fn sync_deadline(&self) -> Option<std::time::Instant> {
+        self.live.as_ref().unwrap_or(&self.screen).sync_deadline()
+    }
+
+    /// Draws a synchronized update whose time ran out. True when one was.
+    pub fn flush_due_sync(&mut self, now: std::time::Instant) -> bool {
+        let screen = self.live.as_mut().unwrap_or(&mut self.screen);
+        if !screen.sync_deadline().is_some_and(|t| t <= now) {
+            return false;
+        }
+        let reply = screen.flush_sync();
+        if !reply.is_empty() {
+            self.input(&reply);
+        }
+        true
     }
 
     pub fn set_cell_px(&mut self, w: u16, h: u16) {

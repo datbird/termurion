@@ -48,6 +48,8 @@ pub enum Osc {
     Kitty(Vec<u8>),
     /// A report request alacritty does not answer.
     Query(crate::reports::Query),
+    /// `DCS = 1 s` (true) or `DCS = 2 s`: synchronized output begins or ends.
+    Sync(bool),
 }
 
 #[derive(Default)]
@@ -74,6 +76,9 @@ fn csi_query(params: &[u8], fin: u8) -> Option<Osc> {
     Some(Osc::Query(match (params, fin) {
         (b">" | b">0", b'q') => Query::XtVersion,
         (b"1337", b'n') => Query::ITerm2Version,
+        (b"?996", b'n') => Query::ColorScheme,
+        (b"?2031", b'h') => Query::ColorSchemeReports(true),
+        (b"?2031", b'l') => Query::ColorSchemeReports(false),
         _ => return None,
     }))
 }
@@ -81,6 +86,11 @@ fn csi_query(params: &[u8], fin: u8) -> Option<Osc> {
 /// The event a finished DCS string stands for.
 fn dcs_event(buf: Vec<u8>) -> Option<Osc> {
     use crate::reports::Query;
+    match buf.as_slice() {
+        b"=1s" => return Some(Osc::Sync(true)),
+        b"=2s" => return Some(Osc::Sync(false)),
+        _ => {}
+    }
     if let Some(pt) = buf.strip_prefix(b"$q") {
         return Some(Osc::Query(Query::Decrqss(pt.to_vec())));
     }

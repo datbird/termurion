@@ -1384,7 +1384,8 @@ impl ApplicationHandler<UserEvent> for App {
         let find_due = self.run_due_searches();
         let spotlight = self.tick_find_cursor();
         let animation = self.next_animation_frame();
-        let wake = [self.save_due, find_due, spotlight, animation].into_iter().flatten().min();
+        let sync = self.flush_due_syncs();
+        let wake = [self.save_due, find_due, spotlight, animation, sync].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

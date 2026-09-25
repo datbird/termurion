@@ -378,10 +378,12 @@ impl Screen {
             return;
         }
         match osc {
+            Osc::Query(crate::reports::Query::ColorSchemeReports(on)) => self.set_color_scheme_reports(on),
             Osc::Query(q) => {
                 let answer = crate::reports::answer(self, &q);
                 self.replies.extend(answer);
             }
+            Osc::Sync(_) => {}
             Osc::Prompt { kind, aid, fresh_line } => self.prompt_start(kind, aid, fresh_line),
             Osc::CommandStart => {
                 self.marks.in_command = true;

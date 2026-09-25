@@ -26,6 +26,15 @@ pub enum Query {
     Decrqss(Vec<u8>),
     /// `DCS + q Pt ST`.
     XtGetTcap(Vec<u8>),
+    /// `CSI ? 996 n`: is the background dark or light?
+    ColorScheme,
+    /// `CSI ? 2031 h` or `l`: report color scheme changes, or stop.
+    ColorSchemeReports(bool),
+}
+
+/// The color scheme report: `CSI ? 997 ; 1 n` for dark, `; 2 n` for light.
+pub fn color_scheme(dark: bool) -> Vec<u8> {
+    format!("\x1b[?997;{}n", if dark { 1 } else { 2 }).into_bytes()
 }
 
 /// The answer to a query, or nothing.
@@ -41,6 +50,8 @@ pub fn answer(screen: &Screen, q: &Query) -> Vec<u8> {
             Some(p) => format!("\x1bP1+r{p}\x1b\\"),
             None => "\x1bP0+r\x1b\\".to_string(),
         },
+        Query::ColorScheme => return color_scheme(screen.is_dark()),
+        Query::ColorSchemeReports(_) => return Vec::new(),
     }
     .into_bytes()
 }

@@ -94,6 +94,20 @@ impl App {
         x >= inner.x + inner.w - 12.0 * cell.0
     }
 
+    /// Draws synchronized updates whose time ran out (a program that never ended one), and
+    /// says when the next one is due.
+    pub(super) fn flush_due_syncs(&mut self) -> Option<Instant> {
+        let now = Instant::now();
+        let mut flushed = false;
+        for p in self.panes.values_mut() {
+            flushed |= p.flush_due_sync(now);
+        }
+        if flushed {
+            self.redraw();
+        }
+        self.panes.values().filter_map(|p| p.sync_deadline()).min()
+    }
+
     /// Animated images on screen: redraws when a frame is due, and says when the next one is.
     pub(super) fn next_animation_frame(&mut self) -> Option<Instant> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
