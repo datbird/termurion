@@ -60,6 +60,7 @@ impl App {
                     DENIED,
                     "The terminal attempted to access the clipboard but it was denied. Enable clipboard access in Settings > General > Selection.",
                     &["Open Settings", "Don't Show This Again"],
+                    false,
                 );
             }
             return;
@@ -77,7 +78,7 @@ impl App {
             ReadPolicy::Always => self.report_clipboard(pane, &pc),
             ReadPolicy::Ask => {
                 self.pending_reads.insert(pane, pc);
-                self.ask(pane, READ, "Share clipboard contents with app in terminal?", &["Just Once", "Always", "Never"]);
+                self.ask(pane, READ, "Share clipboard contents with app in terminal?", &["Just Once", "Always", "Never"], true);
             }
         }
     }

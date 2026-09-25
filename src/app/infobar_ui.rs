@@ -5,11 +5,10 @@ use crate::infobar::{self, Bar};
 
 impl App {
     /// Queues a bar on a pane (once per question) and redraws.
-    pub(super) fn ask(&mut self, pane: PaneId, id: &str, text: &str, buttons: &[&str]) {
-        let bar = Bar { id: id.to_string(), text: text.to_string(), buttons: buttons.iter().map(|b| b.to_string()).collect() };
-        if self.bars.entry(pane).or_default().push(bar) {
-            self.redraw();
-        }
+    pub(super) fn ask(&mut self, pane: PaneId, id: &str, text: &str, buttons: &[&str], important: bool) {
+        let bar = Bar { id: id.to_string(), text: text.to_string(), buttons: buttons.iter().map(|b| b.to_string()).collect(), important };
+        self.bars.entry(pane).or_default().push(bar);
+        self.redraw();
     }
 
     /// Draws a pane's front bar.
@@ -41,7 +40,9 @@ impl App {
     }
 
     /// What a bar's answer does. `button` is None when the bar was closed.
-    fn bar_answered(&mut self, pane: PaneId, id: &str, button: Option<&str>, event_loop: &ActiveEventLoop) {
-        let _ = self.clipboard_bar(pane, id, button, event_loop);
+    pub(super) fn bar_answered(&mut self, pane: PaneId, id: &str, button: Option<&str>, event_loop: &ActiveEventLoop) {
+        if !self.clipboard_bar(pane, id, button, event_loop) {
+            self.prompted_bar(pane, id, button);
+        }
     }
 }

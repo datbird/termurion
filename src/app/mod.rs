@@ -67,6 +67,7 @@ mod seltools_ui;
 mod view_ui;
 mod marks_ui;
 mod menu;
+mod prompted_ui;
 mod requests_ui;
 
 pub enum UserEvent {
@@ -203,6 +204,9 @@ pub struct App {
     attention_due: Option<Instant>,
     /// A short message at the bottom of the window, and when it goes away.
     toast: Option<(String, Instant)>,
+    /// SetProfileProperty values and SetBackgroundImageFile paths waiting for an answer.
+    pending_properties: HashMap<PaneId, Vec<(String, toml::Value)>>,
+    pending_background: HashMap<PaneId, String>,
     /// OSC 52 reads waiting for the user's answer, with the selection parameter to echo.
     pending_reads: HashMap<PaneId, String>,
     /// Keys whose press went to a program, so their release may too.
@@ -337,6 +341,8 @@ pub fn run() {
         sent_keys: keyproto_ui::Held::default(),
         bars: HashMap::new(),
         pending_reads: HashMap::new(),
+        pending_properties: HashMap::new(),
+        pending_background: HashMap::new(),
         toast: None,
         flashes: HashMap::new(),
         fireworks: HashMap::new(),
@@ -605,6 +611,8 @@ impl App {
         self.show_guide.remove(&id);
         self.bars.remove(&id);
         self.pending_reads.remove(&id);
+        self.pending_properties.remove(&id);
+        self.pending_background.remove(&id);
         self.flashes.remove(&id);
         self.fireworks.remove(&id);
         self.tab_colors.remove(&id);
@@ -847,6 +855,9 @@ impl App {
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
+            return;
+        }
+        if self.bar_key(ev, event_loop) {
             return;
         }
         // Typing shows the cursor at once and restarts the blink.

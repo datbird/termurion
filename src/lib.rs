@@ -34,6 +34,7 @@ pub mod menus;
 pub mod import;
 pub mod store;
 pub mod profile;
+pub mod prompted;
 pub mod schema;
 pub mod scene;
 pub mod input;

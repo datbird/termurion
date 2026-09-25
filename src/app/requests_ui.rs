@@ -66,6 +66,9 @@ impl App {
                 };
                 self.redraw();
             }
+            Request::SetProfile(name) => self.set_profile_request(pane, name),
+            Request::SetProfileProperty(pairs) => self.set_property_request(pane, pairs),
+            Request::SetBackgroundImageFile(value) => self.set_background_request(pane, value),
             Request::ClipboardWrite(_) | Request::ClipboardRead(_) => {}
         }
     }

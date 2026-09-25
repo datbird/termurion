@@ -209,6 +209,10 @@ pub enum Request {
     ReportScreenFrames,
     /// SetWindowFrame, in AppKit points.
     SetWindowFrame(f64, f64, f64, f64),
+    /// SetProfile, SetProfileProperty (key, base64 JSON), SetBackgroundImageFile (base64).
+    SetProfile(String),
+    SetProfileProperty(Vec<(String, String)>),
+    SetBackgroundImageFile(String),
     /// SetColors `tab`: the pane's tab color, or back to none.
     TabColor(Option<alacritty_terminal::vte::ansi::Rgb>),
 }

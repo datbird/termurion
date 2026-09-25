@@ -535,6 +535,15 @@ impl Screen {
                     }
                 }
                 "UnicodeVersion" => self.unicode.apply(&value),
+                "SetProfile" if self.trusted => self.requests.push(Request::SetProfile(value)),
+                "SetProfileProperty" if self.trusted => {
+                    let pairs: Vec<(String, String)> =
+                        value.split(';').filter_map(|p| p.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+                    if !pairs.is_empty() {
+                        self.requests.push(Request::SetProfileProperty(pairs));
+                    }
+                }
+                "SetBackgroundImageFile" if self.trusted => self.requests.push(Request::SetBackgroundImageFile(value)),
                 "SetColors" => {
                     for (name, v) in crate::osc1337::set_colors(&value) {
                         match (name.as_str(), crate::osc1337::color(&v)) {

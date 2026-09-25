@@ -622,10 +622,10 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
     let clip = Rect { w: (text_end - r.x).max(0.0), ..r };
-    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.text.clone())], clip });
-    for (label, b) in bar.buttons.iter().zip(&l.buttons) {
+    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip });
+    for (i, b) in l.buttons.iter().enumerate() {
         frame.quads.push(Quad { rect: *b, color: rgba(BAR_BUTTON, 1.0) });
-        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(label.clone())], clip: *b });
+        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.label(i))], clip: *b });
     }
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close });
 }
