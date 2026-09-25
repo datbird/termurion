@@ -169,8 +169,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Pause a tmux pane if it would take more than this many seconds to catch up | TmuxPauseModeAgeLimit | Threshold, in seconds of buffered output, before a lagging tmux pane is auto-paused. | have | Milestone 8d: sent as refresh-client -fpause-after=N (at least 1); a change is sent again. |
 | Unpause automatically | TmuxUnpauseAutomatically | Automatically resumes a paused tmux pane instead of requiring a manual action. | have | Milestone 8d: a pane tmux paused unpauses after one second, with no bar. |
 | Warn before pausing | TmuxWarnBeforePausing | Shows a warning dialog before automatically pausing a lagging tmux pane. | have | Milestone 8d: "This session will pause in about N seconds because it is buffering too much data." [Pause Settings]. |
-| Mirror tmux paste buffer to local clipboard | TmuxSyncClipboard | Keeps the tmux paste buffer and the local system clipboard in sync. | missing |  |
-| Ask Each Time (send clipboard contents to tmux) | PhonyAllowSendingClipboardContents | Policy for whether the local clipboard contents may be sent up to the remote tmux server. | missing |  |
+| Mirror tmux paste buffer to local clipboard | TmuxSyncClipboard | Keeps the tmux paste buffer and the local system clipboard in sync. | have | Milestone 8g: %paste-buffer-changed fetches show-buffer -b bufferN to the clipboard; off and never answered, a bar offers "Always" or "Never" once. |
+| Ask Each Time (send clipboard contents to tmux) | PhonyAllowSendingClipboardContents | Policy for whether the local clipboard contents may be sent up to the remote tmux server. | have | Milestone 5c/8g: the OSC 52 read permission (Ask Each Time, Always, Never); iTerm2 never sends the clipboard into tmux otherwise. In tmux panes the answer goes as send-keys, only from the elected client. |
 
 
 ### Experimental
