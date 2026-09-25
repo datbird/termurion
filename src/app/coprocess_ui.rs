@@ -171,12 +171,15 @@ impl App {
     }
 
     /// The top-right coprocess indicator.
-    pub(super) fn draw_coprocess_indicator(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) {
+    /// The pane's top-right indicators: broadcast (sends, or receive only) and coprocess.
+    pub(super) fn draw_coprocess_indicator(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32), broadcast: (bool, bool)) {
         if self.globals.bool("disableTopRightIndicators") {
             return;
         }
-        if let Some(p) = self.panes.get(&id).filter(|p| p.coprocess_command().is_some()) {
-            scene::top_right_indicators(frame, rect, &[scene::COPROCESS_GLYPH], p.own().palette.fg, cell);
+        let Some(p) = self.panes.get(&id) else { return };
+        let glyphs = scene::indicator_glyphs(broadcast.0, broadcast.1, p.coprocess_command().is_some());
+        if !glyphs.is_empty() {
+            scene::top_right_indicators(frame, rect, &glyphs, p.own().palette.fg, cell);
         }
     }
 

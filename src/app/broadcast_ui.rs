@@ -5,6 +5,21 @@ use super::*;
 use crate::broadcast::{self, Route, TabView, View, Write};
 
 impl App {
+    /// The stripe tile for this display's scale (made once per scale).
+    pub(super) fn stripe_tile(&mut self) -> (u32, std::sync::Arc<Vec<u8>>) {
+        let scale = self.scale();
+        let n = (80.0 * scale.max(0.5)).round() as u32;
+        match &self.stripes {
+            Some((m, px)) if *m == n => (n, px.clone()),
+            _ => {
+                let (n, px) = crate::scene::stripe_tile(scale);
+                let px = std::sync::Arc::new(px);
+                self.stripes = Some((n, px.clone()));
+                (n, px)
+            }
+        }
+    }
+
     /// The current window as the broadcast model sees it.
     pub(super) fn broadcast_view(&self) -> View {
         let tabs = self.tabs.iter().map(|t| TabView { broadcasting: self.broadcast_tabs.contains(&t.id), panes: t.layout.panes() }).collect();

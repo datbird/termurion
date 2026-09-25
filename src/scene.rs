@@ -801,6 +801,41 @@ pub fn tab_icon(dot: bool, dead: bool, bell: bool, new_output: bool, idle: bool)
 
 /// The top-right indicator for a running coprocess (Segoe Fluent Icons "Switch").
 pub const COPROCESS_GLYPH: char = '\u{E8AB}';
+/// Broadcast input: this session sends (and receives), or only receives.
+pub const BROADCAST_GLYPH: char = '\u{EC05}';
+pub const RECEIVE_ONLY_GLYPH: char = '\u{E701}';
+
+/// The top-right glyphs in iTerm2's order (right to left): broadcast or receive-only,
+/// then the coprocess.
+pub fn indicator_glyphs(sends: bool, receives: bool, coprocess: bool) -> Vec<char> {
+    let mut out = Vec::new();
+    if sends {
+        out.push(BROADCAST_GLYPH);
+    } else if receives {
+        out.push(RECEIVE_ONLY_GLYPH);
+    }
+    if coprocess {
+        out.push(COPROCESS_GLYPH);
+    }
+    out
+}
+
+/// iTerm2's broadcast stripes as a tile to repeat: red at alpha 64 in "/" bands at 45
+/// degrees, 40 px on and 40 px off along each row (80 px tile), scaled by `scale`.
+pub fn stripe_tile(scale: f32) -> (u32, Vec<u8>) {
+    let n = (80.0 * scale.max(0.5)).round() as u32;
+    let half = n / 2;
+    let mut px = vec![0u8; (n * n * 4) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            if (x + y) % n < half {
+                let i = ((y * n + x) * 4) as usize;
+                px[i..i + 4].copy_from_slice(&[255, 0, 0, 64]);
+            }
+        }
+    }
+    (n, px)
+}
 
 /// A pane's top-right indicators, right to left from the corner.
 pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], color: Rgb, cell: (f32, f32)) {
@@ -975,6 +1010,32 @@ pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
     let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });
+}
+
+#[cfg(test)]
+mod broadcast_tests {
+    use super::*;
+
+    #[test]
+    fn stripe_tile_matches_iterm2() {
+        let (n, px) = stripe_tile(1.0);
+        assert_eq!((n, px.len()), (80, 80 * 80 * 4));
+        let at = |x: usize, y: usize| px[(y * 80 + x) * 4..(y * 80 + x) * 4 + 4].to_vec();
+        assert_eq!(at(0, 0), vec![255, 0, 0, 64]);
+        assert_eq!(at(39, 0), vec![255, 0, 0, 64]);
+        assert_eq!(at(40, 0)[3], 0);
+        assert_eq!(at(39, 1)[3], 0, "the band edge moves one pixel left per row: a slash");
+        assert_eq!(at(79, 1)[3], 64);
+        assert_eq!(stripe_tile(2.0).0, 160, "scaled for the display");
+    }
+
+    #[test]
+    fn indicators_keep_iterm2_order() {
+        assert_eq!(indicator_glyphs(true, true, true), vec![BROADCAST_GLYPH, COPROCESS_GLYPH]);
+        assert_eq!(indicator_glyphs(false, true, false), vec![RECEIVE_ONLY_GLYPH]);
+        assert_eq!(indicator_glyphs(false, false, true), vec![COPROCESS_GLYPH]);
+        assert!(indicator_glyphs(false, false, false).is_empty());
+    }
 }
 
 #[cfg(test)]

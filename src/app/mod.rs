@@ -255,6 +255,8 @@ pub struct App {
     /// window).
     broadcast: crate::broadcast::Broadcast,
     broadcast_tabs: std::collections::BTreeSet<u64>,
+    /// The broadcast stripe tile (its size and pixels).
+    stripes: Option<(u32, std::sync::Arc<Vec<u8>>)>,
     /// Profile hotkey ids (index + 1) to profile guids; failed registrations by guid.
     hotkey_ids: Vec<String>,
     hotkey_errors: std::collections::HashMap<String, String>,
@@ -454,6 +456,7 @@ pub fn run() {
         hotkey: None,
         broadcast: Default::default(),
         broadcast_tabs: Default::default(),
+        stripes: None,
         hotkey_ids: Vec::new(),
         hotkey_errors: Default::default(),
         hotkeys_registered: false,
@@ -1625,8 +1628,12 @@ impl App {
         self.prepare_portholes();
         self.prepare_badges();
         let mut porthole_hits = Vec::new();
+        let bview = self.broadcast_view();
+        let stripes = self.globals.bool("Use background pattern indicator").then(|| self.stripe_tile());
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
+                let receives = self.broadcast.receives(&bview, id);
+                let sends = self.broadcast.sends(&bview, id);
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
                     scene::background(&mut frame, b.rect, &b.pieces, &b.image, b.bg, b.blend);
                 }
@@ -1639,8 +1646,13 @@ impl App {
                     let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: !self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows") };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: (!self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows")) || (receives && self.broadcast.receives(&bview, tab.focused)) };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
+                    // Broadcast stripes: over the cell backgrounds, under the text.
+                    if let (Some((n, px)), true) = (&stripes, receives) {
+                        let r = self.inner(rect);
+                        frame.images.push(scene::ImageQuad { rect: r, uv: [0.0, 0.0, r.w / *n as f32, r.h / *n as f32], key: (0x5354_5249, *n as usize), pixels: px.clone(), size: (*n, *n), repeat: true });
+                    }
                     porthole_hits.extend(self.draw_portholes(&mut frame, id, rect, cell));
                 }
                 self.draw_view_extras(&mut frame, id, self.inner(rect), cell);
@@ -1653,7 +1665,7 @@ impl App {
                 if self.panes.get(&id).is_some_and(|p| p.buffer.on) {
                     scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
-                self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell);
+                self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives));
                 self.draw_info_bar(&mut frame, id, rect, cell);
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
