@@ -80,6 +80,22 @@ impl Screen {
         if !in_buffer(self, first, last) {
             return None;
         }
+        // Whole logical lines: a wrapped line's rows go together.
+        {
+            let g = self.term.primary_grid();
+            let (top, bottom, cols) = (-(g.history_size() as i32), g.screen_lines() as i32 - 1, g.columns());
+            let wraps = |l: i32| g[Line(l)][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+            while first > top && wraps(first - 1) {
+                first -= 1;
+            }
+            while last < bottom && wraps(last) {
+                last += 1;
+            }
+            // No porthole inside a porthole.
+            if (first..=last).any(|l| g[Line(l)].porthole() != 0) {
+                return None;
+            }
+        }
         // The cursor goes below the range; a line feed at the bottom scrolls it up.
         let mut steps = 0;
         while (first..=last).contains(&self.term.grid().cursor.point.line.0) && steps <= last - first + 1 {
@@ -113,7 +129,9 @@ impl Screen {
         let id = self.next_porthole;
         let detected = detect::detect(&text, source.hint.as_deref(), source.filename.as_deref());
         let mut p = Porthole { id, text, detected, filename: source.filename, base_dir: self.shell.cwd.clone(), wide: source.wide, rows: 0, saved: Vec::new(), sized: false };
-        p.rows = rows_for(&p).max(1);
+        // Never more rows than the buffer can hold above the range's end.
+        let limit = (last + self.term.primary_grid().max_scroll_limit() as i32 + 1).max(1) as u32;
+        p.rows = rows_for(&p).clamp(1, limit);
         let mut rows = blank_rows(self.term.columns(), p.rows, id);
         // A rendered block's rows still belong to it (hover, copy, fold).
         let block = self.term.primary_grid()[Line(first)].block();
@@ -137,6 +155,15 @@ impl Screen {
     pub fn select_in_porthole(&mut self, id: u32, anchor: super::render::Pos, head: super::render::Pos) {
         self.term.selection = None;
         self.porthole_selection = Some((id, anchor, head));
+    }
+
+    /// The porthole selection Copy uses: none when the terminal has a selection, which is
+    /// always the newer one (a porthole selection clears the terminal's).
+    pub fn porthole_copy_selection(&self) -> Option<(u32, super::render::Pos, super::render::Pos)> {
+        if self.term.selection.is_some() {
+            return None;
+        }
+        self.porthole_selection
     }
 
     pub fn clear_porthole_selection(&mut self) {
@@ -185,7 +212,7 @@ impl Screen {
         let g = self.term.primary_grid();
         let top = -(g.history_size() as i32);
         let mut live: HashSet<u32> = (top..g.screen_lines() as i32).map(|l| g[Line(l)].porthole()).collect();
-        live.extend(self.folds.values().flatten().map(|r| r.porthole()));
+        live.extend(self.folded_rows().map(|r| r.porthole()));
         self.portholes.retain(|id, _| live.contains(id));
     }
 }
@@ -278,5 +305,48 @@ mod tests {
         let mut s = Screen::new(20, 5);
         s.feed(b"a\r\n\x1b[?1049hb");
         assert_eq!(s.render_range(0, 0, Source::default(), &two_rows), None);
+    }
+
+    #[test]
+    fn render_takes_whole_logical_lines() {
+        let mut s = Screen::with_scrollback(10, 6, 100);
+        s.feed(b"abcdefghijkl\r\n$ ");
+        let id = s.render_range(1, 1, Source::default(), &two_rows).expect("a porthole");
+        assert_eq!(s.portholes[&id].text, "abcdefghijkl", "the row it wraps from comes too");
+        s.resize(20, 6);
+        assert!(s.close_porthole(id));
+        let g = s.term().grid();
+        let text: Vec<String> = (-(g.history_size() as i32)..6).map(|l| s.line_text(l).trim_end().to_string()).collect();
+        let at = text.iter().position(|t| t == "abcdefghij").unwrap_or_else(|| panic!("{text:?}"));
+        assert_eq!(text[at + 1], "kl", "no text lost: {text:?}");
+    }
+
+    #[test]
+    fn porthole_taller_than_the_scrollback_is_capped() {
+        let mut s = Screen::with_scrollback(20, 5, 10);
+        s.feed(b"x\r\n$ ");
+        let id = s.render_range(0, 0, Source::default(), &|_| 500).expect("a porthole");
+        let rows = s.portholes[&id].rows;
+        assert!(rows <= 14, "capped to the buffer: {rows}");
+        let (first, last) = s.porthole_rows(id).expect("all its rows are in the buffer");
+        assert_eq!((last - first + 1) as u32, rows);
+    }
+
+    #[test]
+    fn saved_rows_keep_their_folds_notes_and_images() {
+        let mut s = Screen::with_scrollback(20, 8, 100);
+        s.feed(b"a\r\nb\r\nc\r\nd\r\n$ ");
+        let fold = s.fold(0, 1).expect("folded");
+        let (fl, _) = (0..8).find_map(|l| s.fold_at(l).map(|f| (l, f))).unwrap();
+        let id = s.render_range(fl, fl + 1, Source::default(), &two_rows).expect("a porthole over the fold");
+        s.prune_tags();
+        assert_eq!(s.fold_count(), 1, "the fold inside the porthole is kept");
+        assert!(s.close_porthole(id));
+        assert!(s.unfold(fold));
+        let (a, b) = s.porthole_rows(id).map_or((0, 0), |r| r);
+        assert_eq!((a, b), (0, 0));
+        let id2 = s.render_range(0, 1, Source::default(), &two_rows).unwrap();
+        let (p0, _) = s.porthole_rows(id2).unwrap();
+        assert_eq!(s.render_range(p0, p0, Source::default(), &two_rows), None, "no porthole inside a porthole");
     }
 }

@@ -55,5 +55,7 @@ test data) is left out. Changes:
 
 12. `grid/row.rs`: `Row` has a `porthole` slot (`porthole()`, `set_porthole()`), the porthole a row
     stands for, cleared by `reset`, merged by `absorb_tags`, and kept by split rows like `block`.
+    `grid/mod.rs`: `Grid::max_scroll_limit()` reads the history limit (a porthole never takes
+    more rows than the buffer holds).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.

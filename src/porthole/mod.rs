@@ -18,8 +18,8 @@ pub fn link_target(link: &str, base_dir: Option<&str>) -> Option<LinkTarget> {
     use crate::prompted::local_path_ok;
     let link = link.trim();
     let windows = |p: &str| p.replace('/', "\\");
-    if link.len() > 7 && link[..7].eq_ignore_ascii_case("file://") {
-        let path = windows(link[7..].trim_start_matches('/'));
+    if let Some(rest) = link.get(..7).filter(|p| p.eq_ignore_ascii_case("file://")).map(|_| &link[7..]) {
+        let path = windows(rest.trim_start_matches('/'));
         return local_path_ok(&path).then_some(LinkTarget::File(path));
     }
     if let Some((scheme, rest)) = link.split_once(':') {
@@ -38,6 +38,21 @@ pub fn link_target(link: &str, base_dir: Option<&str>) -> Option<LinkTarget> {
     let base = base_dir.filter(|b| local_path_ok(b))?;
     let joined = format!("{}\\{}", base.trim_end_matches(['\\', '/']), path);
     local_path_ok(&joined).then_some(LinkTarget::File(joined))
+}
+
+/// What a link click does: open it, or, for a file Windows would run (a program, a
+/// script), show it in Explorer instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkAction {
+    Open,
+    Reveal,
+}
+
+pub fn link_action(target: &LinkTarget) -> LinkAction {
+    match target {
+        LinkTarget::File(f) if crate::semantic::runnable(f) => LinkAction::Reveal,
+        _ => LinkAction::Open,
+    }
 }
 
 /// The question a link click asks, and the setting that silences it for good.
@@ -199,5 +214,36 @@ mod tests {
         assert_eq!(s.porthole_selection, Some((99, b, a)), "one porthole selection at a time");
         s.clear_porthole_selection();
         assert_eq!(s.porthole_selection, None);
+    }
+
+    #[test]
+    fn non_ascii_links_do_not_crash() {
+        assert_eq!(link_target("résumé.md", Some("C:\\d")), Some(LinkTarget::File("C:\\d\\résumé.md".into())));
+        assert_eq!(link_target("日本語.md", Some("C:\\d")), Some(LinkTarget::File("C:\\d\\日本語.md".into())));
+        assert_eq!(link_target("fé", None), None);
+    }
+
+    #[test]
+    fn runnable_files_are_revealed() {
+        assert_eq!(link_action(&LinkTarget::File("C:\\x\\setup.bat".into())), LinkAction::Reveal);
+        assert_eq!(link_action(&LinkTarget::File("C:\\x\\tool.EXE".into())), LinkAction::Reveal);
+        assert_eq!(link_action(&LinkTarget::File("C:\\x\\notes.md".into())), LinkAction::Open);
+        assert_eq!(link_action(&LinkTarget::Url("https://x.org/a.exe".into())), LinkAction::Open);
+    }
+
+    #[test]
+    fn older_porthole_selection_loses_to_the_terminals() {
+        let mut s = Screen::new(30, 10);
+        s.feed(b"# T\r\nx\r\n$ ");
+        let id = s.render_range_estimated(0, 1, store::Source::default()).unwrap();
+        let a = render::Pos { line: 0, col: 0 };
+        s.select_in_porthole(id, a, render::Pos { line: 0, col: 1 });
+        assert!(s.porthole_copy_selection().is_some());
+        s.term_mut().selection = Some(alacritty_terminal::selection::Selection::new(
+            alacritty_terminal::selection::SelectionType::Simple,
+            alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(2), alacritty_terminal::index::Column(0)),
+            alacritty_terminal::index::Side::Left,
+        ));
+        assert_eq!(s.porthole_copy_selection(), None, "the terminal's selection is the newer one");
     }
 }

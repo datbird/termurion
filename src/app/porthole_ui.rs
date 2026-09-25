@@ -17,6 +17,10 @@ use crate::scene::PORTHOLE_MARGIN;
 /// A porthole's layout and what it was made for, and its sideways scroll (Wide).
 pub(super) struct PView {
     pub layout: Layout,
+    /// The rendered document, kept while its language, look, and theme stay (a width or
+    /// font change only lays it out again).
+    doc: render::Doc,
+    doc_key: (bool, String, String),
     key: (u32, u32, bool, String, bool, String),
     pub scroll_x: f32,
     /// This frame's selection and find marks, from the text's top left.
@@ -33,6 +37,9 @@ pub(super) enum CopyAs {
 
 /// Rectangles over the text between two positions, one per line.
 fn span_rects(layout: &Layout, a: Pos, b: Pos, measure: &dyn Fn(&str, Face, f32) -> f32) -> Vec<Rect> {
+    if layout.lines.is_empty() {
+        return Vec::new();
+    }
     let (a, b) = if a <= b { (a, b) } else { (b, a) };
     let mut out = Vec::new();
     for i in a.line..=b.line.min(layout.lines.len().saturating_sub(1)) {
@@ -54,15 +61,33 @@ fn span_rects(layout: &Layout, a: Pos, b: Pos, measure: &dyn Fn(&str, Face, f32)
 /// A drawn porthole: its pane and id, its controls, and its frame.
 pub(super) type PortholeHit = (PaneId, u32, scene::PortholeControls, Rect);
 
-/// The document laid out with the renderer's fonts, in a highlight theme.
-fn lay(renderer: &mut Renderer, p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &render::Theme, width: f32, cell_h: f32) -> Layout {
+/// A porthole's document in a highlight theme.
+fn doc_of(p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &render::Theme) -> render::Doc {
     let lang = p.detected.language.clone().unwrap_or(Language::Plain);
-    let doc = render::render_themed(&p.text, &lang, palette, dark, theme);
-    let r = RefCell::new(renderer);
-    let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width(t, f == Face::Prose, s);
-    render::layout(&doc, width, cell_h, &measure, p.wide)
+    render::render_themed(&p.text, &lang, palette, dark, theme)
 }
 
+/// A document laid out with the renderer's fonts.
+fn lay_doc(renderer: &mut Renderer, doc: &render::Doc, wide: bool, width: f32, cell_h: f32) -> Layout {
+    let r = RefCell::new(renderer);
+    let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width(t, f == Face::Prose, s);
+    render::layout(doc, width, cell_h, &measure, wide)
+}
+
+fn lay(renderer: &mut Renderer, p: &Porthole, palette: &crate::palette::Palette, dark: bool, theme: &render::Theme, width: f32, cell_h: f32) -> Layout {
+    lay_doc(renderer, &doc_of(p, palette, dark, theme), p.wide, width, cell_h)
+}
+
+
+/// The view row a porthole's frame starts on: where its rows start, or, when rows are gone
+/// off the top of the buffer, as many rows higher, so the document's tail stays in place.
+fn frame_top(top: i32, found: u32, rows: u32, at_buffer_top: bool) -> i32 {
+    if at_buffer_top && found < rows {
+        top - (rows - found) as i32
+    } else {
+        top
+    }
+}
 
 /// The width a pane's portholes lay out at.
 fn text_width(cols: usize, cell_w: f32) -> f32 {
@@ -134,62 +159,105 @@ impl App {
     pub(super) fn prepare_portholes(&mut self) {
         let cell = self.cell();
         let Some(tab) = self.tabs.get(self.active) else { return };
-        let ids: Vec<PaneId> = self.visible(tab).into_iter().map(|(id, _)| id).collect();
+        let panes: Vec<(PaneId, Rect)> = self.visible(tab);
         let mut keep: HashSet<(PaneId, u32)> = HashSet::new();
         let mut resize: Vec<(PaneId, u32, u32)> = Vec::new();
-        for pane in ids {
+        // Each theme file is read once per pass.
+        let mut themes: HashMap<(String, String), render::Theme> = HashMap::new();
+        for &(pane, _) in &panes {
             let Some(p) = self.panes.get(&pane) else { continue };
             let s = &p.screen;
             for (pid, ph) in &s.portholes {
                 keep.insert((pane, *pid));
                 let key = self.porthole_key(s, ph);
-                if self.porthole_views.get(&(pane, *pid)).is_some_and(|v| v.key == key) {
+                let old = self.porthole_views.get(&(pane, *pid));
+                if old.is_some_and(|v| v.key == key) {
                     continue;
                 }
-                let (theme, error) = render::load_theme(&key.5, &s.palette, s.is_dark());
-                if let Some(e) = error {
-                    self.banners.set("porthole-css", e);
-                }
+                let doc_key = (key.2, key.3.clone(), key.5.clone());
+                let doc = match old.filter(|v| v.doc_key == doc_key) {
+                    Some(v) => v.doc.clone(),
+                    None => {
+                        let look = format!("{}{:?}{:?}", key.2, s.palette.fg, s.palette.ansi);
+                        let theme = themes.entry((key.5.clone(), look)).or_insert_with(|| {
+                            let (t, error) = render::load_theme(&key.5, &s.palette, s.is_dark());
+                            if let Some(e) = error {
+                                self.banners.set("porthole-css", e);
+                            }
+                            t
+                        });
+                        doc_of(ph, &s.palette, s.is_dark(), theme)
+                    }
+                };
                 let Some(gpu) = self.gpu.as_mut() else { return };
-                let layout = lay(&mut gpu.renderer, ph, &s.palette, s.is_dark(), &theme, text_width(s.term().columns(), cell.0), cell.1);
+                let layout = lay_doc(&mut gpu.renderer, &doc, ph.wide, text_width(s.term().columns(), cell.0), cell.1);
                 // The terminal estimated this one's rows; the window's fonts decide once.
                 if !ph.sized {
                     resize.push((pane, *pid, rows_needed(layout.height, cell.1)));
                 }
                 let scroll_x = self.porthole_views.get(&(pane, *pid)).map_or(0.0, |v| v.scroll_x);
-                self.porthole_views.insert((pane, *pid), PView { layout, key, scroll_x, marks: Vec::new() });
+                self.porthole_views.insert((pane, *pid), PView { layout, doc, doc_key, key, scroll_x, marks: Vec::new() });
             }
         }
-        self.porthole_marks();
+        self.porthole_marks(&panes);
         for (pane, pid, rows) in resize {
             if let Some(s) = self.panes.get_mut(&pane).map(|p| &mut p.screen) {
-                s.set_porthole_rows(pid, rows);
-                if let Some(ph) = s.portholes.get_mut(&pid) {
-                    ph.sized = true;
+                // Refused while the alternate screen is up: try again after.
+                if s.set_porthole_rows(pid, rows) {
+                    if let Some(ph) = s.portholes.get_mut(&pid) {
+                        ph.sized = true;
+                    }
                 }
             }
         }
         self.porthole_views.retain(|k, _| keep.contains(k) || self.panes.get(&k.0).is_some_and(|p| p.screen.portholes.contains_key(&k.1)));
     }
 
-    /// This frame's marks: the selection in its porthole, and find matches while the find
-    /// bar is open.
-    fn porthole_marks(&mut self) {
+    /// This frame's marks, for the lines in view only: the selection in its porthole, and
+    /// find matches while the find bar is open.
+    fn porthole_marks(&mut self, panes: &[(PaneId, Rect)]) {
+        let cell = self.cell();
         let mode = self.find_mode();
-        let queries: HashMap<PaneId, String> = self.finds.iter().filter(|(_, f)| f.open && !f.query.is_empty()).map(|(id, f)| (*id, f.query.clone())).collect();
+        for v in self.porthole_views.values_mut() {
+            v.marks.clear();
+        }
+        let mut work: Vec<(PaneId, u32, std::ops::Range<usize>)> = Vec::new();
+        for &(pane, rect) in panes {
+            for (pid, frame, inner) in self.porthole_frames(pane, rect, cell) {
+                let Some(v) = self.porthole_views.get(&(pane, pid)) else { continue };
+                let content_y = frame.y + PORTHOLE_MARGIN + cell.1;
+                work.push((pane, pid, v.layout.visible_range(inner.y - content_y, inner.y + inner.h - content_y)));
+            }
+        }
+        let queries: HashMap<PaneId, regex::Regex> = self
+            .finds
+            .iter()
+            .filter(|(_, f)| f.open && !f.query.is_empty())
+            .filter_map(|(id, f)| regex::Regex::new(&crate::find::pattern(&f.query, mode)).ok().map(|re| (*id, re)))
+            .collect();
         let Some(gpu) = self.gpu.as_mut() else { return };
         let r = RefCell::new(&mut gpu.renderer);
         let measure = |t: &str, f: Face, s: f32| r.borrow_mut().text_width(t, f == Face::Prose, s);
-        for ((pane, pid), view) in self.porthole_views.iter_mut() {
-            view.marks.clear();
-            let Some(p) = self.panes.get(pane) else { continue };
-            if let Some(re) = queries.get(pane).and_then(|q| regex::Regex::new(&crate::find::pattern(q, mode)).ok()) {
-                for (a, b) in view.layout.find(&re) {
+        for (pane, pid, range) in work {
+            let (Some(p), Some(view)) = (self.panes.get(&pane), self.porthole_views.get_mut(&(pane, pid))) else { continue };
+            if range.is_empty() {
+                continue;
+            }
+            if let Some(re) = queries.get(&pane) {
+                for (a, b) in view.layout.find_in(re, range.clone()) {
                     view.marks.extend(span_rects(&view.layout, a, b, &measure).into_iter().map(|m| (m, crate::palette::rgb(255, 255, 0), 0.8)));
                 }
             }
-            if let Some((_, a, b)) = p.screen.porthole_selection.filter(|s| s.0 == *pid) {
-                view.marks.extend(span_rects(&view.layout, a, b, &measure).into_iter().map(|m| (m, p.screen.palette.selection, 1.0)));
+            if let Some((_, a, b)) = p.screen.porthole_selection.filter(|s| s.0 == pid) {
+                // Only the selected lines in view.
+                let (a, b) = if a <= b { (a, b) } else { (b, a) };
+                let (from, to) = (a.line.max(range.start), b.line.min(range.end - 1));
+                if from <= to {
+                    let a = if from == a.line { a } else { Pos { line: from, col: 0 } };
+                    let b = if to == b.line { b } else { Pos { line: to, col: view.layout.line_text(to).chars().count() } };
+                    let rects = span_rects(&view.layout, a, b, &measure);
+                    view.marks.extend(rects.into_iter().map(|m| (m, p.screen.palette.selection, 1.0)));
+                }
             }
         }
     }
@@ -232,6 +300,7 @@ impl App {
             if let Some(v) = self.porthole_views.get_mut(&(pane, pid)) {
                 v.scroll_x = 0.0;
             }
+            self.drop_porthole_selection(pane, pid);
             self.redraw();
             return true;
         }
@@ -270,6 +339,13 @@ impl App {
         self.redraw();
     }
 
+    /// A porthole laid out again: its selection's positions no longer mean the same text.
+    fn drop_porthole_selection(&mut self, pane: PaneId, pid: u32) {
+        if let Some(p) = self.panes.get_mut(&pane).filter(|p| p.screen.porthole_selection.is_some_and(|s| s.0 == pid)) {
+            p.screen.clear_porthole_selection();
+        }
+    }
+
     pub(super) fn clear_porthole_selections(&mut self) {
         for p in self.panes.values_mut() {
             p.screen.clear_porthole_selection();
@@ -298,7 +374,7 @@ impl App {
     /// False when the pane has none.
     pub(super) fn copy_porthole_selection(&mut self, id: PaneId, how: CopyAs) -> bool {
         let Some(p) = self.panes.get(&id) else { return false };
-        let Some((pid, a, b)) = p.screen.porthole_selection else { return false };
+        let Some((pid, a, b)) = p.screen.porthole_copy_selection() else { return false };
         let Some(view) = self.porthole_views.get(&(id, pid)) else { return false };
         let text = view.layout.text(a, b);
         let rows = view.layout.rows_between(a, b);
@@ -351,6 +427,7 @@ impl App {
             ph.detected.language = Some(lang.clone());
             ph.sized = false;
         }
+        self.drop_porthole_selection(pane, pid);
         self.redraw();
         true
     }
@@ -374,6 +451,13 @@ impl App {
         let t = match target {
             crate::porthole::LinkTarget::Url(u) | crate::porthole::LinkTarget::File(u) => u.clone(),
         };
+        // A program or script a document links to is shown in Explorer, never run.
+        if crate::porthole::link_action(target) == crate::porthole::LinkAction::Reveal {
+            if let Err(e) = std::process::Command::new("explorer").arg(format!("/select,{t}")).spawn() {
+                self.banners.set("link", format!("Could not show {t}: {e}"));
+            }
+            return;
+        }
         if let Err(e) = super::semantic_ui::shell_open(&t, None, false) {
             self.banners.set("link", format!("Could not open {t}: {e}"));
         }
@@ -398,8 +482,8 @@ impl App {
         true
     }
 
-    /// Draws the portholes on a pane's rows in view. The drawn ones, for clicks.
-    pub(super) fn draw_portholes(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) -> Vec<PortholeHit> {
+    /// The portholes on a pane's rows in view: id, frame, and the pane's text area.
+    fn porthole_frames(&self, id: PaneId, rect: Rect, cell: (f32, f32)) -> Vec<(u32, Rect, Rect)> {
         let Some(p) = self.panes.get(&id) else { return Vec::new() };
         let s = &p.screen;
         if s.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN) || s.portholes.is_empty() {
@@ -410,14 +494,14 @@ impl App {
         let (top_line, lines) = (-(g.history_size() as i32), g.screen_lines() as i32);
         let inner = self.inner(rect);
         let mut seen = HashSet::new();
-        let mut hits = Vec::new();
+        let mut out = Vec::new();
         for r in 0..lines {
             let line = r - off;
             let pid = g[Line(line)].porthole();
             if pid == 0 || !seen.insert(pid) {
                 continue;
             }
-            let (Some(ph), Some(view)) = (s.portholes.get(&pid), self.porthole_views.get(&(id, pid))) else { continue };
+            let Some(ph) = s.portholes.get(&pid) else { continue };
             let mut top = line;
             while top > top_line && g[Line(top - 1)].porthole() == pid {
                 top -= 1;
@@ -426,7 +510,21 @@ impl App {
             while bottom < lines - 1 && g[Line(bottom + 1)].porthole() == pid {
                 bottom += 1;
             }
-            let prect = Rect { x: inner.x, y: inner.y + (top + off) as f32 * cell.1 + 4.0, w: inner.w, h: (bottom - top + 1) as f32 * cell.1 - 8.0 };
+            let found = (bottom - top + 1) as u32;
+            let start = frame_top(top, found, ph.rows, top == top_line);
+            let frame = Rect { x: inner.x, y: inner.y + (start + off) as f32 * cell.1 + 4.0, w: inner.w, h: (bottom - start + 1) as f32 * cell.1 - 8.0 };
+            out.push((pid, frame, inner));
+        }
+        out
+    }
+
+    /// Draws the portholes on a pane's rows in view. The drawn ones, for clicks.
+    pub(super) fn draw_portholes(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) -> Vec<PortholeHit> {
+        let Some(p) = self.panes.get(&id) else { return Vec::new() };
+        let s = &p.screen;
+        let mut hits = Vec::new();
+        for (pid, prect, inner) in self.porthole_frames(id, rect, cell) {
+            let (Some(ph), Some(view)) = (s.portholes.get(&pid), self.porthole_views.get(&(id, pid))) else { continue };
             let content_y = prect.y + PORTHOLE_MARGIN + cell.1;
             let shown = view.layout.visible(inner.y - content_y, inner.y + inner.h - content_y);
             let name = ph.detected.language.as_ref().map_or("Plain text".to_string(), |l| l.name());
@@ -435,5 +533,15 @@ impl App {
             hits.push((id, pid, controls, prect));
         }
         hits
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_porthole_cut_at_the_buffer_top_keeps_its_tail_in_place() {
+        assert_eq!(super::frame_top(-3, 5, 5, false), -3, "whole: where its rows start");
+        assert_eq!(super::frame_top(-3, 2, 5, true), -6, "3 rows gone above: the frame starts 3 rows higher");
+        assert_eq!(super::frame_top(-3, 2, 5, false), -3, "rows below the buffer top are never missing");
     }
 }

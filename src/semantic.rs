@@ -290,7 +290,7 @@ const RUNNABLE: &[&str] = &[
     "appinstaller", "diagcab",
 ];
 
-fn runnable(path: &str) -> bool {
+pub(crate) fn runnable(path: &str) -> bool {
     let Some(ext) = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) else { return false };
     RUNNABLE.contains(&ext.as_str())
         || std::env::var("PATHEXT").is_ok_and(|p| p.split(';').any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext)))

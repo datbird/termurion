@@ -725,8 +725,9 @@ impl Screen {
     }
 
     /// The rows folds keep.
+    /// Rows kept off the grid: folded lines, and the lines portholes stand in for.
     pub(crate) fn folded_rows(&self) -> impl Iterator<Item = &Row<Cell>> {
-        self.folds.values().flatten()
+        self.folds.values().flatten().chain(self.portholes.values().flat_map(|p| &p.saved))
     }
 
     /// The cell size in pixels, as the app set it.
@@ -855,6 +856,11 @@ impl Screen {
         let mut notes = std::collections::HashSet::new();
         for l in top..grid.screen_lines() as i32 {
             let row = &grid[Line(l)];
+            folds.insert(row.fold());
+            notes.insert(row.note());
+        }
+        // Rows a porthole keeps count too (a fold or note it covers comes back on close).
+        for row in self.portholes.values().flat_map(|p| &p.saved) {
             folds.insert(row.fold());
             notes.insert(row.note());
         }

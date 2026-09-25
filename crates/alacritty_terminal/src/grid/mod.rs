@@ -379,6 +379,12 @@ impl<T> Grid<T> {
         }
     }
 
+    /// Tandem patch: how many lines of history the grid keeps at most.
+    #[inline]
+    pub fn max_scroll_limit(&self) -> usize {
+        self.max_scroll_limit
+    }
+
     #[inline]
     pub fn clear_history(&mut self) {
         // Explicitly purge all lines from history.

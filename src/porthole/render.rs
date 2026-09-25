@@ -190,7 +190,7 @@ const COLOR_NAMES: [&str; 16] = [
 ];
 
 fn parse_hex(v: &str) -> Option<Rgb> {
-    let h = v.trim().strip_prefix('#')?;
+    let h = v.trim().strip_prefix('#').filter(|h| h.is_ascii())?;
     let n = |s: &str| u8::from_str_radix(s, 16).ok();
     match h.len() {
         3 => {
@@ -684,9 +684,14 @@ pub struct Layout {
 impl Layout {
     /// The lines that show between `y0` and `y1`.
     pub fn visible(&self, y0: f32, y1: f32) -> &[VisualLine] {
+        &self.lines[self.visible_range(y0, y1)]
+    }
+
+    /// The indices of those lines.
+    pub fn visible_range(&self, y0: f32, y1: f32) -> std::ops::Range<usize> {
         let start = self.lines.partition_point(|l| l.y + l.h <= y0);
         let end = self.lines.partition_point(|l| l.y < y1);
-        &self.lines[start..end.max(start)]
+        start..end.max(start)
     }
 
     /// A visual line's text.
@@ -732,6 +737,9 @@ impl Layout {
     /// The runs of each visual line between two positions, cut to them, and whether each
     /// line ends its paragraph (not a wrap).
     pub fn rows_between(&self, a: Pos, b: Pos) -> Vec<(Vec<Run>, bool)> {
+        if self.lines.is_empty() {
+            return Vec::new();
+        }
         let (a, b) = Self::ordered(a, b);
         let mut out = Vec::new();
         for i in a.line..=b.line.min(self.lines.len().saturating_sub(1)) {
@@ -769,8 +777,13 @@ impl Layout {
 
     /// Matches in the rendered text, line by line.
     pub fn find(&self, re: &regex::Regex) -> Vec<(Pos, Pos)> {
+        self.find_in(re, 0..self.lines.len())
+    }
+
+    /// Matches in some of the lines (those in view).
+    pub fn find_in(&self, re: &regex::Regex, lines: std::ops::Range<usize>) -> Vec<(Pos, Pos)> {
         let mut out = Vec::new();
-        for i in 0..self.lines.len() {
+        for i in lines.start.min(self.lines.len())..lines.end.min(self.lines.len()) {
             let t = self.line_text(i);
             for m in re.find_iter(&t) {
                 if m.start() == m.end() {
@@ -1052,5 +1065,37 @@ mod tests {
         assert_eq!(t, Theme::builtin(&p, false));
         assert_eq!(Theme::builtin(&p, true).style("keyword"), (p.ansi[13], false, false), "the dark template");
         assert_eq!(Theme::builtin(&p, false).style("comment"), (p.ansi[8], false, false), "the light template");
+    }
+
+    #[test]
+    fn empty_layouts_and_bad_css_do_not_crash() {
+        let p = Palette::default();
+        let l = layout(&Doc::default(), 100.0, 20.0, &measure, false);
+        let a = Pos { line: 0, col: 0 };
+        assert!(l.rows_between(a, a).is_empty());
+        assert_eq!(l.text(a, a), "");
+        let t = Theme::from_css(".hljs-keyword { color: #\u{20ac}1; }", &p);
+        assert_eq!(t.style("keyword").0, p.fg);
+    }
+
+    #[test]
+    fn long_words_break_in_linear_time() {
+        let p = Palette::default();
+        let word = "x".repeat(200_000);
+        let doc = render(&word, &Language::Plain, &p, true);
+        let t = std::time::Instant::now();
+        let l = layout(&doc, 800.0, 20.0, &measure, false);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(l.lines.len(), 2500);
+    }
+
+    #[test]
+    fn find_in_a_range_of_lines() {
+        let p = Palette::default();
+        let doc = render("me\nme\nme\nme", &Language::Plain, &p, true);
+        let l = layout(&doc, 100.0, 20.0, &measure, false);
+        let re = regex::Regex::new("me").unwrap();
+        assert_eq!(l.find_in(&re, 1..3).len(), 2);
+        assert_eq!(l.find_in(&re, 3..99).len(), 1);
     }
 }
