@@ -181,8 +181,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
 | Session > Edit Session... | Cmd+I | Opens the profile/session editor for the current session. | have |
-| Session > Run Coprocess... | Opt+Cmd+R | Runs a local command piped to and from the session's I/O. (milestone 6) | missing |
-| Session > Stop Coprocess | Opt+Cmd+R | Stops the running coprocess. (milestone 6) | missing |
+| Session > Run Coprocess... | Opt+Cmd+R | Runs a local command piped to and from the session's I/O. (milestone 6) | have, milestone 6c |
+| Session > Stop Coprocess | Opt+Cmd+Shift+R | Stops the running coprocess. (milestone 6) | have, milestone 6c |
 | Session > Restart Session | no shortcut | Restarts the session's shell or command without closing the pane. | have |
 | Session > Duplicate Session | no shortcut | Opens a new session cloning the current one's profile and directory. | have |
 | Session > Open Autocomplete... | Cmd+; | Opens the shell integration based command autocomplete popup. (milestone 9) | missing |
@@ -446,7 +446,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Shell integration | Shell integration version handshake | Reports the installed shell integration script's version and shell name so the app can warn about outdated installs. | have | Version and shell are stored; there is no upgrade prompt. |
 | Shell integration | Command history capture | Captures each command typed, via prompt marks, and its associated host/directory for the Command History toolbelt tool and search. | partial | Each command, directory, host, time, and code is recorded per session; the Command History tool comes in milestone 9. |
 | Shell integration | Command status marks (success/failure coloring) | Colors the mark for a finished command based on its exit code, surfaced in the scrollbar and Command History tool. | have | Blue, yellow, or red in the left margin. |
-| Shell integration | Automatic profile switching by hostname | Switches to a different saved profile automatically when remote host reporting detects an SSH session to a known host. | missing | |
+| Shell integration | Automatic profile switching by hostname | Switches to a different saved profile automatically when remote host reporting detects an SSH session to a known host. | have, milestone 6c |  |
 | Shell integration | it2git status variables | A shell hook script that publishes git branch/dirty state as user variables for status bar/prompt use. | missing | |
 | Shell integration | imgcat | Displays an image file inline in the terminal using the proprietary inline-image protocol. | missing | |
 | Shell integration | it2cat | Generic inline-file display for any file, same proprietary protocol as imgcat. | missing | |
@@ -516,7 +516,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Triggers | Trigger engine | Per-profile list of regex-matched rules evaluated against incoming terminal text, each firing an action. | have, milestone 6a |  |
 | Triggers | Show Alert trigger | Pops a modal alert dialog with text derived from the match. | have, milestone 6a |  |
 | Triggers | Capture Output trigger | Captures the matching line into the Captured Output toolbelt tool. | missing, milestone 9 (listed in the editor) |  |
-| Triggers | Run Coprocess trigger | Launches an external command as a coprocess piped to/from the session on match. | missing, milestone 6c (listed in the editor) |  |
+| Triggers | Run Coprocess trigger | Launches an external command as a coprocess piped to/from the session on match. | have, milestone 6c |  |
 | Triggers | Annotate trigger | Attaches an annotation to the matching text automatically. | have, milestone 6a |  |
 | Triggers | Set Mark trigger | Drops a mark at the matching line for later navigation. | have, milestone 6a |  |
 | Triggers | Make Hyperlink trigger | Turns matching text into a clickable hyperlink automatically. | have, milestone 6a |  |

@@ -395,7 +395,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Cycle Tabs Backward | KEY_ACTION_PREVIOUS_MRU_TAB | Cycles tabs in most-recently-used order, backward. | have |  |
 | Move Tab Left | KEY_ACTION_MOVE_TAB_LEFT | Moves the current tab one position to the left. | have |  |
 | Move Tab Right | KEY_ACTION_MOVE_TAB_RIGHT | Moves the current tab one position to the right. | have |  |
-| Run Coprocess... | KEY_ACTION_RUN_COPROCESS | Launches a coprocess (a program piped to/from the session). | missing | Comes in milestone 6. |
+| Run Coprocess... | KEY_ACTION_RUN_COPROCESS | Launches a coprocess (a program piped to/from the session). | have | Milestone 6c. |
 | Find Regular Expression... | KEY_ACTION_FIND_REGEX | Runs Find using a fixed regular expression. | have |  |
 | Set Profile... | KEY_ACTION_SET_PROFILE | Switches the current session to a different profile. | have |  |
 | Send Text (vim paste-safe) | KEY_ACTION_VIM_TEXT | Sends text wrapped so vim treats it as a paste, not typed keystrokes. | have |  |
@@ -429,7 +429,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Copy Selection or Send ^C | KEY_ACTION_COPY_OR_SEND | Copies the selection if there is one, otherwise sends Ctrl-C. | have |  |
 | Paste or Send ^V | KEY_ACTION_PASTE_OR_SEND | Pastes the clipboard if there is content, otherwise sends the literal key. | have |  |
 | Alert on Next Mark | KEY_ACTION_ALERT_ON_NEXT_MARK | Shows a notification the next time a shell-integration mark appears in this session. | missing | Comes in milestone 6. |
-| Copy Interpolated String... | KEY_ACTION_COPY_INTERPOLATED_STRING | Evaluates a string with session variable interpolation and copies the result to the clipboard. | missing | Comes in milestone 6. |
+| Copy Interpolated String... | KEY_ACTION_COPY_INTERPOLATED_STRING | Evaluates a string with session variable interpolation and copies the result to the clipboard. | have | Milestone 6c. |
 | Enter Copy Mode | KEY_ACTION_COPY_MODE | Enters keyboard-driven Copy Mode for selecting text without the mouse. | have | Runs its vim-style key string through Copy Mode. |
 | Bypass Terminal | KEY_ACTION_BYPASS | Sends the keystroke through to the OS/window manager instead of the terminal program. | have |  |
 | Toggle Setting... | KEY_ACTION_TOGGLE_SETTING | Flips a chosen boolean preference on/off as the bound action. | have |  |
@@ -672,7 +672,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | shouldSetTerminfoDirs | shouldSetTerminfoDirs (bool, default YES) | Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs? iTerm2 ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). | missing |  |
 | xtermVersion | xtermVersion (int, default 2500) | xterm version for secondary device attributes (SDA). | missing |  |
 | p3 | p3 (bool, default YES) | Use P3 as default color space? If No, sRGB will be used. | missing |  |
-| fileDropCoprocess | fileDropCoprocess (string, default @"") | When files are dropped into a terminal window, execute a silent coprocess. | missing |  |
+| fileDropCoprocess | fileDropCoprocess (string, default @"") | When files are dropped into a terminal window, execute a silent coprocess. | have | Milestone 6c: a drop runs it as a silent coprocess; without it the paths are pasted. |
 | maxURLLength | maxURLLength (int, default 2097152) | Maximum length for OSC 8 URLs. | missing |  |
 | defaultWideMode | defaultWideMode (bool, default NO) | When rendering natively, use wide mode by default? | have | Milestone 5f, Advanced > General. |
 | bufferDepth | bufferDepth (int, default 40) | Maximum number of chunks to buffer. | missing |  |
@@ -804,7 +804,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | allowHDR | allowHDR (bool, default NO) | Allow HDR effects When enabled, iTerm2 may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. | missing |  |
 | metalRedrawPeriod | metalRedrawPeriod (float, default 0.5) | GPU renderer redraws at least this often, in seconds. | partial |  |
 | animateGraphStatusBarComponents | animateGraphStatusBarComponents (bool, default YES) | Animate graph-based status bar components? Turn this off to reduce CPU/GPU usage in WindowServer. | partial |  |
-| disableTopRightIndicators | disableTopRightIndicators (bool, default NO) | Disable indicator icons that appear in the top right of a session? This includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging. | missing |  |
+| disableTopRightIndicators | disableTopRightIndicators (bool, default NO) | Disable indicator icons that appear in the top right of a session? This includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging. | partial | Milestone 6c: hides the coprocess indicator, the only top-right indicator Tandem draws so far. |
 | nativeRenderingCSSLight | nativeRenderingCSSLight (string, default @"") | Path to CSS file to customize native drawing (for light background colors). | have | Milestone 5f, Advanced > General; color, weight, and style rules. |
 | nativeRenderingCSSDark | nativeRenderingCSSDark (string, default @"") | Path to CSS file to customize native drawing (for dark background colors). | have | Milestone 5f, Advanced > General; color, weight, and style rules. |
 | supportPowerlineExtendedSymbols | supportPowerlineExtendedSymbols (bool, default YES) | Include extended symbols when drawing Powerline natively. | missing |  |
@@ -870,8 +870,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | logTimestampFormat | logTimestampFormat (string, default @"yyyy-MM-dd hh.mm.ss.SSS") | Format for log timestamps. | missing |  |
 | focusNewSplitPaneWithFocusFollowsMouse | focusNewSplitPaneWithFocusFollowsMouse (bool, default YES) | When focus follows mouse is enabled, should new split panes automatically be focused? | missing |  |
 | NoSyncSuppressRestartSessionConfirmationAlert | NoSyncSuppressRestartSessionConfirmationAlert (bool, default NO) | Suppress restart session confirmation alert. | missing |  |
-| showAutomaticProfileSwitchingBanner | showAutomaticProfileSwitchingBanner (bool, default YES) | Show a “Switched to profile” message when Automatic Profile Switching activates. | missing |  |
-| preserveFontSizeOnAutomaticProfileSwitch | preserveFontSizeOnAutomaticProfileSwitch (bool, default YES) | Preserve font zoom level when Automatic Profile Switching changes profiles. | missing |  |
+| showAutomaticProfileSwitchingBanner | showAutomaticProfileSwitchingBanner (bool, default YES) | Show a “Switched to profile” message when Automatic Profile Switching activates. | have | Milestone 6c. |
+| preserveFontSizeOnAutomaticProfileSwitch | preserveFontSizeOnAutomaticProfileSwitch (bool, default YES) | Preserve font zoom level when Automatic Profile Switching changes profiles. | partial | Milestone 6c: saved; every pane shares one font size until per-pane fonts arrive, so a switch never changes it. |
 | autoLockSessionNameOnEdit | autoLockSessionNameOnEdit (bool, default YES) | Auto-lock session name after editing it. | missing |  |
 | aiGeneratedTabTitles | aiGeneratedTabTitles (bool, default NO) | Name tabs after the work on screen, using on-device AI? When enabled, the session variable “aiTitle” holds a short name for the task visible in the session, which you can show by adding the “AI-generated name” title component or using \\(session.aiTitle) in a custom title format. | missing |  |
 | timeoutForDaemonAttachment | timeoutForDaemonAttachment (float, default 10) | How long to wait when trying to attach to an iTerm daemon at startup when restoring windows (in seconds)? | missing |  |
@@ -1050,7 +1050,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 |---|---|---|---|---|
 | killSessionsOnLogout | killSessionsOnLogout (bool, default NO) | Kill sessions on logout. | missing |  |
 | useExperimentalFontMetrics | useExperimentalFontMetrics (bool, default NO) | Use a more theoretically correct technique to measure line height. | missing |  |
-| fastForegroundJobUpdates | fastForegroundJobUpdates (bool, default YES) | Enable low-latency updates of the current foreground job. | missing |  |
+| fastForegroundJobUpdates | fastForegroundJobUpdates (bool, default YES) | Enable low-latency updates of the current foreground job. | partial | Milestone 6c: the job is checked every 0.5 s while Tandem is in front and 5 s behind; there is no faster event-driven path yet. |
 | tmuxVariableWindowSizesSupported | tmuxVariableWindowSizesSupported (bool, default YES) | Allow variable window sizes in tmux integration. | missing |  |
 | aggressiveBaseCharacterDetection | aggressiveBaseCharacterDetection (bool, default YES) | Detect base unicode characters with lookup table. | missing |  |
 | escapeWithQuotes | escapeWithQuotes (bool, default NO) | Escape file names with single quotes instead of backslashes. | missing |  |

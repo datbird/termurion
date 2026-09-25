@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 122 | 149 | 43 |
-| `02-global-settings.md` | 820 | 124 | 70 | 626 |
-| `03-features-and-menus.md` | 638 | 241 | 31 | 366 |
-| Total | 1,772 | 487 | 250 | 1,035 |
+| `01-profile-settings.md` | 314 | 132 | 144 | 38 |
+| `02-global-settings.md` | 820 | 128 | 73 | 619 |
+| `03-features-and-menus.md` | 640 | 245 | 33 | 362 |
+| Total | 1,774 | 505 | 250 | 1,019 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -60,7 +60,12 @@ and Session > Triggers; alacritty_terminal patch 13). Milestone 6b: the bell set
 offer to silence a busy bell, Windows notifications with iTerm2's texts and filters (a click
 reveals the session), OSC 9 and OSC 1337 Notification, idle and new-output tracking with tab
 indicators, Notify on Status Change, the idle code, event triggers, and badges. Milestone 6c
-(next): Automatic Profile Switching, coprocesses, and the foreground job.
+closed milestone 6: the foreground job (the deepest console program under the shell, from the
+process tree), the Job title components, Job Started and Job Ended triggers and the trigger Job
+field, Prompt Before Closing with Jobs to Ignore, coprocesses (Session > Run Coprocess and Stop
+Coprocess, the triggers, key action, Smart Selection, Semantic History, and file-drop starts,
+silent coprocesses, the indicator, the stderr banner), and Automatic Profile Switching (rules,
+scores, the profile stack, the rule editor, and a debug log).
 
 ## Order
 

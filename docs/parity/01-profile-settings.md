@@ -26,7 +26,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Badge text | Badge Text | Overlay text drawn in the corner of the terminal, can reference session variables. | have | Milestone 6b: interpolated text, the largest size that fits, behind the text; Helvetica becomes Arial. |
 | Badge appearance (font, margins, max size) | Badge Font, Badge Top Margin, Badge Right Margin, Badge Max Width, Badge Max Height | Configures the badge's font and its position and size limits via a separate sheet. | have | Milestone 6b: interpolated text, the largest size that fits, behind the text; Helvetica becomes Arial. |
 | Subtitle | Subtitle | A second line of small text shown under the tab title when the tall tab bar is enabled. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Title components | Title Components | Bitmask popup choosing what appears in the window/tab title: session name, job, working directory, tty, custom, profile name, profile+session name, user, host, command line, size, temporary session name, or an AI-generated name. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Title components | Title Components | Bitmask popup choosing what appears in the window/tab title: session name, job, working directory, tty, custom, profile name, profile+session name, user, host, command line, size, temporary session name, or an AI-generated name. | have | Milestone 6c: every component but Custom (the Python API, milestone 11) and TTY (Windows sessions have none); parts are joined with " - ". |
 | Custom title function | Title Function | Points the title at a registered scripting-API function instead of the built-in components. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Custom window title | Custom Window Title | Literal override text for the window title when "use custom window title" is on. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Use custom window title | Use Custom Window Title | Enables the custom window title override instead of computed title components. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
@@ -37,7 +37,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Load shell integration automatically | Load Shell Integration Automatically | Automatically injects the shell integration script for supported shells (bash, fish, xonsh, zsh) at session start. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Run command in login shell | Run Command In Login Shell | Wraps a custom command so it still runs inside a login shell for dotfile sourcing. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Allow title setting | Allow Title Setting | Permits escape sequences from the running program to change the session/window title; also drives a lock icon when editing the current session. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Prevent Automatic Profile Switching | Prevent Automatic Profile Switching | Once a session's profile is changed by hand, blocks automatic profile switching rules from overriding it again. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Prevent Automatic Profile Switching | Prevent Automatic Profile Switching | Once a session's profile is changed by hand, blocks automatic profile switching rules from overriding it again. | have | Milestone 6c. |
 | Session hotkey | Session Hotkey | A one-off keystroke bound to the current session instance (set from Edit Current Session, not stored on the base profile). | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 
 ## Colors
@@ -242,8 +242,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 |---|---|---|---|---|
 | Close or restart session on end | Close Sessions On End | What happens when the shell process exits: default, close, or restart. | partial | Tandem closes the tab/pane when the process exits, matching the default; close/restart are not selectable. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Warn about short-lived sessions | n/a | Warns when a session that ended very quickly is about to close automatically. | missing |  |
-| Prompt before closing | Prompt Before Closing 2 | Never prompt, always prompt, or prompt unless only ignorable jobs are running. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Jobs to Ignore | Jobs to Ignore | Job or process names that do not count as "still running" for the prompt-before-closing check. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Prompt before closing | Prompt Before Closing 2 | Never prompt, always prompt, or prompt unless only ignorable jobs are running. | have | Milestone 6c: Never, Always, or when jobs besides the ignore list run (every program under the shell counts); an OK and Cancel question with iTerm2's text. |
+| Jobs to Ignore | Jobs to Ignore | Job or process names that do not count as "still running" for the prompt-before-closing check. | have | Milestone 6c: ssh, telnet, and plink by default (iTerm2: rlogin, ssh, slogin, telnet); names match without case and with or without .exe; conhost and OpenConsole never count. |
 | Session Close Undo Timeout | Session Close Undo Timeout | Seconds available to undo (reopen) a closed session. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Automatically Log | Automatically Log | Enables automatic session logging to disk. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Log Directory | Log Directory | Directory session logs are written to. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
@@ -305,7 +305,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key (plist key) | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Automatic Profile Switching rules | Bound Hosts | Hostname, username, or path rules that auto-switch to this profile when the remote host matches, via shell integration. | partial | Requires shell integration. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Automatic Profile Switching rules | Bound Hosts | Hostname, username, or path rules that auto-switch to this profile when the remote host matches, via shell integration. | have | Milestone 6c: iTerm2's rules and scores, the profile stack, and sticky rules; a rule starting with a drive (C:\) is a folder rule; the job comes from the process tree. |
 | Snippets Filter | Snippets Filter | Filters which of the app's global Snippets appear in this profile's Snippets menu. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Enable triggers in interactive apps | Enable Triggers in Interactive Apps | Lets triggers keep firing while a full-screen interactive program is running. | have | Milestone 6a. |
 | Triggers use interpolated strings | Triggers Use Interpolated Strings | Makes trigger parameter fields evaluate as interpolated-string expressions instead of literal backreferences. | partial | Milestone 6a: names, matches[n], quoted strings, and ??; the full expression language comes with the Python API (milestone 11). |
@@ -313,7 +313,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Edit Triggers | n/a | Opens the Triggers editor for this profile's trigger list. | have | Milestone 6a. |
 | Edit Smart Selection | n/a | Opens the Smart Selection editor for this profile's rule list. | have | Profile Advanced tab. |
 | Edit Semantic History | Semantic History | Opens the Semantic History configuration for cmd/opt-click behavior on paths and URLs. | have | Profile Advanced tab. |
-| Automatic Profile Switching debug logging | n/a | Logs why and when automatic profile switching rules match, for debugging. | missing |  |
+| Automatic Profile Switching debug logging | n/a | Logs why and when automatic profile switching rules match, for debugging. | have | Milestone 6c: written to automatic-profile-switching.log beside the settings (the Script Console comes in milestone 11). |
 
 ## Triggers
 
@@ -329,8 +329,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Ring Bell | n/a (action) | Rings the terminal bell when the pattern matches. | have | Milestone 6b: the bell settings apply. |
 | Bounce Dock Icon | n/a (action) | Bounces the app's Dock icon to get attention. | have | Milestone 6a: the taskbar button flashes (until Tandem is in front, or once). |
 | Capture Output | n/a (action) | Captures the matching line into the Captured Output tool for later re-run. | missing | Listed in the editor; the Captured Output tool comes in milestone 9. |
-| Run Coprocess | n/a (action) | Launches an external command fed the session's I/O, shown in the session. | missing | Listed in the editor; coprocesses come in milestone 6c. |
-| Run Silent Coprocess | n/a (action) | Same as Run Coprocess but its output is not displayed. | missing | Listed in the editor; coprocesses come in milestone 6c. |
+| Run Coprocess | n/a (action) | Launches an external command fed the session's I/O, shown in the session. | have | Milestone 6c: cmd.exe /d /s /c, hidden, in its own Job Object; one per session (a second shows iTerm2's warning). |
+| Run Silent Coprocess | n/a (action) | Same as Run Coprocess but its output is not displayed. | have | Milestone 6c: the session's output is not drawn while it runs. |
 | Highlight Text | n/a (action) | Recolors just the matched text. | have | Milestone 6a. |
 | Highlight Line | n/a (action) | Recolors the entire line containing the match. | have | Milestone 6a. |
 | Make Hyperlink | n/a (action) | Turns the matched text into a clickable hyperlink built from the match. | have | Milestone 6a. |
@@ -355,7 +355,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Open File | n/a (action) | Opens the selected text as a file path with its default or resolved application. | have |  |
 | Open URL | n/a (action) | Opens the selected text as a URL in the browser. | have |  |
 | Run Command | n/a (action) | Runs a shell command built from the selected text without opening a window. | have | Runs through cmd.exe, with the captures quoted for it. |
-| Run Coprocess | n/a (action) | Runs a coprocess fed by or feeding the session, built from the selected text. | missing | Coprocesses come in milestone 6. |
+| Run Coprocess | n/a (action) | Runs a coprocess fed by or feeding the session, built from the selected text. | have | Milestone 6c. |
 | Send Text | n/a (action) | Types the selected text, or a template built from it, back into the session. | have |  |
 | Run Command in Window | n/a (action) | Runs a shell command built from the selected text and shows its output in a new window. | partial | Runs the command on its own, without a window, until separate windows arrive in milestone 7. |
 | Copy | n/a (action) | Copies the selected or matched text to the clipboard. | have |  |
@@ -370,7 +370,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Open with editor | n/a (action: editor) | Opens the clicked text file in a specific, user-chosen editor app. | have | The editor is a program path; VS Code gets -g file:line:column. |
 | Run command | n/a (action: command) | Runs a custom command, with path/line/prefix/suffix/pwd substitutions, when an existing filename is clicked. | have | Runs through cmd.exe, with the values quoted for it. |
 | Always run command | n/a (action: raw command) | Runs a custom command on any clicked text, even if it is not a valid existing filename. | have | Runs through cmd.exe. |
-| Run coprocess | n/a (action: coprocess) | Runs a coprocess with the same substitutions whenever an existing filename is clicked. | missing | Coprocesses come in milestone 6. |
+| Run coprocess | n/a (action: coprocess) | Runs a coprocess with the same substitutions whenever an existing filename is clicked. | have | Milestone 6c. |
 | Send text | n/a (action: send text) | Sends literal or template text to the session whenever an existing filename is clicked. | have |  |
 
 ## Totals
