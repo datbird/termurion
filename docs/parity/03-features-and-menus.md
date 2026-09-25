@@ -186,8 +186,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Restart Session | no shortcut | Restarts the session's shell or command without closing the pane. | have |
 | Session > Duplicate Session | no shortcut | Opens a new session cloning the current one's profile and directory. | have |
 | Session > Open Autocomplete... | Cmd+; | Opens the shell integration based command autocomplete popup. (milestone 9) | missing |
-| Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. (milestone 9) | missing |
-| Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. (milestone 9) | missing |
+| Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. (milestone 9) | have, milestone 9c |
+| Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. (milestone 9) | have, milestone 9c |
 | Session > Open Paste History... | Shift+Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. (milestone 9) | have, milestone 9b |
 | Session > Open AI Chat... | Ctrl+Cmd+Y | Opens an AI chat window scoped to the current session. (milestone 12) | missing |
 | Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. (milestone 6) | have, milestone 6a |
@@ -444,7 +444,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Shell integration | Remote host reporting | Shell reports user@host so the terminal can track SSH hops and label tabs/panes accordingly, and offer host-based profile switching. | have | Host and user are tracked; host-based profile switching comes in milestone 6. |
 | Shell integration | User-defined variables | Lets shell scripts publish arbitrary key/value variables consumable by status bar components, badges, and triggers. | have | Stored per session; badges and the status bar that show them come in milestones 6 and 9. |
 | Shell integration | Shell integration version handshake | Reports the installed shell integration script's version and shell name so the app can warn about outdated installs. | have | Version and shell are stored; there is no upgrade prompt. |
-| Shell integration | Command history capture | Captures each command typed, via prompt marks, and its associated host/directory for the Command History toolbelt tool and search. | partial | Each command, directory, host, time, and code is recorded per session; the Command History tool comes in milestone 9. |
+| Shell integration | Command history capture | Captures each command typed, via prompt marks, and its associated host/directory for the Command History toolbelt tool and search. | have | Milestone 9c: every command with its directory, time, and exit code per user@host, ranked by iTerm2 frecency, kept 90 days, saved with "Save copy/paste and command history to disk". |
 | Shell integration | Command status marks (success/failure coloring) | Colors the mark for a finished command based on its exit code, surfaced in the scrollbar and Command History tool. | have | Blue, yellow, or red in the left margin. |
 | Shell integration | Automatic profile switching by hostname | Switches to a different saved profile automatically when remote host reporting detects an SSH session to a known host. | have, milestone 6c |  |
 | Shell integration | it2git status variables | A shell hook script that publishes git branch/dirty state as user variables for status bar/prompt use. | missing | |

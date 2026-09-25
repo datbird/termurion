@@ -139,7 +139,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | Instant Replay memory usage limit | InstantReplayMemoryMegabytes | Megabytes of memory reserved per session for the Instant Replay scrollback-video-like history. | missing | Tandem has no Instant Replay feature. |
-| Save copy/paste and command history to disk | SavePasteAndCommandHistory | Persists paste history and (with shell integration) command history to disk between launches. | partial | Milestone 9b: paste history in %APPDATA%\Tandem\pbhistory.json; command history comes with the shell history store. |
+| Save copy/paste and command history to disk | SavePasteAndCommandHistory | Persists paste history and (with shell integration) command history to disk between launches. | have | Milestone 9b/9c: paste history (pbhistory.json) and shell history (shell_history.json) in %APPDATA%\Tandem. |
 | Add Bonjour hosts to Profiles | AddBonjourHostsToProfiles | Automatically creates dynamic profiles for SSH hosts discovered via Bonjour/mDNS. | missing |  |
 | Ignore non-critical shell integration updates | NotifyOnlyForCriticalShellIntegrationUpdates | Suppresses shell-integration-outdated nags except for critical/breaking updates. | missing |  |
 | Load settings from a custom folder or URL | LoadPrefsFromCustomFolder | Loads and optionally syncs the whole preferences domain from a folder or URL instead of the local plist. | missing |  |
@@ -753,8 +753,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | userNotificationTriggerRateLimit | userNotificationTriggerRateLimit (float, default 0) | Rate limit for Notification triggers. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
 | silentUserNotifications | silentUserNotifications (bool, default NO) | System notifications should be silent. | have | Milestone 6b. |
 | simpleNotifications | simpleNotifications (bool, default NO) | Omit session identifier from notifications. | have | Milestone 6b. |
-| commandHistoryUsePower | commandHistoryUsePower (float, default 3) | When sorting command history for auto command completion: how much should number of uses of a command contribute to its score? A higher score moves the command closer to the top of the list. | missing |  |
-| commandHistoryAgePower | commandHistoryAgePower (float, default 1) | When sorting command history for auto command completion: how much should the time-since-last-use of a command contribute to its score? A higher score moves the command closer to the top of the list. | missing |  |
+| commandHistoryUsePower | commandHistoryUsePower (float, default 3) | When sorting command history for auto command completion: how much should number of uses of a command contribute to its score? A higher score moves the command closer to the top of the list. | have | Milestone 9c. |
+| commandHistoryAgePower | commandHistoryAgePower (float, default 1) | When sorting command history for auto command completion: how much should the time-since-last-use of a command contribute to its score? A higher score moves the command closer to the top of the list. | have | Milestone 9c. |
 | performSQLiteIntegrityCheck | performSQLiteIntegrityCheck (bool, default YES) | Perform restorable state integrity checks? | missing |  |
 | lastpassGroups | lastpassGroups (string, default @"") | Comma-separated list of LastPass groups for the password manager to look in for passwords. | missing |  |
 | onePasswordAccount | onePasswordAccount (string, default @"") | 1Password account name. | missing |  |
