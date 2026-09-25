@@ -54,6 +54,7 @@ mod actions;
 mod annotations_ui;
 mod activity_ui;
 mod alerts_ui;
+mod badge_ui;
 mod bell_ui;
 mod bgimage_ui;
 mod blocks_ui;
@@ -239,6 +240,8 @@ pub struct App {
     bell_icons: std::collections::HashSet<PaneId>,
     /// Each pane's output and idle state.
     activity: HashMap<PaneId, crate::activity::Activity>,
+    /// Each pane's badge layout, with what it was made for.
+    badges: HashMap<PaneId, (String, Option<crate::badge::BadgeLayout>)>,
     /// Notifications: the session of the last one, the escape-sequence limit, Notify on
     /// Status Change, and the idle codes sent.
     last_notified: Option<PaneId>,
@@ -415,6 +418,7 @@ pub fn run() {
         bells: HashMap::new(),
         bell_icons: std::collections::HashSet::new(),
         activity: HashMap::new(),
+        badges: HashMap::new(),
         last_notified: None,
         alert_limits: crate::triggers::RateLimit::default(),
         notify_status_armed: false,
@@ -637,6 +641,8 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let px = normal.size_pt * 4.0 / 3.0 * g.window.scale_factor() as f32;
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
+        let badge = p.font("Badge Font").family;
+        g.renderer.set_badge_family(if badge.is_empty() { "Helvetica" } else { &badge });
         let missing: Vec<String> = std::iter::once(normal.family).chain(alt).filter(|f| !g.renderer.has_family(f)).collect();
         if missing.is_empty() {
             self.banners.clear("font");
@@ -1389,12 +1395,14 @@ impl App {
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
         self.prepare_portholes();
+        self.prepare_badges();
         let mut porthole_hits = Vec::new();
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
                     scene::background(&mut frame, b.rect, &b.pieces, &b.image, b.bg, b.blend);
                 }
+                self.draw_badge(&mut frame, id, rect);
                 if let Some(p) = self.panes.get(&id) {
                     let shortcuts = self.shortcuts.as_ref().filter(|s| s.pane == id);
                     let labeled: Vec<crate::find::Match> = shortcuts.map(|s| s.items.iter().map(|(_, m, _)| *m).collect()).unwrap_or_default();

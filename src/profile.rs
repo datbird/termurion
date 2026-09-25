@@ -120,6 +120,20 @@ impl Profile {
         self.color(key)
     }
 
+    /// A color's alpha (the badge color keeps one), with Light and Dark variants like
+    /// `color_for`; 1 when the color has none.
+    pub fn alpha_for(&self, key: &str, dark: bool) -> f32 {
+        let a = |v: &Value| v.as_table().and_then(|t| t.get("a").or_else(|| t.get("Alpha Component"))).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+        if self.bool("Use Separate Colors for Light and Dark Mode") {
+            let variant = format!("{key} ({})", if dark { "Dark" } else { "Light" });
+            let stock = schema::find(key).and_then(|s| if dark { s.default_dark.as_ref() } else { s.default_light.as_ref() });
+            if let Some(v) = self.values.get(&variant).or(stock).and_then(a) {
+                return v as f32;
+            }
+        }
+        self.get(key).as_ref().and_then(a).map_or(1.0, |v| v as f32)
+    }
+
     /// A font, with its size kept between 4 and 128 points.
     pub fn font(&self, key: &str) -> FontSpec {
         let mut f = parse_font(&self.string(key));

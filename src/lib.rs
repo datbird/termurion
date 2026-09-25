@@ -40,6 +40,7 @@ pub mod triggers;
 pub mod interp;
 pub mod activity;
 pub mod alerts;
+pub mod badge;
 pub mod bell;
 pub mod trigger_eval;
 pub mod trigger_events;

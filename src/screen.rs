@@ -248,6 +248,10 @@ pub enum Request {
     Notify { title: Option<String>, message: String },
     /// OSC 9;4: a progress bar appeared (true) or went away.
     Progress(bool),
+    /// SetBadgeFormat: the session's badge text.
+    SetBadge(String),
+    /// SetBadgeFormat with a function call: refused.
+    BadgeRefused,
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.

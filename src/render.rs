@@ -272,6 +272,8 @@ pub struct Renderer {
     buffers: Vec<(Buffer, Vec<Span>, f32, f32)>,
     /// A porthole's prose font: Segoe UI Variable, else Segoe UI.
     prose_family: String,
+    /// The badge font (bold): the default profile's Badge Font, Arial when not installed.
+    badge_family: String,
     /// Widths of prose words already measured: (text, scale bits) to pixels.
     widths: std::collections::HashMap<(String, u32), f32>,
     family: String,
@@ -310,6 +312,7 @@ impl Renderer {
             alt_family: None,
             icon_family: String::new(),
             prose_family: String::new(),
+            badge_family: "Arial".into(),
             widths: std::collections::HashMap::new(),
             h_spacing: 1.0,
             v_spacing: 1.0,
@@ -386,6 +389,27 @@ impl Renderer {
         }
         self.widths.insert(key, w);
         w
+    }
+
+    /// The terminal font's size in pixels.
+    pub fn font_px(&self) -> f32 {
+        self.font_px
+    }
+
+    /// The badge font: `name` when installed (Helvetica is not on Windows), else Arial.
+    pub fn set_badge_family(&mut self, name: &str) {
+        let resolved = self.resolve_family(name);
+        self.badge_family = if self.has_family(&resolved) { resolved } else { "Arial".into() };
+    }
+
+    /// A badge line's width at `px` pixels, in the bold badge font.
+    pub fn badge_width(&mut self, text: &str, px: f32) -> f32 {
+        let mut b = Buffer::new(&mut self.font_system, Metrics::new(px.max(1.0), px.max(1.0) * 1.2));
+        b.set_size(None, None);
+        b.set_wrap(Wrap::None);
+        b.set_text(text, &Attrs::new().family(Family::Name(&self.badge_family)).weight(Weight::BOLD), Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.font_system, false);
+        b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)
     }
 
     /// True when a font family with this name is installed.
@@ -483,9 +507,12 @@ impl Renderer {
             let alt = self.alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
             let icons = Attrs::new().family(Family::Name(&self.icon_family));
             let prose = Attrs::new().family(Family::Name(&self.prose_family));
+            let badge = Attrs::new().family(Family::Name(&self.badge_family));
             let spans = row.spans.iter().map(|s| {
                 let start = if s.icon {
                     icons.clone()
+                } else if s.badge {
+                    badge.clone()
                 } else if s.prose {
                     prose.clone()
                 } else if s.alt_font {
@@ -687,7 +714,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
             }],
@@ -737,7 +764,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
                 scale: 1.0,
             }],

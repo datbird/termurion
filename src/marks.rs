@@ -541,6 +541,14 @@ impl Screen {
                         self.fire_event(crate::trigger_events::EventKind::NotificationPosted, &crate::trigger_events::EventFacts { value: message.clone(), ..Default::default() }, &[message]);
                     }
                 }
+                "SetBadgeFormat" => {
+                    use base64::Engine;
+                    if let Ok(b) = base64::engine::general_purpose::STANDARD.decode(value.trim()) {
+                        let t = String::from_utf8_lossy(&b).into_owned();
+                        let r = if crate::interp::has_calls(&t) { crate::screen::Request::BadgeRefused } else { crate::screen::Request::SetBadge(t) };
+                        self.requests.push(r);
+                    }
+                }
                 // Custom=id=<sender>:<payload> (trusted): the Custom Escape Sequence event.
                 "Custom" if self.trusted => {
                     let (head, payload) = value.split_once(':').unwrap_or((value.as_str(), ""));
