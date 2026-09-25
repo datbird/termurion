@@ -67,6 +67,7 @@ pub mod keyproto;
 pub mod reports;
 pub mod layout;
 pub mod palette;
+pub mod paste;
 pub mod screen;
 pub mod screenterm;
 
