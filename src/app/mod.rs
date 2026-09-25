@@ -1797,7 +1797,6 @@ impl App {
                     scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
                 self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives));
-                self.draw_completion(&mut frame, id, self.inner(rect), cell);
                 self.draw_info_bar(&mut frame, id, rect, cell);
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
@@ -1819,6 +1818,8 @@ impl App {
                     block_buttons.extend(self.draw_blocks(&mut frame, id, rect, cell));
                     self.draw_inline_buttons(&mut frame, id, rect, cell);
                 }
+                // Last in the pane, so everything under it is cut out.
+                self.draw_completion(&mut frame, id, self.inner(rect), cell);
             }
             self.draw_clippings(&mut frame, cell);
             if tab.zoomed.is_none() {

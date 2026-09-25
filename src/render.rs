@@ -555,6 +555,7 @@ impl Renderer {
         self.queue.write_buffer(&self.quads.uniform, 0, bytemuck::cast_slice(&[width as f32, height as f32, 0.0, 0.0]));
         let under = QuadPipeline::vertices(&frame.quads);
         let over = QuadPipeline::vertices(&frame.overlay);
+        let pops = QuadPipeline::vertices(&frame.popups);
         let make = |v: &[f32]| {
             self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
@@ -562,7 +563,7 @@ impl Renderer {
                 usage: wgpu::BufferUsages::VERTEX,
             })
         };
-        let (under_buf, over_buf) = (make(&under), make(&over));
+        let (under_buf, over_buf, pops_buf) = (make(&under), make(&over), make(&pops));
         // Background images and inline images share one texture cache.
         let all: Vec<crate::scene::ImageQuad> = frame.backgrounds.iter().chain(&frame.images).cloned().collect();
         self.images.prepare(&self.device, &self.queue, &all);
@@ -617,6 +618,13 @@ impl Renderer {
                     let first = (i * 6) as u32;
                     pass.draw(first..first + 6, 0..1);
                 }
+            }
+            // Popup boxes cover images and quads; their text and what they cut stay on top.
+            if !pops.is_empty() {
+                pass.set_pipeline(&self.quads.pipeline);
+                pass.set_bind_group(0, &self.quads.bind_group, &[]);
+                pass.set_vertex_buffer(0, pops_buf.slice(..));
+                pass.draw(0..(pops.len() / 6) as u32, 0..1);
             }
             self.text.render(&self.atlas, &self.viewport, &mut pass).map_err(|e| format!("text render: {e:?}"))?;
             if !over.is_empty() {
@@ -719,6 +727,7 @@ mod tests {
                 scale: 1.0,
             }],
             overlay: vec![],
+            popups: vec![],
             backgrounds: vec![],
         };
         r.draw(&frame, &view, w, h).unwrap();
@@ -769,6 +778,7 @@ mod tests {
                 scale: 1.0,
             }],
             overlay: vec![],
+            popups: vec![],
             backgrounds: vec![],
         };
         r.draw(&frame, &view, w, h).unwrap();

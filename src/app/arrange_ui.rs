@@ -279,6 +279,7 @@ impl App {
         });
         if let Some(e) = failed {
             for id in started {
+                self.clips.remove(&id);
                 if let Some(pid) = self.panes.remove(&id).and_then(|p| p.shell_pid()) {
                     self.jobs.forget(pid);
                 }

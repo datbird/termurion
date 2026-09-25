@@ -81,7 +81,11 @@ impl App {
         let rows = self.clip_rows(id, panel);
         let heights: Vec<(f32, f32)> = rows.iter().map(|r| (ch, r.detail.len() as f32 * ch)).collect();
         let scroll = self.clips.get(&id).map_or(0.0, |c| c.scroll);
-        (clippings::layout(panel, &heights, scroll, self.scale()), rows)
+        let l = clippings::layout(panel, &heights, scroll, self.scale());
+        // Rows removed or rewrapped can leave the scroll past the end.
+        let kept = clippings::clamp_scroll(scroll, &l);
+        let l = if kept == scroll { l } else { clippings::layout(panel, &heights, kept, self.scale()) };
+        (l, rows)
     }
 
     /// Draws the current tab's panels and any preview.
@@ -270,6 +274,9 @@ impl App {
             ClipDrag::Row { from } => {
                 let Some(panel) = self.clip_panels().into_iter().find(|(p, _)| *p == pane).map(|(_, r)| r) else { return };
                 let (layout, _) = self.clip_layout(pane, panel);
+                if !layout.list.contains(self.cursor.0, self.cursor.1) {
+                    return self.redraw();
+                }
                 let (to, _) = self.clip_drop(&layout, self.cursor.1);
                 if let Some(c) = self.clips.get_mut(&pane) {
                     if let Some(at) = c.model.move_row(from, to) {
@@ -288,9 +295,9 @@ impl App {
         let Some((id, panel)) = self.clip_panels().into_iter().find(|(_, p)| p.contains(x, y)) else { return false };
         let (layout, _) = self.clip_layout(id, panel);
         let (_, ch) = self.cell();
-        let max = (layout.content_h - layout.list.h).max(0.0);
+        let now = layout.rows.first().map_or(0.0, |r| layout.list.y - r.y);
         if let Some(c) = self.clips.get_mut(&id) {
-            c.scroll = (c.scroll - dy * ch).clamp(0.0, max);
+            c.scroll = clippings::clamp_scroll(now - dy * ch, &layout);
         }
         self.redraw();
         true
@@ -302,6 +309,10 @@ impl App {
     pub(super) fn clip_key(&mut self, ev: &KeyEvent) -> bool {
         use winit::keyboard::{Key, NamedKey};
         let Some(id) = self.focused_id() else { return false };
+        // Modifier keys alone change nothing; chords with Ctrl, Alt, or Win go on as usual.
+        if matches!(ev.logical_key, Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::AltGraph)) || self.mods.ctrl || self.mods.alt || self.mods.cmd {
+            return false;
+        }
         let Some(c) = self.clips.get_mut(&id).filter(|c| c.keys && c.model.visible) else { return false };
         if ev.state != winit::event::ElementState::Pressed {
             return matches!(ev.logical_key, Key::Named(NamedKey::Delete | NamedKey::Backspace | NamedKey::Space | NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Escape));
@@ -324,8 +335,14 @@ impl App {
                     c.keys = false;
                 }
             }
-            Key::Named(NamedKey::ArrowUp) if n > 0 => c.selected = vec![c.selected.first().map_or(n - 1, |&r| r.saturating_sub(1))],
-            Key::Named(NamedKey::ArrowDown) if n > 0 => c.selected = vec![c.selected.first().map_or(0, |&r| (r + 1).min(n - 1))],
+            Key::Named(NamedKey::ArrowUp) if n > 0 => {
+                c.selected = vec![c.selected.first().map_or(n - 1, |&r| r.saturating_sub(1))];
+                self.clip_reveal(id);
+            }
+            Key::Named(NamedKey::ArrowDown) if n > 0 => {
+                c.selected = vec![c.selected.first().map_or(0, |&r| (r + 1).min(n - 1))];
+                self.clip_reveal(id);
+            }
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown) => {}
             _ => {
                 c.keys = false;
@@ -341,6 +358,9 @@ impl App {
     /// View > Show Clippings: the focused session's panel.
     pub(super) fn toggle_clippings(&mut self) {
         let Some(id) = self.focused_id() else { return };
+        if self.tmux_of(id).is_some() && !self.clippings_shown() {
+            return self.banners.set("clippings", "Clippings are not shown in tmux panes: tmux sizes the whole window and the panel would take columns it does not know about.");
+        }
         let c = self.clips.entry(id).or_default();
         c.model.visible = !c.model.visible;
         if !c.model.visible {
@@ -357,7 +377,9 @@ impl App {
     }
 
     fn open_add_clipping(&mut self, event_loop: &ActiveEventLoop, pane: PaneId) {
-        if let Some((w, _)) = &self.add_clip_win {
+        // An open sheet now adds to this session.
+        if let Some((w, p)) = &mut self.add_clip_win {
+            *p = pane;
             w.focus();
             return;
         }
@@ -414,5 +436,19 @@ impl App {
     /// Whether (x, y) is in one of the current tab's panels.
     pub(super) fn clip_split_hit(&self, x: f32, y: f32) -> bool {
         self.clip_panels().iter().any(|(_, p)| p.contains(x, y))
+    }
+}
+
+impl App {
+    /// Scrolls a panel so its first selected row shows whole.
+    fn clip_reveal(&mut self, id: PaneId) {
+        let Some(panel) = self.clip_panels().into_iter().find(|(p, _)| *p == id).map(|(_, r)| r) else { return };
+        let (layout, _) = self.clip_layout(id, panel);
+        let now = layout.rows.first().map_or(0.0, |r| layout.list.y - r.y);
+        if let Some(c) = self.clips.get_mut(&id) {
+            if let Some(&row) = c.selected.first() {
+                c.scroll = clippings::reveal(now, &layout, row);
+            }
+        }
     }
 }

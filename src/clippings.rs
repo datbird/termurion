@@ -379,6 +379,24 @@ pub fn wrap(text: &str, cols: usize) -> Vec<String> {
     out
 }
 
+/// The scroll kept inside the list (rows removed or rewrapped can leave it too far).
+pub fn clamp_scroll(scroll: f32, l: &Layout) -> f32 {
+    scroll.clamp(0.0, (l.content_h - l.list.h).max(0.0))
+}
+
+/// The scroll that shows `row` whole (Up and Down keep the selection in view).
+pub fn reveal(scroll: f32, l: &Layout, row: usize) -> f32 {
+    let Some(r) = l.rows.get(row) else { return scroll };
+    let top = r.y - l.list.y + scroll;
+    if top < scroll {
+        top
+    } else if top + r.h > scroll + l.list.h {
+        top + r.h - l.list.h
+    } else {
+        scroll
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +563,21 @@ mod tests {
         assert_eq!(wrap("a\n\nb", 10), ["a", "", "b"]);
         assert_eq!(wrap("", 10), Vec::<String>::new());
         assert_eq!(wrap("x y", 0), ["x", "y"]);
+    }
+
+    #[test]
+    fn scroll_stays_in_the_list() {
+        let panel = r(0.0, 0.0, 300.0, 128.0);
+        // Four 60 px rows in a 100 px list: at most 140 down.
+        let l = layout(panel, &[(16.0, 30.0); 4], 500.0, 1.0);
+        assert_eq!(clamp_scroll(500.0, &l), 140.0);
+        assert_eq!(clamp_scroll(-5.0, &l), 0.0);
+        let short = layout(panel, &[(16.0, 30.0)], 90.0, 1.0);
+        assert_eq!(clamp_scroll(90.0, &short), 0.0);
+        let l = layout(panel, &[(16.0, 30.0); 4], 0.0, 1.0);
+        assert_eq!(reveal(0.0, &l, 0), 0.0);
+        assert_eq!(reveal(0.0, &l, 2), 80.0);
+        let l = layout(panel, &[(16.0, 30.0); 4], 140.0, 1.0);
+        assert_eq!(reveal(140.0, &l, 1), 60.0);
     }
 }

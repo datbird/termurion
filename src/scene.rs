@@ -65,6 +65,8 @@ pub struct Frame {
     pub images: Vec<ImageQuad>,
     pub rows: Vec<TextRow>,
     pub overlay: Vec<Quad>,
+    /// Popup boxes over the terminal: drawn after images, before text.
+    pub popups: Vec<Quad>,
 }
 
 /// Which frame of an animated image shows at `now_ms`.
@@ -938,14 +940,16 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0 });
 }
 
-/// Text already in the frame stops at `r` (a popup drawn over it): each row crossing `r`
-/// keeps its part left of `r` and gets a copy for its part right of it. Overlay quads draw
-/// after all text, so a popup's box is a normal quad plus this.
-pub fn cut_out(frame: &mut Frame, r: Rect) {
+/// Text already in the frame stops at `r` (a popup drawn over it): each line behind `r`
+/// keeps its part left of `r` and gets a copy for its part right of it. `line_h` is a text
+/// row's height (rows clip to their whole pane, so their own line decides). A popup's box
+/// goes in `popups`, which draw after images and before text.
+pub fn cut_out(frame: &mut Frame, r: Rect, line_h: f32) {
     let mut extra = Vec::new();
     for row in frame.rows.iter_mut() {
         let c = row.clip;
-        if c.y >= r.y + r.h || c.y + c.h <= r.y || c.x >= r.x + r.w || c.x + c.w <= r.x {
+        let line_h = line_h * row.scale.max(1.0);
+        if row.y >= r.y + r.h || row.y + line_h <= r.y || c.y >= r.y + r.h || c.y + c.h <= r.y || c.x >= r.x + r.w || c.x + c.w <= r.x {
             continue;
         }
         let right = r.x + r.w;
@@ -978,13 +982,13 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     }
     let x = at.0.min(bounds.x + bounds.w - w).max(bounds.x);
     let r = Rect { x, y, w, h };
-    cut_out(frame, r);
-    frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
     let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
     for (i, text) in visible.iter().enumerate() {
         let ry = y + 2.0 + i as f32 * cell.1;
         if first + i == selected {
-            frame.quads.push(Quad { rect: Rect { x, y: ry, w, h: cell.1 }, color: rgba(BAR_BUTTON, 1.0) });
+            frame.popups.push(Quad { rect: Rect { x, y: ry, w, h: cell.1 }, color: rgba(BAR_BUTTON, 1.0) });
         }
         frame.rows.push(TextRow { x: x + cell.0, y: ry, spans: vec![span(text.clone())], clip: r, scale: 1.0 });
     }
@@ -1077,8 +1081,8 @@ pub fn clip_preview(frame: &mut Frame, area: Rect, title: &str, lines: &[String]
     let w = (700.0 * scale).min(area.w - 2.0 * cell.0).max(cell.0 * 10.0);
     let h = ((lines.len() + 2) as f32 * cell.1 + 16.0 * scale).min(480.0 * scale).min(area.h - cell.1);
     let r = Rect { x: area.x + (area.w - w) / 2.0, y: area.y + (area.h - h) / 2.0, w, h };
-    cut_out(frame, r);
-    frame.quads.push(Quad { rect: r, color: rgba(CLIP_BG, 1.0) });
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(CLIP_BG, 1.0) });
     let x = r.x + 12.0 * scale;
     let mut y = r.y + 8.0 * scale;
     frame.rows.push(TextRow { x, y, spans: vec![clip_span(title.to_string(), TAB_TEXT, true, false)], clip: r, scale: 1.0 });
@@ -1206,12 +1210,31 @@ mod tests {
         let bounds = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
         completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 0.0), bounds, (8.0, 16.0));
         assert!(f.overlay.is_empty());
-        let boxes: Vec<Rect> = f.quads.iter().map(|q| q.rect).collect();
+        let boxes: Vec<Rect> = f.popups.iter().map(|q| q.rect).collect();
         let b = boxes[0];
         // The terminal row is split around the box: left part and right part.
         assert_eq!(f.rows[0].clip, Rect { x: 0.0, y: 0.0, w: b.x, h: 16.0 });
         assert_eq!(f.rows[1].clip, Rect { x: b.x + b.w, y: 0.0, w: 400.0 - b.x - b.w, h: 16.0 });
         assert!(f.rows.iter().any(|r| r.spans[0].text == "one"));
+    }
+
+    #[test]
+    fn popups_cut_only_the_lines_behind_them() {
+        // Terminal rows clip to the whole pane: only the lines the box covers lose text.
+        let mut f = Frame::default();
+        let pane = Rect { x: 0.0, y: 0.0, w: 400.0, h: 160.0 };
+        for i in 0..10 {
+            let span = Span { text: format!("line {i}"), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+            f.rows.push(TextRow { x: 0.0, y: i as f32 * 16.0, spans: vec![span], clip: pane, scale: 1.0 });
+        }
+        completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 64.0), pane, (8.0, 16.0));
+        let b = f.popups[0].rect;
+        assert!(f.quads.is_empty() && f.overlay.is_empty());
+        for row in f.rows.iter().filter(|r| r.spans[0].text.starts_with("line")) {
+            let behind = row.y + 16.0 > b.y && row.y < b.y + b.h;
+            let keeps_all = row.clip == pane;
+            assert_eq!(keeps_all, !behind, "row at {}", row.y);
+        }
     }
 
     #[test]

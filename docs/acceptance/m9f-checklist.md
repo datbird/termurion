@@ -20,3 +20,4 @@ Mark each line pass or fail.
 | 12 | Save a window arrangement with a session that has clippings and an archive, close it, restore the arrangement: the clippings, the archive, and the shown panel come back. | |
 | 13 | Advanced > Session > clippingSeparator set to `\n==\n`: Send joins with `==`. | |
 | 14 | Session > Open Autocomplete... on a screen with words: the list's words are readable (the list is no longer a blank box). | |
+| 15 | In a tmux tab, View > Show Clippings shows a bar saying Clippings are not shown in tmux panes. | |
