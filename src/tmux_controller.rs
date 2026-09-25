@@ -421,20 +421,9 @@ impl Controller {
     }
 }
 
-/// A random GUID for `@iterm2_id`.
+/// A new GUID for `@iterm2_id`.
 fn new_guid() -> String {
-    let mut b = [0u8; 16];
-    for chunk in b.chunks_mut(8) {
-        let r = std::collections::hash_map::RandomState::new();
-        use std::hash::{BuildHasher, Hasher};
-        let mut h = r.build_hasher();
-        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
-        chunk.copy_from_slice(&h.finish().to_le_bytes());
-    }
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let h: String = b.iter().map(|x| format!("{x:02X}")).collect();
-    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+    uuid::Uuid::new_v4().to_string().to_uppercase()
 }
 
 #[cfg(test)]

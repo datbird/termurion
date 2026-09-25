@@ -182,8 +182,18 @@ impl App {
         }
     }
 
-    /// The profile tmux panes use (Task 6 adds the dedicated "tmux" profile).
-    pub(super) fn tmux_profile_guid(&self, gw: PaneId) -> String {
+    /// The profile tmux panes use: the "tmux" profile with TmuxUsesDedicatedProfile (made
+    /// the first time), else the gateway session's.
+    pub(super) fn tmux_profile_guid(&mut self, gw: PaneId) -> String {
+        if self.globals.bool("TmuxUsesDedicatedProfile") {
+            let (guid, made) = self.store.tmux_profile();
+            if made {
+                if let Err(e) = self.store.save() {
+                    self.banners.set("profiles", format!("Could not save profiles: {e}"));
+                }
+            }
+            return guid;
+        }
         self.panes.get(&gw).map(|p| p.profile.clone()).unwrap_or_default()
     }
 

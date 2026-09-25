@@ -121,6 +121,23 @@ impl Store {
         self.profiles.push(profile);
     }
 
+    /// The profile named "tmux", made from the default one the first time (iTerm2's
+    /// ProfileModel tmuxProfile: no hotkey, 1000 lines of scrollback). Returns its Guid and
+    /// whether it was made now.
+    pub fn tmux_profile(&mut self) -> (String, bool) {
+        if let Some(p) = self.profiles.iter().find(|p| p.name() == "tmux") {
+            return (p.guid(), false);
+        }
+        let mut p = self.default_profile().clone();
+        let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+        p.set("Has Hotkey", Value::Boolean(false));
+        p.set(NAME, Value::String("tmux".into()));
+        p.set(GUID, Value::String(guid.clone()));
+        p.set("Scrollback Lines", Value::Integer(1000));
+        self.profiles.push(p);
+        (guid, true)
+    }
+
     /// Copies a profile under a new Guid and "<name> copy". Returns the new Guid.
     pub fn duplicate(&mut self, guid: &str) -> Option<String> {
         let mut copy = self.get(guid)?.clone();
@@ -203,6 +220,25 @@ mod tests {
         let t = Store::load(&path).unwrap();
         assert_eq!(t.get(&guid).unwrap().int("Columns"), 132);
         assert_eq!(t.default_guid, guid);
+    }
+
+    #[test]
+    fn tmux_profile_is_made_once() {
+        let dir = std::env::temp_dir().join(format!("tandem-tmuxprof-{}", std::process::id()));
+        let mut s = Store::fresh(&dir.join("profiles.toml"));
+        let (guid, made) = s.tmux_profile();
+        assert!(made);
+        let p = s.get(&guid).unwrap().clone();
+        assert_eq!(p.name(), "tmux");
+        assert_eq!(p.int("Scrollback Lines"), 1000);
+        assert!(!p.bool("Has Hotkey"));
+        assert_ne!(guid, s.default_profile().guid(), "a new profile, not the default");
+        assert_eq!(s.tmux_profile(), (guid, false), "made once");
+        // A profile the person named tmux is the one used.
+        let mut s = Store::fresh(&dir.join("profiles.toml"));
+        let mine = s.duplicate(&s.default_profile().guid()).unwrap();
+        s.get_mut(&mine).unwrap().set(NAME, Value::String("tmux".into()));
+        assert_eq!(s.tmux_profile(), (mine, false));
     }
 
     #[test]
