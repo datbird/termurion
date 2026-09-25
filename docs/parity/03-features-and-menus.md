@@ -89,16 +89,16 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Paste | Cmd+V | Pastes clipboard contents into the session. | have |
 | Edit > Paste Special > Advanced Paste... | Opt+Cmd+V | Opens a dialog with paste transform options such as escaping, encoding, and tab conversion. (milestone 9) | missing |
 | Edit > Paste Special > Paste Selection | Cmd+V | Pastes the current selection, similar to middle-click paste on X11. | have |
-| Edit > Paste Special > Paste File Base64-Encoded | no shortcut | Pastes a file's contents as a base64-encoded string. (milestone 9) | missing |
-| Edit > Paste Special > Paste Slowly | no shortcut | Pastes character by character with a delay, for flaky serial links. (milestone 9) | missing |
-| Edit > Paste Special > Paste Faster | no shortcut | Increases the speed used by slow paste. (milestone 9) | missing |
-| Edit > Paste Special > Paste Slowly Faster | no shortcut | Increases the per-character delay speed of slow paste. (milestone 9) | missing |
-| Edit > Paste Special > Paste Slower | no shortcut | Decreases the speed used by slow paste. (milestone 9) | missing |
-| Edit > Paste Special > Paste Slowly Slower | no shortcut | Decreases the per-character delay speed of slow paste. (milestone 9) | missing |
-| Edit > Paste Special > Warn Before Multi-Line Paste | no shortcut | Toggles a confirmation prompt before pasting multiple lines. (milestone 9) | missing |
-| Edit > Paste Special > Limit Multi-Line Paste Warning to Shell Prompt | no shortcut | Restricts the multi-line paste warning to only fire at a shell prompt. (milestone 9) | missing |
-| Edit > Paste Special > Prompt to Convert Tabs to Spaces when Pasting | no shortcut | Toggles a prompt offering to convert tabs to spaces on paste. (milestone 9) | missing |
-| Edit > Paste Special > Warn Before Pasting One Line Ending in a Newline at Shell Prompt | no shortcut | Toggles a warning for a single line paste that ends with a newline at the prompt. (milestone 9) | missing |
+| Edit > Paste Special > Paste File Base64-Encoded | no shortcut | Pastes a file's contents as a base64-encoded string. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Paste Slowly | no shortcut | Pastes character by character with a delay, for flaky serial links. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Paste Faster | no shortcut | Increases the speed used by slow paste. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Paste Slowly Faster | no shortcut | Increases the per-character delay speed of slow paste. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Paste Slower | no shortcut | Decreases the speed used by slow paste. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Paste Slowly Slower | no shortcut | Decreases the per-character delay speed of slow paste. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Warn Before Multi-Line Paste | no shortcut | Toggles a confirmation prompt before pasting multiple lines. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Limit Multi-Line Paste Warning to Shell Prompt | no shortcut | Restricts the multi-line paste warning to only fire at a shell prompt. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Prompt to Convert Tabs to Spaces when Pasting | no shortcut | Toggles a prompt offering to convert tabs to spaces on paste. (milestone 9) | have, milestone 9a |
+| Edit > Paste Special > Warn Before Pasting One Line Ending in a Newline at Shell Prompt | no shortcut | Toggles a warning for a single line paste that ends with a newline at the prompt. (milestone 9) | have, milestone 9a |
 | Edit > Replace Selection > Render Selection Natively | Opt+Cmd+E | Renders the selected text as an image or markup instead of raw text. (milestone 4) | have, milestone 5f: the selection's whole rows become a porthole (markdown, JSON, or highlighted code), Win+Alt+E; beeps over a porthole or with no selection |
 | Edit > Replace Selection > Replace with Pretty-Printed JSON | no shortcut | Reformats the selected JSON text with indentation. (milestone 4) | have |
 | Edit > Replace Selection > Replace with Base 64-Encoded Value | no shortcut | Replaces the selection with its base64-encoded form. (milestone 4) | have |
@@ -587,21 +587,21 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### paste special / paste history
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Paste special | Tab transform | Converts tabs to spaces, configurable count, or leaves them, before paste. | missing | |
-| Paste special | Convert newlines | Rewrites line endings before paste. | missing | |
-| Paste special | Remove newlines | Strips all newlines, joining pasted text into one line. | missing | |
-| Paste special | Escape shell characters with backslash | Backslash-escapes shell metacharacters so pasted text is treated literally by the shell. | missing | |
-| Paste special | Remove control codes | Strips control characters from the pasted text. | missing | |
-| Paste special | Bracketed paste mode toggle | Chooses whether to wrap the paste in bracketed-paste escape sequences. | missing | |
-| Paste special | Base64 encode | Encodes the pasted payload as base64, for use with shell functions that decode it. | missing | |
-| Paste special | Regex substitution | Applies a user-defined regex find/replace to the pasted text before sending. | missing | |
-| Paste special | Wait for prompt | Delays each chunk of a multi-line paste until a shell prompt is detected, requires shell integration. | missing | |
-| Paste special | Convert Unicode punctuation | Normalizes smart quotes/dashes to plain ASCII equivalents. | missing | |
-| Paste special | Chunked/slow paste with delay | Splits large pastes into chunks with a configurable delay between them, to avoid overwhelming the shell. | missing | |
+| Paste special | Tab transform | Converts tabs to spaces, configurable count, or leaves them, before paste. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Convert newlines | Rewrites line endings before paste. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Remove newlines | Strips all newlines, joining pasted text into one line. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Escape shell characters with backslash | Backslash-escapes shell metacharacters so pasted text is treated literally by the shell. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Remove control codes | Strips control characters from the pasted text. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Bracketed paste mode toggle | Chooses whether to wrap the paste in bracketed-paste escape sequences. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Base64 encode | Encodes the pasted payload as base64, for use with shell functions that decode it. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Regex substitution | Applies a user-defined regex find/replace to the pasted text before sending. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Wait for prompt | Delays each chunk of a multi-line paste until a shell prompt is detected, requires shell integration. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Convert Unicode punctuation | Normalizes smart quotes/dashes to plain ASCII equivalents. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Chunked/slow paste with delay | Splits large pastes into chunks with a configurable delay between them, to avoid overwhelming the shell. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
 | Paste history | Paste History popup | Shows a searchable list of everything previously pasted. | missing | |
 | Paste history | Paste History toolbelt tool | Toolbelt panel listing past pastes, selectable to re-paste. | missing | Tandem has no toolbelt. |
 | Paste history | Erase paste history | Clears all remembered paste entries. | missing | |
-| Paste | Plain paste (Ctrl+V / middle-click) | Directly injects clipboard text into the pty with no transform. | partial | Tandem has plain paste, but none of the transform/chunking options above. |
+| Paste | Plain paste (Ctrl+V / middle-click) | Directly injects clipboard text into the pty with no transform. | have | Milestone 9a: newlines to CR, unsafe control codes removed, bracketing when asked; 768 units every 0.01 s, a "Pasting..." bar with Cancel after 3 s, the multi-line, one-line, size, and tabs questions. |
 
 ### open quickly
 | Subsystem | Feature | What it does | Tandem status | Windows note |

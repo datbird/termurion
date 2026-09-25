@@ -400,8 +400,8 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Set Profile... | KEY_ACTION_SET_PROFILE | Switches the current session to a different profile. | have |  |
 | Send Text (vim paste-safe) | KEY_ACTION_VIM_TEXT | Sends text wrapped so vim treats it as a paste, not typed keystrokes. | have |  |
 | Load Color Preset... | KEY_ACTION_LOAD_COLOR_PRESET | Applies a saved color preset to the current session. | missing | Comes in milestone 13. |
-| Paste Special... | KEY_ACTION_PASTE_SPECIAL | Pastes the clipboard using Paste Special's transform rules. | missing | Comes in milestone 9. |
-| Paste Special from Selection... | KEY_ACTION_PASTE_SPECIAL_FROM_SELECTION | Pastes the current selection (not the clipboard) using Paste Special's transform rules. | missing | Comes in milestone 9. |
+| Paste Special... | KEY_ACTION_PASTE_SPECIAL | Pastes the clipboard using Paste Special's transform rules. | have | Milestone 9a: the encoded configuration (iTerm2 JSON). |
+| Paste Special from Selection... | KEY_ACTION_PASTE_SPECIAL_FROM_SELECTION | Pastes the current selection (not the clipboard) using Paste Special's transform rules. | have | Milestone 9a. |
 | Toggle Pin Hotkey Window | KEY_ACTION_TOGGLE_HOTKEY_WINDOW_PINNING | Pins/unpins a hotkey window so it stays open when it loses focus. | have | Milestone 7e: flips the session's original profile. |
 | Undo | KEY_ACTION_UNDO | Undoes the last undoable terminal action (e.g. closing a session). | missing | Comes in milestone 7. |
 | Move End of Selection Left | KEY_ACTION_MOVE_END_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its end point left, keyboard-driven. | have |  |
@@ -464,8 +464,8 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 |---|---|---|---|---|
 | Ignore | kIgnoreAction | Swallows the click/gesture; nothing happens. | have |  |
 | Invoke Script Function... | kInvokeScriptFunction | Calls a registered Python API script function. | missing | Comes in milestone 11. |
-| Paste from Clipboard... | kPasteFromClipboardPointerAction | Pastes the system clipboard. | partial | Plain paste works; a paste-special configuration comes in milestone 9. |
-| Paste from Selection... | kPasteFromSelectionPointerAction | Pastes the current selection (primary-selection style paste). | partial | Plain paste works; a paste-special configuration comes in milestone 9. |
+| Paste from Clipboard... | kPasteFromClipboardPointerAction | Pastes the system clipboard. | have | Milestone 9a: with an argument, the paste configuration. |
+| Paste from Selection... | kPasteFromSelectionPointerAction | Pastes the current selection (primary-selection style paste). | have | Milestone 9a. |
 | Extend Selection | kExtendSelectionPointerAction | Extends the existing selection to the clicked point. | have |  |
 | Open URL/Semantic History | kOpenTargetPointerAction | Opens the clicked path or URL via Semantic History. | have |  |
 | Open URL in background | kOpenTargetInBackgroundPointerAction | Opens the clicked URL without bringing its app to the foreground. | partial | Asks the app not to take the focus; a browser may still come to the front. |
@@ -651,7 +651,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | focusReportingEnabled | focusReportingEnabled (bool, default YES) | Apps may turn on Focus Reporting. | missing |  |
 | useColorfgbgFallback | useColorfgbgFallback (bool, default YES) | Use fallback for COLORFGBG if no exact match found? The COLORFGBG variable indicates the ANSI colors that match the foreground and background colors. | missing |  |
 | zeroWidthSpaceAdvancesCursor | zeroWidthSpaceAdvancesCursor (bool, default YES) | Zero-Width Space (U+200B) advances cursor? While a zero-width space should not advance the cursor per the Unicode spec, both Terminal.app and Konsole do this, and Weechat depends on it. | missing |  |
-| stripZeroWidthFormatCharactersOnPaste | stripZeroWidthFormatCharactersOnPaste (bool, default NO) | Strip zero-width bidi/format characters when pasting? Characters like the Zero-Width Non-Joiner (U+200C, the Persian half-space), ZWJ, LRM, and RLM are invisible but macOS classifies them as control characters, so line editors like zsh render them as a visible <200c> at the prompt. | missing |  |
+| stripZeroWidthFormatCharactersOnPaste | stripZeroWidthFormatCharactersOnPaste (bool, default NO) | Strip zero-width bidi/format characters when pasting? Characters like the Zero-Width Non-Joiner (U+200C, the Persian half-space), ZWJ, LRM, and RLM are invisible but macOS classifies them as control characters, so line editors like zsh render them as a visible <200c> at the prompt. | have | Milestone 9a. |
 | fullHeightCursor | fullHeightCursor (bool, default NO) | Cursor occupies line spacing area. | missing |  |
 | underlineCursorOffset | underlineCursorOffset (float, default 0) | Vertical offset for underline cursor. | missing |  |
 | preventEscapeSequenceFromClearingHistory | preventEscapeSequenceFromClearingHistory (bool?, default nil) | Prevent CSI 3 J from clearing scrollback history? This is also known as the terminfo E3 capability. | partial |  |
@@ -962,17 +962,17 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | noSyncNeverRemindPrefsChangesLostForUrl | noSyncNeverRemindPrefsChangesLostForUrl (bool, default NO) | Suppress changed-setting warning when settings are loaded from a URL. | missing |  |
 | noSyncNeverRemindPrefsChangesLostForFile | noSyncNeverRemindPrefsChangesLostForFile (bool, default NO) | Suppress changed-setting warning when settings are loaded from a custom folder. | missing |  |
 | noSyncSuppressAnnyoingBellOffer | noSyncSuppressAnnyoingBellOffer (bool, default NO) | Suppress offer to silence bell when it rings too much. | have | Milestone 6b. |
-| suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline | suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline (bool, default NO) | Suppress warning about multi-line paste when pasting a single line ending with a newline. | missing |  |
-| suppressMultilinePasteWarningWhenNotAtShellPrompt | suppressMultilinePasteWarningWhenNotAtShellPrompt (bool, default NO) | Suppress warning about multi-line paste when not at prompt. | missing |  |
+| suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline | suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline (bool, default NO) | Suppress warning about multi-line paste when pasting a single line ending with a newline. | have | Milestone 9a. |
+| suppressMultilinePasteWarningWhenNotAtShellPrompt | suppressMultilinePasteWarningWhenNotAtShellPrompt (bool, default NO) | Suppress warning about multi-line paste when not at prompt. | have | Milestone 9a. |
 | noSyncSuppressBroadcastInputWarning | noSyncSuppressBroadcastInputWarning (bool, default NO) | Suppress warning about broadcasting input. | have | Milestone 7f: Settings > Advanced; the warning is a message box with OK and Cancel. |
 | noSyncSuppressCaptureOutputRequiresShellIntegrationWarning | noSyncSuppressCaptureOutputRequiresShellIntegrationWarning (bool, default NO) | Suppress warning “Shell Integration is required for Capture Output.”. | missing |  |
 | noSyncSuppressCaptureOutputToolNotVisibleWarning | noSyncSuppressCaptureOutputToolNotVisibleWarning (bool, default NO) | Suppress warning that the Captured Output tool is not visible. | missing |  |
 | closingTmuxWindowKillsTmuxWindows | closingTmuxWindowKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux window. | have | Milestone 8c: on, closing a window with tmux tabs hides them without the question. |
 | closingTmuxTabKillsTmuxWindows | closingTmuxTabKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux tab. | have | Milestone 8c: on, closing a tmux tab hides it without the question. |
-| aboutToPasteTabsWithCancel | aboutToPasteTabsWithCancel (bool, default NO) | Suppress warning when pasting tabs with offer to convert them to spaces or perform advanced paste. | missing |  |
+| aboutToPasteTabsWithCancel | aboutToPasteTabsWithCancel (bool, default NO) | Suppress warning when pasting tabs with offer to convert them to spaces or perform advanced paste. | have | Milestone 9a. |
 | shortLivedSessionDuration | shortLivedSessionDuration (float, default 3) | Warn about short-lived sessions that live less than this many seconds. | missing |  |
-| noSyncDoNotWarnBeforeMultilinePaste | noSyncDoNotWarnBeforeMultilinePaste (bool, default NO) | Suppress warning about multi-line pastes (or a single line ending in a newline). | missing |  |
-| noSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt | noSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt (bool, default NO) | Suppress warning about pasting a single line ending in a newline when at the shell prompt. | missing |  |
+| noSyncDoNotWarnBeforeMultilinePaste | noSyncDoNotWarnBeforeMultilinePaste (bool, default NO) | Suppress warning about multi-line pastes (or a single line ending in a newline). | have | Milestone 9a. |
+| noSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt | noSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt (bool, default NO) | Suppress warning about pasting a single line ending in a newline when at the shell prompt. | have | Milestone 9a. |
 | noSyncReplaceProfileWarning | noSyncReplaceProfileWarning (bool, default NO) | Suppress warning about copying a session's settings over a Profile. | missing |  |
 | noSyncTurnOffFocusReportingOnHostChange | noSyncTurnOffFocusReportingOnHostChange (bool?, default nil) | Always turn off focus reporting when host changes? | missing |  |
 | noSyncTurnOffMouseReportingOnHostChange | noSyncTurnOffMouseReportingOnHostChange (bool?, default nil) | Always turn off mouse reporting when host changes? | missing |  |
@@ -995,10 +995,10 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | trimWhitespaceOnCopy | trimWhitespaceOnCopy (bool, default YES) | Trim whitespace when copying to pasteboard. | partial |  |
-| quickPasteBytesPerCall | quickPasteBytesPerCall (int, default 667) | Number of bytes to paste in each chunk when pasting normally. | partial |  |
-| quickPasteDelayBetweenCalls | quickPasteDelayBetweenCalls (float, default 0.01530456) | Delay in seconds between chunks when pasting normally. | missing |  |
-| slowPasteBytesPerCall | slowPasteBytesPerCall (int, default 16) | Number of bytes to paste in each chunk when pasting slowly. | partial |  |
-| slowPasteDelayBetweenCalls | slowPasteDelayBetweenCalls (float, default 0.125) | Delay in seconds between chunks when pasting slowly. | missing |  |
+| quickPasteBytesPerCall | quickPasteBytesPerCall (int, default 667) | Number of bytes to paste in each chunk when pasting normally. | have | Milestone 9a: 768 when unset, as iTerm2's code (the listed 667 is never used). |
+| quickPasteDelayBetweenCalls | quickPasteDelayBetweenCalls (float, default 0.01530456) | Delay in seconds between chunks when pasting normally. | have | Milestone 9a: 0.01 when unset, as iTerm2's code. |
+| slowPasteBytesPerCall | slowPasteBytesPerCall (int, default 16) | Number of bytes to paste in each chunk when pasting slowly. | have | Milestone 9a. |
+| slowPasteDelayBetweenCalls | slowPasteDelayBetweenCalls (float, default 0.125) | Delay in seconds between chunks when pasting slowly. | have | Milestone 9a. |
 | copyWithStylesByDefault | copyWithStylesByDefault (bool, default NO) | Copy to pasteboard on selection includes color and font style. | partial |  |
 | copyBackgroundColor | copyBackgroundColor (bool, default YES) | Exclude the default background color when text is copied with color and font style? When off, the default background color will be left unset. | missing |  |
 | pasteHistoryMaxOptions | pasteHistoryMaxOptions (int, default 20) | Number of entries to save in Paste History. | partial |  |
@@ -1006,12 +1006,12 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | workgroupAutoSendSubmitDelay | workgroupAutoSendSubmitDelay (float, default 0.501) | Delay in seconds before the Return that submits an auto-sent code review. | missing |  |
 | disallowCopyEmptyString | disallowCopyEmptyString (bool, default NO) | Disallow copying empty string to pasteboard. | partial |  |
 | typingClearsSelection | typingClearsSelection (bool, default YES) | Pressing a key will remove the selection. | partial |  |
-| pastingClearsSelection | pastingClearsSelection (bool, default YES) | Pasting text will remove the selection. | partial |  |
-| promptForPasteWhenNotAtPrompt | promptForPasteWhenNotAtPrompt (bool, default NO) | Warn before pasting when not at shell prompt? | missing |  |
+| pastingClearsSelection | pastingClearsSelection (bool, default YES) | Pasting text will remove the selection. | have | Milestone 9a. |
+| promptForPasteWhenNotAtPrompt | promptForPasteWhenNotAtPrompt (bool, default NO) | Warn before pasting when not at shell prompt? | have | Milestone 9a. |
 | excludeBackgroundColorsFromCopiedStyle | excludeBackgroundColorsFromCopiedStyle (bool, default NO) | Exclude all background colors when text is copied with color and font style? This includes both the default background color and non-default background colors. | missing |  |
 | includePasteHistoryInAdvancedPaste | includePasteHistoryInAdvancedPaste (bool, default YES) | Include paste history in the advanced paste menu. | partial |  |
 | advancedPasteWaitsForPromptByDefault | advancedPasteWaitsForPromptByDefault (bool, default YES) | Should Advanced Paste automatically enable “Wait for shell prompt before pasting each line” by default when shell integration is detected? | partial |  |
-| alwaysWarnBeforePastingOverSize | alwaysWarnBeforePastingOverSize (int, default -1) | When pasting more than this many characters, require confirmation. | missing |  |
+| alwaysWarnBeforePastingOverSize | alwaysWarnBeforePastingOverSize (int, default -1) | When pasting more than this many characters, require confirmation. | have | Milestone 9a. |
 | saveToPasteHistoryWhenSecureInputEnabled | saveToPasteHistoryWhenSecureInputEnabled (bool, default NO) | Save to paste history when secure keyboard input is enabled? | partial |  |
 
 ### Tip of the Day
@@ -1053,7 +1053,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | fastForegroundJobUpdates | fastForegroundJobUpdates (bool, default YES) | Enable low-latency updates of the current foreground job. | partial | Milestone 6c: the job is checked every 0.5 s while Tandem is in front and 5 s behind; there is no faster event-driven path yet. |
 | tmuxVariableWindowSizesSupported | tmuxVariableWindowSizesSupported (bool, default YES) | Allow variable window sizes in tmux integration. | have | Milestone 8c: per-window sizes on tmux 2.9 and later (refresh-client -C @W:WxH on 3.4, else resize-window). |
 | aggressiveBaseCharacterDetection | aggressiveBaseCharacterDetection (bool, default YES) | Detect base unicode characters with lookup table. | missing |  |
-| escapeWithQuotes | escapeWithQuotes (bool, default NO) | Escape file names with single quotes instead of backslashes. | missing |  |
+| escapeWithQuotes | escapeWithQuotes (bool, default NO) | Escape file names with single quotes instead of backslashes. | have | Milestone 9a: for pasted shell escaping (the dropped-file path keeps Windows quoting). |
 | fontsForGenerousRounding | fontsForGenerousRounding (string, default @"consolas") | List of fonts to use alternate rounding algorithm for line height calculation. | missing |  |
 | experimentalKeyHandling | experimentalKeyHandling (bool, default NO) | Improved support for input method editors like AquaSKK. | missing |  |
 | allowSendingFunctionKeysToCocoa | allowSendingFunctionKeysToCocoa (bool, default YES_IF_BETA_ELSE_NO) | Allow function keys to be handled by macOS text input system. | missing |  |
