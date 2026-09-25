@@ -21,6 +21,11 @@ impl Filter {
         Filter { italics, held: Vec::new() }
     }
 
+    /// The pane's contents are replaced (a tmux unpause): a held partial sequence is dropped.
+    pub fn reset(&mut self) {
+        self.held.clear();
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(bytes.len());
         for &b in bytes {
@@ -103,6 +108,9 @@ mod tests {
         assert_eq!(f.feed(b"\x1b[?5h\x1b[?5l"), b"", "reverse screen is ignored");
         assert_eq!(f.feed(b"\x1b[?5;1h"), b"\x1b[?1h");
         assert_eq!(f.feed(b"\x1b[5h\x1b]0;t\x07\x1bM"), b"\x1b[5h\x1b]0;t\x07\x1bM", "other bytes pass");
+        assert_eq!(f.feed(b"\x1b[3"), b"");
+        f.reset();
+        assert_eq!(f.feed(b"hello"), b"hello", "a reset drops the half sequence");
         let mut off = Filter::new(false);
         assert_eq!(off.feed(b"\x1b[3m\x1b[?5h"), b"\x1b[3m");
         assert_eq!(off.feed(b"\x1b"), b"");

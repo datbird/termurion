@@ -42,7 +42,16 @@ impl App {
                     }
                     let title = self.tmux_title(&value);
                     if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
-                        self.with_tab_of(first, |t| t.title = Some(title));
+                        // The tab may still wait to become a window.
+                        let mut pending = self.pending_windows.iter_mut().flat_map(|w| match w {
+                            windows_ui::NewWindow::Tab(t) => std::slice::from_mut(t),
+                            windows_ui::NewWindow::Tabs(ts) => ts.as_mut_slice(),
+                            _ => &mut [],
+                        });
+                        match pending.find(|t| t.layout.panes().contains(&first)) {
+                            Some(t) => t.title = Some(title),
+                            None => self.with_tab_of(first, |t| t.title = Some(title)),
+                        }
                     }
                 }
                 // AutoHideTmuxClientSession: once the attach's windows have opened (they may
@@ -63,6 +72,9 @@ impl App {
                     }
                 }
                 Action::Close(window) => {
+                    if let Some(t) = self.tmux.get_mut(&gw) {
+                        t.window_titles.remove(&window);
+                    }
                     let ids = self.tmux_window_panes(gw, window);
                     self.tmux_forget(gw, &ids);
                     for id in ids {
@@ -155,7 +167,15 @@ impl App {
                             // iTerm2's resetForTmuxUnpause and clearScrollbackBuffer, then the captures.
                             pane.own_mut().feed_tmux_restore(b"\x1bc\x1b[3J");
                             pane.own_mut().feed_tmux_restore(&p.restore);
-                            pane.feed_output(&p.pending);
+                            // The screen filter starts over and converts the pending bytes too.
+                            let pending = match pane.screen_filter.as_mut() {
+                                Some(f) => {
+                                    f.reset();
+                                    f.feed(&p.pending)
+                                }
+                                None => p.pending.clone(),
+                            };
+                            pane.feed_output(&pending);
                         }
                     }
                 }
