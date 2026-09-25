@@ -119,6 +119,7 @@ pub mod host_proto;
 pub mod host;
 pub mod host_client;
 pub mod reattach;
+pub mod hotkey;
 pub mod winpipe;
 
 #[cfg(windows)]

@@ -2879,10 +2879,10 @@ section = "Hotkey Window"
 label = "Hotkey modifier-alone activation key"
 type = "enum"
 default = 0
-choices = [ { value = 0, label = "Control" }, { value = 1, label = "Shift" }, { value = 2, label = "Option" }, { value = 3, label = "Command" } ]
-help = "Which single modifier key, tapped alone, toggles the hotkey window when the modifier-alone activation option is enabled."
+choices = [ { value = 0, label = "Control" }, { value = 1, label = "Shift" }, { value = 2, label = "Alt (Option)" }, { value = 3, label = "Win (Command)" } ]
+help = "Which single modifier key, tapped twice alone, toggles the hotkey window when double-tap activation is on."
 light_dark = false
-macos_only = true
+macos_only = false
 
 [[setting]]
 key = "HotKey Alternate Shortcuts"
