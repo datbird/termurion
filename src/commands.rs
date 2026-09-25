@@ -37,7 +37,7 @@ pub const DONE: &[&str] = &[
     "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "zoomOut:", "findUrls:",
     "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openSelection:",
     "replaceSelectionWithPrettyPrintedJSON:", "replaceSelectionWithBase64Encoded:", "replaceSelectionWithBase64Decoded:",
-    "clearToStartOfSelection:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "clearToStartOfSelection:", "toggleCopyMode:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
 ];
 
 /// Commands that work with a known difference for now.

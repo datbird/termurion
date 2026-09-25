@@ -236,6 +236,7 @@ impl App {
             },
             27 => self.open_with_profile(&b.text, None),
             36 => self.find_regex(&b.text),
+            73 => self.copy_mode_commands(&b.text),
             45..=48 => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
                     self.move_selection_end(id, b.action, &b.text);

@@ -137,6 +137,27 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
     mode_rect
 }
 
+/// iTerm2's Copy Mode cursor: a flag in the lower third of the cell at `row`, `col` (on
+/// screen), white, or light blue while selecting, with a black edge.
+pub fn copy_cursor(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize, col: usize, selecting: bool) {
+    const SLICES: usize = 4;
+    let (cw, ch) = cell;
+    let (x, y) = (rect.x + col as f32 * cw, rect.y + row as f32 * ch);
+    let (top, h) = (y + ch * 2.0 / 3.0, ch / 3.0 / SLICES as f32);
+    let fill = if selecting { rgb(0xc1, 0xde, 0xff) } else { rgb(0xff, 0xff, 0xff) };
+    // A triangle pointing up at the text, drawn as slices that widen toward the bottom.
+    let slice = |i: usize, grow: f32| {
+        let w = cw * (i + 1) as f32 / SLICES as f32;
+        Rect { x: x + (cw - w) / 2.0 - grow, y: top + i as f32 * h - grow, w: w + 2.0 * grow, h: h + 2.0 * grow }
+    };
+    for i in 0..SLICES {
+        frame.overlay.push(Quad { rect: slice(i, 1.0), color: rgba(rgb(0, 0, 0), 1.0) });
+    }
+    for i in 0..SLICES {
+        frame.overlay.push(Quad { rect: slice(i, 0.0), color: rgba(fill, 1.0) });
+    }
+}
+
 /// Black or white, whichever reads better on `bg`, as iTerm2 picks text on a match.
 fn contrasting(bg: Rgb) -> Rgb {
     let lum = 0.30 * bg.r as f32 + 0.59 * bg.g as f32 + 0.11 * bg.b as f32;
@@ -587,5 +608,22 @@ mod tests {
         let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "1")).unwrap();
         assert_eq!((tag.x, tag.y), (40.0, 0.0));
         assert!(f.quads.iter().any(|q| q.color == rgba(LABEL_BG, 1.0) && q.rect.x == 40.0));
+    }
+
+    #[test]
+    fn copy_mode_cursor_is_a_flag() {
+        let mut f = Frame::default();
+        copy_cursor(&mut f, RECT, CELL, 2, 3, false);
+        let white = rgba(rgb(0xff, 0xff, 0xff), 1.0);
+        let fills: Vec<Rect> = f.overlay.iter().filter(|q| q.color == white).map(|q| q.rect).collect();
+        assert!(fills.len() >= 3, "{fills:?}");
+        let cell = Rect { x: 30.0, y: 40.0, w: 10.0, h: 20.0 };
+        for r in &fills {
+            assert!(r.x >= cell.x && r.x + r.w <= cell.x + cell.w + 0.01, "{r:?}");
+            assert!(r.y >= cell.y + cell.h * 2.0 / 3.0 - 0.01 && r.y + r.h <= cell.y + cell.h + 0.01, "{r:?}");
+        }
+        let mut g = Frame::default();
+        copy_cursor(&mut g, RECT, CELL, 2, 3, true);
+        assert!(g.overlay.iter().any(|q| q.color == rgba(rgb(0xc1, 0xde, 0xff), 1.0)));
     }
 }

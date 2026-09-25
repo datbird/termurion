@@ -51,6 +51,7 @@ const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod copymode_ui;
 mod find_ui;
 mod labels_ui;
 mod semantic_ui;
@@ -142,6 +143,8 @@ pub struct App {
     find_mode_rect: Option<Rect>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
+    /// Copy Mode, per pane.
+    copy_modes: HashMap<PaneId, crate::copymode::State>,
     /// Labels on results (Find URLs and the like), waiting for a key.
     shortcuts: Option<labels_ui::Shortcuts>,
     /// The last pop-up menu, kept until its pick arrives.
@@ -266,6 +269,7 @@ pub fn run() {
         hover: None,
         popup_menu: None,
         shortcuts: None,
+        copy_modes: HashMap::new(),
         ctx_pending: None,
         prompt: None,
         global_find: None,
@@ -525,6 +529,7 @@ impl App {
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         self.panes.remove(&id);
         self.finds.remove(&id);
+        self.copy_modes.remove(&id);
         if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
             let tab = &mut self.tabs[t];
             if tab.layout.remove(id) {
@@ -767,7 +772,7 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
-        if self.shortcut_key(ev) || self.find_key(ev) {
+        if self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) {
             return;
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
@@ -1170,6 +1175,9 @@ impl App {
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
+                }
+                if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
+                    scene::copy_cursor(&mut frame, self.inner(rect), cell, row, col, selecting);
                 }
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));
                 if let Some(p) = self.panes.get(&id) {

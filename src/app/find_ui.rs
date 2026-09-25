@@ -236,7 +236,7 @@ pub(super) fn reveal(pane: &mut crate::pane::Pane, m: &Match) {
     show_line(pane, a.line.0);
 }
 
-fn show_line(pane: &mut crate::pane::Pane, line: i32) {
+pub(super) fn show_line(pane: &mut crate::pane::Pane, line: i32) {
     let grid = pane.screen.term().grid();
     let (lines, offset, history) = (grid.screen_lines() as i32, grid.display_offset() as i32, grid.history_size() as i32);
     if line >= -offset && line < -offset + lines {

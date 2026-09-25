@@ -168,6 +168,15 @@ default = false
 help = "A double click makes a Smart Selection and a quadruple click selects a word, the other way round from the default. iTerm2 keeps this under General > Selection."
 
 [[setting]]
+key = "EnterCopyModeAutomatically"
+tab = "Pointer"
+section = "Selection"
+label = "Automatically enter copy mode on Shift+Arrow key with selection"
+type = "bool"
+default = true
+help = "With text selected, Shift with an arrow, Home, End, Page Up, or Page Down starts Copy Mode at that end of the selection."
+
+[[setting]]
 key = "Selection Respects Soft Boundaries"
 tab = "Pointer"
 section = "Selection"

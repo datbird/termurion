@@ -11,13 +11,14 @@ use crate::find::Pos;
 use crate::seltools::{self, End};
 
 /// Menu items with a check mark that milestone 4c adds, by selector.
-pub(super) const CHECKED: &[&str] = &["toggleSelectionRespectsSoftBoundaries:"];
+pub(super) const CHECKED: &[&str] = &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:"];
 
 impl App {
     /// Whether a checkable menu item shows its check mark.
     pub(super) fn is_checked(&self, selector: &str) -> bool {
         match selector {
             "toggleSelectionRespectsSoftBoundaries:" => self.globals.bool("Selection Respects Soft Boundaries"),
+            "toggleCopyMode:" => self.focused_id().is_some_and(|id| self.copy_modes.contains_key(&id)),
             _ => false,
         }
     }

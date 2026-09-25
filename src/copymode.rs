@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn v_V_and_ctrl_v_select() {
+    fn v_shift_v_and_ctrl_v_select() {
         let b = buf(&["abc", "def"]);
         let mut s = State::new(at(0, 1));
         run(&mut s, &b, &["v", "j"]);
@@ -382,7 +382,6 @@ mod tests {
         assert_eq!(parse_vim_keys("3j<C-v>$y").unwrap(), vec!["3", "j", "C-v", "$", "y"]);
         assert_eq!(parse_vim_keys("<Esc><Space><lt>").unwrap(), vec!["Esc", " ", "<"]);
         assert!(parse_vim_keys("<C-v").is_err());
-        assert!(parse_vim_keys("<C-v j>x").is_ok_and(|k| k == vec!["C-v j", "x"]) || true);
         assert!(parse_vim_keys("a<b").is_err(), "a later > elsewhere does not close it");
     }
 }
