@@ -139,7 +139,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | Instant Replay memory usage limit | InstantReplayMemoryMegabytes | Megabytes of memory reserved per session for the Instant Replay scrollback-video-like history. | missing | Tandem has no Instant Replay feature. |
-| Save copy/paste and command history to disk | SavePasteAndCommandHistory | Persists paste history and (with shell integration) command history to disk between launches. | missing |  |
+| Save copy/paste and command history to disk | SavePasteAndCommandHistory | Persists paste history and (with shell integration) command history to disk between launches. | partial | Milestone 9b: paste history in %APPDATA%\Tandem\pbhistory.json; command history comes with the shell history store. |
 | Add Bonjour hosts to Profiles | AddBonjourHostsToProfiles | Automatically creates dynamic profiles for SSH hosts discovered via Bonjour/mDNS. | missing |  |
 | Ignore non-critical shell integration updates | NotifyOnlyForCriticalShellIntegrationUpdates | Suppresses shell-integration-outdated nags except for critical/breaking updates. | missing |  |
 | Load settings from a custom folder or URL | LoadPrefsFromCustomFolder | Loads and optionally syncs the whole preferences domain from a folder or URL instead of the local plist. | missing |  |
@@ -260,16 +260,16 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Size changes affect profile | SizeChangesAffectProfile | When resizing a window, also updates the profile's saved default size. | missing |  |
 | Alert on marks in offscreen sessions | AlertOnMarksInOffscreenSessions | Shows a system notification when a shell-integration success/failure mark appears in a session that isn't visible. | missing | Requires shell integration marks. |
 | Disable transparency for key window | DisableTransparencyForKeyWindow | Forces the focused (key) window to be fully opaque even if its profile uses transparency. | missing |  |
-| Paste Special: chunk size / chunk delay | PasteSpecialChunkSize / PasteSpecialChunkDelay | Default byte chunk size and inter-chunk delay used when pasting large amounts of text slowly. | missing |  |
-| Paste Special: spaces per tab | PasteSpecialSpacesPerTab | Default number of spaces substituted for a tab character during Paste Special. | missing |  |
-| Paste Special: tab transform | PasteSpecialTabTransform | Default choice for how tabs are transformed during Paste Special (leave as-is, convert to spaces, or escape). | missing |  |
-| Paste Special: escape shell characters with backslash | PasteSpecialEscapeShellCharsWithBackslash | Default on/off for backslash-escaping shell metacharacters during Paste Special. | missing |  |
-| Paste Special: convert Unicode punctuation | PasteSpecialConvertUnicodePunctuation | Default on/off for converting smart quotes and similar Unicode punctuation to plain ASCII during Paste Special. | missing |  |
-| Paste Special: convert DOS newlines | PasteSpecialConvertDosNewlines | Default on/off for converting CRLF line endings to LF during Paste Special. | missing |  |
-| Paste Special: remove control codes | PasteSpecialRemoveControlCodes | Default on/off for stripping control characters during Paste Special. | missing |  |
-| Paste Special: use bracketed paste mode | PasteSpecialBracketedPasteMode | Default on/off for wrapping the pasted text in bracketed-paste escape sequences. | have | Tandem already supports bracketed paste mode for normal paste. |
-| Paste Special: use regex substitution / regex / substitution | PasteSpecialUseRegexSubstitution / PasteSpecialRegex / PasteSpecialSubstitution | Default on/off and pattern/replacement text for an optional regex find-and-replace pass during Paste Special. | missing |  |
-| Paste warning: number of spaces per tab | PasteWarningNumberOfSpacesPerTab | Spaces-per-tab value used when iTerm2 warns about pasting text containing tabs. | missing |  |
+| Paste Special: chunk size / chunk delay | PasteSpecialChunkSize / PasteSpecialChunkDelay | Default byte chunk size and inter-chunk delay used when pasting large amounts of text slowly. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste Special: spaces per tab | PasteSpecialSpacesPerTab | Default number of spaces substituted for a tab character during Paste Special. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste Special: tab transform | PasteSpecialTabTransform | Default choice for how tabs are transformed during Paste Special (leave as-is, convert to spaces, or escape). | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste Special: escape shell characters with backslash | PasteSpecialEscapeShellCharsWithBackslash | Default on/off for backslash-escaping shell metacharacters during Paste Special. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste Special: convert Unicode punctuation | PasteSpecialConvertUnicodePunctuation | Default on/off for converting smart quotes and similar Unicode punctuation to plain ASCII during Paste Special. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste Special: convert DOS newlines | PasteSpecialConvertDosNewlines | Default on/off for converting CRLF line endings to LF during Paste Special. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste Special: remove control codes | PasteSpecialRemoveControlCodes | Default on/off for stripping control characters during Paste Special. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste Special: use bracketed paste mode | PasteSpecialBracketedPasteMode | Default on/off for wrapping the pasted text in bracketed-paste escape sequences. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste Special: use regex substitution / regex / substitution | PasteSpecialUseRegexSubstitution / PasteSpecialRegex / PasteSpecialSubstitution | Default on/off and pattern/replacement text for an optional regex find-and-replace pass during Paste Special. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
+| Paste warning: number of spaces per tab | PasteWarningNumberOfSpacesPerTab | Spaces-per-tab value used when iTerm2 warns about pasting text containing tabs. | have | Milestone 9b: remembered by Advanced Paste under iTerm2's key. |
 | Actions | Actions | User-defined list of reusable Action snippets (send text, run command, etc) available from the Actions menu/toolbelt. | missing |  |
 | Snippets | Snippets | User-defined list of reusable text Snippets available from the Snippets menu/toolbelt/Composer. | missing |  |
 
@@ -1001,7 +1001,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | slowPasteDelayBetweenCalls | slowPasteDelayBetweenCalls (float, default 0.125) | Delay in seconds between chunks when pasting slowly. | have | Milestone 9a. |
 | copyWithStylesByDefault | copyWithStylesByDefault (bool, default NO) | Copy to pasteboard on selection includes color and font style. | partial |  |
 | copyBackgroundColor | copyBackgroundColor (bool, default YES) | Exclude the default background color when text is copied with color and font style? When off, the default background color will be left unset. | missing |  |
-| pasteHistoryMaxOptions | pasteHistoryMaxOptions (int, default 20) | Number of entries to save in Paste History. | partial |  |
+| pasteHistoryMaxOptions | pasteHistoryMaxOptions (int, default 20) | Number of entries to save in Paste History. | have | Milestone 9b. |
 | clippingSeparator | clippingSeparator (string, default @"\\n--\\n") | Separator inserted between multiple clippings when sending or copying them. | partial |  |
 | workgroupAutoSendSubmitDelay | workgroupAutoSendSubmitDelay (float, default 0.501) | Delay in seconds before the Return that submits an auto-sent code review. | missing |  |
 | disallowCopyEmptyString | disallowCopyEmptyString (bool, default NO) | Disallow copying empty string to pasteboard. | partial |  |
@@ -1009,10 +1009,10 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | pastingClearsSelection | pastingClearsSelection (bool, default YES) | Pasting text will remove the selection. | have | Milestone 9a. |
 | promptForPasteWhenNotAtPrompt | promptForPasteWhenNotAtPrompt (bool, default NO) | Warn before pasting when not at shell prompt? | have | Milestone 9a. |
 | excludeBackgroundColorsFromCopiedStyle | excludeBackgroundColorsFromCopiedStyle (bool, default NO) | Exclude all background colors when text is copied with color and font style? This includes both the default background color and non-default background colors. | missing |  |
-| includePasteHistoryInAdvancedPaste | includePasteHistoryInAdvancedPaste (bool, default YES) | Include paste history in the advanced paste menu. | partial |  |
-| advancedPasteWaitsForPromptByDefault | advancedPasteWaitsForPromptByDefault (bool, default YES) | Should Advanced Paste automatically enable “Wait for shell prompt before pasting each line” by default when shell integration is detected? | partial |  |
+| includePasteHistoryInAdvancedPaste | includePasteHistoryInAdvancedPaste (bool, default YES) | Include paste history in the advanced paste menu. | have | Milestone 9b. |
+| advancedPasteWaitsForPromptByDefault | advancedPasteWaitsForPromptByDefault (bool, default YES) | Should Advanced Paste automatically enable “Wait for shell prompt before pasting each line” by default when shell integration is detected? | have | Milestone 9b. |
 | alwaysWarnBeforePastingOverSize | alwaysWarnBeforePastingOverSize (int, default -1) | When pasting more than this many characters, require confirmation. | have | Milestone 9a. |
-| saveToPasteHistoryWhenSecureInputEnabled | saveToPasteHistoryWhenSecureInputEnabled (bool, default NO) | Save to paste history when secure keyboard input is enabled? | partial |  |
+| saveToPasteHistoryWhenSecureInputEnabled | saveToPasteHistoryWhenSecureInputEnabled (bool, default NO) | Save to paste history when secure keyboard input is enabled? | have | Milestone 9b: Windows has no secure keyboard entry; history is always saved. |
 
 ### Tip of the Day
 

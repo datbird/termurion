@@ -87,7 +87,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Copy with Control Sequences | no shortcut | Copies the selection including the raw escape sequences that produced it. | have |
 | Edit > Copy Mode | Cmd+C | Enters keyboard driven vi-like selection mode for copying text. (milestone 5) | have |
 | Edit > Paste | Cmd+V | Pastes clipboard contents into the session. | have |
-| Edit > Paste Special > Advanced Paste... | Opt+Cmd+V | Opens a dialog with paste transform options such as escaping, encoding, and tab conversion. (milestone 9) | missing |
+| Edit > Paste Special > Advanced Paste... | Opt+Cmd+V | Opens a dialog with paste transform options such as escaping, encoding, and tab conversion. (milestone 9) | have, milestone 9b |
 | Edit > Paste Special > Paste Selection | Cmd+V | Pastes the current selection, similar to middle-click paste on X11. | have |
 | Edit > Paste Special > Paste File Base64-Encoded | no shortcut | Pastes a file's contents as a base64-encoded string. (milestone 9) | have, milestone 9a |
 | Edit > Paste Special > Paste Slowly | no shortcut | Pastes character by character with a delay, for flaky serial links. (milestone 9) | have, milestone 9a |
@@ -188,7 +188,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Open Autocomplete... | Cmd+; | Opens the shell integration based command autocomplete popup. (milestone 9) | missing |
 | Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. (milestone 9) | missing |
 | Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. (milestone 9) | missing |
-| Session > Open Paste History... | Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. (milestone 9) | missing |
+| Session > Open Paste History... | Shift+Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. (milestone 9) | have, milestone 9b |
 | Session > Open AI Chat... | Ctrl+Cmd+Y | Opens an AI chat window scoped to the current session. (milestone 12) | missing |
 | Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. (milestone 6) | have, milestone 6a |
 | Session > Triggers > Edit Triggers | no shortcut | Opens the trigger list editor for the current profile. (milestone 6) | have, milestone 6a |
@@ -587,17 +587,17 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### paste special / paste history
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Paste special | Tab transform | Converts tabs to spaces, configurable count, or leaves them, before paste. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Convert newlines | Rewrites line endings before paste. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Remove newlines | Strips all newlines, joining pasted text into one line. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Escape shell characters with backslash | Backslash-escapes shell metacharacters so pasted text is treated literally by the shell. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Remove control codes | Strips control characters from the pasted text. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Bracketed paste mode toggle | Chooses whether to wrap the paste in bracketed-paste escape sequences. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Base64 encode | Encodes the pasted payload as base64, for use with shell functions that decode it. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Regex substitution | Applies a user-defined regex find/replace to the pasted text before sending. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Wait for prompt | Delays each chunk of a multi-line paste until a shell prompt is detected, requires shell integration. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Convert Unicode punctuation | Normalizes smart quotes/dashes to plain ASCII equivalents. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
-| Paste special | Chunked/slow paste with delay | Splits large pastes into chunks with a configurable delay between them, to avoid overwhelming the shell. | partial | Milestone 9a: done in the paste pipeline (iTerm2 order), used by Paste... and Paste from Selection... key and pointer configurations; the Advanced Paste window comes in 9b. |
+| Paste special | Tab transform | Converts tabs to spaces, configurable count, or leaves them, before paste. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Convert newlines | Rewrites line endings before paste. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Remove newlines | Strips all newlines, joining pasted text into one line. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Escape shell characters with backslash | Backslash-escapes shell metacharacters so pasted text is treated literally by the shell. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Remove control codes | Strips control characters from the pasted text. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Bracketed paste mode toggle | Chooses whether to wrap the paste in bracketed-paste escape sequences. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Base64 encode | Encodes the pasted payload as base64, for use with shell functions that decode it. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Regex substitution | Applies a user-defined regex find/replace to the pasted text before sending. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Wait for prompt | Delays each chunk of a multi-line paste until a shell prompt is detected, requires shell integration. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Convert Unicode punctuation | Normalizes smart quotes/dashes to plain ASCII equivalents. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
+| Paste special | Chunked/slow paste with delay | Splits large pastes into chunks with a configurable delay between them, to avoid overwhelming the shell. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
 | Paste history | Paste History popup | Shows a searchable list of everything previously pasted. | missing | |
 | Paste history | Paste History toolbelt tool | Toolbelt panel listing past pastes, selectable to re-paste. | missing | Tandem has no toolbelt. |
 | Paste history | Erase paste history | Clears all remembered paste entries. | missing | |
