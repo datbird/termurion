@@ -425,6 +425,7 @@ impl App {
             "undoCloseSession:" => self.undo_close(),
             "saveWindowArrangement:" => self.open_save_arrangement(event_loop, true),
             "saveCurrentWindowAsArrangement:" => self.open_save_arrangement(event_loop, false),
+            "importWindowArrangement:" => self.load_arrangement_file(),
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
                     self.restart_pane(id);

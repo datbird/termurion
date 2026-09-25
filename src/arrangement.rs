@@ -263,6 +263,54 @@ pub fn contents(session: &Value) -> Option<&str> {
     session.get("Tandem Contents").and_then(|v| v.as_str())
 }
 
+
+/// An arrangement file (iTerm2's plist: an array of window dictionaries).
+pub fn from_plist(bytes: &[u8]) -> Result<Vec<Value>, String> {
+    let root = plist::Value::from_reader(std::io::Cursor::new(bytes)).map_err(|e| format!("not an arrangement file: {e}"))?;
+    let arr = root.as_array().ok_or("not an arrangement file: it holds no list of windows")?;
+    let windows: Vec<Value> = arr.iter().filter_map(crate::import::from_plist).filter(|w| w.get("Tabs").and_then(|t| t.as_array()).is_some()).collect();
+    if windows.is_empty() {
+        return Err("not an arrangement file: it holds no windows".into());
+    }
+    Ok(windows)
+}
+
+/// The question before opening a downloaded arrangement file: what its profiles would run.
+pub fn trust_text(name: &str, windows: &[Value]) -> String {
+    let mut lines = vec![format!("Open the arrangement \u{201c}{name}\u{201d}?"), String::new()];
+    for w in windows {
+        for t in w.get("Tabs").and_then(|t| t.as_array()).into_iter().flatten() {
+            let Some(tree) = t.get("Root").and_then(|r| tree_of(r).ok()) else { continue };
+            for s in tree.leaves() {
+                let Some((_, pname, prof)) = profile_of(s) else { continue };
+                let get = |k: &str| prof.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if get("Custom Command") == "Yes" && !get("Command").is_empty() {
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} runs: {}", get("Command")));
+                }
+                if !get("Initial Text").is_empty() {
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} types: {}", get("Initial Text")));
+                }
+                if prof.get("Triggers").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
+                    lines.push(format!("Profile \u{201c}{pname}\u{201d} has triggers."));
+                }
+            }
+        }
+    }
+    if lines.len() == 2 {
+        lines.push("It came from another computer.".into());
+    }
+    lines.push(String::new());
+    lines.push("Open it only if you trust where it came from.".into());
+    lines.join("\n")
+}
+
+/// Windows marks a downloaded file with a Zone.Identifier stream (its quarantine flag).
+pub fn has_mark_of_the_web(path: &std::path::Path) -> bool {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(":Zone.Identifier");
+    std::fs::metadata(std::path::PathBuf::from(s)).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +431,45 @@ mod tests {
         assert_eq!(folder_for(&with), Folder::Forced(r"C:\src".into()), "contents force the folder");
         assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None)), Folder::None);
         assert_eq!(contents(&with), Some("x"));
+    }
+
+    fn one_window(profile: Table) -> Vec<Value> {
+        let tree = Tree::Leaf(session(80, 24, profile, "s", Some("C:\\")));
+        vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![tab(node(&tree, 800.0, 600.0), true, None)])]
+    }
+
+    #[test]
+    fn plist_round_trip() {
+        let w = one_window(Table::new());
+        let bytes = to_plist(&w).unwrap();
+        let back = from_plist(&bytes).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(window_facts(&back[0]).cells, (80, 25));
+        let root = back[0].get("Tabs").and_then(|t| t.as_array()).and_then(|t| t[0].get("Root")).unwrap();
+        assert!(tree_of(root).is_ok());
+    }
+
+    #[test]
+    fn bad_files_are_refused() {
+        assert!(from_plist(b"not a plist").is_err());
+        let mut dict = Vec::new();
+        plist::Value::Dictionary(Default::default()).to_writer_xml(&mut dict).unwrap();
+        assert!(from_plist(&dict).is_err(), "a dictionary is not an arrangement");
+        let mut empty = Vec::new();
+        plist::Value::Array(vec![plist::Value::String("x".into())]).to_writer_xml(&mut empty).unwrap();
+        assert!(from_plist(&empty).is_err(), "an array without windows");
+    }
+
+    #[test]
+    fn trust_text_lists_commands() {
+        let mut p = Table::new();
+        p.insert("Name".into(), Value::String("Ops".into()));
+        p.insert("Custom Command".into(), Value::String("Yes".into()));
+        p.insert("Command".into(), Value::String("ssh prod".into()));
+        p.insert("Initial Text".into(), Value::String("rm -rf /tmp/x".into()));
+        let t = trust_text("prod.itermarrangement", &one_window(p));
+        assert!(t.starts_with("Open the arrangement \u{201c}prod.itermarrangement\u{201d}?"), "{t}");
+        assert!(t.contains("ssh prod") && t.contains("rm -rf /tmp/x") && t.contains("Ops"), "{t}");
+        assert!(t.ends_with("Open it only if you trust where it came from."));
     }
 }

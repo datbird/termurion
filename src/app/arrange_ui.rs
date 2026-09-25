@@ -330,3 +330,30 @@ impl App {
         false
     }
 }
+
+impl App {
+    /// Window > Arrangements > Load Arrangement from File...: each window in it opens; a
+    /// downloaded file asks first.
+    pub(super) fn load_arrangement_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new().set_title("Load Arrangement").add_filter("Arrangement", &["itermarrangement", "iterm2arrangement", "plist"]).pick_file() else { return };
+        let windows = match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| arrangement::from_plist(&b)) {
+            Ok(w) => w,
+            Err(e) => {
+                self.banners.set("arrangement", format!("Could not load {}: {e}", path.display()));
+                return self.redraw();
+            }
+        };
+        if arrangement::has_mark_of_the_web(&path) {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let text = arrangement::trust_text(&name, &windows);
+            if !yes_no(self.hwnd(), "Open Arrangement?", &text) {
+                return;
+            }
+        }
+        for w in windows {
+            self.pending_windows.push(super::windows_ui::NewWindow::Arrangement(w));
+        }
+        self.banners.clear("arrangement");
+        self.redraw();
+    }
+}
