@@ -50,13 +50,15 @@ impl App {
         let prevent = self.globals.values.get("PreventEscapeSequenceFromChangingProfile").and_then(|v| v.as_bool());
         match prompted::set_profile_decision(prevent) {
             Decision::Deny => {}
-            Decision::Ask => self.ask(
-                pane,
-                ASK_PROFILE,
-                "A control sequence attempted to change the current profile. Allow this in the future?",
-                &["Always _Allow", "Always _Deny"],
-                false,
-            ),
+            Decision::Ask => {
+                self.ask(
+                    pane,
+                    ASK_PROFILE,
+                    "A control sequence attempted to change the current profile. Allow this in the future?",
+                    &["Always _Allow", "Always _Deny"],
+                    false,
+                );
+            }
             Decision::Apply => {
                 let guid = if name.is_empty() {
                     Some(self.store.default_guid.clone())
@@ -84,8 +86,9 @@ impl App {
             Decision::Deny => {}
             Decision::Apply => self.apply_properties(pane, values),
             Decision::Ask => {
-                self.pending_properties.insert(pane, values);
-                self.ask(pane, ASK_PROPERTY, &prompted::property_text(&keys), &["_Allow Once", "Allow Always", "Deny Always"], false);
+                if self.ask(pane, ASK_PROPERTY, &prompted::property_text(&keys), &["_Allow Once", "Allow Always", "Deny Always"], false) {
+                    self.pending_properties.insert(pane, values);
+                }
             }
         }
     }
@@ -98,15 +101,18 @@ impl App {
     /// SetBackgroundImageFile: a path (empty removes the image) as the pane's own setting.
     pub(super) fn set_background_request(&mut self, pane: PaneId, value: String) {
         let Some(path) = b64_text(&value).map(|p| p.trim_end().to_string()) else { return };
-        if !path.is_empty() && !std::path::Path::new(&path).exists() {
+        // Network paths are refused before anything touches them (a lookup alone would
+        // send the user's credentials to the server).
+        if !path.is_empty() && (!prompted::local_path_ok(&path) || !std::path::Path::new(&path).exists()) {
             return;
         }
         match prompted::background_decision(&path, &self.global_list("AlwaysAllowBackgroundImage"), &self.global_list("AlwaysDenyBackgroundImage")) {
             Decision::Deny => {}
             Decision::Apply => self.apply_background(pane, &path),
             Decision::Ask => {
-                self.pending_background.insert(pane, path.clone());
-                self.ask(pane, ASK_BACKGROUND, &prompted::background_text(&path), &["Yes", "Always", "Never"], false);
+                if self.ask(pane, ASK_BACKGROUND, &prompted::background_text(&path), &["Yes", "Always", "Never"], false) {
+                    self.pending_background.insert(pane, path.clone());
+                }
             }
         }
     }
@@ -206,7 +212,7 @@ impl App {
         if keystroke::key_of(&ev.logical_key, ev.text.as_deref()).is_none() {
             return false;
         }
-        let pressed = if self.mods.alt {
+        let pressed = if crate::infobar::shortcut_mods(self.mods.alt, self.mods.ctrl, self.mods.shift, self.mods.cmd) {
             let letter = match &ev.key_without_modifiers() {
                 winit::keyboard::Key::Character(c) => c.chars().next(),
                 _ => None,
@@ -236,8 +242,9 @@ impl App {
         if !host.is_empty() && self.globals.bool(&prompted::host_key(&host)) {
             return self.open_url(pane, &url);
         }
-        self.pending_urls.insert((pane, host.clone()), url.clone());
-        self.ask(pane, &format!("{ASK_URL}{host}"), &format!("Open this URL? {url}"), &["Allow", "Always allow for this host", "Never allow"], true);
+        if self.ask(pane, &format!("{ASK_URL}{host}"), &format!("Open this URL? {url}"), &["Allow", "Always allow for this host", "Never allow"], true) {
+            self.pending_urls.insert((pane, host.clone()), url.clone());
+        }
     }
 
     fn open_url(&mut self, pane: PaneId, url: &str) {
@@ -249,6 +256,13 @@ impl App {
     /// ReportVariable: the value if the name is allowed; empty now and a question if not.
     pub(super) fn report_variable_request(&mut self, pane: PaneId, value: String) {
         let Some(name) = b64_text(&value) else { return };
+        // Names go into the allow and deny list, so only plain ones are looked up or asked about.
+        if !prompted::variable_name_ok(&name) {
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.reply(&prompted::variable_reply(None));
+            }
+            return;
+        }
         let decision = prompted::variable_decision(&name, &self.globals.string("NoSyncVariablesToReport"));
         let reply = match decision {
             Decision::Apply => {

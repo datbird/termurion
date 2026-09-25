@@ -52,6 +52,15 @@ impl Bars {
         self.queue.front()
     }
 
+    /// Queues a bar unless `cap` others already wait (a new id past the cap is refused, so
+    /// output cannot pile up questions). The replaced bar, as `push`.
+    pub fn push_capped(&mut self, bar: Bar, cap: usize) -> Result<Option<Bar>, Bar> {
+        if self.queue.len() >= cap && !self.queue.iter().any(|b| b.id == bar.id) {
+            return Err(bar);
+        }
+        Ok(self.push(bar))
+    }
+
     pub fn pop(&mut self) -> Option<Bar> {
         self.queue.pop_front()
     }
@@ -59,6 +68,12 @@ impl Bars {
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
+}
+
+/// Whether held modifiers make a letter a bar shortcut: Alt alone. (AltGr arrives as
+/// Ctrl+Alt and types a character.)
+pub fn shortcut_mods(alt: bool, ctrl: bool, shift: bool, win: bool) -> bool {
+    alt && !ctrl && !shift && !win
 }
 
 /// Where the bar goes in a pane: its strip, and a rectangle per button (in button order,
@@ -163,5 +178,23 @@ mod tests {
         assert_eq!(hit(&b, AREA, CELL, x, y), Some(None));
         assert_eq!(hit(&b, AREA, CELL, 110.0, 60.0), None, "on the text");
         assert_eq!(hit(&b, AREA, CELL, 110.0, 200.0), None, "below the bar");
+    }
+    #[test]
+    fn bars_cap_new_questions() {
+        let mut bars = Bars::default();
+        for i in 0..4 {
+            assert!(bars.push_capped(bar(&format!("q{i}"), &[]), 4).is_ok());
+        }
+        assert!(bars.push_capped(bar("q9", &[]), 4).is_err(), "a fifth question is refused");
+        assert!(bars.push_capped(bar("q1", &["new"]), 4).is_ok(), "the same question may still replace its bar");
+    }
+
+    #[test]
+    fn bar_shortcuts_need_alt_alone() {
+        assert!(shortcut_mods(true, false, false, false));
+        assert!(!shortcut_mods(true, true, false, false), "AltGr is Ctrl+Alt");
+        assert!(!shortcut_mods(true, false, true, false));
+        assert!(!shortcut_mods(true, false, false, true));
+        assert!(!shortcut_mods(false, false, false, false));
     }
 }

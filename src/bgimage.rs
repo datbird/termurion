@@ -97,6 +97,10 @@ pub struct Loaded {
 /// Decodes an image, downscaled to `MAX_SIDE`. None when it is missing or does not decode.
 pub fn load(path: &Path) -> Option<Loaded> {
     use std::hash::{Hash, Hasher};
+    // Never touch a network path: opening one sends the user's credentials to its server.
+    if !crate::prompted::local_path_ok(&path.to_string_lossy()) {
+        return None;
+    }
     let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
     let mut img = image::open(path).ok()?.to_rgba8();
     let (w, h) = img.dimensions();
@@ -167,6 +171,9 @@ impl Deck {
 
 /// The image files directly in a folder, by name (hidden files skipped).
 pub fn folder_images(folder: &Path) -> Vec<PathBuf> {
+    if !crate::prompted::local_path_ok(&folder.to_string_lossy()) {
+        return Vec::new();
+    }
     const EXT: [&str; 9] = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff", "ico"];
     let Ok(dir) = std::fs::read_dir(folder) else { return Vec::new() };
     let mut out: Vec<PathBuf> = dir

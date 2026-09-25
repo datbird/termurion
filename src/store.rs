@@ -102,6 +102,11 @@ impl Store {
         self.profiles.iter_mut().find(|p| p.guid() == guid)
     }
 
+    /// The saved profile a Guid stands for: itself, or a session copy's original.
+    pub fn shared_guid(&self, guid: &str) -> String {
+        self.sessions.iter().find(|s| s.profile.guid() == guid).map_or_else(|| guid.to_string(), |s| s.original_guid())
+    }
+
     /// After a saved profile changed: its session copies follow it where they did not
     /// override a key. Copies whose profile is gone keep their values.
     pub fn merge_sessions(&mut self) {
@@ -144,6 +149,17 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_guid_maps_to_its_saved_profile() {
+        let path = std::env::temp_dir().join(format!("tandem-store-map-{}.toml", std::process::id()));
+        let mut st = Store::fresh(&path);
+        let shared = st.profiles[0].guid();
+        st.sessions.push(crate::session_profile::divorce(&st.profiles[0].clone(), "copy".into()));
+        assert_eq!(st.shared_guid("copy"), shared, "new panes and Edit Session use the saved profile");
+        assert_eq!(st.shared_guid(&shared), shared);
+        assert_eq!(st.shared_guid("unknown"), "unknown");
+    }
+
     #[test]
     fn sessions_are_not_saved() {
         let path = std::env::temp_dir().join(format!("tandem-store-{}.toml", std::process::id()));

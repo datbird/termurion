@@ -7,7 +7,7 @@ Cmd is the Win key and Option is Alt. The checks use WSL (`wsl`). Mark each line
 |---|---|---|
 | 1 | Settings > Profiles > Window: set a background image (a photo). The pane shows it under the text, dimmed by the background color. Move Blending: toward Image it shows more. Colored cells (`printf '\e[41m red \e[0m'`) cover it. | |
 | 2 | Try each scaling mode: Stretch fills, Tile repeats at full size, Scale to Fill crops, Scale to Fit shows the whole image with bars. | |
-| 3 | Split the pane. Settings > Appearance is not built yet, so skip "Separate background images per pane" off; with it on (default) each pane shows its own whole image. | |
+| 3 | Split the pane: each pane shows its own whole image (the default "Separate background images per pane"; its switch comes with the Appearance settings page in milestone 13). A split made from a pane a program changed (step 7) starts with the saved profile, not the change. |
 | 4 | Source: Folder Rotation, a folder of 3 images, interval 5: the image changes every 5 seconds and each shows once before any repeats. | |
 | 5 | Point the image at a file that is not an image: the pane shows its plain background, no error, no crash. | |
 | 6 | `printf '\e]1337;SetProfile=Default\a'` (use a profile name you have): a bar asks "A control sequence attempted to change the current profile. Allow this in the future?". Press Alt+A (Always Allow): nothing changes this time. Send it again: the pane switches profile. | |

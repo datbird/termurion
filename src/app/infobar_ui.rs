@@ -3,12 +3,17 @@
 use super::*;
 use crate::infobar::{self, Bar};
 
+/// How many questions may wait in one pane.
+const BARS_PER_PANE: usize = 4;
+
 impl App {
     /// Queues a bar on a pane (once per question) and redraws.
-    pub(super) fn ask(&mut self, pane: PaneId, id: &str, text: &str, buttons: &[&str], important: bool) {
+    pub(super) fn ask(&mut self, pane: PaneId, id: &str, text: &str, buttons: &[&str], important: bool) -> bool {
         let bar = Bar { id: id.to_string(), text: text.to_string(), buttons: buttons.iter().map(|b| b.to_string()).collect(), important };
-        self.bars.entry(pane).or_default().push(bar);
+        // Output cannot pile up questions: past a few waiting, new ones are dropped.
+        let asked = self.bars.entry(pane).or_default().push_capped(bar, BARS_PER_PANE).is_ok();
         self.redraw();
+        asked
     }
 
     /// Draws a pane's front bar.

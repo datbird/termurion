@@ -33,13 +33,16 @@ impl App {
     pub(super) fn remarry(&mut self, pane: PaneId, guid: &str) {
         if let Some(p) = self.panes.get_mut(&pane) {
             let old = std::mem::replace(&mut p.profile, guid.to_string());
-            self.store.sessions.retain(|s| s.profile.guid() != old);
+            self.forget_session_profile(&old);
         }
         self.refresh_panes();
     }
 
     /// Drops the private profile copy of a pane that closed.
     pub(super) fn forget_session_profile(&mut self, guid: &str) {
+        if self.panes.values().any(|p| p.profile == guid) {
+            return;
+        }
         self.store.sessions.retain(|s| s.profile.guid() != guid);
     }
 }

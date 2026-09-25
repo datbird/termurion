@@ -163,7 +163,7 @@ impl App {
     fn toggle_setting(&mut self, json: &str) {
         let Some((key, is_profile)) = toggle_target(json) else { return };
         if is_profile {
-            let Some(guid) = self.focused_pane_id().and_then(|id| self.panes.get(&id)).map(|p| p.profile.clone()) else { return };
+            let Some(guid) = self.focused_pane_id().and_then(|id| self.panes.get(&id)).map(|p| self.store.shared_guid(&p.profile)) else { return };
             if let Some(p) = self.store.get_mut(&guid) {
                 let now = p.bool(&key);
                 p.set(&key, toml::Value::Boolean(!now));
@@ -181,10 +181,9 @@ impl App {
         let Some(p) = self.store.get(guid).cloned() else {
             return self.banners.set("action", format!("No profile with Guid {guid}."));
         };
-        let dark = self.dark();
-        if let Some(pane) = self.focused_pane() {
-            pane.profile = p.guid();
-            pane.restyle(crate::palette::Palette::from_profile(&p, dark), crate::screen::Look::from_profile(&p));
+        // A new profile ends any session copy, as SetProfile does.
+        if let Some(id) = self.focused_pane_id() {
+            self.remarry(id, &p.guid());
         }
     }
 
@@ -289,7 +288,7 @@ impl App {
                 }
             }
             61 => {
-                let g = self.focused_pane_id().and_then(|id| self.panes.get(&id)).map(|p| p.profile.clone());
+                let g = self.focused_pane_id().and_then(|id| self.panes.get(&id)).map(|p| self.store.shared_guid(&p.profile));
                 self.new_tab(g.as_deref());
             }
             66 => {

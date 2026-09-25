@@ -63,8 +63,9 @@ pub mod render;
 #[cfg(windows)]
 pub mod app;
 
-#[cfg(windows)]
 pub mod session_profile;
+
+#[cfg(windows)]
 pub mod settings_ui;
 
 #[cfg(windows)]
@@ -82,7 +83,9 @@ pub mod settings_advanced;
 
 #[cfg(windows)]
 pub mod winclip;
+#[cfg(windows)]
 pub mod winprint;
+#[cfg(windows)]
 pub mod winkeys;
 
 #[cfg(windows)]

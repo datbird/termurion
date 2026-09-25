@@ -26,6 +26,8 @@ pub fn valid(key: &str, json: &serde_json::Value) -> Option<Value> {
         (Kind::Bool, J::Bool(b)) => Value::Boolean(*b),
         (Kind::Int, J::Number(n)) => Value::Integer(n.as_i64()?),
         (Kind::Float, J::Number(n)) => Value::Float(n.as_f64()?),
+        // A program may only point the background image at a local file.
+        (Kind::String, J::String(t)) if matches!(key, "Background Image Location" | "Background Image Folder Location") && !t.is_empty() && !local_path_ok(t) => return None,
         (Kind::String | Kind::Font, J::String(t)) => Value::String(t.clone()),
         (Kind::Enum, J::Number(n)) => {
             let v = Value::Integer(n.as_i64()?);
@@ -112,15 +114,27 @@ pub fn set_profile_decision(prevent: Option<bool>) -> Decision {
     }
 }
 
+/// A path from a program that Tandem may touch: a local absolute path (`C:\...`). Network
+/// and device paths (`\\server\share`, `//host`, `\\?\`) are refused before any file is
+/// opened, since opening one sends the user's Windows credentials to that server.
+pub fn local_path_ok(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
+/// A ReportVariable name Tandem will look up or ask about: letters, digits, `_`, and `.`.
+pub fn variable_name_ok(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+}
+
 /// OpenURL's value, `<ignored>:<base64 url>`: the URL, when it has a scheme.
 pub fn open_url(value: &str) -> Option<String> {
     use base64::Engine;
     let (_, b64) = value.split_once(':')?;
     let url = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()?).ok()?;
     let (scheme, rest) = url.split_once(':')?;
-    let ok = scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
-        && !rest.is_empty();
+    // Web and mail links only: a file, a drive path, or another scheme could run something.
+    let ok = matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "ftp" | "mailto") && !rest.is_empty();
     ok.then_some(url)
 }
 
@@ -391,5 +405,44 @@ mod tests {
         assert!(!upload_format_ok("format=zip"));
         assert_eq!(UPLOAD_CANCEL, b"\x03");
         assert_eq!(UPLOAD_OK, b"ok\n");
+    }
+    #[test]
+    fn network_paths_are_refused() {
+        assert!(local_path_ok("C:\\Users\\me\\bg.png"));
+        assert!(local_path_ok("d:/pics/x.jpg"));
+        assert!(!local_path_ok("\\\\attacker.example\\s\\x.png"));
+        assert!(!local_path_ok("//attacker.example/s/x.png"));
+        assert!(!local_path_ok("\\\\?\\C:\\x.png"));
+        assert!(!local_path_ok("\\\\.\\pipe\\x"));
+        assert!(!local_path_ok("relative\\x.png"));
+        assert!(!local_path_ok("\\rooted-no-drive.png"));
+        assert!(!local_path_ok("C:relative.png"));
+        let unc = serde_json::json!("\\\\attacker\\s\\x.png");
+        assert_eq!(valid("Background Image Location", &unc), None);
+        assert_eq!(valid("Background Image Folder Location", &unc), None);
+        assert!(valid("Background Image Location", &serde_json::json!("C:\\x.png")).is_some());
+        assert!(crate::bgimage::load(std::path::Path::new("\\\\127.0.0.1\\nope\\x.png")).is_none());
+    }
+
+    #[test]
+    fn odd_variable_names_are_refused() {
+        assert!(variable_name_ok("user.git_branch"));
+        assert!(variable_name_ok("columns"));
+        assert!(!variable_name_ok("foo,allow:selection"));
+        assert!(!variable_name_ok("a b"));
+        assert!(!variable_name_ok(""));
+        assert!(!variable_name_ok("x:y"));
+    }
+
+    #[test]
+    fn open_url_takes_web_and_mail_only() {
+        use base64::Engine;
+        let b = |u: &str| format!(":{}", base64::engine::general_purpose::STANDARD.encode(u));
+        assert!(open_url(&b("https://x.io")).is_some());
+        assert!(open_url(&b("ftp://x.io/f")).is_some());
+        assert!(open_url(&b("mailto:a@b.c")).is_some());
+        assert_eq!(open_url(&b("C:\\Users\\me\\x.xll")), None);
+        assert_eq!(open_url(&b("file://localhost/C:/x.xll")), None);
+        assert_eq!(open_url(&b("ms-settings:privacy")), None);
     }
 }

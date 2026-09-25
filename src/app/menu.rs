@@ -237,9 +237,11 @@ impl App {
         }
     }
 
+    /// The focused pane's saved profile (a session copy's original): what new tabs,
+    /// splits, and Edit Session use.
     fn focused_guid(&self) -> Option<String> {
         let t = self.tabs.get(self.active)?;
-        self.panes.get(&t.focused).map(|p| p.profile.clone())
+        self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile))
     }
 
     pub(super) fn focused_id(&self) -> Option<PaneId> {
