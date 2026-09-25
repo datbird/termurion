@@ -433,7 +433,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Enter Copy Mode | KEY_ACTION_COPY_MODE | Enters keyboard-driven Copy Mode for selecting text without the mouse. | have | Runs its vim-style key string through Copy Mode. |
 | Bypass Terminal | KEY_ACTION_BYPASS | Sends the keystroke through to the OS/window manager instead of the terminal program. | have |  |
 | Toggle Setting... | KEY_ACTION_TOGGLE_SETTING | Flips a chosen boolean preference on/off as the bound action. | have |  |
-| Send Text (vim paste-safe, no broadcast) | KEY_ACTION_VIM_TEXT_NO_BROADCAST | Same as the vim paste-safe Send Text action, but exempt from Broadcast Input. | have |  |
+| Send Text without Broadcasting | KEY_ACTION_VIM_TEXT_NO_BROADCAST | Same as the vim paste-safe Send Text action, but exempt from Broadcast Input. | have | Milestone 7f: vim escapes, written to the session only. |
 
 
 ## Pointer
@@ -804,7 +804,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | allowHDR | allowHDR (bool, default NO) | Allow HDR effects When enabled, iTerm2 may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. | missing |  |
 | metalRedrawPeriod | metalRedrawPeriod (float, default 0.5) | GPU renderer redraws at least this often, in seconds. | partial |  |
 | animateGraphStatusBarComponents | animateGraphStatusBarComponents (bool, default YES) | Animate graph-based status bar components? Turn this off to reduce CPU/GPU usage in WindowServer. | partial |  |
-| disableTopRightIndicators | disableTopRightIndicators (bool, default NO) | Disable indicator icons that appear in the top right of a session? This includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging. | partial | Milestone 6c: hides the coprocess indicator, the only top-right indicator Tandem draws so far. |
+| disableTopRightIndicators | disableTopRightIndicators (bool, default NO) | Disable indicator icons that appear in the top right of a session? This includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging. | have | Milestone 7f: hides the broadcast, receive-only, and coprocess indicators. |
 | nativeRenderingCSSLight | nativeRenderingCSSLight (string, default @"") | Path to CSS file to customize native drawing (for light background colors). | have | Milestone 5f, Advanced > General; color, weight, and style rules. |
 | nativeRenderingCSSDark | nativeRenderingCSSDark (string, default @"") | Path to CSS file to customize native drawing (for dark background colors). | have | Milestone 5f, Advanced > General; color, weight, and style rules. |
 | supportPowerlineExtendedSymbols | supportPowerlineExtendedSymbols (bool, default YES) | Include extended symbols when drawing Powerline natively. | missing |  |
@@ -896,7 +896,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | disableWindowSizeSnap | disableWindowSizeSnap (bool, default NO) | Terminal windows resize smoothly. | missing |  |
 | profilesWindowJoinsActiveSpace | profilesWindowJoinsActiveSpace (bool, default NO) | If the Profiles window is open, it always moves to join the active Space. | missing |  |
 | darkThemeHasBlackTitlebar | darkThemeHasBlackTitlebar (bool, default YES) | Dark themes give terminal windows black title bars by default. | missing |  |
-| fontChangeAffectsBroadcastingSessions | fontChangeAffectsBroadcastingSessions (bool, default NO) | Should growing or shrinking the font in a session that's broadcasting input affect all session that broadcast input? This only applies to changing the font size with Make Text Bigger, Make Text Normal Size, and Make Text Smaller. | missing |  |
+| fontChangeAffectsBroadcastingSessions | fontChangeAffectsBroadcastingSessions (bool, default NO) | Should growing or shrinking the font in a session that's broadcasting input affect all session that broadcast input? This only applies to changing the font size with Make Text Bigger, Make Text Normal Size, and Make Text Smaller. | partial | Font size is one offset for every pane today, so it already reaches every broadcasting session. |
 | serializeOpeningMultipleFullScreenWindows | serializeOpeningMultipleFullScreenWindows (bool, default YES) | When opening multiple fullscreen windows, enter fullscreen one window at a time. | missing |  |
 | trackingRunloopForLiveResize | trackingRunloopForLiveResize (bool, default YES) | Use a tracking runloop for live resizing. | missing |  |
 | disableWindowShadowWhenTransparencyOnMojave | disableWindowShadowWhenTransparencyOnMojave (bool, default YES) | Disable the window shadow on Mojave when the window has a transparent session to improve performance. | missing |  |
@@ -964,7 +964,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | noSyncSuppressAnnyoingBellOffer | noSyncSuppressAnnyoingBellOffer (bool, default NO) | Suppress offer to silence bell when it rings too much. | have | Milestone 6b. |
 | suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline | suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline (bool, default NO) | Suppress warning about multi-line paste when pasting a single line ending with a newline. | missing |  |
 | suppressMultilinePasteWarningWhenNotAtShellPrompt | suppressMultilinePasteWarningWhenNotAtShellPrompt (bool, default NO) | Suppress warning about multi-line paste when not at prompt. | missing |  |
-| noSyncSuppressBroadcastInputWarning | noSyncSuppressBroadcastInputWarning (bool, default NO) | Suppress warning about broadcasting input. | missing |  |
+| noSyncSuppressBroadcastInputWarning | noSyncSuppressBroadcastInputWarning (bool, default NO) | Suppress warning about broadcasting input. | have | Milestone 7f: Settings > Advanced; the warning is a message box with OK and Cancel. |
 | noSyncSuppressCaptureOutputRequiresShellIntegrationWarning | noSyncSuppressCaptureOutputRequiresShellIntegrationWarning (bool, default NO) | Suppress warning “Shell Integration is required for Capture Output.”. | missing |  |
 | noSyncSuppressCaptureOutputToolNotVisibleWarning | noSyncSuppressCaptureOutputToolNotVisibleWarning (bool, default NO) | Suppress warning that the Captured Output tool is not visible. | missing |  |
 | closingTmuxWindowKillsTmuxWindows | closingTmuxWindowKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux window. | missing |  |
@@ -983,7 +983,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | noSyncNeverAskAboutMouseReportingFrustration | noSyncNeverAskAboutMouseReportingFrustration (bool, default NO) | Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Cmd-C when mouse reporting is on? | missing |  |
 | noSyncNeverAskAboutDEC2048Frustration | noSyncNeverAskAboutDEC2048Frustration (bool, default NO) | Suppress the notification asking if you want to disable resize reporting. | missing |  |
 | noSyncDontWarnAboutTmuxPause | noSyncDontWarnAboutTmuxPause (bool, default NO) | Suppress announcement that tmux will pause a session. | missing |  |
-| noSyncClearAllBroadcast | noSyncClearAllBroadcast (bool?, default nil) | Send Clear Session to all broadcasted-to sessions? | missing |  |
+| noSyncClearAllBroadcast | noSyncClearAllBroadcast (bool?, default nil) | Send Clear Session to all broadcasted-to sessions? | partial | Milestone 7f: read when set (true clears all, false only the current session); nothing sets it yet, as the question has no Remember box. |
 | noSyncSuppressSendSignal | noSyncSuppressSendSignal (bool, default NO) | Suppress warning about sending a signal to terminate a job. | missing |  |
 | noSyncConfirmRemoveAnnotation | noSyncConfirmRemoveAnnotation (bool, default NO) | Suppress confirmation to remove annotation? | missing |  |
 | noSyncDisableOpenURL | noSyncDisableOpenURL (bool, default NO) | Disable control sequence to open URLs? | missing |  |

@@ -55,12 +55,12 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. (milestone 7) | missing |
 | Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. (milestone 7) | missing |
 | Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. (milestone 7) | missing |
-| Shell > Broadcast Input > Send Input to Current Session Only | Opt+Cmd+I | Turns off input broadcasting, typing goes only to the active pane. (milestone 7) | missing |
-| Shell > Broadcast Input > Broadcast Input to All Panes in All Tabs | Cmd+I | Sends typed input to every pane in every tab of the window. (milestone 7) | missing |
-| Shell > Broadcast Input > Broadcast Input to All Panes in Current Tab | Opt+Cmd+I | Sends typed input to every pane in the current tab. (milestone 7) | missing |
-| Shell > Broadcast Input > Toggle Broadcast Input to Current Session | Ctrl+Opt+Cmd+I | Adds or removes just the current session from the broadcast set. (milestone 7) | missing |
-| Shell > Broadcast Input > Show Background Pattern Indicator | no shortcut | Shows a background tint on panes receiving broadcast input. (milestone 7) | missing |
-| Shell > Broadcast Input > Current Session is Broadcast Source | no shortcut | Marks the current session as the source pane for broadcasting. (milestone 7) | missing |
+| Shell > Broadcast Input > Send Input to Current Session Only | Opt+Cmd+Shift+I | Turns off input broadcasting, typing goes only to the active pane. | have, milestone 7f |
+| Shell > Broadcast Input > Broadcast Input to All Panes in All Tabs | Cmd+Shift+I | Sends typed input to every pane in every tab of the window. | have, milestone 7f |
+| Shell > Broadcast Input > Broadcast Input to All Panes in Current Tab | Opt+Cmd+I | Sends typed input to every pane in the current tab. | have, milestone 7f |
+| Shell > Broadcast Input > Toggle Broadcast Input to Current Session | Ctrl+Opt+Cmd+Shift+I | Adds or removes just the current session from the broadcast set. | have, milestone 7f |
+| Shell > Broadcast Input > Show Background Pattern Indicator | no shortcut | Draws red diagonal stripes on panes receiving broadcast input (off by default). | have, milestone 7f |
+| Shell > Broadcast Input > Current Session is Broadcast Source | no shortcut | Marks the current session as the source pane for broadcasting. | have, milestone 7f |
 | Shell > Toggle Buffer Input | no shortcut | Buffers keystrokes typed while a command is running instead of discarding them. | have |
 | Shell > tmux > Detach | Ctrl+Cmd+D | Detaches from the attached tmux session, leaving it running server side. (milestone 8) | missing |
 | Shell > tmux > Force Detach | no shortcut | Forcibly detaches from tmux even if the gateway is unresponsive. (milestone 8) | missing |
@@ -730,7 +730,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Password manager | OTP / TOTP autofill | Reads a one-time-password field and can type it after the password. | missing | |
 | Password manager | Trigger-driven auto-open | A trigger can be configured to open the password manager automatically when a password prompt is detected. | missing | |
 | Password manager | Re-authentication gate | Requires the user to re-authenticate before reusing access to stored credentials after a timeout. | missing | |
-| Password manager | Broadcast-safe password entry | Temporarily suspends broadcast-to-all-panes while typing a password so it is not sent to every pane. | missing | |
+| Password manager | Broadcast-safe password entry | The password manager's broadcast choice: echo-probes every broadcast session and sends the password only to those at a password prompt; ordinary Enter Password is never broadcast. | missing | Milestone 10 (password manager). |
 
 ### Composer
 | Subsystem | Feature | What it does | Tandem status | Windows note |
@@ -747,12 +747,12 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### broadcast input modes
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Broadcast input | Send Input to Current Session Only | Turns broadcasting off, restores normal single-pane typing. | missing | |
-| Broadcast input | Broadcast to All Panes in All Tabs | Every keystroke is sent to every pane in every tab of the window. | missing | |
-| Broadcast input | Broadcast to All Panes in Current Tab | Every keystroke is sent to every pane in the current tab. | missing | |
-| Broadcast input | Toggle Broadcast Input to Current Session | Adds/removes just the current session from the active broadcast domain. | missing | |
-| Broadcast input | Background pattern indicator | Optional diagonal stripe overlay rendered on panes currently receiving broadcast input, so it is visually obvious. | missing | |
-| Broadcast input | Broadcast source designation | Marks a specific session as the source pane whose input gets mirrored elsewhere. | missing | |
+| Broadcast input | Send Input to Current Session Only | Turns broadcasting off, restores normal single-pane typing. | have |  |
+| Broadcast input | Broadcast to All Panes in All Tabs | Every keystroke is sent to every pane in every tab of the window. | have |  |
+| Broadcast input | Broadcast to All Panes in Current Tab | Every keystroke is sent to every pane in the current tab. | have |  |
+| Broadcast input | Toggle Broadcast Input to Current Session | Adds/removes just the current session from the active broadcast domain. | have |  |
+| Broadcast input | Background pattern indicator | Optional diagonal stripe overlay rendered on panes currently receiving broadcast input, so it is visually obvious. | have |  |
+| Broadcast input | Broadcast source designation | Marks a specific session as the source pane whose input gets mirrored elsewhere. | have |  |
 
 ### utilities scripts
 | Subsystem | Feature | What it does | Tandem status | Windows note |
