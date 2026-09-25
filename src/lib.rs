@@ -78,6 +78,7 @@ pub mod popup_filter;
 pub mod screen;
 pub mod screenterm;
 pub mod shell_history;
+pub mod snippets;
 
 #[cfg(windows)]
 pub mod conpty;
