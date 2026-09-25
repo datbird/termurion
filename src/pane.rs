@@ -45,10 +45,43 @@ impl InputBuffer {
     }
 }
 
-/// Where a pane's shell runs: in Tandem, or in the session host (it outlives Tandem).
+/// Where a pane's shell runs: in Tandem, in the session host (it outlives Tandem), or in
+/// tmux (a pane of a tmux window, reached through its gateway).
 pub enum Io {
     Local(Pty),
     Hosted(crate::host_client::HostedPty),
+    Tmux(TmuxIo),
+}
+
+/// A tmux pane's pty stand-in: `%output` waits in `inbox`, typing waits in `outbox` for the
+/// gateway to turn into send-keys.
+pub struct TmuxIo {
+    pub gateway: PaneId,
+    pub pane: u32,
+    inbox: std::cell::RefCell<Vec<u8>>,
+    outbox: std::cell::RefCell<Vec<u8>>,
+    ended: std::cell::Cell<Option<u32>>,
+}
+
+impl TmuxIo {
+    pub fn new(gateway: PaneId, pane: u32) -> TmuxIo {
+        TmuxIo { gateway, pane, inbox: Default::default(), outbox: Default::default(), ended: Default::default() }
+    }
+
+    /// Output from tmux for this pane.
+    pub fn push_output(&self, bytes: &[u8]) {
+        self.inbox.borrow_mut().extend_from_slice(bytes);
+    }
+
+    /// What was typed since the last call.
+    pub fn take_input(&self) -> Vec<u8> {
+        std::mem::take(&mut self.outbox.borrow_mut())
+    }
+
+    /// The gateway detached or tmux closed the pane.
+    pub fn end(&self) {
+        self.ended.set(Some(0));
+    }
 }
 
 impl Io {
@@ -56,6 +89,10 @@ impl Io {
         match self {
             Io::Local(p) => p.try_read(),
             Io::Hosted(p) => p.try_read(),
+            Io::Tmux(t) => {
+                let data = std::mem::take(&mut *t.inbox.borrow_mut());
+                if data.is_empty() { Read::Empty } else { Read::Data(data) }
+            }
         }
     }
 
@@ -63,6 +100,10 @@ impl Io {
         match self {
             Io::Local(p) => p.write(bytes),
             Io::Hosted(p) => p.write(bytes),
+            Io::Tmux(t) => {
+                t.outbox.borrow_mut().extend_from_slice(bytes);
+                Ok(())
+            }
         }
     }
 
@@ -70,6 +111,8 @@ impl Io {
         match self {
             Io::Local(p) => p.resize(cols, rows),
             Io::Hosted(p) => p.resize(cols, rows),
+            // tmux sets its panes' sizes (milestone 8c sends Tandem's).
+            Io::Tmux(_) => Ok(()),
         }
     }
 
@@ -77,6 +120,7 @@ impl Io {
         match self {
             Io::Local(p) => p.clear(),
             Io::Hosted(p) => p.clear(),
+            Io::Tmux(_) => Ok(()),
         }
     }
 
@@ -84,6 +128,7 @@ impl Io {
         match self {
             Io::Local(p) => p.set_paused(paused),
             Io::Hosted(p) => p.set_paused(paused),
+            Io::Tmux(_) => {}
         }
     }
 
@@ -91,6 +136,7 @@ impl Io {
         match self {
             Io::Local(p) => p.pending(),
             Io::Hosted(p) => p.pending(),
+            Io::Tmux(t) => t.outbox.borrow().len(),
         }
     }
 
@@ -98,13 +144,16 @@ impl Io {
         match self {
             Io::Local(p) => p.exit_code(),
             Io::Hosted(p) => p.exit_code(),
+            Io::Tmux(t) => t.ended.get(),
         }
     }
 
-    pub fn pid(&self) -> u32 {
+    /// The shell's process id; a tmux pane's process is on tmux's side.
+    pub fn pid(&self) -> Option<u32> {
         match self {
-            Io::Local(p) => p.pid(),
-            Io::Hosted(p) => p.pid(),
+            Io::Local(p) => Some(p.pid()),
+            Io::Hosted(p) => Some(p.pid()),
+            Io::Tmux(_) => None,
         }
     }
 }
@@ -171,6 +220,20 @@ impl Pane {
             }
         }
         pane
+    }
+
+    /// A pane of a tmux window: no ConPTY, its size is tmux's.
+    pub fn tmux(id: PaneId, gateway: PaneId, pane: u32, cols: u16, rows: u16) -> Pane {
+        let mut p = Pane::with_io(id, Io::Tmux(TmuxIo::new(gateway, pane)), cols.max(1), rows.max(1));
+        p.screen.pty_backed = false;
+        p
+    }
+
+    pub fn tmux_io(&self) -> Option<&TmuxIo> {
+        match &self.pty {
+            Some(Io::Tmux(t)) => Some(t),
+            _ => None,
+        }
     }
 
     /// The host session this pane runs in, and the output offset read so far.
@@ -383,7 +446,7 @@ impl Pane {
 
     /// The shell's process id, while it has a pty.
     pub fn shell_pid(&self) -> Option<u32> {
-        self.pty.as_ref().map(|p| p.pid())
+        self.pty.as_ref().and_then(|p| p.pid())
     }
 
     /// What the terminal answers the program (reports): never held by Buffer Input.
@@ -572,6 +635,24 @@ mod tests {
     use crate::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn tmux_io_queues() {
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        let io = p.tmux_io().unwrap();
+        assert_eq!((io.gateway, io.pane), (1, 3));
+        io.push_output(b"hi");
+        assert!(p.pump());
+        assert_eq!(p.screen.term().grid()[alacritty_terminal::index::Line(0)][alacritty_terminal::index::Column(1)].c, 'i');
+        p.input(b"ls\r");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"ls\r", "typing waits for send-keys");
+        assert!(p.tmux_io().unwrap().take_input().is_empty());
+        assert_eq!(p.shell_pid(), None, "tmux's process is not Tandem's");
+        assert!(!p.pump(), "nothing new");
+        p.tmux_io().unwrap().end();
+        p.pump();
+        assert_eq!(p.exited, Some(0));
+    }
 
     #[test]
     fn gateway_panes_take_no_input() {
