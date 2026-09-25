@@ -10,6 +10,7 @@
 //! `iTermStatusBarTightlyPackedLayoutAlgorithm.m`, `CV` = `iTermStatusBarContainerView.m`,
 //! `VC` = `iTermStatusBarViewController.m`, `SV` = `iTermStatusBarView.m`.
 
+use crate::layout::Rect;
 use crate::statusbar::Algorithm;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -547,6 +548,37 @@ pub fn bands(placed: &[Placed], items: &[Item], width: f32) -> Vec<(f32, f32, us
     out
 }
 
+// ---------------------------------------------------------------------------------------
+// Where a bar goes
+// ---------------------------------------------------------------------------------------
+
+/// `StatusBarPosition` (`iTermPreferences.h:39-42`): 0 Top, iTerm2's default, 1 Bottom.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Position {
+    #[default]
+    Top,
+    Bottom,
+}
+
+impl Position {
+    pub fn from_code(code: i64) -> Position {
+        if code == 1 { Position::Bottom } else { Position::Top }
+    }
+}
+
+/// A bar `height` tall at the top or bottom of `area`, and what is left for the terminal
+/// (`iTermLayoutCalculator.m:443-469` for the window's shared bar, which spans the tab
+/// content area; `SessionView.m:2222-2260` for a pane's own bar). The same split serves
+/// both: the shared bar splits the window's content area, a per-pane bar its pane's
+/// rectangle. The terminal always keeps at least one pixel.
+pub fn bar_rects(area: Rect, height: f32, position: Position) -> (Rect, Rect) {
+    let h = height.min(area.h - 1.0).max(0.0);
+    match position {
+        Position::Top => (Rect { h, ..area }, Rect { y: area.y + h, h: area.h - h, ..area }),
+        Position::Bottom => (Rect { y: area.y + area.h - h, h, ..area }, Rect { h: area.h - h, ..area }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,5 +670,37 @@ mod tests {
                 (90.5, 120.0, 4),
             ]
         );
+    }
+
+    #[test]
+    fn bar_rects_follow_the_position() {
+        // The shared bar: the window's content area (already below the tab bar and above
+        // any banner) gives the bar its top or bottom edge, full width.
+        let area = Rect { x: 0.0, y: 30.0, w: 800.0, h: 570.0 };
+        let (bar, rest) = bar_rects(area, 31.0, Position::Top);
+        assert_eq!(bar, Rect { x: 0.0, y: 30.0, w: 800.0, h: 31.0 });
+        assert_eq!(rest, Rect { x: 0.0, y: 61.0, w: 800.0, h: 539.0 });
+        let (bar, rest) = bar_rects(area, 31.0, Position::Bottom);
+        assert_eq!(bar, Rect { x: 0.0, y: 569.0, w: 800.0, h: 31.0 });
+        assert_eq!(rest, Rect { x: 0.0, y: 30.0, w: 800.0, h: 539.0 });
+
+        // A per-pane bar: the same split inside one pane's rectangle.
+        let pane = Rect { x: 402.0, y: 30.0, w: 398.0, h: 200.0 };
+        let (bar, rest) = bar_rects(pane, 21.0, Position::Top);
+        assert_eq!(bar, Rect { x: 402.0, y: 30.0, w: 398.0, h: 21.0 });
+        assert_eq!(rest, Rect { x: 402.0, y: 51.0, w: 398.0, h: 179.0 });
+        let (bar, rest) = bar_rects(pane, 21.0, Position::Bottom);
+        assert_eq!(bar, Rect { x: 402.0, y: 209.0, w: 398.0, h: 21.0 });
+        assert_eq!(rest, Rect { x: 402.0, y: 30.0, w: 398.0, h: 179.0 });
+
+        // A pane shorter than the bar keeps one pixel for its terminal.
+        let short = Rect { x: 0.0, y: 0.0, w: 100.0, h: 10.0 };
+        let (bar, rest) = bar_rects(short, 21.0, Position::Top);
+        assert_eq!((bar.h, rest.y, rest.h), (9.0, 9.0, 1.0));
+
+        // StatusBarPosition: 0 is Top (the default), 1 Bottom, anything else Top.
+        assert_eq!(Position::from_code(0), Position::Top);
+        assert_eq!(Position::from_code(1), Position::Bottom);
+        assert_eq!(Position::from_code(7), Position::Top);
     }
 }

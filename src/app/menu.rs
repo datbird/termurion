@@ -307,7 +307,7 @@ impl App {
         if self.snippet_or_action_picked(id, event_loop) {
             return;
         }
-        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) {
+        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.status_bar_picked(id, event_loop) {
             return;
         }
         if let Some(item) = menus::by_id(id) {
@@ -709,7 +709,7 @@ impl App {
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).
     /// Each shown pane's terminal rectangle (a Clippings panel takes the right of it).
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
-        visible_rects(&tab.layout, tab.zoomed, self.content_area(), GAP).into_iter().map(|(id, r)| (id, self.clip_split(id, r).0)).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().map(|(id, r)| (id, self.clip_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
     }
 }
 

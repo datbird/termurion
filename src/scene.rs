@@ -940,6 +940,68 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0 });
 }
 
+/// The status bar's own colors when the layout sets none: the tab bar's background (no
+/// macOS vibrancy on Windows), its text color (iTerm2's `labelColor`), and the edge
+/// separator's line (the system separator color).
+pub const STATUS_BAR_BG: Rgb = TAB_BAR;
+pub const STATUS_BAR_TEXT: Rgb = TAB_TEXT;
+pub const STATUS_BAR_EDGE: Rgb = DIVIDER;
+
+/// One component's text on a status bar: where it starts, what it says, its color, its
+/// size against the terminal font, and the component's own room (it is cut there).
+pub struct BarText {
+    pub x: f32,
+    pub text: String,
+    pub color: Rgb,
+    pub scale: f32,
+    pub clip: Rect,
+}
+
+/// What a status bar shows, already placed in window pixels (`iTermStatusBarView`).
+pub struct StatusBarDraw<'a> {
+    pub rect: Rect,
+    pub background: (Rgb, f32),
+    /// Component background bands: from x, to x, color.
+    pub bands: &'a [(f32, f32, Rgb, f32)],
+    /// Separator lines' x; drawn only with a color.
+    pub separators: &'a [f32],
+    pub separator_color: Option<(Rgb, f32)>,
+    pub texts: &'a [BarText],
+    /// The line between the bar and the terminal ("Draw separator between status bar and
+    /// terminal"), already placed.
+    pub edge: Option<Rect>,
+    /// One point in pixels (the window's scale).
+    pub scale: f32,
+}
+
+/// A status bar (`SV:151-162`): the background, the component bands, the separators (one
+/// point wide, three points in from the top and bottom), the text, and the edge line.
+pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
+    let r = d.rect;
+    frame.quads.push(Quad { rect: r, color: rgba(d.background.0, d.background.1) });
+    for &(x0, x1, c, a) in d.bands {
+        if x1 > x0 {
+            frame.quads.push(Quad { rect: Rect { x: x0, y: r.y, w: x1 - x0, h: r.h }, color: rgba(c, a) });
+        }
+    }
+    if let Some((c, a)) = d.separator_color {
+        let inset = (3.0 * d.scale).round();
+        let w = d.scale.round().max(1.0);
+        for &x in d.separators {
+            frame.quads.push(Quad { rect: Rect { x, y: r.y + inset, w, h: (r.h - 2.0 * inset).max(0.0) }, color: rgba(c, a) });
+        }
+    }
+    for t in d.texts {
+        let line_h = cell.1 * t.scale;
+        let y = r.y + ((r.h - line_h) / 2.0).round();
+        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false };
+        frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale });
+    }
+    if let Some(e) = d.edge {
+        frame.quads.push(Quad { rect: e, color: rgba(STATUS_BAR_EDGE, 1.0) });
+    }
+}
+
 /// Text already in the frame stops at `r` (a popup drawn over it): each line behind `r`
 /// keeps its part left of `r` and gets a copy for its part right of it. `line_h` is a text
 /// row's height (rows clip to their whole pane, so their own line decides). A popup's box

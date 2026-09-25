@@ -97,6 +97,7 @@ mod tmux_ui;
 mod tmux_tabs_ui;
 mod tmux_dashboard_app;
 mod bury_ui;
+mod statusbar_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -339,6 +340,8 @@ pub struct App {
     porthole_link: Option<(PaneId, u32, String)>,
     porthole_link_asks: HashMap<PaneId, crate::porthole::LinkTarget>,
     porthole_languages: Option<(PaneId, u32, Vec<crate::porthole::detect::Language>)>,
+    /// The status bar menu's target, until its pick arrives.
+    status_menu: Option<statusbar_ui::StatusMenu>,
     /// Triggers: the Show Alert limit, messages already shown, the Alert bar's trigger, and
     /// Run Command's pool and processes.
     trigger_limits: crate::triggers::RateLimit<(PaneId, usize)>,
@@ -617,6 +620,7 @@ pub fn run() {
         porthole_link: None,
         porthole_link_asks: HashMap::new(),
         porthole_languages: None,
+        status_menu: None,
         trigger_limits: crate::triggers::RateLimit::default(),
         trigger_told: std::collections::HashSet::new(),
         trigger_alerts: HashMap::new(),
@@ -698,12 +702,20 @@ impl App {
         if self.tabs.len() > 1 { (self.cell().1 * 1.6).round() } else { 0.0 }
     }
 
-    /// The area the active tab's panes share.
-    fn content_area(&self) -> Rect {
+    /// The window's room for tabs: below the tab bar, above any banner.
+    fn window_area(&self) -> Rect {
         let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let top = self.tab_height();
         let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
         Rect { x: 0.0, y: top, w, h: (h - top - bottom).max(1.0) }
+    }
+
+    /// The area the active tab's panes share (less the window's status bar, when it shows).
+    fn content_area(&self) -> Rect {
+        match self.tabs.get(self.active) {
+            Some(t) => self.content_area_for(t),
+            None => self.window_area(),
+        }
     }
 
     /// The text area inside a pane rectangle.
@@ -1437,6 +1449,9 @@ impl App {
             self.active = i;
             return self.redraw();
         }
+        if self.status_press(button, x, y, event_loop) {
+            return;
+        }
         if button == MouseButton::Left && self.clip_press(x, y, event_loop) {
             return;
         }
@@ -1837,6 +1852,7 @@ impl App {
                 self.find_mode_rect = Some(mode_rect);
             }
         }
+        self.draw_status_bars(&mut frame, cell);
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {

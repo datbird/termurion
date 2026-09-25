@@ -831,10 +831,11 @@ impl App {
         if self.tmux.is_empty() {
             return;
         }
-        let (cols, rows) = self.grid_size(self.content_area());
+        // Each tab's own area: a tmux tab's shared status bar is already out of it.
+        let tabs: Vec<(PaneId, (u16, u16))> = self.tabs.iter().map(|t| (t.focused, self.grid_size(self.content_area_for(t)))).collect();
         let mut changed: Vec<PaneId> = Vec::new();
-        for t in &self.tabs {
-            let Some(io) = self.panes.get(&t.focused).and_then(|p| p.tmux_io()) else { continue };
+        for (focused, (cols, rows)) in tabs {
+            let Some(io) = self.panes.get(&focused).and_then(|p| p.tmux_io()) else { continue };
             let (gw, pane) = (io.gateway, io.pane);
             let Some(g) = self.tmux.get_mut(&gw) else { continue };
             let Some(window) = g.panes.get(&pane).map(|(_, w)| *w) else { continue };

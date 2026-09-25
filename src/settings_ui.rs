@@ -95,12 +95,26 @@ pub struct SettingsWindow {
     shortcuts: crate::settings_shortcuts::State,
     /// Hotkey windows: the sheet, and registration failures from the app.
     pub hotkeys: crate::settings_hotkey::HotkeyUi,
+    /// Profiles > Session's "Configure Status Bar" was pressed for this profile Guid: the
+    /// status bar setup window opens for it (milestone 9g Task 4 takes it from here).
+    pub configure_status_bar: Option<String>,
 }
 
 impl SettingsWindow {
     /// Turns to one pane of the settings.
     pub fn show_page(&mut self, page: Page) {
         self.page = page;
+    }
+
+    /// Shows one profile on one of its tabs (Profiles > Session for the status bar).
+    pub fn show_profile_tab(&mut self, guid: &str, tab: &str) {
+        self.page = Page::Profiles;
+        self.selected = Some(guid.to_string());
+        if let Some(i) = schema::TABS.iter().position(|t| *t == tab) {
+            self.tab = i;
+        }
+        self.host.window.request_redraw();
+        self.focus();
     }
 
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, mode: Mode) -> Result<Self, String> {
@@ -126,6 +140,7 @@ impl SettingsWindow {
             arr: Default::default(),
             shortcuts: Default::default(),
             hotkeys: Default::default(),
+            configure_status_bar: None,
         })
     }
 
@@ -193,6 +208,7 @@ impl SettingsWindow {
         let shortcuts = &mut self.shortcuts;
         settings_keys::set_snippets(&snippets.snippets);
         let hk = &mut self.hotkeys;
+        let configure_status_bar = &mut self.configure_status_bar;
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -368,6 +384,15 @@ impl SettingsWindow {
                                 let others: Vec<crate::aps::Candidate> = rule_owners.iter().filter(|c| c.guid != selected).cloned().collect();
                                 if crate::settings_lists::bound_hosts(ui, profile, &others, aps_warning) {
                                     edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            // iTerm2's "Configure Status Bar" button, enabled with the
+                            // "Status bar enabled" checkbox above it (PSV:569-573).
+                            if s.key == "Status Bar Layout" {
+                                let on = profile.bool("Show Status Bar");
+                                if ui.add_enabled(on, egui::Button::new("Configure Status Bar")).on_hover_text(&s.help).clicked() {
+                                    *configure_status_bar = Some(selected.clone());
                                 }
                                 continue;
                             }

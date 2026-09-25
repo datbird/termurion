@@ -2485,10 +2485,10 @@ macos_only = false
 key = "Show Status Bar"
 tab = "Session"
 section = "Status Bar"
-label = "Show Status Bar"
+label = "Status bar enabled"
 type = "bool"
 default = false
-help = "Enables the per-session status bar."
+help = "Shows a configurable status bar at the top of each session."
 light_dark = false
 macos_only = false
 

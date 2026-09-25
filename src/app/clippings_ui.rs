@@ -50,7 +50,7 @@ impl App {
     /// The panels of the current tab: (pane, panel rectangle).
     fn clip_panels(&self) -> Vec<(PaneId, Rect)> {
         let Some(tab) = self.tabs.get(self.active) else { return Vec::new() };
-        visible_rects(&tab.layout, tab.zoomed, self.content_area(), GAP).into_iter().filter_map(|(id, r)| self.clip_split(id, r).1.map(|p| (id, p))).collect()
+        visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().filter_map(|(id, r)| self.clip_split(id, self.pane_bar_split(tab, id, r).0).1.map(|p| (id, p))).collect()
     }
 
     /// Characters per detail line in a panel.

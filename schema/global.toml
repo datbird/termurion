@@ -1316,3 +1316,40 @@ label = "The \"Session Buried\" notification was shown"
 type = "bool"
 default = false
 help = "Set after the first automatic burial of a tmux gateway; the notification shows once."
+
+[[setting]]
+key = "StatusBarPosition"
+tab = "Appearance"
+section = "General"
+label = "Status bar location"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Top" }, { value = 1, label = "Bottom" } ]
+help = "Where a status bar goes: at the top or the bottom of the tab's content, or of each pane with separate status bars per pane."
+
+[[setting]]
+key = "SeparateStatusBarsPerPane"
+tab = "Appearance"
+section = "Panes"
+label = "Separate status bars per pane"
+type = "bool"
+default = false
+help = "Each split pane shows its own profile's status bar; off, the window shows the current session's status bar across the tab. tmux tabs always share one bar."
+
+[[setting]]
+key = "statusBarHeight"
+tab = "Advanced"
+section = "General"
+label = "Height of the status bar in points"
+type = "float"
+default = 21.0
+help = "Height of the status bar in points."
+
+[[setting]]
+key = "UseTmuxStatusBar"
+tab = "General"
+section = "tmux"
+label = "Status bar shows tmux status bar content, not native components"
+type = "bool"
+default = true
+help = "In a tmux tab with the status bar on, the bar shows tmux's status-left and status-right instead of the profile's components. Takes effect with milestone 9h's tmux status bar."
