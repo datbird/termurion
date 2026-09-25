@@ -8,16 +8,26 @@ const LIMIT: usize = 64 * 1024;
 /// OSC 1337 files (inline images, downloads) may be this large.
 const FILE_LIMIT: usize = 512 << 20;
 
+/// iTerm2 caps any other OSC at 1 MiB, cutting it there (OSC 52 keeps what fits).
+const OSC_CAP: usize = 1 << 20;
+
 fn limit_for(buf: &[u8]) -> usize {
-    if [b"1337;File=".as_slice(), b"1337;MultipartFile=", b"1337;FilePart="].iter().any(|p| buf.starts_with(p)) {
+    if [b"1337;File=".as_slice(), b"1337;MultipartFile=", b"1337;FilePart=", b"1337;Copy="].iter().any(|p| buf.starts_with(p)) {
         FILE_LIMIT
+    } else if buf.starts_with(b"52;") {
+        OSC_CAP
     } else {
         LIMIT
     }
 }
 
+/// Payloads cut at their cap instead of dropped.
+fn cut_at_cap(buf: &[u8]) -> bool {
+    buf.starts_with(b"52;")
+}
+
 /// OSC payload prefixes Tandem acts on.
-const WANTED: [&[u8]; 3] = [b"133;", b"7;", b"1337;"];
+const WANTED: [&[u8]; 4] = [b"133;", b"7;", b"1337;", b"52;"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptKind {
@@ -46,6 +56,8 @@ pub enum Osc {
     Sixel(Vec<u8>),
     /// A kitty graphics command: the APC body after `G`.
     Kitty(Vec<u8>),
+    /// OSC 52: the payload after `52;`.
+    Clipboard(Vec<u8>),
     /// A report request alacritty does not answer.
     Query(crate::reports::Query),
     /// `DCS = 1 s` (true) or `DCS = 2 s`: synchronized output begins or ends.
@@ -57,7 +69,7 @@ enum State {
     #[default]
     Ground,
     Esc,
-    Osc { buf: Vec<u8>, keep: bool, esc: bool },
+    Osc { buf: Vec<u8>, keep: bool, esc: bool, cut: bool },
     /// `ESC P`: a DCS string (sixel images are kept).
     Dcs { buf: Vec<u8>, esc: bool },
     /// `ESC _`: an APC string (kitty graphics commands are kept).
@@ -121,19 +133,28 @@ fn could_be_wanted(buf: &[u8]) -> bool {
 impl Scanner {
     /// The events in `bytes`, each with the offset just past its terminator.
     pub fn scan(&mut self, bytes: &[u8]) -> Vec<(usize, Osc)> {
+        self.scan_spans(bytes).into_iter().map(|(_, end, osc)| (end, osc)).collect()
+    }
+
+    /// The events in `bytes`, each with where its sequence began and the offset just past
+    /// its terminator.
+    pub fn scan_spans(&mut self, bytes: &[u8]) -> Vec<(usize, usize, Osc)> {
         let mut out = Vec::new();
+        // Where the escape sequence being read began (0 when it began in an earlier read).
+        let mut began = 0;
         let mut i = 0;
         while i < bytes.len() {
             let b = bytes[i];
             match &mut self.state {
                 State::Ground => {
                     if b == 0x1b {
+                        began = i;
                         self.state = State::Esc;
                     }
                 }
                 State::Esc => {
                     self.state = match b {
-                        b']' => State::Osc { buf: Vec::new(), keep: true, esc: false },
+                        b']' => State::Osc { buf: Vec::new(), keep: true, esc: false, cut: false },
                         b'P' => State::Dcs { buf: Vec::new(), esc: false },
                         b'_' => State::Apc { buf: Vec::new(), esc: false },
                         b'[' => State::Csi { buf: Vec::new(), long: false },
@@ -147,9 +168,10 @@ impl Scanner {
                             let done = std::mem::take(buf);
                             self.state = State::Ground;
                             if let Some(body) = done.strip_prefix(b"G") {
-                                out.push((i + 1, Osc::Kitty(body.to_vec())));
+                                out.push((began, i + 1, Osc::Kitty(body.to_vec())));
                             }
                         } else {
+                            began = i.saturating_sub(1);
                             self.state = State::Esc;
                             continue;
                         }
@@ -174,6 +196,7 @@ impl Scanner {
                 }
                 State::Csi { buf, long } => match b {
                     0x1b => {
+                        began = i;
                         self.state = State::Esc;
                     }
                     0x18 | 0x1a => self.state = State::Ground,
@@ -188,7 +211,7 @@ impl Scanner {
                         let ev = if *long { None } else { csi_query(buf, b) };
                         self.state = State::Ground;
                         if let Some(ev) = ev {
-                            out.push((i + 1, ev));
+                            out.push((began, i + 1, ev));
                         }
                     }
                     // Other control bytes act inside a control sequence without ending it.
@@ -200,9 +223,10 @@ impl Scanner {
                             let done = std::mem::take(buf);
                             self.state = State::Ground;
                             if let Some(ev) = dcs_event(done) {
-                                out.push((i + 1, ev));
+                                out.push((began, i + 1, ev));
                             }
                         } else {
+                            began = i.saturating_sub(1);
                             self.state = State::Esc;
                             continue;
                         }
@@ -225,7 +249,7 @@ impl Scanner {
                         }
                     }
                 }
-                State::Osc { buf, keep, esc } => {
+                State::Osc { buf, keep, esc, cut } => {
                     if *esc {
                         if b == b'\\' {
                             let done = std::mem::take(buf);
@@ -233,11 +257,12 @@ impl Scanner {
                             self.state = State::Ground;
                             if keep {
                                 if let Some(ev) = finish(&done) {
-                                    out.push((i + 1, ev));
+                                    out.push((began, i + 1, ev));
                                 }
                             }
                         } else {
                             // ESC and something else: the OSC is cut off, and a new escape starts.
+                            began = i.saturating_sub(1);
                             self.state = State::Esc;
                             continue;
                         }
@@ -249,22 +274,30 @@ impl Scanner {
                                 self.state = State::Ground;
                                 if keep {
                                     if let Some(ev) = finish(&done) {
-                                        out.push((i + 1, ev));
+                                        out.push((began, i + 1, ev));
                                     }
                                 }
                             }
                             0x1b => *esc = true,
                             0x18 | 0x1a => self.state = State::Ground,
                             _ => {
-                                if *keep && buf.len() >= 24 {
+                                if *keep && (buf.len() >= 24 || *cut) {
                                     // The prefix is known: take the whole run up to the next
                                     // control byte at once (a large inline image streams by).
                                     let rest = &bytes[i..];
                                     let n = rest.iter().position(|c| matches!(c, 0x07 | 0x1b | 0x18 | 0x1a)).unwrap_or(rest.len());
-                                    buf.extend_from_slice(&rest[..n]);
-                                    if buf.len() > limit_for(buf) {
-                                        *keep = false;
-                                        buf.clear();
+                                    if !*cut {
+                                        buf.extend_from_slice(&rest[..n]);
+                                        let limit = limit_for(buf);
+                                        if buf.len() > limit {
+                                            if cut_at_cap(buf) {
+                                                buf.truncate(limit);
+                                                *cut = true;
+                                            } else {
+                                                *keep = false;
+                                                buf.clear();
+                                            }
+                                        }
                                     }
                                     i += n;
                                     continue;
@@ -334,6 +367,7 @@ pub fn parse(payload: &str) -> Option<Osc> {
             })
         }
         "7" => Some(Osc::Location(rest.to_string())),
+        "52" => Some(Osc::Clipboard(rest.as_bytes().to_vec())),
         "1337" => {
             let (k, v) = rest.split_once('=').unwrap_or((rest, ""));
             Some(Osc::Kv(k.to_string(), v.to_string()))

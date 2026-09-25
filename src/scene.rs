@@ -586,6 +586,21 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close });
 }
 
+/// A short message in a dark box near the bottom center of `area`.
+pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
+    let w = (text.chars().count() as f32 + 4.0) * cell.0;
+    let r = Rect { x: area.x + ((area.w - w) / 2.0).max(0.0), y: area.y + area.h - 3.0 * cell.1, w: w.min(area.w), h: cell.1 + 12.0 };
+    // Text under the box is cut where the box starts, as under the find bar.
+    for row in frame.rows.iter_mut() {
+        if row.y < r.y + r.h && row.y + cell.1 > r.y && row.clip.x + row.clip.w > r.x {
+            row.clip.w = (r.x - row.clip.x).max(0.0);
+        }
+    }
+    frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
+    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false };
+    frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r });
+}
+
 /// A one-line error bar along the bottom of `area`. Its box goes in `quads`, so its
 /// text (in `rows`) draws on top.
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {

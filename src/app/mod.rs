@@ -52,6 +52,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod annotations_ui;
+mod clipboard_ui;
 mod copymode_ui;
 mod files_ui;
 mod find_ui;
@@ -184,6 +185,10 @@ pub struct App {
     mods: Mods,
     /// Announcement bars waiting in each pane.
     bars: HashMap<PaneId, crate::infobar::Bars>,
+    /// A short message at the bottom of the window, and when it goes away.
+    toast: Option<(String, Instant)>,
+    /// OSC 52 reads waiting for the user's answer, with the selection parameter to echo.
+    pending_reads: HashMap<PaneId, String>,
     /// Keys whose press went to a program, so their release may too.
     sent_keys: keyproto_ui::Held,
     /// The physical key of the press being routed now.
@@ -315,6 +320,8 @@ pub fn run() {
         mods: Mods::default(),
         sent_keys: keyproto_ui::Held::default(),
         bars: HashMap::new(),
+        pending_reads: HashMap::new(),
+        toast: None,
         typing: None,
         cursor: (0.0, 0.0),
         drag: Drag::None,
@@ -569,6 +576,7 @@ impl App {
         self.show_stamps.remove(&id);
         self.show_guide.remove(&id);
         self.bars.remove(&id);
+        self.pending_reads.remove(&id);
         if self.note_win.as_ref().is_some_and(|(_, p, _)| *p == id) {
             self.note_win = None;
         }
@@ -928,7 +936,7 @@ impl App {
             self.active = i;
             return self.redraw();
         }
-        if button == MouseButton::Left && self.info_bar_press(x, y) {
+        if button == MouseButton::Left && self.info_bar_press(x, y, event_loop) {
             return;
         }
         if button == MouseButton::Left {
@@ -1273,6 +1281,9 @@ impl App {
         }
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
+        if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
+            scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
+        }
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
@@ -1395,7 +1406,8 @@ impl ApplicationHandler<UserEvent> for App {
         let spotlight = self.tick_find_cursor();
         let animation = self.next_animation_frame();
         let sync = self.flush_due_syncs();
-        let wake = [self.save_due, find_due, spotlight, animation, sync].into_iter().flatten().min();
+        let toast = self.toast_due();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -1436,6 +1448,7 @@ impl ApplicationHandler<UserEvent> for App {
         let mut changed = false;
         let mut exited = Vec::new();
         let now = Instant::now();
+        self.sync_output_policy();
         for (id, p) in self.panes.iter_mut() {
             let got = p.pump();
             if got {
@@ -1453,6 +1466,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if changed {
             self.take_downloads();
+            self.take_requests();
             self.check_marks();
             self.sync_checks();
             self.redraw();

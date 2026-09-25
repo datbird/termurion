@@ -328,6 +328,9 @@ pub struct Term<T> {
     /// Tandem: the emulation level (100 to 500) device attributes report.
     pub emulation_level: u16,
 
+    /// Tandem: whether DA1 claims clipboard access (`52`), as iTerm2's policy decides.
+    pub da1_clipboard: bool,
+
     /// Currently inactive keyboard mode stack.
     inactive_keyboard_mode_stack: Vec<KeyboardModes>,
 
@@ -444,6 +447,7 @@ impl<T> Term<T> {
             keyboard_mode_stack: Default::default(),
             modify_other_keys: 0,
             emulation_level: 500,
+            da1_clipboard: true,
             active_charset: Default::default(),
             vi_mode_cursor: Default::default(),
             cursor_style: Default::default(),
@@ -1303,7 +1307,8 @@ impl<T: EventListener> Handler for Term<T> {
             None => String::from(match level {
                 ..=100 => "\x1b[?1;2c",
                 101..=300 => "\x1b[?62;1;2;4;6;22;28c",
-                _ => "\x1b[?64;1;2;4;6;17;18;21;22;52c",
+                _ if self.da1_clipboard => "\x1b[?64;1;2;4;6;17;18;21;22;52c",
+                _ => "\x1b[?64;1;2;4;6;17;18;21;22c",
             }),
             Some('>') => {
                 let vt = match level {

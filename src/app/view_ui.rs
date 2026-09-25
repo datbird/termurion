@@ -94,6 +94,23 @@ impl App {
         x >= inner.x + inner.w - 12.0 * cell.0
     }
 
+    /// Shows a short message at the bottom of the window for 3 seconds.
+    pub(super) fn show_toast(&mut self, text: &str) {
+        self.toast = Some((text.to_string(), Instant::now() + Duration::from_secs(3)));
+        self.redraw();
+    }
+
+    /// When the toast goes away; redraws once it has.
+    pub(super) fn toast_due(&mut self) -> Option<Instant> {
+        let until = self.toast.as_ref()?.1;
+        if Instant::now() >= until {
+            self.toast = None;
+            self.redraw();
+            return None;
+        }
+        Some(until)
+    }
+
     /// Draws synchronized updates whose time ran out (a program that never ended one), and
     /// says when the next one is due.
     pub(super) fn flush_due_syncs(&mut self) -> Option<Instant> {

@@ -101,6 +101,8 @@ fn config(look: Look) -> Config {
     Config {
         scrolling_history: look.scrollback,
         kitty_keyboard: look.app_key_modes,
+        // Tandem applies iTerm2's clipboard policy to OSC 52 itself.
+        osc52: alacritty_terminal::term::Osc52::Disabled,
         default_cursor_style: CursorStyle { shape: look.cursor_shape, blinking: look.cursor_blink },
         ..Config::default()
     }
@@ -113,11 +115,13 @@ pub struct Limits {
     pub images: usize,
     /// Bytes a kitty chunked transfer or a MultipartFile may reach.
     pub transfer: usize,
+    /// Bytes `CopyToClipboard` captures before it stops.
+    pub copy: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { images: 768 << 20, transfer: 512 << 20 }
+        Limits { images: 768 << 20, transfer: 512 << 20, copy: 100 << 20 }
     }
 }
 
@@ -158,9 +162,25 @@ pub struct Screen {
     feeds: u32,
     /// Key reporting chosen in the menu (on top of the program's requests).
     pub keys: KeyState,
+    /// False when the global Disable Potentially Insecure Escape Sequences is on.
+    pub trusted: bool,
+    /// What output asked the window to do, taken by the app.
+    pub requests: Vec<Request>,
+    /// OSC 1337 `Copy=` in progress, and `CopyToClipboard` capture.
+    pub(crate) copy: crate::clipboard_osc::Copy,
+    pub(crate) capture: Option<Vec<u8>>,
     /// Mode 2031 (color scheme reports) and the scheme last reported.
     color_reports: bool,
     last_dark: bool,
+}
+
+/// Something output asked for that the window must do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Request {
+    /// Put text on the clipboard (if the user allows programs to).
+    ClipboardWrite(String),
+    /// Report the clipboard; the selection parameter to echo.
+    ClipboardRead(String),
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -217,6 +237,10 @@ impl Screen {
             next_fold: 0,
             feeds: 0,
             keys: KeyState::new(look.csi_u),
+            trusted: true,
+            requests: Vec::new(),
+            copy: crate::clipboard_osc::Copy::default(),
+            capture: None,
             color_reports: false,
             last_dark: true,
         }
@@ -270,10 +294,11 @@ impl Screen {
         }
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
-        let events = self.osc.scan(bytes);
+        let events = self.osc.scan_spans(bytes);
         let mut reply = Vec::new();
         let mut at = 0;
-        for (end, osc) in events {
+        for (start, end, osc) in events {
+            self.capture_bytes(&bytes[at..start.max(at)]);
             reply.extend(self.feed_raw(&bytes[at..end]));
             at = end;
             match osc {
@@ -293,6 +318,7 @@ impl Screen {
             }
             reply.append(&mut self.replies);
         }
+        self.capture_bytes(&bytes[at..]);
         reply.extend(self.feed_raw(&bytes[at..]));
         reply.extend(self.color_scheme_change());
         reply
@@ -375,6 +401,25 @@ impl Screen {
         }
         self.last_dark = dark;
         crate::reports::color_scheme(dark)
+    }
+
+    /// What output asked the window to do since the last call.
+    pub fn take_requests(&mut self) -> Vec<Request> {
+        std::mem::take(&mut self.requests)
+    }
+
+    /// Whether DA1 claims clipboard support (`52`).
+    pub fn set_clipboard_advertised(&mut self, on: bool) {
+        self.term.da1_clipboard = on;
+    }
+
+    /// `CopyToClipboard`: output bytes join the capture, up to the cap.
+    fn capture_bytes(&mut self, bytes: &[u8]) {
+        let cap = self.limits.copy;
+        if let Some(c) = &mut self.capture {
+            let room = cap.saturating_sub(c.len());
+            c.extend_from_slice(&bytes[..bytes.len().min(room)]);
+        }
     }
 
     /// Replies owed outside `feed` (a color scheme report after a profile change).

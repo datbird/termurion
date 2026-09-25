@@ -620,6 +620,29 @@ fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Ta
     }
 }
 
+/// A pane that shows only the global settings the schema has for it so far, by section
+/// (General and Advanced; the rest of each comes in milestone 13).
+pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
+    let mut changed = false;
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        let mut sections: Vec<&str> = Vec::new();
+        for s in schema::global().iter().filter(|s| s.tab == tab) {
+            if !sections.contains(&s.section.as_str()) {
+                sections.push(&s.section);
+            }
+        }
+        for section in sections {
+            ui.strong(section);
+            for s in schema::global().iter().filter(|s| s.tab == tab && s.section == section) {
+                changed |= global_control(ui, g, s, true);
+            }
+            ui.add_space(8.0);
+        }
+        ui.weak("The rest of this pane comes in milestone 13.");
+    });
+    changed
+}
+
 /// iTerm2's Pointer pane.
 pub fn pointer_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, profiles: &[(String, String)]) -> bool {
     let mut changed = false;

@@ -50,14 +50,16 @@ pub enum Edit {
 
 /// The settings window's panes, as iTerm2's toolbar lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Page {
+pub enum Page {
     Profiles,
+    General,
     Keys,
     Pointer,
+    Advanced,
 }
 
 /// Panes that arrive with later milestones.
-const LATER_PAGES: [(&str, u8); 4] = [("General", 13), ("Appearance", 13), ("Arrangements", 7), ("Advanced", 13)];
+const LATER_PAGES: [(&str, u8); 2] = [("Appearance", 13), ("Arrangements", 7)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum How {
@@ -85,6 +87,11 @@ pub struct SettingsWindow {
 }
 
 impl SettingsWindow {
+    /// Turns to one pane of the settings.
+    pub fn show_page(&mut self, page: Page) {
+        self.page = page;
+    }
+
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, mode: Mode) -> Result<Self, String> {
         let (title, w, h) = match mode {
             Mode::Settings => ("Tandem Settings", 980.0, 720.0),
@@ -169,7 +176,7 @@ impl SettingsWindow {
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for (p, name) in [(Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Pointer, "Pointer")] {
+                        for (p, name) in [(Page::General, "General"), (Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Pointer, "Pointer"), (Page::Advanced, "Advanced")] {
                             if ui.selectable_label(page == p, name).clicked() {
                                 page = p;
                             }
@@ -183,6 +190,8 @@ impl SettingsWindow {
                     egui::CentralPanel::default().show(ui, |ui| {
                         let changed = match page {
                             Page::Keys => settings_keys::keys_page(ui, globals, keys, &profiles),
+                            Page::General => settings_keys::schema_page(ui, globals, "General"),
+                            Page::Advanced => settings_keys::schema_page(ui, globals, "Advanced"),
                             _ => settings_keys::pointer_page(ui, globals, keys, &profiles),
                         };
                         if changed {

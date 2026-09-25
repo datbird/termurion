@@ -33,7 +33,8 @@ test data) is left out. Changes:
 8. `term/mod.rs`: device attributes follow iTerm2 for `Term.emulation_level` (100 to 500,
    default 500): DA1 `CSI ? 1 ; 2 c` (VT100), `CSI ? 62 ; 1 ; 2 ; 4 ; 6 ; 22 ; 28 c` (VT200 and
    VT300), `CSI ? 64 ; 1 ; 2 ; 4 ; 6 ; 17 ; 18 ; 21 ; 22 ; 52 c` (VT400 and VT500; 4 is sixel);
-   DA2 `CSI > vt ; 2500 ; 0 c` (vt 0, 1, 32, 41, 64); DA3 (VT400 and up) `DCS ! | 6954726D ST`.
+   DA2 `CSI > vt ; 2500 ; 0 c` (vt 0, 1, 32, 41, 64); DA3 (VT400 and up) `DCS ! | 6954726D ST`. `Term.da1_clipboard` (default true) drops `52` when
+   the clipboard policy says programs may not use it.
 
 9. `term/mod.rs`: `Term.modify_other_keys` (0, 1, 2) is set by `CSI > 4 ; n m` and reported
    for `CSI ? 4 m` as `CSI > 4 ; n m`; RIS clears it. `Config.kitty_keyboard` now means

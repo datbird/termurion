@@ -20,7 +20,7 @@ impl App {
     }
 
     /// A click on a bar: runs its button (or closes it). True when the click was on one.
-    pub(super) fn info_bar_press(&mut self, x: f32, y: f32) -> bool {
+    pub(super) fn info_bar_press(&mut self, x: f32, y: f32, event_loop: &ActiveEventLoop) -> bool {
         let cell = self.cell();
         let Some(tab) = self.tabs.get(self.active) else { return false };
         for (id, rect) in self.visible(tab) {
@@ -31,7 +31,7 @@ impl App {
             if let Some(pressed) = infobar::hit(bar, rect, cell, x, y) {
                 let bar = self.bars.get_mut(&id).and_then(|b| b.pop());
                 if let Some(bar) = bar {
-                    self.bar_answered(id, &bar.id, pressed.map(|i| bar.buttons[i].as_str()));
+                    self.bar_answered(id, &bar.id, pressed.map(|i| bar.buttons[i].as_str()), event_loop);
                 }
                 self.redraw();
             }
@@ -41,7 +41,7 @@ impl App {
     }
 
     /// What a bar's answer does. `button` is None when the bar was closed.
-    fn bar_answered(&mut self, pane: PaneId, id: &str, button: Option<&str>) {
-        let _ = (pane, id, button);
+    fn bar_answered(&mut self, pane: PaneId, id: &str, button: Option<&str>, event_loop: &ActiveEventLoop) {
+        let _ = self.clipboard_bar(pane, id, button, event_loop);
     }
 }

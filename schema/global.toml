@@ -287,3 +287,21 @@ type = "enum"
 default = 0
 choices = [ { value = 0, label = "Smart Case" }, { value = 1, label = "Case Sensitive" }, { value = 2, label = "Case Insensitive" }, { value = 3, label = "Case-Sensitive Regex" }, { value = 4, label = "Case-Insensitive Regex" } ]
 help = "The find bar's search mode, picked from its mode menu. Shared by every session."
+
+[[setting]]
+key = "AllowClipboardAccess"
+tab = "General"
+section = "Selection"
+label = "Applications in terminal may access clipboard"
+type = "bool"
+default = false
+help = "Lets programs put text on the clipboard with OSC 52 and OSC 1337 Copy. A program that asks to read the clipboard is asked about separately."
+
+[[setting]]
+key = "DisablePotentiallyInsecureEscapeSequences"
+tab = "Advanced"
+section = "Security"
+label = "Disable potentially insecure escape sequences"
+type = "bool"
+default = false
+help = "Ignores escape sequences that can change settings, reach the clipboard, save files, or report window and screen details (iTerm2's trust gate)."

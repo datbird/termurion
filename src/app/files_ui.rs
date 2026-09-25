@@ -21,7 +21,8 @@ fn downloads_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(windows)]
-fn ask(text: &str) -> bool {
+/// A yes/no question in a message box.
+pub(super) fn ask(text: &str) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES }

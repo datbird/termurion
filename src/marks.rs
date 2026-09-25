@@ -384,6 +384,11 @@ impl Screen {
                 self.replies.extend(answer);
             }
             Osc::Sync(_) => {}
+            Osc::Clipboard(payload) => match crate::clipboard_osc::osc52(&payload) {
+                Some(crate::clipboard_osc::Osc52::Write(t)) => self.requests.push(crate::screen::Request::ClipboardWrite(t)),
+                Some(crate::clipboard_osc::Osc52::Read(pc)) => self.requests.push(crate::screen::Request::ClipboardRead(pc)),
+                None => {}
+            },
             Osc::Prompt { kind, aid, fresh_line } => self.prompt_start(kind, aid, fresh_line),
             Osc::CommandStart => {
                 self.marks.in_command = true;
@@ -492,6 +497,18 @@ impl Screen {
                     self.new_mark(line, Kind::Manual);
                 }
                 "File" | "MultipartFile" | "FilePart" | "FileEnd" => self.file_osc(&key, &value),
+                // The clipboard keys need trust (Disable Potentially Insecure Escape Sequences off).
+                "Copy" if self.trusted => {
+                    if let Some(t) = self.copy.take(&value, self.limits.transfer) {
+                        self.requests.push(crate::screen::Request::ClipboardWrite(t));
+                    }
+                }
+                "CopyToClipboard" if self.trusted => self.capture = Some(Vec::new()),
+                "EndCopy" if self.trusted => {
+                    if let Some(c) = self.capture.take() {
+                        self.requests.push(crate::screen::Request::ClipboardWrite(String::from_utf8_lossy(&c).into_owned()));
+                    }
+                }
                 "AddAnnotation" | "AddHiddenAnnotation" => {
                     let Some((text, len, at)) = crate::annotations::parse_osc(&value) else { return };
                     let cols = self.term().columns();
