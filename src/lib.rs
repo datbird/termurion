@@ -123,6 +123,7 @@ pub mod reattach;
 pub mod hotkey;
 pub mod broadcast;
 mod tmux_probe;
+pub mod tmux_hook;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;
