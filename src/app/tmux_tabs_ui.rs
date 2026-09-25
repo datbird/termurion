@@ -23,6 +23,7 @@ impl App {
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
+                Action::PaneInfo { .. } | Action::WindowTitle(..) => {}
                 // AutoHideTmuxClientSession: once the attach's windows have opened (they may
                 // still wait to become windows), the gateway is buried.
                 Action::InitialWindowsOpened => {

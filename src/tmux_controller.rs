@@ -42,7 +42,34 @@ enum Req {
     Capture { opener: u64, pane: u32, part: Part },
     /// The short list-windows after a client resize.
     Relist,
+    /// A monitor's `refresh-client -B` and `display-message` replies.
+    Subscribed(Key),
+    Fetched(Key),
     Ignore,
+}
+
+/// What a pane monitor watches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Info {
+    Title,
+    Job,
+    Cwd,
+}
+
+/// A monitor's subject: a pane's value, or a window's title (set-titles).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Key {
+    Pane(u32, Info),
+    Window(u32),
+}
+
+/// What happened in a tmux pane that may change what its monitors show (tmux before 3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneEvent {
+    /// OSC 0, 1, or 2.
+    Title,
+    Key,
+    LineFeed,
 }
 
 /// A pane ready to show: tmux's size, the bytes that rebuild it (fed quietly), and the
@@ -84,6 +111,10 @@ pub enum Action {
     /// The session's `@iterm2_id`: another gateway of this Tandem may already show it.
     SessionGuid(String),
     SelectWindow(u32),
+    /// A pane monitor's new value.
+    PaneInfo { pane: u32, what: Info, value: String },
+    /// `#{T:set-titles-string}` of a window (tmux has set-titles on).
+    WindowTitle(u32, String),
 }
 
 #[derive(Default)]
@@ -123,11 +154,13 @@ pub struct Prefs {
     pub pause_age: f64,
     pub unpause_automatically: bool,
     pub warn_before_pausing: bool,
+    /// pollForTmuxForegroundJob: the job monitor polls every second before tmux 3.2.
+    pub poll_job: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Prefs {
-        Prefs { open_in: OpenIn::NativeWindows, limit: 10, anonymous_location: 1, prevent_tab: false, max_history: 1000, variable_sizes: true, pause_age: 120.0, unpause_automatically: false, warn_before_pausing: true }
+        Prefs { open_in: OpenIn::NativeWindows, limit: 10, anonymous_location: 1, prevent_tab: false, max_history: 1000, variable_sizes: true, pause_age: 120.0, unpause_automatically: false, warn_before_pausing: true, poll_job: false }
     }
 }
 
@@ -184,6 +217,12 @@ pub struct Controller {
     windows_due: Vec<(u32, f64)>,
     /// Initial windows still capturing.
     initial_pending: usize,
+    /// Option monitors, and their subscriptions by id.
+    monitors: HashMap<Key, crate::tmux_monitor::Monitor>,
+    subscriptions: HashMap<String, Key>,
+    cwd_gates: HashMap<u32, crate::tmux_monitor::CwdGate>,
+    /// tmux has `set-titles on` (read once per attach, 2.9 and later).
+    pub set_titles: bool,
 }
 
 impl Controller {
@@ -223,6 +262,10 @@ impl Controller {
             sessions_due: None,
             windows_due: Vec::new(),
             initial_pending: 0,
+            monitors: HashMap::new(),
+            subscriptions: HashMap::new(),
+            cwd_gates: HashMap::new(),
+            set_titles: false,
         }
     }
 
@@ -324,6 +367,7 @@ impl Controller {
         let Some((s, _)) = self.session.clone() else { return Vec::new() };
         self.hidden.insert(window);
         gw.send(&crate::tmux_persist::hidden_command(s, &self.hidden), None, Flags::default());
+        self.unwatch_window(window, gw);
         match self.windows.remove(&window) {
             Some(_) => vec![Action::Close(window)],
             None => Vec::new(),
@@ -360,7 +404,7 @@ impl Controller {
 
     /// When the next Dashboard list is due (the app wakes for it).
     pub fn next_due(&self) -> Option<f64> {
-        self.sessions_due.into_iter().chain(self.windows_due.iter().map(|(_, t)| *t)).reduce(f64::min)
+        self.sessions_due.into_iter().chain(self.windows_due.iter().map(|(_, t)| *t)).chain(self.monitors.values().filter_map(|m| m.next_tick())).reduce(f64::min)
     }
 
     /// The Dashboard's window list of the attached session goes stale: list it again.
@@ -376,6 +420,11 @@ impl Controller {
     /// Sends the lists that are due (the Dashboard's; iTerm2's timers).
     pub fn poll(&mut self, now: f64, gw: &mut Gateway) {
         self.clock = self.clock.max(now);
+        let ticks: Vec<(Key, String)> = self.monitors.iter_mut().filter_map(|(k, m)| Some((*k, m.tick(now)?))).collect();
+        for (key, cmd) in ticks {
+            let t = self.tag(Req::Fetched(key));
+            gw.send(&cmd, Some(t), Flags { tolerate: true, ..Default::default() });
+        }
         if self.sessions_due.is_some_and(|t| t <= now) {
             self.sessions_due = None;
             self.list_sessions(gw);
@@ -506,6 +555,112 @@ impl Controller {
         out
     }
 
+    /// A tmux pane shows: its title, working directory, and (`job`, the profile has an icon)
+    /// foreground job are watched.
+    pub fn watch_pane(&mut self, pane: u32, job: bool, gw: &mut Gateway) {
+        let target = format!("%{pane}");
+        self.install(Key::Pane(pane, Info::Title), &target, "#{pane_title}", None, gw);
+        if job {
+            // pollForTmuxForegroundJob: a timer, only where subscriptions are missing.
+            let timer = (self.prefs.poll_job && self.v() < 3.2).then_some(1.0);
+            self.install(Key::Pane(pane, Info::Job), &target, "#{pane_current_command}", timer, gw);
+        }
+        self.cwd_gates.insert(pane, crate::tmux_monitor::CwdGate::default());
+        self.install(Key::Pane(pane, Info::Cwd), &target, "#{pane_current_path}", None, gw);
+    }
+
+    pub fn unwatch_pane(&mut self, pane: u32, gw: &mut Gateway) {
+        for what in [Info::Title, Info::Job, Info::Cwd] {
+            self.uninstall(Key::Pane(pane, what), gw);
+        }
+        self.cwd_gates.remove(&pane);
+    }
+
+    /// Something happened in a pane that may change its monitors' values.
+    pub fn pane_event(&mut self, pane: u32, event: PaneEvent, gw: &mut Gateway) {
+        let now = self.clock;
+        match event {
+            PaneEvent::Title => {
+                self.update(Key::Pane(pane, Info::Title), gw);
+                self.update(Key::Pane(pane, Info::Job), gw);
+            }
+            PaneEvent::Key => {
+                if self.cwd_gates.get_mut(&pane).is_some_and(|g| g.key_pressed(now)) {
+                    self.update(Key::Pane(pane, Info::Cwd), gw);
+                }
+            }
+            PaneEvent::LineFeed => {
+                if self.cwd_gates.get_mut(&pane).is_some_and(|g| g.line_feed(now)) {
+                    self.update(Key::Pane(pane, Info::Cwd), gw);
+                }
+            }
+        }
+    }
+
+    /// The set-titles reply: open windows' titles are watched when it is on.
+    pub fn set_titles_known(&mut self, on: bool, gw: &mut Gateway) {
+        self.set_titles = on;
+        let windows: Vec<u32> = self.windows.keys().copied().collect();
+        for w in windows {
+            self.watch_window(w, gw);
+        }
+    }
+
+    /// A window's `#{T:set-titles-string}` (tmux 2.9 and later, with set-titles on).
+    fn watch_window(&mut self, window: u32, gw: &mut Gateway) {
+        if self.set_titles && self.v() >= 2.9 && !self.monitors.contains_key(&Key::Window(window)) {
+            self.install(Key::Window(window), &format!("@{window}"), "#{T:set-titles-string}", None, gw);
+        }
+    }
+
+    fn install(&mut self, key: Key, target: &str, format: &str, timer: Option<f64>, gw: &mut Gateway) {
+        self.uninstall(key, gw);
+        let (m, cmds) = crate::tmux_monitor::Monitor::new(target, format, self.v() >= 3.2, timer);
+        if let Some(id) = &m.id {
+            self.subscriptions.insert(id.clone(), key);
+        }
+        self.monitors.insert(key, m);
+        let tolerate = Flags { tolerate: true, ..Default::default() };
+        for c in cmds {
+            match c {
+                crate::tmux_monitor::Cmd::Subscribe(cmd) => {
+                    let t = self.tag(Req::Subscribed(key));
+                    gw.send(&cmd, Some(t), tolerate);
+                }
+                crate::tmux_monitor::Cmd::Poll(cmd) => {
+                    let t = self.tag(Req::Fetched(key));
+                    gw.send(&cmd, Some(t), tolerate);
+                }
+            }
+        }
+    }
+
+    fn uninstall(&mut self, key: Key, gw: &mut Gateway) {
+        let Some(m) = self.monitors.remove(&key) else { return };
+        if let Some(id) = &m.id {
+            self.subscriptions.remove(id);
+        }
+        if let Some(cmd) = m.unsubscribe() {
+            gw.send(&cmd, None, Flags { tolerate: true, ..Default::default() });
+        }
+    }
+
+    /// iTerm2's updateOnce on one monitor.
+    fn update(&mut self, key: Key, gw: &mut Gateway) {
+        if let Some(cmd) = self.monitors.get_mut(&key).and_then(|m| m.update_once()) {
+            let t = self.tag(Req::Fetched(key));
+            gw.send(&cmd, Some(t), Flags { tolerate: true, ..Default::default() });
+        }
+    }
+
+    /// Every monitor of a window and its panes goes.
+    fn unwatch_window(&mut self, window: u32, gw: &mut Gateway) {
+        self.uninstall(Key::Window(window), gw);
+        for p in self.windows.get(&window).cloned().unwrap_or_default() {
+            self.unwatch_pane(p, gw);
+        }
+    }
+
     /// Tabs moved: tmux's windows take the tabs' order (iTerm2's setPartialWindowIdOrder).
     pub fn reorder(&mut self, wanted: Vec<u32>, gw: &mut Gateway) {
         let t = self.tag(Req::Reorder(wanted));
@@ -541,6 +696,11 @@ impl Controller {
     pub fn session_changed(&mut self, id: u32, name: &str, gw: &mut Gateway) -> Vec<Action> {
         self.session = Some((id, name.to_string()));
         self.session_guid = None;
+        let keys: Vec<Key> = self.monitors.keys().copied().collect();
+        for k in keys {
+            self.uninstall(k, gw);
+        }
+        self.cwd_gates.clear();
         self.windows.clear();
         self.openers.clear();
         self.open_initial(gw);
@@ -581,6 +741,20 @@ impl Controller {
         let mut out = Vec::new();
         match req {
             Req::Ignore => {}
+            Req::Subscribed(key) => {
+                if let Some(m) = self.monitors.get_mut(&key) {
+                    m.subscribed(ok);
+                }
+            }
+            Req::Fetched(key) => {
+                let value = self.monitors.get_mut(&key).and_then(|m| m.fetched(ok.then_some(text)));
+                if let Key::Pane(p, Info::Cwd) = key {
+                    if ok {
+                        self.cwd_gates.entry(p).or_default().known();
+                    }
+                }
+                out.extend(value.map(|v| monitor_action(key, v)));
+            }
             Req::NewWindow(affinity) => {
                 if ok {
                     let w = crate::tmux_windows::window_id(text.trim());
@@ -695,7 +869,12 @@ impl Controller {
                 if o.waiting == 0 {
                     let o = self.openers.remove(&opener).expect("opener");
                     let initial = o.initial && o.update.is_none() && !o.unpause;
-                    out.push(self.finish_opener(o));
+                    let action = self.finish_opener(o);
+                    if let Action::Open { window, .. } = &action {
+                        let w = window.id;
+                        self.watch_window(w, gw);
+                    }
+                    out.push(action);
                     if initial && self.initial_pending > 0 {
                         self.initial_pending -= 1;
                         if self.initial_pending == 0 {
@@ -810,12 +989,24 @@ impl Controller {
                     m.set_latency(pane, latency_ms as f64 / 1000.0, self.clock);
                 }
                 if self.window_of(pane).is_some() {
+                    if data.contains(&b'\n') {
+                        self.pane_event(pane, PaneEvent::LineFeed, gw);
+                    }
                     return vec![Action::Output(pane, data)];
                 }
             }
             Note::Output { pane, data } => {
                 if self.window_of(pane).is_some() {
+                    if data.contains(&b'\n') {
+                        self.pane_event(pane, PaneEvent::LineFeed, gw);
+                    }
                     return vec![Action::Output(pane, data)];
+                }
+            }
+            Note::SubscriptionChanged { name, value, .. } => {
+                let Some(key) = self.subscriptions.get(&name).copied() else { return Vec::new() };
+                if let Some(v) = self.monitors.get_mut(&key).and_then(|m| m.changed(&value)) {
+                    return vec![monitor_action(key, v)];
                 }
             }
             Note::LayoutChange { window, layout, zoomed, .. } => return self.layout_changed(window, &layout, zoomed, gw),
@@ -830,6 +1021,7 @@ impl Controller {
             Note::WindowClose(window) => {
                 self.windows_changed();
                 self.openers.retain(|_, o| o.window.id != window);
+                self.unwatch_window(window, gw);
                 if self.windows.remove(&window).is_some() {
                     return vec![Action::Close(window)];
                 }
@@ -879,6 +1071,9 @@ impl Controller {
         let added: Vec<u32> = now.iter().copied().filter(|p| !old.contains(p)).collect();
         let removed: Vec<u32> = old.iter().copied().filter(|p| !now.contains(p)).collect();
         let kept: Vec<u32> = now.iter().copied().filter(|p| old.contains(p)).collect();
+        for p in &removed {
+            self.unwatch_pane(*p, gw);
+        }
         self.windows.insert(window, now);
         self.nodes.insert(window, node.clone());
         if added.is_empty() {
@@ -890,6 +1085,13 @@ impl Controller {
         let w = Window { id: window, layout: layout.to_string(), ..Default::default() };
         self.openers.insert(id, Opener { window: w, node, panes: added, waiting, captured: HashMap::new(), initial: false, anonymous: false, unpause: false, update: Some((removed, kept, zoomed)) });
         Vec::new()
+    }
+}
+
+fn monitor_action(key: Key, value: String) -> Action {
+    match key {
+        Key::Pane(pane, what) => Action::PaneInfo { pane, what, value },
+        Key::Window(w) => Action::WindowTitle(w, value),
     }
 }
 
@@ -1189,6 +1391,80 @@ mod tests {
         }
         r.sent();
         r
+    }
+
+    #[test]
+    fn subscriptions_carry_pane_titles() {
+        let mut r = opened_34();
+        r.ctl.watch_pane(0, true, &mut r.gw);
+        let sent = r.sent();
+        assert_eq!(sent.matches("refresh-client -B 'it2_").count(), 3, "{sent}");
+        assert!(sent.contains(":%0:#{pane_title}'\rdisplay-message -t '%0' -p '#{pane_title}'\r"), "{sent}");
+        assert!(sent.contains("#{pane_current_command}") && sent.contains("#{pane_current_path}"), "{sent}");
+        let mut got = Vec::new();
+        for reply in ["", "title", "", "bash", "", "/home/me"] {
+            got.extend(r.answer(Some(reply)));
+        }
+        assert_eq!(
+            got,
+            vec![
+                Action::PaneInfo { pane: 0, what: Info::Title, value: "title".into() },
+                Action::PaneInfo { pane: 0, what: Info::Job, value: "bash".into() },
+                Action::PaneInfo { pane: 0, what: Info::Cwd, value: "/home/me".into() },
+            ]
+        );
+        let id = r.ctl.monitors[&Key::Pane(0, Info::Job)].id.clone().unwrap();
+        assert_eq!(r.lines(&[&format!("%subscription-changed {id} $0 @0 0 %0 : vim")]), vec![Action::PaneInfo { pane: 0, what: Info::Job, value: "vim".into() }]);
+        r.ctl.pane_event(0, PaneEvent::Title, &mut r.gw);
+        assert_eq!(r.sent(), "", "subscriptions carry it");
+        r.ctl.unwatch_pane(0, &mut r.gw);
+        assert_eq!(r.sent().matches("refresh-client -B 'it2_").count(), 3);
+    }
+
+    #[test]
+    fn old_tmux_polls_on_events() {
+        let mut r = opened();
+        r.ctl.set_clock(10.0);
+        r.ctl.watch_pane(0, true, &mut r.gw);
+        let sent = r.sent();
+        assert_eq!(sent.matches("display-message -t '%0'").count(), 3, "{sent}");
+        assert!(!sent.contains("refresh-client -B"), "{sent}");
+        for reply in ["t", "bash", "/x"] {
+            r.answer(Some(reply));
+        }
+        r.ctl.pane_event(0, PaneEvent::Title, &mut r.gw);
+        assert_eq!(r.sent(), "display-message -t '%0' -p '#{pane_title}'\rdisplay-message -t '%0' -p '#{pane_current_command}'\r");
+        r.answer(Some("t"));
+        r.answer(Some("bash"));
+        r.ctl.poll(11.5, &mut r.gw);
+        assert_eq!(r.sent(), "", "no timer");
+        assert_eq!(r.lines(&["%output %0 a\\012b"]).len(), 1);
+        assert_eq!(r.sent(), "", "a known directory waits for a key press");
+        r.ctl.pane_event(0, PaneEvent::Key, &mut r.gw);
+        assert_eq!(r.sent(), "display-message -t '%0' -p '#{pane_current_path}'\r");
+        r.answer(Some("/x"));
+        r.ctl.unwatch_pane(0, &mut r.gw);
+        r.ctl.prefs.poll_job = true;
+        r.ctl.watch_pane(0, true, &mut r.gw);
+        for reply in ["t", "bash", "/x"] {
+            r.answer(Some(reply));
+        }
+        r.sent();
+        r.ctl.poll(13.0, &mut r.gw);
+        assert_eq!(r.sent(), "display-message -t '%0' -p '#{pane_current_command}'\r", "pollForTmuxForegroundJob");
+    }
+
+    #[test]
+    fn window_titles_follow_set_titles() {
+        let mut r = opened_34();
+        r.ctl.set_titles_known(true, &mut r.gw);
+        let sent = r.sent();
+        assert!(sent.contains(":@0:#{T:set-titles-string}'\rdisplay-message -t '@0' -p '#{T:set-titles-string}'\r"), "{sent}");
+        r.answer(Some(""));
+        assert_eq!(r.answer(Some("vim - main")), vec![Action::WindowTitle(0, "vim - main".into())]);
+        let id = r.ctl.monitors[&Key::Window(0)].id.clone().unwrap();
+        assert_eq!(r.lines(&["%window-close @0"]), vec![Action::Close(0)]);
+        assert_eq!(r.sent(), format!("refresh-client -B '{id}'\r"));
     }
 
     #[test]

@@ -108,6 +108,12 @@ impl Monitor {
         Some(unsubscribe_command(id))
     }
 
+    /// When the timer polls next (None: no timer, or the subscription carries it).
+    pub fn next_tick(&self) -> Option<f64> {
+        let (_, next) = self.timer?;
+        (!self.valid && !self.outstanding).then_some(next)
+    }
+
     /// The timer's poll, when it is due.
     pub fn tick(&mut self, now: f64) -> Option<String> {
         let (interval, next) = self.timer?;

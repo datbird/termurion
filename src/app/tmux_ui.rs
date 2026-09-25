@@ -127,6 +127,7 @@ impl App {
             pause_age: self.globals.int("TmuxPauseModeAgeLimit").max(1) as f64,
             unpause_automatically: self.globals.bool("TmuxUnpauseAutomatically"),
             warn_before_pausing: self.globals.bool("TmuxWarnBeforePausing") && !self.globals.bool("noSyncDontWarnAboutTmuxPause"),
+            poll_job: self.globals.bool("pollForTmuxForegroundJob"),
         }
     }
 
