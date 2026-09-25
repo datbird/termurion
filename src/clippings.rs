@@ -3,6 +3,8 @@
 
 use toml::{Table, Value};
 
+use crate::layout::Rect;
+
 /// At most this many archived lists (iTerm2's maxClippingsArchiveEntries).
 pub const MAX_ARCHIVE: usize = 50;
 /// The panel's width: its default and limits, in logical pixels.
@@ -221,6 +223,118 @@ pub fn clamp_width(w: f32) -> f32 {
     w.clamp(MIN_WIDTH, MAX_WIDTH)
 }
 
+/// The panel's buttons, in the bottom strip's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    Add,
+    Remove,
+    Archive,
+    Send,
+    Copy,
+    Back,
+    Forward,
+    Close,
+}
+
+impl Button {
+    /// iTerm2's tooltips.
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            Button::Add => "Add clipping",
+            Button::Remove => "Remove selected clipping",
+            Button::Archive => "Archive all clippings",
+            Button::Send => "Send selected to terminal",
+            Button::Copy => "Copy selected to pasteboard",
+            Button::Back => "Show previous archived clippings",
+            Button::Forward => "Show next archived clippings",
+            Button::Close => "Hide clippings",
+        }
+    }
+}
+
+/// Where things are in a panel.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layout {
+    /// The list's area (rows are clipped to it).
+    pub list: Rect,
+    /// Each row, scrolled; rows outside `list` are not drawn.
+    pub rows: Vec<Rect>,
+    pub buttons: Vec<(Button, Rect)>,
+    /// Where "N/M" goes.
+    pub status: Rect,
+    /// The left edge the width is dragged by.
+    pub resize: Rect,
+    /// The rows' whole height (for scrolling).
+    pub content_h: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hit {
+    Row(usize),
+    Button(Button),
+    Resize,
+    Nothing,
+}
+
+/// A pane's terminal rectangle and, when the panel shows, the panel's (on the right; it
+/// takes at most three quarters of the pane).
+pub fn split_rect(pane: Rect, visible: bool, width: f32) -> (Rect, Option<Rect>) {
+    if !visible {
+        return (pane, None);
+    }
+    let w = width.min(pane.w * 0.75);
+    let term = Rect { w: pane.w - w, ..pane };
+    (term, Some(Rect { x: pane.x + pane.w - w, w, ..pane }))
+}
+
+/// The panel's layout. `rows` are each row's (title, detail) text heights; `scroll` is
+/// how far the list is scrolled down.
+pub fn layout(panel: Rect, rows: &[(f32, f32)], scroll: f32, scale: f32) -> Layout {
+    let strip_h = 28.0 * scale;
+    let list = Rect { h: (panel.h - strip_h).max(0.0), ..panel };
+    let (pad, gap) = (6.0 * scale, 2.0 * scale);
+    let mut y = list.y - scroll;
+    let rows: Vec<Rect> = rows
+        .iter()
+        .map(|&(title, detail)| {
+            let h = pad * 2.0 + title + gap + detail;
+            let r = Rect { x: panel.x, y, w: panel.w, h };
+            y += h;
+            r
+        })
+        .collect();
+    let content_h = rows.iter().map(|r| r.h).sum();
+    let b = 22.0 * scale;
+    let by = list.y + list.h + (strip_h - b) / 2.0;
+    let mut x = panel.x + pad;
+    let mut buttons = Vec::new();
+    for group in [&[Button::Add, Button::Remove, Button::Archive][..], &[Button::Send, Button::Copy], &[Button::Back, Button::Forward]] {
+        for &button in group {
+            buttons.push((button, Rect { x, y: by, w: b, h: b }));
+            x += b;
+        }
+        x += pad;
+    }
+    let close_x = panel.x + panel.w - pad - b;
+    let status = Rect { x, y: by, w: (close_x - x - pad).max(0.0), h: b };
+    buttons.push((Button::Close, Rect { x: close_x, y: by, w: b, h: b }));
+    let resize = Rect { x: panel.x, y: panel.y, w: 4.0 * scale, h: list.h };
+    Layout { list, rows, buttons, status, resize, content_h }
+}
+
+pub fn hit(l: &Layout, x: f32, y: f32) -> Hit {
+    if l.resize.contains(x, y) {
+        return Hit::Resize;
+    }
+    if let Some((b, _)) = l.buttons.iter().find(|(_, r)| r.contains(x, y)) {
+        return Hit::Button(*b);
+    }
+    if !l.list.contains(x, y) {
+        return Hit::Nothing;
+    }
+    l.rows.iter().position(|r| r.contains(x, y)).map_or(Hit::Nothing, Hit::Row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +445,52 @@ mod tests {
         assert_eq!(back.live.len(), 1);
         assert_eq!(Clippings::from_table(&Table::new()), Clippings::default());
         assert_eq!(Clippings::default().to_table(), Table::new());
+    }
+
+    fn r(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn panel_takes_its_width() {
+        let pane = r(100.0, 20.0, 1000.0, 600.0);
+        assert_eq!(split_rect(pane, false, 300.0), (pane, None));
+        assert_eq!(split_rect(pane, true, 300.0), (r(100.0, 20.0, 700.0, 600.0), Some(r(800.0, 20.0, 300.0, 600.0))));
+        // A narrow pane keeps a quarter for the terminal.
+        assert_eq!(split_rect(r(0.0, 0.0, 400.0, 100.0), true, 300.0), (r(0.0, 0.0, 100.0, 100.0), Some(r(100.0, 0.0, 300.0, 100.0))));
+        // Two panes of one split: each takes its own panel.
+        let (left, right) = (r(0.0, 0.0, 500.0, 300.0), r(504.0, 0.0, 496.0, 300.0));
+        assert_eq!(split_rect(left, true, 225.0).0.w, 275.0);
+        assert_eq!(split_rect(right, false, 225.0).0, right);
+    }
+
+    #[test]
+    fn panel_hits_rows_and_buttons() {
+        let panel = r(700.0, 0.0, 300.0, 400.0);
+        let l = layout(panel, &[(16.0, 30.0), (16.0, 100.0)], 0.0, 1.0);
+        // Rows: 6 padding, title, 2, detail, 6 padding.
+        assert_eq!(l.rows[0], r(700.0, 0.0, 300.0, 60.0));
+        assert_eq!(l.rows[1], r(700.0, 60.0, 300.0, 130.0));
+        assert_eq!(l.content_h, 190.0);
+        // The strip at the bottom holds the buttons, Close at the right.
+        assert_eq!(l.list, r(700.0, 0.0, 300.0, 372.0));
+        assert_eq!(l.buttons.iter().map(|b| b.0).collect::<Vec<_>>(), [Button::Add, Button::Remove, Button::Archive, Button::Send, Button::Copy, Button::Back, Button::Forward, Button::Close]);
+        let close = l.buttons[7].1;
+        assert!(close.x + close.w <= 1000.0 && close.x + close.w > 990.0);
+        assert_eq!(hit(&l, 750.0, 70.0), Hit::Row(1));
+        assert_eq!(hit(&l, 750.0, 300.0), Hit::Nothing);
+        let add = l.buttons[0].1;
+        assert_eq!(hit(&l, add.x + 2.0, add.y + 2.0), Hit::Button(Button::Add));
+        assert_eq!(hit(&l, 701.0, 100.0), Hit::Resize);
+        // Scrolled down 50: row 0 starts above the list; a row under the strip is not hit.
+        let l = layout(panel, &[(16.0, 30.0), (16.0, 100.0), (16.0, 100.0), (16.0, 100.0)], 50.0, 1.0);
+        assert_eq!(l.rows[0].y, -50.0);
+        assert_eq!(hit(&l, 750.0, 5.0), Hit::Row(0));
+        // The status area of the strip, over a row scrolled under it.
+        assert_eq!(hit(&l, 920.0, 380.0), Hit::Nothing);
+        // Scale doubles the fixed sizes.
+        let l2 = layout(panel, &[(16.0, 30.0)], 0.0, 2.0);
+        assert_eq!(l2.rows[0].h, 16.0 + 30.0 + 2.0 * 14.0);
+        assert_eq!(l2.list.h, 400.0 - 56.0);
     }
 }
