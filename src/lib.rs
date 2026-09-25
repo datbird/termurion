@@ -56,6 +56,7 @@ pub mod prompt_ui;
 pub mod global_find_ui;
 
 pub mod settings_keys;
+pub mod settings_advanced;
 
 #[cfg(windows)]
 pub mod winkeys;

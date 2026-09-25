@@ -300,6 +300,17 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            if s.key == "Smart Selection Rules" || s.key == "Semantic History" {
+                                let done = if s.key == "Smart Selection Rules" {
+                                    crate::settings_advanced::smart_selection_rules(ui, profile)
+                                } else {
+                                    crate::settings_advanced::semantic_history(ui, profile)
+                                };
+                                if done {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
                             if control(ui, profile, s, dark, is_default) {
                                 edit = Edit::Changed(selected.clone());
                             }
