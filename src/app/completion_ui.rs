@@ -8,8 +8,6 @@ use crate::completion::{Key as CKey, Kind, List, Reply, Row};
 
 /// Rows looked at for Autocomplete (the rest of the scrollback is not searched).
 const ROWS: usize = 5000;
-/// Auto Command Completion waits this long after typing (iTerm2's 0.2 s).
-const AUTO_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 const AUTO_FOOTER: &str = "Press Shift+Enter or Alt+Enter to send command.";
 
 fn unix_now() -> f64 {
@@ -28,7 +26,7 @@ impl App {
         if let Some((p, list)) = self.completion.as_mut() {
             if *p == pane && list.kind == Kind::Autocomplete {
                 if list.key(CKey::Tab) == Reply::Search {
-                    self.autocomplete_search();
+                    self.autocomplete_search(false);
                 }
                 return self.redraw();
             }
@@ -38,11 +36,12 @@ impl App {
         let Some((lines, row, col)) = self.panes.get(&pane).map(|p| p.own().char_rows(ROWS)) else { return };
         let q = autocomplete::query_at(&lines, row, col, &word);
         self.completion = Some((pane, List::new(Kind::Autocomplete, q, Vec::new())));
-        self.autocomplete_search();
+        self.autocomplete_search(true);
     }
 
-    /// The candidates for the list's query: the paste history, the screen, the shell history.
-    fn autocomplete_search(&mut self) {
+    /// The candidates for the list's query: the paste history, the screen, and (`first`:
+    /// when the list opens, as iTerm2) the shell history.
+    fn autocomplete_search(&mut self, first: bool) {
         let Some((pane, list)) = self.completion.clone() else { return };
         let extra = self.word_chars(pane);
         let word = move |c: char| c.is_alphanumeric() || extra.contains(c);
@@ -54,7 +53,7 @@ impl App {
         if let Some((lines, row, col)) = self.panes.get(&pane).map(|p| p.own().char_rows(ROWS)) {
             autocomplete::from_screen(&lines, row, col, &list.query, &word, &mut m);
         }
-        if let Some(typed) = self.panes.get(&pane).and_then(|p| p.own().typed_command()) {
+        if let Some(typed) = self.panes.get(&pane).and_then(|p| p.own().typed_command()).filter(|_| first) {
             let host = self.history_host_pub(pane);
             let cmds: Vec<(String, usize, f64)> = self.shell_history_pub().command_stats(&host).into_iter().map(|(c, u, t)| (c, u, now - t)).collect();
             autocomplete::from_commands(&cmds, typed.trim_start(), &list.query, &word, &mut m);
@@ -95,6 +94,13 @@ impl App {
         };
         let Some((_, list)) = self.completion.as_mut() else { return false };
         let reply = list.key(key);
+        // A closed Auto Command Completion list stays closed until the typed text changes.
+        if let Kind::Commands { typed } = &list.kind {
+            if !matches!(reply, Reply::Pass | Reply::Handled | Reply::Search) {
+                let typed = typed.clone();
+                self.auto.1.dismissed(&typed);
+            }
+        }
         self.redraw();
         match reply {
             Reply::Insert(text) => {
@@ -108,7 +114,7 @@ impl App {
                 true
             }
             Reply::Search => {
-                self.autocomplete_search();
+                self.autocomplete_search(false);
                 true
             }
             Reply::Close => {
@@ -124,54 +130,49 @@ impl App {
         }
     }
 
-    /// View > Auto Command Completion: after typing at the prompt stops for 0.2 s, the
-    /// host's commands that start with it show (and follow it). When the next check is due.
+    /// View > Auto Command Completion: the list of history commands starting with what is
+    /// typed at the prompt (timing in `completion::Auto`). When the next check is due.
     pub(super) fn auto_command_tick(&mut self) -> Option<Instant> {
+        use crate::completion::AutoDo;
         if !self.globals.bool("AutoCommandHistory") {
             return None;
         }
         let pane = self.focused_id()?;
+        if self.auto.0 != Some(pane) {
+            self.auto = (Some(pane), crate::completion::Auto::default());
+        }
         let typed = self.panes.get(&pane).and_then(|p| p.own().typed_command()).map(|t| t.trim_start().to_string());
-        let showing = self.completion.as_ref().filter(|(p, l)| *p == pane && matches!(l.kind, Kind::Commands { .. })).map(|(_, l)| l.kind.clone());
-        let Some(typed) = typed.filter(|t| !t.is_empty()) else {
-            if showing.is_some() {
-                self.completion = None;
+        let other = self.completion.as_ref().is_some_and(|(p, l)| *p == pane && l.kind == Kind::Autocomplete);
+        let now = self.started.elapsed().as_secs_f64();
+        match self.auto.1.step(typed.as_deref(), now, other) {
+            AutoDo::Nothing => None,
+            AutoDo::WakeAt(t) => Some(self.started + std::time::Duration::from_secs_f64(t)),
+            AutoDo::Hide => {
+                if self.completion.as_ref().is_some_and(|(_, l)| matches!(l.kind, Kind::Commands { .. })) {
+                    self.completion = None;
+                    self.redraw();
+                }
+                None
+            }
+            AutoDo::Show(typed) => {
+                let host = self.history_host_pub(pane);
+                let (unix, powers) = (unix_now(), self.powers_pub());
+                let rows: Vec<Row> = self.shell_history_pub().commands(&host, &typed, unix, powers).into_iter().map(|(c, _)| Row { shown: String::new(), value: c }).collect();
+                // No match, or only what is typed (ignoring case): nothing to offer.
+                let any = !(rows.is_empty() || (rows.len() == 1 && rows[0].value.eq_ignore_ascii_case(&typed)));
+                self.auto.1.showed(&typed, any);
+                if any {
+                    let selected = self.completion.as_ref().filter(|(p, _)| *p == pane).map_or(0, |(_, l)| l.selected);
+                    let mut list = List::new(Kind::Commands { typed }, autocomplete::Query::default(), rows);
+                    list.selected = selected.min(list.rows.len() - 1);
+                    self.completion = Some((pane, list));
+                } else if self.completion.as_ref().is_some_and(|(_, l)| matches!(l.kind, Kind::Commands { .. })) {
+                    self.completion = None;
+                }
                 self.redraw();
-            }
-            self.auto_typed = None;
-            return None;
-        };
-        let now = Instant::now();
-        match &self.auto_typed {
-            Some((p, t, _)) if *p == pane && *t == typed => {}
-            _ => {
-                self.auto_typed = Some((pane, typed.clone(), now + AUTO_DELAY));
+                None
             }
         }
-        let due = self.auto_typed.as_ref().map(|(_, _, d)| *d)?;
-        if showing == Some(Kind::Commands { typed: typed.clone() }) {
-            return None;
-        }
-        if now < due {
-            return Some(due);
-        }
-        let host = self.history_host_pub(pane);
-        let (unix, powers) = (unix_now(), self.powers_pub());
-        let rows: Vec<Row> = self.shell_history_pub().commands(&host, &typed, unix, powers).into_iter().map(|(c, _)| Row { shown: String::new(), value: c }).collect();
-        // No match, or only what is typed: nothing to offer.
-        if rows.is_empty() || (rows.len() == 1 && rows[0].value == typed) {
-            if showing.is_some() {
-                self.completion = None;
-                self.redraw();
-            }
-            return None;
-        }
-        let selected = self.completion.as_ref().filter(|(p, _)| *p == pane).map_or(0, |(_, l)| l.selected);
-        let mut list = List::new(Kind::Commands { typed }, autocomplete::Query::default(), rows);
-        list.selected = selected.min(list.rows.len() - 1);
-        self.completion = Some((pane, list));
-        self.redraw();
-        None
     }
 
     /// Draws the list at the cursor of its pane.

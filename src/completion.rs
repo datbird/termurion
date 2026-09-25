@@ -125,12 +125,116 @@ impl List {
     }
 }
 
+/// Auto Command Completion's timing (iTerm2's PseudoTerminal auto command history): the
+/// first showing waits 0.2 s after typing stops; while it shows it follows every change at
+/// once; a closed list stays closed until the typed text changes; a text already checked
+/// with no match is not looked up again.
+#[derive(Clone, Debug, Default)]
+pub struct Auto {
+    shown_for: Option<String>,
+    dismissed_for: Option<String>,
+    checked: Option<String>,
+    pending: Option<(String, f64)>,
+}
+
+/// What the app does now.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AutoDo {
+    Nothing,
+    /// Look up and show (or update) the list for this typed text.
+    Show(String),
+    Hide,
+    /// Check again at this time.
+    WakeAt(f64),
+}
+
+/// Auto Command Completion's first delay (iTerm2's 0.2 s).
+pub const AUTO_DELAY: f64 = 0.2;
+
+impl Auto {
+    /// One check: `typed` at the prompt (None: not at a prompt), `other`: another list
+    /// (Autocomplete) shows.
+    pub fn step(&mut self, typed: Option<&str>, now: f64, other: bool) -> AutoDo {
+        let Some(t) = typed.filter(|t| !t.is_empty()) else {
+            self.dismissed_for = None;
+            self.checked = None;
+            self.pending = None;
+            return if self.shown_for.take().is_some() { AutoDo::Hide } else { AutoDo::Nothing };
+        };
+        if other || self.dismissed_for.as_deref() == Some(t) {
+            return AutoDo::Nothing;
+        }
+        self.dismissed_for = None;
+        if let Some(s) = &self.shown_for {
+            return if s == t { AutoDo::Nothing } else { AutoDo::Show(t.to_string()) };
+        }
+        if self.checked.as_deref() == Some(t) {
+            return AutoDo::Nothing;
+        }
+        match &self.pending {
+            Some((p, due)) if p == t => {
+                if now >= *due {
+                    self.pending = None;
+                    AutoDo::Show(t.to_string())
+                } else {
+                    AutoDo::WakeAt(*due)
+                }
+            }
+            _ => {
+                self.pending = Some((t.to_string(), now + AUTO_DELAY));
+                AutoDo::WakeAt(now + AUTO_DELAY)
+            }
+        }
+    }
+
+    /// The list showed for `typed`, or nothing matched it.
+    pub fn showed(&mut self, typed: &str, any: bool) {
+        if any {
+            self.shown_for = Some(typed.to_string());
+            self.checked = None;
+        } else {
+            self.shown_for = None;
+            self.checked = Some(typed.to_string());
+        }
+    }
+
+    /// The list was closed (Esc, Enter, an insert) while `typed` was typed.
+    pub fn dismissed(&mut self, typed: &str) {
+        self.shown_for = None;
+        self.dismissed_for = Some(typed.to_string());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn row(v: &str) -> Row {
         Row { shown: String::new(), value: v.into() }
+    }
+
+    #[test]
+    fn auto_completion_timing_follows_iterm2() {
+        let mut a = Auto::default();
+        let wake = |d: AutoDo, t: f64| matches!(d, AutoDo::WakeAt(x) if (x - t).abs() < 1e-9);
+        assert!(wake(a.step(Some("gi"), 0.0, false), 0.2), "the first showing waits");
+        assert!(wake(a.step(Some("gi"), 0.1, false), 0.2));
+        assert!(wake(a.step(Some("git"), 0.15, false), 0.35), "typing restarts the wait");
+        assert_eq!(a.step(Some("git"), 0.36, false), AutoDo::Show("git".into()));
+        a.showed("git", true);
+        assert_eq!(a.step(Some("git"), 0.4, false), AutoDo::Nothing);
+        assert_eq!(a.step(Some("git "), 0.45, false), AutoDo::Show("git ".into()), "while it shows it follows at once");
+        a.showed("git ", true);
+        a.dismissed("git ");
+        assert_eq!(a.step(Some("git "), 1.0, false), AutoDo::Nothing, "closed stays closed");
+        assert!(wake(a.step(Some("git s"), 1.1, false), 1.3), "until the text changes");
+        assert_eq!(a.step(Some("git s"), 1.31, false), AutoDo::Show("git s".into()));
+        a.showed("git s", false);
+        assert_eq!(a.step(Some("git s"), 2.0, false), AutoDo::Nothing, "no match: not looked up again");
+        assert_eq!(a.step(Some("git st"), 2.0, true), AutoDo::Nothing, "Autocomplete is open");
+        a.showed("git st", true);
+        assert_eq!(a.step(None, 3.0, false), AutoDo::Hide, "left the prompt");
+        assert_eq!(a.step(None, 3.1, false), AutoDo::Nothing);
     }
 
     #[test]

@@ -382,7 +382,7 @@ pub struct App {
     /// The completion list at a pane's cursor, and Auto Command Completion's typed text
     /// and when it may show.
     completion: Option<(PaneId, crate::completion::List)>,
-    auto_typed: Option<(PaneId, String, Instant)>,
+    auto: (Option<PaneId>, crate::completion::Auto),
     upload_due: Option<Instant>,
     /// SetProfileProperty values and SetBackgroundImageFile paths waiting for an answer.
     pending_properties: HashMap<PaneId, Vec<(String, toml::Value)>>,
@@ -632,7 +632,7 @@ pub fn run() {
         shell_fed: HashMap::new(),
         list_popup: None,
         completion: None,
-        auto_typed: None,
+        auto: (None, crate::completion::Auto::default()),
         upload_due: None,
         pending_background: HashMap::new(),
         toast: None,
