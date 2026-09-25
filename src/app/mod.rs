@@ -80,6 +80,7 @@ mod requests_ui;
 mod jobs_ui;
 mod close_ui;
 mod coprocess_ui;
+mod aps_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -200,6 +201,9 @@ pub struct App {
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// Session > Run Coprocess's window.
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
+    /// Automatic Profile Switching: each session's stack, and this computer's name.
+    aps: HashMap<PaneId, crate::aps::Switcher>,
+    local_host: String,
     /// A coprocess's stderr waiting for its banner's answer: (command, text).
     coprocess_errors: HashMap<PaneId, (String, String)>,
     /// Files dropped on the window, handled together once the drop ends.
@@ -406,6 +410,8 @@ pub fn run() {
         ctx_pending: None,
         prompt: None,
         co_prompt: None,
+        aps: HashMap::new(),
+        local_host: aps_ui::local_host(),
         dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
         global_find: None,
@@ -718,6 +724,7 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        self.aps.remove(&id);
         if let Some(p) = self.panes.remove(&id) {
             self.forget_session_profile(&p.profile);
             if let Some(pid) = p.shell_pid() {
@@ -1695,6 +1702,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.check_coprocesses();
         if changed {
+            self.run_automatic_profile_switching();
             self.take_downloads();
             self.take_requests();
             self.check_marks();

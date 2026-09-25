@@ -84,6 +84,8 @@ pub struct SettingsWindow {
     page: Page,
     keys: KeysState,
     mods: Mods,
+    /// The Automatic Profile Switching rule warning, until the next commit.
+    aps_warning: Option<String>,
 }
 
 impl SettingsWindow {
@@ -111,6 +113,7 @@ impl SettingsWindow {
             page: Page::Profiles,
             keys: KeysState::default(),
             mods: Mods::default(),
+            aps_warning: None,
         })
     }
 
@@ -170,8 +173,14 @@ impl SettingsWindow {
         let mode = self.mode;
         let mut page = self.page;
         let keys = &mut self.keys;
+        let aps_warning = &mut self.aps_warning;
         keys.leader = crate::keystroke::parse(&globals.string("Leader"));
         let profiles: Vec<(String, String)> = store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
+        let rule_owners: Vec<crate::aps::Candidate> = store
+            .profiles
+            .iter()
+            .map(|p| crate::aps::Candidate { guid: p.guid(), name: p.name(), rules: p.get("Bound Hosts").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())).unwrap_or_default() })
+            .collect();
         self.host.paint(|ui| {
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
@@ -305,6 +314,19 @@ impl SettingsWindow {
                         for s in list {
                             if s.key == "Keyboard Map" {
                                 if settings_keys::profile_key_mappings(ui, profile, keys, &profiles) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            if s.key == "Bound Hosts" {
+                                let others: Vec<crate::aps::Candidate> = rule_owners.iter().filter(|c| c.guid != selected).cloned().collect();
+                                if crate::settings_lists::bound_hosts(ui, profile, &others, aps_warning) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            if s.key == "Jobs to Ignore" {
+                                if crate::settings_lists::jobs_to_ignore(ui, profile) {
                                     edit = Edit::Changed(selected.clone());
                                 }
                                 continue;

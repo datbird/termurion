@@ -440,3 +440,12 @@ label = "Keep the text size when Automatic Profile Switching changes the profile
 type = "bool"
 default = true
 help = "A session that was made bigger or smaller keeps that change when its profile switches."
+
+[[setting]]
+key = "NoSyncEnableAutomaticProfileSwitchingLogging"
+tab = "Advanced"
+section = "General"
+label = "Write Automatic Profile Switching debug logs"
+type = "bool"
+default = false
+help = "Each Automatic Profile Switching decision goes to automatic-profile-switching.log beside Tandem's settings (iTerm2 writes them to its Script Console)."

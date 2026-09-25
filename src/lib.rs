@@ -45,6 +45,7 @@ pub mod bell;
 pub mod trigger_eval;
 pub mod trigger_events;
 pub mod proctree;
+pub mod aps;
 pub mod coprocess;
 pub mod close_prompt;
 pub mod jobtitle;
@@ -103,6 +104,7 @@ pub mod global_find_ui;
 pub mod settings_keys;
 pub mod settings_advanced;
 pub mod settings_triggers;
+pub mod settings_lists;
 
 #[cfg(windows)]
 pub mod winclip;
