@@ -269,6 +269,32 @@ pub fn place(window: u32, aff: &Affinities, open: &[u32], prevent_tab: bool, ini
     Place::NewWindow
 }
 
+/// iTerm2's preferredTmuxClientName: user@host from shell integration, else the session's
+/// title, else "tmux".
+pub fn client_name(user: Option<&str>, host: Option<&str>, title: &str) -> String {
+    if let (Some(u), Some(h)) = (user, host) {
+        return format!("{u}@{h}");
+    }
+    match title.trim() {
+        "" => "tmux".into(),
+        t => t.into(),
+    }
+}
+
+/// The gateway session's name (iTerm2's formattedName for a gateway).
+pub fn gateway_title(prefix: &str, base: &str, client: &str) -> String {
+    format!("[{prefix}{base} {client}]")
+}
+
+/// A window whose current session is a tmux pane: ` [client]` after the title, only when
+/// the window number shows (iTerm2's PseudoTerminal title rule).
+pub fn window_title(title: &str, show_number: bool, include_client: bool, client: Option<&str>) -> String {
+    match client {
+        Some(c) if show_number && include_client => format!("{title} [{c}]"),
+        _ => title.to_string(),
+    }
+}
+
 /// The history kept for a pane: the client's rows or the profile's scrollback, whichever is
 /// more; unlimited scrollback is 10,000,000.
 pub fn max_history(rows: u32, scrollback: i64, unlimited: bool) -> u32 {
@@ -374,6 +400,18 @@ mod tests {
         assert_eq!(place(5, &none, &[0], false, false, true, OpenIn::NativeWindows, 2), Place::Topmost);
         assert_eq!(place(5, &none, &[0], false, false, true, OpenIn::NativeWindows, 0), Place::NewWindow);
         assert_eq!(place(5, &none, &[0], false, false, false, OpenIn::NativeWindows, 1), Place::NewWindow, "Tandem made it");
+    }
+
+    #[test]
+    fn titles_follow_iterm2() {
+        assert_eq!(client_name(Some("bob"), Some("box"), "zsh"), "bob@box");
+        assert_eq!(client_name(None, Some("box"), "  vim  "), "vim", "no shell integration: the session title");
+        assert_eq!(client_name(None, None, " "), "tmux");
+        assert_eq!(gateway_title("\u{21a3} ", "tmux", "bob@box"), "[\u{21a3} tmux bob@box]");
+        assert_eq!(window_title("1. \u{21a3} vi", true, true, Some("bob@box")), "1. \u{21a3} vi [bob@box]");
+        assert_eq!(window_title("\u{21a3} vi", false, true, Some("bob@box")), "\u{21a3} vi", "only with the window number shown, as iTerm2");
+        assert_eq!(window_title("1. vi", true, false, Some("bob@box")), "1. vi");
+        assert_eq!(window_title("1. vi", true, true, None), "1. vi");
     }
 
     #[test]

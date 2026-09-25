@@ -88,6 +88,7 @@ mod restore_ui;
 mod hotkey_ui;
 mod broadcast_ui;
 mod tmux_ui;
+mod tmux_tabs_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -1738,7 +1739,10 @@ impl App {
             Some(t) => t.clone(),
             None => self.tabs.get(self.active).map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused)),
         };
-        let title = crate::winmodel::title(&title, self.window_number(), self.globals.bool("WindowNumber"));
+        let show_number = self.globals.bool("WindowNumber");
+        let title = crate::winmodel::title(&title, self.window_number(), show_number);
+        let client = self.tabs.get(self.active).and_then(|t| self.tmux_client_of(t.focused));
+        let title = crate::tmux_windows::window_title(&title, show_number, self.globals.bool("tmuxIncludeClientNameInWindowTitle"), client.as_deref());
         // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         let Some(gpu) = self.gpu.as_mut() else { return };
@@ -2055,7 +2059,7 @@ impl ApplicationHandler<UserEvent> for App {
                 exited.push(*id);
             }
         }
-        changed |= self.tmux_pump();
+        changed |= self.tmux_pump(event_loop);
         for id in exited {
             self.session_ended(id);
             if let Some(p) = self.panes.get_mut(&id) {

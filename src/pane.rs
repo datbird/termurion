@@ -192,6 +192,8 @@ pub struct Pane {
     tmux_q: Vec<crate::tmux_hook::Out>,
     /// A tmux gateway: its pty carries tmux commands only, so no input reaches it.
     pub gateway: bool,
+    /// A tmux pane's size is tmux's, whatever its rect (milestone 8c asks tmux for others).
+    tmux_size: Option<(u16, u16)>,
 }
 
 impl Pane {
@@ -226,7 +228,14 @@ impl Pane {
     pub fn tmux(id: PaneId, gateway: PaneId, pane: u32, cols: u16, rows: u16) -> Pane {
         let mut p = Pane::with_io(id, Io::Tmux(TmuxIo::new(gateway, pane)), cols.max(1), rows.max(1));
         p.screen.pty_backed = false;
+        p.tmux_size = Some((cols, rows));
         p
+    }
+
+    /// tmux gave this pane a new size.
+    pub fn set_tmux_size(&mut self, cols: u16, rows: u16) {
+        self.tmux_size = Some((cols, rows));
+        self.resize(cols, rows);
     }
 
     pub fn tmux_io(&self) -> Option<&TmuxIo> {
@@ -267,7 +276,7 @@ impl Pane {
     fn with_io(id: PaneId, io: Io, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false }
+        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -466,6 +475,7 @@ impl Pane {
     /// Resizes the screen and the pty. A pane squeezed to nothing keeps 2x1. True when the
     /// size changed.
     pub fn resize(&mut self, cols: u16, rows: u16) -> bool {
+        let (cols, rows) = self.tmux_size.unwrap_or((cols, rows));
         let (cols, rows) = (cols.max(2), rows.max(1));
         if (self.own().term().columns(), self.own().term().screen_lines()) == (cols as usize, rows as usize) {
             return false;
@@ -649,6 +659,9 @@ mod tests {
         assert!(p.tmux_io().unwrap().take_input().is_empty());
         assert_eq!(p.shell_pid(), None, "tmux's process is not Tandem's");
         assert!(!p.pump(), "nothing new");
+        assert!(!p.resize(100, 50), "a tmux pane keeps tmux's size");
+        p.set_tmux_size(30, 5);
+        assert_eq!((p.screen.term().columns(), p.screen.term().screen_lines()), (30, 5));
         p.tmux_io().unwrap().end();
         p.pump();
         assert_eq!(p.exited, Some(0));
@@ -656,7 +669,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -668,7 +681,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

@@ -10,7 +10,7 @@ use winit::window::Fullscreen;
 /// What belongs to one window.
 pub(super) struct WinSlot {
     pub(super) gpu: Option<Gpu>,
-    tabs: Vec<Tab>,
+    pub(super) tabs: Vec<Tab>,
     active: usize,
     menu_bar: Option<menu::MenuBar>,
     cursor: (f32, f32),

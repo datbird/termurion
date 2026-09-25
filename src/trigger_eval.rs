@@ -254,6 +254,12 @@ impl Screen {
         self.feed_quiet(text.as_bytes());
     }
 
+    /// A tmux pane's history and screen from tmux's captures: triggers do not see them
+    /// (they are not new output) and no reply goes back.
+    pub fn feed_tmux_restore(&mut self, bytes: &[u8]) {
+        self.feed_quiet(bytes);
+    }
+
     /// A tmux gateway message (iTerm2's printTmuxMessage): the text as is, in the default
     /// colors, then a new line. No escape sequence in it acts.
     pub fn print_message(&mut self, text: &str) {

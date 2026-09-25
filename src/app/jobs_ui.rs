@@ -51,6 +51,9 @@ impl App {
 
     /// The window's title: a program's own window title as it is, else the session title.
     pub(super) fn window_title(&self, pane: PaneId) -> String {
+        if let Some(t) = self.tmux_titles(pane) {
+            return t;
+        }
         match self.panes.get(&pane).and_then(|p| p.own().title()) {
             Some(t) => t.to_string(),
             None => self.session_title(pane),

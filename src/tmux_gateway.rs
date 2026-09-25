@@ -150,6 +150,11 @@ impl Gateway {
         self.queue.clear();
     }
 
+    /// No window opened on attach: notifications start now (iTerm2 sets acceptNotifications).
+    pub fn accept_notifications(&mut self) {
+        self.accept_notes = true;
+    }
+
     pub fn enable_writes(&mut self) {
         self.can_write = true;
         let held = std::mem::take(&mut self.held);

@@ -33,11 +33,20 @@ pub(super) struct TmuxGw {
     typed: std::collections::HashSet<Tag>,
     /// Force Detach? was offered for the command that waits.
     hung_asked: bool,
+    /// iTerm2's clientName, fixed when tmux mode starts.
+    client: String,
+    /// The tmux session: windows, panes, and the attach.
+    ctl: crate::tmux_controller::Controller,
+    /// tmux pane id to (Tandem pane, tmux window id).
+    pub(super) panes: HashMap<u32, (PaneId, u32)>,
 }
+
+/// Tags for commands typed through C, above the controller's.
+const TYPED_TAGS: Tag = 1 << 40;
 
 impl App {
     /// Runs what each pane's tmux hook found. True when anything happened.
-    pub(super) fn tmux_pump(&mut self) -> bool {
+    pub(super) fn tmux_pump(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let ids: Vec<PaneId> = self.panes.iter().filter(|(_, p)| p.has_tmux()).map(|(id, _)| *id).collect();
         for id in &ids {
             let outs = self.panes.get_mut(id).map(|p| p.take_tmux()).unwrap_or_default();
@@ -52,7 +61,7 @@ impl App {
                     Out::Line(line) | Out::Exit(line) => {
                         let Some(t) = self.tmux.get_mut(id) else { continue };
                         let events = t.gw.line(&line);
-                        self.tmux_events(*id, events);
+                        self.tmux_events(*id, events, event_loop);
                     }
                 }
             }
@@ -66,6 +75,9 @@ impl App {
             return;
         }
         let newline = if self.profile_of(pane).is_some_and(|p| p.bool("Tmux Newline")) { "\n" } else { "\r" };
+        let title = self.session_title(pane);
+        let Some(shell) = self.panes.get(&pane).map(|p| &p.own().shell) else { return };
+        let name = crate::tmux_windows::client_name(shell.user.as_deref(), shell.host.as_deref(), &title);
         let Some(p) = self.panes.get_mut(&pane) else { return };
         p.gateway = true;
         // A bare ^C first: a fake start cannot make Tandem type a command into a shell.
@@ -73,9 +85,13 @@ impl App {
         for line in BANNER {
             p.own_mut().print_message(line);
         }
+        let client = (p.own().term().columns() as u32, p.own().term().screen_lines() as u32);
         let mut gw = Gateway::new(newline);
         gw.tolerate_unrecognized = self.globals.bool("tolerateUnrecognizedTmuxCommands");
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: tmux_handshake::FIRST_FREE_TAG, typed: Default::default(), hung_asked: false });
+        let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
+        ctl.client = client;
+        ctl.prefs = self.tmux_prefs(pane, client.1);
+        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, panes: HashMap::new() });
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {
@@ -84,18 +100,36 @@ impl App {
         }
     }
 
-    fn tmux_events(&mut self, pane: PaneId, events: Vec<Event>) {
+    /// The controller's preferences, read when the gateway starts.
+    fn tmux_prefs(&self, gw: PaneId, rows: u32) -> crate::tmux_controller::Prefs {
+        let p = self.profile_of(gw);
+        let scrollback = p.map_or(1000, |p| p.int("Scrollback Lines"));
+        let unlimited = p.is_some_and(|p| p.bool("Unlimited Scrollback"));
+        crate::tmux_controller::Prefs {
+            open_in: crate::tmux_windows::OpenIn::from_pref(self.globals.int("OpenTmuxWindowsIn")),
+            limit: self.globals.int("TmuxDashboardLimit"),
+            anonymous_location: self.globals.int("anonymousTmuxWindowsOpenInCurrentWindow"),
+            prevent_tab: p.is_some_and(|p| p.bool("Prevent Opening in a Tab")),
+            max_history: crate::tmux_windows::max_history(rows, scrollback, unlimited),
+        }
+    }
+
+    fn tmux_events(&mut self, pane: PaneId, events: Vec<Event>, event_loop: &ActiveEventLoop) {
         for e in events {
             let Some(t) = self.tmux.get_mut(&pane) else { return };
             match e {
                 Event::Print(line) => self.tmux_print(pane, &line),
-                Event::Reply { tag, ok, text, .. } => {
+                Event::Reply { tag, ok, text, data } => {
                     if let Some(ask) = tmux_handshake::ask_of(tag) {
-                        for step in t.hs.reply(ask, ok.then_some(text.as_str()), &mut t.gw) {
+                        let steps = t.hs.reply(ask, ok.then_some(text.as_str()), &mut t.gw);
+                        for step in steps {
                             match step {
                                 Step::Abort(title, text) => return self.tmux_abort(pane, &title, &text),
-                                // Windows open from here in milestone 8b.
-                                Step::VersionKnown => {}
+                                Step::VersionKnown => {
+                                    let Some(t) = self.tmux.get_mut(&pane) else { return };
+                                    let (min, tab_bug, status) = (t.hs.min, t.hs.tab_bug, t.hs.status_bar);
+                                    t.ctl.version_known(min, tab_bug, status, &mut t.gw);
+                                }
                             }
                         }
                     } else if t.typed.remove(&tag) {
@@ -103,11 +137,23 @@ impl App {
                         for line in text.split('\n') {
                             self.tmux_print(pane, &line.replace('\r', ""));
                         }
+                    } else if let Some(actions) = t.ctl.reply(tag, ok, &text, &data, &mut t.gw) {
+                        if !self.tmux_actions(pane, actions, event_loop) {
+                            return;
+                        }
                     }
                 }
-                Event::Note(Note::SessionChanged { .. }) | Event::Initialized => t.hs.kick_off(&mut t.gw, Instant::now()),
-                // Every other notification drives tmux windows (milestone 8b).
-                Event::Note(_) => {}
+                Event::Initialized => t.hs.kick_off(&mut t.gw, Instant::now()),
+                Event::Note(n) => {
+                    // tmux 1.8 names the session before the first reply ends.
+                    if matches!(n, Note::SessionChanged { .. }) {
+                        t.hs.kick_off(&mut t.gw, Instant::now());
+                    }
+                    let actions = t.ctl.note(n, &mut t.gw);
+                    if !self.tmux_actions(pane, actions, event_loop) {
+                        return;
+                    }
+                }
                 Event::Abort(msg) => return self.tmux_abort(pane, "tmux Reported a Problem", &msg),
                 Event::InitialFailed(text) => self.tmux_print(pane, &format!("tmux failed with error: \u{201c}{text}\u{201d}")),
                 Event::Exit => {
@@ -136,7 +182,7 @@ impl App {
     }
 
     /// iTerm2's abortWithErrorMessage: the alert, `detach`, and tmux mode ends.
-    fn tmux_abort(&mut self, pane: PaneId, title: &str, text: &str) {
+    pub(super) fn tmux_abort(&mut self, pane: PaneId, title: &str, text: &str) {
         alert(self.hwnd(), title, text);
         if let Some(t) = self.tmux.get_mut(&pane) {
             t.gw.abort();
@@ -153,6 +199,7 @@ impl App {
         if self.tmux.remove(&pane).is_none() {
             return;
         }
+        self.tmux_end_panes(pane);
         if let Some(p) = self.panes.get_mut(&pane) {
             p.own_mut().print_message("Detached");
             p.gateway = false;
@@ -162,6 +209,23 @@ impl App {
         }
         self.bars.entry(pane).or_default().retain(|b| b.id != SLOW_BAR && b.id != HUNG_BAR);
         self.redraw();
+    }
+
+    /// A tmux session's names: the gateway's `[prefix title client]`, a tmux pane's tab title.
+    pub(super) fn tmux_titles(&self, pane: PaneId) -> Option<String> {
+        let prefix = self.globals.string("tmuxTitlePrefix");
+        if let Some(t) = self.tmux.get(&pane) {
+            let base = self.panes.get(&pane).and_then(|p| p.own().title()).map(str::to_string).unwrap_or_else(|| self.session_title(pane));
+            return Some(crate::tmux_windows::gateway_title(&prefix, &base, &t.client));
+        }
+        self.panes.get(&pane).and_then(|p| p.tmux_io())?;
+        self.tabs.iter().chain(self.windows.parked().flat_map(|(_, s)| s.tabs.iter())).find(|t| t.layout.panes().contains(&pane)).and_then(|t| t.title.clone())
+    }
+
+    /// The client name of the tmux session that shows `pane`.
+    pub(super) fn tmux_client_of(&self, pane: PaneId) -> Option<String> {
+        let gw = self.panes.get(&pane)?.tmux_io()?.gateway;
+        self.tmux.get(&gw).map(|t| t.client.clone())
     }
 
     pub(super) fn tmux_gateways(&self) -> std::collections::BTreeSet<PaneId> {
