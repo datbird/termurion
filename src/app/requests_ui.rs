@@ -15,6 +15,7 @@ pub(super) const FIREWORKS: Duration = Duration::from_millis(1200);
 impl App {
     pub(super) fn window_request(&mut self, pane: PaneId, r: Request) {
         match r {
+            Request::Trigger(t) => self.trigger_request(pane, t),
             Request::CursorGuide(on) => {
                 self.show_guide.insert(pane, on);
                 self.redraw();

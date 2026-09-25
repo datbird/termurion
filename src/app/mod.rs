@@ -71,6 +71,7 @@ mod marks_ui;
 mod menu;
 mod porthole_ui;
 mod prompted_ui;
+mod triggers_ui;
 mod requests_ui;
 
 pub enum UserEvent {

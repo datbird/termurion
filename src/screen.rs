@@ -176,6 +176,10 @@ pub struct Screen {
     pub blocks: crate::blocks::Blocks,
     /// OSC 1337 Button: the buttons written into the text.
     pub buttons: crate::blocks::Buttons,
+    /// The profile's triggers and where checking has reached.
+    pub triggers: crate::trigger_eval::TriggerState,
+    /// Variables the window owns, for interpolated strings (`session.name`, `tab.title`).
+    pub app_vars: std::collections::HashMap<String, String>,
     /// Portholes by id, and the last id given.
     pub portholes: std::collections::HashMap<u32, crate::porthole::store::Porthole>,
     pub(crate) next_porthole: u32,
@@ -230,6 +234,8 @@ pub enum Request {
     RequestUpload(String),
     /// SetColors `tab`: the pane's tab color, or back to none.
     TabColor(Option<alacritty_terminal::vte::ansi::Rgb>),
+    /// A trigger's action the window runs.
+    Trigger(crate::trigger_eval::TriggerRequest),
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -291,6 +297,8 @@ impl Screen {
             blocks: crate::blocks::Blocks::default(),
             buttons: crate::blocks::Buttons::default(),
             portholes: std::collections::HashMap::new(),
+            triggers: crate::trigger_eval::TriggerState::default(),
+            app_vars: std::collections::HashMap::new(),
             next_porthole: 0,
             porthole_wide_default: false,
             porthole_selection: None,
@@ -335,6 +343,8 @@ impl Screen {
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.term.resize(GridSize { cols, rows });
+        // Reflow moved rows: triggers go on from the cursor.
+        self.triggers_from_cursor();
     }
 
     pub fn term(&self) -> &Term<Listener> {
@@ -357,7 +367,9 @@ impl Screen {
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
         if self.keys.literal {
-            return self.feed_raw(&literal(bytes));
+            let reply = self.feed_raw(&literal(bytes));
+            self.run_triggers_after_feed();
+            return reply;
         }
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
@@ -412,6 +424,7 @@ impl Screen {
         }
         reply.extend(self.feed_raw(&bytes[at..]));
         reply.extend(self.color_scheme_change());
+        self.run_triggers_after_feed();
         reply
     }
 
@@ -757,7 +770,10 @@ impl Screen {
             return Vec::new();
         }
         self.term.selection = None;
-        self.term.primary_grid_mut().splice(Line(first), Line(last), with)
+        let removed = self.term.primary_grid_mut().splice(Line(first), Line(last), with);
+        // Rows moved: triggers go on from the cursor.
+        self.triggers_from_cursor();
+        removed
     }
 
     /// Rows holding `lines` as plain text; a line longer than the width wraps onto more rows.

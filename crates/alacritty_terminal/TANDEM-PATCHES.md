@@ -58,4 +58,7 @@ test data) is left out. Changes:
     `grid/mod.rs`: `Grid::max_scroll_limit()` reads the history limit (a porthole never takes
     more rows than the buffer holds).
 
+13. `term/mod.rs`: `Term.scrolled_off` counts rows that scroll up off the top of the screen
+    (`scroll_up_relative` with the region starting at the top), so triggers can number rows.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.
