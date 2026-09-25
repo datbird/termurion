@@ -127,6 +127,7 @@ const LABEL_BG: Rgb = rgb(0xff, 0xd7, 0x00);
 const NOTE: Rgb = rgb(0xff, 0xff, 0x00);
 const STAMP_BG: Rgb = rgb(0x20, 0x20, 0x20);
 const NOTE_BG: Rgb = rgb(0xff, 0xf8, 0xc4);
+const BAR_BUTTON: Rgb = rgb(0xff, 0xff, 0xff);
 const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
 const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
 /// How much an unfocused pane fades toward the background, as iTerm2 dims inactive splits.
@@ -562,6 +563,27 @@ pub fn dividers(frame: &mut Frame, dividers: &[Divider]) {
     for d in dividers {
         frame.overlay.push(Quad { rect: d.rect, color: rgba(DIVIDER, 1.0) });
     }
+}
+
+/// iTerm2's announcement bar across the top of a pane: its text, buttons, and close box.
+/// The pane's text under the bar is hidden.
+pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar::Layout, cell: (f32, f32)) {
+    let r = l.bar;
+    for row in frame.rows.iter_mut() {
+        if row.y < r.y + r.h && row.y + cell.1 > r.y && row.clip.x < r.x + r.w && row.clip.x + row.clip.w > r.x {
+            row.clip.w = 0.0;
+        }
+    }
+    frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false };
+    let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
+    let clip = Rect { w: (text_end - r.x).max(0.0), ..r };
+    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.text.clone())], clip });
+    for (label, b) in bar.buttons.iter().zip(&l.buttons) {
+        frame.quads.push(Quad { rect: *b, color: rgba(BAR_BUTTON, 1.0) });
+        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(label.clone())], clip: *b });
+    }
+    frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close });
 }
 
 /// A one-line error bar along the bottom of `area`. Its box goes in `quads`, so its

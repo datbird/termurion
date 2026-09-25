@@ -19,6 +19,7 @@ pub mod copymode;
 pub mod fold;
 pub mod annotations;
 pub mod images;
+pub mod infobar;
 pub mod inline_file;
 pub mod sixel;
 pub mod kitty;

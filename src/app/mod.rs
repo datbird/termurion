@@ -55,6 +55,7 @@ mod annotations_ui;
 mod copymode_ui;
 mod files_ui;
 mod find_ui;
+mod infobar_ui;
 mod keyproto_ui;
 mod fold_ui;
 mod labels_ui;
@@ -181,6 +182,8 @@ pub struct App {
     panes: HashMap<PaneId, Pane>,
     next_id: PaneId,
     mods: Mods,
+    /// Announcement bars waiting in each pane.
+    bars: HashMap<PaneId, crate::infobar::Bars>,
     /// Keys whose press went to a program, so their release may too.
     sent_keys: keyproto_ui::Held,
     /// The physical key of the press being routed now.
@@ -311,6 +314,7 @@ pub fn run() {
         next_id: 1,
         mods: Mods::default(),
         sent_keys: keyproto_ui::Held::default(),
+        bars: HashMap::new(),
         typing: None,
         cursor: (0.0, 0.0),
         drag: Drag::None,
@@ -564,6 +568,7 @@ impl App {
         self.note_pos.remove(&id);
         self.show_stamps.remove(&id);
         self.show_guide.remove(&id);
+        self.bars.remove(&id);
         if self.note_win.as_ref().is_some_and(|(_, p, _)| *p == id) {
             self.note_win = None;
         }
@@ -923,6 +928,9 @@ impl App {
             self.active = i;
             return self.redraw();
         }
+        if button == MouseButton::Left && self.info_bar_press(x, y) {
+            return;
+        }
         if button == MouseButton::Left {
             let area = self.content_area();
             let grab = 3.0 * self.scale();
@@ -1234,6 +1242,7 @@ impl App {
                 if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
                     scene::copy_cursor(&mut frame, self.inner(rect), cell, row, col, selecting);
                 }
+                self.draw_info_bar(&mut frame, id, rect, cell);
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));
                 if let Some(p) = self.panes.get(&id) {
                     let bars: Vec<(usize, crate::marks::MarkColor)> = p
