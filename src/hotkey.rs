@@ -272,6 +272,24 @@ pub fn keeps_running(regular: usize, hotkey: usize) -> bool {
     regular + hotkey > 0
 }
 
+/// A shortcut that "smells accidental" (iTerm2): no Win (Cmd) and no Control, and a key
+/// people type (a letter, digit, punctuation, Space, Delete, Tab, Return, Escape, or a
+/// navigation key). Function keys never smell.
+pub fn smells_accidental(s: &Shortcut) -> bool {
+    if s.flags & (COMMAND | CONTROL) != 0 {
+        return false;
+    }
+    let Some(c) = s.chars_ignoring.chars().next() else { return false };
+    let navigation = matches!(c as u32, 0xF700..=0xF703 | 0xF727..=0xF72D);
+    let function = (0xF704..=0xF726).contains(&(c as u32));
+    !function && (navigation || c.is_alphanumeric() || c.is_ascii_punctuation() || matches!(c, ' ' | '\u{7f}' | '\t' | '\r' | '\u{1b}' | '\u{8}'))
+}
+
+/// The question for such a shortcut: (heading, text).
+pub fn confirm_text(label: &str) -> (&'static str, String) {
+    ("Confirm Shortcut", format!("Are you sure you want to use \u{201c}{label}\u{201d} as a hotkey? This looks like a commonly used keystroke."))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +421,21 @@ mod tests {
         assert!(keeps_running(0, 1), "only a hidden hotkey window is left");
         assert!(keeps_running(1, 0));
         assert!(!keeps_running(0, 0));
+    }
+
+    #[test]
+    fn accidental_keystrokes_ask() {
+        assert!(smells_accidental(&short(0x31, OPTION, " ")), "Alt+Space");
+        assert!(smells_accidental(&short(0x00, SHIFT, "a")), "Shift+A");
+        assert!(smells_accidental(&short(0x7E, OPTION, "\u{f700}")), "Alt+Up");
+        assert!(smells_accidental(&short(0x35, 0, "\u{1b}")), "Escape");
+        assert!(!smells_accidental(&short(0x32, CONTROL, "`")), "Control");
+        assert!(!smells_accidental(&short(0x00, COMMAND, "a")), "Win");
+        assert!(!smells_accidental(&short(0x6F, 0, "\u{f70f}")), "F12");
+        assert!(!smells_accidental(&short(0x6F, OPTION, "\u{f70f}")), "Alt+F12");
+        let (heading, text) = confirm_text("Alt+Space");
+        assert_eq!(heading, "Confirm Shortcut");
+        assert_eq!(text, "Are you sure you want to use \u{201c}Alt+Space\u{201d} as a hotkey? This looks like a commonly used keystroke.");
     }
 
     #[test]

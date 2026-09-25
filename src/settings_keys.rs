@@ -117,9 +117,20 @@ pub struct PointerEditor {
     pub binding: PointerBinding,
 }
 
+/// Which hotkey recorder is recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HotkeySlot {
+    Primary,
+    Alternate(usize),
+    App,
+}
+
 /// The binding editors' state, kept by the settings window.
 #[derive(Default)]
 pub struct KeysState {
+    /// A hotkey recorder is recording, and what it recorded.
+    pub hotkey_recording: Option<HotkeySlot>,
+    pub hotkey_recorded: Option<(HotkeySlot, Keystroke)>,
     pub selected: Option<String>,
     pub profile_selected: Option<String>,
     pub pointer_selected: Option<String>,
@@ -136,10 +147,19 @@ pub struct KeysState {
 impl KeysState {
     /// A key press should be recorded, not typed.
     pub fn recording(&self) -> bool {
-        self.leader_recording || self.key_editor.as_ref().is_some_and(|e| e.recording)
+        self.leader_recording || self.hotkey_recording.is_some() || self.key_editor.as_ref().is_some_and(|e| e.recording)
     }
 
     pub fn deliver(&mut self, k: Keystroke) {
+        if let Some(slot) = self.hotkey_recording.take() {
+            // Modifiers alone do not make a hotkey; keep recording.
+            if k.keycode.is_some_and(|c| matches!(c, 0x37 | 0x38 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x36)) {
+                self.hotkey_recording = Some(slot);
+                return;
+            }
+            self.hotkey_recorded = Some((slot, k));
+            return;
+        }
         if self.leader_recording {
             self.leader_recording = false;
             self.leader_recorded = Some(k);

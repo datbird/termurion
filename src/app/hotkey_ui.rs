@@ -106,6 +106,9 @@ impl App {
             }
             Err(e) => self.banners.set("hotkeys", format!("Hotkeys are unavailable: {e}")),
         }
+        if let Some(s) = self.settings.as_mut() {
+            s.hotkeys.errors = self.hotkey_errors.clone();
+        }
     }
 
     /// The app hotkey (Settings > Keys > Hotkey), iTerm2's global keys.

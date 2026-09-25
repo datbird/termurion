@@ -89,6 +89,8 @@ pub struct SettingsWindow {
     /// The Automatic Profile Switching rule warning, until the next commit.
     aps_warning: Option<String>,
     arr: crate::settings_arrangements::State,
+    /// Hotkey windows: the sheet, and registration failures from the app.
+    pub hotkeys: crate::settings_hotkey::HotkeyUi,
 }
 
 impl SettingsWindow {
@@ -118,6 +120,7 @@ impl SettingsWindow {
             mods: Mods::default(),
             aps_warning: None,
             arr: Default::default(),
+            hotkeys: Default::default(),
         })
     }
 
@@ -182,6 +185,8 @@ impl SettingsWindow {
         let profiles: Vec<(String, String)> = store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let profile_tables: Vec<(String, String, toml::Table)> = store.profiles.iter().map(|p| (p.guid(), p.name(), p.values.clone().into_iter().collect())).collect();
         let arr = &mut self.arr;
+        let hk = &mut self.hotkeys;
+        let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
             .iter()
@@ -204,7 +209,15 @@ impl SettingsWindow {
                 if page != Page::Profiles {
                     egui::CentralPanel::default().show(ui, |ui| {
                         let changed = match page {
-                            Page::Keys => settings_keys::keys_page(ui, globals, keys, &profiles),
+                            Page::Keys => {
+                                let mut c = settings_keys::keys_page(ui, globals, keys, &profiles);
+                                match crate::settings_hotkey::keys_section(ui, globals, store, hk, keys) {
+                                    crate::settings_hotkey::KeysEdit::None => {}
+                                    crate::settings_hotkey::KeysEdit::Globals => c = true,
+                                    crate::settings_hotkey::KeysEdit::Profile(g) => edit = Edit::Changed(g),
+                                }
+                                c
+                            }
                             Page::General => settings_keys::schema_page(ui, globals, "General"),
                             Page::Advanced => settings_keys::schema_page(ui, globals, "Advanced"),
                             Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance"),
@@ -320,6 +333,16 @@ impl SettingsWindow {
                             ui.strong(&section);
                         }
                         for s in list {
+                            // The hotkey keys are one row and the Configure Hotkey Window sheet.
+                            if s.key == "Has Hotkey" {
+                                if crate::settings_hotkey::profile_row(ui, &selected, profile, hk, keys, &hotkey_prefs) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
+                            if s.key.starts_with("HotKey ") {
+                                continue;
+                            }
                             if s.key == "Keyboard Map" {
                                 if settings_keys::profile_key_mappings(ui, profile, keys, &profiles) {
                                     edit = Edit::Changed(selected.clone());

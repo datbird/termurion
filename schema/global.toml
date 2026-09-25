@@ -648,3 +648,66 @@ label = "Keep restored windows within the displays"
 type = "bool"
 default = true
 help = "When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays."
+
+[[setting]]
+key = "Hotkey"
+tab = "Keys"
+section = "Hotkey"
+label = "Show/hide all windows with a system-wide hotkey"
+type = "bool"
+default = false
+help = "A system-wide hotkey shows and hides all of Tandem's windows."
+
+[[setting]]
+key = "HotkeyCode"
+tab = "Keys"
+section = "Hotkey"
+label = "App hotkey key code"
+type = "int"
+default = 0
+help = "The app hotkey's key (macOS key code, as iTerm2 stores it)."
+
+[[setting]]
+key = "HotkeyChar"
+tab = "Keys"
+section = "Hotkey"
+label = "App hotkey character"
+type = "int"
+default = 0
+help = "The app hotkey's character."
+
+[[setting]]
+key = "HotkeyModifiers"
+tab = "Keys"
+section = "Hotkey"
+label = "App hotkey modifiers"
+type = "int"
+default = 0
+help = "The app hotkey's modifiers (iTerm2's flags; Command is Win, Option is Alt)."
+
+[[setting]]
+key = "hotkeyTermAnimationDuration"
+tab = "Advanced"
+section = "Hotkey"
+label = "Hotkey window animation seconds"
+type = "float"
+default = 0.25
+help = "Duration in seconds of the hotkey window animation. Warning: reducing this value may cause problems if you have multiple displays."
+
+[[setting]]
+key = "hotKeyDoubleTapMaxDelay"
+tab = "Advanced"
+section = "Hotkey"
+label = "Double-tap maximum delay"
+type = "float"
+default = 0.3
+help = "The maximum amount of time allowed between presses of a modifier key when performing a modifier double-tap."
+
+[[setting]]
+key = "hotKeyDoubleTapMinDelay"
+tab = "Advanced"
+section = "Hotkey"
+label = "Double-tap minimum delay"
+type = "float"
+default = 0.01
+help = "The minimum amount of time required between presses of a modifier key when performing a modifier double-tap."
