@@ -265,7 +265,7 @@ impl Screen {
         if p.column.0 > 0 { Point::new(p.line, Column(p.column.0 - 1)) } else { Point::new(p.line - 1, Column(self.term.columns() - 1)) }
     }
 
-    fn new_mark(&mut self, line: i32, kind: Kind) -> u32 {
+    pub(crate) fn new_mark(&mut self, line: i32, kind: Kind) -> u32 {
         self.marks.next_id = self.marks.next_id.wrapping_add(1).max(1);
         let id = self.marks.next_id;
         match kind {
@@ -340,7 +340,7 @@ impl Screen {
         Some((self.resolve(a)?, self.before(self.resolve(b)?)))
     }
 
-    fn prompt_start(&mut self, kind: PromptKind, aid: Option<String>, fresh_line: bool) {
+    pub(crate) fn prompt_start(&mut self, kind: PromptKind, aid: Option<String>, fresh_line: bool) {
         if !matches!(kind, PromptKind::Initial | PromptKind::Unknown) {
             return;
         }

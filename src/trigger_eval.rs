@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::TermMode;
+use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
 use crate::screen::{Request, Screen};
 use crate::triggers::{self, Trigger};
@@ -72,6 +73,114 @@ enum Flow {
     More,
     Done,
     StopAll,
+}
+
+const fn c(r: u8, g: u8, b: u8) -> Rgb {
+    Rgb { r, g, b }
+}
+
+/// AppKit's named colors in iTerm2's preset order: black, dark gray, light gray, white,
+/// gray, red, green, blue, cyan, yellow, magenta, orange, purple, brown.
+const NAMED: [Rgb; 14] = [
+    c(0, 0, 0), c(85, 85, 85), c(170, 170, 170), c(255, 255, 255), c(128, 128, 128), c(255, 0, 0), c(0, 255, 0),
+    c(0, 0, 255), c(0, 255, 255), c(255, 255, 0), c(255, 0, 255), c(255, 128, 0), c(128, 0, 128), c(153, 102, 51),
+];
+
+fn hex(v: &str) -> Option<Rgb> {
+    let h = v.trim().strip_prefix('#').filter(|h| h.len() == 6 && h.is_ascii())?;
+    let n = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some(c(n(0)?, n(2)?, n(4)?))
+}
+
+/// A Highlight trigger's colors: `{#fg,#bg}` (either side may be empty), an old numeric
+/// preset, or white on red when empty.
+pub fn highlight_colors(param: &str) -> (Option<Rgb>, Option<Rgb>) {
+    let p = param.trim();
+    if let Some(body) = p.strip_prefix('{').and_then(|b| b.strip_suffix('}')) {
+        let (f, b) = body.split_once(',').unwrap_or((body, ""));
+        return (hex(f), hex(b));
+    }
+    let named = |i: i64| NAMED.get(i as usize).copied();
+    match p.parse::<i64>() {
+        Ok(n @ 0..=7) => {
+            let (f, b) = [(9, 0), (0, 9), (3, 5), (5, 3), (0, 11), (11, 0), (0, 12), (12, 0)][n as usize];
+            (named(f), named(b))
+        }
+        Ok(n @ 1000..=1013) => (named(n - 1000), None),
+        Ok(n @ 2000..=2013) => (None, named(n - 2000)),
+        _ => (Some(NAMED[3]), Some(NAMED[5])),
+    }
+}
+
+/// Change Style's SGR parameters applied to a cell (`;` between parameters, `:` inside one).
+fn apply_sgr(cell: &mut Cell, param: &str) {
+    let params: Vec<Vec<u16>> = param.split(';').map(|p| p.split(':').map(|n| n.trim().parse().unwrap_or(0)).collect()).collect();
+    let mut i = 0;
+    let color = |sub: &[u16], rest: &[Vec<u16>], used: &mut usize| -> Option<Color> {
+        // 38:5:n, 38:2:[cs:]r:g:b, or the ; forms 38;5;n and 38;2;r;g;b.
+        let flat: Vec<u16> = if sub.len() > 1 { sub[1..].to_vec() } else { rest.iter().take(4).map(|p| p[0]).collect() };
+        match flat.first() {
+            Some(5) => {
+                *used = if sub.len() > 1 { 0 } else { 2 };
+                flat.get(1).map(|n| Color::Indexed(*n as u8))
+            }
+            Some(2) => {
+                let rgb = if sub.len() > 1 && flat.len() >= 5 { &flat[2..5] } else if flat.len() >= 4 { &flat[1..4] } else { return None };
+                *used = if sub.len() > 1 { 0 } else { 4 };
+                Some(Color::Spec(c(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)))
+            }
+            _ => None,
+        }
+    };
+    while i < params.len() {
+        let p = &params[i];
+        let mut used = 0;
+        match p[0] {
+            0 => {
+                cell.flags.remove(Flags::BOLD | Flags::DIM | Flags::ITALIC | Flags::UNDERLINE | Flags::INVERSE | Flags::HIDDEN | Flags::STRIKEOUT);
+                cell.fg = Color::Named(NamedColor::Foreground);
+                cell.bg = Color::Named(NamedColor::Background);
+            }
+            1 => cell.flags.insert(Flags::BOLD),
+            2 => cell.flags.insert(Flags::DIM),
+            3 => cell.flags.insert(Flags::ITALIC),
+            4 => cell.flags.insert(Flags::UNDERLINE),
+            7 => cell.flags.insert(Flags::INVERSE),
+            8 => cell.flags.insert(Flags::HIDDEN),
+            9 => cell.flags.insert(Flags::STRIKEOUT),
+            22 => cell.flags.remove(Flags::BOLD | Flags::DIM),
+            23 => cell.flags.remove(Flags::ITALIC),
+            24 => cell.flags.remove(Flags::UNDERLINE),
+            27 => cell.flags.remove(Flags::INVERSE),
+            28 => cell.flags.remove(Flags::HIDDEN),
+            29 => cell.flags.remove(Flags::STRIKEOUT),
+            n @ 30..=37 => cell.fg = Color::Indexed((n - 30) as u8),
+            n @ 90..=97 => cell.fg = Color::Indexed((n - 90 + 8) as u8),
+            n @ 40..=47 => cell.bg = Color::Indexed((n - 40) as u8),
+            n @ 100..=107 => cell.bg = Color::Indexed((n - 100 + 8) as u8),
+            39 => cell.fg = Color::Named(NamedColor::Foreground),
+            49 => cell.bg = Color::Named(NamedColor::Background),
+            38 => {
+                if let Some(col) = color(p, &params[i + 1..], &mut used) {
+                    cell.fg = col;
+                }
+            }
+            48 => {
+                if let Some(col) = color(p, &params[i + 1..], &mut used) {
+                    cell.bg = col;
+                }
+            }
+            _ => {}
+        }
+        i += 1 + used;
+    }
+}
+
+/// A URL with a scheme (Make Hyperlink ignores anything else).
+fn url_ok(v: &str) -> bool {
+    v.split_once(':').is_some_and(|(scheme, rest)| {
+        scheme.len() > 1 && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) && !rest.is_empty()
+    })
 }
 
 /// iTerm2's triggerRadius: rows before and after a row a logical line may span.
@@ -169,7 +278,11 @@ impl Screen {
             let row = &g[Line(l)];
             // A row that does not wrap ends at its last written cell.
             let wraps = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
-            let used = if wraps || l < end { cols } else { (0..cols).rev().find(|c| row[Column(*c)].c != ' ' || row[Column(*c)].flags.contains(Flags::WIDE_CHAR)).map_or(0, |c| c + 1) };
+            let written = (0..cols).rev().find(|c| row[Column(*c)].c != ' ' || row[Column(*c)].flags.contains(Flags::WIDE_CHAR)).map_or(0, |c| c + 1);
+            // On the cursor's row the text runs to the cursor (a prompt's trailing space).
+            let cursor = g.cursor.point;
+            let written = if cursor.line.0 == l { written.max(cursor.column.0.min(cols)) } else { written };
+            let used = if wraps || l < end { cols } else { written };
             for c in 0..used {
                 let cell = &row[Column(c)];
                 if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
@@ -251,11 +364,151 @@ impl Screen {
         }
     }
 
+    /// The cells of a match: (line, column), from byte offsets in the logical line.
+    fn match_cells(line: &LineText, span: (usize, usize)) -> Vec<(i32, usize)> {
+        line.cells.iter().filter(|(b, _, _)| *b >= span.0 && *b < span.1).map(|(_, l, c)| (*l, *c)).collect()
+    }
+
+    fn each_cell(&mut self, cells: &[(i32, usize)], f: &mut dyn FnMut(&mut Cell)) {
+        let g = self.term.grid_mut();
+        let (top, lines, cols) = (-(g.history_size() as i32), g.screen_lines() as i32, g.columns());
+        for &(l, col) in cells {
+            if l >= top && l < lines && col < cols {
+                f(&mut g[Line(l)][Column(col)]);
+            }
+        }
+    }
+
     /// Runs trigger `i`'s action on a match (byte range in the line).
-    fn trigger_action(&mut self, i: usize, value: &str, _span: (usize, usize), _line: &LineText) -> Flow {
-        let class = self.triggers.list[i].trigger.action.clone();
-        let class = triggers::action_info(&class).map_or(class.as_str(), |a| a.class).to_string();
-        match class.as_str() {
+    fn trigger_action(&mut self, i: usize, value: &str, span: (usize, usize), line: &LineText) -> Flow {
+        let raw = self.triggers.list[i].trigger.action.clone();
+        let Some(info) = triggers::action_info(&raw) else {
+            self.requests.push(Request::Trigger(TriggerRequest::Unavailable { trigger: i, title: raw, milestone: 0 }));
+            return Flow::Done;
+        };
+        if let Some(m) = info.later {
+            self.requests.push(Request::Trigger(TriggerRequest::Unavailable { trigger: i, title: info.title.to_string(), milestone: m }));
+            return Flow::Done;
+        }
+        let cells = Self::match_cells(line, span);
+        let first = cells.first().copied();
+        let end_line = line.cells.last().map_or(0, |(_, l, _)| *l);
+        let ask = |s: &mut Screen, r: TriggerRequest| {
+            s.requests.push(Request::Trigger(r));
+            Flow::Done
+        };
+        match info.class {
+            "HighlightTrigger" => {
+                let (fg, bg) = highlight_colors(value);
+                self.each_cell(&cells, &mut |c| {
+                    if let Some(f) = fg {
+                        c.fg = Color::Spec(f);
+                    }
+                    if let Some(b) = bg {
+                        c.bg = Color::Spec(b);
+                    }
+                });
+                Flow::More
+            }
+            "iTermHighlightLineTrigger" => {
+                let (fg, bg) = highlight_colors(value);
+                let cols = self.term.grid().columns();
+                let rows: Vec<i32> = {
+                    let mut r: Vec<i32> = line.cells.iter().map(|(_, l, _)| *l).collect();
+                    r.dedup();
+                    if r.is_empty() {
+                        r.push(end_line);
+                    }
+                    r.truncate(10);
+                    r
+                };
+                let all: Vec<(i32, usize)> = rows.iter().flat_map(|l| (0..cols).map(move |c| (*l, c))).collect();
+                self.each_cell(&all, &mut |c| {
+                    if let Some(f) = fg {
+                        c.fg = Color::Spec(f);
+                    }
+                    if let Some(b) = bg {
+                        c.bg = Color::Spec(b);
+                    }
+                });
+                Flow::Done
+            }
+            "iTermSGRTrigger" => {
+                let v = value.to_string();
+                self.each_cell(&cells, &mut |c| apply_sgr(c, &v));
+                Flow::More
+            }
+            "iTermHyperlinkTrigger" => {
+                if url_ok(value) {
+                    let link = Hyperlink::new(None::<String>, value.to_string());
+                    self.each_cell(&cells, &mut |c| c.set_hyperlink(Some(link.clone())));
+                }
+                Flow::More
+            }
+            "AnnotateTrigger" => {
+                if let (Some((l0, c0)), Some((l1, c1))) = (first, cells.last().copied()) {
+                    if !self.term.mode().contains(TermMode::ALT_SCREEN) && !value.is_empty() {
+                        self.add_note(l0, c0, l1, c1 + 1, value, false);
+                    }
+                }
+                Flow::Done
+            }
+            "MarkTrigger" => {
+                let l = first.map_or(end_line, |f| f.0);
+                self.set_manual_mark(l, None);
+                if value.trim() == "1" {
+                    // Stop Scrolling: the marked line is the last one in view.
+                    let g = self.term.grid();
+                    let want = (g.screen_lines() as i32 - 1 - l).clamp(0, g.history_size() as i32);
+                    let delta = want - g.display_offset() as i32;
+                    self.term.scroll_display(alacritty_terminal::grid::Scroll::Delta(delta));
+                }
+                Flow::Done
+            }
+            "iTermSetNamedMarkTrigger" => {
+                self.set_manual_mark(first.map_or(end_line, |f| f.0), Some(value.to_string()));
+                Flow::Done
+            }
+            "iTermFoldTrigger" => {
+                let here = first.map_or(end_line, |f| f.0);
+                let from = self.marks_in_order().into_iter().rev().find(|(l, m)| *l < here && m.name.as_deref() == Some(value)).map(|(l, _)| l);
+                if let Some(from) = from {
+                    self.fold(from, end_line);
+                }
+                Flow::Done
+            }
+            "iTermShellPromptTrigger" => {
+                let l = first.map_or(end_line, |f| f.0);
+                if self.term.grid()[Line(l)].mark() == 0 {
+                    if l == self.term.grid().cursor.point.line.0 {
+                        self.apply(crate::osc::Osc::Prompt { kind: crate::osc::PromptKind::Initial, aid: None, fresh_line: false });
+                        self.apply(crate::osc::Osc::CommandStart);
+                    } else {
+                        self.new_mark(l, crate::marks::Kind::Prompt);
+                    }
+                }
+                Flow::Done
+            }
+            "SetDirectoryTrigger" => {
+                if !value.is_empty() {
+                    self.apply(crate::osc::Osc::Kv("CurrentDir".into(), value.to_string()));
+                }
+                Flow::Done
+            }
+            "SetHostnameTrigger" => {
+                if !value.is_empty() {
+                    self.apply(crate::osc::Osc::Kv("RemoteHost".into(), value.to_string()));
+                }
+                Flow::Done
+            }
+            "iTermInjectTrigger" => {
+                // The text goes through the parser once, as output; it runs no triggers.
+                self.triggers.busy = true;
+                self.feed(value.as_bytes());
+                self.triggers.busy = false;
+                self.triggers_from_cursor();
+                Flow::Done
+            }
             "iTermSetUserVariableTrigger" => {
                 if let Some((name, v)) = value.split_once('\u{1}') {
                     let name = name.strip_prefix("user.").unwrap_or(name);
@@ -266,10 +519,24 @@ impl Screen {
                 Flow::Done
             }
             "StopTrigger" => Flow::StopAll,
-            "AlertTrigger" => {
-                self.requests.push(Request::Trigger(TriggerRequest::Alert { trigger: i, text: value.to_string() }));
-                Flow::Done
+            "AlertTrigger" => ask(self, TriggerRequest::Alert { trigger: i, text: value.to_string() }),
+            "iTermUserNotificationTrigger" => ask(self, TriggerRequest::Notify(value.to_string())),
+            "BellTrigger" => ask(self, TriggerRequest::Bell),
+            "BounceTrigger" => ask(self, TriggerRequest::Bounce { until_active: value.trim() != "1" }),
+            "SendTextTrigger" => ask(self, TriggerRequest::SendText(value.to_string())),
+            "ScriptTrigger" => ask(self, TriggerRequest::RunCommand(value.to_string())),
+            "iTermSetTitleTrigger" => ask(self, TriggerRequest::SetTitle(value.to_string())),
+            "iTermSetTabStatusTrigger" => {
+                let mut parts = value.splitn(3, '\u{1}');
+                let (dot, text, status) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                ask(self, TriggerRequest::TabStatus { status: status.into(), dot: dot.into(), text: text.into() })
             }
+            "iTermBufferInputTrigger" => ask(self, TriggerRequest::BufferInput(value.trim() != "1")),
+            "iTermSetProfileBooleanTrigger" => match value.split_once('\u{1}') {
+                Some((key, on)) if !key.is_empty() => ask(self, TriggerRequest::ProfileSetting { key: key.into(), on: on.trim() == "1" }),
+                _ => Flow::Done,
+            },
+            "CoprocessTrigger" | "MuteCoprocessTrigger" => ask(self, TriggerRequest::Coprocess { cmd: value.to_string(), silent: info.class == "MuteCoprocessTrigger" }),
             _ => Flow::Done,
         }
     }
@@ -382,5 +649,162 @@ mod tests {
             _ => None,
         }).collect();
         assert_eq!(texts, vec!["got abc on Main"]);
+    }
+
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::cell::Flags;
+    use alacritty_terminal::vte::ansi::{Color, Rgb};
+
+    fn one(regex: &str, action: &str, parameter: &str, text: &[u8]) -> Screen {
+        let mut s = Screen::with_scrollback(40, 6, 100);
+        s.set_triggers(vec![trig(regex, action, parameter, false)], TriggerPrefs::default());
+        s.feed(text);
+        s
+    }
+
+    fn cell(s: &Screen, line: i32, col: usize) -> alacritty_terminal::term::cell::Cell {
+        s.term().grid()[Line(line)][Column(col)].clone()
+    }
+
+    fn spec(r: u8, g: u8, b: u8) -> Color {
+        Color::Spec(Rgb { r, g, b })
+    }
+
+    #[test]
+    fn highlight_text_colors_the_match() {
+        let s = one("err", "HighlightTrigger", "{#ff0000,#0000ff}", b"an err here\r\n");
+        assert_eq!((cell(&s, 0, 3).fg, cell(&s, 0, 3).bg), (spec(255, 0, 0), spec(0, 0, 255)));
+        assert_eq!(cell(&s, 0, 5).fg, spec(255, 0, 0));
+        assert_ne!(cell(&s, 0, 2).fg, spec(255, 0, 0), "only the match");
+        assert_ne!(cell(&s, 0, 6).fg, spec(255, 0, 0));
+        let s = one("err", "HighlightTrigger", "{,#00ff00}", b"err\r\n");
+        assert_eq!(cell(&s, 0, 0).bg, spec(0, 255, 0));
+        assert_ne!(cell(&s, 0, 0).fg, spec(0, 255, 0), "an empty side stays");
+        let s = one("err", "HighlightTrigger", "2", b"err err\r\n");
+        assert_eq!((cell(&s, 0, 0).fg, cell(&s, 0, 0).bg), (spec(255, 255, 255), spec(255, 0, 0)), "legacy preset: White on Red");
+        assert_eq!(cell(&s, 0, 4).bg, spec(255, 0, 0), "every match");
+        let s = one("err", "HighlightTrigger", "", b"err\r\n");
+        assert_eq!(cell(&s, 0, 0).bg, spec(255, 0, 0), "default white on red");
+        assert_eq!(highlight_colors("1009"), (Some(Rgb { r: 255, g: 255, b: 0 }), None), "Yellow Foreground");
+        assert_eq!(highlight_colors("2005"), (None, Some(Rgb { r: 255, g: 0, b: 0 })), "Red Background");
+    }
+
+    #[test]
+    fn highlight_line_colors_the_line() {
+        let s = one("warn", "iTermHighlightLineTrigger", "{,#ff0000}", b"a warn\r\nnext\r\n");
+        assert_eq!(cell(&s, 0, 0).bg, spec(255, 0, 0));
+        assert_eq!(cell(&s, 0, 39).bg, spec(255, 0, 0), "the whole width");
+        assert_ne!(cell(&s, 1, 0).bg, spec(255, 0, 0));
+    }
+
+    #[test]
+    fn change_style_applies_sgr() {
+        let s = one("hot", "iTermSGRTrigger", "1;31", b"so hot\r\n");
+        let c = cell(&s, 0, 3);
+        assert!(c.flags.contains(Flags::BOLD));
+        assert_eq!(c.fg, Color::Indexed(1));
+        let s = one("hot", "iTermSGRTrigger", "38:2:1:10:20:30;4", b"hot\r\n");
+        assert_eq!(cell(&s, 0, 0).fg, spec(10, 20, 30));
+        assert!(cell(&s, 0, 0).flags.contains(Flags::UNDERLINE));
+        let s = one("hot", "iTermSGRTrigger", "48;5;200", b"hot\r\n");
+        assert_eq!(cell(&s, 0, 0).bg, Color::Indexed(200));
+    }
+
+    #[test]
+    fn hyperlink_trigger_links_cells() {
+        let s = one(r"id(\d+)", "iTermHyperlinkTrigger", "https://example.com/\\1", b"see id42 now\r\n");
+        assert_eq!(cell(&s, 0, 4).hyperlink().map(|h| h.uri().to_string()), Some("https://example.com/42".into()));
+        assert_eq!(cell(&s, 0, 3).hyperlink(), None);
+        let s = one(r"id(\d+)", "iTermHyperlinkTrigger", "not a url", b"id42\r\n");
+        assert_eq!(cell(&s, 0, 0).hyperlink(), None);
+    }
+
+    #[test]
+    fn annotate_and_marks() {
+        let mut s = one("todo", "AnnotateTrigger", "look here", b"a todo item\r\n");
+        assert_eq!(s.notes_in_order().len(), 1);
+        let mut s2 = one("mark me", "MarkTrigger", "0", b"x\r\nmark me\r\n");
+        assert!(s2.marks_in_order().iter().any(|(l, _)| *l == 1));
+        let mut s3 = one("build", "iTermSetNamedMarkTrigger", "Build \\0", b"build\r\n");
+        assert!(s3.marks_in_order().iter().any(|(_, m)| m.name.as_deref() == Some("Build build")));
+        let _ = &mut s;
+    }
+
+    #[test]
+    fn fold_to_named_mark() {
+        let mut s = Screen::with_scrollback(40, 8, 100);
+        s.set_triggers(vec![trig("^start$", "iTermSetNamedMarkTrigger", "top", false), trig("^end$", "iTermFoldTrigger", "top", false)], TriggerPrefs::default());
+        s.feed(b"start\r\na\r\nb\r\nend\r\n$ ");
+        assert_eq!(s.fold_count(), 1);
+        let mut t = Screen::new(40, 5);
+        t.set_triggers(vec![trig("^end$", "iTermFoldTrigger", "nope", false)], TriggerPrefs::default());
+        t.feed(b"end\r\n");
+        assert_eq!(t.fold_count(), 0, "no mark with that name");
+    }
+
+    #[test]
+    fn prompt_detected_marks_once() {
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig(r"^\$ ", "iTermShellPromptTrigger", "", true)], TriggerPrefs::default());
+        s.feed(b"out\r\n$ ");
+        let t0 = std::time::Instant::now();
+        s.check_instant_triggers(t0);
+        s.check_instant_triggers(t0 + std::time::Duration::from_secs(1));
+        let prompts = s.marks_in_order().into_iter().filter(|(_, m)| m.kind == crate::marks::Kind::Prompt).count();
+        assert_eq!(prompts, 1);
+    }
+
+    #[test]
+    fn report_directory_and_host() {
+        let s = one(r"cd (\S+)", "SetDirectoryTrigger", "/tmp/\\1", b"cd x\r\n");
+        assert_eq!(s.shell.cwd.as_deref(), Some("/tmp/x"));
+        let s = one("login", "SetHostnameTrigger", "bob@box", b"login\r\n");
+        assert_eq!((s.shell.user.as_deref(), s.shell.host.as_deref()), (Some("bob"), Some("box")));
+    }
+
+    #[test]
+    fn injected_text_does_not_refire_forever() {
+        let mut s = Screen::with_scrollback(40, 6, 100);
+        s.set_triggers(vec![trig("ping", "iTermInjectTrigger", "ping\\r\\n", false)], TriggerPrefs::default());
+        s.feed(b"ping\r\n");
+        let rows: Vec<String> = (0..6).map(|l| s.line_text(l).trim_end().to_string()).collect();
+        assert_eq!(rows.iter().filter(|r| *r == "ping").count(), 2, "{rows:?}");
+        assert_eq!(s.triggers.lines_checked, 1);
+    }
+
+    #[test]
+    fn user_variable_names() {
+        let s = one("x", "iTermSetUserVariableTrigger", "user.a\u{1}v", b"x\r\n");
+        assert_eq!(s.shell.vars.get("a").map(String::as_str), Some("v"));
+        let s = one("x", "iTermSetUserVariableTrigger", "a.b\u{1}v", b"x\r\n");
+        assert!(s.shell.vars.is_empty(), "a dotted name is refused");
+    }
+
+    #[test]
+    fn window_requests() {
+        let cases: Vec<(&str, &str, TriggerRequest)> = vec![
+            ("BellTrigger", "", TriggerRequest::Bell),
+            ("BounceTrigger", "1", TriggerRequest::Bounce { until_active: false }),
+            ("BounceTrigger", "0", TriggerRequest::Bounce { until_active: true }),
+            ("SendTextTrigger", "yes\\r", TriggerRequest::SendText("yes\r".into())),
+            ("ScriptTrigger", "echo hi", TriggerRequest::RunCommand("echo hi".into())),
+            ("iTermSetTitleTrigger", "T", TriggerRequest::SetTitle("T".into())),
+            ("iTermSetTabStatusTrigger", "#00ff00\u{1}#ffffff\u{1}work", TriggerRequest::TabStatus { dot: "#00ff00".into(), text: "#ffffff".into(), status: "work".into() }),
+            ("iTermBufferInputTrigger", "0", TriggerRequest::BufferInput(true)),
+            ("iTermBufferInputTrigger", "1", TriggerRequest::BufferInput(false)),
+            ("iTermSetProfileBooleanTrigger", "Silence Bell\u{1}1", TriggerRequest::ProfileSetting { key: "Silence Bell".into(), on: true }),
+            ("MuteCoprocessTrigger", "cat", TriggerRequest::Coprocess { cmd: "cat".into(), silent: true }),
+            ("iTermUserNotificationTrigger", "done", TriggerRequest::Notify("done".into())),
+            ("GrowlTrigger", "done", TriggerRequest::Notify("done".into())),
+            ("CaptureTrigger", "", TriggerRequest::Unavailable { trigger: 0, title: "Capture Output".into(), milestone: 9 }),
+        ];
+        for (action, param, want) in cases {
+            let mut s = one("go", action, param, b"go\r\n");
+            let got: Vec<TriggerRequest> = s.take_requests().into_iter().filter_map(|r| match r {
+                Request::Trigger(t) => Some(t),
+                _ => None,
+            }).collect();
+            assert_eq!(got, vec![want], "{action}");
+        }
     }
 }
