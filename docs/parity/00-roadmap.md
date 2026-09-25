@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 132 | 144 | 38 |
-| `02-global-settings.md` | 820 | 128 | 73 | 619 |
-| `03-features-and-menus.md` | 640 | 245 | 33 | 362 |
-| Total | 1,774 | 505 | 250 | 1,019 |
+| `01-profile-settings.md` | 314 | 151 | 139 | 24 |
+| `02-global-settings.md` | 820 | 135 | 73 | 612 |
+| `03-features-and-menus.md` | 640 | 272 | 32 | 336 |
+| Total | 1,774 | 558 | 244 | 972 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -65,7 +65,13 @@ process tree), the Job title components, Job Started and Job Ended triggers and 
 field, Prompt Before Closing with Jobs to Ignore, coprocesses (Session > Run Coprocess and Stop
 Coprocess, the triggers, key action, Smart Selection, Semantic History, and file-drop starts,
 silent coprocesses, the indicator, the stderr banner), and Automatic Profile Switching (rules,
-scores, the profile stack, the rule editor, and a debug log).
+scores, the profile stack, the rule editor, and a debug log). Milestone 7 is split in six (7a
+many windows, 7b closing and startup, 7c arrangements, 7d restoration, 7e hotkey windows, 7f
+broadcast input). Milestone 7a: many windows (numbers, New Window and New Window with Current
+Profile, the Profiles menu list, switching by number and Next/Previous Window, Move Tab and Move
+Session to a new window, Merge All Windows, Duplicate Window), every window style with iTerm2's
+frame rules, new-window placement, the Screen setting, Lock Size and Lock Layout, Resize Window,
+Edit Window and Tab Title, and Dim background windows.
 
 ## Order
 

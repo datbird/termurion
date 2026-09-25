@@ -127,7 +127,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| New window placement | WindowPlacement | Chooses how new windows are positioned: system default, smart placement, a saved size+position, or position only. | missing |  |
+| New window placement | WindowPlacement | Chooses how new windows are positioned: system default, smart placement, a saved size+position, or position only. | have | Milestone 7a: the four policies, saved frames per profile slot, smart layout. |
 | Adjust window when changing font size | AdjustWindowForFontSizeChange | Resizes the window to keep the same character grid when the font size changes. | missing |  |
 | Zoom maximizes vertically only | MaximizeVerticallyOnly | Makes the green zoom button grow the window's height only, not its width. | missing | Windows has no direct green-button zoom equivalent; maps loosely to maximize. |
 | Native full screen windows | LionStyleFullscreen | Uses macOS's native full-screen Space instead of iTerm2's own borderless full-screen mode. | missing | macOS-specific full-screen Spaces concept; Windows has its own fullscreen model. |
@@ -203,13 +203,13 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Auto-hide menu bar in non-native fullscreen | HideMenuBarInFullscreen | Hides the macOS menu bar while an iTerm2 window is in borderless fullscreen. | missing | macOS menu bar concept; no Windows equivalent. |
 | Exclude from Dock and Cmd-Tab Application Switcher | UIElement | Runs iTerm2 as a background UIElement app, hidden from the Dock and app switcher. | missing | macOS Dock/app-switcher concept; Windows equivalent would be taskbar/Alt-Tab visibility. |
 | ...but only if all windows are hotkey windows | UIElementRequiresHotkeys | Narrows the Dock/switcher exclusion to only apply while every open window is a hotkey window. | missing |  |
-| Show window number in title bar | ShowWindowNumber | Prefixes the window title with its iTerm2 window number. | missing |  |
+| Show window number in title bar | ShowWindowNumber | Prefixes the window title with its iTerm2 window number. | have | Milestone 7a: titles start "N. " (iTerm2 stores it as WindowNumber, the key Tandem uses). |
 | Heavy border around windows in light mode | ShowWindowBorder | Draws a thicker window border when using a light system appearance. | missing |  |
 | Hide scrollbars | HideScrollbar | Hides the per-pane scrollbar. | missing |  |
 | Disable transparency for non-native fullscreen windows by default | DisableFullscreenTransparencyByDefault | Turns off window transparency automatically when a window enters borderless fullscreen. | missing |  |
 | Show line under title bar when the tab bar is not visible | EnableDivisionView | Draws a thin divider line below the title bar when the tab bar is hidden. | missing |  |
 | Show proxy icon in window title bar | EnableProxyIcon | Shows the draggable document/folder proxy icon in the title bar, pointing at the session's working directory. | missing | macOS proxy-icon concept; Windows title bars have no equivalent. |
-| Dim background windows | DimBackgroundWindows | Dims whole windows that are not key/focused. | missing |  |
+| Dim background windows | DimBackgroundWindows | Dims whole windows that are not key/focused. | have | Milestone 7a. |
 
 
 ### Tabs
@@ -360,9 +360,9 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | Next Tab | KEY_ACTION_NEXT_SESSION | Switches to the next tab. | have |  |
-| Next Window | KEY_ACTION_NEXT_WINDOW | Switches to the next iTerm2 window. | missing | Comes in milestone 7. |
+| Next Window | KEY_ACTION_NEXT_WINDOW | Switches to the next iTerm2 window. | have | Milestone 7a. |
 | Previous Tab | KEY_ACTION_PREVIOUS_SESSION | Switches to the previous tab. | have |  |
-| Previous Window | KEY_ACTION_PREVIOUS_WINDOW | Switches to the previous iTerm2 window. | missing | Comes in milestone 7. |
+| Previous Window | KEY_ACTION_PREVIOUS_WINDOW | Switches to the previous iTerm2 window. | have | Milestone 7a. |
 | Scroll To End | KEY_ACTION_SCROLL_END | Scrolls the pane to the bottom. | have |  |
 | Scroll To Top | KEY_ACTION_SCROLL_HOME | Scrolls the pane to the top. | have |  |
 | Scroll One Line Down | KEY_ACTION_SCROLL_LINE_DOWN | Scrolls the pane down by one line. | have |  |
@@ -385,7 +385,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Toggle Fullscreen | KEY_ACTION_TOGGLE_FULLSCREEN | Enters or exits fullscreen. | have |  |
 | Remap Modifiers in iTerm2 Only | KEY_ACTION_REMAP_LOCALLY | Applies modifier remapping only while iTerm2 is frontmost, overriding the global setting for this binding. | have | Remapping is always local on Windows, so this acts like a normal remap. |
 | Select Menu Item... | KEY_ACTION_SELECT_MENU_ITEM | Invokes an arbitrary named app menu item. | have |  |
-| New Window with Profile... | KEY_ACTION_NEW_WINDOW_WITH_PROFILE | Opens a new window using a chosen profile. | missing | Comes in milestone 7. |
+| New Window with Profile... | KEY_ACTION_NEW_WINDOW_WITH_PROFILE | Opens a new window using a chosen profile. | have | Milestone 7a. |
 | New Tab with Profile... | KEY_ACTION_NEW_TAB_WITH_PROFILE | Opens a new tab using a chosen profile. | have |  |
 | Split Horizontally with Profile... | KEY_ACTION_SPLIT_HORIZONTALLY_WITH_PROFILE | Splits the pane horizontally using a chosen profile. | have |  |
 | Split Vertically with Profile... | KEY_ACTION_SPLIT_VERTICALLY_WITH_PROFILE | Splits the pane vertically using a chosen profile. | have |  |
@@ -540,7 +540,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| openProfilesInNewWindow | openProfilesInNewWindow (bool, default NO) | Choosing a profile from the “Profiles” menu opens a new window. | missing |  |
+| openProfilesInNewWindow | openProfilesInNewWindow (bool, default NO) | Choosing a profile from the “Profiles” menu opens a new window. | have | Milestone 7a: Alt at the click is read when the item is picked. |
 | useUnevenTabs | useUnevenTabs (bool, default NO) | Uneven tab widths allowed. | missing |  |
 | minTabWidth | minTabWidth (int, default 75) | Minimum tab width when using uneven tab widths. | missing |  |
 | minCompactTabWidth | minCompactTabWidth (int, default 60) | Minimum tab width when using uneven tab widths for compact tabs. | missing |  |

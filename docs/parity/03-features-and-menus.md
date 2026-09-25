@@ -35,12 +35,12 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 ### Shell menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Shell > New Window | Cmd+N | Opens a new terminal window with the default profile. Tandem: Opens a tab until separate windows arrive in milestone 7. | partial |
-| Shell > New Window with Current Profile | Opt+Cmd+N | Opens a new window reusing the current session's profile. Tandem: Opens a tab until separate windows arrive in milestone 7. | partial |
+| Shell > New Window | Cmd+N | Opens a new terminal window with the default profile. Tandem: Opens a tab until separate windows arrive in milestone 7. | have, milestone 7a |
+| Shell > New Window with Current Profile | Opt+Cmd+Shift+N | Opens a new window reusing the current session's profile. Tandem: Opens a tab until separate windows arrive in milestone 7. | have, milestone 7a |
 | Shell > New Tab | Cmd+T | Opens a new tab with the default profile. | have |
 | Shell > New Tab Next to Current Tab | Opt+Cmd+T | Opens a new tab immediately to the right of the current one. | have |
 | Shell > New Tab with Current Profile | Opt+Cmd+T | Opens a new tab reusing the current session's profile. | have |
-| Shell > Duplicate Window | no shortcut | Opens a new window cloning the current window's layout. (milestone 7) | missing |
+| Shell > Duplicate Window | no shortcut | Opens a new window cloning the current window's layout. (milestone 7) | partial, milestone 7a: a tab for each tab, in its focused session's profile; splits and folders come with arrangements (7c) |
 | Shell > Duplicate Tab | no shortcut | Opens a new tab cloning the current tab's split layout. | have |
 | Shell > Split Horizontally with Current Profile | Cmd+D | Splits the current pane into top and bottom using the current profile. | have |
 | Shell > Split Vertically with Current Profile | Cmd+D | Splits the current pane into left and right using the current profile. | have |
@@ -49,9 +49,9 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > Save Contents... | no shortcut | Saves the full scrollback contents of the session to a file. | have |
 | Shell > Save Selected Text... | Cmd+S | Saves the current text selection to a file. | have |
 | Shell > Close | Cmd+W | Closes the current session or pane. | have |
-| Shell > Close Terminal Window | Cmd+W | Closes the entire terminal window. | have |
+| Shell > Close Terminal Window | Shift+Cmd+W | Closes the entire terminal window. | have, milestone 7a |
 | Shell > Close All Panes in Tab | Opt+Cmd+W | Closes every pane in the current tab. | have |
-| Shell > Undo Close | Cmd+T | Reopens the most recently closed session. (milestone 7) | missing |
+| Shell > Undo Close | Shift+Cmd+T | Reopens the most recently closed session. (milestone 7) | missing, milestone 7b |
 | Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. (milestone 7) | missing |
 | Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. (milestone 7) | missing |
 | Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. (milestone 7) | missing |
@@ -197,7 +197,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Triggers > Disable All | no shortcut | Disables every trigger for the profile. (milestone 6) | have, milestone 6a |
 | Session > Reset | Cmd+R | Sends a terminal reset, clearing modes and screen state. | have |
 | Session > Reset Character Set | no shortcut | Resets the terminal's character set designation to default. | have |
-| Session > Move Session > Move Session to Window | no shortcut | Moves the current session/pane out into a new window. (milestone 7) | missing |
+| Session > Move Session > Move Session to Window | no shortcut | Moves the current session/pane out into a new window. (milestone 7) | have, milestone 7a |
 | Session > Move Session > Move Session to Tab | no shortcut | Moves the current session/pane out into a new tab. (milestone 7) | missing |
 | Session > Move Session > Move Session to Split Pane | no shortcut | Moves the current session into a split position picked interactively. (milestone 7) | missing |
 | Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. (milestone 6) | missing |
@@ -248,8 +248,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
 | Profiles > Open Profiles... | Cmd+O | Opens the Profiles window listing all saved profiles. | have |
-| Profiles > Press Option for New Window | no shortcut | Informational hint item, not an action, showing that holding Option changes profile launch behavior. | missing |
-| Profiles > Open In New Window | no shortcut | Header above the dynamically inserted list of profiles, each launchable in a new window or tab. | missing |
+| Profiles > Press Option for New Window | no shortcut | Informational hint item, not an action, showing that holding Option changes profile launch behavior. | have, milestone 7a |
+| Profiles > Open In New Window | no shortcut | Header above the dynamically inserted list of profiles, each launchable in a new window or tab. | have, milestone 7a: the profiles are listed; Alt picks a window |
 
 ### Toolbelt menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
@@ -267,13 +267,13 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Arrangements > Restore Window Arrangement | no shortcut | Dynamic submenu listing saved arrangements to restore as windows. | missing |
 | Window > Arrangements > Restore Window Arrangement as Tabs | no shortcut | Dynamic submenu listing saved arrangements to restore merged into tabs of the current window. | missing |
 | Window > Arrangements > Change Profile in Arrangement... | no shortcut | Bulk changes which profile a saved arrangement's sessions use. (milestone 7) | missing |
-| Window > Edit Window Title | no shortcut | Opens an editor to set a custom window title override. (milestone 7) | missing |
-| Window > Tab > Edit Tab Title | no shortcut | Opens an editor to set a custom tab title override. (milestone 7) | missing |
+| Window > Edit Window Title | no shortcut | Opens an editor to set a custom window title override. (milestone 7) | have, milestone 7a |
+| Window > Tab > Edit Tab Title | no shortcut | Opens an editor to set a custom tab title override. (milestone 7) | have, milestone 7a |
 | Window > Tab > Select Tab > Select Next Tab | Shift+Cmd+] | Switches focus to the next tab. | have |
 | Window > Tab > Select Tab > Select Previous Tab | Shift+Cmd+[ | Switches focus to the previous tab. | have |
 | Window > Tab > Select Tab > Select Next Tab Group | Ctrl+Shift+Cmd+] | Switches focus to the next tab group. (milestone 7) | missing |
 | Window > Tab > Select Tab > Select Previous Tab Group | Ctrl+Shift+Cmd+[ | Switches focus to the previous tab group. (milestone 7) | missing |
-| Window > Tab > Move Tab > Move Tab to New Window | no shortcut | Pulls the current tab out into its own new window. (milestone 7) | missing |
+| Window > Tab > Move Tab > Move Tab to New Window | no shortcut | Pulls the current tab out into its own new window. (milestone 7) | have, milestone 7a |
 | Window > Tab > Move Tab > Move Tab Left | Opt+Shift+Cmd+[ | Reorders the current tab one position to the left. | have |
 | Window > Tab > Move Tab > Move Tab Right | Opt+Shift+Cmd+] | Reorders the current tab one position to the right. | have |
 | Window > Tab > Add Tab to New Group... | no shortcut | Creates a new tab group containing the current tab. (milestone 7) | missing |
@@ -294,27 +294,27 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Window Style > Normal | no shortcut | Sets the window style to a normal title-barred window. | have |
 | Window > Window Style > Full Screen | no shortcut | Sets the window style to native full screen. | have |
 | Window > Window Style > Maximized | no shortcut | Sets the window style to maximized, fills the screen and keeps chrome. | have |
-| Window > Window Style > No Title Bar | no shortcut | Sets the window style to borderless with no title bar. (milestone 7) | missing |
-| Window > Window Style > Centered | no shortcut | Sets the window style to a centered floating panel. (milestone 7) | missing |
-| Window > Window Style > Centered, No Title Bar | no shortcut | Sets the window style to a centered borderless panel. (milestone 7) | missing |
-| Window > Window Style > Full-Width Bottom of Screen | no shortcut | Docks the window along the full bottom edge of the screen. (milestone 7) | missing |
-| Window > Window Style > Full-Width Top of Screen | no shortcut | Docks the window along the full top edge of the screen. (milestone 7) | missing |
-| Window > Window Style > Full-Height Left of Screen | no shortcut | Docks the window along the full left edge of the screen. (milestone 7) | missing |
-| Window > Window Style > Full-Height Right of Screen | no shortcut | Docks the window along the full right edge of the screen. (milestone 7) | missing |
-| Window > Window Style > Bottom of Screen | no shortcut | Docks the window at the bottom of the screen at its natural size. (milestone 7) | missing |
-| Window > Window Style > Top of Screen | no shortcut | Docks the window at the top of the screen at its natural size. (milestone 7) | missing |
-| Window > Window Style > Left of Screen | no shortcut | Docks the window at the left of the screen at its natural size. (milestone 7) | missing |
-| Window > Window Style > Right of Screen | no shortcut | Docks the window at the right of the screen at its natural size. (milestone 7) | missing |
-| Window > Lock Size | no shortcut | Prevents the window from being resized. (milestone 7) | missing |
-| Window > Lock Layout | no shortcut | Prevents the split pane layout from being changed. (milestone 7) | missing |
+| Window > Window Style > No Title Bar | no shortcut | Sets the window style to borderless with no title bar. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Centered | no shortcut | Sets the window style to a centered floating panel. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Centered, No Title Bar | no shortcut | Sets the window style to a centered borderless panel. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Full-Width Bottom of Screen | no shortcut | Docks the window along the full bottom edge of the screen. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Full-Width Top of Screen | no shortcut | Docks the window along the full top edge of the screen. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Full-Height Left of Screen | no shortcut | Docks the window along the full left edge of the screen. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Full-Height Right of Screen | no shortcut | Docks the window along the full right edge of the screen. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Bottom of Screen | no shortcut | Docks the window at the bottom of the screen at its natural size. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Top of Screen | no shortcut | Docks the window at the top of the screen at its natural size. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Left of Screen | no shortcut | Docks the window at the left of the screen at its natural size. (milestone 7) | have, milestone 7a |
+| Window > Window Style > Right of Screen | no shortcut | Docks the window at the right of the screen at its natural size. (milestone 7) | have, milestone 7a |
+| Window > Lock Size | no shortcut | Prevents the window from being resized. (milestone 7) | have, milestone 7a |
+| Window > Lock Layout | no shortcut | Prevents the split pane layout from being changed. (milestone 7) | have, milestone 7a |
 | Window > Notify on Status Change | no shortcut | Posts a notification when a background session's status changes, such as bell, idle, or done. (milestone 6) | have, milestone 6b: a bar with Reveal on the next status change |
-| Window > Arrange Windows > Merge All Windows | no shortcut | Merges all open windows' tabs into a single window. (milestone 7) | missing |
-| Window > Arrange Windows > Arrange Windows Horizontally | no shortcut | Tiles all open windows horizontally across the screen. (milestone 7) | missing |
+| Window > Arrange Windows > Merge All Windows | no shortcut | Merges all open windows' tabs into a single window. (milestone 7) | have, milestone 7a |
+| Window > Arrange Windows > Arrange Windows Horizontally | no shortcut | Tiles all open windows horizontally across the screen. (milestone 7) | have, milestone 7a |
 | Window > Arrange Windows > Arrange Split Panes Evenly | no shortcut | Resets all split dividers in the tab to equal sizes. | have |
-| Window > Resize Window > Decrease Height | Opt+Cmd+Up | Shrinks the window height by one row via keyboard. (milestone 7) | missing |
-| Window > Resize Window > Increase Height | Opt+Cmd+Down | Grows the window height by one row via keyboard. (milestone 7) | missing |
-| Window > Resize Window > Decrease Width | no shortcut | Shrinks the window width by one column via keyboard. (milestone 7) | missing |
-| Window > Resize Window > Increase Width | no shortcut | Grows the window width by one column via keyboard. (milestone 7) | missing |
+| Window > Resize Window > Decrease Height | Opt+Cmd+Up | Shrinks the window height by one row via keyboard. (milestone 7) | have, milestone 7a |
+| Window > Resize Window > Increase Height | Opt+Cmd+Down | Grows the window height by one row via keyboard. (milestone 7) | have, milestone 7a |
+| Window > Resize Window > Decrease Width | no shortcut | Shrinks the window width by one column via keyboard. (milestone 7) | have, milestone 7a |
+| Window > Resize Window > Increase Width | no shortcut | Grows the window width by one column via keyboard. (milestone 7) | have, milestone 7a |
 | Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. (milestone 10) | missing |
 | Window > AI Chats | Cmd+Y | Opens the window listing all AI chat conversations. (milestone 12) | missing |
 | Window > Cockpit | Opt+Cmd+C | Opens the Cockpit window, a command and session overview dashboard. (milestone 12) | missing |
