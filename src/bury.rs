@@ -39,6 +39,11 @@ impl Burial {
         Some(self.list.remove(i))
     }
 
+    /// The session buried last.
+    pub fn newest(&self) -> Option<u64> {
+        self.list.last().map(|b| b.pane)
+    }
+
     pub fn contains(&self, pane: u64) -> bool {
         self.list.iter().any(|b| b.pane == pane)
     }
@@ -86,6 +91,8 @@ mod tests {
         assert_eq!(restore_target(&gw, true, true), Restore::InTab(1, 2));
         assert_eq!(restore_target(&gw, true, false), Restore::NewTab(1));
         assert_eq!(restore_target(&gw, false, false), Restore::NewWindow);
+        list.bury(b(7));
+        assert_eq!(list.newest(), Some(7), "the last window closing brings back the newest");
         assert_eq!(hidden_window_title("\u{21a3} ", " ", "logs"), "\u{21a3} tmux - logs");
     }
 }

@@ -990,6 +990,12 @@ impl App {
             }
         }
         if self.tabs.is_empty() {
+            // The last window's last tab closed while sessions are buried: the newest comes
+            // back here instead of Tandem ending with them.
+            if self.windows.parked().next().is_none() && self.buried.newest().is_some() {
+                self.disinter_here();
+                return;
+            }
             // The window's last tab closed: the window goes; the last window ends Tandem.
             if !self.drop_current_window() {
                 self.save_empty_state();
@@ -1998,6 +2004,7 @@ impl ApplicationHandler<UserEvent> for App {
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
         }
+        self.tmux_auto_bury();
         if self.save_due.is_some_and(|t| Instant::now() >= t) {
             self.save_now();
         }
@@ -2042,7 +2049,7 @@ impl ApplicationHandler<UserEvent> for App {
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
-        let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop)].into_iter().flatten().min();
+        let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
         let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
         let blinks = self
             .tabs

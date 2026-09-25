@@ -22,9 +22,15 @@ impl App {
         let changes = actions.iter().any(|a| !matches!(a, Action::Output(..)));
         for a in actions {
             match a {
-                Action::Open { window, node, panes, place } => {
-                    self.tmux_open(gw, window, node, panes, place);
-                    self.tmux_auto_bury(gw);
+                Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
+                // AutoHideTmuxClientSession: once the attach's windows have opened (they may
+                // still wait to become windows), the gateway is buried.
+                Action::InitialWindowsOpened => {
+                    if self.globals.bool("AutoHideTmuxClientSession") {
+                        if let Some(t) = self.tmux.get_mut(&gw) {
+                            t.bury_pending = !t.auto_buried;
+                        }
+                    }
                 }
                 Action::Relayout { window, node, added, removed, kept, zoomed } => {
                     let first = kept.first().copied();
@@ -84,9 +90,8 @@ impl App {
                 }
                 // iTerm2's didAttachWithHiddenWindows:tooManyWindows:.
                 Action::Attached { too_many, hidden } => {
-                    if too_many || (hidden && self.globals.bool("openTmuxDashboardIfHiddenWindows")) {
-                        self.tmux_dash_gw = Some(gw);
-                        self.open_tmux_dashboard(event_loop);
+                    if too_many || (hidden && self.globals.bool("OpenTmuxDashboardIfHiddenWindows")) {
+                        self.open_tmux_dashboard_on(event_loop, Some(gw));
                     }
                 }
                 Action::SessionGuid(guid) => {
@@ -587,14 +592,24 @@ impl App {
 
     /// AutoHideTmuxClientSession: the gateway is buried once its windows open, with iTerm2's
     /// notification the first time ever (NoSyncAutoBurialReveal).
-    fn tmux_auto_bury(&mut self, gw: PaneId) {
-        if !self.globals.bool("AutoHideTmuxClientSession") || self.tmux.get(&gw).is_none_or(|t| t.auto_buried) {
+    pub(super) fn tmux_auto_bury(&mut self) {
+        if !self.pending_windows.is_empty() {
             return;
         }
-        if let Some(t) = self.tmux.get_mut(&gw) {
-            t.auto_buried = true;
-        }
-        if self.bury_pane(gw) && !self.globals.bool("NoSyncAutoBurialReveal") {
+        let due: Vec<PaneId> = self.tmux.iter().filter(|(_, t)| t.bury_pending).map(|(g, _)| *g).collect();
+        for gw in due {
+            if let Some(t) = self.tmux.get_mut(&gw) {
+                t.bury_pending = false;
+            }
+            if !self.bury_pane(gw) {
+                continue;
+            }
+            if let Some(t) = self.tmux.get_mut(&gw) {
+                t.auto_buried = true;
+            }
+            if self.globals.bool("NoSyncAutoBurialReveal") {
+                continue;
+            }
             if let Err(e) = crate::notify::show_with("Session Buried", "It can be restored by detaching from tmux, or from the Sessions > Buried Sessions menu.", self.globals.bool("silentUserNotifications")) {
                 self.banners.set("notify", format!("Could not show a notification: {e}"));
             }

@@ -15,27 +15,50 @@ impl App {
 
     /// Shell > tmux > Dashboard (Shift+Ctrl+Win+Return).
     pub(super) fn open_tmux_dashboard(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(w) = &self.tmux_dash {
-            return w.focus();
-        }
+        self.open_tmux_dashboard_on(event_loop, None);
+    }
+
+    /// The Dashboard on `gw` (the focused session's connection when None).
+    pub(super) fn open_tmux_dashboard_on(&mut self, event_loop: &ActiveEventLoop, gw: Option<PaneId>) {
         let focused_gw = self.focused_id().and_then(|id| if self.tmux.contains_key(&id) { Some(id) } else { self.tmux_of(id).map(|(g, _, _)| g) });
-        self.tmux_dash_gw = focused_gw.or_else(|| self.tmux_gateways_sorted().first().copied());
-        let Some(g) = self.gpu.as_ref() else { return };
-        match TmuxDashboardWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
-            Ok(w) => self.tmux_dash = Some(w),
-            Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
+        let target = gw.or(focused_gw).or_else(|| self.tmux_gateways_sorted().first().copied());
+        if let Some(w) = &self.tmux_dash {
+            w.focus();
+        } else {
+            let Some(g) = self.gpu.as_ref() else { return };
+            match TmuxDashboardWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue) {
+                Ok(w) => self.tmux_dash = Some(w),
+                Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
+            }
         }
-        if let Some(gw) = self.tmux_dash_gw {
+        self.tmux_dash_retarget(target);
+    }
+
+    /// The Dashboard shows `gw`: its sessions and its attached session's windows are listed.
+    fn tmux_dash_retarget(&mut self, gw: Option<PaneId>) {
+        self.tmux_dash_gw = gw;
+        if let Some(w) = self.tmux_dash.as_mut() {
+            w.selected_session = None;
+        }
+        if let Some(gw) = gw {
+            let clock = self.started.elapsed().as_secs_f64();
             if let Some(t) = self.tmux.get_mut(&gw) {
                 t.ctl.list_sessions(&mut t.gw);
                 if let Some((s, _)) = t.ctl.session.clone() {
-                    let clock = self.started.elapsed().as_secs_f64();
                     t.ctl.dashboard_windows(s, clock - 1.5);
+                    t.ctl.poll(clock, &mut t.gw);
                 }
             }
             self.tmux_flush(gw);
         }
         self.tmux_dashboard_refresh();
+    }
+
+    /// When a Dashboard list is due, as an instant for the event loop.
+    pub(super) fn tmux_dashboard_due(&self) -> Option<Instant> {
+        let secs = self.tmux.values().filter_map(|t| t.ctl.next_due()).reduce(f64::min)?;
+        let now = self.started.elapsed().as_secs_f64();
+        Some(Instant::now() + std::time::Duration::from_secs_f64((secs - now).max(0.0)))
     }
 
     /// Each pass: the controllers' due lists go out, and the Dashboard shows what changed.
@@ -56,12 +79,12 @@ impl App {
         }
         let gws = self.tmux_gateways_sorted();
         if self.tmux_dash_gw.is_none_or(|g| !gws.contains(&g)) {
-            self.tmux_dash_gw = gws.first().copied();
+            return self.tmux_dash_retarget(gws.first().copied());
         }
         let connections: Vec<String> = gws.iter().filter_map(|g| self.tmux.get(g).map(|t| t.client.clone())).collect();
         let connection = self.tmux_dash_gw.and_then(|g| gws.iter().position(|x| *x == g)).unwrap_or(0);
         let selected = self.tmux_dash.as_ref().and_then(|w| w.selected_session);
-        let mut data = DashData { connections, connection, limit: self.globals.int("TmuxDashboardLimit"), open_if_hidden: self.globals.bool("openTmuxDashboardIfHiddenWindows"), ..Default::default() };
+        let mut data = DashData { connections, connection, limit: self.globals.int("TmuxDashboardLimit"), open_if_hidden: self.globals.bool("OpenTmuxDashboardIfHiddenWindows"), ..Default::default() };
         if let Some(t) = self.tmux_dash_gw.and_then(|g| self.tmux.get(&g)) {
             data.sessions = t.ctl.sessions.iter().map(|(id, name)| model::SessionRow { id: *id, name: name.clone() }).collect();
             data.attached = t.ctl.session.as_ref().map(|(s, _)| *s);
@@ -100,17 +123,8 @@ impl App {
     fn tmux_dashboard_act(&mut self, e: DashEvent, event_loop: &ActiveEventLoop) {
         let clock = self.started.elapsed().as_secs_f64();
         if let DashEvent::Connection(i) = e {
-            self.tmux_dash_gw = self.tmux_gateways_sorted().get(i).copied();
-            if let Some(w) = self.tmux_dash.as_mut() {
-                w.selected_session = None;
-            }
-            if let Some(gw) = self.tmux_dash_gw {
-                if let Some(t) = self.tmux.get_mut(&gw) {
-                    t.ctl.list_sessions(&mut t.gw);
-                }
-                self.tmux_flush(gw);
-            }
-            return self.tmux_dashboard_refresh();
+            let gw = self.tmux_gateways_sorted().get(i).copied();
+            return self.tmux_dash_retarget(gw);
         }
         match e {
             DashEvent::Limit(n) => {
@@ -119,7 +133,7 @@ impl App {
                 return self.tmux_dashboard_refresh();
             }
             DashEvent::OpenIfHidden(on) => {
-                self.globals.set("openTmuxDashboardIfHiddenWindows", toml::Value::Boolean(on));
+                self.globals.set("OpenTmuxDashboardIfHiddenWindows", toml::Value::Boolean(on));
                 self.save_globals();
                 return self.tmux_dashboard_refresh();
             }

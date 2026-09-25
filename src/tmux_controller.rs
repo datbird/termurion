@@ -77,6 +77,8 @@ pub enum Action {
     Unpaused(Vec<PaneOpen>),
     /// The pause warning bar of a pane.
     PauseWarning(u32, crate::tmux_pause::Bar),
+    /// Every window of the attach has opened (iTerm2's tmuxDidOpenInitialWindows).
+    InitialWindowsOpened,
     /// The attach found hidden windows or too many (the Dashboard may open).
     Attached { too_many: bool, hidden: bool },
     /// The session's `@iterm2_id`: another gateway of this Tandem may already show it.
@@ -180,6 +182,8 @@ pub struct Controller {
     /// Lists waiting their 1.5 s: sessions (after %sessions-changed) and one session's windows.
     sessions_due: Option<f64>,
     windows_due: Vec<(u32, f64)>,
+    /// Initial windows still capturing.
+    initial_pending: usize,
 }
 
 impl Controller {
@@ -218,6 +222,7 @@ impl Controller {
             session_windows: HashMap::new(),
             sessions_due: None,
             windows_due: Vec::new(),
+            initial_pending: 0,
         }
     }
 
@@ -350,6 +355,21 @@ impl Controller {
     pub fn dashboard_windows(&mut self, session: u32, now: f64) {
         if !self.windows_due.iter().any(|(s, _)| *s == session) {
             self.windows_due.push((session, now + 1.5));
+        }
+    }
+
+    /// When the next Dashboard list is due (the app wakes for it).
+    pub fn next_due(&self) -> Option<f64> {
+        self.sessions_due.into_iter().chain(self.windows_due.iter().map(|(_, t)| *t)).reduce(f64::min)
+    }
+
+    /// The Dashboard's window list of the attached session goes stale: list it again.
+    fn windows_changed(&mut self) {
+        if let Some((s, _)) = self.session {
+            if self.session_windows.contains_key(&s) {
+                let now = self.clock;
+                self.dashboard_windows(s, now);
+            }
         }
     }
 
@@ -635,7 +655,9 @@ impl Controller {
                 }
                 if initial.open.is_empty() {
                     gw.accept_notifications();
+                    out.push(Action::InitialWindowsOpened);
                 }
+                self.initial_pending = initial.open.len();
                 // Too many: they are saved hidden, so the next attach says so.
                 if !initial.hide.is_empty() {
                     self.hidden.extend(initial.hide.iter().copied());
@@ -672,7 +694,14 @@ impl Controller {
                 o.waiting = o.waiting.saturating_sub(1);
                 if o.waiting == 0 {
                     let o = self.openers.remove(&opener).expect("opener");
+                    let initial = o.initial && o.update.is_none() && !o.unpause;
                     out.push(self.finish_opener(o));
+                    if initial && self.initial_pending > 0 {
+                        self.initial_pending -= 1;
+                        if self.initial_pending == 0 {
+                            out.push(Action::InitialWindowsOpened);
+                        }
+                    }
                 }
             }
         }
@@ -791,6 +820,7 @@ impl Controller {
             }
             Note::LayoutChange { window, layout, zoomed, .. } => return self.layout_changed(window, &layout, zoomed, gw),
             Note::WindowAdd(window) => {
+                self.windows_changed();
                 if !self.windows.contains_key(&window) && !self.hidden.contains(&window) {
                     let t = self.tag(Req::DisplayOne);
                     let format = tmux_windows::detailed_format(self.v());
@@ -798,12 +828,14 @@ impl Controller {
                 }
             }
             Note::WindowClose(window) => {
+                self.windows_changed();
                 self.openers.retain(|_, o| o.window.id != window);
                 if self.windows.remove(&window).is_some() {
                     return vec![Action::Close(window)];
                 }
             }
             Note::WindowRenamed { window, name } => {
+                self.windows_changed();
                 if self.windows.contains_key(&window) {
                     return vec![Action::Rename(window, name)];
                 }
@@ -962,7 +994,7 @@ mod tests {
         r.answer(Some("pane_id=%0\tcursor_x=5\tcursor_y=1"));
         r.answer(Some("early"));
         let a = r.answer(Some(""));
-        let [Action::Open { window, panes, place, .. }] = &a[..] else { panic!("{a:?}") };
+        let [Action::Open { window, panes, place, .. }, Action::InitialWindowsOpened] = &a[..] else { panic!("{a:?}") };
         assert_eq!((window.id, place), (0, &Place::NewWindow));
         assert_eq!(panes[0].pending, b"early", "once, from the capture");
         assert_eq!((panes[0].w, panes[0].h), (80, 24));
@@ -1231,6 +1263,27 @@ mod tests {
         assert_eq!(r.sent(), "list-sessions -F \"#{session_id} #{session_name}\"\r");
         r.answer(Some("$0 main\n$1 other"));
         assert_eq!(r.ctl.sessions, vec![(0, "main".into()), (1, "other".into())]);
+    }
+
+    #[test]
+    fn initial_opens_are_announced_and_lists_refresh() {
+        let mut r = attached();
+        r.sent();
+        r.answer(Some(""));
+        let mut acts = Vec::new();
+        for _ in 0..5 {
+            acts.extend(r.answer(Some("")));
+        }
+        assert!(matches!(acts.last(), Some(Action::InitialWindowsOpened)), "after the last initial window: {acts:?}");
+        r.ctl.dashboard_windows(0, 10.0);
+        assert_eq!(r.ctl.next_due(), Some(11.5), "the loop wakes for the Dashboard's list");
+        r.ctl.poll(11.5, &mut r.gw);
+        r.sent();
+        r.answer(Some(ONE_PANE));
+        assert_eq!(r.ctl.next_due(), None);
+        r.ctl.set_clock(20.0);
+        r.lines(&["%window-renamed @0 vi"]);
+        assert_eq!(r.ctl.next_due(), Some(21.5), "a rename lists the Dashboard's windows again");
     }
 
     #[test]

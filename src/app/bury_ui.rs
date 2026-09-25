@@ -12,10 +12,18 @@ impl App {
     /// Buries a session. The last session of the last window stays (Tandem ends when its
     /// last window closes). True when it was buried.
     pub(super) fn bury_pane(&mut self, id: PaneId) -> bool {
+        // A tmux pane is not buried: its tmux window is hidden (iTerm2's bury of a tmux client).
+        if let Some((gw, _, window)) = self.tmux_of(id) {
+            let actions = self.tmux.get_mut(&gw).map(|t| t.ctl.hide(window, &mut t.gw)).unwrap_or_default();
+            self.tmux_flush(gw);
+            self.tmux_pending_close.push((gw, actions, false));
+            self.menus_dirty = true;
+            return true;
+        }
         if !self.enter_pane_window(id) {
             return false;
         }
-        let only = self.tabs.len() == 1 && self.tabs[0].layout.panes().len() == 1 && self.windows.parked().next().is_none();
+        let only = self.tabs.len() == 1 && self.tabs[0].layout.panes().len() == 1 && self.windows.parked().next().is_none() && self.pending_windows.is_empty();
         if only {
             self.banners.set("bury", "The last session cannot be buried: Tandem ends when its last window closes.");
             return false;
@@ -78,6 +86,18 @@ impl App {
                 self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
             }
         }
+    }
+
+    /// The newest buried session, as a new tab of the current (otherwise empty) window.
+    pub(super) fn disinter_here(&mut self) {
+        let Some(id) = self.buried.newest() else { return };
+        self.buried.take(id);
+        self.menus_dirty = true;
+        self.refresh_buried_menu();
+        self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+        self.next_tab_id += 1;
+        self.active = self.tabs.len() - 1;
+        self.relayout();
     }
 
     /// Session > Buried Sessions: the buried sessions, then the hidden tmux windows.
