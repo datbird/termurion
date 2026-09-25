@@ -9,6 +9,9 @@ use crate::tmux_windows::{Place, Window};
 pub(super) const PLANE_BAR: &str = "tmux-22-plane";
 /// The tab close question: "tmux-close-tab:GW:WINDOW" (window questions: tmux_persist).
 const CLOSE_TAB: &str = "tmux-close-tab:";
+/// Pause bars: "tmux-paused:GW:PANE:1" (1: tmux paused it) and "tmux-pause-warn:GW:PANE".
+const PAUSED: &str = "tmux-paused:";
+const PAUSE_WARN: &str = "tmux-pause-warn:";
 /// "tmux-double:GW:OTHER": this gateway attached to a session OTHER already shows.
 const DOUBLE: &str = "tmux-double:";
 
@@ -81,6 +84,34 @@ impl App {
                     if let Some(other) = other {
                         let (heading, text, buttons) = crate::tmux_persist::attach_warning(true);
                         self.ask(gw, &format!("{DOUBLE}{gw}:{other}"), &format!("{heading}: {text}"), &buttons, true);
+                    }
+                }
+                Action::Paused { pane, by_tmux } => {
+                    let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
+                    self.drop_bar(id, &format!("{PAUSE_WARN}{gw}:{pane}"));
+                    self.ask(id, &format!("{PAUSED}{gw}:{pane}:{}", u8::from(by_tmux)), crate::tmux_pause::paused_text(by_tmux), &["Unpause", "Settings"], true);
+                }
+                Action::Unpaused(panes) => {
+                    for p in panes {
+                        let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&p.pane)).map(|(id, _)| *id) else { continue };
+                        self.drop_bar(id, &format!("{PAUSED}{gw}:{}:1", p.pane));
+                        self.drop_bar(id, &format!("{PAUSED}{gw}:{}:0", p.pane));
+                        if let Some(pane) = self.panes.get_mut(&id) {
+                            // iTerm2's resetForTmuxUnpause and clearScrollbackBuffer, then the captures.
+                            pane.own_mut().feed_tmux_restore(b"\x1bc\x1b[3J");
+                            pane.own_mut().feed_tmux_restore(&p.restore);
+                            pane.feed_output(&p.pending);
+                        }
+                    }
+                }
+                Action::PauseWarning(pane, bar) => {
+                    let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
+                    let bid = format!("{PAUSE_WARN}{gw}:{pane}");
+                    match bar {
+                        crate::tmux_pause::Bar::Show(text) => {
+                            self.ask(id, &bid, &text, &["Pause Settings"], true);
+                        }
+                        crate::tmux_pause::Bar::Dismiss => self.drop_bar(id, &bid),
                     }
                 }
                 Action::SelectWindow(window) => {
@@ -240,6 +271,95 @@ impl App {
     pub(super) fn tmux_force_detach(&mut self) {
         let Some(gw) = self.focused_id().and_then(|id| if self.tmux.contains_key(&id) { Some(id) } else { self.tmux_of(id).map(|(g, _, _)| g) }) else { return };
         self.tmux_gateway_input(gw, b"X", false);
+    }
+
+    fn drop_bar(&mut self, pane: PaneId, id: &str) {
+        if let Some(b) = self.bars.get_mut(&pane) {
+            b.retain(|x| x.id != id);
+        }
+    }
+
+    /// Once a second per session in pause mode: the monitor, automatic unpauses, and the
+    /// settings it follows. Returns when to look again.
+    pub(super) fn tmux_pause_tick(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
+        let now = Instant::now();
+        let clock = self.started.elapsed().as_secs_f64();
+        let age = self.globals.int("TmuxPauseModeAgeLimit").max(1) as f64;
+        let auto = self.globals.bool("TmuxUnpauseAutomatically");
+        let warn = self.globals.bool("TmuxWarnBeforePausing") && !self.globals.bool("noSyncDontWarnAboutTmuxPause");
+        let mut next: Option<Instant> = None;
+        let gws: Vec<PaneId> = self.tmux.keys().copied().collect();
+        for gw in gws {
+            let Some(t) = self.tmux.get_mut(&gw) else { continue };
+            if !t.ctl.pause_mode() {
+                continue;
+            }
+            t.ctl.prefs.unpause_automatically = auto;
+            t.ctl.prefs.warn_before_pausing = warn;
+            t.ctl.set_age_limit(age, &mut t.gw);
+            let due = t.pause_tick.map_or(now, |p| p + std::time::Duration::from_secs(1));
+            if now >= due {
+                t.pause_tick = Some(now);
+                let actions = t.ctl.tick(clock, &mut t.gw);
+                self.tmux_flush(gw);
+                self.tmux_actions(gw, actions, event_loop);
+                next = [next, Some(now + std::time::Duration::from_secs(1))].into_iter().flatten().min();
+            } else {
+                next = [next, Some(due)].into_iter().flatten().min();
+            }
+            self.tmux_flush(gw);
+        }
+        next
+    }
+
+    /// Shell > tmux > Pause Pane: pauses the focused tmux pane, or unpauses it.
+    pub(super) fn tmux_toggle_pause(&mut self) {
+        let Some((gw, p, _)) = self.focused_id().and_then(|id| self.tmux_of(id)) else { return };
+        let Some(t) = self.tmux.get_mut(&gw) else { return };
+        if t.ctl.is_paused(p) {
+            t.ctl.unpause(&[p], &mut t.gw);
+        } else {
+            t.ctl.pause_panes(&[p], &mut t.gw);
+        }
+        self.tmux_flush(gw);
+    }
+
+    /// Pause Pane's check: the focused tmux pane is paused.
+    pub(super) fn tmux_pane_paused(&self) -> bool {
+        self.focused_id().and_then(|id| self.tmux_of(id)).is_some_and(|(gw, p, _)| self.tmux.get(&gw).is_some_and(|t| t.ctl.is_paused(p)))
+    }
+
+    /// The pause bars' answers. True when the bar was one of these.
+    pub(super) fn tmux_pause_bar(&mut self, id: &str, button: Option<&str>, event_loop: &ActiveEventLoop) -> bool {
+        if let Some(rest) = id.strip_prefix(PAUSED) {
+            let parts: Vec<&str> = rest.split(':').collect();
+            let (Some(gw), Some(p)) = (parts.first().and_then(|s| s.parse::<u64>().ok()), parts.get(1).and_then(|s| s.parse::<u32>().ok())) else { return true };
+            match button {
+                Some("Unpause") => {
+                    if let Some(t) = self.tmux.get_mut(&gw) {
+                        t.ctl.unpause(&[p], &mut t.gw);
+                    }
+                    self.tmux_flush(gw);
+                }
+                Some("Settings") => {
+                    self.open_settings_page(event_loop, crate::settings_ui::Page::General);
+                    // iTerm2 shows the bar again: the pane is still paused.
+                    if let Some(pane) = self.tmux.get(&gw).and_then(|t| t.panes.get(&p)).map(|(x, _)| *x) {
+                        let by_tmux = parts.get(2) == Some(&"1");
+                        self.ask(pane, id, crate::tmux_pause::paused_text(by_tmux), &["Unpause", "Settings"], true);
+                    }
+                }
+                _ => {}
+            }
+            return true;
+        }
+        if id.starts_with(PAUSE_WARN) {
+            if button == Some("Pause Settings") {
+                self.open_settings_page(event_loop, crate::settings_ui::Page::General);
+            }
+            return true;
+        }
+        false
     }
 
     /// The close questions' answers. True when the bar was one of these.

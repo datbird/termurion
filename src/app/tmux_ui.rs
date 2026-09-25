@@ -39,6 +39,8 @@ pub(super) struct TmuxGw {
     pub(super) ctl: crate::tmux_controller::Controller,
     /// The tmux pane Tandem last told tmux (or tmux told Tandem) is selected.
     pub(super) selected: Option<u32>,
+    /// When the pause monitor last ran.
+    pub(super) pause_tick: Option<Instant>,
     /// Each tmux window's tab size in cells, as Tandem last laid it out.
     pub(super) tab_sizes: HashMap<u32, (u32, u32)>,
     /// tmux pane id to (Tandem pane, tmux window id).
@@ -63,7 +65,9 @@ impl App {
                     }
                     Out::Enter => self.tmux_enter(*id),
                     Out::Line(line) | Out::Exit(line) => {
+                        let clock = self.started.elapsed().as_secs_f64();
                         let Some(t) = self.tmux.get_mut(id) else { continue };
+                        t.ctl.set_clock(clock);
                         let events = t.gw.line(&line);
                         self.tmux_events(*id, events, event_loop);
                     }
@@ -95,7 +99,7 @@ impl App {
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, tab_sizes: HashMap::new(), panes: HashMap::new() });
+        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, tab_sizes: HashMap::new(), panes: HashMap::new() });
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {
@@ -116,6 +120,9 @@ impl App {
             prevent_tab: p.is_some_and(|p| p.bool("Prevent Opening in a Tab")),
             max_history: crate::tmux_windows::max_history(rows, scrollback, unlimited),
             variable_sizes: self.globals.bool("tmuxVariableWindowSizesSupported"),
+            pause_age: self.globals.int("TmuxPauseModeAgeLimit").max(1) as f64,
+            unpause_automatically: self.globals.bool("TmuxUnpauseAutomatically"),
+            warn_before_pausing: self.globals.bool("TmuxWarnBeforePausing") && !self.globals.bool("noSyncDontWarnAboutTmuxPause"),
         }
     }
 
@@ -396,6 +403,7 @@ impl App {
             }
             (super::tmux_tabs_ui::PLANE_BAR, _) => {}
             (id, button) if self.tmux_close_bar(id, button) => self.tmux_finish_close(event_loop),
+            (id, button) if self.tmux_pause_bar(id, button, event_loop) => {}
             _ => return false,
         }
         true

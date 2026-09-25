@@ -12,7 +12,7 @@ use crate::seltools::{self, End};
 
 /// Menu items with a check mark that milestone 4c adds, by selector.
 pub(super) const CHECKED: &[&str] =
-    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:", "toggleEnableTriggersInInteractiveApps:", "toggleNotifyOnStatusChange:", "togglePinHotkeyWindow:", "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleUseBackgroundPatternIndicator:", "toggleBroadcastSource:"];
+    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:", "toggleEnableTriggersInInteractiveApps:", "toggleNotifyOnStatusChange:", "togglePinHotkeyWindow:", "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleUseBackgroundPatternIndicator:", "toggleBroadcastSource:", "toggleTmuxPausePane:"];
 
 impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
@@ -79,6 +79,7 @@ impl App {
         match selector {
             "toggleSelectionRespectsSoftBoundaries:" => self.globals.bool("Selection Respects Soft Boundaries"),
             "togglePinHotkeyWindow:" => self.hotkey_pinned(),
+            "toggleTmuxPausePane:" => self.tmux_pane_paused(),
             "toggleCopyMode:" => self.focused_id().is_some_and(|id| self.copy_modes.contains_key(&id)),
             "toggleShowTimestamps:" => self.focused_id().is_some_and(|id| self.stamps_on(id)),
             "editSessionNote:" => self.focused_id().is_some_and(|id| self.note_win.as_ref().is_some_and(|(_, p, n)| *p == id && n.is_none())),

@@ -875,3 +875,39 @@ label = "Suppress kill/hide dialog when closing a tmux window."
 type = "bool"
 default = false
 help = "Suppress kill/hide dialog when closing a tmux window. On: the tmux windows are hidden without asking."
+
+[[setting]]
+key = "TmuxPauseModeAgeLimit"
+tab = "General"
+section = "tmux"
+label = "Pause a pane if catching up would take longer than (seconds):"
+type = "int"
+default = 120
+help = "The \"pause\" feature requires tmux 3.2 or later."
+
+[[setting]]
+key = "TmuxUnpauseAutomatically"
+tab = "General"
+section = "tmux"
+label = "Unpause automatically"
+type = "bool"
+default = false
+help = "A pane tmux paused unpauses by itself after a second."
+
+[[setting]]
+key = "TmuxWarnBeforePausing"
+tab = "General"
+section = "tmux"
+label = "Warn before pausing"
+type = "bool"
+default = true
+help = "Shows how many seconds are left before tmux pauses a pane that buffers too much."
+
+[[setting]]
+key = "noSyncDontWarnAboutTmuxPause"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress announcement that tmux will pause a session."
+type = "bool"
+default = false
+help = "Suppress announcement that tmux will pause a session."

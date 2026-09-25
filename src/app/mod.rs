@@ -2025,7 +2025,7 @@ impl ApplicationHandler<UserEvent> for App {
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
-        let tmux_due = self.tick_tmux();
+        let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop)].into_iter().flatten().min();
         let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
         let blinks = self
             .tabs
