@@ -17,6 +17,7 @@ enum Part {
     Alt,
     State,
     Pending,
+    UserVars,
     Other,
 }
 
@@ -81,6 +82,8 @@ pub struct PaneOpen {
     pub h: u32,
     pub restore: Vec<u8>,
     pub pending: Vec<u8>,
+    /// Its `user.*` variables from `@uservars` (tmux 3.1 and later).
+    pub user_vars: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -123,6 +126,7 @@ struct Captured {
     alt: Vec<u8>,
     state: String,
     pending: Vec<u8>,
+    user_vars: String,
 }
 
 struct Opener {
@@ -223,6 +227,8 @@ pub struct Controller {
     cwd_gates: HashMap<u32, crate::tmux_monitor::CwdGate>,
     /// tmux has `set-titles on` (read once per attach, 2.9 and later).
     pub set_titles: bool,
+    /// Each pane's variables as tmux has them in `@uservars`.
+    user_vars: HashMap<u32, BTreeMap<String, String>>,
 }
 
 impl Controller {
@@ -266,6 +272,7 @@ impl Controller {
             subscriptions: HashMap::new(),
             cwd_gates: HashMap::new(),
             set_titles: false,
+            user_vars: HashMap::new(),
         }
     }
 
@@ -653,6 +660,16 @@ impl Controller {
         }
     }
 
+    /// A pane's variables changed in Tandem: all of them go to `@uservars` (tmux 3.1 and
+    /// later), unless tmux has them already.
+    pub fn sync_user_vars(&mut self, pane: u32, vars: &BTreeMap<String, String>, gw: &mut Gateway) {
+        if self.v() < 3.1 || self.user_vars.get(&pane) == Some(vars) {
+            return;
+        }
+        self.user_vars.insert(pane, vars.clone());
+        gw.send(&crate::tmux_persist::user_vars_command(pane, &crate::tmux_persist::user_vars_value(vars)), None, Flags { tolerate: true, ..Default::default() });
+    }
+
     /// Every monitor of a window and its panes goes.
     fn unwatch_window(&mut self, window: u32, gw: &mut Gateway) {
         self.uninstall(Key::Window(window), gw);
@@ -861,6 +878,7 @@ impl Controller {
                             Part::Alt => c.alt = data.to_vec(),
                             Part::State => c.state = text.to_string(),
                             Part::Pending => c.pending = tmux_state::pending_bytes(data),
+                            Part::UserVars => c.user_vars = text.to_string(),
                             Part::Other => {}
                         }
                     }
@@ -896,7 +914,7 @@ impl Controller {
             let cmds = tmux_windows::capture_list(p, self.prefs.max_history, self.version, self.pause_mode, &format);
             let parts = [Part::Primary, Part::Alt, Part::State, Part::Pending, Part::Other];
             for (i, cmd) in cmds.into_iter().enumerate() {
-                let part = parts[i.min(4)];
+                let part = if cmd.ends_with("@uservars") { Part::UserVars } else { parts[i.min(4)] };
                 let t = self.tag(Req::Capture { opener, pane: p, part });
                 list.push((cmd, Some(t), Flags { tolerate: true, wants_data: true, ..Default::default() }));
             }
@@ -944,7 +962,9 @@ impl Controller {
                 let c = o.captured.remove(&p).unwrap_or_default();
                 let (w, h) = sizes.get(&p).copied().unwrap_or((80, 24));
                 let state = tmux_state::parse(&c.state, p, tab_bug);
-                PaneOpen { pane: p, w, h, restore: tmux_state::restore_bytes(&state, &c.primary, &c.alt, h as usize), pending: c.pending }
+                let user_vars = crate::tmux_persist::parse_user_vars(&c.user_vars);
+                self.user_vars.insert(p, user_vars.clone());
+                PaneOpen { pane: p, w, h, restore: tmux_state::restore_bytes(&state, &c.primary, &c.alt, h as usize), pending: c.pending, user_vars }
             })
             .collect();
         let all = tmux_layout::panes(&o.node);
@@ -1391,6 +1411,32 @@ mod tests {
         }
         r.sent();
         r
+    }
+
+    #[test]
+    fn user_vars_are_saved_and_read() {
+        let mut r = attached();
+        r.sent();
+        r.answer(Some(""));
+        r.answer(Some("line1"));
+        r.answer(Some(""));
+        r.answer(Some("pane_id=%0\tcursor_x=0\tcursor_y=0"));
+        r.answer(Some(""));
+        let enc = "u_757365722e613d31";
+        let a = r.answer(Some(enc));
+        let Some(Action::Open { panes, .. }) = a.first() else { panic!("{a:?}") };
+        assert_eq!(panes[0].user_vars.get("user.a").map(String::as_str), Some("1"));
+        let mut vars = panes[0].user_vars.clone();
+        r.ctl.sync_user_vars(0, &vars, &mut r.gw);
+        assert_eq!(r.sent(), "", "tmux has them");
+        vars.insert("user.b".into(), "2".into());
+        r.ctl.sync_user_vars(0, &vars, &mut r.gw);
+        assert_eq!(r.sent(), format!("set -p -t %0 @uservars \"{}\"\r", crate::tmux_persist::user_vars_value(&vars)));
+        r.ctl.sync_user_vars(0, &vars, &mut r.gw);
+        assert_eq!(r.sent(), "", "unchanged");
+        let mut old = Rig::with_version(3.0);
+        old.ctl.sync_user_vars(0, &vars, &mut old.gw);
+        assert_eq!(old.sent(), "", "tmux 3.0 has no pane options");
     }
 
     #[test]

@@ -9,6 +9,23 @@ pub fn encode_option(text: &str, prefix: &str) -> String {
     format!("{prefix}{hex}")
 }
 
+/// A pane's `user.*` variables as iTerm2's `@uservars`: `key=value` pairs (a value ends at
+/// its first NUL) joined by NUL, encoded with `u_`.
+pub fn user_vars_value(vars: &std::collections::BTreeMap<String, String>) -> String {
+    let pairs: Vec<String> = vars.iter().map(|(k, v)| format!("{k}={}", v.split('\0').next().unwrap_or(""))).collect();
+    encode_option(&pairs.join("\0"), "u_")
+}
+
+/// `@uservars` back to variables: `u_` hex (or plain text), NUL-separated, each split at its
+/// first `=`; parts without `=` are skipped.
+pub fn parse_user_vars(value: &str) -> std::collections::BTreeMap<String, String> {
+    crate::tmux_windows::decode_option(value, "u_").split('\0').filter_map(|p| p.split_once('=')).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+pub fn user_vars_command(pane: u32, value: &str) -> String {
+    format!("set -p -t %{pane} @uservars \"{value}\"")
+}
+
 /// iTerm2's stringByEscapingQuotes: backslashes double, then quotes get a backslash.
 pub fn escape_quotes(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
@@ -119,5 +136,23 @@ mod tests {
         assert!(close_window_question(1).unwrap().0.starts_with("Kill window and its jobs"));
         assert!(close_window_question(2).unwrap().0.starts_with("Kill all tmux windows"));
         assert_eq!(close_window_question(1).unwrap().1, ["Hide", "Detach tmux Session", "Kill", "Cancel"]);
+    }
+
+    #[test]
+    fn user_vars_round_trip() {
+        let mut vars = std::collections::BTreeMap::new();
+        vars.insert("user.a".to_string(), "x=y".to_string());
+        vars.insert("user.b".to_string(), "\u{e9}".to_string());
+        let v = user_vars_value(&vars);
+        assert_eq!(v, format!("u_{}", "user.a=x=y\0user.b=\u{e9}".bytes().map(|b| format!("{b:02x}")).collect::<String>()));
+        assert_eq!(parse_user_vars(&v), vars);
+        assert_eq!(parse_user_vars("user.c=1\0junk")["user.c"], "1", "plain text, a part without = skipped");
+        assert_eq!(parse_user_vars("user.c=1\0junk").len(), 1);
+        assert_eq!(parse_user_vars(&format!("{v}f")), vars, "an odd trailing digit is ignored");
+        let mut nul = std::collections::BTreeMap::new();
+        nul.insert("user.n".to_string(), "a\0b".to_string());
+        assert_eq!(parse_user_vars(&user_vars_value(&nul))["user.n"], "a", "a value ends at its NUL");
+        assert_eq!(user_vars_command(3, "u_61"), "set -p -t %3 @uservars \"u_61\"");
+        assert!(parse_user_vars("").is_empty());
     }
 }

@@ -108,7 +108,8 @@ pub fn parse_windows(reply: &str, version: f64, tab_bug: bool) -> Vec<Window> {
 /// A session option iTerm2 wrote: `prefix` then hex of UTF-8; without the prefix, plain.
 pub fn decode_option(value: &str, prefix: &str) -> String {
     let Some(hex) = value.strip_prefix(prefix) else { return value.to_string() };
-    let bytes: Vec<u8> = hex.as_bytes().chunks(2).filter_map(|p| std::str::from_utf8(p).ok().and_then(|p| u8::from_str_radix(p, 16).ok())).collect();
+    // An odd trailing digit is dropped (iTerm2's dataFromHexValues).
+    let bytes: Vec<u8> = hex.as_bytes().chunks(2).filter(|p| p.len() == 2).filter_map(|p| std::str::from_utf8(p).ok().and_then(|p| u8::from_str_radix(p, 16).ok())).collect();
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
