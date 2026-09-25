@@ -25,6 +25,113 @@ pub struct Image {
     pub frames: Vec<Frame>,
     /// The file did not decode; this is the placeholder.
     pub broken: bool,
+    /// Fit inside its cells keeping its shape (iTerm2's preserveAspectRatio).
+    pub keep_aspect: bool,
+}
+
+/// A decoded file: its size and frames.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Decoded {
+    pub width: u32,
+    pub height: u32,
+    pub frames: Vec<Frame>,
+    pub broken: bool,
+}
+
+/// Larger pictures are refused (as iTerm2's image restore does).
+pub const MAX_SIDE: u32 = 10_000;
+/// A GIF keeps at most this many frames.
+pub const MAX_FRAMES: usize = 1_000;
+/// iTerm2 keeps an image's row in 8 bits, so an image is at most this many rows tall.
+pub const MAX_ROWS: usize = 255;
+
+/// Decodes a PNG, JPEG, GIF (every frame), BMP, WebP, TIFF, or ICO file to RGBA8.
+pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
+    use image::AnimationDecoder;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SIDE);
+    limits.max_image_height = Some(MAX_SIDE);
+    limits.max_alloc = Some(1 << 30);
+    let format = image::guess_format(bytes).map_err(|e| e.to_string())?;
+    if format == image::ImageFormat::Gif {
+        let mut dec = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
+        image::ImageDecoder::set_limits(&mut dec, limits).map_err(|e| e.to_string())?;
+        let (width, height) = image::ImageDecoder::dimensions(&dec);
+        let frames = dec
+            .into_frames()
+            .take(MAX_FRAMES)
+            .map(|f| {
+                let f = f.map_err(|e| e.to_string())?;
+                let (n, d) = f.delay().numer_denom_ms();
+                Ok(Frame { delay_ms: n / d.max(1), rgba: Arc::new(f.into_buffer().into_raw()) })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        if frames.is_empty() {
+            return Err("The GIF has no frames.".into());
+        }
+        return Ok(Decoded { width, height, frames, broken: false });
+    }
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|e| e.to_string())?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Ok(Decoded { width, height, frames: vec![Frame { rgba: Arc::new(img.into_raw()), delay_ms: 0 }], broken: false })
+}
+
+/// iTerm2's broken-image placeholder: a grey square with a red cross.
+pub fn broken() -> Decoded {
+    const N: u32 = 32;
+    let mut px = vec![0u8; (N * N * 4) as usize];
+    for y in 0..N {
+        for x in 0..N {
+            let edge = x < 2 || y < 2 || x >= N - 2 || y >= N - 2;
+            let cross = (x as i32 - y as i32).abs() <= 1 || (x as i32 + y as i32 - (N as i32 - 1)).abs() <= 1;
+            let c: [u8; 4] = if cross { [0xd0, 0x30, 0x30, 0xff] } else if edge { [0x80, 0x80, 0x80, 0xff] } else { [0x40, 0x40, 0x40, 0xff] };
+            let i = ((y * N + x) * 4) as usize;
+            px[i..i + 4].copy_from_slice(&c);
+        }
+    }
+    Decoded { width: N, height: N, frames: vec![Frame { rgba: Arc::new(px), delay_ms: 0 }], broken: true }
+}
+
+/// A requested width or height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dim {
+    Auto,
+    Cells(u32),
+    Pixels(u32),
+    Percent(u32),
+}
+
+/// An image's size in cells, as iTerm2 works it out: pixels become `ceil(px / cell)`,
+/// percent is of the grid, auto keeps the shape; too wide for the space left means the
+/// full grid width (the height scaled to match); at most MAX_ROWS rows.
+pub fn size_in_cells(img: (u32, u32), w: Dim, h: Dim, keep_aspect: bool, cell: (f32, f32), grid: (usize, usize), cursor_col: usize) -> (usize, usize) {
+    let (cw, ch) = (cell.0.max(1.0) as f64, cell.1.max(1.0) as f64);
+    let (iw, ih) = (img.0.max(1) as f64, img.1.max(1) as f64);
+    let cells = |d: Dim, total: usize, cell: f64| -> Option<f64> {
+        match d {
+            Dim::Auto => None,
+            Dim::Cells(n) => Some(n as f64),
+            Dim::Pixels(n) => Some((n as f64 / cell).ceil()),
+            Dim::Percent(p) => Some((total as f64 * p as f64 / 100.0).ceil()),
+        }
+    };
+    let (w, h) = match (cells(w, grid.0, cw), cells(h, grid.1, ch)) {
+        (None, None) => ((iw / cw).ceil(), (ih / ch).ceil()),
+        (Some(w), None) => (w, if keep_aspect { (w * cw * ih / iw / ch).ceil() } else { (ih / ch).ceil() }),
+        (None, Some(h)) => (if keep_aspect { (h * ch * iw / ih / cw).ceil() } else { (iw / cw).ceil() }, h),
+        (Some(w), Some(h)) => (w, h),
+    };
+    let (mut w, mut h) = (w.max(1.0), h.max(1.0));
+    if w > grid.0.saturating_sub(cursor_col) as f64 {
+        let full = grid.0.max(1) as f64;
+        if keep_aspect {
+            h = (h * full / w).ceil().max(1.0);
+        }
+        w = full;
+    }
+    (w as usize, (h as usize).min(MAX_ROWS))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -117,7 +224,7 @@ mod tests {
     use alacritty_terminal::index::{Column, Line};
 
     fn picture(cols: usize, rows: usize) -> Image {
-        Image { width_px: 10, height_px: 10, cols, rows, frames: vec![Frame { rgba: Arc::new(vec![0; 400]), delay_ms: 0 }], broken: false }
+        Image { width_px: 10, height_px: 10, cols, rows, frames: vec![Frame { rgba: Arc::new(vec![0; 400]), delay_ms: 0 }], broken: false, keep_aspect: true }
     }
 
     fn tile(s: &Screen, line: i32, col: usize) -> Option<Tile> {
@@ -198,5 +305,70 @@ mod tests {
         let mut s = Screen::new(20, 4);
         let reply = s.feed(b"\x1b[c");
         assert_eq!(String::from_utf8(reply).unwrap(), "\x1b[?62;4;22c");
+    }
+
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    fn gif() -> Vec<u8> {
+        use image::codecs::gif::{GifEncoder, Repeat};
+        let mut out = Vec::new();
+        {
+            let mut enc = GifEncoder::new(&mut out);
+            enc.set_repeat(Repeat::Infinite).unwrap();
+            for c in [0u8, 255] {
+                let img = image::RgbaImage::from_pixel(4, 3, image::Rgba([c, 0, 0, 255]));
+                let frame = image::Frame::from_parts(img, 0, 0, image::Delay::from_numer_denom_ms(70, 1));
+                enc.encode_frame(frame).unwrap();
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn decodes_png_and_gif_frames() {
+        let d = decode(&png(3, 2)).unwrap();
+        assert_eq!((d.width, d.height, d.frames.len(), d.broken), (3, 2, 1, false));
+        assert_eq!(&d.frames[0].rgba[..4], &[10, 20, 30, 255]);
+        let g = decode(&gif()).unwrap();
+        assert_eq!((g.width, g.height, g.frames.len()), (4, 3, 2));
+        assert_eq!(g.frames[0].delay_ms, 70);
+        assert_eq!(g.frames[1].rgba[0], 255);
+    }
+
+    #[test]
+    fn corrupt_bytes_decode_as_broken() {
+        assert!(decode(b"not an image").is_err());
+        let b = broken();
+        assert!(b.broken && b.width > 0 && b.frames[0].rgba.len() == (b.width * b.height * 4) as usize);
+        assert!(decode(&png(MAX_SIDE + 1, 1)).is_err(), "too wide");
+    }
+
+    #[test]
+    fn sizes_follow_iterm2() {
+        let (cell, grid) = ((10.0, 20.0), (80, 24));
+        let img = (100, 40);
+        assert_eq!(size_in_cells(img, Dim::Auto, Dim::Auto, true, cell, grid, 0), (10, 2));
+        assert_eq!(size_in_cells(img, Dim::Cells(5), Dim::Auto, true, cell, grid, 0), (5, 1));
+        assert_eq!(size_in_cells(img, Dim::Pixels(55), Dim::Auto, true, cell, grid, 0).0, 6);
+        assert_eq!(size_in_cells(img, Dim::Percent(50), Dim::Auto, true, cell, grid, 0), (40, 8));
+        assert_eq!(size_in_cells(img, Dim::Cells(5), Dim::Auto, false, cell, grid, 0), (5, 2));
+        assert_eq!(size_in_cells(img, Dim::Auto, Dim::Cells(4), true, cell, grid, 0), (20, 4));
+        assert_eq!(size_in_cells(img, Dim::Cells(7), Dim::Cells(3), true, cell, grid, 0), (7, 3));
+        assert_eq!(size_in_cells((0, 0), Dim::Auto, Dim::Auto, true, cell, grid, 0), (1, 1));
+    }
+
+    #[test]
+    fn wide_images_shrink_to_the_grid() {
+        assert_eq!(size_in_cells((2000, 100), Dim::Auto, Dim::Auto, true, (10.0, 20.0), (80, 24), 30), (80, 2));
+    }
+
+    #[test]
+    fn height_caps_at_255() {
+        assert_eq!(size_in_cells((10, 100_000), Dim::Auto, Dim::Auto, true, (10.0, 20.0), (80, 24), 0).1, MAX_ROWS);
     }
 }
