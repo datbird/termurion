@@ -95,6 +95,10 @@ pub struct Screen {
     clock: Option<u32>,
     /// Inline images, by id.
     pub images: crate::images::Store,
+    /// Files the terminal was sent to save; the app asks before writing them.
+    pub downloads: Vec<crate::inline_file::Download>,
+    /// A MultipartFile in progress.
+    pub multipart: Option<crate::inline_file::Multipart>,
     /// Annotations, by id.
     pub notes: crate::annotations::Notes,
     /// Folded lines, by fold id.
@@ -125,6 +129,8 @@ impl Screen {
             pty_backed: false,
             clock: None,
             images: crate::images::Store::default(),
+            downloads: Vec::new(),
+            multipart: None,
             notes: crate::annotations::Notes::default(),
             folds: std::collections::HashMap::new(),
             next_fold: 0,
@@ -180,6 +186,11 @@ impl Screen {
         }
         reply.extend(self.feed_raw(&bytes[at..]));
         reply
+    }
+
+    /// The cell size in pixels, as the app set it.
+    pub fn cell_px(&self) -> (u16, u16) {
+        self.cell_px
     }
 
     /// Fixes the clock that stamps written rows (seconds), for tests; None uses the time.

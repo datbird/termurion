@@ -5,6 +5,17 @@
 /// The longest payload kept. Longer ones (an inline image, say) are not ours and are dropped.
 const LIMIT: usize = 64 * 1024;
 
+/// OSC 1337 files (inline images, downloads) may be this large.
+const FILE_LIMIT: usize = 512 << 20;
+
+fn limit_for(buf: &[u8]) -> usize {
+    if [b"1337;File=".as_slice(), b"1337;MultipartFile=", b"1337;FilePart="].iter().any(|p| buf.starts_with(p)) {
+        FILE_LIMIT
+    } else {
+        LIMIT
+    }
+}
+
 /// OSC payload prefixes Tandem acts on.
 const WANTED: [&[u8]; 3] = [b"133;", b"7;", b"1337;"];
 
@@ -101,9 +112,22 @@ impl Scanner {
                             0x1b => *esc = true,
                             0x18 | 0x1a => self.state = State::Ground,
                             _ => {
+                                if *keep && buf.len() >= 24 {
+                                    // The prefix is known: take the whole run up to the next
+                                    // control byte at once (a large inline image streams by).
+                                    let rest = &bytes[i..];
+                                    let n = rest.iter().position(|c| matches!(c, 0x07 | 0x1b | 0x18 | 0x1a)).unwrap_or(rest.len());
+                                    buf.extend_from_slice(&rest[..n]);
+                                    if buf.len() > limit_for(buf) {
+                                        *keep = false;
+                                        buf.clear();
+                                    }
+                                    i += n;
+                                    continue;
+                                }
                                 if *keep {
                                     buf.push(b);
-                                    if buf.len() > LIMIT || !could_be_wanted(buf) {
+                                    if buf.len() > limit_for(buf) || !could_be_wanted(buf) {
                                         *keep = false;
                                         buf.clear();
                                     }
@@ -212,13 +236,18 @@ mod tests {
     #[test]
     fn a_huge_payload_is_dropped() {
         let mut s = Scanner::default();
-        let mut big = b"\x1b]1337;File=".to_vec();
+        let mut big = b"\x1b]1337;SetUserVar=".to_vec();
         big.extend(std::iter::repeat_n(b'A', 70_000));
         big.push(7);
         big.extend(b"\x1b]133;C\x07");
         let ev = s.scan(&big);
         assert_eq!(ev.len(), 1);
         assert!(matches!(ev[0].1, Osc::OutputStart));
+        // Files (inline images) may be far larger, and are kept.
+        let mut file = b"\x1b]1337;File=".to_vec();
+        file.extend(std::iter::repeat_n(b'A', 70_000));
+        file.push(7);
+        assert!(matches!(&s.scan(&file)[0].1, Osc::Kv(k, _) if k == "File"));
     }
 
     #[test]

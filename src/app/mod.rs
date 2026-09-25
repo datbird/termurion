@@ -53,6 +53,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 mod actions;
 mod annotations_ui;
 mod copymode_ui;
+mod files_ui;
 mod find_ui;
 mod fold_ui;
 mod labels_ui;
@@ -1424,6 +1425,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.close_pane(id, event_loop);
         }
         if changed {
+            self.take_downloads();
             self.check_marks();
             self.sync_checks();
             self.redraw();

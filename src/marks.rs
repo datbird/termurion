@@ -483,6 +483,7 @@ impl Screen {
                     let line = self.cursor_point().line.0;
                     self.new_mark(line, Kind::Manual);
                 }
+                "File" | "MultipartFile" | "FilePart" | "FileEnd" => self.file_osc(&key, &value),
                 "AddAnnotation" | "AddHiddenAnnotation" => {
                     let Some((text, len, at)) = crate::annotations::parse_osc(&value) else { return };
                     let cols = self.term().columns();
