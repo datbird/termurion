@@ -27,6 +27,7 @@ pub mod sixel;
 pub mod kitty;
 pub mod stamps;
 pub mod styled_copy;
+pub mod bgimage;
 pub mod clipboard_osc;
 pub mod commands;
 pub mod menus;

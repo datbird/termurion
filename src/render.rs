@@ -102,8 +102,11 @@ struct ImagePipeline {
     screen_group: wgpu::BindGroup,
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// Textures by picture, with the frame count they were last drawn at.
-    cache: std::collections::HashMap<(u64, usize), (wgpu::BindGroup, u64)>,
+    /// Tiled background images repeat.
+    repeat_sampler: wgpu::Sampler,
+    /// Textures by picture (and whether it repeats), with the frame count they were last
+    /// drawn at.
+    cache: std::collections::HashMap<((u64, usize), bool), (wgpu::BindGroup, u64)>,
     uploads: usize,
     frames: u64,
 }
@@ -157,6 +160,13 @@ impl ImagePipeline {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let repeat_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            ..Default::default()
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[Some(&screen_layout), Some(&texture_layout)],
@@ -188,14 +198,14 @@ impl ImagePipeline {
             multiview_mask: None,
             cache: None,
         });
-        ImagePipeline { pipeline, screen_group, texture_layout, sampler, cache: Default::default(), uploads: 0, frames: 0 }
+        ImagePipeline { pipeline, screen_group, texture_layout, sampler, repeat_sampler, cache: Default::default(), uploads: 0, frames: 0 }
     }
 
     /// Makes sure every picture in `images` has a texture; drops ones long unused.
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, images: &[crate::scene::ImageQuad]) {
         self.frames += 1;
         for q in images {
-            if let Some(entry) = self.cache.get_mut(&q.key) {
+            if let Some(entry) = self.cache.get_mut(&(q.key, q.repeat)) {
                 entry.1 = self.frames;
                 continue;
             }
@@ -225,10 +235,10 @@ impl ImagePipeline {
                 layout: &self.texture_layout,
                 entries: &[
                     wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if q.repeat { &self.repeat_sampler } else { &self.sampler }) },
                 ],
             });
-            self.cache.insert(q.key, (group, self.frames));
+            self.cache.insert((q.key, q.repeat), (group, self.frames));
             self.uploads += 1;
         }
         let now = self.frames;
@@ -419,9 +429,13 @@ impl Renderer {
             })
         };
         let (under_buf, over_buf) = (make(&under), make(&over));
-        self.images.prepare(&self.device, &self.queue, &frame.images);
+        // Background images and inline images share one texture cache.
+        let all: Vec<crate::scene::ImageQuad> = frame.backgrounds.iter().chain(&frame.images).cloned().collect();
+        self.images.prepare(&self.device, &self.queue, &all);
         let picture = ImagePipeline::vertices(&frame.images);
         let picture_buf = make(&picture);
+        let backdrop = ImagePipeline::vertices(&frame.backgrounds);
+        let backdrop_buf = make(&backdrop);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
@@ -442,6 +456,17 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if !backdrop.is_empty() {
+                pass.set_pipeline(&self.images.pipeline);
+                pass.set_bind_group(0, &self.images.screen_group, &[]);
+                pass.set_vertex_buffer(0, backdrop_buf.slice(..));
+                for (i, q) in frame.backgrounds.iter().enumerate() {
+                    let Some((group, _)) = self.images.cache.get(&(q.key, q.repeat)) else { continue };
+                    pass.set_bind_group(1, group, &[]);
+                    let first = (i * 6) as u32;
+                    pass.draw(first..first + 6, 0..1);
+                }
+            }
             pass.set_pipeline(&self.quads.pipeline);
             pass.set_bind_group(0, &self.quads.bind_group, &[]);
             if !under.is_empty() {
@@ -453,7 +478,7 @@ impl Renderer {
                 pass.set_bind_group(0, &self.images.screen_group, &[]);
                 pass.set_vertex_buffer(0, picture_buf.slice(..));
                 for (i, q) in frame.images.iter().enumerate() {
-                    let Some((group, _)) = self.images.cache.get(&q.key) else { continue };
+                    let Some((group, _)) = self.images.cache.get(&(q.key, q.repeat)) else { continue };
                     pass.set_bind_group(1, group, &[]);
                     let first = (i * 6) as u32;
                     pass.draw(first..first + 6, 0..1);
@@ -540,6 +565,7 @@ mod tests {
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
             }],
             overlay: vec![],
+            backgrounds: vec![],
         };
         r.draw(&frame, &view, w, h).unwrap();
         let px = read(&device, &queue, &tex, w, h);
@@ -588,6 +614,7 @@ mod tests {
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
             }],
             overlay: vec![],
+            backgrounds: vec![],
         };
         r.draw(&frame, &view, w, h).unwrap();
         let px = read(&device, &queue, &tex, w, h);
@@ -619,6 +646,7 @@ mod tests {
             key: (key, 0),
             pixels: std::sync::Arc::new(px),
             size: (2, 1),
+            repeat: false,
         }
     }
 

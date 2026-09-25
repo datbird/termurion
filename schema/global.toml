@@ -314,3 +314,12 @@ label = "Show session status in tab"
 type = "bool"
 default = true
 help = "Shows the status text a program sets with OSC 21337 in its tab, in the status color."
+
+[[setting]]
+key = "PerPaneBackgroundImage"
+tab = "Appearance"
+section = "Panes"
+label = "Separate background images per pane"
+type = "bool"
+default = true
+help = "Each split pane shows its own profile's background image; off, the active pane's image spans the whole tab."

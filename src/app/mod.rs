@@ -52,6 +52,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod annotations_ui;
+mod bgimage_ui;
 mod clipboard_ui;
 mod copymode_ui;
 mod files_ui;
@@ -192,6 +193,10 @@ pub struct App {
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
     /// SetColors `tab`: the tab color a pane's program chose.
     tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
+    /// Background images by path (None for a file that does not load), and folder
+    /// rotations by folder and interval.
+    bg_images: HashMap<PathBuf, Option<Arc<crate::bgimage::Loaded>>>,
+    rotators: HashMap<(PathBuf, u64), bgimage_ui::Rotator>,
     /// When the last StealFocus question closed.
     steal_asked: Option<Instant>,
     /// When a pane flash or fireworks needs the next frame.
@@ -338,6 +343,8 @@ pub fn run() {
         tab_colors: HashMap::new(),
         attention_due: None,
         steal_asked: None,
+        bg_images: HashMap::new(),
+        rotators: HashMap::new(),
         typing: None,
         cursor: (0.0, 0.0),
         drag: Drag::None,
@@ -1254,8 +1261,12 @@ impl App {
             self.tab_rects = scene::tab_bar(&mut frame, &titles, self.active, bar, cell);
         }
         let area = self.content_area();
+        let backgrounds = self.pane_backgrounds();
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
+                if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
+                    scene::background(&mut frame, b.rect, &b.pieces, &b.image, b.bg, b.blend);
+                }
                 if let Some(p) = self.panes.get(&id) {
                     let shortcuts = self.shortcuts.as_ref().filter(|s| s.pane == id);
                     let labeled: Vec<crate::find::Match> = shortcuts.map(|s| s.items.iter().map(|(_, m, _)| *m).collect()).unwrap_or_default();
@@ -1435,11 +1446,12 @@ impl ApplicationHandler<UserEvent> for App {
         let animation = self.next_animation_frame();
         let sync = self.flush_due_syncs();
         let toast = self.toast_due();
+        let rotation = self.tick_rotations();
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
         }
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

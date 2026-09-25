@@ -43,12 +43,16 @@ pub struct ImageQuad {
     pub key: (u64, usize),
     pub pixels: std::sync::Arc<Vec<u8>>,
     pub size: (u32, u32),
+    /// The texture repeats past uv 0..1 (a tiled background image).
+    pub repeat: bool,
 }
 
 /// Draw order: `quads`, then `images`, then `rows`, then `overlay`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
     pub clear: [f32; 4],
+    /// Background images, drawn before everything else.
+    pub backgrounds: Vec<ImageQuad>,
     pub quads: Vec<Quad>,
     pub images: Vec<ImageQuad>,
     pub rows: Vec<TextRow>,
@@ -113,6 +117,7 @@ pub fn tile_quad(image: &crate::images::Image, tile: alacritty_terminal::term::c
         key: (image.uid, frame.min(image.frames.len() - 1)),
         pixels: f.rgba.clone(),
         size: (image.width_px, image.height_px),
+        repeat: false,
     })
 }
 
@@ -594,6 +599,16 @@ pub fn dividers(frame: &mut Frame, dividers: &[Divider]) {
     }
 }
 
+/// A pane's background image: its pieces first, then the pane's default background color
+/// over them at `1 - blend` (iTerm2's blend with an opaque window). Cells with the default
+/// background then draw nothing, so the veiled image shows; other cells cover it.
+pub fn background(frame: &mut Frame, pane: Rect, pieces: &[crate::bgimage::Piece], image: &crate::bgimage::Loaded, bg: Rgb, blend: f32) {
+    for (rect, uv, repeat) in pieces {
+        frame.backgrounds.push(ImageQuad { rect: *rect, uv: *uv, key: (image.key, 0), pixels: image.rgba.clone(), size: image.size, repeat: *repeat });
+    }
+    frame.quads.push(Quad { rect: pane, color: rgba(bg, 1.0 - blend.clamp(0.0, 1.0)) });
+}
+
 /// iTerm2's announcement bar across the top of a pane: its text, buttons, and close box.
 /// The pane's text under the bar is hidden.
 pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar::Layout, cell: (f32, f32)) {
@@ -805,6 +820,23 @@ mod tests {
         assert_eq!(rects[1].x, 100.0);
         let first: String = f.rows[0].spans.iter().map(|s| s.text.as_str()).collect();
         assert!(first.chars().count() <= 8, "{first:?}");
+    }
+
+    #[test]
+    fn background_image_under_cells() {
+        let img = crate::bgimage::Loaded { path: "x.png".into(), key: 7, size: (2, 2), rgba: std::sync::Arc::new(vec![255; 16]) };
+        let pane = Rect { x: 0.0, y: 0.0, w: 80.0, h: 32.0 };
+        let pieces = crate::bgimage::quads(crate::bgimage::Mode::Stretch, img.size, pane, pane);
+        let s = screen(b"a\x1b[41mb\x1b[0m");
+        let mut f = Frame::default();
+        background(&mut f, pane, &pieces, &img, s.palette.bg, 0.25);
+        pane_with(&mut f, &s, pane, CELL, false, false, None);
+        assert_eq!(f.backgrounds.len(), 1);
+        assert_eq!((f.backgrounds[0].key, f.backgrounds[0].repeat), ((7, 0), false));
+        assert_eq!(f.quads[0], Quad { rect: pane, color: rgba(s.palette.bg, 0.75) }, "the default background veils the image");
+        let red = s.palette.ansi[1];
+        assert!(f.quads.iter().any(|q| q.color == rgba(red, 1.0)), "a colored cell covers the image");
+        assert_eq!(f.quads.len(), 2, "the default cell draws no background");
     }
 
     #[test]
