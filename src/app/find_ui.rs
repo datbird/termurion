@@ -394,6 +394,10 @@ impl App {
 
     /// Back to the pane's own screen from Filter or Zoom.
     pub(super) fn end_view(&mut self, id: PaneId) {
+        // The screenshot's frozen copy stays until its panel closes.
+        if self.shot.as_ref().is_some_and(|s| s.pane == id) {
+            return;
+        }
         if let Some(p) = self.panes.get_mut(&id) {
             p.end_view();
         }

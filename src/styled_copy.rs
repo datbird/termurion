@@ -28,6 +28,14 @@ pub struct Row {
     pub hard_end: bool,
 }
 
+/// The selection's rows as `(grid line, first column, last column)`, and whether it is a
+/// box.
+pub fn selection_spans(screen: &Screen) -> (Vec<(i32, usize, usize)>, bool) {
+    let term = screen.term();
+    let is_box = term.selection.as_ref().and_then(|s| s.to_range(term)).is_some_and(|r| r.is_block);
+    (spans(screen), is_box)
+}
+
 /// The selection's rows, first to last: `(line, first column, last column)`.
 fn spans(screen: &Screen) -> Vec<(i32, usize, usize)> {
     let term = screen.term();

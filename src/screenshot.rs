@@ -91,10 +91,100 @@ pub fn slice(from: &crate::screen::Screen, first: i32, count: usize) -> crate::s
     s
 }
 
+/// A screen of the chosen buffer lines (0 is the oldest), in order: the minimap's rows.
+pub fn pick(from: &crate::screen::Screen, lines: &[usize]) -> crate::screen::Screen {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::Line;
+    let g = from.term().grid();
+    let (cols, history, rows) = (g.columns(), g.history_size() as i32, g.screen_lines() as i32);
+    let count = lines.len().max(1);
+    let look = crate::screen::Look { scrollback: 0, ..crate::screen::Look::default() };
+    let mut s = crate::screen::Screen::with_look(cols, count, from.palette.clone(), look);
+    s.feed(b"\x1b[?25l");
+    let picked = lines
+        .iter()
+        .map(|&i| {
+            let l = i as i32 - history;
+            if l < rows { g[Line(l)].clone() } else { alacritty_terminal::grid::Row::new(cols) }
+        })
+        .chain(std::iter::repeat_with(|| alacritty_terminal::grid::Row::new(cols)))
+        .take(count)
+        .collect();
+    s.splice_rows(0, count as i32 - 1, picked);
+    s.images = from.images.clone();
+    s
+}
+
 /// Batches of at most `max` lines covering `first..=last`.
 pub fn batches(first: usize, last: usize, max: usize) -> Vec<(usize, usize)> {
     let max = max.max(1);
     (first..=last).step_by(max).map(|s| (s, (s + max - 1).min(last))).collect()
+}
+
+/// A frozen copy of a screen with all its scrollback, cursor hidden: what Make Screenshot
+/// shows in the pane while its panel is open (output keeps going to the live screen).
+pub fn snapshot(from: &crate::screen::Screen) -> crate::screen::Screen {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::Line;
+    let g = from.term().grid();
+    let (cols, rows, history) = (g.columns(), g.screen_lines(), g.history_size());
+    let look = crate::screen::Look { scrollback: history + rows + 1, ..crate::screen::Look::default() };
+    let mut s = crate::screen::Screen::with_look(cols, rows, from.palette.clone(), look);
+    s.feed(b"\x1b[?25l");
+    let all: Vec<_> = (-(history as i32)..rows as i32).map(|l| g[Line(l)].clone()).collect();
+    // Splicing in more rows than the screen holds pushes the rest into scrollback.
+    s.splice_rows(0, rows as i32 - 1, all);
+    s.images = from.images.clone();
+    s
+}
+
+/// One Redact or Highlight annotation: its label and the selection it covers (buffer
+/// line, first column, last column).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Annotation {
+    pub kind: Kind,
+    pub label: String,
+    pub spans: Vec<(usize, usize, usize)>,
+    pub is_box: bool,
+}
+
+/// How redactions are drawn: one choice for all of them, as in iTerm2.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Method {
+    Blur(f32),
+    Solid([u8; 3]),
+}
+
+/// The panel's state.
+#[derive(Clone, Debug)]
+pub struct Panel {
+    pub total: usize,
+    /// The chosen range, 0-based inclusive.
+    pub range: (usize, usize),
+    pub annotations: Vec<Annotation>,
+    pub method: Method,
+}
+
+impl Panel {
+    /// A panel over `total` lines, starting at the lines that were in view.
+    pub fn new(total: usize, visible: (usize, usize)) -> Panel {
+        Panel { total, range: clamp_range(visible.0, visible.1, total), annotations: Vec::new(), method: Method::Blur(8.0) }
+    }
+
+    /// Adds an annotation from the pane's selection. False (and nothing added) with no
+    /// selection; the caller then clears the selection.
+    pub fn annotate(&mut self, kind: Kind, spans: Vec<(usize, usize, usize)>, is_box: bool, lines: &[String]) -> bool {
+        if spans.is_empty() {
+            return false;
+        }
+        self.annotations.push(Annotation { kind, label: label(kind, lines), spans, is_box });
+        true
+    }
+
+    /// Sets the range from the 1-based line fields.
+    pub fn set_range_1based(&mut self, start: usize, end: usize) {
+        self.range = clamp_range(start.saturating_sub(1), end.saturating_sub(1), self.total);
+    }
 }
 
 /// The default file name, from the local time.
@@ -172,7 +262,46 @@ mod tests {
         assert_eq!(b.term().grid().history_size(), 0);
         assert!(!b.term().mode().contains(alacritty_terminal::term::TermMode::SHOW_CURSOR), "no cursor");
         assert_eq!(batches(0, 2499, 1000), vec![(0, 999), (1000, 1999), (2000, 2499)]);
+        let history = s.term().grid().history_size();
+        let m = pick(&s, &[0, 2, history + 1]);
+        let mtext = |l: i32| (0..8).map(|c| m.term().grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string();
+        assert_eq!((mtext(0), mtext(1), mtext(2)), ("row0".to_string(), "row2".to_string(), s.term().grid()[Line(1)].clone().into_iter().map(|c| c.c).collect::<String>().trim_end().to_string()));
         assert_eq!(batches(5, 5, 1000), vec![(5, 5)]);
+    }
+
+    #[test]
+    fn panel_state_follows_selection() {
+        let mut p = Panel::new(500, (480, 499));
+        assert_eq!(p.range, (480, 499), "starts at the lines in view");
+        assert_eq!(p.method, Method::Blur(8.0));
+        assert!(!p.annotate(Kind::Redact, vec![], false, &[]), "no selection, nothing added");
+        assert!(p.annotate(Kind::Redact, vec![(481, 0, 4)], false, &["hello".to_string()]));
+        assert_eq!(p.annotations[0].label, "Redact: 1 lines: \u{201c}hello\u{201d}");
+        p.set_range_1based(0, 900);
+        assert_eq!(p.range, (0, 499), "1-based fields, clamped");
+        p.set_range_1based(10, 3);
+        assert_eq!(p.range, (9, 9));
+    }
+
+    #[test]
+    fn snapshot_copies_scrollback_and_hides_the_cursor() {
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Line};
+        let mut s = crate::screen::Screen::with_scrollback(8, 3, 100);
+        for i in 0..10 {
+            s.feed(format!("\x1b[32mr{i}\x1b[0m\r\n").as_bytes());
+        }
+        s.feed(b"end");
+        let snap = snapshot(&s);
+        let g = snap.term().grid();
+        assert_eq!(g.history_size(), s.term().grid().history_size());
+        let text = |l: i32| (0..8).map(|c| g[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string();
+        assert_eq!(text(-(g.history_size() as i32)), "r0");
+        assert_eq!(text(2), "end");
+        assert_eq!(g[Line(0)][Column(0)].fg, s.term().grid()[Line(0)][Column(0)].fg);
+        assert!(!snap.term().mode().contains(alacritty_terminal::term::TermMode::SHOW_CURSOR));
+        s.feed(b"\r\nmore output");
+        assert_eq!(text(2), "end", "the copy does not follow new output");
     }
 
     #[test]

@@ -205,6 +205,8 @@ pub struct App {
     attention_due: Option<Instant>,
     /// A short message at the bottom of the window, and when it goes away.
     toast: Option<(String, Instant)>,
+    /// An open Make Screenshot panel.
+    shot: Option<screenshot_ui::Shot>,
     /// Page Setup's printer, paper, and margins.
     print_setup: crate::winprint::Setup,
     /// OpenURL requests waiting for an answer, by pane and host; uploads being sent.
@@ -351,6 +353,7 @@ pub fn run() {
         pending_properties: HashMap::new(),
         pending_urls: HashMap::new(),
         print_setup: crate::winprint::Setup::default(),
+        shot: None,
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
@@ -615,6 +618,9 @@ impl App {
         if let Some(p) = self.panes.remove(&id) {
             self.forget_session_profile(&p.profile);
         }
+        if self.shot.as_ref().is_some_and(|s| s.pane == id) {
+            self.shot = None;
+        }
         self.finds.remove(&id);
         self.copy_modes.remove(&id);
         self.note_pos.remove(&id);
@@ -677,6 +683,10 @@ impl App {
     fn redraw(&self) {
         if let Some(g) = &self.gpu {
             g.window.request_redraw();
+        }
+        // The screenshot panel's buttons follow the pane's selection.
+        if let Some(s) = &self.shot {
+            s.window.request_redraw();
         }
     }
 
@@ -957,6 +967,10 @@ impl App {
     fn to_terminal(&mut self, key: &Key, base: Option<&Key>, bytes: Option<Vec<u8>>, event_loop: &ActiveEventLoop) {
         if let Some(action) = base.and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);
+        }
+        // A pane showing a frozen screenshot copy takes no keys until its panel closes.
+        if self.shot.as_ref().is_some_and(|s| Some(s.pane) == self.focused_id()) {
+            return;
         }
         // Filter and Zoom views are read-only: a key ends the view (Esc only that).
         if let Some(id) = self.focused_id().filter(|id| self.panes.get(id).is_some_and(|p| p.live.is_some())) {
@@ -1306,6 +1320,9 @@ impl App {
                 if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
                     scene::copy_cursor(&mut frame, self.inner(rect), cell, row, col, selecting);
                 }
+                if self.shot.as_ref().is_some_and(|s| s.pane == id) {
+                    scene::camera_sign(&mut frame, self.inner(rect), cell);
+                }
                 if self.panes.get(&id).is_some_and(|p| p.buffer.on) {
                     scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
@@ -1543,7 +1560,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) {
+        if self.prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

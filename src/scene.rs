@@ -630,6 +630,19 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close });
 }
 
+/// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
+/// small camera (a body, a lens, and a viewfinder).
+pub fn camera_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {
+    let (w, h) = (cell.0 * 1.6, cell.1 * 0.8);
+    let x = pane.x + pane.w - 2.0 * cell.0 - w;
+    let y = pane.y + cell.1 / 2.0;
+    let c = rgba(TAB_TEXT, 0.9);
+    frame.overlay.push(Quad { rect: Rect { x, y: y + h * 0.2, w, h: h * 0.8 }, color: c });
+    frame.overlay.push(Quad { rect: Rect { x: x + w * 0.3, y, w: w * 0.3, h: h * 0.25 }, color: c });
+    let l = h * 0.4;
+    frame.overlay.push(Quad { rect: Rect { x: x + (w - l) / 2.0, y: y + h * 0.4, w: l, h: l }, color: rgba(TAB_BAR, 1.0) });
+}
+
 /// Buffer Input's sign at the pane's top right: two bars, as a pause symbol.
 pub fn buffering_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {
     let h = cell.1;

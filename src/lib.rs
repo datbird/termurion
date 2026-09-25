@@ -78,6 +78,8 @@ pub mod prompt_ui;
 #[cfg(windows)]
 pub mod note_ui;
 #[cfg(windows)]
+pub mod shot_ui;
+#[cfg(windows)]
 pub mod global_find_ui;
 
 pub mod settings_keys;
