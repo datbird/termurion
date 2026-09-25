@@ -31,6 +31,7 @@ pub mod bgimage;
 pub mod blocks;
 pub mod clipboard_osc;
 pub mod commands;
+pub mod completion;
 pub mod menus;
 pub mod import;
 pub mod store;
