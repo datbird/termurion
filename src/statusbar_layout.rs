@@ -579,6 +579,28 @@ pub fn bar_rects(area: Rect, height: f32, position: Position) -> (Rect, Rect) {
     }
 }
 
+/// A pane's rectangle less its own bar, and the bar: `bar` is the bar's height and
+/// position when the pane shows one, None when it does not.
+pub fn pane_split(rect: Rect, bar: Option<(f32, Position)>) -> (Rect, Option<Rect>) {
+    match bar {
+        Some((height, position)) => {
+            let (bar, rest) = bar_rects(rect, height, position);
+            (rest, Some(bar))
+        }
+        None => (rect, None),
+    }
+}
+
+/// What a window's terminals were sized for: its content area and each pane's terminal
+/// rectangle in every tab. Any bar that comes, goes or changes height or place, shared
+/// or per pane, changes it, so a window compares it before each frame and lays out
+/// again (resizing the ptys and telling tmux) when it differs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Room {
+    pub area: Rect,
+    pub panes: Vec<(u64, Rect)>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,5 +724,27 @@ mod tests {
         assert_eq!(Position::from_code(0), Position::Top);
         assert_eq!(Position::from_code(1), Position::Bottom);
         assert_eq!(Position::from_code(7), Position::Top);
+    }
+    #[test]
+    fn a_per_pane_bar_changes_the_room() {
+        // Two panes side by side; the room a window compares before each frame.
+        let area = Rect { x: 0.0, y: 30.0, w: 800.0, h: 570.0 };
+        let left = Rect { w: 399.0, ..area };
+        let right = Rect { x: 401.0, w: 399.0, ..area };
+        let room = |bars: [Option<(f32, Position)>; 2]| Room { area, panes: vec![(1, pane_split(left, bars[0]).0), (2, pane_split(right, bars[1]).0)] };
+        let none = room([None, None]);
+        assert_eq!(none, room([None, None]));
+        assert_eq!(none.panes[0].1, left);
+        // The content area is the same in every case: only the pane rectangles move.
+        let one = room([None, Some((21.0, Position::Top))]);
+        assert_ne!(none, one);
+        assert_eq!(one.panes[1].1, Rect { y: 51.0, h: 549.0, ..right });
+        // Height, position and which pane shows a bar each change it.
+        assert_ne!(one, room([None, Some((28.0, Position::Top))]));
+        assert_ne!(one, room([None, Some((21.0, Position::Bottom))]));
+        assert_ne!(one, room([Some((21.0, Position::Top)), None]));
+        assert_eq!(room([None, Some((21.0, Position::Bottom))]).panes[1].1, Rect { h: 549.0, ..right });
+        let (rest, bar) = pane_split(right, Some((21.0, Position::Bottom)));
+        assert_eq!((rest.h + bar.unwrap().h, bar.unwrap().y), (right.h, right.y + right.h - 21.0));
     }
 }

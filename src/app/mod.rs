@@ -256,8 +256,9 @@ pub struct App {
     /// The current window's Lock Size and Lock Layout, and its Edit Window Title text.
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
-    /// The content area the current window's panes were laid out for.
-    laid_out: Option<Rect>,
+    /// What the current window's terminals were laid out for: the content area and every
+    /// pane's terminal rectangle, per-pane bars included.
+    laid_out: Option<crate::statusbar_layout::Room>,
     /// The save-arrangement window (true: all windows), and menus to rebuild (arrangements
     /// changed).
     arrange_prompt: Option<(crate::prompt_ui::PromptWindow, bool)>,
@@ -894,6 +895,9 @@ impl App {
             }
         }
         self.relayout();
+        // A profile's bar or the bar settings changed: other windows' panes may have
+        // gained or lost a bar (per pane, their room changes without the content area).
+        self.relayout_changed_windows();
     }
 
     /// Rebuilds every pane's colors and cursor from its profile and the system appearance.
@@ -1091,7 +1095,7 @@ impl App {
 
     fn relayout(&mut self) {
         self.mark_state_dirty();
-        self.laid_out = Some(self.content_area());
+        self.laid_out = Some(self.room());
         if let Some(t) = self.tabs.get(self.active) {
             self.mru.touch(t.id);
         }
@@ -2352,9 +2356,10 @@ impl ApplicationHandler<UserEvent> for App {
                 // A font change made while another window was current reaches this one now.
                 let sig = self.font_sig.clone();
                 self.apply_fonts();
-                // A font change or a banner made while another window was current reaches
-                // this one now.
-                if sig != self.font_sig || self.laid_out != Some(self.content_area()) {
+                // A font change, a banner or a status bar (shared or per pane) that came,
+                // went or changed height while another window was current reaches this one
+                // now: the room its terminals were sized for is compared whole.
+                if sig != self.font_sig || self.laid_out.as_ref() != Some(&self.room()) {
                     self.relayout();
                 }
                 self.render()

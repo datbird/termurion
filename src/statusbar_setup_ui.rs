@@ -176,9 +176,9 @@ impl StatusBarSetupWindow {
     /// Opens the window on `layout`. With `select`, that component is selected; with
     /// `configure` too, its Configure Component sheet opens (the bar's "Configure").
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, layout: Layout, dark_background: bool, profiles: Vec<(String, String)>, select: Option<usize>, configure: bool) -> Result<StatusBarSetupWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, layout: Layout, dark_background: bool, profiles: Vec<(String, String)>, select: Option<usize>, configure: bool) -> Result<StatusBarSetupWindow, String> {
         // iTerm2's content view is 918 x 526 (`SXIB:28`).
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Configure Status Bar", 918.0, 526.0)?;
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 918.0, 526.0)?;
         add_symbol_font(host.ctx());
         let selected = select.filter(|&i| i < layout.components.len());
         Ok(StatusBarSetupWindow { host, layout, selected, dark_background, profiles, drag: None, sheet: None, advanced: None, configure_first: configure && selected.is_some() })
@@ -255,6 +255,9 @@ impl StatusBarSetupWindow {
         let mut advanced_done = false;
         self.host.paint(|ui| {
             let ctx = ui.ctx().clone();
+            // A popup (the Auto-Rainbow list) open as the frame starts takes this frame's
+            // Escape and Return: its own code closes it before the keys are read below.
+            let popup_open = egui::Popup::is_any_open(&ctx);
             let drop_color = ui.visuals().selection.stroke.color;
             let pointer = ctx.input(|i| i.pointer.interact_pos());
             let released = ctx.input(|i| i.pointer.any_released());
@@ -387,8 +390,10 @@ impl StatusBarSetupWindow {
             }
 
             // Delete or Backspace removes the selected component (`DCV:90-117`); Escape
-            // is Cancel and Return is OK (`SXIB:127-152`).
-            if !sheet_open && !ctx.egui_wants_keyboard_input() {
+            // is Cancel and Return is OK (`SXIB:127-152`); none of them while a popup is
+            // open, whose Escape closes only the popup.
+            let popup_open = popup_open || egui::Popup::is_any_open(&ctx);
+            if !sheet_open && !popup_open && !ctx.egui_wants_keyboard_input() {
                 if ctx.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
                     delete = *selected;
                 }

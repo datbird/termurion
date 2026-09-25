@@ -27,6 +27,9 @@ impl App {
         let shared = self.store.profiles.iter().find(|p| p.guid() == original).cloned().unwrap_or_else(|| self.store.default_profile().clone());
         self.store.sessions[i].set(values, &shared);
         self.refresh_panes();
+        // Show Status Bar on a pane that is not focused, or in another window, changes
+        // that pane's room only.
+        self.relayout_changed_windows();
     }
 
     /// The pane takes a saved profile; any private copy (and what it overrode) goes.

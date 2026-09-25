@@ -33,7 +33,7 @@ pub(super) struct WinSlot {
     win_title: Option<String>,
     mru: Mru,
     mru_mods: Option<Mods>,
-    laid_out: Option<Rect>,
+    laid_out: Option<crate::statusbar_layout::Room>,
     /// Set on a profile's hotkey window.
     pub(super) hotkey: Option<super::hotkey_ui::HotkeyWin>,
     broadcast: crate::broadcast::Broadcast,

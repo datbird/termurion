@@ -241,12 +241,29 @@ impl App {
 
     /// A pane's rectangle less its own bar, and the bar, with bars per pane.
     pub(super) fn pane_bar_split(&self, tab: &Tab, id: PaneId, rect: Rect) -> (Rect, Option<Rect>) {
-        if self.per_pane_bars(tab) && self.shows_status_bar(id) {
-            let (bar, rest) = sbl::bar_rects(rect, self.status_bar_height(), self.status_bar_position());
-            (rest, Some(bar))
-        } else {
-            (rect, None)
+        let bar = (self.per_pane_bars(tab) && self.shows_status_bar(id)).then(|| (self.status_bar_height(), self.status_bar_position()));
+        sbl::pane_split(rect, bar)
+    }
+
+    /// What the current window's terminals are sized for now (see `Room`).
+    pub(super) fn room(&self) -> sbl::Room {
+        sbl::Room { area: self.content_area(), panes: self.tabs.iter().flat_map(|t| self.visible(t)).collect() }
+    }
+
+    /// Lays out again, now, every window whose room changed since its last layout: a bar,
+    /// shared or per pane, came, went or changed height while another window was current.
+    /// Its ptys and tmux's size report follow at once, not on its next frame, so a hidden
+    /// window is right too. The current window stays current.
+    pub(super) fn relayout_changed_windows(&mut self) {
+        // No window is current (one is closing): each heals on its next frame instead.
+        let Some(back) = self.current_window() else { return };
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
+        for id in ids {
+            if self.enter(id) && self.laid_out.as_ref() != Some(&self.room()) {
+                self.relayout();
+            }
         }
+        self.enter(back);
     }
 
     /// The tab's bars.
@@ -449,7 +466,15 @@ impl App {
                     self.open_status_setup(target, m.index, true, event_loop);
                 }
             }
-            "hide" => self.edit_status_layout(m.pane, |l| statusbar::hide_class(l, &m.class)),
+            // Hide goes the way the knob toggle below goes (both are `statusBarSetLayout:`,
+            // `VC:441-448`, `PS:23120-23128`): the layout the bar shows, written where the
+            // session keeps it.
+            "hide" => {
+                let Some(target) = self.status_target(m.pane, &[LAYOUT_KEY]) else { return true };
+                let mut layout = self.status_layout(m.pane);
+                statusbar::hide_class(&mut layout, &m.class);
+                self.write_status_layout(&target, Some(layout.to_value()));
+            }
             "disable" => self.disable_status_bar(m.pane),
             k => {
                 let Some(key) = k.strip_prefix("knob:").and_then(|i| i.parse::<usize>().ok()).and_then(|i| m.checkboxes.get(i).cloned()) else { return true };
@@ -519,30 +544,34 @@ impl App {
     }
 
     /// Opens the setup window for `target` (`PSV:664-706`). With `select`, that component is
-    /// selected, and with `configure` its Configure Component sheet opens. A window already
-    /// open comes to the front instead (iTerm2's is a sheet: one at a time).
+    /// selected, and with `configure` its Configure Component sheet opens. One window at a
+    /// time (iTerm2's is a sheet): a window already open on `target` comes to the front; one
+    /// open on another profile keeps its edits (they are already live, as after OK) and
+    /// closes, and the window opens again on `target`. Its title names the profile.
     pub(super) fn open_status_setup(&mut self, target: SetupTarget, select: Option<usize>, configure: bool, event_loop: &ActiveEventLoop) {
         if let Some(s) = self.status_setup.as_mut() {
-            if s.target == target
-                && let (Some(i), true) = (select, configure)
-            {
-                s.win.configure(i);
+            if s.target == target {
+                if let (Some(i), true) = (select, configure) {
+                    s.win.configure(i);
+                }
+                s.win.focus();
+                return;
             }
-            s.win.focus();
-            return;
+            self.status_setup = None;
         }
         let profile = match &target {
             SetupTarget::Shared(guid) => self.store.profiles.iter().find(|p| p.guid() == *guid),
             SetupTarget::Session(pane) => self.profile_of(*pane),
         };
         let Some(profile) = profile else { return };
+        let title = setup_title(&profile.name(), matches!(target, SetupTarget::Session(_)));
         let layout = Layout::from_value(profile.get(LAYOUT_KEY).as_ref());
         // Automatic auto-rainbow follows the session background's brightness (`PSV:654-662`).
         let dark_background = is_dark(crate::palette::Palette::from_profile(profile, self.dark()).bg);
         let saved = self.status_layout_value(&target);
         let profiles: Vec<(String, String)> = self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let Some(g) = self.gpu.as_ref() else { return };
-        match crate::statusbar_setup_ui::StatusBarSetupWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, layout, dark_background, profiles, select, configure) {
+        match crate::statusbar_setup_ui::StatusBarSetupWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, layout, dark_background, profiles, select, configure) {
             Ok(win) => self.status_setup = Some(StatusSetup { win, target, saved }),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -579,17 +608,6 @@ impl App {
         true
     }
 
-    /// Changes the session's saved profile's layout (Hide writes to the original profile
-    /// even for a session with its own copy, `PS:23130-23135`).
-    fn edit_status_layout(&mut self, pane: PaneId, f: impl FnOnce(&mut Layout)) {
-        let Some(guid) = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile)) else { return };
-        let Some(profile) = self.store.get_mut(&guid) else { return };
-        let mut layout = Layout::from_value(profile.get(LAYOUT_KEY).as_ref());
-        f(&mut layout);
-        profile.set(LAYOUT_KEY, layout.to_value());
-        self.apply_edit(Edit::Changed(guid));
-    }
-
     /// Disable Status Bar (`PS:23070-23080`): the session's own copy when it has one, else
     /// the shared profile (every session using it).
     fn disable_status_bar(&mut self, pane: PaneId) {
@@ -604,9 +622,21 @@ impl App {
     }
 }
 
+/// The setup window's title: the profile it edits, and whether that is a session's own
+/// copy (whose edits reach only that session).
+fn setup_title(profile: &str, session_copy: bool) -> String {
+    if session_copy { format!("Configure Status Bar: {profile} (this session only)") } else { format!("Configure Status Bar: {profile}") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_setup_window_names_its_profile() {
+        assert_eq!(setup_title("Default", false), "Configure Status Bar: Default");
+        assert_eq!(setup_title("Work", true), "Configure Status Bar: Work (this session only)");
+    }
 
     fn component(class: &str, knobs: &[(&str, toml::Value)]) -> Component {
         Component { class: class.into(), knobs: knobs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(), config: toml::Table::new() }
