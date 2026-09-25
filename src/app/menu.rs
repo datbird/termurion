@@ -312,7 +312,12 @@ impl App {
             "showBookmarkWindow:" | "openSplitHorizontallySheet:" | "openSplitVerticallySheet:" => {
                 self.open_settings(event_loop, Mode::Profiles)
             }
-            "terminate:" | "closeTerminalWindow:" => self.quit(event_loop),
+            "terminate:" => self.quit(event_loop),
+            "closeTerminalWindow:" => {
+                if let Some(id) = self.current_window() {
+                    self.close_window(id, event_loop);
+                }
+            }
             "hide:" | "performMiniaturize:" => {
                 if let Some(w) = &window {
                     w.set_minimized(true);
@@ -344,7 +349,8 @@ impl App {
                     w.focus_window();
                 }
             }
-            "newSession:" | "newWindow:" => self.new_tab(None),
+            "newSession:" => self.new_tab(None),
+            "newWindow:" => self.new_window(event_loop, None),
             "newSessionAlternate:" => {
                 let (before, active) = (self.tabs.len(), self.active);
                 self.new_tab(None);
@@ -352,7 +358,11 @@ impl App {
                     self.active = at;
                 }
             }
-            "newSessionWithSameProfile:" | "newWindowWithSameProfile:" | "duplicateTab:" | "duplicateSession:" => {
+            "newWindowWithSameProfile:" => {
+                let g = self.focused_guid();
+                self.new_window(event_loop, g.as_deref());
+            }
+            "newSessionWithSameProfile:" | "duplicateTab:" | "duplicateSession:" => {
                 let g = self.focused_guid();
                 self.new_tab(g.as_deref());
             }

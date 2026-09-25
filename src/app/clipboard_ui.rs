@@ -46,6 +46,8 @@ impl App {
             self.panes.iter_mut().flat_map(|(id, p)| p.own_mut().take_requests().into_iter().map(|r| (*id, r)).collect::<Vec<_>>()).collect();
         let asked = thin_requests(asked, self.steal_asked, std::time::Instant::now());
         for (pane, r) in asked {
+            // A request acts in the window that shows its pane.
+            self.enter_pane_window(pane);
             match r {
                 Request::ClipboardWrite(text) => self.clipboard_write(pane, text),
                 Request::ClipboardRead(pc) => self.clipboard_read(pane, pc),

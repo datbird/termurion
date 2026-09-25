@@ -449,3 +449,12 @@ label = "Write Automatic Profile Switching debug logs"
 type = "bool"
 default = false
 help = "Each Automatic Profile Switching decision goes to automatic-profile-switching.log beside Tandem's settings (iTerm2 writes them to its Script Console)."
+
+[[setting]]
+key = "WindowNumber"
+tab = "Appearance"
+section = "Windows"
+label = "Show window number"
+type = "bool"
+default = true
+help = "Window titles start with the window's number (1, 2, ...), which Alt+Win+number switches to."

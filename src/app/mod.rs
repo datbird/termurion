@@ -81,6 +81,7 @@ mod jobs_ui;
 mod close_ui;
 mod coprocess_ui;
 mod aps_ui;
+mod windows_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -201,6 +202,10 @@ pub struct App {
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// Session > Run Coprocess's window.
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
+    /// The terminal windows that are not current, their numbers, and the last one focused.
+    windows: crate::winmodel::Parked<windows_ui::WinSlot>,
+    registry: crate::winmodel::Registry,
+    last_window: Option<WindowId>,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
     aps: HashMap<PaneId, crate::aps::Switcher>,
     local_host: String,
@@ -411,6 +416,9 @@ pub fn run() {
         prompt: None,
         co_prompt: None,
         aps: HashMap::new(),
+        windows: Default::default(),
+        registry: Default::default(),
+        last_window: None,
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
@@ -728,6 +736,7 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        self.enter_pane_window(id);
         self.aps.remove(&id);
         if let Some(p) = self.panes.remove(&id) {
             self.forget_session_profile(&p.profile);
@@ -768,7 +777,13 @@ impl App {
             }
         }
         if self.tabs.is_empty() {
-            event_loop.exit();
+            // The window's last tab closed: the window goes; the last window ends Tandem.
+            if !self.drop_current_window() {
+                if self.save_due.is_some() {
+                    self.save_now();
+                }
+                event_loop.exit();
+            }
             return;
         }
         self.relayout();
@@ -803,6 +818,7 @@ impl App {
         if let Some(g) = &self.gpu {
             g.window.request_redraw();
         }
+        self.redraw_all();
         // The screenshot panel's buttons follow the pane's selection.
         if let Some(s) = &self.shot {
             s.window.request_redraw();
@@ -1522,6 +1538,7 @@ impl App {
     fn render(&mut self) {
         let frame = self.build_frame();
         let title = self.tabs.get(self.active).map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused));
+        let title = crate::winmodel::title(&title, self.window_number(), self.globals.bool("WindowNumber"));
         // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         let Some(gpu) = self.gpu.as_mut() else { return };
@@ -1606,7 +1623,13 @@ impl ApplicationHandler<UserEvent> for App {
             }
         };
         match init_gpu(window, event_loop) {
-            Ok(gpu) => self.gpu = Some(gpu),
+            Ok(gpu) => {
+                let k = windows_ui::key(gpu.window.id());
+                self.last_window = Some(gpu.window.id());
+                self.gpu = Some(gpu);
+                self.windows.start(k);
+                self.registry.open(k);
+            }
             Err(e) => {
                 message_box(&format!("Could not start the GPU renderer: {e}"));
                 return event_loop.exit();
@@ -1670,12 +1693,20 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Chord(c) => {
+                if let Some(w) = self.last_window {
+                    self.enter(w);
+                }
                 if let Some(s) = self.settings.as_mut().filter(|s| s.recording()) {
                     return s.record_chord(&c);
                 }
                 return self.run_chord(&c, event_loop);
             }
-            UserEvent::Menu(id) => return self.run_menu_id(&id, event_loop),
+            UserEvent::Menu(id) => {
+                if let Some(w) = self.last_window {
+                    self.enter(w);
+                }
+                return self.run_menu_id(&id, event_loop);
+            }
             UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::Wake => {}
@@ -1739,6 +1770,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             return;
         }
+        // Every other window is a terminal window: make it current first.
+        if !self.enter(id) {
+            return;
+        }
         match event {
             WindowEvent::ThemeChanged(_) => self.refresh_panes(),
             WindowEvent::DroppedFile(path) => {
@@ -1748,16 +1783,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.dropped.push((p, path.to_string_lossy().to_string()));
                 }
             }
-            WindowEvent::CloseRequested => {
-                if !self.confirm_close(close_ui::Closing::Window) {
-                    return;
-                }
-                if self.save_due.is_some() {
-                    self.save_now();
-                }
-                self.panes.clear();
-                event_loop.exit();
-            }
+            WindowEvent::CloseRequested => self.close_window(id, event_loop),
             WindowEvent::Resized(size) => {
                 // Minimizing reports 0x0. Keep every pty at its size, or ConPTY reflows the screen.
                 let Some((w, h)) = usable_size(size.width, size.height) else { return };
@@ -1775,6 +1801,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(f) => {
                 self.focused = f;
+                if f {
+                    self.last_window = Some(id);
+                }
                 self.jobs.set_fast(f);
                 // Keys held while the window loses focus send no release to Tandem.
                 if !f {
@@ -1813,7 +1842,15 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => self.mouse_release(button, event_loop),
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
-            WindowEvent::RedrawRequested => self.render(),
+            WindowEvent::RedrawRequested => {
+                // A font change made while another window was current reaches this one now.
+                let sig = self.font_sig.clone();
+                self.apply_fonts();
+                if sig != self.font_sig {
+                    self.relayout();
+                }
+                self.render()
+            }
             _ => {}
         }
     }

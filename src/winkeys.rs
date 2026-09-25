@@ -132,7 +132,19 @@ struct Hook {
 }
 
 static HOOK: OnceLock<Hook> = OnceLock::new();
-static WINDOW: AtomicIsize = AtomicIsize::new(0);
+/// Tandem's terminal windows.
+static WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+fn is_tandem(hwnd: isize) -> bool {
+    WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+}
+
+/// A terminal window closed.
+pub fn remove_window(hwnd: isize) {
+    if let Ok(mut w) = WINDOWS.lock() {
+        w.retain(|h| *h != hwnd);
+    }
+}
 static SETTINGS: AtomicIsize = AtomicIsize::new(0);
 /// The settings window is recording a keystroke: every Win chord goes to it.
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -188,7 +200,7 @@ fn is_modifier(vk: u16) -> bool {
 fn remap(h: &Hook, kb: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let vk = kb.vkCode as u16;
     let fg = unsafe { GetForegroundWindow() } as isize;
-    let focused = fg == WINDOW.load(Ordering::Relaxed) || fg == SETTINGS.load(Ordering::Relaxed);
+    let focused = is_tandem(fg) || fg == SETTINGS.load(Ordering::Relaxed);
     let tags = *h.tags.read().unwrap();
     let mut r = h.remapper.lock().unwrap();
     if let crate::remap::Verdict::Replace(keys) = r.on_key(vk, kb.scanCode, down, focused, &tags) {
@@ -227,7 +239,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                     vk: kb.vkCode as u16,
                     down,
                     win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
-                    focused: fg == WINDOW.load(Ordering::Relaxed) || recording,
+                    focused: is_tandem(fg) || recording,
                     shift: held(0x10),
                     alt: held(0x12),
                     ctrl: held(0x11),
@@ -259,7 +271,11 @@ pub fn install(
     tags: Arc<RwLock<Tags>>,
     exempt: Box<dyn Fn(u16, Mods) -> bool + Send + Sync>,
 ) -> Result<(), String> {
-    WINDOW.store(hwnd, Ordering::Relaxed);
+    if let Ok(mut w) = WINDOWS.lock() {
+        if !w.contains(&hwnd) {
+            w.push(hwnd);
+        }
+    }
     let hook = Hook { gate: Mutex::new(Gate::default()), send, bound, remapper: Mutex::new(Remapper::default()), tags, exempt, exempting: Mutex::new(None) };
     if HOOK.set(hook).is_err() {
         return Ok(());
