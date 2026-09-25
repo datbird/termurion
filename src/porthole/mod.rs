@@ -2,3 +2,4 @@
 
 pub mod detect;
 pub mod render;
+pub mod store;

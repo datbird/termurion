@@ -157,7 +157,7 @@ pub struct Screen {
     /// Annotations, by id.
     pub notes: crate::annotations::Notes,
     /// Folded lines, by fold id.
-    folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
+    pub(crate) folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
     feeds: u32,
     /// Key reporting chosen in the menu (on top of the program's requests).
@@ -176,6 +176,9 @@ pub struct Screen {
     pub blocks: crate::blocks::Blocks,
     /// OSC 1337 Button: the buttons written into the text.
     pub buttons: crate::blocks::Buttons,
+    /// Portholes by id, and the last id given.
+    pub portholes: std::collections::HashMap<u32, crate::porthole::store::Porthole>,
+    pub(crate) next_porthole: u32,
     /// OSC 21337: what the pane's program says it is doing.
     pub tab_status: crate::tabstatus::Status,
     /// The program's `Env=report=all` environment, kept for the SSH integration.
@@ -283,6 +286,8 @@ impl Screen {
             tab_status: crate::tabstatus::Status::default(),
             blocks: crate::blocks::Blocks::default(),
             buttons: crate::blocks::Buttons::default(),
+            portholes: std::collections::HashMap::new(),
+            next_porthole: 0,
             env: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
@@ -834,6 +839,7 @@ impl Screen {
         }
         self.folds.retain(|id, _| folds.contains(id));
         self.notes.by_id.retain(|_, n| notes.contains(&n.row_key));
+        self.prune_portholes();
         self.prune_images();
     }
 
@@ -860,7 +866,7 @@ impl Screen {
         self.parser.advance(&mut self.term, bytes);
         // Now and then, forget folds and notes whose rows scrolled out of the buffer.
         self.feeds = self.feeds.wrapping_add(1);
-        if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty()) {
+        if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {
             self.prune_tags();
         }
         self.drain_events()

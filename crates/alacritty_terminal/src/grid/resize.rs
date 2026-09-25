@@ -132,7 +132,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 row.grow(columns);
             }
             while row.len() > columns {
-                let (time, block) = (row.time, row.block);
+                let (time, block, porthole) = (row.time, row.block, row.porthole);
                 let Some(mut rest) = row.shrink(columns) else { break };
                 if let Some(cell) = row.last_mut() {
                     cell.flags_mut().insert(Flags::WRAPLINE);
@@ -145,6 +145,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 row = Row::from_vec(rest, occ);
                 row.time = time;
                 row.block = block;
+                row.porthole = porthole;
             }
             fitted.push(row);
         }
@@ -427,9 +428,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     // Tandem patch: the split-off part keeps the line's time.
                     let time = new_raw.last().map_or(0, |r: &Row<T>| r.time);
                     let block = new_raw.last().map_or(0, |r: &Row<T>| r.block);
+                    let porthole = new_raw.last().map_or(0, |r: &Row<T>| r.porthole);
                     row = Row::from_vec(wrapped, occ);
                     row.time = time;
                     row.block = block;
+                    row.porthole = porthole;
 
                     if i < self.display_offset {
                         // Since we added a new line, rotate up the viewport.

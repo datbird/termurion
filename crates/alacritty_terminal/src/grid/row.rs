@@ -49,6 +49,9 @@ pub struct Row<T> {
 
     /// Tandem patch: the key of the OSC 1337 buttons on this row (0 for none).
     pub(crate) button: u32,
+
+    /// Tandem patch: the porthole this row is part of (0 for none).
+    pub(crate) porthole: u32,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -79,7 +82,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0 }
+        Row { inner, occ: 0, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0, porthole: 0 }
     }
 
     /// Increase the number of columns in the row.
@@ -141,6 +144,7 @@ impl<T: Default> Row<T> {
         self.note = 0;
         self.block = 0;
         self.button = 0;
+        self.porthole = 0;
     }
 }
 
@@ -148,7 +152,7 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0 }
+        Row { inner: vec, occ, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0, button: 0, porthole: 0 }
     }
 
     /// Tandem patch: the mark id on this row, 0 for none.
@@ -209,6 +213,17 @@ impl<T> Row<T> {
         self.button = key;
     }
 
+    /// Tandem patch: the porthole this row is part of.
+    #[inline]
+    pub fn porthole(&self) -> u32 {
+        self.porthole
+    }
+
+    #[inline]
+    pub fn set_porthole(&mut self, id: u32) {
+        self.porthole = id;
+    }
+
     /// Tandem patch: the fold this row stands for.
     #[inline]
     pub fn fold(&self) -> u32 {
@@ -235,7 +250,7 @@ impl<T> Row<T> {
     /// row has none) and its time (when later).
     #[inline]
     pub(crate) fn absorb_tags(&mut self, other: &Row<T>) {
-        for (mine, theirs) in [(&mut self.mark, other.mark), (&mut self.manual, other.manual), (&mut self.fold, other.fold), (&mut self.note, other.note), (&mut self.block, other.block), (&mut self.button, other.button)] {
+        for (mine, theirs) in [(&mut self.mark, other.mark), (&mut self.manual, other.manual), (&mut self.fold, other.fold), (&mut self.note, other.note), (&mut self.block, other.block), (&mut self.button, other.button), (&mut self.porthole, other.porthole)] {
             if *mine == 0 {
                 *mine = theirs;
             }

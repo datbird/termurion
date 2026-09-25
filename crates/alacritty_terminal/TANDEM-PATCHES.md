@@ -53,4 +53,7 @@ test data) is left out. Changes:
     buttons on the row, cleared by `reset` and merged by `absorb_tags`. Split rows do not keep it:
     a button belongs to the part it was written in.
 
+12. `grid/row.rs`: `Row` has a `porthole` slot (`porthole()`, `set_porthole()`), the porthole a row
+    stands for, cleared by `reset`, merged by `absorb_tags`, and kept by split rows like `block`.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.
