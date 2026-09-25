@@ -156,7 +156,7 @@ impl App {
         })
     }
 
-    fn execute(&mut self, id: PaneId, run: Run, cwd: Option<&std::path::Path>, background: bool) {
+    pub(super) fn execute(&mut self, id: PaneId, run: Run, cwd: Option<&std::path::Path>, background: bool) {
         match run {
             Run::Open(target) => {
                 if let Err(e) = shell_open(&target, cwd, background) {

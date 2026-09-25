@@ -544,6 +544,9 @@ impl Screen {
                     }
                 }
                 "SetBackgroundImageFile" if self.trusted => self.requests.push(Request::SetBackgroundImageFile(value)),
+                "OpenURL" if self.trusted => self.requests.push(Request::OpenUrl(value)),
+                "ReportVariable" if self.trusted => self.requests.push(Request::ReportVariable(value)),
+                "RequestUpload" if self.trusted => self.requests.push(Request::RequestUpload(value)),
                 "SetColors" => {
                     for (name, v) in crate::osc1337::set_colors(&value) {
                         match (name.as_str(), crate::osc1337::color(&v)) {

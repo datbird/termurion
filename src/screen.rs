@@ -213,6 +213,10 @@ pub enum Request {
     SetProfile(String),
     SetProfileProperty(Vec<(String, String)>),
     SetBackgroundImageFile(String),
+    /// OpenURL, ReportVariable (base64 name), RequestUpload (its parameters).
+    OpenUrl(String),
+    ReportVariable(String),
+    RequestUpload(String),
     /// SetColors `tab`: the pane's tab color, or back to none.
     TabColor(Option<alacritty_terminal::vte::ansi::Rgb>),
 }

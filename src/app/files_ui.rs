@@ -21,6 +21,13 @@ fn downloads_dir() -> Option<std::path::PathBuf> {
 }
 
 #[cfg(windows)]
+/// A message box with an OK button.
+pub(super) fn message(text: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONWARNING) };
+}
+
 /// A yes/no question in a message box.
 pub(super) fn ask(text: &str) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDYES, MB_ICONQUESTION, MB_YESNO, MessageBoxW};

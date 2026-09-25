@@ -112,6 +112,146 @@ pub fn set_profile_decision(prevent: Option<bool>) -> Decision {
     }
 }
 
+/// OpenURL's value, `<ignored>:<base64 url>`: the URL, when it has a scheme.
+pub fn open_url(value: &str) -> Option<String> {
+    use base64::Engine;
+    let (_, b64) = value.split_once(':')?;
+    let url = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()?).ok()?;
+    let (scheme, rest) = url.split_once(':')?;
+    let ok = scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && !rest.is_empty();
+    ok.then_some(url)
+}
+
+/// The host part of a URL (without user, port, path), as iTerm2 compares it.
+pub fn url_host(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once("://")?;
+    let auth = rest.split(['/', '?', '#']).next()?;
+    let auth = auth.rsplit_once('@').map_or(auth, |(_, h)| h);
+    let host = if let Some(v6) = auth.strip_prefix('[') {
+        v6.split(']').next()?
+    } else {
+        auth.rsplit_once(':').filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit())).map_or(auth, |(h, _)| h)
+    };
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+/// The stored key that always allows OpenURL for a host: `OpenURL` + hex of its bytes.
+pub fn host_key(host: &str) -> String {
+    let hex: String = host.bytes().map(|b| format!("{b:02x}")).collect();
+    format!("OpenURL{hex}")
+}
+
+/// ReportVariable's permission from `NoSyncVariablesToReport` (`allow:name` and
+/// `deny:name`, comma separated; deny wins).
+pub fn variable_decision(name: &str, list: &str) -> Decision {
+    let entries: Vec<&str> = list.split(',').map(str::trim).filter(|e| !e.is_empty()).collect();
+    if entries.iter().any(|e| e.strip_prefix("deny:") == Some(name)) {
+        Decision::Deny
+    } else if entries.iter().any(|e| e.strip_prefix("allow:") == Some(name)) {
+        Decision::Apply
+    } else {
+        Decision::Ask
+    }
+}
+
+/// ReportVariable's answer: the value in base64 (empty for none), ended by BEL.
+pub fn variable_reply(value: Option<&str>) -> Vec<u8> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(value.unwrap_or(""));
+    format!("\x1b]1337;ReportVariable={b64}\x07").into_bytes()
+}
+
+/// What ReportVariable can report about a session.
+#[derive(Clone, Debug, Default)]
+pub struct Vars {
+    pub session: std::collections::BTreeMap<&'static str, String>,
+    pub user: std::collections::BTreeMap<String, String>,
+    pub tab: std::collections::BTreeMap<&'static str, String>,
+    pub window: std::collections::BTreeMap<&'static str, String>,
+    pub app: std::collections::BTreeMap<&'static str, String>,
+}
+
+/// A variable by iTerm2's name in the session scope: bare session names, `user.`,
+/// `tab.`, `tab.window.`, `iterm2.`. Anything else (`session.name` too) is None.
+pub fn variable(name: &str, vars: &Vars) -> Option<String> {
+    if let Some(n) = name.strip_prefix("user.") {
+        return vars.user.get(n).cloned();
+    }
+    if let Some(n) = name.strip_prefix("tab.window.") {
+        return vars.window.get(n).cloned();
+    }
+    if let Some(n) = name.strip_prefix("tab.") {
+        return vars.tab.get(n).cloned();
+    }
+    if let Some(n) = name.strip_prefix("iterm2.") {
+        return vars.app.get(n).cloned();
+    }
+    if name.contains('.') {
+        return None;
+    }
+    vars.session.get(name).cloned()
+}
+
+/// RequestUpload's parameters: Ok when the format is tgz (or not given).
+pub fn upload_format_ok(params: &str) -> bool {
+    params.split(';').filter_map(|p| p.split_once('=')).find(|(k, _)| *k == "format").is_none_or(|(_, v)| v == "tgz")
+}
+
+/// RequestUpload's answers before the archive: OK, and cancel (^C, iTerm2's choice over
+/// the protocol's `abort`, which a report must not hold).
+pub const UPLOAD_OK: &[u8] = b"ok\n";
+pub const UPLOAD_CANCEL: &[u8] = b"\x03";
+
+/// A gzipped tar of `paths` with names relative to their lowest common folder (one folder
+/// alone: relative to its parent).
+pub fn upload_archive(paths: &[std::path::PathBuf]) -> Result<Vec<u8>, String> {
+    use std::path::{Path, PathBuf};
+    if paths.is_empty() {
+        return Err("nothing chosen".into());
+    }
+    // Files count as their folder; folders as themselves.
+    let homes: Vec<PathBuf> = paths.iter().map(|p| if p.is_dir() { p.clone() } else { p.parent().map(Path::to_path_buf).unwrap_or_default() }).collect();
+    let base = if paths.len() == 1 && paths[0].is_dir() {
+        paths[0].parent().map(Path::to_path_buf).unwrap_or_default()
+    } else {
+        let mut base = homes[0].clone();
+        for h in &homes[1..] {
+            while !h.starts_with(&base) {
+                if !base.pop() {
+                    break;
+                }
+            }
+        }
+        base
+    };
+    let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut tar = tar::Builder::new(gz);
+    tar.follow_symlinks(false);
+    for p in paths {
+        let rel = p.strip_prefix(&base).map_err(|_| format!("{} is outside {}", p.display(), base.display()))?;
+        let name = Path::new(".").join(rel);
+        let result = if p.is_dir() { tar.append_dir_all(&name, p) } else { tar.append_path_with_name(p, &name) };
+        result.map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    let gz = tar.into_inner().map_err(|e| e.to_string())?;
+    gz.finish().map_err(|e| e.to_string())
+}
+
+/// The archive as sent: base64 in 76-column lines each ending CR, then CR CR.
+pub fn upload_lines(archive: &[u8]) -> Vec<u8> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(archive);
+    let mut out = Vec::with_capacity(b64.len() + b64.len() / 76 + 3);
+    for line in b64.as_bytes().chunks(76) {
+        out.extend_from_slice(line);
+        out.push(b'\r');
+    }
+    out.extend_from_slice(b"\r\r");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +311,85 @@ mod tests {
         assert_eq!(background_decision("C:\\c.png", &allow, &deny), Decision::Ask);
         assert_eq!(background_text("C:\\c.png"), "Set background image to \u{201c}C:\\c.png\u{201d}?");
         assert_eq!(background_text(""), "Remove background image?");
+    }
+    #[test]
+    fn open_url_parse_and_hosts() {
+        use base64::Engine;
+        let b = |u: &str| base64::engine::general_purpose::STANDARD.encode(u);
+        assert_eq!(open_url(&format!("x=1:{}", b("https://Example.com:8080/p?q#f"))).as_deref(), Some("https://Example.com:8080/p?q#f"));
+        assert_eq!(open_url(&format!(":{}", b("mailto:a@b.c"))).as_deref(), Some("mailto:a@b.c"));
+        assert_eq!(open_url(&b("https://x.io")), None, "a colon is required");
+        assert_eq!(open_url(&format!(":{}", b("no scheme here"))), None);
+        assert_eq!(open_url(":!!!"), None);
+        assert_eq!(url_host("https://user:pw@Example.com:8080/p").as_deref(), Some("Example.com"));
+        assert_eq!(url_host("http://[::1]:80/").as_deref(), Some("::1"));
+        assert_eq!(url_host("mailto:a@b.c"), None);
+        assert_eq!(host_key("Example.com"), "OpenURL4578616d706c652e636f6d");
+    }
+
+    #[test]
+    fn report_variable_replies() {
+        let mut v = Vars::default();
+        v.session.insert("name", "zsh".into());
+        v.session.insert("columns", "80".into());
+        v.user.insert("git_branch".into(), "main".into());
+        v.tab.insert("title", "T".into());
+        v.window.insert("id", "1".into());
+        v.app.insert("pid", "42".into());
+        assert_eq!(variable("name", &v).as_deref(), Some("zsh"));
+        assert_eq!(variable("user.git_branch", &v).as_deref(), Some("main"));
+        assert_eq!(variable("tab.title", &v).as_deref(), Some("T"));
+        assert_eq!(variable("tab.window.id", &v).as_deref(), Some("1"));
+        assert_eq!(variable("iterm2.pid", &v).as_deref(), Some("42"));
+        assert_eq!(variable("session.name", &v), None, "not a name in this scope");
+        assert_eq!(variable("nope", &v), None);
+        assert_eq!(variable_reply(Some("zsh")), b"\x1b]1337;ReportVariable=enNo\x07");
+        assert_eq!(variable_reply(None), b"\x1b]1337;ReportVariable=\x07");
+    }
+
+    #[test]
+    fn variable_permissions() {
+        assert_eq!(variable_decision("name", ""), Decision::Ask);
+        assert_eq!(variable_decision("name", "allow:name,deny:rows"), Decision::Apply);
+        assert_eq!(variable_decision("rows", "allow:name,deny:rows"), Decision::Deny);
+        assert_eq!(variable_decision("name", "allow:name, ,deny:name"), Decision::Deny, "deny wins");
+        assert_eq!(variable_decision("nam", "allow:name"), Decision::Ask, "whole names only");
+    }
+
+    #[test]
+    fn upload_archive_and_lines() {
+        let dir = std::env::temp_dir().join(format!("tandem-up-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"alpha").unwrap();
+        std::fs::write(dir.join("sub").join("b.txt"), b"beta").unwrap();
+        let archive = upload_archive(&[dir.join("a.txt"), dir.join("sub")]).unwrap();
+        let mut names: Vec<String> = tar::Archive::new(flate2::read::GzDecoder::new(&archive[..]))
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        names.sort();
+        // iTerm2's tar writes `./a.txt`; the tar crate writes `a.txt`. Both extract alike.
+        assert_eq!(names, vec!["a.txt", "sub/", "sub/b.txt"]);
+        let only = upload_archive(&[dir.join("sub")]).unwrap();
+        let first: Vec<String> = tar::Archive::new(flate2::read::GzDecoder::new(&only[..])).entries().unwrap().map(|e| e.unwrap().path().unwrap().to_string_lossy().replace('\\', "/")).collect();
+        assert!(first.contains(&"sub/b.txt".to_string()), "one folder: relative to its parent: {first:?}");
+        let lines = upload_lines(&[7u8; 100]);
+        let text = String::from_utf8(lines).unwrap();
+        let parts: Vec<&str> = text.split('\r').collect();
+        assert_eq!(parts[0].len(), 76);
+        assert!(text.ends_with("\r\r\r"), "the last line's CR, then CR CR");
+        assert!(!text.contains('\n'));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upload_answers() {
+        assert!(upload_format_ok("format=tgz;version=dGFy"));
+        assert!(upload_format_ok(""), "no format given");
+        assert!(!upload_format_ok("format=zip"));
+        assert_eq!(UPLOAD_CANCEL, b"\x03");
+        assert_eq!(UPLOAD_OK, b"ok\n");
     }
 }

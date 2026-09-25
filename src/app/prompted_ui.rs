@@ -9,6 +9,22 @@ use crate::prompted::{self, Decision};
 pub(super) const ASK_PROFILE: &str = "AskAboutChangingProfile";
 pub(super) const ASK_PROPERTY: &str = "SetProfileProperty";
 pub(super) const ASK_BACKGROUND: &str = "SetBackgroundImageFile";
+pub(super) const ASK_VARIABLE: &str = "ShouldReportVariable";
+pub(super) const ASK_URL: &str = "NoSyncAllowOpenURL_host:";
+pub(super) const UPLOAD_FORMAT: &str = "UploadInUnsupportedFormatRequested";
+pub(super) const ASK_ABORT_UPLOAD: &str = "AbortUploadOnKeyPressAnnouncement";
+
+/// RequestUpload sends this much every tick, as iTerm2's fast paste does.
+const UPLOAD_CHUNK: usize = 768;
+const UPLOAD_TICK: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// An upload being sent to a pane.
+pub(super) struct Upload {
+    data: Vec<u8>,
+    sent: usize,
+    name: String,
+    shown_pct: usize,
+}
 
 fn b64_text(s: &str) -> Option<String> {
     let bytes = base64::engine::general_purpose::STANDARD.decode(s.trim()).ok()?;
@@ -141,6 +157,41 @@ impl App {
                 }
             }
             (ASK_PROFILE, None) => {}
+            (UPLOAD_FORMAT, _) => {}
+            (ASK_ABORT_UPLOAD, answer) => {
+                if answer == Some("OK") {
+                    self.uploads.remove(&pane);
+                    self.show_toast("Upload aborted");
+                }
+            }
+            (id, answer) if id.starts_with(ASK_VARIABLE) => {
+                let name = &id[ASK_VARIABLE.len()..];
+                if let Some(b) = answer {
+                    let word = if b == "Always Allow" { "allow" } else { "deny" };
+                    let list = self.globals.string("NoSyncVariablesToReport");
+                    let joined = if list.is_empty() { format!("{word}:{name}") } else { format!("{list},{word}:{name}") };
+                    self.globals.set("NoSyncVariablesToReport", toml::Value::String(joined));
+                    self.save_globals();
+                }
+            }
+            (id, answer) if id.starts_with(ASK_URL) => {
+                let host = id[ASK_URL.len()..].to_string();
+                let Some(url) = self.pending_urls.remove(&(pane, host.clone())) else { return true };
+                match answer {
+                    Some("Allow") => self.open_url(pane, &url),
+                    Some("Always allow for this host") => {
+                        self.globals.set(&prompted::host_key(&host), toml::Value::Boolean(true));
+                        self.save_globals();
+                        self.open_url(pane, &url);
+                    }
+                    Some("Never allow") => {
+                        // iTerm2's Never turns the sequence off for every host.
+                        self.globals.set("NoSyncDisableOpenURL", toml::Value::Boolean(true));
+                        self.save_globals();
+                    }
+                    _ => {}
+                }
+            }
             _ => return false,
         }
         true
@@ -172,6 +223,181 @@ impl App {
         }
         self.bar_answered(pane, &bar.id, pressed.map(|i| bar.buttons[i].as_str()), event_loop);
         self.redraw();
+        true
+    }
+
+    /// OpenURL: opens at once for an allowed host, else asks.
+    pub(super) fn open_url_request(&mut self, pane: PaneId, value: String) {
+        if self.globals.bool("NoSyncDisableOpenURL") {
+            return;
+        }
+        let Some(url) = prompted::open_url(&value) else { return };
+        let host = prompted::url_host(&url).unwrap_or_default();
+        if !host.is_empty() && self.globals.bool(&prompted::host_key(&host)) {
+            return self.open_url(pane, &url);
+        }
+        self.pending_urls.insert((pane, host.clone()), url.clone());
+        self.ask(pane, &format!("{ASK_URL}{host}"), &format!("Open this URL? {url}"), &["Allow", "Always allow for this host", "Never allow"], true);
+    }
+
+    fn open_url(&mut self, pane: PaneId, url: &str) {
+        // The same guard as a Win-click: web and mail links open; others are refused.
+        let run = crate::semantic::guard_open(url, false);
+        self.execute(pane, run, None, false);
+    }
+
+    /// ReportVariable: the value if the name is allowed; empty now and a question if not.
+    pub(super) fn report_variable_request(&mut self, pane: PaneId, value: String) {
+        let Some(name) = b64_text(&value) else { return };
+        let decision = prompted::variable_decision(&name, &self.globals.string("NoSyncVariablesToReport"));
+        let reply = match decision {
+            Decision::Apply => {
+                let vars = self.variables(pane);
+                prompted::variable_reply(prompted::variable(&name, &vars).as_deref())
+            }
+            _ => prompted::variable_reply(None),
+        };
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.reply(&reply);
+        }
+        if decision == Decision::Ask {
+            self.ask(
+                pane,
+                &format!("{ASK_VARIABLE}{name}"),
+                &format!("A request to report variable \u{201c}{name}\u{201d} was denied. Allow it in the future?"),
+                &["Always Allow", "Always Deny"],
+                true,
+            );
+        }
+    }
+
+    /// The session's variables, as ReportVariable names them.
+    fn variables(&self, pane: PaneId) -> prompted::Vars {
+        let mut v = prompted::Vars::default();
+        let tab_index = self.tabs.iter().position(|t| t.layout.panes().contains(&pane));
+        let Some(p) = self.panes.get(&pane) else { return v };
+        let s = p.own();
+        let title = s.title().unwrap_or("Shell").to_string();
+        let grid = s.term().grid();
+        use alacritty_terminal::grid::Dimensions;
+        v.session.insert("name", title.clone());
+        v.session.insert("presentationName", title.clone());
+        v.session.insert("id", pane.to_string());
+        if let Some(t) = tab_index {
+            let index = self.tabs[t].layout.panes().iter().position(|x| *x == pane).unwrap_or(0);
+            v.session.insert("termid", format!("w0t{t}p{index}"));
+            v.tab.insert("id", t.to_string());
+            let focused = self.tabs[t].focused;
+            v.tab.insert("title", self.panes.get(&focused).and_then(|f| f.own().title()).unwrap_or("Shell").to_string());
+        }
+        v.session.insert("columns", grid.columns().to_string());
+        v.session.insert("rows", grid.screen_lines().to_string());
+        v.session.insert("showingAlternateScreen", if s.term().mode().contains(TermMode::ALT_SCREEN) { "1" } else { "0" }.to_string());
+        if let Some(c) = &s.shell.cwd {
+            v.session.insert("path", c.clone());
+        }
+        if let Some(h) = &s.shell.host {
+            v.session.insert("hostname", h.clone());
+        }
+        if let Some(u) = &s.shell.user {
+            v.session.insert("username", u.clone());
+        }
+        if let Some(c) = s.shell.history.last() {
+            v.session.insert("lastCommand", c.command.clone());
+        }
+        if let Some(sel) = s.term().selection_to_string() {
+            v.session.insert("selectionLength", sel.chars().count().to_string());
+            v.session.insert("selection", sel);
+        }
+        if let Some(pr) = self.store.get(&p.profile) {
+            v.session.insert("profileName", pr.name());
+        }
+        for (k, val) in &s.shell.vars {
+            v.user.insert(k.clone(), val.clone());
+        }
+        v.window.insert("id", "0".into());
+        v.window.insert("title", title);
+        v.app.insert("pid", std::process::id().to_string());
+        v.app.insert("effectiveTheme", if self.dark() { "dark" } else { "light" }.to_string());
+        v
+    }
+
+    /// RequestUpload: pick files, answer, and send the archive.
+    pub(super) fn upload_request(&mut self, pane: PaneId, params: String) {
+        if !prompted::upload_format_ok(&params) {
+            self.ask(pane, UPLOAD_FORMAT, "An upload with an unsupported archive format was requested. You may need a newer version of iTerm2.", &[], false);
+            return;
+        }
+        let picked = rfd::FileDialog::new().set_title("Choose files to upload").pick_files();
+        let Some(paths) = picked.filter(|p| !p.is_empty()) else {
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.reply(prompted::UPLOAD_CANCEL);
+            }
+            return;
+        };
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.reply(prompted::UPLOAD_OK);
+        }
+        match prompted::upload_archive(&paths) {
+            Ok(archive) => {
+                let first = paths[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = if paths.len() > 1 { format!("{first} plus {} more", paths.len() - 1) } else { first };
+                self.uploads.insert(pane, Upload { data: prompted::upload_lines(&archive), sent: 0, name, shown_pct: 0 });
+                self.upload_due = Some(Instant::now());
+            }
+            Err(e) => {
+                // The program already has "ok"; as in iTerm2 it waits until the user presses Ctrl+C.
+                files_ui::message(&format!("Error Preparing Upload\n\nThe archive could not be made: {e}"));
+            }
+        }
+    }
+
+    /// Sends the next piece of each upload; says when the next piece is due.
+    pub(super) fn feed_uploads(&mut self) -> Option<Instant> {
+        if self.uploads.is_empty() {
+            return None;
+        }
+        let now = Instant::now();
+        if self.upload_due.is_some_and(|t| now < t) {
+            return self.upload_due;
+        }
+        let mut done = Vec::new();
+        let mut progress = None;
+        for (id, up) in self.uploads.iter_mut() {
+            let end = (up.sent + UPLOAD_CHUNK).min(up.data.len());
+            if let Some(p) = self.panes.get_mut(id) {
+                // An upload is pasted text: unbracketed, and held by Buffer Input like typing.
+                p.input(&up.data[up.sent..end]);
+            }
+            up.sent = end;
+            let pct = up.sent * 100 / up.data.len().max(1);
+            if pct / 10 != up.shown_pct / 10 || up.sent == up.data.len() {
+                up.shown_pct = pct;
+                progress = Some(format!("Uploading {}: {pct}%", up.name));
+            }
+            if up.sent >= up.data.len() {
+                done.push(*id);
+            }
+        }
+        for id in done {
+            self.uploads.remove(&id);
+        }
+        if let Some(text) = progress {
+            self.show_toast(&text);
+        }
+        self.upload_due = (!self.uploads.is_empty()).then(|| now + UPLOAD_TICK);
+        self.upload_due
+    }
+
+    /// Ctrl+C while the focused pane is uploading asks before stopping it. True when the key
+    /// was used.
+    pub(super) fn upload_key(&mut self, ev: &KeyEvent) -> bool {
+        let Some(pane) = self.focused_id().filter(|id| self.uploads.contains_key(id)) else { return false };
+        let is_c = matches!(&ev.key_without_modifiers(), winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("c"));
+        if !(self.mods.ctrl && is_c) {
+            return false;
+        }
+        self.ask(pane, ASK_ABORT_UPLOAD, "A file is being uploaded. Abort the upload?", &["OK", "Cancel"], true);
         true
     }
 }

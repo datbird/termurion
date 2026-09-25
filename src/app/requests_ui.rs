@@ -69,6 +69,9 @@ impl App {
             Request::SetProfile(name) => self.set_profile_request(pane, name),
             Request::SetProfileProperty(pairs) => self.set_property_request(pane, pairs),
             Request::SetBackgroundImageFile(value) => self.set_background_request(pane, value),
+            Request::OpenUrl(value) => self.open_url_request(pane, value),
+            Request::ReportVariable(value) => self.report_variable_request(pane, value),
+            Request::RequestUpload(value) => self.upload_request(pane, value),
             Request::ClipboardWrite(_) | Request::ClipboardRead(_) => {}
         }
     }

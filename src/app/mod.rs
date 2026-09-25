@@ -204,6 +204,10 @@ pub struct App {
     attention_due: Option<Instant>,
     /// A short message at the bottom of the window, and when it goes away.
     toast: Option<(String, Instant)>,
+    /// OpenURL requests waiting for an answer, by pane and host; uploads being sent.
+    pending_urls: HashMap<(PaneId, String), String>,
+    uploads: HashMap<PaneId, prompted_ui::Upload>,
+    upload_due: Option<Instant>,
     /// SetProfileProperty values and SetBackgroundImageFile paths waiting for an answer.
     pending_properties: HashMap<PaneId, Vec<(String, toml::Value)>>,
     pending_background: HashMap<PaneId, String>,
@@ -342,6 +346,9 @@ pub fn run() {
         bars: HashMap::new(),
         pending_reads: HashMap::new(),
         pending_properties: HashMap::new(),
+        pending_urls: HashMap::new(),
+        uploads: HashMap::new(),
+        upload_due: None,
         pending_background: HashMap::new(),
         toast: None,
         flashes: HashMap::new(),
@@ -612,6 +619,8 @@ impl App {
         self.bars.remove(&id);
         self.pending_reads.remove(&id);
         self.pending_properties.remove(&id);
+        self.pending_urls.retain(|(p, _), _| *p != id);
+        self.uploads.remove(&id);
         self.pending_background.remove(&id);
         self.flashes.remove(&id);
         self.fireworks.remove(&id);
@@ -857,7 +866,7 @@ impl App {
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
             return;
         }
-        if self.bar_key(ev, event_loop) {
+        if self.bar_key(ev, event_loop) || self.upload_key(ev) {
             return;
         }
         // Typing shows the cursor at once and restarts the blink.
@@ -1458,11 +1467,12 @@ impl ApplicationHandler<UserEvent> for App {
         let sync = self.flush_due_syncs();
         let toast = self.toast_due();
         let rotation = self.tick_rotations();
+        let upload = self.feed_uploads();
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
         }
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
