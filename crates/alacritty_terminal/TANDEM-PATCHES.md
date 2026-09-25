@@ -30,17 +30,18 @@ test data) is left out. Changes:
 7. `term/cell.rs`: `CellExtra` holds an inline image `Tile` (image id, column, and row in the
    image) with `Cell::image()` and `Cell::set_image()`; a cell with a tile is not empty.
 
-8. `term/mod.rs`: primary device attributes report `CSI ? 62 ; 4 ; 22 c` (VT220 class, sixel,
-   ANSI color), as iTerm2 does, so apps know sixel works.
+8. `term/mod.rs`: device attributes follow iTerm2 for `Term.emulation_level` (100 to 500,
+   default 500): DA1 `CSI ? 1 ; 2 c` (VT100), `CSI ? 62 ; 1 ; 2 ; 4 ; 6 ; 22 ; 28 c` (VT200 and
+   VT300), `CSI ? 64 ; 1 ; 2 ; 4 ; 6 ; 17 ; 18 ; 21 ; 22 ; 52 c` (VT400 and VT500; 4 is sixel);
+   DA2 `CSI > vt ; 2500 ; 0 c` (vt 0, 1, 32, 41, 64); DA3 (VT400 and up) `DCS ! | 6954726D ST`.
+
+9. `term/mod.rs`: `Term.modify_other_keys` (0, 1, 2) is set by `CSI > 4 ; n m` and reported
+   for `CSI ? 4 m` as `CSI > 4 ; n m`; RIS clears it. `Config.kitty_keyboard` now means
+   "programs may change how keys are reported" (Tandem's profile setting Allow
+   modifyOtherKeys) and gates both kitty flags and modifyOtherKeys. Upstream's
+   `push_keyboard_mode` removed the oldest entry from the title stack when the keyboard stack
+   was full, which panics on an empty title stack; it now removes from the keyboard stack.
+   `Term::clear_keyboard_modes` drops every program request (Terminal State > Reset), and
+   `Term::scroll_region` reads the scrolling region (DECRQSS).
 
 To update alacritty_terminal, copy the new version here and apply these changes again.
-
-## 9. modifyOtherKeys, and the kitty stack's depth cap
-
-`term/mod.rs`: `Term.modify_other_keys` (0, 1, 2) is set by `CSI > 4 ; n m` and reported for
-`CSI ? 4 m` as `CSI > 4 ; n m`; RIS clears it. `Config.kitty_keyboard` now means "programs may
-change how keys are reported" (Tandem's profile setting Allow modifyOtherKeys) and gates both
-kitty flags and modifyOtherKeys. Upstream's `push_keyboard_mode` removed the oldest entry from
-the title stack when the keyboard stack was full, which panics on an empty title stack; it now
-removes from the keyboard stack. `Term::clear_keyboard_modes` drops every program request
-(Session > Terminal State > Reset).

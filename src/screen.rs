@@ -172,15 +172,13 @@ pub struct KeyState {
     pub kitty_off: u8,
     /// Literal Controls: control bytes show as carets instead of acting.
     pub literal: bool,
-    /// The emulation level: 100 to 500.
-    pub level: u16,
     /// The profile's Use libtickit protocol.
     pub profile_csi_u: bool,
 }
 
 impl KeyState {
     pub fn new(csi_u: bool) -> Self {
-        KeyState { csi_u, raw: false, kitty_on: 0, kitty_off: 0, literal: false, level: 500, profile_csi_u: csi_u }
+        KeyState { csi_u, raw: false, kitty_on: 0, kitty_off: 0, literal: false, profile_csi_u: csi_u }
     }
 }
 
@@ -318,6 +316,15 @@ impl Screen {
             KeyMode::Mok2 => 2,
             _ => 0,
         };
+    }
+
+    /// The emulation level (100 to 500), which device attributes report.
+    pub fn level(&self) -> u16 {
+        self.term.emulation_level
+    }
+
+    pub fn set_level(&mut self, level: u16) {
+        self.term.emulation_level = level.clamp(100, 500);
     }
 
     /// Flips one kitty flag from the menu.
@@ -621,7 +628,7 @@ impl Screen {
         self.feed(DECSTR);
         // Key reporting goes back to the profile's: no program flags, no menu choices.
         self.term.clear_keyboard_modes();
-        self.keys = KeyState { level: self.keys.level, literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
+        self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
     }
 
     pub fn mouse_modes(&self) -> Modes {

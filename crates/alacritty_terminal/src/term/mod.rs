@@ -325,6 +325,9 @@ pub struct Term<T> {
     /// Tandem: xterm's modifyOtherKeys level (0, 1, or 2), set when `kitty_keyboard` allows.
     pub modify_other_keys: u8,
 
+    /// Tandem: the emulation level (100 to 500) device attributes report.
+    pub emulation_level: u16,
+
     /// Currently inactive keyboard mode stack.
     inactive_keyboard_mode_stack: Vec<KeyboardModes>,
 
@@ -440,6 +443,7 @@ impl<T> Term<T> {
             inactive_keyboard_mode_stack: Default::default(),
             keyboard_mode_stack: Default::default(),
             modify_other_keys: 0,
+            emulation_level: 500,
             active_charset: Default::default(),
             vi_mode_cursor: Default::default(),
             cursor_style: Default::default(),
@@ -650,6 +654,11 @@ impl<T> Term<T> {
     }
 
     /// Access to the raw grid data structure.
+    /// Tandem: the scrolling region (top line, and the line past the bottom).
+    pub fn scroll_region(&self) -> &Range<Line> {
+        &self.scroll_region
+    }
+
     /// Tandem: drops every program key reporting request (kitty flags on both screens,
     /// modifyOtherKeys).
     pub fn clear_keyboard_modes(&mut self) {
@@ -1286,22 +1295,28 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn identify_terminal(&mut self, intermediate: Option<char>) {
-        match intermediate {
-            None => {
-                trace!("Reporting primary device attributes");
-                // Tandem patch: a VT220-class terminal with sixel graphics and ANSI color,
-                // as iTerm2 reports.
-                let text = String::from("\x1b[?62;4;22c");
-                self.event_proxy.send_event(Event::PtyWrite(text));
-            },
+        // Tandem patch: iTerm2's answers for each emulation level (VT100 to VT500).
+        let level = self.emulation_level;
+        let text = match intermediate {
+            None => String::from(match level {
+                ..=100 => "\x1b[?1;2c",
+                101..=300 => "\x1b[?62;1;2;4;6;22;28c",
+                _ => "\x1b[?64;1;2;4;6;17;18;21;22;52c",
+            }),
             Some('>') => {
-                trace!("Reporting secondary device attributes");
-                let version = version_number(env!("CARGO_PKG_VERSION"));
-                let text = format!("\x1b[>0;{version};1c");
-                self.event_proxy.send_event(Event::PtyWrite(text));
+                let vt = match level {
+                    ..=100 => 0,
+                    101..=200 => 1,
+                    201..=300 => 32,
+                    301..=400 => 41,
+                    _ => 64,
+                };
+                format!("\x1b[>{vt};2500;0c")
             },
-            _ => debug!("Unsupported device attributes intermediate"),
-        }
+            Some('=') if level >= 400 => String::from("\x1bP!|6954726D\x1b\\"),
+            _ => return,
+        };
+        self.event_proxy.send_event(Event::PtyWrite(text));
     }
 
     #[inline]
@@ -2347,6 +2362,7 @@ impl From<bool> for ModeState {
 /// This returns the current terminal version as a unique number based on alacritty_terminal's
 /// semver version. The different versions are padded to ensure that a higher semver version will
 /// always report a higher version number.
+#[cfg(test)]
 fn version_number(mut version: &str) -> usize {
     if let Some(separator) = version.rfind('-') {
         version = &version[..separator];

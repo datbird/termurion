@@ -338,7 +338,7 @@ mod tests {
     fn da1_reports_sixel() {
         let mut s = Screen::new(20, 4);
         let reply = s.feed(b"\x1b[c");
-        assert_eq!(String::from_utf8(reply).unwrap(), "\x1b[?62;4;22c");
+        assert_eq!(String::from_utf8(reply).unwrap(), "\x1b[?64;1;2;4;6;17;18;21;22;52c");
     }
 
     fn png(w: u32, h: u32) -> Vec<u8> {

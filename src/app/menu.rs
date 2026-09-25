@@ -196,7 +196,7 @@ impl App {
             check(label, kb.is_some_and(|k| k.kitty & bit != 0));
         }
         for (label, level) in LEVELS {
-            check(label, screen.is_some_and(|s| s.keys.level == level));
+            check(label, screen.is_some_and(|s| s.level() == level));
         }
         check("Literal Controls", screen.is_some_and(|s| s.keys.literal));
         let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
@@ -389,7 +389,7 @@ impl App {
             }
             "terminalStateSetEmulationLevel:" => {
                 if let (Some((_, level)), Some(p)) = (LEVELS.iter().find(|l| l.0 == label), self.focused_pane()) {
-                    p.screen.keys.level = *level;
+                    p.screen.set_level(*level);
                 }
             }
             s if s.starts_with("terminalStateToggle") && KEY_MODES.iter().any(|m| m.0 == label) => {

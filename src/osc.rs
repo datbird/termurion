@@ -46,6 +46,8 @@ pub enum Osc {
     Sixel(Vec<u8>),
     /// A kitty graphics command: the APC body after `G`.
     Kitty(Vec<u8>),
+    /// A report request alacritty does not answer.
+    Query(crate::reports::Query),
 }
 
 #[derive(Default)]
@@ -58,6 +60,34 @@ enum State {
     Dcs { buf: Vec<u8>, esc: bool },
     /// `ESC _`: an APC string (kitty graphics commands are kept).
     Apc { buf: Vec<u8>, esc: bool },
+    /// `ESC [`: a control sequence (a few queries are caught). `long` marks one too long to
+    /// be a query.
+    Csi { buf: Vec<u8>, long: bool },
+}
+
+/// A control sequence longer than this is no query Tandem answers.
+const CSI_LIMIT: usize = 32;
+
+/// The query a control sequence asks, from its parameter bytes and final byte.
+fn csi_query(params: &[u8], fin: u8) -> Option<Osc> {
+    use crate::reports::Query;
+    Some(Osc::Query(match (params, fin) {
+        (b">" | b">0", b'q') => Query::XtVersion,
+        (b"1337", b'n') => Query::ITerm2Version,
+        _ => return None,
+    }))
+}
+
+/// The event a finished DCS string stands for.
+fn dcs_event(buf: Vec<u8>) -> Option<Osc> {
+    use crate::reports::Query;
+    if let Some(pt) = buf.strip_prefix(b"$q") {
+        return Some(Osc::Query(Query::Decrqss(pt.to_vec())));
+    }
+    if let Some(pt) = buf.strip_prefix(b"+q") {
+        return Some(Osc::Query(Query::XtGetTcap(pt.to_vec())));
+    }
+    sixel_body(&buf).map(Osc::Sixel)
 }
 
 /// A DCS string kept up to this size (a large sixel image).
@@ -96,6 +126,7 @@ impl Scanner {
                         b']' => State::Osc { buf: Vec::new(), keep: true, esc: false },
                         b'P' => State::Dcs { buf: Vec::new(), esc: false },
                         b'_' => State::Apc { buf: Vec::new(), esc: false },
+                        b'[' => State::Csi { buf: Vec::new(), long: false },
                         0x1b => State::Esc,
                         _ => State::Ground,
                     };
@@ -131,13 +162,35 @@ impl Scanner {
                         }
                     }
                 }
+                State::Csi { buf, long } => match b {
+                    0x1b => {
+                        self.state = State::Esc;
+                    }
+                    0x18 | 0x1a => self.state = State::Ground,
+                    0x20..=0x3f => {
+                        if buf.len() < CSI_LIMIT {
+                            buf.push(b);
+                        } else {
+                            *long = true;
+                        }
+                    }
+                    0x40..=0x7e => {
+                        let ev = if *long { None } else { csi_query(buf, b) };
+                        self.state = State::Ground;
+                        if let Some(ev) = ev {
+                            out.push((i + 1, ev));
+                        }
+                    }
+                    // Other control bytes act inside a control sequence without ending it.
+                    _ => {}
+                },
                 State::Dcs { buf, esc } => {
                     if *esc {
                         if b == b'\\' {
                             let done = std::mem::take(buf);
                             self.state = State::Ground;
-                            if let Some(body) = sixel_body(&done) {
-                                out.push((i + 1, Osc::Sixel(body)));
+                            if let Some(ev) = dcs_event(done) {
+                                out.push((i + 1, ev));
                             }
                         } else {
                             self.state = State::Esc;
