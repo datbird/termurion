@@ -51,6 +51,21 @@ struct Current {
     data: Vec<u8>,
 }
 
+/// The Command Menu characters in typing: a key counts by its first character (iTerm2 reads
+/// the key event's characters, where arrows and function keys are private-use codes), so an
+/// encoded key that starts with ESC and has more after it is not Esc; typed text counts
+/// each character.
+pub fn menu_chars(bytes: &[u8], key: bool) -> Vec<char> {
+    let text = String::from_utf8_lossy(bytes);
+    if !key {
+        return text.chars().collect();
+    }
+    if bytes.len() > 1 && bytes[0] == 0x1b {
+        return Vec::new();
+    }
+    text.chars().take(1).collect()
+}
+
 /// How long a laggy command may wait before Force Detach is offered.
 pub const LAG: Duration = Duration::from_secs(5);
 
@@ -390,6 +405,16 @@ mod tests {
         assert_eq!(feed(&mut g, &["%exit server exited"]), vec![Event::Print("tmux exited unexpectedly.".into()), Event::Print("%exit server exited".into()), Event::Exit]);
         assert_eq!(g.take_writes(), b"\r", "tmux 3.2's wait-exit wants a newline");
         assert!(g.disconnected());
+    }
+
+    #[test]
+    fn only_a_bare_escape_detaches() {
+        assert_eq!(menu_chars(b"\x1b", true), vec!['\u{1b}']);
+        for key in [&b"\x1b[A"[..], b"\x1b[15~", b"\x1bx", b"\x1bOP"] {
+            assert!(menu_chars(key, true).is_empty(), "{key:?}");
+        }
+        assert_eq!(menu_chars(b"Lx", true), vec!['L'], "a key counts by its first character");
+        assert_eq!(menu_chars(b"LC", false), vec!['L', 'C'], "typed text counts each one");
     }
 
     #[test]

@@ -9,8 +9,8 @@ Mark each line pass or fail.
 |---|---|---|
 | 1 | Run `wsl`, then `tmux -CC`. The pane shows "** tmux mode started **", an empty line, "Command Menu", a dashed line, and the four key lines (esc, X, L, C). No `^C` or command text shows up in the shell. | |
 | 2 | Press L: "tmux logging on". Press C, type `list-sessions`, OK: "> list-sessions" and "Run command "list-sessions"" appear, then lines starting "< " and the session list (for example `0: 1 windows ...`). Press L again: "tmux logging off". | |
-| 3 | Press C, type `display-message -p "%exit"`, OK: the pane prints `%exit` as a reply line and tmux mode stays on (press C again to check it still answers). | |
-| 4 | Type other letters (a, b, lowercase l): nothing happens and nothing reaches tmux. | |
+| 3 | Press C, type `display-message -p "%exit"`, OK: as in iTerm2, a reply line starting `%exit` ends tmux mode. "Detached" prints, the rest of the reply shows as plain text, and tmux is still running in control mode: type `detach` and Enter to get the shell back. | |
+| 4 | `tmux -CC` again. Type other letters (a, b, lowercase l), arrow keys, F5, and Alt+x: nothing happens and nothing reaches tmux. With Broadcast Input to All Panes on in a tab with a second pane, typing in the other pane does not reach the gateway, and C in the gateway types nothing into the other pane. | |
 | 5 | Press Esc: "Detaching...", then "Detached". The WSL shell prompt comes back and takes typing normally. `tmux ls` shows the session still running. | |
 | 6 | `tmux -CC attach`: the banner shows again. Press X: "Exiting tmux mode, but tmux client may still be running." then "Detached". tmux's own lines now show as plain text; press Ctrl+C or type `detach` Enter to get the shell back. | |
 | 7 | `tmux kill-server`, then `tmux -CC attach`: the pane shows `tmux failed with error: "no sessions"` (curly quotes) and then "Detached". | |

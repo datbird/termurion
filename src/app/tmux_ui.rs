@@ -67,6 +67,7 @@ impl App {
         }
         let newline = if self.profile_of(pane).is_some_and(|p| p.bool("Tmux Newline")) { "\n" } else { "\r" };
         let Some(p) = self.panes.get_mut(&pane) else { return };
+        p.gateway = true;
         // A bare ^C first: a fake start cannot make Tandem type a command into a shell.
         p.reply(&[3]);
         for line in BANNER {
@@ -109,7 +110,11 @@ impl App {
                 Event::Note(_) => {}
                 Event::Abort(msg) => return self.tmux_abort(pane, "tmux Reported a Problem", &msg),
                 Event::InitialFailed(text) => self.tmux_print(pane, &format!("tmux failed with error: \u{201c}{text}\u{201d}")),
-                Event::Exit => return self.tmux_disconnected(pane),
+                Event::Exit => {
+                    // tmux 3.2's wait-exit wants the newline the gateway queued.
+                    self.tmux_flush(pane);
+                    return self.tmux_disconnected(pane, false);
+                }
             }
         }
         self.tmux_flush(pane);
@@ -137,20 +142,30 @@ impl App {
             t.gw.abort();
         }
         self.tmux_flush(pane);
-        self.tmux_disconnected(pane);
+        self.tmux_disconnected(pane, true);
     }
 
     /// iTerm2's tmuxHostDisconnected: "Detached", and the pane is an ordinary one again.
-    fn tmux_disconnected(&mut self, pane: PaneId) {
+    /// `unhook`: tmux did not say `%exit` (X, an abort, Force Detach), so the hook is still
+    /// reading lines. After `%exit` the hook has left already and may have started a new
+    /// session read in the same batch.
+    fn tmux_disconnected(&mut self, pane: PaneId, unhook: bool) {
         if self.tmux.remove(&pane).is_none() {
             return;
         }
         if let Some(p) = self.panes.get_mut(&pane) {
             p.own_mut().print_message("Detached");
-            p.unhook_tmux();
+            p.gateway = false;
+            if unhook {
+                p.unhook_tmux();
+            }
         }
         self.bars.entry(pane).or_default().retain(|b| b.id != SLOW_BAR && b.id != HUNG_BAR);
         self.redraw();
+    }
+
+    pub(super) fn tmux_gateways(&self) -> std::collections::BTreeSet<PaneId> {
+        self.tmux.keys().copied().collect()
     }
 
     pub(super) fn is_tmux_gateway(&self, pane: PaneId) -> bool {
@@ -160,9 +175,7 @@ impl App {
     /// Typing in a gateway: the Command Menu's keys; everything else is dropped. A key
     /// counts by its first character, typed text by each one (iTerm2's keyDown and writeTask).
     pub(super) fn tmux_gateway_input(&mut self, pane: PaneId, bytes: &[u8], key: bool) {
-        let text = String::from_utf8_lossy(bytes).into_owned();
-        let chars: Vec<char> = if key { text.chars().take(1).collect() } else { text.chars().collect() };
-        for c in chars {
+        for c in crate::tmux_gateway::menu_chars(bytes, key) {
             let Some(t) = self.tmux.get_mut(&pane) else { return };
             match c {
                 '\u{1b}' => {
@@ -187,7 +200,7 @@ impl App {
                     if let Some(t) = self.tmux.get_mut(&pane) {
                         t.gw.force_disconnect();
                     }
-                    self.tmux_disconnected(pane);
+                    self.tmux_disconnected(pane, true);
                 }
                 _ => {}
             }
@@ -303,7 +316,7 @@ impl App {
                 if let Some(t) = self.tmux.get_mut(&pane) {
                     t.gw.force_disconnect();
                 }
-                self.tmux_disconnected(pane);
+                self.tmux_disconnected(pane, true);
             }
             (HUNG_BAR, _) => {}
             _ => return false,

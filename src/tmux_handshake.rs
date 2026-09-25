@@ -210,6 +210,8 @@ impl Handshake {
                     self.version_known(gw, &mut steps);
                 }
             },
+            Ask::ServerPid => self.server_pid = text.and_then(|t| t.trim().parse().ok()).filter(|p| *p > 0),
+            Ask::SetTitles => self.set_titles = text == Some("on"),
             _ if self.detected => {}
             Ask::Probe23 => match text {
                 None => self.lower_max(2.2),
@@ -231,8 +233,6 @@ impl Handshake {
                 // The oldest version iTerm2 supports: the version is as known as it gets.
                 self.version_known(gw, &mut steps);
             }
-            Ask::ServerPid => self.server_pid = text.and_then(|t| t.trim().parse().ok()).filter(|p| *p > 0),
-            Ask::SetTitles => self.set_titles = text == Some("on"),
         }
         steps
     }
@@ -369,6 +369,9 @@ mod tests {
         assert!(g.v3_2);
         let follow = String::from_utf8(g.take_writes()).unwrap();
         assert_eq!(follow, "display-message -p \"#{pid}\"\rshow-options -v -g set-titles\r");
+        h.reply(Ask::ServerPid, Some("4242"), &mut g);
+        h.reply(Ask::SetTitles, Some("on"), &mut g);
+        assert_eq!((h.server_pid, h.set_titles), (Some(4242), true), "known versions still read these");
         // Probes after an exact version change nothing.
         assert!(h.reply(Ask::Probe18, None, &mut g).is_empty());
         assert_eq!(h.max, None);

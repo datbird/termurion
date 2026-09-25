@@ -141,6 +141,8 @@ pub struct Pane {
     /// What the hook found, in order, for the window's tmux gateway. Output behind a tmux
     /// line waits here too, so "Detached" lands before what followed `%exit`.
     tmux_q: Vec<crate::tmux_hook::Out>,
+    /// A tmux gateway: its pty carries tmux commands only, so no input reaches it.
+    pub gateway: bool,
 }
 
 impl Pane {
@@ -202,7 +204,7 @@ impl Pane {
     fn with_io(id: PaneId, io: Io, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new() }
+        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -295,6 +297,9 @@ impl Pane {
 
     /// What the user sends: keys, pastes. Held while Buffer Input is on.
     pub fn input(&mut self, bytes: &[u8]) {
+        if self.gateway {
+            return;
+        }
         self.suppress_output = false;
         if let Some(now) = self.buffer.send(bytes) {
             self.reply(&now);
@@ -569,10 +574,20 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn gateway_panes_take_no_input() {
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false };
+        p.buffer.on = true;
+        p.input(b"a");
+        p.gateway = true;
+        p.input(b"b");
+        assert_eq!(p.buffer.release(), b"a", "a tmux gateway's pty carries only tmux commands");
+    }
+
+    #[test]
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new() };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

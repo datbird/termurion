@@ -128,7 +128,8 @@ impl App {
         for (id, code, period) in due {
             let last_output = self.activity.get(&id).and_then(|a| a.last_output()).unwrap_or(self.started);
             let sent = self.idle_sent.get(&id).copied();
-            if alerts::idle_code_due(last_output, sent, now, period) {
+            // iTerm2's doAntiIdle skips a tmux gateway: the code would land in tmux's commands.
+            if alerts::idle_code_due(last_output, sent, now, period) && !self.tmux.contains_key(&id) {
                 if let Some(p) = self.panes.get_mut(&id) {
                     p.reply(&[code]);
                 }

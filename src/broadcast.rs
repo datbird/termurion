@@ -252,6 +252,15 @@ pub fn route(w: Write) -> Route {
     }
 }
 
+/// iTerm2's sendInputToAllSessions skips gateways: a gateway's keys stay in it, and no
+/// other pane's typing reaches one.
+pub fn without_gateways(targets: Vec<u64>, sender: u64, gateways: &BTreeSet<u64>) -> Vec<u64> {
+    if gateways.contains(&sender) {
+        return vec![sender];
+    }
+    targets.into_iter().filter(|t| !gateways.contains(t)).collect()
+}
+
 /// Writes that are typing (iTerm2's writeTask): a tmux gateway reads them as its Command
 /// Menu's keys. The rest never reach a gateway.
 pub fn typed(w: Write) -> bool {
@@ -415,6 +424,14 @@ mod tests {
         for w in [Write::SendTextLocal, Write::MouseReport, Write::FocusReport, Write::Trigger, Write::Upload, Write::BufferRelease] {
             assert_eq!(route(w), Route::Local, "{w:?}");
         }
+    }
+
+    #[test]
+    fn gateways_never_broadcast() {
+        let gateways: BTreeSet<u64> = [2].into();
+        assert_eq!(without_gateways(vec![1, 2, 3], 1, &gateways), vec![1, 3], "no typing reaches a gateway");
+        assert_eq!(without_gateways(vec![1, 2, 3], 2, &gateways), vec![2], "a gateway's keys stay in it");
+        assert_eq!(without_gateways(vec![2], 2, &gateways), vec![2]);
     }
 
     #[test]

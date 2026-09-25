@@ -40,6 +40,8 @@ impl App {
             Route::Broadcast => self.broadcast.targets(&self.broadcast_view(), sender),
             Route::Local => vec![sender],
         };
+        let gateways = self.tmux_gateways();
+        let targets = broadcast::without_gateways(targets, sender, &gateways);
         for t in targets {
             // A tmux gateway reads typing as its Command Menu's keys; reports and other
             // bytes would land in tmux's command stream, so they are dropped there.
