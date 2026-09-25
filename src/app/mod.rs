@@ -1698,6 +1698,14 @@ impl ApplicationHandler<UserEvent> for App {
         self.install_menus();
         self.place_window();
         self.apply_window_profile(None);
+        // Startup: arrangements (7c) and hotkey windows (7e) are not here yet, so the
+        // first window always opens; the Profiles window follows Open profiles window.
+        let g = &self.globals;
+        let policy = if g.bool("OpenArrangementAtStartup") { crate::startup::DEFAULT_ARRANGEMENT } else if g.bool("OpenNoWindowsAtStartup") { crate::startup::HOTKEY_ONLY } else { crate::startup::SYSTEM };
+        let prefs = crate::startup::StartupPrefs { open_profiles_window: g.bool("OpenBookmark"), policy, always_open: g.bool("AlwaysOpenWindowAtStartup"), open_new_window: g.bool("openNewWindowAtStartup") };
+        if crate::startup::plan(prefs, false, false).profiles_window {
+            self.open_settings(event_loop, Mode::Profiles);
+        }
         let style = self.store.default_profile().int("Window Type");
         if style != crate::frames::NORMAL {
             self.apply_window_style(style, false);

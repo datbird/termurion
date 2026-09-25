@@ -540,3 +540,48 @@ label = "Disable all confirmations on system shutdown, restart, and log out"
 type = "bool"
 default = false
 help = "Windows shutting down, restarting, or signing out never waits for Tandem's questions."
+
+[[setting]]
+key = "OpenBookmark"
+tab = "General"
+section = "Startup"
+label = "Open profiles window"
+type = "bool"
+default = false
+help = "The Profiles window also opens when Tandem starts."
+
+[[setting]]
+key = "OpenArrangementAtStartup"
+tab = "General"
+section = "Startup"
+label = "Open default window arrangement"
+type = "bool"
+default = false
+help = "Tandem starts with the default window arrangement (Window > Arrangements) instead of one window."
+
+[[setting]]
+key = "OpenNoWindowsAtStartup"
+tab = "General"
+section = "Startup"
+label = "Only restore hotkey window"
+type = "bool"
+default = false
+help = "Tandem starts with only its hotkey windows. With no hotkey window a window opens anyway, since Windows would show nothing."
+
+[[setting]]
+key = "AlwaysOpenWindowAtStartup"
+tab = "General"
+section = "Startup"
+label = "Always open at least one terminal window at startup"
+type = "bool"
+default = false
+help = "The existence of hotkey windows disables opening a window at startup. This opens one anyway."
+
+[[setting]]
+key = "openNewWindowAtStartup"
+tab = "Advanced"
+section = "General"
+label = "Open a new window when Tandem starts"
+type = "bool"
+default = true
+help = "Tandem opens a terminal window at launch unless the Startup settings say otherwise."
