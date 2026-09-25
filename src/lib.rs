@@ -120,6 +120,7 @@ pub mod host;
 pub mod host_client;
 pub mod reattach;
 pub mod hotkey;
+pub mod doubletap;
 pub mod winpipe;
 
 #[cfg(windows)]
