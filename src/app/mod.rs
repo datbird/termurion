@@ -836,6 +836,7 @@ impl App {
             let (list, prefs) = triggers_ui::triggers_of(p);
             pane.own_mut().set_triggers(list, prefs);
         }
+        self.tmux_resend_colors();
         self.redraw();
     }
 

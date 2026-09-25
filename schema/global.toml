@@ -958,6 +958,15 @@ default = true
 help = "Opens the tmux Dashboard after an attach that left windows hidden."
 
 [[setting]]
+key = "TmuxSyncClipboard"
+tab = "General"
+section = "tmux"
+label = "Mirror tmux paste buffer to local clipboard"
+type = "bool"
+default = false
+help = "When tmux's paste buffer changes, its text goes to the clipboard."
+
+[[setting]]
 key = "AutoHideTmuxClientSession"
 tab = "General"
 section = "tmux"

@@ -89,6 +89,12 @@ impl App {
 
     /// Sends the clipboard's text to the program that asked.
     fn report_clipboard(&mut self, pane: PaneId, pc: &str) {
+        // A tmux pane: only the client tmux leaves it to answers (iTerm2 drops it silently).
+        if let Some(gw) = self.panes.get(&pane).and_then(|p| p.tmux_io()).map(|io| io.gateway) {
+            if !self.tmux.get(&gw).is_some_and(|t| t.ctl.answers_osc52()) {
+                return;
+            }
+        }
         let text = match self.clipboard.as_mut().map(|cb| cb.get_text()) {
             Some(Ok(t)) => t,
             // An empty or non-text clipboard reports as empty text.

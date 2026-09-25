@@ -12,6 +12,10 @@ const CLOSE_TAB: &str = "tmux-close-tab:";
 /// Pause bars: "tmux-paused:GW:PANE:1" (1: tmux paused it) and "tmux-pause-warn:GW:PANE".
 const PAUSED: &str = "tmux-paused:";
 const PAUSE_WARN: &str = "tmux-pause-warn:";
+/// The paste buffer offer (iTerm2's NoSyncOfferToSyncTmuxClipboard) and the key that says
+/// it was answered (iTerm2 checks whether TmuxSyncClipboard exists at all).
+const PASTE_OFFER: &str = "NoSyncOfferToSyncTmuxClipboard";
+const PASTE_ANSWERED: &str = "NoSyncTmuxSyncClipboardAnswered";
 /// "tmux-double:GW:OTHER": this gateway attached to a session OTHER already shows.
 const DOUBLE: &str = "tmux-double:";
 
@@ -23,7 +27,27 @@ impl App {
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
-                Action::PasteBuffer(_) | Action::Clipboard(_) => {}
+                // %paste-buffer-changed: mirrored with TmuxSyncClipboard, else offered once.
+                Action::PasteBuffer(name) => {
+                    if self.globals.bool("TmuxSyncClipboard") {
+                        if let Some(t) = self.tmux.get_mut(&gw) {
+                            t.ctl.fetch_buffer(&name, &mut t.gw);
+                        }
+                        self.tmux_flush(gw);
+                    } else if crate::tmux_clients::offer_paste_sync(false, self.globals.bool(PASTE_ANSWERED), false) {
+                        // In the current window's current session, tmux or not (iTerm2's).
+                        if let Some(id) = self.focused_id() {
+                            self.ask(id, PASTE_OFFER, "The tmux paste buffer was updated. Would you like to mirror it to the local clipboard from now on?", &["Always", "Never"], false);
+                        }
+                    }
+                }
+                Action::Clipboard(text) => {
+                    if let Some(cb) = &mut self.clipboard {
+                        if let Err(e) = cb.set_text(text) {
+                            self.banners.set("clipboard", format!("Copy failed: {e}"));
+                        }
+                    }
+                }
                 Action::PaneInfo { pane, what, value } => {
                     let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
                     if let Some(io) = self.panes.get(&id).and_then(|p| p.tmux_io()) {
@@ -112,7 +136,10 @@ impl App {
                     let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
                     let Some(p) = self.panes.get_mut(&id) else { continue };
                     let (title, vars) = (p.own().title().map(str::to_string), p.own().shell.vars.clone());
+                    let osc4 = self.tmux.get(&gw).is_some_and(|t| t.ctl.answers_osc4());
+                    let Some(p) = self.panes.get_mut(&id) else { continue };
                     if let Some(io) = p.tmux_io() {
+                        io.answers_osc4.set(osc4);
                         io.push_output(&data);
                     }
                     // Read now: nothing else wakes the loop for it.
@@ -433,6 +460,15 @@ impl App {
             }
             return true;
         }
+        if id == PASTE_OFFER {
+            // Always does not copy the buffer that asked (iTerm2's).
+            if let Some(b) = button.filter(|b| *b == "Always" || *b == "Never") {
+                self.globals.set("TmuxSyncClipboard", toml::Value::Boolean(b == "Always"));
+                self.globals.set(PASTE_ANSWERED, toml::Value::Boolean(true));
+                self.save_globals();
+            }
+            return true;
+        }
         if id.starts_with(PAUSE_WARN) {
             if button == Some("Pause Settings") {
                 self.open_settings_page(event_loop, crate::settings_ui::Page::General);
@@ -557,9 +593,12 @@ impl App {
         self.panes.insert(id, pane);
         // The job is watched only when the profile shows an icon (iTerm2's PS:10098).
         let job = profile.int("Icon") != 0;
+        let pal = Palette::from_profile(&profile, self.dark());
         if let Some(t) = self.tmux.get_mut(&gw) {
             t.panes.insert(p.pane, (id, window));
             t.ctl.watch_pane(p.pane, job, &mut t.gw);
+            // tmux answers OSC 10 and 11 in the pane from these (3.4 and later).
+            t.ctl.color_reports(p.pane, (pal.fg.r, pal.fg.g, pal.fg.b), (pal.bg.r, pal.bg.g, pal.bg.b), &mut t.gw);
         }
         self.tmux_flush(gw);
         id
@@ -693,6 +732,40 @@ impl App {
             }
             self.globals.set("NoSyncAutoBurialReveal", toml::Value::Boolean(true));
             self.save_globals();
+        }
+    }
+
+    /// A tmux tab's label when it is the session title (iTerm2's updateTabTitleForCurrentSessionName):
+    /// no set-titles string, and tmux gave the pane a title. None: the tab's own title.
+    pub(super) fn tmux_tab_label(&self, focused: PaneId) -> Option<String> {
+        let io = self.panes.get(&focused)?.tmux_io()?;
+        let t = self.tmux.get(&io.gateway)?;
+        let window = t.panes.get(&io.pane)?.1;
+        if t.window_titles.contains_key(&window) {
+            return None;
+        }
+        let pane_title = io.info.borrow().title.clone();
+        (!pane_title.is_empty()).then(|| crate::tmux_clients::tab_label(None, &pane_title, &self.session_title(focused), "", ""))
+    }
+
+    /// Every tmux pane's colors go to tmux again (a profile or the appearance changed).
+    pub(super) fn tmux_resend_colors(&mut self) {
+        let dark = self.dark();
+        let panes: Vec<(PaneId, u32, (u8, u8, u8), (u8, u8, u8))> = self
+            .panes
+            .values()
+            .filter_map(|p| {
+                let io = p.tmux_io()?;
+                let pr = self.store.get(&p.profile)?;
+                let pal = Palette::from_profile(pr, dark);
+                Some((io.gateway, io.pane, (pal.fg.r, pal.fg.g, pal.fg.b), (pal.bg.r, pal.bg.g, pal.bg.b)))
+            })
+            .collect();
+        for (gw, pane, fg, bg) in panes {
+            if let Some(t) = self.tmux.get_mut(&gw) {
+                t.ctl.color_reports(pane, fg, bg, &mut t.gw);
+            }
+            self.tmux_flush(gw);
         }
     }
 

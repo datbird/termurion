@@ -63,6 +63,8 @@ pub struct TmuxIo {
     ended: std::cell::Cell<Option<u32>>,
     /// What tmux's monitors say about the pane.
     pub info: std::cell::RefCell<TmuxInfo>,
+    /// This client answers the pane's OSC 4 color queries (tmux 3.6 and later elect one).
+    pub answers_osc4: std::cell::Cell<bool>,
 }
 
 /// A tmux pane's title, foreground job, and working directory (remote paths), from tmux.
@@ -75,7 +77,7 @@ pub struct TmuxInfo {
 
 impl TmuxIo {
     pub fn new(gateway: PaneId, pane: u32) -> TmuxIo {
-        TmuxIo { gateway, pane, inbox: Default::default(), outbox: Default::default(), ended: Default::default(), info: Default::default() }
+        TmuxIo { gateway, pane, inbox: Default::default(), outbox: Default::default(), ended: Default::default(), info: Default::default(), answers_osc4: Default::default() }
     }
 
     /// Output from tmux for this pane.
@@ -313,8 +315,14 @@ impl Pane {
                             None => bytes,
                         };
                         let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&bytes);
-                        // tmux answers queries for its panes itself.
-                        if !reply.is_empty() && !matches!(pty, Io::Tmux(_)) {
+                        // tmux answers queries for its panes itself, but OSC 4 when this
+                        // client is the elected one.
+                        let reply = match pty {
+                            Io::Tmux(t) if t.answers_osc4.get() => crate::tmux_clients::osc4_answers(&reply),
+                            Io::Tmux(_) => Vec::new(),
+                            _ => reply,
+                        };
+                        if !reply.is_empty() {
                             if let Err(e) = pty.write(&reply) {
                                 self.error = Some(e);
                             }
