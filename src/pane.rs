@@ -45,10 +45,74 @@ impl InputBuffer {
     }
 }
 
+/// Where a pane's shell runs: in Tandem, or in the session host (it outlives Tandem).
+pub enum Io {
+    Local(Pty),
+    Hosted(crate::host_client::HostedPty),
+}
+
+impl Io {
+    pub fn try_read(&self) -> Read {
+        match self {
+            Io::Local(p) => p.try_read(),
+            Io::Hosted(p) => p.try_read(),
+        }
+    }
+
+    pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
+        match self {
+            Io::Local(p) => p.write(bytes),
+            Io::Hosted(p) => p.write(bytes),
+        }
+    }
+
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
+        match self {
+            Io::Local(p) => p.resize(cols, rows),
+            Io::Hosted(p) => p.resize(cols, rows),
+        }
+    }
+
+    pub fn clear(&self) -> Result<(), String> {
+        match self {
+            Io::Local(p) => p.clear(),
+            Io::Hosted(p) => p.clear(),
+        }
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        match self {
+            Io::Local(p) => p.set_paused(paused),
+            Io::Hosted(p) => p.set_paused(paused),
+        }
+    }
+
+    pub fn pending(&self) -> usize {
+        match self {
+            Io::Local(p) => p.pending(),
+            Io::Hosted(p) => p.pending(),
+        }
+    }
+
+    pub fn exit_code(&self) -> Option<u32> {
+        match self {
+            Io::Local(p) => p.exit_code(),
+            Io::Hosted(p) => p.exit_code(),
+        }
+    }
+
+    pub fn pid(&self) -> u32 {
+        match self {
+            Io::Local(p) => p.pid(),
+            Io::Hosted(p) => p.pid(),
+        }
+    }
+}
+
 pub struct Pane {
     pub id: PaneId,
     pub screen: Screen,
-    pty: Option<Pty>,
+    pty: Option<Io>,
     pub exited: Option<u32>,
     pub error: Option<String>,
     /// The Guid of the profile this pane runs.
@@ -78,9 +142,40 @@ impl Pane {
     pub fn start(id: PaneId, api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         let (cols, rows) = (cols.max(2), rows.max(1));
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
+        Ok(Pane::with_io(id, Io::Local(pty), cols, rows))
+    }
+
+    /// A pane whose shell the session host runs.
+    pub fn start_hosted(id: PaneId, host: &crate::host_client::Client, cmdline: &str, cwd: Option<&std::path::Path>, cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
+        let (cols, rows) = (cols.max(2), rows.max(1));
+        let pty = host.launch(cmdline, cwd, cols, rows, notify)?;
+        Ok(Pane::with_io(id, Io::Hosted(pty), cols, rows))
+    }
+
+    /// A pane for a session the host already runs (a reattach).
+    pub fn attached(id: PaneId, pty: crate::host_client::HostedPty, cols: u16, rows: u16) -> Pane {
+        Pane::with_io(id, Io::Hosted(pty), cols.max(2), rows.max(1))
+    }
+
+    /// The host session this pane runs in, and the output offset read so far.
+    pub fn host_session(&self) -> Option<(u64, u64)> {
+        match &self.pty {
+            Some(Io::Hosted(p)) => Some((p.id(), p.offset())),
+            _ => None,
+        }
+    }
+
+    /// Quit with jobs kept: the shell stays in the host when the pane goes.
+    pub fn detach(&mut self) {
+        if let Some(Io::Hosted(p)) = &mut self.pty {
+            p.detach();
+        }
+    }
+
+    fn with_io(id: PaneId, io: Io, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None })
+        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.

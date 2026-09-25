@@ -243,6 +243,9 @@ pub struct App {
     /// Files dropped on the window, handled together once the drop ends.
     dropped: Vec<(PaneId, String)>,
     api: Api,
+    /// The session host this Tandem runs its shells in, and what it said at the handshake.
+    host: Option<crate::host_client::Client>,
+    host_welcome: Option<crate::host_client::Welcome>,
     shell: String,
     gpu: Option<Gpu>,
     tabs: Vec<Tab>,
@@ -378,7 +381,7 @@ pub fn run() {
 
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)).unwrap_or_default();
     let mut banners = Banners::default();
-    let api = match conpty::load(&Source::Shipped(exe_dir)) {
+    let api = match conpty::load(&Source::Shipped(exe_dir.clone())) {
         Ok(api) => api,
         Err(e) => match conpty::load(&Source::Inbox) {
             Ok(api) => {
@@ -410,7 +413,23 @@ pub fn run() {
             Globals::load(&side).unwrap_or_else(|_| Globals::empty(&side))
         }
     };
+    // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
+    // a change needs a restart, as in iTerm2).
+    let (host, host_welcome) = if globals.bool("runJobsInServers") {
+        let wait = std::time::Duration::from_secs_f64(globals.get("timeoutForDaemonAttachment").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(10.0).clamp(1.0, 120.0));
+        match crate::host_client::connect_or_start(&exe_dir, wait) {
+            Ok((c, w)) => (Some(c), Some(w)),
+            Err(e) => {
+                banners.set("host", format!("Shells run inside Tandem this time, so they end with it: {e}"));
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
     let mut app = App {
+        host,
+        host_welcome,
         notify,
         jobs,
         proxy,
@@ -621,7 +640,15 @@ impl App {
             Some(w) => self.banners.set("directory", w),
             None => self.banners.clear("directory"),
         }
-        match Pane::start(id, &self.api, &cmd, Some(&cwd), cols, rows, self.notify.clone()) {
+        if self.host.as_ref().is_some_and(|h| h.is_lost()) {
+            self.host = None;
+            self.banners.set("host", "The session host stopped. New shells run inside Tandem, so they end with it.");
+        }
+        let started = match &self.host {
+            Some(h) => Pane::start_hosted(id, h, &cmd, Some(&cwd), cols, rows, self.notify.clone()),
+            None => Pane::start(id, &self.api, &cmd, Some(&cwd), cols, rows, self.notify.clone()),
+        };
+        match started {
             Ok(mut pane) => {
                 pane.restyle(Palette::from_profile(&p, self.dark()), Look::from_profile(&p));
                 pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");

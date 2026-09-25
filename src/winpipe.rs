@@ -30,6 +30,9 @@ use windows_sys::Win32::System::Threading::{
 pub struct Pipe {
     h: usize,
     closed: AtomicBool,
+    /// I/O holds it shared; closing the handle holds it alone, so no I/O ever uses a closed
+    /// (and maybe reused) handle value.
+    gate: std::sync::RwLock<bool>,
 }
 
 /// The listening side: one pipe instance always waits, so the name is never free.
@@ -180,7 +183,7 @@ impl Listener {
         }
         // A new instance waits before this one is handed out, so the name stays taken.
         self.waiting = create_instance(&self.name, false)? as usize;
-        Ok(Some(Pipe { h: h as usize, closed: AtomicBool::new(false) }))
+        Ok(Some(Pipe::new(h)))
     }
 }
 
@@ -199,7 +202,7 @@ pub fn connect(name: &str, wait: Duration) -> Result<Option<Pipe>, String> {
             CreateFileW(w.as_ptr(), GENERIC_READ | GENERIC_WRITE, 0, null(), OPEN_EXISTING, FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, null_mut())
         };
         if h != INVALID_HANDLE_VALUE {
-            return Ok(Some(Pipe { h: h as usize, closed: AtomicBool::new(false) }));
+            return Ok(Some(Pipe::new(h)));
         }
         match unsafe { GetLastError() } {
             ERROR_FILE_NOT_FOUND => return Ok(None),
@@ -216,13 +219,18 @@ pub fn connect(name: &str, wait: Duration) -> Result<Option<Pipe>, String> {
 }
 
 impl Pipe {
+    fn new(h: HANDLE) -> Pipe {
+        Pipe { h: h as usize, closed: AtomicBool::new(false), gate: std::sync::RwLock::new(true) }
+    }
+
     fn handle(&self) -> HANDLE {
         self.h as HANDLE
     }
 
     /// Reads what is there (blocking). 0 means the other end closed.
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, String> {
-        if self.closed.load(Ordering::Acquire) {
+        let open = self.gate.read().unwrap();
+        if !*open || self.closed.load(Ordering::Acquire) {
             return Ok(0);
         }
         let mut op = Op::new()?;
@@ -239,9 +247,10 @@ impl Pipe {
     }
 
     pub fn write_all(&self, bytes: &[u8]) -> Result<(), String> {
+        let open = self.gate.read().unwrap();
         let mut done = 0;
         while done < bytes.len() {
-            if self.closed.load(Ordering::Acquire) {
+            if !*open || self.closed.load(Ordering::Acquire) {
                 return Err("the pipe is closed".into());
             }
             let mut op = Op::new()?;
@@ -260,14 +269,29 @@ impl Pipe {
         Ok(())
     }
 
-    /// Ends every read and write in progress; later ones fail.
+    /// Ends every read and write in progress and closes the handle, so the other end sees
+    /// the pipe close; later reads give 0 and writes fail.
     pub fn shutdown(&self) {
         self.closed.store(true, Ordering::Release);
-        unsafe { CancelIoEx(self.handle(), null()) };
+        loop {
+            unsafe { CancelIoEx(self.handle(), null()) };
+            if let Ok(mut open) = self.gate.try_write() {
+                if *open {
+                    unsafe { CloseHandle(self.handle()) };
+                    *open = false;
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Ok when the process serving this pipe runs as this user.
     pub fn server_is_this_user(&self) -> Result<(), String> {
+        let open = self.gate.read().unwrap();
+        if !*open {
+            return Err("the pipe is closed".into());
+        }
         unsafe {
             let mut pid = 0u32;
             if GetNamedPipeServerProcessId(self.handle(), &mut pid) == 0 {
@@ -302,7 +326,9 @@ fn closed_or(code: u32, what: &str) -> Result<usize, String> {
 
 impl Drop for Pipe {
     fn drop(&mut self) {
-        unsafe { CloseHandle(self.handle()) };
+        if *self.gate.get_mut().unwrap() {
+            unsafe { CloseHandle(self.handle()) };
+        }
     }
 }
 

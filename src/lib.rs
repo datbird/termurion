@@ -117,6 +117,7 @@ pub mod settings_arrangements;
 pub mod restore_state;
 pub mod host_proto;
 pub mod host;
+pub mod host_client;
 pub mod winpipe;
 
 #[cfg(windows)]
