@@ -75,6 +75,7 @@ pub mod paste_history_ui;
 pub mod popup_filter;
 pub mod screen;
 pub mod screenterm;
+pub mod shell_history;
 
 #[cfg(windows)]
 pub mod conpty;
