@@ -399,6 +399,7 @@ impl App {
                 }
             }
             "detachTmux:" => self.tmux_request_detach(),
+            "openDashboard:" => self.open_tmux_dashboard(event_loop),
             "toggleTmuxPausePane:" => self.tmux_toggle_pause(),
             "forceDetachTmux:" => self.tmux_force_detach(),
             "newTmuxWindow:" => {

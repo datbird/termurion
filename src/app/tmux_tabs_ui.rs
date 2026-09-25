@@ -79,6 +79,13 @@ impl App {
                     let _ = window;
                     self.with_tab_of(id, |t| t.focused = id);
                 }
+                // iTerm2's didAttachWithHiddenWindows:tooManyWindows:.
+                Action::Attached { too_many, hidden } => {
+                    if too_many || (hidden && self.globals.bool("openTmuxDashboardIfHiddenWindows")) {
+                        self.tmux_dash_gw = Some(gw);
+                        self.open_tmux_dashboard(event_loop);
+                    }
+                }
                 Action::SessionGuid(guid) => {
                     let other = self.tmux.iter().find(|(g, t)| **g != gw && t.ctl.session_guid.as_deref() == Some(guid.as_str())).map(|(g, _)| *g);
                     if let Some(other) = other {
@@ -257,6 +264,10 @@ impl App {
     /// Shell > tmux > Detach (iTerm2's requestDetach): a second request asks to force it.
     pub(super) fn tmux_request_detach(&mut self) {
         let Some(gw) = self.focused_id().and_then(|id| if self.tmux.contains_key(&id) { Some(id) } else { self.tmux_of(id).map(|(g, _, _)| g) }) else { return };
+        self.tmux_request_detach_of(gw);
+    }
+
+    pub(super) fn tmux_request_detach_of(&mut self, gw: PaneId) {
         let Some(t) = self.tmux.get_mut(&gw) else { return };
         if t.gw.request_detach() {
             return self.tmux_flush(gw);

@@ -911,3 +911,12 @@ label = "Suppress announcement that tmux will pause a session."
 type = "bool"
 default = false
 help = "Suppress announcement that tmux will pause a session."
+
+[[setting]]
+key = "openTmuxDashboardIfHiddenWindows"
+tab = "General"
+section = "tmux"
+label = "Open dashboard when attaching if there are hidden windows"
+type = "bool"
+default = false
+help = "Opens the tmux Dashboard after an attach that left windows hidden."

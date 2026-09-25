@@ -34,6 +34,8 @@ enum Req {
     NewWindow(Option<u32>),
     /// `refresh-client -A '%P:pause'` for these panes.
     PausePanes(Vec<u32>),
+    /// The Dashboard's list of one session's windows.
+    SessionWindows(u32),
     /// `display -p` for a window tmux added.
     DisplayOne,
     /// A capture for one opener (a window being opened, or one layout change's new panes).
@@ -75,6 +77,8 @@ pub enum Action {
     Unpaused(Vec<PaneOpen>),
     /// The pause warning bar of a pane.
     PauseWarning(u32, crate::tmux_pause::Bar),
+    /// The attach found hidden windows or too many (the Dashboard may open).
+    Attached { too_many: bool, hidden: bool },
     /// The session's `@iterm2_id`: another gateway of this Tandem may already show it.
     SessionGuid(String),
     SelectWindow(u32),
@@ -171,6 +175,11 @@ pub struct Controller {
     clock: f64,
     /// Each open window's layout, for the sizes of a recapture.
     nodes: HashMap<u32, Node>,
+    /// The Dashboard's windows of each session it looked at.
+    pub session_windows: HashMap<u32, Vec<crate::tmux_dashboard::WindowRow>>,
+    /// Lists waiting their 1.5 s: sessions (after %sessions-changed) and one session's windows.
+    sessions_due: Option<f64>,
+    windows_due: Vec<(u32, f64)>,
 }
 
 impl Controller {
@@ -206,6 +215,9 @@ impl Controller {
             auto_unpause: Vec::new(),
             clock: 0.0,
             nodes: HashMap::new(),
+            session_windows: HashMap::new(),
+            sessions_due: None,
+            windows_due: Vec::new(),
         }
     }
 
@@ -332,6 +344,72 @@ impl Controller {
         self.affinities = Affinities::parse(&value);
         self.last_affinities = Some(cmd.clone());
         gw.send(&cmd, None, Flags::default());
+    }
+
+    /// The Dashboard wants a session's windows: listed 1.5 s from now, once per request.
+    pub fn dashboard_windows(&mut self, session: u32, now: f64) {
+        if !self.windows_due.iter().any(|(s, _)| *s == session) {
+            self.windows_due.push((session, now + 1.5));
+        }
+    }
+
+    /// Sends the lists that are due (the Dashboard's; iTerm2's timers).
+    pub fn poll(&mut self, now: f64, gw: &mut Gateway) {
+        self.clock = self.clock.max(now);
+        if self.sessions_due.is_some_and(|t| t <= now) {
+            self.sessions_due = None;
+            self.list_sessions(gw);
+        }
+        let due: Vec<u32> = self.windows_due.iter().filter(|(_, t)| *t <= now).map(|(s, _)| *s).collect();
+        self.windows_due.retain(|(_, t)| *t > now);
+        let format = tmux_windows::detailed_format(self.v());
+        for s in due {
+            let t = self.tag(Req::SessionWindows(s));
+            gw.send(&crate::tmux_dashboard::list_windows(s, &format), Some(t), Flags { tolerate: true, ..Default::default() });
+        }
+    }
+
+    pub fn list_sessions(&mut self, gw: &mut Gateway) {
+        let t = self.tag(Req::ListSessions);
+        gw.send(crate::tmux_dashboard::list_sessions(), Some(t), Flags::default());
+    }
+
+    /// A Dashboard command with no reply to read (rename, attach, and the like).
+    pub fn command(&mut self, cmd: &str, gw: &mut Gateway) {
+        gw.send(cmd, None, Flags::default());
+    }
+
+    /// Kill Session and New Session list the sessions again afterwards.
+    pub fn command_then_list(&mut self, cmd: &str, laggy: bool, gw: &mut Gateway) {
+        gw.send(cmd, None, Flags { tolerate: true, laggy, ..Default::default() });
+        self.list_sessions(gw);
+    }
+
+    pub fn hidden(&self) -> &BTreeSet<u32> {
+        &self.hidden
+    }
+
+    /// Opens windows from the Dashboard (iTerm2's openWindowWithId intentional): out of
+    /// `@hidden`, then listed and opened; `tabs`: all in one Tandem window.
+    pub fn open_windows(&mut self, windows: &[u32], tabs: bool, gw: &mut Gateway) {
+        let Some((s, _)) = self.session.clone() else { return };
+        for w in windows {
+            self.hidden.remove(w);
+        }
+        gw.send(&crate::tmux_persist::hidden_command(s, &self.hidden), None, Flags::default());
+        if tabs {
+            if let Some(first) = windows.first() {
+                for w in &windows[1..] {
+                    self.affinities.set_equal(&w.to_string(), &first.to_string());
+                }
+            }
+        }
+        let format = tmux_windows::detailed_format(self.v());
+        for w in windows {
+            self.intentional.insert(*w);
+            let t = self.tag(Req::DisplayOne);
+            gw.send(&format!("display -p -F {format} -t @{w}"), Some(t), Flags { tolerate: true, ..Default::default() });
+        }
     }
 
     pub fn pause_mode(&self) -> bool {
@@ -492,6 +570,13 @@ impl Controller {
                     }
                 }
             }
+            Req::SessionWindows(session) => {
+                let rows = tmux_windows::parse_windows(text, self.v(), self.tab_bug)
+                    .into_iter()
+                    .map(|w| crate::tmux_dashboard::WindowRow { open: self.windows.contains_key(&w.id), id: w.id, name: w.name })
+                    .collect();
+                self.session_windows.insert(session, rows);
+            }
             Req::PausePanes(panes) => {
                 for p in panes {
                     self.paused.insert(p);
@@ -546,6 +631,7 @@ impl Controller {
                 let initial = tmux_windows::initial(windows, &self.hidden, &mut self.affinities, self.prefs.open_in, self.prefs.limit);
                 if let Some((t, x)) = initial.notify {
                     out.push(Action::Notify(t, x));
+                    out.push(Action::Attached { too_many: !initial.hide.is_empty(), hidden: initial.hide.is_empty() });
                 }
                 if initial.open.is_empty() {
                     gw.accept_notifications();
@@ -723,6 +809,11 @@ impl Controller {
                 }
             }
             Note::SessionChanged { session, name } => return self.session_changed(session, &name, gw),
+            Note::SessionsChanged => {
+                if self.sessions_due.is_none() {
+                    self.sessions_due = Some(self.clock + 1.5);
+                }
+            }
             Note::SessionRenamed { session, name } => {
                 if let Some((s, n)) = &mut self.session {
                     if *s == session {
@@ -1117,6 +1208,29 @@ mod tests {
         assert_eq!(r.sent(), "refresh-client -fpause-after=30\r");
         r.ctl.set_age_limit(30.0, &mut r.gw);
         assert!(r.sent().is_empty(), "unchanged");
+    }
+
+    #[test]
+    fn dashboard_lists_follow_the_session() {
+        let mut r = opened();
+        r.sent();
+        r.ctl.dashboard_windows(0, 10.0);
+        r.ctl.dashboard_windows(0, 10.2);
+        r.ctl.poll(11.0, &mut r.gw);
+        assert!(r.sent().is_empty(), "iTerm2 waits 1.5 s");
+        r.ctl.poll(11.6, &mut r.gw);
+        let sent = r.sent();
+        assert!(sent.starts_with("list-windows -F \"#{session_name}") && sent.ends_with(" -t \"$0\"\r"), "{sent}");
+        assert_eq!(sent.matches("list-windows").count(), 1, "once per request");
+        r.answer(Some(&format!("{ONE_PANE}\nmain\t@4\tlogs\t80\t24\tb25d,80x24,0,0,9\t\t0\tb25d,80x24,0,0,9\toff")));
+        let rows = &r.ctl.session_windows[&0];
+        assert_eq!(rows.iter().map(|w| (w.id, w.name.as_str(), w.open)).collect::<Vec<_>>(), vec![(0, "bash", true), (4, "logs", false)]);
+        r.lines(&["%sessions-changed"]);
+        r.ctl.poll(20.0, &mut r.gw);
+        r.ctl.poll(21.6, &mut r.gw);
+        assert_eq!(r.sent(), "list-sessions -F \"#{session_id} #{session_name}\"\r");
+        r.answer(Some("$0 main\n$1 other"));
+        assert_eq!(r.ctl.sessions, vec![(0, "main".into()), (1, "other".into())]);
     }
 
     #[test]

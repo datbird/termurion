@@ -89,6 +89,7 @@ mod hotkey_ui;
 mod broadcast_ui;
 mod tmux_ui;
 mod tmux_tabs_ui;
+mod tmux_dashboard_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -220,6 +221,9 @@ pub struct App {
     /// A divider drag in a tmux tab: window key, gateway, pane before the divider,
     /// horizontal, start.
     tmux_drag: Option<(u64, PaneId, u32, bool, f32)>,
+    /// The tmux Dashboard and the gateway it shows.
+    tmux_dash: Option<crate::tmux_dashboard_ui::TmuxDashboardWindow>,
+    tmux_dash_gw: Option<PaneId>,
     /// tmux lines a cancelled drag released, run on the next pass.
     tmux_held_events: Vec<(PaneId, Vec<crate::tmux_gateway::Event>)>,
     /// tmux gateways, by the pane that runs `tmux -CC`.
@@ -523,6 +527,8 @@ pub fn run() {
         tmux_drag: None,
         tmux_pending_close: Vec::new(),
         tmux_held_events: Vec::new(),
+        tmux_dash: None,
+        tmux_dash_gw: None,
         tmux: HashMap::new(),
         tmux_ask_command: None,
         tmux_prompt: None,
@@ -2022,6 +2028,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.tmux_send_input();
         self.tmux_focus_tick();
         self.tmux_finish_close(event_loop);
+        self.tmux_dashboard_tick();
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
@@ -2115,7 +2122,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

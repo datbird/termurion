@@ -23,7 +23,7 @@ pub const DONE: &[&str] = &[
     "newSessionWithSameProfile:", "duplicateTab:", "splitHorizontally:", "splitVertically:",
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
-    "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:",
+    "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:",
     "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:",
     "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
     "returnToDefaultSize:|Restore Text and Session Size", "maximizePane:",
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
         assert!(matches!(status(find("performFindPanelAction:", "Select Matches")), Status::Partial(_)));
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
-        assert_eq!(status(find("openDashboard:", "Dashboard")), Status::Later(8));
+        assert_eq!(status(find("openDashboard:", "Dashboard")), Status::Done, "8e");
         assert_eq!(status(find("setWindowStyle:", "Maximized")), Status::Done);
         assert_eq!(status(find("setWindowStyle:", "Full-Width Top of Screen")), Status::Done, "every style arrives in 7a");
     }

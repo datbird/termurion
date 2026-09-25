@@ -34,7 +34,7 @@ pub(super) struct TmuxGw {
     /// Force Detach? was offered for the command that waits.
     hung_asked: bool,
     /// iTerm2's clientName, fixed when tmux mode starts.
-    client: String,
+    pub(super) client: String,
     /// The tmux session: windows, panes, and the attach.
     pub(super) ctl: crate::tmux_controller::Controller,
     /// The tmux pane Tandem last told tmux (or tmux told Tandem) is selected.

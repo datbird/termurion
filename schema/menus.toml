@@ -423,6 +423,8 @@ separator = true
 [[item]]
 path = ["Shell", "tmux", "Dashboard"]
 selector = "openDashboard:"
+key = "\r"
+mods = ["ctrl", "cmd", "shift"]
 alternate = true
 
 [[item]]
