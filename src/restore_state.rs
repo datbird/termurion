@@ -16,6 +16,8 @@ pub const HOST_KEY: &str = "Host Session";
 /// Quiet time after the last change before a save, and the least time between saves.
 pub const QUIET: Duration = Duration::from_secs(5);
 pub const FLOOR: Duration = Duration::from_secs(30);
+/// The longest a change waits when output never goes quiet.
+pub const MAX_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct State {
@@ -69,16 +71,20 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     })
 }
 
-/// When to save: `QUIET` after the last change, and never twice within `FLOOR`.
+/// When to save: `QUIET` after the last change (or `MAX_WAIT` after the first one, when
+/// output never stops), and never twice within `FLOOR`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Debounce {
     dirty_at: Option<Instant>,
+    /// The first change since the last save.
+    first_dirty: Option<Instant>,
     last_write: Option<Instant>,
 }
 
 impl Debounce {
     pub fn mark(&mut self, now: Instant) {
         self.dirty_at = Some(now);
+        self.first_dirty.get_or_insert(now);
     }
 
     pub fn dirty(&self) -> bool {
@@ -86,12 +92,14 @@ impl Debounce {
     }
 
     pub fn due(&self, now: Instant) -> bool {
-        let Some(at) = self.dirty_at else { return false };
-        now.saturating_duration_since(at) >= QUIET && self.last_write.is_none_or(|w| now.saturating_duration_since(w) >= FLOOR)
+        let (Some(at), Some(first)) = (self.dirty_at, self.first_dirty) else { return false };
+        let waited = now.saturating_duration_since(at) >= QUIET || now.saturating_duration_since(first) >= MAX_WAIT;
+        waited && self.last_write.is_none_or(|w| now.saturating_duration_since(w) >= FLOOR)
     }
 
     pub fn written(&mut self, now: Instant) {
         self.dirty_at = None;
+        self.first_dirty = None;
         self.last_write = Some(now);
     }
 }
@@ -222,6 +230,13 @@ mod tests {
         assert!(d.due(t0 + Duration::from_secs(35)));
         d.mark(t0 + Duration::from_secs(34));
         assert!(!d.due(t0 + Duration::from_secs(36)), "a new change restarts the quiet time");
+        // Output that never stops: a save still comes once the first change waited MAX_WAIT.
+        let mut busy = Debounce::default();
+        for i in 0..=70 {
+            busy.mark(t0 + Duration::from_secs(i));
+            let due = busy.due(t0 + Duration::from_secs(i));
+            assert_eq!(due, i >= 60, "second {i}");
+        }
     }
 
     #[test]

@@ -93,6 +93,28 @@ pub fn clamp_to_monitors(r: Rect, monitors: &[Rect]) -> Rect {
     Rect { x: r.x.clamp(m.x, m.x + m.w - w), y: r.y.clamp(m.y, m.y + m.h - h), w, h }
 }
 
+/// restoreWindowsWithinScreens for a restored window: a frame on no monitor moves onto the
+/// first one, then, as iTerm2 does, a frame sticking out of the box around all monitors
+/// moves in (never resized; the left and top edges win when it is larger).
+pub fn within_screens(r: Rect, monitors: &[Rect]) -> Rect {
+    let r = clamp_to_monitors(r, monitors);
+    let Some(first) = monitors.first() else { return r };
+    let (mut x0, mut y0, mut x1, mut y1) = (first.x, first.y, first.x + first.w, first.y + first.h);
+    for m in monitors {
+        (x0, y0, x1, y1) = (x0.min(m.x), y0.min(m.y), x1.max(m.x + m.w), y1.max(m.y + m.h));
+    }
+    let fit = |p: f32, size: f32, lo: f32, hi: f32| {
+        if p < lo {
+            lo
+        } else if p + size > hi {
+            p - (p + size - hi).min(p - lo)
+        } else {
+            p
+        }
+    };
+    Rect { x: fit(r.x, r.w, x0, x1), y: fit(r.y, r.h, y0, y1), ..r }
+}
+
 /// The frame for a new window, or None to leave it where Windows put it. `saved` is this
 /// profile slot's last frame; `current` holds the profile's size.
 pub fn place(policy: i64, saved: Option<Rect>, windows: usize, work: Rect, others: &[Rect], current: Rect, monitors: &[Rect]) -> Option<Rect> {
@@ -182,6 +204,25 @@ mod tests {
         let left = [Rect { x: 0.0, y: 0.0, w: 500.0, h: 800.0 }];
         let (x, _) = smart(WORK, SIZE, &left);
         assert!(x >= 500.0, "{x}");
+    }
+
+    #[test]
+    fn frames_shift_into_the_screens() {
+        let right = Rect { x: 1000.0, y: 0.0, w: 800.0, h: 600.0 };
+        let mons = [WORK, right];
+        // Sticking out on the right of the second monitor: moved left, size kept.
+        let r = within_screens(Rect { x: 1500.0, y: 50.0, w: 400.0, h: 300.0 }, &mons);
+        assert_eq!(r, Rect { x: 1400.0, y: 50.0, w: 400.0, h: 300.0 });
+        // Above the top: moved down.
+        assert_eq!(within_screens(Rect { x: 10.0, y: -40.0, w: 100.0, h: 100.0 }, &mons).y, 0.0);
+        // Larger than all monitors: left edge in, size kept.
+        let big = within_screens(Rect { x: -50.0, y: 0.0, w: 3000.0, h: 500.0 }, &mons);
+        assert_eq!((big.x, big.w), (0.0, 3000.0));
+        // On no monitor at all: today's move onto the first monitor still happens.
+        let lost = within_screens(Rect { x: 5000.0, y: 5000.0, w: 100.0, h: 100.0 }, &mons);
+        assert!(lost.x < 1000.0 && lost.y < 800.0, "{lost:?}");
+        let fine = Rect { x: 10.0, y: 10.0, w: 100.0, h: 100.0 };
+        assert_eq!(within_screens(fine, &mons), fine);
     }
 
     #[test]

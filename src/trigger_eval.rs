@@ -250,10 +250,33 @@ impl Screen {
     /// Saved text (an arrangement's contents) as plain history: control characters go, so no
     /// escape sequence acts; triggers are off while it goes in and never check its lines.
     pub fn feed_inert(&mut self, text: &str) {
-        let list = std::mem::take(&mut self.triggers.list);
         let text = crate::arrangement::inert_text(text).replace("\r\n", "\n").replace('\n', "\r\n");
+        self.feed_quiet(text.as_bytes());
+    }
+
+    /// Session restoration's contents (SGR-safe styled text) and the optional banner
+    /// (text, (background gray, text gray)): real cells, a full-width bar on its own line.
+    pub fn feed_restored(&mut self, text: &str, banner: Option<(&str, (u8, u8))>) {
+        let mut bytes = crate::restore_state::sgr_safe(text).replace("\r\n", "\n").replace('\n', "\r\n");
+        bytes.push_str("\x1b[0m");
+        self.feed_quiet(bytes.as_bytes());
+        if let Some((line, (bg, fg))) = banner {
+            let mut b = String::new();
+            if self.term.grid().cursor.point.column.0 != 0 {
+                b.push_str("\r\n");
+            }
+            // Erasing with the bar's background paints the whole line (iTerm2 does the same).
+            b += &format!("\x1b[48;2;{bg};{bg};{bg}m\x1b[38;2;{fg};{fg};{fg}m\x1b[2K{}\x1b[0m\r\n", crate::arrangement::inert_text(line));
+            self.feed_quiet(b.as_bytes());
+        }
+    }
+
+    /// Output that is not the program's: no triggers see it, no request it makes is kept,
+    /// and triggers never check its lines later.
+    fn feed_quiet(&mut self, bytes: &[u8]) {
+        let list = std::mem::take(&mut self.triggers.list);
         let queued = self.requests.len();
-        let _ = self.feed(text.as_bytes());
+        let _ = self.feed(bytes);
         self.requests.truncate(queued);
         self.triggers.list = list;
         self.triggers.next = self.triggers.next.max(self.cursor_row());
@@ -621,6 +644,44 @@ mod tests {
 
     fn alerts(s: &mut Screen) -> usize {
         s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Alert { .. }))).count()
+    }
+
+    #[test]
+    fn restored_contents_keep_colors_and_fire_nothing() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig("Reply", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed_restored("\x1b[0;31mReply\x1b[0m\n\x1b]0;evil\x07ok\n", None);
+        assert_eq!(alerts(&mut s), 0);
+        assert!(s.take_requests().is_empty());
+        assert_ne!(s.title(), Some("evil"));
+        assert_eq!(s.term().grid()[Line(0)][Column(0)].fg, Color::Named(NamedColor::Red));
+        assert_eq!(s.term().grid()[Line(1)][Column(0)].c, 'o');
+        s.feed(b"Reply\r\n");
+        assert_eq!(alerts(&mut s), 1, "new output still fires");
+    }
+
+    #[test]
+    fn banner_is_one_full_line() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, Rgb};
+        let mut s = Screen::new(20, 5);
+        s.set_triggers(vec![trig("Restored", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed_restored("abc", Some(("Session Contents Restored on X", (38, 102))));
+        let g = s.term().grid();
+        let row: String = (0..20).map(|c| g[Line(1)][Column(c)].c).collect();
+        assert_eq!(row.trim_end(), "Session Contents Res", "the banner starts its own line");
+        assert_eq!(g[Line(0)][Column(0)].c, 'a');
+        assert_eq!(g[Line(1)][Column(0)].bg, Color::Spec(Rgb { r: 38, g: 38, b: 38 }));
+        assert_eq!(g[Line(1)][Column(0)].fg, Color::Spec(Rgb { r: 102, g: 102, b: 102 }));
+        let mut w = Screen::new(40, 5);
+        w.feed_restored("", Some(("B", (38, 102))));
+        let g = w.term().grid();
+        assert_eq!(g[Line(0)][Column(39)].bg, Color::Spec(Rgb { r: 38, g: 38, b: 38 }), "the bar spans the width");
+        assert_eq!((g.cursor.point.line.0, g.cursor.point.column.0), (1, 0), "the shell starts below it");
+        assert_eq!(g[Line(1)][Column(0)].bg, Color::Named(alacritty_terminal::vte::ansi::NamedColor::Background));
+        assert_eq!(alerts(&mut s), 0, "triggers do not see the banner");
     }
 
     #[test]

@@ -10,6 +10,15 @@ use crate::prompt_ui::{PromptResult, PromptWindow};
 /// maxHistoryLinesToRestore default).
 const CONTENT_LINES: usize = 20_000;
 
+/// What a snapshot keeps of each session's text: nothing, plain text (a file saved "with
+/// contents"), or styled text capped at N lines (session restoration).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Contents {
+    None,
+    Plain,
+    Styled(usize),
+}
+
 impl App {
     pub(super) fn arrangements(&self) -> Arrangements {
         Arrangements::from_values(self.globals.get(arrangements::ARRANGEMENTS_KEY).as_ref(), self.globals.get(arrangements::DEFAULT_KEY).as_ref())
@@ -25,7 +34,7 @@ impl App {
     }
 
     /// One session's table.
-    fn session_value(&self, id: PaneId, with_contents: bool) -> Value {
+    fn session_value(&self, id: PaneId, contents: Contents) -> Value {
         let Some(p) = self.panes.get(&id) else { return Value::Table(Default::default()) };
         let s = p.own();
         let grid = s.term().grid();
@@ -33,26 +42,26 @@ impl App {
         // OSC 7 reports "/C:/x"; the arrangement keeps a folder a shell can start in.
         let cwd = s.shell.cwd.as_deref().map(arrangement::saved_folder);
         let mut v = arrangement::session(grid.columns() as u16, grid.screen_lines() as u16, profile, &id.to_string(), cwd.as_deref());
-        if with_contents {
-            let text = s.all_text();
-            let lines: Vec<&str> = text.lines().collect();
-            let keep = lines[lines.len().saturating_sub(CONTENT_LINES)..].join("\n");
-            if let Some(t) = v.as_table_mut() {
-                t.insert("Tandem Contents".into(), Value::String(keep));
-            }
+        let saved = match contents {
+            Contents::None => None,
+            Contents::Plain => Some((arrangement::CONTENTS_KEY, crate::restore_state::cap_lines(&s.all_text(), CONTENT_LINES).to_string())),
+            Contents::Styled(n) => Some((arrangement::STYLED_KEY, crate::restore_state::cap_lines(&crate::styled_copy::sgr_all(s), n).to_string())),
+        };
+        if let (Some((key, text)), Some(t)) = (saved, v.as_table_mut()) {
+            t.insert(key.into(), Value::String(text));
         }
         v
     }
 
     /// The current window as an arrangement window table.
-    pub(super) fn snapshot_window(&self, with_contents: bool) -> Value {
+    pub(super) fn snapshot_window(&self, contents: Contents) -> Value {
         let area = self.content_area();
         let tabs: Vec<Value> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                let tree = t.layout.tree().map(&mut |id| self.session_value(id, with_contents));
+                let tree = t.layout.tree().map(&mut |id| self.session_value(id, contents));
                 let active = t.layout.panes().iter().position(|p| *p == t.focused);
                 arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), i == self.active, t.title.as_deref())
             })
@@ -80,13 +89,13 @@ impl App {
     }
 
     /// Every window, by number.
-    pub(super) fn snapshot_all(&mut self, with_contents: bool) -> Vec<Value> {
+    pub(super) fn snapshot_all(&mut self, contents: Contents) -> Vec<Value> {
         let back = self.current_window();
         let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
         let mut out = Vec::new();
         for id in ids {
             if self.enter(id) {
-                out.push(self.snapshot_window(with_contents));
+                out.push(self.snapshot_window(contents));
             }
         }
         if let Some(b) = back {
@@ -150,7 +159,7 @@ impl App {
         if store.get(name).is_some() && !yes_no(self.hwnd(), "Replace Existing Saved Window Arrangement?", "There is an existing saved window arrangement with this name. Would you like to replace it with the current arrangement?") {
             return;
         }
-        let windows = if all { self.snapshot_all(false) } else { vec![self.snapshot_window(false)] };
+        let windows = if all { self.snapshot_all(Contents::None) } else { vec![self.snapshot_window(Contents::None)] };
         store.save(name, windows);
         self.put_arrangements(&store);
     }
@@ -159,7 +168,7 @@ impl App {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
-        let windows = if all { self.snapshot_all(true) } else { vec![self.snapshot_window(true)] };
+        let windows = if all { self.snapshot_all(Contents::Plain) } else { vec![self.snapshot_window(Contents::Plain)] };
         let Some(path) = rfd::FileDialog::new().set_title("Save Arrangement with Contents").set_file_name(format!("{name}.itermarrangement")).add_filter("Arrangement", &["itermarrangement", "iterm2arrangement"]).save_file() else { return };
         match arrangement::to_plist(&windows).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
             Ok(()) => self.banners.clear("arrangement"),
@@ -214,9 +223,16 @@ impl App {
             self.start_dir_override = None;
             match id {
                 Some(id) => {
-                    if let (Some(text), Some(p)) = (arrangement::contents(&session), self.panes.get_mut(&id)) {
-                        // The saved text comes back as the session's history, as plain text.
-                        p.screen.feed_inert(&format!("{text}\n"));
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        if let Some(text) = arrangement::styled_contents(&session) {
+                            // Session restoration: styled text, then the banner when no job came back.
+                            let banner = session.get(arrangement::BANNER_KEY).and_then(|b| b.as_str());
+                            let grays = crate::restore_state::banner_grays(p.screen.palette.bg);
+                            p.screen.feed_restored(text, banner.map(|b| (b, grays)));
+                        } else if let Some(text) = arrangement::contents(&session) {
+                            // The saved text comes back as the session's history, as plain text.
+                            p.screen.feed_inert(&format!("{text}\n"));
+                        }
                     }
                     started.push(id);
                     id
@@ -258,12 +274,18 @@ impl App {
         self.active = f.selected_tab.min(self.tabs.len().saturating_sub(1));
         self.win_title = f.title;
         self.win_locks = crate::winmodel::Locks { size: f.size_locked, layout: f.layout_locked && !f.size_locked };
+        // restoreWindowsWithinScreens: a normal window moves back onto the displays of today.
+        let mut frame = crate::placement::Rect { x: f.x as f32, y: f.y as f32, w: f.w as f32, h: f.h as f32 };
+        if f.style == crate::frames::NORMAL && self.globals.bool("restoreWindowsWithinScreens") {
+            let monitors: Vec<crate::placement::Rect> = super::requests_ui::work_areas().into_iter().map(|(x, y, w, h)| crate::placement::Rect { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).collect();
+            frame = crate::placement::within_screens(frame, &crate::placement::primary_first(monitors));
+        }
         if let Some(g) = &self.gpu {
-            if f.w > 0.0 && f.h > 0.0 {
-                g.window.set_outer_position(winit::dpi::PhysicalPosition::new(f.x.round() as i32, f.y.round() as i32));
+            if frame.w > 0.0 && frame.h > 0.0 {
+                g.window.set_outer_position(winit::dpi::PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32));
                 let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
                 let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-                let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new((f.w as u32).saturating_sub(dw).max(1), (f.h as u32).saturating_sub(dh).max(1)));
+                let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
             }
             g.window.set_resizable(!self.win_locks.size);
         }

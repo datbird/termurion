@@ -585,3 +585,66 @@ label = "Open a new window when Tandem starts"
 type = "bool"
 default = true
 help = "Tandem opens a terminal window at launch unless the Startup settings say otherwise."
+
+[[setting]]
+key = "runJobsInServers"
+tab = "Advanced"
+section = "Session"
+label = "Enable session restoration"
+type = "bool"
+default = true
+help = "Session restoration runs jobs in a separate process (tandem-host). They survive crashes, force quits, and upgrades. You must restart Tandem for this change to take effect."
+
+[[setting]]
+key = "killJobsInServersOnQuit"
+tab = "Advanced"
+section = "Session"
+label = "Quit ends all running jobs"
+type = "bool"
+default = true
+help = "A Quit you choose (Cmd+Q) ends all running jobs. Applies only when session restoration is on."
+
+[[setting]]
+key = "showSessionRestoredBanner"
+tab = "Advanced"
+section = "Session"
+label = "Show the Session Contents Restored banner"
+type = "bool"
+default = true
+help = "When restoring a session without restoring a running job, draw a banner saying \"Session Contents Restored\" below the restored contents."
+
+[[setting]]
+key = "timeoutForDaemonAttachment"
+tab = "Advanced"
+section = "Session"
+label = "Seconds to wait for the session host at startup"
+type = "float"
+default = 10.0
+help = "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
+
+[[setting]]
+key = "restoreWindowContents"
+tab = "Advanced"
+section = "Terminal"
+label = "Restore window contents at startup"
+type = "bool"
+default = true
+help = "Restore window contents at startup."
+
+[[setting]]
+key = "maxHistoryLinesToRestore"
+tab = "Advanced"
+section = "Terminal"
+label = "Maximum number of lines of history to restore"
+type = "int"
+default = 20000
+help = "When the app is relaunched, only the last N lines of history are restored to avoid making launch too slow. If you reduce this number, existing sessions won't be affected until their history is cleared."
+
+[[setting]]
+key = "restoreWindowsWithinScreens"
+tab = "Advanced"
+section = "Windows"
+label = "Keep restored windows within the displays"
+type = "bool"
+default = true
+help = "When restoring a window arrangement, ensure windows are entirely within the bounds of the current displays."

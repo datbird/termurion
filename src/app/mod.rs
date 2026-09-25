@@ -84,6 +84,7 @@ mod aps_ui;
 mod windows_ui;
 mod undo_ui;
 mod arrange_ui;
+mod restore_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -330,6 +331,11 @@ pub struct App {
     profiles_win: Option<SettingsWindow>,
     /// When unsaved settings edits are due to be written.
     save_due: Option<Instant>,
+    /// Session restoration: when to save the windows, whether saving is over (quit, or the
+    /// last window closed), and a focus loss waiting to be saved.
+    state_debounce: crate::restore_state::Debounce,
+    state_frozen: bool,
+    focus_lost: bool,
     /// The font settings the renderer last loaded.
     font_sig: String,
     /// Cursor blink phase, and when it last flipped.
@@ -524,6 +530,9 @@ pub fn run() {
         store,
         settings: None,
         save_due: None,
+        state_debounce: Default::default(),
+        state_frozen: false,
+        focus_lost: false,
         font_sig: String::new(),
         profiles_win: None,
         blink_on: true,
@@ -867,6 +876,7 @@ impl App {
         if self.tabs.is_empty() {
             // The window's last tab closed: the window goes; the last window ends Tandem.
             if !self.drop_current_window() {
+                self.save_empty_state();
                 if self.save_due.is_some() {
                     self.save_now();
                 }
@@ -878,6 +888,7 @@ impl App {
     }
 
     fn relayout(&mut self) {
+        self.mark_state_dirty();
         self.laid_out = Some(self.content_area());
         if let Some(t) = self.tabs.get(self.active) {
             self.mru.touch(t.id);
@@ -1729,10 +1740,15 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.apply_fonts();
         self.size_window(None);
-        // Open default window arrangement: its first window fills this one, the others open
-        // as new windows.
-        let startup_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
-        let has_arrangement = startup_arrangement.is_some();
+        // Use System Window Restoration Setting (policy 0): the windows saved at the last run.
+        // Open default window arrangement (policy 1): that arrangement. Either way the first
+        // window fills this one, and the others open as new windows.
+        let system_policy = !self.globals.bool("OpenArrangementAtStartup") && !self.globals.bool("OpenNoWindowsAtStartup");
+        let saved = if system_policy { self.saved_windows() } else { None };
+        let has_saved = saved.is_some();
+        let default_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
+        let has_arrangement = default_arrangement.is_some();
+        let startup_arrangement = saved.or(default_arrangement);
         let mut arranged = false;
         match startup_arrangement {
             Some(mut windows) => {
@@ -1766,7 +1782,7 @@ impl ApplicationHandler<UserEvent> for App {
         let g = &self.globals;
         let policy = if g.bool("OpenArrangementAtStartup") { crate::startup::DEFAULT_ARRANGEMENT } else if g.bool("OpenNoWindowsAtStartup") { crate::startup::HOTKEY_ONLY } else { crate::startup::SYSTEM };
         let prefs = crate::startup::StartupPrefs { open_profiles_window: g.bool("OpenBookmark"), policy, always_open: g.bool("AlwaysOpenWindowAtStartup"), open_new_window: g.bool("openNewWindowAtStartup") };
-        if crate::startup::plan(prefs, has_arrangement, false).profiles_window {
+        if crate::startup::plan_with(prefs, has_arrangement, false, has_saved).profiles_window {
             self.open_settings(event_loop, Mode::Profiles);
         }
         let style = self.store.default_profile().int("Window Type");
@@ -1789,6 +1805,8 @@ impl ApplicationHandler<UserEvent> for App {
         if self.save_due.is_some_and(|t| Instant::now() >= t) {
             self.save_now();
         }
+        let lost = std::mem::take(&mut self.focus_lost);
+        self.save_state(lost);
         let find_due = self.run_due_searches();
         let spotlight = self.tick_find_cursor();
         let animation = self.next_animation_frame();
@@ -1866,6 +1884,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             changed |= got;
+            if got {
+                self.state_debounce.mark(now);
+            }
             if p.exited.is_some() {
                 exited.push(*id);
             }
@@ -1944,6 +1965,9 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(f) => {
                 self.focused = f;
+                // Tandem going to the background saves the windows (iTerm2 saves on resign
+                // active); a switch between Tandem's own windows gains focus again at once.
+                self.focus_lost = !f;
                 if f {
                     self.last_window = Some(id);
                 }

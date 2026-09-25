@@ -509,7 +509,7 @@ impl App {
         if self.tabs.is_empty() {
             return;
         }
-        let snap = self.snapshot_window(false);
+        let snap = self.snapshot_window(super::arrange_ui::Contents::None);
         self.pending_windows.push(NewWindow::Arrangement(snap));
         self.redraw();
     }

@@ -324,15 +324,25 @@ pub enum Folder {
 
 pub fn folder_for(session: &Value) -> Folder {
     match session.get("Working Directory").and_then(|v| v.as_str()) {
-        Some(d) if contents(session).is_some() => Folder::Forced(d.into()),
+        Some(d) if contents(session).is_some() || styled_contents(session).is_some() => Folder::Forced(d.into()),
         Some(d) => Folder::Previous(d.into()),
         None => Folder::None,
     }
 }
 
+pub const CONTENTS_KEY: &str = "Tandem Contents";
+/// Session restoration's contents: styled text (SGR sequences only).
+pub const STYLED_KEY: &str = "Tandem Styled Contents";
+/// Set on a session while it is restored: the banner line to draw under its contents.
+pub const BANNER_KEY: &str = "Tandem Banner";
+
 /// The text saved "with contents".
 pub fn contents(session: &Value) -> Option<&str> {
-    session.get("Tandem Contents").and_then(|v| v.as_str())
+    session.get(CONTENTS_KEY).and_then(|v| v.as_str())
+}
+
+pub fn styled_contents(session: &Value) -> Option<&str> {
+    session.get(STYLED_KEY).and_then(|v| v.as_str())
 }
 
 

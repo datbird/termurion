@@ -25,17 +25,26 @@ pub struct Actions {
     pub profiles_window: bool,
     pub arrangement: bool,
     pub window: bool,
+    pub restore: bool,
 }
 
 /// iTerm2's launch order: the Profiles window if set; the default arrangement for policy
 /// 1; otherwise a window for policy 0 unless a hotkey window exists (Always open overrides
 /// that). A Windows app with nothing open cannot be found, so when nothing else would show
 /// (no arrangement, no hotkey window), a window opens.
+/// `plan` with saved windows (session restoration): policy 0 restores them, and they count
+/// as the startup window.
+pub fn plan_with(p: StartupPrefs, has_default_arrangement: bool, has_hotkey_windows: bool, has_saved_windows: bool) -> Actions {
+    let base = plan(p, has_default_arrangement, has_hotkey_windows);
+    let restore = p.policy == SYSTEM && has_saved_windows;
+    Actions { restore, window: base.window && !restore, ..base }
+}
+
 pub fn plan(p: StartupPrefs, has_default_arrangement: bool, has_hotkey_windows: bool) -> Actions {
     let arrangement = p.policy == DEFAULT_ARRANGEMENT && has_default_arrangement;
     let iterm = !arrangement && (p.policy == SYSTEM || p.policy == DEFAULT_ARRANGEMENT) && p.open_new_window && (p.always_open || !has_hotkey_windows);
     let nothing_else = !arrangement && !has_hotkey_windows;
-    Actions { profiles_window: p.open_profiles_window, arrangement, window: iterm || nothing_else }
+    Actions { profiles_window: p.open_profiles_window, arrangement, window: iterm || nothing_else, restore: false }
 }
 
 #[cfg(test)]
@@ -47,11 +56,20 @@ mod tests {
     }
 
     #[test]
+    fn policy_zero_restores() {
+        let a = plan_with(prefs(SYSTEM), false, false, true);
+        assert!(a.restore && !a.window, "restored windows count as the startup window");
+        assert!(plan_with(prefs(SYSTEM), false, false, false).window, "nothing saved: a window");
+        assert!(!plan_with(prefs(DEFAULT_ARRANGEMENT), true, false, true).restore);
+        assert!(!plan_with(prefs(HOTKEY_ONLY), false, false, true).restore);
+    }
+
+    #[test]
     fn startup_follows_the_policy() {
-        assert_eq!(plan(prefs(SYSTEM), false, false), Actions { profiles_window: false, arrangement: false, window: true });
-        assert_eq!(plan(prefs(SYSTEM), false, true), Actions { profiles_window: false, arrangement: false, window: false }, "a hotkey window stops the startup window");
+        assert_eq!(plan(prefs(SYSTEM), false, false), Actions { profiles_window: false, arrangement: false, window: true, restore: false });
+        assert_eq!(plan(prefs(SYSTEM), false, true), Actions { profiles_window: false, arrangement: false, window: false, restore: false }, "a hotkey window stops the startup window");
         assert!(plan(StartupPrefs { always_open: true, ..prefs(SYSTEM) }, false, true).window, "Always open at least one terminal window");
-        assert_eq!(plan(prefs(DEFAULT_ARRANGEMENT), true, false), Actions { profiles_window: false, arrangement: true, window: false });
+        assert_eq!(plan(prefs(DEFAULT_ARRANGEMENT), true, false), Actions { profiles_window: false, arrangement: true, window: false, restore: false });
         assert!(plan(prefs(DEFAULT_ARRANGEMENT), false, false).window, "no default arrangement: a window");
         assert!(!plan(prefs(HOTKEY_ONLY), false, true).window, "Only Restore Hotkey Window");
         assert!(plan(prefs(HOTKEY_ONLY), false, false).window, "no hotkey window either: Windows would show nothing, so a window opens");
