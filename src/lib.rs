@@ -122,6 +122,7 @@ pub mod host_client;
 pub mod reattach;
 pub mod hotkey;
 pub mod broadcast;
+mod tmux_probe;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;

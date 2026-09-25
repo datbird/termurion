@@ -1,0 +1,15 @@
+[1t[c[?1004h[?9001hP1000p%begin 1790341902 273 0
+%end 1790341902 273 0
+%window-add @1
+%sessions-changed
+%session-changed $1 1
+%output %1 \033[?2004h\033[01;32mtbird@EXTREME\033[00m:\033[01;34m/mnt/c/Users/datbi/src/tandem\033[00m$ 
+%begin 1790341903 279 1
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+%end 1790341903 279 1
+%begin 1790341903 280 1
+%end 1790341903 280 1
+%sessions-changed
+%sessions-changed
+%exit
+\
