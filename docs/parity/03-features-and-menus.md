@@ -166,7 +166,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Show Cursor Guide | Opt+Cmd+; | Shows a horizontal highlight line tracking the cursor's row. (milestone 4) | have |
 | View > Show Session Note | Opt+Cmd+G | Shows a free-text note panel attached to the session. (milestone 4) | have |
 | View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. (milestone 4) | partial |
-| View > Auto Command Completion | Opt+Cmd+Y | Toggles automatic command-history-based autocomplete suggestions. (milestone 9) | missing |
+| View > Auto Command Completion | Shift+Opt+Cmd+Y | Toggles automatic command-history-based autocomplete suggestions. (milestone 9) | have, milestone 9d |
 | View > Auto Composer | Opt+Shift+Cmd+. | Toggles automatically opening the Composer for multi-line input. (milestone 9) | missing |
 | View > Open Quickly | Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. (milestone 9) | missing |
 | View > Maximize Active Pane | no shortcut | Temporarily expands the focused pane to fill the tab, hiding siblings. | have |
@@ -185,7 +185,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Stop Coprocess | Opt+Cmd+Shift+R | Stops the running coprocess. (milestone 6) | have, milestone 6c |
 | Session > Restart Session | no shortcut | Restarts the session's shell or command without closing the pane. | have |
 | Session > Duplicate Session | no shortcut | Opens a new session cloning the current one's profile and directory. | have |
-| Session > Open Autocomplete... | Cmd+; | Opens the shell integration based command autocomplete popup. (milestone 9) | missing |
+| Session > Open Autocomplete... | Cmd+; | Opens the shell integration based command autocomplete popup. (milestone 9) | have, milestone 9d |
 | Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. (milestone 9) | have, milestone 9c |
 | Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. (milestone 9) | have, milestone 9c |
 | Session > Open Paste History... | Shift+Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. (milestone 9) | have, milestone 9b |

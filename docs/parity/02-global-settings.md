@@ -35,7 +35,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 |---|---|---|---|---|
 | Composer leader key | n/a (iTermShortcutInputView, not a plain pref key) | Assigns a prefix keystroke that starts the Composer / command-input overlay. | missing |  |
 | Auto Composer | kPreferenceAutoComposer | Automatically opens the Composer overlay for multi-line command editing as you type. | missing |  |
-| Auto Command History | kPreferenceAutoCommandHistory | Automatically opens the command-history search overlay as you type at the prompt. | missing | Requires shell integration, which Tandem does not inject. |
+| Auto Command History | kPreferenceAutoCommandHistory | Automatically opens the command-history search overlay as you type at the prompt. | have | Milestone 9d: the list at the cursor while typing at the prompt; Shift+Enter inserts the rest, Alt+Enter runs it. |
 
 
 ### AI
@@ -695,7 +695,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 |---|---|---|---|---|
 | searchCommand | searchCommand (string, default @"https://google.com/search?q=%@") | Template for URL of search engine. | missing |  |
 | searchSuggestURL | searchSuggestURL (string, default @"https://suggestqueries.google.com/complete/search?client=firefox&q=%@") | Template of URL for typeahead search suggestions. | missing |  |
-| autocompleteMaxOptions | autocompleteMaxOptions (int, default 20) | Number of autocomplete options to present. | missing |  |
+| autocompleteMaxOptions | autocompleteMaxOptions (int, default 20) | Number of autocomplete options to present. | have | Milestone 9d. |
 | minRunningTime | minRunningTime (float, default 10) | Grace period for automatic quitting after the last window is closed. | missing |  |
 | updateScreenParamsDelay | updateScreenParamsDelay (float, default 1) | Delay after changing number of screens/resolution until refresh (seconds). | missing |  |
 | disableAppNap | disableAppNap (bool, default NO) | Disable App Nap. | missing |  |
