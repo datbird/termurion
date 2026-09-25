@@ -803,3 +803,30 @@ label = "Include the tmux client name in the window title"
 type = "bool"
 default = true
 help = "When using tmux integration, should the tmux client name (typically the name of the attaching session or the host name) appear in brackets in the window title?"
+
+[[setting]]
+key = "tmuxVariableWindowSizesSupported"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Allow variable window sizes in tmux integration."
+type = "bool"
+default = true
+help = "Requres tmux version 2.9 or later."
+
+[[setting]]
+key = "disableTmuxWindowResizing"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Don't automatically resize tmux windows"
+type = "bool"
+default = true
+help = "Tandem keeps its window size and tmux's layout shrinks to fit it."
+
+[[setting]]
+key = "rememberTmuxWindowSizes"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Remember window sizes in tmux integration?"
+type = "bool"
+default = true
+help = "Requires tmux 2.9 or later. The \"variable window size\" advanced setting must be enabled."

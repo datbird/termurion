@@ -208,6 +208,31 @@ impl App {
         }
     }
 
+    /// After a layout of the current window: each tmux tab's size in cells (its whole area,
+    /// a divider counting as a cell as in tmux) goes to its session.
+    pub(super) fn tmux_report_sizes(&mut self) {
+        if self.tmux.is_empty() {
+            return;
+        }
+        let (cols, rows) = self.grid_size(self.content_area());
+        let mut changed: Vec<PaneId> = Vec::new();
+        for t in &self.tabs {
+            let Some(io) = self.panes.get(&t.focused).and_then(|p| p.tmux_io()) else { continue };
+            let (gw, pane) = (io.gateway, io.pane);
+            let Some(g) = self.tmux.get_mut(&gw) else { continue };
+            let Some(window) = g.panes.get(&pane).map(|(_, w)| *w) else { continue };
+            if g.tab_sizes.insert(window, (cols as u32, rows as u32)) != Some((cols as u32, rows as u32)) && !changed.contains(&gw) {
+                changed.push(gw);
+            }
+        }
+        for gw in changed {
+            let Some(g) = self.tmux.get_mut(&gw) else { continue };
+            let sizes: Vec<(u32, (u32, u32))> = g.tab_sizes.iter().filter(|(w, _)| g.ctl.windows.contains_key(w)).map(|(w, s)| (*w, *s)).collect();
+            g.ctl.tabs_resized(&sizes, &mut g.gw);
+            self.tmux_flush(gw);
+        }
+    }
+
     /// A tmux pane closed in Tandem: the controller forgets it (tmux keeps it until 8c sends
     /// kill-pane), so the next layout that names it opens it again.
     pub(super) fn tmux_pane_closed(&mut self, id: PaneId) {

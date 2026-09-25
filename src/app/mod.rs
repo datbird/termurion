@@ -993,6 +993,7 @@ impl App {
             .flat_map(|t| self.visible(t))
             .map(|(id, rect)| (id, self.grid_size(rect)))
             .collect();
+        self.tmux_report_sizes();
         for (id, (cols, rows)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 if p.resize(cols, rows) {

@@ -32,6 +32,8 @@ enum Req {
     DisplayOne,
     /// A capture for one opener (a window being opened, or one layout change's new panes).
     Capture { opener: u64, pane: u32, part: Part },
+    /// The short list-windows after a client resize.
+    Relist,
     Ignore,
 }
 
@@ -92,11 +94,13 @@ pub struct Prefs {
     pub anonymous_location: i64,
     pub prevent_tab: bool,
     pub max_history: u32,
+    /// tmuxVariableWindowSizesSupported.
+    pub variable_sizes: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Prefs {
-        Prefs { open_in: OpenIn::NativeWindows, limit: 10, anonymous_location: 1, prevent_tab: false, max_history: 1000 }
+        Prefs { open_in: OpenIn::NativeWindows, limit: 10, anonymous_location: 1, prevent_tab: false, max_history: 1000, variable_sizes: true }
     }
 }
 
@@ -125,6 +129,12 @@ pub struct Controller {
     border: HashMap<u32, String>,
     /// A new `@iterm2_id` this controller set.
     pub session_guid: Option<String>,
+    /// The client size last sent (fixed-size mode).
+    last_client: Option<(u32, u32)>,
+    /// Each window's size last sent (variable-size mode).
+    window_sizes: HashMap<u32, (u32, u32)>,
+    /// Client resizes whose relist has not come back (only the last one is read).
+    outstanding: u32,
 }
 
 impl Controller {
@@ -148,6 +158,9 @@ impl Controller {
             windows: BTreeMap::new(),
             border: HashMap::new(),
             session_guid: None,
+            last_client: None,
+            window_sizes: HashMap::new(),
+            outstanding: 0,
         }
     }
 
@@ -165,6 +178,45 @@ impl Controller {
     /// The window that shows `pane`.
     pub fn window_of(&self, pane: u32) -> Option<u32> {
         self.windows.iter().find(|(_, ps)| ps.contains(&pane)).map(|(w, _)| *w)
+    }
+
+    /// The tmux tabs' sizes in cells (by tmux window) after Tandem laid them out: per
+    /// window on tmux 2.9 and later, else one client size, the smallest.
+    pub fn tabs_resized(&mut self, tabs: &[(u32, (u32, u32))], gw: &mut Gateway) {
+        let Some((s, _)) = self.session.clone() else { return };
+        if !self.known || tabs.is_empty() {
+            return;
+        }
+        if crate::tmux_sizes::variable(self.version, self.prefs.variable_sizes) {
+            let keyed: Vec<(String, (u32, u32))> = tabs.iter().map(|(w, size)| (w.to_string(), *size)).collect();
+            let v = self.v();
+            let cmds = crate::tmux_sizes::window_size_commands(&keyed, &mut self.window_sizes, v);
+            if !cmds.is_empty() {
+                gw.send_list(cmds.into_iter().map(|c| (c, None, Flags { tolerate: true, ..Default::default() })).collect(), false);
+            }
+            return;
+        }
+        let sizes: Vec<(u32, u32)> = tabs.iter().map(|(_, s)| *s).collect();
+        let Some(size) = crate::tmux_sizes::fixed_client_size(&sizes) else { return };
+        if self.last_client == Some(size) {
+            return;
+        }
+        self.last_client = Some(size);
+        self.window_sizes.clear();
+        let list = crate::tmux_sizes::client_size_commands(s, size.0, size.1, self.status_bar, self.version)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (cmd, tolerate))| {
+                let tag = match i {
+                    0 => Some(self.tag(Req::Ignore)),
+                    2 => Some(self.tag(Req::Relist)),
+                    _ => None,
+                };
+                (cmd, tag, Flags { tolerate, ..Default::default() })
+            })
+            .collect();
+        self.outstanding += 1;
+        gw.send_list(list, false);
     }
 
     /// Tandem closed this pane (tmux still has it, until milestone 8c sends kill-pane): the
@@ -230,6 +282,17 @@ impl Controller {
         let mut out = Vec::new();
         match req {
             Req::Ignore => {}
+            Req::Relist => {
+                self.outstanding = self.outstanding.saturating_sub(1);
+                if self.outstanding == 0 && ok {
+                    for row in crate::tmux_sizes::parse_short(text) {
+                        if let Some(b) = row.border {
+                            self.border.insert(row.window, b);
+                        }
+                        out.extend(self.layout_changed(row.window, &row.layout, gw));
+                    }
+                }
+            }
             Req::ShowSize => {
                 let size = text.split_once(',').and_then(|(w, h)| Some((w.trim().parse().ok()?, h.trim().parse().ok()?)));
                 let (w, h) = size.filter(|_| ok).unwrap_or(self.client);
@@ -617,6 +680,26 @@ mod tests {
         assert_eq!(r.ctl.windows[&0], vec![0]);
         r.lines(&["%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} x *"]);
         assert!(r.sent().starts_with("capture-pane -peqJN -t \"%1\""), "tmux still has it, so it opens again");
+    }
+
+    #[test]
+    fn resizes_follow_the_size_mode() {
+        let mut r = opened();
+        r.sent();
+        r.ctl.tabs_resized(&[(0, (100, 30))], &mut r.gw);
+        assert_eq!(r.sent(), "refresh-client -C @0:100x30\r", "tmux 3.4: per window");
+        r.answer(Some(""));
+        r.ctl.tabs_resized(&[(0, (100, 30))], &mut r.gw);
+        assert!(r.sent().is_empty(), "unchanged");
+        // Fixed size (variable sizes off): one client size, then the relist relays out.
+        r.ctl.prefs.variable_sizes = false;
+        r.ctl.tabs_resized(&[(0, (90, 20)), (5, (100, 25))], &mut r.gw);
+        let sent = r.sent();
+        assert!(sent.starts_with("set -t $0 @iterm2_size 90,20; refresh-client -C 90,20; list-windows -F "), "{sent}");
+        r.answer(Some(""));
+        r.answer(Some(""));
+        let a = r.answer(Some("@0 b25d,90x20,0,0,0 * b25d,90x20,0,0,0 off"));
+        assert!(matches!(&a[..], [Action::Relayout { window: 0, kept, .. }] if *kept == vec![0]), "{a:?}");
     }
 
     #[test]

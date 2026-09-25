@@ -39,6 +39,8 @@ pub(super) struct TmuxGw {
     pub(super) ctl: crate::tmux_controller::Controller,
     /// The tmux pane Tandem last told tmux (or tmux told Tandem) is selected.
     pub(super) selected: Option<u32>,
+    /// Each tmux window's tab size in cells, as Tandem last laid it out.
+    pub(super) tab_sizes: HashMap<u32, (u32, u32)>,
     /// tmux pane id to (Tandem pane, tmux window id).
     pub(super) panes: HashMap<u32, (PaneId, u32)>,
 }
@@ -93,7 +95,7 @@ impl App {
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, panes: HashMap::new() });
+        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, tab_sizes: HashMap::new(), panes: HashMap::new() });
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {
@@ -113,6 +115,7 @@ impl App {
             anonymous_location: self.globals.int("anonymousTmuxWindowsOpenInCurrentWindow"),
             prevent_tab: p.is_some_and(|p| p.bool("Prevent Opening in a Tab")),
             max_history: crate::tmux_windows::max_history(rows, scrollback, unlimited),
+            variable_sizes: self.globals.bool("tmuxVariableWindowSizesSupported"),
         }
     }
 
