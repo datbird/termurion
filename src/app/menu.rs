@@ -149,8 +149,8 @@ impl App {
         });
         self.refresh_route();
         let hotkeys = self.proxy.clone();
-        crate::winkeys::set_hotkey_sink(Box::new(move |id| {
-            let _ = hotkeys.lock().unwrap().send_event(UserEvent::Hotkey(id));
+        crate::winkeys::set_hotkey_sink(Box::new(move |ids| {
+            let _ = hotkeys.lock().unwrap().send_event(UserEvent::Hotkey(ids));
         }));
         match crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
             Err(e) => self.banners.set("keys", format!("Win chords are unavailable: {e}")),

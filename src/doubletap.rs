@@ -81,6 +81,11 @@ impl Machine {
         self.step(only, any, e.time)
     }
 
+    /// Drops held keys that are not down any more (a release the hook never saw).
+    pub fn prune(&mut self, down: &dyn Fn(u32) -> bool) {
+        self.held.retain(|vk| down(*vk));
+    }
+
     fn set(&mut self, s: State, now: Duration) {
         self.state = s;
         self.last_change = now;
@@ -188,6 +193,15 @@ mod tests {
         assert!(!feed(&mut m, &[(LCTRL, true, 1000), (LCTRL, false, 1050), (0x41, true, 1070), (0x41, false, 1080), (LCTRL, true, 1100), (LCTRL, false, 1150)]).contains(&true), "a letter between");
         let mut s = Machine::new(1, MIN_DELAY, MAX_DELAY);
         assert!(!feed(&mut s, &[(LCTRL, true, 1000), (LCTRL, false, 1050), (LCTRL, true, 1100), (LCTRL, false, 1150)]).contains(&true), "Control taps do not fire a Shift machine");
+    }
+
+    #[test]
+    fn a_missed_release_does_not_stick() {
+        let mut m = ctrl();
+        // Win went down, and its release never came (Win+L locked the machine).
+        m.event(Ev { vk: 0x5B, down: true, time: ms(500), scan: 0x5B });
+        m.prune(&|vk| vk != 0x5B);
+        assert_eq!(feed(&mut m, &[(LCTRL, true, 1000), (LCTRL, false, 1050), (LCTRL, true, 1100), (LCTRL, false, 1150)]).last(), Some(&true));
     }
 
     #[test]

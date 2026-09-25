@@ -284,6 +284,10 @@ fn sheet(ctx: &egui::Context, sh: &mut Sheet, keys: &mut KeysState, others: &[(S
             sh.model.alternates.retain(Option::is_some);
         }
     }
+    // A recorder left armed would eat the next key in Settings.
+    if !matches!(out, Outcome::Open) {
+        keys.hotkey_recording = None;
+    }
     if let Some((slot, s)) = sh.confirm.clone() {
         let (heading, text) = hotkey::confirm_text(&label(&s));
         egui::Window::new(heading).collapsible(false).resizable(false).show(ctx, |ui| {

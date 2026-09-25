@@ -150,7 +150,13 @@ static SETTINGS: AtomicIsize = AtomicIsize::new(0);
 static RECORDING: AtomicBool = AtomicBool::new(false);
 
 pub fn set_recording(on: bool) {
-    RECORDING.store(on, Ordering::Relaxed);
+    // A change pauses or restores the system-wide hotkeys (on the hook thread).
+    if RECORDING.swap(on, Ordering::Relaxed) != on {
+        let thread = HOOK_THREAD.load(Ordering::Acquire);
+        if thread != 0 {
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::PostThreadMessageW(thread, WM_APP_RECORDING, 0, 0) };
+        }
+    }
 }
 
 /// The settings window counts as Tandem for remapping.
@@ -231,8 +237,13 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let down = wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN;
             // System-wide hotkeys first: they act whatever window is in front, and a remap
             // must not rewrite the physical chord.
-            if kb.dwExtraInfo != MAGIC && global_hotkeys(kb, down) == Some(true) {
-                return 1;
+            if kb.dwExtraInfo != MAGIC {
+                match global_hotkeys(kb, down) {
+                    HookVerdict::Swallow { .. } => return 1,
+                    // Windows delivers a registered chord; no remap or Win-chord gate may take it.
+                    HookVerdict::ToSystem => return unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) },
+                    HookVerdict::Continue => {}
+                }
             }
             if kb.dwExtraInfo != MAGIC && remap(h, kb, down) {
                 return 1;
@@ -299,10 +310,14 @@ pub fn install(
             let mut msg: MSG = unsafe { std::mem::zeroed() };
             // Registered hotkeys: (RegisterHotKey id, hotkey ids).
             let mut registered: Vec<(i32, Vec<u32>)> = Vec::new();
+            let mut last: Vec<(u32, crate::hotkey::Chord)> = Vec::new();
             const WM_HOTKEY: u32 = 0x0312;
             while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
                 match msg.message {
-                    WM_APP_HOTKEYS => apply_pending(&mut registered),
+                    WM_APP_HOTKEYS => apply_pending(&mut registered, &mut last),
+                    WM_APP_RECORDING => {
+                        let _ = register(&mut registered, &last, RECORDING.load(Ordering::Relaxed));
+                    }
                     WM_HOTKEY => {
                         if let Some((_, ids)) = registered.iter().find(|(rid, _)| *rid as usize == msg.wParam) {
                             fire(ids);
@@ -334,7 +349,7 @@ pub fn group_chords(bindings: &[(u32, crate::hotkey::Chord)]) -> Vec<(crate::hot
 pub fn fallback(chord: crate::hotkey::Chord, error: u32) -> Result<(), String> {
     const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
     match error {
-        ERROR_HOTKEY_ALREADY_REGISTERED if chord.mods & crate::hotkey::MOD_WIN != 0 => Ok(()),
+        ERROR_HOTKEY_ALREADY_REGISTERED if shell_owned(chord) => Ok(()),
         ERROR_HOTKEY_ALREADY_REGISTERED => Err("Another app uses this shortcut".into()),
         e => Err(format!("Windows refused the shortcut: {}", std::io::Error::from_raw_os_error(e as i32))),
     }
@@ -351,32 +366,123 @@ pub fn hook_matches(chord: crate::hotkey::Chord, scan: u32, extended: bool, mods
     }
 }
 
-/// System-wide hotkeys the hook handles: chords the shell owns, and double taps.
-#[derive(Default)]
-struct Global {
-    chords: Vec<(crate::hotkey::Chord, Vec<u32>)>,
-    /// Keys whose key-down a hotkey took; their key-ups are taken too.
-    taken: std::collections::HashSet<u32>,
-    taps: Vec<(crate::doubletap::Machine, u32)>,
+/// One key event for the hook's hotkeys.
+#[derive(Clone, Copy, Debug)]
+pub struct HookKey {
+    pub vk: u32,
+    pub scan: u32,
+    pub extended: bool,
+    pub down: bool,
+    pub time: std::time::Duration,
+    /// The modifiers held (MOD_* bits).
+    pub mods: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookVerdict {
+    /// Not a hotkey: the rest of the hook decides.
+    Continue,
+    /// A hotkey took it; `mask` sends the Start-menu mask (a Win chord).
+    Swallow { mask: bool },
+    /// A chord registered with RegisterHotKey: pass it on untouched so Windows delivers it.
+    ToSystem,
+}
+
+/// System-wide hotkeys as the hook sees them: chords only the hook can take (the shell owns
+/// them), chords Windows delivers (so nothing else in the hook may take them), and double
+/// taps. Paused while Settings records a shortcut.
+#[derive(Default)]
+pub struct HookHotkeys {
+    pub hooked: Vec<(crate::hotkey::Chord, Vec<u32>)>,
+    pub system: Vec<crate::hotkey::Chord>,
+    /// Keys whose key-down a hotkey took; their repeats and key-ups are taken too.
+    pub taken: std::collections::HashSet<u32>,
+    pub taps: Vec<(crate::doubletap::Machine, u32)>,
+    pub paused: bool,
+}
+
+impl HookHotkeys {
+    /// The verdict for one key event, and the hotkeys it fired.
+    pub fn on_key(&mut self, k: HookKey, vk_of_char: &dyn Fn(char) -> Option<u32>, down_now: &dyn Fn(u32) -> bool) -> (HookVerdict, Vec<u32>) {
+        if self.paused {
+            return (HookVerdict::Continue, Vec::new());
+        }
+        let mut fired = Vec::new();
+        for (m, id) in self.taps.iter_mut() {
+            // A release the hook never saw (Win+L, a UAC prompt) must not leave a key held.
+            m.prune(down_now);
+            if m.event(crate::doubletap::Ev { vk: k.vk, down: k.down, time: k.time, scan: k.scan }) {
+                fired.push(*id);
+            }
+        }
+        if !k.down {
+            let taken = self.taken.remove(&k.vk);
+            return (if taken { HookVerdict::Swallow { mask: false } } else { HookVerdict::Continue }, fired);
+        }
+        if is_modifier(k.vk as u16) {
+            return (HookVerdict::Continue, fired);
+        }
+        // A held hotkey repeats: take the repeats, fire once.
+        if self.taken.contains(&k.vk) {
+            return (HookVerdict::Swallow { mask: false }, fired);
+        }
+        if let Some((chord, ids)) = self.hooked.iter().find(|(c, _)| hook_matches(*c, k.scan, k.extended, k.mods, vk_of_char, k.vk)) {
+            self.taken.insert(k.vk);
+            fired.extend(ids.iter().copied());
+            return (HookVerdict::Swallow { mask: chord.mods & crate::hotkey::MOD_WIN != 0 }, fired);
+        }
+        if self.system.iter().any(|c| hook_matches(*c, k.scan, k.extended, k.mods, vk_of_char, k.vk)) {
+            return (HookVerdict::ToSystem, fired);
+        }
+        (HookVerdict::Continue, fired)
+    }
+}
+
+/// Win chords the Windows shell keeps for itself (RegisterHotKey refuses them): only these
+/// go to the keyboard hook. Another app's chord is reported, not taken.
+pub fn shell_owned(chord: crate::hotkey::Chord) -> bool {
+    use crate::hotkey::{ChordKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN};
+    let ChordKey::Scan(scan) = chord.key else { return false };
+    if chord.mods & MOD_WIN == 0 {
+        return false;
+    }
+    let extra = chord.mods & !(MOD_WIN | MOD_SHIFT);
+    // Win (+Shift) with a letter but Y, a digit, or the shell's other keys.
+    const LETTERS: &[u32] = &[0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x2C];
+    const OTHERS: &[u32] = &[0x39, 0x0F, 0x33, 0x34, 0x27, 0x1C, 0x0C, 0x0D, 0x01, 0xE04B, 0xE04D, 0xE048, 0xE050, 0xE047, 0xE037, 0x45];
+    let digit = (0x02..=0x0B).contains(&scan);
+    match extra {
+        0 => LETTERS.contains(&scan) || digit || OTHERS.contains(&scan),
+        // Virtual desktops (Win+Ctrl+D, F4, Left, Right) and the like.
+        MOD_CONTROL => matches!(scan, 0x20 | 0x3E | 0xE04B | 0xE04D | 0x1C | 0x21 | 0x30 | 0x2E),
+        // Game Bar and pen shortcuts (Win+Alt+G, R, T, M, B, D, K, H, PrtSc).
+        MOD_ALT => matches!(scan, 0x22 | 0x13 | 0x14 | 0x32 | 0x30 | 0x20 | 0x25 | 0x23 | 0xE037),
+        _ => false,
+    }
+}
+
+type Global = HookHotkeys;
+
 static GLOBAL: Mutex<Option<Global>> = Mutex::new(None);
-static HOTKEY_SINK: OnceLock<Box<dyn Fn(u32) + Send + Sync>> = OnceLock::new();
+static HOTKEY_SINK: OnceLock<Box<dyn Fn(Vec<u32>) + Send + Sync>> = OnceLock::new();
 static HOOK_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 type Pending = (Vec<(u32, crate::hotkey::Chord)>, std::sync::mpsc::Sender<Vec<(u32, Result<(), String>)>>);
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 const WM_APP_HOTKEYS: u32 = 0x8000 + 0x48;
+const WM_APP_RECORDING: u32 = 0x8000 + 0x49;
 
 /// Where hotkey presses go (their ids).
-pub fn set_hotkey_sink(sink: Box<dyn Fn(u32) + Send + Sync>) {
+pub fn set_hotkey_sink(sink: Box<dyn Fn(Vec<u32>) + Send + Sync>) {
     let _ = HOTKEY_SINK.set(sink);
 }
 
+/// One press, every hotkey it matched: the app handles each sibling group once.
 fn fire(ids: &[u32]) {
-    if let Some(s) = HOTKEY_SINK.get() {
-        for id in ids {
-            s(*id);
-        }
+    if let (Some(s), false) = (HOTKEY_SINK.get(), ids.is_empty()) {
+        let mut ids = ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        s(ids);
     }
 }
 
@@ -388,7 +494,8 @@ pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)
     if thread == 0 {
         return Err("the keyboard hook is not running".into());
     }
-    *GLOBAL.lock().unwrap() = Some(Global { chords: Vec::new(), taken: Default::default(), taps: taps.into_iter().map(|(id, m)| (crate::doubletap::Machine::new(m, min, max), id)).collect() });
+    let paused = RECORDING.load(Ordering::Relaxed);
+    *GLOBAL.lock().unwrap() = Some(Global { taps: taps.into_iter().map(|(id, m)| (crate::doubletap::Machine::new(m, min, max), id)).collect(), paused, ..Default::default() });
     let (tx, rx) = std::sync::mpsc::channel();
     *PENDING.lock().unwrap() = Some((chords, tx));
     if unsafe { PostThreadMessageW(thread, WM_APP_HOTKEYS, 0, 0) } == 0 {
@@ -398,14 +505,29 @@ pub fn set_hotkeys(chords: Vec<(u32, crate::hotkey::Chord)>, taps: Vec<(u32, u8)
 }
 
 /// On the hook thread: registers the pending chords (RegisterHotKey is per thread).
-fn apply_pending(registered: &mut Vec<(i32, Vec<u32>)>) {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, VkKeyScanW};
+fn apply_pending(registered: &mut Vec<(i32, Vec<u32>)>, last: &mut Vec<(u32, crate::hotkey::Chord)>) {
     let Some((chords, reply)) = PENDING.lock().unwrap().take() else { return };
+    *last = chords.clone();
+    let out = register(registered, &chords, RECORDING.load(Ordering::Relaxed));
+    let _ = reply.send(out);
+}
+
+/// Replaces the registered chords. While Settings records a shortcut nothing is
+/// registered, so the recorder gets the keys (iTerm2 sends a press to the recorder).
+fn register(registered: &mut Vec<(i32, Vec<u32>)>, chords: &[(u32, crate::hotkey::Chord)], paused: bool) -> Vec<(u32, Result<(), String>)> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, VkKeyScanW};
     for (rid, _) in registered.drain(..) {
         unsafe { UnregisterHotKey(std::ptr::null_mut(), rid) };
     }
+    if paused {
+        if let Some(g) = GLOBAL.lock().unwrap().as_mut() {
+            g.paused = true;
+        }
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let mut hooked = Vec::new();
+    let mut system = Vec::new();
     const MAPVK_VSC_TO_VK_EX: u32 = 3;
     const MOD_NOREPEAT: u32 = 0x4000;
     for (i, (chord, ids)) in group_chords(&chords).into_iter().enumerate() {
@@ -418,6 +540,7 @@ fn apply_pending(registered: &mut Vec<(i32, Vec<u32>)>) {
             Err("This key has no Windows key code on this keyboard".to_string())
         } else if unsafe { RegisterHotKey(std::ptr::null_mut(), rid, chord.mods | MOD_NOREPEAT, vk) } != 0 {
             registered.push((rid, ids.clone()));
+            system.push(chord);
             Ok(())
         } else {
             let e = std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32;
@@ -430,52 +553,32 @@ fn apply_pending(registered: &mut Vec<(i32, Vec<u32>)>) {
         out.extend(ids.iter().map(|id| (*id, result.clone())));
     }
     if let Some(g) = GLOBAL.lock().unwrap().as_mut() {
-        g.chords = hooked;
+        g.hooked = hooked;
+        g.system = system;
+        g.paused = false;
     }
-    let _ = reply.send(out);
+    out
 }
 
-/// The hook's part of system-wide hotkeys. Some(swallow) when a hotkey chord took the key.
-fn global_hotkeys(kb: &KBDLLHOOKSTRUCT, down: bool) -> Option<bool> {
+/// The hook's part of system-wide hotkeys.
+fn global_hotkeys(kb: &KBDLLHOOKSTRUCT, down: bool) -> HookVerdict {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
     let mut guard = GLOBAL.lock().unwrap();
-    let g = guard.as_mut()?;
-    let time = std::time::Duration::from_millis(kb.time as u64);
-    let mut fired = Vec::new();
-    for (m, id) in g.taps.iter_mut() {
-        if m.event(crate::doubletap::Ev { vk: kb.vkCode, down, time, scan: kb.scanCode }) {
-            fired.push(*id);
-        }
-    }
-    let mut swallow = None;
-    if !down {
-        if g.taken.remove(&kb.vkCode) {
-            swallow = Some(true);
-        }
-    } else if !is_modifier(kb.vkCode as u16) && !g.chords.is_empty() {
-        let fg = unsafe { GetForegroundWindow() } as isize;
-        let recording = RECORDING.load(Ordering::Relaxed) && fg == SETTINGS.load(Ordering::Relaxed);
-        if !recording {
-            let mods = [(held(VK_LWIN as i32) || held(VK_RWIN as i32), crate::hotkey::MOD_WIN), (held(0x12), crate::hotkey::MOD_ALT), (held(0x11), crate::hotkey::MOD_CONTROL), (held(0x10), crate::hotkey::MOD_SHIFT)]
-                .iter()
-                .filter(|(h, _)| *h)
-                .fold(0, |a, (_, m)| a | m);
-            const LLKHF_EXTENDED: u32 = 0x01;
-            let extended = kb.flags & LLKHF_EXTENDED != 0;
-            let vk_of_char = |c: char| Some((unsafe { VkKeyScanW(c as u16) } as u32) & 0xFF);
-            if let Some((chord, ids)) = g.chords.iter().find(|(c, _)| hook_matches(*c, kb.scanCode, extended, mods, &vk_of_char, kb.vkCode)) {
-                g.taken.insert(kb.vkCode);
-                if chord.mods & crate::hotkey::MOD_WIN != 0 {
-                    mask_start_menu();
-                }
-                fired.extend(ids.iter().copied());
-                swallow = Some(true);
-            }
-        }
-    }
+    let Some(g) = guard.as_mut() else { return HookVerdict::Continue };
+    const LLKHF_EXTENDED: u32 = 0x01;
+    let mods = [(held(VK_LWIN as i32) || held(VK_RWIN as i32), crate::hotkey::MOD_WIN), (held(0x12), crate::hotkey::MOD_ALT), (held(0x11), crate::hotkey::MOD_CONTROL), (held(0x10), crate::hotkey::MOD_SHIFT)]
+        .iter()
+        .filter(|(h, _)| *h)
+        .fold(0, |a, (_, m)| a | m);
+    let k = HookKey { vk: kb.vkCode, scan: kb.scanCode, extended: kb.flags & LLKHF_EXTENDED != 0, down, time: std::time::Duration::from_millis(kb.time as u64), mods };
+    let vk_of_char = |c: char| Some((unsafe { VkKeyScanW(c as u16) } as u32) & 0xFF);
+    let (verdict, fired) = g.on_key(k, &vk_of_char, &|vk| held(vk as i32));
     drop(guard);
+    if let HookVerdict::Swallow { mask: true } = verdict {
+        mask_start_menu();
+    }
     fire(&fired);
-    swallow
+    verdict
 }
 
 #[cfg(test)]
@@ -513,6 +616,28 @@ mod tests {
         assert!(!hook_matches(up, 0x48, false, MOD_WIN, &|_| None, 0x68), "keypad 8 is not Up");
         let x = HChord { key: HKey::Char('x'), mods: MOD_WIN };
         assert!(hook_matches(x, 0x2D, false, MOD_WIN, &|c| (c == 'x').then_some(0x58), 0x58));
+    }
+
+    #[test]
+    fn hook_hotkeys_follow_the_rules() {
+        use crate::hotkey::{Chord as HChord, ChordKey as HKey, MOD_CONTROL, MOD_WIN};
+        let t = HChord { key: HKey::Scan(0x14), mods: MOD_WIN };
+        let tick = HChord { key: HKey::Scan(0x29), mods: MOD_CONTROL };
+        let mut h = HookHotkeys { hooked: vec![(t, vec![7])], system: vec![tick], ..Default::default() };
+        let key = |vk, scan, down, mods| HookKey { vk, scan, extended: false, down, time: std::time::Duration::ZERO, mods };
+        let none = |_: char| None;
+        let up = |_: u32| false;
+        assert_eq!(h.on_key(key(0x54, 0x14, true, MOD_WIN), &none, &up), (HookVerdict::Swallow { mask: true }, vec![7]));
+        assert_eq!(h.on_key(key(0x54, 0x14, true, MOD_WIN), &none, &up), (HookVerdict::Swallow { mask: false }, vec![]), "a repeat fires nothing");
+        assert_eq!(h.on_key(key(0x54, 0x14, false, MOD_WIN), &none, &up).0, HookVerdict::Swallow { mask: false }, "its release is taken too");
+        assert_eq!(h.on_key(key(0xC0, 0x29, true, MOD_CONTROL), &none, &up).0, HookVerdict::ToSystem, "Windows delivers a registered chord");
+        assert_eq!(h.on_key(key(0x41, 0x1E, true, 0), &none, &up).0, HookVerdict::Continue);
+        h.paused = true;
+        assert_eq!(h.on_key(key(0x54, 0x14, true, MOD_WIN), &none, &up), (HookVerdict::Continue, vec![]), "recording: the recorder gets it");
+        assert!(shell_owned(t), "Win+T");
+        assert!(!shell_owned(HChord { key: HKey::Scan(0x15), mods: MOD_WIN }), "Win+Y is free");
+        assert!(!shell_owned(HChord { key: HKey::Scan(0x24), mods: MOD_WIN | crate::hotkey::MOD_ALT | MOD_CONTROL }), "Win+Ctrl+Alt+J");
+        assert_eq!(fallback(HChord { key: HKey::Scan(0x15), mods: MOD_WIN }, 1409), Err("Another app uses this shortcut".to_string()));
     }
 
     #[test]

@@ -308,6 +308,29 @@ pub fn app_press(active: bool, windows: usize) -> AppAct {
     }
 }
 
+/// The sibling groups a press reaches, each once (iTerm2's `handled` set): `pressed` are
+/// the profiles whose hotkey matched.
+pub fn groups_for(pressed: &[String], all: &[(String, Prefs)]) -> Vec<Vec<String>> {
+    let mut handled: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for g in pressed {
+        if handled.contains(g) || !all.iter().any(|(x, p)| x == g && p.active()) {
+            continue;
+        }
+        let mut group = vec![g.clone()];
+        group.extend(siblings(g, all));
+        handled.extend(group.iter().cloned());
+        out.push(group);
+    }
+    out
+}
+
+/// Hotkey windows whose profile no longer has an active hotkey (deleted, or turned off):
+/// they must become regular windows, or nothing could show them again.
+pub fn stale_windows(windows: &[String], all: &[(String, Prefs)]) -> Vec<String> {
+    windows.iter().filter(|g| !all.iter().any(|(x, p)| x == *g && p.active())).cloned().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,6 +485,23 @@ mod tests {
         assert_eq!(app_press(false, 2), AppAct::ShowAll);
         assert_eq!(app_press(false, 0), AppAct::OpenWindow);
         assert_eq!(app_press(true, 0), AppAct::HideAll, "in front with only a hotkey window up");
+    }
+
+    #[test]
+    fn one_press_toggles_each_group_once() {
+        let a = Prefs { primary: Some(short(0x31, OPTION, " ")), ..prefs() };
+        let c = Prefs { primary: Some(short(0x32, CONTROL, "`")), ..prefs() };
+        let all = vec![("a".to_string(), a.clone()), ("b".into(), a), ("c".into(), c)];
+        assert_eq!(groups_for(&["a".to_string(), "b".into()], &all), vec![vec!["a".to_string(), "b".into()]], "siblings fire together once");
+        assert_eq!(groups_for(&["a".to_string(), "c".into()], &all).len(), 2);
+        assert!(groups_for(&["gone".to_string()], &all).is_empty());
+    }
+
+    #[test]
+    fn stale_hotkey_windows() {
+        let on = Prefs { primary: Some(short(0x31, OPTION, " ")), ..prefs() };
+        let all = vec![("a".to_string(), on.clone()), ("b".into(), Prefs { has_hotkey: false, ..on })];
+        assert_eq!(stale_windows(&["a".to_string(), "b".into(), "deleted".into()], &all), vec!["b".to_string(), "deleted".into()]);
     }
 
     #[test]

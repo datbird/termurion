@@ -70,11 +70,8 @@ impl App {
             self.active = i;
             self.tabs[i].focused = pane;
         }
-        if let Some(g) = self.gpu.as_ref() {
-            // A minimized window takes no focus until it is restored.
-            g.window.set_minimized(false);
-            g.window.focus_window();
-        }
+        // A minimized window takes no focus until it is restored; a hidden hotkey window shows.
+        self.bring_forward();
         self.relayout();
     }
 

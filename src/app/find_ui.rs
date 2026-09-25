@@ -693,9 +693,7 @@ impl App {
                     if let Some(p) = self.panes.get_mut(&id) {
                         reveal(p, &m);
                     }
-                    if let Some(g) = &self.gpu {
-                        g.window.focus_window();
-                    }
+                    self.bring_forward();
                     self.relayout();
                 }
             },

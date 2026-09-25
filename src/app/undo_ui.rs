@@ -101,10 +101,9 @@ impl App {
 
     /// Brings the window an undone close went back into to the front.
     fn show_restored(&mut self) {
-        if let Some(g) = &self.gpu {
-            g.window.set_minimized(false);
-            g.window.focus_window();
-            self.last_window = Some(g.window.id());
+        self.bring_forward();
+        if let Some(w) = self.current_window() {
+            self.last_window = Some(w);
         }
     }
 

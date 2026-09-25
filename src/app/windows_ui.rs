@@ -468,10 +468,7 @@ impl App {
         if !self.enter(id) {
             return;
         }
-        if let Some(g) = &self.gpu {
-            g.window.set_minimized(false);
-            g.window.focus_window();
-        }
+        self.bring_forward();
         self.last_window = Some(id);
     }
 

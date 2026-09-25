@@ -128,10 +128,7 @@ impl App {
             self.active = t;
             self.tabs[t].focused = pane;
         }
-        if let Some(g) = &self.gpu {
-            g.window.set_minimized(false);
-            g.window.focus_window();
-        }
+        self.bring_forward();
         if let Some(hwnd) = self.hwnd() {
             use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
             if unsafe { SetForegroundWindow(hwnd as _) } == 0 {
