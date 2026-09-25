@@ -67,7 +67,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > tmux > New Tmux Window | Ctrl+Cmd+N | Creates a new window inside the attached tmux session. (milestone 8) | have |
 | Shell > tmux > New Tmux Tab | Ctrl+Cmd+T | Creates a new tab or pane inside the attached tmux session. (milestone 8) | have |
 | Shell > tmux > Pause Pane | Ctrl+Cmd+P | Pauses output updates for a tmux pane to save bandwidth. (milestone 8) | have |
-| Shell > tmux > Dashboard | no shortcut | Opens a dashboard listing all attached tmux sessions and windows. (milestone 8) | missing |
+| Shell > tmux > Dashboard | no shortcut | Opens a dashboard listing all attached tmux sessions and windows. (milestone 8) | have |
 | Shell > ssh > Disconnect | no shortcut | Disconnects the built in SSH integration session. | missing, the SSH integration milestone |
 | Shell > ssh > Download Files... | no shortcut | Downloads files from the remote host over the SSH integration channel. | missing, the SSH integration milestone |
 | Shell > ssh > Remote host can control iTerm2 | no shortcut | Lets escape sequences from the remote SSH host control iTerm2 features. | missing, the SSH integration milestone |
@@ -227,8 +227,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Terminal State > Emulation Level > VT400 | no shortcut | Restricts terminal emulation to VT400-level feature set. | have, the level sets what DA1, DA2, DA3, and DECRQSS DECSCL report |
 | Session > Terminal State > Emulation Level > VT500 | no shortcut | Restricts terminal emulation to VT500-level feature set. | have, the level sets what DA1, DA2, DA3, and DECRQSS DECSCL report |
 | Session > Terminal State > Reset | no shortcut | Resets all terminal state toggles to their defaults. | have |
-| Session > Bury Session | Opt+Cmd+B | Hides the session from the tab bar while it keeps running, listed under Buried Sessions. (milestone 7) | missing |
-| Session > Buried Sessions | no shortcut | Dynamic submenu listing buried sessions to bring back. | missing |
+| Session > Bury Session | Opt+Cmd+B | Hides the session from the tab bar while it keeps running, listed under Buried Sessions. (milestone 7) | have |
+| Session > Buried Sessions | no shortcut | Dynamic submenu listing buried sessions to bring back. | have |
 
 ### Scripts menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
@@ -370,7 +370,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; SetColors=&lt;name&gt;=&lt;color&gt;,... | Sets one or more named ANSI/theme colors at once. | partial, every color but badge (milestone 6) and preset (no color presets yet); tab draws a stripe |
 | OSC 1337 ; SetKeyLabel=&lt;key&gt;=&lt;label&gt; | Sets the on screen label for a Touch Bar key. | partial, Windows has no Touch Bar: labels are kept, not shown |
 | OSC 1337 ; PushKeyLabels / PopKeyLabels | Saves/restores a set of Touch Bar key labels. | partial, Windows has no Touch Bar: labels are kept, not shown |
-| OSC 1337 ; Disinter | Detaches (disinters) a session from its buried state. | partial, accepted; nothing to restore until milestone 7 adds Bury |
+| OSC 1337 ; Disinter | Detaches (disinters) a session from its buried state. | have, milestone 8e: a buried session that sends it is restored |
 | OSC 1337 ; ReportVariable=&lt;base64 name&gt; (trusted) | Terminal reports the value of a named session variable. | partial, the session, user, tab, window, and app names Tandem has |
 | OSC 1337 ; Custom=&lt;params&gt;:&lt;payload&gt; (trusted) | Fires a user-defined custom escape-sequence trigger with key/value params and a payload. | have, milestone 6b: the Custom Escape Sequence event trigger |
 | OSC 1337 ; Notification=&lt;text&gt; | Posts a rich user notification (toast). | have, milestone 6b: title, subtitle, and message (no image) |
@@ -415,13 +415,13 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | tmux integration | tmux -CC control mode | Attaches to a tmux session over a control-mode connection so tmux windows appear as native windows/tabs instead of a text UI. | partial | Milestone 8a to 8c: the gateway, the protocol, tmux windows as tabs and windows, sizes, edits from Tandem, closing questions, @hidden and @affinities, and detach. Pause mode (8d), the Dashboard and burying (8e), and monitors and clipboard (8f) remain. It needs the shipped ConPTY (conpty.dll and OpenConsole.exe beside tandem.exe). |
-| tmux integration | Session dashboard | Lists all tmux sessions on the server with a picker to attach, rename, or create a new one. | missing | |
+| tmux integration | Session dashboard | Lists all tmux sessions on the server with a picker to attach, rename, or create a new one. | have | Milestone 8e: the tmux Dashboard (connections popup, sessions with rename, add, remove, attach, detach; windows with search, rename, add, remove, open in tabs or windows, hide; the attach limit and hidden-window checkbox). Dragging windows between sessions is not in it. |
 | tmux integration | Window to tab/window mapping | Maps each tmux window to a native window or tab, tracks window IDs, opens new tmux windows automatically. | partial | Milestone 8b: each tmux window opens as a tab or window by OpenTmuxWindowsIn and anonymousTmuxWindowsOpenInCurrentWindow, affinities read, %window-add/close/renamed and %session-changed followed. Saving affinities and tab moves are 8c. |
 | tmux integration | Pane layout sync | Parses tmux's layout string and reproduces the split-pane geometry natively, keeps it in sync as tmux panes are added, closed, or resized. | have | Milestone 8b/8c: tmux layouts become cell-exact splits and %layout-change is followed; divider drags send resize-pane on release (tmux lines wait during the drag), splits send split-window, zoom and swap relist. |
 | tmux integration | Detach and reattach | Cleanly detaches the control client from tmux without killing the tmux session, and reattaches later restoring layout. | partial | Milestone 8c: Detach (a second request offers Force Detach), Force Detach, and reattach with the same windows grouped by @affinities. Window origins and per-window settings wait for 8e. |
 | tmux integration | Window/session/pane rename sync | Propagates tmux renames of windows, sessions, and panes to the native UI, and lets the user rename back into tmux. | have | Milestone 8b/8c: %window-renamed renames the tab, and Edit Tab Title on a tmux tab sends rename-window (pane titles need 2.6, via the same escape). |
 | tmux integration | Per-window and per-tab settings persistence | Saves and restores window affinities, origins, hidden windows, and per-window/per-tab overrides such as font and key mappings, across attach cycles. | partial | Milestone 8c: @affinities and @hidden are saved and read. @per_window_settings, @per_tab_settings, @origins, and @buried_indexes wait for 8e. |
-| tmux integration | Hidden windows | Lets a tmux window exist on the server but stay hidden from the native window list; can be revealed later. | partial | Milestone 8b: windows in @hidden stay closed on attach ("Some tmux windows were hidden."), and more than TmuxDashboardLimit open none ("Too many tmux windows!"). Hiding and revealing are the Dashboard (8e). |
+| tmux integration | Hidden windows | Lets a tmux window exist on the server but stay hidden from the native window list; can be revealed later. | have | Milestone 8b/8e: @hidden windows stay closed on attach, Hide keeps a window in tmux only, and the Dashboard and Session > Buried Sessions open them again. |
 | tmux integration | tmux status bar passthrough | Mirrors tmux's own status line content into iTerm2 when tmux driven status text changes. | missing | |
 | tmux integration | tmux option monitor | Watches tmux global/session/window options, for example pane-border-status, and reacts live. | missing | |
 | tmux integration | Copy mode bridging | Lets iTerm2 exit/enter tmux copy mode and reconcile it with native scrollback/selection. | missing | |
