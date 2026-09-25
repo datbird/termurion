@@ -351,6 +351,7 @@ impl App {
             "mergeAllWindows:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.merge_all_windows(),
             "moveTabToNewWindow:" | "moveSessionToWindow:" | "mergeAllWindows:" => {}
             "arrangeHorizontally:" => self.arrange_windows_horizontally(),
+            s if self.broadcast_command(s) => {}
             "togglePinHotkeyWindow:" => {
                 if let Some(g) = self.hotkey.as_ref().map(|h| h.guid.clone()) {
                     self.toggle_pin_hotkey(&g);
@@ -479,9 +480,10 @@ impl App {
                     term.selection = Some(sel);
                 }
             }
-            "clearBuffer:" => self.focused_pane().map_or((), |p| p.clear()),
+            "clearBuffer:" => self.clear_or_reset(true),
             "clearScrollbackBuffer:" => self.focused_pane().map_or((), |p| p.screen.clear(true)),
-            "reset:" | "terminalStateReset:" => self.focused_pane().map_or((), |p| p.screen.soft_reset()),
+            "reset:" => self.clear_or_reset(false),
+            "terminalStateReset:" => self.focused_pane().map_or((), |p| p.screen.soft_reset()),
             "resetCharset:" => {
                 if let Some(p) = self.focused_pane() {
                     let term = p.screen.term_mut();

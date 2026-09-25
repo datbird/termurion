@@ -100,7 +100,7 @@ impl App {
 }
 
 /// An OK and Cancel question; true for OK.
-fn confirm(owner: Option<isize>, title: &str, text: &str) -> bool {
+pub(super) fn confirm(owner: Option<isize>, title: &str, text: &str) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONWARNING, MB_OKCANCEL, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let owner = owner.map_or(std::ptr::null_mut(), |h| h as *mut core::ffi::c_void);

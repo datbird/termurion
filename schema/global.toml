@@ -711,3 +711,21 @@ label = "Double-tap minimum delay"
 type = "float"
 default = 0.01
 help = "The minimum amount of time required between presses of a modifier key when performing a modifier double-tap."
+
+[[setting]]
+key = "NoSyncSuppressBroadcastInputWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning about broadcasting input"
+type = "bool"
+default = false
+help = "Suppress warning about broadcasting input."
+
+[[setting]]
+key = "Use background pattern indicator"
+tab = "Advanced"
+section = "Broadcast"
+label = "Show Background Pattern Indicator"
+type = "bool"
+default = false
+help = "When enabled, prominent red lines are drawn in the background to indicate that text you type is being broadcast to other sessions."

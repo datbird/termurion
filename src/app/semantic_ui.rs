@@ -268,6 +268,13 @@ impl App {
                 pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None });
             }
         }
+        // Toggle Broadcasting Input, for the pane that was clicked (always offered).
+        if let Some((id, _)) = at {
+            extra.push(("Toggle Broadcasting Input".into(), CtxItem::ToggleBroadcast));
+            if pending.is_none() {
+                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None });
+            }
+        }
         self.ctx_pending = pending;
         self.show_context_menu_with(&extra);
     }
@@ -278,6 +285,8 @@ impl App {
         let Some(pend) = self.ctx_pending.take() else { return true };
         if item == "stopcoprocess" {
             self.stop_coprocess(pend.pane);
+        } else if item == "togglebroadcast" {
+            self.toggle_broadcast_pane(pend.pane);
         } else if item == "unfold" {
             if let Some(f) = pend.fold {
                 self.unfold(pend.pane, f);
@@ -334,6 +343,7 @@ pub(super) enum CtxItem {
     CopyLink,
     Unfold,
     StopCoprocess,
+    ToggleBroadcast,
 }
 
 impl CtxItem {
@@ -343,6 +353,7 @@ impl CtxItem {
             CtxItem::CopyLink => format!("{CTX_ID}copylink"),
             CtxItem::Unfold => format!("{CTX_ID}unfold"),
             CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
+            CtxItem::ToggleBroadcast => format!("{CTX_ID}togglebroadcast"),
         }
     }
 }

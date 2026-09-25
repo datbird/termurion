@@ -244,6 +244,16 @@ pub fn route(w: Write) -> Route {
     }
 }
 
+/// Clear Buffer with two or more broadcast sessions: (heading, text, buttons).
+pub fn clear_question(n: usize) -> (&'static str, String, [&'static str; 3]) {
+    ("Clear in All Broadcasted-to Sessions?", format!("Clear all sessions to which input is broadcast? This will affect {n} sessions."), ["Clear All", "Clear Current Session Only", "Cancel"])
+}
+
+/// Reset with two or more broadcast sessions: (heading, text, buttons).
+pub fn reset_question(n: usize) -> (&'static str, String, [&'static str; 3]) {
+    ("Reset in All Broadcasted-to Sessions?", format!("Reset all sessions to which input is broadcast? This will affect {n} sessions."), ["Reset All", "Reset Current Session Only", "Cancel"])
+}
+
 /// The warning's text for turning `mode` on.
 pub fn warning_title(v: &View, mode: Mode) -> String {
     match mode {
@@ -391,6 +401,12 @@ mod tests {
         for w in [Write::SendTextLocal, Write::MouseReport, Write::FocusReport, Write::Trigger, Write::Upload, Write::BufferRelease] {
             assert_eq!(route(w), Route::Local, "{w:?}");
         }
+    }
+
+    #[test]
+    fn clear_and_reset_questions() {
+        assert_eq!(clear_question(3), ("Clear in All Broadcasted-to Sessions?", "Clear all sessions to which input is broadcast? This will affect 3 sessions.".to_string(), ["Clear All", "Clear Current Session Only", "Cancel"]));
+        assert_eq!(reset_question(2), ("Reset in All Broadcasted-to Sessions?", "Reset all sessions to which input is broadcast? This will affect 2 sessions.".to_string(), ["Reset All", "Reset Current Session Only", "Cancel"]));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::seltools::{self, End};
 
 /// Menu items with a check mark that milestone 4c adds, by selector.
 pub(super) const CHECKED: &[&str] =
-    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:", "toggleEnableTriggersInInteractiveApps:", "toggleNotifyOnStatusChange:", "togglePinHotkeyWindow:"];
+    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:", "toggleEnableTriggersInInteractiveApps:", "toggleNotifyOnStatusChange:", "togglePinHotkeyWindow:", "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleUseBackgroundPatternIndicator:", "toggleBroadcastSource:"];
 
 impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
@@ -73,6 +73,9 @@ impl App {
 
     /// Whether a checkable menu item shows its check mark.
     pub(super) fn is_checked(&self, selector: &str) -> bool {
+        if let Some(on) = self.broadcast_checked(selector) {
+            return on;
+        }
         match selector {
             "toggleSelectionRespectsSoftBoundaries:" => self.globals.bool("Selection Respects Soft Boundaries"),
             "togglePinHotkeyWindow:" => self.hotkey_pinned(),

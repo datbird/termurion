@@ -43,6 +43,8 @@ pub const DONE: &[&str] = &[
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
     "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
     "moveTabToNewWindow:", "moveSessionToWindow:", "mergeAllWindows:", "duplicateWindow:", "togglePinHotkeyWindow:",
+    "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleBroadcastingToCurrentSession:",
+    "toggleUseBackgroundPatternIndicator:", "toggleBroadcastSource:",
     "toggleSizeLocked:", "toggleLayoutLocked:", "decreaseHeight:", "increaseHeight:", "decreaseWidth:", "increaseWidth:",
     "editWindowTitle:", "editTabTitle:", "arrangeHorizontally:", "undoCloseSession:",
     "saveWindowArrangement:", "saveCurrentWindowAsArrangement:", "importWindowArrangement:", "changeProfileInArrangement:",
