@@ -190,11 +190,11 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. (milestone 9) | missing |
 | Session > Open Paste History... | Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. (milestone 9) | missing |
 | Session > Open AI Chat... | Ctrl+Cmd+Y | Opens an AI chat window scoped to the current session. (milestone 12) | missing |
-| Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. (milestone 6) | missing |
-| Session > Triggers > Edit Triggers | no shortcut | Opens the trigger list editor for the current profile. (milestone 6) | missing |
-| Session > Triggers > Enable Triggers in Interactive Apps | no shortcut | Allows triggers to fire even while a full-screen interactive app such as vim is running. (milestone 6) | missing |
-| Session > Triggers > Enable All | no shortcut | Enables every trigger for the profile. (milestone 6) | missing |
-| Session > Triggers > Disable All | no shortcut | Disables every trigger for the profile. (milestone 6) | missing |
+| Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. (milestone 6) | have, milestone 6a |
+| Session > Triggers > Edit Triggers | no shortcut | Opens the trigger list editor for the current profile. (milestone 6) | have, milestone 6a |
+| Session > Triggers > Enable Triggers in Interactive Apps | no shortcut | Allows triggers to fire even while a full-screen interactive app such as vim is running. (milestone 6) | have, milestone 6a |
+| Session > Triggers > Enable All | no shortcut | Enables every trigger for the profile. (milestone 6) | have, milestone 6a |
+| Session > Triggers > Disable All | no shortcut | Disables every trigger for the profile. (milestone 6) | have, milestone 6a |
 | Session > Reset | Cmd+R | Sends a terminal reset, clearing modes and screen state. | have |
 | Session > Reset Character Set | no shortcut | Resets the terminal's character set designation to default. | have |
 | Session > Move Session > Move Session to Window | no shortcut | Moves the current session/pane out into a new window. (milestone 7) | missing |
@@ -511,36 +511,36 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### triggers
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Triggers | Trigger engine | Per-profile list of regex-matched rules evaluated against incoming terminal text, each firing an action. | missing | |
-| Triggers | Show Alert trigger | Pops a modal alert dialog with text derived from the match. | missing | |
-| Triggers | Capture Output trigger | Captures the matching line into the Captured Output toolbelt tool. | missing | |
-| Triggers | Run Coprocess trigger | Launches an external command as a coprocess piped to/from the session on match. | missing | |
-| Triggers | Annotate trigger | Attaches an annotation to the matching text automatically. | missing | |
-| Triggers | Set Mark trigger | Drops a mark at the matching line for later navigation. | missing | |
-| Triggers | Make Hyperlink trigger | Turns matching text into a clickable hyperlink automatically. | missing | Tandem's core has no OSC 8 hyperlink rendering to attach this to. |
-| Triggers | Bounce Dock Icon trigger | Bounces the app icon in the Dock on match, to get attention. | missing | macOS Dock only; a Windows equivalent would be taskbar flash. |
-| Triggers | Report Directory trigger | Feeds a matched directory string into iTerm2's own cwd tracking, an alternative to shell integration reporting. | missing | |
-| Triggers | Ring Bell trigger | Plays the terminal bell sound on match. | missing | |
-| Triggers | Invoke Script Function trigger | Calls a registered Python API script function with the match as an argument. | missing | |
-| Triggers | Highlight Line trigger | Colors the whole matching line's background/foreground. | missing | |
-| Triggers | Highlight Text trigger | Colors just the matched substring. | missing | |
-| Triggers | Run Command trigger | Runs a shell command, not attached as a coprocess, when the pattern matches. | missing | |
-| Triggers | Report User & Host trigger | Feeds a matched user@host string into iTerm2's own host tracking, an alternative to shell integration remote host reporting. | missing | |
-| Triggers | Prompt Detected trigger | Manually marks a matching line as a shell prompt for terminals without shell integration installed. | missing | |
-| Triggers | Stop Processing Triggers trigger | Halts evaluation of any further triggers on the current line. | missing | |
-| Triggers | Set Title trigger | Sets the session's title from the match. | missing | |
-| Triggers | Open Password Manager trigger | Opens the password manager automatically on match, for example detecting a login prompt. | missing | |
-| Triggers | Post Notification trigger | Posts a system notification on match. | missing | |
-| Triggers | Send Text trigger | Sends literal text back into the session as if typed, on match, for example auto-answering a prompt. | missing | |
-| Triggers | Fold trigger | Collapses matched lines into a folded/hidden block in scrollback. | missing | |
-| Triggers | Inject Data trigger | Injects data into the terminal's input stream as if it arrived from the pty, on match. | missing | |
-| Triggers | Set Named Mark trigger | Creates a named mark from the match, for the Named Marks toolbelt tool. | missing | |
-| Triggers | Set Profile Boolean trigger | Flips a boolean profile setting on match. | missing | |
-| Triggers | Set Tab Status trigger | Sets tab status/badge indicators from the match. | missing | |
-| Triggers | Set User Variable trigger | Sets an arbitrary user variable from the match, same namespace as shell integration SetUserVar. | missing | |
-| Triggers | Change Style (SGR) trigger | Applies an SGR text style/color change based on the match. | missing | |
+| Triggers | Trigger engine | Per-profile list of regex-matched rules evaluated against incoming terminal text, each firing an action. | have, milestone 6a |  |
+| Triggers | Show Alert trigger | Pops a modal alert dialog with text derived from the match. | have, milestone 6a |  |
+| Triggers | Capture Output trigger | Captures the matching line into the Captured Output toolbelt tool. | missing, milestone 9 (listed in the editor) |  |
+| Triggers | Run Coprocess trigger | Launches an external command as a coprocess piped to/from the session on match. | missing, milestone 6c (listed in the editor) |  |
+| Triggers | Annotate trigger | Attaches an annotation to the matching text automatically. | have, milestone 6a |  |
+| Triggers | Set Mark trigger | Drops a mark at the matching line for later navigation. | have, milestone 6a |  |
+| Triggers | Make Hyperlink trigger | Turns matching text into a clickable hyperlink automatically. | have, milestone 6a |  |
+| Triggers | Bounce Dock Icon trigger | Bounces the app icon in the Dock on match, to get attention. | have, milestone 6a: the taskbar button flashes |  |
+| Triggers | Report Directory trigger | Feeds a matched directory string into iTerm2's own cwd tracking, an alternative to shell integration reporting. | have, milestone 6a |  |
+| Triggers | Ring Bell trigger | Plays the terminal bell sound on match. | partial, milestone 6a beeps; bell settings in 6b |  |
+| Triggers | Invoke Script Function trigger | Calls a registered Python API script function with the match as an argument. | missing, milestone 11 (listed in the editor) |  |
+| Triggers | Highlight Line trigger | Colors the whole matching line's background/foreground. | have, milestone 6a |  |
+| Triggers | Highlight Text trigger | Colors just the matched substring. | have, milestone 6a |  |
+| Triggers | Run Command trigger | Runs a shell command, not attached as a coprocess, when the pattern matches. | have, milestone 6a |  |
+| Triggers | Report User & Host trigger | Feeds a matched user@host string into iTerm2's own host tracking, an alternative to shell integration remote host reporting. | have, milestone 6a |  |
+| Triggers | Prompt Detected trigger | Manually marks a matching line as a shell prompt for terminals without shell integration installed. | have, milestone 6a |  |
+| Triggers | Stop Processing Triggers trigger | Halts evaluation of any further triggers on the current line. | have, milestone 6a |  |
+| Triggers | Set Title trigger | Sets the session's title from the match. | have, milestone 6a |  |
+| Triggers | Open Password Manager trigger | Opens the password manager automatically on match, for example detecting a login prompt. | missing, milestone 10 (listed in the editor) |  |
+| Triggers | Post Notification trigger | Posts a system notification on match. | partial, milestone 6a shows a bar; Windows notifications in 6b |  |
+| Triggers | Send Text trigger | Sends literal text back into the session as if typed, on match, for example auto-answering a prompt. | have, milestone 6a |  |
+| Triggers | Fold trigger | Collapses matched lines into a folded/hidden block in scrollback. | have, milestone 6a |  |
+| Triggers | Inject Data trigger | Injects data into the terminal's input stream as if it arrived from the pty, on match. | have, milestone 6a |  |
+| Triggers | Set Named Mark trigger | Creates a named mark from the match, for the Named Marks toolbelt tool. | have, milestone 6a |  |
+| Triggers | Set Profile Boolean trigger | Flips a boolean profile setting on match. | have, milestone 6a |  |
+| Triggers | Set Tab Status trigger | Sets tab status/badge indicators from the match. | have, milestone 6a |  |
+| Triggers | Set User Variable trigger | Sets an arbitrary user variable from the match, same namespace as shell integration SetUserVar. | have, milestone 6a |  |
+| Triggers | Change Style (SGR) trigger | Applies an SGR text style/color change based on the match. | have, milestone 6a |  |
 | Triggers | Enter/Exit Workgroup trigger | Groups sessions into a workgroup context based on matched text, used with AI/browser features. | missing | |
-| Triggers | Buffer Input trigger | Buffers subsequent input until a condition is met, based on the match. | missing | |
+| Triggers | Buffer Input trigger | Buffers subsequent input until a condition is met, based on the match. | have, milestone 6a |  |
 
 ### captured output, annotations, marks and navigation
 | Subsystem | Feature | What it does | Tandem status | Windows note |
@@ -554,7 +554,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Marks and navigation | Manual mark | A mark the user places explicitly, not tied to a command, for bookmarking a scrollback position. | have |  |
 | Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | have | The Named Marks tool comes in milestone 9. |
 | Marks and navigation | Image mark | A mark type used to anchor an inline image's position in the buffer. | have | Images live in their cells, so they move with their lines. |
-| Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | partial | Folds work from the Edit menu; the Fold trigger comes with triggers in milestone 6. |
+| Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | have, milestone 6a adds the Fold to Named Mark trigger |  |
 | Marks and navigation | Block mark / Button mark | Marks used by block-based UI, for example clickable inline buttons in output such as AI suggestions. | missing | |
 | Marks and navigation | Next/previous mark navigation | Keyboard commands to jump the viewport to the next or previous mark in scrollback. | have | Tandem has scrollback but no mark concept to navigate between; plain scroll-by-page exists instead. |
 | Marks and navigation | Mark rendering in scrollbar | Draws small colored tick marks in the scrollbar gutter representing command marks, for an at-a-glance command timeline. | partial | Marks show in the left margin; Tandem has no scrollbar. |

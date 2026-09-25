@@ -307,10 +307,10 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 |---|---|---|---|---|
 | Automatic Profile Switching rules | Bound Hosts | Hostname, username, or path rules that auto-switch to this profile when the remote host matches, via shell integration. | partial | Requires shell integration. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Snippets Filter | Snippets Filter | Filters which of the app's global Snippets appear in this profile's Snippets menu. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Enable triggers in interactive apps | Enable Triggers in Interactive Apps | Lets triggers keep firing while a full-screen interactive program is running. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Triggers use interpolated strings | Triggers Use Interpolated Strings | Makes trigger parameter fields evaluate as interpolated-string expressions instead of literal backreferences. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Enable triggers in interactive apps | Enable Triggers in Interactive Apps | Lets triggers keep firing while a full-screen interactive program is running. | have | Milestone 6a. |
+| Triggers use interpolated strings | Triggers Use Interpolated Strings | Makes trigger parameter fields evaluate as interpolated-string expressions instead of literal backreferences. | partial | Milestone 6a: names, matches[n], quoted strings, and ??; the full expression language comes with the Python API (milestone 11). |
 | Smart Selection actions use interpolated strings | Smart Selection Actions Use Interpolated Strings | Makes smart-selection action parameters evaluate as interpolated-string expressions. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Edit Triggers | n/a | Opens the Triggers editor for this profile's trigger list. | missing |  |
+| Edit Triggers | n/a | Opens the Triggers editor for this profile's trigger list. | have | Milestone 6a. |
 | Edit Smart Selection | n/a | Opens the Smart Selection editor for this profile's rule list. | have | Profile Advanced tab. |
 | Edit Semantic History | Semantic History | Opens the Semantic History configuration for cmd/opt-click behavior on paths and URLs. | have | Profile Advanced tab. |
 | Automatic Profile Switching debug logging | n/a | Logs why and when automatic profile switching rules match, for debugging. | missing |  |
@@ -319,32 +319,32 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key (plist key) | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Trigger list | Triggers | Ordered list of regex-based rules that watch output and perform an action when matched. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Regex / match pattern | n/a (per-row field) | The regular expression a trigger tests each new line or screen content against. | missing |  |
-| Parameter | n/a (per-row field) | The action-specific argument for the chosen trigger action. | missing |  |
-| Enabled checkbox | n/a (per-row field) | Turns an individual trigger on or off without deleting it. | missing |  |
-| Instant (partial line) flag | n/a (per-row field) | Lets a trigger fire on a partial, not yet newline-terminated, line. | missing |  |
-| Show Alert | n/a (action) | Shows a modal alert dialog containing the matched text. | missing |  |
-| Annotate | n/a (action) | Attaches an inline annotation to the matching text. | missing |  |
-| Ring Bell | n/a (action) | Rings the terminal bell when the pattern matches. | missing |  |
-| Bounce Dock Icon | n/a (action) | Bounces the app's Dock icon to get attention. | missing | macOS-only concept (Dock); nearest Windows equivalent is taskbar flashing. |
-| Capture Output | n/a (action) | Captures the matching line into the Captured Output tool for later re-run. | missing |  |
-| Run Coprocess | n/a (action) | Launches an external command fed the session's I/O, shown in the session. | missing |  |
-| Run Silent Coprocess | n/a (action) | Same as Run Coprocess but its output is not displayed. | missing |  |
-| Highlight Text | n/a (action) | Recolors just the matched text. | missing |  |
-| Highlight Line | n/a (action) | Recolors the entire line containing the match. | missing |  |
-| Make Hyperlink | n/a (action) | Turns the matched text into a clickable hyperlink built from the match. | missing |  |
-| Invoke Script Function | n/a (action) | Invokes a registered scripting API function, passing the match as arguments. | missing |  |
-| Set Title | n/a (action) | Sets the session title to a value derived from the match. | missing |  |
-| Prompt Detected | n/a (action) | Marks the matching line as a shell prompt for prompt-based navigation. | missing | Requires shell integration. |
-| Post Notification | n/a (action) | Posts a system notification containing the matched text. | missing |  |
-| Set Mark | n/a (action) | Drops a mark at the matching line for later jump-to-mark navigation. | missing |  |
-| Open Password Manager | n/a (action) | Opens the password manager, optionally filtered to an account name. | missing | Tandem has no password manager. |
-| Run Command | n/a (action) | Runs a shell command, not shown in the session, when the pattern matches. | missing |  |
-| Send Text | n/a (action) | Sends literal text to the session as if typed. | missing |  |
-| Report Directory | n/a (action) | Tells the terminal the current working directory, emulating shell-integration reporting. | missing | Requires shell integration. |
-| Report User and Host | n/a (action) | Tells the terminal the current user and hostname, feeding Automatic Profile Switching. | missing | Requires shell integration. |
-| Stop Processing Triggers | n/a (action) | Halts evaluation of further triggers on the current line. | missing |  |
+| Trigger list | Triggers | Ordered list of regex-based rules that watch output and perform an action when matched. | have | Milestone 6a. |
+| Regex / match pattern | n/a (per-row field) | The regular expression a trigger tests each new line or screen content against. | have | Milestone 6a. |
+| Parameter | n/a (per-row field) | The action-specific argument for the chosen trigger action. | have | Milestone 6a. |
+| Enabled checkbox | n/a (per-row field) | Turns an individual trigger on or off without deleting it. | have | Milestone 6a. |
+| Instant (partial line) flag | n/a (per-row field) | Lets a trigger fire on a partial, not yet newline-terminated, line. | have | Milestone 6a. |
+| Show Alert | n/a (action) | Shows a modal alert dialog containing the matched text. | have | Milestone 6a: an announcement bar with OK and Disable This Alert, once per second per trigger. |
+| Annotate | n/a (action) | Attaches an inline annotation to the matching text. | have | Milestone 6a. |
+| Ring Bell | n/a (action) | Rings the terminal bell when the pattern matches. | partial | Milestone 6a beeps; the bell settings come in milestone 6b. |
+| Bounce Dock Icon | n/a (action) | Bounces the app's Dock icon to get attention. | have | Milestone 6a: the taskbar button flashes (until Tandem is in front, or once). |
+| Capture Output | n/a (action) | Captures the matching line into the Captured Output tool for later re-run. | missing | Listed in the editor; the Captured Output tool comes in milestone 9. |
+| Run Coprocess | n/a (action) | Launches an external command fed the session's I/O, shown in the session. | missing | Listed in the editor; coprocesses come in milestone 6c. |
+| Run Silent Coprocess | n/a (action) | Same as Run Coprocess but its output is not displayed. | missing | Listed in the editor; coprocesses come in milestone 6c. |
+| Highlight Text | n/a (action) | Recolors just the matched text. | have | Milestone 6a. |
+| Highlight Line | n/a (action) | Recolors the entire line containing the match. | have | Milestone 6a. |
+| Make Hyperlink | n/a (action) | Turns the matched text into a clickable hyperlink built from the match. | have | Milestone 6a. |
+| Invoke Script Function | n/a (action) | Invokes a registered scripting API function, passing the match as arguments. | missing | Listed in the editor; the Python API comes in milestone 11. |
+| Set Title | n/a (action) | Sets the session title to a value derived from the match. | have | Milestone 6a. |
+| Prompt Detected | n/a (action) | Marks the matching line as a shell prompt for prompt-based navigation. | have | Milestone 6a. |
+| Post Notification | n/a (action) | Posts a system notification containing the matched text. | partial | Milestone 6a shows a bar; Windows notifications come in milestone 6b. |
+| Set Mark | n/a (action) | Drops a mark at the matching line for later jump-to-mark navigation. | have | Milestone 6a. |
+| Open Password Manager | n/a (action) | Opens the password manager, optionally filtered to an account name. | missing | Listed in the editor; the password manager comes in milestone 10. |
+| Run Command | n/a (action) | Runs a shell command, not shown in the session, when the pattern matches. | have | Milestone 6a: cmd.exe /d /c, hidden, 16 at once. |
+| Send Text | n/a (action) | Sends literal text to the session as if typed. | have | Milestone 6a. |
+| Report Directory | n/a (action) | Tells the terminal the current working directory, emulating shell-integration reporting. | have | Milestone 6a. |
+| Report User and Host | n/a (action) | Tells the terminal the current user and hostname, feeding Automatic Profile Switching. | have | Milestone 6a. |
+| Stop Processing Triggers | n/a (action) | Halts evaluation of further triggers on the current line. | have | Milestone 6a. |
 
 ## Smart Selection
 

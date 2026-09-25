@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 82 | 166 | 66 |
+| `01-profile-settings.md` | 314 | 103 | 166 | 45 |
 | `02-global-settings.md` | 820 | 119 | 59 | 642 |
-| `03-features-and-menus.md` | 636 | 205 | 31 | 400 |
-| Total | 1,770 | 406 | 256 | 1,108 |
+| `03-features-and-menus.md` | 636 | 234 | 32 | 370 |
+| Total | 1,770 | 456 | 257 | 1,057 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -53,7 +53,12 @@ closed milestone 5: portholes (a document shown rendered in place of grid rows: 
 pulldown-cmark, JSON with key order kept, code highlighted by syntect in iTerm2's theme classes;
 made by Block `render=1`, File= text documents, and Render Selection Natively; close, the language
 list, Wide, selection and copy inside, Find marks, link clicks that ask; alacritty_terminal patch
-12). Milestone 6 is next.
+12). Milestone 6 is split in three. Milestone 6a: triggers (the profile's list in iTerm2's stored form,
+checked on each finished logical line and every 0.5 s for Instant triggers, plain and interpolated
+parameters, every action iTerm2 lists with the later-milestone ones marked, the Triggers editor,
+and Session > Triggers; alacritty_terminal patch 13). Milestone 6b (next): the bell settings,
+Windows notifications, idle and new-output alerts, event triggers, and badges. Milestone 6c:
+Automatic Profile Switching, coprocesses, and the foreground job.
 
 ## Order
 
