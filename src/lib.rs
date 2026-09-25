@@ -32,6 +32,7 @@ pub mod schema;
 pub mod scene;
 pub mod input;
 pub mod keys;
+pub mod keyproto;
 pub mod layout;
 pub mod palette;
 pub mod screen;
