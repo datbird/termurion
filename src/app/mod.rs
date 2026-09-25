@@ -222,6 +222,13 @@ pub struct App {
     porthole_link: Option<(PaneId, u32, String)>,
     porthole_link_asks: HashMap<PaneId, crate::porthole::LinkTarget>,
     porthole_languages: Option<(PaneId, u32, Vec<crate::porthole::detect::Language>)>,
+    /// Triggers: the Show Alert limit, messages already shown, the Alert bar's trigger, and
+    /// Run Command's pool and processes.
+    trigger_limits: crate::triggers::RateLimit<(PaneId, usize)>,
+    trigger_told: std::collections::HashSet<(PaneId, String)>,
+    trigger_alerts: HashMap<PaneId, usize>,
+    trigger_pool: crate::triggers::CommandPool,
+    trigger_children: Vec<(PaneId, String, std::process::Child)>,
     /// An open Make Screenshot panel.
     shot: Option<screenshot_ui::Shot>,
     /// Page Setup's printer, paper, and margins.
@@ -378,6 +385,11 @@ pub fn run() {
         porthole_link: None,
         porthole_link_asks: HashMap::new(),
         porthole_languages: None,
+        trigger_limits: crate::triggers::RateLimit::default(),
+        trigger_told: std::collections::HashSet::new(),
+        trigger_alerts: HashMap::new(),
+        trigger_pool: crate::triggers::CommandPool::new(16),
+        trigger_children: Vec::new(),
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
@@ -482,6 +494,8 @@ impl App {
             Ok(mut pane) => {
                 pane.restyle(Palette::from_profile(&p, self.dark()), Look::from_profile(&p));
                 pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+                let (list, prefs) = triggers_ui::triggers_of(&p);
+                pane.screen.set_triggers(list, prefs);
                 pane.profile = p.guid();
                 pane.set_buffering(p.bool("Buffer Input by Default"));
                 self.panes.insert(id, pane);
@@ -558,6 +572,8 @@ impl App {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
             pane.own_mut().place_prompt_first_column = p.bool("Place Prompt at First Column");
+            let (list, prefs) = triggers_ui::triggers_of(p);
+            pane.own_mut().set_triggers(list, prefs);
         }
         self.redraw();
     }
@@ -1538,11 +1554,12 @@ impl ApplicationHandler<UserEvent> for App {
         let toast = self.toast_due();
         let rotation = self.tick_rotations();
         let upload = self.feed_uploads();
+        let triggers = self.tick_triggers();
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
         }
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

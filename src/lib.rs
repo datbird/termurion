@@ -89,6 +89,7 @@ pub mod global_find_ui;
 
 pub mod settings_keys;
 pub mod settings_advanced;
+pub mod settings_triggers;
 
 #[cfg(windows)]
 pub mod winclip;

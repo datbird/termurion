@@ -359,6 +359,11 @@ impl Screen {
         self.cell_px = (w, h);
     }
 
+    /// Set Title (a trigger): the session's title.
+    pub fn set_title(&mut self, title: Option<String>) {
+        self.title = title;
+    }
+
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }

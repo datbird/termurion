@@ -289,6 +289,9 @@ impl App {
                 self.end_view(id);
             }
         }
+        if self.run_trigger_command_menu(&item.selector, event_loop) {
+            return self.relayout();
+        }
         if self.run_mark_command(&item.selector, event_loop) {
             self.sync_checks();
             return self.relayout();

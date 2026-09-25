@@ -12,7 +12,7 @@ use crate::seltools::{self, End};
 
 /// Menu items with a check mark that milestone 4c adds, by selector.
 pub(super) const CHECKED: &[&str] =
-    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:"];
+    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:", "toggleEnableTriggersInInteractiveApps:"];
 
 impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
@@ -81,6 +81,7 @@ impl App {
             "toggleCursorGuide:" => self.focused_id().is_some_and(|id| self.guide_on(id)),
             "showHideNotes:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.own().notes.by_id.values().any(|n| !n.hidden)),
             "toggleBufferInput:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.buffer.on),
+            "toggleEnableTriggersInInteractiveApps:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.own().triggers.prefs.interactive),
             _ => false,
         }
     }

@@ -188,6 +188,73 @@ pub fn substitute(param: &str, captures: &[Option<&str>]) -> String {
     out
 }
 
+/// Every trigger on or off (Enable All, Disable All).
+pub fn set_all_enabled(list: &[Trigger], on: bool) -> Vec<Trigger> {
+    list.iter().map(|t| Trigger { enabled: on, ..t.clone() }).collect()
+}
+
+/// Run Command's pool: at most `max` commands at once; the rest wait their turn.
+#[derive(Clone, Debug, Default)]
+pub struct CommandPool {
+    max: usize,
+    running: usize,
+    waiting: std::collections::VecDeque<String>,
+}
+
+impl CommandPool {
+    pub fn new(max: usize) -> CommandPool {
+        CommandPool { max, ..Default::default() }
+    }
+
+    /// A command to run: it, when it may start now.
+    pub fn submit(&mut self, cmd: String) -> Option<String> {
+        if self.running < self.max {
+            self.running += 1;
+            Some(cmd)
+        } else {
+            self.waiting.push_back(cmd);
+            None
+        }
+    }
+
+    /// A command ended: the next waiting one to start.
+    pub fn finished(&mut self) -> Option<String> {
+        match self.waiting.pop_front() {
+            Some(next) => Some(next),
+            None => {
+                self.running = self.running.saturating_sub(1);
+                None
+            }
+        }
+    }
+
+    pub fn running(&self) -> usize {
+        self.running
+    }
+}
+
+/// At most one event per key in each period; events inside it are dropped.
+#[derive(Clone, Debug)]
+pub struct RateLimit<K> {
+    last: std::collections::HashMap<K, std::time::Instant>,
+}
+
+impl<K> Default for RateLimit<K> {
+    fn default() -> Self {
+        RateLimit { last: std::collections::HashMap::new() }
+    }
+}
+
+impl<K: std::hash::Hash + Eq> RateLimit<K> {
+    pub fn allow(&mut self, key: K, now: std::time::Instant, period: std::time::Duration) -> bool {
+        if self.last.get(&key).is_some_and(|t| now.saturating_duration_since(*t) < period) {
+            return false;
+        }
+        self.last.insert(key, now);
+        true
+    }
+}
+
 /// Add Trigger...'s pattern for selected text: ICU's special characters escaped.
 pub fn escape_regex(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -252,5 +319,39 @@ mod tests {
     fn add_trigger_escapes_the_selection() {
         assert_eq!(escape_regex("a.b*c (x) [y] {z} ^$|?+-&\\"), r"a\.b\*c \(x\) \[y\] \{z\} \^\$\|\?\+\-\&\\");
         assert_eq!(escape_regex("plain"), "plain");
+    }
+
+    #[test]
+    fn run_command_pool_waits_past_16() {
+        let mut pool = CommandPool::new(16);
+        for i in 0..16 {
+            assert_eq!(pool.submit(format!("c{i}")), Some(format!("c{i}")), "starts now");
+        }
+        assert_eq!(pool.submit("c16".into()), None, "waits");
+        assert_eq!(pool.submit("c17".into()), None);
+        assert_eq!(pool.finished(), Some("c16".into()), "the first waiting one starts");
+        assert_eq!(pool.finished(), Some("c17".into()));
+        assert_eq!(pool.finished(), None);
+        assert_eq!(pool.running(), 15, "16, two swapped in, one ended");
+    }
+
+    #[test]
+    fn alert_rate_limit_per_trigger() {
+        let mut limit: RateLimit<(u64, usize)> = RateLimit::default();
+        let t0 = std::time::Instant::now();
+        let second = std::time::Duration::from_secs(1);
+        assert!(limit.allow((1, 0), t0, second));
+        assert!(!limit.allow((1, 0), t0 + std::time::Duration::from_millis(500), second), "dropped, not deferred");
+        assert!(limit.allow((1, 1), t0, second), "per trigger");
+        assert!(limit.allow((2, 0), t0, second), "per pane");
+        assert!(limit.allow((1, 0), t0 + second, second));
+    }
+
+    #[test]
+    fn enable_all_rewrites_disabled() {
+        let v: toml::Value = toml::from_str(r#"list = [{ regex = "a", action = "BellTrigger", disabled = true }, { regex = "b", action = "BellTrigger" }]"#).unwrap();
+        let list = parse_list(&v["list"]);
+        assert!(set_all_enabled(&list, true).iter().all(|t| t.enabled));
+        assert!(set_all_enabled(&list, false).iter().all(|t| !t.enabled));
     }
 }
