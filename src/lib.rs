@@ -33,6 +33,7 @@ pub mod commands;
 pub mod menus;
 pub mod import;
 pub mod store;
+pub mod print;
 pub mod profile;
 pub mod prompted;
 pub mod schema;
@@ -81,6 +82,7 @@ pub mod settings_advanced;
 
 #[cfg(windows)]
 pub mod winclip;
+pub mod winprint;
 pub mod winkeys;
 
 #[cfg(windows)]

@@ -323,3 +323,12 @@ label = "Separate background images per pane"
 type = "bool"
 default = true
 help = "Each split pane shows its own profile's background image; off, the active pane's image spans the whole tab."
+
+[[setting]]
+key = "Print In Black And White"
+tab = "General"
+section = "Printing"
+label = "Print in black and white"
+type = "bool"
+default = true
+help = "Shell > Print leaves out text and background colors."

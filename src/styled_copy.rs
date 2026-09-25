@@ -59,10 +59,21 @@ fn empty(c: &Cell) -> bool {
 /// The selection as styled runs, with the pane's colors (bold, dim, reverse, and hidden
 /// applied as drawn). Blank cells after a row's text are left out.
 pub fn runs(screen: &Screen) -> Vec<Row> {
+    runs_over(screen, &spans(screen))
+}
+
+/// Styled rows for whole grid lines `first..=last` (grid lines: negative is history).
+pub fn runs_of_lines(screen: &Screen, first: i32, last: i32) -> Vec<Row> {
+    let cols = screen.term().columns();
+    let spans: Vec<(i32, usize, usize)> = (first..=last).map(|l| (l, 0, cols - 1)).collect();
+    runs_over(screen, &spans)
+}
+
+fn runs_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> Vec<Row> {
     let g = screen.term().grid();
     let palette = &screen.palette;
     let mut out = Vec::new();
-    for (line, from, to) in spans(screen) {
+    for &(line, from, to) in spans {
         let hard_end = !wraps(screen, line);
         let cells = cells_of(screen, line, from, to, hard_end);
         let mut row: Vec<Run> = Vec::new();

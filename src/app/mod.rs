@@ -204,6 +204,8 @@ pub struct App {
     attention_due: Option<Instant>,
     /// A short message at the bottom of the window, and when it goes away.
     toast: Option<(String, Instant)>,
+    /// Page Setup's printer, paper, and margins.
+    print_setup: crate::winprint::Setup,
     /// OpenURL requests waiting for an answer, by pane and host; uploads being sent.
     pending_urls: HashMap<(PaneId, String), String>,
     uploads: HashMap<PaneId, prompted_ui::Upload>,
@@ -347,6 +349,7 @@ pub fn run() {
         pending_reads: HashMap::new(),
         pending_properties: HashMap::new(),
         pending_urls: HashMap::new(),
+        print_setup: crate::winprint::Setup::default(),
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),

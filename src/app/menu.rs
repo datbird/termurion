@@ -355,6 +355,16 @@ impl App {
                     self.copy_selection(id);
                 }
             }
+            "print:" => {
+                let what = match label {
+                    "Selection" => crate::print::What::Selection,
+                    "Buffer" => crate::print::What::Buffer,
+                    _ => crate::print::What::Screen,
+                };
+                if let Some(id) = self.focused_id() {
+                    self.print(id, what);
+                }
+            }
             "paste:" => self.paste(),
             "pasteSelection:" => {
                 let text = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| p.screen.term().selection_to_string());

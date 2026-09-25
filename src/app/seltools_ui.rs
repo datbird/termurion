@@ -30,6 +30,44 @@ impl App {
         }
     }
 
+    /// Shell > Print > Screen, Selection, or Buffer.
+    pub(super) fn print(&mut self, id: PaneId, what: crate::print::What) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{IDCANCEL, IDYES, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNOCANCEL, MessageBoxW};
+        use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
+        let Some(hwnd) = self.hwnd() else { return };
+        let Some(p) = self.panes.get(&id) else { return };
+        // The user selects in the screen on show: a Filter or Zoom view while one is up.
+        let screen = &p.screen;
+        if what == crate::print::What::Selection && screen.term().selection.is_none() {
+            unsafe { MessageBeep(0) };
+            return;
+        }
+        let mut rows = crate::print::rows(screen, what);
+        let cols = { use alacritty_terminal::grid::Dimensions; screen.term().columns() };
+        let title = screen.title().unwrap_or("Tandem").to_string();
+        let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
+        // iTerm2 keeps "Black and white" in its print panel; Tandem asks first.
+        let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+        let default = if self.globals.bool("Print In Black And White") { MB_DEFBUTTON1 } else { MB_DEFBUTTON2 };
+        let answer = unsafe {
+            MessageBoxW(hwnd as _, wide("Print in black and white?\n\nYes leaves out colors; No prints the terminal's colors.").as_ptr(), wide("Print").as_ptr(), MB_YESNOCANCEL | MB_ICONQUESTION | default)
+        };
+        if answer == IDCANCEL {
+            return;
+        }
+        let bw = answer == IDYES;
+        if bw != self.globals.bool("Print In Black And White") {
+            self.globals.set("Print In Black And White", toml::Value::Boolean(bw));
+            self.save_globals();
+        }
+        if bw {
+            crate::print::black_and_white(&mut rows);
+        }
+        if let Err(e) = crate::winprint::print(hwnd as _, &mut self.print_setup, &title, &rows, cols, &font.family, font.size_pt) {
+            self.banners.set("print", format!("Printing failed: {e}"));
+        }
+    }
+
     /// Whether a checkable menu item shows its check mark.
     pub(super) fn is_checked(&self, selector: &str) -> bool {
         match selector {
@@ -73,6 +111,11 @@ impl App {
                 }
             }
             "copyWithStyles:" => self.copy_with_styles(id),
+            "runPageLayout:" => {
+                if let Some(hwnd) = self.hwnd() {
+                    crate::winprint::page_setup(hwnd as _, &mut self.print_setup);
+                }
+            }
             "copyWithControlSequences:" => {
                 let text = self.panes.get(&id).map(|p| p.sgr_copy());
                 if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut()) {
