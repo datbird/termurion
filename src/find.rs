@@ -154,6 +154,30 @@ pub fn logical_texts(screen: &Screen) -> Vec<String> {
     texts_between(screen, -(grid.history_size() as i32), grid.screen_lines() as i32 - 1)
 }
 
+/// The logical lines on screen, widened to whole lines.
+pub fn visible_lines(screen: &Screen) -> Vec<Logical> {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+    let mut a = -(grid.display_offset() as i32);
+    let mut b = (a + grid.screen_lines() as i32 - 1).min(bottom);
+    while a > top && wraps(screen, a - 1) {
+        a -= 1;
+    }
+    while b < bottom && wraps(screen, b) {
+        b += 1;
+    }
+    logical_between(screen, a, b)
+}
+
+/// The buffer rows on screen.
+pub fn visible_rows(screen: &Screen) -> std::ops::RangeInclusive<usize> {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let top = grid.history_size() - grid.display_offset();
+    top..=top + grid.screen_lines() - 1
+}
+
 /// The text of the logical lines over buffer rows `first..=last`, widened to whole lines.
 pub fn logical_texts_over(screen: &Screen, first: usize, last: usize) -> Vec<String> {
     use alacritty_terminal::grid::Dimensions;

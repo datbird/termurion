@@ -52,6 +52,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod find_ui;
+mod labels_ui;
 mod semantic_ui;
 mod marks_ui;
 mod menu;
@@ -140,6 +141,8 @@ pub struct App {
     find_mode_rect: Option<Rect>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
+    /// Labels on results (Find URLs and the like), waiting for a key.
+    shortcuts: Option<labels_ui::Shortcuts>,
     /// The last pop-up menu, kept until its pick arrives.
     popup_menu: Option<muda::Menu>,
     /// What the right-click menu's own items act on.
@@ -259,6 +262,7 @@ pub fn run() {
         find_mode_rect: None,
         hover: None,
         popup_menu: None,
+        shortcuts: None,
         ctx_pending: None,
         prompt: None,
         api,
@@ -761,7 +765,7 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
-        if self.find_key(ev) {
+        if self.shortcut_key(ev) || self.find_key(ev) {
             return;
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
@@ -1153,9 +1157,12 @@ impl App {
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
                 if let Some(p) = self.panes.get(&id) {
-                    let matches = self.finds.get(&id).map(|f| f.results.matches.as_slice()).unwrap_or_default();
+                    let shortcuts = self.shortcuts.as_ref().filter(|s| s.pane == id);
+                    let labeled: Vec<crate::find::Match> = shortcuts.map(|s| s.items.iter().map(|(_, m, _)| *m).collect()).unwrap_or_default();
+                    let labels: Vec<(crate::find::Pos, String)> = shortcuts.map(|s| s.items.iter().map(|(l, m, _)| (m.start, l.clone())).collect()).unwrap_or_default();
+                    let matches = if labeled.is_empty() { self.finds.get(&id).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
                 }
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));

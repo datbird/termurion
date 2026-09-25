@@ -414,6 +414,9 @@ impl App {
                 p.show_view(view);
             }
             ("zoomOut:", _) => self.end_view(id),
+            ("findUrls:", _) => self.reveal_shortcuts("urls"),
+            ("smartSelectAllVisible:", _) => self.reveal_shortcuts("smart"),
+            ("revealContentNavigationShortcuts:", _) => self.reveal_shortcuts("pick"),
             ("jumpToSelection:", _) => {
                 if let Some(p) = self.panes.get_mut(&id) {
                     let term = p.screen.term();

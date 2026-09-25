@@ -50,6 +50,8 @@ const TAB_TEXT_DIM: Rgb = rgb(0x8a, 0x8a, 0x8a);
 const DIVIDER: Rgb = rgb(0x4a, 0x4a, 0x4a);
 const BANNER: Rgb = rgb(0x7a, 0x1e, 0x1e);
 const FIND_BAR: Rgb = rgb(0x2b, 0x2b, 0x2b);
+const LABEL_BG: Rgb = rgb(0xff, 0xd7, 0x00);
+const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
 const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
 /// How much an unfocused pane fades toward the background, as iTerm2 dims inactive splits.
 const DIM_ALPHA: f32 = 0.4;
@@ -79,6 +81,8 @@ pub struct Highlights<'a> {
     /// The Win-click target under the pointer, underlined in `link`.
     pub hover: Option<crate::find::Match>,
     pub link: Rgb,
+    /// Shortcut labels, each over the cells from its position.
+    pub labels: &'a [(crate::find::Pos, String)],
 }
 
 /// What the find bar shows.
@@ -189,6 +193,14 @@ pub fn pane_with(
         if !hover && c.hyperlink().is_some() {
             dashes.push((row, col, fg));
         }
+        let mut hidden = false;
+        if let Some(h) = highlights {
+            let at_row = (indexed.point.line.0 + history) as usize;
+            if h.labels.iter().any(|(p, l)| p.row == at_row && col >= p.col && col < p.col + l.chars().count()) {
+                (fg, bg) = (LABEL_TEXT, LABEL_BG);
+                hidden = true;
+            }
+        }
         if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
             (fg, bg) = (palette.selected_text.unwrap_or(fg), palette.selection);
         }
@@ -196,7 +208,9 @@ pub fn pane_with(
             (fg, bg) = (palette.cursor_text, palette.cursor);
         }
         let mut text = String::new();
-        if !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+        if hidden {
+            text.push(' ');
+        } else if !c.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
             text.push(c.c);
             if let Some(extra) = c.zerowidth() {
                 text.extend(extra);
@@ -260,6 +274,16 @@ pub fn pane_with(
         flush(&mut piece, frame);
     }
 
+    if let Some(h) = highlights {
+        let top = history - content.display_offset as i32;
+        for (p, label) in h.labels {
+            let row = p.row as i32 - top;
+            if row >= 0 && (row as usize) < lines {
+                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false };
+                frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect });
+            }
+        }
+    }
     let underline_y = |row: usize| rect.y + row as f32 * ch + ch - 1.0;
     for (row, col, color) in dashes {
         for part in [0.0, 0.5] {
@@ -501,7 +525,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow }));
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[] }));
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -543,11 +567,25 @@ mod tests {
         let mut f = Frame::default();
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[] };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
         let x = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.starts_with("x.rs")).unwrap();
         assert_eq!(x.color, link);
+    }
+
+    #[test]
+    fn labels_hide_the_text_under_them() {
+        let s = screen(b"see https://x.y now");
+        let mut f = Frame::default();
+        let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels };
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
+        let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
+        assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
+        let tag = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "1")).unwrap();
+        assert_eq!((tag.x, tag.y), (40.0, 0.0));
+        assert!(f.quads.iter().any(|q| q.color == rgba(LABEL_BG, 1.0) && q.rect.x == 40.0));
     }
 }

@@ -258,6 +258,22 @@ impl App {
         true
     }
 
+    /// Opens text picked from a label: an existing file (with its line) through Semantic
+    /// History, else the text as a URL.
+    pub(super) fn open_text(&mut self, id: PaneId, text: &str) {
+        let cwd = self.pane_dir(id);
+        let prefs = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).map(|p| Prefs::from_value(p.get("Semantic History").as_ref())).unwrap_or_default();
+        let target = match semantic::find_path("", text, cwd.as_deref()) {
+            Some((path, line, column)) => Target::File { path, line, column },
+            None => Target::Url(semantic::url_like("", text).unwrap_or_else(|| text.to_string())),
+        };
+        let cwd_s = cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
+        let around = Around { prefix: "", suffix: text, cwd: &cwd_s };
+        if let Some(run) = semantic::plan(&target, &prefs, &around, has_code()) {
+            self.execute(id, run, cwd.as_deref(), false);
+        }
+    }
+
     /// Copy Link Address, the pointer action: the link or URL at a point.
     pub(super) fn copy_link_at(&mut self, id: PaneId, point: Point) {
         let Some(c) = self.clicked(id, point) else { return };
