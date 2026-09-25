@@ -212,6 +212,13 @@ impl App {
                 }
             }
             72 => self.copy_interpolated(&b.text),
+            // Toggle Pin Hotkey Window: the session's profile (its saved original) flips.
+            43 => {
+                if let Some(g) = self.focused_guid() {
+                    let original = self.store.shared_guid(&g);
+                    self.toggle_pin_hotkey(&original);
+                }
+            }
             0 => self.step_tab(true),
             2 => self.step_tab(false),
             4 => self.focused_pane().map_or((), |p| p.scroll(Scroll::Bottom)),

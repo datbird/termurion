@@ -9,7 +9,7 @@ use winit::window::Fullscreen;
 
 /// What belongs to one window.
 pub(super) struct WinSlot {
-    gpu: Option<Gpu>,
+    pub(super) gpu: Option<Gpu>,
     tabs: Vec<Tab>,
     active: usize,
     menu_bar: Option<menu::MenuBar>,
@@ -34,6 +34,8 @@ pub(super) struct WinSlot {
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<Rect>,
+    /// Set on a profile's hotkey window.
+    pub(super) hotkey: Option<super::hotkey_ui::HotkeyWin>,
 }
 
 impl WinSlot {
@@ -64,6 +66,7 @@ impl WinSlot {
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
+            hotkey: None,
         }
     }
 }
@@ -102,6 +105,7 @@ impl App {
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
+        swap(&mut self.hotkey, &mut s.hotkey);
     }
 
     /// Makes a terminal window current. False for a window that is not one.
@@ -150,7 +154,13 @@ impl App {
     }
 
     fn open_window_with(&mut self, event_loop: &ActiveEventLoop, first: NewWindow) -> Result<WindowId, String> {
-        let attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
+        let hotkey = matches!(first, NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..));
+        let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
+        if hotkey {
+            // A hotkey window starts hidden and has no taskbar button (a Quake-style window).
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs = attrs.with_visible(false).with_skip_taskbar(true);
+        }
         let made = event_loop.create_window(attrs).map_err(|e| e.to_string()).and_then(|w| {
             let window = Arc::new(w);
             match self.gpu.as_ref() {
@@ -165,7 +175,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    NewWindow::Profile(_) | NewWindow::Arrangement(_) | NewWindow::Orphans(_) => {}
+                    NewWindow::Profile(_) | NewWindow::Arrangement(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
                 self.relayout();
                 return Err(e);
@@ -186,11 +196,12 @@ impl App {
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Arrangement(w) => self.first_arrangement_guid(w),
             NewWindow::Orphans(_) => None,
+            NewWindow::Hotkey(g, _) | NewWindow::HotkeyRestored(g, _) => Some(g.clone()),
         };
         self.apply_fonts();
         self.size_window(first_guid.as_deref());
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
-        let arranged = matches!(first, NewWindow::Arrangement(_));
+        let arranged = matches!(first, NewWindow::Arrangement(_) | NewWindow::HotkeyRestored(..));
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
             NewWindow::Tab(tab) => {
@@ -209,11 +220,25 @@ impl App {
                 }
             }
             NewWindow::Orphans(sessions) => self.adopt_orphans(&sessions),
+            NewWindow::Hotkey(guid, previous) => {
+                self.new_tab(Some(&guid));
+                let mut h = super::hotkey_ui::HotkeyWin::new(guid);
+                h.previous = previous;
+                self.hotkey = Some(h);
+            }
+            NewWindow::HotkeyRestored(guid, w) => {
+                if let Err(e) = self.apply_arrangement_window(&w) {
+                    self.banners.set("arrangement", e);
+                }
+                self.hotkey = Some(super::hotkey_ui::HotkeyWin::new(guid));
+            }
         }
         self.install_menus();
-        // An arrangement's window has its own frame, style, and locks.
-        let steps = crate::winmodel::open_steps(arranged);
-        if steps.place {
+        // An arrangement's window has its own frame, style, and locks. A hotkey window's
+        // frame is its style's (it is not placed like a new window).
+        let restored_hotkey = hotkey && arranged;
+        let steps = crate::winmodel::open_steps(arranged || restored_hotkey);
+        if steps.place && !hotkey {
             self.place_window();
         } else {
             self.claim_slot();
@@ -222,7 +247,7 @@ impl App {
             self.apply_window_style(style, false);
         }
         // After the style, so a Maximized or Full Screen style does not restore it again.
-        if steps.profile_window {
+        if steps.profile_window && !hotkey {
             self.apply_window_profile(first_guid.as_deref());
         }
         if self.tabs.is_empty() {
@@ -237,6 +262,10 @@ impl App {
                 self.enter(p);
             }
             return Err(why);
+        }
+        // A hotkey window made by its hotkey shows now; a restored one waits for the hotkey.
+        if hotkey && !arranged {
+            self.roll_in();
         }
         Ok(id)
     }
@@ -256,7 +285,10 @@ impl App {
         // next one into `live`.
         let next = self.windows.close_current(&mut live);
         self.swap_live(&mut live);
-        if next.is_none() {
+        // A hotkey window, even hidden, keeps Tandem running (iTerm2).
+        let hotkeys = self.hotkey_windows().len();
+        let regular = self.registry.order().len().saturating_sub(hotkeys);
+        if next.is_none() || !crate::hotkey::keeps_running(regular, hotkeys) {
             return false;
         }
         self.relayout();
@@ -320,6 +352,7 @@ impl WinSlot {
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
+            hotkey: None,
         }
     }
 }
@@ -403,6 +436,11 @@ pub(super) enum NewWindow {
     Arrangement(crate::arrangement::Value),
     /// Host sessions nobody claimed at launch: (host session id, pid), a tab each.
     Orphans(Vec<(u64, u32)>),
+    /// A profile's hotkey window, made on its first press (and the window that was in
+    /// front before the press).
+    Hotkey(String, Option<isize>),
+    /// A hotkey window from the saved state: made hidden, shown by its hotkey.
+    HotkeyRestored(String, crate::arrangement::Value),
 }
 
 impl App {
@@ -439,15 +477,30 @@ impl App {
 
     /// Alt+Win+1 to 9.
     pub(super) fn select_window_number(&mut self, digit: u8) {
-        if let Some(id) = self.registry.switch_target(digit).and_then(|k| self.window_of_key(k)) {
-            self.focus_terminal_window(id);
+        let Some(k) = self.registry.switch_target(digit) else { return };
+        let hidden = self.hidden_hotkey_key(k);
+        if let Some(id) = self.window_of_key(k) {
+            // A hidden hotkey window comes back the way its hotkey shows it (iTerm2).
+            if hidden && self.enter(id) {
+                self.roll_in();
+            } else {
+                self.focus_terminal_window(id);
+            }
         }
     }
 
     /// Next Window and Previous Window: by number, wrapping.
     pub(super) fn step_window(&mut self, forward: bool) {
         let Some(k) = self.windows.current() else { return };
-        let next = if forward { self.registry.next(k) } else { self.registry.previous(k) };
+        // Hidden hotkey windows take no part.
+        let mut at = k;
+        let next = loop {
+            let n = if forward { self.registry.next(at) } else { self.registry.previous(at) };
+            match n {
+                Some(n) if n != k && self.hidden_hotkey_key(n) => at = n,
+                other => break other,
+            }
+        };
         if let Some(id) = next.filter(|n| *n != k).and_then(|n| self.window_of_key(n)) {
             self.focus_terminal_window(id);
         }
@@ -595,7 +648,7 @@ fn to_rect(t: (f64, f64, f64, f64)) -> Rect {
 }
 
 impl App {
-    fn outer_rect(g: &Gpu) -> Rect {
+    pub(super) fn outer_rect(g: &Gpu) -> Rect {
         let p = g.window.outer_position().unwrap_or_default();
         let s = g.window.outer_size();
         Rect { x: p.x as f32, y: p.y as f32, w: s.width as f32, h: s.height as f32 }

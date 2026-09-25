@@ -148,8 +148,17 @@ impl App {
             crate::keyroute::press_from_chord(&chord).stroke.find(&exempt_map.read().unwrap(), false).is_some()
         });
         self.refresh_route();
-        if let Err(e) = crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
-            self.banners.set("keys", format!("Win chords are unavailable: {e}"));
+        let hotkeys = self.proxy.clone();
+        crate::winkeys::set_hotkey_sink(Box::new(move |id| {
+            let _ = hotkeys.lock().unwrap().send_event(UserEvent::Hotkey(id));
+        }));
+        match crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
+            Err(e) => self.banners.set("keys", format!("Win chords are unavailable: {e}")),
+            Ok(()) if !self.hotkeys_registered => {
+                self.hotkeys_registered = true;
+                self.register_hotkeys();
+            }
+            Ok(()) => {}
         }
         let named = subs.get(&vec!["Edit".to_string(), "Named Marks".to_string()]).cloned();
         let profiles = subs.get(&vec!["Profiles".to_string()]).cloned().map(|s| {
@@ -287,7 +296,7 @@ impl App {
 
     /// The focused pane's saved profile (a session copy's original): what new tabs,
     /// splits, and Edit Session use.
-    fn focused_guid(&self) -> Option<String> {
+    pub(super) fn focused_guid(&self) -> Option<String> {
         let t = self.tabs.get(self.active)?;
         self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile))
     }
@@ -342,6 +351,11 @@ impl App {
             "mergeAllWindows:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.merge_all_windows(),
             "moveTabToNewWindow:" | "moveSessionToWindow:" | "mergeAllWindows:" => {}
             "arrangeHorizontally:" => self.arrange_windows_horizontally(),
+            "togglePinHotkeyWindow:" => {
+                if let Some(g) = self.hotkey.as_ref().map(|h| h.guid.clone()) {
+                    self.toggle_pin_hotkey(&g);
+                }
+            }
             "toggleSizeLocked:" => self.toggle_lock(false),
             "toggleLayoutLocked:" => self.toggle_lock(true),
             "decreaseHeight:" => self.resize_window_by_cell(crate::winmodel::Resize::Height(-1)),

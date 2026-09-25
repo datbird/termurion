@@ -42,7 +42,7 @@ pub const DONE: &[&str] = &[
     "terminalStateSetEmulationLevel:", "toggleBufferInput:", "copyWithStyles:", "copyWithControlSequences:",
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
     "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
-    "moveTabToNewWindow:", "moveSessionToWindow:", "mergeAllWindows:", "duplicateWindow:",
+    "moveTabToNewWindow:", "moveSessionToWindow:", "mergeAllWindows:", "duplicateWindow:", "togglePinHotkeyWindow:",
     "toggleSizeLocked:", "toggleLayoutLocked:", "decreaseHeight:", "increaseHeight:", "decreaseWidth:", "increaseWidth:",
     "editWindowTitle:", "editTabTitle:", "arrangeHorizontally:", "undoCloseSession:",
     "saveWindowArrangement:", "saveCurrentWindowAsArrangement:", "importWindowArrangement:", "changeProfileInArrangement:",

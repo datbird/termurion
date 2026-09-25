@@ -376,7 +376,7 @@ pub fn info(code: i64) -> Option<&'static ActionInfo> {
 /// Whether an action works now, or the milestone that brings it.
 pub fn status(code: i64) -> Status {
     match code {
-        43 | 44 | 62 => Status::Later(7),
+        44 | 62 => Status::Later(7),
         15 => Status::Later(10),
         40 => Status::Later(13),
         41 | 42 | 63 | 64 => Status::Later(9),

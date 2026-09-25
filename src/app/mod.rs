@@ -85,6 +85,7 @@ mod windows_ui;
 mod undo_ui;
 mod arrange_ui;
 mod restore_ui;
+mod hotkey_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -97,6 +98,8 @@ pub enum UserEvent {
     NotificationClicked,
     /// A shell's foreground job changed.
     JobsChanged,
+    /// A system-wide hotkey was pressed (its id).
+    Hotkey(u32),
 }
 
 #[derive(Clone)]
@@ -245,6 +248,14 @@ pub struct App {
     api: Api,
     /// The session host this Tandem runs its shells in, and what it said at the handshake.
     host: Option<crate::host_client::Client>,
+    /// The current window's hotkey state (swapped per window).
+    hotkey: Option<hotkey_ui::HotkeyWin>,
+    /// Profile hotkey ids (index + 1) to profile guids; failed registrations by guid.
+    hotkey_ids: Vec<String>,
+    hotkey_errors: std::collections::HashMap<String, String>,
+    hotkeys_registered: bool,
+    /// A Tandem window was in front at the last check (Reopen on activation).
+    app_active: bool,
     host_welcome: Option<crate::host_client::Welcome>,
     shell: String,
     gpu: Option<Gpu>,
@@ -433,6 +444,11 @@ pub fn run() {
     };
     let mut app = App {
         host,
+        hotkey: None,
+        hotkey_ids: Vec::new(),
+        hotkey_errors: Default::default(),
+        hotkeys_registered: false,
+        app_active: false,
         host_welcome,
         notify,
         jobs,
@@ -735,6 +751,7 @@ impl App {
                 self.save_globals();
                 self.menus_dirty = true;
                 self.sync_checks();
+                self.register_hotkeys();
             }
             Edit::Changed(_) | Edit::Imported(_) => {
                 // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
@@ -748,6 +765,8 @@ impl App {
                 self.save_due = Some(Instant::now() + SAVE_DELAY);
                 self.refresh_panes();
                 self.apply_fonts();
+                // A hotkey may have changed.
+                self.register_hotkeys();
             }
         }
         self.relayout();
@@ -1755,7 +1774,17 @@ impl ApplicationHandler<UserEvent> for App {
         if self.gpu.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
+        let arrangement_policy = self.globals.bool("OpenArrangementAtStartup");
+        let hotkey_only = !arrangement_policy && self.globals.bool("OpenNoWindowsAtStartup");
+        let hotkey_profiles: Vec<String> = self.hotkey_prefs().into_iter().filter(|(_, p)| p.active()).map(|(g, _)| g).collect();
+        // Only Restore Hotkey Window with a hotkey profile: nothing shows at launch; the first
+        // window is that profile's hotkey window, made hidden.
+        let startup_hotkey = if hotkey_only && !self.state_frozen { hotkey_profiles.first().cloned() } else { None };
+        let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
+        if startup_hotkey.is_some() {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs = attrs.with_visible(false).with_skip_taskbar(true);
+        }
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -1781,10 +1810,9 @@ impl ApplicationHandler<UserEvent> for App {
         // Use System Window Restoration Setting (policy 0): the windows saved at the last run.
         // Open default window arrangement (policy 1): that arrangement. Either way the first
         // window fills this one, and the others open as new windows.
-        let system_policy = !self.globals.bool("OpenArrangementAtStartup") && !self.globals.bool("OpenNoWindowsAtStartup");
+        let system_policy = !arrangement_policy && !hotkey_only;
         // `state_frozen` at launch: a second copy of Tandem, which leaves the state to the first.
-        let mut saved = if system_policy && !self.state_frozen { self.saved_windows() } else { None };
-        let has_saved = saved.is_some();
+        let mut saved = if (system_policy || hotkey_only) && !self.state_frozen { self.saved_windows() } else { None };
         // Sessions still running in the host: the saved ones they belong to take them over,
         // and the rest open in one new window (iTerm2's orphan adoption).
         let orphans = match saved.as_mut() {
@@ -1794,10 +1822,15 @@ impl ApplicationHandler<UserEvent> for App {
             }
             None => self.plan_reattach(&mut [], None),
         };
-        let saved = saved.map(|(w, _)| w);
+        // Hotkey windows come back hidden under both policies (iTerm2 restores them always);
+        // the other windows only under policy 0.
+        let (hotkey_saved, regular_saved): (Vec<_>, Vec<_>) = saved.map(|(w, _)| w).unwrap_or_default().into_iter().partition(|w| crate::arrangement::hotkey_guid(w).is_some());
+        let mut hotkey_saved: Vec<(String, crate::arrangement::Value)> = hotkey_saved.into_iter().filter_map(|w| crate::arrangement::hotkey_guid(&w).filter(|g| hotkey_profiles.contains(g)).map(|g| (g, w))).collect();
+        let saved = (system_policy && !regular_saved.is_empty()).then_some(regular_saved);
+        let has_saved = saved.is_some() || !hotkey_saved.is_empty();
         let default_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
-        let startup_arrangement = saved.or(default_arrangement);
+        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.or(default_arrangement) };
         let mut arranged = false;
         match startup_arrangement {
             Some(mut windows) => {
@@ -1813,7 +1846,25 @@ impl ApplicationHandler<UserEvent> for App {
                     self.pending_windows.push(windows_ui::NewWindow::Arrangement(w));
                 }
             }
-            None => self.new_tab(None),
+            None => match &startup_hotkey {
+                Some(guid) => {
+                    if let Some(i) = hotkey_saved.iter().position(|(g, _)| g == guid) {
+                        let (_, w) = hotkey_saved.remove(i);
+                        match self.apply_arrangement_window(&w) {
+                            Ok(()) => arranged = !self.tabs.is_empty(),
+                            Err(e) => self.banners.set("arrangement", e),
+                        }
+                    }
+                    if self.tabs.is_empty() {
+                        self.new_tab(Some(guid));
+                    }
+                    self.hotkey = Some(hotkey_ui::HotkeyWin::new(guid.clone()));
+                }
+                None => self.new_tab(None),
+            },
+        }
+        for (guid, w) in hotkey_saved {
+            self.pending_windows.push(windows_ui::NewWindow::HotkeyRestored(guid, w));
         }
         if !orphans.is_empty() {
             self.pending_windows.push(windows_ui::NewWindow::Orphans(orphans));
@@ -1821,23 +1872,22 @@ impl ApplicationHandler<UserEvent> for App {
         self.install_menus();
         // A window the default arrangement filled keeps its frame, style, and locks.
         let steps = crate::winmodel::open_steps(arranged);
-        if steps.place {
+        if steps.place && startup_hotkey.is_none() {
             self.place_window();
         } else {
             self.claim_slot();
         }
-        if steps.profile_window {
+        if steps.profile_window && startup_hotkey.is_none() {
             self.apply_window_profile(None);
         }
-        // Startup: hotkey windows (7e) are not here yet, so the first window always opens;
-        // the Profiles window follows Open profiles window.
+        // The Profiles window follows Open profiles window.
         let g = &self.globals;
         let policy = if g.bool("OpenArrangementAtStartup") { crate::startup::DEFAULT_ARRANGEMENT } else if g.bool("OpenNoWindowsAtStartup") { crate::startup::HOTKEY_ONLY } else { crate::startup::SYSTEM };
         let prefs = crate::startup::StartupPrefs { open_profiles_window: g.bool("OpenBookmark"), policy, always_open: g.bool("AlwaysOpenWindowAtStartup"), open_new_window: g.bool("openNewWindowAtStartup") };
-        if crate::startup::plan_with(prefs, has_arrangement, false, has_saved).profiles_window {
+        if crate::startup::plan_with(prefs, has_arrangement, !hotkey_profiles.is_empty(), has_saved).profiles_window {
             self.open_settings(event_loop, Mode::Profiles);
         }
-        let style = self.store.default_profile().int("Window Type");
+        let style = startup_hotkey.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
         if steps.profile_style && style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
@@ -1859,6 +1909,12 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let lost = std::mem::take(&mut self.focus_lost);
         self.save_state(lost);
+        let active = hotkey_ui::tandem_in_front();
+        if active && !self.app_active {
+            self.hotkey_reactivated();
+        }
+        self.app_active = active;
+        let hotkey_due = self.tick_hotkeys();
         let find_due = self.run_due_searches();
         let spotlight = self.tick_find_cursor();
         let animation = self.next_animation_frame();
@@ -1876,7 +1932,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.redraw();
         }
         let undo_due = self.expire_undo();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -1905,6 +1961,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
+            UserEvent::Hotkey(id) => self.hotkey_pressed(id),
             UserEvent::Chord(c) => {
                 if let Some(w) = self.last_window {
                     self.enter(w);
@@ -2020,6 +2077,9 @@ impl ApplicationHandler<UserEvent> for App {
                 // Tandem going to the background saves the windows (iTerm2 saves on resign
                 // active); a switch between Tandem's own windows gains focus again at once.
                 self.focus_lost = !f;
+                if !f && self.hotkey.is_some() {
+                    self.hotkey_focus_lost();
+                }
                 if f {
                     self.last_window = Some(id);
                 }

@@ -266,6 +266,12 @@ pub fn create_warning(names: &[String]) -> (String, String, Vec<&'static str>) {
     ("Add Another Hotkey Window Profile?".into(), text, buttons)
 }
 
+/// Whether Tandem keeps running with `regular` terminal windows and `hotkey` hotkey windows
+/// (shown or hidden): a made hotkey window keeps it alive, as in iTerm2.
+pub fn keeps_running(regular: usize, hotkey: usize) -> bool {
+    regular + hotkey > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +396,13 @@ mod tests {
         let map = get("Keyboard Map").and_then(|m| m.as_table().cloned()).unwrap();
         let b = crate::keyaction::Binding::from_value(&map["0x74-0x100000-0x11"]).unwrap();
         assert_eq!((b.action, b.text.as_str()), (27, "NEW"), "Win+T opens a tab of the new profile");
+    }
+
+    #[test]
+    fn a_hotkey_window_keeps_tandem_running() {
+        assert!(keeps_running(0, 1), "only a hidden hotkey window is left");
+        assert!(keeps_running(1, 0));
+        assert!(!keeps_running(0, 0));
     }
 
     #[test]

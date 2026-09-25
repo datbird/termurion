@@ -338,6 +338,16 @@ pub const BANNER_KEY: &str = "Tandem Banner";
 /// Session restoration: where the cursor was on the screen (`{Row, Column}`).
 pub const CURSOR_KEY: &str = "Tandem Cursor";
 
+/// A window that is a profile's hotkey window (iTerm2's keys).
+pub const HOTKEY_WINDOW_KEY: &str = "Is Hotkey Window";
+pub const HOTKEY_GUID_KEY: &str = "Hotkey Profile GUID";
+
+/// The profile of a saved hotkey window.
+pub fn hotkey_guid(window: &Value) -> Option<String> {
+    let is = window.get(HOTKEY_WINDOW_KEY).and_then(|v| v.as_bool()).unwrap_or(false);
+    is.then(|| window.get(HOTKEY_GUID_KEY).and_then(|v| v.as_str()).map(str::to_string)).flatten()
+}
+
 pub fn saved_cursor(session: &Value) -> Option<(usize, usize)> {
     let c = session.get(CURSOR_KEY)?;
     let n = |k: &str| c.get(k).and_then(|v| v.as_integer()).filter(|i| (0..100_000).contains(i)).map(|i| i as usize);

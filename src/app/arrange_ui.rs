@@ -101,7 +101,12 @@ impl App {
             percent: (profile.float("Width Percentage"), profile.float("Height Percentage")),
             cells: (profile.int("Columns").clamp(1, 1000) as u16, profile.int("Rows").clamp(1, 1000) as u16),
         };
-        arrangement::window(facts, tabs)
+        let mut w = arrangement::window(facts, tabs);
+        if let (Some(h), Some(t)) = (&self.hotkey, w.as_table_mut()) {
+            t.insert(arrangement::HOTKEY_WINDOW_KEY.into(), Value::Boolean(true));
+            t.insert(arrangement::HOTKEY_GUID_KEY.into(), Value::String(h.guid.clone()));
+        }
+        w
     }
 
     /// Every window, by number.
@@ -325,6 +330,8 @@ impl App {
     /// or Restore Window Arrangement as Tabs (every saved tab in this window).
     pub(super) fn restore_arrangement(&mut self, name: &str, as_tabs: bool) {
         let Some(windows) = self.arrangements().get(name).cloned() else { return };
+        // A hotkey window belongs to its hotkey, not to a restored arrangement.
+        let windows: Vec<Value> = windows.into_iter().filter(|w| arrangement::hotkey_guid(w).is_none()).collect();
         if as_tabs {
             if let Some(w) = self.last_window {
                 self.enter(w);
