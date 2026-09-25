@@ -585,6 +585,7 @@ impl Screen {
                 }
                 "RequestAttention" => self.requests.push(Request::Attention(crate::osc1337::attention(&value))),
                 "StealFocus" if self.trusted => self.requests.push(Request::StealFocus),
+                "Disinter" => self.requests.push(Request::Disinter),
                 "ReportCellSize" => self.requests.push(Request::ReportCellSize),
                 "ReportWindowFrame" => self.requests.push(Request::ReportWindowFrame),
                 "ReportScreenFrames" if self.trusted => self.requests.push(Request::ReportScreenFrames),

@@ -224,6 +224,8 @@ pub enum Request {
     Attention(crate::osc1337::Attention),
     /// StealFocus: bring this pane to the front (after asking).
     StealFocus,
+    /// OSC 1337 Disinter: a buried session asks to be restored.
+    Disinter,
     /// Answer with the cell size, the window frame, or the screens' work areas.
     ReportCellSize,
     ReportWindowFrame,

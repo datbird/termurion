@@ -41,6 +41,8 @@ pub(super) struct TmuxGw {
     pub(super) selected: Option<u32>,
     /// When the pause monitor last ran.
     pub(super) pause_tick: Option<Instant>,
+    /// AutoHideTmuxClientSession buried the gateway once already.
+    pub(super) auto_buried: bool,
     /// Each tmux window's tab size in cells, as Tandem last laid it out.
     pub(super) tab_sizes: HashMap<u32, (u32, u32)>,
     /// tmux pane id to (Tandem pane, tmux window id).
@@ -99,7 +101,7 @@ impl App {
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, tab_sizes: HashMap::new(), panes: HashMap::new() });
+        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, tab_sizes: HashMap::new(), panes: HashMap::new() });
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {
@@ -208,9 +210,14 @@ impl App {
     /// reading lines. After `%exit` the hook has left already and may have started a new
     /// session read in the same batch.
     pub(super) fn tmux_disconnected(&mut self, pane: PaneId, unhook: bool) {
-        if self.tmux.remove(&pane).is_none() {
+        if !self.tmux.contains_key(&pane) {
             return;
         }
+        // A buried gateway comes back first (iTerm2 restores it before anything else).
+        if self.buried.contains(pane) {
+            self.disinter(pane);
+        }
+        self.tmux.remove(&pane);
         self.tmux_end_panes(pane);
         if let Some(p) = self.panes.get_mut(&pane) {
             p.own_mut().print_message("Detached");

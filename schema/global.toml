@@ -920,3 +920,21 @@ label = "Open dashboard when attaching if there are hidden windows"
 type = "bool"
 default = false
 help = "Opens the tmux Dashboard after an attach that left windows hidden."
+
+[[setting]]
+key = "AutoHideTmuxClientSession"
+tab = "General"
+section = "tmux"
+label = "Automatically bury the tmux client session after connecting"
+type = "bool"
+default = false
+help = "Buried sessions appear under Session > Buried Sessions. When this setting is enabled, window sizes are restored when attaching to an existing tmux session."
+
+[[setting]]
+key = "NoSyncAutoBurialReveal"
+tab = "Advanced"
+section = "Warnings"
+label = "The \"Session Buried\" notification was shown"
+type = "bool"
+default = false
+help = "Set after the first automatic burial of a tmux gateway; the notification shows once."

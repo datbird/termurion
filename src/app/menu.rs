@@ -76,6 +76,9 @@ pub(super) struct MenuBar {
     pub(super) restore_tabs: Option<Submenu>,
     pub(super) arrangement_items: Vec<(String, bool)>,
     pub(super) arrangements_filled: bool,
+    /// Session > Buried Sessions and what it lists: (menu id, label); an empty id is a line.
+    pub(super) buried: Option<Submenu>,
+    pub(super) buried_items: Vec<(String, String)>,
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -165,7 +168,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())] });
         self.sync_checks();
     }
 
@@ -252,6 +255,7 @@ impl App {
         self.refresh_named_marks();
         self.refresh_profiles_menu();
         self.refresh_arrangement_menus();
+        self.refresh_buried_menu();
         self.menus_dirty = false;
         let Some(bar) = &self.menu_bar else { return };
         for selector in super::seltools_ui::CHECKED {
@@ -280,6 +284,9 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
+        if self.buried_picked(id) {
+            return;
+        }
         if self.arrangement_picked(id) {
             return;
         }
@@ -399,6 +406,11 @@ impl App {
                 }
             }
             "detachTmux:" => self.tmux_request_detach(),
+            "bury:" => {
+                if let Some(id) = self.focused_id() {
+                    self.bury_pane(id);
+                }
+            }
             "openDashboard:" => self.open_tmux_dashboard(event_loop),
             "toggleTmuxPausePane:" => self.tmux_toggle_pause(),
             "forceDetachTmux:" => self.tmux_force_detach(),

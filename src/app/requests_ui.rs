@@ -27,6 +27,7 @@ impl App {
                 self.redraw();
             }
             Request::Attention(a) => self.attention(pane, a),
+            Request::Disinter => self.disinter(pane),
             Request::StealFocus => {
                 let allow = files_ui::ask("A control sequence attempted to activate a session. Allow it?");
                 self.steal_asked = Some(Instant::now());

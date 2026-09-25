@@ -90,6 +90,7 @@ mod broadcast_ui;
 mod tmux_ui;
 mod tmux_tabs_ui;
 mod tmux_dashboard_app;
+mod bury_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -221,6 +222,8 @@ pub struct App {
     /// A divider drag in a tmux tab: window key, gateway, pane before the divider,
     /// horizontal, start.
     tmux_drag: Option<(u64, PaneId, u32, bool, f32)>,
+    /// Buried sessions (Session > Bury Session).
+    buried: crate::bury::Burial,
     /// The tmux Dashboard and the gateway it shows.
     tmux_dash: Option<crate::tmux_dashboard_ui::TmuxDashboardWindow>,
     tmux_dash_gw: Option<PaneId>,
@@ -529,6 +532,7 @@ pub fn run() {
         tmux_held_events: Vec::new(),
         tmux_dash: None,
         tmux_dash_gw: None,
+        buried: Default::default(),
         tmux: HashMap::new(),
         tmux_ask_command: None,
         tmux_prompt: None,
@@ -931,6 +935,10 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // A buried session that ends leaves the Buried Sessions menu.
+        if self.buried.take(id).is_some() {
+            self.menus_dirty = true;
+        }
         self.enter_pane_window(id);
         self.tmux_pane_closed(id);
         self.aps.remove(&id);
