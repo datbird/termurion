@@ -44,6 +44,7 @@ pub mod badge;
 pub mod bell;
 pub mod trigger_eval;
 pub mod trigger_events;
+pub mod proctree;
 pub mod profile;
 pub mod prompted;
 pub mod schema;
@@ -63,6 +64,8 @@ pub mod conpty;
 pub mod probe;
 #[cfg(windows)]
 pub mod pty;
+#[cfg(windows)]
+pub mod jobwatch;
 
 #[cfg(windows)]
 pub mod pane;

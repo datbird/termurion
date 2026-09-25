@@ -146,6 +146,11 @@ impl Pane {
     }
 
     /// What the terminal answers the program (reports): never held by Buffer Input.
+    /// The shell's process id, while it has a pty.
+    pub fn shell_pid(&self) -> Option<u32> {
+        self.pty.as_ref().map(|p| p.pid())
+    }
+
     pub fn reply(&mut self, bytes: &[u8]) {
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {

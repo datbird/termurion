@@ -77,6 +77,7 @@ mod porthole_ui;
 mod prompted_ui;
 mod triggers_ui;
 mod requests_ui;
+mod jobs_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -87,6 +88,8 @@ pub enum UserEvent {
     Menu(String),
     /// A notification was clicked.
     NotificationClicked,
+    /// A shell's foreground job changed.
+    JobsChanged,
 }
 
 struct Tab {
@@ -129,6 +132,8 @@ struct Gpu {
 
 pub struct App {
     notify: Notify,
+    /// The foreground jobs of the panes' shells.
+    jobs: crate::jobwatch::JobWatch,
     proxy: Arc<Mutex<EventLoopProxy<UserEvent>>>,
     menu_bar: Option<menu::MenuBar>,
     /// Make Text Bigger and Smaller, in points, on top of the profile font size.
@@ -311,6 +316,10 @@ pub fn run() {
     crate::notify::on_click(Box::new(move || {
         let _ = clicks.lock().map(|p| p.send_event(UserEvent::NotificationClicked));
     }));
+    let job_wake = proxy.clone();
+    let jobs = crate::jobwatch::JobWatch::start(Arc::new(move || {
+        let _ = job_wake.lock().map(|p| p.send_event(UserEvent::JobsChanged));
+    }));
     let wake = proxy.clone();
     let notify: Notify = Arc::new(move || {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
@@ -352,6 +361,7 @@ pub fn run() {
     };
     let mut app = App {
         notify,
+        jobs,
         proxy,
         menu_bar: None,
         font_offset: 0.0,
@@ -512,7 +522,9 @@ impl App {
     fn restart_pane(&mut self, id: PaneId) {
         let Some(rect) = self.pane_rect(id) else { return };
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
-        self.panes.remove(&id);
+        if let Some(pid) = self.panes.remove(&id).and_then(|p| p.shell_pid()) {
+            self.jobs.forget(pid);
+        }
         self.start_pane_as(id, rect, guid.as_deref());
     }
 
@@ -533,6 +545,9 @@ impl App {
                 pane.screen.set_triggers(list, prefs);
                 pane.profile = p.guid();
                 pane.set_buffering(p.bool("Buffer Input by Default"));
+                if let Some(pid) = pane.shell_pid() {
+                    self.jobs.watch(pid);
+                }
                 self.panes.insert(id, pane);
                 true
             }
@@ -694,6 +709,9 @@ impl App {
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         if let Some(p) = self.panes.remove(&id) {
             self.forget_session_profile(&p.profile);
+            if let Some(pid) = p.shell_pid() {
+                self.jobs.forget(pid);
+            }
         }
         if self.shot.as_ref().is_some_and(|s| s.pane == id) {
             self.shot = None;
@@ -1641,6 +1659,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Menu(id) => return self.run_menu_id(&id, event_loop),
             UserEvent::NotificationClicked => return self.reveal_notified(),
+            UserEvent::JobsChanged => return self.jobs_changed(),
             UserEvent::Wake => {}
         }
         let mut changed = false;
@@ -1726,6 +1745,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(f) => {
                 self.focused = f;
+                self.jobs.set_fast(f);
                 // Keys held while the window loses focus send no release to Tandem.
                 if !f {
                     self.sent_keys.clear();

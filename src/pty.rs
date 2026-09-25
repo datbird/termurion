@@ -284,6 +284,11 @@ impl Pty {
     }
 
     /// The child's exit code, or None while it runs.
+    /// The shell's process id (the root of its job tree).
+    pub fn pid(&self) -> u32 {
+        unsafe { windows_sys::Win32::System::Threading::GetProcessId(self.process) }
+    }
+
     pub fn exit_code(&self) -> Option<u32> {
         self.wait_exit(Duration::ZERO)
     }
