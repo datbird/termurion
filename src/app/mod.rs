@@ -138,6 +138,12 @@ pub struct App {
     /// Where the focused pane's find bar and its mode label were last drawn.
     find_bar_rect: Option<Rect>,
     find_mode_rect: Option<Rect>,
+    /// The Win-click target under the pointer while Win is held.
+    hover: Option<(PaneId, crate::find::Match)>,
+    /// The last pop-up menu, kept until its pick arrives.
+    popup_menu: Option<muda::Menu>,
+    /// What the right-click menu's own items act on.
+    ctx_pending: Option<semantic_ui::CtxPending>,
     /// The Set Named Mark window, and the pane it names a mark in.
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     api: Api,
@@ -251,6 +257,9 @@ pub fn run() {
         finds: HashMap::new(),
         find_bar_rect: None,
         find_mode_rect: None,
+        hover: None,
+        popup_menu: None,
+        ctx_pending: None,
         prompt: None,
         api,
         shell: default_shell(),
@@ -894,6 +903,16 @@ impl App {
             self.pointer_down = Some(PointerDown { button: b, clicks, pane: id, cell: (col, row) });
             return self.redraw();
         }
+        // Win-click opens the file or URL under the pointer (Semantic History). Windows
+        // would open the Start menu when Win comes up, so that is masked.
+        if b == 0 && mods.cmd && !mods.ctrl && self.globals.bool("CommandSelection") {
+            #[cfg(windows)]
+            crate::winkeys::mask_start_menu();
+            let point = self.grid_point(id, col, row);
+            if self.open_target(id, point, false) {
+                return self.redraw();
+            }
+        }
         if let (true, Some(mb)) = (reportable, mb) {
             let ev = mouse::Event { button: mb, action: mouse::Action::Press, mods, col, row };
             if let Some(bytes) = mouse::encode(modes, ev) {
@@ -925,7 +944,10 @@ impl App {
                 self.alt_click = (count == 1 && alt_only).then_some((id, (col, row)));
             }
             // With no binding and no reporting app, a right click opens the menu (iTerm2's native behavior).
-            1 => self.show_context_menu(),
+            1 => {
+                let point = self.grid_point(id, col, row);
+                self.show_context_menu_at(Some((id, point)));
+            }
             _ => {}
         }
         self.redraw();
@@ -1000,6 +1022,7 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        self.update_hover();
         match &self.drag {
             Drag::Select { pane } => {
                 let pane = *pane;
@@ -1124,9 +1147,9 @@ impl App {
             for (id, rect) in self.visible(tab) {
                 if let Some(p) = self.panes.get(&id) {
                     let matches = self.finds.get(&id).map(|f| f.results.matches.as_slice()).unwrap_or_default();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg };
-                    let hl = (!matches.is_empty()).then_some(&hl);
-                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, hl);
+                    let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link };
+                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
                 }
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));
                 if let Some(p) = self.panes.get(&id) {
@@ -1404,6 +1427,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
                 self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                self.update_hover();
                 if s.alt_key() {
                     self.alt_side = if m.ralt_state() == ModifiersKeyState::Pressed { AltSide::Right } else { AltSide::Left };
                 }

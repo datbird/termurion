@@ -145,7 +145,7 @@ fn held(vk: i32) -> bool {
 
 /// Sends a harmless key while Win is down, so Windows does not open the Start menu when
 /// Win comes up after a chord Tandem took (the pattern AutoHotkey uses).
-fn mask_start_menu() {
+pub fn mask_start_menu() {
     let key = |flags| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VK_MASK, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: MAGIC } },

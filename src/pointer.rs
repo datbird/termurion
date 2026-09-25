@@ -56,8 +56,8 @@ pub fn arg(action: &str) -> Arg {
 /// a paste-special configuration waits for Paste Special (milestone 9).
 pub fn status(b: &PointerBinding) -> Status {
     match b.action.as_str() {
-        "kOpenTargetPointerAction" | "kOpenTargetInBackgroundPointerAction" | "kSmartSelectionPointerAction"
-        | "kSmartSelectionIgnoringNewlinesPointerAction" | "kCopyLinkAddressPointerAction" | "kQuickLookAction" => Status::Later(4),
+        "kOpenTargetInBackgroundPointerAction" => Status::Partial("Asks the app not to take the focus; a browser may still come to the front."),
+        "kQuickLookAction" => Status::Partial("Opens the target with its default app, since Windows has no Quick Look."),
         "kNextWindowPointerAction" | "kPrevWindowPointerAction" | "kNewWindowWithProfilePointerAction" | "kMovePanePointerAction" => Status::Later(7),
         "kInvokeScriptFunction" => Status::Later(11),
         "kPasteFromClipboardPointerAction" | "kPasteFromSelectionPointerAction" if !b.argument.is_empty() => Status::Later(9),
@@ -323,7 +323,7 @@ mod tests {
     fn thirty_two_actions_with_names() {
         assert_eq!(ACTIONS.len(), 32);
         assert_eq!(name("kContextMenuPointerAction"), "Open Context Menu");
-        assert_eq!(status(&PointerBinding::new("kOpenTargetPointerAction", "")), Status::Later(4));
+        assert_eq!(status(&PointerBinding::new("kOpenTargetPointerAction", "")), Status::Done);
         assert_eq!(status(&PointerBinding::new("kPasteFromClipboardPointerAction", "")), Status::Done);
         assert_eq!(status(&PointerBinding::new("kPasteFromClipboardPointerAction", "x")), Status::Later(9));
     }

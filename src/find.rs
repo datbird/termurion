@@ -66,6 +66,10 @@ pub struct Logical {
 }
 
 impl Logical {
+    pub fn clone_line(&self) -> Logical {
+        Logical { text: self.text.clone(), cells: self.cells.clone() }
+    }
+
     /// Lines joined into one with `sep` between them.
     pub fn join(lines: &[Logical], sep: &str) -> Logical {
         let mut out = Logical { text: String::new(), cells: Vec::new() };

@@ -31,23 +31,30 @@ pub struct ClickContext {
 /// iTerm2 looks this far each way from the click.
 pub const MAX_CONTEXT: usize = 2000;
 
-pub fn resolve(ctx: &ClickContext) -> Option<Target> {
+/// Like `resolve`, with the target's byte range in `before` + `after`. The range is None
+/// for a link or a Smart Selection action, whose extent the caller knows.
+pub fn resolve_range(ctx: &ClickContext) -> Option<(Target, Option<std::ops::Range<usize>>)> {
     if let Some(link) = &ctx.link {
-        return Some(Target::Link(link.clone()));
+        return Some((Target::Link(link.clone()), None));
     }
-    if let Some((path, line, column)) = find_path(&ctx.before, &ctx.after, ctx.cwd.as_deref()) {
-        return Some(Target::File { path, line, column });
+    if let Some((path, line, column, range)) = path_in(&ctx.before, &ctx.after, ctx.cwd.as_deref()) {
+        return Some((Target::File { path, line, column }, Some(range)));
     }
     if let Some((rule, action, text)) = &ctx.smart {
-        return Some(Target::Action { rule: *rule, action: *action, text: text.clone() });
+        return Some((Target::Action { rule: *rule, action: *action, text: text.clone() }, None));
     }
     if ctx.raw_command {
-        let word = word_at(&ctx.before, &ctx.after);
-        if !word.is_empty() {
-            return Some(Target::RawCommand(word));
+        let range = word_range(&ctx.before, &ctx.after);
+        if !range.is_empty() {
+            let word = format!("{}{}", ctx.before, ctx.after)[range.clone()].to_string();
+            return Some((Target::RawCommand(word), Some(range)));
         }
     }
-    url_like(&ctx.before, &ctx.after).map(Target::Url)
+    url_in(&ctx.before, &ctx.after).map(|(u, r)| (Target::Url(u), Some(r)))
+}
+
+pub fn resolve(ctx: &ClickContext) -> Option<Target> {
+    resolve_range(ctx).map(|(t, _)| t)
 }
 
 /// iTerm2 splits the text around a click into chunks at these characters, and tries
@@ -55,11 +62,11 @@ pub fn resolve(ctx: &ClickContext) -> Option<Target> {
 const SEPARATORS: &[char] = &['\t', ' ', '(', ')', ':', '"', ','];
 const MAX_CHUNKS: usize = 10;
 
-/// The chunk under the click.
-fn word_at(before: &str, after: &str) -> String {
+/// The chunk under the click, as a range of `before` + `after`.
+fn word_range(before: &str, after: &str) -> std::ops::Range<usize> {
     let start = before.rfind(SEPARATORS).map_or(0, |i| i + 1);
     let end = after.find(SEPARATORS).unwrap_or(after.len());
-    format!("{}{}", &before[start..], &after[..end])
+    start..before.len() + end
 }
 
 /// Where candidate paths may start in `before` (nearest first) and end in `after`.
@@ -141,39 +148,55 @@ fn existing(text: &str, cwd: Option<&Path>) -> Option<PathBuf> {
 /// An existing file or folder around the click, with a line and column when the text
 /// after it gives them.
 pub fn find_path(before: &str, after: &str, cwd: Option<&Path>) -> Option<(PathBuf, Option<u32>, Option<u32>)> {
+    path_in(before, after, cwd).map(|(p, l, c, _)| (p, l, c))
+}
+
+type PathHit = (PathBuf, Option<u32>, Option<u32>, std::ops::Range<usize>);
+
+fn path_in(before: &str, after: &str, cwd: Option<&Path>) -> Option<PathHit> {
     let (starts, ends) = chunk_bounds(before, after);
     // The longest candidate that exists wins, so a path with spaces beats its last word.
-    let mut best: Option<(usize, PathBuf, String)> = None;
+    let mut best: Option<(std::ops::Range<usize>, PathBuf, String)> = None;
     for &s in &starts {
         for &e in &ends {
             let joined = format!("{}{}", &before[s..], &after[..e]);
             let (l, r) = clean_range(&joined);
-            if l >= r || best.as_ref().is_some_and(|(len, _, _)| *len >= r - l) {
+            if l >= r || best.as_ref().is_some_and(|(range, _, _)| range.len() >= r - l) {
                 continue;
             }
             if let Some(p) = existing(&joined[l..r], cwd) {
                 // The text after the kept path, for its line and column.
                 let rest = format!("{}{}", &joined[r..], &after[e..]);
-                best = Some((r - l, p, rest));
+                best = Some((s + l..s + r, p, rest));
             }
         }
     }
-    best.map(|(_, p, rest)| {
+    best.map(|(range, p, rest)| {
         let (line, column) = line_and_column(&rest);
-        (p, line, column)
+        (p, line, column, range)
     })
 }
 
 /// URL-like text around the click, made into a URL.
 pub fn url_like(before: &str, after: &str) -> Option<String> {
+    url_in(before, after).map(|(u, _)| u)
+}
+
+fn url_in(before: &str, after: &str) -> Option<(String, std::ops::Range<usize>)> {
     let url_char = |c: char| c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c);
-    let start = before.char_indices().rev().find(|(_, c)| !url_char(*c)).map_or(0, |(i, c)| i + c.len_utf8());
+    let mut start = before.char_indices().rev().find(|(_, c)| !url_char(*c)).map_or(0, |(i, c)| i + c.len_utf8());
     let end = after.char_indices().find(|(_, c)| !url_char(*c)).map_or(after.len(), |(i, _)| i);
     let mut s = format!("{}{}", &before[start..], &after[..end]);
     loop {
         let unbalanced = |open: char, close: char, s: &str| s.matches(close).count() > s.matches(open).count();
-        if s.starts_with(['(', '[', '\'']) && !s.ends_with([')', ']', '\'']) {
+        let wrapped = [('(', ')'), ('[', ']'), ('\'', '\'')].iter().any(|(o, c)| s.len() > 1 && s.starts_with(*o) && s.ends_with(*c));
+        if wrapped {
             s.remove(0);
+            s.pop();
+            start += 1;
+        } else if s.starts_with(['(', '[', '\'']) && !s.ends_with([')', ']', '\'']) {
+            s.remove(0);
+            start += 1;
         } else if s.ends_with(['.', ',', ';', ':', '!', '?', '\''])
             || s.ends_with(')') && unbalanced('(', ')', &s)
             || s.ends_with(']') && unbalanced('[', ']', &s)
@@ -183,13 +206,14 @@ pub fn url_like(before: &str, after: &str) -> Option<String> {
             break;
         }
     }
+    let range = |from: usize| start + from..start + s.len();
     if let Some(i) = s.find("://") {
         let scheme_start = s[..i].rfind(|c: char| !(c.is_ascii_alphanumeric() || "+.-".contains(c))).map_or(0, |j| j + 1);
         let scheme = &s[scheme_start..i];
-        return (!scheme.is_empty() && s.len() > i + 3).then(|| s[scheme_start..].to_string());
+        return (!scheme.is_empty() && s.len() > i + 3).then(|| (s[scheme_start..].to_string(), range(scheme_start)));
     }
     if s.starts_with("mailto:") && s.len() > 7 {
-        return Some(s);
+        return Some((s.clone(), range(0)));
     }
     let host = s.split(['/', '?', '#']).next().unwrap_or_default();
     let host = host.rsplit_once(':').filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit())).map_or(host, |(h, _)| h);
@@ -197,7 +221,115 @@ pub fn url_like(before: &str, after: &str) -> Option<String> {
     let domain = labels.len() >= 2
         && labels.iter().all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
         && labels.last().is_some_and(|t| t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic()));
-    domain.then(|| format!("https://{s}"))
+    domain.then(|| (format!("https://{s}"), range(0)))
+}
+
+/// A profile's Semantic History setting.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Prefs {
+    /// "best editor", "url", "editor", "command", "raw command", "coprocess", or "send text".
+    pub action: String,
+    /// The URL, command, or text for those actions.
+    pub text: String,
+    /// The editor for "editor".
+    pub editor: String,
+}
+
+impl Prefs {
+    pub fn from_value(v: Option<&toml::Value>) -> Prefs {
+        let t = v.and_then(|v| v.as_table());
+        let s = |k: &str| t.and_then(|t| t.get(k)).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let action = s("action");
+        Prefs { action: if action.is_empty() { "best editor".into() } else { action }, text: s("text"), editor: s("editor") }
+    }
+}
+
+/// What opening a target runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Run {
+    /// Open a file, folder, or URL with its default app.
+    Open(String),
+    /// A command line for cmd.exe, run on its own.
+    Command(String),
+    /// Text typed into the session.
+    Send(String),
+    /// An action a later milestone brings: its name and the milestone.
+    Later(&'static str, u8),
+}
+
+/// The text around the click and the session's folder, for \\3, \\4, and \\5.
+#[derive(Clone, Debug, Default)]
+pub struct Around<'a> {
+    pub prefix: &'a str,
+    pub suffix: &'a str,
+    pub cwd: &'a str,
+}
+
+/// Quotes a value for cmd.exe.
+pub fn cmd_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+/// Percent-encodes everything but letters, digits, and "-._~".
+pub fn percent_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+/// Fills iTerm2's \\1 (file), \\2 (line), \\3 (text before the click), \\4 (text after it),
+/// and \\5 (working directory) into `template`, each passed through `each`.
+pub fn fill(template: &str, values: [&str; 5], each: impl Fn(&str) -> String) -> String {
+    let mut out = String::new();
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some(d @ '1'..='5')) => {
+                out.push_str(&each(values[*d as usize - '1' as usize]));
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// What a Win-click on `target` runs under `prefs`. `has_code` says VS Code is on the
+/// PATH, which the best editor uses to go to a line. Smart Selection actions are the
+/// caller's (they carry their own parameters).
+pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> Option<Run> {
+    match target {
+        Target::Link(u) | Target::Url(u) => Some(Run::Open(u.clone())),
+        Target::Action { .. } => None,
+        Target::RawCommand(word) => (prefs.action == "raw command")
+            .then(|| Run::Command(fill(&prefs.text, [word, "", around.prefix, around.suffix, around.cwd], cmd_quote))),
+        Target::File { path, line, column } => {
+            let p = path.to_string_lossy().to_string();
+            let l = line.map(|n| n.to_string()).unwrap_or_default();
+            let values = [p.as_str(), l.as_str(), around.prefix, around.suffix, around.cwd];
+            // VS Code's -g takes file:line:column.
+            let goto = || {
+                let mut at = p.clone();
+                if let Some(n) = line {
+                    at.push_str(&format!(":{n}"));
+                    if let Some(c) = column {
+                        at.push_str(&format!(":{c}"));
+                    }
+                }
+                cmd_quote(&at)
+            };
+            Some(match prefs.action.as_str() {
+                "url" => Run::Open(fill(&prefs.text, values, percent_encode)),
+                "editor" if prefs.editor.to_lowercase().contains("code") => Run::Command(format!("{} -g {}", cmd_quote(&prefs.editor), goto())),
+                "editor" => Run::Command(format!("{} {}", cmd_quote(&prefs.editor), cmd_quote(&p))),
+                "command" | "raw command" => Run::Command(fill(&prefs.text, values, cmd_quote)),
+                "coprocess" => Run::Later("Run Coprocess", 6),
+                "send text" => Run::Send(fill(&prefs.text, values, str::to_string)),
+                _ if has_code && line.is_some() => Run::Command(format!("code -g {}", goto())),
+                _ => Run::Open(p),
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -306,5 +438,58 @@ mod tests {
         ctx.before = "plain ".into();
         ctx.after = "".into();
         assert_eq!(resolve(&ctx), None);
+    }
+
+    #[test]
+    fn semantic_history_command_quotes_for_cmd() {
+        let file = Target::File { path: PathBuf::from("C:\\a b\\x.rs"), line: Some(3), column: None };
+        let around = Around { prefix: "at ", suffix: " now", cwd: "C:\\w" };
+        let prefs = Prefs { action: "command".into(), text: "vim \\1 +\\2".into(), editor: String::new() };
+        assert_eq!(plan(&file, &prefs, &around, false), Some(Run::Command("vim \"C:\\a b\\x.rs\" +\"3\"".into())));
+        let raw = Prefs { action: "raw command".into(), text: "echo \\1 in \\5".into(), editor: String::new() };
+        assert_eq!(plan(&Target::RawCommand("w\"x".into()), &raw, &around, false), Some(Run::Command("echo \"w\"\"x\" in \"C:\\w\"".into())));
+        let best = Prefs::from_value(None);
+        assert_eq!(best.action, "best editor");
+        assert_eq!(plan(&file, &best, &around, false), Some(Run::Open("C:\\a b\\x.rs".into())));
+        assert_eq!(plan(&file, &best, &around, true), Some(Run::Command("code -g \"C:\\a b\\x.rs:3\"".into())));
+        let editor = Prefs { action: "editor".into(), text: String::new(), editor: "C:\\ed\\ed.exe".into() };
+        assert_eq!(plan(&file, &editor, &around, false), Some(Run::Command("\"C:\\ed\\ed.exe\" \"C:\\a b\\x.rs\"".into())));
+        let send = Prefs { action: "send text".into(), text: "open \\1\\n".into(), editor: String::new() };
+        assert_eq!(plan(&file, &send, &around, false), Some(Run::Send("open C:\\a b\\x.rs\\n".into())));
+        let co = Prefs { action: "coprocess".into(), text: "x".into(), editor: String::new() };
+        assert_eq!(plan(&file, &co, &around, false), Some(Run::Later("Run Coprocess", 6)));
+        assert_eq!(plan(&Target::Url("https://a/".into()), &co, &around, false), Some(Run::Open("https://a/".into())));
+        assert_eq!(plan(&Target::Link("file:///c:/x".into()), &best, &around, false), Some(Run::Open("file:///c:/x".into())));
+    }
+
+    #[test]
+    fn url_action_percent_encodes() {
+        let file = Target::File { path: PathBuf::from("C:\\a b\\x.rs"), line: Some(3), column: Some(1) };
+        let prefs = Prefs { action: "url".into(), text: "https://x/open?f=\\1&l=\\2".into(), editor: String::new() };
+        assert_eq!(
+            plan(&file, &prefs, &Around::default(), false),
+            Some(Run::Open("https://x/open?f=C%3A%5Ca%20b%5Cx.rs&l=3".into()))
+        );
+        assert_eq!(percent_encode("a-._~/é"), "a-._~%2F%C3%A9");
+    }
+
+    #[test]
+    fn hover_ranges_cover_the_target() {
+        let d = dir("range", &["src/main.rs"]);
+        let (before, after) = click("at src/ma|in.rs:3 and https://a.b/c. x");
+        let ctx = ClickContext { before: before.clone(), after: after.clone(), cwd: Some(d), ..Default::default() };
+        let text = format!("{before}{after}");
+        let (t, r) = resolve_range(&ctx).unwrap();
+        assert!(matches!(t, Target::File { line: Some(3), .. }));
+        assert_eq!(&text[r.unwrap()], "src/main.rs");
+        let (before, after) = click("at src/main.rs:3 and https://a.|b/c. x");
+        let ctx = ClickContext { before: before.clone(), after: after.clone(), ..Default::default() };
+        let text = format!("{before}{after}");
+        let (t, r) = resolve_range(&ctx).unwrap();
+        assert_eq!(t, Target::Url("https://a.b/c".into()));
+        assert_eq!(&text[r.unwrap()], "https://a.b/c");
+        let (before, after) = click("(www.ex|ample.com)");
+        let (_, r) = resolve_range(&ClickContext { before: before.clone(), after: after.clone(), ..Default::default() }).unwrap();
+        assert_eq!(&format!("{before}{after}")[r.unwrap()], "www.example.com");
     }
 }

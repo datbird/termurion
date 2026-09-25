@@ -156,7 +156,7 @@ section = "General"
 label = "Win-click opens filename/URL"
 type = "bool"
 default = true
-help = "Win-click opens the clicked path or URL (Semantic History, milestone 4)."
+help = "Win-click opens the clicked file, folder, or URL (Semantic History)."
 
 [[setting]]
 key = "DoubleClickPerformsSmartSelection"

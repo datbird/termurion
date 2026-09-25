@@ -42,7 +42,6 @@ fn menu_text(item: &Item) -> String {
 
 pub(super) struct MenuBar {
     _menu: Menu,
-    context: Menu,
     checks: HashMap<String, CheckMenuItem>,
 }
 
@@ -95,20 +94,6 @@ impl App {
             self.banners.set("menu", format!("Could not attach the menu bar: {e}"));
         }
 
-        let context = Menu::new();
-        for id in commands::CONTEXT {
-            let result = match menus::by_id(id) {
-                None => context.append(&PredefinedMenuItem::separator()),
-                Some(item) => {
-                    let enabled = !matches!(commands::status(item), Status::Later(_));
-                    context.append(&MenuItem::with_id(item.id(), menu_text(item), enabled, None))
-                }
-            };
-            if let Err(e) = result {
-                self.banners.set("menu", format!("Context menu: {e}"));
-            }
-        }
-
         let proxy = self.proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
             let _ = proxy.lock().unwrap().send_event(UserEvent::Menu(e.id.0));
@@ -129,14 +114,36 @@ impl App {
         if let Err(e) = crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
             self.banners.set("keys", format!("Win chords are unavailable: {e}"));
         }
-        self.menu_bar = Some(MenuBar { _menu: menu, context, checks });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks });
         self.sync_checks();
     }
 
-    pub(super) fn show_context_menu(&self) {
-        if let (Some(bar), Some(hwnd)) = (&self.menu_bar, self.hwnd()) {
-            unsafe { bar.context.show_context_menu_for_hwnd(hwnd, None) };
+    /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator.
+    pub(super) fn show_context_menu_with(&mut self, extra: &[(String, super::semantic_ui::CtxItem)]) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let context = Menu::new();
+        let mut results = Vec::new();
+        for (label, item) in extra {
+            results.push(context.append(&MenuItem::with_id(item.id(), label.replace('&', "&&"), true, None)));
         }
+        if !extra.is_empty() {
+            results.push(context.append(&PredefinedMenuItem::separator()));
+        }
+        for id in commands::CONTEXT {
+            results.push(match menus::by_id(id) {
+                None => context.append(&PredefinedMenuItem::separator()),
+                Some(item) => {
+                    let enabled = !matches!(commands::status(item), Status::Later(_));
+                    context.append(&MenuItem::with_id(item.id(), menu_text(item), enabled, None))
+                }
+            });
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Context menu: {e}"));
+        }
+        unsafe { context.show_context_menu_for_hwnd(hwnd, None) };
+        // The pick arrives after the menu closes, so the menu lives until the next one.
+        self.popup_menu = Some(context);
     }
 
     /// Check marks follow the focused pane's terminal modes.
@@ -170,7 +177,7 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
-        if self.find_mode_picked(id) {
+        if self.find_mode_picked(id) || self.context_picked(id) {
             return;
         }
         if let Some(item) = menus::by_id(id) {

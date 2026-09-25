@@ -410,6 +410,8 @@ impl App {
         let at = self.find_mode_rect.map(|r| muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(r.x as i32, (r.y + r.h) as i32)));
         use muda::ContextMenu;
         unsafe { menu.show_context_menu_for_hwnd(hwnd, at) };
+        // The pick arrives after the menu closes, so the menu lives until the next one.
+        self.popup_menu = Some(menu);
     }
 
     /// A pick from the mode menu. Returns false for other menu ids.

@@ -358,7 +358,24 @@ impl App {
                     self.copy_selection(pane);
                 }
             }
-            "kContextMenuPointerAction" => self.show_context_menu(),
+            "kContextMenuPointerAction" => {
+                let point = self.grid_point(pane, cell.0, cell.1);
+                self.show_context_menu_at(Some((pane, point)));
+            }
+            "kOpenTargetPointerAction" | "kQuickLookAction" | "kOpenTargetInBackgroundPointerAction" => {
+                let point = self.grid_point(pane, cell.0, cell.1);
+                self.open_target(pane, point, b.action == "kOpenTargetInBackgroundPointerAction");
+            }
+            "kSmartSelectionPointerAction" | "kSmartSelectionIgnoringNewlinesPointerAction" => {
+                let point = self.grid_point(pane, cell.0, cell.1);
+                if self.smart_select(pane, point, b.action == "kSmartSelectionIgnoringNewlinesPointerAction").is_some() {
+                    self.copy_selection(pane);
+                }
+            }
+            "kCopyLinkAddressPointerAction" => {
+                let point = self.grid_point(pane, cell.0, cell.1);
+                self.copy_link_at(pane, point);
+            }
             "kNextTabPointerAction" => self.step_tab(true),
             "kPrevTabPointerAction" => self.step_tab(false),
             "kSendEscapeSequencePointerAction" => self.send_to_focused(&[b"\x1b".as_slice(), b.argument.as_bytes()].concat()),

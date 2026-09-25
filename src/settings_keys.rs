@@ -626,8 +626,7 @@ pub fn pointer_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, prof
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.strong("General");
         for s in globals_in("General").into_iter().filter(|s| s.tab == "Pointer") {
-            // Semantic History arrives in milestone 4.
-            changed |= global_control(ui, g, s, s.key != "CommandSelection");
+            changed |= global_control(ui, g, s, true);
         }
         ui.add_space(8.0);
         ui.strong("Selection");

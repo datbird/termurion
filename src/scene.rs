@@ -76,6 +76,9 @@ struct CellLook {
 pub struct Highlights<'a> {
     pub matches: &'a [crate::find::Match],
     pub color: Rgb,
+    /// The Win-click target under the pointer, underlined in `link`.
+    pub hover: Option<crate::find::Match>,
+    pub link: Rgb,
 }
 
 /// What the find bar shows.
@@ -146,6 +149,10 @@ pub fn pane_with(
     highlights: Option<&Highlights>,
 ) {
     let history = screen.term().grid().history_size() as i32;
+    // Underlines: OSC 8 links get dashes in their text color; the Win-click target under
+    // the pointer gets a solid line in the link color.
+    let mut dashes: Vec<(usize, usize, Rgb)> = Vec::new();
+    let mut hovered: Vec<(usize, usize)> = Vec::new();
     let (cw, ch) = cell;
     let palette = &screen.palette;
     let term = screen.term();
@@ -166,12 +173,21 @@ pub fn pane_with(
         }
         let c = indexed.cell;
         let (mut fg, mut bg) = palette.cell(c.fg, c.bg, c.flags);
+        let mut hover = false;
         if let Some(h) = highlights {
             let at = crate::find::Pos { row: (indexed.point.line.0 + history) as usize, col };
             let i = h.matches.partition_point(|m| m.end < at);
             if h.matches.get(i).is_some_and(|m| m.start <= at) {
                 (fg, bg) = (contrasting(h.color), h.color);
             }
+            if h.hover.is_some_and(|m| m.start <= at && at <= m.end) {
+                fg = h.link;
+                hover = true;
+                hovered.push((row, col));
+            }
+        }
+        if !hover && c.hyperlink().is_some() {
+            dashes.push((row, col, fg));
         }
         if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
             (fg, bg) = (palette.selected_text.unwrap_or(fg), palette.selection);
@@ -242,6 +258,28 @@ pub fn pane_with(
             }
         }
         flush(&mut piece, frame);
+    }
+
+    let underline_y = |row: usize| rect.y + row as f32 * ch + ch - 1.0;
+    for (row, col, color) in dashes {
+        for part in [0.0, 0.5] {
+            let r = Rect { x: rect.x + (col as f32 + part) * cw, y: underline_y(row), w: (cw / 4.0).max(1.0), h: 1.0 };
+            frame.overlay.push(Quad { rect: r, color: rgba(color, 1.0) });
+        }
+    }
+    if let Some(h) = highlights {
+        let mut i = 0;
+        while i < hovered.len() {
+            let (row, start) = hovered[i];
+            let mut end = start;
+            while i + 1 < hovered.len() && hovered[i + 1] == (row, end + 1) {
+                i += 1;
+                end += 1;
+            }
+            let r = Rect { x: rect.x + start as f32 * cw, y: underline_y(row), w: (end - start + 1) as f32 * cw, h: 1.0 };
+            frame.overlay.push(Quad { rect: r, color: rgba(h.link, 1.0) });
+            i += 1;
+        }
     }
 
     if let Some((row, col)) = cursor {
@@ -463,7 +501,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow }));
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow }));
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -487,5 +525,29 @@ mod tests {
         assert!(mode.x >= boxed.x && mode.x + mode.w <= boxed.x + boxed.w && mode.y == boxed.y);
         // The pane's first row stops where the bar starts.
         assert!(f.rows[0].clip.x + f.rows[0].clip.w <= boxed.x);
+    }
+
+    #[test]
+    fn links_draw_a_dashed_underline() {
+        let s = screen(b"\x1b]8;;https://x/\x1b\\ab\x1b]8;;\x1b\\ c");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, false);
+        let under: Vec<Rect> = f.overlay.iter().map(|q| q.rect).filter(|r| r.y == CELL.1 - 1.0 && r.h == 1.0).collect();
+        assert!(under.len() >= 4, "{under:?}");
+        assert!(under.iter().all(|r| r.w < CELL.0 && r.x < 2.0 * CELL.0), "{under:?}");
+    }
+
+    #[test]
+    fn hover_underlines_in_the_link_color() {
+        let s = screen(b"see x.rs");
+        let mut f = Frame::default();
+        let link = rgb(0x06, 0x45, 0xad);
+        let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link };
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
+        let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
+        assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
+        let x = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.starts_with("x.rs")).unwrap();
+        assert_eq!(x.color, link);
     }
 }
