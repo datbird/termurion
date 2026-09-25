@@ -1319,6 +1319,9 @@ impl App {
         if let Some(bytes) = bytes {
             pane.scroll(Scroll::Bottom);
             let sender = pane.id;
+            if self.tmux_key_by_name(sender, key) {
+                return;
+            }
             self.user_write(sender, &bytes, crate::broadcast::Write::Key);
             if let (Some(k), Some(id)) = (self.typing.take(), focused) {
                 self.sent_keys.press(k, id);
@@ -1990,6 +1993,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let undo_due = self.expire_undo();
         self.open_tmux_command_prompt(event_loop);
+        // Writes that did not come through user_write (mouse reports, Buffer Input).
+        self.tmux_send_input();
+        self.tmux_focus_tick();
         let tmux_due = self.tick_tmux();
         let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
         let blinks = self

@@ -26,8 +26,8 @@ const HUNG_KEY: &str = "NoSyncTmuxHung";
 
 /// One gateway: its protocol state and what the session asked of it.
 pub(super) struct TmuxGw {
-    gw: Gateway,
-    hs: Handshake,
+    pub(super) gw: Gateway,
+    pub(super) hs: Handshake,
     next_tag: Tag,
     /// Commands typed through C: their replies are printed.
     typed: std::collections::HashSet<Tag>,
@@ -37,6 +37,8 @@ pub(super) struct TmuxGw {
     client: String,
     /// The tmux session: windows, panes, and the attach.
     ctl: crate::tmux_controller::Controller,
+    /// The tmux pane Tandem last told tmux (or tmux told Tandem) is selected.
+    pub(super) selected: Option<u32>,
     /// tmux pane id to (Tandem pane, tmux window id).
     pub(super) panes: HashMap<u32, (PaneId, u32)>,
 }
@@ -91,7 +93,7 @@ impl App {
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, panes: HashMap::new() });
+        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, panes: HashMap::new() });
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {
@@ -167,7 +169,7 @@ impl App {
     }
 
     /// Writes what the gateway queued to the pane's pty (echoed while logging is on).
-    fn tmux_flush(&mut self, pane: PaneId) {
+    pub(super) fn tmux_flush(&mut self, pane: PaneId) {
         let Some(t) = self.tmux.get_mut(&pane) else { return };
         let bytes = t.gw.take_writes();
         if bytes.is_empty() {
@@ -383,6 +385,12 @@ impl App {
                 self.tmux_disconnected(pane, true);
             }
             (HUNG_BAR, _) => {}
+            (super::tmux_tabs_ui::PLANE_BAR, Some("Why?")) => {
+                if let Err(e) = super::semantic_ui::shell_open("https://iterm2.com//tmux22bug.html", None, false) {
+                    self.banners.set("window", format!("Could not open the page: {e}"));
+                }
+            }
+            (super::tmux_tabs_ui::PLANE_BAR, _) => {}
             _ => return false,
         }
         true

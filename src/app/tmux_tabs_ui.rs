@@ -6,6 +6,8 @@ use crate::tmux_controller::{Action, PaneOpen};
 use crate::tmux_layout::{self, Node};
 use crate::tmux_windows::{Place, Window};
 
+pub(super) const PLANE_BAR: &str = "tmux-22-plane";
+
 impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
     pub(super) fn tmux_actions(&mut self, gw: PaneId, actions: Vec<Action>, event_loop: &ActiveEventLoop) -> bool {
@@ -54,6 +56,10 @@ impl App {
                 }
                 Action::SelectPane(window, pane) => {
                     let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
+                    // tmux's own change: no select-pane goes back.
+                    if let Some(t) = self.tmux.get_mut(&gw) {
+                        t.selected = Some(pane);
+                    }
                     let _ = window;
                     self.with_tab_of(id, |t| t.focused = id);
                 }
@@ -179,6 +185,97 @@ impl App {
     /// The profile tmux panes use (Task 6 adds the dedicated "tmux" profile).
     pub(super) fn tmux_profile_guid(&self, gw: PaneId) -> String {
         self.panes.get(&gw).map(|p| p.profile.clone()).unwrap_or_default()
+    }
+
+    /// Typing waiting in tmux panes goes to tmux as send-keys, one command list per pane
+    /// (errors tolerated, as iTerm2).
+    pub(super) fn tmux_send_input(&mut self) {
+        let ready: Vec<(PaneId, PaneId, u32, Vec<u8>)> = self
+            .panes
+            .iter()
+            .filter_map(|(id, p)| {
+                let io = p.tmux_io()?;
+                let bytes = io.take_input();
+                (!bytes.is_empty()).then_some((*id, io.gateway, io.pane, bytes))
+            })
+            .collect();
+        for (id, gw, pane, bytes) in ready {
+            let Some(t) = self.tmux.get_mut(&gw) else { continue };
+            match crate::tmux_keys::encode(&bytes, pane, t.hs.min, t.hs.max) {
+                Ok(cmds) => {
+                    let tolerate = crate::tmux_gateway::Flags { tolerate: true, ..Default::default() };
+                    if !cmds.is_empty() {
+                        t.gw.send_list(cmds.into_iter().map(|c| (c, None, tolerate)).collect(), false);
+                    }
+                }
+                Err(c) => {
+                    self.ask(id, PLANE_BAR, &format!("Because of a bug in tmux 2.2, the character \u{201c}{c}\u{201d} cannot be sent."), &["Why?"], false);
+                }
+            }
+            self.tmux_flush(gw);
+        }
+    }
+
+    /// tmux 3.2 and later under modifyOtherKeys: a modified key goes by name, so tmux
+    /// encodes it for the pane (iTerm2's tmuxControlModeKeyNameForEvent). True when sent.
+    pub(super) fn tmux_key_by_name(&mut self, pane: PaneId, key: &crate::keys::Key) -> bool {
+        use crate::keys::Key;
+        let Some(io) = self.panes.get(&pane).and_then(|p| p.tmux_io()) else { return false };
+        let (gw, tpane) = (io.gateway, io.pane);
+        let Some(t) = self.tmux.get(&gw) else { return false };
+        if !t.hs.at_least(3.2) {
+            return false;
+        }
+        // A broadcast keystroke keeps the byte path, which broadcasts.
+        if self.broadcast.targets(&self.broadcast_view(), pane).len() > 1 {
+            return false;
+        }
+        let kb = self.panes.get(&pane).map(|p| p.own().keyboard()).unwrap_or_default();
+        if kb.kitty != 0 || !matches!(kb.mode, crate::keyproto::KeyMode::Mok1 | crate::keyproto::KeyMode::Mok2) {
+            return false;
+        }
+        let c = match key {
+            Key::Text(s) => match s.chars().next() {
+                Some(c) if s.chars().count() == 1 => c,
+                _ => return false,
+            },
+            Key::Enter => '\r',
+            Key::Tab => '\t',
+            Key::Escape => '\u{1b}',
+            Key::Backspace => '\u{7f}',
+            _ => return false,
+        };
+        let meta = self.profile_of(pane).is_some_and(|p| p.int("Option Key Sends") != 0);
+        let Some(name) = crate::tmux_keys::key_name(c, self.mods.ctrl, self.mods.alt, self.mods.shift, meta, false) else { return false };
+        let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        let tolerate = crate::tmux_gateway::Flags { tolerate: true, ..Default::default() };
+        t.gw.send_list(vec![(crate::tmux_keys::key_name_command(tpane, &name), None, tolerate)], false);
+        self.tmux_flush(gw);
+        true
+    }
+
+    /// A tmux pane that takes focus (the window focused, the pane current) tells tmux with
+    /// select-pane; losing window focus lets the next gain tell it again.
+    pub(super) fn tmux_focus_tick(&mut self) {
+        let focused = if self.focused { self.focused_id() } else { None };
+        let now = focused.and_then(|id| self.panes.get(&id)).and_then(|p| p.tmux_io()).map(|io| (io.gateway, io.pane));
+        for (gw, t) in self.tmux.iter_mut() {
+            let mine = now.filter(|(g, _)| g == gw).map(|(_, p)| p);
+            if mine.is_none() {
+                t.selected = None;
+                continue;
+            }
+            if t.selected != mine {
+                t.selected = mine;
+                if let Some(cmd) = mine.and_then(|p| crate::tmux_windows::select_pane_command(p, t.hs.min)) {
+                    t.gw.send(&cmd, None, Default::default());
+                }
+            }
+        }
+        let gws: Vec<PaneId> = self.tmux.keys().copied().collect();
+        for gw in gws {
+            self.tmux_flush(gw);
+        }
     }
 
     /// The gateway ended: its panes' sessions end (they follow "After a session ends").

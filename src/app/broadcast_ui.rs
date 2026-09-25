@@ -55,6 +55,8 @@ impl App {
                 p.input(bytes);
             }
         }
+        // tmux panes' typing goes out as send-keys now.
+        self.tmux_send_input();
     }
 
     /// A paste from `sender`: bracketed by the sender's mode, then written like typing.

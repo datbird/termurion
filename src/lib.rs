@@ -131,6 +131,7 @@ pub mod tmux_layout;
 pub mod tmux_state;
 pub mod tmux_windows;
 pub mod tmux_controller;
+pub mod tmux_keys;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;

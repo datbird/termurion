@@ -295,6 +295,11 @@ pub fn window_title(title: &str, show_number: bool, include_client: bool, client
     }
 }
 
+/// A tmux pane took focus in Tandem (iTerm2's selectPane): none on exactly tmux 2.9.
+pub fn select_pane_command(pane: u32, min: Option<f64>) -> Option<String> {
+    (min != Some(2.9)).then(|| format!("select-pane -t \"%{pane}\""))
+}
+
 /// The history kept for a pane: the client's rows or the profile's scrollback, whichever is
 /// more; unlimited scrollback is 10,000,000.
 pub fn max_history(rows: u32, scrollback: i64, unlimited: bool) -> u32 {
@@ -412,6 +417,13 @@ mod tests {
         assert_eq!(window_title("\u{21a3} vi", false, true, Some("bob@box")), "\u{21a3} vi", "only with the window number shown, as iTerm2");
         assert_eq!(window_title("1. vi", true, false, Some("bob@box")), "1. vi");
         assert_eq!(window_title("1. vi", true, true, None), "1. vi");
+    }
+
+    #[test]
+    fn select_pane_skips_2_9() {
+        assert_eq!(select_pane_command(4, Some(3.4)).as_deref(), Some("select-pane -t \"%4\""));
+        assert_eq!(select_pane_command(4, Some(2.9)), None, "tmux 2.9 misbehaved");
+        assert!(select_pane_command(4, Some(2.91)).is_some());
     }
 
     #[test]
