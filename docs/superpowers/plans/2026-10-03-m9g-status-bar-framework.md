@@ -58,3 +58,19 @@
 **Files:** Create `src/statusbar_setup_ui.rs`; modify the app to open it from Profiles > Session and the context menu, apply every change live to the profile, and restore on Cancel.
 
 - [ ] Wire; pure helpers `insert_component`, `move_component`, `knob_values` in `statusbar.rs` with test `setup_edits_follow_iterm2`. Commit `status bar setup` and `docs: m9g parity and checklist` (parity rows, `docs/acceptance/m9g-checklist.md`).
+
+---
+
+## Resume notes (facts gathered before Task 1, from the iTerm2 source)
+
+- Nothing of Task 1 is written yet. The ledger at `.superpowers/sdd/2026-10-03-m9g-status-bar-framework/progress.md` has only the pre-flight line; start with `task-start PLAN 1`.
+- Component configuration: `{"class": <ObjC name>, "configuration": {"knobs": {...}, "layout advanced configuration dictionary value": {...}}}`. iTerm2 drops a component with no `configuration`; Tandem keeps an unknown class in the file (the 9h classes) and skips it on screen.
+- Computed default layout: `{"components": [], "advanced configuration": {"algorithm": 0, "remove empty components": false, "draw separator between status bar and terminal": false, "auto-rainbow style": 0}}`.
+- Base knob keys and defaults (`StatusBar/Components/iTermStatusBarBaseComponent.m`): `"base: priority"` 5; `"base: compression resistance"` 1, read as `max(0.01, v)`; `"maxwidth"` default infinity, read as `max(24, v)`; `"minwidth"` 0. Base knobs: stretchable components get "Compression Resistance:" (Tightly Packed) or "Size Multiple:" (Stable), then "Priority:"; others only "Priority:". Min/max knobs are "Minimum Width:" then "Maximum Width:". Default knobs: `{compression resistance: 1, priority: 5}`.
+- Spring (`iTermStatusBarSpringComponent`): keys `iTermStatusBarSpringComponentSpringConstantKey` (tight, default 0.01) and `iTermStatusBarSpringComponentSizeMultipleKey` (stable, default 1); spring constant `max(0.01, knob or 1)`; knobs [Compression Resistance: or Size Multiple: (Double), "Color" (Color, key `shared background color`)]; min 0, preferred infinity, stretch, no margins; short "Spring"/"Empty Space"; exemplar `║〜〜║` / seven spaces; details in section 1.5 of the research.
+- Fixed-size Spacer (`iTermStatusBarFixedSpacerComponent`): key `iTermStatusBarFixedSpacerComponentWidthKnob`, width `knob or 5` (0 also means 5); knobs ["Color" (Color), "Width" (Double, 5), "Priority:"]; exemplar `╠══╣`; "Adds a fixed amount of space".
+- Placeholder (`iTermStatusBarPlaceholderComponent`): "Click here to configure status bar", stretchable, internal, never empty, click opens the profile's status bar settings.
+- Text measurement: `Renderer::text_width(text, prose, scale)` (src/render.rs) measures prose-font text; porthole_ui.rs shows how to call it through the GPU renderer.
+- Colors: Tandem stores colors as `{r, g, b, a}` tables (src/import.rs converts iTerm2 color dictionaries).
+- Profile settings UI: `Status Bar Layout` is a `dict` setting that settings_ui.rs shows as "N item(s)" (the Kind::Dict arm); Task 3 replaces that with "Status bar enabled" plus a "Configure Status Bar" button.
+- Rendering: popup boxes go in `Frame.popups` with `scene::cut_out`; `overlay` draws after all text.
