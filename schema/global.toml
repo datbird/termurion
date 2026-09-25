@@ -1019,6 +1019,24 @@ default = ""
 help = "Remembered by Advanced Paste."
 
 [[setting]]
+key = "CommandHistoryUsePower"
+tab = "Advanced"
+section = "Session"
+label = "Command history's use count weight (the power of log10(10 + uses)) in its ranking."
+type = "float"
+default = 3.0
+help = "Command history's use count weight (the power of log10(10 + uses)) in its ranking."
+
+[[setting]]
+key = "CommandHistoryAgePower"
+tab = "Advanced"
+section = "Session"
+label = "Command history's age weight (the power of log10(10 + age in seconds)) in its ranking."
+type = "float"
+default = 1.0
+help = "Command history's age weight (the power of log10(10 + age in seconds)) in its ranking."
+
+[[setting]]
 key = "NoSyncSuppressBroadcastInputWarning"
 tab = "Advanced"
 section = "Warnings"

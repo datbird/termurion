@@ -506,6 +506,8 @@ impl App {
                 }
             }
             "openPasteHistory:" => self.open_paste_history(event_loop),
+            "openCommandHistory:" => self.open_command_history(event_loop),
+            "openDirectories:" => self.open_recent_dirs(event_loop),
             "pasteSelection:" => {
                 let text = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| p.screen.term().selection_to_string());
                 if let (Some(text), Some(id)) = (text, self.focused_id()) {
@@ -773,7 +775,7 @@ fn ask(text: &str) -> bool {
 
 impl App {
     /// iTerm2 > Install Shell Integration, for the focused pane's shell.
-    fn install_shell_integration(&mut self) {
+    pub(super) fn install_shell_integration(&mut self) {
         let Some(guid) = self.focused_guid() else { return };
         let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell);
         let typed = match install_plan(&cmdline) {

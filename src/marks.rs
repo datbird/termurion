@@ -215,6 +215,15 @@ impl Screen {
         (self.marks.prompts > 0).then_some(self.marks.in_command)
     }
 
+    /// The command being typed at the prompt (shell integration), if any.
+    pub fn typed_command(&self) -> Option<String> {
+        if !self.marks.in_command {
+            return None;
+        }
+        let (a, b) = self.last_command_range()?;
+        Some(self.term.bounds_to_string(a, b))
+    }
+
     /// Prompts seen so far.
     pub fn prompts_seen(&self) -> usize {
         self.marks.prompts

@@ -53,6 +53,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 mod actions;
 mod paste_ui;
 mod history_ui;
+mod shell_history_ui;
 mod annotations_ui;
 mod activity_ui;
 mod alerts_ui;
@@ -369,9 +370,14 @@ pub struct App {
     /// Paste history (read on first use), its popup, Advanced Paste (the pane it pastes
     /// into; whether it came from the menu), and an "Advanced..." waiting for the loop.
     paste_history: Option<crate::paste_history::History>,
-    paste_history_win: Option<(crate::paste_history_ui::PasteHistoryWindow, PaneId)>,
+    paste_history_win: Option<(crate::list_popup_ui::ListPopup, PaneId)>,
     advanced_paste_win: Option<(crate::advanced_paste_ui::AdvancedPasteWindow, PaneId, bool)>,
     advanced_paste_request: Option<(PaneId, String)>,
+    /// The shell history (read on first use), what each pane fed it, and the list popup
+    /// (Command History, Recent Directories) with its pane, purpose, and values.
+    shell_history: Option<crate::shell_history::Store>,
+    shell_fed: HashMap<PaneId, shell_history_ui::Fed>,
+    list_popup: Option<(crate::list_popup_ui::ListPopup, PaneId, shell_history_ui::PopupFor, Vec<String>)>,
     upload_due: Option<Instant>,
     /// SetProfileProperty values and SetBackgroundImageFile paths waiting for an answer.
     pending_properties: HashMap<PaneId, Vec<(String, toml::Value)>>,
@@ -617,6 +623,9 @@ pub fn run() {
         paste_history_win: None,
         advanced_paste_win: None,
         advanced_paste_request: None,
+        shell_history: None,
+        shell_fed: HashMap::new(),
+        list_popup: None,
         upload_due: None,
         pending_background: HashMap::new(),
         toast: None,
@@ -2064,6 +2073,7 @@ impl ApplicationHandler<UserEvent> for App {
         let undo_due = self.expire_undo();
         self.open_tmux_command_prompt(event_loop);
         self.open_requested_advanced_paste(event_loop);
+        self.feed_shell_history();
         // Writes that did not come through user_write (mouse reports, Buffer Input).
         self.tmux_send_input();
         self.tmux_focus_tick();
@@ -2162,7 +2172,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

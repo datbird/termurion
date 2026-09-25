@@ -5,7 +5,7 @@ use super::*;
 use crate::advanced_paste::{Defaults, Form, Session};
 use crate::advanced_paste_ui::{AdvEvent, AdvancedPasteWindow};
 use crate::paste_history::{self, History};
-use crate::paste_history_ui::{HistEvent, PasteHistoryWindow};
+use crate::list_popup_ui::{ListPopup, PopupEvent};
 
 fn history_path() -> std::path::PathBuf {
     std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("pbhistory.json")
@@ -61,7 +61,7 @@ impl App {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match PasteHistoryWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, rows) {
+        match ListPopup::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Paste History", ["Value", "Time"], rows, None) {
             Ok(w) => self.paste_history_win = Some((w, pane)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -76,7 +76,7 @@ impl App {
         match event {
             WindowEvent::CloseRequested => self.paste_history_win = None,
             WindowEvent::RedrawRequested => match w.redraw() {
-                HistEvent::Pick(i) => {
+                PopupEvent::Pick(i) => {
                     let value = self.history().newest_first().get(i).map(|e| e.value.clone());
                     self.paste_history_win = None;
                     // iTerm2 puts it on the clipboard, then pastes (with the usual questions).
@@ -87,8 +87,8 @@ impl App {
                         self.user_paste(pane, &v, crate::broadcast::Write::Paste);
                     }
                 }
-                HistEvent::Close => self.paste_history_win = None,
-                HistEvent::None => {}
+                PopupEvent::Close => self.paste_history_win = None,
+                PopupEvent::None => {}
             },
             other => {
                 w.event(other);

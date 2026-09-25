@@ -67,6 +67,18 @@ impl History {
     }
 }
 
+/// "just now", "5 minutes ago", "2 hours ago", "3 days ago".
+pub fn ago(time: f64, now: f64) -> String {
+    let age = (now - time).max(0.0) as u64;
+    let n = |n: u64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
+    match age {
+        0..60 => "just now".to_string(),
+        60..3600 => n(age / 60, "minute"),
+        3600..86400 => n(age / 3600, "hour"),
+        _ => n(age / 86400, "day"),
+    }
+}
+
 /// The popup's second column: "3 lines, 12 bytes, 5 minutes ago" (lines counted in the
 /// first 50 KiB, with "+" when there is more).
 pub fn time_text(value: &str, time: f64, now: f64) -> String {
@@ -79,14 +91,7 @@ pub fn time_text(value: &str, time: f64, now: f64) -> String {
     let lines = head.matches('\n').count() + usize::from(!head.is_empty() && !head.ends_with('\n'));
     let plus = if cut < value.len() { "+" } else { "" };
     let noun = if lines == 1 && plus.is_empty() { "line" } else { "lines" };
-    let age = (now - time).max(0.0) as u64;
-    let ago = |n: u64, unit: &str| format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" });
-    let when = match age {
-        0..60 => "just now".to_string(),
-        60..3600 => ago(age / 60, "minute"),
-        3600..86400 => ago(age / 3600, "hour"),
-        _ => ago(age / 86400, "day"),
-    };
+    let when = ago(time, now);
     format!("{lines}{plus} {noun}, {}, {when}", crate::paste::format_bytes(value.len() as f64))
 }
 

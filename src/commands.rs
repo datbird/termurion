@@ -44,7 +44,7 @@ pub const DONE: &[&str] = &[
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
     "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
     "moveTabToNewWindow:", "moveSessionToWindow:", "moveSessionToTab:", "paste:|Paste Slowly", "pasteFaster:", "pasteSlower:",
-    "pasteSlowlyFaster:", "pasteSlowlySlower:", "pasteBase64Encoded:", "pasteOptions:", "openPasteHistory:", "toggleMultiLinePasteWarning:|Warn Before Multi-Line Paste",
+    "pasteSlowlyFaster:", "pasteSlowlySlower:", "pasteBase64Encoded:", "pasteOptions:", "openPasteHistory:", "openCommandHistory:", "openDirectories:", "toggleMultiLinePasteWarning:|Warn Before Multi-Line Paste",
     "toggleMultiLinePasteWarning:|Limit Multi-Line Paste Warning to Shell Prompt",
     "toggleMultiLinePasteWarning:|Warn Before Pasting One Line Ending in a Newline at Shell Prompt", "promptToConvertTabsToSpacesWhenPasting:", "mergeAllWindows:", "duplicateWindow:", "togglePinHotkeyWindow:",
     "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleBroadcastingToCurrentSession:",

@@ -1,5 +1,6 @@
-//! Session > Open Paste History...: iTerm2's popup of earlier copies and pastes, newest
-//! first, filtered by typing (a subsequence of each entry), Enter pastes the chosen one.
+//! iTerm2's list popups (Open Paste History, Open Command History, Open Recent
+//! Directories): two columns, filtered by typing (a subsequence of the first column),
+//! Enter picks a row, Esc closes.
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -8,26 +9,29 @@ use winit::window::WindowId;
 use crate::egui_host::EguiHost;
 use crate::popup_filter::{self, Filter};
 
-pub enum HistEvent {
+pub enum PopupEvent {
     None,
     /// Paste this entry (its index in the rows given).
     Pick(usize),
     Close,
 }
 
-pub struct PasteHistoryWindow {
+pub struct ListPopup {
+    headers: [String; 2],
+    footer: Option<String>,
     host: EguiHost,
-    /// (value, "N lines, size, date"), newest first.
+    /// (first column, second column), best first.
     rows: Vec<(String, String)>,
     filter: Filter,
     selected: usize,
     started: std::time::Instant,
 }
 
-impl PasteHistoryWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, rows: Vec<(String, String)>) -> Result<PasteHistoryWindow, String> {
-        let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Paste History", 716.0, 270.0)?;
-        Ok(PasteHistoryWindow { host, rows, filter: Filter::default(), selected: 0, started: std::time::Instant::now() })
+impl ListPopup {
+    #[allow(clippy::too_many_arguments)]
+    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, headers: [&str; 2], rows: Vec<(String, String)>, footer: Option<String>) -> Result<ListPopup, String> {
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 716.0, 320.0)?;
+        Ok(ListPopup { headers: headers.map(str::to_string), footer, host, rows, filter: Filter::default(), selected: 0, started: std::time::Instant::now() })
     }
 
     pub fn id(&self) -> WindowId {
@@ -47,12 +51,12 @@ impl PasteHistoryWindow {
         self.host.event(event)
     }
 
-    pub fn redraw(&mut self) -> HistEvent {
-        let mut out = HistEvent::None;
+    pub fn redraw(&mut self) -> PopupEvent {
+        let mut out = PopupEvent::None;
         let now = self.started.elapsed().as_secs_f64();
         let mut typed_any = false;
         let rows_all = self.rows.clone();
-        let (filter, selected) = (&mut self.filter, &mut self.selected);
+        let (filter, selected, headers, footer) = (&mut self.filter, &mut self.selected, &self.headers, &self.footer);
         self.host.paint(|ui| {
             // Typing filters; Backspace clears; arrows move; Enter pastes; Esc closes.
             let (typed, keys) = ui.input(|i| {
@@ -79,20 +83,23 @@ impl PasteHistoryWindow {
                 *selected += 1;
             }
             if esc {
-                out = HistEvent::Close;
+                out = PopupEvent::Close;
             }
             if enter {
                 if let Some((i, _)) = shown.get(*selected) {
-                    out = HistEvent::Pick(*i);
+                    out = PopupEvent::Pick(*i);
                 }
             }
             egui::CentralPanel::default().show(ui, |ui| {
                 if !filter.text().is_empty() {
                     ui.label(format!("Filter: {}", filter.text()));
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| egui::Grid::new("history").num_columns(2).striped(true).show(ui, |ui| {
-                    ui.strong("Value");
-                    ui.strong("Time");
+                if let Some(f) = footer {
+                    ui.small(f);
+                }
+                egui::ScrollArea::vertical().show(ui, |ui| egui::Grid::new("rows").num_columns(2).striped(true).show(ui, |ui| {
+                    ui.strong(&headers[0]);
+                    ui.strong(&headers[1]);
                     ui.end_row();
                     for (n, (i, hits)) in shown.iter().enumerate() {
                         let (value, when) = &rows[*i];
@@ -106,7 +113,7 @@ impl PasteHistoryWindow {
                             job.append(&c.to_string(), 0.0, f);
                         }
                         if ui.selectable_label(n == *selected, job).clicked() {
-                            out = HistEvent::Pick(*i);
+                            out = PopupEvent::Pick(*i);
                         }
                         let r = ui.label(when);
                         if n == *selected && (up || down) {

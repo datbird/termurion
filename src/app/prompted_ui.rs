@@ -247,7 +247,7 @@ impl App {
         }
     }
 
-    fn open_url(&mut self, pane: PaneId, url: &str) {
+    pub(super) fn open_url(&mut self, pane: PaneId, url: &str) {
         // The same guard as a Win-click: web and mail links open; others are refused.
         let run = crate::semantic::guard_open(url, false);
         self.execute(pane, run, None, false);
