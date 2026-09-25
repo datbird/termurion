@@ -233,17 +233,21 @@ pub fn faster(s: Speed, factor: f64) -> Speed {
     Speed { units, delay: (s.delay / factor).clamp(0.001, 10.0) }
 }
 
+/// A byte count as iTerm2 shows sizes: "12 bytes", "1 byte", "75.0 KB", "1.2 MB".
+pub fn format_bytes(n: f64) -> String {
+    if n < 1024.0 {
+        let n = n.round() as u64;
+        format!("{n} byte{}", if n == 1 { "" } else { "s" })
+    } else if n < 1024.0 * 1024.0 {
+        format!("{:.1} KB", n / 1024.0)
+    } else {
+        format!("{:.1} MB", n / (1024.0 * 1024.0))
+    }
+}
+
 /// "Pasting at up to 75.0 KB/sec".
 pub fn rate_text(s: Speed) -> String {
-    let rate = s.units as f64 / s.delay.max(1e-9);
-    let text = if rate < 1024.0 {
-        format!("{rate:.0} bytes")
-    } else if rate < 1024.0 * 1024.0 {
-        format!("{:.1} KB", rate / 1024.0)
-    } else {
-        format!("{:.1} MB", rate / (1024.0 * 1024.0))
-    };
-    format!("Pasting at up to {text}/sec")
+    format!("Pasting at up to {}/sec", format_bytes(s.units as f64 / s.delay.max(1e-9)))
 }
 
 /// The end (exclusive) of the next write from `at`: `units` long, never ending inside a

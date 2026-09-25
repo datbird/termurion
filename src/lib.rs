@@ -68,6 +68,8 @@ pub mod reports;
 pub mod layout;
 pub mod palette;
 pub mod paste;
+pub mod paste_history;
+pub mod popup_filter;
 pub mod screen;
 pub mod screenterm;
 
