@@ -79,6 +79,8 @@ fn read_all(h: HANDLE, mut each: impl FnMut(&[u8]) -> bool + Send + 'static, don
             }
         }
         unsafe { CloseHandle(h) };
+        // The sender goes first, so the window's wake after `done` sees the channel closed.
+        drop(each);
         done();
     });
 }
@@ -354,5 +356,15 @@ mod tests {
         drop(co);
         std::thread::sleep(Duration::from_millis(500));
         assert!(!alive(cmd) && !alive(ping), "the whole tree ends");
+    }
+
+    #[test]
+    fn quoted_drop_names_stay_text_in_cmd() {
+        let name = crate::coprocess::cmd_safe(r"C:\d\a&echo INJECTED&%PATH%.txt");
+        let mut co = Coprocess::start(&format!("echo {name}"), false, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
+        let out = String::from_utf8_lossy(&wait_for(&mut co, 10)).to_string();
+        // echo shows the quote marks; a program's own argument parsing joins the pieces.
+        assert!(out.contains("&echo INJECTED&") && out.contains("%\"PATH\"%") && !out.to_lowercase().contains("system32"), "{out}");
+        assert!(!out.lines().any(|l| l.trim() == "INJECTED"), "{out}");
     }
 }

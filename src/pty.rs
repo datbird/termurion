@@ -82,7 +82,7 @@ pub fn spawn_notify(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, col
     let (hpc, input, output, process) = unsafe { start(api, cmdline, cwd, cols, rows)? };
     let (rx, reader_done, reader) = start_reader(output, notify.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let (writer, write_error) = start_writer(input, pending.clone());
+    let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
     let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, process, output: rx, reader: Some(reader), reader_done };
     watch_exit(pty.process, notify)?;
     Ok(pty)
@@ -196,7 +196,7 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u
 
 /// Writes input on its own thread. The thread owns the input handle and closes it
 /// when the sender is dropped or a write fails.
-pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::AtomicUsize>) -> (mpsc::Sender<Vec<u8>>, Arc<std::sync::Mutex<Option<String>>>) {
+pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::AtomicUsize>, notify: Notify) -> (mpsc::Sender<Vec<u8>>, Arc<std::sync::Mutex<Option<String>>>) {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let error = Arc::new(std::sync::Mutex::new(None));
     let seen = error.clone();
@@ -215,7 +215,12 @@ pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::Atomic
                 }
                 done += n as usize;
             }
-            pending.fetch_sub(chunk.len(), std::sync::atomic::Ordering::Relaxed);
+            let before = pending.fetch_sub(chunk.len(), std::sync::atomic::Ordering::Relaxed);
+            // Room again for a coprocess's output: wake the window to send more.
+            let limit = crate::coprocess::WRITE_LIMIT;
+            if before >= limit && before - chunk.len() < limit {
+                notify();
+            }
         }
         unsafe { CloseHandle(input) };
     });

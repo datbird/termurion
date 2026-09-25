@@ -71,7 +71,8 @@ fn walk(procs: &[Proc], root: u32) -> Vec<(&Proc, usize)> {
     while i < out.len() {
         let (parent, depth) = out[i];
         i += 1;
-        if depth >= MAX_DEPTH {
+        // A GUI program's children (an editor's helpers) are not in this pane.
+        if depth >= MAX_DEPTH || parent.gui {
             continue;
         }
         let mut kids: Vec<&Proc> = procs.iter().filter(|q| q.ppid == parent.pid && q.created >= parent.created && !seen.contains(&q.pid)).collect();
@@ -183,5 +184,14 @@ mod tests {
         let j = display_job(&[p(10, 1, "cmd.exe", 100), v], 10).unwrap();
         assert_eq!((j.title.as_str(), j.cmdline.as_str()), ("vim", "vim.exe notes.md"));
         assert!(same_job("VIM", "vim.exe") && same_job("vim.exe", "Vim") && !same_job("vi", "vim"));
+    }
+
+    #[test]
+    fn programs_under_a_gui_program_are_not_the_job() {
+        let mut ide = p(11, 10, "code.exe", 110);
+        ide.gui = true;
+        let procs = vec![p(10, 1, "pwsh.exe", 100), ide, p(12, 11, "git.exe", 120), p(13, 12, "ssh.exe", 130)];
+        assert_eq!(display_job(&procs, 10).unwrap().name, "pwsh", "a GUI program's own console helpers are not in this pane");
+        assert!(ancestors(&procs, 10).is_empty());
     }
 }

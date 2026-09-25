@@ -164,6 +164,13 @@ pub fn trigger_warning(action_title: &str) -> String {
     format!("{} trigger: Can't run two coprocesses at once.", action_title.trim_end_matches('\u{2026}').trim_end_matches("..."))
 }
 
+/// A path for a cmd.exe command line: quoted, so `&`, `|`, `^`, and parentheses are text,
+/// and each `%` escaped outside the quotes (`"^%"`), since cmd expands %VAR% even inside
+/// them. A path cannot hold a `"`.
+pub fn cmd_safe(path: &str) -> String {
+    format!("\"{}\"", path.replace('%', "\"^%\""))
+}
+
 /// `fileDropCoprocess`: the command for dropped files, `\(filenames)` filled with the
 /// paths (quoted when they hold a space). None when the setting is empty.
 pub fn drop_command(template: &str, files: &[String]) -> Option<String> {
@@ -171,7 +178,7 @@ pub fn drop_command(template: &str, files: &[String]) -> Option<String> {
     if t.is_empty() {
         return None;
     }
-    let names = files.iter().map(|f| if f.contains(char::is_whitespace) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ");
+    let names = files.iter().map(|f| cmd_safe(f)).collect::<Vec<_>>().join(" ");
     Some(t.replace("\\(filenames)", &names))
 }
 
@@ -252,7 +259,13 @@ mod tests {
     fn file_drop_command() {
         let files = vec![r"C:\a b\x.txt".to_string(), r"C:\y.txt".to_string()];
         assert_eq!(drop_command("", &files), None, "no fileDropCoprocess: a drop pastes as usual");
-        assert_eq!(drop_command("upload \\(filenames)", &files).as_deref(), Some(r#"upload "C:\a b\x.txt" C:\y.txt"#));
+        assert_eq!(drop_command("upload \\(filenames)", &files).as_deref(), Some(r#"upload "C:\a b\x.txt" "C:\y.txt""#));
         assert_eq!(drop_command("upload", &files).as_deref(), Some("upload"));
+    }
+
+    #[test]
+    fn dropped_names_cannot_run_commands() {
+        let files = vec![r"C:\d\notes&calc.txt".to_string(), r"C:\d\%PATH%.txt".to_string()];
+        assert_eq!(drop_command("x \\(filenames)", &files).as_deref(), Some(r#"x "C:\d\notes&calc.txt" "C:\d\"^%"PATH"^%".txt""#));
     }
 }

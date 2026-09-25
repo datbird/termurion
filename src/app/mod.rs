@@ -618,6 +618,10 @@ impl App {
             Edit::Error(e) => self.banners.set("import", e),
             Edit::GlobalsChanged => self.save_globals(),
             Edit::Changed(_) | Edit::Imported(_) => {
+                // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
+                for s in self.aps.values_mut() {
+                    s.mark_dirty();
+                }
                 if matches!(edit, Edit::Imported(_)) {
                     self.save_globals();
                 }

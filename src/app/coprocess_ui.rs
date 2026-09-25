@@ -97,6 +97,7 @@ impl App {
                         list.push(command.clone());
                     }
                     self.globals.set(coprocess::IGNORE_ERRORS_KEY, toml::Value::Array(list.into_iter().map(toml::Value::String).collect()));
+                    self.save_globals();
                     self.start_coprocess(pane, &command, false, Entry::Menu);
                 }
             },

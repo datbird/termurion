@@ -59,16 +59,25 @@ impl App {
         let job = s.job.as_ref().map(|j| j.name.clone());
         let cmdline = s.job.as_ref().map(|j| j.cmdline.clone());
         let vars = self.variables(pane);
+        // A rule expression that fails scores nothing; the failure is shown, not hidden.
+        let failed = std::cell::RefCell::new(None);
         let expr = |e: &str| {
-            crate::interp::evaluate(&format!("\\({e})"), &|n| crate::prompted::variable(n.strip_prefix("session.").unwrap_or(n), &vars), &[])
-                .ok()
-                .and_then(|v| v.trim().parse::<f64>().ok())
-                .unwrap_or(f64::NEG_INFINITY)
+            let v = crate::interp::evaluate(&format!("\\({e})"), &|n| crate::prompted::variable(n.strip_prefix("session.").unwrap_or(n), &vars), &[]);
+            match v.map(|v| v.trim().parse::<f64>().map_err(|_| format!("\u{201c}{v}\u{201d} is not a number"))) {
+                Ok(Ok(n)) => n,
+                Ok(Err(e2)) | Err(e2) => {
+                    *failed.borrow_mut() = Some(format!("{{{e}}}: {e2}"));
+                    f64::NEG_INFINITY
+                }
+            }
         };
         let facts = Facts { host: Some(&host), user: Some(&user), path: path.as_deref(), job: job.as_deref(), cmdline: cmdline.as_deref() };
         let switcher = self.aps.entry(pane).or_insert_with(Switcher::default);
         let decision = switcher.decide(&current, &facts, candidates, &expr);
         let stack = switcher.stack().join(" ");
+        if let Some(e) = failed.into_inner() {
+            self.banners.set("aps-expression", format!("An Automatic Profile Switching rule could not be scored: {e}"));
+        }
         if self.globals.bool(LOG_KEY) {
             self.aps_log(pane, &format!("host={host} user={user} path={path:?} job={job:?} current={current} -> {decision:?}; stack: {stack}"));
         }

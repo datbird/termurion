@@ -135,14 +135,24 @@ impl Rule {
             Some(u) if !u.is_empty() => return 0.0,
             _ => {}
         }
-        if let Some(p) = &self.path {
-            let actual = f.path.unwrap_or("");
+        if let Some(rule_path) = &self.path {
+            // Windows folders ignore case and take either slash; a Unix path keeps iTerm2's
+            // exact comparison.
+            let windows = |s: &str| s.contains('\\') || s.as_bytes().get(1) == Some(&b':');
+            let fold = |s: &str| s.replace('/', "\\").to_lowercase();
+            let win = windows(rule_path) || f.path.is_some_and(windows);
+            let p = if win { fold(rule_path) } else { rule_path.clone() };
+            let actual = f.path.map(|a| if win { fold(a) } else { a.to_string() });
             // A trailing separator lets "/foo/bar/*" match "/foo/bar" (on Windows, "\").
-            let sep = if actual.contains('\\') { '\\' } else { '/' };
-            let augmented = if actual.ends_with(sep) { actual.to_string() } else { format!("{actual}{sep}") };
-            if !p.contains('*') && f.path == Some(p.as_str()) {
+            let sep = if win { '\\' } else { '/' };
+            let exact = actual.as_deref().is_some_and(|a| !p.contains('*') && a == p);
+            let partial = actual.as_deref().is_some_and(|a| {
+                let augmented = if a.ends_with(sep) { a.to_string() } else { format!("{a}{sep}") };
+                glob(&augmented, &p, true) || glob(a, &p, true)
+            });
+            if exact {
                 score += PATH_EXACT;
-            } else if f.path.is_some() && (glob(&augmented, p, true) || glob(actual, p, true)) {
+            } else if partial {
                 score += PATH_PARTIAL + squash(p.chars().count() as f64);
             } else if !p.is_empty() {
                 return 0.0;
@@ -379,5 +389,14 @@ mod tests {
         assert_eq!(check_rule("a", &["a".to_string()], &others), Err(RuleProblem::Beep));
         assert_eq!(check_rule("box", &[], &others), Err(RuleProblem::Owned { profile: "X".into(), message: "The profile \u{201c}X\u{201d} is already bound to hostname \u{201c}box\u{201d}.".into() }));
         assert_eq!(check_rule("new", &[], &others), Ok(()));
+    }
+
+    #[test]
+    fn windows_folders_ignore_case() {
+        let s = |rule: &str, path: &str| Rule::parse(rule).score(&Facts { path: Some(path), ..Default::default() }, &no_expr);
+        assert_eq!(s(r"C:\src\*", r"c:\SRC\x"), 8.0 / 9.0, "cd c:\\src\\x still matches");
+        assert_eq!(s(r"C:\src", r"c:\Src"), 2.0);
+        assert_eq!(s(r"C:/src/*", r"C:\src\x"), 8.0 / 9.0, "either slash");
+        assert_eq!(s("/foo", "/FOO"), 0.0, "a Unix path keeps iTerm2's case");
     }
 }
