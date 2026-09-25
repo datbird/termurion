@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 152 | 138 | 24 |
-| `02-global-settings.md` | 820 | 140 | 78 | 602 |
-| `03-features-and-menus.md` | 640 | 273 | 32 | 335 |
-| Total | 1,774 | 565 | 248 | 961 |
+| `02-global-settings.md` | 820 | 144 | 78 | 598 |
+| `03-features-and-menus.md` | 640 | 287 | 31 | 322 |
+| Total | 1,774 | 583 | 247 | 944 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -73,7 +73,10 @@ Session to a new window, Merge All Windows, Duplicate Window), every window styl
 frame rules, new-window placement, the Screen setting, Lock Size and Lock Layout, Resize Window,
 Edit Window and Tab Title, and Dim background windows. Milestone 7b: the session, tab, and
 window close questions and the quit question with iTerm2's rules and texts, Undo Close, the
-Closing and Startup settings.
+Closing and Startup settings. Milestone 7c: window arrangements (save, restore as windows or
+tabs, files in iTerm2's plist form with a trust question for downloaded ones, the Settings
+Arrangements page, Change Profile in Arrangement, the default arrangement at startup, and
+Duplicate Window rebuilt from a snapshot).
 
 ## Order
 

@@ -40,7 +40,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > New Tab | Cmd+T | Opens a new tab with the default profile. | have |
 | Shell > New Tab Next to Current Tab | Opt+Cmd+T | Opens a new tab immediately to the right of the current one. | have |
 | Shell > New Tab with Current Profile | Opt+Cmd+T | Opens a new tab reusing the current session's profile. | have |
-| Shell > Duplicate Window | no shortcut | Opens a new window cloning the current window's layout. (milestone 7) | partial, milestone 7a: a tab for each tab, in its focused session's profile; splits and folders come with arrangements (7c) |
+| Shell > Duplicate Window | no shortcut | Opens a new window cloning the current window's layout. (milestone 7) | have, milestone 7c: the window snapshotted and restored, splits and folders included |
 | Shell > Duplicate Tab | no shortcut | Opens a new tab cloning the current tab's split layout. | have |
 | Shell > Split Horizontally with Current Profile | Cmd+D | Splits the current pane into top and bottom using the current profile. | have |
 | Shell > Split Vertically with Current Profile | Cmd+D | Splits the current pane into left and right using the current profile. | have |
@@ -261,12 +261,12 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 |---|---|---|---|
 | Window > Minimize | Cmd+M | Minimizes the window to the Dock. | have |
 | Window > Zoom | Shift+Cmd+0 | Zooms/maximizes the window. | have |
-| Window > Arrangements > Save Window Arrangement | Cmd+S | Saves the current set of windows, tabs, and splits as a named arrangement. (milestone 7) | missing |
-| Window > Arrangements > Save Current Window as Arrangement | Opt+Cmd+S | Saves just the current window as a named arrangement. (milestone 7) | missing |
-| Window > Arrangements > Load Arrangement from File... | no shortcut | Loads a window arrangement from a file on disk. (milestone 7) | missing |
-| Window > Arrangements > Restore Window Arrangement | no shortcut | Dynamic submenu listing saved arrangements to restore as windows. | missing |
-| Window > Arrangements > Restore Window Arrangement as Tabs | no shortcut | Dynamic submenu listing saved arrangements to restore merged into tabs of the current window. | missing |
-| Window > Arrangements > Change Profile in Arrangement... | no shortcut | Bulk changes which profile a saved arrangement's sessions use. (milestone 7) | missing |
+| Window > Arrangements > Save Window Arrangement | Shift+Cmd+S | Saves the current set of windows, tabs, and splits as a named arrangement. (milestone 7) | have, milestone 7c |
+| Window > Arrangements > Save Current Window as Arrangement | Opt+Shift+Cmd+S | Saves just the current window as a named arrangement. (milestone 7) | have, milestone 7c |
+| Window > Arrangements > Load Arrangement from File... | no shortcut | Loads a window arrangement from a file on disk. (milestone 7) | have, milestone 7c |
+| Window > Arrangements > Restore Window Arrangement | no shortcut | Dynamic submenu listing saved arrangements to restore as windows. | have, milestone 7c: the default is marked; it has no Shift+Cmd+R (Win chords reach only fixed menu items) |
+| Window > Arrangements > Restore Window Arrangement as Tabs | no shortcut | Dynamic submenu listing saved arrangements to restore merged into tabs of the current window. | have, milestone 7c |
+| Window > Arrangements > Change Profile in Arrangement... | no shortcut | Bulk changes which profile a saved arrangement's sessions use. (milestone 7) | have, milestone 7c: in Settings > Arrangements |
 | Window > Edit Window Title | no shortcut | Opens an editor to set a custom window title override. (milestone 7) | have, milestone 7a |
 | Window > Tab > Edit Tab Title | no shortcut | Opens an editor to set a custom tab title override. (milestone 7) | have, milestone 7a |
 | Window > Tab > Select Tab > Select Next Tab | Shift+Cmd+] | Switches focus to the next tab. | have |
@@ -646,13 +646,13 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### arrangements
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Arrangements | Save Window Arrangement | Saves the layout of all windows as the default arrangement. | missing | |
-| Arrangements | Save Current Window as Arrangement | Saves just the frontmost window as a named arrangement. | missing | |
-| Arrangements | Load Arrangement from File | Imports an arrangement saved to disk. | missing | |
-| Arrangements | Restore Window Arrangement (by name) | Lists every saved arrangement by name for one-click restore. | missing | |
-| Arrangements | Restore Window Arrangement as Tabs | Restores a saved multi-window arrangement collapsed into tabs of a single window. | missing | |
-| Arrangements | Change Profile in Arrangement | Bulk-reassigns all sessions in a saved arrangement to a different profile before/at restore. | missing | |
-| Arrangements | Arrangement trust gate | Prompts before running any startup commands embedded in an untrusted imported arrangement. | missing | |
+| Arrangements | Save Window Arrangement | Saves the layout of all windows as the default arrangement. | have, milestone 7c |  |
+| Arrangements | Save Current Window as Arrangement | Saves just the frontmost window as a named arrangement. | have, milestone 7c |  |
+| Arrangements | Load Arrangement from File | Imports an arrangement saved to disk. | have, milestone 7c |  |
+| Arrangements | Restore Window Arrangement (by name) | Lists every saved arrangement by name for one-click restore. | have, milestone 7c |  |
+| Arrangements | Restore Window Arrangement as Tabs | Restores a saved multi-window arrangement collapsed into tabs of a single window. | have, milestone 7c |  |
+| Arrangements | Change Profile in Arrangement | Bulk-reassigns all sessions in a saved arrangement to a different profile before/at restore. | have, milestone 7c |  |
+| Arrangements | Arrangement trust gate | Prompts before running any startup commands embedded in an untrusted imported arrangement. | have, milestone 7c: a file with a Mark of the Web asks first, naming commands, initial text, and triggers |  |
 
 ### hotkey windows
 | Subsystem | Feature | What it does | Tandem status | Windows note |

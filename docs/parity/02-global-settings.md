@@ -518,10 +518,10 @@ This tab is not backed by kPreferenceKey settings; it manages the saved-window-a
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Saved arrangements list | n/a (named blobs in the WindowArrangements store) | Lists every saved window arrangement by name, each one a full snapshot of windows/tabs/splits/profiles/sizes. | missing | Tandem has no session/window-layout save or restore feature. |
-| Preview | n/a | Shows a miniature preview of the selected saved arrangement's window/tab/split layout. | missing |  |
-| Set Default | n/a (setDefault: action) | Marks the selected arrangement as the one opened by "Open Default Window Arrangement" at startup. | missing |  |
-| Delete | n/a (deleteSelectedArrangement: action) | Deletes the selected saved arrangement. | missing |  |
+| Saved arrangements list | n/a (named blobs in the WindowArrangements store) | Lists every saved window arrangement by name, each one a full snapshot of windows/tabs/splits/profiles/sizes. | have | Milestone 7c: the default marked; rename with the field under the list. |
+| Preview | n/a | Shows a miniature preview of the selected saved arrangement's window/tab/split layout. | have | Milestone 7c: each window with its selected tab's panes. |
+| Set Default | n/a (setDefault: action) | Marks the selected arrangement as the one opened by "Open Default Window Arrangement" at startup. | have | Milestone 7c. |
+| Delete | n/a (deleteSelectedArrangement: action) | Deletes the selected saved arrangement. | have | Milestone 7c: a neighbor becomes the default. |
 
 
 ### Workgroups
