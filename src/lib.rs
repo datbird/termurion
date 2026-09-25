@@ -114,6 +114,7 @@ pub mod settings_advanced;
 pub mod settings_triggers;
 pub mod settings_lists;
 pub mod settings_arrangements;
+pub mod restore_state;
 
 #[cfg(windows)]
 pub mod winclip;

@@ -194,7 +194,7 @@ pub fn profile_of(session: &Value) -> Option<(String, String, &Table)> {
 }
 
 
-fn to_plist_value(v: &Value) -> plist::Value {
+pub(crate) fn to_plist_value(v: &Value) -> plist::Value {
     match v {
         Value::String(s) => plist::Value::String(s.clone()),
         Value::Integer(i) => plist::Value::Integer((*i).into()),

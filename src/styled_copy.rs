@@ -232,9 +232,24 @@ pub fn rtf(rows: &[Row], font: &str, size_pt: f32) -> String {
 
 /// Copy with Control Sequences: the text with iTerm2's SGR codes where the look changes,
 /// `ESC[0m` and a newline at each hard line end, wrapped rows joined, `ESC[0m` at the end.
-pub fn sgr_text(screen: &Screen) -> String {
+/// The whole buffer (history and screen, to the last line with text) as `sgr_text` writes
+/// it, for session restoration.
+pub fn sgr_all(screen: &Screen) -> String {
     let g = screen.term().grid();
-    let spans = spans(screen);
+    let top = -(g.history_size() as i32);
+    let last_col = g.columns() - 1;
+    let Some(last) = (top..g.screen_lines() as i32).rev().find(|l| (0..=last_col).any(|c| !empty(&g[Line(*l)][Column(c)]))) else {
+        return String::new();
+    };
+    sgr_over(screen, &(top..=last).map(|l| (l, 0, last_col)).collect::<Vec<_>>())
+}
+
+pub fn sgr_text(screen: &Screen) -> String {
+    sgr_over(screen, &spans(screen))
+}
+
+fn sgr_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> String {
+    let g = screen.term().grid();
     let mut out = String::new();
     let mut last: Option<Vec<String>> = None;
     for (i, (line, from, to)) in spans.iter().enumerate() {
@@ -390,6 +405,14 @@ mod tests {
         s.feed(b"\x1b[1;31mab\x1b[0m c\x1b[48;5;200mz\x1b[0;101my\x1b[0;38;2;1;2;3;4:3;7mq\x1b[0m");
         select(&mut s, (0, 0), (0, 11));
         assert_eq!(sgr_text(&s), "\x1b[0;31;1mab\x1b[0m c\x1b[0;48:5:200mz\x1b[0;101my\x1b[0;38:2:1:1:2:3;4:3;7mq\x1b[0m");
+    }
+
+    #[test]
+    fn whole_buffer_sgr_keeps_history() {
+        let mut s = Screen::with_scrollback(10, 2, 100);
+        s.feed(b"\x1b[31mone\x1b[0m\r\ntwo\r\nthree");
+        assert_eq!(sgr_all(&s), "\x1b[0;31mone\x1b[0m\ntwo\x1b[0m\nthree\x1b[0m");
+        assert_eq!(sgr_all(&Screen::new(5, 2)), "", "an empty screen saves nothing");
     }
 
     #[test]
