@@ -53,6 +53,7 @@ pub mod arrangements;
 pub mod advanced_paste;
 pub mod advanced_paste_ui;
 pub mod aps;
+pub mod autocomplete;
 pub mod coprocess;
 pub mod close_prompt;
 pub mod close_rules;
