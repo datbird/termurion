@@ -305,7 +305,7 @@ impl App {
     /// Closes one window and its sessions (Cmd+Shift+W, the close box). The last window
     /// closing ends Tandem.
     pub(super) fn close_window(&mut self, id: WindowId, event_loop: &ActiveEventLoop) {
-        if !self.enter(id) || !self.confirm_close(close_ui::Closing::Window) {
+        if !self.enter(id) || self.tmux_close_window() || !self.confirm_close(close_ui::Closing::Window) {
             return;
         }
         let panes: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();

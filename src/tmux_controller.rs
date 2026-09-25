@@ -142,6 +142,8 @@ pub struct Controller {
     outstanding: u32,
     /// Windows Tandem asked for: not anonymous when tmux adds them.
     intentional: BTreeSet<u32>,
+    /// The last `@affinities` command sent (iTerm2 skips an unchanged one).
+    last_affinities: Option<String>,
 }
 
 impl Controller {
@@ -169,6 +171,7 @@ impl Controller {
             window_sizes: HashMap::new(),
             outstanding: 0,
             intentional: BTreeSet::new(),
+            last_affinities: None,
         }
     }
 
@@ -263,6 +266,38 @@ impl Controller {
         let t = self.tag(Req::NewWindow(affinity));
         list.push((crate::tmux_edits::new_window(None, dir, recycling), Some(t), Flags::default()));
         gw.send_list(list, false);
+    }
+
+    /// Hide: the window stays in tmux, is saved in `@hidden`, and its tab closes.
+    pub fn hide(&mut self, window: u32, gw: &mut Gateway) -> Vec<Action> {
+        let Some((s, _)) = self.session.clone() else { return Vec::new() };
+        self.hidden.insert(window);
+        gw.send(&crate::tmux_persist::hidden_command(s, &self.hidden), None, Flags::default());
+        match self.windows.remove(&window) {
+            Some(_) => vec![Action::Close(window)],
+            None => Vec::new(),
+        }
+    }
+
+    pub fn kill_window(&mut self, window: u32, gw: &mut Gateway) {
+        gw.send(&crate::tmux_edits::kill_window(window), None, Flags { tolerate: true, laggy: true, ..Default::default() });
+    }
+
+    /// Which tmux windows share a Tandem window, saved for the next attach (skipped while
+    /// windows are still opening, and when unchanged).
+    pub fn save_affinities(&mut self, groups: &[crate::tmux_persist::Group], gw: &mut Gateway) {
+        let Some((s, _)) = self.session.clone() else { return };
+        if !self.openers.is_empty() {
+            return;
+        }
+        let value = crate::tmux_persist::affinities_value(groups);
+        let cmd = crate::tmux_persist::affinities_command(s, &value);
+        if self.last_affinities.as_deref() == Some(cmd.as_str()) {
+            return;
+        }
+        self.affinities = Affinities::parse(&value);
+        self.last_affinities = Some(cmd.clone());
+        gw.send(&cmd, None, Flags::default());
     }
 
     /// Tabs moved: tmux's windows take the tabs' order (iTerm2's setPartialWindowIdOrder).
@@ -387,6 +422,13 @@ impl Controller {
                 }
                 if initial.open.is_empty() {
                     gw.accept_notifications();
+                }
+                // Too many: they are saved hidden, so the next attach says so.
+                if !initial.hide.is_empty() {
+                    self.hidden.extend(initial.hide.iter().copied());
+                    if let Some((s, _)) = &self.session {
+                        gw.send(&crate::tmux_persist::hidden_command(*s, &self.hidden), None, Flags::default());
+                    }
                 }
                 for w in initial.open {
                     out.extend(self.open_window(w, true, false, gw));
@@ -809,6 +851,22 @@ mod tests {
         }
         let a = r.answer(Some(""));
         assert!(matches!(&a[..], [Action::Open { place: Place::WithSibling(0), .. }]), "{a:?}");
+    }
+
+    #[test]
+    fn hides_and_affinities_are_saved() {
+        let mut r = opened();
+        r.sent();
+        assert_eq!(r.ctl.hide(0, &mut r.gw), vec![Action::Close(0)]);
+        assert_eq!(r.sent(), "set -t $0 @hidden \"i_30\"\r");
+        r.answer(Some(""));
+        let g = [crate::tmux_persist::Group { windows: vec![1, 2], terminal: "pty-9".into(), full_screen: false }];
+        r.ctl.save_affinities(&g, &mut r.gw);
+        assert!(r.sent().starts_with("set -t $0 @affinities \"a_"));
+        r.ctl.save_affinities(&g, &mut r.gw);
+        assert!(r.sent().is_empty(), "unchanged");
+        r.ctl.kill_window(2, &mut r.gw);
+        assert_eq!(r.sent(), "kill-window -t @2\r");
     }
 
     #[test]

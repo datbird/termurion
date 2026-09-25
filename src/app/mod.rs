@@ -214,6 +214,9 @@ pub struct App {
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// Session > Run Coprocess's window.
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
+    /// A tmux close question's answer, waiting for the event loop: gateway, actions, and
+    /// whether the whole window closes.
+    tmux_pending_close: Option<(PaneId, Vec<crate::tmux_controller::Action>, bool)>,
     /// A divider drag in a tmux tab: gateway, pane after the divider, horizontal, start.
     tmux_drag: Option<(PaneId, u32, bool, f32)>,
     /// tmux gateways, by the pane that runs `tmux -CC`.
@@ -515,6 +518,7 @@ pub fn run() {
         prompt: None,
         co_prompt: None,
         tmux_drag: None,
+        tmux_pending_close: None,
         tmux: HashMap::new(),
         tmux_ask_command: None,
         tmux_prompt: None,
@@ -2011,6 +2015,7 @@ impl ApplicationHandler<UserEvent> for App {
         // Writes that did not come through user_write (mouse reports, Buffer Input).
         self.tmux_send_input();
         self.tmux_focus_tick();
+        self.tmux_finish_close(event_loop);
         let tmux_due = self.tick_tmux();
         let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
         let blinks = self

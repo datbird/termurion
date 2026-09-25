@@ -857,3 +857,21 @@ label = "Suppress alert asking what kind of tab to open in tmux integration."
 type = "bool"
 default = false
 help = "Suppress alert asking what kind of tab to open in tmux integration. On: New tmux Tab or Window; off: ask."
+
+[[setting]]
+key = "ClosingTmuxTabKillsTmuxWindows"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress kill/hide dialog when closing a tmux tab."
+type = "bool"
+default = false
+help = "Suppress kill/hide dialog when closing a tmux tab. On: the tmux windows are hidden without asking."
+
+[[setting]]
+key = "ClosingTmuxWindowKillsTmuxWindows"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress kill/hide dialog when closing a tmux window."
+type = "bool"
+default = false
+help = "Suppress kill/hide dialog when closing a tmux window. On: the tmux windows are hidden without asking."

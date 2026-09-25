@@ -394,6 +394,7 @@ impl App {
                 }
             }
             (super::tmux_tabs_ui::PLANE_BAR, _) => {}
+            (id, button) if self.tmux_close_bar(id, button) => self.tmux_finish_close(event_loop),
             _ => return false,
         }
         true

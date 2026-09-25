@@ -438,6 +438,7 @@ impl App {
                     self.close_session_undoable(id, event_loop);
                 }
             }
+            "closeCurrentTab:" if self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) && self.tmux_close_tab(self.active) => {}
             "closeCurrentTab:" => {
                 if let Some(t) = self.tabs.get(self.active).filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::CloseTab)).filter(|_| self.confirm_close(close_ui::Closing::Tab(self.active))) {
                     let panes = t.layout.panes();

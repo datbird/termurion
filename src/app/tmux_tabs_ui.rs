@@ -7,6 +7,10 @@ use crate::tmux_layout::{self, Node};
 use crate::tmux_windows::{Place, Window};
 
 pub(super) const PLANE_BAR: &str = "tmux-22-plane";
+/// Close questions: "tmux-close-tab:GW:WINDOW" and "tmux-close-win:GW" (every tmux tab of
+/// this window).
+const CLOSE_TAB: &str = "tmux-close-tab:";
+const CLOSE_WIN: &str = "tmux-close-win:";
 
 impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
@@ -85,8 +89,129 @@ impl App {
         }
         if changes {
             self.relayout();
+            self.tmux_save_affinities(gw);
         }
         true
+    }
+
+    /// Saves which tmux windows share each Tandem window (iTerm2's saveAffinities).
+    pub(super) fn tmux_save_affinities(&mut self, gw: PaneId) {
+        let mut groups = Vec::new();
+        let mut add = |app: &App, key: u64, tabs: &[Tab]| {
+            let windows: Vec<u32> = tabs.iter().filter_map(|t| app.tmux_of(t.focused)).filter(|(g, _, _)| *g == gw).map(|(_, _, w)| w).collect();
+            groups.push(crate::tmux_persist::Group { windows, terminal: format!("pty-{key}"), full_screen: false });
+        };
+        if let Some(k) = self.windows.current() {
+            add(self, k, &self.tabs);
+        }
+        for (k, slot) in self.windows.parked() {
+            add(self, *k, &slot.tabs);
+        }
+        if let Some(t) = self.tmux.get_mut(&gw) {
+            t.ctl.save_affinities(&groups, &mut t.gw);
+        }
+        self.tmux_flush(gw);
+    }
+
+    /// Close Tab on a tmux tab: iTerm2's question (a window question when it is the
+    /// session's only tab here). True when the question took over the close.
+    pub(super) fn tmux_close_tab(&mut self, index: usize) -> bool {
+        let Some(focused) = self.tabs.get(index).map(|t| t.focused) else { return false };
+        let Some((gw, _, window)) = self.tmux_of(focused) else { return false };
+        let same = self.tabs.iter().filter(|t| self.tmux_of(t.focused).is_some_and(|(g, _, _)| g == gw)).count();
+        if same > 1 {
+            if self.globals.bool("ClosingTmuxTabKillsTmuxWindows") {
+                self.tmux_close_answer(gw, &[window], "Hide", false);
+                return true;
+            }
+            let (text, buttons) = crate::tmux_persist::close_tab_question();
+            self.ask(focused, &format!("{CLOSE_TAB}{gw}:{window}"), text, &buttons, true);
+            return true;
+        }
+        self.tmux_close_window_question(focused, gw)
+    }
+
+    /// Closing a window that shows tmux tabs of the session `gw` (or of any session when
+    /// `gw` is None): iTerm2's four-way question.
+    fn tmux_close_window_question(&mut self, anchor: PaneId, gw: PaneId) -> bool {
+        let n = self.tabs.iter().filter(|t| self.tmux_of(t.focused).is_some_and(|(g, _, _)| g == gw)).count();
+        let Some((text, buttons)) = crate::tmux_persist::close_window_question(n) else { return false };
+        if self.globals.bool("ClosingTmuxWindowKillsTmuxWindows") {
+            let windows = self.tmux_windows_here(gw);
+            self.tmux_close_answer(gw, &windows, "Hide", true);
+            return true;
+        }
+        self.ask(anchor, &format!("{CLOSE_WIN}{gw}"), text, &buttons, true);
+        true
+    }
+
+    /// Close Window with tmux tabs: the question first. True when it took over the close.
+    pub(super) fn tmux_close_window(&mut self) -> bool {
+        let Some((anchor, gw)) = self.tabs.iter().find_map(|t| self.tmux_of(t.focused).map(|(g, _, _)| (t.focused, g))) else { return false };
+        self.tmux_close_window_question(anchor, gw)
+    }
+
+    fn tmux_windows_here(&self, gw: PaneId) -> Vec<u32> {
+        self.tabs.iter().filter_map(|t| self.tmux_of(t.focused)).filter(|(g, _, _)| *g == gw).map(|(_, _, w)| w).collect()
+    }
+
+    /// Hide, Kill, or Detach tmux Session for `windows`; `whole` closes this window's tabs
+    /// right away (iTerm2 closes the window without waiting for tmux).
+    fn tmux_close_answer(&mut self, gw: PaneId, windows: &[u32], answer: &str, whole: bool) {
+        let mut actions = Vec::new();
+        match answer {
+            "Hide" => {
+                for w in windows {
+                    if let Some(t) = self.tmux.get_mut(&gw) {
+                        actions.extend(t.ctl.hide(*w, &mut t.gw));
+                    }
+                }
+            }
+            "Kill" => {
+                for w in windows {
+                    if let Some(t) = self.tmux.get_mut(&gw) {
+                        t.ctl.kill_window(*w, &mut t.gw);
+                    }
+                }
+            }
+            "Detach tmux Session" => self.tmux_gateway_input(gw, b"\x1b", true),
+            _ => return,
+        }
+        self.tmux_flush(gw);
+        self.tmux_pending_close = Some((gw, actions, whole));
+    }
+
+    /// Runs the close a question's answer left (needs the event loop).
+    pub(super) fn tmux_finish_close(&mut self, event_loop: &ActiveEventLoop) {
+        let Some((gw, actions, whole)) = self.tmux_pending_close.take() else { return };
+        self.tmux_actions(gw, actions, event_loop);
+        if whole {
+            let panes: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+            for p in panes {
+                self.close_pane(p, event_loop);
+            }
+        }
+    }
+
+    /// The close questions' answers. True when the bar was one of these.
+    pub(super) fn tmux_close_bar(&mut self, id: &str, button: Option<&str>) -> bool {
+        if let Some(rest) = id.strip_prefix(CLOSE_TAB) {
+            let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
+            if let (Some(Some(gw)), Some(Some(w))) = (it.next(), it.next()) {
+                if let Some(b) = button {
+                    self.tmux_close_answer(gw, &[w as u32], b, false);
+                }
+            }
+            return true;
+        }
+        if let Some(rest) = id.strip_prefix(CLOSE_WIN) {
+            if let (Ok(gw), Some(b)) = (rest.parse::<u64>(), button) {
+                let windows = self.tmux_windows_here(gw);
+                self.tmux_close_answer(gw, &windows, b, true);
+            }
+            return true;
+        }
+        false
     }
 
     /// The Tandem panes of a tmux window, first to last.
@@ -324,6 +449,7 @@ impl App {
                 t.ctl.reorder(wanted, &mut t.gw);
             }
             self.tmux_flush(gw);
+            self.tmux_save_affinities(gw);
         }
     }
 
