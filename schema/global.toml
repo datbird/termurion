@@ -343,6 +343,15 @@ default = ""
 help = "Folder where Save in the Make Screenshot panel writes files (a ~ start means your user folder). Empty or not a folder: the Desktop."
 
 [[setting]]
+key = "ShowNewOutputIndicator"
+tab = "Appearance"
+section = "Tabs"
+label = "Show new-output indicator"
+type = "bool"
+default = true
+help = "A tab whose session printed something you have not looked at shows a dot."
+
+[[setting]]
 key = "ShowSessionStatusInTabSubtitle"
 tab = "Appearance"
 section = "Tabs"

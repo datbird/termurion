@@ -234,6 +234,8 @@ pub struct App {
     /// Each pane's bell state, and the panes whose tab shows a bell icon.
     bells: HashMap<PaneId, crate::bell::Bell>,
     bell_icons: std::collections::HashSet<PaneId>,
+    /// Each pane's output and idle state.
+    activity: HashMap<PaneId, crate::activity::Activity>,
     /// An open Make Screenshot panel.
     shot: Option<screenshot_ui::Shot>,
     /// Page Setup's printer, paper, and margins.
@@ -397,6 +399,7 @@ pub fn run() {
         trigger_children: Vec::new(),
         bells: HashMap::new(),
         bell_icons: std::collections::HashSet::new(),
+        activity: HashMap::new(),
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
@@ -720,7 +723,9 @@ impl App {
             .collect();
         for (id, (cols, rows)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
-                p.resize(cols, rows);
+                if p.resize(cols, rows) {
+                    self.activity.entry(id).or_default().resized(Instant::now());
+                }
                 p.set_cell_px(cw as u16, ch as u16);
             }
         }
@@ -1563,11 +1568,12 @@ impl ApplicationHandler<UserEvent> for App {
         let upload = self.feed_uploads();
         let triggers = self.tick_triggers();
         self.tick_bell();
+        let activity = self.tick_activity();
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
         }
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

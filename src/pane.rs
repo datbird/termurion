@@ -65,6 +65,8 @@ pub struct Pane {
     pub frozen: bool,
     /// The bell offer's Suppress All Output: output is dropped until a key is typed.
     pub suppress_output: bool,
+    /// Output arrived since the window last looked (idle and new-output tracking).
+    pub got_output: bool,
 }
 
 impl Pane {
@@ -73,7 +75,7 @@ impl Pane {
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false })
+        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -82,6 +84,7 @@ impl Pane {
         let mut changed = false;
         while let Read::Data(chunk) = pty.try_read() {
             changed = true;
+            self.got_output = true;
             if self.suppress_output {
                 continue;
             }
@@ -156,11 +159,12 @@ impl Pane {
         self.input(&bytes);
     }
 
-    /// Resizes the screen and the pty. A pane squeezed to nothing keeps 2x1.
-    pub fn resize(&mut self, cols: u16, rows: u16) {
+    /// Resizes the screen and the pty. A pane squeezed to nothing keeps 2x1. True when the
+    /// size changed.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> bool {
         let (cols, rows) = (cols.max(2), rows.max(1));
-        if (self.screen.term().columns(), self.screen.term().screen_lines()) == (cols as usize, rows as usize) {
-            return;
+        if (self.own().term().columns(), self.own().term().screen_lines()) == (cols as usize, rows as usize) {
+            return false;
         }
         if !self.frozen {
             self.screen.resize(cols as usize, rows as usize);
@@ -173,6 +177,7 @@ impl Pane {
                 self.error = Some(e);
             }
         }
+        true
     }
 
     /// iTerm2's Clear to Last Mark: clears from after the last mark above the prompt, then
@@ -331,7 +336,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);
