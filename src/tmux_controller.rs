@@ -51,6 +51,16 @@ enum Req {
     ClientList,
     /// `show-buffer -b bufferN`.
     ShowBuffer,
+    /// The attach list's saved window state.
+    Buried,
+    PerWindow,
+    PerTab,
+    Origins,
+    TabColors,
+    /// `list-panes -s` before `@tab_colors` is written: the panes that still exist.
+    LivePanes,
+    /// `break-pane -P`: the tmux window whose Tandem window gets the new one (None: a new window).
+    BreakPane(Option<u32>),
     Ignore,
 }
 
@@ -129,6 +139,30 @@ pub enum Action {
     PasteBuffer(String),
     /// A fetched paste buffer's text.
     Clipboard(String),
+    /// `@tab_colors` held iTerm2's pure red: ask "Fix corrupted tab colors?".
+    RedTabColors,
+}
+
+/// What Tandem saved about a tmux window's Tandem window and tab.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Restore {
+    pub settings: Option<crate::tmux_persist::WindowSettings>,
+    pub origin: Option<(i32, i32)>,
+    pub tab_title: Option<String>,
+    /// The tab's place in its window, when it comes back from being hidden.
+    pub tab_index: Option<usize>,
+    pub tab_colors: Vec<(u32, Option<(u8, u8, u8)>)>,
+}
+
+/// One Tandem window, as saved: its name, its tmux windows (tab order), where it is, its
+/// size, and its tmux tabs' title overrides.
+#[derive(Clone, Debug, Default)]
+pub struct GroupState {
+    pub terminal: String,
+    pub windows: Vec<u32>,
+    pub origin: (i32, i32),
+    pub size: Option<crate::tmux_persist::WinSize>,
+    pub tab_titles: Vec<(u32, String)>,
 }
 
 #[derive(Default)]
@@ -246,6 +280,18 @@ pub struct Controller {
     /// get-clipboard and set-clipboard levels.
     clip_get: u8,
     clip_set: u8,
+    /// Saved window state read on attach, and what Tandem changed since.
+    per_window: HashMap<String, crate::tmux_persist::WindowSettings>,
+    per_tab: HashMap<u32, String>,
+    origins: HashMap<u32, (i32, i32)>,
+    buried: HashMap<String, Vec<(u32, usize)>>,
+    tab_colors: HashMap<u32, Option<(u8, u8, u8)>>,
+    /// Where a pane broken out to a new window should open (by pane).
+    break_points: HashMap<u32, (i32, i32)>,
+    /// Hidden windows opened again: their Tandem window and tab index.
+    unburied: HashMap<u32, usize>,
+    /// The last command sent for each saved option (iTerm2 skips an unchanged one).
+    last_saved: HashMap<&'static str, String>,
 }
 
 impl Controller {
@@ -294,6 +340,14 @@ impl Controller {
             client_name_asked: false,
             clip_get: 0,
             clip_set: 0,
+            per_window: HashMap::new(),
+            per_tab: HashMap::new(),
+            origins: HashMap::new(),
+            buried: HashMap::new(),
+            tab_colors: HashMap::new(),
+            break_points: HashMap::new(),
+            unburied: HashMap::new(),
+            last_saved: HashMap::new(),
         }
     }
 
@@ -697,6 +751,104 @@ impl Controller {
         gw.send(&cmd, Some(t), Flags { tolerate: true, ..Default::default() });
     }
 
+    /// What was saved about a tmux window that is opening (with these panes): the Tandem
+    /// window's settings, origin, the tab's title and place, and the panes' tab colors.
+    pub fn restore_of(&mut self, window: u32, panes: &[u32]) -> Restore {
+        let terminal = self.affinities.class_of(&window.to_string()).into_iter().find(|n| n.starts_with("pty-"));
+        // A break-out point is used once, then the saved origin (iTerm2's positionForWindowWithPanes).
+        let point = panes.iter().find_map(|p| self.break_points.remove(p));
+        Restore {
+            settings: terminal.and_then(|t| self.per_window.get(&t).cloned()),
+            origin: point.or_else(|| self.origins.get(&window).copied()),
+            tab_title: self.per_tab.get(&window).cloned(),
+            tab_index: self.unburied.remove(&window),
+            tab_colors: panes.iter().filter_map(|p| Some((*p, *self.tab_colors.get(p)?))).collect(),
+        }
+    }
+
+    /// Saves the Tandem windows' state (per-window settings, per-tab settings, origins, and
+    /// buried indexes), each only when it changed; skipped while windows are opening.
+    pub fn save_window_state(&mut self, groups: &[GroupState], gw: &mut Gateway) {
+        let Some((s, _)) = self.session.clone() else { return };
+        if !self.openers.is_empty() {
+            return;
+        }
+        use crate::tmux_persist::{option_command, WindowSettings};
+        let windows: Vec<(String, WindowSettings)> = groups.iter().map(|g| (g.terminal.clone(), WindowSettings { size: g.size })).collect();
+        let tabs: Vec<(u32, String)> = groups.iter().flat_map(|g| g.tab_titles.iter().cloned()).collect();
+        let origins: Vec<(Vec<u32>, (i32, i32))> = groups.iter().filter(|g| !g.windows.is_empty()).map(|g| (g.windows.clone(), g.origin)).collect();
+        let mut buried: Vec<(String, Vec<(u32, usize)>)> = self.buried.iter().map(|(t, v)| (t.clone(), v.clone())).collect();
+        buried.sort();
+        let tolerate = Flags { tolerate: true, ..Default::default() };
+        self.save_option("@per_window_settings", option_command(s, "@per_window_settings", &crate::tmux_persist::per_window_value(&windows)), tolerate, gw);
+        self.save_option("@per_tab_settings", option_command(s, "@per_tab_settings", &crate::tmux_persist::per_tab_value(&tabs)), tolerate, gw);
+        // iTerm2 sends @origins without tolerating an error.
+        self.save_option("@origins", option_command(s, "@origins", &crate::tmux_persist::origins_value(&origins)), Flags::default(), gw);
+        self.save_option("@buried_indexes", option_command(s, "@buried_indexes", &crate::tmux_persist::buried_value(&buried)), tolerate, gw);
+        for (ws, point) in &origins {
+            for w in ws {
+                self.origins.insert(*w, *point);
+            }
+        }
+    }
+
+    /// Sends a saved option's command unless it is the last one sent for it.
+    fn save_option(&mut self, name: &'static str, cmd: String, flags: Flags, gw: &mut Gateway) {
+        if self.last_saved.get(name) == Some(&cmd) {
+            return;
+        }
+        gw.send(&cmd, None, flags);
+        self.last_saved.insert(name, cmd);
+    }
+
+    /// Panes' tab colors: saved in `@tab_colors` for the panes tmux still has.
+    pub fn save_tab_colors(&mut self, colors: &[(u32, Option<(u8, u8, u8)>)], gw: &mut Gateway) {
+        let Some((s, _)) = self.session.clone() else { return };
+        let changed = colors.iter().any(|(p, c)| self.tab_colors.get(p) != Some(c));
+        if !changed {
+            return;
+        }
+        self.tab_colors.extend(colors.iter().copied());
+        let t = self.tag(Req::LivePanes);
+        gw.send(&format!("list-panes -s -t ${s} -F \"#{{pane_id}}\""), Some(t), Flags { tolerate: true, ..Default::default() });
+    }
+
+    /// "Fix corrupted tab colors?" answered Reset: the pure red entries go.
+    pub fn reset_red_tab_colors(&mut self) {
+        self.tab_colors.retain(|_, c| *c != Some(crate::tmux_persist::PURE_RED));
+    }
+
+    /// Move Session to Window (`sibling` None, opening at `point`) or to Tab (`sibling`: a
+    /// tmux window in the Tandem window that gets it).
+    pub fn break_pane(&mut self, pane: u32, sibling: Option<u32>, point: Option<(i32, i32)>, gw: &mut Gateway) {
+        if let Some(p) = point {
+            self.break_points.insert(pane, p);
+        }
+        let flag = if self.v() >= 2.1 { "-s" } else { "-t" };
+        let t = self.tag(Req::BreakPane(sibling));
+        gw.send(&format!("break-pane -P -F \"#{{window_id}}\" {flag} \"%{pane}\""), Some(t), Flags::default());
+    }
+
+    /// A tmux window hidden from `terminal`'s tab `index` (iTerm2's buried windows).
+    pub fn bury_window(&mut self, window: u32, terminal: &str, index: usize) {
+        for list in self.buried.values_mut() {
+            list.retain(|(w, _)| *w != window);
+        }
+        self.buried.entry(terminal.to_string()).or_default().push((window, index));
+    }
+
+    /// A hidden window opens again: it goes back to its Tandem window and tab index.
+    pub fn unbury(&mut self, window: u32) -> Option<(String, usize)> {
+        let (terminal, index) = self.buried.iter_mut().find_map(|(t, list)| {
+            let i = list.iter().position(|(w, _)| *w == window)?;
+            Some((t.clone(), list.remove(i).1))
+        })?;
+        self.buried.retain(|_, list| !list.is_empty());
+        self.affinities.set_equal(&window.to_string(), &terminal);
+        self.unburied.insert(window, index);
+        Some((terminal, index))
+    }
+
     /// This client answers OSC 4 color queries of its panes.
     pub fn answers_osc4(&self) -> bool {
         crate::tmux_clients::answers_osc4(self.v(), self.tracker.as_ref().is_some_and(|t| t.responsible()))
@@ -804,7 +956,7 @@ impl Controller {
         let Some((s, _)) = self.session.clone() else { return };
         let h = tmux_windows::client_height(h, self.status_bar, self.version);
         let format = tmux_windows::detailed_format(self.v());
-        let reqs = [Req::SessionGuid, Req::Ignore, Req::Hidden, Req::Ignore, Req::Affinities, Req::Ignore, Req::Ignore, Req::Ignore, Req::Ignore, Req::Ignore, Req::ListSessions, Req::ListWindows];
+        let reqs = [Req::SessionGuid, Req::Ignore, Req::Hidden, Req::Buried, Req::Affinities, Req::PerWindow, Req::PerTab, Req::Origins, Req::Ignore, Req::TabColors, Req::ListSessions, Req::ListWindows];
         let strict = [0usize, 10, 11];
         let list = tmux_windows::open_list(s, w, h, &format)
             .into_iter()
@@ -834,6 +986,45 @@ impl Controller {
             Req::ClientList => {
                 if let (true, Some(t)) = (ok, self.tracker.as_mut()) {
                     t.listed(text);
+                }
+            }
+            // An empty buried value leaves the map as it is (iTerm2's).
+            Req::Buried => {
+                let b = crate::tmux_persist::parse_buried(if ok { text } else { "" });
+                if !b.is_empty() {
+                    self.buried = b;
+                }
+            }
+            Req::PerWindow => self.per_window = crate::tmux_persist::parse_per_window(if ok { text } else { "" }),
+            Req::PerTab => self.per_tab = crate::tmux_persist::parse_per_tab(if ok { text } else { "" }),
+            Req::Origins => self.origins = crate::tmux_persist::parse_origins(if ok { text } else { "" }),
+            Req::TabColors => {
+                let (colors, red) = crate::tmux_persist::parse_tab_colors(if ok { text } else { "" });
+                self.tab_colors = colors;
+                if red {
+                    out.push(Action::RedTabColors);
+                }
+            }
+            Req::LivePanes => {
+                if ok {
+                    let live: BTreeSet<u32> = text.lines().filter_map(|l| l.trim().strip_prefix('%')?.parse().ok()).collect();
+                    let mut entries: Vec<(u32, Option<(u8, u8, u8)>)> = self.tab_colors.iter().filter(|(p, _)| live.contains(p)).map(|(p, c)| (*p, *c)).collect();
+                    entries.sort_by_key(|(p, _)| *p);
+                    if let Some((s, _)) = self.session.clone() {
+                        let cmd = crate::tmux_persist::option_command(s, "@tab_colors", &crate::tmux_persist::tab_colors_value(&entries));
+                        self.save_option("@tab_colors", cmd, Flags { tolerate: true, ..Default::default() }, gw);
+                    }
+                }
+            }
+            Req::BreakPane(sibling) => {
+                if ok {
+                    let w = crate::tmux_windows::window_id(text.trim());
+                    match sibling {
+                        Some(s) => self.affinities.set_equal(&w.to_string(), &s.to_string()),
+                        None => {
+                            self.intentional.insert(w);
+                        }
+                    }
                 }
             }
             Req::ShowBuffer => {
@@ -1538,6 +1729,81 @@ mod tests {
         let mut old = Rig::with_version(3.0);
         old.ctl.sync_user_vars(0, &vars, &mut old.gw);
         assert_eq!(old.sent(), "", "tmux 3.0 has no pane options");
+    }
+
+    /// A 3.1 attach whose option replies are given: buried, affinities, per-window,
+    /// per-tab, origins, tab colors.
+    fn attached_with(options: [&str; 6]) -> (Rig, Vec<Action>) {
+        let mut r = Rig::new();
+        r.lines(&["%session-changed $0 main"]);
+        r.answer(Some(""));
+        let [buried, aff, pw, pt, origins, colors] = options;
+        let mut out = Vec::new();
+        for reply in ["", "", "", buried, aff, pw, pt, origins, "", colors, ""] {
+            out.extend(r.answer(Some(reply)));
+        }
+        r.answer(Some(ONE_PANE));
+        r.sent();
+        (r, out)
+    }
+
+    #[test]
+    fn window_state_round_trips() {
+        let mut r = opened();
+        let groups = vec![GroupState { terminal: "pty-1".into(), windows: vec![0], origin: (100, 50), size: Some(crate::tmux_persist::WinSize::Size(800, 600)), tab_titles: vec![(0, "logs".into())] }];
+        r.ctl.save_window_state(&groups, &mut r.gw);
+        let sent = r.sent();
+        let pw = crate::tmux_persist::option_command(0, "@per_window_settings", "pty-1:size={800, 600}");
+        let pt = crate::tmux_persist::option_command(0, "@per_tab_settings", "0:t=bG9ncw==");
+        let or = crate::tmux_persist::option_command(0, "@origins", "0:100,50");
+        for cmd in [&pw, &pt, &or] {
+            assert!(sent.contains(cmd.as_str()), "{cmd} in {sent}");
+        }
+        r.ctl.save_window_state(&groups, &mut r.gw);
+        assert_eq!(r.sent(), "", "unchanged: nothing sent");
+        for _ in 0..4 {
+            r.answer(Some(""));
+        }
+        r.ctl.save_tab_colors(&[(0, Some((255, 128, 0)))], &mut r.gw);
+        assert_eq!(r.sent(), "list-panes -s -t $0 -F \"#{pane_id}\"\r");
+        r.answer(Some("%0\n%1"));
+        assert_eq!(r.sent(), format!("{}\r", crate::tmux_persist::option_command(0, "@tab_colors", "0=#ff8000")));
+        let enc = |p: &str, t: &str| crate::tmux_persist::encode_option(t, p);
+        let (mut a, out) = attached_with(["", "0,pty-1", &enc("w_", "pty-1:size={800, 600}"), &enc("T_", "0:t=bG9ncw=="), &enc("o_", "0:100,50"), &enc("t_", "0=#ff8000 9=p3#ffff00000000")]);
+        assert!(out.contains(&Action::RedTabColors), "{out:?}");
+        let got = a.ctl.restore_of(0, &[0]);
+        assert_eq!(got.settings.and_then(|s| s.size), Some(crate::tmux_persist::WinSize::Size(800, 600)));
+        assert_eq!((got.origin, got.tab_title.as_deref()), (Some((100, 50)), Some("logs")));
+        assert_eq!(got.tab_colors, vec![(0, Some((255, 128, 0)))]);
+        a.ctl.reset_red_tab_colors();
+        assert!(!a.ctl.tab_colors.contains_key(&9));
+    }
+
+    #[test]
+    fn break_pane_places_the_new_window() {
+        let mut r = opened();
+        r.ctl.break_pane(0, None, Some((10, 20)), &mut r.gw);
+        assert_eq!(r.sent(), "break-pane -P -F \"#{window_id}\" -s \"%0\"\r");
+        r.answer(Some("@5"));
+        assert!(r.ctl.intentional.contains(&5), "a new Tandem window");
+        assert_eq!(r.ctl.restore_of(5, &[0]).origin, Some((10, 20)));
+        assert_eq!(r.ctl.restore_of(5, &[0]).origin, None, "a break-out point is used once");
+        r.ctl.break_pane(0, Some(3), None, &mut r.gw);
+        r.sent();
+        r.answer(Some("@6"));
+        assert!(r.ctl.affinities.class_of("6").contains("3"), "a tab beside window 3");
+    }
+
+    #[test]
+    fn buried_windows_remember_their_tab() {
+        let mut r = opened();
+        r.ctl.bury_window(0, "pty-2", 1);
+        r.ctl.save_window_state(&[], &mut r.gw);
+        assert!(r.sent().contains(&crate::tmux_persist::option_command(0, "@buried_indexes", "pty-2:0=1")));
+        assert_eq!(r.ctl.unbury(0), Some(("pty-2".into(), 1)));
+        assert!(r.ctl.affinities.class_of("0").contains("pty-2"), "back to its Tandem window");
+        assert_eq!(r.ctl.restore_of(0, &[0]).tab_index, Some(1));
+        assert_eq!(r.ctl.unbury(0), None);
     }
 
     #[test]

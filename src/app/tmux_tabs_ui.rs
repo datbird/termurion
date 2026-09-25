@@ -41,6 +41,7 @@ impl App {
                         }
                     }
                 }
+                Action::RedTabColors => {}
                 Action::Clipboard(text) => {
                     if let Some(cb) = &mut self.clipboard {
                         if let Err(e) = cb.set_text(text) {
