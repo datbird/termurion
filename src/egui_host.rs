@@ -62,6 +62,10 @@ impl EguiHost {
         self.window.focus_window();
     }
 
+    pub fn ctx(&self) -> &egui::Context {
+        &self.ctx
+    }
+
     pub fn request_redraw(&self) {
         self.window.request_redraw();
     }

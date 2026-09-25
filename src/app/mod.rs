@@ -342,6 +342,8 @@ pub struct App {
     porthole_languages: Option<(PaneId, u32, Vec<crate::porthole::detect::Language>)>,
     /// The status bar menu's target, until its pick arrives.
     status_menu: Option<statusbar_ui::StatusMenu>,
+    /// The status bar setup window (one at a time, like iTerm2's sheet).
+    status_setup: Option<statusbar_ui::StatusSetup>,
     /// Triggers: the Show Alert limit, messages already shown, the Alert bar's trigger, and
     /// Run Command's pool and processes.
     trigger_limits: crate::triggers::RateLimit<(PaneId, usize)>,
@@ -621,6 +623,7 @@ pub fn run() {
         porthole_link_asks: HashMap::new(),
         porthole_languages: None,
         status_menu: None,
+        status_setup: None,
         trigger_limits: crate::triggers::RateLimit::default(),
         trigger_told: std::collections::HashSet::new(),
         trigger_alerts: HashMap::new(),
@@ -2232,7 +2235,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -2247,7 +2250,12 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 WindowEvent::RedrawRequested => {
                     let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    // Profiles > Session's "Configure Status Bar" opens the setup window.
+                    let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
                     self.apply_edit(edit);
+                    if let Some(guid) = setup {
+                        self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
+                    }
                 }
                 other => {
                     slot.as_mut().unwrap().event(&other);

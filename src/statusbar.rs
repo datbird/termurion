@@ -254,7 +254,7 @@ impl Advanced {
 
     /// Matches iTerm2's computed default exactly: the four non-color keys are always
     /// written; a nil color or font is left out (`dictionaryByRemovingNullValues`).
-    fn to_table(&self) -> toml::Table {
+    pub fn to_table(&self) -> toml::Table {
         let mut t = toml::Table::new();
         if let Some(c) = &self.separator_color {
             t.insert("separator color 2".into(), c.clone());
@@ -333,8 +333,7 @@ pub fn registry() -> Vec<Info> {
         Info {
             class: SPRING_CLASS,
             // Tightly Packed's naming ("Spring"); under Stable this component displays
-            // as "Empty Space" with a matching exemplar and detail text (see `knobs`'s
-            // own algorithm-driven label) — the setup UI picks that variant itself.
+            // as "Empty Space" with a matching exemplar and detail text: `info_for`.
             short: "Spring",
             detail: "Pushes items apart. Use one spring to right-align status bar elements that follow it. Use two to center those inbetween.",
             exemplar: "║〜〜║",
@@ -390,6 +389,137 @@ pub fn knobs(class: &str, algorithm: Algorithm) -> Vec<Knob> {
             priority_knob(),
         ],
         _ => Vec::new(),
+    }
+}
+
+/// `info` as the setup window shows it under `algorithm`: the Spring is "Spring" with the
+/// `║〜〜║` exemplar under Tightly Packed, and "Empty Space" with seven spaces under Stable
+/// (`SPR:32-58`). Every other class is the same under either.
+pub fn info_for(class: &str, algorithm: Algorithm) -> Option<Info> {
+    let i = info(class)?;
+    Some(if class == SPRING_CLASS && algorithm == Algorithm::Stable { Info { short: "Empty Space", detail: "Empty space that draws only a background color.", exemplar: "       ", ..i } } else { i })
+}
+
+/// The setup window's component menu, in iTerm2's order (`SVC:107-146`: the Fixed-size
+/// Spacer is number 18, the Spring 19). Milestone 9h adds the content components before them.
+pub const PALETTE: [&str; 2] = [SPACER_CLASS, SPRING_CLASS];
+
+/// `"layout advanced configuration dictionary value"`: the copy of the layout's advanced
+/// configuration iTerm2 keeps in each component's configuration.
+pub const ADVANCED_COPY_KEY: &str = "layout advanced configuration dictionary value";
+
+/// `statusBarComponentDefaultKnobs`: what a component dropped from the palette starts with.
+pub fn default_knobs(class: &str) -> toml::Table {
+    let mut t = toml::Table::new();
+    t.insert(BASE_COMPRESSION_RESISTANCE_KEY.into(), Value::Float(1.0));
+    t.insert(BASE_PRIORITY_KEY.into(), Value::Float(5.0));
+    match class {
+        SPRING_CLASS => {
+            t.insert(SPRING_CONSTANT_KEY.into(), Value::Float(0.01));
+            t.insert(SIZE_MULTIPLE_KEY.into(), Value::Float(1.0));
+        }
+        SPACER_CLASS => {
+            t.insert(SPACER_WIDTH_KEY.into(), Value::Float(5.0));
+        }
+        _ => {}
+    }
+    t
+}
+
+/// A drop from the palette (`DCV:320-360`): a new component of `class` with its default
+/// knobs goes before `index` (clamped to the end). Returns where it went.
+pub fn insert_component(layout: &mut Layout, index: usize, class: &str) -> usize {
+    let mut config = toml::Table::new();
+    config.insert(ADVANCED_COPY_KEY.into(), Value::Table(layout.advanced.to_table()));
+    let at = index.min(layout.components.len());
+    layout.components.insert(at, Component { class: class.to_string(), knobs: default_knobs(class), config });
+    at
+}
+
+/// A drag within Active Components (`DCV:340-356`): the component at `from` goes before
+/// the one that was at `to` (`to` may be the length: last). Returns its new index; a bad
+/// `from` changes nothing and returns it.
+pub fn move_component(layout: &mut Layout, from: usize, to: usize) -> usize {
+    let n = layout.components.len();
+    if from >= n {
+        return from;
+    }
+    let to = to.min(n);
+    let c = layout.components.remove(from);
+    let at = if from < to { to - 1 } else { to };
+    layout.components.insert(at, c);
+    at
+}
+
+/// The Configure Component sheet's values (`KVC:60-70`, `KVC:125-141`): each of the
+/// class's knobs under `algorithm`, at its saved value or else its default; a knob with
+/// neither is left out, and so is any key no knob shows.
+pub fn knob_values(c: &Component, algorithm: Algorithm) -> toml::Table {
+    knobs(&c.class, algorithm).into_iter().filter_map(|k| c.knobs.get(&k.key).cloned().or(k.default).map(|v| (k.key, v))).collect()
+}
+
+/// Two knob values equal within iTerm2's 0.0001 (`isApproximatelyEqualToObject:epsilon:`,
+/// for the color picker's perturbations).
+fn approx_eq(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (Some(Value::Table(x)), Some(Value::Table(y))) => x.len() == y.len() && x.iter().all(|(k, v)| approx_eq(Some(v), y.get(k))),
+        (Some(x), Some(y)) => match (x.as_float().or_else(|| x.as_integer().map(|i| i as f64)), y.as_float().or_else(|| y.as_integer().map(|i| i as f64))) {
+            (Some(p), Some(q)) => p == q || (p - q).abs() < 0.0001,
+            _ => x == y,
+        },
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// OK in the Configure Component sheet (`statusBarComponentSetKnobValues:`, `BC:276-302`):
+/// the component's knobs become `values`, and a changed text color turns auto-rainbow off
+/// (`DCV:421-452`). A bad index changes nothing.
+pub fn set_knob_values(layout: &mut Layout, index: usize, values: toml::Table) {
+    let Some(c) = layout.components.get_mut(index) else { return };
+    let text_changed = values.contains_key(SHARED_TEXT_COLOR_KEY) && !approx_eq(c.knobs.get(SHARED_TEXT_COLOR_KEY), values.get(SHARED_TEXT_COLOR_KEY));
+    c.knobs = values;
+    if text_changed {
+        layout.advanced.rainbow = Rainbow::Disabled;
+    }
+}
+
+/// Each component's copy of the advanced configuration becomes the layout's, as iTerm2's
+/// layout has it after building itself again from its dictionary (`L:122-123`).
+pub fn sync_advanced_copies(layout: &mut Layout) {
+    let copy = Value::Table(layout.advanced.to_table());
+    for c in layout.components.iter_mut() {
+        c.config.insert(ADVANCED_COPY_KEY.into(), copy.clone());
+    }
+}
+
+/// `NSColor colorWithHue:saturation:brightness:alpha:1` as a `{r, g, b, a}` table.
+fn hsb_value(h: f32, s: f32, b: f32) -> Value {
+    let h6 = h.rem_euclid(1.0) * 6.0;
+    let f = h6 - h6.floor();
+    let (p, q, t) = (b * (1.0 - s), b * (1.0 - s * f), b * (1.0 - s * (1.0 - f)));
+    let (r, g, bl) = match h6.floor() as i32 {
+        0 => (b, t, p),
+        1 => (q, b, p),
+        2 => (p, b, t),
+        3 => (p, q, b),
+        4 => (t, p, b),
+        _ => (b, p, q),
+    };
+    let mut out = toml::Table::new();
+    for (k, v) in [("r", r), ("g", g), ("b", bl), ("a", 1.0)] {
+        out.insert(k.into(), Value::Float(v as f64));
+    }
+    Value::Table(out)
+}
+
+/// The setup window's auto-rainbow (`DCV:128-142`): every component in the layout gets
+/// its rainbow color in its `"shared text color"` knob. Disabled leaves the knobs alone
+/// (colors an earlier style wrote stay, as in iTerm2).
+pub fn apply_rainbow(layout: &mut Layout, dark_background: bool) {
+    let colors = rainbow_colors(layout.components.len(), layout.advanced.rainbow, dark_background);
+    for (c, (h, s, b)) in layout.components.iter_mut().zip(colors) {
+        c.knobs.insert(SHARED_TEXT_COLOR_KEY.into(), hsb_value(h, s, b));
     }
 }
 
@@ -600,5 +730,116 @@ mod tests {
         // Automatic: a dark bar gets the Light parameters; a light bar gets the Dark ones.
         assert_eq!(rainbow_colors(1, Rainbow::Automatic, true), vec![(0.0, 0.3, 0.9)]);
         assert_eq!(rainbow_colors(1, Rainbow::Automatic, false), vec![(0.0, 0.5, 0.5)]);
+    }
+
+    #[test]
+    fn info_for_follows_the_algorithm() {
+        let tight = info_for(SPRING_CLASS, Algorithm::TightlyPacked).unwrap();
+        assert_eq!((tight.short, tight.exemplar), ("Spring", "║〜〜║"));
+        assert!(tight.detail.starts_with("Pushes items apart."));
+        let stable = info_for(SPRING_CLASS, Algorithm::Stable).unwrap();
+        assert_eq!((stable.short, stable.exemplar, stable.detail), ("Empty Space", "       ", "Empty space that draws only a background color."));
+        assert_eq!(stable.exemplar.chars().count(), 7);
+        // Everything else is the same under either algorithm.
+        assert_eq!(info_for(SPACER_CLASS, Algorithm::Stable), info(SPACER_CLASS));
+        assert_eq!(info_for(SPACER_CLASS, Algorithm::TightlyPacked), info(SPACER_CLASS));
+        assert_eq!(info_for("iTermStatusBarNoSuchComponent", Algorithm::Stable), None);
+        // The palette: iTerm2's order (the spacer is number 18, the spring 19), no internal class.
+        assert_eq!(PALETTE, [SPACER_CLASS, SPRING_CLASS]);
+    }
+
+    #[test]
+    fn setup_edits_follow_iterm2() {
+        // A drop from the palette inserts a new component with the class's default knobs
+        // (`statusBarComponentDefaultKnobs`) and an advanced-configuration copy.
+        let mut l = Layout::default();
+        l.advanced.algorithm = Algorithm::TightlyPacked;
+        assert_eq!(insert_component(&mut l, 0, SPACER_CLASS), 0);
+        let spacer = &l.components[0];
+        assert_eq!(spacer.class, SPACER_CLASS);
+        assert_eq!(spacer.knobs, table(&[(BASE_COMPRESSION_RESISTANCE_KEY, Value::Float(1.0)), (BASE_PRIORITY_KEY, Value::Float(5.0)), (SPACER_WIDTH_KEY, Value::Float(5.0))]));
+        let injected = spacer.config.get(ADVANCED_COPY_KEY).and_then(Value::as_table).unwrap();
+        assert_eq!(injected.get("algorithm"), Some(&Value::Integer(1)));
+        // Drop before the spacer.
+        assert_eq!(insert_component(&mut l, 0, SPRING_CLASS), 0);
+        assert_eq!(
+            l.components[0].knobs,
+            table(&[(BASE_COMPRESSION_RESISTANCE_KEY, Value::Float(1.0)), (BASE_PRIORITY_KEY, Value::Float(5.0)), (SPRING_CONSTANT_KEY, Value::Float(0.01)), (SIZE_MULTIPLE_KEY, Value::Float(1.0))])
+        );
+        // Past the end goes last.
+        assert_eq!(insert_component(&mut l, 99, SPACER_CLASS), 2);
+        let classes = |l: &Layout| l.components.iter().map(|c| c.class.clone()).collect::<Vec<String>>();
+        assert_eq!(classes(&l), vec![SPRING_CLASS, SPACER_CLASS, SPACER_CLASS]);
+
+        // Reorder: `to` is the drop-before index in the list as it was (DCV acceptDrop).
+        let named = |names: &[&str]| Layout { components: names.iter().map(|n| Component { class: n.to_string(), knobs: toml::Table::new(), config: toml::Table::new() }).collect(), ..Layout::default() };
+        let mut m = named(&["a", "b", "c"]);
+        assert_eq!(move_component(&mut m, 0, 2), 1);
+        assert_eq!(classes(&m), vec!["b", "a", "c"]);
+        let mut m = named(&["a", "b", "c"]);
+        assert_eq!(move_component(&mut m, 2, 0), 0);
+        assert_eq!(classes(&m), vec!["c", "a", "b"]);
+        let mut m = named(&["a", "b", "c"]);
+        assert_eq!(move_component(&mut m, 0, 3), 2);
+        assert_eq!(classes(&m), vec!["b", "c", "a"]);
+        // Dropped on itself, or just after itself: nothing moves.
+        for to in [1, 2] {
+            let mut m = named(&["a", "b", "c"]);
+            assert_eq!(move_component(&mut m, 1, to), 1);
+            assert_eq!(classes(&m), vec!["a", "b", "c"]);
+        }
+        let mut m = named(&["a", "b"]);
+        assert_eq!(move_component(&mut m, 5, 0), 5, "a bad index leaves the layout alone");
+        assert_eq!(classes(&m), vec!["a", "b"]);
+
+        // The Configure sheet's values: each knob's saved value, else its default; a knob
+        // with neither (Color) is left out, and keys no knob shows are dropped (KVC:125-141).
+        let red = Value::Table(table(&[("r", Value::Float(1.0)), ("g", Value::Float(0.0)), ("b", Value::Float(0.0)), ("a", Value::Float(1.0))]));
+        let spring = Component { class: SPRING_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
+        assert_eq!(knob_values(&spring, Algorithm::Stable), table(&[(SIZE_MULTIPLE_KEY, Value::Float(1.0))]));
+        assert_eq!(knob_values(&spring, Algorithm::TightlyPacked), table(&[(SPRING_CONSTANT_KEY, Value::Float(0.01))]));
+        let spacer = Component { class: SPACER_CLASS.into(), knobs: table(&[(SPACER_WIDTH_KEY, Value::Integer(30)), (SHARED_BACKGROUND_COLOR_KEY, red.clone()), ("stray", Value::Boolean(true))]), config: toml::Table::new() };
+        assert_eq!(knob_values(&spacer, Algorithm::Stable), table(&[(SHARED_BACKGROUND_COLOR_KEY, red.clone()), (SPACER_WIDTH_KEY, Value::Integer(30)), (BASE_PRIORITY_KEY, Value::Float(5.0))]));
+        assert!(knob_values(&Component { class: "iTermStatusBarNoSuchComponent".into(), knobs: table(&[("x", Value::Float(1.0))]), config: toml::Table::new() }, Algorithm::Stable).is_empty());
+
+        // OK in the Configure sheet replaces the knobs wholesale (`statusBarComponentSetKnobValues:`).
+        let mut l = Layout { components: vec![spacer.clone()], ..Layout::default() };
+        l.advanced.rainbow = Rainbow::Light;
+        set_knob_values(&mut l, 0, table(&[(SPACER_WIDTH_KEY, Value::Float(12.0))]));
+        assert_eq!(l.components[0].knobs, table(&[(SPACER_WIDTH_KEY, Value::Float(12.0))]));
+        assert_eq!(l.advanced.rainbow, Rainbow::Light, "no text color changed");
+        // A changed text color turns auto-rainbow off (DCV:421-452); within 0.0001 is unchanged.
+        l.components[0].knobs.insert(SHARED_TEXT_COLOR_KEY.into(), red.clone());
+        let nearly_red = Value::Table(table(&[("r", Value::Float(0.99995)), ("g", Value::Float(0.0)), ("b", Value::Float(0.0)), ("a", Value::Float(1.0))]));
+        set_knob_values(&mut l, 0, table(&[(SHARED_TEXT_COLOR_KEY, nearly_red)]));
+        assert_eq!(l.advanced.rainbow, Rainbow::Light);
+        let green = Value::Table(table(&[("r", Value::Float(0.0)), ("g", Value::Float(1.0)), ("b", Value::Float(0.0)), ("a", Value::Float(1.0))]));
+        set_knob_values(&mut l, 0, table(&[(SHARED_TEXT_COLOR_KEY, green)]));
+        assert_eq!(l.advanced.rainbow, Rainbow::Disabled);
+        set_knob_values(&mut l, 7, toml::Table::new());
+        assert_eq!(l.components.len(), 1, "a bad index changes nothing");
+
+        // Auto-rainbow in the setup window writes each component's text color knob, every
+        // component in the layout (DCV:128-142); Disabled writes nothing.
+        let mut l = named(&["a", "b", "c"]);
+        l.advanced.rainbow = Rainbow::Light;
+        apply_rainbow(&mut l, false);
+        let rgb = |c: &Component| {
+            let t = c.knobs.get(SHARED_TEXT_COLOR_KEY).and_then(Value::as_table).unwrap().clone();
+            ["r", "g", "b", "a"].map(|k| t.get(k).and_then(Value::as_float).unwrap())
+        };
+        let first = rgb(&l.components[0]);
+        for (got, want) in first.iter().zip([0.9, 0.63, 0.63, 1.0]) {
+            assert!((got - want).abs() < 1e-4, "{first:?}");
+        }
+        assert_ne!(rgb(&l.components[1]), first);
+        let mut off = named(&["a"]);
+        apply_rainbow(&mut off, true);
+        assert!(off.components[0].knobs.is_empty());
+
+        // After an Advanced change every component's copy follows the layout's.
+        l.advanced.algorithm = Algorithm::TightlyPacked;
+        sync_advanced_copies(&mut l);
+        assert!(l.components.iter().all(|c| c.config.get(ADVANCED_COPY_KEY) == Some(&Value::Table(l.advanced.to_table()))));
     }
 }

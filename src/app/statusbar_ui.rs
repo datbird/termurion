@@ -12,6 +12,7 @@ use super::*;
 use crate::layout::visible_rects;
 use crate::palette::Rgb;
 use crate::statusbar::{self, Algorithm, Component, KnobKind, Layout, Rainbow, PLACEHOLDER_CLASS, SPACER_CLASS, SPRING_CLASS};
+use crate::statusbar_setup_ui::SetupEvent;
 use crate::statusbar_layout::{self as sbl, Item, ItemKind, Placed, Position};
 
 /// `iTermStatusBarPlaceholderComponent`'s text.
@@ -174,6 +175,23 @@ impl Placement {
     fn hit(&self, x_pt: f32) -> Option<usize> {
         sbl::bands(&self.placed, &self.items, self.width_pt).into_iter().find(|&(a, b, _)| x_pt >= a && x_pt < b).map(|(_, _, i)| i)
     }
+}
+
+/// The profile a status bar setup window edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SetupTarget {
+    /// A saved profile, by Guid.
+    Shared(String),
+    /// The pane's own profile copy.
+    Session(PaneId),
+}
+
+/// The open status bar setup window: its target, and the target's layout value when it
+/// opened (what Cancel puts back; None when the profile had none).
+pub(super) struct StatusSetup {
+    win: crate::statusbar_setup_ui::StatusBarSetupWindow,
+    target: SetupTarget,
+    saved: Option<toml::Value>,
 }
 
 /// The right-click menu's target, until its pick arrives.
@@ -384,9 +402,9 @@ impl App {
         }
         let mut checkboxes = Vec::new();
         if let Some(s) = shown {
-            if let Some(info) = statusbar::info(&s.component.class).filter(|i| !i.internal) {
-                // The spring's Stable name (`SPR:42-49`).
-                let short = if info.class == SPRING_CLASS && algorithm == Algorithm::Stable { "Empty Space" } else { info.short };
+            if let Some(info) = statusbar::info_for(&s.component.class, algorithm).filter(|i| !i.internal) {
+                // The spring's Stable name is "Empty Space" (`SPR:42-49`).
+                let short = info.short;
                 let knobs = statusbar::knobs(&s.component.class, algorithm);
                 if !knobs.is_empty() {
                     results.push(menu.append(&MenuItem::with_id("statusbar:configure", format!("Configure {short}").replace('&', "&&"), true, None)));
@@ -400,7 +418,7 @@ impl App {
         if !checkboxes.is_empty() {
             results.push(menu.append(&PredefinedMenuItem::separator()));
             for (i, k) in checkboxes.iter().enumerate() {
-                let on = shown.and_then(|s| s.component.knobs.get(&k.key)).or(k.default.as_ref()).and_then(toml::Value::as_bool).unwrap_or(false);
+                let on = shown.and_then(|s| statusbar::knob_values(&s.component, algorithm).get(&k.key).and_then(toml::Value::as_bool)).unwrap_or(false);
                 results.push(menu.append(&CheckMenuItem::with_id(format!("statusbar:knob:{i}"), k.label.replace('&', "&&"), true, on, None)));
             }
         }
@@ -424,32 +442,141 @@ impl App {
                     }
                 }
             }
-            // Task 4's setup window opens from both; until then, the profile's Session page.
-            "configure" | "configure-bar" => self.configure_status_bar(m.pane, event_loop),
+            "configure-bar" => self.configure_status_bar(m.pane, event_loop),
+            // The setup window with that component selected and its sheet open (`DCV:190-205`).
+            "configure" => {
+                if let Some(target) = self.status_target(m.pane, &[LAYOUT_KEY, SHOW_KEY]) {
+                    self.open_status_setup(target, m.index, true, event_loop);
+                }
+            }
             "hide" => self.edit_status_layout(m.pane, |l| statusbar::hide_class(l, &m.class)),
             "disable" => self.disable_status_bar(m.pane),
             k => {
                 let Some(key) = k.strip_prefix("knob:").and_then(|i| i.parse::<usize>().ok()).and_then(|i| m.checkboxes.get(i).cloned()) else { return true };
                 let Some(index) = m.index else { return true };
-                self.edit_status_layout(m.pane, |l| {
-                    if let Some(c) = l.components.get_mut(index) {
-                        let on = c.knobs.get(&key).and_then(toml::Value::as_bool).unwrap_or(false);
-                        c.knobs.insert(key, toml::Value::Boolean(!on));
-                    }
-                });
+                // The layout the bar shows (the session's own copy when it has one), written
+                // back where the session keeps it (`statusBarSetLayout:`, `PS:23120-23128`);
+                // the knob's value is its saved one or else its default.
+                let Some(target) = self.status_target(m.pane, &[LAYOUT_KEY]) else { return true };
+                let mut layout = self.status_layout(m.pane);
+                let algorithm = layout.advanced.algorithm;
+                let Some(c) = layout.components.get_mut(index) else { return true };
+                let on = statusbar::knob_values(c, algorithm).get(&key).and_then(toml::Value::as_bool).unwrap_or(false);
+                c.knobs.insert(key, toml::Value::Boolean(!on));
+                self.write_status_layout(&target, Some(layout.to_value()));
             }
         }
         true
     }
 
-    /// Configure Status Bar and the placeholder's click: the Settings window at the
-    /// session's profile, on its Session tab.
+    /// Configure Status Bar and the placeholder's click: the setup window for the profile
+    /// the session's bar comes from.
     pub(super) fn configure_status_bar(&mut self, pane: PaneId, event_loop: &ActiveEventLoop) {
-        let Some(guid) = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile)) else { return };
-        self.open_settings_page(event_loop, crate::settings_ui::Page::Profiles);
-        if let Some(s) = self.settings.as_mut() {
-            s.show_profile_tab(&guid, "Session");
+        if let Some(target) = self.status_target(pane, &[LAYOUT_KEY, SHOW_KEY]) {
+            self.open_status_setup(target, None, false, event_loop);
         }
+    }
+
+    /// Where a session's status bar layout is edited: its own profile copy when it has one
+    /// that overrides any of `keys`, else the saved profile (`PS:23052-23066`,
+    /// `PS:23113-23119`). None for a pane that is gone.
+    pub(super) fn status_target(&self, pane: PaneId, keys: &[&str]) -> Option<SetupTarget> {
+        let guid = &self.panes.get(&pane)?.profile;
+        let own = self.store.sessions.iter().find(|s| s.profile.guid() == *guid).is_some_and(|s| keys.iter().any(|k| s.overridden.contains(*k)));
+        Some(if own { SetupTarget::Session(pane) } else { SetupTarget::Shared(self.store.shared_guid(guid)) })
+    }
+
+    /// The target profile's saved `Status Bar Layout` value, as stored (None when unset).
+    fn status_layout_value(&self, target: &SetupTarget) -> Option<toml::Value> {
+        match target {
+            SetupTarget::Shared(guid) => self.store.profiles.iter().find(|p| p.guid() == *guid)?.values.get(LAYOUT_KEY).cloned(),
+            SetupTarget::Session(pane) => {
+                let guid = &self.panes.get(pane)?.profile;
+                self.store.sessions.iter().find(|s| s.profile.guid() == *guid)?.profile.values.get(LAYOUT_KEY).cloned()
+            }
+        }
+    }
+
+    /// Writes (Some) or removes (None) the target profile's layout, and redraws every bar.
+    pub(super) fn write_status_layout(&mut self, target: &SetupTarget, value: Option<toml::Value>) {
+        match target {
+            SetupTarget::Shared(guid) => {
+                let Some(profile) = self.store.get_mut(guid) else { return };
+                match value {
+                    Some(v) => profile.set(LAYOUT_KEY, v),
+                    None => {
+                        profile.values.remove(LAYOUT_KEY);
+                    }
+                }
+                self.apply_edit(Edit::Changed(guid.clone()));
+            }
+            SetupTarget::Session(pane) => {
+                self.set_session_values(*pane, &[(LAYOUT_KEY.to_string(), value)]);
+                self.relayout();
+            }
+        }
+        self.redraw_all();
+    }
+
+    /// Opens the setup window for `target` (`PSV:664-706`). With `select`, that component is
+    /// selected, and with `configure` its Configure Component sheet opens. A window already
+    /// open comes to the front instead (iTerm2's is a sheet: one at a time).
+    pub(super) fn open_status_setup(&mut self, target: SetupTarget, select: Option<usize>, configure: bool, event_loop: &ActiveEventLoop) {
+        if let Some(s) = self.status_setup.as_mut() {
+            if s.target == target
+                && let (Some(i), true) = (select, configure)
+            {
+                s.win.configure(i);
+            }
+            s.win.focus();
+            return;
+        }
+        let profile = match &target {
+            SetupTarget::Shared(guid) => self.store.profiles.iter().find(|p| p.guid() == *guid),
+            SetupTarget::Session(pane) => self.profile_of(*pane),
+        };
+        let Some(profile) = profile else { return };
+        let layout = Layout::from_value(profile.get(LAYOUT_KEY).as_ref());
+        // Automatic auto-rainbow follows the session background's brightness (`PSV:654-662`).
+        let dark_background = is_dark(crate::palette::Palette::from_profile(profile, self.dark()).bg);
+        let saved = self.status_layout_value(&target);
+        let profiles: Vec<(String, String)> = self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
+        let Some(g) = self.gpu.as_ref() else { return };
+        match crate::statusbar_setup_ui::StatusBarSetupWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, layout, dark_background, profiles, select, configure) {
+            Ok(win) => self.status_setup = Some(StatusSetup { win, target, saved }),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+    }
+
+    /// The setup window's events: each change goes to the profile at once, OK keeps it,
+    /// and Cancel or closing the window puts back the layout it opened with (`PSV:694-703`).
+    pub(super) fn status_setup_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
+        let Some(s) = self.status_setup.as_mut() else { return false };
+        if s.win.id() != window {
+            return false;
+        }
+        let what = match event {
+            WindowEvent::CloseRequested => SetupEvent::Cancel,
+            WindowEvent::RedrawRequested => s.win.redraw(),
+            other => {
+                s.win.event(other);
+                SetupEvent::None
+            }
+        };
+        match what {
+            SetupEvent::None => {}
+            SetupEvent::Changed => {
+                let (target, value) = (s.target.clone(), s.win.layout.to_value());
+                self.write_status_layout(&target, Some(value));
+            }
+            SetupEvent::Ok => self.status_setup = None,
+            SetupEvent::Cancel => {
+                if let Some(s) = self.status_setup.take() {
+                    self.write_status_layout(&s.target, s.saved);
+                }
+            }
+        }
+        true
     }
 
     /// Changes the session's saved profile's layout (Hide writes to the original profile

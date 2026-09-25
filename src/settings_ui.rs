@@ -96,7 +96,7 @@ pub struct SettingsWindow {
     /// Hotkey windows: the sheet, and registration failures from the app.
     pub hotkeys: crate::settings_hotkey::HotkeyUi,
     /// Profiles > Session's "Configure Status Bar" was pressed for this profile Guid: the
-    /// status bar setup window opens for it (milestone 9g Task 4 takes it from here).
+    /// status bar setup window opens for it (the app takes it after each frame).
     pub configure_status_bar: Option<String>,
 }
 
