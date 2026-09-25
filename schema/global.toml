@@ -722,6 +722,24 @@ default = false
 help = "Suppress warning about broadcasting input."
 
 [[setting]]
+key = "NoSyncTmuxHung"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning about a slow tmux response"
+type = "bool"
+default = false
+help = "Suppress the \"Slow tmux Response\" warning shown when tmux does not answer its first command within five seconds."
+
+[[setting]]
+key = "tolerateUnrecognizedTmuxCommands"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Tolerate unrecognized commands from server."
+type = "bool"
+default = false
+help = "If disabled, an unknown command from tmux (such as output from ssh or wall) will end the session. Turning this off helps detect dead ssh sessions."
+
+[[setting]]
 key = "Use background pattern indicator"
 tab = "Advanced"
 section = "Broadcast"

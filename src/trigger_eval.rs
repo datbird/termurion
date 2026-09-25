@@ -254,6 +254,14 @@ impl Screen {
         self.feed_quiet(text.as_bytes());
     }
 
+    /// A tmux gateway message (iTerm2's printTmuxMessage): the text as is, in the default
+    /// colors, then a new line. No escape sequence in it acts.
+    pub fn print_message(&mut self, text: &str) {
+        self.feed_quiet(b"\x1b[39;49m");
+        let text = crate::arrangement::inert_text(text).replace(['\r', '\n'], " ");
+        self.feed_quiet(format!("{text}\r\n").as_bytes());
+    }
+
     /// Session restoration's contents (SGR-safe styled text) and the optional banner
     /// (text, (background gray, text gray)): real cells, a full-width bar on its own line.
     pub fn feed_restored(&mut self, text: &str, cursor: Option<(usize, usize)>, banner: Option<(&str, (u8, u8))>) {
@@ -717,6 +725,19 @@ mod tests {
         assert_eq!((g.cursor.point.line.0, g.cursor.point.column.0), (1, 0), "the shell starts below it");
         assert_eq!(g[Line(1)][Column(0)].bg, Color::Named(alacritty_terminal::vte::ansi::NamedColor::Background));
         assert_eq!(alerts(&mut s), 0, "triggers do not see the banner");
+    }
+
+    #[test]
+    fn gateway_messages_print_literally() {
+        let mut s = Screen::new(40, 5);
+        s.feed(b"\x1b[31;44m");
+        s.print_message("tmux \x1b]0;evil\x07on");
+        assert_ne!(s.title(), Some("evil"), "no escape sequence acts");
+        let g = s.term().grid();
+        assert_eq!(g[Line(0)][Column(0)].c, 't');
+        assert_eq!(g[Line(0)][Column(0)].fg, Color::Named(alacritty_terminal::vte::ansi::NamedColor::Foreground), "default colors");
+        assert_eq!(g[Line(0)][Column(0)].bg, Color::Named(alacritty_terminal::vte::ansi::NamedColor::Background));
+        assert_eq!((g.cursor.point.line.0, g.cursor.point.column.0), (1, 0), "then a new line");
     }
 
     #[test]

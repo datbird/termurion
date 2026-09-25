@@ -46,7 +46,7 @@ impl App {
 
     /// What a bar's answer does. `button` is None when the bar was closed.
     pub(super) fn bar_answered(&mut self, pane: PaneId, id: &str, button: Option<&str>, event_loop: &ActiveEventLoop) {
-        if !self.clipboard_bar(pane, id, button, event_loop) && !self.porthole_link_bar(pane, id, button) && !self.trigger_bar(pane, id, button) && !self.bell_bar(pane, id, button) && !self.coprocess_bar(pane, id, button) && !self.status_bar(pane, id, button) {
+        if !self.clipboard_bar(pane, id, button, event_loop) && !self.porthole_link_bar(pane, id, button) && !self.trigger_bar(pane, id, button) && !self.bell_bar(pane, id, button) && !self.coprocess_bar(pane, id, button) && !self.status_bar(pane, id, button) && !self.tmux_bar(pane, id, button, event_loop) {
             self.prompted_bar(pane, id, button);
         }
     }

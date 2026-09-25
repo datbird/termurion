@@ -126,6 +126,7 @@ mod tmux_probe;
 pub mod tmux_hook;
 pub mod tmux_proto;
 pub mod tmux_gateway;
+pub mod tmux_handshake;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;

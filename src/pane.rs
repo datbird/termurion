@@ -136,6 +136,11 @@ pub struct Pane {
     co_out: crate::coprocess::OutQueue,
     /// A coprocess that ended: its command and stderr, for the window.
     co_end: Option<(String, String)>,
+    /// tmux control mode's entry and line reader.
+    tmux_hook: crate::tmux_hook::Hook,
+    /// What the hook found, in order, for the window's tmux gateway. Output behind a tmux
+    /// line waits here too, so "Detached" lands before what followed `%exit`.
+    tmux_q: Vec<crate::tmux_hook::Out>,
 }
 
 impl Pane {
@@ -197,7 +202,7 @@ impl Pane {
     fn with_io(id: PaneId, io: Io, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None }
+        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -211,13 +216,20 @@ impl Pane {
             if let Some(c) = self.coprocess.as_mut() {
                 c.write(&chunk);
             }
-            if self.suppress_output || self.coprocess.as_ref().is_some_and(|c| c.mute) {
-                continue;
-            }
-            let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&chunk);
-            if !reply.is_empty() {
-                if let Err(e) = pty.write(&reply) {
-                    self.error = Some(e);
+            // tmux control mode is found before anything can drop output.
+            let dropping = self.suppress_output || self.coprocess.as_ref().is_some_and(|c| c.mute);
+            for out in self.tmux_hook.feed(&chunk) {
+                match out {
+                    crate::tmux_hook::Out::Screen(_) if dropping => {}
+                    crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {
+                        let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&bytes);
+                        if !reply.is_empty() {
+                            if let Err(e) = pty.write(&reply) {
+                                self.error = Some(e);
+                            }
+                        }
+                    }
+                    other => self.tmux_q.push(other),
                 }
             }
         }
@@ -257,6 +269,28 @@ impl Pane {
             self.stop_coprocess();
         }
         changed
+    }
+
+    /// What the tmux hook found since the last call.
+    pub fn take_tmux(&mut self) -> Vec<crate::tmux_hook::Out> {
+        std::mem::take(&mut self.tmux_q)
+    }
+
+    pub fn has_tmux(&self) -> bool {
+        !self.tmux_q.is_empty()
+    }
+
+    /// Output that waited behind a tmux line.
+    pub fn feed_output(&mut self, bytes: &[u8]) {
+        let reply = self.own_mut().feed(bytes);
+        if !reply.is_empty() {
+            self.reply(&reply);
+        }
+    }
+
+    /// Ends tmux control mode here without an `%exit`.
+    pub fn unhook_tmux(&mut self) {
+        self.tmux_hook.unhook();
     }
 
     /// What the user sends: keys, pastes. Held while Buffer Input is on.
@@ -538,7 +572,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

@@ -68,6 +68,11 @@ impl Bars {
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
+
+    /// Keeps only the bars `keep` accepts (a question whose subject ended leaves).
+    pub fn retain(&mut self, keep: impl FnMut(&Bar) -> bool) {
+        self.queue.retain(keep);
+    }
 }
 
 /// Whether held modifiers make a letter a bar shortcut: Alt alone. (AltGr arrives as
@@ -127,6 +132,18 @@ mod tests {
 
     const AREA: Rect = Rect { x: 100.0, y: 50.0, w: 800.0, h: 400.0 };
     const CELL: (f32, f32) = (8.0, 16.0);
+
+    #[test]
+    fn ended_questions_leave() {
+        let mut bars = Bars::default();
+        bars.push(bar("tmux-slow", &["OK"]));
+        bars.push(bar("paste", &["Just Once"]));
+        bars.push(bar("tmux-hung", &["Detach"]));
+        bars.retain(|b| !b.id.starts_with("tmux-"));
+        assert_eq!(bars.front().map(|b| b.id.as_str()), Some("paste"));
+        bars.pop();
+        assert!(bars.is_empty());
+    }
 
     #[test]
     fn same_id_replaces_the_bar() {

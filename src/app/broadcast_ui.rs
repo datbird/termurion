@@ -41,6 +41,14 @@ impl App {
             Route::Local => vec![sender],
         };
         for t in targets {
+            // A tmux gateway reads typing as its Command Menu's keys; reports and other
+            // bytes would land in tmux's command stream, so they are dropped there.
+            if self.is_tmux_gateway(t) {
+                if broadcast::typed(what) {
+                    self.tmux_gateway_input(t, bytes, what == Write::Key);
+                }
+                continue;
+            }
             if let Some(p) = self.panes.get_mut(&t) {
                 p.input(bytes);
             }

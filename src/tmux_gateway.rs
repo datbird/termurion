@@ -67,13 +67,15 @@ pub struct Gateway {
     disconnected: bool,
     stray: String,
     pub logging: bool,
+    /// tolerateUnrecognizedTmuxCommands: text that is not tmux is kept for `%exit`.
+    pub tolerate_unrecognized: bool,
     /// tmux 3.2 or later (the wait-exit handshake).
     pub v3_2: bool,
 }
 
 impl Gateway {
     pub fn new(newline: &str) -> Gateway {
-        Gateway { newline: newline.into(), queue: VecDeque::new(), current: None, out: Vec::new(), held: Vec::new(), can_write: false, accept_notes: false, initialized: false, detach_sent: false, disconnected: false, stray: String::new(), logging: false, v3_2: false }
+        Gateway { newline: newline.into(), queue: VecDeque::new(), current: None, out: Vec::new(), held: Vec::new(), can_write: false, accept_notes: false, initialized: false, detach_sent: false, disconnected: false, stray: String::new(), logging: false, tolerate_unrecognized: false, v3_2: false }
     }
 
     /// Sends one command. With no tag its errors are tolerated (iTerm2 does the same).
@@ -121,6 +123,18 @@ impl Gateway {
         self.detach_sent = true;
     }
 
+    /// After an Abort: `detach`, then nothing more (iTerm2's abortWithErrorMessage).
+    pub fn abort(&mut self) {
+        self.detach();
+        self.force_disconnect();
+    }
+
+    /// X in the gateway session, or an abort: let go without telling tmux.
+    pub fn force_disconnect(&mut self) {
+        self.disconnected = true;
+        self.queue.clear();
+    }
+
     pub fn enable_writes(&mut self) {
         self.can_write = true;
         let held = std::mem::take(&mut self.held);
@@ -132,6 +146,10 @@ impl Gateway {
         std::mem::take(&mut self.out)
     }
 
+    pub fn detach_sent(&self) -> bool {
+        self.detach_sent
+    }
+
     pub fn disconnected(&self) -> bool {
         self.disconnected
     }
@@ -140,6 +158,16 @@ impl Gateway {
     pub fn hung(&self, now: Instant) -> bool {
         let cmds = || self.current.iter().filter_map(|c| c.cmd.as_ref()).chain(self.queue.iter());
         cmds().any(|c| c.flags.laggy) && cmds().any(|c| now.saturating_duration_since(c.sent) > LAG)
+    }
+
+    /// When `hung` may next turn true: while a laggy command waits, the oldest command's
+    /// time plus `LAG`.
+    pub fn next_hung_check(&self) -> Option<Instant> {
+        let cmds = || self.current.iter().filter_map(|c| c.cmd.as_ref()).chain(self.queue.iter());
+        if !cmds().any(|c| c.flags.laggy) {
+            return None;
+        }
+        cmds().map(|c| c.sent + LAG).min()
     }
 
     /// One line from the hook.
@@ -202,6 +230,10 @@ impl Gateway {
                 self.disconnected = true;
                 ev.push(Event::Exit);
             }
+            Ok(Note::Text(_)) if self.tolerate_unrecognized => {
+                self.stray.push_str(&text);
+                self.stray.push('\n');
+            }
             Ok(Note::Text(_)) => {
                 ev.push(Event::Print("Unrecognized command from tmux. Did your ssh session die? The command was:".into()));
                 ev.push(Event::Print(text.clone()));
@@ -251,7 +283,6 @@ impl Gateway {
                 }
                 if !flags.tolerate && (self.initialized || cur.cmd.is_some()) {
                     ev.push(Event::Abort(format!("Error: {}.\n\nInfo:\n{}", cur.text, cur.cmd.as_ref().map_or("", |c| c.text.as_str()))));
-                    self.disconnected = true;
                     return;
                 }
             }
@@ -362,10 +393,38 @@ mod tests {
     }
 
     #[test]
+    fn abort_detaches_then_disconnects() {
+        let mut g = started();
+        g.send("bad", Some(4), Flags::default());
+        g.take_writes();
+        let ev = feed(&mut g, &["%begin 6 6 1", "no such thing", "%error 6 6 1"]);
+        assert!(matches!(&ev[..], [Event::Abort(_)]));
+        g.abort();
+        assert_eq!(g.take_writes(), b"detach\r", "iTerm2 detaches before it lets go");
+        assert!(g.disconnected());
+        g.send("list-windows", None, Flags::default());
+        assert!(g.take_writes().is_empty());
+    }
+
+    #[test]
+    fn tolerated_text_waits_for_exit() {
+        let mut g = started();
+        g.tolerate_unrecognized = true;
+        assert!(feed(&mut g, &["sh: 1: oops"]).is_empty());
+        let ev = feed(&mut g, &["%exit"]);
+        let star = "*".repeat(80);
+        let want: Vec<Event> = ["", "** ERROR **", "tmux exited with message:", "sh: 1: oops", &star].iter().map(|s| Event::Print(s.to_string())).chain([Event::Exit]).collect();
+        assert_eq!(ev, want);
+    }
+
+    #[test]
     fn slow_detach_offers_force() {
         let mut g = started();
         let t0 = Instant::now();
+        assert_eq!(g.next_hung_check(), None);
         g.detach();
+        assert!(g.next_hung_check().is_some_and(|t| t >= t0 + LAG));
+        assert!(g.detach_sent());
         assert!(!g.hung(t0));
         assert!(g.hung(t0 + LAG + Duration::from_millis(1)));
         g.send("list-windows", None, Flags::default());

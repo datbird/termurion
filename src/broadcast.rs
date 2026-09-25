@@ -252,6 +252,12 @@ pub fn route(w: Write) -> Route {
     }
 }
 
+/// Writes that are typing (iTerm2's writeTask): a tmux gateway reads them as its Command
+/// Menu's keys. The rest never reach a gateway.
+pub fn typed(w: Write) -> bool {
+    matches!(w, Write::Key | Write::Paste | Write::Drop | Write::SendText | Write::SendTextLocal | Write::AltClickArrows)
+}
+
 /// Clear Buffer with two or more broadcast sessions: (heading, text, buttons).
 pub fn clear_question(n: usize) -> (&'static str, String, [&'static str; 3]) {
     ("Clear in All Broadcasted-to Sessions?", format!("Clear all sessions to which input is broadcast? This will affect {n} sessions."), ["Clear All", "Clear Current Session Only", "Cancel"])
@@ -408,6 +414,16 @@ mod tests {
         }
         for w in [Write::SendTextLocal, Write::MouseReport, Write::FocusReport, Write::Trigger, Write::Upload, Write::BufferRelease] {
             assert_eq!(route(w), Route::Local, "{w:?}");
+        }
+    }
+
+    #[test]
+    fn gateways_read_only_typing() {
+        for w in [Write::Key, Write::Paste, Write::Drop, Write::SendText, Write::SendTextLocal, Write::AltClickArrows] {
+            assert!(typed(w), "{w:?}");
+        }
+        for w in [Write::KeyRelease, Write::MouseReport, Write::FocusReport, Write::Trigger, Write::Upload, Write::BufferRelease] {
+            assert!(!typed(w), "{w:?}");
         }
     }
 

@@ -87,6 +87,7 @@ mod arrange_ui;
 mod restore_ui;
 mod hotkey_ui;
 mod broadcast_ui;
+mod tmux_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -212,6 +213,12 @@ pub struct App {
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// Session > Run Coprocess's window.
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
+    /// tmux gateways, by the pane that runs `tmux -CC`.
+    tmux: HashMap<PaneId, tmux_ui::TmuxGw>,
+    /// A gateway's C key waits for the event loop to open its window.
+    tmux_ask_command: Option<PaneId>,
+    /// C's window, "Enter command to send tmux:".
+    tmux_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// The terminal windows that are not current, their numbers, and the last one focused.
     windows: crate::winmodel::Parked<windows_ui::WinSlot>,
     registry: crate::winmodel::Registry,
@@ -504,6 +511,9 @@ pub fn run() {
         ctx_pending: None,
         prompt: None,
         co_prompt: None,
+        tmux: HashMap::new(),
+        tmux_ask_command: None,
+        tmux_prompt: None,
         aps: HashMap::new(),
         windows: Default::default(),
         registry: Default::default(),
@@ -1975,7 +1985,9 @@ impl ApplicationHandler<UserEvent> for App {
             self.redraw();
         }
         let undo_due = self.expire_undo();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due].into_iter().flatten().min();
+        self.open_tmux_command_prompt(event_loop);
+        let tmux_due = self.tick_tmux();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -2043,6 +2055,7 @@ impl ApplicationHandler<UserEvent> for App {
                 exited.push(*id);
             }
         }
+        changed |= self.tmux_pump();
         for id in exited {
             self.session_ended(id);
             if let Some(p) = self.panes.get_mut(&id) {
@@ -2063,7 +2076,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

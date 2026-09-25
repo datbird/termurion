@@ -38,6 +38,12 @@ impl Hook {
         self.control
     }
 
+    /// Leaves control mode without an `%exit` (iTerm2's forceUnhookDCS): what follows is
+    /// output again.
+    pub fn unhook(&mut self) {
+        *self = Hook::default();
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);
@@ -138,6 +144,15 @@ mod tests {
         assert_eq!(h.feed(b"hello\x1bP1000p%begin 1 2 0\r\n"), vec![s(b"hello"), Out::Enter, l("%begin 1 2 0")]);
         assert!(h.active());
         assert_eq!(Hook::default().feed(b"plain \x1bP1001p text"), vec![s(b"plain \x1bP1001p text")], "another DCS is output");
+    }
+
+    #[test]
+    fn unhook_returns_to_the_screen() {
+        let mut h = Hook::default();
+        assert_eq!(h.feed(b"\x1bP1000p%begin 1 1 0\r\n%end"), vec![Out::Enter, l("%begin 1 1 0")]);
+        h.unhook();
+        assert!(!h.active());
+        assert_eq!(h.feed(b" 1 1 0\r\n%exit\r\n\x1b\\$ "), vec![s(b" 1 1 0\r\n%exit\r\n\x1b\\$ ")], "X: tmux's lines show as text");
     }
 
     #[test]
