@@ -47,8 +47,8 @@ impl App {
             } else {
                 None
             };
-            if let (Some(b), Some(p)) = (bytes, self.focused_pane()) {
-                p.input(&b);
+            if let (Some(b), Some(id)) = (bytes, self.focused_id()) {
+                self.user_write(id, &b, crate::broadcast::Write::Key);
             }
             return false;
         }
@@ -65,8 +65,8 @@ impl App {
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
         let Some(key) = keystroke::key_of(&ev.logical_key, ev.text.as_deref()).or_else(|| base.clone()) else { return true };
         let bytes = keyproto::encode(kb, &self.proto_event(ev, &key, base.as_ref(), Kind::Release));
-        if let (Some(b), Some(p)) = (bytes.filter(|b| !b.is_empty()), self.panes.get_mut(&pane)) {
-            p.input(&b);
+        if let Some(b) = bytes.filter(|b| !b.is_empty() && self.panes.contains_key(&pane)) {
+            self.user_write(pane, &b, crate::broadcast::Write::KeyRelease);
         }
         true
     }

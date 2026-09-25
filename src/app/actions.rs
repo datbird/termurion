@@ -89,14 +89,17 @@ impl App {
 
     /// Bytes an action sends, as if typed.
     pub(super) fn send_to_focused(&mut self, bytes: &[u8]) {
+        self.send_focused_as(bytes, crate::broadcast::Write::SendText);
+    }
+
+    fn send_focused_as(&mut self, bytes: &[u8], what: crate::broadcast::Write) {
         if bytes.is_empty() {
             return;
         }
-        if let Some(p) = self.focused_pane() {
-            if p.exited.is_none() {
-                p.scroll(Scroll::Bottom);
-                p.input(bytes);
-            }
+        let Some(id) = self.focused_id() else { return };
+        if let Some(p) = self.panes.get_mut(&id).filter(|p| p.exited.is_none()) {
+            p.scroll(Scroll::Bottom);
+            self.user_write(id, bytes, what);
         }
     }
 
@@ -221,7 +224,16 @@ impl App {
             }
             0 => self.step_tab(true),
             2 => self.step_tab(false),
-            4 => self.focused_pane().map_or((), |p| p.scroll(Scroll::Bottom)),
+            // Scroll to End: every broadcast session (iTerm2's broadcastScrollToEnd).
+            4 => {
+                if let Some(id) = self.focused_id() {
+                    for t in self.broadcast.targets(&self.broadcast_view(), id) {
+                        if let Some(p) = self.panes.get_mut(&t) {
+                            p.scroll(Scroll::Bottom);
+                        }
+                    }
+                }
+            }
             5 => self.focused_pane().map_or((), |p| p.scroll(Scroll::Top)),
             6 => self.focused_pane().map_or((), |p| p.scroll(Scroll::Delta(-1))),
             7 => self.focused_pane().map_or((), |p| p.scroll(Scroll::Delta(1))),
@@ -230,7 +242,9 @@ impl App {
             10 => self.send_to_focused(&[b"\x1b".as_slice(), b.text.as_bytes()].concat()),
             11 => self.send_to_focused(&keyaction::hex_bytes(&b.text)),
             12 => self.send_to_focused(keyaction::expand(&b.text, b.escaping()).as_bytes()),
-            38 | 76 => self.send_to_focused(keyaction::expand(&b.text, b.vim_escaping()).as_bytes()),
+            38 => self.send_to_focused(keyaction::expand(&b.text, b.vim_escaping()).as_bytes()),
+            // Send Text without Broadcasting.
+            76 => self.send_focused_as(keyaction::expand(&b.text, b.vim_escaping()).as_bytes(), crate::broadcast::Write::SendTextLocal),
             16 => self.send_to_focused(&[0x08]),
             17 => self.send_to_focused(&[0x7f]),
             18 => self.select_pane_dir(Dir::Left),
@@ -375,8 +389,8 @@ impl App {
             "kPasteFromClipboardPointerAction" => self.paste(),
             "kPasteFromSelectionPointerAction" => {
                 let sel = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string());
-                if let (Some(s), Some(p)) = (sel, self.focused_pane()) {
-                    p.paste(&s);
+                if let (Some(s), Some(id)) = (sel, self.focused_id()) {
+                    self.user_paste(id, &s, crate::broadcast::Write::Paste);
                 }
             }
             "kExtendSelectionPointerAction" => {

@@ -86,6 +86,7 @@ mod undo_ui;
 mod arrange_ui;
 mod restore_ui;
 mod hotkey_ui;
+mod broadcast_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -250,6 +251,10 @@ pub struct App {
     host: Option<crate::host_client::Client>,
     /// The current window's hotkey state (swapped per window).
     hotkey: Option<hotkey_ui::HotkeyWin>,
+    /// The current window's broadcast input state and its broadcasting tabs (swapped per
+    /// window).
+    broadcast: crate::broadcast::Broadcast,
+    broadcast_tabs: std::collections::BTreeSet<u64>,
     /// Profile hotkey ids (index + 1) to profile guids; failed registrations by guid.
     hotkey_ids: Vec<String>,
     hotkey_errors: std::collections::HashMap<String, String>,
@@ -447,6 +452,8 @@ pub fn run() {
     let mut app = App {
         host,
         hotkey: None,
+        broadcast: Default::default(),
+        broadcast_tabs: Default::default(),
         hotkey_ids: Vec::new(),
         hotkey_errors: Default::default(),
         hotkeys_registered: false,
@@ -1040,8 +1047,8 @@ impl App {
             }
             None => return,
         };
-        if let Some(p) = self.focused_pane() {
-            p.paste(&text);
+        if let Some(id) = self.focused_id() {
+            self.user_paste(id, &text, crate::broadcast::Write::Paste);
         }
     }
 
@@ -1294,7 +1301,8 @@ impl App {
         }
         if let Some(bytes) = bytes {
             pane.scroll(Scroll::Bottom);
-            pane.input(&bytes);
+            let sender = pane.id;
+            self.user_write(sender, &bytes, crate::broadcast::Write::Key);
             if let (Some(k), Some(id)) = (self.typing.take(), focused) {
                 self.sent_keys.press(k, id);
             }
@@ -1424,7 +1432,7 @@ impl App {
         let c = term.grid().cursor.point;
         let mode = *term.mode();
         let bytes = actions::option_click_arrows((c.column.0 as u32, c.line.0.max(0) as u32), target, term.columns() as u32, mode.contains(TermMode::ALT_SCREEN), mode.contains(TermMode::APP_CURSOR));
-        p.input(&bytes);
+        self.user_write(pane, &bytes, crate::broadcast::Write::AltClickArrows);
     }
 
     fn mouse_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {

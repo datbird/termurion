@@ -208,9 +208,7 @@ impl App {
             Some(cmd) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),
             None => {
                 let text = files.iter().map(|f| if f.contains(char::is_whitespace) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ");
-                if let Some(p) = self.panes.get_mut(&pane) {
-                    p.paste(&text);
-                }
+                self.user_paste(pane, &text, crate::broadcast::Write::Drop);
             }
         }
     }

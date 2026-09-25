@@ -36,6 +36,8 @@ pub(super) struct WinSlot {
     laid_out: Option<Rect>,
     /// Set on a profile's hotkey window.
     pub(super) hotkey: Option<super::hotkey_ui::HotkeyWin>,
+    broadcast: crate::broadcast::Broadcast,
+    broadcast_tabs: std::collections::BTreeSet<u64>,
 }
 
 impl WinSlot {
@@ -67,6 +69,8 @@ impl WinSlot {
             mru_mods: None,
             laid_out: None,
             hotkey: None,
+            broadcast: Default::default(),
+            broadcast_tabs: Default::default(),
         }
     }
 }
@@ -106,6 +110,8 @@ impl App {
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
         swap(&mut self.hotkey, &mut s.hotkey);
+        swap(&mut self.broadcast, &mut s.broadcast);
+        swap(&mut self.broadcast_tabs, &mut s.broadcast_tabs);
     }
 
     /// Makes a terminal window current. False for a window that is not one.
@@ -353,6 +359,8 @@ impl WinSlot {
             mru_mods: None,
             laid_out: None,
             hotkey: None,
+            broadcast: Default::default(),
+            broadcast_tabs: Default::default(),
         }
     }
 }

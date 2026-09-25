@@ -286,7 +286,7 @@ impl App {
                 let text = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string());
                 if let (Some(t), Some(p)) = (text, self.panes.get_mut(&id)) {
                     p.scroll(Scroll::Bottom);
-                    p.paste(&t);
+                    self.user_paste(id, &t, crate::broadcast::Write::Paste);
                 }
             }
         }

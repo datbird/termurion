@@ -465,8 +465,8 @@ impl App {
             "paste:" => self.paste(),
             "pasteSelection:" => {
                 let text = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| p.screen.term().selection_to_string());
-                if let (Some(text), Some(p)) = (text, self.focused_pane()) {
-                    p.paste(&text);
+                if let (Some(text), Some(id)) = (text, self.focused_id()) {
+                    self.user_paste(id, &text, crate::broadcast::Write::Paste);
                 }
             }
             "selectAll:" => {

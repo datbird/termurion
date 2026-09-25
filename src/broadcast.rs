@@ -210,6 +210,40 @@ impl Broadcast {
     }
 }
 
+/// A write to a session, by where it comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Write {
+    Key,
+    KeyRelease,
+    Paste,
+    Drop,
+    SendText,
+    /// Key action 76, Send Text without Broadcasting.
+    SendTextLocal,
+    AltClickArrows,
+    MouseReport,
+    FocusReport,
+    Trigger,
+    Upload,
+    BufferRelease,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// To every session of the sender's broadcast domain.
+    Broadcast,
+    /// To the sender only.
+    Local,
+}
+
+/// Which writes broadcast (iTerm2's canBroadcast).
+pub fn route(w: Write) -> Route {
+    match w {
+        Write::Key | Write::KeyRelease | Write::Paste | Write::Drop | Write::SendText | Write::AltClickArrows => Route::Broadcast,
+        Write::SendTextLocal | Write::MouseReport | Write::FocusReport | Write::Trigger | Write::Upload | Write::BufferRelease => Route::Local,
+    }
+}
+
 /// The warning's text for turning `mode` on.
 pub fn warning_title(v: &View, mode: Mode) -> String {
     match mode {
@@ -347,6 +381,16 @@ mod tests {
         v.current = 3;
         v.current_tab = 1;
         assert_eq!(b.targets(&v, 1), vec![1]);
+    }
+
+    #[test]
+    fn local_writes_stay_local() {
+        for w in [Write::Key, Write::KeyRelease, Write::Paste, Write::Drop, Write::SendText, Write::AltClickArrows] {
+            assert_eq!(route(w), Route::Broadcast, "{w:?}");
+        }
+        for w in [Write::SendTextLocal, Write::MouseReport, Write::FocusReport, Write::Trigger, Write::Upload, Write::BufferRelease] {
+            assert_eq!(route(w), Route::Local, "{w:?}");
+        }
     }
 
     #[test]
