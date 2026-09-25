@@ -912,8 +912,8 @@ help = "Should Advanced Paste automatically enable \"Wait for shell prompt befor
 
 [[setting]]
 key = "PasteSpecialChunkSize"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: chunk size"
 type = "int"
 default = 1024
@@ -921,8 +921,8 @@ help = "Advanced Paste's chunk size, remembered."
 
 [[setting]]
 key = "PasteSpecialChunkDelay"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: chunk delay"
 type = "float"
 default = 0.01
@@ -930,8 +930,8 @@ help = "Advanced Paste's delay between chunks, remembered."
 
 [[setting]]
 key = "NumberOfSpacesPerTab"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: spaces per tab"
 type = "int"
 default = 4
@@ -939,8 +939,8 @@ help = "Advanced Paste's spaces for each tab, remembered."
 
 [[setting]]
 key = "TabTransform"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: tab transform"
 type = "int"
 default = 0
@@ -948,8 +948,8 @@ help = "Advanced Paste's tab choice (0 keep, 1 spaces, 2 escape with ^V), rememb
 
 [[setting]]
 key = "EscapeShellCharsWithBackslash"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: escape shell characters with backslash"
 type = "bool"
 default = false
@@ -957,8 +957,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "ConvertUnicodePunctuation"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: convert Unicode punctuation"
 type = "bool"
 default = false
@@ -966,8 +966,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "ConvertDosNewlines"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: convert DOS newlines"
 type = "bool"
 default = true
@@ -975,8 +975,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "RemoveControlCodes"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: remove control codes"
 type = "bool"
 default = true
@@ -984,8 +984,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "BracketedPasteMode"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: use bracketed paste mode"
 type = "bool"
 default = true
@@ -993,8 +993,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialUseRegexSubstitution"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: use regex substitution"
 type = "bool"
 default = false
@@ -1002,8 +1002,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialRegex"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: regex"
 type = "string"
 default = ""
@@ -1011,8 +1011,8 @@ help = "Remembered by Advanced Paste."
 
 [[setting]]
 key = "PasteSpecialSubstitution"
-tab = "General"
-section = "Paste Special"
+tab = "Advanced"
+section = "Pasteboard"
 label = "Paste Special: substitution"
 type = "string"
 default = ""

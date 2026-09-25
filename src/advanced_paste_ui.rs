@@ -22,16 +22,16 @@ pub struct AdvancedPasteWindow {
     pub form: Form,
     pub preview: String,
     pub session: Session,
-    /// The preview follows the form until the person edits it.
-    edited: bool,
+    /// The remembered settings the form starts from (a new source starts from them again).
+    defaults: crate::advanced_paste::Defaults,
 }
 
 impl AdvancedPasteWindow {
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, sources: Vec<(String, String)>, source: usize, form: Form, session: Session) -> Result<AdvancedPasteWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, sources: Vec<(String, String)>, source: usize, form: Form, session: Session, defaults: crate::advanced_paste::Defaults) -> Result<AdvancedPasteWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, "Advanced Paste", 520.0, 640.0)?;
         let text = sources.get(source).map(|s| s.1.clone()).unwrap_or_default();
         let preview = form.preview(&text);
-        Ok(AdvancedPasteWindow { host, sources, source, form, preview, session, edited: false })
+        Ok(AdvancedPasteWindow { host, sources, source, form, preview, session, defaults })
     }
 
     pub fn id(&self) -> WindowId {
@@ -56,7 +56,7 @@ impl AdvancedPasteWindow {
         let en = self.form.enabled(&text, self.session);
         let before = self.form.clone();
         let before_source = self.source;
-        let (form, preview, sources, source, edited) = (&mut self.form, &mut self.preview, &self.sources, &mut self.source, &mut self.edited);
+        let (form, preview, sources, source) = (&mut self.form, &mut self.preview, &self.sources, &mut self.source);
         self.host.paint(|ui| {
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 out = AdvEvent::Cancel;
@@ -72,9 +72,8 @@ impl AdvancedPasteWindow {
                     }
                 });
                 egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
-                    if ui.add(egui::TextEdit::multiline(preview).code_editor().desired_width(f32::INFINITY).desired_rows(6)).changed() {
-                        *edited = true;
-                    }
+                    // The preview can be edited; a transform change makes it again (iTerm2's).
+                    ui.add(egui::TextEdit::multiline(preview).code_editor().desired_width(f32::INFINITY).desired_rows(6));
                 });
                 ui.label(model::stats(preview));
                 ui.separator();
@@ -134,8 +133,14 @@ impl AdvancedPasteWindow {
         });
         // A new source or transform shows a new preview (speed changes do not).
         let transforms_changed = { let mut b = before.clone(); b.chunk = self.form.chunk; b.delay = self.form.delay; b.wait = self.form.wait; b.bracket = self.form.bracket; b.tab_transform = self.form.tab_transform; b.spaces = self.form.spaces; b != self.form };
+        // A new source sets every control again from its text (iTerm2's selectValueAtIndex:);
+        // the speed stays.
+        if self.source != before_source {
+            let text = self.text();
+            let (chunk, delay) = (self.form.chunk, self.form.delay);
+            self.form = Form { chunk, delay, ..Form::new(&text, &self.defaults, self.session) };
+        }
         if self.source != before_source || transforms_changed {
-            self.edited = false;
             let text = self.text();
             self.preview = self.form.preview(&text);
             self.host.request_redraw();

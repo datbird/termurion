@@ -167,12 +167,13 @@ impl App {
             d.delay = s.delay;
         }
         let form = Form::new(&body, &d, session);
+        let d = d.clone();
         if let Some((w, _, _)) = &self.advanced_paste_win {
             w.focus();
             return;
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match AdvancedPasteWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, sources, source, form, session) {
+        match AdvancedPasteWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, sources, source, form, session, d) {
             Ok(w) => self.advanced_paste_win = Some((w, pane, from_menu)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }

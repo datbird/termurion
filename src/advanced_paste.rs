@@ -179,7 +179,21 @@ impl Form {
 /// "12 bytes in 3 lines."
 pub fn stats(preview: &str) -> String {
     let bytes = preview.encode_utf16().count();
-    let lines = preview.matches('\n').count() + usize::from(!preview.is_empty() && !preview.ends_with('\n'));
+    // iTerm2's numberOfLines: CR, LF, CRLF, and the Unicode line ends each end a line.
+    let mut lines = 0;
+    let mut chars = preview.chars().peekable();
+    let mut open = false;
+    while let Some(c) = chars.next() {
+        open = true;
+        if matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}') {
+            if c == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            lines += 1;
+            open = false;
+        }
+    }
+    lines += usize::from(open);
     let s = |n: usize| if n == 1 { "" } else { "s" };
     format!("{bytes} byte{} in {lines} line{}.", s(bytes), s(lines))
 }
@@ -187,19 +201,32 @@ pub fn stats(preview: &str) -> String {
 /// iTerm2's "Minimum duration" text.
 pub fn duration(len: usize, s: Speed) -> String {
     let chunks = len / s.units.max(1);
-    let mut d = chunks.saturating_sub(1) as f64 * s.delay + (len / 2_000_000) as f64;
+    let mut d = chunks.saturating_sub(1) as f64 * s.delay + len as f64 / 2_000_000.0;
     if d > 1.0 {
         d = d.ceil();
     }
     if d < 0.01 {
-        "Instant".into()
-    } else if d < 1.0 {
-        format!("{:.0} ms", d * 1000.0)
-    } else if d < 3600.0 {
-        format!("{d:.0} sec")
-    } else {
-        format!("{:.0} min", d / 60.0)
+        return "Instant".into();
     }
+    // iTerm2's descriptionForDuration: two fraction digits at most, thousands grouped.
+    let (n, unit) = if d < 1.0 { (d * 1000.0, "ms") } else if d < 60.0 { (d, "sec") } else { (d / 60.0, "min") };
+    format!("{} {unit}", decimal(n))
+}
+
+/// A number with at most two fraction digits and grouped thousands ("1,234.5").
+fn decimal(n: f64) -> String {
+    let text = format!("{:.2}", (n * 100.0).round() / 100.0);
+    let (whole, frac) = text.split_once('.').unwrap_or((&text, ""));
+    let frac = frac.trim_end_matches('0');
+    let digits: Vec<char> = whole.chars().collect();
+    let mut grouped = String::new();
+    for (i, c) in digits.iter().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(*c);
+    }
+    if frac.is_empty() { grouped } else { format!("{grouped}.{frac}") }
 }
 
 /// The chunk slider (0..1, logarithmic from 1 byte to 1 MB) and the delay slider (0..1,
@@ -268,9 +295,12 @@ mod tests {
         assert_eq!((saved.tab_transform, saved.escape), (1, true));
         assert_eq!(stats("ab\ncd"), "5 bytes in 2 lines.");
         assert_eq!(stats("a"), "1 byte in 1 line.");
-        assert_eq!(duration(100_000, Speed { units: 1024, delay: 0.01 }), "960 ms");
+        assert_eq!(duration(100_000, Speed { units: 1024, delay: 0.01 }), "2 sec", "0.96 s + 0.05 s at 2 MB/s, rounded up");
+        assert_eq!(duration(60_000, Speed { units: 1024, delay: 0.01 }), "600 ms");
+        assert_eq!(stats("a\rb\r"), "4 bytes in 2 lines.", "CR ends a line too");
+        assert_eq!(stats("a\r\nb"), "4 bytes in 2 lines.");
         assert_eq!(duration(10, Speed { units: 1024, delay: 0.01 }), "Instant");
-        assert_eq!(duration(100_000, Speed { units: 16, delay: 0.125 }), "782 sec");
+        assert_eq!(duration(100_000, Speed { units: 16, delay: 0.125 }), "13.03 min", "iTerm2 switches to minutes at 60 s");
         assert_eq!((slider_to_units(0.0), slider_to_units(1.0)), (1, 1_048_576));
         assert!((units_to_slider(1024) - 0.5).abs() < 1e-6);
         assert!((slider_to_delay(0.0) - 0.001).abs() < 1e-9 && (slider_to_delay(1.0) - 10.0).abs() < 1e-9);

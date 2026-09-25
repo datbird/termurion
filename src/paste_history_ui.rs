@@ -47,16 +47,12 @@ impl PasteHistoryWindow {
         self.host.event(event)
     }
 
-    /// The rows the filter keeps: (index into the rows, matched character positions).
-    fn shown(&self) -> Vec<(usize, Vec<usize>)> {
-        self.rows.iter().enumerate().filter_map(|(i, (v, _))| popup_filter::matches(self.filter.text(), v).map(|m| (i, m))).collect()
-    }
-
     pub fn redraw(&mut self) -> HistEvent {
         let mut out = HistEvent::None;
-        let shown = self.shown();
         let now = self.started.elapsed().as_secs_f64();
-        let (filter, selected, rows) = (&mut self.filter, &mut self.selected, &self.rows);
+        let mut typed_any = false;
+        let rows_all = self.rows.clone();
+        let (filter, selected) = (&mut self.filter, &mut self.selected);
         self.host.paint(|ui| {
             // Typing filters; Backspace clears; arrows move; Enter pastes; Esc closes.
             let (typed, keys) = ui.input(|i| {
@@ -66,11 +62,16 @@ impl PasteHistoryWindow {
             for c in typed.chars() {
                 filter.type_char(c, now);
                 *selected = 0;
+                typed_any = true;
             }
             let (back, up, down, enter, esc) = keys;
             if back {
                 filter.backspace();
+                typed_any = true;
             }
+            // The list follows the filter as it is now (after this frame's typing).
+            let shown: Vec<(usize, Vec<usize>)> = rows_all.iter().enumerate().filter_map(|(i, (v, _))| popup_filter::matches(filter.text(), v).map(|m| (i, m))).collect();
+            let rows = &rows_all;
             if up {
                 *selected = selected.saturating_sub(1);
             }
@@ -89,7 +90,7 @@ impl PasteHistoryWindow {
                 if !filter.text().is_empty() {
                     ui.label(format!("Filter: {}", filter.text()));
                 }
-                egui::Grid::new("history").num_columns(2).striped(true).show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| egui::Grid::new("history").num_columns(2).striped(true).show(ui, |ui| {
                     ui.strong("Value");
                     ui.strong("Time");
                     ui.end_row();
@@ -107,12 +108,18 @@ impl PasteHistoryWindow {
                         if ui.selectable_label(n == *selected, job).clicked() {
                             out = HistEvent::Pick(*i);
                         }
-                        ui.label(when);
+                        let r = ui.label(when);
+                        if n == *selected && (up || down) {
+                            r.scroll_to_me(None);
+                        }
                         ui.end_row();
                     }
-                });
+                }));
             });
         });
+        if typed_any {
+            self.host.request_redraw();
+        }
         out
     }
 }
