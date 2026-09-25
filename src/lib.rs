@@ -36,6 +36,7 @@ pub mod import;
 pub mod store;
 pub mod print;
 pub mod porthole;
+pub mod triggers;
 pub mod profile;
 pub mod prompted;
 pub mod schema;
