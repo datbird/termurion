@@ -64,6 +64,7 @@ pub mod render;
 pub mod app;
 
 pub mod screenshot;
+pub mod shotimage;
 pub mod session_profile;
 
 #[cfg(windows)]
