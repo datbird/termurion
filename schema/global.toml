@@ -830,3 +830,30 @@ label = "Remember window sizes in tmux integration?"
 type = "bool"
 default = true
 help = "Requires tmux 2.9 or later. The \"variable window size\" advanced setting must be enabled."
+
+[[setting]]
+key = "NoSyncNewWindowOrTabFromTmuxOpensTmux"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Suppress alert asking what kind of tab/window to open in tmux integration. Affects both windows and tabs."
+type = "bool"
+default = false
+help = "Suppress alert asking what kind of tab/window to open in tmux integration. Affects both windows and tabs. On: New tmux Tab or Window; off: ask."
+
+[[setting]]
+key = "NoSyncNewWindowFromTmuxOpensTmux"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Suppress alert asking what kind of window to open in tmux integration."
+type = "bool"
+default = false
+help = "Suppress alert asking what kind of window to open in tmux integration. On: New tmux Tab or Window; off: ask."
+
+[[setting]]
+key = "NoSyncNewTabFromTmuxOpensTmux"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Suppress alert asking what kind of tab to open in tmux integration."
+type = "bool"
+default = false
+help = "Suppress alert asking what kind of tab to open in tmux integration. On: New tmux Tab or Window; off: ask."

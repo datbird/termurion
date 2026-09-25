@@ -28,6 +28,10 @@ enum Req {
     Affinities,
     ListSessions,
     ListWindows,
+    /// `list-windows -F "#{window_id}"` for a tab reorder: the wanted order.
+    Reorder(Vec<u32>),
+    /// `new-window -PF` from Tandem: the tmux window whose Tandem window it joins.
+    NewWindow(Option<u32>),
     /// `display -p` for a window tmux added.
     DisplayOne,
     /// A capture for one opener (a window being opened, or one layout change's new panes).
@@ -53,7 +57,8 @@ pub enum Action {
     Open { window: Window, node: Node, panes: Vec<PaneOpen>, place: Place },
     /// A new layout: `added` panes open, `removed` panes close, `kept` panes (in layout
     /// order) keep their screens and name the tab.
-    Relayout { window: u32, node: Node, added: Vec<PaneOpen>, removed: Vec<u32>, kept: Vec<u32> },
+    /// `zoomed`: tmux's Z flag, when the notification or list carried flags.
+    Relayout { window: u32, node: Node, added: Vec<PaneOpen>, removed: Vec<u32>, kept: Vec<u32>, zoomed: Option<bool> },
     Close(u32),
     Rename(u32, String),
     /// The session changed: every tmux tab of this gateway closes.
@@ -83,7 +88,7 @@ struct Opener {
     initial: bool,
     anonymous: bool,
     /// A layout change of an open window: the panes it removes and keeps.
-    update: Option<(Vec<u32>, Vec<u32>)>,
+    update: Option<(Vec<u32>, Vec<u32>, Option<bool>)>,
 }
 
 /// Preferences the controller reads.
@@ -135,6 +140,8 @@ pub struct Controller {
     window_sizes: HashMap<u32, (u32, u32)>,
     /// Client resizes whose relist has not come back (only the last one is read).
     outstanding: u32,
+    /// Windows Tandem asked for: not anonymous when tmux adds them.
+    intentional: BTreeSet<u32>,
 }
 
 impl Controller {
@@ -161,6 +168,7 @@ impl Controller {
             last_client: None,
             window_sizes: HashMap::new(),
             outstanding: 0,
+            intentional: BTreeSet::new(),
         }
     }
 
@@ -217,6 +225,50 @@ impl Controller {
             .collect();
         self.outstanding += 1;
         gw.send_list(list, false);
+    }
+
+    /// A command, then the short list whose layouts follow it (iTerm2's edits that relist).
+    fn with_relist(&mut self, cmd: String, gw: &mut Gateway) {
+        let t = self.tag(Req::Relist);
+        self.outstanding += 1;
+        gw.send_list(vec![(cmd, None, Flags::default()), (crate::tmux_sizes::short_list(self.v()), Some(t), Flags::default())], false);
+    }
+
+    /// A divider moved `cells` (plus is right or down) before `pane`, the first pane right of
+    /// or below it.
+    pub fn resize_pane(&mut self, pane: u32, cells: i32, horizontal: bool, gw: &mut Gateway) {
+        if cells != 0 {
+            self.with_relist(crate::tmux_edits::resize_pane(pane, cells, horizontal), gw);
+        }
+    }
+
+    pub fn zoom(&mut self, pane: u32, gw: &mut Gateway) {
+        self.with_relist(crate::tmux_edits::zoom(pane), gw);
+    }
+
+    pub fn swap(&mut self, a: u32, b: u32, gw: &mut Gateway) {
+        self.with_relist(crate::tmux_edits::swap_panes(a, b), gw);
+    }
+
+    /// New Tmux Tab (`affinity`: the tmux window whose Tandem window gets the tab) or New
+    /// Tmux Window. With variable sizes the client first takes the new window's size.
+    pub fn new_window(&mut self, affinity: Option<u32>, dir: &crate::tmux_edits::Dir, size: Option<(u32, u32)>, gw: &mut Gateway) {
+        let mut list = Vec::new();
+        if let Some((w, h)) = size.filter(|_| crate::tmux_sizes::variable(self.version, self.prefs.variable_sizes)) {
+            self.window_sizes.clear();
+            let h = crate::tmux_windows::client_height(h, self.status_bar, self.version);
+            list.push((format!("refresh-client -C {w},{h}"), None, Flags { tolerate: true, ..Default::default() }));
+        }
+        let recycling = self.version.is_some_and(|v| v >= 1.9);
+        let t = self.tag(Req::NewWindow(affinity));
+        list.push((crate::tmux_edits::new_window(None, dir, recycling), Some(t), Flags::default()));
+        gw.send_list(list, false);
+    }
+
+    /// Tabs moved: tmux's windows take the tabs' order (iTerm2's setPartialWindowIdOrder).
+    pub fn reorder(&mut self, wanted: Vec<u32>, gw: &mut Gateway) {
+        let t = self.tag(Req::Reorder(wanted));
+        gw.send("list-windows -F \"#{window_id}\"", Some(t), Flags::default());
     }
 
     /// Tandem closed this pane (tmux still has it, until milestone 8c sends kill-pane): the
@@ -282,6 +334,21 @@ impl Controller {
         let mut out = Vec::new();
         match req {
             Req::Ignore => {}
+            Req::NewWindow(affinity) => {
+                if ok {
+                    let w = crate::tmux_windows::window_id(text.trim());
+                    self.intentional.insert(w);
+                    if let Some(a) = affinity {
+                        self.affinities.set_equal(&w.to_string(), &a.to_string());
+                    }
+                }
+            }
+            Req::Reorder(wanted) => {
+                let cmds = crate::tmux_edits::reorder(text, &wanted);
+                if !cmds.is_empty() {
+                    gw.send_list(cmds.into_iter().map(|c| (c, None, Flags::default())).collect(), false);
+                }
+            }
             Req::Relist => {
                 self.outstanding = self.outstanding.saturating_sub(1);
                 if self.outstanding == 0 && ok {
@@ -289,7 +356,7 @@ impl Controller {
                         if let Some(b) = row.border {
                             self.border.insert(row.window, b);
                         }
-                        out.extend(self.layout_changed(row.window, &row.layout, gw));
+                        out.extend(self.layout_changed(row.window, &row.layout, row.zoomed, gw));
                     }
                 }
             }
@@ -328,7 +395,8 @@ impl Controller {
             Req::DisplayOne => {
                 if let Some(w) = tmux_windows::parse_windows(text, self.v(), self.tab_bug).into_iter().next() {
                     if !self.windows.contains_key(&w.id) && !self.openers.values().any(|o| o.window.id == w.id) {
-                        out.extend(self.open_window(w, false, true, gw));
+                        let anonymous = !self.intentional.remove(&w.id);
+                        out.extend(self.open_window(w, false, anonymous, gw));
                     }
                 }
             }
@@ -419,9 +487,9 @@ impl Controller {
         let all = tmux_layout::panes(&o.node);
         match o.update {
             // The window's pane list changed when the layout came.
-            Some((removed, kept)) => {
+            Some((removed, kept, zoomed)) => {
                 let _ = all;
-                Action::Relayout { window: o.window.id, node: o.node, added: panes, removed, kept }
+                Action::Relayout { window: o.window.id, node: o.node, added: panes, removed, kept, zoomed }
             }
             None => {
                 let open: Vec<u32> = self.windows.keys().copied().collect();
@@ -440,7 +508,7 @@ impl Controller {
                     return vec![Action::Output(pane, data)];
                 }
             }
-            Note::LayoutChange { window, layout, .. } => return self.layout_changed(window, &layout, gw),
+            Note::LayoutChange { window, layout, zoomed, .. } => return self.layout_changed(window, &layout, zoomed, gw),
             Note::WindowAdd(window) => {
                 if !self.windows.contains_key(&window) && !self.hidden.contains(&window) {
                     let t = self.tag(Req::DisplayOne);
@@ -482,7 +550,7 @@ impl Controller {
         Vec::new()
     }
 
-    fn layout_changed(&mut self, window: u32, layout: &str, gw: &mut Gateway) -> Vec<Action> {
+    fn layout_changed(&mut self, window: u32, layout: &str, zoomed: Option<bool>, gw: &mut Gateway) -> Vec<Action> {
         let Some(old) = self.windows.get(&window).cloned() else { return Vec::new() };
         let Some(node) = tmux_layout::parse(layout) else {
             return vec![Action::Abort(format!("Error parsing layout {layout}"))];
@@ -495,13 +563,13 @@ impl Controller {
         let kept: Vec<u32> = now.iter().copied().filter(|p| old.contains(p)).collect();
         self.windows.insert(window, now);
         if added.is_empty() {
-            return vec![Action::Relayout { window, node, added: Vec::new(), removed, kept }];
+            return vec![Action::Relayout { window, node, added: Vec::new(), removed, kept, zoomed }];
         }
         let id = self.next_opener;
         self.next_opener += 1;
         let waiting = self.capture(id, window, &added, false, false, gw);
         let w = Window { id: window, layout: layout.to_string(), ..Default::default() };
-        self.openers.insert(id, Opener { window: w, node, panes: added, waiting, captured: HashMap::new(), initial: false, anonymous: false, update: Some((removed, kept)) });
+        self.openers.insert(id, Opener { window: w, node, panes: added, waiting, captured: HashMap::new(), initial: false, anonymous: false, update: Some((removed, kept, zoomed)) });
         Vec::new()
     }
 }
@@ -700,6 +768,47 @@ mod tests {
         r.answer(Some(""));
         let a = r.answer(Some("@0 b25d,90x20,0,0,0 * b25d,90x20,0,0,0 off"));
         assert!(matches!(&a[..], [Action::Relayout { window: 0, kept, .. }] if *kept == vec![0]), "{a:?}");
+    }
+
+    #[test]
+    fn drags_send_one_resize_on_release() {
+        let mut r = opened();
+        r.sent();
+        r.ctl.resize_pane(1, -3, true, &mut r.gw);
+        let sent = r.sent();
+        assert!(sent.starts_with("resize-pane -L -t \"%1\" 3; list-windows -F "), "{sent}");
+        r.answer(Some(""));
+        let a = r.answer(Some("@0 b25d,80x24,0,0,0 *Z b25d,80x24,0,0,0 off"));
+        assert!(matches!(&a[..], [Action::Relayout { zoomed: Some(true), .. }]), "{a:?}");
+        r.ctl.zoom(0, &mut r.gw);
+        assert!(r.sent().starts_with("resize-pane -Z -t \"%0\"; list-windows"));
+        r.answer(Some(""));
+        r.answer(Some(""));
+        r.ctl.swap(0, 1, &mut r.gw);
+        assert!(r.sent().starts_with("swap-pane -s \"%0\" -t \"%1\"; list-windows"));
+        r.answer(Some(""));
+        r.answer(Some(""));
+        r.ctl.reorder(vec![2, 0], &mut r.gw);
+        assert_eq!(r.sent(), "list-windows -F \"#{window_id}\"\r");
+        r.answer(Some("@0\n@2"));
+        assert_eq!(r.sent(), "swap-window -s @0 -t @2\r");
+    }
+
+    #[test]
+    fn new_tabs_join_their_window() {
+        let mut r = opened();
+        r.sent();
+        r.ctl.new_window(Some(0), &crate::tmux_edits::Dir::Home, Some((80, 25)), &mut r.gw);
+        assert_eq!(r.sent(), "refresh-client -C 80,25; new-window -PF '#{window_id}'\r");
+        r.answer(Some(""));
+        r.answer(Some("@7"));
+        r.lines(&["%window-add @7"]);
+        r.answer(Some("main\t@7\tzsh\t80\t24\tb25d,80x24,0,0,9\t\t0\tb25d,80x24,0,0,9\toff"));
+        for _ in 0..4 {
+            r.answer(Some(""));
+        }
+        let a = r.answer(Some(""));
+        assert!(matches!(&a[..], [Action::Open { place: Place::WithSibling(0), .. }]), "{a:?}");
     }
 
     #[test]

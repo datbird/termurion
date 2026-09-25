@@ -171,7 +171,7 @@ impl App {
 }
 
 /// Yes, No, or Cancel (None).
-fn yes_no_cancel(owner: Option<isize>, title: &str, text: &str) -> Option<bool> {
+pub(super) fn yes_no_cancel(owner: Option<isize>, title: &str, text: &str) -> Option<bool> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_ICONQUESTION, MB_YESNOCANCEL, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let owner = owner.map_or(std::ptr::null_mut(), |h| h as *mut core::ffi::c_void);

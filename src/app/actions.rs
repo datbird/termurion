@@ -134,6 +134,11 @@ impl App {
     }
 
     fn swap_with(&mut self, other: Option<PaneId>) {
+        if let (Some(f), Some(o)) = (self.tabs.get(self.active).map(|t| t.focused), other) {
+            if self.tmux_swap(f, o) {
+                return;
+            }
+        }
         if let (Some(t), Some(o)) = (self.tabs.get_mut(self.active), other) {
             t.layout.swap(t.focused, o);
         }

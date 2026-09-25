@@ -318,6 +318,9 @@ impl App {
 
     /// A session the person closes: alone in its tab it closes as the tab.
     pub(super) fn close_session_undoable(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        if self.tmux_kill_pane(id) {
+            return;
+        }
         let panes = self.tabs.iter().find(|t| t.layout.panes().contains(&id)).map(|t| t.layout.panes()).unwrap_or_default();
         let kind = if panes.len() > 1 { crate::undo_close::Kind::Session } else { crate::undo_close::Kind::Tab };
         self.begin_undo(kind, if kind == crate::undo_close::Kind::Session { std::slice::from_ref(&id) } else { &panes });
@@ -829,8 +832,15 @@ impl App {
                         }
                         TitleEdit::Tab(id, tab) => {
                             if self.enter(id) {
-                                if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                                    t.title = text;
+                                let first = self.tabs.iter().find(|t| t.id == tab).map(|t| t.focused);
+                                let renamed = match (first, text.as_deref()) {
+                                    (Some(f), Some(name)) => self.tmux_rename(f, name),
+                                    _ => false,
+                                };
+                                if !renamed {
+                                    if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                                        t.title = text;
+                                    }
                                 }
                             }
                         }

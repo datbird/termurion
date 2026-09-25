@@ -16,7 +16,14 @@ impl App {
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
-                Action::Relayout { window, node, added, removed, kept } => self.tmux_relayout(gw, window, node, added, removed, kept, event_loop),
+                Action::Relayout { window, node, added, removed, kept, zoomed } => {
+                    let first = kept.first().copied();
+                    self.tmux_relayout(gw, window, node, added, removed, kept, event_loop);
+                    // tmux's zoom shows as Maximize Active Pane.
+                    if let (Some(z), Some(id)) = (zoomed, first.and_then(|p| self.tmux.get(&gw).and_then(|t| t.panes.get(&p)).map(|(id, _)| *id))) {
+                        self.with_tab_of(id, |t| t.zoomed = if z { Some(t.focused) } else { None });
+                    }
+                }
                 Action::Close(window) => {
                     let ids = self.tmux_window_panes(gw, window);
                     self.tmux_forget(gw, &ids);
@@ -231,6 +238,159 @@ impl App {
             g.ctl.tabs_resized(&sizes, &mut g.gw);
             self.tmux_flush(gw);
         }
+    }
+
+    /// A tmux pane's gateway, tmux pane id, and tmux window.
+    pub(super) fn tmux_of(&self, pane: PaneId) -> Option<(PaneId, u32, u32)> {
+        let io = self.panes.get(&pane)?.tmux_io()?;
+        let window = self.tmux.get(&io.gateway)?.panes.get(&io.pane)?.1;
+        Some((io.gateway, io.pane, window))
+    }
+
+    /// The profile's Initial Directory for tmux (Home, Reuse, or Custom).
+    fn tmux_dir(&self, pane: PaneId) -> crate::tmux_edits::Dir {
+        use crate::tmux_edits::Dir;
+        let Some(p) = self.profile_of(pane) else { return Dir::Home };
+        match p.string("Custom Directory").as_str() {
+            "Yes" => Dir::Custom(p.string("Working Directory")),
+            "Recycle" => Dir::Recycle,
+            _ => Dir::Home,
+        }
+    }
+
+    /// Split Pane in a tmux tab: tmux splits, and its layout change shows the new pane.
+    pub(super) fn tmux_split(&mut self, pane: PaneId, side_by_side: bool) -> bool {
+        let Some((gw, p, _)) = self.tmux_of(pane) else { return false };
+        let dir = self.tmux_dir(pane);
+        let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        let recycling = t.hs.at_least(1.9);
+        t.gw.send(&crate::tmux_edits::split_window(p, side_by_side, &dir, recycling), None, Default::default());
+        self.tmux_flush(gw);
+        true
+    }
+
+    /// Maximize Active Pane in a tmux tab: tmux zooms.
+    pub(super) fn tmux_zoom(&mut self, pane: PaneId) -> bool {
+        let Some((gw, p, _)) = self.tmux_of(pane) else { return false };
+        let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        t.ctl.zoom(p, &mut t.gw);
+        self.tmux_flush(gw);
+        true
+    }
+
+    pub(super) fn tmux_swap(&mut self, a: PaneId, b: PaneId) -> bool {
+        let (Some((gw, pa, _)), Some((gb, pb, _))) = (self.tmux_of(a), self.tmux_of(b)) else { return false };
+        if gw != gb {
+            return true;
+        }
+        let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        t.ctl.swap(pa, pb, &mut t.gw);
+        self.tmux_flush(gw);
+        true
+    }
+
+    /// Edit Tab Title on a tmux tab renames the tmux window; %window-renamed brings it back.
+    pub(super) fn tmux_rename(&mut self, pane: PaneId, name: &str) -> bool {
+        let Some((gw, _, window)) = self.tmux_of(pane) else { return false };
+        let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        t.gw.send(&crate::tmux_edits::rename_window(window, None, name), None, Default::default());
+        self.tmux_flush(gw);
+        true
+    }
+
+    /// Close Session on a tmux pane: tmux kills it and its layout change removes it.
+    pub(super) fn tmux_kill_pane(&mut self, pane: PaneId) -> bool {
+        let Some((gw, p, _)) = self.tmux_of(pane) else { return false };
+        let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        let flags = crate::tmux_gateway::Flags { tolerate: true, laggy: true, ..Default::default() };
+        t.gw.send(&crate::tmux_edits::kill_pane(p), None, flags);
+        self.tmux_flush(gw);
+        true
+    }
+
+    /// Tabs moved in this window: each session's windows take the tabs' order.
+    pub(super) fn tmux_reorder(&mut self) {
+        let mut orders: HashMap<PaneId, Vec<u32>> = HashMap::new();
+        for t in &self.tabs {
+            if let Some((gw, _, window)) = self.tmux_of(t.focused) {
+                orders.entry(gw).or_default().push(window);
+            }
+        }
+        for (gw, wanted) in orders {
+            if wanted.len() < 2 {
+                continue;
+            }
+            if let Some(t) = self.tmux.get_mut(&gw) {
+                t.ctl.reorder(wanted, &mut t.gw);
+            }
+            self.tmux_flush(gw);
+        }
+    }
+
+    /// New Tab or New Window while a tmux pane is current: None when it is not one (or the
+    /// person chose the default profile); Some(()) when tmux makes it or it was cancelled.
+    pub(super) fn tmux_new(&mut self, window: bool, ask: bool) -> Option<()> {
+        let pane = self.focused_id()?;
+        let (gw, _, tmux_window) = self.tmux_of(pane)?;
+        if ask {
+            let legacy = self.globals.get("NoSyncNewWindowOrTabFromTmuxOpensTmux").and_then(|v| v.as_bool()).is_some();
+            let key = crate::tmux_edits::new_kind_key(window, legacy);
+            let answer = match self.globals.get(key).and_then(|v| v.as_bool()) {
+                Some(a) => Some(a),
+                None => {
+                    let (heading, text, b) = crate::tmux_edits::new_kind_question(window);
+                    super::broadcast_ui::yes_no_cancel(self.hwnd(), heading, &format!("{text}\n\nYes: {}. No: {}.", b[0], b[1]))
+                }
+            };
+            match answer {
+                None => return Some(()),
+                Some(false) => return None,
+                Some(true) => {}
+            }
+        }
+        let dir = self.tmux_dir(pane);
+        let size = self.profile_of(pane).map(|p| (p.int("Columns").max(1) as u32, p.int("Rows").max(1) as u32));
+        let affinity = (!window).then_some(tmux_window);
+        let t = self.tmux.get_mut(&gw)?;
+        t.ctl.new_window(affinity, &dir, size, &mut t.gw);
+        self.tmux_flush(gw);
+        Some(())
+    }
+
+    /// A divider drag in a tmux tab starts: tmux's lines wait until it ends.
+    pub(super) fn tmux_drag_start(&mut self, path: &[bool], axis: Axis) {
+        let Some(tab) = self.tabs.get(self.active) else { return };
+        // The first pane right of or below the divider.
+        let mut node = tab.layout.tree();
+        for step in path {
+            node = match node {
+                crate::layout::Tree::Split { a, b, .. } => if *step { *b } else { *a },
+                leaf => leaf,
+            };
+        }
+        let after = match node {
+            crate::layout::Tree::Split { b, .. } => b.leaves().first().copied().copied(),
+            _ => None,
+        };
+        let Some((gw, p, _)) = after.and_then(|id| self.tmux_of(id)) else { return };
+        let pos = if axis == Axis::Row { self.cursor.0 } else { self.cursor.1 };
+        if let Some(t) = self.tmux.get_mut(&gw) {
+            t.gw.pause();
+        }
+        self.tmux_drag = Some((gw, p, axis == Axis::Row, pos));
+    }
+
+    /// The drag ended: one resize-pane for how far it moved, then tmux's held lines.
+    pub(super) fn tmux_drag_end(&mut self, event_loop: &ActiveEventLoop) {
+        let Some((gw, p, horizontal, start)) = self.tmux_drag.take() else { return };
+        let (cw, ch) = self.cell();
+        let pos = if horizontal { self.cursor.0 } else { self.cursor.1 };
+        let cells = ((pos - start) / if horizontal { cw } else { ch }).round() as i32;
+        let Some(t) = self.tmux.get_mut(&gw) else { return };
+        t.ctl.resize_pane(p, cells, horizontal, &mut t.gw);
+        let events = t.gw.resume();
+        self.tmux_flush(gw);
+        self.tmux_events(gw, events, event_loop);
     }
 
     /// A tmux pane closed in Tandem: the controller forgets it (tmux keeps it until 8c sends

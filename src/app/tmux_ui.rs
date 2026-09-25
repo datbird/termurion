@@ -119,7 +119,7 @@ impl App {
         }
     }
 
-    fn tmux_events(&mut self, pane: PaneId, events: Vec<Event>, event_loop: &ActiveEventLoop) {
+    pub(super) fn tmux_events(&mut self, pane: PaneId, events: Vec<Event>, event_loop: &ActiveEventLoop) {
         for e in events {
             let Some(t) = self.tmux.get_mut(&pane) else { return };
             match e {

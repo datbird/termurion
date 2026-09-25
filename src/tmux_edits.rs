@@ -124,6 +124,27 @@ pub fn reorder(current_reply: &str, wanted: &[u32]) -> Vec<String> {
     out
 }
 
+/// New Tab or New Window while a tmux pane is current (iTerm2's possiblyTmuxValueForWindow):
+/// (heading, text, buttons).
+pub fn new_kind_question(window: bool) -> (&'static str, &'static str, [&'static str; 3]) {
+    if window {
+        ("What kind of window do you want to open?", "The current session is a tmux session. Would you like to create a new tmux window or use the default profile?", ["New tmux Window", "Use Default Profile", "Cancel"])
+    } else {
+        ("What kind of tab do you want to open?", "The current session is a tmux session. Would you like to create a new tmux tab or use the default profile?", ["New tmux Tab", "Use Default Profile", "Cancel"])
+    }
+}
+
+/// The key that remembers the answer; the legacy key wins once it holds one.
+pub fn new_kind_key(window: bool, legacy_set: bool) -> &'static str {
+    if legacy_set {
+        "NoSyncNewWindowOrTabFromTmuxOpensTmux"
+    } else if window {
+        "NoSyncNewWindowFromTmuxOpensTmux"
+    } else {
+        "NoSyncNewTabFromTmuxOpensTmux"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +170,18 @@ mod tests {
         assert_eq!(rename_pane(4, "t", Some(3.4)).as_deref(), Some("select-pane -t %4 -T \"t\""));
         assert_eq!(reorder("@0\n@1\n@2\n@9", &[2, 0, 1]), ["swap-window -s @0 -t @2", "swap-window -s @1 -t @0"]);
         assert!(reorder("@0\n@1", &[0, 1]).is_empty());
+    }
+
+    #[test]
+    fn new_tab_question_follows_iterm2() {
+        assert_eq!(
+            new_kind_question(false),
+            ("What kind of tab do you want to open?", "The current session is a tmux session. Would you like to create a new tmux tab or use the default profile?", ["New tmux Tab", "Use Default Profile", "Cancel"])
+        );
+        assert_eq!(new_kind_question(true).2[0], "New tmux Window");
+        assert_eq!(new_kind_key(true, false), "NoSyncNewWindowFromTmuxOpensTmux");
+        assert_eq!(new_kind_key(false, false), "NoSyncNewTabFromTmuxOpensTmux");
+        assert_eq!(new_kind_key(false, true), "NoSyncNewWindowOrTabFromTmuxOpensTmux", "the legacy key wins once it is set");
     }
 
     #[test]

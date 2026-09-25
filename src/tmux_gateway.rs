@@ -84,13 +84,16 @@ pub struct Gateway {
     pub logging: bool,
     /// tolerateUnrecognizedTmuxCommands: text that is not tmux is kept for `%exit`.
     pub tolerate_unrecognized: bool,
+    /// A divider drag runs: tmux's lines wait (iTerm2's pauseTokenExecution).
+    paused: bool,
+    stash: Vec<Vec<u8>>,
     /// tmux 3.2 or later (the wait-exit handshake).
     pub v3_2: bool,
 }
 
 impl Gateway {
     pub fn new(newline: &str) -> Gateway {
-        Gateway { newline: newline.into(), queue: VecDeque::new(), current: None, out: Vec::new(), held: Vec::new(), can_write: false, accept_notes: false, initialized: false, detach_sent: false, disconnected: false, stray: String::new(), logging: false, tolerate_unrecognized: false, v3_2: false }
+        Gateway { newline: newline.into(), queue: VecDeque::new(), current: None, out: Vec::new(), held: Vec::new(), can_write: false, accept_notes: false, initialized: false, detach_sent: false, disconnected: false, stray: String::new(), logging: false, tolerate_unrecognized: false, paused: false, stash: Vec::new(), v3_2: false }
     }
 
     /// Sends one command. With no tag its errors are tolerated (iTerm2 does the same).
@@ -190,8 +193,24 @@ impl Gateway {
         cmds().map(|c| c.sent + LAG).min()
     }
 
+    /// Holds tmux's lines until `resume`.
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+
+    /// Runs the held lines.
+    pub fn resume(&mut self) -> Vec<Event> {
+        self.paused = false;
+        let held = std::mem::take(&mut self.stash);
+        held.iter().flat_map(|l| self.line(l)).collect()
+    }
+
     /// One line from the hook.
     pub fn line(&mut self, raw: &[u8]) -> Vec<Event> {
+        if self.paused {
+            self.stash.push(raw.to_vec());
+            return Vec::new();
+        }
         let mut ev = Vec::new();
         let text = String::from_utf8_lossy(raw).into_owned();
         if self.logging {
@@ -420,6 +439,17 @@ mod tests {
         }
         assert_eq!(menu_chars(b"Lx", true), vec!['L'], "a key counts by its first character");
         assert_eq!(menu_chars(b"LC", false), vec!['L', 'C'], "typed text counts each one");
+    }
+
+    #[test]
+    fn paused_lines_wait() {
+        let mut g = started();
+        g.send("x", Some(1), tol());
+        g.pause();
+        assert!(feed(&mut g, &["%begin 3 3 1", "r", "%end 3 3 1"]).is_empty(), "held while a divider drags");
+        let ev = g.resume();
+        assert!(matches!(&ev[..], [Event::Reply { tag: 1, .. }]), "{ev:?}");
+        assert!(g.resume().is_empty());
     }
 
     #[test]

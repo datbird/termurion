@@ -393,7 +393,17 @@ impl App {
                 }
             }
             "newSession:" => self.new_tab(None),
-            "newWindow:" => self.new_window(event_loop, None),
+            "newWindow:" => {
+                if self.tmux_new(true, true).is_none() {
+                    self.new_window(event_loop, None);
+                }
+            }
+            "newTmuxWindow:" => {
+                self.tmux_new(true, false);
+            }
+            "newTmuxTab:" => {
+                self.tmux_new(false, false);
+            }
             "newSessionAlternate:" => {
                 let (before, active) = (self.tabs.len(), self.active);
                 self.new_tab(None);
@@ -522,6 +532,10 @@ impl App {
             "biggerFont:" => self.font_offset += 1.0,
             "smallerFont:" => self.font_offset = (self.font_offset - 1.0).max(-8.0),
             "returnToDefaultSize:" => self.font_offset = 0.0,
+            "maximizePane:" if self.tabs.get(self.active).is_some_and(|t| self.tmux_of(t.focused).is_some()) => {
+                let f = self.tabs[self.active].focused;
+                self.tmux_zoom(f);
+            }
             "maximizePane:" => {
                 if let Some(t) = self.tabs.get_mut(self.active) {
                     t.zoomed = if t.zoomed.is_some() { None } else { Some(t.focused) };
@@ -540,6 +554,7 @@ impl App {
                     let to = if item.selector == "moveTabRight:" { (self.active + 1) % n } else { (self.active + n - 1) % n };
                     self.tabs.swap(self.active, to);
                     self.active = to;
+                    self.tmux_reorder();
                 }
             }
             "selectPaneUp:" | "selectPaneDown:" | "selectPaneLeft:" | "selectPaneRight:" => {

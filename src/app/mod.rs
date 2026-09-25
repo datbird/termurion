@@ -214,6 +214,8 @@ pub struct App {
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// Session > Run Coprocess's window.
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
+    /// A divider drag in a tmux tab: gateway, pane after the divider, horizontal, start.
+    tmux_drag: Option<(PaneId, u32, bool, f32)>,
     /// tmux gateways, by the pane that runs `tmux -CC`.
     tmux: HashMap<PaneId, tmux_ui::TmuxGw>,
     /// A gateway's C key waits for the event loop to open its window.
@@ -512,6 +514,7 @@ pub fn run() {
         ctx_pending: None,
         prompt: None,
         co_prompt: None,
+        tmux_drag: None,
         tmux: HashMap::new(),
         tmux_ask_command: None,
         tmux_prompt: None,
@@ -892,8 +895,11 @@ impl App {
         if !self.layout_allowed(crate::winmodel::LayoutOp::Split) {
             return;
         }
-        let Some(tab) = self.tabs.get(self.active) else { return };
-        let target = tab.focused;
+        let Some(target) = self.tabs.get(self.active).map(|t| t.focused) else { return };
+        if self.tmux_split(target, axis == Axis::Row) {
+            return;
+        }
+        let tab = &self.tabs[self.active];
         let area = self.content_area();
         let Some((_, rect)) = tab.layout.rects(area, GAP).into_iter().find(|(id, _)| *id == target) else { return };
         let half = match axis {
@@ -1075,7 +1081,11 @@ impl App {
     fn action(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         let n = self.tabs.len();
         match action {
-            Action::NewTab => self.new_tab(None),
+            Action::NewTab => {
+                if self.tmux_new(false, true).is_none() {
+                    self.new_tab(None);
+                }
+            }
             Action::ClosePane => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused).filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::ClosePane)).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_session_undoable(id, event_loop);
@@ -1349,6 +1359,7 @@ impl App {
                     Rect { x: d.rect.x - grab, y: d.rect.y - grab, w: d.rect.w + 2.0 * grab, h: d.rect.h + 2.0 * grab }.contains(x, y)
                 })
             }) {
+                self.tmux_drag_start(&d.path, d.axis);
                 self.drag = Drag::Divider { path: d.path, axis: d.axis, parent: d.parent };
                 return;
             }
@@ -1476,6 +1487,7 @@ impl App {
         let alt_click = self.alt_click.take();
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Porthole { pane, id, .. } => self.porthole_release(pane, id),
+            Drag::Divider { .. } => self.tmux_drag_end(event_loop),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
