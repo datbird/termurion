@@ -694,7 +694,9 @@ impl Screen {
     pub fn soft_reset(&mut self) {
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
             \x1b[?2004l\x1b[?1004l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b(B";
-        self.feed(DECSTR);
+        // Straight to the parser: Literal Controls would print the sequence instead.
+        let reply = self.feed_raw(DECSTR);
+        self.replies.extend(reply);
         // Key reporting goes back to the profile's: no program flags, no menu choices.
         self.term.clear_keyboard_modes();
         self.keys = KeyState { literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
@@ -1186,5 +1188,23 @@ mod tests {
         assert_eq!(s.take_replies(), b"\x1b[?997;2n", "a profile change reports too");
         s.feed(b"\x1b[?2031l");
         assert_eq!(s.feed(b"\x1b]11;rgb:ffff/ffff/ffff\x07"), b"");
+    }
+    #[test]
+    fn reset_works_under_literal_controls() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[?1h");
+        s.keys.literal = true;
+        s.soft_reset();
+        assert!(!s.term.mode().contains(TermMode::APP_CURSOR));
+        assert_eq!(row_text(&s, 0), "", "no carets from the reset itself");
+    }
+
+    #[test]
+    fn turning_app_key_modes_off_clears_them() {
+        use crate::keyproto::KeyMode;
+        let mut s = Screen::new(20, 4);
+        s.feed(b"\x1b[>4;2m");
+        s.set_look(Look { app_key_modes: false, ..Look::default() });
+        assert_eq!(s.keyboard().mode, KeyMode::Standard);
     }
 }

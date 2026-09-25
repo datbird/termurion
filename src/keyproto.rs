@@ -65,6 +65,13 @@ pub fn encode(kb: Keyboard, ev: &KeyEvent) -> Option<Vec<u8>> {
     }
 }
 
+/// Whether a key typed with Ctrl and Alt down is AltGr's character: its text is not the
+/// key's own (base) character. winit's text ignores Ctrl, so Ctrl+Alt+A still says "a".
+pub fn is_altgr(mods: Mods, text: Option<&str>, base: Option<char>) -> bool {
+    let Some(t) = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control)) else { return false };
+    mods.ctrl && mods.alt && base.map(|b| b.to_string()) != Some(t.to_lowercase())
+}
+
 /// The kitty flags.
 pub const DISAMBIGUATE: u8 = 1;
 pub const EVENT_TYPES: u8 = 2;
@@ -533,5 +540,14 @@ mod tests {
         assert_eq!(s(kitty_modifier(Modifier::LeftShift, NONE, Kind::Press, ALL_AS_ESCAPES)).as_deref(), Some("\x1b[57441;2u"));
         assert_eq!(s(kitty_modifier(Modifier::RightCtrl, m(false, false, true), Kind::Release, ALL_AS_ESCAPES | EVENT_TYPES)).as_deref(), Some("\x1b[57448;1:3u"));
         assert_eq!(kitty_modifier(Modifier::LeftAlt, NONE, Kind::Press, DISAMBIGUATE), None, "only with flag 8");
+    }
+    #[test]
+    fn ctrl_alt_letter_is_not_altgr() {
+        let both = m(false, true, true);
+        assert!(!is_altgr(both, Some("a"), Some('a')), "Ctrl+Alt+A on a US layout");
+        assert!(!is_altgr(both, Some("A"), Some('a')), "with Shift too");
+        assert!(is_altgr(both, Some("@"), Some('q')), "AltGr+Q on a German layout");
+        assert!(!is_altgr(m(false, true, false), Some("@"), Some('q')), "Alt alone");
+        assert!(!is_altgr(both, None, Some('a')));
     }
 }

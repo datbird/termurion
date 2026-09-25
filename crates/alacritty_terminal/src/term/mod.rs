@@ -531,6 +531,8 @@ impl<T> Term<T> {
             self.keyboard_mode_stack = Vec::new();
             self.inactive_keyboard_mode_stack = Vec::new();
             self.mode.remove(TermMode::KITTY_KEYBOARD_PROTOCOL);
+            // Tandem: programs lose modifyOtherKeys with the setting, too.
+            self.modify_other_keys = 0;
         }
 
         // Damage everything on config updates.

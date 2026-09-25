@@ -217,7 +217,11 @@ pub fn press_bytes_with(
     }
     let typed = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
     if let (Key::Text(_), Some(t)) = (key, typed) {
-        let altgr = mods.ctrl && mods.alt && base != Some(&Key::Text(t.to_lowercase()));
+        let base_char = match base {
+            Some(Key::Text(b)) => b.chars().next(),
+            _ => None,
+        };
+        let altgr = crate::keyproto::is_altgr(mods, Some(t), base_char);
         if altgr {
             return Some(t.as_bytes().to_vec());
         }

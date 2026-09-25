@@ -15,12 +15,12 @@ impl App {
     fn proto_event<'a>(&self, ev: &'a KeyEvent, key: &'a Key, base: Option<&'a Key>, kind: Kind) -> keyproto::KeyEvent<'a> {
         let text = ev.text.as_deref().filter(|t| !t.chars().any(char::is_control));
         let mods = Mods { cmd: false, ..self.mods };
-        // Windows reports AltGr as Ctrl+Alt; a character typed with both is AltGr's.
-        let altgr = mods.ctrl && mods.alt && text.is_some_and(|t| !t.is_empty());
         let base = match base {
             Some(Key::Text(b)) => b.chars().next(),
             _ => None,
         };
+        // Windows reports AltGr as Ctrl+Alt.
+        let altgr = keyproto::is_altgr(mods, text, base);
         keyproto::KeyEvent { key, base, text, mods, kind, altgr, vk: crate::winkeys::vk_of(ev.physical_key) }
     }
 
@@ -57,17 +57,15 @@ impl App {
         }
         // Only keys that went to the program report their release; a Tandem shortcut's key
         // does not.
-        if !self.sent_keys.remove(&ev.physical_key) {
-            return true;
-        }
-        let kb = self.keyboard();
+        let Some(pane) = self.sent_keys.release(ev.physical_key) else { return true };
+        let Some(kb) = self.panes.get(&pane).map(|p| p.own().keyboard()) else { return true };
         if !kb.wants_releases() {
             return true;
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
         let Some(key) = keystroke::key_of(&ev.logical_key, ev.text.as_deref()).or_else(|| base.clone()) else { return true };
         let bytes = keyproto::encode(kb, &self.proto_event(ev, &key, base.as_ref(), Kind::Release));
-        if let (Some(b), Some(p)) = (bytes.filter(|b| !b.is_empty()), self.focused_pane()) {
+        if let (Some(b), Some(p)) = (bytes.filter(|b| !b.is_empty()), self.panes.get_mut(&pane)) {
             p.input(&b);
         }
         true
@@ -99,4 +97,41 @@ fn after(mut m: Mods, which: Modifier, down: bool) -> Mods {
         Modifier::LeftSuper | Modifier::RightSuper => m.cmd = down,
     }
     m
+}
+
+/// Keys whose press went to a program, and which pane got it, so the release goes there.
+#[derive(Default)]
+pub(super) struct Held(HashMap<PhysicalKey, PaneId>);
+
+impl Held {
+    pub(super) fn press(&mut self, key: PhysicalKey, pane: PaneId) {
+        self.0.insert(key, pane);
+    }
+
+    /// The pane a released key's press went to.
+    pub(super) fn release(&mut self, key: PhysicalKey) -> Option<PaneId> {
+        self.0.remove(&key)
+    }
+
+    /// Forgets every held key (the window lost focus, so their releases never come).
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn releases_go_to_the_pressed_pane() {
+        let a = PhysicalKey::Code(KeyCode::KeyA);
+        let mut held = Held::default();
+        held.press(a, 1);
+        assert_eq!(held.release(a), Some(1));
+        assert_eq!(held.release(a), None, "one release per press");
+        held.press(a, 2);
+        held.clear();
+        assert_eq!(held.release(a), None, "focus loss forgets held keys");
+    }
 }

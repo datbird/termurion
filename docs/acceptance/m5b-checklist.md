@@ -13,6 +13,8 @@ pass or fail.
 | 5 | Session > Terminal State > Report All Event Types (with no program flags): the item is checked, and `cat -v` shows releases for Esc. Pick it again: unchecked. | |
 | 6 | Session > Terminal State > Raw Key Reporting Mode, `cat -v`, press A: `^[]1337;d;1;61;65;61^G` then `^[]1337;u;...^G` on release. Press Shift alone: `^[]1337;f;2^G`. Terminal State > Reset: back to standard keys. | |
 | 7 | On a German keyboard layout (add it in Windows if needed), in CSI u Mode and with `printf '\e[>1u'`, AltGr+Q types `@`, not an escape code. | |
+| 7b | On the German layout, `printf '\e[>8u'; cat -v`, then AltGr+Q: note what arrives (`^[[64u` or `^[[113u`). On a US layout in CSI u Mode, Ctrl+Alt+A gives `^[[97;7u`, not a plain `a`. | |
+| 7c | Type `reset` after picking Raw Key Reporting Mode in the menu: the menu choice stays (only Terminal State > Reset clears it). | |
 | 8 | Settings > Profiles > Keys: "Apps can change how keys are reported" off: step 3's `printf '\e[>1u'` no longer changes keys. "Report keys using CSI u" on: a new tab starts in CSI u Mode. Set both back. | |
 | 9 | Session > Terminal State > Literal Controls, then `printf 'a\tb\n'`: the tab shows as a reverse `^I` and the new line as `^J`. Turn it off: output is normal. | |
 | 10 | `printf '\e[c'; read -rs -t1 -d c x; echo "$x" | cat -v` shows `^[[?64;1;2;4;6;17;18;21;22;52`. Session > Terminal State > Emulation Level > VT100, then again: `^[[?1;2`. Set VT500 back. | |

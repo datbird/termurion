@@ -181,8 +181,8 @@ pub struct App {
     panes: HashMap<PaneId, Pane>,
     next_id: PaneId,
     mods: Mods,
-    /// Keys whose press went to the program, so their release may too.
-    sent_keys: std::collections::HashSet<PhysicalKey>,
+    /// Keys whose press went to a program, so their release may too.
+    sent_keys: keyproto_ui::Held,
     /// The physical key of the press being routed now.
     typing: Option<PhysicalKey>,
     cursor: (f32, f32),
@@ -310,7 +310,7 @@ pub fn run() {
         panes: HashMap::new(),
         next_id: 1,
         mods: Mods::default(),
-        sent_keys: std::collections::HashSet::new(),
+        sent_keys: keyproto_ui::Held::default(),
         typing: None,
         cursor: (0.0, 0.0),
         drag: Drag::None,
@@ -899,6 +899,7 @@ impl App {
         }
         let mods = self.mods;
         let movement = self.focused_profile().is_some_and(|p| p.bool("Movement Keys Scroll Outside Interactive Apps"));
+        let focused = self.focused_id();
         let Some(pane) = self.focused_pane() else { return };
         if movement {
             let alt_screen = pane.screen.term().mode().contains(TermMode::ALT_SCREEN);
@@ -910,8 +911,8 @@ impl App {
         if let Some(bytes) = bytes {
             pane.scroll(Scroll::Bottom);
             pane.input(&bytes);
-            if let Some(k) = self.typing.take() {
-                self.sent_keys.insert(k);
+            if let (Some(k), Some(id)) = (self.typing.take(), focused) {
+                self.sent_keys.press(k, id);
             }
         }
     }
@@ -1499,6 +1500,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::Focused(f) => {
                 self.focused = f;
+                // Keys held while the window loses focus send no release to Tandem.
+                if !f {
+                    self.sent_keys.clear();
+                }
                 // iTerm2 drops a pending Leader when the app goes to the background.
                 if !f && self.leader_on {
                     self.leader_on = false;
