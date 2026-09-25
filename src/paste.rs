@@ -16,6 +16,9 @@ pub const COMMANDS: u32 = 1 << 8;
 pub const REMOVE_NEWLINES: u32 = 1 << 9;
 pub const REGEX: u32 = 1 << 10;
 pub const NO_WARNINGS: u32 = 1 << 11;
+/// Tandem's: a plain paste (the menu, keys, clicks, drops), the only kind the tabs question
+/// is for (iTerm2 asks it in pasteString:flags: only).
+pub const PLAIN: u32 = 1 << 12;
 
 /// What happens to tabs (iTerm2's iTermTabTransformTags).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,7 +129,8 @@ fn backslashed(t: &str, which: impl Fn(char) -> bool) -> String {
 
 /// ESC [200~ ... ESC [201~; `per_line`: each line on its own, its newline outside.
 pub fn bracket(text: &str, per_line: bool) -> String {
-    let wrap = |s: &str| format!("\x1b[200~{s}\x1b[201~");
+    // No ESC inside, so the text cannot end its own bracket (Tandem keeps this guard).
+    let wrap = |s: &str| format!("\x1b[200~{}\x1b[201~", s.replace('\x1b', ""));
     if !per_line {
         return wrap(text);
     }
@@ -338,7 +342,7 @@ pub fn check(text: &str, at_prompt: Option<bool>, bracketed: bool, flags: u32, p
     if text.is_empty() || flags & (COMMANDS | NO_WARNINGS) != 0 {
         return out;
     }
-    if !bracketed && text.contains('\t') && !p.tabs_off {
+    if flags & PLAIN != 0 && !bracketed && text.contains('\t') && !p.tabs_off {
         out.push(Warning::Tabs);
     }
     let n = text.encode_utf16().count();
@@ -392,7 +396,10 @@ pub struct Config {
 impl Config {
     /// Missing keys read as 0, false, or empty (iTerm2's).
     pub fn decode(json: &str) -> Config {
-        let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+        // An empty or unreadable setting is a new action in iTerm2's editor.
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+            return Config { convert_newlines: true, convert_punctuation: true, remove_controls: true, bracket_allowed: true, ..Default::default() };
+        };
         let b = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
         let i = |k: &str| v.get(k).and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64))).unwrap_or(0);
         let st = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -632,6 +639,7 @@ mod tests {
     #[test]
     fn brackets_wrap_lines() {
         assert_eq!(bracket("ls\rpwd", false), "\x1b[200~ls\rpwd\x1b[201~");
+        assert_eq!(bracket("a\x1b[201~b", false), "\x1b[200~a[201~b\x1b[201~", "no ESC inside: a paste cannot end its bracket");
         assert_eq!(bracket("ls\rpwd\r", true), "\x1b[200~ls\x1b[201~\r\x1b[200~pwd\x1b[201~\r");
         assert_eq!(bracket("a\r\nb", true), "\x1b[200~a\x1b[201~\r\n\x1b[200~b\x1b[201~");
     }
@@ -680,8 +688,9 @@ mod tests {
         assert!(check("a\nb", Some(true), true, REMOVE_NEWLINES, &p).is_empty());
         assert!(check("a\nb", Some(true), true, 0, &WarnPrefs { multiline_off: true, ..p }).is_empty());
         assert!(check("ab\n", Some(true), true, 0, &WarnPrefs { skip_one_line_newline: true, ..p }).is_empty());
-        assert_eq!(check("a\tb", Some(false), false, 0, &p), vec![Warning::Tabs], "tabs with bracketing off");
-        assert!(check("a\tb", Some(false), true, 0, &p).is_empty(), "bracketing on: tabs go as they are");
+        assert_eq!(check("a\tb", Some(false), false, PLAIN, &p), vec![Warning::Tabs], "tabs with bracketing off");
+        assert!(check("a\tb", Some(false), true, PLAIN, &p).is_empty(), "bracketing on: tabs go as they are");
+        assert!(check("a\tb", Some(false), false, 0, &p).is_empty(), "a configured paste has its own tab rule");
         assert_eq!(Warning::Tabs.text(), "You're about to paste a string with tabs.");
         assert_eq!(check("abcdef", None, true, 0, &WarnPrefs { size_limit: 3, ..p }), vec![Warning::Size(6)]);
         assert_eq!(Warning::Size(6).text(), "OK to paste 6 characters?");
@@ -700,7 +709,10 @@ mod tests {
         let full = Config { convert_newlines: true, remove_controls: true, bracket_allowed: true, escape_for_shell: true, use_regex: true, regex: "a".into(), substitution: "b".into(), tab_transform: 2, ..Default::default() };
         assert_eq!(full.summary(), "^V+Tab, \\Escape, s/a/b/g");
         assert_eq!(full.job("x").0.flags, NEWLINES | CONTROLS | BRACKET | ESCAPE | REGEX);
-        assert_eq!(Config::decode("not json"), Config::default());
+        let fresh = Config::decode("");
+        assert!(fresh.convert_newlines && fresh.convert_punctuation && fresh.remove_controls && fresh.bracket_allowed, "an empty setting is iTerm2's new action");
+        assert!(!fresh.base64 && !fresh.escape_for_shell && !fresh.wait_for_prompts);
+        assert_eq!(Config::decode("not json"), fresh);
     }
 
     #[test]

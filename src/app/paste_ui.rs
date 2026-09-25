@@ -26,7 +26,7 @@ impl App {
 
     /// A plain paste, quickly or slowly (Paste Slowly).
     pub(super) fn paste_text(&mut self, sender: PaneId, text: &str, what: Write, slow: bool) {
-        let job = Job::new(text, paste::NEWLINES | paste::CONTROLS | paste::BRACKET);
+        let job = Job::new(text, paste::NEWLINES | paste::CONTROLS | paste::BRACKET | paste::PLAIN);
         let speed = self.paste_speed(slow);
         self.paste_job(sender, job, speed, what);
     }

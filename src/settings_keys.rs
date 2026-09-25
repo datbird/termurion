@@ -30,6 +30,11 @@ pub fn action_summary(b: &Binding) -> String {
         Arg::None => name,
         Arg::Sequence => format!("{name} ({} steps)", keyaction::sequence(&b.text).len()),
         _ if b.text.is_empty() => name,
+        // Paste... and Paste from Selection...: the configuration's summary (iTerm2's).
+        _ if matches!(b.action, 41 | 42) => match crate::paste::Config::decode(&b.text).summary() {
+            s if s.is_empty() => name,
+            s => format!("{name}: {s}"),
+        },
         _ => {
             let text: String = b.text.chars().take(40).collect();
             format!("{name}: {text}")
@@ -768,6 +773,12 @@ pub fn profile_key_mappings(ui: &mut egui::Ui, p: &mut Profile, st: &mut KeysSta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paste_configurations_show_their_summary() {
+        let b = Binding::new(41, r#"{"Base64":true,"RemoveControls":true,"BracketAllowed":true,"ConvertNewlines":true}"#);
+        assert_eq!(action_summary(&b), "Paste...: Base64");
+    }
 
     #[test]
     fn a_preset_can_replace_or_merge() {
