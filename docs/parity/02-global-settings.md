@@ -12,9 +12,9 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Open profiles window | OpenBookmark | At launch, opens the profiles/bookmarks window instead of a terminal window. | missing |  |
-| Window restoration mode | OpenArrangementAtStartup / OpenNoWindowsAtStartup | Three-way choice at startup: use system window restoration, open the default saved window arrangement, or open no windows. | missing | Windows has no system session-restore equivalent to key off of. |
-| Always open at least one terminal window at startup | AlwaysOpenWindowAtStartup | Forces at least one terminal window even if system restoration would otherwise open none. | missing |  |
+| Open profiles window | OpenBookmark | At launch, opens the profiles/bookmarks window instead of a terminal window. | have | Milestone 7b. |
+| Window restoration mode | OpenArrangementAtStartup / OpenNoWindowsAtStartup | Three-way choice at startup: use system window restoration, open the default saved window arrangement, or open no windows. | partial | Milestone 7b: saved as iTerm2's two keys; the default arrangement opens with 7c, hotkey windows with 7e; until then one window opens. |
+| Always open at least one terminal window at startup | AlwaysOpenWindowAtStartup | Forces at least one terminal window even if system restoration would otherwise open none. | have | Milestone 7b. |
 | Restore windows to same Spaces | RestoreWindowsToSameSpaces | When restoring windows, puts each one back on the macOS Space it was on. | missing | macOS Spaces concept; no direct Windows virtual-desktop equivalent wired up. |
 
 
@@ -22,11 +22,11 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Quit when all windows are closed | QuitWhenAllWindowsClosed | Quits the app automatically once the last window is closed instead of staying resident. | missing |  |
-| Confirm closing multiple sessions | ConfirmClosingMultipleTabs | Shows a confirmation dialog when closing a window or tab would close more than one session at once. | missing |  |
-| Confirm "Quit iTerm2 (Cmd+Q)" | PromptOnQuit | Shows a confirmation dialog before quitting the application. | missing |  |
-| Even if there are no windows | PromptOnQuitEvenIfThereAreNoWindows | Extends the quit confirmation to apply even when no windows are open. | missing |  |
-| Disable all confirmations on system shutdown, restart, and log out | NeverBlockSystemShutdown | Lets macOS shut down, restart, or log out without iTerm2 blocking or prompting. | missing | Windows shutdown/logoff has its own app-close notification model. |
+| Quit when all windows are closed | QuitWhenAllWindowsClosed | Quits the app automatically once the last window is closed instead of staying resident. | partial | Milestone 7b: saved; Tandem ends with its last window either way until hotkey windows (7e), since a Windows app with no window cannot be reached. |
+| Confirm closing multiple sessions | ConfirmClosingMultipleTabs | Shows a confirmation dialog when closing a window or tab would close more than one session at once. | have | Milestone 7b: stored as OnlyWhenMoreTabs, iTerm2's real key; iTerm2's texts. |
+| Confirm "Quit iTerm2 (Cmd+Q)" | PromptOnQuit | Shows a confirmation dialog before quitting the application. | have | Milestone 7b: "Quit Tandem?" with the reasons after "You are being prompted because:". |
+| Even if there are no windows | PromptOnQuitEvenIfThereAreNoWindows | Extends the quit confirmation to apply even when no windows are open. | have | Milestone 7b. |
+| Disable all confirmations on system shutdown, restart, and log out | NeverBlockSystemShutdown | Lets macOS shut down, restart, or log out without iTerm2 blocking or prompting. | partial | Milestone 7b: saved; Tandem never asks at Windows shutdown (winit gives no close request then). |
 
 
 ### Magic
@@ -546,7 +546,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | minCompactTabWidth | minCompactTabWidth (int, default 60) | Minimum tab width when using uneven tab widths for compact tabs. | missing |  |
 | optimumTabWidth | optimumTabWidth (int, default 175) | Preferred tab width when tabs are equally sized. | missing |  |
 | scrollableTabWidth | scrollableTabWidth (int, default 120) | Tab width when the tab bar is scrollable. | missing |  |
-| moveLeftAfterClosingTab | moveLeftAfterClosingTab (bool, default NO) | Select the tab to the left when closing a tab? If disabled, the tab to the right of the closing tab will be selected. | missing |  |
+| moveLeftAfterClosingTab | moveLeftAfterClosingTab (bool, default NO) | Select the tab to the left when closing a tab? If disabled, the tab to the right of the closing tab will be selected. | have | Milestone 7b. |
 | navigatePanesInReadingOrder | navigatePanesInReadingOrder (bool, default YES) | Next Pane and Previous Pane commands use reading order, not the time of last use. | missing |  |
 | tabAutoShowHoldTime | tabAutoShowHoldTime (float, default 1.0) | How long in seconds to show tabs in fullscreen. | missing |  |
 | tabFlashAnimationDuration | tabFlashAnimationDuration (float, default 0.25) | Animation duration for fade in/out animation of tabs in full screen, in seconds. | missing |  |
@@ -723,7 +723,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | statusBarHeight | statusBarHeight (float, default 21) | Height of the status bar in points. | missing |  |
 | wrapFocus | wrapFocus (bool, default YES) | Should split pane navigation by direction wrap around? | missing |  |
 | openUntitledFile | openUntitledFile (bool, default YES) | Open a new window when you click the dock icon and no windows are already open, and also on app launch when no other windows are open? | missing |  |
-| openNewWindowAtStartup | openNewWindowAtStartup (bool, default YES) | Open a window at startup? This is useful if you wish to use the system window restoration settings but not create a new window if none would be restored. | missing |  |
+| openNewWindowAtStartup | openNewWindowAtStartup (bool, default YES) | Open a window at startup? This is useful if you wish to use the system window restoration settings but not create a new window if none would be restored. | have | Milestone 7b: with nothing else to show, a window opens anyway. |
 | timeToWaitForEmojiPanel | timeToWaitForEmojiPanel (float, default 1) | How long to wait for the emoji panel to open in seconds? Floating hotkey windows adjust their level when the emoji panel is open. | missing |  |
 | timeoutForStringEvaluation | timeoutForStringEvaluation (float, default 10) | Timeout (seconds) for evaluating RPCs. | missing |  |
 | pathToFTP | pathToFTP (string, default @"ftp") | Path to ftp for opening ftp: URLs. | missing |  |

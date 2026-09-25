@@ -51,7 +51,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > Close | Cmd+W | Closes the current session or pane. | have |
 | Shell > Close Terminal Window | Shift+Cmd+W | Closes the entire terminal window. | have, milestone 7a |
 | Shell > Close All Panes in Tab | Opt+Cmd+W | Closes every pane in the current tab. | have |
-| Shell > Undo Close | Shift+Cmd+T | Reopens the most recently closed session. (milestone 7) | missing, milestone 7b |
+| Shell > Undo Close | Shift+Cmd+T | Reopens the most recently closed session. (milestone 7) | have, milestone 7b |
 | Shell > Archives > Save Archive of Current Session... | no shortcut | Saves session scrollback and state as a reloadable archive file. (milestone 7) | missing |
 | Shell > Archives > Restore Archive... | no shortcut | Reloads a previously saved session archive. (milestone 7) | missing |
 | Shell > Workgroups > Exit Workgroup | no shortcut | Leaves a linked group of peer sessions. (milestone 7) | missing |

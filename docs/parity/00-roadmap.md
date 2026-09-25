@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 151 | 139 | 24 |
-| `02-global-settings.md` | 820 | 135 | 73 | 612 |
-| `03-features-and-menus.md` | 640 | 272 | 32 | 336 |
-| Total | 1,774 | 558 | 244 | 972 |
+| `01-profile-settings.md` | 314 | 152 | 138 | 24 |
+| `02-global-settings.md` | 820 | 142 | 76 | 602 |
+| `03-features-and-menus.md` | 640 | 273 | 32 | 335 |
+| Total | 1,774 | 567 | 246 | 961 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -71,7 +71,9 @@ broadcast input). Milestone 7a: many windows (numbers, New Window and New Window
 Profile, the Profiles menu list, switching by number and Next/Previous Window, Move Tab and Move
 Session to a new window, Merge All Windows, Duplicate Window), every window style with iTerm2's
 frame rules, new-window placement, the Screen setting, Lock Size and Lock Layout, Resize Window,
-Edit Window and Tab Title, and Dim background windows.
+Edit Window and Tab Title, and Dim background windows. Milestone 7b: the session, tab, and
+window close questions and the quit question with iTerm2's rules and texts, Undo Close, the
+Closing and Startup settings.
 
 ## Order
 
