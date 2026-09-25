@@ -747,3 +747,59 @@ label = "Show Background Pattern Indicator"
 type = "bool"
 default = false
 help = "When enabled, prominent red lines are drawn in the background to indicate that text you type is being broadcast to other sessions."
+
+[[setting]]
+key = "OpenTmuxWindowsIn"
+tab = "General"
+section = "tmux"
+label = "When attaching, open unrecognized windows in"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Windows" }, { value = 1, label = "Tabs in a new window" }, { value = 2, label = "Tabs in the attaching window" } ]
+help = "Where tmux windows open when Tandem attaches. Tabs in the attaching window is iTerm2's \"Open tmux windows as tabs in the attaching window\" checkbox."
+
+[[setting]]
+key = "TmuxUsesDedicatedProfile"
+tab = "General"
+section = "tmux"
+label = "Use \"tmux\" profile rather than profile of the connecting session"
+type = "bool"
+default = true
+help = "tmux panes use a profile named tmux, made from the default profile the first time."
+
+[[setting]]
+key = "TmuxDashboardLimit"
+tab = "General"
+section = "tmux"
+label = "Don't open windows when attaching if there are at least this many windows"
+type = "int"
+default = 10
+help = "When a tmux session has more windows than this, none open on attach (iTerm2 tests more than, not at least)."
+
+[[setting]]
+key = "anonymousTmuxWindowsOpenInCurrentWindow"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Where should new tmux windows not created by Tandem open?"
+type = "enum"
+default = 1
+choices = [ { value = 0, label = "New window" }, { value = 1, label = "Focused window" }, { value = 2, label = "Topmost session window" } ]
+help = "\"Focused window\" (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus, unless it has tabs of another tmux session."
+
+[[setting]]
+key = "tmuxTitlePrefix"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Insert this string at the start of tab and window titles to indicate tmux integration."
+type = "string"
+default = "↣ "
+help = "Insert this string at the start of tab and window titles to indicate tmux integration."
+
+[[setting]]
+key = "tmuxIncludeClientNameInWindowTitle"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Include the tmux client name in the window title"
+type = "bool"
+default = true
+help = "When using tmux integration, should the tmux client name (typically the name of the attaching session or the host name) appear in brackets in the window title?"
