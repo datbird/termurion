@@ -102,7 +102,7 @@ pub struct Marks {
     /// The prompt being typed at, or whose command runs.
     current: Option<u32>,
     /// The last mark with a command.
-    last_command: Option<u32>,
+    pub(crate) last_command: Option<u32>,
     /// Between 133;B and 133;C.
     in_command: bool,
     command_start: Option<Anchor>,
@@ -368,11 +368,25 @@ impl Screen {
         self.marks.records.get_mut(&id).unwrap().aid = aid;
         self.marks.current = Some(id);
         self.marks.in_command = false;
+        self.fire_event(crate::trigger_events::EventKind::PromptDetected, &Default::default(), &[]);
     }
 
     /// Acts on one shell-integration OSC at the current cursor position. A full-screen app
     /// on the alternate screen makes no marks; its cursor is not on the main screen.
     pub(crate) fn apply(&mut self, osc: Osc) {
+        use crate::trigger_events::{EventFacts, EventKind};
+        let before = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
+        self.apply_osc(osc);
+        // Directory, host, and user changes are events for triggers.
+        let after = (self.shell.cwd.clone(), self.shell.host.clone(), self.shell.user.clone());
+        for (kind, old, new) in [(EventKind::DirectoryChanged, before.0, after.0), (EventKind::HostChanged, before.1, after.1), (EventKind::UserChanged, before.2, after.2)] {
+            if let Some(v) = new.filter(|n| Some(n) != old.as_ref()) {
+                self.fire_event(kind, &EventFacts { value: v.clone(), ..Default::default() }, &[v]);
+            }
+        }
+    }
+
+    fn apply_osc(&mut self, osc: Osc) {
         let alt = self.term.mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
         if alt && matches!(osc, Osc::Prompt { .. } | Osc::CommandStart | Osc::OutputStart | Osc::CommandEnd { .. })
             || alt && matches!(&osc, Osc::Kv(k, _) if k == "SetMark")
@@ -449,14 +463,21 @@ impl Screen {
                     r.code = code;
                     r.end = Some(now);
                 }
+                let c = code.unwrap_or(0);
+                self.fire_event(crate::trigger_events::EventKind::CommandFinished, &crate::trigger_events::EventFacts { exit_code: Some(c), ..Default::default() }, &[c.to_string()]);
             }
-            Osc::Notify(text) => self.requests.push(crate::screen::Request::Notify { title: None, message: text }),
+            Osc::Notify(text) => {
+                self.requests.push(crate::screen::Request::Notify { title: None, message: text.clone() });
+                self.fire_event(crate::trigger_events::EventKind::NotificationPosted, &crate::trigger_events::EventFacts { value: text.clone(), ..Default::default() }, &[text]);
+            }
             Osc::Progress(p) => {
                 // 9;4;0 removes the bar; any other state shows it.
                 let shown = p.split(';').next().is_some_and(|st| st.trim() != "0");
                 if shown != self.progress_shown {
                     self.progress_shown = shown;
                     self.requests.push(crate::screen::Request::Progress(shown));
+                    let word = if shown { "appeared" } else { "disappeared" };
+                    self.fire_event(crate::trigger_events::EventKind::ProgressBarChanged, &crate::trigger_events::EventFacts { appeared: shown, ..Default::default() }, &[word.to_string()]);
                 }
             }
             Osc::Sixel(data) => self.sixel(&data),
@@ -497,7 +518,7 @@ impl Screen {
                         return;
                     }
                     if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                        self.shell.vars.insert(name.to_string(), String::from_utf8_lossy(&bytes).into_owned());
+                        self.set_user_var(name, String::from_utf8_lossy(&bytes).into_owned());
                     }
                 }
                 "ShellIntegrationVersion" => {
@@ -516,8 +537,17 @@ impl Screen {
                         (sub, m) => sub.or(m).unwrap_or_default(),
                     };
                     if !message.is_empty() || d("title").is_some() {
-                        self.requests.push(crate::screen::Request::Notify { title: d("title"), message });
+                        self.requests.push(crate::screen::Request::Notify { title: d("title"), message: message.clone() });
+                        self.fire_event(crate::trigger_events::EventKind::NotificationPosted, &crate::trigger_events::EventFacts { value: message.clone(), ..Default::default() }, &[message]);
                     }
+                }
+                // Custom=id=<sender>:<payload> (trusted): the Custom Escape Sequence event.
+                "Custom" if self.trusted => {
+                    let (head, payload) = value.split_once(':').unwrap_or((value.as_str(), ""));
+                    let args = crate::blocks::parse(head);
+                    let id = crate::blocks::get(&args, "id").unwrap_or("").to_string();
+                    let facts = crate::trigger_events::EventFacts { name: id.clone(), ..Default::default() };
+                    self.fire_event(crate::trigger_events::EventKind::CustomEscapeSequence, &facts, &[id, payload.to_string()]);
                 }
                 "SetMark" => {
                     let line = self.cursor_point().line.0;

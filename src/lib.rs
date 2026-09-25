@@ -42,6 +42,7 @@ pub mod activity;
 pub mod alerts;
 pub mod bell;
 pub mod trigger_eval;
+pub mod trigger_events;
 pub mod profile;
 pub mod prompted;
 pub mod schema;

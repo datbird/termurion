@@ -46,6 +46,81 @@ pub fn action_label(a: &ActionInfo) -> String {
     }
 }
 
+/// An event's menu title, with the milestone that brings it when it is not here yet.
+pub fn event_label(e: crate::trigger_events::EventKind) -> String {
+    match e.later() {
+        Some(m) => format!("{} (milestone {m}c)", e.name()),
+        None => e.name().to_string(),
+    }
+}
+
+/// An event's filter fields (iTerm2's eventParams). True when one changed.
+fn event_params(ui: &mut egui::Ui, kind: crate::trigger_events::EventKind, t: &mut Trigger) -> bool {
+    use crate::trigger_events::EventKind as E;
+    let mut params = t.extra.get("eventParams").and_then(|v| v.as_table()).cloned().unwrap_or_default();
+    let mut changed = false;
+    let text = |ui: &mut egui::Ui, key: &str, label: &str, hint: &str, params: &mut toml::Table| {
+        let mut v = params.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        ui.label(label);
+        let c = ui.add(egui::TextEdit::singleline(&mut v).hint_text(hint).desired_width(300.0)).changed();
+        ui.end_row();
+        if c {
+            params.insert(key.into(), v.into());
+        }
+        c
+    };
+    let number = |ui: &mut egui::Ui, key: &str, label: &str, default: f64, params: &mut toml::Table| {
+        let mut v = crate::trigger_events::param_secs(Some(params), key, default);
+        ui.label(label);
+        let c = ui.add(egui::DragValue::new(&mut v).range(1.0..=86400.0).suffix(" s")).changed();
+        ui.end_row();
+        if c {
+            params.insert(key.into(), toml::Value::Float(v));
+        }
+        c
+    };
+    match kind {
+        E::CommandFinished => changed |= text(ui, "exitCodeFilter", "Exit code:", "* any, 0, !0, or a number", &mut params),
+        E::DirectoryChanged => changed |= text(ui, "directoryRegex", "Directory:", "Regular expression (empty: any)", &mut params),
+        E::HostChanged => changed |= text(ui, "hostRegex", "Host:", "Regular expression (empty: any)", &mut params),
+        E::UserChanged => changed |= text(ui, "userRegex", "User:", "Regular expression (empty: any)", &mut params),
+        E::Idle | E::ActivityAfterIdle => changed |= number(ui, "timeout", "Quiet for:", 30.0, &mut params),
+        E::LongRunningCommand => {
+            changed |= number(ui, "threshold", "Running for:", 60.0, &mut params);
+            changed |= text(ui, "commandRegex", "Command:", "Regular expression (empty: any)", &mut params);
+        }
+        E::CustomEscapeSequence => changed |= text(ui, "sequenceId", "Sequence id:", "The id= the program sends", &mut params),
+        E::NotificationPosted => changed |= text(ui, "messageRegex", "Message:", "Regular expression (empty: any)", &mut params),
+        E::ProgressBarChanged => {
+            let cur = params.get("progressBarFilter").and_then(|v| v.as_str()).unwrap_or("*").to_string();
+            ui.label("When:");
+            egui::ComboBox::from_id_salt("trigger-progress").selected_text(match cur.as_str() {
+                "appeared" => "Appeared",
+                "disappeared" => "Disappeared",
+                _ => "Either",
+            }).show_ui(ui, |ui| {
+                for (label, v) in [("Either", "*"), ("Appeared", "appeared"), ("Disappeared", "disappeared")] {
+                    if ui.selectable_label(cur == v, label).clicked() {
+                        params.insert("progressBarFilter".into(), v.into());
+                        changed = true;
+                    }
+                }
+            });
+            ui.end_row();
+        }
+        E::VariableChanged => {
+            changed |= text(ui, "variableName", "Variable:", "user.name", &mut params);
+            changed |= text(ui, "variableValueRegex", "Value:", "Regular expression (empty: any)", &mut params);
+        }
+        E::JobStarted | E::JobEnded => changed |= text(ui, "jobName", "Job:", "Program name", &mut params),
+        E::PromptDetected | E::SessionEnded | E::BellReceived => {}
+    }
+    if changed {
+        t.extra.insert("eventParams".into(), toml::Value::Table(params));
+    }
+    changed
+}
+
 /// iTerm2's list row: the name, then Instant, the job, `/regex/`, and the action with its
 /// parameter; disabled rows faint.
 pub fn row(t: &Trigger) -> Row {
@@ -57,7 +132,10 @@ pub fn row(t: &Trigger) -> Row {
         detail.push_str(&format!("Job: {} ", t.job));
     }
     let action = triggers::action_info(&t.action).map_or_else(|| format!("{} (not in Tandem)", t.action), action_label);
-    detail.push_str(&format!("/{}/ {action}", t.regex));
+    match crate::trigger_events::EventKind::from_match_type(t.match_type) {
+        Some(e) => detail.push_str(&format!("Event: {} {action}", event_label(e))),
+        None => detail.push_str(&format!("/{}/ {action}", t.regex)),
+    }
     if !t.parameter.is_empty() {
         detail.push(' ');
         detail.push_str(&t.parameter.replace('\u{1}', " "));
@@ -264,9 +342,32 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                 ui.label("Name:");
                 changed |= ui.text_edit_singleline(&mut t.name).changed();
                 ui.end_row();
-                ui.label("Regular Expression:");
-                changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().desired_width(360.0)).changed();
+                ui.label("Match Against:");
+                let event = crate::trigger_events::EventKind::from_match_type(t.match_type);
+                egui::ComboBox::from_id_salt("trigger-match").selected_text(event.map_or("Regular Expression".to_string(), event_label)).width(260.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(event.is_none(), "Regular Expression").clicked() {
+                        t.match_type = 0;
+                        changed = true;
+                    }
+                    ui.separator();
+                    let mut all = crate::trigger_events::EventKind::ALL.to_vec();
+                    all.sort_by_key(|e| e.name());
+                    for e in all {
+                        if ui.selectable_label(event == Some(e), event_label(e)).clicked() {
+                            t.match_type = e.match_type();
+                            changed = true;
+                        }
+                    }
+                });
                 ui.end_row();
+                match event {
+                    Some(e) => changed |= event_params(ui, e, t),
+                    None => {
+                        ui.label("Regular Expression:");
+                        changed |= ui.add(egui::TextEdit::singleline(&mut t.regex).code_editor().desired_width(360.0)).changed();
+                        ui.end_row();
+                    }
+                }
                 ui.label("Job:");
                 changed |= ui.add(egui::TextEdit::singleline(&mut t.job).hint_text("Trigger enabled only for this job (e.g., emacs)").desired_width(360.0)).changed();
                 ui.end_row();
@@ -298,7 +399,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                 });
                 ui.end_row();
             });
-            if let Err(e) = fancy_regex::Regex::new(&t.regex) {
+            if let (0, Err(e)) = (t.match_type, fancy_regex::Regex::new(&t.regex)) {
                 ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("This expression does not compile, so the trigger never fires: {e}"));
             }
             // An interpolated parameter that cannot be evaluated (iTerm2: Error in Trigger Parameter).
@@ -348,6 +449,11 @@ mod tests {
         assert_eq!(row(&trig("", "x", "CaptureTrigger", "")).detail, "/x/ Capture Output (milestone 9)");
         assert_eq!(row(&trig("", "x", "NoSuch", "")).detail, "/x/ NoSuch (not in Tandem)");
         assert_eq!(action_label(crate::triggers::action_info("iTermEnterWorkgroupTrigger").unwrap()), "Enter Workgroup\u{2026} (later)");
+        let mut ev = trig("", "", "BellTrigger", "");
+        ev.match_type = 105;
+        assert_eq!(row(&ev).detail, "Event: Idle (Silence) Ring Bell");
+        ev.match_type = 113;
+        assert_eq!(row(&ev).detail, "Event: Job Started (milestone 6c) Ring Bell");
     }
 
     #[test]

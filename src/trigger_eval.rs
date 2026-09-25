@@ -50,6 +50,8 @@ pub struct Compiled {
     last_line: Option<i64>,
     /// Show Alert's Disable This Alert: off for this session, not in the profile.
     pub off_here: bool,
+    /// An event trigger's timer state.
+    pub events: crate::trigger_events::EventState,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -207,7 +209,7 @@ impl Screen {
                     Ok(re) => (Some(re), None),
                     Err(e) => (None, Some(e.to_string())),
                 };
-                Compiled { trigger, re, error, last_line: None, off_here: false }
+                Compiled { trigger, re, error, last_line: None, off_here: false, events: Default::default() }
             })
             .collect();
         self.triggers.prefs = prefs;
@@ -328,7 +330,7 @@ impl Screen {
     }
 
     /// A variable for interpolated parameters.
-    fn trigger_var(&self, name: &str, row: i64) -> Option<String> {
+    pub(crate) fn trigger_var(&self, name: &str, row: i64) -> Option<String> {
         match name {
             "session.hostname" => self.shell.host.clone(),
             "session.username" => self.shell.user.clone(),
@@ -398,6 +400,12 @@ impl Screen {
                 break;
             }
         }
+    }
+
+    /// An event trigger's action, on the cursor's line. True to stop the rest.
+    pub(crate) fn run_event_action(&mut self, i: usize, value: &str) -> bool {
+        let line = self.logical_line(self.term.grid().cursor.point.line.0);
+        matches!(self.trigger_action(i, value, (0, 0), &line), Flow::StopAll)
     }
 
     /// The cells of a match: (line, column), from byte offsets in the logical line.
@@ -550,7 +558,7 @@ impl Screen {
                 if let Some((name, v)) = value.split_once('\u{1}') {
                     let name = name.strip_prefix("user.").unwrap_or(name);
                     if !name.is_empty() && !name.contains('.') {
-                        self.shell.vars.insert(name.to_string(), v.to_string());
+                        self.set_user_var(name, v.to_string());
                     }
                 }
                 Flow::Done

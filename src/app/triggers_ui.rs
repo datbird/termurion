@@ -168,6 +168,10 @@ impl App {
                 s.check_instant_triggers(now);
                 wake = Some(now + Duration::from_millis(500));
             }
+            if s.has_timed_events() {
+                s.check_event_timers(now);
+                wake = Some(wake.map_or(now + Duration::from_secs(1), |w: Instant| w.min(now + Duration::from_secs(1))));
+            }
         }
         self.take_requests();
         let mut done = Vec::new();

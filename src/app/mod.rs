@@ -1653,6 +1653,10 @@ impl ApplicationHandler<UserEvent> for App {
         }
         for id in exited {
             self.session_ended(id);
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.own_mut().fire_event(crate::trigger_events::EventKind::SessionEnded, &Default::default(), &[]);
+            }
+            self.take_requests();
             self.close_pane(id, event_loop);
         }
         if changed {

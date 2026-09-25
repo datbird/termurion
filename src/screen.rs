@@ -182,6 +182,8 @@ pub struct Screen {
     pub bell_count: u64,
     /// OSC 9;4 shows a progress bar now.
     pub progress_shown: bool,
+    /// When output last arrived (Idle and Activity After Idle event triggers).
+    pub last_output: Option<std::time::Instant>,
     /// Variables the window owns, for interpolated strings (`session.name`, `tab.title`).
     pub app_vars: std::collections::HashMap<String, String>,
     /// Portholes by id, and the last id given.
@@ -311,6 +313,7 @@ impl Screen {
             app_vars: std::collections::HashMap::new(),
             bell_count: 0,
             progress_shown: false,
+            last_output: None,
             next_porthole: 0,
             porthole_wide_default: false,
             porthole_selection: None,
@@ -383,6 +386,9 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if !bytes.is_empty() && !self.triggers.list.is_empty() {
+            self.events_on_output();
+        }
         // With triggers, a read holding more lines than the buffer keeps goes in pieces, so
         // every line is checked before it scrolls away.
         let g = self.term.grid();
@@ -985,6 +991,7 @@ impl Screen {
                 Event::Bell => {
                     self.bell_count += 1;
                     self.requests.push(Request::Bell);
+                    self.fire_event(crate::trigger_events::EventKind::BellReceived, &Default::default(), &[]);
                 }
                 _ => {}
             }
