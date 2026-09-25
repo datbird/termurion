@@ -154,7 +154,16 @@ impl Pane {
 
     /// A pane for a session the host already runs (a reattach).
     pub fn attached(id: PaneId, pty: crate::host_client::HostedPty, cols: u16, rows: u16) -> Pane {
-        Pane::with_io(id, Io::Hosted(pty), cols.max(2), rows.max(1))
+        let (cols, rows) = (cols.max(2), rows.max(1));
+        let mut pane = Pane::with_io(id, Io::Hosted(pty), cols, rows);
+        // The host's pty may have another size (a resize just before a crash, another
+        // monitor now): it takes the pane's, as iTerm2 sets the grid size after an attach.
+        if let Some(io) = &pane.pty {
+            if let Err(e) = io.resize(cols, rows) {
+                pane.error = Some(e);
+            }
+        }
+        pane
     }
 
     /// The host session this pane runs in, and the output offset read so far.

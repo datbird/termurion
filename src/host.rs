@@ -95,9 +95,21 @@ pub fn run(pipe: &str, api: Api, opts: Options) -> Result<(), String> {
     let mut conns = 0u64;
     let mut idle_since: Option<Instant> = None;
     loop {
-        if let Some(p) = listener.accept(Duration::from_millis(250))? {
-            conns += 1;
-            serve(host.clone(), Arc::new(p), conns, api.clone(), wake.clone());
+        match listener.accept(Duration::from_millis(250)) {
+            Ok(Some(p)) => {
+                conns += 1;
+                serve(host.clone(), Arc::new(p), conns, api.clone(), wake.clone());
+            }
+            Ok(None) => {}
+            // An error here must not end the host (and every shell with it): log, take a
+            // fresh pipe instance, and go on.
+            Err(e) => {
+                log(&format!("accept: {e}"));
+                if let Err(e) = listener.renew() {
+                    log(&format!("renew: {e}"));
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
         }
         let idle = {
             let h = host.lock().unwrap();
@@ -196,6 +208,11 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
             h.client = None;
             for s in h.sessions.values_mut() {
                 s.attached = false;
+                // A pane paused for Undo Close must not stay parked with no Tandem to resume
+                // it: the host keeps reading into the ring.
+                if let Some(p) = &s.pty {
+                    p.set_paused(false);
+                }
             }
         }
     });
@@ -235,6 +252,9 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
                 return;
             };
             s.attached = true;
+            if let Some(p) = &s.pty {
+                p.set_paused(false);
+            }
             let (from, dropped, bytes) = s.ring.since(since);
             let exited = s.exited;
             h.send(&Msg::Attached { id, from, dropped });
@@ -434,6 +454,24 @@ pub(crate) mod tests {
             _ => None,
         }), (0, false));
         c.output_until(id, "later-text");
+        c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn detach_resumes_a_paused_session() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello();
+        let id = c.launch("cmd.exe /d /c echo before-pause & ping -n 3 127.0.0.1 >nul & echo after-pause & ping -n 30 127.0.0.1 >nul");
+        c.output_until(id, "before-pause");
+        c.send(&Msg::Pause { id, paused: true });
+        std::thread::sleep(Duration::from_millis(200));
+        c.close();
+        std::thread::sleep(Duration::from_millis(3500));
+        let c = Conn::open(&name);
+        c.hello();
+        c.send(&Msg::Attach { id, since: 0 });
+        c.output_until(id, "after-pause");
         c.send(&Msg::KillAll);
     }
 

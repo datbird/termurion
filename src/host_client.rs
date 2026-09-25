@@ -147,9 +147,16 @@ fn dispatch(inner: &Inner, m: Msg, welcome: &mut Option<mpsc::Sender<Result<Welc
             }
         }
         Msg::Launched { tag, id, pid } => {
-            if let Some((tx, notify)) = inner.launches.lock().unwrap().remove(&tag) {
-                inner.sessions.lock().unwrap().insert(id, Arc::new(Mutex::new(Incoming { notify: Some(notify), ..Default::default() })));
-                let _ = tx.send(Ok((id, pid)));
+            let waiting = inner.launches.lock().unwrap().remove(&tag);
+            match waiting {
+                Some((tx, notify)) => {
+                    inner.sessions.lock().unwrap().insert(id, Arc::new(Mutex::new(Incoming { notify: Some(notify), ..Default::default() })));
+                    let _ = tx.send(Ok((id, pid)));
+                }
+                // Nobody waits for it any more (the launch timed out): no shell runs unseen.
+                None => {
+                    let _ = inner.send(&Msg::Kill { id });
+                }
             }
         }
         Msg::LaunchFailed { tag, error } => {
@@ -281,7 +288,12 @@ impl Client {
         self.inner.send(&Msg::Attach { id, since })?;
         match rx.recv_timeout(REPLY_WAIT) {
             Ok((from, dropped)) => Ok((pty, from, dropped)),
-            Err(_) => Err("the session host did not hand over the session".into()),
+            Err(_) => {
+                // The shell keeps running in the host (a later launch adopts it).
+                let mut pty = pty;
+                pty.detach();
+                Err("the session host did not hand over the session".into())
+            }
         }
     }
 
@@ -480,6 +492,30 @@ mod tests {
             Err(e) => panic!("not busy: {e}"),
             Ok(_) => panic!("a second Tandem was let in"),
         }
+    }
+
+    #[test]
+    fn an_attached_pane_sets_its_size() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let (c, _) = connect(&name);
+        let mut p = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, 80, 24, quiet()).unwrap();
+        let (id, pid) = (p.id(), p.pid());
+        p.detach();
+        drop(p);
+        c.close();
+        std::thread::sleep(Duration::from_millis(300));
+        let (c, _) = connect(&name);
+        let (pty, _, _) = c.attach(id, pid, 0, quiet()).unwrap();
+        let mut pane = crate::pane::Pane::attached(1, pty, 100, 30);
+        pane.detach();
+        drop(pane);
+        std::thread::sleep(Duration::from_millis(300));
+        c.close();
+        std::thread::sleep(Duration::from_millis(300));
+        let raw = Conn::open(&name);
+        let s = raw.hello().into_iter().find(|l| l.id == id).unwrap();
+        assert_eq!((s.cols, s.rows), (100, 30), "the host's pty took the pane's size");
+        raw.send(&Msg::KillAll);
     }
 
     #[test]

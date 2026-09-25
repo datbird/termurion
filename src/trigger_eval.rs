@@ -256,9 +256,14 @@ impl Screen {
 
     /// Session restoration's contents (SGR-safe styled text) and the optional banner
     /// (text, (background gray, text gray)): real cells, a full-width bar on its own line.
-    pub fn feed_restored(&mut self, text: &str, banner: Option<(&str, (u8, u8))>) {
+    pub fn feed_restored(&mut self, text: &str, cursor: Option<(usize, usize)>, banner: Option<(&str, (u8, u8))>) {
         let mut bytes = crate::restore_state::sgr_safe(text).replace("\r\n", "\n").replace('\n', "\r\n");
         bytes.push_str("\x1b[0m");
+        // The cursor goes back where the shell left it, so the shell's own view of the
+        // screen and this one agree when a reattached shell writes on.
+        if let Some((row, col)) = cursor {
+            bytes += &format!("\x1b[{};{}H", row + 1, col + 1);
+        }
         self.feed_quiet(bytes.as_bytes());
         if let Some((line, (bg, fg))) = banner {
             let mut b = String::new();
@@ -647,12 +652,42 @@ mod tests {
     }
 
     #[test]
+    fn restore_matches_the_saved_viewport() {
+        use alacritty_terminal::index::{Column, Line};
+        let row = |s: &Screen, l: i32| -> String { (0..20).map(|c| s.term().grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string() };
+        let cursor = |s: &Screen| (s.term().grid().cursor.point.line.0, s.term().grid().cursor.point.column.0);
+        // History above, the prompt on the last row with the cursor after "$ ".
+        let mut s = Screen::with_scrollback(20, 4, 100);
+        s.feed(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n$ ");
+        let (text, at) = crate::styled_copy::sgr_restorable(&s);
+        let mut r = Screen::with_scrollback(20, 4, 100);
+        r.feed_restored(&text, Some(at), None);
+        for l in -2..4 {
+            assert_eq!(row(&r, l), row(&s, l), "line {l}");
+        }
+        assert_eq!(cursor(&r), (3, 2), "the cursor sits where the shell left it");
+        // The cursor high on the screen, blank rows below it: they are not pushed away.
+        let mut s = Screen::with_scrollback(20, 4, 100);
+        s.feed(b"a\r\n");
+        let (text, at) = crate::styled_copy::sgr_restorable(&s);
+        let mut r = Screen::with_scrollback(20, 4, 100);
+        r.feed_restored(&text, Some(at), None);
+        assert_eq!((row(&r, 0), cursor(&r)), ("a".to_string(), (1, 0)));
+        // A full-screen program is up: the shell's screen and history are what is saved.
+        let mut s = Screen::with_scrollback(20, 4, 100);
+        s.feed(b"shell\r\n\x1b[?1049hVIM");
+        let (text, at) = crate::styled_copy::sgr_restorable(&s);
+        assert!(text.contains("shell") && !text.contains("VIM"), "{text:?}");
+        assert_eq!(at, (1, 0));
+    }
+
+    #[test]
     fn restored_contents_keep_colors_and_fire_nothing() {
         use alacritty_terminal::index::{Column, Line};
         use alacritty_terminal::vte::ansi::{Color, NamedColor};
         let mut s = Screen::new(40, 5);
         s.set_triggers(vec![trig("Reply", "AlertTrigger", "x", false)], TriggerPrefs::default());
-        s.feed_restored("\x1b[0;31mReply\x1b[0m\n\x1b]0;evil\x07ok\n", None);
+        s.feed_restored("\x1b[0;31mReply\x1b[0m\n\x1b]0;evil\x07ok\n", None, None);
         assert_eq!(alerts(&mut s), 0);
         assert!(s.take_requests().is_empty());
         assert_ne!(s.title(), Some("evil"));
@@ -668,7 +703,7 @@ mod tests {
         use alacritty_terminal::vte::ansi::{Color, Rgb};
         let mut s = Screen::new(20, 5);
         s.set_triggers(vec![trig("Restored", "AlertTrigger", "x", false)], TriggerPrefs::default());
-        s.feed_restored("abc", Some(("Session Contents Restored on X", (38, 102))));
+        s.feed_restored("abc", None, Some(("Session Contents Restored on X", (38, 102))));
         let g = s.term().grid();
         let row: String = (0..20).map(|c| g[Line(1)][Column(c)].c).collect();
         assert_eq!(row.trim_end(), "Session Contents Res", "the banner starts its own line");
@@ -676,7 +711,7 @@ mod tests {
         assert_eq!(g[Line(1)][Column(0)].bg, Color::Spec(Rgb { r: 38, g: 38, b: 38 }));
         assert_eq!(g[Line(1)][Column(0)].fg, Color::Spec(Rgb { r: 102, g: 102, b: 102 }));
         let mut w = Screen::new(40, 5);
-        w.feed_restored("", Some(("B", (38, 102))));
+        w.feed_restored("", None, Some(("B", (38, 102))));
         let g = w.term().grid();
         assert_eq!(g[Line(0)][Column(39)].bg, Color::Spec(Rgb { r: 38, g: 38, b: 38 }), "the bar spans the width");
         assert_eq!((g.cursor.point.line.0, g.cursor.point.column.0), (1, 0), "the shell starts below it");

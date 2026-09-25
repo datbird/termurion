@@ -73,7 +73,8 @@ impl App {
         if self.globals.bool("restoreWindowContents") {
             Contents::Styled(self.globals.int("maxHistoryLinesToRestore").clamp(0, 10_000_000) as usize)
         } else {
-            Contents::None
+            // No text, but the shells still come back to their panes after a crash.
+            Contents::KeysOnly
         }
     }
 
@@ -109,7 +110,8 @@ impl App {
             Err(e) => {
                 let bad = path.with_file_name("state.bad");
                 let kept = std::fs::rename(&path, &bad).map_or_else(|r| format!(" (it could not be moved aside: {r})"), |_| format!(" The file is kept as {}.", bad.display()));
-                self.banners.set("state", format!("The saved windows could not be restored: {e}.{kept}"));
+                // Its own slot: a later successful save clears "state", not this.
+                self.banners.set("state-bad", format!("The saved windows could not be restored: {e}.{kept}"));
                 return None;
             }
         };
@@ -164,6 +166,9 @@ impl App {
         self.install_pane(id, Pane::attached(id, pty, cols, rows), &p);
         if dropped {
             if let Some(pane) = self.panes.get_mut(&id) {
+                // A visible mark where output is missing, then a repaint.
+                let grays = restore_state::banner_grays(pane.screen.palette.bg);
+                pane.screen.feed_restored("", None, Some(("Output was cut short while Tandem was closed.", grays)));
                 pane.jiggle();
             }
         }

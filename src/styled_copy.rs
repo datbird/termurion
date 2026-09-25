@@ -55,7 +55,10 @@ fn spans(screen: &Screen) -> Vec<(i32, usize, usize)> {
 }
 
 fn wraps(screen: &Screen, line: i32) -> bool {
-    let g = screen.term().grid();
+    wraps_in(screen.term().grid(), line)
+}
+
+fn wraps_in(g: &alacritty_terminal::grid::Grid<Cell>, line: i32) -> bool {
     g[Line(line)][Column(g.columns() - 1)].flags.contains(Flags::WRAPLINE)
 }
 
@@ -114,7 +117,10 @@ fn runs_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> Vec<Row> {
 /// The columns of a selected row that hold text: wide-character spacers are skipped, and
 /// at a hard line end the empty cells after the text are left out.
 fn cells_of(screen: &Screen, line: i32, from: usize, to: usize, hard_end: bool) -> Vec<usize> {
-    let g = screen.term().grid();
+    cells_in(screen.term().grid(), line, from, to, hard_end)
+}
+
+fn cells_in(g: &alacritty_terminal::grid::Grid<Cell>, line: i32, from: usize, to: usize, hard_end: bool) -> Vec<usize> {
     let row = &g[Line(line)];
     let mut end = to;
     if hard_end {
@@ -244,17 +250,31 @@ pub fn sgr_all(screen: &Screen) -> String {
     sgr_over(screen, &(top..=last).map(|l| (l, 0, last_col)).collect::<Vec<_>>())
 }
 
+/// Session restoration's contents: the main screen's history and every row of its screen
+/// (blank rows too, so the rows line up with the shell's own view), and its cursor as
+/// (row, column) on the screen.
+pub fn sgr_restorable(screen: &Screen) -> (String, (usize, usize)) {
+    let g = screen.term().primary_grid();
+    let top = -(g.history_size() as i32);
+    let spans: Vec<_> = (top..g.screen_lines() as i32).map(|l| (l, 0, g.columns() - 1)).collect();
+    let at = g.cursor.point;
+    (sgr_grid(g, &spans), (at.line.0.max(0) as usize, at.column.0))
+}
+
 pub fn sgr_text(screen: &Screen) -> String {
     sgr_over(screen, &spans(screen))
 }
 
 fn sgr_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> String {
-    let g = screen.term().grid();
+    sgr_grid(screen.term().grid(), spans)
+}
+
+fn sgr_grid(g: &alacritty_terminal::grid::Grid<Cell>, spans: &[(i32, usize, usize)]) -> String {
     let mut out = String::new();
     let mut last: Option<Vec<String>> = None;
     for (i, (line, from, to)) in spans.iter().enumerate() {
-        let hard_end = !wraps(screen, *line);
-        for col in cells_of(screen, *line, *from, *to, hard_end) {
+        let hard_end = !wraps_in(g, *line);
+        for col in cells_in(g, *line, *from, *to, hard_end) {
             let c = &g[Line(*line)][Column(col)];
             let codes = sgr_codes(c);
             if last.as_ref() != Some(&codes) {

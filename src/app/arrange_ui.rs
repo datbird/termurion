@@ -17,6 +17,8 @@ pub(super) enum Contents {
     None,
     Plain,
     Styled(usize),
+    /// No text, but the host session (restoration with contents off).
+    KeysOnly,
 }
 
 impl App {
@@ -45,13 +47,23 @@ impl App {
         let saved = match contents {
             Contents::None => None,
             Contents::Plain => Some((arrangement::CONTENTS_KEY, crate::restore_state::cap_lines(&s.all_text(), CONTENT_LINES).to_string())),
-            Contents::Styled(n) => Some((arrangement::STYLED_KEY, crate::restore_state::cap_lines(&crate::styled_copy::sgr_all(s), n).to_string())),
+            Contents::Styled(n) => {
+                let (text, (row, col)) = crate::styled_copy::sgr_restorable(s);
+                if let Some(t) = v.as_table_mut() {
+                    let mut c = toml::Table::new();
+                    c.insert("Row".into(), Value::Integer(row as i64));
+                    c.insert("Column".into(), Value::Integer(col as i64));
+                    t.insert(arrangement::CURSOR_KEY.into(), Value::Table(c));
+                }
+                Some((arrangement::STYLED_KEY, crate::restore_state::cap_lines(&text, n).to_string()))
+            }
+            Contents::KeysOnly => None,
         };
         if let (Some((key, text)), Some(t)) = (saved, v.as_table_mut()) {
             t.insert(key.into(), Value::String(text));
         }
         // Session restoration: the host session, so a later launch can take the shell back.
-        if let (Contents::Styled(_), Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
+        if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
             t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));
         }
         v
@@ -241,7 +253,7 @@ impl App {
                             // Session restoration: styled text, then the banner when no job came back.
                             let banner = session.get(arrangement::BANNER_KEY).and_then(|b| b.as_str());
                             let grays = crate::restore_state::banner_grays(p.screen.palette.bg);
-                            p.screen.feed_restored(text, banner.map(|b| (b, grays)));
+                            p.screen.feed_restored(text, arrangement::saved_cursor(&session), banner.map(|b| (b, grays)));
                         } else if let Some(text) = arrangement::contents(&session) {
                             // The saved text comes back as the session's history, as plain text.
                             p.screen.feed_inert(&format!("{text}\n"));

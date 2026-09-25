@@ -12,7 +12,7 @@ use windows_sys::Win32::Foundation::{
     HLOCAL, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-use windows_sys::Win32::Security::{GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser};
+use windows_sys::Win32::Security::{GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
     SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
@@ -94,15 +94,39 @@ pub fn user_sid() -> Result<String, String> {
     }
 }
 
+/// Whether this process runs elevated (as administrator).
+pub fn elevated() -> Result<bool, String> {
+    unsafe {
+        let mut token: HANDLE = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(last_error("OpenProcessToken"));
+        }
+        let token = Owned(token);
+        token_elevated(token.0)
+    }
+}
+
+fn token_elevated(token: HANDLE) -> Result<bool, String> {
+    let mut e = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut len = 0u32;
+    if unsafe { GetTokenInformation(token, TokenElevation, (&mut e as *mut TOKEN_ELEVATION).cast(), size_of::<TOKEN_ELEVATION>() as u32, &mut len) } == 0 {
+        return Err(last_error("GetTokenInformation(TokenElevation)"));
+    }
+    Ok(e.TokenIsElevated != 0)
+}
+
 /// `\\.\pipe\tandem-host-<user SID>`.
 pub fn host_pipe_name() -> Result<String, String> {
-    Ok(format!(r"\\.\pipe\tandem-host-{}", user_sid()?))
+    // An elevated Tandem has its own host: normal and elevated shells never mix.
+    Ok(format!(r"\\.\pipe\tandem-host-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
 /// A pipe instance whose DACL lets only this user connect; no remote clients.
 fn create_instance(name: &str, first: bool) -> Result<HANDLE, String> {
     unsafe {
-        let sddl = wide(&format!("D:P(A;;GA;;;{})", user_sid()?));
+        // Elevated: a high mandatory label, so a normal-integrity process cannot open it.
+        let label = if elevated()? { "S:(ML;;NWNRNX;;;HI)" } else { "" };
+        let sddl = wide(&format!("D:P(A;;GA;;;{}){label}", user_sid()?));
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut sd, null_mut()) == 0 {
             return Err(last_error("ConvertStringSecurityDescriptorToSecurityDescriptorW"));
@@ -142,6 +166,14 @@ impl Listener {
     /// Creates the first instance of `name`. Fails when another process owns the name.
     pub fn bind(name: &str) -> Result<Listener, String> {
         Ok(Listener { name: name.to_string(), waiting: create_instance(name, true)? as usize })
+    }
+
+    /// Replaces the waiting instance (after an error on it).
+    pub fn renew(&mut self) -> Result<(), String> {
+        let fresh = create_instance(&self.name, false)?;
+        unsafe { CloseHandle(self.waiting as HANDLE) };
+        self.waiting = fresh as usize;
+        Ok(())
     }
 
     /// Waits up to `wait` for a client. None when none came.
@@ -272,7 +304,11 @@ impl Pipe {
     /// Ends every read and write in progress and closes the handle, so the other end sees
     /// the pipe close; later reads give 0 and writes fail.
     pub fn shutdown(&self) {
-        self.closed.store(true, Ordering::Release);
+        // Only the first call closes; a later one must not touch a handle value that may
+        // belong to something else by now.
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         loop {
             unsafe { CancelIoEx(self.handle(), null()) };
             if let Ok(mut open) = self.gate.try_write() {
@@ -311,6 +347,9 @@ impl Pipe {
             let mine = user_sid()?;
             if theirs != mine {
                 return Err(format!("the session host pipe is served by another user ({theirs})"));
+            }
+            if token_elevated(token.0)? != elevated()? {
+                return Err("the session host runs at another elevation than this Tandem".into());
             }
             Ok(())
         }
@@ -383,6 +422,12 @@ pub(crate) mod tests {
         std::thread::sleep(Duration::from_millis(200));
         server.shutdown();
         assert!(reader.join().unwrap().map_or(true, |n| n == 0));
+    }
+
+    #[test]
+    fn pipe_names_follow_elevation() {
+        let admin = elevated().unwrap();
+        assert_eq!(host_pipe_name().unwrap().ends_with("-admin"), admin, "an elevated Tandem never shares a host with a normal one");
     }
 
     #[test]

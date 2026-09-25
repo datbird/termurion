@@ -335,6 +335,15 @@ pub const CONTENTS_KEY: &str = "Tandem Contents";
 pub const STYLED_KEY: &str = "Tandem Styled Contents";
 /// Set on a session while it is restored: the banner line to draw under its contents.
 pub const BANNER_KEY: &str = "Tandem Banner";
+/// Session restoration: where the cursor was on the screen (`{Row, Column}`).
+pub const CURSOR_KEY: &str = "Tandem Cursor";
+
+pub fn saved_cursor(session: &Value) -> Option<(usize, usize)> {
+    let c = session.get(CURSOR_KEY)?;
+    let n = |k: &str| c.get(k).and_then(|v| v.as_integer()).filter(|i| (0..100_000).contains(i)).map(|i| i as usize);
+    Some((n("Row")?, n("Column")?))
+}
+
 /// Set on a session while it is restored: the host session to take over (`{Id, Pid, Since}`).
 pub const ATTACH_KEY: &str = "Tandem Attach";
 

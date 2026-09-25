@@ -10,7 +10,8 @@ use toml::Value;
 /// The state file's format. A file with another version is not read.
 pub const VERSION: i64 = 1;
 
-/// Per session: the host session it ran in (`{Id, Instance, Offset}`), iTerm2's `Server Dict`.
+/// Per session: the host session it ran in (`{Id, Pid, Offset}`), iTerm2's `Server Dict`; the
+/// host instance is the state's `Host Instance`.
 pub const HOST_KEY: &str = "Host Session";
 
 /// Quiet time after the last change before a save, and the least time between saves.
