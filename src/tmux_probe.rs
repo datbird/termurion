@@ -40,6 +40,43 @@ mod tests {
         std::fs::write(format!("tests/fixtures/tmux/{name}.bin"), &all).unwrap();
     }
 
+    /// Two splits and the window's layout: `%layout-change` lines and a list-windows reply.
+    fn capture_layout(name: &str) {
+        let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
+        let p = spawn(&api, "wsl.exe -e tmux -L tandem-layout -f /dev/null -CC new-session", 80, 24).unwrap();
+        let mut all = Vec::new();
+        let step = |p: &crate::pty::Pty, needle: &[u8], all: &mut Vec<u8>| match p.read_until(needle, Duration::from_secs(20)) {
+            Ok(b) => all.extend(b),
+            Err(b) => {
+                all.extend(b);
+                panic!("{name}: no {:?} in {:?}", String::from_utf8_lossy(needle), String::from_utf8_lossy(all));
+            }
+        };
+        step(&p, b"%session-changed", &mut all);
+        while let Some(b) = p.read_timeout(Duration::from_millis(500)) {
+            all.extend(b);
+        }
+        for cmd in ["split-window -h", "split-window -v", "list-windows -F \"#{window_layout}\""] {
+            p.write(format!("{cmd}\r").as_bytes()).unwrap();
+            step(&p, b"%end", &mut all);
+            while let Some(b) = p.read_timeout(Duration::from_millis(500)) {
+                all.extend(b);
+            }
+        }
+        p.write(b"kill-server\r").unwrap();
+        step(&p, b"%exit", &mut all);
+        while let Some(b) = p.read_timeout(Duration::from_millis(1000)) {
+            all.extend(b);
+        }
+        std::fs::write(format!("tests/fixtures/tmux/{name}.bin"), &all).unwrap();
+    }
+
+    #[test]
+    #[ignore]
+    fn record_tmux_layout() {
+        capture_layout("wsl-3.4-layout");
+    }
+
     #[test]
     #[ignore]
     fn record_tmux_transcripts() {
