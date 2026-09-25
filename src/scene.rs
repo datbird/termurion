@@ -539,21 +539,50 @@ pub fn mark_bars(frame: &mut Frame, marks: &[(usize, crate::marks::MarkColor)], 
     }
 }
 
-pub fn tab_bar(frame: &mut Frame, titles: &[String], active: usize, area: Rect, cell: (f32, f32)) -> Vec<Rect> {
+/// One tab's look: its title, its OSC 21337 status text and color, the status dot, and
+/// the tab color a program chose.
+#[derive(Clone, Debug, Default)]
+pub struct TabLook {
+    pub title: String,
+    pub status: Option<(String, Rgb)>,
+    pub dot: Option<Rgb>,
+    pub color: Option<Rgb>,
+}
+
+pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, cell: (f32, f32)) -> Vec<Rect> {
     frame.quads.push(Quad { rect: area, color: rgba(TAB_BAR, 1.0) });
-    let n = titles.len().max(1) as f32;
+    let n = tabs.len().max(1) as f32;
     let w = (area.w / n).floor();
     let mut rects = Vec::new();
-    for (i, title) in titles.iter().enumerate() {
+    for (i, tab) in tabs.iter().enumerate() {
+        let title = &tab.title;
         let r = Rect { x: area.x + i as f32 * w, y: area.y, w, h: area.h };
         if i == active {
             frame.quads.push(Quad { rect: r, color: rgba(TAB_ACTIVE, 1.0) });
         }
-        let fit = ((w / cell.0) as usize).saturating_sub(2);
-        let text: String = title.chars().take(fit).collect();
+        if let Some(c) = tab.color {
+            frame.quads.push(Quad { rect: Rect { y: r.y + r.h - 3.0, h: 3.0, ..r }, color: rgba(c, 1.0) });
+        }
+        let mut x = r.x + cell.0;
+        if let Some(c) = tab.dot {
+            let d = (cell.1 / 2.0).floor();
+            frame.quads.push(Quad { rect: Rect { x, y: r.y + ((r.h - d) / 2.0).floor(), w: d, h: d }, color: rgba(c, 1.0) });
+            x += d + cell.0 / 2.0;
+        }
+        let fit = ((r.x + w - x) / cell.0).max(0.0) as usize;
+        let fit = fit.saturating_sub(1);
         let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
+        let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false };
+        let mut spans = Vec::new();
+        let mut left = fit;
+        if let Some((status, c)) = &tab.status {
+            let s: String = format!("{status} ").chars().take(left).collect();
+            left -= s.chars().count();
+            spans.push(span(s, *c));
+        }
+        spans.push(span(title.chars().take(left).collect(), color));
         let y = r.y + ((r.h - cell.1) / 2.0).floor();
-        frame.rows.push(TextRow { x: r.x + cell.0, y, spans: vec![Span { text, color, bold: false, italic: false, alt_font: false }], clip: r });
+        frame.rows.push(TextRow { x, y, spans, clip: r });
         rects.push(r);
     }
     rects
@@ -760,12 +789,30 @@ mod tests {
     #[test]
     fn tab_titles_are_cut_to_fit() {
         let mut f = Frame::default();
-        let titles = vec!["a very long title that cannot fit".to_string(), "b".to_string()];
+        let titles: Vec<TabLook> = ["a very long title that cannot fit", "b"].iter().map(|t| TabLook { title: t.to_string(), ..TabLook::default() }).collect();
         let rects = tab_bar(&mut f, &titles, 0, Rect { x: 0.0, y: 0.0, w: 200.0, h: 30.0 }, CELL);
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[1].x, 100.0);
         let first: String = f.rows[0].spans.iter().map(|s| s.text.as_str()).collect();
         assert!(first.chars().count() <= 8, "{first:?}");
+    }
+
+    #[test]
+    fn tab_shows_status_dot() {
+        let mut f = Frame::default();
+        let green = rgb(0, 0xff, 0);
+        let red = rgb(0xff, 0, 0);
+        let tabs = vec![
+            TabLook { title: "shell".into(), status: Some(("waiting".into(), red)), dot: Some(green), color: Some(rgb(0, 0, 0xff)) },
+            TabLook { title: "other".into(), ..TabLook::default() },
+        ];
+        let rects = tab_bar(&mut f, &tabs, 1, Rect { x: 0.0, y: 0.0, w: 400.0, h: 30.0 }, CELL);
+        let inside = |q: &Quad| q.rect.x >= rects[0].x && q.rect.x + q.rect.w <= rects[0].x + rects[0].w;
+        assert!(f.quads.iter().any(|q| inside(q) && q.color == rgba(green, 1.0) && q.rect.w < 20.0), "a dot");
+        assert!(f.quads.iter().any(|q| inside(q) && q.color == rgba(rgb(0, 0, 0xff), 1.0)), "the tab color");
+        let spans: Vec<&Span> = f.rows.iter().filter(|r| r.clip.x < rects[1].x).flat_map(|r| &r.spans).collect();
+        assert_eq!(spans.first().map(|s| (s.text.as_str(), s.color)), Some(("waiting ", red)), "status before the title");
+        assert!(spans.iter().any(|s| s.text.contains("shell")));
     }
 
     #[test]

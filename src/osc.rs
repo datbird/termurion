@@ -27,7 +27,7 @@ fn cut_at_cap(buf: &[u8]) -> bool {
 }
 
 /// OSC payload prefixes Tandem acts on.
-const WANTED: [&[u8]; 4] = [b"133;", b"7;", b"1337;", b"52;"];
+const WANTED: [&[u8]; 5] = [b"133;", b"7;", b"1337;", b"52;", b"21337;"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptKind {
@@ -56,6 +56,8 @@ pub enum Osc {
     Sixel(Vec<u8>),
     /// A kitty graphics command: the APC body after `G`.
     Kitty(Vec<u8>),
+    /// OSC 21337: tab status fields.
+    TabStatus(String),
     /// OSC 52: the payload after `52;`.
     Clipboard(Vec<u8>),
     /// A report request alacritty does not answer.
@@ -368,6 +370,7 @@ pub fn parse(payload: &str) -> Option<Osc> {
         }
         "7" => Some(Osc::Location(rest.to_string())),
         "52" => Some(Osc::Clipboard(rest.as_bytes().to_vec())),
+        "21337" => Some(Osc::TabStatus(rest.to_string())),
         "1337" => {
             let (k, v) = rest.split_once('=').unwrap_or((rest, ""));
             Some(Osc::Kv(k.to_string(), v.to_string()))

@@ -169,6 +169,8 @@ pub struct Screen {
     /// OSC 1337 `Copy=` in progress, and `CopyToClipboard` capture.
     pub(crate) copy: crate::clipboard_osc::Copy,
     pub(crate) capture: Option<Vec<u8>>,
+    /// OSC 21337: what the pane's program says it is doing.
+    pub tab_status: crate::tabstatus::Status,
     /// The program's `Env=report=all` environment, kept for the SSH integration.
     pub env: Option<String>,
     /// ExecFailed: the command could not start.
@@ -263,6 +265,7 @@ impl Screen {
             feeds: 0,
             keys: KeyState::new(look.csi_u),
             trusted: true,
+            tab_status: crate::tabstatus::Status::default(),
             env: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),

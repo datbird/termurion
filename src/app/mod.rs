@@ -1240,11 +1240,7 @@ impl App {
         let (w, _) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         self.tab_rects.clear();
         if self.tabs.len() > 1 {
-            let titles: Vec<String> = self
-                .tabs
-                .iter()
-                .map(|t| self.panes.get(&t.focused).and_then(|p| p.own().title()).unwrap_or("Shell").to_string())
-                .collect();
+            let titles: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
             let bar = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
             self.tab_rects = scene::tab_bar(&mut frame, &titles, self.active, bar, cell);
         }

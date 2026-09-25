@@ -305,3 +305,12 @@ label = "Disable potentially insecure escape sequences"
 type = "bool"
 default = false
 help = "Ignores escape sequences that can change settings, reach the clipboard, save files, or report window and screen details (iTerm2's trust gate)."
+
+[[setting]]
+key = "ShowSessionStatusInTabSubtitle"
+tab = "Appearance"
+section = "Tabs"
+label = "Show session status in tab"
+type = "bool"
+default = true
+help = "Shows the status text a program sets with OSC 21337 in its tab, in the status color."

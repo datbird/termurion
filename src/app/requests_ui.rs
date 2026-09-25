@@ -148,6 +148,25 @@ impl App {
         let _ = g.window.request_inner_size(PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
     }
 
+    /// A tab's title, status, and colors for the tab bar.
+    pub(super) fn tab_look(&self, t: &Tab) -> scene::TabLook {
+        use crate::tabstatus::{self, xterm_color};
+        let title = self.panes.get(&t.focused).and_then(|p| p.own().title()).unwrap_or("Shell").to_string();
+        let panes = t.layout.panes();
+        let focused = self.panes.get(&t.focused).map(|p| &p.own().tab_status);
+        let others: Vec<&tabstatus::Status> = panes.iter().filter(|id| **id != t.focused).filter_map(|id| self.panes.get(id)).map(|p| &p.own().tab_status).collect();
+        let st = tabstatus::aggregate(focused, &others, &tabstatus::PRIORITIES);
+        let show_text = self.globals.bool("ShowSessionStatusInTabSubtitle");
+        let status = st.filter(|_| show_text).and_then(|s| {
+            let text = s.status.clone()?;
+            let color = s.status_color.as_deref().and_then(xterm_color).unwrap_or(rgb_of(0xc7, 0xc7, 0xc7));
+            Some((text, color))
+        });
+        let dot = st.and_then(|s| s.indicator.as_deref()).and_then(xterm_color);
+        let color = self.tab_colors.get(&t.focused).copied();
+        scene::TabLook { title, status, dot, color }
+    }
+
     /// Forgets pane flashes and fireworks that are over.
     pub(super) fn prune_attention(&mut self) {
         let now = Instant::now();
@@ -176,6 +195,10 @@ impl App {
         }
         next
     }
+}
+
+fn rgb_of(r: u8, g: u8, b: u8) -> alacritty_terminal::vte::ansi::Rgb {
+    alacritty_terminal::vte::ansi::Rgb { r, g, b }
 }
 
 /// The primary monitor's height in pixels (it sits at the virtual screen's origin).

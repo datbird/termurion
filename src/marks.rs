@@ -341,6 +341,8 @@ impl Screen {
     }
 
     fn prompt_start(&mut self, kind: PromptKind, aid: Option<String>, fresh_line: bool) {
+        // A new prompt ends whatever the last program said it was doing (OSC 21337).
+        self.tab_status = crate::tabstatus::Status::default();
         if !matches!(kind, PromptKind::Initial | PromptKind::Unknown) {
             return;
         }
@@ -384,6 +386,10 @@ impl Screen {
                 self.replies.extend(answer);
             }
             Osc::Sync(_) => {}
+            Osc::TabStatus(payload) => {
+                let pairs = crate::tabstatus::parse(&payload);
+                self.tab_status.apply(&pairs);
+            }
             Osc::Clipboard(payload) => match crate::clipboard_osc::osc52(&payload) {
                 Some(crate::clipboard_osc::Osc52::Write(t)) => self.requests.push(crate::screen::Request::ClipboardWrite(t)),
                 Some(crate::clipboard_osc::Osc52::Read(pc)) => self.requests.push(crate::screen::Request::ClipboardRead(pc)),
