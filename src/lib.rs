@@ -79,6 +79,7 @@ pub mod screen;
 pub mod screenterm;
 pub mod shell_history;
 pub mod snippets;
+pub mod clippings;
 pub mod user_actions;
 
 #[cfg(windows)]
