@@ -153,6 +153,16 @@ impl Profile {
         self.bool(key)
     }
 
+    /// The tab's color (Use Tab Color and Tab Color, for the mode); None without one.
+    pub fn tab_color(&self, dark: bool) -> Option<Rgb> {
+        if !self.bool_for("Use Tab Color", dark) {
+            return None;
+        }
+        let variant = format!("Tab Color ({})", if dark { "Dark" } else { "Light" });
+        let separate = self.bool("Use Separate Colors for Light and Dark Mode");
+        separate.then(|| self.values.get(&variant)).flatten().or_else(|| self.values.get("Tab Color")).and_then(to_rgb)
+    }
+
     /// Gives this profile a new Guid.
     pub fn renew_guid(&mut self) {
         self.set(GUID, Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
@@ -356,6 +366,23 @@ mod tests {
         p.set("Brighten Bold Text (Dark)", toml::Value::Boolean(false));
         assert!(!p.bool_for("Brighten Bold Text", true));
         assert!(!crate::palette::Palette::from_profile(&p, true).bright_bold);
+    }
+
+    #[test]
+    fn profile_tab_colors_follow_the_mode() {
+        assert_eq!(Profile::stock().tab_color(false), None, "off in the stock profile");
+        let mut p = Profile::default();
+        assert_eq!(p.tab_color(false), None, "off by default");
+        p.set("Use Tab Color", toml::Value::Boolean(true));
+        assert_eq!(p.tab_color(false), None, "on, but no color picked");
+        p.set("Tab Color", color_value(rgb(10, 20, 30)));
+        assert_eq!(p.tab_color(false), Some(rgb(10, 20, 30)));
+        p.set("Use Separate Colors for Light and Dark Mode", toml::Value::Boolean(true));
+        p.set("Use Tab Color (Dark)", toml::Value::Boolean(true));
+        p.set("Tab Color (Dark)", color_value(rgb(1, 2, 3)));
+        assert_eq!(p.tab_color(true), Some(rgb(1, 2, 3)));
+        p.set("Use Tab Color (Light)", toml::Value::Boolean(false));
+        assert_eq!(p.tab_color(false), None, "light mode has it off");
     }
 
     #[test]
