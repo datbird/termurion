@@ -27,7 +27,11 @@ pub struct Image {
     pub broken: bool,
     /// Fit inside its cells keeping its shape (iTerm2's preserveAspectRatio).
     pub keep_aspect: bool,
+    /// Unique across every screen, for the renderer's texture cache (set by `Store::add`).
+    pub uid: u64,
 }
+
+static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// A decoded file: its size and frames.
 #[derive(Clone, Debug, PartialEq)]
@@ -141,7 +145,8 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn add(&mut self, image: Image) -> u32 {
+    pub fn add(&mut self, mut image: Image) -> u32 {
+        image.uid = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.next += 1;
         self.by_id.insert(self.next, image);
         self.next
@@ -224,7 +229,7 @@ mod tests {
     use alacritty_terminal::index::{Column, Line};
 
     fn picture(cols: usize, rows: usize) -> Image {
-        Image { width_px: 10, height_px: 10, cols, rows, frames: vec![Frame { rgba: Arc::new(vec![0; 400]), delay_ms: 0 }], broken: false, keep_aspect: true }
+        Image { width_px: 10, height_px: 10, cols, rows, frames: vec![Frame { rgba: Arc::new(vec![0; 400]), delay_ms: 0 }], broken: false, keep_aspect: true, uid: 0 }
     }
 
     fn tile(s: &Screen, line: i32, col: usize) -> Option<Tile> {

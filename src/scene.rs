@@ -34,13 +34,69 @@ pub struct TextRow {
     pub clip: Rect,
 }
 
-/// Draw order: `quads`, then `rows`, then `overlay`.
+/// A piece of an inline image: where it goes, which part of the picture (u0, v0, u1, v1),
+/// and the picture (`key` names it for the renderer's texture cache).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageQuad {
+    pub rect: Rect,
+    pub uv: [f32; 4],
+    pub key: (u64, usize),
+    pub pixels: std::sync::Arc<Vec<u8>>,
+    pub size: (u32, u32),
+}
+
+/// Draw order: `quads`, then `images`, then `rows`, then `overlay`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
     pub clear: [f32; 4],
     pub quads: Vec<Quad>,
+    pub images: Vec<ImageQuad>,
     pub rows: Vec<TextRow>,
     pub overlay: Vec<Quad>,
+}
+
+/// Which frame of an animated image shows at `now_ms`.
+pub fn frame_at(frames: &[crate::images::Frame], now_ms: u64) -> usize {
+    let total: u64 = frames.iter().map(|f| f.delay_ms as u64).sum();
+    if total == 0 {
+        return 0;
+    }
+    let mut t = now_ms % total;
+    for (i, f) in frames.iter().enumerate() {
+        if t < f.delay_ms as u64 {
+            return i;
+        }
+        t -= f.delay_ms as u64;
+    }
+    0
+}
+
+/// The image pieces for one cell showing `tile` of `image` at `cell_rect`.
+pub fn tile_quad(image: &crate::images::Image, tile: alacritty_terminal::term::cell::Tile, cell_rect: Rect, frame: usize) -> Option<ImageQuad> {
+    let (cw, ch) = (cell_rect.w, cell_rect.h);
+    let (bw, bh) = (image.cols as f32 * cw, image.rows as f32 * ch);
+    let (iw, ih) = (image.width_px.max(1) as f32, image.height_px.max(1) as f32);
+    // The picture's place in its box of cells: all of it, or fitted and centered.
+    let (px, py, pw, ph) = if image.keep_aspect {
+        let s = (bw / iw).min(bh / ih);
+        ((bw - iw * s) / 2.0, (bh - ih * s) / 2.0, iw * s, ih * s)
+    } else {
+        (0.0, 0.0, bw, bh)
+    };
+    let (tx, ty) = (tile.x as f32 * cw, tile.y as f32 * ch);
+    let (x0, y0) = (tx.max(px), ty.max(py));
+    let (x1, y1) = ((tx + cw).min(px + pw), (ty + ch).min(py + ph));
+    if x1 <= x0 || y1 <= y0 || pw <= 0.0 || ph <= 0.0 {
+        return None;
+    }
+    let f = &image.frames[frame.min(image.frames.len().checked_sub(1)?)];
+    Some(ImageQuad {
+        rect: Rect { x: cell_rect.x + x0 - tx, y: cell_rect.y + y0 - ty, w: x1 - x0, h: y1 - y0 },
+        uv: [(x0 - px) / pw, (y0 - py) / ph, (x1 - px) / pw, (y1 - py) / ph],
+        key: (image.uid, frame.min(image.frames.len() - 1)),
+        pixels: f.rgba.clone(),
+        size: (image.width_px, image.height_px),
+    })
 }
 
 const TAB_BAR: Rgb = rgb(0x1e, 0x1e, 0x1e);
@@ -279,6 +335,15 @@ pub fn pane_with(
         }
         if block_cursor && cursor == Some((row, col)) {
             (fg, bg) = (palette.cursor_text, palette.cursor);
+        }
+        if let Some(t) = c.image() {
+            if let Some(img) = screen.images.by_id.get(&t.image) {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+                let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
+                if let Some(q) = tile_quad(img, t, r, frame_at(&img.frames, now)) {
+                    frame.images.push(q);
+                }
+            }
         }
         let mut text = String::new();
         if hidden {
@@ -764,5 +829,58 @@ mod tests {
         pane_with(&mut f, &s, rect, CELL, true, false, Some(&hl));
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
+    }
+
+    #[test]
+    fn tiles_become_textured_quads() {
+        let mut s = screen(b"");
+        let img = crate::images::Image {
+            width_px: 20,
+            height_px: 20,
+            cols: 2,
+            rows: 1,
+            frames: vec![crate::images::Frame { rgba: std::sync::Arc::new(vec![9; 20 * 20 * 4]), delay_ms: 0 }],
+            broken: false,
+            keep_aspect: false,
+            uid: 0,
+        };
+        s.place_image(img, true);
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, false);
+        assert_eq!(f.images.len(), 2);
+        assert_eq!(f.images[0].rect, Rect { x: 0.0, y: 0.0, w: 10.0, h: 20.0 });
+        assert_eq!(f.images[0].uv, [0.0, 0.0, 0.5, 1.0]);
+        assert_eq!(f.images[1].uv, [0.5, 0.0, 1.0, 1.0]);
+        assert_eq!(f.images[0].size, (20, 20));
+    }
+
+    #[test]
+    fn kept_shape_letterboxes_the_picture() {
+        // A 2:1 picture in a 2x1 cell box of 20x20 px sits in a 20x10 band in the middle.
+        let img = crate::images::Image {
+            width_px: 20,
+            height_px: 10,
+            cols: 2,
+            rows: 1,
+            frames: vec![crate::images::Frame { rgba: std::sync::Arc::new(vec![0; 800]), delay_ms: 0 }],
+            broken: false,
+            keep_aspect: true,
+            uid: 7,
+        };
+        let t = alacritty_terminal::term::cell::Tile { image: 1, x: 1, y: 0 };
+        let q = tile_quad(&img, t, Rect { x: 110.0, y: 40.0, w: 10.0, h: 20.0 }, 0).unwrap();
+        assert_eq!(q.rect, Rect { x: 110.0, y: 45.0, w: 10.0, h: 10.0 });
+        assert_eq!(q.uv, [0.5, 0.0, 1.0, 1.0]);
+        assert_eq!(q.key, (7, 0));
+    }
+
+    #[test]
+    fn animation_frames_follow_the_clock() {
+        let f = |d| crate::images::Frame { rgba: std::sync::Arc::new(vec![]), delay_ms: d };
+        let frames = [f(100), f(50)];
+        assert_eq!(frame_at(&frames, 0), 0);
+        assert_eq!(frame_at(&frames, 120), 1);
+        assert_eq!(frame_at(&frames, 160), 0);
+        assert_eq!(frame_at(&[f(0)], 999), 0);
     }
 }
