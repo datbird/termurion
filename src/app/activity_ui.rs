@@ -57,7 +57,18 @@ impl App {
     fn activity_event(&mut self, pane: PaneId, e: ActivityEvent) {
         match e {
             ActivityEvent::Idle => self.post_alert(pane, crate::alerts::AlertKind::Idle),
-            ActivityEvent::NewOutput => self.post_alert(pane, crate::alerts::AlertKind::NewOutput),
+            // No New Output alerts from a window that broadcasts (iTerm2): the echo of typing
+            // would post one per keystroke.
+            ActivityEvent::NewOutput => {
+                let back = self.current_window();
+                let broadcasting = self.enter_pane_window(pane) && self.broadcast.mode(&self.broadcast_view()) != crate::broadcast::Mode::Off;
+                if let Some(b) = back {
+                    self.enter(b);
+                }
+                if !broadcasting {
+                    self.post_alert(pane, crate::alerts::AlertKind::NewOutput);
+                }
+            }
             ActivityEvent::ActivityAfterIdle => {}
         }
     }

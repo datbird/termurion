@@ -206,6 +206,8 @@ impl App {
         }
         let dropped = std::mem::take(&mut self.dropped);
         let pane = dropped[0].0;
+        // The drop's own window decides where a broadcast paste goes.
+        self.enter_pane_window(pane);
         let files: Vec<String> = dropped.into_iter().map(|(_, f)| f).collect();
         match coprocess::drop_command(&self.globals.string("fileDropCoprocess"), &files) {
             Some(cmd) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),

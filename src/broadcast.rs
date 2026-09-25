@@ -106,12 +106,20 @@ impl Broadcast {
     /// Where `sender`'s typed input goes: every live pane of the window's current domain
     /// (the sender included) when it sends, else the sender alone.
     pub fn targets(&self, v: &View, sender: PaneId) -> Vec<PaneId> {
-        if !self.should_broadcast_to(v, sender, Some(sender)) {
+        // A pane of another window is not this window's to broadcast from.
+        if !v.all().contains(&sender) || !self.should_broadcast_to(v, sender, Some(sender)) {
             return vec![sender];
         }
         let all = v.all();
         let out: Vec<PaneId> = self.current_domain(v).into_iter().filter(|p| all.contains(p) && !v.exited.contains(p)).collect();
         if out.is_empty() { vec![sender] } else { out }
+    }
+
+    /// Every pane of the window's current domain still in the window (Clear, Reset, and
+    /// Scroll to End act on these, sources or not, as iTerm2's broadcastSessions).
+    pub fn domain_panes(&self, v: &View) -> Vec<PaneId> {
+        let all = v.all();
+        self.current_domain(v).into_iter().filter(|p| all.contains(p)).collect()
     }
 
     pub fn receives(&self, v: &View, p: PaneId) -> bool {
@@ -407,6 +415,17 @@ mod tests {
     fn clear_and_reset_questions() {
         assert_eq!(clear_question(3), ("Clear in All Broadcasted-to Sessions?", "Clear all sessions to which input is broadcast? This will affect 3 sessions.".to_string(), ["Clear All", "Clear Current Session Only", "Cancel"]));
         assert_eq!(reset_question(2), ("Reset in All Broadcasted-to Sessions?", "Reset all sessions to which input is broadcast? This will affect 2 sessions.".to_string(), ["Reset All", "Reset Current Session Only", "Cancel"]));
+    }
+
+    #[test]
+    fn senders_outside_the_window_stay_local() {
+        let (mut b, mut v) = (Broadcast::default(), view());
+        b.all_tabs(&mut v, &mut yes());
+        assert_eq!(b.targets(&v, 42), vec![42], "a pane of another window (a drop there) is not this window's");
+        b.toggle_source(&v, 1);
+        v.exited.insert(3);
+        assert_eq!(b.domain_panes(&v), vec![1, 2, 3], "sources and ended panes do not narrow it");
+        assert!(Broadcast::default().domain_panes(&v).is_empty());
     }
 
     #[test]

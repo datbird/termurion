@@ -79,7 +79,7 @@ impl App {
                 self.broadcast.toggle_session(&mut v, current);
             }
             "toggleBroadcastSource:" => {
-                if !self.broadcast.receives(&v, current) {
+                if v.exited.contains(&current) || !self.broadcast.receives(&v, current) {
                     return true;
                 }
                 self.broadcast.toggle_source(&v, current);
@@ -115,7 +115,7 @@ impl App {
             "enableSendInputToAllTabs:" => self.broadcast.mode(&v) == broadcast::Mode::AllTabs,
             "enableSendInputToAllPanes:" => self.broadcast.mode(&v) == broadcast::Mode::AllPanes,
             "toggleUseBackgroundPatternIndicator:" => self.globals.bool("Use background pattern indicator"),
-            "toggleBroadcastSource:" => self.broadcast.sources.contains(&v.current),
+            "toggleBroadcastSource:" => self.broadcast.sources.contains(&v.current) && self.broadcast.receives(&v, v.current),
             _ => return None,
         })
     }
@@ -124,8 +124,9 @@ impl App {
     /// question (or the remembered answer) decides whether all of them or only this one.
     pub(super) fn clear_or_reset(&mut self, clear: bool) {
         let Some(me) = self.focused_id() else { return };
-        let targets = self.broadcast.targets(&self.broadcast_view(), me);
-        let all = if targets.len() < 2 {
+        // The window's whole broadcast domain (iTerm2's broadcastSessions), sources or not.
+        let targets = self.broadcast.domain_panes(&self.broadcast_view());
+        let all = if targets.len() < 2 || !targets.contains(&me) {
             false
         } else {
             let key = if clear { "NoSyncClearAllBroadcast" } else { "NoSyncResetAllBroadcast" };
@@ -141,6 +142,10 @@ impl App {
             }
         };
         for t in if all { targets } else { vec![me] } {
+            if !clear {
+                // A Filter or Zoom view would take the reset instead of the shell's screen.
+                self.end_view(t);
+            }
             if let Some(p) = self.panes.get_mut(&t) {
                 if clear {
                     p.clear();

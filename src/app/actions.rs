@@ -227,7 +227,9 @@ impl App {
             // Scroll to End: every broadcast session (iTerm2's broadcastScrollToEnd).
             4 => {
                 if let Some(id) = self.focused_id() {
-                    for t in self.broadcast.targets(&self.broadcast_view(), id) {
+                    let domain = self.broadcast.domain_panes(&self.broadcast_view());
+                    let all = if domain.contains(&id) { domain } else { vec![id] };
+                    for t in all {
                         if let Some(p) = self.panes.get_mut(&t) {
                             p.scroll(Scroll::Bottom);
                         }

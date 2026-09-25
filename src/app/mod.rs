@@ -255,6 +255,8 @@ pub struct App {
     /// window).
     broadcast: crate::broadcast::Broadcast,
     broadcast_tabs: std::collections::BTreeSet<u64>,
+    /// The window, tab, and pane the menu checks were last synced for.
+    checks_key: Option<(Option<WindowId>, usize, Option<PaneId>)>,
     /// The broadcast stripe tile (its size and pixels).
     stripes: Option<(u32, std::sync::Arc<Vec<u8>>)>,
     /// Profile hotkey ids (index + 1) to profile guids; failed registrations by guid.
@@ -457,6 +459,7 @@ pub fn run() {
         broadcast: Default::default(),
         broadcast_tabs: Default::default(),
         stripes: None,
+        checks_key: None,
         hotkey_ids: Vec::new(),
         hotkey_errors: Default::default(),
         hotkeys_registered: false,
@@ -1646,7 +1649,7 @@ impl App {
                     let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: (!self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows")) || (receives && self.broadcast.receives(&bview, tab.focused)) };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: (!self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(&bview, tab.focused, Some(tab.focused))) };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
                     // Broadcast stripes: over the cell backgrounds, under the text.
                     if let (Some((n, px)), true) = (&stripes, receives) {
@@ -1942,6 +1945,13 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let lost = std::mem::take(&mut self.focus_lost);
         self.save_state(lost);
+        // Menu checks that follow the current tab and pane (broadcast input) refresh when
+        // either changes.
+        let key = (self.current_window(), self.active, self.tabs.get(self.active).map(|t| t.focused));
+        if self.checks_key != Some(key) {
+            self.checks_key = Some(key);
+            self.sync_checks();
+        }
         let active = hotkey_ui::tandem_in_front();
         if active && !self.app_active {
             self.hotkey_reactivated();
