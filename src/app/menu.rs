@@ -207,7 +207,7 @@ impl App {
         }
         let label = item.label();
         let window = self.gpu.as_ref().map(|g| g.window.clone());
-        if self.run_find_command(&item.selector, label) || self.run_seltools_command(&item.selector) || self.run_copymode_command(&item.selector) || self.run_fold_command(&item.selector) || self.run_note_command(&item.selector, event_loop) {
+        if self.run_find_command(&item.selector, label) || self.run_seltools_command(&item.selector) || self.run_copymode_command(&item.selector) || self.run_fold_command(&item.selector) || self.run_view_command(&item.selector) || self.run_note_command(&item.selector, event_loop) {
             return self.relayout();
         }
         // Commands that change the terminal itself act on the pane's own screen.

@@ -52,6 +52,7 @@ const BANNER: Rgb = rgb(0x7a, 0x1e, 0x1e);
 const FIND_BAR: Rgb = rgb(0x2b, 0x2b, 0x2b);
 const LABEL_BG: Rgb = rgb(0xff, 0xd7, 0x00);
 const NOTE: Rgb = rgb(0xff, 0xff, 0x00);
+const STAMP_BG: Rgb = rgb(0x20, 0x20, 0x20);
 const NOTE_BG: Rgb = rgb(0xff, 0xf8, 0xc4);
 const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
 const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
@@ -159,6 +160,53 @@ pub fn copy_cursor(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize, 
     }
     for i in 0..SLICES {
         frame.overlay.push(Quad { rect: slice(i, 0.0), color: rgba(fill, 1.0) });
+    }
+}
+
+/// The cursor guide: a band of `color` (with its alpha) across the pane on screen row `row`.
+pub fn cursor_guide(frame: &mut Frame, rect: Rect, cell: (f32, f32), row: usize, color: [f32; 4]) {
+    let r = Rect { x: rect.x, y: rect.y + row as f32 * cell.1, w: rect.w, h: cell.1 };
+    frame.quads.push(Quad { rect: r, color });
+}
+
+/// Per-line timestamps: each label right-aligned on its screen row, over the text.
+pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cell: (f32, f32)) {
+    let (cw, ch) = cell;
+    let right = rect.x + rect.w;
+    for (row, text) in labels {
+        let n = text.chars().count() as f32;
+        let y = rect.y + *row as f32 * ch;
+        let bg = Rect { x: right - (n + 2.0) * cw, y, w: (n + 2.0) * cw, h: ch };
+        frame.quads.push(Quad { rect: bg, color: rgba(STAMP_BG, 0.85) });
+        // The pane's text on this row stops where the label starts.
+        for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > bg.x) {
+            r.clip.w = (bg.x - r.clip.x).max(0.0);
+        }
+        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false };
+        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect });
+    }
+}
+
+/// Find Cursor: the window dims, except a clear circle of `radius` around `center`.
+pub fn find_cursor(frame: &mut Frame, area: Rect, center: (f32, f32), radius: f32) {
+    const BAND: f32 = 2.0;
+    let color = rgba(rgb(0x40, 0x40, 0x40), 0.7);
+    let (cx, cy) = center;
+    let right = area.x + area.w;
+    let mut y = area.y;
+    while y < area.y + area.h {
+        let h = BAND.min(area.y + area.h - y);
+        let dy = y + h / 2.0 - cy;
+        if dy.abs() < radius {
+            // The circle's width on this band is left clear.
+            let half = (radius * radius - dy * dy).sqrt();
+            frame.overlay.push(Quad { rect: Rect { x: area.x, y, w: (cx - half - area.x).max(0.0), h }, color });
+            let from = (cx + half).min(right);
+            frame.overlay.push(Quad { rect: Rect { x: from, y, w: right - from, h }, color });
+        } else {
+            frame.overlay.push(Quad { rect: Rect { x: area.x, y, w: area.w, h }, color });
+        }
+        y += h;
     }
 }
 
@@ -668,5 +716,37 @@ mod tests {
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
+    }
+
+    #[test]
+    fn cursor_guide_fills_the_cursor_row() {
+        let mut f = Frame::default();
+        cursor_guide(&mut f, RECT, CELL, 3, [0.5, 0.9, 1.0, 0.25]);
+        let q = f.quads.last().unwrap();
+        assert_eq!(q.rect, Rect { x: 0.0, y: 60.0, w: 800.0, h: 20.0 });
+        assert_eq!(q.color[3], 0.25);
+    }
+
+    #[test]
+    fn timestamps_sit_at_the_right() {
+        let mut f = Frame::default();
+        timestamps(&mut f, &[(2, "14:02:09".into())], RECT, CELL);
+        let r = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "14:02:09")).unwrap();
+        assert_eq!((r.x, r.y), (800.0 - 90.0, 40.0));
+        assert!(f.quads.iter().any(|q| q.rect.x < 710.0 && q.rect.x + q.rect.w == 800.0 && q.rect.y == 40.0));
+    }
+
+    #[test]
+    fn find_cursor_leaves_a_hole() {
+        let mut f = Frame::default();
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        find_cursor(&mut f, area, (200.0, 150.0), 30.0);
+        let covers = |x: f32, y: f32| f.overlay.iter().any(|q| x >= q.rect.x && x < q.rect.x + q.rect.w && y >= q.rect.y && y < q.rect.y + q.rect.h);
+        assert!(!covers(200.0, 150.0));
+        assert!(!covers(220.0, 150.0));
+        assert!(covers(5.0, 5.0));
+        assert!(covers(240.0, 150.0));
+        assert!(covers(200.0, 190.0));
+        assert!(f.overlay.iter().all(|q| q.color[3] > 0.5 && q.color[3] < 0.8));
     }
 }

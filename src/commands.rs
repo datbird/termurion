@@ -38,7 +38,7 @@ pub const DONE: &[&str] = &[
     "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openSelection:",
     "replaceSelectionWithPrettyPrintedJSON:", "replaceSelectionWithBase64Encoded:", "replaceSelectionWithBase64Decoded:",
     "clearToStartOfSelection:", "toggleCopyMode:", "foldSelection:", "foldAll:", "addNoteAtCursor:", "annotateSelection:", "nextAnnotation:",
-    "previousAnnotation:", "showHideNotes:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "previousAnnotation:", "showHideNotes:", "toggleCursorGuide:", "findCursor:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
 ];
 
 /// Commands that work with a known difference for now.
@@ -48,6 +48,7 @@ const PARTIAL: &[(&str, &str)] = &[
     ("biggerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("smallerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("filter:", "Shows the matching lines without their colors."),
+    ("toggleShowTimestamps:", "Next to contents (Adjacent) draws over the text like Over contents, since the grid keeps its width."),
     ("toggleSelectionRespectsSoftBoundaries:", "Double-click and Smart Selection stop at pane dividers; a drag still crosses them."),
     ("zoomOnSelection:", "Shows the selected lines without their colors."),
     ("performFindPanelAction:|Select Matches", "Selects from the first match to the last and copies every match, one per line, since a selection is one range."),

@@ -58,6 +58,7 @@ mod fold_ui;
 mod labels_ui;
 mod semantic_ui;
 mod seltools_ui;
+mod view_ui;
 mod marks_ui;
 mod menu;
 
@@ -149,6 +150,11 @@ pub struct App {
     note_win: Option<(crate::note_ui::NoteWindow, PaneId, Option<u32>)>,
     /// Annotation navigation: the row each pane is at.
     note_pos: HashMap<PaneId, i32>,
+    /// View > Show Timestamps and Show Cursor Guide, per pane, over the profile's choice.
+    show_stamps: HashMap<PaneId, bool>,
+    show_guide: HashMap<PaneId, bool>,
+    /// Find Cursor is up until then (longer while Win is held).
+    find_cursor_until: Option<Instant>,
     /// Copy Mode, per pane.
     copy_modes: HashMap<PaneId, crate::copymode::State>,
     /// Labels on results (Find URLs and the like), waiting for a key.
@@ -276,6 +282,9 @@ pub fn run() {
         popup_menu: None,
         shortcuts: None,
         copy_modes: HashMap::new(),
+        show_stamps: HashMap::new(),
+        show_guide: HashMap::new(),
+        find_cursor_until: None,
         note_win: None,
         note_pos: HashMap::new(),
         ctx_pending: None,
@@ -1189,6 +1198,7 @@ impl App {
                     let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
                 }
+                self.draw_view_extras(&mut frame, id, self.inner(rect), cell);
                 if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
                     scene::copy_cursor(&mut frame, self.inner(rect), cell, row, col, selecting);
                 }
@@ -1220,6 +1230,8 @@ impl App {
                 self.find_mode_rect = Some(mode_rect);
             }
         }
+        let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
@@ -1339,7 +1351,8 @@ impl ApplicationHandler<UserEvent> for App {
             self.save_now();
         }
         let find_due = self.run_due_searches();
-        let wake = [self.save_due, find_due].into_iter().flatten().min();
+        let spotlight = self.tick_find_cursor();
+        let wake = [self.save_due, find_due, spotlight].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
