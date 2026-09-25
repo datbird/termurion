@@ -64,9 +64,9 @@ impl EventKind {
         }
     }
 
-    /// The milestone that brings it, when it is not here yet.
+    /// The milestone that brings it, when it is not here yet (every event is here).
     pub fn later(self) -> Option<u8> {
-        matches!(self, EventKind::JobStarted | EventKind::JobEnded).then_some(6)
+        None
     }
 }
 
@@ -88,6 +88,23 @@ pub fn regex_param_matches(pattern: Option<&str>, value: &str, exact_fallback: b
         Err(_) if exact_fallback => value == p,
         Err(_) => value.contains(p),
     }
+}
+
+/// Job Started and Job Ended: the names that entered and left the job's ancestors
+/// (iTerm2 diffs the sets, case-insensitively). Each keeps its first spelling.
+pub fn job_events(before: &[String], after: &[String]) -> (Vec<String>, Vec<String>) {
+    let set = |v: &[String]| v.iter().map(|s| s.to_lowercase()).collect::<std::collections::HashSet<String>>();
+    let (b, a) = (set(before), set(after));
+    let only = |from: &[String], other: &std::collections::HashSet<String>| {
+        let mut seen = std::collections::HashSet::new();
+        from.iter().filter(|n| !other.contains(&n.to_lowercase()) && seen.insert(n.to_lowercase())).cloned().collect::<Vec<String>>()
+    };
+    (only(after, &b), only(before, &a))
+}
+
+/// A trigger's Job field: empty passes; else the job must be among the ancestors.
+pub fn job_gate(job: &str, ancestors: &[String]) -> bool {
+    job.trim().is_empty() || ancestors.iter().any(|a| crate::proctree::same_job(a, job))
 }
 
 /// What an event is about, for its filters.
@@ -135,6 +152,7 @@ pub fn passes(kind: EventKind, params: Option<&toml::Table>, f: &EventFacts) -> 
             Some("disappeared") => !f.appeared,
             _ => true,
         },
+        EventKind::JobStarted | EventKind::JobEnded => param(params, "jobName").is_some_and(|j| !j.trim().is_empty() && crate::proctree::same_job(j, &f.name)),
         EventKind::VariableChanged => {
             param(params, "variableName").is_none_or(|n| n.is_empty() || user_name(n) == user_name(&f.name))
                 && regex_param_matches(param(params, "variableValueRegex"), &f.value, false)
@@ -171,7 +189,7 @@ impl Screen {
             .list
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.trigger.match_type == kind.match_type() && c.trigger.enabled && !c.off_here && kind.later().is_none())
+            .filter(|(_, c)| c.trigger.match_type == kind.match_type() && c.trigger.enabled && !c.off_here && job_gate(&c.trigger.job, &self.shell.job_ancestors))
             .filter(|(_, c)| passes(kind, c.trigger.extra.get("eventParams").and_then(|v| v.as_table()), facts))
             .map(|(i, _)| i)
             .collect();
@@ -244,8 +262,15 @@ impl Screen {
 
     /// The window saw the foreground job change.
     pub fn set_job(&mut self, job: Option<crate::proctree::Job>, ancestors: Vec<String>) {
+        let (started, ended) = job_events(&self.shell.job_ancestors, &ancestors);
         self.shell.job = job;
         self.shell.job_ancestors = ancestors;
+        for (kind, names) in [(EventKind::JobStarted, started), (EventKind::JobEnded, ended)] {
+            for n in names {
+                let facts = EventFacts { name: n.clone(), ..Default::default() };
+                self.fire_event(kind, &facts, &[n]);
+            }
+        }
     }
 
     /// A user variable set (SetUserVar, a trigger): Variable Changed when its value changed.
@@ -324,7 +349,7 @@ mod tests {
         assert!(alerts(&mut s).is_empty(), "the same folder is not a change");
         assert_eq!(EventKind::Idle.name(), "Idle (Silence)");
         assert_eq!(EventKind::from_match_type(113), Some(EventKind::JobStarted));
-        assert_eq!(EventKind::JobStarted.later(), Some(6));
+        assert_eq!(EventKind::JobStarted.later(), None, "jobs are known from 6c");
     }
 
     #[test]
@@ -427,5 +452,31 @@ mod tests {
         assert_eq!(s.trigger_var("session.jobPid", 0).as_deref(), Some("42"));
         assert_eq!(s.trigger_var("session.processTitle", 0).as_deref(), Some("vim"));
         assert_eq!(s.trigger_var("session.foregroundJobAncestors", 0).as_deref(), Some("vim\ncmd"));
+    }
+
+    #[test]
+    fn job_events_diff_names() {
+        let before: Vec<String> = vec!["cmd".into()];
+        let after: Vec<String> = vec!["Vim".into(), "cmd".into(), "cmd".into()];
+        assert_eq!(job_events(&before, &after), (vec!["Vim".to_string()], vec![]));
+        assert_eq!(job_events(&after, &before), (vec![], vec!["Vim".to_string()]));
+        assert_eq!(job_events(&["CMD".to_string()], &before), (vec![], vec![]), "case does not make a change");
+    }
+
+    #[test]
+    fn job_filter_is_exact() {
+        let mut s = Screen::new(40, 4);
+        s.set_triggers(vec![
+            event(EventKind::JobStarted, "started \\0", &[("jobName", toml::Value::String("VIM.exe".into()))]),
+            event(EventKind::JobEnded, "ended \\0", &[("jobName", toml::Value::String("vim".into()))]),
+            event(EventKind::JobStarted, "never", &[("jobName", toml::Value::String(String::new()))]),
+            event(EventKind::JobStarted, "never vi", &[("jobName", toml::Value::String("vi".into()))]),
+        ], TriggerPrefs::default());
+        s.set_job(None, vec!["vim".into(), "cmd".into()]);
+        assert_eq!(alerts(&mut s), vec!["started vim"]);
+        s.set_job(None, vec!["vim".into(), "cmd".into()]);
+        assert!(alerts(&mut s).is_empty(), "no change, no event");
+        s.set_job(None, vec![]);
+        assert_eq!(alerts(&mut s), vec!["ended vim"]);
     }
 }

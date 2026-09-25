@@ -112,7 +112,7 @@ fn event_params(ui: &mut egui::Ui, kind: crate::trigger_events::EventKind, t: &m
             changed |= text(ui, "variableName", "Variable:", "user.name", &mut params);
             changed |= text(ui, "variableValueRegex", "Value:", "Regular expression (empty: any)", &mut params);
         }
-        E::JobStarted | E::JobEnded => changed |= text(ui, "jobName", "Job:", "Program name", &mut params),
+        E::JobStarted | E::JobEnded => changed |= text(ui, "jobName", "Job:", "claude", &mut params),
         E::PromptDetected | E::SessionEnded | E::BellReceived => {}
     }
     if changed {
@@ -369,7 +369,10 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                     }
                 }
                 ui.label("Job:");
-                changed |= ui.add(egui::TextEdit::singleline(&mut t.job).hint_text("Trigger enabled only for this job (e.g., emacs)").desired_width(360.0)).changed();
+                // Job Started and Job Ended name their job above (iTerm2 disables this field).
+                let job_event = matches!(event, Some(crate::trigger_events::EventKind::JobStarted | crate::trigger_events::EventKind::JobEnded));
+                let hint = if job_event { "Set job above" } else { "Trigger enabled only for this job (e.g., emacs)" };
+                changed |= ui.add_enabled(!job_event, egui::TextEdit::singleline(&mut t.job).hint_text(hint).desired_width(360.0)).changed();
                 ui.end_row();
                 ui.label("Action:");
                 let current = triggers::action_info(&t.action).map_or_else(|| t.action.clone(), action_label);
@@ -407,9 +410,6 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
                 if let Err(e) = crate::interp::evaluate(&t.parameter, &|_| None, &[]) {
                     ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("Error in Trigger Parameter: {e}"));
                 }
-            }
-            if !t.job.is_empty() {
-                ui.weak("Job triggers fire once Tandem knows the program in front (milestone 6c).");
             }
         }
     }
@@ -453,7 +453,7 @@ mod tests {
         ev.match_type = 105;
         assert_eq!(row(&ev).detail, "Event: Idle (Silence) Ring Bell");
         ev.match_type = 113;
-        assert_eq!(row(&ev).detail, "Event: Job Started (milestone 6c) Ring Bell");
+        assert_eq!(row(&ev).detail, "Event: Job Started Ring Bell");
     }
 
     #[test]

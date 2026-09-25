@@ -356,8 +356,7 @@ impl Screen {
         for i in 0..self.triggers.list.len() {
             let c = &self.triggers.list[i];
             let t = &c.trigger;
-            // Jobs are known from milestone 6c; event triggers come with 6b.
-            if !t.enabled || c.off_here || c.re.is_none() || t.match_type != 0 || !t.job.is_empty() {
+            if !t.enabled || c.off_here || c.re.is_none() || t.match_type != 0 || !crate::trigger_events::job_gate(&t.job, &self.shell.job_ancestors) {
                 continue;
             }
             let multi = triggers::action_info(&t.action).is_some_and(|a| a.multi_fire);
@@ -687,13 +686,16 @@ mod tests {
     }
 
     #[test]
-    fn job_triggers_wait_for_6c() {
+    fn job_field_gates_triggers() {
         let mut s = Screen::new(40, 5);
         let mut t = trig("foo", "AlertTrigger", "x", false);
-        t.job = "vim".into();
+        t.job = "Vim.exe".into();
         s.set_triggers(vec![t], TriggerPrefs::default());
         s.feed(b"foo\r\n");
-        assert_eq!(alerts(&mut s), 0);
+        assert_eq!(alerts(&mut s), 0, "vim is not running");
+        s.set_job(None, vec!["vim".into(), "cmd".into()]);
+        s.feed(b"foo\r\n");
+        assert_eq!(alerts(&mut s), 1, "vim is in the ancestors");
     }
 
     #[test]

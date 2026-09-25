@@ -21,6 +21,8 @@ impl App {
                 s.set_job(now.job, now.ancestors);
             }
         }
+        // Job Started and Job Ended triggers leave their actions as requests.
+        self.take_requests();
         self.redraw();
     }
 
