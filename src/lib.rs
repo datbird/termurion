@@ -10,6 +10,7 @@ pub mod keyroute;
 pub mod mru;
 pub mod osc;
 pub mod marks;
+pub mod find;
 pub mod commands;
 pub mod menus;
 pub mod import;
