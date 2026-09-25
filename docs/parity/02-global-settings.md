@@ -929,19 +929,19 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| noSyncNewWindowOrTabFromTmuxOpensTmux | noSyncNewWindowOrTabFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of tab/window to open in tmux integration. | missing |  |
-| noSyncNewWindowFromTmuxOpensTmux | noSyncNewWindowFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of window to open in tmux integration. | missing |  |
-| noSyncNewTabFromTmuxOpensTmux | noSyncNewTabFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of tab to open in tmux integration. | missing |  |
+| noSyncNewWindowOrTabFromTmuxOpensTmux | noSyncNewWindowOrTabFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of tab/window to open in tmux integration. | have | Milestone 8c: the legacy key, used for both once set; on means New tmux Tab or Window without asking. |
+| noSyncNewWindowFromTmuxOpensTmux | noSyncNewWindowFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of window to open in tmux integration. | have | Milestone 8c: "What kind of window do you want to open?" remembered. |
+| noSyncNewTabFromTmuxOpensTmux | noSyncNewTabFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of tab to open in tmux integration. | have | Milestone 8c: "What kind of tab do you want to open?" remembered. |
 | tolerateUnrecognizedTmuxCommands | tolerateUnrecognizedTmuxCommands (bool, default NO) | Tolerate unrecognized commands from server. | have | Milestone 8a: text that is not tmux is kept and printed at %exit under "** ERROR **". |
 | useBlackFillerColorForTmuxInFullScreen | useBlackFillerColorForTmuxInFullScreen (bool, default NO) | Use black for filler area in tmux windows in full screen. | missing |  |
-| tmuxWindowsShouldCloseAfterDetach | tmuxWindowsShouldCloseAfterDetach (bool?, default nil) | Close tmux windows after detaching? This only takes effect when “Settings > Profiles > Session > After a session ends” is set to “No Action”. | missing |  |
+| tmuxWindowsShouldCloseAfterDetach | tmuxWindowsShouldCloseAfterDetach (bool?, default nil) | Close tmux windows after detaching? This only takes effect when “Settings > Profiles > Session > After a session ends” is set to “No Action”. | partial | Milestone 8c: detached tmux panes end and close, since Tandem closes every ended session; the question comes with the "After a session ends" setting. |
 | disableTmuxWindowPositionRestoration | disableTmuxWindowPositionRestoration (bool, default NO) | Disable window position restoration in tmux integration. | missing |  |
-| disableTmuxWindowResizing | disableTmuxWindowResizing (bool, default YES) | Don't automatically resize tmux windows. | missing |  |
+| disableTmuxWindowResizing | disableTmuxWindowResizing (bool, default YES) | Don't automatically resize tmux windows. | have | Milestone 8c: Tandem never grows a window for tmux; tmux takes the window's size. |
 | anonymousTmuxWindowsOpenInCurrentWindow | anonymousTmuxWindowsOpenInCurrentWindow (enum, default iTermOpenAnonymousTmuxWindowLocationFocusedWindow) | Where should new tmux windows not created by iTerm2 open? “Focused window” (the default) attaches the window as a tab of whichever iTerm2 window currently has keyboard focus. | have | Milestone 8b: New window, Focused window (default), Topmost session window. |
 | pollForTmuxForegroundJob | pollForTmuxForegroundJob (bool, default NO) | Poll for foreground job name in tmux integration with tmux < 3.2? This enables tab icons but can cause a lot of background traffic. | missing |  |
 | tmuxTitlePrefix | tmuxTitlePrefix (string, default @"↣ ") | Insert this string at the start of tab and window titles to indicate tmux integration. | have | Milestone 8b: before tmux tab titles and in the gateway's [prefix title client] name. |
 | tmuxIncludeClientNameInWindowTitle | tmuxIncludeClientNameInWindowTitle (bool, default YES) | When using tmux integration, should the tmux client name (typically the name of the attaching session or the host name) appear in brackets in the window title? | have | Milestone 8b: " [client]" after the window title while the window number shows, as iTerm2. |
-| rememberTmuxWindowSizes | rememberTmuxWindowSizes (bool, default YES) | Remember window sizes in tmux integration? Requires tmux 2.9 or later. | missing |  |
+| rememberTmuxWindowSizes | rememberTmuxWindowSizes (bool, default YES) | Remember window sizes in tmux integration? Requires tmux 2.9 or later. | partial | Milestone 8c: stored; window frames from @per_window_settings come with 8e. |
 | tmuxWindowsOpenInBackground | tmuxWindowsOpenInBackground (bool, default NO) | Open tmux windows and tabs in the background? When enabled, attaching with tmux -CC (or when tmux creates a new window) will reveal the window or tab without moving keyboard focus to it. | missing |  |
 
 ### SSH Integration
@@ -967,8 +967,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | noSyncSuppressBroadcastInputWarning | noSyncSuppressBroadcastInputWarning (bool, default NO) | Suppress warning about broadcasting input. | have | Milestone 7f: Settings > Advanced; the warning is a message box with OK and Cancel. |
 | noSyncSuppressCaptureOutputRequiresShellIntegrationWarning | noSyncSuppressCaptureOutputRequiresShellIntegrationWarning (bool, default NO) | Suppress warning “Shell Integration is required for Capture Output.”. | missing |  |
 | noSyncSuppressCaptureOutputToolNotVisibleWarning | noSyncSuppressCaptureOutputToolNotVisibleWarning (bool, default NO) | Suppress warning that the Captured Output tool is not visible. | missing |  |
-| closingTmuxWindowKillsTmuxWindows | closingTmuxWindowKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux window. | missing |  |
-| closingTmuxTabKillsTmuxWindows | closingTmuxTabKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux tab. | missing |  |
+| closingTmuxWindowKillsTmuxWindows | closingTmuxWindowKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux window. | have | Milestone 8c: on, closing a window with tmux tabs hides them without the question. |
+| closingTmuxTabKillsTmuxWindows | closingTmuxTabKillsTmuxWindows (bool, default NO) | Suppress kill/hide dialog when closing a tmux tab. | have | Milestone 8c: on, closing a tmux tab hides it without the question. |
 | aboutToPasteTabsWithCancel | aboutToPasteTabsWithCancel (bool, default NO) | Suppress warning when pasting tabs with offer to convert them to spaces or perform advanced paste. | missing |  |
 | shortLivedSessionDuration | shortLivedSessionDuration (float, default 3) | Warn about short-lived sessions that live less than this many seconds. | missing |  |
 | noSyncDoNotWarnBeforeMultilinePaste | noSyncDoNotWarnBeforeMultilinePaste (bool, default NO) | Suppress warning about multi-line pastes (or a single line ending in a newline). | missing |  |
@@ -1051,7 +1051,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | killSessionsOnLogout | killSessionsOnLogout (bool, default NO) | Kill sessions on logout. | missing |  |
 | useExperimentalFontMetrics | useExperimentalFontMetrics (bool, default NO) | Use a more theoretically correct technique to measure line height. | missing |  |
 | fastForegroundJobUpdates | fastForegroundJobUpdates (bool, default YES) | Enable low-latency updates of the current foreground job. | partial | Milestone 6c: the job is checked every 0.5 s while Tandem is in front and 5 s behind; there is no faster event-driven path yet. |
-| tmuxVariableWindowSizesSupported | tmuxVariableWindowSizesSupported (bool, default YES) | Allow variable window sizes in tmux integration. | missing |  |
+| tmuxVariableWindowSizesSupported | tmuxVariableWindowSizesSupported (bool, default YES) | Allow variable window sizes in tmux integration. | have | Milestone 8c: per-window sizes on tmux 2.9 and later (refresh-client -C @W:WxH on 3.4, else resize-window). |
 | aggressiveBaseCharacterDetection | aggressiveBaseCharacterDetection (bool, default YES) | Detect base unicode characters with lookup table. | missing |  |
 | escapeWithQuotes | escapeWithQuotes (bool, default NO) | Escape file names with single quotes instead of backslashes. | missing |  |
 | fontsForGenerousRounding | fontsForGenerousRounding (string, default @"consolas") | List of fonts to use alternate rounding algorithm for line height calculation. | missing |  |
