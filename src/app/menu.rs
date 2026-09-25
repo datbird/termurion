@@ -170,6 +170,9 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
+        if self.find_mode_picked(id) {
+            return;
+        }
         if let Some(item) = menus::by_id(id) {
             self.run_command(item, event_loop);
         }
@@ -180,7 +183,7 @@ impl App {
         self.panes.get(&t.focused).map(|p| p.profile.clone())
     }
 
-    fn focused_id(&self) -> Option<PaneId> {
+    pub(super) fn focused_id(&self) -> Option<PaneId> {
         self.tabs.get(self.active).map(|t| t.focused)
     }
 
@@ -191,6 +194,9 @@ impl App {
         }
         let label = item.label();
         let window = self.gpu.as_ref().map(|g| g.window.clone());
+        if self.run_find_command(&item.selector, label) {
+            return self.relayout();
+        }
         if self.run_mark_command(&item.selector, event_loop) {
             self.sync_checks();
             return self.relayout();

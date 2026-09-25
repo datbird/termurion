@@ -236,6 +236,12 @@ impl App {
                 None => self.banners.set("action", format!("No menu item {:?}.", b.text)),
             },
             27 => self.open_with_profile(&b.text, None),
+            36 => self.find_regex(&b.text),
+            57 | 58 => {
+                if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
+                    self.find_step(id, b.action == 58);
+                }
+            }
             28 => self.open_with_profile(&b.text, Some(Axis::Column)),
             29 => self.open_with_profile(&b.text, Some(Axis::Row)),
             30 => self.step_pane(true),

@@ -23,6 +23,10 @@ pub struct Palette {
     pub bright_bold: bool,
     /// Opacity of faint (dim) text over its background.
     pub faint_alpha: f32,
+    /// Find matches' background.
+    pub match_bg: Rgb,
+    /// Links and URLs under the pointer.
+    pub link: Rgb,
 }
 
 impl Default for Palette {
@@ -58,6 +62,8 @@ impl Palette {
             selected_text: p.bool("Use Selected Text Color").then(|| c("Selected Text Color")),
             bright_bold: p.bool_for("Brighten Bold Text", dark),
             faint_alpha: p.float("Faint Text Alpha") as f32,
+            match_bg: c("Match Background Color"),
+            link: c("Link Color"),
         }
     }
 

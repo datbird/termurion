@@ -33,7 +33,8 @@ pub const DONE: &[&str] = &[
     "moveTabRight:", "selectPaneUp:", "selectPaneDown:", "selectPaneLeft:", "selectPaneRight:", "nextPane:",
     "previousPane:", "movePaneDividerUp:", "movePaneDividerDown:", "movePaneDividerLeft:",
     "movePaneDividerRight:", "arrangeSplitPanesEvenly:", "restartSession:", "duplicateSession:", "showHelp:",
-    "arrangeInFront:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "arrangeInFront:", "performFindPanelAction:|Find...", "performFindPanelAction:|Use Selection for Find",
+    "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
 ];
 
 /// Commands that work with a known difference for now.
@@ -187,7 +188,7 @@ mod tests {
     #[test]
     fn a_chord_for_a_later_milestone_stays_with_windows() {
         use crate::menus::ChordKey::Char;
-        assert!(command_for_chord(&win(Char('f'), false)).is_none(), "Find is milestone 4");
+        assert!(command_for_chord(&win(Char('y'), false)).is_none(), "Engage Artificial Intelligence is milestone 12");
         assert_eq!(command_for_chord(&win(Char('t'), false)).unwrap().selector, "newSession:");
     }
 
@@ -203,7 +204,8 @@ mod tests {
         let find = |sel: &str, label: &str| items().iter().find(|i| i.selector == sel && i.label() == label).unwrap();
         assert_eq!(status(find("splitVertically:", "Split Vertically with Current Profile")), Status::Done);
         assert!(matches!(status(find("newWindow:", "New Window")), Status::Partial(_)));
-        assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Later(4));
+        assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
+        assert_eq!(status(find("performFindPanelAction:", "Select Matches")), Status::Later(4));
         assert_eq!(status(find("detachTmux:", "Detach")), Status::Later(8));
         assert_eq!(status(find("setWindowStyle:", "Maximized")), Status::Done);
         assert_eq!(status(find("setWindowStyle:", "Full-Width Top of Screen")), Status::Later(7));

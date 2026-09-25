@@ -250,3 +250,13 @@ label = "Alert on Marks in Offscreen Sessions"
 type = "bool"
 default = false
 help = "Alerts on every mark in a session that is not in the selected tab."
+
+[[setting]]
+key = "findMode_iTerm"
+tab = "Find"
+section = "Find"
+label = "Find mode"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Smart Case" }, { value = 1, label = "Case Sensitive" }, { value = 2, label = "Case Insensitive" }, { value = 3, label = "Case-Sensitive Regex" }, { value = 4, label = "Case-Insensitive Regex" } ]
+help = "The find bar's search mode, picked from its mode menu. Shared by every session."

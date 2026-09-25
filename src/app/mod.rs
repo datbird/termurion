@@ -51,6 +51,7 @@ const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod find_ui;
 mod marks_ui;
 mod menu;
 
@@ -131,6 +132,11 @@ pub struct App {
     wheel_acc_x: f32,
     /// Mark navigation: the mark each pane is at.
     mark_pos: HashMap<PaneId, u32>,
+    /// Each pane's find bar and matches.
+    finds: HashMap<PaneId, find_ui::FindState>,
+    /// Where the focused pane's find bar and its mode label were last drawn.
+    find_bar_rect: Option<Rect>,
+    find_mode_rect: Option<Rect>,
     /// The Set Named Mark window, and the pane it names a mark in.
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     api: Api,
@@ -241,6 +247,9 @@ pub fn run() {
         alt_click: None,
         wheel_acc_x: 0.0,
         mark_pos: HashMap::new(),
+        finds: HashMap::new(),
+        find_bar_rect: None,
+        find_mode_rect: None,
         prompt: None,
         api,
         shell: default_shell(),
@@ -499,6 +508,7 @@ impl App {
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         self.panes.remove(&id);
+        self.finds.remove(&id);
         if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
             let tab = &mut self.tabs[t];
             if tab.layout.remove(id) {
@@ -741,6 +751,9 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
+        if self.find_key(ev) {
+            return;
+        }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
         let Some(key) = keystroke::key_of(&ev.logical_key, ev.text.as_deref()) else { return };
         let Some(stroke) = keystroke::from_key_event(ev, self.mods) else { return };
@@ -850,6 +863,9 @@ impl App {
                 self.drag = Drag::Divider { path: d.path, axis: d.axis, parent: d.parent };
                 return;
             }
+        }
+        if button == MouseButton::Left && self.find_press(x, y) {
+            return;
         }
         let Some((id, rect)) = self.pane_at(x, y) else { return };
         let b = button_number(button);
@@ -1094,7 +1110,10 @@ impl App {
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
                 if let Some(p) = self.panes.get(&id) {
-                    scene::pane(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on);
+                    let matches = self.finds.get(&id).map(|f| f.results.matches.as_slice()).unwrap_or_default();
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg };
+                    let hl = (!matches.is_empty()).then_some(&hl);
+                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, hl);
                 }
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));
                 if let Some(p) = self.panes.get(&id) {
@@ -1111,6 +1130,17 @@ impl App {
             }
             if tab.zoomed.is_none() {
                 scene::dividers(&mut frame, &tab.layout.dividers(area, GAP));
+            }
+            self.find_bar_rect = None;
+            self.find_mode_rect = None;
+            let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused);
+            if let (Some((_, rect)), Some(f)) = (bar_pane, self.finds.get(&tab.focused).filter(|f| f.open)) {
+                let count = f.results.label();
+                let mode = self.find_mode();
+                let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some() };
+                let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
+                self.find_bar_rect = frame.quads.last().map(|q| q.rect);
+                self.find_mode_rect = Some(mode_rect);
             }
         }
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
@@ -1231,6 +1261,8 @@ impl ApplicationHandler<UserEvent> for App {
         if self.save_due.is_some_and(|t| Instant::now() >= t) {
             self.save_now();
         }
+        let find_due = self.run_due_searches();
+        let wake = [self.save_due, find_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -1242,7 +1274,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.blink_on = true;
                 self.redraw();
             }
-            match self.save_due {
+            match wake {
                 Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
                 None => event_loop.set_control_flow(ControlFlow::Wait),
             }
@@ -1253,7 +1285,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.last_blink = Instant::now();
             self.redraw();
         }
-        let next = self.save_due.map_or(self.last_blink + BLINK, |t| t.min(self.last_blink + BLINK));
+        let next = wake.map_or(self.last_blink + BLINK, |t| t.min(self.last_blink + BLINK));
         event_loop.set_control_flow(ControlFlow::WaitUntil(next));
     }
 
@@ -1270,8 +1302,15 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let mut changed = false;
         let mut exited = Vec::new();
+        let now = Instant::now();
         for (id, p) in self.panes.iter_mut() {
-            changed |= p.pump();
+            let got = p.pump();
+            if got {
+                if let Some(f) = self.finds.get_mut(id) {
+                    f.output_changed(now);
+                }
+            }
+            changed |= got;
             if p.exited.is_some() {
                 exited.push(*id);
             }

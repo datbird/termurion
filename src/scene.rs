@@ -49,6 +49,8 @@ const TAB_TEXT: Rgb = rgb(0xc7, 0xc7, 0xc7);
 const TAB_TEXT_DIM: Rgb = rgb(0x8a, 0x8a, 0x8a);
 const DIVIDER: Rgb = rgb(0x4a, 0x4a, 0x4a);
 const BANNER: Rgb = rgb(0x7a, 0x1e, 0x1e);
+const FIND_BAR: Rgb = rgb(0x2b, 0x2b, 0x2b);
+const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
 /// How much an unfocused pane fades toward the background, as iTerm2 dims inactive splits.
 const DIM_ALPHA: f32 = 0.4;
 
@@ -70,9 +72,80 @@ struct CellLook {
     italic: bool,
 }
 
+/// Find matches to mark in a pane.
+pub struct Highlights<'a> {
+    pub matches: &'a [crate::find::Match],
+    pub color: Rgb,
+}
+
+/// What the find bar shows.
+pub struct FindBar<'a> {
+    pub query: &'a str,
+    pub count: &'a str,
+    pub mode: &'a str,
+    /// The query is not a valid regular expression.
+    pub error: bool,
+}
+
 /// Draws one pane's visible screen into `rect`.
 /// `cursor_on` is the blink phase: false hides the cursor.
 pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), focused: bool, cursor_on: bool) {
+    pane_with(frame, screen, rect, cell, focused, cursor_on, None)
+}
+
+/// Draws the find bar at the top right of `pane`, over the text. Returns the mode label's
+/// rectangle, which opens the mode menu when clicked.
+pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) -> Rect {
+    const FIELD: usize = 24;
+    let (cw, ch) = cell;
+    let mode = format!("[{}]", bar.mode);
+    let chars = 1 + FIELD + 2 + bar.count.chars().count() + 2 + mode.chars().count() + 1;
+    let w = (chars as f32 * cw).min(pane.w);
+    let r = Rect { x: pane.x + pane.w - w, y: pane.y, w, h: ch + 8.0 };
+    frame.quads.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
+    // The pane's text under the bar is cut off where the bar starts.
+    for row in frame.rows.iter_mut() {
+        if row.y < r.y + r.h && row.y + ch > r.y && row.clip.x + row.clip.w > r.x {
+            row.clip.w = (r.x - row.clip.x).max(0.0);
+        }
+    }
+    // The end of a long query stays in view, with a caret after it.
+    let shown: String = {
+        let n = bar.query.chars().count();
+        bar.query.chars().skip(n.saturating_sub(FIELD - 1)).collect()
+    };
+    let field = format!("{shown}_");
+    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false };
+    let y = r.y + 4.0;
+    let query_color = if bar.error { FIND_ERROR } else { TAB_TEXT };
+    frame.rows.push(TextRow {
+        x: r.x + cw,
+        y,
+        spans: vec![span(format!("{field:<FIELD$}  {}", bar.count), query_color)],
+        clip: r,
+    });
+    let mode_x = r.x + (1 + FIELD + 2 + bar.count.chars().count() + 2) as f32 * cw;
+    let mode_rect = Rect { x: mode_x, y: r.y, w: mode.chars().count() as f32 * cw, h: r.h };
+    frame.rows.push(TextRow { x: mode_x, y, spans: vec![span(mode, TAB_TEXT_DIM)], clip: r });
+    mode_rect
+}
+
+/// Black or white, whichever reads better on `bg`, as iTerm2 picks text on a match.
+fn contrasting(bg: Rgb) -> Rgb {
+    let lum = 0.30 * bg.r as f32 + 0.59 * bg.g as f32 + 0.11 * bg.b as f32;
+    if lum > 127.5 { rgb(0, 0, 0) } else { rgb(0xff, 0xff, 0xff) }
+}
+
+pub fn pane_with(
+    frame: &mut Frame,
+    screen: &Screen,
+    rect: Rect,
+    cell: (f32, f32),
+    focused: bool,
+    cursor_on: bool,
+    highlights: Option<&Highlights>,
+) {
+    let history = screen.term().grid().history_size() as i32;
     let (cw, ch) = cell;
     let palette = &screen.palette;
     let term = screen.term();
@@ -93,6 +166,13 @@ pub fn pane(frame: &mut Frame, screen: &Screen, rect: Rect, cell: (f32, f32), fo
         }
         let c = indexed.cell;
         let (mut fg, mut bg) = palette.cell(c.fg, c.bg, c.flags);
+        if let Some(h) = highlights {
+            let at = crate::find::Pos { row: (indexed.point.line.0 + history) as usize, col };
+            let i = h.matches.partition_point(|m| m.end < at);
+            if h.matches.get(i).is_some_and(|m| m.start <= at) {
+                (fg, bg) = (contrasting(h.color), h.color);
+            }
+        }
         if content.selection.as_ref().is_some_and(|s| s.contains(indexed.point)) {
             (fg, bg) = (palette.selected_text.unwrap_or(fg), palette.selection);
         }
@@ -375,5 +455,37 @@ mod tests {
         assert_eq!(rects[1].x, 100.0);
         let first: String = f.rows[0].spans.iter().map(|s| s.text.as_str()).collect();
         assert!(first.chars().count() <= 8, "{first:?}");
+    }
+
+    #[test]
+    fn match_highlights_use_the_match_color() {
+        let s = screen(b"xx ab ab");
+        let m = crate::find::find_all(&s, "ab").unwrap();
+        let mut f = Frame::default();
+        let yellow = rgb(0xff, 0xff, 0x00);
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow }));
+        let y = rgba(yellow, 1.0);
+        assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
+        assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
+        // Text on a yellow match is black.
+        let ab = f.rows.iter().flat_map(|r| &r.spans).find(|sp| sp.text.starts_with("ab")).unwrap();
+        assert_eq!(ab.color, rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn the_find_bar_covers_the_text_under_it() {
+        let s = screen(b"a long line of text that runs under the find bar");
+        let mut f = Frame::default();
+        pane(&mut f, &s, RECT, CELL, true, false);
+        let bar = FindBar { query: "abc", count: "2/5", mode: "Smart Case", error: false };
+        let mode = find_bar(&mut f, &bar, RECT, CELL);
+        let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
+        assert!(texts.iter().any(|t| t.contains("abc") && t.contains("2/5")), "{texts:?}");
+        assert!(texts.iter().any(|t| t.contains("Smart Case")), "{texts:?}");
+        let boxed = f.quads.last().unwrap().rect;
+        assert_eq!(boxed.x + boxed.w, RECT.x + RECT.w);
+        assert!(mode.x >= boxed.x && mode.x + mode.w <= boxed.x + boxed.w && mode.y == boxed.y);
+        // The pane's first row stops where the bar starts.
+        assert!(f.rows[0].clip.x + f.rows[0].clip.w <= boxed.x);
     }
 }

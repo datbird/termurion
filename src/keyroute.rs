@@ -254,8 +254,8 @@ mod tests {
     #[test]
     fn a_mapped_win_chord_is_bound_for_the_hook() {
         let e = toml::Table::new();
-        let j = map("0x6a-0x100000", 13);
-        let chord = win(ChordKey::Char('j'));
+        let j = map("0x79-0x100000", 13);
+        let chord = win(ChordKey::Char('y'));
         assert!(win_chord_bound(&Snapshot::new(&ctx(&j, &e)), &chord));
         assert!(!win_chord_bound(&Snapshot::new(&ctx(&e, &e)), &chord));
         // Win+T has a menu command; Win+3 is a tab shortcut.

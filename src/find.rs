@@ -33,7 +33,7 @@ impl Mode {
 }
 
 /// A place in the buffer: `row` counts from the oldest line of scrollback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pos {
     pub row: usize,
     pub col: usize,

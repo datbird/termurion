@@ -379,7 +379,7 @@ pub fn status(code: i64) -> Status {
         1 | 3 | 26 | 43 | 44 | 62 => Status::Later(7),
         15 => Status::Later(10),
         35 | 72 => Status::Later(6),
-        36 | 45..=48 | 57 | 58 | 73 => Status::Later(4),
+        45..=48 | 73 => Status::Later(4),
         40 => Status::Later(13),
         41 | 42 | 63 | 64 => Status::Later(9),
         60 => Status::Later(11),
@@ -442,7 +442,8 @@ mod tests {
         assert_eq!(status(15), Status::Later(10));
         assert_eq!(status(65), Status::Later(8));
         assert_eq!(status(1), Status::Later(7));
-        assert_eq!(status(57), Status::Later(4));
+        assert_eq!(status(45), Status::Later(4));
+        assert_eq!(status(57), Status::Done);
     }
 
     #[test]
