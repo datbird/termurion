@@ -147,6 +147,8 @@ pub struct App {
     popup_menu: Option<muda::Menu>,
     /// What the right-click menu's own items act on.
     ctx_pending: Option<semantic_ui::CtxPending>,
+    /// The Find Globally window.
+    global_find: Option<crate::global_find_ui::GlobalFindWindow>,
     /// The Set Named Mark window, and the pane it names a mark in.
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     api: Api,
@@ -265,6 +267,7 @@ pub fn run() {
         shortcuts: None,
         ctx_pending: None,
         prompt: None,
+        global_find: None,
         api,
         shell: default_shell(),
         gpu: None,
@@ -1376,7 +1379,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) {
+        if self.prompt_event(id, &event) || self.global_find_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

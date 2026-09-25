@@ -62,6 +62,10 @@ impl EguiHost {
         self.window.focus_window();
     }
 
+    pub fn request_redraw(&self) {
+        self.window.request_redraw();
+    }
+
     /// The window's Win32 handle.
     pub fn hwnd(&self) -> Option<isize> {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};

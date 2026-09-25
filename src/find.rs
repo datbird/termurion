@@ -263,17 +263,21 @@ fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
 /// Every match of `pattern` in the buffer, top to bottom. Matches do not cross logical
 /// lines, and a match of no text is skipped.
 pub fn find_all(screen: &Screen, pattern: &str) -> Result<Vec<Match>, String> {
+    Ok(find_hits(screen, pattern)?.into_iter().map(|(m, _, _)| m).collect())
+}
+
+/// Like `find_all`, with each match's logical line and its byte range there.
+pub fn find_hits(screen: &Screen, pattern: &str) -> Result<Vec<(Match, String, std::ops::Range<usize>)>, String> {
     if pattern.is_empty() {
         return Ok(Vec::new());
     }
     let re = regex::Regex::new(pattern).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for line in logical_lines(screen) {
-        for m in re.find_iter(&line.text) {
-            if m.is_empty() {
-                continue;
-            }
-            out.push(Match { start: line.pos_before(m.start()), end: line.pos_before(m.end() - 1) });
+        let found: Vec<_> = re.find_iter(&line.text).filter(|m| !m.is_empty()).map(|m| m.range()).collect();
+        for r in found {
+            let m = Match { start: line.pos_before(r.start), end: line.pos_before(r.end - 1) };
+            out.push((m, line.text.clone(), r));
         }
     }
     Ok(out)

@@ -35,7 +35,7 @@ pub const DONE: &[&str] = &[
     "movePaneDividerRight:", "arrangeSplitPanesEvenly:", "restartSession:", "duplicateSession:", "showHelp:",
     "arrangeInFront:", "performFindPanelAction:|Find...", "performFindPanelAction:|Use Selection for Find",
     "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "zoomOut:", "findUrls:",
-    "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openSelection:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
 ];
 
 /// Commands that work with a known difference for now.
@@ -46,13 +46,19 @@ const PARTIAL: &[(&str, &str)] = &[
     ("smallerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("filter:", "Shows the matching lines without their colors."),
     ("zoomOnSelection:", "Shows the selected lines without their colors."),
+    ("performFindPanelAction:|Select Matches", "Selects from the first match to the last and copies every match, one per line, since a selection is one range."),
 ];
 
-fn in_list(list: &[&str], item: &Item) -> bool {
-    list.iter().any(|d| match d.split_once('|') {
+/// A "selector" or "selector|Label" entry names this item.
+fn names(entry: &str, item: &Item) -> bool {
+    match entry.split_once('|') {
         Some((sel, label)) => item.selector == sel && item.label() == label,
-        None => item.selector == *d,
-    })
+        None => item.selector == entry,
+    }
+}
+
+fn in_list(list: &[&str], item: &Item) -> bool {
+    list.iter().any(|d| names(d, item))
 }
 
 /// The milestone that brings a command, from the roadmap (docs/parity/00-roadmap.md).
@@ -131,7 +137,7 @@ pub fn command_for_chord(chord: &Chord) -> Option<&'static Item> {
 
 pub fn status(item: &Item) -> Status {
     // A partial note wins over DONE: the command runs, and the note says how it differs.
-    if let Some((_, note)) = PARTIAL.iter().find(|(sel, _)| item.selector == *sel) {
+    if let Some((_, note)) = PARTIAL.iter().find(|(entry, _)| names(entry, item)) {
         return Status::Partial(note);
     }
     if in_list(DONE, item) {
@@ -208,7 +214,8 @@ mod tests {
         assert_eq!(status(find("splitVertically:", "Split Vertically with Current Profile")), Status::Done);
         assert!(matches!(status(find("newWindow:", "New Window")), Status::Partial(_)));
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
-        assert_eq!(status(find("performFindPanelAction:", "Select Matches")), Status::Later(4));
+        assert!(matches!(status(find("performFindPanelAction:", "Select Matches")), Status::Partial(_)));
+        assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
         assert_eq!(status(find("detachTmux:", "Detach")), Status::Later(8));
         assert_eq!(status(find("setWindowStyle:", "Maximized")), Status::Done);
         assert_eq!(status(find("setWindowStyle:", "Full-Width Top of Screen")), Status::Later(7));

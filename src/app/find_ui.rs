@@ -146,6 +146,13 @@ impl FindState {
     }
 }
 
+fn beep() {
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
+    }
+}
+
 /// Menu item ids of the find bar's mode menu.
 const MODE_ID: &str = "tandem.findmode.";
 
@@ -414,6 +421,13 @@ impl App {
                 p.show_view(view);
             }
             ("zoomOut:", _) => self.end_view(id),
+            ("performFindPanelAction:", "Select Matches") => self.select_matches(id),
+            ("openSelection:", _) => {
+                match self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()).filter(|t| !t.trim().is_empty()) {
+                    Some(text) => self.open_text(id, text.trim()),
+                    None => beep(),
+                }
+            }
             ("findUrls:", _) => self.reveal_shortcuts("urls"),
             ("smartSelectAllVisible:", _) => self.reveal_shortcuts("smart"),
             ("revealContentNavigationShortcuts:", _) => self.reveal_shortcuts("pick"),
@@ -509,6 +523,95 @@ impl App {
         }
         self.redraw();
         in_bar
+    }
+}
+
+impl App {
+    /// Find Globally: the window, or its focus when it is open.
+    pub(super) fn open_global_find(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(w) = &self.global_find {
+            return w.focus();
+        }
+        let query = self.focused_id().and_then(|id| self.finds.get(&id)).map(|f| f.query.clone()).unwrap_or_default();
+        let Some(g) = self.gpu.as_ref() else { return };
+        match crate::global_find_ui::GlobalFindWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &query) {
+            Ok(w) => self.global_find = Some(w),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+    }
+
+    /// Handles an event for the Find Globally window. False when `window` is not it.
+    pub(super) fn global_find_event(&mut self, window: winit::window::WindowId, event: &winit::event::WindowEvent) -> bool {
+        use crate::global_find_ui::{GlobalEvent, Hit, group, snippet};
+        let Some(w) = self.global_find.as_mut() else { return false };
+        if w.id() != window {
+            return false;
+        }
+        match event {
+            winit::event::WindowEvent::CloseRequested => self.global_find = None,
+            winit::event::WindowEvent::RedrawRequested => match w.redraw() {
+                GlobalEvent::None => {}
+                GlobalEvent::Close => self.global_find = None,
+                GlobalEvent::Search(q) => {
+                    let pattern = find::pattern(&q, self.find_mode());
+                    let mut hits = Vec::new();
+                    let mut error = None;
+                    for (n, tab) in self.tabs.iter().enumerate() {
+                        for id in tab.layout.panes() {
+                            let Some(p) = self.panes.get(&id) else { continue };
+                            let title = format!("Tab {}: {}", n + 1, p.own().title().unwrap_or("Shell"));
+                            match find::find_hits(&p.screen, &pattern) {
+                                Ok(found) => hits.extend(found.into_iter().map(|(m, line, r)| {
+                                    let (snippet, mark) = snippet(&line, r);
+                                    Hit { pane: id, title: title.clone(), m, snippet, mark }
+                                })),
+                                Err(e) => error = Some(e),
+                            }
+                        }
+                    }
+                    if let Some(w) = self.global_find.as_mut() {
+                        w.set_results(group(hits), error);
+                    }
+                }
+                GlobalEvent::Pick(id, m) => {
+                    if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
+                        self.active = t;
+                        self.tabs[t].focused = id;
+                        self.tabs[t].zoomed = None;
+                    }
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        reveal(p, &m);
+                    }
+                    if let Some(g) = &self.gpu {
+                        g.window.focus_window();
+                    }
+                    self.relayout();
+                }
+            },
+            other => {
+                w.event(other);
+            }
+        }
+        true
+    }
+
+    /// Select Matches: the selection runs from the first match to the last, and every
+    /// match is copied, one per line.
+    fn select_matches(&mut self, id: PaneId) {
+        let (Some(f), Some(p)) = (self.finds.get(&id), self.panes.get_mut(&id)) else { return };
+        let (Some(first), Some(last)) = (f.results.matches.first().copied(), f.results.matches.last().copied()) else { return };
+        let texts: Vec<String> = f
+            .results
+            .matches
+            .iter()
+            .map(|m| p.screen.term().bounds_to_string(to_point(&p.screen, m.start), to_point(&p.screen, m.end)))
+            .collect();
+        reveal(p, &Match { start: first.start, end: last.end });
+        if let Some(cb) = &mut self.clipboard {
+            if let Err(e) = cb.set_text(texts.join("\n")) {
+                self.banners.set("clipboard", format!("Copy failed: {e}"));
+            }
+        }
     }
 }
 

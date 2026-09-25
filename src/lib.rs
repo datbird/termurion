@@ -52,6 +52,8 @@ pub mod egui_host;
 
 #[cfg(windows)]
 pub mod prompt_ui;
+#[cfg(windows)]
+pub mod global_find_ui;
 
 pub mod settings_keys;
 

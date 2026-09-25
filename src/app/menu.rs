@@ -218,6 +218,7 @@ impl App {
         match item.selector.as_str() {
             "showAbout:" => info_box(&format!("Tandem {}\nAn iTerm2-style terminal for Windows.", env!("CARGO_PKG_VERSION"))),
             "showPrefWindow:" => self.open_settings(event_loop, Mode::Settings),
+            "findGlobally:" => self.open_global_find(event_loop),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
                 self.open_settings(event_loop, Mode::Settings);
