@@ -14,6 +14,8 @@ pub struct Store {
     pub profiles: Vec<Profile>,
     pub default_guid: String,
     path: PathBuf,
+    /// Session-local profile copies (never saved).
+    pub sessions: Vec<crate::session_profile::SessionProfile>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,13 +55,13 @@ impl Store {
             return Err(format!("{}: no profiles", path.display()));
         }
         let default_guid = if profiles.iter().any(|p| p.guid() == file.default) { file.default } else { profiles[0].guid() };
-        Ok(Store { profiles, default_guid, path: path.to_path_buf() })
+        Ok(Store { profiles, default_guid, path: path.to_path_buf(), sessions: Vec::new() })
     }
 
     /// One "Default" profile, saved at `path`.
     pub fn fresh(path: &Path) -> Store {
         let p = Profile::new("Default");
-        Store { default_guid: p.guid(), profiles: vec![p], path: path.to_path_buf() }
+        Store { default_guid: p.guid(), profiles: vec![p], path: path.to_path_buf(), sessions: Vec::new() }
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -91,12 +93,23 @@ impl Store {
         self.get(&self.default_guid).unwrap_or(&self.profiles[0])
     }
 
+    /// A saved profile or a session's private copy.
     pub fn get(&self, guid: &str) -> Option<&Profile> {
-        self.profiles.iter().find(|p| p.guid() == guid)
+        self.profiles.iter().find(|p| p.guid() == guid).or_else(|| self.sessions.iter().map(|s| &s.profile).find(|p| p.guid() == guid))
     }
 
     pub fn get_mut(&mut self, guid: &str) -> Option<&mut Profile> {
         self.profiles.iter_mut().find(|p| p.guid() == guid)
+    }
+
+    /// After a saved profile changed: its session copies follow it where they did not
+    /// override a key. Copies whose profile is gone keep their values.
+    pub fn merge_sessions(&mut self) {
+        for s in self.sessions.iter_mut() {
+            if let Some(shared) = self.profiles.iter().find(|p| p.guid() == s.original_guid()) {
+                s.merge(shared);
+            }
+        }
     }
 
     pub fn add(&mut self, profile: Profile) {
@@ -131,6 +144,21 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sessions_are_not_saved() {
+        let path = std::env::temp_dir().join(format!("tandem-store-{}.toml", std::process::id()));
+        let mut st = Store::fresh(&path);
+        let shared = st.profiles[0].clone();
+        let copy = crate::session_profile::divorce(&shared, "session-guid".into());
+        st.sessions.push(copy);
+        assert_eq!(st.get("session-guid").map(|p| p.guid()), Some("session-guid".to_string()), "get finds session copies");
+        st.save().unwrap();
+        let back = Store::load(&path).unwrap();
+        assert!(back.get("session-guid").is_none());
+        assert_eq!(back.profiles.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
     use super::*;
     use toml::Value;
 

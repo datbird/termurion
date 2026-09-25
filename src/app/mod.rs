@@ -61,6 +61,7 @@ mod keyproto_ui;
 mod fold_ui;
 mod labels_ui;
 mod semantic_ui;
+mod session_ui;
 mod seltools_ui;
 mod view_ui;
 mod marks_ui;
@@ -499,6 +500,8 @@ impl App {
 
     /// Rebuilds every pane's colors and cursor from its profile and the system appearance.
     fn refresh_panes(&mut self) {
+        // Session copies follow edits to their saved profiles first.
+        self.store.merge_sessions();
         let dark = self.dark();
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
@@ -585,7 +588,9 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
-        self.panes.remove(&id);
+        if let Some(p) = self.panes.remove(&id) {
+            self.forget_session_profile(&p.profile);
+        }
         self.finds.remove(&id);
         self.copy_modes.remove(&id);
         self.note_pos.remove(&id);
