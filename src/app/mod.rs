@@ -645,6 +645,14 @@ impl App {
         profile::local_path(shell.cwd.as_deref()?)
     }
 
+    /// The Settings window on one page.
+    pub(super) fn open_settings_page(&mut self, event_loop: &ActiveEventLoop, page: crate::settings_ui::Page) {
+        self.open_settings(event_loop, Mode::Settings);
+        if let Some(s) = self.settings.as_mut() {
+            s.show_page(page);
+        }
+    }
+
     fn open_settings(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {
         let slot = match mode {
             Mode::Settings => &self.settings,
@@ -678,7 +686,11 @@ impl App {
                 How::SplitDown => self.split(Axis::Column, Some(&guid)),
             },
             Edit::Error(e) => self.banners.set("import", e),
-            Edit::GlobalsChanged => self.save_globals(),
+            Edit::GlobalsChanged => {
+                self.save_globals();
+                self.menus_dirty = true;
+                self.sync_checks();
+            }
             Edit::Changed(_) | Edit::Imported(_) => {
                 // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
                 for s in self.aps.values_mut() {

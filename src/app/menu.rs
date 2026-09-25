@@ -426,6 +426,7 @@ impl App {
             "saveWindowArrangement:" => self.open_save_arrangement(event_loop, true),
             "saveCurrentWindowAsArrangement:" => self.open_save_arrangement(event_loop, false),
             "importWindowArrangement:" => self.load_arrangement_file(),
+            "changeProfileInArrangement:" => self.open_settings_page(event_loop, crate::settings_ui::Page::Arrangements),
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
                     self.restart_pane(id);

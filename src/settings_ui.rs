@@ -56,10 +56,12 @@ pub enum Page {
     Keys,
     Pointer,
     Advanced,
+    Appearance,
+    Arrangements,
 }
 
 /// Panes that arrive with later milestones.
-const LATER_PAGES: [(&str, u8); 2] = [("Appearance", 13), ("Arrangements", 7)];
+const LATER_PAGES: [(&str, u8); 0] = [];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum How {
@@ -86,6 +88,7 @@ pub struct SettingsWindow {
     mods: Mods,
     /// The Automatic Profile Switching rule warning, until the next commit.
     aps_warning: Option<String>,
+    arr: crate::settings_arrangements::State,
 }
 
 impl SettingsWindow {
@@ -114,6 +117,7 @@ impl SettingsWindow {
             keys: KeysState::default(),
             mods: Mods::default(),
             aps_warning: None,
+            arr: Default::default(),
         })
     }
 
@@ -176,6 +180,8 @@ impl SettingsWindow {
         let aps_warning = &mut self.aps_warning;
         keys.leader = crate::keystroke::parse(&globals.string("Leader"));
         let profiles: Vec<(String, String)> = store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
+        let profile_tables: Vec<(String, String, toml::Table)> = store.profiles.iter().map(|p| (p.guid(), p.name(), p.values.clone().into_iter().collect())).collect();
+        let arr = &mut self.arr;
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
             .iter()
@@ -185,7 +191,7 @@ impl SettingsWindow {
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for (p, name) in [(Page::General, "General"), (Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Pointer, "Pointer"), (Page::Advanced, "Advanced")] {
+                        for (p, name) in [(Page::General, "General"), (Page::Appearance, "Appearance"), (Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Pointer, "Pointer"), (Page::Arrangements, "Arrangements"), (Page::Advanced, "Advanced")] {
                             if ui.selectable_label(page == p, name).clicked() {
                                 page = p;
                             }
@@ -201,6 +207,8 @@ impl SettingsWindow {
                             Page::Keys => settings_keys::keys_page(ui, globals, keys, &profiles),
                             Page::General => settings_keys::schema_page(ui, globals, "General"),
                             Page::Advanced => settings_keys::schema_page(ui, globals, "Advanced"),
+                            Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance"),
+                            Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, arr),
                             _ => settings_keys::pointer_page(ui, globals, keys, &profiles),
                         };
                         if changed {

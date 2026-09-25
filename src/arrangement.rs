@@ -311,6 +311,31 @@ pub fn has_mark_of_the_web(path: &std::path::Path) -> bool {
     std::fs::metadata(std::path::PathBuf::from(s)).is_ok()
 }
 
+
+/// Change Profile in Arrangement: every session in every window gets this profile.
+pub fn change_profile(windows: &mut [Value], profile: &Table) {
+    fn walk(node: &mut Value, profile: &Table) {
+        let Some(t) = node.as_table_mut() else { return };
+        if let Some(Value::Table(s)) = t.get_mut("Session") {
+            s.insert("Bookmark".into(), Value::Table(profile.clone()));
+        }
+        if let Some(Value::Array(kids)) = t.get_mut("Subviews") {
+            for k in kids {
+                walk(k, profile);
+            }
+        }
+    }
+    for w in windows {
+        if let Some(Value::Array(tabs)) = w.as_table_mut().and_then(|t| t.get_mut("Tabs")) {
+            for tab in tabs {
+                if let Some(root) = tab.as_table_mut().and_then(|t| t.get_mut("Root")) {
+                    walk(root, profile);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +496,21 @@ mod tests {
         assert!(t.starts_with("Open the arrangement \u{201c}prod.itermarrangement\u{201d}?"), "{t}");
         assert!(t.contains("ssh prod") && t.contains("rm -rf /tmp/x") && t.contains("Ops"), "{t}");
         assert!(t.ends_with("Open it only if you trust where it came from."));
+    }
+
+    #[test]
+    fn change_profile_rewrites_every_session() {
+        let mut windows = one_window(Table::new());
+        windows.extend(one_window(Table::new()));
+        let mut p = Table::new();
+        p.insert("Guid".into(), Value::String("NEW".into()));
+        p.insert("Name".into(), Value::String("Fresh".into()));
+        change_profile(&mut windows, &p);
+        for w in &windows {
+            let root = w.get("Tabs").and_then(|t| t.as_array()).and_then(|t| t[0].get("Root")).unwrap();
+            for s in tree_of(root).unwrap().leaves() {
+                assert_eq!(profile_of(s).map(|x| x.0), Some("NEW".to_string()));
+            }
+        }
     }
 }
