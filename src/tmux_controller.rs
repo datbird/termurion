@@ -32,6 +32,8 @@ enum Req {
     Reorder(Vec<u32>),
     /// `new-window -PF` from Tandem: the tmux window whose Tandem window it joins.
     NewWindow(Option<u32>),
+    /// `refresh-client -A '%P:pause'` for these panes.
+    PausePanes(Vec<u32>),
     /// `display -p` for a window tmux added.
     DisplayOne,
     /// A capture for one opener (a window being opened, or one layout change's new panes).
@@ -67,6 +69,12 @@ pub enum Action {
     Abort(String),
     Output(u32, Vec<u8>),
     SelectPane(u32, u32),
+    /// A pane paused: by tmux (its notification) or by the person (Pause Pane).
+    Paused { pane: u32, by_tmux: bool },
+    /// Panes unpaused: their contents are replaced by these.
+    Unpaused(Vec<PaneOpen>),
+    /// The pause warning bar of a pane.
+    PauseWarning(u32, crate::tmux_pause::Bar),
     /// The session's `@iterm2_id`: another gateway of this Tandem may already show it.
     SessionGuid(String),
     SelectWindow(u32),
@@ -89,6 +97,8 @@ struct Opener {
     captured: HashMap<u32, Captured>,
     initial: bool,
     anonymous: bool,
+    /// Unpausing: the captures replace the panes' contents.
+    unpause: bool,
     /// A layout change of an open window: the panes it removes and keeps.
     update: Option<(Vec<u32>, Vec<u32>, Option<bool>)>,
 }
@@ -103,11 +113,15 @@ pub struct Prefs {
     pub max_history: u32,
     /// tmuxVariableWindowSizesSupported.
     pub variable_sizes: bool,
+    /// TmuxPauseModeAgeLimit, TmuxUnpauseAutomatically, TmuxWarnBeforePausing.
+    pub pause_age: f64,
+    pub unpause_automatically: bool,
+    pub warn_before_pausing: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Prefs {
-        Prefs { open_in: OpenIn::NativeWindows, limit: 10, anonymous_location: 1, prevent_tab: false, max_history: 1000, variable_sizes: true }
+        Prefs { open_in: OpenIn::NativeWindows, limit: 10, anonymous_location: 1, prevent_tab: false, max_history: 1000, variable_sizes: true, pause_age: 120.0, unpause_automatically: false, warn_before_pausing: true }
     }
 }
 
@@ -146,6 +160,17 @@ pub struct Controller {
     intentional: BTreeSet<u32>,
     /// The last `@affinities` command sent (iTerm2 skips an unchanged one).
     last_affinities: Option<String>,
+    /// Pause mode (tmux 3.2 and later).
+    pause_mode: bool,
+    monitor: Option<crate::tmux_pause::Monitor>,
+    paused: BTreeSet<u32>,
+    warnings: HashMap<u32, crate::tmux_pause::Warning>,
+    /// Panes tmux paused that unpause by themselves, and when.
+    auto_unpause: Vec<(u32, f64)>,
+    /// Seconds on the app's clock, for latency samples.
+    clock: f64,
+    /// Each open window's layout, for the sizes of a recapture.
+    nodes: HashMap<u32, Node>,
 }
 
 impl Controller {
@@ -174,6 +199,13 @@ impl Controller {
             outstanding: 0,
             intentional: BTreeSet::new(),
             last_affinities: None,
+            pause_mode: false,
+            monitor: None,
+            paused: BTreeSet::new(),
+            warnings: HashMap::new(),
+            auto_unpause: Vec::new(),
+            clock: 0.0,
+            nodes: HashMap::new(),
         }
     }
 
@@ -302,6 +334,80 @@ impl Controller {
         gw.send(&cmd, None, Flags::default());
     }
 
+    pub fn pause_mode(&self) -> bool {
+        self.pause_mode
+    }
+
+    pub fn is_paused(&self, pane: u32) -> bool {
+        self.paused.contains(&pane)
+    }
+
+    /// The app's clock in seconds (latency samples are timed with it).
+    pub fn set_clock(&mut self, now: f64) {
+        self.clock = now;
+    }
+
+    /// Shell > tmux > Pause Pane (iTerm2's pausePanes): only in pause mode.
+    pub fn pause_panes(&mut self, panes: &[u32], gw: &mut Gateway) {
+        if !self.pause_mode || panes.is_empty() {
+            return;
+        }
+        let t = self.tag(Req::PausePanes(panes.to_vec()));
+        gw.send(&crate::tmux_pause::pause_command(panes), Some(t), Flags::default());
+    }
+
+    /// Unpause: each pane is captured again (with `continue`) and its contents replaced.
+    pub fn unpause(&mut self, panes: &[u32], gw: &mut Gateway) {
+        for &p in panes {
+            if !self.paused.remove(&p) {
+                continue;
+            }
+            let Some(window) = self.window_of(p) else { continue };
+            let node = self.nodes.get(&window).cloned().unwrap_or(Node::Leaf { w: 80, h: 24, x: 0, y: 0, pane: Some(p) });
+            let id = self.next_opener;
+            self.next_opener += 1;
+            let waiting = self.capture(id, window, &[p], false, false, gw);
+            let w = Window { id: window, ..Default::default() };
+            self.openers.insert(id, Opener { window: w, node, panes: vec![p], waiting, captured: HashMap::new(), initial: false, anonymous: false, unpause: true, update: None });
+        }
+    }
+
+    /// TmuxPauseModeAgeLimit changed: tmux gets the new age (iTerm2 sends it again).
+    pub fn set_age_limit(&mut self, age: f64, gw: &mut Gateway) {
+        if (age - self.prefs.pause_age).abs() < f64::EPSILON {
+            return;
+        }
+        self.prefs.pause_age = age;
+        if let Some(m) = &mut self.monitor {
+            m.age_limit = age;
+        }
+        if self.pause_mode {
+            gw.send(&crate::tmux_pause::enable_command(age), None, Flags::default());
+        }
+    }
+
+    /// Once a second: automatic unpauses that are due, and the pause warnings.
+    pub fn tick(&mut self, now: f64, gw: &mut Gateway) -> Vec<Action> {
+        self.clock = now;
+        let due: Vec<u32> = self.auto_unpause.iter().filter(|(_, t)| *t <= now).map(|(p, _)| *p).collect();
+        self.auto_unpause.retain(|(_, t)| *t > now);
+        if !due.is_empty() {
+            self.unpause(&due, gw);
+        }
+        let mut out = Vec::new();
+        let Some(m) = &mut self.monitor else { return out };
+        for (pane, ttl, red) in m.update(now) {
+            if self.window_of(pane).is_none() {
+                continue;
+            }
+            let paused = self.paused.contains(&pane);
+            if let Some(bar) = self.warnings.entry(pane).or_default().update(ttl, red, paused, self.prefs.warn_before_pausing) {
+                out.push(Action::PauseWarning(pane, bar));
+            }
+        }
+        out
+    }
+
     /// Tabs moved: tmux's windows take the tabs' order (iTerm2's setPartialWindowIdOrder).
     pub fn reorder(&mut self, wanted: Vec<u32>, gw: &mut Gateway) {
         let t = self.tag(Req::Reorder(wanted));
@@ -322,6 +428,12 @@ impl Controller {
         self.tab_bug = tab_bug;
         self.status_bar = status_bar;
         self.known = true;
+        // iTerm2's enablePauseModeIfPossible.
+        if min.is_some_and(|v| v >= 3.2) && !self.pause_mode {
+            self.pause_mode = true;
+            self.monitor = Some(crate::tmux_pause::Monitor::new(self.prefs.pause_age));
+            gw.send(&crate::tmux_pause::enable_command(self.prefs.pause_age), None, Flags::default());
+        }
         if std::mem::take(&mut self.want_open) {
             self.open_initial(gw);
         }
@@ -378,6 +490,16 @@ impl Controller {
                     if let Some(a) = affinity {
                         self.affinities.set_equal(&w.to_string(), &a.to_string());
                     }
+                }
+            }
+            Req::PausePanes(panes) => {
+                for p in panes {
+                    self.paused.insert(p);
+                    if let Some(m) = &mut self.monitor {
+                        m.reset(p);
+                    }
+                    self.warnings.entry(p).or_default().reset();
+                    out.push(Action::Paused { pane: p, by_tmux: false });
                 }
             }
             Req::Reorder(wanted) => {
@@ -477,7 +599,7 @@ impl Controller {
         let format = tmux_state::format();
         let mut list = Vec::new();
         for &p in panes {
-            let cmds = tmux_windows::capture_list(p, self.prefs.max_history, self.version, false, &format);
+            let cmds = tmux_windows::capture_list(p, self.prefs.max_history, self.version, self.pause_mode, &format);
             let parts = [Part::Primary, Part::Alt, Part::State, Part::Pending, Part::Other];
             for (i, cmd) in cmds.into_iter().enumerate() {
                 let part = parts[i.min(4)];
@@ -506,7 +628,7 @@ impl Controller {
         let id = self.next_opener;
         self.next_opener += 1;
         let waiting = self.capture(id, window.id, &panes, initial, window.zoomed(), gw);
-        self.openers.insert(id, Opener { window, node, panes, waiting, captured: HashMap::new(), initial, anonymous, update: None });
+        self.openers.insert(id, Opener { window, node, panes, waiting, captured: HashMap::new(), initial, anonymous, unpause: false, update: None });
         Vec::new()
     }
 
@@ -532,6 +654,10 @@ impl Controller {
             })
             .collect();
         let all = tmux_layout::panes(&o.node);
+        if o.unpause {
+            return Action::Unpaused(panes);
+        }
+        self.nodes.insert(o.window.id, o.node.clone());
         match o.update {
             // The window's pane list changed when the layout came.
             Some((removed, kept, zoomed)) => {
@@ -550,7 +676,29 @@ impl Controller {
     /// A notification the gateway passed on.
     pub fn note(&mut self, note: Note, gw: &mut Gateway) -> Vec<Action> {
         match note {
-            Note::Output { pane, data } | Note::ExtendedOutput { pane, data, .. } => {
+            Note::Pause(pane) => {
+                if self.window_of(pane).is_none() || !self.paused.insert(pane) {
+                    return Vec::new();
+                }
+                if let Some(m) = &mut self.monitor {
+                    m.reset(pane);
+                }
+                self.warnings.entry(pane).or_default().reset();
+                if self.prefs.unpause_automatically {
+                    self.auto_unpause.push((pane, self.clock + 1.0));
+                    return Vec::new();
+                }
+                return vec![Action::Paused { pane, by_tmux: true }];
+            }
+            Note::ExtendedOutput { pane, latency_ms, data } => {
+                if let Some(m) = &mut self.monitor {
+                    m.set_latency(pane, latency_ms as f64 / 1000.0, self.clock);
+                }
+                if self.window_of(pane).is_some() {
+                    return vec![Action::Output(pane, data)];
+                }
+            }
+            Note::Output { pane, data } => {
                 if self.window_of(pane).is_some() {
                     return vec![Action::Output(pane, data)];
                 }
@@ -609,6 +757,7 @@ impl Controller {
         let removed: Vec<u32> = old.iter().copied().filter(|p| !now.contains(p)).collect();
         let kept: Vec<u32> = now.iter().copied().filter(|p| old.contains(p)).collect();
         self.windows.insert(window, now);
+        self.nodes.insert(window, node.clone());
         if added.is_empty() {
             return vec![Action::Relayout { window, node, added: Vec::new(), removed, kept, zoomed }];
         }
@@ -616,7 +765,7 @@ impl Controller {
         self.next_opener += 1;
         let waiting = self.capture(id, window, &added, false, false, gw);
         let w = Window { id: window, layout: layout.to_string(), ..Default::default() };
-        self.openers.insert(id, Opener { window: w, node, panes: added, waiting, captured: HashMap::new(), initial: false, anonymous: false, update: Some((removed, kept, zoomed)) });
+        self.openers.insert(id, Opener { window: w, node, panes: added, waiting, captured: HashMap::new(), initial: false, anonymous: false, unpause: false, update: Some((removed, kept, zoomed)) });
         Vec::new()
     }
 }
@@ -638,14 +787,24 @@ mod tests {
     }
 
     impl Rig {
+        /// tmux 3.1: capture-pane -N and user vars, no pause mode.
         fn new() -> Rig {
+            Rig::with_version(3.1)
+        }
+
+        fn with_version(v: f64) -> Rig {
             let mut gw = Gateway::new("\r");
             for l in ["%begin 1 1 0", "%end 1 1 0"] {
                 gw.line(l.as_bytes());
             }
             let mut ctl = Controller::new(100);
-            ctl.version_known(Some(3.4), false, false, &mut gw);
-            Rig { gw, ctl, n: 10 }
+            ctl.version_known(Some(v), false, false, &mut gw);
+            let mut r = Rig { gw, ctl, n: 10 };
+            if v >= 3.2 {
+                // pause mode's refresh-client -fpause-after goes first.
+                r.answer(Some(""));
+            }
+            r
         }
 
         /// Feeds tmux lines; replies go to the controller, notes too.
@@ -802,7 +961,7 @@ mod tests {
         let mut r = opened();
         r.sent();
         r.ctl.tabs_resized(&[(0, (100, 30))], &mut r.gw);
-        assert_eq!(r.sent(), "refresh-client -C @0:100x30\r", "tmux 3.4: per window");
+        assert_eq!(r.sent(), "resize-window -x 100 -y 30 -t @0\r", "tmux 3.1: per window with resize-window");
         r.answer(Some(""));
         r.ctl.tabs_resized(&[(0, (100, 30))], &mut r.gw);
         assert!(r.sent().is_empty(), "unchanged");
@@ -890,6 +1049,76 @@ mod tests {
         assert_eq!(crate::tmux_persist::attach_warning(false).2, vec!["OK"]);
     }
 
+    /// tmux 3.4 attached with one window, one pane (%0), six captures a pane.
+    fn opened_34() -> Rig {
+        let mut r = Rig::with_version(3.4);
+        r.lines(&["%session-changed $0 main"]);
+        r.answer(Some(""));
+        for _ in 0..11 {
+            r.answer(Some(""));
+        }
+        r.answer(Some(ONE_PANE));
+        r.answer(Some(""));
+        let caps = r.sent();
+        assert!(caps.contains("refresh-client -A '%0:continue'"), "pause mode adds continue: {caps}");
+        for _ in 0..6 {
+            r.answer(Some(""));
+        }
+        r.sent();
+        r
+    }
+
+    #[test]
+    fn automatic_unpause_waits_a_second() {
+        let mut r = opened_34();
+        r.ctl.prefs.unpause_automatically = true;
+        r.ctl.set_clock(100.0);
+        assert!(r.lines(&["%pause %0"]).is_empty(), "no bar when it unpauses by itself");
+        assert!(r.ctl.tick(100.5, &mut r.gw).is_empty());
+        r.ctl.tick(101.0, &mut r.gw);
+        assert!(r.sent().contains("refresh-client -A '%0:continue'"), "a second later it recaptures");
+    }
+
+    #[test]
+    fn unpause_replaces_contents() {
+        let mut r = opened_34();
+        assert_eq!(r.lines(&["%pause %0"]), vec![Action::Paused { pane: 0, by_tmux: true }]);
+        assert!(r.ctl.is_paused(0));
+        r.ctl.unpause(&[0], &mut r.gw);
+        assert!(r.sent().starts_with("capture-pane -peqJN -t \"%0\""));
+        r.answer(Some("fresh"));
+        for _ in 0..4 {
+            r.answer(Some(""));
+        }
+        let a = r.answer(Some(""));
+        let [Action::Unpaused(panes)] = &a[..] else { panic!("{a:?}") };
+        assert!(panes[0].restore.starts_with(b"fresh"));
+        assert!(!r.ctl.is_paused(0));
+    }
+
+    #[test]
+    fn pause_needs_pause_mode() {
+        let mut r = opened();
+        r.sent();
+        assert!(!r.ctl.pause_mode());
+        r.ctl.pause_panes(&[0], &mut r.gw);
+        assert!(r.sent().is_empty(), "tmux 3.1 has no pause mode");
+        let mut r = opened_34();
+        assert!(r.ctl.pause_mode());
+        r.ctl.pause_panes(&[0], &mut r.gw);
+        assert_eq!(r.sent(), "refresh-client -A '%0:pause'\r");
+        assert_eq!(r.answer(Some("")), vec![Action::Paused { pane: 0, by_tmux: false }]);
+    }
+
+    #[test]
+    fn age_limit_changes_are_sent() {
+        let mut r = opened_34();
+        r.ctl.set_age_limit(30.0, &mut r.gw);
+        assert_eq!(r.sent(), "refresh-client -fpause-after=30\r");
+        r.ctl.set_age_limit(30.0, &mut r.gw);
+        assert!(r.sent().is_empty(), "unchanged");
+    }
+
     #[test]
     fn session_change_closes_everything() {
         let mut r = opened();
@@ -921,6 +1150,6 @@ mod tests {
         gw.line(b"%session-changed $1 s");
         assert!(gw.take_writes().is_empty(), "no version yet");
         ctl.version_known(Some(3.4), false, false, &mut gw);
-        assert_eq!(gw.take_writes(), b"show -v -q -t $1 @iterm2_size\r");
+        assert_eq!(gw.take_writes(), b"refresh-client -fpause-after=120\rshow -v -q -t $1 @iterm2_size\r", "pause mode first, as iTerm2's didGuessVersion");
     }
 }
