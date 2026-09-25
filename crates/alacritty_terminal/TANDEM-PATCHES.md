@@ -27,4 +27,10 @@ test data) is left out. Changes:
    removed ones (folds and Replace Selection). Rows saved at another width grow or wrap to
    the current width.
 
+7. `term/cell.rs`: `CellExtra` holds an inline image `Tile` (image id, column, and row in the
+   image) with `Cell::image()` and `Cell::set_image()`; a cell with a tile is not empty.
+
+8. `term/mod.rs`: primary device attributes report `CSI ? 62 ; 4 ; 22 c` (VT220 class, sixel,
+   ANSI color), as iTerm2 does, so apps know sixel works.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

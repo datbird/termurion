@@ -18,6 +18,7 @@ pub mod seltools;
 pub mod copymode;
 pub mod fold;
 pub mod annotations;
+pub mod images;
 pub mod stamps;
 pub mod commands;
 pub mod menus;

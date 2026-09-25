@@ -126,6 +126,17 @@ pub struct CellExtra {
     zerowidth: Vec<char>,
     underline_color: Option<Color>,
     hyperlink: Option<Hyperlink>,
+    /// Tandem patch: the inline image tile this cell shows.
+    image: Option<Tile>,
+}
+
+/// Tandem patch: which image a cell shows, and the cell's column and row in it.
+#[derive(Default, Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Tile {
+    pub image: u32,
+    pub x: u16,
+    pub y: u16,
 }
 
 /// Content and attributes of a single cell in the terminal grid.
@@ -183,7 +194,7 @@ impl Cell {
             && self
                 .extra
                 .as_ref()
-                .is_none_or(|extra| extra.zerowidth.is_empty() && extra.hyperlink.is_none())
+                .is_none_or(|extra| extra.zerowidth.is_empty() && extra.hyperlink.is_none() && extra.image.is_none())
         {
             self.extra = None;
         } else {
@@ -204,7 +215,7 @@ impl Cell {
             && self
                 .extra
                 .as_ref()
-                .is_none_or(|extra| extra.zerowidth.is_empty() && extra.underline_color.is_none());
+                .is_none_or(|extra| extra.zerowidth.is_empty() && extra.underline_color.is_none() && extra.image.is_none());
 
         if should_drop {
             self.extra = None;
@@ -218,6 +229,26 @@ impl Cell {
     #[inline]
     pub fn hyperlink(&self) -> Option<Hyperlink> {
         self.extra.as_ref()?.hyperlink.clone()
+    }
+
+    /// Tandem patch: the image tile this cell shows.
+    #[inline]
+    pub fn image(&self) -> Option<Tile> {
+        self.extra.as_ref()?.image
+    }
+
+    /// Tandem patch: shows an image tile in this cell (None removes it).
+    pub fn set_image(&mut self, tile: Option<Tile>) {
+        let should_drop = tile.is_none()
+            && self.extra.as_ref().is_none_or(|extra| {
+                extra.zerowidth.is_empty() && extra.underline_color.is_none() && extra.hyperlink.is_none()
+            });
+        if should_drop {
+            self.extra = None;
+        } else {
+            let extra = self.extra.get_or_insert(Default::default());
+            Arc::make_mut(extra).image = tile;
+        }
     }
 }
 
@@ -236,6 +267,8 @@ impl GridCell for Cell {
                     | Flags::LEADING_WIDE_CHAR_SPACER,
             )
             && self.extra.as_ref().map(|extra| extra.zerowidth.is_empty()) != Some(false)
+            // Tandem patch: a cell showing an image tile is not empty.
+            && self.extra.as_ref().is_none_or(|extra| extra.image.is_none())
     }
 
     #[inline]

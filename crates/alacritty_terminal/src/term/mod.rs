@@ -1276,7 +1276,9 @@ impl<T: EventListener> Handler for Term<T> {
         match intermediate {
             None => {
                 trace!("Reporting primary device attributes");
-                let text = String::from("\x1b[?6c");
+                // Tandem patch: a VT220-class terminal with sixel graphics and ANSI color,
+                // as iTerm2 reports.
+                let text = String::from("\x1b[?62;4;22c");
                 self.event_proxy.send_event(Event::PtyWrite(text));
             },
             Some('>') => {

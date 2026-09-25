@@ -93,6 +93,8 @@ pub struct Screen {
     pub pty_backed: bool,
     /// A fixed clock for row stamps (tests); None uses the time.
     clock: Option<u32>,
+    /// Inline images, by id.
+    pub images: crate::images::Store,
     /// Annotations, by id.
     pub notes: crate::annotations::Notes,
     /// Folded lines, by fold id.
@@ -122,6 +124,7 @@ impl Screen {
             place_prompt_first_column: true,
             pty_backed: false,
             clock: None,
+            images: crate::images::Store::default(),
             notes: crate::annotations::Notes::default(),
             folds: std::collections::HashMap::new(),
             next_fold: 0,
@@ -305,6 +308,7 @@ impl Screen {
         }
         self.folds.retain(|id, _| folds.contains(id));
         self.notes.by_id.retain(|_, n| notes.contains(&n.row_key));
+        self.prune_images();
     }
 
     fn alt_screen(&self) -> bool {
@@ -330,7 +334,7 @@ impl Screen {
         self.parser.advance(&mut self.term, bytes);
         // Now and then, forget folds and notes whose rows scrolled out of the buffer.
         self.feeds = self.feeds.wrapping_add(1);
-        if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty()) {
+        if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty()) {
             self.prune_tags();
         }
         let mut reply = Vec::new();
