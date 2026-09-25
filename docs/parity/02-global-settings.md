@@ -222,7 +222,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | ...but only if it would cause the window to go off-screen | PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges | Narrows size preservation to only kick in when the alternative would push the window off-screen. | missing |  |
 | Tabs have close buttons | TabsHaveCloseButton | Shows a close (x) button on each tab. | missing | Tandem tabs are closed via keyboard shortcut only, no close button. |
 | Show activity indicator | HideTabActivityIndicator (inverted) | Shows a spinner/indicator on a tab whose session has recent unseen output. | missing |  |
-| Show new-output indicator | ShowNewOutputIndicator | Shows a dot/badge on a tab that produced output while not focused. | missing |  |
+| Show new-output indicator | ShowNewOutputIndicator | Shows a dot/badge on a tab that produced output while not focused. | have | Milestone 6b. |
 | Flash tab bar when switching tabs in fullscreen | FlashTabBarInFullscreen | Briefly reveals the tab bar overlay whenever the active tab changes in fullscreen. | missing |  |
 | New tabs open at end of tab bar | NewTabsOpenAtEndOfTabBar | Appends new tabs at the end instead of next to the current tab. | have | Tandem currently appends new tabs at the end. |
 | Show tab bar in fullscreen | ShowFullscreenTabBar | Keeps the tab bar visible while in fullscreen instead of auto-hiding it. | missing |  |
@@ -640,7 +640,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | findURLsRespectsSoftBoundaries | findURLsRespectsSoftBoundaries (bool, default YES) | When using “Find URLs”, extend results across soft boundaries like tmux pane dividers. | missing |  |
 | echoProbeDuration | echoProbeDuration (float, default 0.5) | Amount of time to wait while testing if echo is on (seconds). | missing |  |
 | disablePasswordManagerAnimations | disablePasswordManagerAnimations (bool, default NO) | Disable animations for showing/hiding password manager. | missing |  |
-| noSyncSilenceAnnoyingBellAutomatically | noSyncSilenceAnnoyingBellAutomatically (bool, default NO) | Automatically silence bell when it rings too much. | missing |  |
+| noSyncSilenceAnnoyingBellAutomatically | noSyncSilenceAnnoyingBellAutomatically (bool, default NO) | Automatically silence bell when it rings too much. | have | Milestone 6b. |
 | noSyncVariablesToReport | noSyncVariablesToReport (string, default @"") | Variables to report via control sequence This is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. | missing |  |
 | restoreWindowContents | restoreWindowContents (bool, default YES) | Restore window contents at startup. | missing |  |
 | numberOfLinesForAccessibility | numberOfLinesForAccessibility (int, default 1000) | Maximum number of lines of history to expose to Accessibility. | missing |  |
@@ -667,7 +667,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | defaultTabStopWidth | defaultTabStopWidth (int, default 8) | Default tab stop width for new sessions. | missing |  |
 | convertItalicsToReverseVideoForTmux | convertItalicsToReverseVideoForTmux (bool, default YES) | Convert italics to reverse video in tmux integration? This is effective when the default TERM reported by tmux matches *screen*. | missing |  |
 | convertItalicsToReverseVideoForTmuxBugwardsCompatible | convertItalicsToReverseVideoForTmuxBugwardsCompatible (bool, default NO) | Convert italics to reverse video in tmux integration, even when TERM matches *tmux*? This was the default behavior for a long time, but it was incorrect. | missing |  |
-| bellRateLimit | bellRateLimit (float, default 0.1) | Minimum time between beeping or flashing screen on bell, in seconds. | missing |  |
+| bellRateLimit | bellRateLimit (float, default 0.1) | Minimum time between beeping or flashing screen on bell, in seconds. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
 | translateScreenToXterm | translateScreenToXterm (bool, default YES) | Support TERM=screen Most notably, this fixes italics replacing inverse text. | missing |  |
 | shouldSetTerminfoDirs | shouldSetTerminfoDirs (bool, default YES) | Set $TERMINFO_DIRS to add modern terminal features to xterm-like $TERMs? iTerm2 ships with extended terminfo capabilities for common TERMs (xterm, xterm-new, and xterm-256color). | missing |  |
 | xtermVersion | xtermVersion (int, default 2500) | xterm version for secondary device attributes (SDA). | missing |  |
@@ -700,7 +700,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | updateScreenParamsDelay | updateScreenParamsDelay (float, default 1) | Delay after changing number of screens/resolution until refresh (seconds). | missing |  |
 | disableAppNap | disableAppNap (bool, default NO) | Disable App Nap. | missing |  |
 | preventSleepOnBatteryToo | preventSleepOnBatteryToo (bool, default NO) | Prevent system idle sleep on battery too, for profiles with “Prevent sleep” enabled? By default the “Prevent sleep” profile setting only prevents idle sleep while connected to power. | missing |  |
-| idleTimeSeconds | idleTimeSeconds (float, default 2) | Time in seconds before a session is considered idle. | missing |  |
+| idleTimeSeconds | idleTimeSeconds (float, default 2) | Time in seconds before a session is considered idle. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
 | findDelaySeconds | findDelaySeconds (float, default 1) | Time to wait before performing Find action on 1- or 2- character queries. | partial | Tandem uses iTerm2's default; the Advanced pane that sets it comes in milestone 13. |
 | maximumBytesToProvideToServices | maximumBytesToProvideToServices (int, default 100000) | Maximum number of bytes of selection to provide to Services. | missing |  |
 | maximumBytesToProvideToPythonAPI | maximumBytesToProvideToPythonAPI (int, default 100) | Maximum number of bytes of selection to provide to Python API. | missing |  |
@@ -749,10 +749,10 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | maximumNumberOfTriggerCommands | maximumNumberOfTriggerCommands (int, default 16) | Maximum number of trigger-launched commands that can run at once. | missing |  |
 | smartSelectionRadius | smartSelectionRadius (int, default 2) | Maximum number of lines before and after the click location to include in smart selection. | partial | Tandem uses iTerm2's default; the Advanced pane that sets it comes in milestone 13. |
 | wordSelectionRegexRadius | wordSelectionRegexRadius (int, default 500) | Maximum number of characters before and after the click location to search when applying word selection regex patterns. | missing |  |
-| alertTriggerRateLimit | alertTriggerRateLimit (float, default 1) | Rate limit for Alert triggers. | missing |  |
-| userNotificationTriggerRateLimit | userNotificationTriggerRateLimit (float, default 0) | Rate limit for Notification triggers. | missing |  |
-| silentUserNotifications | silentUserNotifications (bool, default NO) | System notifications should be silent. | missing |  |
-| simpleNotifications | simpleNotifications (bool, default NO) | Omit session identifier from notifications. | missing |  |
+| alertTriggerRateLimit | alertTriggerRateLimit (float, default 1) | Rate limit for Alert triggers. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
+| userNotificationTriggerRateLimit | userNotificationTriggerRateLimit (float, default 0) | Rate limit for Notification triggers. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
+| silentUserNotifications | silentUserNotifications (bool, default NO) | System notifications should be silent. | have | Milestone 6b. |
+| simpleNotifications | simpleNotifications (bool, default NO) | Omit session identifier from notifications. | have | Milestone 6b. |
 | commandHistoryUsePower | commandHistoryUsePower (float, default 3) | When sorting command history for auto command completion: how much should number of uses of a command contribute to its score? A higher score moves the command closer to the top of the list. | missing |  |
 | commandHistoryAgePower | commandHistoryAgePower (float, default 1) | When sorting command history for auto command completion: how much should the time-since-last-use of a command contribute to its score? A higher score moves the command closer to the top of the list. | missing |  |
 | performSQLiteIntegrityCheck | performSQLiteIntegrityCheck (bool, default YES) | Perform restorable state integrity checks? | missing |  |
@@ -961,7 +961,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | neverWarnAboutPossibleOverrides | neverWarnAboutPossibleOverrides (bool, default NO) | Suppress a warning about a change to a global key that's overridden by a Profile. | missing |  |
 | noSyncNeverRemindPrefsChangesLostForUrl | noSyncNeverRemindPrefsChangesLostForUrl (bool, default NO) | Suppress changed-setting warning when settings are loaded from a URL. | missing |  |
 | noSyncNeverRemindPrefsChangesLostForFile | noSyncNeverRemindPrefsChangesLostForFile (bool, default NO) | Suppress changed-setting warning when settings are loaded from a custom folder. | missing |  |
-| noSyncSuppressAnnyoingBellOffer | noSyncSuppressAnnyoingBellOffer (bool, default NO) | Suppress offer to silence bell when it rings too much. | missing |  |
+| noSyncSuppressAnnyoingBellOffer | noSyncSuppressAnnyoingBellOffer (bool, default NO) | Suppress offer to silence bell when it rings too much. | have | Milestone 6b. |
 | suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline | suppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline (bool, default NO) | Suppress warning about multi-line paste when pasting a single line ending with a newline. | missing |  |
 | suppressMultilinePasteWarningWhenNotAtShellPrompt | suppressMultilinePasteWarningWhenNotAtShellPrompt (bool, default NO) | Suppress warning about multi-line paste when not at prompt. | missing |  |
 | noSyncSuppressBroadcastInputWarning | noSyncSuppressBroadcastInputWarning (bool, default NO) | Suppress warning about broadcasting input. | missing |  |
@@ -1025,12 +1025,12 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| badgeFont | badgeFont (string, default @"Helvetica") | Font to use for the badge. | missing |  |
-| badgeFontIsBold | badgeFontIsBold (bool, default YES) | Should the badge render in bold type? | missing |  |
-| badgeMaxWidthFraction | badgeMaxWidthFraction (float, default 0.5) | Maximum width of the badge As a fraction of the width of the terminal, between 0 and 1.0. | missing |  |
-| badgeMaxHeightFraction | badgeMaxHeightFraction (float, default 0.2) | Maximum height of the badge As a fraction of the height of the terminal, between 0 and 1.0. | missing |  |
-| badgeRightMargin | badgeRightMargin (int, default 10) | Default value for right margin for the badge How much space to leave between the right edge of the badge and the right edge of the terminal. | missing |  |
-| badgeTopMargin | badgeTopMargin (int, default 10) | Default value for the top margin for the badge How much space to leave between the top edge of the badge and the top edge of the terminal. | missing |  |
+| badgeFont | badgeFont (string, default @"Helvetica") | Font to use for the badge. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
+| badgeFontIsBold | badgeFontIsBold (bool, default YES) | Should the badge render in bold type? | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
+| badgeMaxWidthFraction | badgeMaxWidthFraction (float, default 0.5) | Maximum width of the badge As a fraction of the width of the terminal, between 0 and 1.0. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
+| badgeMaxHeightFraction | badgeMaxHeightFraction (float, default 0.2) | Maximum height of the badge As a fraction of the height of the terminal, between 0 and 1.0. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
+| badgeRightMargin | badgeRightMargin (int, default 10) | Default value for right margin for the badge How much space to leave between the right edge of the badge and the right edge of the terminal. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
+| badgeTopMargin | badgeTopMargin (int, default 10) | Default value for the top margin for the badge How much space to leave between the top edge of the badge and the top edge of the terminal. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
 
 ### Web Browser
 
@@ -1071,7 +1071,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | useDivorcedProfileToSplit | useDivorcedProfileToSplit (bool, default YES) | When splitting a pane, use the profile with local modifications, not the backing profile. | missing |  |
 | synergyModifierRemappingEnabled | synergyModifierRemappingEnabled (bool, default YES) | Support modifier remapping for keystrokes originated by Synergy. | missing |  |
 | shouldSetLCTerminal | shouldSetLCTerminal (bool, default YES) | Set LC_TERMINAL=iTerm2. | missing |  |
-| clearBellIconAggressively | clearBellIconAggressively (bool, default YES) | Clear bell icon when a session becomes active. | missing |  |
+| clearBellIconAggressively | clearBellIconAggressively (bool, default YES) | Clear bell icon when a session becomes active. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
 | workAroundNumericKeypadBug | workAroundNumericKeypadBug (bool, default YES) | Treat the equals sign on the numeric keypad as a key on the numeric keypad. | missing |  |
 | enableCharacterAccentMenu | enableCharacterAccentMenu (bool, default NO) | Enable character accent menu. | missing |  |
 | accelerateUploads | accelerateUploads (bool, default YES) | Make uploads with it2ul really fast. | missing |  |

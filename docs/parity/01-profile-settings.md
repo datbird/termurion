@@ -23,8 +23,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Advanced working directory (window) | AWDS Window Option / AWDS Window Directory | Sets a working-directory rule specific to new windows from this profile. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Advanced working directory (tab) | AWDS Tab Option / AWDS Tab Directory | Sets a working-directory rule specific to new tabs from this profile. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Advanced working directory (pane) | AWDS Pane Option / AWDS Pane Directory | Sets a working-directory rule specific to new split panes from this profile. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Badge text | Badge Text | Overlay text drawn in the corner of the terminal, can reference session variables. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Badge appearance (font, margins, max size) | Badge Font, Badge Top Margin, Badge Right Margin, Badge Max Width, Badge Max Height | Configures the badge's font and its position and size limits via a separate sheet. | missing |  |
+| Badge text | Badge Text | Overlay text drawn in the corner of the terminal, can reference session variables. | have | Milestone 6b: interpolated text, the largest size that fits, behind the text; Helvetica becomes Arial. |
+| Badge appearance (font, margins, max size) | Badge Font, Badge Top Margin, Badge Right Margin, Badge Max Width, Badge Max Height | Configures the badge's font and its position and size limits via a separate sheet. | have | Milestone 6b: interpolated text, the largest size that fits, behind the text; Helvetica becomes Arial. |
 | Subtitle | Subtitle | A second line of small text shown under the tab title when the tall tab bar is enabled. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Title components | Title Components | Bitmask popup choosing what appears in the window/tab title: session name, job, working directory, tty, custom, profile name, profile+session name, user, host, command line, size, temporary session name, or an AI-generated name. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Custom title function | Title Function | Points the title at a registered scripting-API function instead of the built-in components. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
@@ -61,7 +61,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Cursor Text Color | Cursor Text Color | Color of text drawn under or over the cursor. | have |  |
 | Smart Cursor Color | Smart Cursor Color | Computes a contrasting cursor color automatically for a box cursor instead of using fixed swatches. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | IME Cursor Color | IME Cursor Color | Cursor color shown while composing text through an Input Method Editor. | partial | Windows also has IME; concept still applies. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Badge Color | Badge Color | Color of the badge text overlay drawn in the corner of the terminal. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Badge Color | Badge Color | Color of the badge text overlay drawn in the corner of the terminal. | have | Milestone 6b: interpolated text, the largest size that fits, behind the text; Helvetica becomes Arial. |
 | Use custom tab color | Use Tab Color | Enables a custom color for the session's tab. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Tab Color | Tab Color | Color used to color the session's tab, when enabled. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Use custom underline color | Use Underline Color | Enables a custom color for underlines instead of matching the underlined text's own color. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
@@ -215,17 +215,17 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Terminal may resize window | Disable Window Resizing | Controls whether escape sequences may resize the terminal window. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Terminal may resize window when not focused | Disable Window Resizing by Unfocused Sessions | Controls whether an unfocused window can still be resized by escape sequences. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Programs can change cursor blink | Allow Change Cursor Blink | Allows escape sequences to toggle whether the cursor blinks. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Silence Bell | Silence Bell | Mutes the audible bell sound. | partial | Tandem has no bell implementation yet. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Send Notification (master toggle) | BM Growl | Enables user notifications for terminal events. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Bell (alert filter) | Send Bell Alert | Whether a bell event triggers a notification. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Idle (alert filter) | Send Idle Alert | Whether the session going idle triggers a notification. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| New Output (alert filter) | Send New Output Alert | Whether new output after idle triggers a notification. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Session Ended (alert filter) | Send Session Ended Alert | Whether the session ending triggers a notification. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Terminal-Generated Alerts (alert filter) | Send Terminal Generated Alerts | Whether escape-sequence-generated alerts trigger a notification. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Suppress Alerts in Active Session | Suppress Alerts in Active Session | Suppresses notifications for the session currently focused. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Silence Bell | Silence Bell | Mutes the audible bell sound. | have | Milestone 6b: the Windows Default Beep, the tab bell icon, the pane flash. |
+| Send Notification (master toggle) | BM Growl | Enables user notifications for terminal events. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
+| Bell (alert filter) | Send Bell Alert | Whether a bell event triggers a notification. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
+| Idle (alert filter) | Send Idle Alert | Whether the session going idle triggers a notification. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
+| New Output (alert filter) | Send New Output Alert | Whether new output after idle triggers a notification. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
+| Session Ended (alert filter) | Send Session Ended Alert | Whether the session ending triggers a notification. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
+| Terminal-Generated Alerts (alert filter) | Send Terminal Generated Alerts | Whether escape-sequence-generated alerts trigger a notification. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
+| Suppress Alerts in Active Session | Suppress Alerts in Active Session | Suppresses notifications for the session currently focused. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
 | Also Send to Companion | Send Alerts To Companion | Also delivers alerts to a paired companion iPhone app. | partial | macOS/iOS-only concept. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Flashing Bell | Flashing Bell | Flashes the screen when the bell rings. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Visual Bell | Visual Bell | Enables a visual indicator for the bell. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Flashing Bell | Flashing Bell | Flashes the screen when the bell rings. | have | Milestone 6b: the Windows Default Beep, the tab bell icon, the pane flash. |
+| Visual Bell | Visual Bell | Enables a visual indicator for the bell. | have | Milestone 6b: the Windows Default Beep, the tab bell icon, the pane flash. |
 | Set Locale Variables | Set Local Environment Vars | Chooses how $LANG/$LC_CTYPE are set for new sessions: do not set, automatic, custom, or minimal. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Change Locale | Custom Locale | Opens a locale picker for the custom locale mode. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Place prompt at first column | Place Prompt at First Column | Forces the shell prompt to always be placed at column 1. | have |  |
@@ -234,7 +234,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Show Offscreen Command Line | Show Offscreen Command line | Shows a floating bar with the current prompt when it has scrolled off the top. | partial | Requires shell integration. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Show offscreen command line for current command | Show Offscreen Command line for Current Command | Extends the floating bar to show the running command, not just the prompt. | partial | Requires shell integration. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | tmux uses newline (vs CRLF) | Tmux Newline | Controls whether tmux integration sends newline or CRLF line endings. | partial | Tandem has no tmux integration. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Filter Alerts | n/a | Opens the sheet containing the per-event alert filter checkboxes. | missing |  |
+| Filter Alerts | n/a | Opens the sheet containing the per-event alert filter checkboxes. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
 
 ## Session
 
@@ -251,9 +251,9 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Logging style | Plain Text Logging | Chooses raw, plain text, HTML, or asciicast logging. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Archive On Closure | Archive On Closure | Enables automatic archiving of the session's content when it closes. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Archive Directory | Archive Directory | Directory closed-session archives are written to. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Send code when idle | Send Code When Idle | Anti-idle/keepalive checkbox that periodically sends an ASCII code while the session is idle. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Idle code | Idle Code | ASCII code value, 0 to 255, sent periodically while idle. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Idle period | Idle Period | Seconds between sending the idle code. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Send code when idle | Send Code When Idle | Anti-idle/keepalive checkbox that periodically sends an ASCII code while the session is idle. | have | Milestone 6b. |
+| Idle code | Idle Code | ASCII code value, 0 to 255, sent periodically while idle. | have | Milestone 6b. |
+| Idle period | Idle Period | Seconds between sending the idle code. | have | Milestone 6b. |
 | Reduce Flicker | Reduce Flicker | Enables extra frame synchronization to reduce visual flicker during redraws. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Prevent Sleep | Prevent Sleep | Keeps the system from idle-sleeping while a session using this profile exists. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Default Pane Locked | Default Pane Locked | Whether new split panes from this profile start locked against closing or replacement. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
@@ -326,7 +326,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Instant (partial line) flag | n/a (per-row field) | Lets a trigger fire on a partial, not yet newline-terminated, line. | have | Milestone 6a. |
 | Show Alert | n/a (action) | Shows a modal alert dialog containing the matched text. | have | Milestone 6a: an announcement bar with OK and Disable This Alert, once per second per trigger. |
 | Annotate | n/a (action) | Attaches an inline annotation to the matching text. | have | Milestone 6a. |
-| Ring Bell | n/a (action) | Rings the terminal bell when the pattern matches. | partial | Milestone 6a beeps; the bell settings come in milestone 6b. |
+| Ring Bell | n/a (action) | Rings the terminal bell when the pattern matches. | have | Milestone 6b: the bell settings apply. |
 | Bounce Dock Icon | n/a (action) | Bounces the app's Dock icon to get attention. | have | Milestone 6a: the taskbar button flashes (until Tandem is in front, or once). |
 | Capture Output | n/a (action) | Captures the matching line into the Captured Output tool for later re-run. | missing | Listed in the editor; the Captured Output tool comes in milestone 9. |
 | Run Coprocess | n/a (action) | Launches an external command fed the session's I/O, shown in the session. | missing | Listed in the editor; coprocesses come in milestone 6c. |
@@ -337,7 +337,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Invoke Script Function | n/a (action) | Invokes a registered scripting API function, passing the match as arguments. | missing | Listed in the editor; the Python API comes in milestone 11. |
 | Set Title | n/a (action) | Sets the session title to a value derived from the match. | have | Milestone 6a. |
 | Prompt Detected | n/a (action) | Marks the matching line as a shell prompt for prompt-based navigation. | have | Milestone 6a. |
-| Post Notification | n/a (action) | Posts a system notification containing the matched text. | partial | Milestone 6a shows a bar; Windows notifications come in milestone 6b. |
+| Post Notification | n/a (action) | Posts a system notification containing the matched text. | have | Milestone 6b: a Windows notification. |
 | Set Mark | n/a (action) | Drops a mark at the matching line for later jump-to-mark navigation. | have | Milestone 6a. |
 | Open Password Manager | n/a (action) | Opens the password manager, optionally filtered to an account name. | missing | Listed in the editor; the password manager comes in milestone 10. |
 | Run Command | n/a (action) | Runs a shell command, not shown in the session, when the pattern matches. | have | Milestone 6a: cmd.exe /d /c, hidden, 16 at once. |

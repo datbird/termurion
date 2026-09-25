@@ -307,7 +307,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Window Style > Right of Screen | no shortcut | Docks the window at the right of the screen at its natural size. (milestone 7) | missing |
 | Window > Lock Size | no shortcut | Prevents the window from being resized. (milestone 7) | missing |
 | Window > Lock Layout | no shortcut | Prevents the split pane layout from being changed. (milestone 7) | missing |
-| Window > Notify on Status Change | no shortcut | Posts a notification when a background session's status changes, such as bell, idle, or done. (milestone 6) | missing |
+| Window > Notify on Status Change | no shortcut | Posts a notification when a background session's status changes, such as bell, idle, or done. (milestone 6) | have, milestone 6b: a bar with Reveal on the next status change |
 | Window > Arrange Windows > Merge All Windows | no shortcut | Merges all open windows' tabs into a single window. (milestone 7) | missing |
 | Window > Arrange Windows > Arrange Windows Horizontally | no shortcut | Tiles all open windows horizontally across the screen. (milestone 7) | missing |
 | Window > Arrange Windows > Arrange Split Panes Evenly | no shortcut | Resets all split dividers in the tab to equal sizes. | have |
@@ -360,7 +360,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; RequestAttention=fireworks\|once\|flash\|1\|0 | Bounces the dock icon, flashes the screen, or fires a fireworks animation to get user attention. | have, the taskbar button flashes where the dock icon bounces |
 | OSC 1337 ; SetBackgroundImageFile=&lt;path&gt; | Sets the session's background image, trusted only. | have |
 | OSC 1337 ; SetProfileProperty=&lt;key&gt;=&lt;base64 JSON&gt; | Changes a single profile property at runtime, trusted only. | have, the session gets its own profile copy; several keys are listed in the bar text |
-| OSC 1337 ; SetBadgeFormat=&lt;base64&gt; | Sets the session badge text/template shown in the corner of the pane. | missing, milestone 6 (badges) |
+| OSC 1337 ; SetBadgeFormat=&lt;base64&gt; | Sets the session badge text/template shown in the corner of the pane. | have, milestone 6b (function calls refused) |
 | OSC 1337 ; SetUserVar=&lt;name&gt;=&lt;base64 value&gt; | Sets a user-defined variable exposed to status bar, badges, and scripting. | have |
 | OSC 1337 ; ReportCellSize (query) | Terminal reports character cell size in points and scale factor. | have |
 | OSC 1337 ; SetWindowFrame=x;y;w;h | Sets the window's frame in points. | have |
@@ -372,8 +372,8 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; PushKeyLabels / PopKeyLabels | Saves/restores a set of Touch Bar key labels. | partial, Windows has no Touch Bar: labels are kept, not shown |
 | OSC 1337 ; Disinter | Detaches (disinters) a session from its buried state. | partial, accepted; nothing to restore until milestone 7 adds Bury |
 | OSC 1337 ; ReportVariable=&lt;base64 name&gt; (trusted) | Terminal reports the value of a named session variable. | partial, the session, user, tab, window, and app names Tandem has |
-| OSC 1337 ; Custom=&lt;params&gt;:&lt;payload&gt; (trusted) | Fires a user-defined custom escape-sequence trigger with key/value params and a payload. | missing, milestone 6 (triggers and the API) |
-| OSC 1337 ; Notification=&lt;text&gt; | Posts a rich user notification (toast). | missing, milestone 6 (notifications) |
+| OSC 1337 ; Custom=&lt;params&gt;:&lt;payload&gt; (trusted) | Fires a user-defined custom escape-sequence trigger with key/value params and a payload. | have, milestone 6b: the Custom Escape Sequence event trigger |
+| OSC 1337 ; Notification=&lt;text&gt; | Posts a rich user notification (toast). | have, milestone 6b: title, subtitle, and message (no image) |
 | OSC 1337 ; Capabilities (query, trusted) | Terminal reports its capability set. | have |
 | OSC 1337 ; Env=&lt;name&gt;=&lt;base64 value&gt; | Updates a tracked environment variable for the session, trusted only. | partial, kept for the SSH integration milestone |
 | OSC 1337 ; it2ssh=&lt;params&gt; | Begins iTerm2's own SSH integration (Conductor) session. | missing, the SSH integration milestone |
@@ -394,6 +394,8 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 133 ; E (semantic text start) | Marks the start of semantic text of a given type, for example filename, directory, pid. | have, parsed and ignored, as iTerm2 does |
 | OSC 133 ; F (semantic text end) | Marks the end of semantic text. | have, parsed and ignored, as iTerm2 does |
 | OSC 133 ; G (progress) | Updates or clears a progress indicator/percentage shown for the running command. | have, parsed and ignored, as iTerm2 does |
+| OSC 9 ; &lt;text&gt; | Posts a plain notification with the text (iTerm2's Growl-style OSC 9). | have, milestone 6b |
+| OSC 9 ; 4 ; &lt;state&gt; ; &lt;progress&gt; | Shows or clears a progress bar for the session. | partial, milestone 6b: parsed, and the Progress Bar Changed event trigger fires; no bar is drawn yet |
 | OSC 133 ; H (terminal command) | Sends an arbitrary terminal command token to the delegate. | have, parsed and ignored, as iTerm2 does |
 | OSC 7 ; file://user@host/path | Reports the current directory, user, and host as a URL; iTerm2's current shell scripts use it instead of 1337;CurrentDir and RemoteHost. Without a machineID it also marks a prompt. | have |
 | OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | have, links draw a dashed underline; Win-click opens them; the right-click menu and a pointer action copy the address |
@@ -520,7 +522,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Triggers | Make Hyperlink trigger | Turns matching text into a clickable hyperlink automatically. | have, milestone 6a |  |
 | Triggers | Bounce Dock Icon trigger | Bounces the app icon in the Dock on match, to get attention. | have, milestone 6a: the taskbar button flashes |  |
 | Triggers | Report Directory trigger | Feeds a matched directory string into iTerm2's own cwd tracking, an alternative to shell integration reporting. | have, milestone 6a |  |
-| Triggers | Ring Bell trigger | Plays the terminal bell sound on match. | partial, milestone 6a beeps; bell settings in 6b |  |
+| Triggers | Ring Bell trigger | Plays the terminal bell sound on match. | have, milestone 6b |  |
 | Triggers | Invoke Script Function trigger | Calls a registered Python API script function with the match as an argument. | missing, milestone 11 (listed in the editor) |  |
 | Triggers | Highlight Line trigger | Colors the whole matching line's background/foreground. | have, milestone 6a |  |
 | Triggers | Highlight Text trigger | Colors just the matched substring. | have, milestone 6a |  |
@@ -530,7 +532,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Triggers | Stop Processing Triggers trigger | Halts evaluation of any further triggers on the current line. | have, milestone 6a |  |
 | Triggers | Set Title trigger | Sets the session's title from the match. | have, milestone 6a |  |
 | Triggers | Open Password Manager trigger | Opens the password manager automatically on match, for example detecting a login prompt. | missing, milestone 10 (listed in the editor) |  |
-| Triggers | Post Notification trigger | Posts a system notification on match. | partial, milestone 6a shows a bar; Windows notifications in 6b |  |
+| Triggers | Post Notification trigger | Posts a system notification on match. | have, milestone 6b |  |
 | Triggers | Send Text trigger | Sends literal text back into the session as if typed, on match, for example auto-answering a prompt. | have, milestone 6a |  |
 | Triggers | Fold trigger | Collapses matched lines into a folded/hidden block in scrollback. | have, milestone 6a |  |
 | Triggers | Inject Data trigger | Injects data into the terminal's input stream as if it arrived from the pty, on match. | have, milestone 6a |  |
