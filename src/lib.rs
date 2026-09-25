@@ -133,6 +133,7 @@ pub mod tmux_windows;
 pub mod tmux_controller;
 pub mod tmux_keys;
 pub mod tmux_sizes;
+pub mod tmux_edits;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;
