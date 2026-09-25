@@ -117,7 +117,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Characters considered part of a word for selection | CharactersConsideredPartOfAWordForSelection | The literal set of extra non-alphanumeric characters treated as part of a word for double-click selection. | missing | Tandem's double-click selection uses its own fixed word-boundary rule. |
 | Word selection regex pattern | WordSelectionRegexPattern | Regular expression defining word boundaries for double-click selection, when regex mode is chosen. | missing |  |
 | Triple-click selects entire wrapped lines | TripleClickSelectsFullWrappedLines | Makes triple-click select a full soft-wrapped logical line instead of just the visual row. | partial | Tandem has triple-click line selection; wrapped-line awareness is not confirmed. |
-| Double-click performs smart selection | DoubleClickPerformsSmartSelection | Uses the Smart Selection rule engine (regex-based) for double-click instead of plain word selection. | missing | Tandem has double-click word selection but no Smart Selection rule engine. |
+| Double-click performs smart selection | DoubleClickPerformsSmartSelection | Uses the Smart Selection rule engine (regex-based) for double-click instead of plain word selection. | have | Shown under Settings > Pointer > Selection until the General pane arrives in milestone 13. |
 | Automatically enter copy mode on Shift+Arrow key with selection | EnterCopyModeAutomatically | Starts keyboard-driven copy mode when Shift+Arrow extends a selection. | missing |  |
 | Clicking on a command selects it to restrict Find and Filter | ClickToSelectCommand | Clicking a shell-integration command mark selects that command's output range for Find/Filter scoping. | missing | Depends on shell integration marks, which Tandem does not have. |
 | When pasting a dropped filename, wrap it in double quotes | WrapDroppedFilenamesInQuotesWhenPasting | Adds surrounding double quotes when a file dropped onto the terminal is pasted as a path. | missing |  |
@@ -396,7 +396,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Move Tab Left | KEY_ACTION_MOVE_TAB_LEFT | Moves the current tab one position to the left. | have |  |
 | Move Tab Right | KEY_ACTION_MOVE_TAB_RIGHT | Moves the current tab one position to the right. | have |  |
 | Run Coprocess... | KEY_ACTION_RUN_COPROCESS | Launches a coprocess (a program piped to/from the session). | missing | Comes in milestone 6. |
-| Find Regular Expression... | KEY_ACTION_FIND_REGEX | Runs Find using a fixed regular expression. | missing | Comes in milestone 4. |
+| Find Regular Expression... | KEY_ACTION_FIND_REGEX | Runs Find using a fixed regular expression. | have |  |
 | Set Profile... | KEY_ACTION_SET_PROFILE | Switches the current session to a different profile. | have |  |
 | Send Text (vim paste-safe) | KEY_ACTION_VIM_TEXT | Sends text wrapped so vim treats it as a paste, not typed keystrokes. | have |  |
 | Load Color Preset... | KEY_ACTION_LOAD_COLOR_PRESET | Applies a saved color preset to the current session. | missing | Comes in milestone 13. |
@@ -443,7 +443,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Cmd-Click opens filename/URL (semantic history) | CommandSelection | Makes Cmd-click open the clicked path or URL via Semantic History instead of just moving the cursor. | missing | Saved; Semantic History comes in milestone 4. Cmd is Win. |
+| Cmd-Click opens filename/URL (semantic history) | CommandSelection | Makes Cmd-click open the clicked path or URL via Semantic History instead of just moving the cursor. | have | Win-click, since Cmd is Win. |
 | Ctrl-Click reported to apps, does not open menu | PassOnControlClick | Sends a Control-click straight to the running program (e.g. for mouse reporting) instead of opening iTerm2's context menu. | have |  |
 | Right click reported to apps, does not open menu | ReportRightClick | Sends a right-click straight to the running program instead of opening iTerm2's context menu. | have |  |
 | Option-Click moves cursor | OptionClickMovesCursor | Lets Option-click reposition the cursor on the current line, for apps that support cursor-repositioning reports. | have | Option is Alt. |
@@ -467,10 +467,10 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 | Paste from Clipboard... | kPasteFromClipboardPointerAction | Pastes the system clipboard. | partial | Plain paste works; a paste-special configuration comes in milestone 9. |
 | Paste from Selection... | kPasteFromSelectionPointerAction | Pastes the current selection (primary-selection style paste). | partial | Plain paste works; a paste-special configuration comes in milestone 9. |
 | Extend Selection | kExtendSelectionPointerAction | Extends the existing selection to the clicked point. | have |  |
-| Open URL/Semantic History | kOpenTargetPointerAction | Opens the clicked path or URL via Semantic History. | missing | Comes in milestone 4. |
-| Open URL in background | kOpenTargetInBackgroundPointerAction | Opens the clicked URL without bringing its app to the foreground. | missing | Comes in milestone 4. |
-| Smart Selection | kSmartSelectionPointerAction | Runs the Smart Selection regex rule engine at the clicked point. | missing | Comes in milestone 4. |
-| Smart Selection Ignoring Newlines | kSmartSelectionIgnoringNewlinesPointerAction | Runs Smart Selection but lets matches span across line breaks. | missing | Comes in milestone 4. |
+| Open URL/Semantic History | kOpenTargetPointerAction | Opens the clicked path or URL via Semantic History. | have |  |
+| Open URL in background | kOpenTargetInBackgroundPointerAction | Opens the clicked URL without bringing its app to the foreground. | partial | Asks the app not to take the focus; a browser may still come to the front. |
+| Smart Selection | kSmartSelectionPointerAction | Runs the Smart Selection regex rule engine at the clicked point. | have |  |
+| Smart Selection Ignoring Newlines | kSmartSelectionIgnoringNewlinesPointerAction | Runs Smart Selection but lets matches span across line breaks. | have |  |
 | Open Context Menu | kContextMenuPointerAction | Opens iTerm2's right-click context menu. | have |  |
 | Next Tab | kNextTabPointerAction | Switches to the next tab. | have |  |
 | Previous Tab | kPrevTabPointerAction | Switches to the previous tab. | have |  |
@@ -488,9 +488,9 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 | New Tab With Profile... | kNewTabWithProfilePointerAction | Opens a new tab using a chosen profile. | have |  |
 | New Vertical Split With Profile... | kNewVerticalSplitWithProfilePointerAction | Splits vertically using a chosen profile. | have |  |
 | New Horizontal Split With Profile... | kNewHorizontalSplitWithProfilePointerAction | Splits horizontally using a chosen profile. | have |  |
-| QuickLook | kQuickLookAction | Opens a macOS Quick Look preview of the clicked file. | missing | Comes in milestone 4. QuickLook has no Windows equivalent yet. |
+| QuickLook | kQuickLookAction | Opens a macOS Quick Look preview of the clicked file. | partial | Windows has no Quick Look, so this opens the target with its default app. |
 | Select Menu Item | kSelectMenuItemPointerAction | Invokes a chosen app menu item. | have |  |
-| Copy Link Address | kCopyLinkAddressPointerAction | Copies the clicked URL/path to the clipboard without opening it. | missing | Comes in milestone 4. |
+| Copy Link Address | kCopyLinkAddressPointerAction | Copies the clicked URL/path to the clipboard without opening it. | have |  |
 | Select Next Pane | kSelectNextPanePointerAction | Moves focus to the next split pane in order. | have |  |
 | Select Previous Pane | kSelectPreviousPanePointerAction | Moves focus to the previous split pane in order. | have |  |
 | Copy or Paste | kCopyOrPastePointerAction | Copies the selection if there is one, otherwise pastes the clipboard. | have |  |
@@ -636,7 +636,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | debugShowPromptMarkRangesInLegacyRenderer | debugShowPromptMarkRangesInLegacyRenderer (bool, default NO) | Debug: highlight prompt mark prompt/command/excluded ranges in the legacy (non-GPU) renderer. | missing |  |
 | smartCursorColorBgThreshold | smartCursorColorBgThreshold (float, default 0.5) | Threshold for Smart Cursor Color for background color (0 to 1). | missing |  |
 | smartCursorColorFgThreshold | smartCursorColorFgThreshold (float, default 0.75) | Threshold for Smart Cursor Color for text color (0 to 1). | missing |  |
-| findUrlsRegex | findUrlsRegex (string, default @"https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\\-]+(\\.[a-z0-9A-Z\\-]+)*"               @"((:[0-9]+)?)(/[a-zA-Z0-9;:/\\.\\-_+%~?&amp;@=#\\(\\)]*)?") | Regular expression for “Find URLs” command. | missing |  |
+| findUrlsRegex | findUrlsRegex (string, default @"https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\\-]+(\\.[a-z0-9A-Z\\-]+)*"               @"((:[0-9]+)?)(/[a-zA-Z0-9;:/\\.\\-_+%~?&amp;@=#\\(\\)]*)?") | Regular expression for “Find URLs” command. | partial | Tandem uses its own URL pattern for Find URLs; the Advanced pane comes in milestone 13. |
 | findURLsRespectsSoftBoundaries | findURLsRespectsSoftBoundaries (bool, default YES) | When using “Find URLs”, extend results across soft boundaries like tmux pane dividers. | missing |  |
 | echoProbeDuration | echoProbeDuration (float, default 0.5) | Amount of time to wait while testing if echo is on (seconds). | missing |  |
 | disablePasswordManagerAnimations | disablePasswordManagerAnimations (bool, default NO) | Disable animations for showing/hiding password manager. | missing |  |
@@ -701,7 +701,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | disableAppNap | disableAppNap (bool, default NO) | Disable App Nap. | missing |  |
 | preventSleepOnBatteryToo | preventSleepOnBatteryToo (bool, default NO) | Prevent system idle sleep on battery too, for profiles with “Prevent sleep” enabled? By default the “Prevent sleep” profile setting only prevents idle sleep while connected to power. | missing |  |
 | idleTimeSeconds | idleTimeSeconds (float, default 2) | Time in seconds before a session is considered idle. | missing |  |
-| findDelaySeconds | findDelaySeconds (float, default 1) | Time to wait before performing Find action on 1- or 2- character queries. | missing |  |
+| findDelaySeconds | findDelaySeconds (float, default 1) | Time to wait before performing Find action on 1- or 2- character queries. | partial | Tandem uses iTerm2's default; the Advanced pane that sets it comes in milestone 13. |
 | maximumBytesToProvideToServices | maximumBytesToProvideToServices (int, default 100000) | Maximum number of bytes of selection to provide to Services. | missing |  |
 | maximumBytesToProvideToPythonAPI | maximumBytesToProvideToPythonAPI (int, default 100) | Maximum number of bytes of selection to provide to Python API. | missing |  |
 | useOpenDirectory | useOpenDirectory (bool, default YES) | Use Open Directory to determine the user shell. | missing |  |
@@ -731,7 +731,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | fallbackLCCType | fallbackLCCType (string, default @"") | Value to set LC_CTYPE to if the machine‘s combination of country and language are not supported. | missing |  |
 | useVirtualKeyCodesForDetectingDigits | useVirtualKeyCodesForDetectingDigits (bool, default NO) | Treat the top row of keys like number keys on an English keyboard for the purposes of switching panes, tabs, and windows with modifier+number. | missing |  |
 | hotkeyWindowsExcludedFromCycling | hotkeyWindowsExcludedFromCycling (bool, default NO) | Hotkey windows are excluded from Cycle Through Windows. | missing |  |
-| swapFindNextPrevious | swapFindNextPrevious (bool, default YES) | Swap Find Next and Find Previous. | missing |  |
+| swapFindNextPrevious | swapFindNextPrevious (bool, default YES) | Swap Find Next and Find Previous. | partial | Tandem uses iTerm2's default; the Advanced pane that sets it comes in milestone 13. |
 | pinEditSession | pinEditSession (bool, default NO) | Pin Edit Session window to the session it originally edited. | missing |  |
 | remapModifiersWithoutEventTap | remapModifiersWithoutEventTap (bool, default NO) | Disable remapping modifiers for system shortcuts. | missing |  |
 | alertsIndicateShortcuts | alertsIndicateShortcuts (bool, default NO) | Buttons in modal alerts indicate keyboard shortcuts. | missing |  |
@@ -747,7 +747,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | gitTimeout | gitTimeout (float, default 4) | Timeout in seconds when running git for the status bar component. | missing |  |
 | preferredBaseDir | preferredBaseDir (string, default @"") | Folder for config files. | missing |  |
 | maximumNumberOfTriggerCommands | maximumNumberOfTriggerCommands (int, default 16) | Maximum number of trigger-launched commands that can run at once. | missing |  |
-| smartSelectionRadius | smartSelectionRadius (int, default 2) | Maximum number of lines before and after the click location to include in smart selection. | missing |  |
+| smartSelectionRadius | smartSelectionRadius (int, default 2) | Maximum number of lines before and after the click location to include in smart selection. | partial | Tandem uses iTerm2's default; the Advanced pane that sets it comes in milestone 13. |
 | wordSelectionRegexRadius | wordSelectionRegexRadius (int, default 500) | Maximum number of characters before and after the click location to search when applying word selection regex patterns. | missing |  |
 | alertTriggerRateLimit | alertTriggerRateLimit (float, default 1) | Rate limit for Alert triggers. | missing |  |
 | userNotificationTriggerRateLimit | userNotificationTriggerRateLimit (float, default 0) | Rate limit for Notification triggers. | missing |  |

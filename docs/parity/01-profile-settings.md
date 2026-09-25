@@ -52,8 +52,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Use custom color for bold text | Use Bright Bold | Enables the Bold Color swatch; also makes bold text in a normal ANSI color use that color's bright variant. | have |  |
 | Bold Color | Bold Color | Color used for bold text when the custom bold color option is on. | have |  |
 | Use bright version of ANSI colors for bold text | Brighten Bold Text | Brightens text drawn in a normal ANSI color when it is also bold. | have |  |
-| Link Color | Link Color | Color for clickable hyperlink and URL text. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Match Color | Match Background Color | Background used to highlight Find, Smart Selection, and Semantic History matches. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Link Color | Link Color | Color for clickable hyperlink and URL text. | have |  |
+| Match Color | Match Background Color | Background used to highlight Find, Smart Selection, and Semantic History matches. | have |  |
 | Selection Color | Selection Color | Background color of selected text. | have |  |
 | Use custom color for selected text | Use Selected Text Color | Enables a custom color for text drawn over a selection instead of keeping its normal foreground color. | have |  |
 | Selected Text Color | Selected Text Color | Text color drawn over a selection, when enabled. | have |  |
@@ -311,8 +311,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Triggers use interpolated strings | Triggers Use Interpolated Strings | Makes trigger parameter fields evaluate as interpolated-string expressions instead of literal backreferences. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Smart Selection actions use interpolated strings | Smart Selection Actions Use Interpolated Strings | Makes smart-selection action parameters evaluate as interpolated-string expressions. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Edit Triggers | n/a | Opens the Triggers editor for this profile's trigger list. | missing |  |
-| Edit Smart Selection | n/a | Opens the Smart Selection editor for this profile's rule list. | missing |  |
-| Edit Semantic History | Semantic History | Opens the Semantic History configuration for cmd/opt-click behavior on paths and URLs. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Edit Smart Selection | n/a | Opens the Smart Selection editor for this profile's rule list. | have | Profile Advanced tab. |
+| Edit Semantic History | Semantic History | Opens the Semantic History configuration for cmd/opt-click behavior on paths and URLs. | have | Profile Advanced tab. |
 | Automatic Profile Switching debug logging | n/a | Logs why and when automatic profile switching rules match, for debugging. | missing |  |
 
 ## Triggers
@@ -350,34 +350,34 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key (plist key) | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Smart Selection rule list | Smart Selection Rules | Ordered regex rules that classify what a double or triple click selects, each with a precision level and actions. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Built-in rules | n/a | Ships default regexes for a whitespace-bounded word, C++ namespace::identifier, file paths, quoted strings, dotted Java/Python paths, mailto/http/https/ssh/telnet URLs, Obj-C selectors, and email addresses. | missing |  |
-| Open File | n/a (action) | Opens the selected text as a file path with its default or resolved application. | missing |  |
-| Open URL | n/a (action) | Opens the selected text as a URL in the browser. | missing |  |
-| Run Command | n/a (action) | Runs a shell command built from the selected text without opening a window. | missing |  |
-| Run Coprocess | n/a (action) | Runs a coprocess fed by or feeding the session, built from the selected text. | missing |  |
-| Send Text | n/a (action) | Types the selected text, or a template built from it, back into the session. | missing |  |
-| Run Command in Window | n/a (action) | Runs a shell command built from the selected text and shows its output in a new window. | missing |  |
-| Copy | n/a (action) | Copies the selected or matched text to the clipboard. | missing | Tandem already supports copy-on-select for plain selections, but not as a Smart Selection rule action. |
+| Smart Selection rule list | Smart Selection Rules | Ordered regex rules that classify what a double or triple click selects, each with a precision level and actions. | have | Rules are ICU regular expressions; Tandem reads them with fancy-regex after mapping [:letter:] and [:number:]. A rule that still does not compile is skipped, and the editor says so. |
+| Built-in rules | n/a | Ships default regexes for a whitespace-bounded word, C++ namespace::identifier, file paths, quoted strings, dotted Java/Python paths, mailto/http/https/ssh/telnet URLs, Obj-C selectors, and email addresses. | have |  |
+| Open File | n/a (action) | Opens the selected text as a file path with its default or resolved application. | have |  |
+| Open URL | n/a (action) | Opens the selected text as a URL in the browser. | have |  |
+| Run Command | n/a (action) | Runs a shell command built from the selected text without opening a window. | have | Runs through cmd.exe, with the captures quoted for it. |
+| Run Coprocess | n/a (action) | Runs a coprocess fed by or feeding the session, built from the selected text. | missing | Coprocesses come in milestone 6. |
+| Send Text | n/a (action) | Types the selected text, or a template built from it, back into the session. | have |  |
+| Run Command in Window | n/a (action) | Runs a shell command built from the selected text and shows its output in a new window. | partial | Runs the command on its own, without a window, until separate windows arrive in milestone 7. |
+| Copy | n/a (action) | Copies the selected or matched text to the clipboard. | have |  |
 
 ## Semantic History
 
 | Setting (UI name) | Key (plist key) | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Semantic History | Semantic History | Recognizes file paths and URLs in output and, on cmd/opt-click, opens them via a configurable action instead of just selecting text. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Open with default app | n/a (action: best editor) | Opens the clicked file with the app macOS considers its default handler. | missing |  |
-| Open URL | n/a (action: url) | Opens a URL template, with filename and line-number substitutions, in the default browser. | missing |  |
-| Open with editor | n/a (action: editor) | Opens the clicked text file in a specific, user-chosen editor app. | missing |  |
-| Run command | n/a (action: command) | Runs a custom command, with path/line/prefix/suffix/pwd substitutions, when an existing filename is clicked. | missing |  |
-| Always run command | n/a (action: raw command) | Runs a custom command on any clicked text, even if it is not a valid existing filename. | missing |  |
-| Run coprocess | n/a (action: coprocess) | Runs a coprocess with the same substitutions whenever an existing filename is clicked. | missing |  |
-| Send text | n/a (action: send text) | Sends literal or template text to the session whenever an existing filename is clicked. | missing |  |
+| Semantic History | Semantic History | Recognizes file paths and URLs in output and, on cmd/opt-click, opens them via a configurable action instead of just selecting text. | have | Win-click, since Cmd is Win. |
+| Open with default app | n/a (action: best editor) | Opens the clicked file with the app macOS considers its default handler. | have | Opens with the Windows default app; with VS Code on the PATH and a line number in the text, runs code -g file:line:column. |
+| Open URL | n/a (action: url) | Opens a URL template, with filename and line-number substitutions, in the default browser. | have |  |
+| Open with editor | n/a (action: editor) | Opens the clicked text file in a specific, user-chosen editor app. | have | The editor is a program path; VS Code gets -g file:line:column. |
+| Run command | n/a (action: command) | Runs a custom command, with path/line/prefix/suffix/pwd substitutions, when an existing filename is clicked. | have | Runs through cmd.exe, with the values quoted for it. |
+| Always run command | n/a (action: raw command) | Runs a custom command on any clicked text, even if it is not a valid existing filename. | have | Runs through cmd.exe. |
+| Run coprocess | n/a (action: coprocess) | Runs a coprocess with the same substitutions whenever an existing filename is clicked. | missing | Coprocesses come in milestone 6. |
+| Send text | n/a (action: send text) | Sends literal or template text to the session whenever an existing filename is clicked. | have |  |
 
 ## Totals
 
-Updated after milestone 2 (2026-09-24).
+Updated after milestone 4b (2026-09-24).
 
 - Rows: 314
-- have: 42
-- partial: 190
-- missing: 82
+- have: 70
+- partial: 178
+- missing: 66

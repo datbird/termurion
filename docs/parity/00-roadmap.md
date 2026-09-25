@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 52 | 182 | 80 |
-| `02-global-settings.md` | 820 | 98 | 53 | 669 |
-| `03-features-and-menus.md` | 633 | 100 | 8 | 525 |
-| Total | 1,767 | 250 | 243 | 1,274 |
+| `01-profile-settings.md` | 314 | 70 | 178 | 66 |
+| `02-global-settings.md` | 820 | 105 | 59 | 656 |
+| `03-features-and-menus.md` | 633 | 127 | 12 | 494 |
+| Total | 1,767 | 302 | 249 | 1,216 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -21,7 +21,11 @@ modifier remapping, number shortcuts, and the profile Keys options). Actions and
 need a later feature are stored and name their milestone. Milestone 4a: shell integration (OSC 133, OSC 7,
 the 1337 shell keys, a PowerShell script, iTerm2's installer for bash and zsh), prompt, manual,
 and named marks on their rows (a small alacritty_terminal patch), the mark commands and alerts,
-mark indicators, and Reuse previous session's directory.
+mark indicators, and Reuse previous session's directory. Milestone 4b: the find bar (five modes,
+search as you type, match highlights, the count), Find Globally, Filter, Zoom In on Selection, Find
+URLs and the other labeled results, Smart Selection (rules, precision, quadruple click, actions),
+Semantic History (Win-click on files and URLs, all seven actions but coprocesses), OSC 8 links, Open
+Selection, and the Smart Selection and Semantic History editors.
 
 ## Order
 

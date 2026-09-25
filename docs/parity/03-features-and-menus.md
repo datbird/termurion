@@ -107,23 +107,23 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Explain Output with AI | Opt+Cmd+Y | Sends recent terminal output to AI and shows an explanation. (milestone 12) | missing |
 | Edit > Snippets | no shortcut | Dynamic submenu listing saved text snippets to insert into the session. | missing |
 | Edit > Actions | no shortcut | Dynamic submenu listing saved actions, macro-like keystroke, text, or script triggers. | missing |
-| Edit > Open Selection | Opt+Cmd+O | Opens the current selection as a URL or file path. (milestone 4) | missing |
-| Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. (milestone 4) | missing |
+| Edit > Open Selection | Opt+Cmd+O | Opens the current selection as a URL or file path. (milestone 4) | have |
+| Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. (milestone 4) | have |
 | Edit > Select All | Cmd+A | Selects all text in the current session's scrollback. | have |
 | Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. (milestone 4) | missing |
 | Edit > Select Output of Last Command | Cmd+A | Selects the output of the most recently run shell command, needs shell integration marks. (milestone 4) | have |
 | Edit > Select Current Command | no shortcut | Selects the command currently being typed at the prompt. (milestone 4) | have |
-| Edit > Find > Find... | Cmd+F | Opens the in-session find bar. (milestone 4) | missing |
-| Edit > Find > Find Next | Cmd+G | Jumps to the next find match. (milestone 4) | missing |
-| Edit > Find > Find Previous | Cmd+G | Jumps to the previous find match. (milestone 4) | missing |
-| Edit > Find > Use Selection for Find | Cmd+E | Loads the current selection as the find query. (milestone 4) | missing |
-| Edit > Find > Clear Find | Opt+Cmd+E | Clears the find query and highlights. (milestone 4) | missing |
-| Edit > Find > Find Globally... | Cmd+F | Searches across all open sessions at once. (milestone 4) | missing |
-| Edit > Find > Select Matches | no shortcut | Selects all text matching the current find query. (milestone 4) | missing |
-| Edit > Find > Find URLs | Opt+Cmd+U | Highlights all URLs detected in the buffer for quick opening. (milestone 4) | missing |
-| Edit > Find > Find All Smart Selection Matches | Opt+Cmd+U | Highlights all matches of the active Smart Selection rule. (milestone 4) | missing |
-| Edit > Find > Pick Result to Open | Opt+Cmd+O | Shows shortcut labels over found links and paths so one can be opened by key. (milestone 4) | missing |
-| Edit > Find > Filter | Opt+Cmd+F | Filters the visible buffer to only lines matching a query. (milestone 4) | missing |
+| Edit > Find > Find... | Cmd+F | Opens the in-session find bar. (milestone 4) | have |
+| Edit > Find > Find Next | Cmd+G | Jumps to the next find match. (milestone 4) | have |
+| Edit > Find > Find Previous | Cmd+G | Jumps to the previous find match. (milestone 4) | have |
+| Edit > Find > Use Selection for Find | Cmd+E | Loads the current selection as the find query. (milestone 4) | have |
+| Edit > Find > Clear Find | Opt+Cmd+E | Clears the find query and highlights. (milestone 4) | have |
+| Edit > Find > Find Globally... | Cmd+F | Searches across all open sessions at once. (milestone 4) | have |
+| Edit > Find > Select Matches | no shortcut | Selects all text matching the current find query. (milestone 4) | partial |
+| Edit > Find > Find URLs | Opt+Cmd+U | Highlights all URLs detected in the buffer for quick opening. (milestone 4) | have |
+| Edit > Find > Find All Smart Selection Matches | Opt+Cmd+U | Highlights all matches of the active Smart Selection rule. (milestone 4) | have |
+| Edit > Find > Pick Result to Open | Opt+Cmd+O | Shows shortcut labels over found links and paths so one can be opened by key. (milestone 4) | have |
+| Edit > Find > Filter | Opt+Cmd+F | Filters the visible buffer to only lines matching a query. (milestone 4) | partial |
 | Edit > Marks and Annotations > Set Mark | Cmd+M | Drops a scroll position mark at the current line. (milestone 4) | have |
 | Edit > Marks and Annotations > Jump to Mark | Cmd+J | Scrolls to the last saved mark. (milestone 4) | have |
 | Edit > Marks and Annotations > Next Mark | Shift+Cmd+Down | Jumps to the next mark below in the scrollback. (milestone 4) | have |
@@ -156,8 +156,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. (milestone 9) | missing |
 | View > Use Transparency | Cmd+U | Toggles background transparency for the window. (milestone 7) | missing |
 | View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. (milestone 7) | missing |
-| View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. (milestone 4) | missing |
-| View > Zoom Out | no shortcut | Reverses Zoom In on Selection. (milestone 4) | missing |
+| View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. (milestone 4) | partial |
+| View > Zoom Out | no shortcut | Reverses Zoom In on Selection. (milestone 4) | have |
 | View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. (milestone 4) | missing |
 | View > Show Annotations | Cmd+\ | Shows or hides annotation markers in the buffer. (milestone 4) | missing |
 | View > Show Clippings | Shift+Cmd+= | Shows the Clippings/Snippets quick-insert panel. (milestone 9) | missing |
@@ -393,7 +393,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 133 ; G (progress) | Updates or clears a progress indicator/percentage shown for the running command. | missing |
 | OSC 133 ; H (terminal command) | Sends an arbitrary terminal command token to the delegate. | missing |
 | OSC 7 ; file://user@host/path | Reports the current directory, user, and host as a URL; iTerm2's current shell scripts use it instead of 1337;CurrentDir and RemoteHost. Without a machineID it also marks a prompt. | have |
-| OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | partial, alacritty_terminal parses OSC 8 hyperlinks and exposes hovered/clicked URLs, but Tandem has not wired click-to-open or hyperlink styling in its own renderer yet |
+| OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | have, links draw a dashed underline; Win-click opens them; the right-click menu and a pointer action copy the address |
 | OSC 52 (PASTE64) set/query clipboard | Reads or writes the system clipboard, and other X11-style selections, via a base64 payload. | partial, alacritty_terminal parses OSC 52 set/query, but Tandem has not confirmed it wires the result to the Windows clipboard or enables it by policy |
 | DECRQSS / DECRPSS (SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP) | Request/report current terminal settings, graphic rendition, conformance level, cursor style, protection attribute, margins, page size, as an ANSI-standard report-settings sequence. | missing |
 | Sixel graphics (DECSIXEL, via VT100SixelParser/VT100DCSParser) | Parses and renders sixel bitmap graphics sent by an application, for example img2sixel. | missing |
@@ -561,23 +561,23 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### find
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Find | Find bar | Opens the in-pane find bar. | missing | |
-| Find | Find Next / Find Previous | Moves to next/previous match. | missing | |
-| Find | Smart case sensitivity | Default mode, case-insensitive unless the query has an uppercase letter. | missing | |
-| Find | Case-sensitive substring mode | Forces exact-case plain substring matching. | missing | |
-| Find | Case-insensitive substring mode | Forces case-insensitive plain substring matching. | missing | |
-| Find | Case-sensitive regex mode | Query is treated as a regular expression, case sensitive. | missing | |
-| Find | Case-insensitive regex mode | Query is treated as a regular expression, case insensitive. | missing | |
-| Find | Use Selection for Find | Populates the find query from the current text selection. | missing | |
-| Find | Clear Find | Clears the find query and highlighted matches. | missing | |
-| Find | Find Globally | Searches across all sessions/tabs/windows at once, not just the active pane. | missing | |
-| Find | Select Matches | Converts all current find matches into multiple text selections. | missing | |
-| Find | Find URLs | Special search mode that highlights only URL-shaped text. | missing | |
-| Find | Find All Smart Selection Matches | Highlights every match of the active Smart Selection rule. | missing | |
-| Find | Pick Result to Open | Lets you choose one match and open it, for example as a URL or file. | missing | |
-| Find | Filter mode | Hides all scrollback lines that do not match the query, showing only matching lines. | missing | |
+| Find | Find bar | Opens the in-pane find bar. | have |  |
+| Find | Find Next / Find Previous | Moves to next/previous match. | have | Find Next goes up, iTerm2's default. |
+| Find | Smart case sensitivity | Default mode, case-insensitive unless the query has an uppercase letter. | have |  |
+| Find | Case-sensitive substring mode | Forces exact-case plain substring matching. | have |  |
+| Find | Case-insensitive substring mode | Forces case-insensitive plain substring matching. | have |  |
+| Find | Case-sensitive regex mode | Query is treated as a regular expression, case sensitive. | have | Rust regex syntax, which covers the common ICU syntax. |
+| Find | Case-insensitive regex mode | Query is treated as a regular expression, case insensitive. | have | Rust regex syntax, which covers the common ICU syntax. |
+| Find | Use Selection for Find | Populates the find query from the current text selection. | have |  |
+| Find | Clear Find | Clears the find query and highlighted matches. | have |  |
+| Find | Find Globally | Searches across all sessions/tabs/windows at once, not just the active pane. | have |  |
+| Find | Select Matches | Converts all current find matches into multiple text selections. | partial | A selection is one range in Tandem, so it runs from the first match to the last, and every match is copied, one per line. |
+| Find | Find URLs | Special search mode that highlights only URL-shaped text. | have |  |
+| Find | Find All Smart Selection Matches | Highlights every match of the active Smart Selection rule. | have |  |
+| Find | Pick Result to Open | Lets you choose one match and open it, for example as a URL or file. | have |  |
+| Find | Filter mode | Hides all scrollback lines that do not match the query, showing only matching lines. | partial | Shows the lines as plain text, without their colors. |
 | Find | Filter progress indicator | Shows progress while a filter search runs over large scrollback. | missing | |
-| Find | Jump to Selection | Scrolls the viewport to the current selection/match. | missing | |
+| Find | Jump to Selection | Scrolls the viewport to the current selection/match. | have |  |
 
 ### paste special / paste history
 | Subsystem | Feature | What it does | Tandem status | Windows note |
