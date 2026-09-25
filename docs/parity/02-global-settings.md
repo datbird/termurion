@@ -743,7 +743,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | addDynamicTagToDynamicProfiles | addDynamicTagToDynamicProfiles (bool, default NO) | Add a 'Dynamic' tag to dynamic profiles. | missing |  |
 | gitSearchPath | gitSearchPath (string, default @"") | $PATH used when running git for the status bar component. | missing |  |
 | screenshotMaxPixelHeight | screenshotMaxPixelHeight (int, default 30000) | Maximum pixel height for a single screenshot file. | missing |  |
-| screenshotSaveLocation | screenshotSaveLocation (string, default @"") | Folder where the “Save” button in the screenshot window writes files. | missing |  |
+| screenshotSaveLocation | screenshotSaveLocation (string, default @"") | Folder where the “Save” button in the screenshot window writes files. | have | Milestone 5e, Advanced > General. |
 | gitTimeout | gitTimeout (float, default 4) | Timeout in seconds when running git for the status bar component. | missing |  |
 | preferredBaseDir | preferredBaseDir (string, default @"") | Folder for config files. | missing |  |
 | maximumNumberOfTriggerCommands | maximumNumberOfTriggerCommands (int, default 16) | Maximum number of trigger-launched commands that can run at once. | missing |  |
