@@ -9,6 +9,7 @@ alacritty_terminal = "=0.26.0"
 arboard = "3"
 base64 = "0.22"
 regex = "1"
+flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff", "ico"] }
 unicode-width = "0.2"
 fancy-regex = "0.14"

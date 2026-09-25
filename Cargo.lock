@@ -3273,6 +3273,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "fancy-regex",
+ "flate2",
  "glyphon",
  "image",
  "muda",

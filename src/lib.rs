@@ -21,6 +21,7 @@ pub mod annotations;
 pub mod images;
 pub mod inline_file;
 pub mod sixel;
+pub mod kitty;
 pub mod stamps;
 pub mod commands;
 pub mod menus;

@@ -434,6 +434,7 @@ impl Screen {
                 }
             }
             Osc::Sixel(data) => self.sixel(&data),
+            Osc::Kitty(body) => self.kitty(&body),
             Osc::Location(url) => {
                 let Some((user, host, path, machine)) = parse_location(&url) else { return };
                 if host.is_some() && (user.is_some() || host != self.shell.host) {

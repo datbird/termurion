@@ -99,6 +99,10 @@ pub struct Screen {
     pub downloads: Vec<crate::inline_file::Download>,
     /// A MultipartFile in progress.
     pub multipart: Option<crate::inline_file::Multipart>,
+    /// Kitty graphics images and transfers.
+    pub kitty: crate::kitty::Kitty,
+    /// Answers the terminal owes the program (kitty graphics), sent with `feed`'s reply.
+    pub replies: Vec<u8>,
     /// Annotations, by id.
     pub notes: crate::annotations::Notes,
     /// Folded lines, by fold id.
@@ -131,6 +135,8 @@ impl Screen {
             images: crate::images::Store::default(),
             downloads: Vec::new(),
             multipart: None,
+            kitty: crate::kitty::Kitty::default(),
+            replies: Vec::new(),
             notes: crate::annotations::Notes::default(),
             folds: std::collections::HashMap::new(),
             next_fold: 0,
@@ -183,6 +189,7 @@ impl Screen {
             reply.extend(self.feed_raw(&bytes[at..end]));
             at = end;
             self.apply(osc);
+            reply.append(&mut self.replies);
         }
         reply.extend(self.feed_raw(&bytes[at..]));
         reply

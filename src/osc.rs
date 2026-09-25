@@ -44,6 +44,8 @@ pub enum Osc {
     Kv(String, String),
     /// A sixel image: the DCS body after `q`.
     Sixel(Vec<u8>),
+    /// A kitty graphics command: the APC body after `G`.
+    Kitty(Vec<u8>),
 }
 
 #[derive(Default)]
@@ -54,6 +56,8 @@ enum State {
     Osc { buf: Vec<u8>, keep: bool, esc: bool },
     /// `ESC P`: a DCS string (sixel images are kept).
     Dcs { buf: Vec<u8>, esc: bool },
+    /// `ESC _`: an APC string (kitty graphics commands are kept).
+    Apc { buf: Vec<u8>, esc: bool },
 }
 
 /// A DCS string kept up to this size (a large sixel image).
@@ -91,9 +95,41 @@ impl Scanner {
                     self.state = match b {
                         b']' => State::Osc { buf: Vec::new(), keep: true, esc: false },
                         b'P' => State::Dcs { buf: Vec::new(), esc: false },
+                        b'_' => State::Apc { buf: Vec::new(), esc: false },
                         0x1b => State::Esc,
                         _ => State::Ground,
                     };
+                }
+                State::Apc { buf, esc } => {
+                    if *esc {
+                        if b == b'\\' {
+                            let done = std::mem::take(buf);
+                            self.state = State::Ground;
+                            if let Some(body) = done.strip_prefix(b"G") {
+                                out.push((i + 1, Osc::Kitty(body.to_vec())));
+                            }
+                        } else {
+                            self.state = State::Esc;
+                            continue;
+                        }
+                    } else {
+                        match b {
+                            0x1b => *esc = true,
+                            0x18 | 0x1a => self.state = State::Ground,
+                            _ => {
+                                let rest = &bytes[i..];
+                                let n = rest.iter().position(|c| matches!(c, 0x1b | 0x18 | 0x1a)).unwrap_or(rest.len());
+                                if buf.len() + n <= DCS_LIMIT {
+                                    buf.extend_from_slice(&rest[..n]);
+                                } else {
+                                    buf.clear();
+                                    buf.push(b'x');
+                                }
+                                i += n;
+                                continue;
+                            }
+                        }
+                    }
                 }
                 State::Dcs { buf, esc } => {
                     if *esc {
