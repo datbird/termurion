@@ -128,6 +128,7 @@ pub mod tmux_proto;
 pub mod tmux_gateway;
 pub mod tmux_handshake;
 pub mod tmux_layout;
+pub mod tmux_monitor;
 pub mod tmux_state;
 pub mod tmux_windows;
 pub mod tmux_controller;
