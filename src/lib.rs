@@ -38,6 +38,7 @@ pub mod print;
 pub mod porthole;
 pub mod triggers;
 pub mod interp;
+pub mod bell;
 pub mod trigger_eval;
 pub mod profile;
 pub mod prompted;

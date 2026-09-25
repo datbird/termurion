@@ -16,6 +16,7 @@ impl App {
     pub(super) fn window_request(&mut self, pane: PaneId, r: Request) {
         match r {
             Request::Trigger(t) => self.trigger_request(pane, t),
+            Request::Bell => self.ring_bell(pane),
             Request::CursorGuide(on) => {
                 self.show_guide.insert(pane, on);
                 self.redraw();

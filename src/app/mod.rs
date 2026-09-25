@@ -52,6 +52,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod annotations_ui;
+mod bell_ui;
 mod bgimage_ui;
 mod blocks_ui;
 mod clipboard_ui;

@@ -178,6 +178,8 @@ pub struct Screen {
     pub buttons: crate::blocks::Buttons,
     /// The profile's triggers and where checking has reached.
     pub triggers: crate::trigger_eval::TriggerState,
+    /// Bells rung (iTerm2's bellCount).
+    pub bell_count: u64,
     /// Variables the window owns, for interpolated strings (`session.name`, `tab.title`).
     pub app_vars: std::collections::HashMap<String, String>,
     /// Portholes by id, and the last id given.
@@ -236,6 +238,8 @@ pub enum Request {
     TabColor(Option<alacritty_terminal::vte::ansi::Rgb>),
     /// A trigger's action the window runs.
     Trigger(crate::trigger_eval::TriggerRequest),
+    /// BEL.
+    Bell,
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -299,6 +303,7 @@ impl Screen {
             portholes: std::collections::HashMap::new(),
             triggers: crate::trigger_eval::TriggerState::default(),
             app_vars: std::collections::HashMap::new(),
+            bell_count: 0,
             next_porthole: 0,
             porthole_wide_default: false,
             porthole_selection: None,
@@ -970,6 +975,10 @@ impl Screen {
                 }
                 Event::Title(title) => self.title = Some(title),
                 Event::ResetTitle => self.title = None,
+                Event::Bell => {
+                    self.bell_count += 1;
+                    self.requests.push(Request::Bell);
+                }
                 _ => {}
             }
         }
