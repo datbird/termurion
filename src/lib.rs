@@ -118,6 +118,7 @@ pub mod restore_state;
 pub mod host_proto;
 pub mod host;
 pub mod host_client;
+pub mod reattach;
 pub mod winpipe;
 
 #[cfg(windows)]

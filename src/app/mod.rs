@@ -649,17 +649,8 @@ impl App {
             None => Pane::start(id, &self.api, &cmd, Some(&cwd), cols, rows, self.notify.clone()),
         };
         match started {
-            Ok(mut pane) => {
-                pane.restyle(Palette::from_profile(&p, self.dark()), Look::from_profile(&p));
-                pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
-                let (list, prefs) = triggers_ui::triggers_of(&p);
-                pane.screen.set_triggers(list, prefs);
-                pane.profile = p.guid();
-                pane.set_buffering(p.bool("Buffer Input by Default"));
-                if let Some(pid) = pane.shell_pid() {
-                    self.jobs.watch(pid);
-                }
-                self.panes.insert(id, pane);
+            Ok(pane) => {
+                self.install_pane(id, pane, &p);
                 true
             }
             Err(e) => {
@@ -667,6 +658,20 @@ impl App {
                 false
             }
         }
+    }
+
+    /// A started pane takes its profile's look, triggers, and input settings.
+    fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile) {
+        pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
+        pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+        let (list, prefs) = triggers_ui::triggers_of(p);
+        pane.screen.set_triggers(list, prefs);
+        pane.profile = p.guid();
+        pane.set_buffering(p.bool("Buffer Input by Default"));
+        if let Some(pid) = pane.shell_pid() {
+            self.jobs.watch(pid);
+        }
+        self.panes.insert(id, pane);
     }
 
     /// The focused session's directory, from shell integration, when it is on this machine
@@ -1771,8 +1776,18 @@ impl ApplicationHandler<UserEvent> for App {
         // Open default window arrangement (policy 1): that arrangement. Either way the first
         // window fills this one, and the others open as new windows.
         let system_policy = !self.globals.bool("OpenArrangementAtStartup") && !self.globals.bool("OpenNoWindowsAtStartup");
-        let saved = if system_policy { self.saved_windows() } else { None };
+        let mut saved = if system_policy { self.saved_windows() } else { None };
         let has_saved = saved.is_some();
+        // Sessions still running in the host: the saved ones they belong to take them over,
+        // and the rest open in one new window (iTerm2's orphan adoption).
+        let orphans = match saved.as_mut() {
+            Some((windows, instance)) => {
+                let instance = instance.clone();
+                self.plan_reattach(windows, instance.as_deref())
+            }
+            None => self.plan_reattach(&mut [], None),
+        };
+        let saved = saved.map(|(w, _)| w);
         let default_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
         let startup_arrangement = saved.or(default_arrangement);
@@ -1792,6 +1807,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             None => self.new_tab(None),
+        }
+        if !orphans.is_empty() {
+            self.pending_windows.push(windows_ui::NewWindow::Orphans(orphans));
         }
         self.install_menus();
         // A window the default arrangement filled keeps its frame, style, and locks.

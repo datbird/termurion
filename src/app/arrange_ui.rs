@@ -50,6 +50,10 @@ impl App {
         if let (Some((key, text)), Some(t)) = (saved, v.as_table_mut()) {
             t.insert(key.into(), Value::String(text));
         }
+        // Session restoration: the host session, so a later launch can take the shell back.
+        if let (Contents::Styled(_), Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
+            t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));
+        }
         v
     }
 
@@ -219,7 +223,16 @@ impl App {
             let guid = arrangement::resolve_profile(&session, &profiles);
             missing |= guid.is_none();
             self.start_dir_override = Some(arrangement::folder_for(&session));
-            let id = self.start_pane(area, guid.as_deref());
+            let id = match super::restore_ui::attach_key(&session) {
+                Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since) {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        self.banners.set("reattach", format!("A running shell could not be taken back ({e}); a new shell started in its place."));
+                        self.start_pane(area, guid.as_deref())
+                    }
+                },
+                None => self.start_pane(area, guid.as_deref()),
+            };
             self.start_dir_override = None;
             match id {
                 Some(id) => {

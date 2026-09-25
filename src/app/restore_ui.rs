@@ -27,7 +27,8 @@ impl App {
         if let Some(b) = back {
             self.enter(b);
         }
-        self.write_state(&State { host: None, windows });
+        let host = self.host_welcome.as_ref().filter(|_| self.host.is_some()).map(|w| w.instance.clone());
+        self.write_state(&State { host, windows });
         self.state_debounce.written(now);
     }
 
@@ -71,7 +72,7 @@ impl App {
     /// The windows saved at the last run, ready to rebuild: each restored session carries the
     /// banner line. None when nothing was saved; a bad file is kept as `state.bad` and a
     /// banner says why.
-    pub(super) fn saved_windows(&mut self) -> Option<Vec<Value>> {
+    pub(super) fn saved_windows(&mut self) -> Option<(Vec<Value>, Option<String>)> {
         let path = Self::state_path();
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
@@ -99,8 +100,119 @@ impl App {
                 mark_banner(w, &line);
             }
         }
-        Some(state.windows)
+        Some((state.windows, state.host))
     }
+
+    /// Matches the saved sessions against the host's running ones: a match is marked to take
+    /// its shell back (no banner); ended sessions nobody claims are forgotten. Returns the
+    /// running sessions nobody claims, as (id, pid).
+    pub(super) fn plan_reattach(&mut self, windows: &mut [Value], saved_instance: Option<&str>) -> Vec<(u64, u32)> {
+        let (Some(host), Some(welcome)) = (self.host.clone(), self.host_welcome.clone()) else { return Vec::new() };
+        let mut sessions = Vec::new();
+        for w in windows.iter_mut() {
+            sessions_mut(w, &mut sessions);
+        }
+        let keys: Vec<Option<crate::reattach::HostKey>> = sessions.iter().map(|s| s.get(restore_state::HOST_KEY).and_then(parse_host_key)).collect();
+        let plan = crate::reattach::plan(&keys, saved_instance, &welcome.instance, &welcome.sessions);
+        for (i, id, since) in &plan.attach {
+            let pid = keys[*i].as_ref().map_or(0, |k| k.pid);
+            let mut t = toml::Table::new();
+            t.insert("Id".into(), Value::Integer(*id as i64));
+            t.insert("Pid".into(), Value::Integer(pid as i64));
+            t.insert("Since".into(), Value::Integer(*since as i64));
+            sessions[*i].insert(crate::arrangement::ATTACH_KEY.into(), Value::Table(t));
+            // The job came back: no "Session Contents Restored" banner (iTerm2).
+            sessions[*i].remove(crate::arrangement::BANNER_KEY);
+        }
+        for id in &plan.forget {
+            host.forget(*id);
+        }
+        plan.orphans.iter().filter_map(|id| welcome.sessions.iter().find(|l| l.id == *id).map(|l| (l.id, l.pid))).collect()
+    }
+
+    /// Takes over a shell the host still runs, as a new pane. Its output from `since` follows
+    /// the restored contents; when the host dropped part of it, the pane is repainted.
+    pub(super) fn attach_pane(&mut self, rect: Rect, guid: Option<&str>, host_id: u64, pid: u32, since: u64) -> Result<PaneId, String> {
+        let host = self.host.clone().ok_or("no session host is running")?;
+        let (cols, rows) = self.grid_size(rect);
+        let (pty, _from, dropped) = host.attach(host_id, pid, since, self.notify.clone())?;
+        let id = self.next_id;
+        self.next_id += 1;
+        let p = self.profile(guid);
+        self.install_pane(id, Pane::attached(id, pty, cols, rows), &p);
+        if dropped {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                pane.jiggle();
+            }
+        }
+        Ok(id)
+    }
+
+    /// Host sessions nobody claimed: a tab each in this (new) window, the default profile,
+    /// the whole output the host kept, a repaint, and iTerm2's notice.
+    pub(super) fn adopt_orphans(&mut self, sessions: &[(u64, u32)]) {
+        let area = self.content_area();
+        for (host_id, pid) in sessions {
+            match self.attach_pane(area, None, *host_id, *pid, 0) {
+                Ok(id) => {
+                    if let Some(p) = self.panes.get_mut(&id) {
+                        p.jiggle();
+                    }
+                    self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+                    self.next_tab_id += 1;
+                }
+                Err(e) => self.banners.set("reattach", format!("A running shell could not be taken back: {e}")),
+            }
+        }
+        self.active = 0;
+        if !self.tabs.is_empty() {
+            self.banners.set("orphan", "This already-running session was restored but its contents were not saved.");
+        }
+        self.relayout();
+    }
+}
+
+/// The session tables of a window table, in reading order.
+fn sessions_mut<'a>(v: &'a mut Value, out: &mut Vec<&'a mut toml::Table>) {
+    match v {
+        Value::Table(t) => {
+            if t.get("View Type").and_then(|x| x.as_str()) == Some("SessionView") {
+                if let Some(Value::Table(s)) = t.get_mut("Session") {
+                    out.push(s);
+                }
+                return;
+            }
+            for (_, x) in t.iter_mut() {
+                sessions_mut(x, out);
+            }
+        }
+        Value::Array(a) => {
+            for x in a.iter_mut() {
+                sessions_mut(x, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub(super) fn host_key_value(id: u64, pid: u32, offset: u64) -> Value {
+    let mut t = toml::Table::new();
+    t.insert("Id".into(), Value::Integer(id as i64));
+    t.insert("Pid".into(), Value::Integer(pid as i64));
+    t.insert("Offset".into(), Value::Integer(offset as i64));
+    Value::Table(t)
+}
+
+fn parse_host_key(v: &Value) -> Option<crate::reattach::HostKey> {
+    let n = |k: &str| v.get(k).and_then(|x| x.as_integer()).filter(|i| *i >= 0);
+    Some(crate::reattach::HostKey { id: n("Id")? as u64, pid: u32::try_from(n("Pid")?).ok()?, offset: n("Offset")? as u64 })
+}
+
+/// A session marked to take its shell back: (host session id, pid, output offset).
+pub(super) fn attach_key(session: &Value) -> Option<(u64, u32, u64)> {
+    let t = session.get(crate::arrangement::ATTACH_KEY)?;
+    let n = |k: &str| t.get(k).and_then(|x| x.as_integer()).filter(|i| *i >= 0);
+    Some((n("Id")? as u64, u32::try_from(n("Pid")?).ok()?, n("Since")? as u64))
 }
 
 /// Every session with restored contents gets the banner line.

@@ -165,6 +165,19 @@ impl Pane {
         }
     }
 
+    /// A forced repaint: the pty one column wider, then back (a reattach whose output was
+    /// cut short, or an adopted orphan).
+    pub fn jiggle(&mut self) {
+        let (cols, rows) = (self.screen.term().columns() as u16, self.screen.term().screen_lines() as u16);
+        if let Some(io) = &self.pty {
+            for (c, r) in crate::reattach::jiggle(cols, rows) {
+                if let Err(e) = io.resize(c, r) {
+                    self.error = Some(e);
+                }
+            }
+        }
+    }
+
     /// Quit with jobs kept: the shell stays in the host when the pane goes.
     pub fn detach(&mut self) {
         if let Some(Io::Hosted(p)) = &mut self.pty {

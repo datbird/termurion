@@ -335,6 +335,8 @@ pub const CONTENTS_KEY: &str = "Tandem Contents";
 pub const STYLED_KEY: &str = "Tandem Styled Contents";
 /// Set on a session while it is restored: the banner line to draw under its contents.
 pub const BANNER_KEY: &str = "Tandem Banner";
+/// Set on a session while it is restored: the host session to take over (`{Id, Pid, Since}`).
+pub const ATTACH_KEY: &str = "Tandem Attach";
 
 /// The text saved "with contents".
 pub fn contents(session: &Value) -> Option<&str> {

@@ -262,6 +262,11 @@ impl Client {
         }
     }
 
+    /// An ended session nobody claimed: the host drops it.
+    pub fn forget(&self, id: u64) {
+        let _ = self.inner.send(&Msg::Forget { id });
+    }
+
     /// Quit: the host ends every session.
     pub fn kill_all(&self) {
         let _ = self.inner.send(&Msg::KillAll);

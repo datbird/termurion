@@ -165,7 +165,7 @@ impl App {
                 match first {
                     NewWindow::Tab(tab) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
-                    NewWindow::Profile(_) | NewWindow::Arrangement(_) => {}
+                    NewWindow::Profile(_) | NewWindow::Arrangement(_) | NewWindow::Orphans(_) => {}
                 }
                 self.relayout();
                 return Err(e);
@@ -185,6 +185,7 @@ impl App {
             NewWindow::Tab(t) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Arrangement(w) => self.first_arrangement_guid(w),
+            NewWindow::Orphans(_) => None,
         };
         self.apply_fonts();
         self.size_window(first_guid.as_deref());
@@ -207,6 +208,7 @@ impl App {
                     self.banners.set("arrangement", e);
                 }
             }
+            NewWindow::Orphans(sessions) => self.adopt_orphans(&sessions),
         }
         self.install_menus();
         // An arrangement's window has its own frame, style, and locks.
@@ -399,6 +401,8 @@ pub(super) enum NewWindow {
     Tabs(Vec<Tab>),
     /// A window table from an arrangement.
     Arrangement(crate::arrangement::Value),
+    /// Host sessions nobody claimed at launch: (host session id, pid), a tab each.
+    Orphans(Vec<(u64, u32)>),
 }
 
 impl App {
