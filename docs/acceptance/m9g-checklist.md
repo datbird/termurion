@@ -6,7 +6,7 @@ Mark each line pass or fail.
 
 | # | Check | Result |
 |---|---|---|
-| 1 | Settings > Profiles > Session: "Status bar enabled" is off and "Configure Status Bar" is greyed out. Hover the checkbox: "Shows a configurable status bar at the top of each session." | |
+| 1 | Settings > Profiles > Session: "Status bar enabled" is off and "Configure Status Bar" is greyed out. Hover the checkbox: "Shows a configurable status bar for sessions using this profile." | |
 | 2 | Turn "Status bar enabled" on: a bar 21 points high appears at the top of the tab area, in the tab bar's color, and the terminal loses that much room (its rows shrink by one or two). The bar reads "Click here to configure status bar", centered vertically in the bar. | |
 | 3 | Click the placeholder text: the "Configure Status Bar" window opens (about 918 by 526). "Status Bar Component Menu" shows "Fixed-size Spacer" (╠══╣) and "Empty Space" (a blank box). Hover each: its description shows ("Adds a fixed amount of space"; "Empty space that draws only a background color."). | |
 | 4 | Drag "Fixed-size Spacer" into Active Components: a line shows where it lands, and on release it is added. The bar behind the window changes at once (the placeholder is gone). Drag "Empty Space" in before the spacer, then a second spacer after it. | |

@@ -2488,7 +2488,7 @@ section = "Status Bar"
 label = "Status bar enabled"
 type = "bool"
 default = false
-help = "Shows a configurable status bar at the top of each session."
+help = "Shows a configurable status bar for sessions using this profile."
 light_dark = false
 macos_only = false
 

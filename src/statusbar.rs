@@ -28,7 +28,13 @@ const SHARED_BACKGROUND_COLOR_KEY: &str = "shared background color";
 const SHARED_FONT_KEY: &str = "shared font";
 const SPRING_CONSTANT_KEY: &str = "iTermStatusBarSpringComponentSpringConstantKey";
 const SIZE_MULTIPLE_KEY: &str = "iTermStatusBarSpringComponentSizeMultipleKey";
-const SPACER_WIDTH_KEY: &str = "iTermStatusBarFixedSpacerComponentWidthKnob";
+/// `iTermStatusBarFixedSpacerComponentWidthKnob`. `pub(crate)` so the app side's own tests
+/// can build a spacer `Component` with it, rather than duplicating the string.
+pub(crate) const SPACER_WIDTH_KEY: &str = "iTermStatusBarFixedSpacerComponentWidthKnob";
+/// A spring constant's upper clamp (review fix): large enough that a user-typed knob is
+/// still effectively "take everything", but finite, so two such items dividing infinity by
+/// infinity for a growth weight never produces NaN placements.
+const SPRING_CONSTANT_MAX: f64 = 1_000_000.0;
 
 /// `iTermStatusBarLayoutAlgorithmSetting`: which layout algorithm lays out the bar.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -161,11 +167,16 @@ impl Component {
         knob_f64(&self.knobs, BASE_PRIORITY_KEY).unwrap_or(5.0)
     }
 
-    /// `statusBarComponentSpringConstant`, clamped to a minimum of 0.01. A Spring reads
-    /// its own key for the active algorithm; every other component reads
-    /// `"base: compression resistance"`. Either way the fallback when the key is absent
-    /// is 1, even for the Spring's Tightly Packed key (whose knob *descriptor* default is
-    /// 0.01; iTerm2's own surprise, see `iTermStatusBarSpringComponent.m`).
+    /// `statusBarComponentSpringConstant`, clamped to between 0.01 and a large finite
+    /// value (review fix: an infinite Size Multiple or Compression Resistance knob, which
+    /// the numeric knob's text field accepts as "\u{221e}", used to reach the layout
+    /// algorithms unclamped above and give NaN placements when two such items divided
+    /// infinity by infinity for a growth weight; a NaN knob, which should not occur but
+    /// would poison every comparison below, falls back to the same default as an absent
+    /// one). A Spring reads its own key for the active algorithm; every other component
+    /// reads `"base: compression resistance"`. Either way the fallback when the key is
+    /// absent is 1, even for the Spring's Tightly Packed key (whose knob *descriptor*
+    /// default is 0.01; iTerm2's own surprise, see `iTermStatusBarSpringComponent.m`).
     pub fn spring_constant(&self, algorithm: Algorithm) -> f64 {
         let key = if self.class == SPRING_CLASS {
             match algorithm {
@@ -175,7 +186,8 @@ impl Component {
         } else {
             BASE_COMPRESSION_RESISTANCE_KEY
         };
-        knob_f64(&self.knobs, key).unwrap_or(1.0).max(0.01)
+        let v = knob_f64(&self.knobs, key).unwrap_or(1.0);
+        if v.is_nan() { 1.0 } else { v.clamp(0.01, SPRING_CONSTANT_MAX) }
     }
 
     /// `"minwidth"`, default 0.
@@ -203,6 +215,14 @@ impl Component {
     /// profile's own font keys.
     pub fn font(&self) -> Option<String> {
         self.knobs.get(SHARED_FONT_KEY).and_then(Value::as_str).map(str::to_string)
+    }
+
+    /// `iTermStatusBarFixedSpacerComponent`'s width: `knob ?: 5`, so 0 also means 5.
+    pub fn spacer_width(&self) -> f64 {
+        match knob_f64(&self.knobs, SPACER_WIDTH_KEY) {
+            Some(w) if w != 0.0 => w,
+            _ => 5.0,
+        }
     }
 }
 
@@ -493,19 +513,26 @@ pub fn sync_advanced_copies(layout: &mut Layout) {
     }
 }
 
-/// `NSColor colorWithHue:saturation:brightness:alpha:1` as a `{r, g, b, a}` table.
-fn hsb_value(h: f32, s: f32, b: f32) -> Value {
+/// `NSColor colorWithHue:saturation:brightness:alpha:`'s RGB, each 0 to 1. Shared with the
+/// app side (`statusbar_ui::hsb`), which converts this to its own `Rgb` byte type; this
+/// module only ever needs the `{r, g, b, a}` table `hsb_value` builds from it.
+pub fn hsb_to_rgb(h: f32, s: f32, b: f32) -> (f32, f32, f32) {
     let h6 = h.rem_euclid(1.0) * 6.0;
     let f = h6 - h6.floor();
     let (p, q, t) = (b * (1.0 - s), b * (1.0 - s * f), b * (1.0 - s * (1.0 - f)));
-    let (r, g, bl) = match h6.floor() as i32 {
+    match h6.floor() as i32 {
         0 => (b, t, p),
         1 => (q, b, p),
         2 => (p, b, t),
         3 => (p, q, b),
         4 => (t, p, b),
         _ => (b, p, q),
-    };
+    }
+}
+
+/// `NSColor colorWithHue:saturation:brightness:alpha:1` as a `{r, g, b, a}` table.
+fn hsb_value(h: f32, s: f32, b: f32) -> Value {
+    let (r, g, bl) = hsb_to_rgb(h, s, b);
     let mut out = toml::Table::new();
     for (k, v) in [("r", r), ("g", g), ("b", bl), ("a", 1.0)] {
         out.insert(k.into(), Value::Float(v as f64));
@@ -667,6 +694,15 @@ mod tests {
         assert_eq!(spring.spring_constant(Algorithm::Stable), 3.0);
         spring.knobs.insert(SPRING_CONSTANT_KEY.into(), Value::Float(-1.0));
         assert_eq!(spring.spring_constant(Algorithm::TightlyPacked), 0.01);
+
+        // Review fix: an infinite knob (typed as the numeric knob's "\u{221e}") no longer
+        // reaches the layout algorithms as infinity, which divided infinity by infinity
+        // into NaN placements there; it is clamped to a large finite value instead. A knob
+        // that is somehow NaN falls back to the same default as an absent one (1).
+        spring.knobs.insert(SPRING_CONSTANT_KEY.into(), Value::Float(f64::INFINITY));
+        assert!(spring.spring_constant(Algorithm::TightlyPacked).is_finite());
+        spring.knobs.insert(SPRING_CONSTANT_KEY.into(), Value::Float(f64::NAN));
+        assert_eq!(spring.spring_constant(Algorithm::TightlyPacked), 1.0);
     }
 
     #[test]

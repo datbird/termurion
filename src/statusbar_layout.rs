@@ -548,6 +548,18 @@ pub fn bands(placed: &[Placed], items: &[Item], width: f32) -> Vec<(f32, f32, us
     out
 }
 
+/// A click at `x` (points from the bar's left): the item, if any, whose own margins
+/// (`updateMargins:`, `margins_for`) bound it. Unlike `bands`, which tiles the whole bar so
+/// a click anywhere hits some item, this leaves empty space before the first item or past
+/// the last one hitting nothing (the 9g review fix: a right-click there must offer only
+/// Configure Status Bar and Disable Status Bar, `m9g-checklist.md` #17). Returns the hit
+/// item's index into `items`.
+pub fn hit_index(placed: &[Placed], items: &[Item], x: f32) -> Option<usize> {
+    let order: Vec<usize> = placed.iter().map(|p| p.index).collect();
+    let margins = margins_for(&order, items);
+    placed.iter().zip(margins).find(|(p, (l, r))| x >= p.x - l && x < p.x + p.width + r).map(|(p, _)| p.index)
+}
+
 // ---------------------------------------------------------------------------------------
 // Where a bar goes
 // ---------------------------------------------------------------------------------------
@@ -692,6 +704,25 @@ mod tests {
                 (90.5, 120.0, 4),
             ]
         );
+    }
+
+    #[test]
+    fn hit_index_bounds_each_item_by_its_own_margins() {
+        // Unlike `bands`, which tiles the whole bar so a click anywhere hits some item,
+        // `hit_index` bounds each item by its own left and right margin (`updateMargins:`)
+        // and nothing else: empty space before the first item or past the last one hits
+        // nothing (the 9g review fix for the bar's right-click menu on empty space,
+        // `m9g-checklist.md` #17).
+        let items = [normal(20.0, 20.0, 20.0, 5.0), normal(20.0, 20.0, 20.0, 5.0)];
+        let placed = vec![Placed { index: 0, x: 6.0, width: 20.0 }, Placed { index: 1, x: 37.0, width: 20.0 }];
+        // margins_for([0, 1], items) = [(6, 5), (6, 10)]: item 0 spans 0..31, item 1 31..67.
+        assert_eq!(hit_index(&placed, &items, -1.0), None, "before item 0's left margin");
+        assert_eq!(hit_index(&placed, &items, 0.0), Some(0));
+        assert_eq!(hit_index(&placed, &items, 30.0), Some(0));
+        assert_eq!(hit_index(&placed, &items, 31.0), Some(1));
+        assert_eq!(hit_index(&placed, &items, 66.0), Some(1));
+        assert_eq!(hit_index(&placed, &items, 67.0), None, "past the last item's own right margin: no component, unlike bands");
+        assert_eq!(hit_index(&placed, &items, 200.0), None, "empty bar space far past everything hits nothing");
     }
 
     #[test]

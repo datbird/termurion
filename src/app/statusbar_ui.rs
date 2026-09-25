@@ -19,8 +19,6 @@ use crate::statusbar_layout::{self as sbl, Item, ItemKind, Placed, Position};
 pub(super) const PLACEHOLDER_TEXT: &str = "Click here to configure status bar";
 const LAYOUT_KEY: &str = "Status Bar Layout";
 const SHOW_KEY: &str = "Show Status Bar";
-/// `iTermStatusBarFixedSpacerComponentWidthKnob`.
-const SPACER_WIDTH_KEY: &str = "iTermStatusBarFixedSpacerComponentWidthKnob";
 /// The status bar font's size when neither the layout nor the component sets one
 /// (`[NSFont systemFontOfSize:12]`).
 const DEFAULT_FONT_PT: f32 = 12.0;
@@ -92,24 +90,12 @@ impl Piece {
             Piece::Spring => Item { min: knob_min.max(0.0), preferred: f32::INFINITY, max: f32::INFINITY, stretch: true, margins: false, kind: ItemKind::Spring, ..base },
             // FSP: its width knob, 5 when absent or 0.
             Piece::Spacer => {
-                let w = spacer_width(c);
+                let w = c.spacer_width() as f32;
                 Item { min: w.max(knob_min), preferred: w, kind: ItemKind::FixedSpacer, ..base }
             }
             // A one-variant text component: its text's width, stretchable.
             Piece::Placeholder => Item { min: text_pt.max(knob_min), preferred: text_pt, stretch: true, ..base },
         }
-    }
-}
-
-fn knob_number(c: &Component, key: &str) -> Option<f64> {
-    c.knobs.get(key).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
-}
-
-/// `iTermStatusBarFixedSpacerComponent`: `knob ?: 5`, so 0 also means 5.
-fn spacer_width(c: &Component) -> f32 {
-    match knob_number(c, SPACER_WIDTH_KEY) {
-        Some(w) if w != 0.0 => w as f32,
-        _ => 5.0,
     }
 }
 
@@ -121,26 +107,11 @@ fn color_of(v: &toml::Value) -> Option<(Rgb, f32)> {
     Some((crate::palette::rgb(byte(c("r")?), byte(c("g")?), byte(c("b")?)), c("a").unwrap_or(1.0).clamp(0.0, 1.0) as f32))
 }
 
-/// `NSColor colorWithHue:saturation:brightness:alpha:`.
+/// `NSColor colorWithHue:saturation:brightness:alpha:`, as `Rgb` bytes.
 fn hsb(h: f32, s: f32, b: f32) -> Rgb {
-    let h = (h.rem_euclid(1.0)) * 6.0;
-    let i = h.floor();
-    let f = h - i;
-    let (p, q, t) = (b * (1.0 - s), b * (1.0 - s * f), b * (1.0 - s * (1.0 - f)));
-    let (r, g, bl) = match i as i32 {
-        0 => (b, t, p),
-        1 => (q, b, p),
-        2 => (p, b, t),
-        3 => (p, q, b),
-        4 => (t, p, b),
-        _ => (b, p, q),
-    };
+    let (r, g, bl) = statusbar::hsb_to_rgb(h, s, b);
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     crate::palette::rgb(byte(r), byte(g), byte(bl))
-}
-
-fn is_dark(c: Rgb) -> bool {
-    (0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32) / 255.0 < 0.5
 }
 
 /// A bar on screen: the session whose layout it shows, and where it is.
@@ -170,10 +141,11 @@ struct Placement {
 }
 
 impl Placement {
-    /// The visible component under x (points from the bar's left): a component's band
-    /// covers its margins too.
+    /// The visible component under x (points from the bar's left), bounded by its own
+    /// margins, not `bands`'s whole-bar tiling: empty space before the first component or
+    /// past the last one hits nothing (the 9g review fix, `m9g-checklist.md` #17).
     fn hit(&self, x_pt: f32) -> Option<usize> {
-        sbl::bands(&self.placed, &self.items, self.width_pt).into_iter().find(|&(a, b, _)| x_pt >= a && x_pt < b).map(|(_, _, i)| i)
+        sbl::hit_index(&self.placed, &self.items, x_pt)
     }
 }
 
@@ -341,8 +313,10 @@ impl App {
             let background = adv.background_color.as_ref().and_then(color_of).unwrap_or((scene::STATUS_BAR_BG, 1.0));
             let default_text = adv.default_text_color.as_ref().and_then(color_of).map_or(scene::STATUS_BAR_TEXT, |(c, _)| c);
             // Auto-rainbow colors every visible component, springs and spacers included
-            // (`VC:490-504`); Automatic picks by the bar's own background.
-            let rainbow = if adv.rainbow == Rainbow::Disabled { Vec::new() } else { statusbar::rainbow_colors(p.placed.len(), adv.rainbow, is_dark(background.0)) };
+            // (`VC:490-504`); Automatic picks by the window's appearance (review fix: the
+            // same source the setup window uses for the same purpose, `open_status_setup`,
+            // rather than the bar's own background).
+            let rainbow = if adv.rainbow == Rainbow::Disabled { Vec::new() } else { statusbar::rainbow_colors(p.placed.len(), adv.rainbow, self.dark()) };
             let px = |x: f32| bar.rect.x + (x * scale).round();
             let bands: Vec<(f32, f32, Rgb, f32)> = sbl::bands(&p.placed, &p.items, p.width_pt)
                 .into_iter()
@@ -566,8 +540,9 @@ impl App {
         let Some(profile) = profile else { return };
         let title = setup_title(&profile.name(), matches!(target, SetupTarget::Session(_)));
         let layout = Layout::from_value(profile.get(LAYOUT_KEY).as_ref());
-        // Automatic auto-rainbow follows the session background's brightness (`PSV:654-662`).
-        let dark_background = is_dark(crate::palette::Palette::from_profile(profile, self.dark()).bg);
+        // Automatic auto-rainbow follows the window's appearance (`PSV:654-662`; review
+        // fix: the same source the bar itself uses, rather than the session background's).
+        let dark_background = self.dark();
         let saved = self.status_layout_value(&target);
         let profiles: Vec<(String, String)> = self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let Some(g) = self.gpu.as_ref() else { return };
@@ -631,6 +606,7 @@ fn setup_title(profile: &str, session_copy: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use statusbar::SPACER_WIDTH_KEY;
 
     #[test]
     fn the_setup_window_names_its_profile() {
@@ -671,6 +647,20 @@ mod tests {
         assert_eq!(hsb(0.0, 1.0, 1.0), crate::palette::rgb(255, 0, 0));
         assert_eq!(hsb(1.0 / 3.0, 1.0, 1.0), crate::palette::rgb(0, 255, 0));
         assert_eq!(hsb(0.5, 0.0, 0.5), crate::palette::rgb(128, 128, 128));
-        assert!(is_dark(scene::STATUS_BAR_BG));
+    }
+
+    /// The hit test (review fix) is bounded per item, not tiled across the whole bar like
+    /// `bands`: empty bar space past the last component hits nothing, so a right-click
+    /// there offers only Configure Status Bar and Disable Status Bar (`m9g-checklist.md`
+    /// #17). The pure geometry is `statusbar_layout::hit_index`'s own test; this just
+    /// checks `Placement::hit` delegates to it rather than to `bands`.
+    #[test]
+    fn bar_hit_test_leaves_empty_space_unhit() {
+        let c = component(SPACER_CLASS, &[(SPACER_WIDTH_KEY, toml::Value::Float(20.0))]);
+        let item = Piece::Spacer.item(&c, Algorithm::Stable, 0.0);
+        let placed = vec![sbl::Placed { index: 0, x: 6.0, width: 20.0 }];
+        let placement = Placement { layout: Layout::default(), shown: Vec::new(), items: vec![item], placed, width_pt: 200.0 };
+        assert_eq!(placement.hit(10.0), Some(0));
+        assert_eq!(placement.hit(150.0), None, "empty bar space, unlike bands, which would have hit the last item");
     }
 }
