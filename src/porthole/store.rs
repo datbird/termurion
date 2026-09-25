@@ -32,6 +32,25 @@ pub struct Porthole {
     pub rows: u32,
     /// The rows it replaced, put back on close.
     pub saved: Vec<Row<Cell>>,
+    /// Its rows were counted with the window's fonts (not the terminal's estimate).
+    pub sized: bool,
+}
+
+/// Rows a laid-out document needs: its height, the margins, and the control strip.
+pub fn rows_needed(height: f32, cell_h: f32) -> u32 {
+    ((height + 2.0 * crate::scene::PORTHOLE_MARGIN + cell_h) / cell_h.max(1.0)).ceil().max(1.0) as u32
+}
+
+/// The rows a document needs, measured as if every face were the terminal's font (the
+/// window measures again with its fonts when it first draws the porthole).
+pub fn estimate_rows(p: &Porthole, palette: &crate::palette::Palette, dark: bool, cols: usize, cell: (f32, f32)) -> u32 {
+    use super::render::{self, Face};
+    use unicode_width::UnicodeWidthStr;
+    let lang = p.detected.language.clone().unwrap_or(detect::Language::Plain);
+    let doc = render::render(&p.text, &lang, palette, dark);
+    let measure = |t: &str, _: Face, s: f32| t.width() as f32 * cell.0 * s;
+    let width = (cols as f32 * cell.0 - 2.0 * crate::scene::PORTHOLE_MARGIN).max(cell.0);
+    rows_needed(render::layout(&doc, width, cell.1, &measure, p.wide).height, cell.1)
 }
 
 fn blank_rows(cols: usize, n: u32, id: u32) -> Vec<Row<Cell>> {
@@ -93,12 +112,20 @@ impl Screen {
         self.next_porthole += 1;
         let id = self.next_porthole;
         let detected = detect::detect(&text, source.hint.as_deref(), source.filename.as_deref());
-        let mut p = Porthole { id, text, detected, filename: source.filename, base_dir: self.shell.cwd.clone(), wide: source.wide, rows: 0, saved: Vec::new() };
+        let mut p = Porthole { id, text, detected, filename: source.filename, base_dir: self.shell.cwd.clone(), wide: source.wide, rows: 0, saved: Vec::new(), sized: false };
         p.rows = rows_for(&p).max(1);
         let rows = blank_rows(self.term.columns(), p.rows, id);
         p.saved = self.splice_rows(first, last, rows);
         self.portholes.insert(id, p);
         Some(id)
+    }
+
+    /// `render_range` with the terminal's own estimate of the rows (output-made portholes).
+    pub fn render_range_estimated(&mut self, first: i32, last: i32, source: Source) -> Option<u32> {
+        let (palette, dark, cols) = (self.palette.clone(), self.is_dark(), self.term.columns());
+        let (cw, ch) = self.cell_px();
+        let cell = (cw.max(1) as f32, ch.max(1) as f32);
+        self.render_range(first, last, source, &|p| estimate_rows(p, &palette, dark, cols, cell))
     }
 
     /// The grid lines a porthole stands on.

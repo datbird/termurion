@@ -14,6 +14,12 @@ pub struct FileArgs {
     pub height: Dim,
     pub keep_aspect: bool,
     pub inline: bool,
+    /// `type`: a MIME type, `.ext`, or a language name.
+    pub kind: Option<String>,
+    /// `mode=wide`: a text document shows in Wide mode.
+    pub wide: bool,
+    /// A `name` was given.
+    pub named: bool,
 }
 
 /// A file the terminal was sent to save, waiting for the person to allow it.
@@ -30,9 +36,20 @@ pub struct Multipart {
     pub data: String,
 }
 
+/// iTerm2's guess at whether an inline file is a picture: no type means a picture unless the
+/// name has a known text ending; `.ext` with known languages, a language's name, and every
+/// other type that is not `image/` or `video/` mean text.
+pub fn smells_like_image(kind: Option<&str>, filename: Option<&str>) -> bool {
+    use crate::porthole::detect;
+    match kind {
+        None => filename.is_none_or(|f| detect::for_path(f).is_empty()),
+        Some(k) => k.starts_with("image/") || k.starts_with("video/"),
+    }
+}
+
 pub fn parse_args(s: &str) -> FileArgs {
     use base64::Engine;
-    let mut a = FileArgs { name: "Unnamed file".into(), size: None, width: Dim::Auto, height: Dim::Auto, keep_aspect: true, inline: false };
+    let mut a = FileArgs { name: "Unnamed file".into(), size: None, width: Dim::Auto, height: Dim::Auto, keep_aspect: true, inline: false, kind: None, wide: false, named: false };
     let dim = |v: &str| {
         let n = |t: &str| t.parse::<u32>().ok();
         if let Some(p) = v.strip_suffix("px") {
@@ -49,6 +66,7 @@ pub fn parse_args(s: &str) -> FileArgs {
             "name" => {
                 if let Ok(b) = base64::engine::general_purpose::STANDARD.decode(v.trim()) {
                     a.name = String::from_utf8_lossy(&b).into_owned();
+                    a.named = true;
                 }
             }
             "size" => a.size = v.parse().ok(),
@@ -56,6 +74,8 @@ pub fn parse_args(s: &str) -> FileArgs {
             "height" => a.height = dim(v),
             "preserveAspectRatio" => a.keep_aspect = v != "0",
             "inline" => a.inline = v == "1",
+            "type" => a.kind = Some(v.to_string()),
+            "mode" => a.wide = v == "wide",
             _ => {}
         }
     }
@@ -148,13 +168,58 @@ impl Screen {
             }
             return;
         }
-        let d = bytes.and_then(|b| images::decode(&b).ok()).unwrap_or_else(images::broken);
+        // Text (a type or name that says so, or a picture that does not decode but reads as
+        // UTF-8) shows rendered in place.
+        let text = bytes.as_deref().and_then(|b| std::str::from_utf8(b).ok()).map(str::to_string);
+        let name = args.named.then(|| args.name.clone());
+        if let (false, Some(t)) = (smells_like_image(args.kind.as_deref(), name.as_deref()), text.as_deref()) {
+            return self.write_text_document(t, &args);
+        }
+        let d = match bytes.as_deref().map(images::decode) {
+            Some(Ok(d)) => d,
+            _ => match text.as_deref() {
+                Some(t) => return self.write_text_document(t, &args),
+                None => images::broken(),
+            },
+        };
         let (cw, ch) = self.cell_px();
         let grid = (self.term().columns(), self.term().screen_lines());
         let col = self.term().grid().cursor.point.column.0;
         let (cols, rows) = images::size_in_cells((d.width, d.height), args.width, args.height, args.keep_aspect, (cw as f32, ch as f32), grid, col);
         let image = Image { width_px: d.width, height_px: d.height, cols, rows, frames: d.frames, broken: d.broken, keep_aspect: args.keep_aspect, uid: 0 };
         self.place_image(image, true);
+    }
+
+    /// iTerm2's text document: the lines are printed from the start of a line, then those
+    /// rows become a porthole.
+    fn write_text_document(&mut self, text: &str, args: &FileArgs) {
+        use alacritty_terminal::vte::ansi::Handler;
+        let feed = |s: &mut Self, start: &mut i32| {
+            let before = s.term.grid().cursor.point.line.0;
+            s.term.linefeed();
+            s.term.carriage_return();
+            if s.term.grid().cursor.point.line.0 == before {
+                *start -= 1;
+            }
+        };
+        let mut start = self.term.grid().cursor.point.line.0;
+        if self.term.grid().cursor.point.column.0 > 0 {
+            feed(self, &mut start);
+            start = self.term.grid().cursor.point.line.0;
+        }
+        for line in text.split('\n') {
+            for ch in line.trim_end_matches('\r').chars() {
+                match ch {
+                    '\t' => self.term.put_tab(1),
+                    c if (c as u32) < 0x20 || c == '\u{7f}' => {}
+                    c => self.term.input(c),
+                }
+            }
+            feed(self, &mut start);
+        }
+        let last = self.term.grid().cursor.point.line.0 - 1;
+        let source = crate::porthole::store::Source { hint: args.kind.clone(), filename: args.named.then(|| args.name.clone()), wide: args.wide || self.porthole_wide_default };
+        self.render_range_estimated(start, last, source);
     }
 }
 
@@ -176,7 +241,7 @@ mod tests {
         let a = parse_args("name=aGkudHh0;size=3;width=10px;height=50%;preserveAspectRatio=0;inline=1");
         assert_eq!(
             a,
-            FileArgs { name: "hi.txt".into(), size: Some(3), width: Dim::Pixels(10), height: Dim::Percent(50), keep_aspect: false, inline: true }
+            FileArgs { name: "hi.txt".into(), size: Some(3), width: Dim::Pixels(10), height: Dim::Percent(50), keep_aspect: false, inline: true, kind: None, wide: false, named: true }
         );
         let d = parse_args("");
         assert_eq!((d.name.as_str(), d.width, d.keep_aspect, d.inline), ("Unnamed file", Dim::Auto, true, false));

@@ -10,7 +10,7 @@ use alacritty_terminal::index::Line;
 use super::*;
 use crate::porthole::detect::Language;
 use crate::porthole::render::{self, Face, Layout};
-use crate::porthole::store::{Porthole, Source};
+use crate::porthole::store::{rows_needed, Porthole, Source};
 use crate::render::Renderer;
 use crate::scene::PORTHOLE_MARGIN;
 
@@ -33,10 +33,6 @@ fn lay(renderer: &mut Renderer, p: &Porthole, palette: &crate::palette::Palette,
     render::layout(&doc, width, cell_h, &measure, p.wide)
 }
 
-/// Rows a layout needs: its height, the margins, and the control strip.
-pub(super) fn rows_needed(height: f32, cell_h: f32) -> u32 {
-    ((height + 2.0 * PORTHOLE_MARGIN + cell_h) / cell_h.max(1.0)).ceil().max(1.0) as u32
-}
 
 /// The width a pane's portholes lay out at.
 fn text_width(cols: usize, cell_w: f32) -> f32 {
@@ -57,8 +53,38 @@ impl App {
         let renderer = RefCell::new(&mut gpu.renderer);
         let rows_for = |ph: &Porthole| rows_needed(lay(&mut renderer.borrow_mut(), ph, &palette, dark, width, cell.1).height, cell.1);
         let id = screen.render_range(first, last, source, &rows_for);
+        if let Some(ph) = id.and_then(|i| screen.portholes.get_mut(&i)) {
+            ph.sized = true;
+        }
         self.redraw();
         id
+    }
+
+    /// Edit > Replace Selection > Render Selection Natively: the selection's whole rows.
+    pub(super) fn render_selection(&mut self) {
+        let beep = || unsafe {
+            windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
+        };
+        let dragging = matches!(self.drag, Drag::Select { .. });
+        let wide = self.globals.bool("defaultWideMode");
+        let Some(id) = self.focused_id() else { return beep() };
+        let Some(p) = self.panes.get_mut(&id) else { return beep() };
+        // A Filter or Zoom view is a copy: nothing there to replace.
+        if p.live.is_some() {
+            return beep();
+        }
+        let term = p.screen.term();
+        let Some(r) = term.selection.as_ref().and_then(|s| s.to_range(term)) else { return beep() };
+        let (first, last) = crate::porthole::selection_rows((r.start.line.0, r.start.column.0), (r.end.line.0, r.end.column.0));
+        let g = term.grid();
+        let overlaps = (first..=last).any(|l| g[Line(l)].porthole() != 0);
+        if !crate::porthole::selection_can_render(1, dragging, overlaps) {
+            return beep();
+        }
+        p.screen.term_mut().selection = None;
+        if self.make_porthole(id, first, last, Source { hint: None, filename: None, wide }).is_none() {
+            beep();
+        }
     }
 
     fn porthole_key(&self, s: &crate::screen::Screen, p: &Porthole) -> (u32, u32, bool, String, bool) {
@@ -73,6 +99,7 @@ impl App {
         let Some(tab) = self.tabs.get(self.active) else { return };
         let ids: Vec<PaneId> = self.visible(tab).into_iter().map(|(id, _)| id).collect();
         let mut keep: HashSet<(PaneId, u32)> = HashSet::new();
+        let mut resize: Vec<(PaneId, u32, u32)> = Vec::new();
         for pane in ids {
             let Some(p) = self.panes.get(&pane) else { continue };
             let s = &p.screen;
@@ -84,8 +111,20 @@ impl App {
                 }
                 let Some(gpu) = self.gpu.as_mut() else { return };
                 let layout = lay(&mut gpu.renderer, ph, &s.palette, s.is_dark(), text_width(s.term().columns(), cell.0), cell.1);
+                // The terminal estimated this one's rows; the window's fonts decide once.
+                if !ph.sized {
+                    resize.push((pane, *pid, rows_needed(layout.height, cell.1)));
+                }
                 let scroll_x = self.porthole_views.get(&(pane, *pid)).map_or(0.0, |v| v.scroll_x);
                 self.porthole_views.insert((pane, *pid), PView { layout, key, scroll_x });
+            }
+        }
+        for (pane, pid, rows) in resize {
+            if let Some(s) = self.panes.get_mut(&pane).map(|p| &mut p.screen) {
+                s.set_porthole_rows(pid, rows);
+                if let Some(ph) = s.portholes.get_mut(&pid) {
+                    ph.sized = true;
+                }
             }
         }
         self.porthole_views.retain(|k, _| keep.contains(k) || self.panes.get(&k.0).is_some_and(|p| p.screen.portholes.contains_key(&k.1)));

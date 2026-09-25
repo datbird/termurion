@@ -24,6 +24,7 @@ impl App {
     pub(super) fn sync_output_policy(&mut self) {
         let trusted = !self.globals.bool("disablePotentiallyInsecureEscapeSequences");
         let chosen = self.globals.values.contains_key("AllowClipboardAccess");
+        let wide = self.globals.bool("defaultWideMode");
         let allowed = self.globals.bool("AllowClipboardAccess");
         let advertise = clipboard_osc::advertise_52(
             self.globals.bool("AllowClipboardAccess"),
@@ -33,6 +34,7 @@ impl App {
         for p in self.panes.values_mut() {
             let s = p.own_mut();
             s.trusted = trusted;
+            s.porthole_wide_default = wide;
             s.clipboard_allowed = allowed;
             s.set_clipboard_advertised(advertise);
         }

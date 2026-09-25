@@ -609,8 +609,16 @@ impl Screen {
                         }
                         (Some(id), Some("end")) => {
                             // A block that never started is not ended.
-                            if self.blocks.by_id.contains_key(id) {
+                            if let Some(n) = self.blocks.by_id.get(id).copied() {
                                 self.term.block = self.blocks.end(id);
+                                // render=1: the block's rows, through the cursor's, show rendered.
+                                if crate::blocks::get(&args, "render") == Some("1") && !alt {
+                                    if let Some((first, last)) = self.block_rows(id) {
+                                        let last = last.max(self.term.grid().cursor.point.line.0);
+                                        let source = crate::porthole::store::Source { hint: self.blocks.types.get(&n).cloned(), filename: None, wide: self.porthole_wide_default };
+                                        self.render_range_estimated(first, last, source);
+                                    }
+                                }
                             }
                         }
                         _ => {}

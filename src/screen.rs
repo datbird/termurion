@@ -179,6 +179,8 @@ pub struct Screen {
     /// Portholes by id, and the last id given.
     pub portholes: std::collections::HashMap<u32, crate::porthole::store::Porthole>,
     pub(crate) next_porthole: u32,
+    /// The global defaultWideMode: portholes start in Wide mode.
+    pub porthole_wide_default: bool,
     /// OSC 21337: what the pane's program says it is doing.
     pub tab_status: crate::tabstatus::Status,
     /// The program's `Env=report=all` environment, kept for the SSH integration.
@@ -288,6 +290,7 @@ impl Screen {
             buttons: crate::blocks::Buttons::default(),
             portholes: std::collections::HashMap::new(),
             next_porthole: 0,
+            porthole_wide_default: false,
             env: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),

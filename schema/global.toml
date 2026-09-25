@@ -307,6 +307,15 @@ default = false
 help = "Ignores escape sequences that can change settings, reach the clipboard, save files, or report window and screen details (iTerm2's trust gate)."
 
 [[setting]]
+key = "defaultWideMode"
+tab = "Advanced"
+section = "General"
+label = "Rendered documents start in Wide mode"
+type = "bool"
+default = false
+help = "Documents shown rendered in place (Render Selection Natively, OSC 1337 Block render=1, File= text) start without wrapping, scrolled sideways."
+
+[[setting]]
 key = "screenshotSaveLocation"
 tab = "Advanced"
 section = "General"
