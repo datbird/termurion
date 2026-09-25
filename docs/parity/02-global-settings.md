@@ -166,9 +166,9 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Automatically bury the tmux client session after connecting | AutoHideTmuxClientSession | Hides the raw tmux control-mode session window once the native integration takes over. | missing |  |
 | Use "tmux" profile rather than profile of the connecting session | UseTmuxProfile | Applies a dedicated profile named "tmux" to tmux panes instead of inheriting the profile used to connect. | have | Milestone 8b: stored as TmuxUsesDedicatedProfile (default on); the "tmux" profile is made from the default one with 1000 lines of scrollback. |
 | Status bar shows tmux status bar content, not native components | UseTmuxStatusBar | Renders the remote tmux status-bar content in iTerm2's status bar instead of iTerm2's own status bar components. | missing | Tandem has no status bar yet. |
-| Pause a tmux pane if it would take more than this many seconds to catch up | TmuxPauseModeAgeLimit | Threshold, in seconds of buffered output, before a lagging tmux pane is auto-paused. | missing |  |
-| Unpause automatically | TmuxUnpauseAutomatically | Automatically resumes a paused tmux pane instead of requiring a manual action. | missing |  |
-| Warn before pausing | TmuxWarnBeforePausing | Shows a warning dialog before automatically pausing a lagging tmux pane. | missing |  |
+| Pause a tmux pane if it would take more than this many seconds to catch up | TmuxPauseModeAgeLimit | Threshold, in seconds of buffered output, before a lagging tmux pane is auto-paused. | have | Milestone 8d: sent as refresh-client -fpause-after=N (at least 1); a change is sent again. |
+| Unpause automatically | TmuxUnpauseAutomatically | Automatically resumes a paused tmux pane instead of requiring a manual action. | have | Milestone 8d: a pane tmux paused unpauses after one second, with no bar. |
+| Warn before pausing | TmuxWarnBeforePausing | Shows a warning dialog before automatically pausing a lagging tmux pane. | have | Milestone 8d: "This session will pause in about N seconds because it is buffering too much data." [Pause Settings]. |
 | Mirror tmux paste buffer to local clipboard | TmuxSyncClipboard | Keeps the tmux paste buffer and the local system clipboard in sync. | missing |  |
 | Ask Each Time (send clipboard contents to tmux) | PhonyAllowSendingClipboardContents | Policy for whether the local clipboard contents may be sent up to the remote tmux server. | missing |  |
 
@@ -982,7 +982,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | noSyncSuppressBadPWDInArrangementWarning | noSyncSuppressBadPWDInArrangementWarning (bool, default NO) | Suppress the notification that a saved arrangement has a bad initial working directory. | missing |  |
 | noSyncNeverAskAboutMouseReportingFrustration | noSyncNeverAskAboutMouseReportingFrustration (bool, default NO) | Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Cmd-C when mouse reporting is on? | missing |  |
 | noSyncNeverAskAboutDEC2048Frustration | noSyncNeverAskAboutDEC2048Frustration (bool, default NO) | Suppress the notification asking if you want to disable resize reporting. | missing |  |
-| noSyncDontWarnAboutTmuxPause | noSyncDontWarnAboutTmuxPause (bool, default NO) | Suppress announcement that tmux will pause a session. | missing |  |
+| noSyncDontWarnAboutTmuxPause | noSyncDontWarnAboutTmuxPause (bool, default NO) | Suppress announcement that tmux will pause a session. | have | Milestone 8d: on, the pause warning bar never shows. |
 | noSyncClearAllBroadcast | noSyncClearAllBroadcast (bool?, default nil) | Send Clear Session to all broadcasted-to sessions? | partial | Milestone 7f: read when set (true clears all, false only the current session); nothing sets it yet, as the question has no Remember box. |
 | noSyncSuppressSendSignal | noSyncSuppressSendSignal (bool, default NO) | Suppress warning about sending a signal to terminate a job. | missing |  |
 | noSyncConfirmRemoveAnnotation | noSyncConfirmRemoveAnnotation (bool, default NO) | Suppress confirmation to remove annotation? | missing |  |

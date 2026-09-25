@@ -66,7 +66,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > tmux > Force Detach | no shortcut | Forcibly detaches from tmux even if the gateway is unresponsive. (milestone 8) | have |
 | Shell > tmux > New Tmux Window | Ctrl+Cmd+N | Creates a new window inside the attached tmux session. (milestone 8) | have |
 | Shell > tmux > New Tmux Tab | Ctrl+Cmd+T | Creates a new tab or pane inside the attached tmux session. (milestone 8) | have |
-| Shell > tmux > Pause Pane | Ctrl+Cmd+P | Pauses output updates for a tmux pane to save bandwidth. (milestone 8) | missing |
+| Shell > tmux > Pause Pane | Ctrl+Cmd+P | Pauses output updates for a tmux pane to save bandwidth. (milestone 8) | have |
 | Shell > tmux > Dashboard | no shortcut | Opens a dashboard listing all attached tmux sessions and windows. (milestone 8) | missing |
 | Shell > ssh > Disconnect | no shortcut | Disconnects the built in SSH integration session. | missing, the SSH integration milestone |
 | Shell > ssh > Download Files... | no shortcut | Downloads files from the remote host over the SSH integration channel. | missing, the SSH integration milestone |
@@ -425,7 +425,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | tmux integration | tmux status bar passthrough | Mirrors tmux's own status line content into iTerm2 when tmux driven status text changes. | missing | |
 | tmux integration | tmux option monitor | Watches tmux global/session/window options, for example pane-border-status, and reacts live. | missing | |
 | tmux integration | Copy mode bridging | Lets iTerm2 exit/enter tmux copy mode and reconcile it with native scrollback/selection. | missing | |
-| tmux integration | Pane pause/buffer management | Pauses/unpauses individual tmux panes and monitors buffer size to avoid unbounded growth while paused. | missing | |
+| tmux integration | Pane pause/buffer management | Pauses/unpauses individual tmux panes and monitors buffer size to avoid unbounded growth while paused. | have | Milestone 8d: pause mode on tmux 3.2+: refresh-client -fpause-after, the %extended-output latency monitor with iTerm2's fit, red zone, and hysteresis, the warning and paused bars, automatic unpause, and unpause by recapture. |
 | tmux integration | Break pane out to window/tab | Moves a tmux pane into its own new window or tab, or docks it next to a sibling, both directions. | missing | |
 | tmux integration | Window/pane hotkeys | Lets a tmux pane carry its own quick-access hotkey binding independent of the main app hotkey window. | missing | |
 | tmux integration | Tab color from tmux | Reads/writes a tmux pane's associated tab color string so tab coloring matches tmux state. | missing | |
