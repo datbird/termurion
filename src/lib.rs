@@ -45,6 +45,7 @@ pub mod bell;
 pub mod trigger_eval;
 pub mod trigger_events;
 pub mod proctree;
+pub mod jobtitle;
 pub mod profile;
 pub mod prompted;
 pub mod schema;

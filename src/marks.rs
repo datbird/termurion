@@ -92,6 +92,9 @@ pub struct Shell {
     pub version: Option<u32>,
     /// SetUserVar values, by name (iTerm2's `user.<name>` variables).
     pub vars: BTreeMap<String, String>,
+    /// The foreground job and its ancestors (lowercased, deepest first), from the window.
+    pub job: Option<crate::proctree::Job>,
+    pub job_ancestors: Vec<String>,
     pub history: Vec<CommandRecord>,
 }
 

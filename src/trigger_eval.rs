@@ -337,6 +337,11 @@ impl Screen {
             "session.hostname" => self.shell.host.clone(),
             "session.username" => self.shell.user.clone(),
             "session.path" => self.shell.cwd.clone(),
+            "session.jobName" => self.shell.job.as_ref().map(|j| j.name.clone()),
+            "session.processTitle" => self.shell.job.as_ref().map(|j| j.title.clone()),
+            "session.commandLine" => self.shell.job.as_ref().map(|j| j.cmdline.clone()),
+            "session.jobPid" => self.shell.job.as_ref().map(|j| j.pid.to_string()),
+            "session.foregroundJobAncestors" => Some(self.shell.job_ancestors.join("\n")),
             "line" => Some(row.to_string()),
             n => n.strip_prefix("user.").and_then(|u| self.shell.vars.get(u).cloned()).or_else(|| self.app_vars.get(n).cloned()),
         }

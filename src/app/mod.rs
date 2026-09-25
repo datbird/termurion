@@ -1498,13 +1498,7 @@ impl App {
 
     fn render(&mut self) {
         let frame = self.build_frame();
-        let title = self
-            .tabs
-            .get(self.active)
-            .and_then(|t| self.panes.get(&t.focused))
-            .and_then(|p| p.own().title())
-            .unwrap_or("Tandem")
-            .to_string();
+        let title = self.tabs.get(self.active).map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused));
         // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         let Some(gpu) = self.gpu.as_mut() else { return };

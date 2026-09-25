@@ -316,6 +316,18 @@ impl App {
         if let Some(u) = &s.shell.user {
             v.session.insert("username", u.clone());
         }
+        if let Some(j) = &s.shell.job {
+            v.session.insert("jobName", j.name.clone());
+            v.session.insert("deepestJob", j.name.clone());
+            v.session.insert("processTitle", j.title.clone());
+            v.session.insert("commandLine", j.cmdline.clone());
+            v.session.insert("jobPid", j.pid.to_string());
+        }
+        v.session.insert("foregroundJobAncestors", s.shell.job_ancestors.join("\n"));
+        if let Some(pid) = p.shell_pid() {
+            v.session.insert("pid", pid.to_string());
+            v.session.insert("effective_root_pid", pid.to_string());
+        }
         if let Some(c) = s.shell.history.last() {
             v.session.insert("lastCommand", c.command.clone());
         }

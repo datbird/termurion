@@ -242,6 +242,12 @@ impl Screen {
         self.triggers.list.iter().any(|c| c.trigger.enabled && timed.contains(&c.trigger.match_type))
     }
 
+    /// The window saw the foreground job change.
+    pub fn set_job(&mut self, job: Option<crate::proctree::Job>, ancestors: Vec<String>) {
+        self.shell.job = job;
+        self.shell.job_ancestors = ancestors;
+    }
+
     /// A user variable set (SetUserVar, a trigger): Variable Changed when its value changed.
     pub(crate) fn set_user_var(&mut self, name: &str, value: String) {
         let changed = self.shell.vars.get(name) != Some(&value);
@@ -409,5 +415,17 @@ mod tests {
         s.set_triggers(vec![event(EventKind::Idle, "x", &[("timeout", toml::Value::Float(-1.0))]), event(EventKind::LongRunningCommand, "y", &[("threshold", toml::Value::Float(f64::NAN))])], TriggerPrefs::default());
         s.feed(b"x");
         s.check_event_timers(std::time::Instant::now() + std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn job_variables_interpolate() {
+        let mut s = Screen::new(40, 4);
+        let job = crate::proctree::Job { name: "vim".into(), title: "vim".into(), cmdline: "vim a.txt".into(), pid: 42 };
+        s.set_job(Some(job), vec!["vim".into(), "cmd".into()]);
+        assert_eq!(s.trigger_var("session.jobName", 0).as_deref(), Some("vim"));
+        assert_eq!(s.trigger_var("session.commandLine", 0).as_deref(), Some("vim a.txt"));
+        assert_eq!(s.trigger_var("session.jobPid", 0).as_deref(), Some("42"));
+        assert_eq!(s.trigger_var("session.processTitle", 0).as_deref(), Some("vim"));
+        assert_eq!(s.trigger_var("session.foregroundJobAncestors", 0).as_deref(), Some("vim\ncmd"));
     }
 }
