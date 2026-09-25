@@ -269,6 +269,9 @@ pub struct Term<T> {
     /// Terminal focus controlling the cursor shape.
     pub is_focused: bool,
 
+    /// Tandem patch: the time written rows are stamped with (Unix seconds).
+    pub stamp: u32,
+
     /// Cursor for keyboard selection.
     pub vi_mode_cursor: ViModeCursor,
 
@@ -423,6 +426,7 @@ impl<T> Term<T> {
         let damage = TermDamageState::new(num_cols, num_lines);
 
         Term {
+            stamp: 0,
             inactive_grid,
             scroll_region,
             event_proxy,
@@ -997,6 +1001,10 @@ impl<T> Term<T> {
         let bg = self.grid.cursor.template.bg;
         let flags = self.grid.cursor.template.flags;
         let extra = self.grid.cursor.template.extra.clone();
+
+        // Tandem patch: the row remembers when it was last written.
+        let line = self.grid.cursor.point.line;
+        self.grid[line].time = self.stamp;
 
         let mut cursor_cell = self.grid.cursor_cell();
 

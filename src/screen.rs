@@ -4,7 +4,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Row};
+use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, Processor};
@@ -90,6 +91,8 @@ pub struct Screen {
     /// Output comes through ConPTY, whose own screen must match this one, so the terminal
     /// never moves the cursor on its own (no fresh line for a prompt).
     pub pty_backed: bool,
+    /// A fixed clock for row stamps (tests); None uses the time.
+    clock: Option<u32>,
 }
 
 impl Screen {
@@ -112,6 +115,7 @@ impl Screen {
             shell: crate::marks::Shell::default(),
             place_prompt_first_column: true,
             pty_backed: false,
+            clock: None,
         }
     }
 
@@ -165,7 +169,61 @@ impl Screen {
         reply
     }
 
+    /// Fixes the clock that stamps written rows (seconds), for tests; None uses the time.
+    pub fn set_clock(&mut self, secs: Option<u32>) {
+        self.clock = secs;
+    }
+
+    /// When a row (grid line) was last written, in Unix seconds; 0 for never.
+    pub fn row_time(&self, line: i32) -> u32 {
+        let grid = self.term.grid();
+        if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
+            return 0;
+        }
+        grid[Line(line)].time()
+    }
+
+    /// Replaces the main screen's rows `first..=last` (grid lines) with `with`, returning
+    /// the removed rows, top first. Rows above slide down when fewer come back.
+    pub fn splice_rows(&mut self, first: i32, last: i32, with: Vec<Row<Cell>>) -> Vec<Row<Cell>> {
+        self.term.selection = None;
+        self.term.primary_grid_mut().splice(Line(first), Line(last), with)
+    }
+
+    /// Rows holding `lines` as plain text, one row per line, cut at the width.
+    pub fn text_rows(&self, lines: &[String]) -> Vec<Row<Cell>> {
+        use alacritty_terminal::term::cell::Flags;
+        use unicode_width::UnicodeWidthChar;
+        let cols = self.term.columns();
+        lines
+            .iter()
+            .map(|l| {
+                let mut row: Row<Cell> = Row::new(cols);
+                let mut c = 0;
+                for ch in l.chars() {
+                    let w = ch.width().unwrap_or(0);
+                    if w == 0 || c + w > cols {
+                        if c + w > cols {
+                            break;
+                        }
+                        continue;
+                    }
+                    row[Column(c)].c = ch;
+                    if w == 2 {
+                        row[Column(c)].flags.insert(Flags::WIDE_CHAR);
+                        row[Column(c + 1)].flags.insert(Flags::WIDE_CHAR_SPACER);
+                    }
+                    c += w;
+                }
+                row
+            })
+            .collect()
+    }
+
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.term.stamp = self.clock.unwrap_or_else(|| {
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
+        });
         self.parser.advance(&mut self.term, bytes);
         let mut reply = Vec::new();
         while let Ok(event) = self.events.try_recv() {
@@ -489,5 +547,59 @@ mod tests {
         s.feed(b"hello\r\nworld");
         let text = s.text();
         assert!(text.contains("hello") && text.contains("world"), "{text}");
+    }
+
+    #[test]
+    fn output_stamps_the_rows_it_writes() {
+        let mut s = Screen::new(20, 6);
+        s.set_clock(Some(100));
+        s.feed(b"a\r\nb");
+        s.set_clock(Some(200));
+        s.feed(b"\r\nc");
+        assert_eq!((s.row_time(0), s.row_time(1), s.row_time(2), s.row_time(3)), (100, 100, 200, 0));
+    }
+
+    #[test]
+    fn row_slots_survive_reflow() {
+        let mut s = Screen::new(20, 6);
+        s.set_clock(Some(100));
+        s.feed(b"0123456789012345678901234\r\n");
+        s.set_clock(Some(200));
+        s.feed(b"x");
+        // Every row by its text, oldest first.
+        let rows = |s: &Screen| {
+            let top = -(s.term().grid().history_size() as i32);
+            (top..6)
+                .map(|l| {
+                    let g = s.term().grid();
+                    let text: String = (0..g.columns()).map(|c| g[Line(l)][Column(c)].c).collect();
+                    (text.trim_end().to_string(), s.row_time(l))
+                })
+                .filter(|(t, _)| !t.is_empty())
+                .collect::<Vec<_>>()
+        };
+        s.resize(10, 6);
+        let t = |xs: &[(&str, u32)]| xs.iter().map(|(a, b)| (a.to_string(), *b)).collect::<Vec<_>>();
+        assert_eq!(rows(&s), t(&[("0123456789", 100), ("0123456789", 100), ("01234", 100), ("x", 200)]));
+        s.resize(30, 6);
+        assert_eq!(rows(&s), t(&[("0123456789012345678901234", 100), ("x", 200)]));
+    }
+
+    #[test]
+    fn splice_replaces_rows_and_keeps_the_cursor_row() {
+        let mut s = Screen::new(20, 6);
+        s.feed(b"l0\r\nl1\r\nl2\r\nl3\r\nl4\r\nprompt");
+        let cursor = s.term().grid().cursor.point.line.0;
+        let placeholder = s.text_rows(&["folded".to_string()]);
+        let removed = s.splice_rows(1, 3, placeholder);
+        assert_eq!(removed.len(), 3);
+        // Rows above slide down; with no history, blank rows fill in at the top.
+        assert_eq!(s.all_text().trim_start_matches('\n'), "l0\nfolded\nl4\nprompt\n");
+        assert_eq!(s.term().grid().cursor.point.line.0, cursor);
+        assert_eq!(s.line_text(cursor), "prompt");
+        let line = (0..6).find(|l| s.line_text(*l) == "folded").unwrap();
+        s.splice_rows(line, line, removed);
+        assert_eq!(s.all_text().trim_start_matches('\n'), "l0\nl1\nl2\nl3\nl4\nprompt\n");
+        assert_eq!(s.line_text(s.term().grid().cursor.point.line.0), "prompt");
     }
 }

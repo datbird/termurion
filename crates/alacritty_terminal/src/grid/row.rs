@@ -31,6 +31,18 @@ pub struct Row<T> {
     /// Tandem patch: a second mark id (manual marks), so a row can hold both kinds.
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) manual: u32,
+
+    /// Tandem patch: when the row was last written (Unix seconds, 0 for never).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) time: u32,
+
+    /// Tandem patch: the fold this row stands for (0 for none).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) fold: u32,
+
+    /// Tandem patch: the annotation that starts on this row (0 for none).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub(crate) note: u32,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -61,7 +73,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0, mark: 0, manual: 0 }
+        Row { inner, occ: 0, mark: 0, manual: 0, time: 0, fold: 0, note: 0 }
     }
 
     /// Increase the number of columns in the row.
@@ -118,6 +130,9 @@ impl<T: Default> Row<T> {
         self.occ = 0;
         self.mark = 0;
         self.manual = 0;
+        self.time = 0;
+        self.fold = 0;
+        self.note = 0;
     }
 }
 
@@ -125,7 +140,7 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ, mark: 0, manual: 0 }
+        Row { inner: vec, occ, mark: 0, manual: 0, time: 0, fold: 0, note: 0 }
     }
 
     /// Tandem patch: the mark id on this row, 0 for none.
@@ -150,6 +165,51 @@ impl<T> Row<T> {
     #[inline]
     pub fn set_manual(&mut self, mark: u32) {
         self.manual = mark;
+    }
+
+    /// Tandem patch: when the row was last written.
+    #[inline]
+    pub fn time(&self) -> u32 {
+        self.time
+    }
+
+    #[inline]
+    pub fn set_time(&mut self, time: u32) {
+        self.time = time;
+    }
+
+    /// Tandem patch: the fold this row stands for.
+    #[inline]
+    pub fn fold(&self) -> u32 {
+        self.fold
+    }
+
+    #[inline]
+    pub fn set_fold(&mut self, fold: u32) {
+        self.fold = fold;
+    }
+
+    /// Tandem patch: the annotation that starts on this row.
+    #[inline]
+    pub fn note(&self) -> u32 {
+        self.note
+    }
+
+    #[inline]
+    pub fn set_note(&mut self, note: u32) {
+        self.note = note;
+    }
+
+    /// Tandem patch: a row merged into this one by reflow gives up its ids (where this
+    /// row has none) and its time (when later).
+    #[inline]
+    pub(crate) fn absorb_tags(&mut self, other: &Row<T>) {
+        for (mine, theirs) in [(&mut self.mark, other.mark), (&mut self.manual, other.manual), (&mut self.fold, other.fold), (&mut self.note, other.note)] {
+            if *mine == 0 {
+                *mine = theirs;
+            }
+        }
+        self.time = self.time.max(other.time);
     }
 
     #[inline]

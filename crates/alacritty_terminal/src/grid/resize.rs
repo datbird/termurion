@@ -113,6 +113,33 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.display_offset = min(self.display_offset, self.history_size());
     }
 
+    /// Tandem patch: replaces rows `first..=last` with `with` (top first) and returns the
+    /// removed rows, top first. Rows above slide down (pulled from history) when fewer
+    /// come back, and up into history when more come back; a cursor below the range keeps
+    /// its row, and one above it moves with its row.
+    pub fn splice(&mut self, first: Line, last: Line, with: Vec<Row<T>>) -> Vec<Row<T>> {
+        let (lines, columns) = (self.lines, self.columns);
+        // Raw storage is bottom first: the bottom screen row is index 0.
+        let mut rows = self.raw.take_all();
+        let top = rows.len() as i64 - 1;
+        let index = |l: Line| (lines as i64 - 1 - l.0 as i64).clamp(0, top) as usize;
+        let (lo, hi) = (index(last), index(first));
+        let (taken, added) = (hi - lo + 1, with.len());
+        let mut removed: Vec<Row<T>> = rows.splice(lo..=hi, with.into_iter().rev()).collect();
+        removed.reverse();
+        if self.cursor.point.line < first {
+            let line = self.cursor.point.line.0 as i64 + taken as i64 - added as i64;
+            self.cursor.point.line = Line(line.clamp(0, lines as i64 - 1) as i32);
+        }
+        while rows.len() < lines {
+            rows.push(Row::new(columns));
+        }
+        rows.truncate(self.max_scroll_limit + lines);
+        self.raw.replace_inner(rows);
+        self.display_offset = min(self.display_offset, self.history_size());
+        removed
+    }
+
     /// Grow number of columns in each row, reflowing if necessary.
     fn grow_columns(&mut self, reflow: bool, columns: usize) {
         // Check if a row needs to be wrapped.
@@ -198,25 +225,15 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 let line_delta = self.cursor.point.line - target.line;
 
                 if line_delta != 0 && row.is_clear() {
-                    // Tandem patch: a mark on a merged-away continuation row moves up.
-                    if last_row.mark == 0 {
-                        last_row.mark = row.mark;
-                    }
-                    if last_row.manual == 0 {
-                        last_row.manual = row.manual;
-                    }
+                    // Tandem patch: a merged-away continuation row's ids and time move up.
+                    last_row.absorb_tags(&row);
                     continue;
                 }
 
                 cursor_line_delta += line_delta.0 as usize;
             } else if row.is_clear() {
-                // Tandem patch: a mark on a merged-away continuation row moves up.
-                if last_row.mark == 0 {
-                    last_row.mark = row.mark;
-                }
-                if last_row.manual == 0 {
-                    last_row.manual = row.manual;
-                }
+                // Tandem patch: a merged-away continuation row's ids and time move up.
+                last_row.absorb_tags(&row);
                 if i < self.display_offset {
                     // Since we removed a line, rotate down the viewport.
                     self.display_offset = self.display_offset.saturating_sub(1);
@@ -383,7 +400,10 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                     if occ < columns {
                         wrapped.resize_with(columns, T::default);
                     }
+                    // Tandem patch: the split-off part keeps the line's time.
+                    let time = new_raw.last().map_or(0, |r: &Row<T>| r.time);
                     row = Row::from_vec(wrapped, occ);
+                    row.time = time;
 
                     if i < self.display_offset {
                         // Since we added a new line, rotate up the viewport.
