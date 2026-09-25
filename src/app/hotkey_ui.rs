@@ -402,5 +402,42 @@ impl App {
         self.windows.parked().any(|(kk, s)| *kk == k && s.hotkey.as_ref().is_some_and(|h| !h.shown))
     }
 
-    fn app_hotkey_pressed(&mut self) {}
+    /// The app hotkey: Show/hide all windows. Windows has no "hide app", so the terminal
+    /// windows are minimized (and shown hotkey windows hidden), then restored.
+    fn app_hotkey_pressed(&mut self) {
+        let hotkeys = self.hotkey_windows();
+        let regular: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).filter(|w| !hotkeys.contains(w)).collect();
+        match hotkey::app_press(tandem_in_front(), regular.len()) {
+            hotkey::AppAct::HideAll => {
+                self.app_hidden.clear();
+                for w in regular {
+                    self.enter(w);
+                    if let Some(g) = &self.gpu {
+                        if !g.window.is_minimized().unwrap_or(false) {
+                            g.window.set_minimized(true);
+                            self.app_hidden.push(w);
+                        }
+                    }
+                }
+                for w in hotkeys {
+                    self.enter(w);
+                    self.roll_out(false);
+                }
+            }
+            hotkey::AppAct::ShowAll => {
+                let back = std::mem::take(&mut self.app_hidden);
+                for w in &back {
+                    if self.enter(*w) {
+                        if let Some(g) = &self.gpu {
+                            g.window.set_minimized(false);
+                        }
+                    }
+                }
+                if let Some(w) = self.last_window.filter(|w| regular.contains(w)).or_else(|| regular.last().copied()) {
+                    self.focus_terminal_window(w);
+                }
+            }
+            hotkey::AppAct::OpenWindow => self.pending_windows.push(NewWindow::Profile(None)),
+        }
+    }
 }

@@ -256,6 +256,8 @@ pub struct App {
     hotkeys_registered: bool,
     /// A Tandem window was in front at the last check (Reopen on activation).
     app_active: bool,
+    /// Windows the app hotkey minimized, to bring back on the next press.
+    app_hidden: Vec<WindowId>,
     host_welcome: Option<crate::host_client::Welcome>,
     shell: String,
     gpu: Option<Gpu>,
@@ -449,6 +451,7 @@ pub fn run() {
         hotkey_errors: Default::default(),
         hotkeys_registered: false,
         app_active: false,
+        app_hidden: Vec::new(),
         host_welcome,
         notify,
         jobs,

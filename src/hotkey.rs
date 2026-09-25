@@ -290,6 +290,24 @@ pub fn confirm_text(label: &str) -> (&'static str, String) {
     ("Confirm Shortcut", format!("Are you sure you want to use \u{201c}{label}\u{201d} as a hotkey? This looks like a commonly used keystroke."))
 }
 
+/// What the app hotkey (Show/hide all windows) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppAct {
+    HideAll,
+    ShowAll,
+    OpenWindow,
+}
+
+/// iTerm2's app hotkey: Tandem in front hides it; otherwise it comes forward, with a new
+/// window when it has none.
+pub fn app_press(active: bool, windows: usize) -> AppAct {
+    match (active, windows) {
+        (true, _) => AppAct::HideAll,
+        (false, 0) => AppAct::OpenWindow,
+        (false, _) => AppAct::ShowAll,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,6 +454,14 @@ mod tests {
         let (heading, text) = confirm_text("Alt+Space");
         assert_eq!(heading, "Confirm Shortcut");
         assert_eq!(text, "Are you sure you want to use \u{201c}Alt+Space\u{201d} as a hotkey? This looks like a commonly used keystroke.");
+    }
+
+    #[test]
+    fn app_hotkey_follows_iterm2() {
+        assert_eq!(app_press(true, 2), AppAct::HideAll);
+        assert_eq!(app_press(false, 2), AppAct::ShowAll);
+        assert_eq!(app_press(false, 0), AppAct::OpenWindow);
+        assert_eq!(app_press(true, 0), AppAct::HideAll, "in front with only a hotkey window up");
     }
 
     #[test]
