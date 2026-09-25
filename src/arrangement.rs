@@ -1,0 +1,212 @@
+//! Window arrangements in iTerm2's form: windows, tabs with a tree of "Splitter" and
+//! "SessionView" nodes (pixel frames, n-ary splitters), and sessions. Tandem's layouts are
+//! binary; `node` and `tree_of` convert.
+
+
+pub use toml::{Table, Value};
+
+use crate::layout::{Axis, Tree};
+
+/// iTerm2's frame dictionary.
+pub fn frame(x: f64, y: f64, w: f64, h: f64) -> Value {
+    let mut t = Table::new();
+    for (k, v) in [("x", x), ("y", y), ("width", w), ("height", h)] {
+        t.insert(k.into(), Value::Float(v));
+    }
+    Value::Table(t)
+}
+
+fn num(v: Option<&Value>) -> Option<f64> {
+    v.and_then(|x| x.as_float().or_else(|| x.as_integer().map(|i| i as f64)))
+}
+
+fn frame_size(v: &Value) -> (f64, f64) {
+    let f = v.get("frame");
+    (num(f.and_then(|f| f.get("width"))).unwrap_or(0.0), num(f.and_then(|f| f.get("height"))).unwrap_or(0.0))
+}
+
+/// The children of a run of same-axis splits, with their share of the whole.
+fn flatten<'a>(t: &'a Tree<Value>, axis: Axis, share: f64, out: &mut Vec<(&'a Tree<Value>, f64)>) {
+    match t {
+        Tree::Split { axis: a2, ratio, a, b } if *a2 == axis => {
+            flatten(a, axis, share * *ratio as f64, out);
+            flatten(b, axis, share * (1.0 - *ratio as f64), out);
+        }
+        other => out.push((other, share)),
+    }
+}
+
+fn node_at(t: &Tree<Value>, x: f64, y: f64, w: f64, h: f64) -> Value {
+    let mut out = Table::new();
+    match t {
+        Tree::Leaf(session) => {
+            out.insert("View Type".into(), Value::String("SessionView".into()));
+            out.insert("frame".into(), frame(x, y, w, h));
+            out.insert("Session".into(), session.clone());
+        }
+        Tree::Split { axis, .. } => {
+            let mut kids = Vec::new();
+            flatten(t, *axis, 1.0, &mut kids);
+            let vertical = *axis == Axis::Row;
+            let mut offset = 0.0;
+            let subviews = kids
+                .into_iter()
+                .map(|(k, share)| {
+                    let v = if vertical {
+                        let cw = (w * share).round();
+                        let n = node_at(k, offset, 0.0, cw, h);
+                        offset += cw;
+                        n
+                    } else {
+                        let ch = (h * share).round();
+                        let n = node_at(k, 0.0, offset, w, ch);
+                        offset += ch;
+                        n
+                    };
+                    v
+                })
+                .collect();
+            out.insert("View Type".into(), Value::String("Splitter".into()));
+            out.insert("isVertical".into(), Value::Boolean(vertical));
+            out.insert("frame".into(), frame(x, y, w, h));
+            out.insert("Subviews".into(), Value::Array(subviews));
+        }
+    }
+    Value::Table(out)
+}
+
+/// A tab's `Root`: iTerm2's node tree for a layout whose leaves are session tables, laid
+/// out in `w` by `h` pixels. Runs of same-axis splits become one n-ary splitter.
+pub fn node(t: &Tree<Value>, w: f64, h: f64) -> Value {
+    node_at(t, 0.0, 0.0, w, h)
+}
+
+/// The layout a `Root` describes: n-ary splitters become nested binary splits, each share
+/// from the subviews' frames. The leaves are the session tables.
+pub fn tree_of(v: &Value) -> Result<Tree<Value>, String> {
+    match v.get("View Type").and_then(|t| t.as_str()) {
+        Some("SessionView") => v.get("Session").cloned().map(Tree::Leaf).ok_or_else(|| "a pane in the arrangement has no session".to_string()),
+        Some("Splitter") => {
+            let vertical = v.get("isVertical").and_then(|b| b.as_bool()).unwrap_or(false);
+            let axis = if vertical { Axis::Row } else { Axis::Column };
+            let subs = v.get("Subviews").and_then(|s| s.as_array()).ok_or_else(|| "a split in the arrangement has no panes".to_string())?;
+            let mut kids: Vec<(Tree<Value>, f64)> = Vec::new();
+            for s in subs {
+                let (w, h) = frame_size(s);
+                kids.push((tree_of(s)?, if vertical { w } else { h }.max(1.0)));
+            }
+            fn join(mut kids: Vec<(Tree<Value>, f64)>, axis: Axis) -> Option<Tree<Value>> {
+                if kids.len() <= 1 {
+                    return kids.pop().map(|k| k.0);
+                }
+                let total: f64 = kids.iter().map(|k| k.1).sum();
+                let (first, size) = kids.remove(0);
+                let rest = join(kids, axis)?;
+                Some(Tree::Split { axis, ratio: (size / total) as f32, a: Box::new(first), b: Box::new(rest) })
+            }
+            join(kids, axis).ok_or_else(|| "a split in the arrangement has no panes".to_string())
+        }
+        _ => Err("not an arrangement pane or split".to_string()),
+    }
+}
+
+/// A session table: its size, its profile (the whole profile, as iTerm2 keeps it), its id,
+/// and its folder.
+pub fn session(cols: u16, rows: u16, profile: Table, guid: &str, cwd: Option<&str>) -> Value {
+    let mut t = Table::new();
+    t.insert("Columns".into(), Value::Integer(cols as i64));
+    t.insert("Rows".into(), Value::Integer(rows as i64));
+    t.insert("Bookmark".into(), Value::Table(profile));
+    t.insert("Session GUID".into(), Value::String(guid.into()));
+    if let Some(c) = cwd {
+        t.insert("Working Directory".into(), Value::String(c.into()));
+    }
+    Value::Table(t)
+}
+
+/// A session's profile: its Guid, its Name, and the whole table.
+pub fn profile_of(session: &Value) -> Option<(String, String, &Table)> {
+    let b = session.get("Bookmark")?.as_table()?;
+    let s = |k: &str| b.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    Some((s("Guid"), s("Name"), b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::{Axis, Tree};
+
+    fn s(name: &str) -> Value {
+        let mut t = Table::new();
+        t.insert("Name".into(), Value::String(name.into()));
+        Value::Table(t)
+    }
+
+    fn leaf_names(t: &Tree<Value>) -> Vec<String> {
+        match t {
+            Tree::Leaf(v) => vec![v.get("Name").and_then(|n| n.as_str()).unwrap_or("").to_string()],
+            Tree::Split { a, b, .. } => [leaf_names(a), leaf_names(b)].concat(),
+        }
+    }
+
+    #[test]
+    fn layouts_round_trip() {
+        let tree = Tree::Split {
+            axis: Axis::Row,
+            ratio: 0.3,
+            a: Box::new(Tree::Leaf(s("a"))),
+            b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(s("b"))), b: Box::new(Tree::Leaf(s("c"))) }),
+        };
+        let root = node(&tree, 1000.0, 600.0);
+        assert_eq!(root.get("View Type").and_then(|v| v.as_str()), Some("Splitter"));
+        assert_eq!(root.get("isVertical").and_then(|v| v.as_bool()), Some(true), "side by side is a vertical splitter");
+        let back = tree_of(&root).unwrap();
+        assert_eq!(leaf_names(&back), vec!["a", "b", "c"]);
+        let Tree::Split { axis, ratio, b, .. } = &back else { panic!("{back:?}") };
+        assert_eq!(*axis, Axis::Row);
+        assert!((ratio - 0.3).abs() < 0.01, "{ratio}");
+        assert!(matches!(**b, Tree::Split { axis: Axis::Column, .. }));
+    }
+
+    #[test]
+    fn n_ary_splitters_become_binary() {
+        let view = |name: &str, w: f64, h: f64| {
+            let mut t = Table::new();
+            t.insert("View Type".into(), Value::String("SessionView".into()));
+            t.insert("frame".into(), frame(0.0, 0.0, w, h));
+            t.insert("Session".into(), s(name));
+            Value::Table(t)
+        };
+        let mut inner = Table::new();
+        inner.insert("View Type".into(), Value::String("Splitter".into()));
+        inner.insert("isVertical".into(), Value::Boolean(false));
+        inner.insert("frame".into(), frame(0.0, 0.0, 400.0, 600.0));
+        inner.insert("Subviews".into(), Value::Array(vec![view("c", 400.0, 200.0), view("d", 400.0, 400.0)]));
+        let mut root = Table::new();
+        root.insert("View Type".into(), Value::String("Splitter".into()));
+        root.insert("isVertical".into(), Value::Boolean(true));
+        root.insert("Subviews".into(), Value::Array(vec![view("a", 300.0, 600.0), view("b", 300.0, 600.0), Value::Table(inner)]));
+        let t = tree_of(&Value::Table(root)).unwrap();
+        assert_eq!(leaf_names(&t), vec!["a", "b", "c", "d"]);
+        let Tree::Split { axis: Axis::Row, ratio, b, .. } = &t else { panic!() };
+        assert!((ratio - 0.3).abs() < 0.01, "a takes 300 of 1000: {ratio}");
+        let Tree::Split { axis: Axis::Row, ratio: r2, b: rest, .. } = &**b else { panic!() };
+        assert!((r2 - 300.0 / 700.0).abs() < 0.01, "{r2}");
+        let Tree::Split { axis: Axis::Column, ratio: r3, .. } = &**rest else { panic!() };
+        assert!((r3 - 1.0 / 3.0).abs() < 0.01, "{r3}");
+        assert!(tree_of(&Value::String("x".into())).is_err());
+    }
+
+    #[test]
+    fn sessions_carry_profile_and_folder() {
+        let mut profile = Table::new();
+        profile.insert("Guid".into(), Value::String("G".into()));
+        profile.insert("Name".into(), Value::String("Build".into()));
+        let v = session(80, 24, profile, "S1", Some(r"C:\src"));
+        assert_eq!(v.get("Columns").and_then(|x| x.as_integer()), Some(80));
+        assert_eq!(v.get("Rows").and_then(|x| x.as_integer()), Some(24));
+        assert_eq!(v.get("Session GUID").and_then(|x| x.as_str()), Some("S1"));
+        assert_eq!(v.get("Working Directory").and_then(|x| x.as_str()), Some(r"C:\src"));
+        assert_eq!(profile_of(&v).map(|p| (p.0, p.1)), Some(("G".to_string(), "Build".to_string())));
+    }
+}

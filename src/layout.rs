@@ -46,6 +46,34 @@ pub struct Divider {
     pub parent: Rect,
 }
 
+/// A layout's shape with any leaf type (arrangements carry sessions in the leaves).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Tree<T> {
+    Leaf(T),
+    Split { axis: Axis, ratio: f32, a: Box<Tree<T>>, b: Box<Tree<T>> },
+}
+
+impl<T> Tree<T> {
+    /// The same shape with each leaf mapped (in order, left or top first).
+    pub fn map<U>(self, f: &mut impl FnMut(T) -> U) -> Tree<U> {
+        match self {
+            Tree::Leaf(t) => Tree::Leaf(f(t)),
+            Tree::Split { axis, ratio, a, b } => {
+                let a = a.map(f);
+                Tree::Split { axis, ratio, a: Box::new(a), b: Box::new(b.map(f)) }
+            }
+        }
+    }
+
+    /// The leaves in order.
+    pub fn leaves(&self) -> Vec<&T> {
+        match self {
+            Tree::Leaf(t) => vec![t],
+            Tree::Split { a, b, .. } => [a.leaves(), b.leaves()].concat(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Node {
     Leaf(PaneId),
@@ -86,6 +114,28 @@ fn overlaps(a0: f32, alen: f32, b0: f32, blen: f32) -> bool {
 impl Layout {
     pub fn new(pane: PaneId) -> Self {
         Layout { root: Node::Leaf(pane) }
+    }
+
+    /// The layout's shape.
+    pub fn tree(&self) -> Tree<PaneId> {
+        fn go(n: &Node) -> Tree<PaneId> {
+            match n {
+                Node::Leaf(p) => Tree::Leaf(*p),
+                Node::Split { axis, ratio, a, b } => Tree::Split { axis: *axis, ratio: *ratio, a: Box::new(go(a)), b: Box::new(go(b)) },
+            }
+        }
+        go(&self.root)
+    }
+
+    /// A layout of that shape.
+    pub fn from_tree(t: Tree<PaneId>) -> Layout {
+        fn go(t: Tree<PaneId>) -> Node {
+            match t {
+                Tree::Leaf(p) => Node::Leaf(p),
+                Tree::Split { axis, ratio, a, b } => Node::Split { axis, ratio: ratio.clamp(0.05, 0.95), a: Box::new(go(*a)), b: Box::new(go(*b)) },
+            }
+        }
+        Layout { root: go(t) }
     }
 
     /// Splits `target`. `new` goes right of it (Row) or below it (Column).
