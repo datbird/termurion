@@ -51,6 +51,8 @@ const DIVIDER: Rgb = rgb(0x4a, 0x4a, 0x4a);
 const BANNER: Rgb = rgb(0x7a, 0x1e, 0x1e);
 const FIND_BAR: Rgb = rgb(0x2b, 0x2b, 0x2b);
 const LABEL_BG: Rgb = rgb(0xff, 0xd7, 0x00);
+const NOTE: Rgb = rgb(0xff, 0xff, 0x00);
+const NOTE_BG: Rgb = rgb(0xff, 0xf8, 0xc4);
 const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
 const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
 /// How much an unfocused pane fades toward the background, as iTerm2 dims inactive splits.
@@ -83,6 +85,8 @@ pub struct Highlights<'a> {
     pub link: Rgb,
     /// Shortcut labels, each over the cells from its position.
     pub labels: &'a [(crate::find::Pos, String)],
+    /// Annotated text (a yellow underline), with the note's text for a note on show.
+    pub notes: &'a [(crate::find::Match, Option<String>)],
 }
 
 /// What the find bar shows.
@@ -306,6 +310,33 @@ pub fn pane_with(
         }
     }
     let underline_y = |row: usize| rect.y + row as f32 * ch + ch - 1.0;
+    if let Some(h) = highlights {
+        let top = history - content.display_offset as i32;
+        for (m, label) in h.notes {
+            // iTerm2: a 1 px yellow line 2 px above the row's bottom under each annotated cell.
+            for r in m.start.row..=m.end.row {
+                let row = r as i32 - top;
+                if row < 0 || row as usize >= lines {
+                    continue;
+                }
+                let a = if r == m.start.row { m.start.col } else { 0 };
+                let b = if r == m.end.row { m.end.col } else { cols - 1 };
+                let y = rect.y + row as f32 * ch + ch - 3.0;
+                frame.overlay.push(Quad { rect: Rect { x: rect.x + a as f32 * cw, y, w: (b + 1 - a.min(b + 1)) as f32 * cw, h: 1.0 }, color: rgba(NOTE, 1.0) });
+            }
+            // A note on show: its text in a box after the annotated text.
+            let row = m.end.row as i32 - top;
+            if let (Some(text), true) = (label, row >= 0 && (row as usize) < lines) {
+                let shown: String = text.lines().next().unwrap_or_default().chars().take(40).collect();
+                let x = rect.x + (m.end.col + 2) as f32 * cw;
+                let y = rect.y + row as f32 * ch;
+                let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
+                frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
+                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false };
+                frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect });
+            }
+        }
+    }
     for (row, col, color) in dashes {
         for part in [0.0, 0.5] {
             let r = Rect { x: rect.x + (col as f32 + part) * cw, y: underline_y(row), w: (cw / 4.0).max(1.0), h: 1.0 };
@@ -546,7 +577,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[] }));
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[] }));
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -588,7 +619,7 @@ mod tests {
         let mut f = Frame::default();
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[] };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[] };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
@@ -601,7 +632,7 @@ mod tests {
         let s = screen(b"see https://x.y now");
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[] };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
@@ -625,5 +656,17 @@ mod tests {
         let mut g = Frame::default();
         copy_cursor(&mut g, RECT, CELL, 2, 3, true);
         assert!(g.overlay.iter().any(|q| q.color == rgba(rgb(0xc1, 0xde, 0xff), 1.0)));
+    }
+
+    #[test]
+    fn annotated_text_is_underlined_in_yellow() {
+        let s = screen(b"see x.rs");
+        let mut f = Frame::default();
+        let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
+        let notes = [(m, Some("a file".to_string()))];
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes };
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
+        assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
+        assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
     }
 }

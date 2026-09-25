@@ -93,6 +93,8 @@ pub struct Screen {
     pub pty_backed: bool,
     /// A fixed clock for row stamps (tests); None uses the time.
     clock: Option<u32>,
+    /// Annotations, by id.
+    pub notes: crate::annotations::Notes,
     /// Folded lines, by fold id.
     folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
@@ -119,6 +121,7 @@ impl Screen {
             place_prompt_first_column: true,
             pty_backed: false,
             clock: None,
+            notes: crate::annotations::Notes::default(),
             folds: std::collections::HashMap::new(),
             next_fold: 0,
         }

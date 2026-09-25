@@ -17,6 +17,7 @@ pub mod synthetic;
 pub mod seltools;
 pub mod copymode;
 pub mod fold;
+pub mod annotations;
 pub mod stamps;
 pub mod commands;
 pub mod menus;
@@ -56,6 +57,8 @@ pub mod egui_host;
 
 #[cfg(windows)]
 pub mod prompt_ui;
+#[cfg(windows)]
+pub mod note_ui;
 #[cfg(windows)]
 pub mod global_find_ui;
 

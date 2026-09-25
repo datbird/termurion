@@ -483,6 +483,20 @@ impl Screen {
                     let line = self.cursor_point().line.0;
                     self.new_mark(line, Kind::Manual);
                 }
+                "AddAnnotation" | "AddHiddenAnnotation" => {
+                    let Some((text, len, at)) = crate::annotations::parse_osc(&value) else { return };
+                    let cols = self.term().columns();
+                    let (line, col) = match at {
+                        Some((x, y)) => (y as i32, x.min(cols - 1)),
+                        None => {
+                            let p = self.cursor_point();
+                            (p.line.0, p.column.0)
+                        }
+                    };
+                    let last = col + len.unwrap_or(cols - col).max(1) - 1;
+                    let end_line = line + (last / cols) as i32;
+                    self.add_note(line, col, end_line, last % cols, &text, key == "AddHiddenAnnotation");
+                }
                 _ => {}
             },
         }

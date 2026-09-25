@@ -51,6 +51,7 @@ const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod annotations_ui;
 mod copymode_ui;
 mod find_ui;
 mod fold_ui;
@@ -144,6 +145,10 @@ pub struct App {
     find_mode_rect: Option<Rect>,
     /// The Win-click target under the pointer while Win is held.
     hover: Option<(PaneId, crate::find::Match)>,
+    /// The annotation or session note window: its pane and note (None for the session note).
+    note_win: Option<(crate::note_ui::NoteWindow, PaneId, Option<u32>)>,
+    /// Annotation navigation: the row each pane is at.
+    note_pos: HashMap<PaneId, i32>,
     /// Copy Mode, per pane.
     copy_modes: HashMap<PaneId, crate::copymode::State>,
     /// Labels on results (Find URLs and the like), waiting for a key.
@@ -271,6 +276,8 @@ pub fn run() {
         popup_menu: None,
         shortcuts: None,
         copy_modes: HashMap::new(),
+        note_win: None,
+        note_pos: HashMap::new(),
         ctx_pending: None,
         prompt: None,
         global_find: None,
@@ -875,7 +882,7 @@ impl App {
         }
     }
 
-    fn mouse_press(&mut self, button: MouseButton) {
+    fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
         let (x, y) = self.cursor;
         if let Some(i) = tab_hit(&self.tab_rects, self.tabs.len(), x, y) {
             self.active = i;
@@ -945,7 +952,7 @@ impl App {
                 let count = self.clicks.press(Instant::now(), col, row);
                 let point = self.grid_point(id, col, row);
                 let plain = !mods.shift && !mods.alt && !mods.ctrl && !mods.cmd;
-                if count == 1 && plain && self.click_unfold(id, point) {
+                if count == 1 && plain && (self.click_unfold(id, point) || self.click_note(id, point, event_loop)) {
                     return;
                 }
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
@@ -1178,7 +1185,8 @@ impl App {
                     // Find highlights show only while the find bar is open.
                     let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels };
+                    let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
                 }
                 if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
@@ -1395,7 +1403,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.global_find_event(id, &event) {
+        if self.prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -1474,7 +1482,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::KeyboardInput { event, .. } => self.key(&event, event_loop),
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as f32, position.y as f32),
-            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button),
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => self.mouse_release(button, event_loop),
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::RedrawRequested => self.render(),

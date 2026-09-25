@@ -31,6 +31,8 @@ pub struct Pane {
     /// The pane's own screen while `screen` shows a Filter or Zoom view. Output keeps
     /// going here.
     pub live: Option<Screen>,
+    /// View > Show Session Note's text.
+    pub session_note: String,
 }
 
 impl Pane {
@@ -39,7 +41,7 @@ impl Pane {
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None })
+        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new() })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
