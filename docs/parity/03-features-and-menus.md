@@ -210,22 +210,22 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Terminal State > Paste Bracketing | no shortcut | Manually toggles bracketed paste mode. | have |
 | Session > Terminal State > Application Cursor | no shortcut | Manually toggles DECCKM application cursor key mode. | have |
 | Session > Terminal State > Application Keypad | no shortcut | Manually toggles application keypad mode. | have |
-| Session > Terminal State > Standard Key Reporting Mode | no shortcut | Sets keyboard protocol to legacy/standard key reporting. (milestone 5) | missing |
-| Session > Terminal State > modifyOtherKeys Mode 1 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 1. (milestone 5) | missing |
-| Session > Terminal State > modifyOtherKeys Mode 2 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 2. (milestone 5) | missing |
-| Session > Terminal State > CSI u Mode | no shortcut | Enables the CSI u (fixterms) keyboard protocol. (milestone 5) | missing |
-| Session > Terminal State > Raw Key Reporting Mode | no shortcut | Enables raw keyboard event reporting. (milestone 5) | missing |
-| Session > Terminal State > Disambiguate Escape | no shortcut | Enables the kitty keyboard protocol's escape key disambiguation flag. (milestone 5) | missing |
-| Session > Terminal State > Report All Event Types | no shortcut | Enables the kitty keyboard protocol's key-up/repeat event reporting. (milestone 5) | missing |
-| Session > Terminal State > Report Alternate Keys | no shortcut | Enables kitty keyboard protocol reporting of alternate keys (shifted symbols). (milestone 5) | missing |
-| Session > Terminal State > Report All Keys as Escape Codes | no shortcut | Enables kitty keyboard protocol full escape-code key reporting. (milestone 5) | missing |
-| Session > Terminal State > Report Associated Text | no shortcut | Enables kitty keyboard protocol reporting of the text a key event produces. (milestone 5) | missing |
-| Session > Terminal State > Literal Controls | no shortcut | Toggles literal, non-interpreted, handling of control characters. (milestone 5) | missing |
-| Session > Terminal State > Emulation Level > VT100 | no shortcut | Restricts terminal emulation to VT100-level feature set. (milestone 5) | missing |
-| Session > Terminal State > Emulation Level > VT200 | no shortcut | Restricts terminal emulation to VT200-level feature set. (milestone 5) | missing |
-| Session > Terminal State > Emulation Level > VT300 | no shortcut | Restricts terminal emulation to VT300-level feature set. (milestone 5) | missing |
-| Session > Terminal State > Emulation Level > VT400 | no shortcut | Restricts terminal emulation to VT400-level feature set. (milestone 5) | missing |
-| Session > Terminal State > Emulation Level > VT500 | no shortcut | Restricts terminal emulation to VT500-level feature set. (milestone 5) | missing |
+| Session > Terminal State > Standard Key Reporting Mode | no shortcut | Sets keyboard protocol to legacy/standard key reporting. | have |
+| Session > Terminal State > modifyOtherKeys Mode 1 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 1. | have |
+| Session > Terminal State > modifyOtherKeys Mode 2 | no shortcut | Sets the xterm modifyOtherKeys keyboard protocol to mode 2. | have |
+| Session > Terminal State > CSI u Mode | no shortcut | Enables the CSI u (fixterms) keyboard protocol. | have |
+| Session > Terminal State > Raw Key Reporting Mode | no shortcut | Enables raw keyboard event reporting. | have |
+| Session > Terminal State > Disambiguate Escape | no shortcut | Enables the kitty keyboard protocol's escape key disambiguation flag. | have |
+| Session > Terminal State > Report All Event Types | no shortcut | Enables the kitty keyboard protocol's key-up/repeat event reporting. | have |
+| Session > Terminal State > Report Alternate Keys | no shortcut | Enables kitty keyboard protocol reporting of alternate keys (shifted symbols). | have |
+| Session > Terminal State > Report All Keys as Escape Codes | no shortcut | Enables kitty keyboard protocol full escape-code key reporting. | have |
+| Session > Terminal State > Report Associated Text | no shortcut | Enables kitty keyboard protocol reporting of the text a key event produces. | have |
+| Session > Terminal State > Literal Controls | no shortcut | Toggles literal, non-interpreted, handling of control characters. | have |
+| Session > Terminal State > Emulation Level > VT100 | no shortcut | Restricts terminal emulation to VT100-level feature set. | have, the level sets what DA1, DA2, DA3, and DECRQSS DECSCL report |
+| Session > Terminal State > Emulation Level > VT200 | no shortcut | Restricts terminal emulation to VT200-level feature set. | have, the level sets what DA1, DA2, DA3, and DECRQSS DECSCL report |
+| Session > Terminal State > Emulation Level > VT300 | no shortcut | Restricts terminal emulation to VT300-level feature set. | have, the level sets what DA1, DA2, DA3, and DECRQSS DECSCL report |
+| Session > Terminal State > Emulation Level > VT400 | no shortcut | Restricts terminal emulation to VT400-level feature set. | have, the level sets what DA1, DA2, DA3, and DECRQSS DECSCL report |
+| Session > Terminal State > Emulation Level > VT500 | no shortcut | Restricts terminal emulation to VT500-level feature set. | have, the level sets what DA1, DA2, DA3, and DECRQSS DECSCL report |
 | Session > Terminal State > Reset | no shortcut | Resets all terminal state toggles to their defaults. | have |
 | Session > Bury Session | Opt+Cmd+B | Hides the session from the tab bar while it keeps running, listed under Buried Sessions. (milestone 7) | missing |
 | Session > Buried Sessions | no shortcut | Dynamic submenu listing buried sessions to bring back. | missing |
@@ -382,7 +382,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; Block / UpdateBlock | Marks a folded/collapsible output block, start/end, fold/unfold, for command output blocks. | missing |
 | OSC 1337 ; Button=type=copy\|custom;... | Inserts an inline clickable button, for example a copy-output button, in a command-output block. | missing |
 | OSC 1337 ; RequestUpload=&lt;params&gt; (trusted) | Asks the user to pick a local file to upload/send to the shell. | missing |
-| OSC 1337 (bare, terminal-to-host report) | Terminal reports its iTerm2 version string as a DSR-style query. | missing |
+| OSC 1337 (bare, terminal-to-host report) | Terminal reports its iTerm2 version string as a DSR-style query. | have, `CSI 1337 n` answers `CSI ITERM2 <version> n` |
 | OSC 21337 (tab status) | Sets a structured tab status key/value payload shown in the tab. | missing |
 | OSC 133 ; A / N / P (FTCS_PROMPT_START) | Marks the start of a shell prompt, optionally forcing a fresh line, carries k=&lt;kind&gt; and aid=&lt;id&gt;. Basis of iTerm2's command marks and prompt navigation. | have |
 | OSC 133 ; B (FTCS_COMMAND_START) | Marks the end of the prompt and start of the typed command. | have |
@@ -395,13 +395,13 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 7 ; file://user@host/path | Reports the current directory, user, and host as a URL; iTerm2's current shell scripts use it instead of 1337;CurrentDir and RemoteHost. Without a machineID it also marks a prompt. | have |
 | OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | have, links draw a dashed underline; Win-click opens them; the right-click menu and a pointer action copy the address |
 | OSC 52 (PASTE64) set/query clipboard | Reads or writes the system clipboard, and other X11-style selections, via a base64 payload. | partial, alacritty_terminal parses OSC 52 set/query, but Tandem has not confirmed it wires the result to the Windows clipboard or enables it by policy |
-| DECRQSS / DECRPSS (SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP) | Request/report current terminal settings, graphic rendition, conformance level, cursor style, protection attribute, margins, page size, as an ANSI-standard report-settings sequence. | missing |
-| Sixel graphics (DECSIXEL, via VT100SixelParser/VT100DCSParser) | Parses and renders sixel bitmap graphics sent by an application, for example img2sixel. | partial, decoded by Tandem (palette, HLS, repeats, raster size); pixels opaque as in iTerm2; DECSDM comes in milestone 5b |
+| DECRQSS / DECRPSS (SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP) | Request/report current terminal settings, graphic rendition, conformance level, cursor style, protection attribute, margins, page size, as an ANSI-standard report-settings sequence. | have, SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP; XTVERSION and XTGETTCAP (TN, name, Co, colors, RGB) too |
+| Sixel graphics (DECSIXEL, via VT100SixelParser/VT100DCSParser) | Parses and renders sixel bitmap graphics sent by an application, for example img2sixel. | partial, decoded by Tandem (palette, HLS, repeats, raster size); pixels opaque as in iTerm2; DECSDM is not handled yet |
 | Kitty graphics protocol (transmit, put, delete, animate, compose, query) | Parses and renders the kitty terminal graphics protocol for inline images and animations, rendered via a dedicated Metal renderer. | partial, transmit (direct, file, temp file, zlib, chunks), display, delete, query; z-index, pixel offsets, unicode placeholders, and animation are not drawn (iTerm2 does not animate either) |
-| Kitty keyboard protocol (progressive enhancement, CSI u key reporting) | Disambiguated keyboard reporting mode used by some modern CLI apps. | missing |
-| Synchronized output, DEC private mode 2026 (BSU/ESU) | Suppresses screen redraws between begin and end markers so a full-screen app can update atomically without tearing. | missing |
-| DEC private mode 996/997 (dark-mode query) | Application asks the terminal whether the OS is in dark or light mode; terminal replies with mode 997. | missing |
-| CSI ? Ps c (DA1/DA2/DA3) with iTerm2 extensions | Extended device-attributes reporting including iTerm2's emulation level, up to VT400 class, and macro-space/checksum reports. | missing |
+| Kitty keyboard protocol (progressive enhancement, CSI u key reporting) | Disambiguated keyboard reporting mode used by some modern CLI apps. | have, all five flags, the stack per screen, and Session > Terminal State toggles; modifyOtherKeys 1 and 2, CSI u, and raw key reporting (Windows virtual key codes) too |
+| Synchronized output, DEC private mode 2026 (BSU/ESU) | Suppresses screen redraws between begin and end markers so a full-screen app can update atomically without tearing. | have, mode 2026 and the DCS form; an update that never ends is drawn after 150 ms |
+| DEC private mode 996/997 (dark-mode query) | Application asks the terminal whether the OS is in dark or light mode; terminal replies with mode 997. | have, judged from the pane's background; mode 2031 reports changes |
+| CSI ? Ps c (DA1/DA2/DA3) with iTerm2 extensions | Extended device-attributes reporting including iTerm2's emulation level, up to VT400 class, and macro-space/checksum reports. | have, per emulation level as iTerm2 answers |
 | Kitty drag-and-drop file protocol | iTerm2-specific extension layered on drag-and-drop for transferring files over SSH sessions using a kitty-protocol-derived encoding. | missing |
 
 ## 3. Subsystems

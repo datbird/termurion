@@ -276,10 +276,10 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Left Option Key Independently Changeable | Left Option Key Changeable | Unlocks the left Option key's own dropdown instead of mirroring the right. | partial | macOS-only concept. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Right Option Key Independently Changeable | Right Option Key Changeable | Unlocks the right Option key's own dropdown instead of mirroring the left. | partial | macOS-only concept. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Application Keypad Allowed | Application Keypad Allowed | Permits apps to switch the numeric keypad into application mode via escape sequences. | have |  |
-| Allow modifyOtherKeys | Allow modifyOtherKeys | Enables the xterm modifyOtherKeys protocol for reporting more modifier key combinations. | partial | Saved and shown in Settings; the effect comes with the keyboard protocols in milestone 5. |
+| Apps can change how keys are reported | Allow modifyOtherKeys | Lets programs turn on modifyOtherKeys and the kitty keyboard protocol. | have | Milestone 5b. |
 | Movement keys scroll outside interactive apps | Movement Keys Scroll Outside Interactive Apps | Lets arrow/movement keys scroll the buffer instead of being sent to the shell outside interactive apps. | have |  |
 | Treat Option as Alt | Treat Option as Alt | Chooses whether Esc+ mode reports the key as Alt versus older Meta-style behavior. | have |  |
-| Use libtickit protocol (CSI u) | Use libtickit protocol | Enables the CSI u keyboard protocol for unambiguous key reporting. | partial | Saved and shown in Settings; the effect comes with the keyboard protocols in milestone 5. |
+| Report keys using CSI u | Use libtickit protocol | Starts each session in CSI u key reporting (fixterms). | have | Milestone 5b. |
 | Left Control Key | Left Control Key | Remaps the left Control key to a bucky bit: regular, Hyper, Meta, or Super. | partial | Saved and shown in Settings; the effect comes with the keyboard protocols in milestone 5. |
 | Right Control Key | Right Control Key | Remaps the right Control key independently to a bucky bit. | partial | Saved and shown in Settings; the effect comes with the keyboard protocols in milestone 5. |
 | Left Command Key | Left Command Key | Remaps the left Command key to a bucky bit. | partial | Saved and shown in Settings; the effect comes with the keyboard protocols in milestone 5. |

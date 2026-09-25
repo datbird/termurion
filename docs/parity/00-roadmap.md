@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 73 | 175 | 66 |
+| `01-profile-settings.md` | 314 | 75 | 173 | 66 |
 | `02-global-settings.md` | 820 | 112 | 59 | 649 |
-| `03-features-and-menus.md` | 633 | 151 | 17 | 465 |
-| Total | 1,767 | 336 | 251 | 1,180 |
+| `03-features-and-menus.md` | 633 | 173 | 17 | 443 |
+| Total | 1,767 | 360 | 249 | 1,158 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -32,7 +32,12 @@ guide, Find Cursor, and the Named Marks menu (two more alacritty_terminal patche
 fold, and note slots, and Grid::splice). Milestone 5a: inline images (OSC 1337 File and
 multipart files with iTerm2's sizing, downloads to the Downloads folder after asking, sixel, the
 kitty graphics protocol, animated GIFs), drawn by a textured-quad pipeline from image tiles kept
-in the grid cells (alacritty_terminal patches 7 and 8).
+in the grid cells (alacritty_terminal patches 7 and 8). Milestone 5b: the keyboard protocols (modifyOtherKeys
+1 and 2, CSI u, raw key reporting, the kitty keyboard protocol with all five flags and key
+releases), the Session > Terminal State key modes, Literal Controls, and Emulation Level, the
+profile's two key reporting settings, and the reports iTerm2 answers (DA1 to DA3 by level,
+XTVERSION, `CSI 1337 n`, DECRQSS, XTGETTCAP, synchronized output, the dark-mode query and mode
+2031; alacritty_terminal patch 9 and patch 8 revised).
 
 ## Order
 
