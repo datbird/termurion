@@ -14,7 +14,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 |---|---|---|---|---|
 | Open profiles window | OpenBookmark | At launch, opens the profiles/bookmarks window instead of a terminal window. | have | Milestone 7b. |
 | Window restoration mode | OpenArrangementAtStartup / OpenNoWindowsAtStartup | Three-way choice at startup: use system window restoration, open the default saved window arrangement, or open no windows. | partial | Milestone 7b: saved as iTerm2's two keys; the default arrangement opens with 7c, hotkey windows with 7e; until then one window opens. |
-| Always open at least one terminal window at startup | AlwaysOpenWindowAtStartup | Forces at least one terminal window even if system restoration would otherwise open none. | have | Milestone 7b. |
+| Always open at least one terminal window at startup | AlwaysOpenWindowAtStartup | Forces at least one terminal window even if system restoration would otherwise open none. | partial | Milestone 7b: saved; it matters once hotkey windows (7e) can stop the startup window, and one always opens until then. |
 | Restore windows to same Spaces | RestoreWindowsToSameSpaces | When restoring windows, puts each one back on the macOS Space it was on. | missing | macOS Spaces concept; no direct Windows virtual-desktop equivalent wired up. |
 
 
@@ -723,7 +723,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | statusBarHeight | statusBarHeight (float, default 21) | Height of the status bar in points. | missing |  |
 | wrapFocus | wrapFocus (bool, default YES) | Should split pane navigation by direction wrap around? | missing |  |
 | openUntitledFile | openUntitledFile (bool, default YES) | Open a new window when you click the dock icon and no windows are already open, and also on app launch when no other windows are open? | missing |  |
-| openNewWindowAtStartup | openNewWindowAtStartup (bool, default YES) | Open a window at startup? This is useful if you wish to use the system window restoration settings but not create a new window if none would be restored. | have | Milestone 7b: with nothing else to show, a window opens anyway. |
+| openNewWindowAtStartup | openNewWindowAtStartup (bool, default YES) | Open a window at startup? This is useful if you wish to use the system window restoration settings but not create a new window if none would be restored. | partial | Milestone 7b: saved; with nothing else to show a window opens anyway, so it has no effect until 7c and 7e. |
 | timeToWaitForEmojiPanel | timeToWaitForEmojiPanel (float, default 1) | How long to wait for the emoji panel to open in seconds? Floating hotkey windows adjust their level when the emoji panel is open. | missing |  |
 | timeoutForStringEvaluation | timeoutForStringEvaluation (float, default 10) | Timeout (seconds) for evaluating RPCs. | missing |  |
 | pathToFTP | pathToFTP (string, default @"ftp") | Path to ftp for opening ftp: URLs. | missing |  |

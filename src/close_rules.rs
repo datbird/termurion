@@ -74,6 +74,12 @@ pub fn body(subject: Subject, names: &[String]) -> String {
     }
 }
 
+/// The body with extra notes after it (iTerm2's additionalMessage), such as a process tree
+/// that could not be read.
+pub fn with_notes(body: String, notes: &[String]) -> String {
+    if notes.is_empty() { body } else { format!("{body}\n\n{}", notes.join("\n")) }
+}
+
 /// The tab to select after tab `closed` goes, leaving `remaining`; with
 /// moveLeftAfterClosingTab, the one to the left of a closed active tab.
 pub fn active_after_close(active: usize, closed: usize, remaining: usize, move_left: bool) -> usize {
@@ -97,28 +103,78 @@ pub struct QuitPrefs {
     pub confirm_multiple: bool,
 }
 
-/// Why quitting asks, in iTerm2's priority order: Confirm Quit, then more than one session,
-/// then each profile's Prompt Before Closing reasons. `last_window_closed` is a quit that
-/// closing the last window caused (no Confirm Quit reason then).
-pub fn quit_reasons(profile_reasons: &[String], windows: usize, sessions: usize, p: QuitPrefs, last_window_closed: bool) -> Vec<String> {
-    let mut out = Vec::new();
+/// One reason a quit asks: its priority and kind (iTerm2's reason classes).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reason {
+    pub priority: u32,
+    pub kind: ReasonKind,
+    pub text: String,
+}
+
+/// Prompt Before Closing's two kinds carry the Settings footer; the plain messages do not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReasonKind {
+    Blocked,
+    Always,
+    Message,
+}
+
+const PROFILE_FOOTER: &str = "You can change this setting in Settings > Profiles > Session";
+
+/// A Prompt Before Closing reason's kind and priority, from its text.
+fn profile_reason(text: &str) -> Reason {
+    if text.ends_with("always requires confirmation.") {
+        Reason { priority: 50, kind: ReasonKind::Always, text: text.into() }
+    } else if text.starts_with("A session with profile") {
+        Reason { priority: 25, kind: ReasonKind::Blocked, text: text.into() }
+    } else {
+        Reason { priority: 25, kind: ReasonKind::Message, text: text.into() }
+    }
+}
+
+/// Why quitting asks: each profile's Prompt Before Closing reasons, more than one session
+/// (Confirm closing multiple sessions, 90), and Confirm Quit (100). `last_window_closed`
+/// is a quit that closing the last window caused (no Confirm Quit reason then).
+pub fn quit_reasons(profile_reasons: &[String], windows: usize, sessions: usize, p: QuitPrefs, last_window_closed: bool) -> Vec<Reason> {
+    let msg = |priority, text: &str| Reason { priority, kind: ReasonKind::Message, text: text.into() };
+    let mut out: Vec<Reason> = profile_reasons.iter().map(|t| profile_reason(t)).collect();
     if !last_window_closed && p.prompt_on_quit {
         if windows > 0 {
-            out.push(CONFIRM_QUIT.to_string());
+            out.push(msg(100, CONFIRM_QUIT));
         } else if p.even_if_no_windows {
-            out.push(CONFIRM_QUIT_NO_WINDOWS.to_string());
+            out.push(msg(100, CONFIRM_QUIT_NO_WINDOWS));
         }
     }
     if p.confirm_multiple && sessions > 1 {
-        out.push(CONFIRM_MULTIPLE.to_string());
+        out.push(msg(90, CONFIRM_MULTIPLE));
     }
-    out.extend(profile_reasons.iter().cloned());
     out
 }
 
-/// The quit question's text (iTerm2 folds the reasons into a disclosure).
-pub fn quit_text(reasons: &[String]) -> String {
-    format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{}", reasons.join("\n"))
+/// The quit question's text, formatted as iTerm2's compound reason: lowest priority first,
+/// a repeated reason once, each with a bullet, and the Settings footer after each Prompt
+/// Before Closing group (iTerm2 shows this in a disclosure).
+pub fn quit_text(reasons: &[Reason]) -> String {
+    let mut sorted: Vec<&Reason> = reasons.iter().collect();
+    sorted.sort_by_key(|r| r.priority);
+    sorted.dedup_by(|a, b| a.text == b.text);
+    let footer = |k: ReasonKind| matches!(k, ReasonKind::Blocked | ReasonKind::Always).then_some(PROFILE_FOOTER);
+    let mut lines: Vec<String> = Vec::new();
+    let mut previous = sorted.first().map(|r| r.kind);
+    for r in &sorted {
+        if Some(r.kind) != previous {
+            if let Some(f) = previous.and_then(footer) {
+                lines.push(f.to_string());
+                lines.push(String::new());
+            }
+        }
+        lines.push(format!("\u{2022} {}", r.text));
+        previous = Some(r.kind);
+    }
+    if let Some(f) = previous.and_then(footer) {
+        lines.push(f.to_string());
+    }
+    format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{}", lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -171,11 +227,21 @@ mod tests {
     fn quit_asks_for_the_right_reasons() {
         let q = |profile: &[&str], windows, sessions, on, even, multi, last| quit_reasons(&n(profile), windows, sessions, QuitPrefs { prompt_on_quit: on, even_if_no_windows: even, confirm_multiple: multi }, last);
         assert!(q(&[], 1, 1, false, false, true, false).is_empty(), "Confirm Quit off, one session: no question");
-        assert_eq!(q(&[], 1, 1, true, false, true, false), vec![CONFIRM_QUIT.to_string()]);
-        assert_eq!(q(&[], 0, 0, true, false, true, false), Vec::<String>::new(), "no windows");
-        assert_eq!(q(&[], 0, 0, true, true, true, false), vec![CONFIRM_QUIT_NO_WINDOWS.to_string()]);
-        assert_eq!(q(&["The profile \u{201c}P\u{201d} always requires confirmation."], 2, 3, true, false, true, false), vec![CONFIRM_QUIT.to_string(), CONFIRM_MULTIPLE.to_string(), "The profile \u{201c}P\u{201d} always requires confirmation.".to_string()], "iTerm2's priority order");
+        assert_eq!(quit_text(&q(&[], 1, 1, true, false, true, false)), format!("All sessions will be closed.\n\nYou are being prompted because:\n\n\u{2022} {CONFIRM_QUIT}"));
+        assert!(q(&[], 0, 0, true, false, true, false).is_empty(), "no windows");
+        assert_eq!(q(&[], 0, 0, true, true, true, false).len(), 1);
         assert!(q(&[], 1, 1, true, false, true, true).is_empty(), "closing the last window skips Confirm Quit");
-        assert_eq!(quit_text(&[CONFIRM_QUIT.to_string()]), format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{CONFIRM_QUIT}"));
+        let always = "The profile \u{201c}P\u{201d} always requires confirmation.";
+        let blocked = "A session with profile \u{201c}P\u{201d} is running vim.";
+        let r = q(&[always, blocked, always], 2, 3, true, false, true, false);
+        let footer = "You can change this setting in Settings > Profiles > Session";
+        let expect = format!("\u{2022} {blocked}\n{footer}\n\n\u{2022} {always}\n{footer}\n\n\u{2022} {CONFIRM_MULTIPLE}\n\u{2022} {CONFIRM_QUIT}");
+        assert_eq!(quit_text(&r), format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{expect}"), "iTerm2's order (lowest priority first), one of each, bullets, and the profile footer");
+    }
+
+    #[test]
+    fn notes_follow_the_body() {
+        assert_eq!(with_notes("This tab will be closed.".into(), &[]), "This tab will be closed.");
+        assert_eq!(with_notes("This tab will be closed.".into(), &["Tandem could not read the programs (x).".into()]), "This tab will be closed.\n\nTandem could not read the programs (x).");
     }
 }

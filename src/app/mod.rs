@@ -793,7 +793,11 @@ impl App {
             }
             // A close the person made keeps a running shell for Undo Close.
             match self.undo_capture.as_mut() {
-                Some(c) if p.exited.is_none() => c.panes.push(p),
+                Some(c) if p.exited.is_none() => {
+                    let mut p = p;
+                    p.set_paused(true);
+                    c.panes.push(p);
+                }
                 _ => self.forget_session_profile(&p.profile),
             }
         }

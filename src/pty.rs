@@ -32,6 +32,8 @@ pub struct Pty {
     write_error: Arc<std::sync::Mutex<Option<String>>>,
     /// Bytes sent to the writer and not yet written.
     pending: Arc<std::sync::atomic::AtomicUsize>,
+    /// Undo Close: the reader holds off, so the program waits on ConPTY (iTerm2 pauses).
+    paused: Arc<std::sync::atomic::AtomicBool>,
     process: HANDLE,
     output: Receiver<Vec<u8>>,
     reader: Option<JoinHandle<()>>,
@@ -80,10 +82,11 @@ pub fn spawn(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<Pty, Stri
 pub fn spawn_notify(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
     check_size(cols, rows)?;
     let (hpc, input, output, process) = unsafe { start(api, cmdline, cwd, cols, rows)? };
-    let (rx, reader_done, reader) = start_reader(output, notify.clone());
+    let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (rx, reader_done, reader) = start_reader(output, notify.clone(), paused.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (writer, write_error) = start_writer(input, pending.clone(), notify.clone());
-    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, process, output: rx, reader: Some(reader), reader_done };
+    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, paused, process, output: rx, reader: Some(reader), reader_done };
     watch_exit(pty.process, notify)?;
     Ok(pty)
 }
@@ -228,7 +231,7 @@ pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::Atomic
 }
 
 /// Drains ConPTY output on its own thread, so ConPTY never blocks on a full pipe.
-fn start_reader(output: HANDLE, notify: Notify) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
+fn start_reader(output: HANDLE, notify: Notify, paused: Arc<std::sync::atomic::AtomicBool>) -> (Receiver<Vec<u8>>, Receiver<()>, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     // HANDLE is a raw pointer and not Send. The thread owns this handle from here on.
@@ -239,6 +242,10 @@ fn start_reader(output: HANDLE, notify: Notify) -> (Receiver<Vec<u8>>, Receiver<
         loop {
             let mut n = 0u32;
             let ok = unsafe { ReadFile(output, buf.as_mut_ptr(), buf.len() as u32, &mut n, null_mut()) };
+            // While paused, a chunk already read waits here and nothing more is read.
+            while paused.load(std::sync::atomic::Ordering::Acquire) && ok != 0 && n != 0 {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             if ok == 0 || n == 0 || tx.send(buf[..n as usize].to_vec()).is_err() {
                 break;
             }
@@ -298,6 +305,11 @@ impl Pty {
     /// The shell's process id (the root of its job tree).
     pub fn pid(&self) -> u32 {
         unsafe { windows_sys::Win32::System::Threading::GetProcessId(self.process) }
+    }
+
+    /// Undo Close: stop reading the program's output (it then waits), or go on.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, std::sync::atomic::Ordering::Release);
     }
 
     /// Bytes queued for the child that it has not taken yet.
@@ -460,7 +472,7 @@ mod tests {
     fn reader_survives_a_zero_byte_write() {
         let (mut r, mut w): (HANDLE, HANDLE) = (null_mut(), null_mut());
         assert_ne!(unsafe { CreatePipe(&mut r, &mut w, null(), 0) }, 0);
-        let (rx, _done, reader) = start_reader(r, Arc::new(|| {}));
+        let (rx, _done, reader) = start_reader(r, Arc::new(|| {}), Arc::new(std::sync::atomic::AtomicBool::new(false)));
         let mut n = 0u32;
         unsafe {
             WriteFile(w, b"".as_ptr(), 0, &mut n, null_mut());

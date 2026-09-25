@@ -78,8 +78,10 @@ impl App {
             Undone::Session { pane, .. } => vec![pane],
             Undone::Tab { panes, .. } | Undone::Window { panes, .. } => panes,
         };
-        for p in panes {
+        for mut p in panes {
             let guid = p.profile.clone();
+            // A paused reader would hold up the pty's shutdown: let it drain first.
+            p.set_paused(false);
             drop(p);
             self.forget_session_profile(&guid);
         }
@@ -89,11 +91,21 @@ impl App {
         id.is_some_and(|w| self.registry.order().contains(&windows_ui::key(w)))
     }
 
-    fn put_back(&mut self, pane: Pane) {
+    fn put_back(&mut self, mut pane: Pane) {
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
         }
+        pane.set_paused(false);
         self.panes.insert(pane.id, pane);
+    }
+
+    /// Brings the window an undone close went back into to the front.
+    fn show_restored(&mut self) {
+        if let Some(g) = &self.gpu {
+            g.window.set_minimized(false);
+            g.window.focus_window();
+            self.last_window = Some(g.window.id());
+        }
     }
 
     /// Shell > Undo Close.
@@ -144,6 +156,9 @@ impl App {
                 self.pending_windows.push(windows_ui::NewWindow::Tabs(tabs));
             }
         }
+        // Profile or theme changes made while it waited reach it now.
+        self.refresh_panes();
+        self.show_restored();
         self.relayout();
         self.redraw();
     }

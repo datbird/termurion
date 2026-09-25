@@ -46,15 +46,19 @@ impl App {
         out
     }
 
-    /// The programs running under the panes' shells (not the shells), for the question.
-    fn job_names(&self, panes: &[PaneId]) -> Vec<String> {
-        let mut out = Vec::new();
+    /// The programs running under the panes' shells (not the shells), for the question, and
+    /// a note for each shell whose programs could not be read.
+    fn job_names(&self, panes: &[PaneId]) -> (Vec<String>, Vec<String>) {
+        let (mut out, mut notes) = (Vec::new(), Vec::new());
         for id in panes {
             let Some(p) = self.panes.get(id).filter(|p| p.exited.is_none()) else { continue };
-            let Some(Ok(procs)) = p.shell_pid().map(crate::jobwatch::descendants_now) else { continue };
-            out.extend(procs.iter().map(|q| crate::proctree::strip_exe(&q.name).to_string()).filter(|n| !n.eq_ignore_ascii_case("conhost") && !n.eq_ignore_ascii_case("OpenConsole")));
+            match p.shell_pid().map(crate::jobwatch::descendants_now) {
+                Some(Ok(procs)) => out.extend(procs.iter().map(|q| crate::proctree::strip_exe(&q.name).to_string()).filter(|n| !n.eq_ignore_ascii_case("conhost") && !n.eq_ignore_ascii_case("OpenConsole"))),
+                Some(Err(e)) => notes.push(format!("Tandem could not read the programs running in a session ({e}).")),
+                None => {}
+            }
         }
-        out
+        (out, notes)
     }
 
     /// True when the panes may close: nothing to ask about, or the user chose OK. A
@@ -89,8 +93,9 @@ impl App {
         if !close_rules::must_ask(kind, running, has_reason, self.globals.bool("OnlyWhenMoreTabs")) {
             return true;
         }
-        let names = close_rules::counted(&self.job_names(&panes));
-        confirm(self.hwnd(), &title, &close_rules::body(close_rules::subject(kind, panes.len()), &names))
+        let (names, notes) = self.job_names(&panes);
+        let body = close_rules::with_notes(close_rules::body(close_rules::subject(kind, panes.len()), &close_rules::counted(&names)), &notes);
+        confirm(self.hwnd(), &title, &body)
     }
 }
 

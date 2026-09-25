@@ -183,6 +183,13 @@ impl Pane {
         self.buffer.queue.len()
     }
 
+    /// Undo Close: a waiting pane stops reading its program's output.
+    pub fn set_paused(&mut self, paused: bool) {
+        if let Some(pty) = &self.pty {
+            pty.set_paused(paused);
+        }
+    }
+
     /// Starts a coprocess. One at a time: a second is an error.
     pub fn run_coprocess(&mut self, command: &str, mute: bool, cwd: &std::path::Path, notify: Notify) -> Result<(), String> {
         if self.coprocess.is_some() {
@@ -635,5 +642,32 @@ mod tests {
         assert!(!shown, "a silent coprocess hides the session's output");
         p.stop_coprocess();
         assert!(p.coprocess_command().is_none());
+    }
+
+    #[test]
+    fn a_paused_pane_stops_reading() {
+        // ping prints a line a second; a paused pane takes none of them until it resumes.
+        let mut p = start("ping -n 8 127.0.0.1");
+        std::thread::sleep(Duration::from_millis(1200));
+        let drain = |p: &Pane| {
+            let mut n = 0;
+            if let Some(pty) = &p.pty {
+                while let Read::Data(c) = pty.try_read() {
+                    n += c.len();
+                }
+            }
+            n
+        };
+        drain(&p);
+        p.set_paused(true);
+        std::thread::sleep(Duration::from_millis(100));
+        drain(&p);
+        std::thread::sleep(Duration::from_millis(3000));
+        let while_paused = drain(&p);
+        p.set_paused(false);
+        std::thread::sleep(Duration::from_millis(2500));
+        let after = drain(&p);
+        assert_eq!(while_paused, 0, "nothing read while paused");
+        assert!(after > 0, "reading resumes");
     }
 }
