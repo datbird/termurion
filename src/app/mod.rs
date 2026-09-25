@@ -69,6 +69,7 @@ mod seltools_ui;
 mod view_ui;
 mod marks_ui;
 mod menu;
+mod porthole_ui;
 mod prompted_ui;
 mod requests_ui;
 
@@ -210,6 +211,9 @@ pub struct App {
     /// buttons.
     block_hover: Option<(PaneId, u32, i32, i32)>,
     block_buttons: Vec<blocks_ui::BlockButton>,
+    /// Porthole layouts by pane and id, and the portholes drawn last frame.
+    porthole_views: HashMap<(PaneId, u32), porthole_ui::PView>,
+    porthole_hits: Vec<porthole_ui::PortholeHit>,
     /// An open Make Screenshot panel.
     shot: Option<screenshot_ui::Shot>,
     /// Page Setup's printer, paper, and margins.
@@ -361,6 +365,8 @@ pub fn run() {
         shot: None,
         block_hover: None,
         block_buttons: Vec::new(),
+        porthole_views: HashMap::new(),
+        porthole_hits: Vec::new(),
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
@@ -1309,6 +1315,8 @@ impl App {
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
+        self.prepare_portholes();
+        let mut porthole_hits = Vec::new();
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
@@ -1324,6 +1332,7 @@ impl App {
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
                     let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
+                    porthole_hits.extend(self.draw_portholes(&mut frame, id, rect, cell));
                 }
                 self.draw_view_extras(&mut frame, id, self.inner(rect), cell);
                 if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
@@ -1379,6 +1388,7 @@ impl App {
         }
         self.attention_due = attention;
         self.block_buttons = block_buttons;
+        self.porthole_hits = porthole_hits;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));

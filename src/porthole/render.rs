@@ -564,6 +564,8 @@ fn table_lines(rows: &[Vec<String>], head: usize, fg: Rgb, indent: f32) -> Vec<B
 #[derive(Clone, Debug, PartialEq)]
 pub struct VisualLine {
     pub runs: Vec<Run>,
+    /// Each run's left edge (from the line's `x`) and width.
+    pub spans: Vec<(f32, f32)>,
     pub x: f32,
     pub y: f32,
     pub h: f32,
@@ -662,7 +664,16 @@ pub fn layout(doc: &Doc, width: f32, cell_h: f32, measure: &dyn Fn(&str, Face, f
         }
         for (runs, lw) in lines {
             out.width = out.width.max(x + lw);
-            out.lines.push(VisualLine { runs, x, y, h, scale: b.scale, code_bg: b.code_bg, rule: b.rule });
+            let mut at = 0.0;
+            let spans = runs
+                .iter()
+                .map(|r| {
+                    let w = measure(&r.text, r.face, b.scale);
+                    at += w;
+                    (at - w, w)
+                })
+                .collect();
+            out.lines.push(VisualLine { runs, spans, x, y, h, scale: b.scale, code_bg: b.code_bg, rule: b.rule });
             y += h;
         }
     }

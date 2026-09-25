@@ -26,6 +26,8 @@ pub struct Span {
     pub alt_font: bool,
     /// Draw with the icon font (Segoe Fluent Icons).
     pub icon: bool,
+    /// Draw with the prose font (a porthole's markdown).
+    pub prose: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +36,8 @@ pub struct TextRow {
     pub y: f32,
     pub spans: Vec<Span>,
     pub clip: Rect,
+    /// Text size against the terminal font (a porthole's headings).
+    pub scale: f32,
 }
 
 /// A piece of an inline image: where it goes, which part of the picture (u0, v0, u1, v1),
@@ -208,7 +212,7 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         bar.query.chars().skip(n.saturating_sub(FIELD - 1)).collect()
     };
     let field = format!("{shown}_");
-    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false };
+    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false };
     let y = r.y + 4.0;
     let query_color = if bar.error { FIND_ERROR } else { TAB_TEXT };
     frame.rows.push(TextRow {
@@ -216,10 +220,11 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         y,
         spans: vec![span(format!("{field:<FIELD$}  {}", bar.count), query_color)],
         clip: r,
+        scale: 1.0,
     });
     let mode_x = r.x + (1 + FIELD + 2 + bar.count.chars().count() + 2) as f32 * cw;
     let mode_rect = Rect { x: mode_x, y: r.y, w: mode.chars().count() as f32 * cw, h: r.h };
-    frame.rows.push(TextRow { x: mode_x, y, spans: vec![span(mode, TAB_TEXT_DIM)], clip: r });
+    frame.rows.push(TextRow { x: mode_x, y, spans: vec![span(mode, TAB_TEXT_DIM)], clip: r, scale: 1.0 });
     mode_rect
 }
 
@@ -263,8 +268,8 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
         for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > bg.x) {
             r.clip.w = (bg.x - r.clip.x).max(0.0);
         }
-        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false };
-        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect });
+        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false };
+        frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect, scale: 1.0 });
     }
 }
 
@@ -412,7 +417,7 @@ pub fn pane_with(
                     spans.pop();
                 }
                 if !spans.is_empty() {
-                    frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect });
+                    frame.rows.push(TextRow { x: rect.x + start as f32 * cw, y, spans, clip: rect, scale: 1.0 });
                 }
             }
         };
@@ -428,7 +433,7 @@ pub fn pane_with(
             let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
             match spans.last_mut() {
                 Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
-                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false }),
+                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false }),
             }
             if !ascii {
                 flush(&mut piece, frame);
@@ -442,8 +447,8 @@ pub fn pane_with(
         for (p, label) in h.labels {
             let row = p.row as i32 - top;
             if row >= 0 && (row as usize) < lines {
-                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false };
-                frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect });
+                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false };
+                frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0 });
             }
         }
     }
@@ -473,8 +478,8 @@ pub fn pane_with(
                 let y = rect.y + row as f32 * ch;
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false };
-                frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect });
+                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false };
+                frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect, scale: 1.0 });
             }
         }
     }
@@ -602,6 +607,104 @@ pub fn block_pill(frame: &mut Frame, buttons: &[(Rect, crate::blocks::PillButton
     }
 }
 
+/// A porthole's look: colors, the language button's text, Wide, and the sideways scroll.
+pub struct PortholeChrome<'a> {
+    pub fg: Rgb,
+    pub bg: Rgb,
+    pub language: &'a str,
+    pub wide: bool,
+    pub scroll_x: f32,
+}
+
+/// Where a porthole's controls are, for clicks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PortholeControls {
+    pub close: Rect,
+    pub language: Rect,
+    pub wide: Rect,
+}
+
+fn cut(r: Rect, clip: Rect) -> Option<Rect> {
+    let x0 = r.x.max(clip.x);
+    let y0 = r.y.max(clip.y);
+    let x1 = (r.x + r.w).min(clip.x + clip.w);
+    let y1 = (r.y + r.h).min(clip.y + clip.h);
+    (x1 > x0 && y1 > y0).then_some(Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
+}
+
+fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
+}
+
+/// Pixels between a porthole's frame and its text.
+pub const PORTHOLE_MARGIN: f32 = 8.0;
+
+/// A porthole over its rows (iTerm2's chrome): the background moved 20% toward grey, a 1 px
+/// border in the text color at 50%, the close button, the language button, and Wide at the
+/// top right, then the laid-out lines (`lines` holds the ones in view), all cut to `clip`.
+pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porthole::render::VisualLine], chrome: &PortholeChrome, cell: (f32, f32)) -> PortholeControls {
+    let (fg, bg) = (chrome.fg, chrome.bg);
+    let back = blend(bg, rgb(128, 128, 128), 0.2);
+    if let Some(r) = cut(rect, clip) {
+        frame.quads.push(Quad { rect: r, color: rgba(back, 1.0) });
+    }
+    for edge in [Rect { h: 1.0, ..rect }, Rect { y: rect.y + rect.h - 1.0, h: 1.0, ..rect }, Rect { w: 1.0, ..rect }, Rect { x: rect.x + rect.w - 1.0, w: 1.0, ..rect }] {
+        if let Some(r) = cut(edge, clip) {
+            frame.quads.push(Quad { rect: r, color: rgba(fg, 0.5) });
+        }
+    }
+    let s = cell.1;
+    let close = Rect { x: rect.x + rect.w - 2.0 - s, y: rect.y + 2.0, w: s, h: s };
+    let lw = (chrome.language.chars().count() as f32 + 2.0) * cell.0;
+    let language = Rect { x: close.x - 4.0 - lw, y: close.y, w: lw, h: s };
+    let ww = 8.0 * cell.0;
+    let wide = Rect { x: language.x - 2.0 - ww, y: close.y, w: ww, h: s };
+    let text = |t: String, color: Rgb, icon: bool| Span { text: t, color, bold: false, italic: false, alt_font: false, icon, prose: false };
+    if let Some(c) = cut(close, clip) {
+        frame.rows.push(TextRow { x: close.x + (s - cell.0) / 2.0, y: close.y, spans: vec![text("\u{E711}".into(), blend(bg, fg, 0.5), true)], clip: c, scale: 1.0 });
+    }
+    if let Some(c) = cut(language, clip) {
+        frame.quads.push(Quad { rect: c, color: rgba(blend(back, fg, 0.12), 1.0) });
+        frame.rows.push(TextRow { x: language.x + cell.0, y: language.y, spans: vec![text(chrome.language.to_string(), fg, false)], clip: c, scale: 1.0 });
+    }
+    if let Some(c) = cut(wide, clip) {
+        let label = if chrome.wide { "[x] Wide" } else { "[ ] Wide" };
+        frame.rows.push(TextRow { x: wide.x, y: wide.y, spans: vec![text(label.into(), fg, false)], clip: c, scale: 1.0 });
+    }
+    let inner = Rect { x: rect.x + 4.0, y: rect.y + 4.0 + s, w: rect.w - 8.0, h: rect.h - 8.0 - s };
+    let Some(area) = cut(inner, clip) else { return PortholeControls { close, language, wide } };
+    let ox = rect.x + PORTHOLE_MARGIN - chrome.scroll_x;
+    let oy = rect.y + PORTHOLE_MARGIN + s;
+    for l in lines {
+        let y = oy + l.y;
+        if l.code_bg {
+            if let Some(r) = cut(Rect { x: inner.x, y, w: inner.w, h: l.h }, area) {
+                frame.quads.push(Quad { rect: r, color: rgba(blend(back, fg, 0.08), 1.0) });
+            }
+        }
+        if l.rule {
+            if let Some(r) = cut(Rect { x: ox + l.x, y: y + l.h / 2.0, w: inner.w - PORTHOLE_MARGIN - l.x, h: 1.0 }, area) {
+                frame.quads.push(Quad { rect: r, color: rgba(fg, 0.5) });
+            }
+        }
+        for (run, (sx, sw)) in l.runs.iter().zip(&l.spans) {
+            if run.underline {
+                if let Some(r) = cut(Rect { x: ox + l.x + sx, y: y + l.h - 2.0, w: *sw, h: 1.0 }, area) {
+                    frame.quads.push(Quad { rect: r, color: rgba(run.color, 1.0) });
+                }
+            }
+        }
+        let spans = l
+            .runs
+            .iter()
+            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose })
+            .collect();
+        frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale });
+    }
+    PortholeControls { close, language, wide }
+}
+
 /// How an inline button looks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ButtonFace {
@@ -632,8 +735,8 @@ pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], b
             }
             ButtonFace::Icon(c) => {
                 frame.quads.push(Quad { rect: *r, color: rgba(mix(0.15 * a), 1.0) });
-                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true };
-                frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r });
+                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true, prose: false };
+                frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r, scale: 1.0 });
             }
         }
     }
@@ -672,7 +775,7 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, c
         let fit = ((r.x + w - x) / cell.0).max(0.0) as usize;
         let fit = fit.saturating_sub(1);
         let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
-        let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false };
+        let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false };
         let mut spans = Vec::new();
         let mut left = fit;
         if let Some((status, c)) = &tab.status {
@@ -682,7 +785,7 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, c
         }
         spans.push(span(title.chars().take(left).collect(), color));
         let y = r.y + ((r.h - cell.1) / 2.0).floor();
-        frame.rows.push(TextRow { x, y, spans, clip: r });
+        frame.rows.push(TextRow { x, y, spans, clip: r, scale: 1.0 });
         rects.push(r);
     }
     rects
@@ -714,15 +817,15 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
         }
     }
     frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false };
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
     let clip = Rect { w: (text_end - r.x).max(0.0), ..r };
-    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip });
+    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip, scale: 1.0 });
     for (i, b) in l.buttons.iter().enumerate() {
         frame.quads.push(Quad { rect: *b, color: rgba(BAR_BUTTON, 1.0) });
-        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.label(i))], clip: *b });
+        frame.rows.push(TextRow { x: b.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.label(i))], clip: *b, scale: 1.0 });
     }
-    frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close });
+    frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0 });
 }
 
 /// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
@@ -786,8 +889,8 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
         }
     }
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
-    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false };
-    frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r });
+    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false };
+    frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0 });
 }
 
 /// A one-line error bar along the bottom of `area`. Its box goes in `quads`, so its
@@ -795,8 +898,8 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
     let r = Rect { x: area.x, y: area.y + area.h - cell.1 - 8.0, w: area.w, h: cell.1 + 8.0 };
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
-    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false };
-    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r });
+    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false };
+    frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });
 }
 
 #[cfg(test)]
@@ -943,6 +1046,31 @@ mod tests {
         let mut f = Frame::default();
         block_bars(&mut f, &[(0, false, true)], inner, 16.0, 6.0, fg, red);
         assert_eq!(f.overlay[0].color, rgba(red, 1.0), "red when hovered");
+    }
+
+    #[test]
+    fn porthole_chrome_and_clip() {
+        use crate::porthole::render::{Face, Run, VisualLine};
+        let (fg, bg) = (rgb(200, 200, 200), rgb(0, 0, 0));
+        let run = |t: &str, face| Run { text: t.into(), color: fg, bold: false, italic: false, underline: t == "link", face, link: None };
+        let line = |y: f32, runs: Vec<Run>, scale: f32| VisualLine { spans: runs.iter().enumerate().map(|(i, _)| (i as f32 * 40.0, 40.0)).collect(), runs, x: 10.0, y, h: 20.0 * scale, scale, code_bg: false, rule: false };
+        let lines = vec![line(0.0, vec![run("Title", Face::Prose)], 2.0), line(40.0, vec![run("code", Face::Code), run("link", Face::Prose)], 1.0)];
+        let rect = Rect { x: 0.0, y: -40.0, w: 200.0, h: 200.0 };
+        let clip = Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
+        let mut f = Frame::default();
+        let chrome = PortholeChrome { fg, bg, language: "Markdown", wide: false, scroll_x: 0.0 };
+        let c = porthole(&mut f, rect, clip, &lines, &chrome, (10.0, 20.0));
+        assert_eq!(f.quads[0].rect, clip, "the background, cut to the pane");
+        assert_eq!(f.quads[0].color, rgba(rgb(26, 26, 26), 1.0), "20% toward grey");
+        assert!(f.quads.iter().all(|q| q.rect.y >= clip.y && q.rect.y + q.rect.h <= clip.y + clip.h), "nothing outside the pane");
+        let title = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "Title")).expect("the title");
+        assert!(title.spans[0].prose && title.scale == 2.0);
+        assert_eq!(title.x, 8.0 + 10.0, "margin plus the line's indent");
+        assert!(title.clip.y >= clip.y && title.clip.y + title.clip.h <= clip.y + clip.h);
+        let code = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "code")).unwrap();
+        assert!(!code.spans[0].prose);
+        assert!(f.quads.iter().any(|q| q.rect.h == 1.0 && q.rect.w == 40.0), "the link is underlined");
+        assert!(c.close.x + c.close.w <= rect.x + rect.w - 2.0 && c.language.x + c.language.w <= c.close.x && c.wide.x + c.wide.w <= c.language.x, "close, then the language, then Wide, right to left");
     }
 
     #[test]

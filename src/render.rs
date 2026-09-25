@@ -269,7 +269,11 @@ pub struct Renderer {
     viewport: Viewport,
     text: TextRenderer,
     /// One text buffer per row slot, with the spans it last shaped.
-    buffers: Vec<(Buffer, Vec<Span>, f32)>,
+    buffers: Vec<(Buffer, Vec<Span>, f32, f32)>,
+    /// A porthole's prose font: Segoe UI Variable, else Segoe UI.
+    prose_family: String,
+    /// Widths of prose words already measured: (text, scale bits) to pixels.
+    widths: std::collections::HashMap<(String, u32), f32>,
     family: String,
     alt_family: Option<String>,
     /// Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets (Windows 10, same code points).
@@ -305,11 +309,14 @@ impl Renderer {
             format,
             alt_family: None,
             icon_family: String::new(),
+            prose_family: String::new(),
+            widths: std::collections::HashMap::new(),
             h_spacing: 1.0,
             v_spacing: 1.0,
             font_px,
             cell: (0.0, 0.0),
         };
+        r.prose_family = if r.has_family("Segoe UI Variable") { "Segoe UI Variable" } else { "Segoe UI" }.to_string();
         r.icon_family = if r.has_family("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" }.to_string();
         r.set_font_px(font_px);
         r
@@ -330,6 +337,7 @@ impl Renderer {
         let w = b.layout_runs().next().map(|r| r.line_w / n as f32).filter(|w| *w > 0.0).unwrap_or(px * 0.6);
         self.cell = (w * self.h_spacing, line);
         self.buffers.clear();
+        self.widths.clear();
     }
 
     /// The installed family for an iTerm2 font name, which is usually a PostScript
@@ -354,6 +362,30 @@ impl Renderer {
             .flat_map(|f| f.families.iter())
             .find(|(n, _)| squash(n) == want)
             .map_or(guess, |(n, _)| n.clone())
+    }
+
+    /// A porthole run's width: the cell width per column for the profile's font, the shaped
+    /// width for the prose font (remembered per word).
+    pub fn text_width(&mut self, text: &str, prose: bool, scale: f32) -> f32 {
+        use unicode_width::UnicodeWidthStr;
+        if !prose {
+            return text.width() as f32 * self.cell.0 * scale;
+        }
+        let key = (text.to_string(), scale.to_bits());
+        if let Some(w) = self.widths.get(&key) {
+            return *w;
+        }
+        let mut b = Buffer::new(&mut self.font_system, Metrics::new(self.font_px * scale, self.cell.1 * scale));
+        b.set_size(None, None);
+        b.set_wrap(Wrap::None);
+        b.set_text(text, &Attrs::new().family(Family::Name(&self.prose_family)), Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.font_system, false);
+        let w = b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
+        if self.widths.len() > 200_000 {
+            self.widths.clear();
+        }
+        self.widths.insert(key, w);
+        w
     }
 
     /// True when a font family with this name is installed.
@@ -436,22 +468,26 @@ impl Renderer {
         let (cw, ch) = self.cell;
         let metrics = Metrics::new(self.font_px, ch);
         while self.buffers.len() < frame.rows.len() {
-            self.buffers.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0));
+            self.buffers.push((Buffer::new(&mut self.font_system, metrics), Vec::new(), 0.0, 1.0));
         }
         for (slot, row) in self.buffers.iter_mut().zip(&frame.rows) {
-            let (buffer, last, last_w) = slot;
-            if *last == row.spans && *last_w == row.clip.w {
+            let (buffer, last, last_w, last_scale) = slot;
+            if *last == row.spans && *last_w == row.clip.w && *last_scale == row.scale {
                 continue;
             }
-            buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw), Some(ch));
+            let metrics = Metrics::new(self.font_px * row.scale, ch * row.scale);
+            buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
             buffer.set_wrap(Wrap::None);
             buffer.set_monospace_width(Some(cw));
             let base = Attrs::new().family(Family::Name(&self.family));
             let alt = self.alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
             let icons = Attrs::new().family(Family::Name(&self.icon_family));
+            let prose = Attrs::new().family(Family::Name(&self.prose_family));
             let spans = row.spans.iter().map(|s| {
                 let start = if s.icon {
                     icons.clone()
+                } else if s.prose {
+                    prose.clone()
                 } else if s.alt_font {
                     alt.clone().unwrap_or_else(|| base.clone())
                 } else {
@@ -467,10 +503,11 @@ impl Renderer {
             buffer.shape_until_scroll(&mut self.font_system, false);
             *last = row.spans.clone();
             *last_w = row.clip.w;
+            *last_scale = row.scale;
         }
 
         self.viewport.update(&self.queue, Resolution { width, height });
-        let areas = self.buffers.iter().zip(&frame.rows).map(|((buffer, _, _), row)| TextArea {
+        let areas = self.buffers.iter().zip(&frame.rows).map(|((buffer, _, _, _), row)| TextArea {
             buffer,
             left: row.x,
             top: row.y,
@@ -650,8 +687,9 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
+                scale: 1.0,
             }],
             overlay: vec![],
             backgrounds: vec![],
@@ -699,8 +737,9 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
+                scale: 1.0,
             }],
             overlay: vec![],
             backgrounds: vec![],
