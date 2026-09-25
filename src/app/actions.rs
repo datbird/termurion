@@ -212,6 +212,9 @@ impl App {
         if let Status::Later(m) = keyaction::status(b.action) {
             return self.later(name, m);
         }
+        if self.run_applied(b) {
+            return;
+        }
         let window = self.gpu.as_ref().map(|g| g.window.clone());
         match b.action {
             35 => {
@@ -249,6 +252,12 @@ impl App {
             10 => self.send_to_focused(&[b"\x1b".as_slice(), b.text.as_bytes()].concat()),
             11 => self.send_to_focused(&keyaction::hex_bytes(&b.text)),
             12 => self.send_to_focused(keyaction::expand(&b.text, b.escaping()).as_bytes()),
+            // Send Snippet: nothing when the snippet was deleted.
+            63 => {
+                if let Some(bytes) = self.action_text(b) {
+                    self.send_to_focused(&bytes);
+                }
+            }
             38 => self.send_to_focused(keyaction::expand(&b.text, b.vim_escaping()).as_bytes()),
             // Send Text without Broadcasting.
             76 => self.send_focused_as(keyaction::expand(&b.text, b.vim_escaping()).as_bytes(), crate::broadcast::Write::SendTextLocal),

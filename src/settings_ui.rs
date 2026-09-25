@@ -46,6 +46,8 @@ pub enum Edit {
     Open(String, How),
     /// A global setting changed (Keys or Pointer).
     GlobalsChanged,
+    /// The snippets changed (Settings > Shortcuts).
+    SnippetsChanged,
 }
 
 /// The settings window's panes, as iTerm2's toolbar lists them.
@@ -54,6 +56,7 @@ pub enum Page {
     Profiles,
     General,
     Keys,
+    Shortcuts,
     Pointer,
     Advanced,
     Appearance,
@@ -89,6 +92,7 @@ pub struct SettingsWindow {
     /// The Automatic Profile Switching rule warning, until the next commit.
     aps_warning: Option<String>,
     arr: crate::settings_arrangements::State,
+    shortcuts: crate::settings_shortcuts::State,
     /// Hotkey windows: the sheet, and registration failures from the app.
     pub hotkeys: crate::settings_hotkey::HotkeyUi,
 }
@@ -120,6 +124,7 @@ impl SettingsWindow {
             mods: Mods::default(),
             aps_warning: None,
             arr: Default::default(),
+            shortcuts: Default::default(),
             hotkeys: Default::default(),
         })
     }
@@ -171,7 +176,7 @@ impl SettingsWindow {
         self.host.event(event)
     }
 
-    pub fn redraw(&mut self, store: &mut Store, globals: &mut Globals) -> Edit {
+    pub fn redraw(&mut self, store: &mut Store, globals: &mut Globals, snippets: &mut crate::snippets::Store) -> Edit {
         let mut edit = Edit::None;
         let selected = self.selected.get_or_insert_with(|| store.default_guid.clone()).clone();
         let mut tab = self.tab;
@@ -185,6 +190,8 @@ impl SettingsWindow {
         let profiles: Vec<(String, String)> = store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let profile_tables: Vec<(String, String, toml::Table)> = store.profiles.iter().map(|p| (p.guid(), p.name(), p.values.clone().into_iter().collect())).collect();
         let arr = &mut self.arr;
+        let shortcuts = &mut self.shortcuts;
+        settings_keys::set_snippets(&snippets.snippets);
         let hk = &mut self.hotkeys;
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
@@ -196,7 +203,7 @@ impl SettingsWindow {
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for (p, name) in [(Page::General, "General"), (Page::Appearance, "Appearance"), (Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Pointer, "Pointer"), (Page::Arrangements, "Arrangements"), (Page::Advanced, "Advanced")] {
+                        for (p, name) in [(Page::General, "General"), (Page::Appearance, "Appearance"), (Page::Profiles, "Profiles"), (Page::Keys, "Keys"), (Page::Shortcuts, "Shortcuts"), (Page::Pointer, "Pointer"), (Page::Arrangements, "Arrangements"), (Page::Advanced, "Advanced")] {
                             if ui.selectable_label(page == p, name).clicked() {
                                 page = p;
                             }
@@ -222,6 +229,14 @@ impl SettingsWindow {
                             Page::Advanced => settings_keys::schema_page(ui, globals, "Advanced"),
                             Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance"),
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, arr),
+                            Page::Shortcuts => match crate::settings_shortcuts::page(ui, globals, snippets, shortcuts, &profiles) {
+                                crate::settings_shortcuts::Changed::None => false,
+                                crate::settings_shortcuts::Changed::Actions => true,
+                                crate::settings_shortcuts::Changed::Snippets => {
+                                    edit = Edit::SnippetsChanged;
+                                    false
+                                }
+                            },
                             _ => settings_keys::pointer_page(ui, globals, keys, &profiles),
                         };
                         if changed {

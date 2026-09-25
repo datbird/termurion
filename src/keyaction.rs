@@ -379,7 +379,7 @@ pub fn status(code: i64) -> Status {
         44 | 62 => Status::Later(7),
         15 => Status::Later(10),
         40 => Status::Later(13),
-        63 | 64 => Status::Later(9),
+        64 => Status::Later(9),
         60 => Status::Later(11),
         _ => Status::Done,
     }

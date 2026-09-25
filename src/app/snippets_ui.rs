@@ -1,0 +1,182 @@
+//! Snippets and actions in the app: the snippets file, Edit > Snippets and Edit > Actions,
+//! sending a snippet (Alt: Advanced Paste), and the apply modes of key actions.
+
+use super::*;
+use crate::keyaction::{self, Binding};
+use crate::snippets::{self, MenuEntry, Store};
+use crate::user_actions;
+
+const SNIPPET_ID: &str = "snippet-send:";
+const ACTION_ID: &str = "action-apply:";
+
+pub(super) fn snippets_path() -> std::path::PathBuf {
+    std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("snippets.json")
+}
+
+/// The snippets file as it is now (a missing file is an empty list).
+pub(super) fn load_snippets() -> Store {
+    match std::fs::read_to_string(snippets_path()) {
+        Ok(t) => Store::from_file_text(Some(&t)),
+        Err(_) => Store::from_file_text(None),
+    }
+}
+
+fn append(parent: &muda::Submenu, item: &dyn muda::IsMenuItem, errors: &mut Vec<String>) {
+    if let Err(e) = parent.append(item) {
+        errors.push(e.to_string());
+    }
+}
+
+/// Builds entries into `parent` up to the end of the current folder.
+fn build(parent: &muda::Submenu, entries: &[MenuEntry], at: &mut usize, errors: &mut Vec<String>) {
+    while *at < entries.len() {
+        let e = &entries[*at];
+        *at += 1;
+        match e {
+            MenuEntry::Close => return,
+            MenuEntry::Open(name) => {
+                let sub = muda::Submenu::new(name.replace('&', "&&"), true);
+                build(&sub, entries, at, errors);
+                append(parent, &sub, errors);
+            }
+            MenuEntry::Line => append(parent, &muda::PredefinedMenuItem::separator(), errors),
+            MenuEntry::Item(guid, label) => append(parent, &muda::MenuItem::with_id(format!("{SNIPPET_ID}{guid}"), label.replace('&', "&&"), true, None), errors),
+        }
+    }
+}
+
+impl App {
+    /// The focused session's profile "Snippets Filter".
+    fn snippets_filter(&self) -> Vec<String> {
+        let Some(p) = self.focused_id().and_then(|id| self.panes.get(&id)).and_then(|p| self.store.get(&p.profile)) else { return Vec::new() };
+        p.get("Snippets Filter").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())).unwrap_or_default()
+    }
+
+    /// Edit > Snippets and Edit > Actions, rebuilt when what they list changes.
+    pub(super) fn refresh_snippet_menus(&mut self) {
+        let s = &self.snippets.snippets;
+        let entries = snippets::menu_entries(s, &snippets::filtered(s, &self.snippets_filter()));
+        let actions: Vec<(String, String)> = user_actions::load(self.globals.get("Actions").as_ref()).iter().enumerate().map(|(i, a)| (format!("{ACTION_ID}{i}"), a.title.clone())).collect();
+        let mut errors = Vec::new();
+        let Some(bar) = &mut self.menu_bar else { return };
+        if let Some(sub) = bar.snippets.as_ref().filter(|_| bar.snippet_items.as_ref() != Some(&entries)) {
+            while sub.remove_at(0).is_some() {}
+            append(sub, &muda::MenuItem::new("Press Option to Edit Before Sending", false, None), &mut errors);
+            append(sub, &muda::PredefinedMenuItem::separator(), &mut errors);
+            build(sub, &entries, &mut 0, &mut errors);
+            bar.snippet_items = Some(entries);
+        }
+        if let Some(sub) = bar.actions.as_ref().filter(|_| bar.action_items != actions) {
+            while sub.remove_at(0).is_some() {}
+            for (id, title) in &actions {
+                append(sub, &muda::MenuItem::with_id(id.clone(), title.replace('&', "&&"), true, None), &mut errors);
+            }
+            bar.action_items = actions;
+        }
+        if let Some(e) = errors.first() {
+            self.banners.set("menu", format!("Snippets menu: {e}"));
+        }
+    }
+
+    /// A pick from Edit > Snippets or Edit > Actions. False for other menu ids.
+    pub(super) fn snippet_or_action_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
+        if let Some(guid) = id.strip_prefix(SNIPPET_ID) {
+            let Some(s) = self.snippets.snippets.iter().find(|s| s.guid == guid).cloned() else { return true };
+            let text = keyaction::expand(&s.value, s.escaping);
+            let option = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+            match self.focused_id() {
+                // iTerm2 puts the escaped text on the pasteboard and opens Advanced Paste on it.
+                Some(pane) if option => {
+                    if let Some(cb) = self.clipboard.as_mut() {
+                        if let Err(e) = cb.set_text(text) {
+                            self.banners.set("clipboard", format!("Could not copy: {e}"));
+                            return true;
+                        }
+                    }
+                    self.open_advanced_paste(event_loop, pane, None);
+                }
+                Some(_) => self.send_to_focused(text.as_bytes()),
+                None => {}
+            }
+            return true;
+        }
+        if let Some(n) = id.strip_prefix(ACTION_ID).and_then(|n| n.parse::<usize>().ok()) {
+            if let Some(a) = user_actions::load(self.globals.get("Actions").as_ref()).get(n) {
+                let b = a.binding();
+                self.run_key_action(&b, None, None, event_loop);
+            }
+            return true;
+        }
+        false
+    }
+
+    /// What a text-sending key action writes, or None for other actions (and a deleted
+    /// snippet).
+    pub(super) fn action_text(&self, b: &Binding) -> Option<Vec<u8>> {
+        match b.action {
+            10 => Some([b"\x1b".as_slice(), b.text.as_bytes()].concat()),
+            11 => Some(keyaction::hex_bytes(&b.text)),
+            12 => Some(keyaction::expand(&b.text, b.escaping()).into_bytes()),
+            38 | 76 => Some(keyaction::expand(&b.text, b.vim_escaping()).into_bytes()),
+            // A snippet is sent with its own escaping, never the binding's.
+            63 => self.snippets.find_key(&b.text).map(|s| keyaction::expand(&s.value, s.escaping).into_bytes()),
+            _ => None,
+        }
+    }
+
+    /// The sessions an apply mode names, from the focused one.
+    fn apply_targets(&self, mode: i64, current: PaneId) -> Vec<PaneId> {
+        let window: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+        let mut all = window.clone();
+        for (_, s) in self.windows.parked() {
+            all.extend(s.tabs.iter().flat_map(|t| t.layout.panes()));
+        }
+        let tab = self.tabs.get(self.active).map(|t| t.layout.panes()).unwrap_or_default();
+        let broadcast = self.broadcast.domain_panes(&self.broadcast_view());
+        user_actions::targets(mode, current, &all, &window, &tab, &broadcast)
+    }
+
+    /// A key action with an apply mode other than the current session. True when it ran.
+    pub(super) fn run_applied(&mut self, b: &Binding) -> bool {
+        if b.apply_mode == 0 || !user_actions::shows_apply_mode(b.action) {
+            return false;
+        }
+        let Some(current) = self.focused_id() else { return true };
+        let targets = self.apply_targets(b.apply_mode, current);
+        if b.action == 35 {
+            for t in targets {
+                self.start_coprocess(t, &b.text, false, crate::coprocess::Entry::KeyBinding);
+            }
+            return true;
+        }
+        if matches!(b.action, 10 | 11 | 12 | 38 | 76 | 63) {
+            let Some(bytes) = self.action_text(b) else { return true };
+            if bytes.is_empty() {
+                return true;
+            }
+            // Each target gets the text once (its own broadcasting does not repeat it).
+            for t in targets {
+                if let Some(p) = self.panes.get_mut(&t).filter(|p| p.exited.is_none()) {
+                    p.scroll(Scroll::Bottom);
+                    self.user_write(t, &bytes, crate::broadcast::Write::SendTextLocal);
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Saves the snippets file after an edit (never an empty list over a broken file).
+    pub(super) fn save_snippets(&mut self) {
+        let Some(text) = self.snippets.file_text() else { return };
+        let path = snippets_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match crate::shell_history::write_whole(&path, &text) {
+            Ok(()) => self.snippets.broken = false,
+            Err(e) => self.banners.set("snippets", format!("Problem Saving Snippets: There was a problem saving snippets to \u{201c}{}\u{201d}. The error was: {e}", path.display())),
+        }
+        self.refresh_snippet_menus();
+    }
+}

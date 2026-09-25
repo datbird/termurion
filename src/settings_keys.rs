@@ -12,6 +12,22 @@ use crate::pointer::{self, PointerBinding};
 use crate::profile::Profile;
 use crate::schema::{self, Kind, Setting};
 
+thread_local! {
+    /// The snippets Send Snippet can pick and names; the settings window sets them each
+    /// frame from the snippets file.
+    static SNIPPETS: std::cell::RefCell<Vec<crate::snippets::Snippet>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The snippets the editors offer (the settings window calls this each frame).
+pub fn set_snippets(list: &[crate::snippets::Snippet]) {
+    SNIPPETS.with(|s| *s.borrow_mut() = list.to_vec());
+}
+
+/// Send Snippet's name for a stored key.
+fn snippet_name(key: &str) -> String {
+    SNIPPETS.with(|s| crate::user_actions::snippet_action_name(s.borrow().iter().find(|x| x.matches_key(key)).map(|x| x.title.as_str())))
+}
+
 /// The Delete sends ^H checkbox's binding: Backspace (0x7f, kVK_Delete) to Send ^H Backspace.
 const BACKSPACE_KEY: &str = "0x7f-0x0-0x33";
 
@@ -22,8 +38,14 @@ fn later_note(status: Status) -> String {
     }
 }
 
-/// One line for an action in a table: its name, and its parameter when it has one.
+/// One line for an action in a table: its name, and its parameter when it has one, after
+/// the apply mode's words.
 pub fn action_summary(b: &Binding) -> String {
+    let base = if b.action == 63 { snippet_name(&b.text) } else { action_name(b) };
+    crate::user_actions::with_apply_mode(&base, b.apply_mode)
+}
+
+fn action_name(b: &Binding) -> String {
     let name = keyaction::info(b.action).map_or_else(|| format!("Action {}", b.action), |a| a.name.clone());
     let arg = keyaction::info(b.action).map_or(Arg::None, |a| a.arg);
     match arg {
@@ -228,7 +250,7 @@ pub fn table(ui: &mut egui::Ui, salt: &str, rows: &[(String, String, String)], s
     out
 }
 
-fn action_combo(ui: &mut egui::Ui, salt: &str, action: &mut i64, allow_sequence: bool) -> bool {
+pub(crate) fn action_combo(ui: &mut egui::Ui, salt: &str, action: &mut i64, allow_sequence: bool) -> bool {
     let mut changed = false;
     let current = keyaction::info(*action).map_or("Select Action...".to_string(), |a| format!("{}{}", a.name, later_note(keyaction::status(*action))));
     egui::ComboBox::from_id_salt(salt).width(320.0).height(420.0).selected_text(current).show_ui(ui, |ui| {
@@ -319,9 +341,47 @@ const ESCAPINGS: [(Escaping, &str); 5] = [
 ];
 
 /// The parameter controls for a key binding's action.
-fn param_editor(ui: &mut egui::Ui, salt: &str, b: &mut Binding, profiles: &[(String, String)]) -> bool {
+/// Send Snippet's picker: the snippets sorted by title, case-insensitively.
+fn snippet_combo(ui: &mut egui::Ui, salt: &str, key: &mut String) -> bool {
+    let mut list = SNIPPETS.with(|s| s.borrow().clone());
+    list.sort_by_key(|s| s.display_title().to_lowercase());
+    let shown = list.iter().find(|s| s.matches_key(key)).map_or("Select a snippet".to_string(), |s| s.display_title());
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(salt).width(320.0).selected_text(shown).show_ui(ui, |ui| {
+        for s in &list {
+            if ui.selectable_label(s.matches_key(key), s.display_title()).clicked() {
+                *key = s.action_key();
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// The apply mode popup, for the actions that have one.
+pub(crate) fn apply_mode_combo(ui: &mut egui::Ui, salt: &str, b: &mut Binding) -> bool {
+    if !crate::user_actions::shows_apply_mode(b.action) {
+        return false;
+    }
+    let mut changed = false;
+    let shown = crate::user_actions::APPLY_MODES.iter().find(|(m, _)| *m == b.apply_mode).map_or("", |(_, n)| n);
+    egui::ComboBox::from_id_salt(salt).width(260.0).selected_text(shown).show_ui(ui, |ui| {
+        for (m, name) in crate::user_actions::APPLY_MODES {
+            if ui.selectable_label(m == b.apply_mode, name).clicked() {
+                b.apply_mode = m;
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+pub(crate) fn param_editor(ui: &mut egui::Ui, salt: &str, b: &mut Binding, profiles: &[(String, String)]) -> bool {
     let arg = keyaction::info(b.action).map_or(Arg::None, |a| a.arg);
     let mut changed = false;
+    if b.action == 63 {
+        return snippet_combo(ui, &format!("{salt}-snippet"), &mut b.text);
+    }
     match arg {
         Arg::None => {}
         Arg::Text => {
@@ -416,9 +476,13 @@ pub fn key_editor(ctx: &egui::Context, e: &mut KeyEditor, profiles: &[(String, S
             ui.label("Action:");
             if action_combo(ui, "key-action", &mut e.binding.action, true) {
                 e.binding.text.clear();
+                if !crate::user_actions::shows_apply_mode(e.binding.action) {
+                    e.binding.apply_mode = 0;
+                }
             }
         });
         param_editor(ui, "key-param", &mut e.binding, profiles);
+        apply_mode_combo(ui, "key-apply", &mut e.binding);
         ui.separator();
         ui.horizontal(|ui| {
             let ok = e.stroke.is_some() && e.binding.action != -1 && !e.recording;

@@ -193,6 +193,47 @@ pub fn menu_tree(snippets: &[Snippet], shown: &[usize]) -> (Vec<usize>, Vec<Menu
     (untagged, nodes_of(tree, snippets))
 }
 
+/// One line of Edit > Snippets after its hint.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuEntry {
+    /// A snippet: its GUID and display title.
+    Item(String, String),
+    Line,
+    /// A folder starts (its name) or ends.
+    Open(String),
+    Close,
+}
+
+/// Edit > Snippets below its hint and line, in order.
+pub fn menu_entries(snippets: &[Snippet], shown: &[usize]) -> Vec<MenuEntry> {
+    fn node(n: &MenuNode, s: &[Snippet], out: &mut Vec<MenuEntry>) {
+        match n {
+            MenuNode::Snippet(i) => out.push(MenuEntry::Item(s[*i].guid.clone(), s[*i].display_title())),
+            MenuNode::Folder(name, children) => {
+                out.push(MenuEntry::Open(name.clone()));
+                // Subfolders, a line, then the folder's snippets.
+                let folders = children.iter().filter(|c| matches!(c, MenuNode::Folder(..))).count();
+                for (k, c) in children.iter().enumerate() {
+                    if k == folders && folders > 0 {
+                        out.push(MenuEntry::Line);
+                    }
+                    node(c, s, out);
+                }
+                out.push(MenuEntry::Close);
+            }
+        }
+    }
+    let (untagged, tree) = menu_tree(snippets, shown);
+    let mut out: Vec<MenuEntry> = untagged.iter().map(|&i| MenuEntry::Item(snippets[i].guid.clone(), snippets[i].display_title())).collect();
+    if !tree.is_empty() {
+        out.push(MenuEntry::Line);
+        for n in &tree {
+            node(n, snippets, &mut out);
+        }
+    }
+    out
+}
+
 /// iTerm2's componentsBySplittingProfileListQuery: words, with quotes and backslashes.
 fn query_words(q: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -510,6 +551,16 @@ mod tests {
         let (u, t) = menu_tree(&s, &[1, 2]);
         assert!(u.is_empty());
         assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn menu_entries_follow_iterm2() {
+        use MenuEntry::*;
+        let s = vec![snip("zeta", "1", &[]), snip("", "echo hi", &[]), snip("b", "2", &["w/g"]), snip("a", "3", &["w"])];
+        let item = |i: usize| Item(s[i].guid.clone(), s[i].display_title());
+        assert_eq!(menu_entries(&s, &[0, 1, 2, 3]), vec![item(0), item(1), Line, Open("w".into()), Open("g".into()), item(2), Close, Line, item(3), Close]);
+        assert_eq!(menu_entries(&s, &[0]), vec![item(0)]);
+        assert_eq!(menu_entries(&s, &[3]), vec![Line, Open("w".into()), item(3), Close]);
     }
 
     #[test]

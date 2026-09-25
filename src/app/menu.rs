@@ -79,6 +79,11 @@ pub(super) struct MenuBar {
     /// Session > Buried Sessions and what it lists: (menu id, label); an empty id is a line.
     pub(super) buried: Option<Submenu>,
     pub(super) buried_items: Vec<(String, String)>,
+    /// Edit > Snippets and Edit > Actions, and what they list.
+    pub(super) snippets: Option<Submenu>,
+    pub(super) snippet_items: Option<Vec<crate::snippets::MenuEntry>>,
+    pub(super) actions: Option<Submenu>,
+    pub(super) action_items: Vec<(String, String)>,
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -168,7 +173,7 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())] });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))] });
         self.sync_checks();
     }
 
@@ -256,6 +261,7 @@ impl App {
         self.refresh_profiles_menu();
         self.refresh_arrangement_menus();
         self.refresh_buried_menu();
+        self.refresh_snippet_menus();
         self.menus_dirty = false;
         let Some(bar) = &self.menu_bar else { return };
         for selector in super::seltools_ui::CHECKED {
@@ -297,6 +303,9 @@ impl App {
         }
         if let Some(guid) = id.strip_prefix(PROFILE_ID) {
             return self.open_profile_from_menu(guid);
+        }
+        if self.snippet_or_action_picked(id, event_loop) {
+            return;
         }
         if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) {
             return;

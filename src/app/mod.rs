@@ -54,6 +54,7 @@ mod actions;
 mod paste_ui;
 mod history_ui;
 mod shell_history_ui;
+mod snippets_ui;
 mod completion_ui;
 mod annotations_ui;
 mod activity_ui;
@@ -377,6 +378,8 @@ pub struct App {
     /// The shell history (read on first use), what each pane fed it, and the list popup
     /// (Command History, Recent Directories) with its pane, purpose, and values.
     shell_history: Option<crate::shell_history::Store>,
+    /// The snippets file (Edit > Snippets, Send Snippet, Settings > Shortcuts).
+    snippets: crate::snippets::Store,
     shell_fed: HashMap<PaneId, shell_history_ui::Fed>,
     list_popup: Option<(crate::list_popup_ui::ListPopup, PaneId, shell_history_ui::PopupFor, Vec<String>)>,
     /// The completion list at a pane's cursor, and Auto Command Completion's typed text
@@ -625,6 +628,7 @@ pub fn run() {
         pastes: HashMap::new(),
         paste_asks: HashMap::new(),
         paste_history: None,
+        snippets: snippets_ui::load_snippets(),
         paste_history_win: None,
         advanced_paste_win: None,
         advanced_paste_request: None,
@@ -839,6 +843,7 @@ impl App {
                 How::SplitDown => self.split(Axis::Column, Some(&guid)),
             },
             Edit::Error(e) => self.banners.set("import", e),
+            Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => {
                 self.save_globals();
                 self.menus_dirty = true;
@@ -857,8 +862,9 @@ impl App {
                 self.save_due = Some(Instant::now() + SAVE_DELAY);
                 self.refresh_panes();
                 self.apply_fonts();
-                // A hotkey may have changed.
+                // A hotkey may have changed, and the Snippets Filter.
                 self.register_hotkeys();
+                self.refresh_snippet_menus();
             }
         }
         self.relayout();
@@ -2194,7 +2200,7 @@ impl ApplicationHandler<UserEvent> for App {
                     crate::winkeys::set_recording(false);
                 }
                 WindowEvent::RedrawRequested => {
-                    let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals);
+                    let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     self.apply_edit(edit);
                 }
                 other => {

@@ -126,6 +126,7 @@ pub mod settings_advanced;
 pub mod settings_triggers;
 pub mod settings_lists;
 pub mod settings_arrangements;
+pub mod settings_shortcuts;
 pub mod settings_hotkey;
 pub mod restore_state;
 pub mod host_proto;
