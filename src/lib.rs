@@ -49,6 +49,7 @@ pub mod winmodel;
 pub mod frames;
 pub mod placement;
 pub mod arrangement;
+pub mod arrangements;
 pub mod aps;
 pub mod coprocess;
 pub mod close_prompt;
