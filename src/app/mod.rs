@@ -1911,6 +1911,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.gpu.is_some() {
             return;
         }
+        if self.snippets.broken {
+            self.banners.set("snippets", format!("Could not read the snippets in {}. The file stays as it is until a snippet is added.", snippets_ui::snippets_path().display()));
+        }
         let arrangement_policy = self.globals.bool("OpenArrangementAtStartup");
         let hotkey_only = !arrangement_policy && self.globals.bool("OpenNoWindowsAtStartup");
         let hotkey_profiles: Vec<String> = self.hotkey_prefs().into_iter().filter(|(_, p)| p.active()).map(|(g, _)| g).collect();

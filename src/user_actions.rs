@@ -91,9 +91,15 @@ pub fn export(actions: &[&UserAction]) -> String {
 
 /// Actions whose editor offers an apply mode (iTerm2's applyHidden = NO).
 pub fn shows_apply_mode(action: i64) -> bool {
-    // Send Snippet, Compose, hex codes, the Send Text kinds, coprocesses, tmux commands,
-    // menu items, escape sequences, the profile actions, and color presets.
-    matches!(action, 63 | 64 | 11 | 38 | 76 | 12 | 35 | 65 | 25 | 10 | 26..=29 | 37 | 40)
+    // Send Snippet, hex codes, the Send Text kinds, coprocesses, escape sequences, Set
+    // Profile, color presets, Find Regular Expression, Copy Mode commands, script
+    // functions, and the two Paste Special actions.
+    matches!(action, 63 | 11 | 38 | 76 | 12 | 35 | 10 | 37 | 40 | 36 | 73 | 60 | 41 | 42)
+}
+
+/// Actions Tandem runs once per target session.
+pub fn fans_out(action: i64) -> bool {
+    matches!(action, 10 | 11 | 12 | 35 | 36 | 37 | 38 | 41 | 42 | 63 | 73 | 76)
 }
 
 /// iTerm2's sessionsForActionApplyMode. An empty `broadcast` means broadcasting is off.
@@ -156,8 +162,17 @@ mod tests {
         // The binding it runs.
         let b = v2.binding();
         assert_eq!((b.action, b.text.as_str(), b.version, b.escaping, b.apply_mode), (63, "{\"guid\":\"G\"}", 2, Some(3), 4));
-        assert!(shows_apply_mode(12) && shows_apply_mode(63) && shows_apply_mode(35) && shows_apply_mode(27));
-        assert!(!shows_apply_mode(0) && !shows_apply_mode(41));
+        // iTerm2's key action editor: the popup shows for exactly these.
+        let shown: Vec<i64> = (-1..=76).filter(|&c| shows_apply_mode(c)).collect();
+        assert_eq!(shown, vec![10, 11, 12, 35, 36, 37, 38, 40, 41, 42, 60, 63, 73, 76]);
+    }
+
+    #[test]
+    fn every_apply_mode_action_fans_out() {
+        // A mode the person chose never runs only in the current session.
+        for code in (-1..=76).filter(|&c| shows_apply_mode(c)) {
+            assert!(fans_out(code) || matches!(crate::keyaction::status(code), crate::commands::Status::Later(_)), "{code}");
+        }
     }
 
     #[test]

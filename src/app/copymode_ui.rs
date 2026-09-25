@@ -87,7 +87,12 @@ impl App {
     /// Key action 73: runs a vim-style key string through Copy Mode, then leaves Copy
     /// Mode as it was.
     pub(super) fn copy_mode_commands(&mut self, keys: &str) {
-        let Some(id) = self.focused_id() else { return };
+        if let Some(id) = self.focused_id() {
+            self.copy_mode_commands_in(id, keys);
+        }
+    }
+
+    pub(super) fn copy_mode_commands_in(&mut self, id: PaneId, keys: &str) {
         let keys = match copymode::parse_vim_keys(keys) {
             Ok(k) => k,
             Err(e) => return self.banners.set("action", e),

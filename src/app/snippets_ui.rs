@@ -15,10 +15,7 @@ pub(super) fn snippets_path() -> std::path::PathBuf {
 
 /// The snippets file as it is now (a missing file is an empty list).
 pub(super) fn load_snippets() -> Store {
-    match std::fs::read_to_string(snippets_path()) {
-        Ok(t) => Store::from_file_text(Some(&t)),
-        Err(_) => Store::from_file_text(None),
-    }
+    Store::from_read(std::fs::read_to_string(snippets_path()).map_err(|e| e.kind()))
 }
 
 fn append(parent: &muda::Submenu, item: &dyn muda::IsMenuItem, errors: &mut Vec<String>) {
@@ -136,34 +133,36 @@ impl App {
         user_actions::targets(mode, current, &all, &window, &tab, &broadcast)
     }
 
-    /// A key action with an apply mode other than the current session. True when it ran.
+    /// A key action with an apply mode other than the current session: it runs once in
+    /// each target session. True when it ran.
     pub(super) fn run_applied(&mut self, b: &Binding) -> bool {
-        if b.apply_mode == 0 || !user_actions::shows_apply_mode(b.action) {
+        if b.apply_mode == 0 || !user_actions::shows_apply_mode(b.action) || !user_actions::fans_out(b.action) {
             return false;
         }
         let Some(current) = self.focused_id() else { return true };
-        let targets = self.apply_targets(b.apply_mode, current);
-        if b.action == 35 {
-            for t in targets {
-                self.start_coprocess(t, &b.text, false, crate::coprocess::Entry::KeyBinding);
+        let text = self.action_text(b);
+        for t in self.apply_targets(b.apply_mode, current) {
+            if self.panes.get(&t).is_none_or(|p| p.exited.is_some()) {
+                continue;
             }
-            return true;
-        }
-        if matches!(b.action, 10 | 11 | 12 | 38 | 76 | 63) {
-            let Some(bytes) = self.action_text(b) else { return true };
-            if bytes.is_empty() {
-                return true;
-            }
-            // Each target gets the text once (its own broadcasting does not repeat it).
-            for t in targets {
-                if let Some(p) = self.panes.get_mut(&t).filter(|p| p.exited.is_none()) {
-                    p.scroll(Scroll::Bottom);
-                    self.user_write(t, &bytes, crate::broadcast::Write::SendTextLocal);
+            match b.action {
+                35 => self.start_coprocess(t, &b.text, false, crate::coprocess::Entry::KeyBinding),
+                36 => self.find_regex_in(t, &b.text),
+                37 => self.set_profile_on(t, &b.text),
+                41 | 42 => self.paste_special_in(t, b),
+                73 => self.copy_mode_commands_in(t, &b.text),
+                // The text actions: each target gets the text once (its own broadcasting
+                // does not repeat it).
+                _ => {
+                    let Some(bytes) = text.as_ref().filter(|x| !x.is_empty()) else { continue };
+                    if let Some(p) = self.panes.get_mut(&t) {
+                        p.scroll(Scroll::Bottom);
+                    }
+                    self.user_write(t, bytes, crate::broadcast::Write::SendTextLocal);
                 }
             }
-            return true;
         }
-        false
+        true
     }
 
     /// Saves the snippets file after an edit (never an empty list over a broken file).

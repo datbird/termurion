@@ -186,12 +186,24 @@ impl App {
     }
 
     fn set_profile(&mut self, guid: &str) {
+        if let Some(id) = self.focused_pane_id() {
+            self.set_profile_on(id, guid);
+        }
+    }
+
+    pub(super) fn set_profile_on(&mut self, id: PaneId, guid: &str) {
         let Some(p) = self.store.get(guid).cloned() else {
             return self.banners.set("action", format!("No profile with Guid {guid}."));
         };
         // A new profile ends any session copy, as SetProfile does.
-        if let Some(id) = self.focused_pane_id() {
-            self.remarry(id, &p.guid());
+        self.remarry(id, &p.guid());
+    }
+
+    /// Paste... (41) and Paste from Selection... (42) with their configuration, into `id`.
+    pub(super) fn paste_special_in(&mut self, id: PaneId, b: &Binding) {
+        let text = if b.action == 41 { self.clipboard_text() } else { self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) };
+        if let Some(t) = text.filter(|t| !t.is_empty()) {
+            self.paste_with_config(id, &t, &b.text);
         }
     }
 
@@ -347,10 +359,8 @@ impl App {
             65 => self.send_tmux_command(&b.text),
             // Paste... and Paste from Selection... with their paste configuration.
             41 | 42 => {
-                let Some(id) = self.focused_id() else { return };
-                let text = if b.action == 41 { self.clipboard_text() } else { self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) };
-                if let Some(t) = text.filter(|t| !t.is_empty()) {
-                    self.paste_with_config(id, &t, &b.text);
+                if let Some(id) = self.focused_id() {
+                    self.paste_special_in(id, b);
                 }
             }
             66 => {

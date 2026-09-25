@@ -545,7 +545,12 @@ impl App {
     /// Key action 36, Find Regular Expression: the next match up of `regex`, case
     /// sensitive, without touching the find bar's query.
     pub(super) fn find_regex(&mut self, regex: &str) {
-        let Some(id) = self.focused_id() else { return };
+        if let Some(id) = self.focused_id() {
+            self.find_regex_in(id, regex);
+        }
+    }
+
+    pub(super) fn find_regex_in(&mut self, id: PaneId, regex: &str) {
         let Some(p) = self.panes.get_mut(&id) else { return };
         match find::find_all(&p.screen, regex) {
             Err(e) => self.banners.set("action", format!("Find Regular Expression: {e}")),

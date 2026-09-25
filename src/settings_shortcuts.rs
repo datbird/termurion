@@ -88,10 +88,15 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &mut Stat
         ui.selectable_value(&mut st.tab, Tab::Snippets, "Snippets");
     });
     ui.separator();
-    let mut changed = match st.tab {
-        Tab::Actions => actions_tab(ui, g, st, profiles),
-        Tab::Snippets => snippets_tab(ui, store, st),
-    };
+    // The table waits while a sheet is open, so the sheet's row stays the row it edits.
+    let sheet_open = st.snippet_editor.is_some() || st.action_editor.is_some();
+    let mut changed = Changed::None;
+    ui.add_enabled_ui(!sheet_open, |ui| {
+        changed = match st.tab {
+            Tab::Actions => actions_tab(ui, g, st, profiles),
+            Tab::Snippets => snippets_tab(ui, store, st),
+        };
+    });
     let ctx = ui.ctx().clone();
     if let Some(e) = &mut st.snippet_editor {
         match snippet_sheet(&ctx, e) {
@@ -101,8 +106,13 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &mut Stat
                 s.tags = e.tags.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
                 s.version = snippets::VERSION;
                 match e.index {
-                    Some(i) if i < store.snippets.len() => store.snippets[i] = s,
-                    _ => {
+                    // An edit finds its snippet by GUID (the rows may have moved).
+                    Some(_) => {
+                        if !store.replace(s) {
+                            st.alert = Some(("Edit Failed".into(), "The snippet was deleted while it was being edited.".into()));
+                        }
+                    }
+                    None => {
                         let at = e.insert_at.min(store.snippets.len());
                         store.snippets.insert(at, s);
                         st.snippets_selected = vec![at];
@@ -175,7 +185,7 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
     let mut rects: Vec<(usize, egui::Rect)> = Vec::new();
     let mut edit_row = None;
     let mut menu: Option<(&'static str, usize)> = None;
-    egui::ScrollArea::vertical().max_height(320.0).id_salt("snippets-table").show(ui, |ui| {
+    let area = egui::ScrollArea::vertical().max_height(320.0).id_salt("snippets-table").show(ui, |ui| {
         let w = ui.available_width();
         ui.horizontal(|ui| {
             ui.add_sized([w * 0.45, 16.0], egui::Label::new(egui::RichText::new("Title").strong()));
@@ -218,15 +228,19 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
             rects.push((i, rect));
         }
     });
+    // Only rows showing in the table can take a drop.
+    let clip = area.inner_rect;
+    rects.retain(|(_, r)| clip.intersects(*r));
+    let inside = |p: egui::Pos2| clip.contains(p);
     if let Some(from) = st.drag {
-        if let Some(p) = ui.ctx().pointer_interact_pos() {
+        if let Some(p) = ui.ctx().pointer_interact_pos().filter(|p| inside(*p)) {
             if let Some(&(_, r)) = rects.iter().find(|(_, r)| r.y_range().contains(p.y)) {
                 ui.painter().hline(r.x_range(), if p.y < r.center().y { r.top() } else { r.bottom() }, egui::Stroke::new(2.0, ui.visuals().selection.stroke.color));
             }
         }
         if ui.input(|i| i.pointer.any_released()) {
             st.drag = None;
-            let to = ui.ctx().pointer_interact_pos().and_then(|p| rects.iter().find(|(_, r)| r.y_range().contains(p.y)).map(|&(i, r)| if p.y < r.center().y { i } else { i + 1 }));
+            let to = ui.ctx().pointer_interact_pos().filter(|p| inside(*p)).and_then(|p| rects.iter().find(|(_, r)| r.y_range().contains(p.y)).map(|&(i, r)| if p.y < r.center().y { i } else { i + 1 }));
             if let Some(to) = to {
                 let s = store.snippets.remove(from);
                 let at = if to > from { to - 1 } else { to }.min(store.snippets.len());
@@ -265,7 +279,7 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
                 });
                 match parsed {
                     Ok(list) => {
-                        store.snippets.extend(list);
+                        store.add_imported(list);
                         changed = Changed::Snippets;
                     }
                     Err(e) => st.alert = Some(("Import Failed".into(), e)),

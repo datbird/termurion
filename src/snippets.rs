@@ -94,7 +94,7 @@ impl Snippet {
 
     /// A stored key: the GUID dictionary, or (older bindings) the title itself.
     pub fn matches_key(&self, key: &str) -> bool {
-        guid_of_key(key).is_some_and(|g| g == self.guid) || key == self.title
+        guid_of_key(key).is_some_and(|g| g == self.guid) || (!key.is_empty() && key == self.title)
     }
 }
 
@@ -124,6 +124,36 @@ impl Store {
         }
         let list: Vec<Value> = self.snippets.iter().map(Snippet::to_json).collect();
         serde_json::to_string_pretty(&json!({ "snippets": list })).ok()
+    }
+
+    /// The file as read: only a missing file is an empty list.
+    pub fn from_read(read: Result<String, std::io::ErrorKind>) -> Store {
+        match read {
+            Ok(text) => Store::from_file_text(Some(&text)),
+            Err(std::io::ErrorKind::NotFound) => Store::from_file_text(None),
+            Err(_) => Store { snippets: Vec::new(), broken: true },
+        }
+    }
+
+    /// Imported snippets go at the end; a GUID already in the list gets a new one.
+    pub fn add_imported(&mut self, list: Vec<Snippet>) {
+        for mut s in list {
+            if self.snippets.iter().any(|x| x.guid == s.guid) {
+                s.guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+            }
+            self.snippets.push(s);
+        }
+    }
+
+    /// Puts an edited snippet where its GUID is. False when it is gone.
+    pub fn replace(&mut self, s: Snippet) -> bool {
+        match self.snippets.iter_mut().find(|x| x.guid == s.guid) {
+            Some(x) => {
+                *x = s;
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn find_key(&self, key: &str) -> Option<&Snippet> {
@@ -438,7 +468,8 @@ pub fn search(snippets: &[Snippet], query: &str, extra_tags: &[String]) -> Vec<u
 pub fn import(text: &str) -> Result<Vec<Snippet>, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     let list = v.as_array().ok_or_else(|| "Malformed file".to_string())?;
-    list.iter().enumerate().map(|(i, s)| Snippet::from_json(s, i).ok_or_else(|| "Malformed file".to_string())).collect()
+    // iTerm2 refuses an entry without a GUID.
+    list.iter().enumerate().map(|(i, s)| s.get("guid").and_then(Value::as_str).and(Snippet::from_json(s, i)).ok_or_else(|| "Malformed file".to_string())).collect()
 }
 
 pub fn export(snippets: &[&Snippet]) -> String {
@@ -495,6 +526,8 @@ mod tests {
         assert!(s.matches_key("deploy"));
         assert!(!s.matches_key(r#"{"guid":"other"}"#));
         assert!(!s.matches_key("Deploy"));
+        // A binding saved without a snippet matches none, not an untitled one.
+        assert!(!snip("", "x", &[]).matches_key(""));
         let store = Store { snippets: vec![snip("a", "1", &[]), s.clone()], broken: false };
         assert_eq!(store.find_key("deploy").map(|s| s.value.as_str()), Some("make deploy"));
         assert_eq!(store.find_key(r#"{"guid":"nope"}"#), None);
@@ -517,6 +550,12 @@ mod tests {
         assert_eq!(Store::from_file_text(Some(&good.file_text().unwrap())), good);
         // No "snippets" array is broken too.
         assert!(Store::from_file_text(Some("{}")).broken);
+        // A file that exists but cannot be read is broken; only a missing one is empty.
+        let missing = Store::from_read(Err(std::io::ErrorKind::NotFound));
+        assert!(!missing.broken && missing.file_text().is_some());
+        let locked = Store::from_read(Err(std::io::ErrorKind::PermissionDenied));
+        assert!(locked.broken && locked.file_text().is_none());
+        assert_eq!(Store::from_read(Ok(good.file_text().unwrap())), good);
     }
 
     #[test]
@@ -594,6 +633,22 @@ mod tests {
         let text = export(&[&a, &b]);
         assert_eq!(import(&text).unwrap(), vec![a.clone(), b]);
         assert!(import("{}").unwrap_err().starts_with("Malformed file"));
+        // iTerm2 refuses an imported snippet without a GUID.
+        assert!(import(r#"[{"title":"a","value":"1"}]"#).is_err());
+        // Imported GUIDs already in the list get new ones.
+        let mut store = Store { snippets: vec![a.clone()], broken: false };
+        store.add_imported(import(&text).unwrap());
+        assert_eq!(store.snippets.len(), 3);
+        assert_eq!(store.snippets[1].title, "a");
+        assert_ne!(store.snippets[1].guid, a.guid);
+        assert_eq!(store.snippets[2].guid, "g-b");
+        // An edit finds its snippet by GUID wherever it moved.
+        let mut edited = a.clone();
+        edited.value = "changed".into();
+        store.snippets.insert(0, snip("z", "9", &[]));
+        assert!(store.replace(edited));
+        assert_eq!(store.snippets[1].value, "changed");
+        assert!(!store.replace(snip("gone", "", &[])));
         assert!(import("nope").is_err());
         // New snippets.
         let n = new_snippet(None);
