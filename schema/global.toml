@@ -875,6 +875,150 @@ default = false
 help = "Suppress warning about pasting a single line ending in a newline when at the shell prompt.\nThis requires Shell Integration to be installed."
 
 [[setting]]
+key = "SavePasteHistory"
+tab = "General"
+section = "Settings"
+label = "Save copy/paste and command history to disk"
+type = "bool"
+default = false
+help = "Persists paste history and command history between launches."
+
+[[setting]]
+key = "PasteHistoryMaxOptions"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Number of entries to save in Paste History."
+type = "int"
+default = 20
+help = "Number of entries to save in Paste History."
+
+[[setting]]
+key = "IncludePasteHistoryInAdvancedPaste"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Include paste history in the advanced paste menu."
+type = "bool"
+default = true
+help = "Include paste history in the advanced paste menu."
+
+[[setting]]
+key = "AdvancedPasteWaitsForPromptByDefault"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Should Advanced Paste automatically enable \"Wait for shell prompt before pasting each line\" by default when shell integration is detected?"
+type = "bool"
+default = true
+help = "Should Advanced Paste automatically enable \"Wait for shell prompt before pasting each line\" by default when shell integration is detected?"
+
+[[setting]]
+key = "PasteSpecialChunkSize"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: chunk size"
+type = "int"
+default = 1024
+help = "Advanced Paste's chunk size, remembered."
+
+[[setting]]
+key = "PasteSpecialChunkDelay"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: chunk delay"
+type = "float"
+default = 0.01
+help = "Advanced Paste's delay between chunks, remembered."
+
+[[setting]]
+key = "NumberOfSpacesPerTab"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: spaces per tab"
+type = "int"
+default = 4
+help = "Advanced Paste's spaces for each tab, remembered."
+
+[[setting]]
+key = "TabTransform"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: tab transform"
+type = "int"
+default = 0
+help = "Advanced Paste's tab choice (0 keep, 1 spaces, 2 escape with ^V), remembered."
+
+[[setting]]
+key = "EscapeShellCharsWithBackslash"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: escape shell characters with backslash"
+type = "bool"
+default = false
+help = "Remembered by Advanced Paste."
+
+[[setting]]
+key = "ConvertUnicodePunctuation"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: convert Unicode punctuation"
+type = "bool"
+default = false
+help = "Remembered by Advanced Paste."
+
+[[setting]]
+key = "ConvertDosNewlines"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: convert DOS newlines"
+type = "bool"
+default = true
+help = "Remembered by Advanced Paste."
+
+[[setting]]
+key = "RemoveControlCodes"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: remove control codes"
+type = "bool"
+default = true
+help = "Remembered by Advanced Paste."
+
+[[setting]]
+key = "BracketedPasteMode"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: use bracketed paste mode"
+type = "bool"
+default = true
+help = "Remembered by Advanced Paste."
+
+[[setting]]
+key = "PasteSpecialUseRegexSubstitution"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: use regex substitution"
+type = "bool"
+default = false
+help = "Remembered by Advanced Paste."
+
+[[setting]]
+key = "PasteSpecialRegex"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: regex"
+type = "string"
+default = ""
+help = "Remembered by Advanced Paste."
+
+[[setting]]
+key = "PasteSpecialSubstitution"
+tab = "General"
+section = "Paste Special"
+label = "Paste Special: substitution"
+type = "string"
+default = ""
+help = "Remembered by Advanced Paste."
+
+[[setting]]
 key = "NoSyncSuppressBroadcastInputWarning"
 tab = "Advanced"
 section = "Warnings"

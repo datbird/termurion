@@ -500,6 +500,12 @@ impl App {
                 }
             }
             "paste:" => self.paste(),
+            "pasteOptions:" => {
+                if let Some(id) = self.focused_id() {
+                    self.open_advanced_paste(event_loop, id, None);
+                }
+            }
+            "openPasteHistory:" => self.open_paste_history(event_loop),
             "pasteSelection:" => {
                 let text = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| p.screen.term().selection_to_string());
                 if let (Some(text), Some(id)) = (text, self.focused_id()) {

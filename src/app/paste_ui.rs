@@ -67,6 +67,10 @@ impl App {
         self.paste_ask_next(sender);
     }
 
+    pub(super) fn paste_bracketed_pub(&self, pane: PaneId) -> bool {
+        self.paste_bracketed(pane)
+    }
+
     /// The program asked for bracketed paste and the profile allows it.
     fn paste_bracketed(&self, pane: PaneId) -> bool {
         let Some(p) = self.panes.get(&pane) else { return false };
@@ -92,6 +96,8 @@ impl App {
         if text.is_empty() {
             return;
         }
+        // The history keeps what was pasted (before bracketing; iTerm2's).
+        self.remember_paste(&paste::sanitize(&job, &prefs));
         let total = text.encode_utf16().count();
         let commands = job.flags & paste::COMMANDS != 0;
         let entry = self.pastes.entry(sender).or_insert_with(|| (paste::Queue::default(), what, false));
@@ -175,7 +181,12 @@ impl App {
                 let n = self.globals.int("PasteTabToStringTabStopSize").clamp(0, 100) as usize;
                 a.job.tabs = paste::Tabs::Spaces(n);
             }
-            // Cancel, Advanced... (Advanced Paste comes with milestone 9b), or dismissed.
+            // Advanced...: the Advanced Paste window with this text; this paste stops.
+            Some("Advanced...") => {
+                self.advanced_paste_request = Some((pane, a.job.text));
+                return true;
+            }
+            // Cancel, or dismissed.
             _ => return true,
         }
         let _ = w;
