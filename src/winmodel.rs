@@ -38,6 +38,16 @@ impl Registry {
         v.into_iter().map(|(_, k)| k).collect()
     }
 
+    /// Alt+Win+digit (the SwitchWindowModifier): the window numbered `digit` (1 to 9).
+    pub fn switch_target(&self, digit: u8) -> Option<u64> {
+        (1..=9).contains(&digit).then(|| self.by_number(digit as usize - 1)).flatten()
+    }
+
+    /// Merge All Windows: every window but `into`, by number.
+    pub fn merge_order(&self, into: u64) -> Vec<u64> {
+        self.order().into_iter().filter(|k| *k != into).collect()
+    }
+
     fn step(&self, id: u64, by: isize) -> Option<u64> {
         let order = self.order();
         let i = order.iter().position(|k| *k == id)? as isize;
@@ -252,5 +262,26 @@ mod tests {
         assert_eq!(open_target(ProfileMenu { option: false }, false, true), Target::Window, "openProfilesInNewWindow swaps them");
         assert_eq!(open_target(ProfileMenu { option: true }, false, true), Target::Tab);
         assert_eq!(open_target(ProfileMenu { option: true }, true, true), Target::Window, "the profile still refuses a tab");
+    }
+
+    #[test]
+    fn switch_chord_targets_a_number() {
+        let mut r = Registry::default();
+        for id in [40, 41, 42] {
+            r.open(id);
+        }
+        assert_eq!((r.switch_target(1), r.switch_target(3)), (Some(40), Some(42)), "Alt+Win+1 is the window numbered 1");
+        assert_eq!((r.switch_target(0), r.switch_target(4), r.switch_target(10)), (None, None, None));
+    }
+
+    #[test]
+    fn merge_order_follows_numbers() {
+        let mut r = Registry::default();
+        for id in [7, 8, 9] {
+            r.open(id);
+        }
+        r.close(7);
+        r.open(6);
+        assert_eq!(r.merge_order(8), vec![6, 9], "every other window, by number");
     }
 }

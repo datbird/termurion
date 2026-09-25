@@ -207,7 +207,7 @@ pub struct App {
     registry: crate::winmodel::Registry,
     last_window: Option<WindowId>,
     /// Windows to open at the next turn of the event loop (new windows need it).
-    pending_windows: Vec<Option<String>>,
+    pending_windows: Vec<windows_ui::NewWindow>,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
     aps: HashMap<PaneId, crate::aps::Switcher>,
     local_host: String,
@@ -623,7 +623,7 @@ impl App {
             Edit::Open(guid, how) => match how {
                 // Separate windows arrive in milestone 7; until then a new window opens a tab.
                 How::Tab => self.new_tab(Some(&guid)),
-                How::Window => self.pending_windows.push(Some(guid)),
+                How::Window => self.pending_windows.push(windows_ui::NewWindow::Profile(Some(guid))),
                 How::SplitRight => self.split(Axis::Row, Some(&guid)),
                 How::SplitDown => self.split(Axis::Column, Some(&guid)),
             },
@@ -715,7 +715,7 @@ impl App {
         // window's first tab is the one exception).
         let prevent = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).bool("Prevent Opening in a Tab");
         if !self.tabs.is_empty() && crate::winmodel::open_target(crate::winmodel::OpenRequest::NewTab, prevent, false) == crate::winmodel::Target::Window {
-            self.pending_windows.push(guid.map(str::to_string));
+            self.pending_windows.push(windows_ui::NewWindow::Profile(guid.map(str::to_string)));
             return self.redraw();
         }
         let area = self.content_area();
@@ -1077,7 +1077,7 @@ impl App {
         match route {
             Route::LeaderOn => self.leader_on = true,
             // One window until milestone 7: window 1 is this one.
-            Route::SelectWindow(_) => {}
+            Route::SelectWindow(d) => self.select_window_number(d),
             Route::SelectPane(d) => {
                 if let Some(t) = self.tabs.get_mut(self.active) {
                     let panes = t.layout.panes();
@@ -1655,8 +1655,8 @@ impl ApplicationHandler<UserEvent> for App {
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.flush_dropped();
-        for guid in std::mem::take(&mut self.pending_windows) {
-            self.new_window(event_loop, guid.as_deref());
+        for w in std::mem::take(&mut self.pending_windows) {
+            self.open_pending(event_loop, w);
         }
         if self.save_due.is_some_and(|t| Instant::now() >= t) {
             self.save_now();

@@ -376,7 +376,7 @@ pub fn info(code: i64) -> Option<&'static ActionInfo> {
 /// Whether an action works now, or the milestone that brings it.
 pub fn status(code: i64) -> Status {
     match code {
-        1 | 3 | 43 | 44 | 62 => Status::Later(7),
+        43 | 44 | 62 => Status::Later(7),
         15 => Status::Later(10),
         40 => Status::Later(13),
         41 | 42 | 63 | 64 => Status::Later(9),
@@ -439,7 +439,7 @@ mod tests {
         }
         assert_eq!(status(15), Status::Later(10));
         assert_eq!(status(65), Status::Later(8));
-        assert_eq!(status(1), Status::Later(7));
+        assert_eq!((status(1), status(3)), (Status::Done, Status::Done), "Next and Previous Window arrive in 7a");
         assert_eq!(status(26), Status::Done, "New Window with Profile arrives in 7a");
         assert_eq!(status(73), Status::Done);
         assert_eq!((status(35), status(72)), (Status::Done, Status::Done), "Run Coprocess and Copy Interpolated String arrive in 6c");

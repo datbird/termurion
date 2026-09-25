@@ -239,9 +239,11 @@ impl App {
                 Some(item) => self.run_command(item, event_loop),
                 None => self.banners.set("action", format!("No menu item {:?}.", b.text)),
             },
+            1 => self.step_window(true),
+            3 => self.step_window(false),
             26 => {
                 if self.store.get(&b.text).is_some() {
-                    self.pending_windows.push(Some(b.text.clone()));
+                    self.pending_windows.push(super::windows_ui::NewWindow::Profile(Some(b.text.clone())));
                 } else {
                     self.banners.set("action", format!("No profile with Guid {}.", b.text));
                 }

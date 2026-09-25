@@ -327,6 +327,10 @@ impl App {
                 self.open_settings(event_loop, Mode::Profiles)
             }
             "terminate:" => self.quit(event_loop),
+            "moveTabToNewWindow:" => self.move_tab_to_new_window(),
+            "moveSessionToWindow:" => self.move_session_to_window(),
+            "mergeAllWindows:" => self.merge_all_windows(),
+            "duplicateWindow:" => self.duplicate_window(),
             "closeTerminalWindow:" => {
                 if let Some(id) = self.current_window() {
                     self.close_window(id, event_loop);

@@ -42,6 +42,7 @@ pub const DONE: &[&str] = &[
     "terminalStateSetEmulationLevel:", "toggleBufferInput:", "copyWithStyles:", "copyWithControlSequences:",
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
     "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
+    "moveTabToNewWindow:", "moveSessionToWindow:", "mergeAllWindows:", "duplicateWindow:",
     "showBookmarkWindow:", "installShellIntegration:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
     "previousMark:", "clearToLastMark:", "selectOutputOfLastCommand:", "selectCurrentCommand:",
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",

@@ -3,6 +3,7 @@
 //! events run or its frame is drawn.
 
 use super::*;
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 /// What belongs to one window.
 pub(super) struct WinSlot {
@@ -121,21 +122,12 @@ impl App {
         }
     }
 
-    /// Every terminal window's id, by number.
-    pub(super) fn window_ids(&self) -> Vec<WindowId> {
-        let mut ids = Vec::new();
-        for k in self.registry.order() {
-            if self.windows.current() == Some(k) {
-                ids.extend(self.current_window());
-            } else if let Some(id) = self.windows.parked().find(|(kk, _)| **kk == k).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id())) {
-                ids.push(id);
-            }
-        }
-        ids
-    }
-
     /// Opens a terminal window with one tab of `guid` (the default profile when None).
     pub(super) fn open_window(&mut self, event_loop: &ActiveEventLoop, guid: Option<&str>) -> Result<WindowId, String> {
+        self.open_window_with(event_loop, NewWindow::Profile(guid.map(str::to_string)))
+    }
+
+    fn open_window_with(&mut self, event_loop: &ActiveEventLoop, first: NewWindow) -> Result<WindowId, String> {
         let attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let gpu = match self.gpu.as_ref() {
@@ -152,7 +144,20 @@ impl App {
         self.registry.open(key(id));
         self.apply_fonts();
         self.size_window();
-        self.new_tab(guid);
+        match first {
+            NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
+            NewWindow::Profiles(guids) => {
+                for g in &guids {
+                    self.new_tab(g.as_deref());
+                }
+                self.active = 0;
+            }
+            NewWindow::Tab(tab) => {
+                self.tabs.push(tab);
+                self.active = 0;
+                self.relayout();
+            }
+        }
         self.install_menus();
         if self.tabs.is_empty() {
             // The shell did not start: the window closes again, and the banner says why.
@@ -285,9 +290,124 @@ impl App {
         match open_target(OpenRequest::ProfileMenu { option }, prevent, self.globals.bool("openProfilesInNewWindow")) {
             Target::Tab => self.new_tab(Some(guid)),
             Target::Window => {
-                self.pending_windows.push(Some(guid.to_string()));
+                self.pending_windows.push(NewWindow::Profile(Some(guid.to_string())));
                 self.redraw();
             }
+        }
+    }
+}
+
+/// What a new window starts with.
+pub(super) enum NewWindow {
+    /// One tab of a profile (the default one when None).
+    Profile(Option<String>),
+    /// A tab for each profile (Duplicate Window).
+    Profiles(Vec<Option<String>>),
+    /// A tab moved from another window.
+    Tab(Tab),
+}
+
+impl App {
+    pub(super) fn open_pending(&mut self, event_loop: &ActiveEventLoop, w: NewWindow) {
+        if let Err(e) = self.open_window_with(event_loop, w) {
+            self.banners.set("window", format!("Could not open a window: {e}"));
+            self.redraw();
+        }
+    }
+
+    /// The window id of a registry key, current or parked.
+    fn window_of_key(&self, k: u64) -> Option<WindowId> {
+        if self.windows.current() == Some(k) {
+            return self.current_window();
+        }
+        self.windows.parked().find(|(kk, _)| **kk == k).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()))
+    }
+
+    /// Brings a window to the front and makes it current.
+    pub(super) fn focus_terminal_window(&mut self, id: WindowId) {
+        if !self.enter(id) {
+            return;
+        }
+        if let Some(g) = &self.gpu {
+            g.window.set_minimized(false);
+            g.window.focus_window();
+        }
+        self.last_window = Some(id);
+    }
+
+    /// Alt+Win+1 to 9.
+    pub(super) fn select_window_number(&mut self, digit: u8) {
+        if let Some(id) = self.registry.switch_target(digit).and_then(|k| self.window_of_key(k)) {
+            self.focus_terminal_window(id);
+        }
+    }
+
+    /// Next Window and Previous Window: by number, wrapping.
+    pub(super) fn step_window(&mut self, forward: bool) {
+        let Some(k) = self.windows.current() else { return };
+        let next = if forward { self.registry.next(k) } else { self.registry.previous(k) };
+        if let Some(id) = next.filter(|n| *n != k).and_then(|n| self.window_of_key(n)) {
+            self.focus_terminal_window(id);
+        }
+    }
+
+    /// Window > Move Tab to New Window (not the window's only tab).
+    pub(super) fn move_tab_to_new_window(&mut self) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        let tab = self.tabs.remove(self.active);
+        self.active = self.active.min(self.tabs.len() - 1);
+        self.pending_windows.push(NewWindow::Tab(tab));
+        self.relayout();
+        self.redraw();
+    }
+
+    /// Session > Move Session > Move Session to Window: the focused pane leaves its tab
+    /// for a new window (a one-pane tab moves whole).
+    pub(super) fn move_session_to_window(&mut self) {
+        let Some(t) = self.tabs.get_mut(self.active) else { return };
+        let pane = t.focused;
+        if t.layout.panes().len() < 2 {
+            return self.move_tab_to_new_window();
+        }
+        if t.layout.remove(pane) {
+            t.focused = t.layout.panes()[0];
+            t.zoomed = None;
+        }
+        let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None };
+        self.next_tab_id += 1;
+        self.pending_windows.push(NewWindow::Tab(tab));
+        self.relayout();
+        self.redraw();
+    }
+
+    /// Window > Arrange Windows > Merge All Windows: every other window's tabs come here,
+    /// in window-number order, and those windows close.
+    pub(super) fn merge_all_windows(&mut self) {
+        let Some(k) = self.windows.current() else { return };
+        for other in self.registry.merge_order(k) {
+            let Some(mut slot) = self.windows.remove(other) else { continue };
+            self.tabs.append(&mut slot.tabs);
+            self.registry.close(other);
+            if let Some(g) = &slot.gpu {
+                if let Ok(RawWindowHandle::Win32(h)) = g.window.window_handle().map(|h| h.as_raw()) {
+                    crate::winkeys::remove_window(h.hwnd.get());
+                }
+            }
+            drop(slot);
+        }
+        self.relayout();
+        self.redraw();
+    }
+
+    /// Shell > Duplicate Window: a new window with a tab for each of this window's tabs, in
+    /// the profile of its focused session.
+    pub(super) fn duplicate_window(&mut self) {
+        let guids: Vec<Option<String>> = self.tabs.iter().map(|t| self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile))).collect();
+        if !guids.is_empty() {
+            self.pending_windows.push(NewWindow::Profiles(guids));
+            self.redraw();
         }
     }
 }
