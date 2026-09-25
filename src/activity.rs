@@ -63,6 +63,10 @@ impl Activity {
         self.last_output.is_some_and(|l| now.saturating_duration_since(l) > IDLE_AFTER)
     }
 
+    pub fn last_output(&self) -> Option<Instant> {
+        self.last_output
+    }
+
     /// A burst of output has not gone idle yet (the window checks back).
     pub fn in_burst(&self) -> bool {
         self.burst

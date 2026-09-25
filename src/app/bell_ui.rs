@@ -42,6 +42,10 @@ impl App {
             if e.icon && !self.looking_at(pane) {
                 self.bell_icons.insert(pane);
             }
+            // iTerm2 posts the Bell notification only with the bell icon on.
+            if e.icon {
+                self.post_alert(pane, crate::alerts::AlertKind::Bell);
+            }
             if e.flash {
                 self.flashes.insert(pane, now);
             }

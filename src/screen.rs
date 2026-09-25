@@ -180,6 +180,8 @@ pub struct Screen {
     pub triggers: crate::trigger_eval::TriggerState,
     /// Bells rung (iTerm2's bellCount).
     pub bell_count: u64,
+    /// OSC 9;4 shows a progress bar now.
+    pub progress_shown: bool,
     /// Variables the window owns, for interpolated strings (`session.name`, `tab.title`).
     pub app_vars: std::collections::HashMap<String, String>,
     /// Portholes by id, and the last id given.
@@ -240,6 +242,10 @@ pub enum Request {
     Trigger(crate::trigger_eval::TriggerRequest),
     /// BEL.
     Bell,
+    /// OSC 9 or OSC 1337 Notification: an escape-sequence alert.
+    Notify { title: Option<String>, message: String },
+    /// OSC 9;4: a progress bar appeared (true) or went away.
+    Progress(bool),
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -304,6 +310,7 @@ impl Screen {
             triggers: crate::trigger_eval::TriggerState::default(),
             app_vars: std::collections::HashMap::new(),
             bell_count: 0,
+            progress_shown: false,
             next_porthole: 0,
             porthole_wide_default: false,
             porthole_selection: None,

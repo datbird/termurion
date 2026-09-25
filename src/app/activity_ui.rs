@@ -54,5 +54,11 @@ impl App {
     }
 
     /// An idle, new-output, or activity-after-idle event (notifications and event triggers).
-    fn activity_event(&mut self, _pane: PaneId, _e: ActivityEvent) {}
+    fn activity_event(&mut self, pane: PaneId, e: ActivityEvent) {
+        match e {
+            ActivityEvent::Idle => self.post_alert(pane, crate::alerts::AlertKind::Idle),
+            ActivityEvent::NewOutput => self.post_alert(pane, crate::alerts::AlertKind::NewOutput),
+            ActivityEvent::ActivityAfterIdle => {}
+        }
+    }
 }

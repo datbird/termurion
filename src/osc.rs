@@ -27,7 +27,7 @@ fn cut_at_cap(buf: &[u8]) -> bool {
 }
 
 /// OSC payload prefixes Tandem acts on.
-const WANTED: [&[u8]; 5] = [b"133;", b"7;", b"1337;", b"52;", b"21337;"];
+const WANTED: [&[u8]; 6] = [b"133;", b"7;", b"1337;", b"52;", b"21337;", b"9;"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptKind {
@@ -64,6 +64,10 @@ pub enum Osc {
     Query(crate::reports::Query),
     /// `DCS = 1 s` (true) or `DCS = 2 s`: synchronized output begins or ends.
     Sync(bool),
+    /// OSC 9: a notification's text.
+    Notify(String),
+    /// OSC 9;4: a progress bar (its state and value).
+    Progress(String),
 }
 
 #[derive(Default)]
@@ -373,6 +377,10 @@ pub fn parse(payload: &str) -> Option<Osc> {
             })
         }
         "7" => Some(Osc::Location(rest.to_string())),
+        "9" => Some(match rest.strip_prefix("4;") {
+            Some(p) => Osc::Progress(p.to_string()),
+            None => Osc::Notify(rest.to_string()),
+        }),
         "52" => Some(Osc::Clipboard(rest.as_bytes().to_vec())),
         "21337" => Some(Osc::TabStatus(rest.to_string())),
         "1337" => {

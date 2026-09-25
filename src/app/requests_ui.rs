@@ -17,6 +17,9 @@ impl App {
         match r {
             Request::Trigger(t) => self.trigger_request(pane, t),
             Request::Bell => self.ring_bell(pane),
+            Request::Notify { title, message } => self.terminal_alert(pane, title, message),
+            // Progress Bar Changed event triggers arrive in task 5 of milestone 6b.
+            Request::Progress(_) => {}
             Request::CursorGuide(on) => {
                 self.show_guide.insert(pane, on);
                 self.redraw();

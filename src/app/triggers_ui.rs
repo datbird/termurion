@@ -38,10 +38,7 @@ impl App {
                     self.trigger_alerts.insert(pane, trigger);
                 }
             }
-            // Windows notifications and the bell arrive in milestone 6b.
-            TriggerRequest::Notify(text) => {
-                self.ask(pane, "trigger-notify", &text, &["OK"], false);
-            }
+            TriggerRequest::Notify(text) => self.post_alert(pane, crate::alerts::AlertKind::Trigger(text)),
             TriggerRequest::Bell => self.ring_bell(pane),
             TriggerRequest::Bounce { until_active } => self.flash_taskbar(until_active),
             TriggerRequest::SendText(text) => {
@@ -229,6 +226,7 @@ impl App {
                 let on = !self.panes.get(&id).is_some_and(|p| p.own().triggers.prefs.interactive);
                 self.set_session_values(id, &[("Enable Triggers in Interactive Apps".into(), Some(toml::Value::Boolean(on)))]);
             }
+            "toggleNotifyOnStatusChange:" => self.notify_status_armed = !self.notify_status_armed,
             "enableAllTriggers:" | "disableAllTriggers:" => {
                 let on = selector == "enableAllTriggers:";
                 let list = self.panes.get(&id).map(|p| p.own().triggers.list.iter().map(|c| c.trigger.clone()).collect::<Vec<_>>()).unwrap_or_default();

@@ -450,6 +450,15 @@ impl Screen {
                     r.end = Some(now);
                 }
             }
+            Osc::Notify(text) => self.requests.push(crate::screen::Request::Notify { title: None, message: text }),
+            Osc::Progress(p) => {
+                // 9;4;0 removes the bar; any other state shows it.
+                let shown = p.split(';').next().is_some_and(|st| st.trim() != "0");
+                if shown != self.progress_shown {
+                    self.progress_shown = shown;
+                    self.requests.push(crate::screen::Request::Progress(shown));
+                }
+            }
             Osc::Sixel(data) => self.sixel(&data),
             Osc::Kitty(body) => self.kitty(&body),
             Osc::Location(url) => {
@@ -496,6 +505,18 @@ impl Screen {
                     self.shell.version = parts.next().and_then(|v| v.trim().parse().ok());
                     if let Some(sh) = parts.find_map(|p| p.strip_prefix("shell=")) {
                         self.shell.shell = Some(sh.to_string());
+                    }
+                }
+                "Notification" => {
+                    use base64::Engine;
+                    let args = crate::blocks::parse(&value);
+                    let d = |k: &str| crate::blocks::get(&args, k).and_then(|v| base64::engine::general_purpose::STANDARD.decode(v.trim()).ok()).map(|b| String::from_utf8_lossy(&b).into_owned()).filter(|v| !v.is_empty());
+                    let message = match (d("subtitle"), d("message")) {
+                        (Some(sub), Some(m)) => format!("{sub}\n{m}"),
+                        (sub, m) => sub.or(m).unwrap_or_default(),
+                    };
+                    if !message.is_empty() || d("title").is_some() {
+                        self.requests.push(crate::screen::Request::Notify { title: d("title"), message });
                     }
                 }
                 "SetMark" => {

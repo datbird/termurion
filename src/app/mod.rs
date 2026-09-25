@@ -53,6 +53,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 mod actions;
 mod annotations_ui;
 mod activity_ui;
+mod alerts_ui;
 mod bell_ui;
 mod bgimage_ui;
 mod blocks_ui;
@@ -83,6 +84,8 @@ pub enum UserEvent {
     Chord(crate::menus::Chord),
     /// A menu item was clicked (its id).
     Menu(String),
+    /// A notification was clicked.
+    NotificationClicked,
 }
 
 struct Tab {
@@ -236,6 +239,14 @@ pub struct App {
     bell_icons: std::collections::HashSet<PaneId>,
     /// Each pane's output and idle state.
     activity: HashMap<PaneId, crate::activity::Activity>,
+    /// Notifications: the session of the last one, the escape-sequence limit, Notify on
+    /// Status Change, and the idle codes sent.
+    last_notified: Option<PaneId>,
+    alert_limits: crate::triggers::RateLimit<PaneId>,
+    notify_status_armed: bool,
+    last_status: HashMap<PaneId, Option<String>>,
+    idle_sent: HashMap<PaneId, Instant>,
+    started: Instant,
     /// An open Make Screenshot panel.
     shot: Option<screenshot_ui::Shot>,
     /// Page Setup's printer, paper, and margins.
@@ -293,6 +304,10 @@ pub fn run() {
         Err(e) => return message_box(&format!("Could not start the event loop: {e}")),
     };
     let proxy = Arc::new(Mutex::new(event_loop.create_proxy()));
+    let clicks = proxy.clone();
+    crate::notify::on_click(Box::new(move || {
+        let _ = clicks.lock().map(|p| p.send_event(UserEvent::NotificationClicked));
+    }));
     let wake = proxy.clone();
     let notify: Notify = Arc::new(move || {
         let _ = wake.lock().unwrap().send_event(UserEvent::Wake);
@@ -400,6 +415,12 @@ pub fn run() {
         bells: HashMap::new(),
         bell_icons: std::collections::HashSet::new(),
         activity: HashMap::new(),
+        last_notified: None,
+        alert_limits: crate::triggers::RateLimit::default(),
+        notify_status_armed: false,
+        last_status: HashMap::new(),
+        idle_sent: HashMap::new(),
+        started: Instant::now(),
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
@@ -1569,11 +1590,13 @@ impl ApplicationHandler<UserEvent> for App {
         let triggers = self.tick_triggers();
         self.tick_bell();
         let activity = self.tick_activity();
+        self.tick_status_change();
+        let idle_codes = self.tick_idle_codes();
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
         }
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -1609,6 +1632,7 @@ impl ApplicationHandler<UserEvent> for App {
                 return self.run_chord(&c, event_loop);
             }
             UserEvent::Menu(id) => return self.run_menu_id(&id, event_loop),
+            UserEvent::NotificationClicked => return self.reveal_notified(),
             UserEvent::Wake => {}
         }
         let mut changed = false;
@@ -1628,6 +1652,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         for id in exited {
+            self.session_ended(id);
             self.close_pane(id, event_loop);
         }
         if changed {
