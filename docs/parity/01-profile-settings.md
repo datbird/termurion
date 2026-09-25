@@ -68,8 +68,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Underline Color | Underline Color | Color of underlines under underlined text, when enabled. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Border around active pane | Use Active Pane Border | Draws a custom-colored border around the currently focused split pane. | partial | Tandem dims inactive panes instead of bordering the active one; different mechanism. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Active Pane Border Color | Active Pane Border Color | Color of the focused split-pane border, when enabled. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Use cursor guide | Use Cursor Guide | Draws a highlighted horizontal guide across the row containing the text cursor. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Cursor Guide Color | Cursor Guide Color | Color and opacity of the cursor guide row highlight. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Use cursor guide | Use Cursor Guide | Draws a highlighted horizontal guide across the row containing the text cursor. | have | View > Show Cursor Guide turns it on or off per session. |
+| Cursor Guide Color | Cursor Guide Color | Color and opacity of the cursor guide row highlight. | have |  |
 | Use ANSI colors for mark indicators | Use Theme Mark Colors | Makes command-status marks in the left margin use the ANSI palette instead of fixed theme colors. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Harmonize 256 Colors | Harmonize 256 Colors | Chooses the extended 256-color palette to visually match the 8 normal ANSI colors instead of the standard RGB cube. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Use HDR cursor when available | HDR Cursor | On HDR-capable displays, draws the cursor at maximum HDR brightness white. | partial | Windows also supports HDR displays; not macOS-specific. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
@@ -261,8 +261,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Show Status Bar | Show Status Bar | Enables the per-session status bar. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Configure Status Bar | Status Bar Layout | Opens a sheet to arrange status bar components such as clock, CPU, network, memory, working directory, and git branch. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Open Password Manager Automatically | Open Password Manager Automatically | Automatically opens the password manager when a new session starts. | partial | Tandem has no password manager. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Timestamps Style | Timestamps Style | How per-line timestamps display when shown: overlap, hover, or adjacent. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Timestamps Visible | Timestamps Visible | Whether per-line timestamps are shown at all. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Timestamps Style | Timestamps Style | How per-line timestamps display when shown: overlap, hover, or adjacent. | partial | Over contents and Hover work; Next to contents draws like Over contents, since the grid keeps its width. |
+| Timestamps Visible | Timestamps Visible | Whether per-line timestamps are shown at all. | have | View > Show Timestamps turns them on or off per session. |
 | Enable Progress Bars | Enable Progress Bars | Enables OSC 9;4 style progress-bar indicators in the session. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Progress Bar Height | Progress Bar Height | Height of the progress bar in points. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Progress Bar Color Scheme | Progress Bar Color Scheme | Color scheme for the progress bar: default, rainbow, red, green, blue, yellow, purple, cyan, or orange. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
@@ -375,9 +375,9 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 ## Totals
 
-Updated after milestone 4b (2026-09-24).
+Updated after milestone 4c (2026-09-24).
 
 - Rows: 314
-- have: 70
-- partial: 178
+- have: 73
+- partial: 175
 - missing: 66

@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 70 | 178 | 66 |
-| `02-global-settings.md` | 820 | 105 | 59 | 656 |
-| `03-features-and-menus.md` | 633 | 127 | 12 | 494 |
-| Total | 1,767 | 302 | 249 | 1,216 |
+| `01-profile-settings.md` | 314 | 73 | 175 | 66 |
+| `02-global-settings.md` | 820 | 111 | 59 | 650 |
+| `03-features-and-menus.md` | 633 | 146 | 15 | 472 |
+| Total | 1,767 | 330 | 249 | 1,188 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -25,7 +25,11 @@ mark indicators, and Reuse previous session's directory. Milestone 4b: the find 
 search as you type, match highlights, the count), Find Globally, Filter, Zoom In on Selection, Find
 URLs and the other labeled results, Smart Selection (rules, precision, quadruple click, actions),
 Semantic History (Win-click on files and URLs, all seven actions but coprocesses), OSC 8 links, Open
-Selection, and the Smart Selection and Semantic History editors.
+Selection, and the Smart Selection and Semantic History editors. Milestone 4c: Copy Mode (and key
+actions 45 to 48 and 73), Replace Selection, Clear to Start of Selection, soft boundaries, folds,
+annotations (and OSC 1337 AddAnnotation), the session note, per-line timestamps, the cursor
+guide, Find Cursor, and the Named Marks menu (two more alacritty_terminal patches: row time,
+fold, and note slots, and Grid::splice).
 
 ## Order
 

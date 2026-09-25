@@ -118,7 +118,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Word selection regex pattern | WordSelectionRegexPattern | Regular expression defining word boundaries for double-click selection, when regex mode is chosen. | missing |  |
 | Triple-click selects entire wrapped lines | TripleClickSelectsFullWrappedLines | Makes triple-click select a full soft-wrapped logical line instead of just the visual row. | partial | Tandem has triple-click line selection; wrapped-line awareness is not confirmed. |
 | Double-click performs smart selection | DoubleClickPerformsSmartSelection | Uses the Smart Selection rule engine (regex-based) for double-click instead of plain word selection. | have | Shown under Settings > Pointer > Selection until the General pane arrives in milestone 13. |
-| Automatically enter copy mode on Shift+Arrow key with selection | EnterCopyModeAutomatically | Starts keyboard-driven copy mode when Shift+Arrow extends a selection. | missing |  |
+| Automatically enter copy mode on Shift+Arrow key with selection | EnterCopyModeAutomatically | Starts keyboard-driven copy mode when Shift+Arrow extends a selection. | have | Shift with Alt, Ctrl, or Win enters too, as in iTerm2. Shown under Settings > Pointer > Selection until the General pane. |
 | Clicking on a command selects it to restrict Find and Filter | ClickToSelectCommand | Clicking a shell-integration command mark selects that command's output range for Find/Filter scoping. | missing | Depends on shell integration marks, which Tandem does not have. |
 | When pasting a dropped filename, wrap it in double quotes | WrapDroppedFilenamesInQuotesWhenPasting | Adds surrounding double quotes when a file dropped onto the terminal is pasted as a path. | missing |  |
 
@@ -404,10 +404,10 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Paste Special from Selection... | KEY_ACTION_PASTE_SPECIAL_FROM_SELECTION | Pastes the current selection (not the clipboard) using Paste Special's transform rules. | missing | Comes in milestone 9. |
 | Toggle Pin Hotkey Window | KEY_ACTION_TOGGLE_HOTKEY_WINDOW_PINNING | Pins/unpins a hotkey window so it stays open when it loses focus. | missing | Comes in milestone 7. |
 | Undo | KEY_ACTION_UNDO | Undoes the last undoable terminal action (e.g. closing a session). | missing | Comes in milestone 7. |
-| Move End of Selection Left | KEY_ACTION_MOVE_END_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its end point left, keyboard-driven. | missing | Comes in milestone 4. |
-| Move End of Selection Right | KEY_ACTION_MOVE_END_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its end point right, keyboard-driven. | missing | Comes in milestone 4. |
-| Move Start of Selection Left | KEY_ACTION_MOVE_START_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its start point left, keyboard-driven. | missing | Comes in milestone 4. |
-| Move Start of Selection Right | KEY_ACTION_MOVE_START_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its start point right, keyboard-driven. | missing | Comes in milestone 4. |
+| Move End of Selection Left | KEY_ACTION_MOVE_END_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its end point left, keyboard-driven. | have |  |
+| Move End of Selection Right | KEY_ACTION_MOVE_END_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its end point right, keyboard-driven. | have |  |
+| Move Start of Selection Left | KEY_ACTION_MOVE_START_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its start point left, keyboard-driven. | have |  |
+| Move Start of Selection Right | KEY_ACTION_MOVE_START_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its start point right, keyboard-driven. | have |  |
 | Decrease Height | KEY_ACTION_DECREASE_HEIGHT | Shrinks the current split pane's height. | have |  |
 | Increase Height | KEY_ACTION_INCREASE_HEIGHT | Grows the current split pane's height. | have |  |
 | Decrease Width | KEY_ACTION_DECREASE_WIDTH | Shrinks the current split pane's width. | have |  |
@@ -430,7 +430,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Paste or Send ^V | KEY_ACTION_PASTE_OR_SEND | Pastes the clipboard if there is content, otherwise sends the literal key. | have |  |
 | Alert on Next Mark | KEY_ACTION_ALERT_ON_NEXT_MARK | Shows a notification the next time a shell-integration mark appears in this session. | missing | Comes in milestone 6. |
 | Copy Interpolated String... | KEY_ACTION_COPY_INTERPOLATED_STRING | Evaluates a string with session variable interpolation and copies the result to the clipboard. | missing | Comes in milestone 6. |
-| Enter Copy Mode | KEY_ACTION_COPY_MODE | Enters keyboard-driven Copy Mode for selecting text without the mouse. | missing | Comes in milestone 4. |
+| Enter Copy Mode | KEY_ACTION_COPY_MODE | Enters keyboard-driven Copy Mode for selecting text without the mouse. | have | Runs its vim-style key string through Copy Mode. |
 | Bypass Terminal | KEY_ACTION_BYPASS | Sends the keystroke through to the OS/window manager instead of the terminal program. | have |  |
 | Toggle Setting... | KEY_ACTION_TOGGLE_SETTING | Flips a chosen boolean preference on/off as the bound action. | have |  |
 | Send Text (vim paste-safe, no broadcast) | KEY_ACTION_VIM_TEXT_NO_BROADCAST | Same as the vim paste-safe Send Text action, but exempt from Broadcast Input. | have |  |

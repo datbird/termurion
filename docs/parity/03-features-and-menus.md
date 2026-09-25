@@ -85,7 +85,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Copy | Cmd+C | Copies the current selection to the clipboard. | have |
 | Edit > Copy with Styles | Opt+Cmd+C | Copies the selection to the clipboard preserving colors and font styling. (milestone 5) | missing |
 | Edit > Copy with Control Sequences | no shortcut | Copies the selection including the raw escape sequences that produced it. (milestone 5) | missing |
-| Edit > Copy Mode | Cmd+C | Enters keyboard driven vi-like selection mode for copying text. (milestone 5) | missing |
+| Edit > Copy Mode | Cmd+C | Enters keyboard driven vi-like selection mode for copying text. (milestone 5) | have |
 | Edit > Paste | Cmd+V | Pastes clipboard contents into the session. | have |
 | Edit > Paste Special > Advanced Paste... | Opt+Cmd+V | Opens a dialog with paste transform options such as escaping, encoding, and tab conversion. (milestone 9) | missing |
 | Edit > Paste Special > Paste Selection | Cmd+V | Pastes the current selection, similar to middle-click paste on X11. | have |
@@ -100,9 +100,9 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Paste Special > Prompt to Convert Tabs to Spaces when Pasting | no shortcut | Toggles a prompt offering to convert tabs to spaces on paste. (milestone 9) | missing |
 | Edit > Paste Special > Warn Before Pasting One Line Ending in a Newline at Shell Prompt | no shortcut | Toggles a warning for a single line paste that ends with a newline at the prompt. (milestone 9) | missing |
 | Edit > Replace Selection > Render Selection Natively | Opt+Cmd+E | Renders the selected text as an image or markup instead of raw text. (milestone 4) | missing |
-| Edit > Replace Selection > Replace with Pretty-Printed JSON | no shortcut | Reformats the selected JSON text with indentation. (milestone 4) | missing |
-| Edit > Replace Selection > Replace with Base 64-Encoded Value | no shortcut | Replaces the selection with its base64-encoded form. (milestone 4) | missing |
-| Edit > Replace Selection > Replace with Base 64-Decoded Value | no shortcut | Replaces the selection with its base64-decoded form. (milestone 4) | missing |
+| Edit > Replace Selection > Replace with Pretty-Printed JSON | no shortcut | Reformats the selected JSON text with indentation. (milestone 4) | have |
+| Edit > Replace Selection > Replace with Base 64-Encoded Value | no shortcut | Replaces the selection with its base64-encoded form. (milestone 4) | have |
+| Edit > Replace Selection > Replace with Base 64-Decoded Value | no shortcut | Replaces the selection with its base64-decoded form. (milestone 4) | have |
 | Edit > Engage Artificial Intelligence | Cmd+Y | Opens an AI prompt to turn a natural-language request into a shell command. (milestone 12) | missing |
 | Edit > Explain Output with AI | Opt+Cmd+Y | Sends recent terminal output to AI and shows an explanation. (milestone 12) | missing |
 | Edit > Snippets | no shortcut | Dynamic submenu listing saved text snippets to insert into the session. | missing |
@@ -110,7 +110,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Open Selection | Opt+Cmd+O | Opens the current selection as a URL or file path. (milestone 4) | have |
 | Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. (milestone 4) | have |
 | Edit > Select All | Cmd+A | Selects all text in the current session's scrollback. | have |
-| Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. (milestone 4) | missing |
+| Edit > Selection Respects Soft Boundaries | Opt+Cmd+A | Toggles whether selection stops at shell integration soft line boundaries. (milestone 4) | partial |
 | Edit > Select Output of Last Command | Cmd+A | Selects the output of the most recently run shell command, needs shell integration marks. (milestone 4) | have |
 | Edit > Select Current Command | no shortcut | Selects the command currently being typed at the prompt. (milestone 4) | have |
 | Edit > Find > Find... | Cmd+F | Opens the in-session find bar. (milestone 4) | have |
@@ -128,23 +128,23 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Marks and Annotations > Jump to Mark | Cmd+J | Scrolls to the last saved mark. (milestone 4) | have |
 | Edit > Marks and Annotations > Next Mark | Shift+Cmd+Down | Jumps to the next mark below in the scrollback. (milestone 4) | have |
 | Edit > Marks and Annotations > Previous Mark | Shift+Cmd+Up | Jumps to the previous mark above in the scrollback. (milestone 4) | have |
-| Edit > Marks and Annotations > Add Annotation at Cursor | Opt+Cmd+M | Adds a free-text sticky annotation attached to the cursor line. (milestone 4) | missing |
-| Edit > Marks and Annotations > Annotate Selection | no shortcut | Adds a free-text annotation attached to the current selection. (milestone 4) | missing |
-| Edit > Marks and Annotations > Next Annotation | Opt+Shift+Cmd+Down | Jumps to the next annotation below. (milestone 4) | missing |
-| Edit > Marks and Annotations > Previous Annotation | Opt+Shift+Cmd+Up | Jumps to the previous annotation above. (milestone 4) | missing |
+| Edit > Marks and Annotations > Add Annotation at Cursor | Opt+Cmd+M | Adds a free-text sticky annotation attached to the cursor line. (milestone 4) | have |
+| Edit > Marks and Annotations > Annotate Selection | no shortcut | Adds a free-text annotation attached to the current selection. (milestone 4) | have |
+| Edit > Marks and Annotations > Next Annotation | Opt+Shift+Cmd+Down | Jumps to the next annotation below. (milestone 4) | have |
+| Edit > Marks and Annotations > Previous Annotation | Opt+Shift+Cmd+Up | Jumps to the previous annotation above. (milestone 4) | have |
 | Edit > Marks and Annotations > Alerts > Alert on Next Mark | Opt+Cmd+A | Arms a one-shot alert that fires the next time a mark is created. (milestone 4) | have |
 | Edit > Marks and Annotations > Alerts > Alert on Marks in Offscreen Sessions | no shortcut | Extends mark alerts to sessions not currently visible. (milestone 4) | have |
 | Edit > Marks and Annotations > Alerts > Show Modal Alert Box | no shortcut | Sets mark alerts to show a modal dialog. (milestone 4) | have |
 | Edit > Marks and Annotations > Alerts > Post Notification | no shortcut | Sets mark alerts to post a macOS notification. (milestone 4) | have |
 | Edit > Marks and Annotations > Alerts > Play a Sound | no shortcut | Sets mark alerts to play a sound. (milestone 4) | have |
 | Edit > Set Named Mark | Opt+Cmd+M | Creates a mark with a user-supplied name for later lookup. (milestone 4) | have |
-| Edit > Named Marks | no shortcut | Dynamic submenu listing named marks in the current session. | missing |
-| Edit > Fold Selected Lines | Cmd+L | Collapses the selected lines into a single foldable summary line. (milestone 4) | missing |
-| Edit > Fold All | Opt+Shift+Cmd+L | Collapses all foldable regions detected in the buffer. (milestone 4) | missing |
+| Edit > Named Marks | no shortcut | Dynamic submenu listing named marks in the current session. | have |
+| Edit > Fold Selected Lines | Cmd+L | Collapses the selected lines into a single foldable summary line. (milestone 4) | have |
+| Edit > Fold All | Opt+Shift+Cmd+L | Collapses all foldable regions detected in the buffer. (milestone 4) | have |
 | Edit > Clear Buffer | Cmd+K | Clears the visible screen and scrollback. | have |
 | Edit > Clear Instant Replay | Opt+Cmd+K | Clears the Instant Replay history buffer. (milestone 10) | missing |
 | Edit > Clear Scrollback Buffer | Cmd+K | Clears the scrollback history, keeping the visible screen. | have |
-| Edit > Clear to Start of Selection | Cmd+L | Clears the buffer from the top down to the start of the current selection. (milestone 4) | missing |
+| Edit > Clear to Start of Selection | Cmd+L | Clears the buffer from the top down to the start of the current selection. (milestone 4) | have |
 | Edit > Clear to Last Mark | Opt+Cmd+L | Clears the buffer up to the most recent mark. (milestone 4) | have |
 
 ### View menu
@@ -158,14 +158,14 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. (milestone 7) | missing |
 | View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. (milestone 4) | partial |
 | View > Zoom Out | no shortcut | Reverses Zoom In on Selection. (milestone 4) | have |
-| View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. (milestone 4) | missing |
-| View > Show Annotations | Cmd+\ | Shows or hides annotation markers in the buffer. (milestone 4) | missing |
+| View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. (milestone 4) | have |
+| View > Show Annotations | Cmd+\ | Shows or hides annotation markers in the buffer. (milestone 4) | have |
 | View > Show Clippings | Shift+Cmd+= | Shows the Clippings/Snippets quick-insert panel. (milestone 9) | missing |
 | View > Show Inline Chat | Shift+Cmd+, | Shows an inline AI chat panel attached to the session. (milestone 12) | missing |
 | View > Show Composer | Shift+Cmd+. | Shows the Composer, a multi-line command editor above the prompt. (milestone 9) | missing |
-| View > Show Cursor Guide | Opt+Cmd+; | Shows a horizontal highlight line tracking the cursor's row. (milestone 4) | missing |
-| View > Show Session Note | Opt+Cmd+G | Shows a free-text note panel attached to the session. (milestone 4) | missing |
-| View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. (milestone 4) | missing |
+| View > Show Cursor Guide | Opt+Cmd+; | Shows a horizontal highlight line tracking the cursor's row. (milestone 4) | have |
+| View > Show Session Note | Opt+Cmd+G | Shows a free-text note panel attached to the session. (milestone 4) | have |
+| View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. (milestone 4) | partial |
 | View > Auto Command Completion | Opt+Cmd+Y | Toggles automatic command-history-based autocomplete suggestions. (milestone 9) | missing |
 | View > Auto Composer | Opt+Shift+Cmd+. | Toggles automatically opening the Composer for multi-line input. (milestone 9) | missing |
 | View > Open Quickly | Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. (milestone 9) | missing |
@@ -348,8 +348,8 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; RemoteHost=&lt;user@host&gt; | Reports remote user/host for shell integration, for example after ssh, trusted only. | have |
 | OSC 1337 ; ShellIntegrationVersion=&lt;n&gt; | Announces shell integration script version and shell type. | have |
 | OSC 1337 ; SetProfile=&lt;name&gt; | Switches the session's profile on the fly, trusted only. | missing |
-| OSC 1337 ; AddNote / AddAnnotation=&lt;text&gt; | Adds a visible annotation bound to the current text. | missing |
-| OSC 1337 ; AddHiddenNote / AddHiddenAnnotation=&lt;text&gt; | Adds a hidden annotation. | missing |
+| OSC 1337 ; AddNote / AddAnnotation=&lt;text&gt; | Adds a visible annotation bound to the current text. | have |
+| OSC 1337 ; AddHiddenNote / AddHiddenAnnotation=&lt;text&gt; | Adds a hidden annotation. | have |
 | OSC 1337 ; HighlightCursorLine[=bool] | Toggles cursor line highlighting from the shell. | missing |
 | OSC 1337 ; ClearCapturedOutput | Clears the captured output list, a trigger feature. | missing |
 | OSC 1337 ; CopyToClipboard=&lt;dest&gt; ... OSC 1337 ; EndCopy | Legacy iTerm2 copy-to-pasteboard sequence, streams text until EndCopy, trusted only. | missing |
@@ -544,14 +544,14 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 |---|---|---|---|---|
 | Captured output | Capture Output pipeline | Text matched by a Capture Output trigger is stored as a record tied to the originating command mark. | missing | |
 | Captured output | Captured Output toolbelt list | Displays all captured snippets in one list, click-to-jump to the source line in the buffer. | missing | |
-| Annotations | Inline annotation | A user- or trigger-attached note bound to a range of terminal text, shown inline and editable, independent of triggers. | missing | |
+| Annotations | Inline annotation | A user- or trigger-attached note bound to a range of terminal text, shown inline and editable, independent of triggers. | have | A row holds one annotation. |
 | Annotations | Annotation from Named Mark | Auto-generates annotation text describing a named mark. | missing | |
 | Marks and navigation | Command mark (prompt-based) | A mark automatically placed at each shell prompt via shell integration, carrying the command text, start/end time, and exit code. | have |  |
 | Marks and navigation | Exit-code coloring | Colors a command mark green/red based on success/failure of the exit code, visible in the scrollbar gutter. | have | In the left margin (Tandem has no scrollbar). |
 | Marks and navigation | Manual mark | A mark the user places explicitly, not tied to a command, for bookmarking a scrollback position. | have |  |
 | Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | have | The Named Marks tool comes in milestone 9. |
 | Marks and navigation | Image mark | A mark type used to anchor an inline image's position in the buffer. | missing | Depends on inline-image support, which Tandem also lacks. |
-| Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | missing | |
+| Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | partial | Folds work from the Edit menu; the Fold trigger comes with triggers in milestone 6. |
 | Marks and navigation | Block mark / Button mark | Marks used by block-based UI, for example clickable inline buttons in output such as AI suggestions. | missing | |
 | Marks and navigation | Next/previous mark navigation | Keyboard commands to jump the viewport to the next or previous mark in scrollback. | have | Tandem has scrollback but no mark concept to navigate between; plain scroll-by-page exists instead. |
 | Marks and navigation | Mark rendering in scrollbar | Draws small colored tick marks in the scrollbar gutter representing command marks, for an at-a-glance command timeline. | partial | Marks show in the left margin; Tandem has no scrollbar. |
