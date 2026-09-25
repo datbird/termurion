@@ -116,6 +116,8 @@ pub mod settings_lists;
 pub mod settings_arrangements;
 pub mod restore_state;
 pub mod host_proto;
+pub mod host;
+pub mod winpipe;
 
 #[cfg(windows)]
 pub mod winclip;
