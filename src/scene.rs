@@ -586,6 +586,33 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close });
 }
 
+/// RequestAttention=flash: the pane goes white and fades back (`strength` 1 to 0).
+pub fn pane_flash(frame: &mut Frame, pane: Rect, strength: f32) {
+    frame.overlay.push(Quad { rect: pane, color: rgba(rgb(0xff, 0xff, 0xff), 0.6 * strength.clamp(0.0, 1.0)) });
+}
+
+/// RequestAttention=fireworks: bursts of colored sparks around `center`, `t` from 0 to 1.
+pub fn fireworks(frame: &mut Frame, center: (f32, f32), t: f32, cell: (f32, f32)) {
+    const COLORS: [Rgb; 5] = [rgb(0xff, 0x55, 0x55), rgb(0xff, 0xd7, 0x00), rgb(0x55, 0xff, 0x55), rgb(0x55, 0xaa, 0xff), rgb(0xff, 0x77, 0xff)];
+    let bursts = [(0.0f32, (0.0f32, 0.0f32)), (0.15, (-4.0, -2.0)), (0.3, (5.0, -3.0))];
+    for (k, (start, (dx, dy))) in bursts.iter().enumerate() {
+        let local = ((t - start) / (1.0 - start)).clamp(0.0, 1.0);
+        if t < *start || local >= 1.0 {
+            continue;
+        }
+        let (cx, cy) = (center.0 + dx * cell.0, center.1 + dy * cell.1);
+        let radius = local * 6.0 * cell.0;
+        let size = (cell.0 / 2.0).max(2.0);
+        let alpha = 1.0 - local;
+        for i in 0..12 {
+            let a = i as f32 / 12.0 * std::f32::consts::TAU;
+            let (x, y) = (cx + a.cos() * radius, cy + a.sin() * radius + local * local * cell.1 * 2.0);
+            let color = COLORS[(i + k) % COLORS.len()];
+            frame.overlay.push(Quad { rect: Rect { x: x - size / 2.0, y: y - size / 2.0, w: size, h: size }, color: rgba(color, alpha) });
+        }
+    }
+}
+
 /// A short message in a dark box near the bottom center of `area`.
 pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
     let w = (text.chars().count() as f32 + 4.0) * cell.0;

@@ -65,6 +65,7 @@ mod seltools_ui;
 mod view_ui;
 mod marks_ui;
 mod menu;
+mod requests_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -185,6 +186,13 @@ pub struct App {
     mods: Mods,
     /// Announcement bars waiting in each pane.
     bars: HashMap<PaneId, crate::infobar::Bars>,
+    /// RequestAttention: pane flashes and fireworks (start time, and the cursor cell).
+    flashes: HashMap<PaneId, Instant>,
+    fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
+    /// SetColors `tab`: the tab color a pane's program chose.
+    tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
+    /// When a pane flash or fireworks needs the next frame.
+    attention_due: Option<Instant>,
     /// A short message at the bottom of the window, and when it goes away.
     toast: Option<(String, Instant)>,
     /// OSC 52 reads waiting for the user's answer, with the selection parameter to echo.
@@ -322,6 +330,10 @@ pub fn run() {
         bars: HashMap::new(),
         pending_reads: HashMap::new(),
         toast: None,
+        flashes: HashMap::new(),
+        fireworks: HashMap::new(),
+        tab_colors: HashMap::new(),
+        attention_due: None,
         typing: None,
         cursor: (0.0, 0.0),
         drag: Drag::None,
@@ -577,6 +589,9 @@ impl App {
         self.show_guide.remove(&id);
         self.bars.remove(&id);
         self.pending_reads.remove(&id);
+        self.flashes.remove(&id);
+        self.fireworks.remove(&id);
+        self.tab_colors.remove(&id);
         if self.note_win.as_ref().is_some_and(|(_, p, _)| *p == id) {
             self.note_win = None;
         }
@@ -1218,6 +1233,7 @@ impl App {
     }
 
     fn build_frame(&mut self) -> Frame {
+        let mut attention: Option<Instant> = None;
         let cell = self.cell();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
@@ -1251,6 +1267,9 @@ impl App {
                     scene::copy_cursor(&mut frame, self.inner(rect), cell, row, col, selecting);
                 }
                 self.draw_info_bar(&mut frame, id, rect, cell);
+                if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
+                    attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
+                }
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));
                 if let Some(p) = self.panes.get(&id) {
                     let bars: Vec<(usize, crate::marks::MarkColor)> = p
@@ -1284,6 +1303,7 @@ impl App {
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
             scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         }
+        self.attention_due = attention;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
@@ -1407,7 +1427,11 @@ impl ApplicationHandler<UserEvent> for App {
         let animation = self.next_animation_frame();
         let sync = self.flush_due_syncs();
         let toast = self.toast_due();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast].into_iter().flatten().min();
+        if self.attention_due.is_some_and(|t| Instant::now() >= t) {
+            self.prune_attention();
+            self.redraw();
+        }
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

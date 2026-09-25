@@ -11,7 +11,7 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::vte::ansi::Handler;
 
 use crate::osc::{Osc, PromptKind};
-use crate::screen::Screen;
+use crate::screen::{Request, Screen};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -504,12 +504,71 @@ impl Screen {
                     }
                 }
                 "CopyToClipboard" if self.trusted => self.capture = Some(Vec::new()),
+                "CursorShape" => {
+                    if let Some(shape) = crate::osc1337::cursor_shape(&value) {
+                        self.term.set_cursor_shape(shape);
+                    }
+                }
+                "ClearScrollback" => self.clear(false),
+                "HighlightCursorLine" => {
+                    let on = value.is_empty() || crate::osc1337::parse_bool(&value);
+                    self.requests.push(Request::CursorGuide(on));
+                }
+                "RequestAttention" => self.requests.push(Request::Attention(crate::osc1337::attention(&value))),
+                "StealFocus" if self.trusted => self.requests.push(Request::StealFocus),
+                "ReportCellSize" => self.requests.push(Request::ReportCellSize),
+                "ReportWindowFrame" => self.requests.push(Request::ReportWindowFrame),
+                "ReportScreenFrames" if self.trusted => self.requests.push(Request::ReportScreenFrames),
+                "SetWindowFrame" => {
+                    let n: Vec<f64> = value.split(';').filter_map(|v| v.trim().parse().ok()).collect();
+                    if let [x, y, w, h] = n[..] {
+                        if value.split(';').count() == 4 {
+                            self.requests.push(Request::SetWindowFrame(x, y, w, h));
+                        }
+                    }
+                }
+                "UnicodeVersion" => self.unicode.apply(&value),
+                "SetColors" => {
+                    for (name, v) in crate::osc1337::set_colors(&value) {
+                        match (name.as_str(), crate::osc1337::color(&v)) {
+                            ("tab", _) if v == "default" => self.requests.push(Request::TabColor(None)),
+                            ("tab", Some(crate::osc1337::Color::Rgb(c))) => self.requests.push(Request::TabColor(Some(c))),
+                            ("tab", Some(crate::osc1337::Color::Index(i))) => {
+                                let c = self.palette.indexed(i);
+                                self.requests.push(Request::TabColor(Some(c)));
+                            }
+                            (_, Some(c)) => {
+                                if self.apply_color(&name, c) {
+                                    self.color_sets.retain(|(n, _)| *n != name);
+                                    self.color_sets.push((name, c));
+                                }
+                            }
+                            (_, None) => {}
+                        }
+                    }
+                }
+                "Capabilities" if self.trusted => {
+                    let version = if self.unicode.version == 0 { 9 } else { self.unicode.version };
+                    let f = crate::osc1337::Features { clipboard_writable: self.clipboard_allowed, ambiguous_wide: false, unicode_version: version };
+                    let reply = format!("\x1b]1337;Capabilities={}\x07", crate::osc1337::capabilities(f));
+                    self.replies.extend(reply.into_bytes());
+                }
+                "ExecFailed" => self.exec_failed = true,
+                "Env" if self.trusted => {
+                    use base64::Engine;
+                    if let Some(b) = value.strip_prefix("report=all:").and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()) {
+                        self.env = Some(String::from_utf8_lossy(&b).into_owned());
+                    }
+                }
+                "SetKeyLabel" => self.key_labels.set(&value),
+                "PushKeyLabels" => self.key_labels.push(&value),
+                "PopKeyLabels" => self.key_labels.pop(&value),
                 "EndCopy" if self.trusted => {
                     if let Some(c) = self.capture.take() {
                         self.requests.push(crate::screen::Request::ClipboardWrite(String::from_utf8_lossy(&c).into_owned()));
                     }
                 }
-                "AddAnnotation" | "AddHiddenAnnotation" => {
+                "AddAnnotation" | "AddHiddenAnnotation" | "AddNote" | "AddHiddenNote" => {
                     let Some((text, len, at)) = crate::annotations::parse_osc(&value) else { return };
                     let cols = self.term().columns();
                     let (line, col) = match at {
@@ -525,7 +584,7 @@ impl Screen {
                     let left = (lines - line) as usize * cols - col;
                     let last = col + len.unwrap_or(cols - col).clamp(1, left) - 1;
                     let end_line = line + (last / cols) as i32;
-                    self.add_note(line, col, end_line, last % cols, &text, key == "AddHiddenAnnotation");
+                    self.add_note(line, col, end_line, last % cols, &text, key.starts_with("AddHidden"));
                 }
                 _ => {}
             },

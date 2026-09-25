@@ -14,6 +14,7 @@ impl App {
     pub(super) fn sync_output_policy(&mut self) {
         let trusted = !self.globals.bool("DisablePotentiallyInsecureEscapeSequences");
         let chosen = self.globals.values.contains_key("AllowClipboardAccess");
+        let allowed = self.globals.bool("AllowClipboardAccess");
         let advertise = clipboard_osc::advertise_52(
             self.globals.bool("AllowClipboardAccess"),
             chosen,
@@ -22,6 +23,7 @@ impl App {
         for p in self.panes.values_mut() {
             let s = p.own_mut();
             s.trusted = trusted;
+            s.clipboard_allowed = allowed;
             s.set_clipboard_advertised(advertise);
         }
     }
@@ -34,6 +36,7 @@ impl App {
             match r {
                 Request::ClipboardWrite(text) => self.clipboard_write(pane, text),
                 Request::ClipboardRead(pc) => self.clipboard_read(pane, pc),
+                other => self.window_request(pane, other),
             }
         }
     }

@@ -31,7 +31,7 @@ impl App {
         true
     }
 
-    fn profile_of(&self, id: PaneId) -> Option<&Profile> {
+    pub(super) fn profile_of(&self, id: PaneId) -> Option<&Profile> {
         self.panes.get(&id).and_then(|p| self.store.get(&p.profile))
     }
 

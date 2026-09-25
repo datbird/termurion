@@ -9,6 +9,7 @@ pub mod remap;
 pub mod keyroute;
 pub mod mru;
 pub mod osc;
+pub mod osc1337;
 pub mod marks;
 pub mod find;
 pub mod smartsel;

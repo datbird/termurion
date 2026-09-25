@@ -169,18 +169,43 @@ pub struct Screen {
     /// OSC 1337 `Copy=` in progress, and `CopyToClipboard` capture.
     pub(crate) copy: crate::clipboard_osc::Copy,
     pub(crate) capture: Option<Vec<u8>>,
+    /// The program's `Env=report=all` environment, kept for the SSH integration.
+    pub env: Option<String>,
+    /// ExecFailed: the command could not start.
+    pub exec_failed: bool,
+    /// UnicodeVersion and the Touch Bar key labels.
+    pub unicode: crate::osc1337::Unicode,
+    pub key_labels: crate::osc1337::KeyLabels,
+    /// SetColors changes, reapplied over a new profile palette.
+    pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
+    /// Whether programs may write the clipboard (for the Capabilities report).
+    pub clipboard_allowed: bool,
     /// Mode 2031 (color scheme reports) and the scheme last reported.
     color_reports: bool,
     last_dark: bool,
 }
 
 /// Something output asked for that the window must do.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     /// Put text on the clipboard (if the user allows programs to).
     ClipboardWrite(String),
     /// Report the clipboard; the selection parameter to echo.
     ClipboardRead(String),
+    /// HighlightCursorLine: the pane's cursor guide on or off.
+    CursorGuide(bool),
+    /// RequestAttention.
+    Attention(crate::osc1337::Attention),
+    /// StealFocus: bring this pane to the front (after asking).
+    StealFocus,
+    /// Answer with the cell size, the window frame, or the screens' work areas.
+    ReportCellSize,
+    ReportWindowFrame,
+    ReportScreenFrames,
+    /// SetWindowFrame, in AppKit points.
+    SetWindowFrame(f64, f64, f64, f64),
+    /// SetColors `tab`: the pane's tab color, or back to none.
+    TabColor(Option<alacritty_terminal::vte::ansi::Rgb>),
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -238,6 +263,12 @@ impl Screen {
             feeds: 0,
             keys: KeyState::new(look.csi_u),
             trusted: true,
+            env: None,
+            exec_failed: false,
+            unicode: crate::osc1337::Unicode::default(),
+            key_labels: crate::osc1337::KeyLabels::default(),
+            color_sets: Vec::new(),
+            clipboard_allowed: false,
             requests: Vec::new(),
             copy: crate::clipboard_osc::Copy::default(),
             capture: None,
@@ -253,6 +284,10 @@ impl Screen {
 
     pub fn set_palette(&mut self, palette: Palette) {
         self.palette = palette;
+        // What a program set with SetColors stays over the profile's colors.
+        for (name, color) in self.color_sets.clone() {
+            self.apply_color(&name, color);
+        }
         let report = self.color_scheme_change();
         self.replies.extend(report);
     }
@@ -401,6 +436,35 @@ impl Screen {
         }
         self.last_dark = dark;
         crate::reports::color_scheme(dark)
+    }
+
+    /// SetColors: one named color on the pane's palette. False for an unknown name.
+    pub(crate) fn apply_color(&mut self, name: &str, color: crate::osc1337::Color) -> bool {
+        let rgb = match color {
+            crate::osc1337::Color::Rgb(c) => c,
+            crate::osc1337::Color::Index(i) => self.palette.indexed(i),
+        };
+        const ANSI: [&str; 8] = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
+        let p = &mut self.palette;
+        match name {
+            "fg" => p.fg = rgb,
+            "bg" => p.bg = rgb,
+            "bold" => p.bold = rgb,
+            "link" => p.link = rgb,
+            "match" => p.match_bg = rgb,
+            "selbg" => p.selection = rgb,
+            "selfg" => p.selected_text = Some(rgb),
+            "curbg" => p.cursor = rgb,
+            "curfg" => p.cursor_text = rgb,
+            n => {
+                let bright = n.strip_prefix("br_");
+                match ANSI.iter().position(|a| *a == bright.unwrap_or(n)) {
+                    Some(i) => p.ansi[i + if bright.is_some() { 8 } else { 0 }] = rgb,
+                    None => return false,
+                }
+            }
+        }
+        true
     }
 
     /// What output asked the window to do since the last call.
