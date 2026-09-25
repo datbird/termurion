@@ -45,6 +45,7 @@ pub mod bell;
 pub mod trigger_eval;
 pub mod trigger_events;
 pub mod proctree;
+pub mod coprocess;
 pub mod close_prompt;
 pub mod jobtitle;
 pub mod profile;
@@ -68,6 +69,8 @@ pub mod probe;
 pub mod pty;
 #[cfg(windows)]
 pub mod jobwatch;
+#[cfg(windows)]
+pub mod coproc_win;
 
 #[cfg(windows)]
 pub mod pane;

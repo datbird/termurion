@@ -67,6 +67,11 @@ pub struct Pane {
     pub suppress_output: bool,
     /// Output arrived since the window last looked (idle and new-output tracking).
     pub got_output: bool,
+    /// Session > Run Coprocess: it reads the raw output and types into the shell.
+    coprocess: Option<crate::coproc_win::Coprocess>,
+    co_out: crate::coprocess::OutQueue,
+    /// A coprocess that ended: its command and stderr, for the window.
+    co_end: Option<(String, String)>,
 }
 
 impl Pane {
@@ -75,7 +80,7 @@ impl Pane {
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false })
+        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -85,7 +90,11 @@ impl Pane {
         while let Read::Data(chunk) = pty.try_read() {
             changed = true;
             self.got_output = true;
-            if self.suppress_output {
+            // The coprocess gets every byte, before parsing (iTerm2 tees the raw read).
+            if let Some(c) = self.coprocess.as_mut() {
+                c.write(&chunk);
+            }
+            if self.suppress_output || self.coprocess.as_ref().is_some_and(|c| c.mute) {
                 continue;
             }
             let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&chunk);
@@ -95,11 +104,40 @@ impl Pane {
                 }
             }
         }
+        if let Some(c) = self.coprocess.as_mut() {
+            // Its output goes to the shell as typed, while the shell keeps up.
+            loop {
+                let budget = crate::coprocess::budget(pty.pending());
+                if budget == 0 {
+                    break;
+                }
+                if self.co_out.is_empty() {
+                    match c.try_output() {
+                        Some(o) => self.co_out.push(o),
+                        None => break,
+                    }
+                }
+                let bytes = self.co_out.take(budget);
+                if let Err(e) = pty.write(&bytes) {
+                    self.error = Some(e);
+                    break;
+                }
+            }
+            if self.co_out.is_empty() && c.finished() {
+                self.co_end = Some((c.command.clone(), c.stderr()));
+                self.coprocess = None;
+                changed = true;
+            }
+        }
         if self.exited.is_none() {
             if let Some(code) = pty.exit_code() {
                 self.exited = Some(code);
                 changed = true;
             }
+        }
+        // The session ended: its coprocess ends too (iTerm2's mainProcessDidTerminate).
+        if self.exited.is_some() && self.coprocess.is_some() {
+            self.stop_coprocess();
         }
         changed
     }
@@ -145,12 +183,47 @@ impl Pane {
         self.buffer.queue.len()
     }
 
-    /// What the terminal answers the program (reports): never held by Buffer Input.
+    /// Starts a coprocess. One at a time: a second is an error.
+    pub fn run_coprocess(&mut self, command: &str, mute: bool, cwd: &std::path::Path, notify: Notify) -> Result<(), String> {
+        if self.coprocess.is_some() {
+            return Err("a coprocess is already running in this session".into());
+        }
+        if self.pty.is_none() {
+            return Err("the session has ended".into());
+        }
+        self.coprocess = Some(crate::coproc_win::Coprocess::start(command, mute, cwd, notify)?);
+        self.co_out = Default::default();
+        Ok(())
+    }
+
+    /// Session > Stop Coprocess (and pane close, through Drop).
+    pub fn stop_coprocess(&mut self) {
+        if let Some(mut c) = self.coprocess.take() {
+            c.stop();
+        }
+        self.co_out = Default::default();
+    }
+
+    pub fn coprocess_command(&self) -> Option<&str> {
+        self.coprocess.as_ref().map(|c| c.command.as_str())
+    }
+
+    /// A coprocess that ended since the last call: (command, stderr).
+    pub fn take_coprocess_end(&mut self) -> Option<(String, String)> {
+        self.co_end.take()
+    }
+
+    /// Terminal output a coprocess did not read in time and lost.
+    pub fn coprocess_dropped(&self) -> usize {
+        self.coprocess.as_ref().map_or(0, |c| c.dropped())
+    }
+
     /// The shell's process id, while it has a pty.
     pub fn shell_pid(&self) -> Option<u32> {
         self.pty.as_ref().map(|p| p.pid())
     }
 
+    /// What the terminal answers the program (reports): never held by Buffer Input.
     pub fn reply(&mut self, bytes: &[u8]) {
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
@@ -341,7 +414,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);
@@ -539,5 +612,28 @@ mod tests {
         assert_eq!(p.waiting(), 0);
         p.input(b"x");
         assert_eq!(p.waiting(), 1);
+    }
+
+    #[test]
+    fn coprocess_types_into_the_shell() {
+        let mut p = start("cmd.exe");
+        assert!(pump_until(&mut p, |p| p.screen.text().contains('>')), "no prompt");
+        p.run_coprocess("echo echo FROM^^CO", false, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
+        assert!(p.run_coprocess("echo x", false, &std::env::temp_dir(), Arc::new(|| {})).is_err(), "one at a time");
+        assert!(pump_until(&mut p, |p| p.screen.all_text().contains("FROMCO")), "{}", p.screen.all_text());
+        assert!(pump_until(&mut p, |p| p.coprocess_command().is_none()), "it ends");
+        assert_eq!(p.take_coprocess_end().map(|e| e.0), Some("echo echo FROM^^CO".to_string()));
+    }
+
+    #[test]
+    fn mute_hides_output_from_the_screen() {
+        let mut p = start("cmd.exe");
+        assert!(pump_until(&mut p, |p| p.screen.text().contains('>')), "no prompt");
+        p.run_coprocess("ping -n 30 127.0.0.1 >NUL", true, &std::env::temp_dir(), Arc::new(|| {})).unwrap();
+        p.input(b"echo HID^DEN\r");
+        let shown = pump_until(&mut p, |p| p.screen.all_text().contains("HIDDEN"));
+        assert!(!shown, "a silent coprocess hides the session's output");
+        p.stop_coprocess();
+        assert!(p.coprocess_command().is_none());
     }
 }

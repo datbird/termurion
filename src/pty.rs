@@ -30,6 +30,8 @@ pub struct Pty {
     /// blocks the caller. Dropping the sender ends the thread, which closes the pipe.
     writer: Option<mpsc::Sender<Vec<u8>>>,
     write_error: Arc<std::sync::Mutex<Option<String>>>,
+    /// Bytes sent to the writer and not yet written.
+    pending: Arc<std::sync::atomic::AtomicUsize>,
     process: HANDLE,
     output: Receiver<Vec<u8>>,
     reader: Option<JoinHandle<()>>,
@@ -79,8 +81,9 @@ pub fn spawn_notify(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, col
     check_size(cols, rows)?;
     let (hpc, input, output, process) = unsafe { start(api, cmdline, cwd, cols, rows)? };
     let (rx, reader_done, reader) = start_reader(output, notify.clone());
-    let (writer, write_error) = start_writer(input);
-    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, process, output: rx, reader: Some(reader), reader_done };
+    let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (writer, write_error) = start_writer(input, pending.clone());
+    let pty = Pty { api: api.clone(), hpc, writer: Some(writer), write_error, pending, process, output: rx, reader: Some(reader), reader_done };
     watch_exit(pty.process, notify)?;
     Ok(pty)
 }
@@ -193,7 +196,7 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u
 
 /// Writes input on its own thread. The thread owns the input handle and closes it
 /// when the sender is dropped or a write fails.
-fn start_writer(input: HANDLE) -> (mpsc::Sender<Vec<u8>>, Arc<std::sync::Mutex<Option<String>>>) {
+pub(crate) fn start_writer(input: HANDLE, pending: Arc<std::sync::atomic::AtomicUsize>) -> (mpsc::Sender<Vec<u8>>, Arc<std::sync::Mutex<Option<String>>>) {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let error = Arc::new(std::sync::Mutex::new(None));
     let seen = error.clone();
@@ -212,6 +215,7 @@ fn start_writer(input: HANDLE) -> (mpsc::Sender<Vec<u8>>, Arc<std::sync::Mutex<O
                 }
                 done += n as usize;
             }
+            pending.fetch_sub(chunk.len(), std::sync::atomic::Ordering::Relaxed);
         }
         unsafe { CloseHandle(input) };
     });
@@ -249,7 +253,10 @@ impl Pty {
             return Err(e);
         }
         match &self.writer {
-            Some(w) => w.send(bytes.to_vec()).map_err(|_| "the pty writer has stopped".to_string()),
+            Some(w) => {
+                self.pending.fetch_add(bytes.len(), std::sync::atomic::Ordering::Relaxed);
+                w.send(bytes.to_vec()).map_err(|_| "the pty writer has stopped".to_string())
+            }
             None => Err("the pty is closed".to_string()),
         }
     }
@@ -283,12 +290,17 @@ impl Pty {
         }
     }
 
-    /// The child's exit code, or None while it runs.
     /// The shell's process id (the root of its job tree).
     pub fn pid(&self) -> u32 {
         unsafe { windows_sys::Win32::System::Threading::GetProcessId(self.process) }
     }
 
+    /// Bytes queued for the child that it has not taken yet.
+    pub fn pending(&self) -> usize {
+        self.pending.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The child's exit code, or None while it runs.
     pub fn exit_code(&self) -> Option<u32> {
         self.wait_exit(Duration::ZERO)
     }
