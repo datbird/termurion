@@ -29,6 +29,8 @@ pub enum PromptResult {
     Open,
     Cancel,
     Ok(String),
+    /// The extra button (Save to File with Contents...).
+    Extra(String),
 }
 
 pub struct PromptWindow {
@@ -42,6 +44,8 @@ pub struct PromptWindow {
     check: Option<(String, bool, Vec<String>)>,
     /// OK with blank text beeps and keeps the window open.
     refuse_blank: bool,
+    /// A button between OK and Cancel.
+    extra: Option<String>,
 }
 
 impl PromptWindow {
@@ -57,7 +61,7 @@ impl PromptWindow {
         initial: &str,
     ) -> Result<PromptWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 420.0, 130.0)?;
-        Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false })
+        Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None })
     }
 
     /// Earlier entries, offered in a list under the text.
@@ -71,6 +75,11 @@ impl PromptWindow {
     pub fn with_check(mut self, label: &str, checked_for: Vec<String>) -> PromptWindow {
         let on = checked_for.iter().any(|c| *c == self.text);
         self.check = Some((label.into(), on, checked_for));
+        self
+    }
+
+    pub fn with_extra(mut self, label: &str) -> PromptWindow {
+        self.extra = Some(label.into());
         self
     }
 
@@ -99,7 +108,7 @@ impl PromptWindow {
     /// Draws the window. Enter or OK gives the text; Escape or Cancel gives up.
     pub fn redraw(&mut self) -> PromptResult {
         let mut result = PromptResult::Open;
-        let (label, text, first, choices, check, refuse_blank) = (&self.label, &mut self.text, &mut self.first, &self.choices, &mut self.check, self.refuse_blank);
+        let (label, text, first, choices, check, refuse_blank, extra) = (&self.label, &mut self.text, &mut self.first, &self.choices, &mut self.check, self.refuse_blank, &self.extra);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(label.as_str());
@@ -132,6 +141,11 @@ impl PromptWindow {
                             unsafe { windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK) };
                         } else {
                             result = PromptResult::Ok(text.clone());
+                        }
+                    }
+                    if let Some(x) = extra {
+                        if ui.button(x.as_str()).clicked() {
+                            result = PromptResult::Extra(text.clone());
                         }
                     }
                     if ui.button("Cancel").clicked() || escape {

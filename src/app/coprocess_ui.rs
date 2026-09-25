@@ -85,7 +85,7 @@ impl App {
         match event {
             WindowEvent::CloseRequested => self.co_prompt = None,
             WindowEvent::RedrawRequested => match w.redraw() {
-                PromptResult::Open => {}
+                PromptResult::Open | PromptResult::Extra(_) => {}
                 PromptResult::Cancel => self.co_prompt = None,
                 PromptResult::Ok(command) => {
                     let ignore = w.checked();

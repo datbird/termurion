@@ -131,6 +131,107 @@ pub fn profile_of(session: &Value) -> Option<(String, String, &Table)> {
     Some((s("Guid"), s("Name"), b))
 }
 
+
+fn to_plist_value(v: &Value) -> plist::Value {
+    match v {
+        Value::String(s) => plist::Value::String(s.clone()),
+        Value::Integer(i) => plist::Value::Integer((*i).into()),
+        Value::Float(f) => plist::Value::Real(*f),
+        Value::Boolean(b) => plist::Value::Boolean(*b),
+        Value::Datetime(d) => plist::Value::String(d.to_string()),
+        Value::Array(a) => plist::Value::Array(a.iter().map(to_plist_value).collect()),
+        Value::Table(t) => plist::Value::Dictionary(t.iter().map(|(k, v)| (k.clone(), to_plist_value(v))).collect()),
+    }
+}
+
+/// An arrangement file: an XML plist array of windows (iTerm2's form).
+pub fn to_plist(windows: &[Value]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    plist::Value::Array(windows.iter().map(to_plist_value).collect()).to_writer_xml(&mut out).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// A tab table: its `Root`, whether it is the selected tab, and its Edit Tab Title text.
+pub fn tab(root: Value, active: bool, title: Option<&str>) -> Value {
+    let mut t = Table::new();
+    t.insert("Root".into(), root);
+    t.insert("Is Active".into(), Value::Boolean(active));
+    if let Some(x) = title {
+        t.insert("Title Override".into(), Value::String(x.into()));
+    }
+    Value::Table(t)
+}
+
+/// What a window table records.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowFacts {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub style: i64,
+    pub selected_tab: usize,
+    pub title: Option<String>,
+    pub size_locked: bool,
+    pub layout_locked: bool,
+    pub percent: (f64, f64),
+    pub cells: (u16, u16),
+}
+
+/// A window table in iTerm2's keys.
+pub fn window(f: WindowFacts, tabs: Vec<Value>) -> Value {
+    let mut t = Table::new();
+    for (k, v) in [("X Origin", f.x), ("Y Origin", f.y), ("Width", f.w), ("Height", f.h)] {
+        t.insert(k.into(), Value::Float(v));
+    }
+    t.insert("Window Type".into(), Value::Integer(f.style));
+    t.insert("Selected Tab Index".into(), Value::Integer(f.selected_tab as i64));
+    t.insert("Size Locked".into(), Value::Boolean(f.size_locked));
+    t.insert("Layout Locked".into(), Value::Boolean(f.layout_locked));
+    t.insert("Desired Screen Width Percentage".into(), Value::Float(f.percent.0));
+    t.insert("Desired Screen Height Percentage".into(), Value::Float(f.percent.1));
+    t.insert("Desired Columns".into(), Value::Integer(f.cells.0 as i64));
+    t.insert("Desired Rows".into(), Value::Integer(f.cells.1 as i64));
+    if let Some(x) = f.title {
+        t.insert("Title Override".into(), Value::String(x));
+    }
+    t.insert("Tabs".into(), Value::Array(tabs));
+    Value::Table(t)
+}
+
+/// A window table's facts, for restoring.
+pub fn window_facts(w: &Value) -> WindowFacts {
+    let f = |k: &str| num(w.get(k)).unwrap_or(0.0);
+    let b = |k: &str| w.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+    WindowFacts {
+        x: f("X Origin"),
+        y: f("Y Origin"),
+        w: f("Width"),
+        h: f("Height"),
+        style: w.get("Window Type").and_then(|v| v.as_integer()).unwrap_or(0),
+        selected_tab: w.get("Selected Tab Index").and_then(|v| v.as_integer()).unwrap_or(0).max(0) as usize,
+        title: w.get("Title Override").and_then(|v| v.as_str()).map(str::to_string),
+        size_locked: b("Size Locked"),
+        layout_locked: b("Layout Locked"),
+        percent: (num(w.get("Desired Screen Width Percentage")).unwrap_or(100.0), num(w.get("Desired Screen Height Percentage")).unwrap_or(100.0)),
+        cells: (w.get("Desired Columns").and_then(|v| v.as_integer()).unwrap_or(80) as u16, w.get("Desired Rows").and_then(|v| v.as_integer()).unwrap_or(25) as u16),
+    }
+}
+
+/// The date, the time to the minute, and the time to the second, for arrangement names.
+pub fn date_names(t: (u16, u16, u16, u16, u16, u16)) -> (String, String, String) {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let (y, mo, d, h, mi, s) = t;
+    let month = MONTHS.get((mo as usize).saturating_sub(1)).copied().unwrap_or("");
+    let (h12, ampm) = match h {
+        0 => (12, "AM"),
+        1..=11 => (h, "AM"),
+        12 => (12, "PM"),
+        _ => (h - 12, "PM"),
+    };
+    (format!("{month} {d}, {y}"), format!("{h12}:{mi:02} {ampm}"), format!("{h12}:{mi:02}:{s:02} {ampm}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +309,23 @@ mod tests {
         assert_eq!(v.get("Session GUID").and_then(|x| x.as_str()), Some("S1"));
         assert_eq!(v.get("Working Directory").and_then(|x| x.as_str()), Some(r"C:\src"));
         assert_eq!(profile_of(&v).map(|p| (p.0, p.1)), Some(("G".to_string(), "Build".to_string())));
+    }
+
+    #[test]
+    fn snapshot_keys_follow_iterm2() {
+        let root = node(&Tree::Leaf(s("a")), 800.0, 600.0);
+        let t = tab(root, true, Some("build"));
+        assert_eq!(t.get("Is Active").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(t.get("Title Override").and_then(|v| v.as_str()), Some("build"));
+        assert!(t.get("Root").is_some());
+        let w = window(WindowFacts { x: 10.0, y: 20.0, w: 800.0, h: 600.0, style: 0, selected_tab: 1, title: None, size_locked: true, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![t.clone(), t]);
+        for (k, v) in [("X Origin", 10.0), ("Y Origin", 20.0), ("Width", 800.0), ("Height", 600.0)] {
+            assert_eq!(w.get(k).and_then(|x| x.as_float()), Some(v), "{k}");
+        }
+        assert_eq!(w.get("Window Type").and_then(|v| v.as_integer()), Some(0));
+        assert_eq!(w.get("Selected Tab Index").and_then(|v| v.as_integer()), Some(1));
+        assert_eq!(w.get("Size Locked").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(w.get("Tabs").and_then(|v| v.as_array()).map(Vec::len), Some(2));
+        assert_eq!(date_names((2026, 9, 27, 14, 5, 33)), ("Sep 27, 2026".to_string(), "2:05 PM".to_string(), "2:05:33 PM".to_string()));
     }
 }

@@ -83,6 +83,7 @@ mod coprocess_ui;
 mod aps_ui;
 mod windows_ui;
 mod undo_ui;
+mod arrange_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -220,6 +221,10 @@ pub struct App {
     win_title: Option<String>,
     /// The content area the current window's panes were laid out for.
     laid_out: Option<Rect>,
+    /// The save-arrangement window (true: all windows), and menus to rebuild (arrangements
+    /// changed).
+    arrange_prompt: Option<(crate::prompt_ui::PromptWindow, bool)>,
+    menus_dirty: bool,
     /// Undo Close: closed things waiting, and the close being collected now.
     undo: crate::undo_close::Stack<undo_ui::Undone>,
     undo_capture: Option<undo_ui::Capture>,
@@ -447,6 +452,8 @@ pub fn run() {
         win_title: None,
         laid_out: None,
         title_prompt: None,
+        arrange_prompt: None,
+        menus_dirty: false,
         undo: Default::default(),
         undo_capture: None,
         pending_windows: Vec::new(),
@@ -1831,7 +1838,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

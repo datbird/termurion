@@ -194,7 +194,7 @@ impl App {
         match event {
             WindowEvent::CloseRequested => self.prompt = None,
             WindowEvent::RedrawRequested => match w.redraw() {
-                PromptResult::Open => {}
+                PromptResult::Open | PromptResult::Extra(_) => {}
                 PromptResult::Cancel => self.prompt = None,
                 PromptResult::Ok(name) => {
                     self.prompt = None;

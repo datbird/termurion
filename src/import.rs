@@ -50,7 +50,7 @@ fn color_table(get: impl Fn(&str) -> Option<f64>, space: Option<&str>) -> Option
     Some(Value::Table(t))
 }
 
-fn from_plist(v: &plist::Value) -> Option<Value> {
+pub(crate) fn from_plist(v: &plist::Value) -> Option<Value> {
     Some(match v {
         plist::Value::Boolean(b) => Value::Boolean(*b),
         plist::Value::Integer(i) => Value::Integer(i.as_signed().unwrap_or(i64::MAX)),

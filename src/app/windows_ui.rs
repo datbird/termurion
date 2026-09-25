@@ -401,6 +401,10 @@ impl App {
         }
     }
 
+    pub(super) fn window_id_of_key(&self, k: u64) -> Option<WindowId> {
+        self.window_of_key(k)
+    }
+
     /// The window id of a registry key, current or parked.
     fn window_of_key(&self, k: u64) -> Option<WindowId> {
         if self.windows.current() == Some(k) {
@@ -735,7 +739,7 @@ impl App {
         match event {
             WindowEvent::CloseRequested => self.title_prompt = None,
             WindowEvent::RedrawRequested => match w.redraw() {
-                PromptResult::Open => {}
+                PromptResult::Open | PromptResult::Extra(_) => {}
                 PromptResult::Cancel => self.title_prompt = None,
                 PromptResult::Ok(text) => {
                     let Some((_, target)) = self.title_prompt.take() else { return true };
