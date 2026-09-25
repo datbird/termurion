@@ -122,10 +122,11 @@ pub fn offer_paste_sync(sync_on: bool, answered: bool, bar_showing: bool) -> boo
     !sync_on && !answered && !bar_showing
 }
 
-/// A tmux tab's label (iTerm2's updateTabTitleForCurrentSessionName): the set-titles
-/// string, else the session title once tmux gave a pane title, else prefix and window name.
-pub fn tab_label(set_titles: Option<&str>, pane_title: &str, session_title: &str, window_name: &str, prefix: &str) -> String {
-    match set_titles.filter(|t| !t.is_empty()) {
+/// A tmux tab's label (iTerm2's updateTabTitleForCurrentSessionName): the tab's title
+/// override (Edit Tab Title, else the set-titles string) with the prefix, else the session
+/// title once tmux gave a pane title, else prefix and window name.
+pub fn tab_label(user: Option<&str>, set_titles: Option<&str>, pane_title: &str, session_title: &str, window_name: &str, prefix: &str) -> String {
+    match user.or(set_titles).filter(|t| !t.is_empty()) {
         Some(t) if t.starts_with(prefix) => t.to_string(),
         Some(t) => format!("{prefix}{t}"),
         None if !pane_title.is_empty() => session_title.to_string(),
@@ -192,10 +193,11 @@ mod tests {
 
     #[test]
     fn tmux_tab_labels_follow_iterm2() {
-        assert_eq!(tab_label(Some("> vim in work"), "host", "host", "bash", "> "), "> vim in work");
-        assert_eq!(tab_label(Some("vim"), "host", "host", "bash", "> "), "> vim");
-        assert_eq!(tab_label(None, "host", "host (vim)", "bash", "> "), "host (vim)");
-        assert_eq!(tab_label(None, "", "tmux", "bash", "> "), "> bash");
-        assert_eq!(tab_label(Some(""), "", "tmux", "bash", "> "), "> bash");
+        assert_eq!(tab_label(None, Some("> vim in work"), "host", "host", "bash", "> "), "> vim in work");
+        assert_eq!(tab_label(None, Some("vim"), "host", "host", "bash", "> "), "> vim");
+        assert_eq!(tab_label(None, None, "host", "host (vim)", "bash", "> "), "host (vim)");
+        assert_eq!(tab_label(None, None, "", "tmux", "bash", "> "), "> bash");
+        assert_eq!(tab_label(None, Some(""), "", "tmux", "bash", "> "), "> bash");
+        assert_eq!(tab_label(Some("logs"), Some("vim"), "host", "host", "bash", "> "), "> logs", "Edit Tab Title wins");
     }
 }

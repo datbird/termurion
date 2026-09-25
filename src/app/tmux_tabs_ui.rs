@@ -99,6 +99,7 @@ impl App {
                 Action::Close(window) => {
                     if let Some(t) = self.tmux.get_mut(&gw) {
                         t.window_titles.remove(&window);
+                        t.tab_overrides.remove(&window);
                     }
                     let ids = self.tmux_window_panes(gw, window);
                     self.tmux_forget(gw, &ids);
@@ -741,11 +742,13 @@ impl App {
         let io = self.panes.get(&focused)?.tmux_io()?;
         let t = self.tmux.get(&io.gateway)?;
         let window = t.panes.get(&io.pane)?.1;
-        if t.window_titles.contains_key(&window) {
+        let user = t.tab_overrides.get(&window);
+        let pane_title = io.info.borrow().title.clone();
+        if user.is_none() && (t.window_titles.contains_key(&window) || pane_title.is_empty()) {
             return None;
         }
-        let pane_title = io.info.borrow().title.clone();
-        (!pane_title.is_empty()).then(|| crate::tmux_clients::tab_label(None, &pane_title, &self.session_title(focused), "", ""))
+        let prefix = self.globals.string("tmuxTitlePrefix");
+        Some(crate::tmux_clients::tab_label(user.map(String::as_str), None, &pane_title, &self.session_title(focused), "", &prefix))
     }
 
     /// Every tmux pane's colors go to tmux again (a profile or the appearance changed).
@@ -847,6 +850,12 @@ impl App {
     pub(super) fn tmux_rename(&mut self, pane: PaneId, name: &str) -> bool {
         let Some((gw, _, window)) = self.tmux_of(pane) else { return false };
         let Some(t) = self.tmux.get_mut(&gw) else { return false };
+        // The tab shows the name the person gave it (iTerm2's tabTitleOverrideFormat).
+        if name.is_empty() {
+            t.tab_overrides.remove(&window);
+        } else {
+            t.tab_overrides.insert(window, name.to_string());
+        }
         t.gw.send(&crate::tmux_edits::rename_window(window, None, name), None, Default::default());
         self.tmux_flush(gw);
         true

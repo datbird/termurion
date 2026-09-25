@@ -51,6 +51,8 @@ pub(super) struct TmuxGw {
     pub(super) panes: HashMap<u32, (PaneId, u32)>,
     /// Each window's set-titles string, once tmux sent one.
     pub(super) window_titles: HashMap<u32, String>,
+    /// Tab titles the person gave tmux tabs (Edit Tab Title), by tmux window.
+    pub(super) tab_overrides: HashMap<u32, String>,
 }
 
 /// Tags for commands typed through C, above the controller's.
@@ -105,7 +107,7 @@ impl App {
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new() });
+        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), tab_overrides: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new() });
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {
