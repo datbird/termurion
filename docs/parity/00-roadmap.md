@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 75 | 173 | 66 |
-| `02-global-settings.md` | 820 | 112 | 59 | 649 |
-| `03-features-and-menus.md` | 633 | 173 | 17 | 443 |
-| Total | 1,767 | 360 | 249 | 1,158 |
+| `01-profile-settings.md` | 314 | 76 | 172 | 66 |
+| `02-global-settings.md` | 820 | 114 | 59 | 647 |
+| `03-features-and-menus.md` | 636 | 197 | 25 | 414 |
+| Total | 1,770 | 387 | 256 | 1,127 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -37,7 +37,15 @@ in the grid cells (alacritty_terminal patches 7 and 8). Milestone 5b: the keyboa
 releases), the Session > Terminal State key modes, Literal Controls, and Emulation Level, the
 profile's two key reporting settings, and the reports iTerm2 answers (DA1 to DA3 by level,
 XTVERSION, `CSI 1337 n`, DECRQSS, XTGETTCAP, synchronized output, the dark-mode query and mode
-2031; alacritty_terminal patch 9 and patch 8 revised).
+2031; alacritty_terminal patch 9 and patch 8 revised). Milestone 5c: the clipboard sequences (OSC 52
+write and read with iTerm2's policy, OSC 1337 Copy and CopyToClipboard), the escape-sequence
+trust gate, iTerm2's announcement bar in the pane, the small OSC 1337 keys (CursorShape,
+ClearScrollback, HighlightCursorLine, RequestAttention, the cell size and window and screen
+frames, UnicodeVersion, SetColors, Capabilities, key labels, StealFocus), OSC 133 E to H, OSC
+21337 tab status, Copy with Styles, Copy with Control Sequences, and Buffer Input. Milestone 5d
+(next) closes the rest of milestone 5: Print and Page Setup, Make Screenshot, the OSC 1337 keys
+that ask first (SetProfile, SetProfileProperty, SetBackgroundImageFile, OpenURL, ReportVariable,
+RequestUpload), and Block, UpdateBlock, and Button.
 
 ## Order
 
@@ -57,6 +65,7 @@ the command system, or shows up in a menu, so those come first.
 | 10 | Instant Replay and the password manager | 03: Instant Replay, password manager (Windows Credential Manager behind it). | 3 |
 | 11 | Python API and utilities | 03: Python API (the same protobuf API over a local socket), utilities scripts (Windows builds of imgcat, it2dl, it2copy and the rest). 02: Magic, Advanced > Scripting. | most of the above |
 | 12 | AI features | 02: AI, AI > Prompts, AI > Features. 03: AI and chat features. | 3, 9 |
+| 14 | SSH integration | 03: iTerm2's SSH integration (it2ssh, the conductor and its remote scripts, file download), Shell > ssh; OSC 1337 it2ssh, SendConductor, EndSSH, wrap, and Env's use. | 5 |
 | 13 | Advanced settings sweep and parity audit | 02: every Advanced row not closed earlier. A final pass over all three files. | all |
 
 ## Windows notes that apply everywhere

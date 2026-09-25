@@ -112,7 +112,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 |---|---|---|---|---|
 | Copy to clipboard on selection | SelectionCopiesText | Automatically copies selected text to the clipboard (copy-on-select). | have | Tandem already copies on select by default. |
 | Copied text includes trailing newline | CopyLastNewline | Includes a trailing newline when the last selected line is copied. | missing |  |
-| Applications in terminal may access clipboard | AllowClipboardAccessFromTerminal | Lets programs read/write the system clipboard via terminal escape sequences (OSC 52). | missing |  |
+| Applications in terminal may access clipboard | AllowClipboardAccess | Lets programs write the system clipboard via escape sequences (OSC 52, OSC 1337 Copy); reads ask each time. | have | Milestone 5c; Settings > General > Selection. |
 | Word-selection character list mode | CharactersConsideredPartOfAWordForSelectionMode | Chooses whether double-click word selection uses a literal character list or a regular expression. | missing |  |
 | Characters considered part of a word for selection | CharactersConsideredPartOfAWordForSelection | The literal set of extra non-alphanumeric characters treated as part of a word for double-click selection. | missing | Tandem's double-click selection uses its own fixed word-boundary rule. |
 | Word selection regex pattern | WordSelectionRegexPattern | Regular expression defining word boundaries for double-click selection, when regex mode is chosen. | missing |  |
@@ -706,7 +706,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | maximumBytesToProvideToPythonAPI | maximumBytesToProvideToPythonAPI (int, default 100) | Maximum number of bytes of selection to provide to Python API. | missing |  |
 | useOpenDirectory | useOpenDirectory (bool, default YES) | Use Open Directory to determine the user shell. | missing |  |
 | disableDECRQCRA | disableDECRQCRA (bool, default YES) | Disable DECRQCRA? This control sequence allows an app running in the terminal to read its contents. | missing |  |
-| disablePotentiallyInsecureEscapeSequences | disablePotentiallyInsecureEscapeSequences (bool, default NO) | Disable potentially insecure escape sequences. | missing |  |
+| disablePotentiallyInsecureEscapeSequences | disablePotentiallyInsecureEscapeSequences (bool, default NO) | Disable potentially insecure escape sequences. | have |  |
 | performDictionaryLookupOnQuickLook | performDictionaryLookupOnQuickLook (bool, default YES) | Perform dictionary lookups on force press. | missing |  |
 | webUserAgent | webUserAgent (string, default @"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15") | User agent for web views. | missing |  |
 | jiggleTTYSizeOnClearBuffer | jiggleTTYSizeOnClearBuffer (bool, default NO) | Redraw the screen after the Clear Buffer menu item is selected. | missing |  |

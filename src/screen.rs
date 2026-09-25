@@ -162,7 +162,7 @@ pub struct Screen {
     feeds: u32,
     /// Key reporting chosen in the menu (on top of the program's requests).
     pub keys: KeyState,
-    /// False when the global Disable Potentially Insecure Escape Sequences is on.
+    /// False when the global disablePotentiallyInsecureEscapeSequences is on.
     pub trusted: bool,
     /// What output asked the window to do, taken by the app.
     pub requests: Vec<Request>,

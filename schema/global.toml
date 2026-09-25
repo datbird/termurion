@@ -298,9 +298,9 @@ default = false
 help = "Lets programs put text on the clipboard with OSC 52 and OSC 1337 Copy. A program that asks to read the clipboard is asked about separately."
 
 [[setting]]
-key = "DisablePotentiallyInsecureEscapeSequences"
+key = "disablePotentiallyInsecureEscapeSequences"
 tab = "Advanced"
-section = "Security"
+section = "General"
 label = "Disable potentially insecure escape sequences"
 type = "bool"
 default = false
