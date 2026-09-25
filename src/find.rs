@@ -147,6 +147,59 @@ pub fn logical_lines_around(screen: &Screen, row: usize, radius: usize) -> (Vec<
     (logical_between(screen, first, last), above)
 }
 
+/// The text of every logical line, oldest first, without the cell map (for Filter).
+pub fn logical_texts(screen: &Screen) -> Vec<String> {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    texts_between(screen, -(grid.history_size() as i32), grid.screen_lines() as i32 - 1)
+}
+
+/// The text of the logical lines over buffer rows `first..=last`, widened to whole lines.
+pub fn logical_texts_over(screen: &Screen, first: usize, last: usize) -> Vec<String> {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+    let mut a = (first as i32 + top).clamp(top, bottom);
+    let mut b = (last as i32 + top).clamp(top, bottom);
+    while a > top && wraps(screen, a - 1) {
+        a -= 1;
+    }
+    while b < bottom && wraps(screen, b) {
+        b += 1;
+    }
+    texts_between(screen, a, b)
+}
+
+fn texts_between(screen: &Screen, top: i32, bottom: i32) -> Vec<String> {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::cell::Flags;
+    let grid = screen.term().grid();
+    let cols = grid.columns();
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for l in top..=bottom {
+        let row = &grid[Line(l)];
+        let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+        let end = if wrapped { cols } else { (0..cols).rev().find(|&c| row[Column(c)].c != ' ').map_or(0, |c| c + 1) };
+        for c in 0..end {
+            let cell = &row[Column(c)];
+            if !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                cur.push(cell.c);
+                for z in cell.zerowidth().into_iter().flatten() {
+                    cur.push(*z);
+                }
+            }
+        }
+        if !wrapped || l == bottom {
+            let kept = cur.trim_end_matches(' ').len();
+            cur.truncate(kept);
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    out
+}
+
 /// Logical lines over grid lines `top..=bottom`, which must start a logical line.
 fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
     use alacritty_terminal::grid::Dimensions;
@@ -160,7 +213,9 @@ fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
     for l in top..=bottom {
         let row = &grid[Line(l)];
         let r = (l + history) as usize;
-        for c in 0..cols {
+        let wrapped = row[Column(cols - 1)].flags.contains(Flags::WRAPLINE);
+        let end = if wrapped { cols } else { (0..cols).rev().find(|&c| row[Column(c)].c != ' ').map_or(0, |c| c + 1) };
+        for c in 0..end {
             let cell = &row[Column(c)];
             if cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                 continue;
@@ -171,7 +226,7 @@ fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
                 cur.text.push(*z);
             }
         }
-        if !row[Column(cols - 1)].flags.contains(Flags::WRAPLINE) || l == bottom {
+        if !wrapped || l == bottom {
             let kept = cur.text.trim_end_matches(' ').len();
             cur.text.truncate(kept);
             cur.cells.retain(|(o, _)| *o < kept);

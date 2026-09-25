@@ -137,7 +137,8 @@ impl App {
             }
             "toggleAlertOnNextMark:" => {
                 if let Some(p) = self.panes.get_mut(&id) {
-                    p.screen.marks.alert_next = !p.screen.marks.alert_next;
+                    let marks = &mut p.own_mut().marks;
+                    marks.alert_next = !marks.alert_next;
                 }
             }
             "toggleAlertOnMarksInOffscreenSessions:" => {
@@ -204,15 +205,16 @@ impl App {
         let offscreen = self.globals.bool("Alert On Marks in Offscreen Sessions");
         let mut alerts = Vec::new();
         for (id, p) in self.panes.iter_mut() {
-            if !p.screen.take_new_mark() {
+            let screen = p.own_mut();
+            if !screen.take_new_mark() {
                 continue;
             }
-            if let Some((_, m)) = p.screen.marks_in_order().last() {
+            if let Some((_, m)) = screen.marks_in_order().last() {
                 self.mark_pos.insert(*id, m.id);
             }
-            if std::mem::take(&mut p.screen.marks.alert_next) || (offscreen && !active.contains(id)) {
-                let title = p.screen.title().unwrap_or("Shell").to_string();
-                alerts.push((title, p.screen.previous_code().unwrap_or(0) != 0));
+            if std::mem::take(&mut screen.marks.alert_next) || (offscreen && !active.contains(id)) {
+                let title = screen.title().unwrap_or("Shell").to_string();
+                alerts.push((title, screen.previous_code().unwrap_or(0) != 0));
             }
         }
         for (title, failed) in alerts {

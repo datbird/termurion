@@ -34,7 +34,7 @@ pub const DONE: &[&str] = &[
     "previousPane:", "movePaneDividerUp:", "movePaneDividerDown:", "movePaneDividerLeft:",
     "movePaneDividerRight:", "arrangeSplitPanesEvenly:", "restartSession:", "duplicateSession:", "showHelp:",
     "arrangeInFront:", "performFindPanelAction:|Find...", "performFindPanelAction:|Use Selection for Find",
-    "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "zoomOut:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
 ];
 
 /// Commands that work with a known difference for now.
@@ -43,6 +43,8 @@ const PARTIAL: &[(&str, &str)] = &[
     ("newWindowWithSameProfile:", "Opens a tab until separate windows arrive in milestone 7."),
     ("biggerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("smallerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
+    ("filter:", "Shows the matching lines without their colors."),
+    ("zoomOnSelection:", "Shows the selected lines without their colors."),
 ];
 
 fn in_list(list: &[&str], item: &Item) -> bool {

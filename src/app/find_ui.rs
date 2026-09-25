@@ -56,6 +56,8 @@ pub(super) struct FindState {
     pub changed_at: Option<Instant>,
     /// Keys go to the bar, not the terminal. A click in the pane takes them back.
     pub typing: bool,
+    /// The bar is Filter's: the query picks the lines the pane shows.
+    pub filter: bool,
 }
 
 impl FindState {
@@ -77,7 +79,7 @@ impl FindState {
 
     /// New output arrived: search again soon, keeping the current match.
     pub fn output_changed(&mut self, now: Instant) {
-        if !self.query.is_empty() && !self.pending {
+        if (!self.query.is_empty() || self.filter) && !self.pending {
             self.pending = true;
             self.fresh = false;
             self.changed_at = Some(now);
@@ -137,6 +139,7 @@ impl FindState {
     pub fn close(&mut self) {
         self.open = false;
         self.typing = false;
+        self.filter = false;
         self.pending = false;
         self.error = None;
         self.results = Results::default();
@@ -224,8 +227,14 @@ impl App {
         };
         let now = Instant::now();
         let Some(f) = self.finds.get_mut(&id) else { return false };
+        let was_filter = f.filter;
         match f.key(key, now) {
-            Outcome::Nothing | Outcome::Close => {}
+            Outcome::Nothing => {}
+            Outcome::Close => {
+                if was_filter {
+                    self.end_view(id);
+                }
+            }
             Outcome::Step { up } => self.find_step(id, up),
             Outcome::Grow => self.find_grow(id),
             Outcome::PasteMatch => {
@@ -246,7 +255,11 @@ impl App {
         let due: Vec<(PaneId, bool)> =
             self.finds.iter_mut().filter_map(|(id, f)| f.take_due(now).map(|fresh| (*id, fresh))).collect();
         for (id, fresh) in due {
-            self.search(id, fresh);
+            if self.finds.get(&id).is_some_and(|f| f.filter) {
+                self.refilter(id);
+            } else {
+                self.search(id, fresh);
+            }
         }
         self.finds.values().filter_map(FindState::due).min()
     }
@@ -274,6 +287,32 @@ impl App {
                 f.error = None;
                 f.results.update(matches);
             }
+        }
+        self.redraw();
+    }
+
+    /// Filter: the pane shows the lines of its own screen that match the query.
+    fn refilter(&mut self, id: PaneId) {
+        let mode = self.find_mode();
+        let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
+        match crate::synthetic::filter_lines(p.own(), &find::pattern(&f.query, mode)) {
+            Err(e) => f.error = Some(e),
+            Ok(lines) => {
+                f.error = None;
+                let view = crate::synthetic::view(&lines, p.own());
+                p.show_view(view);
+            }
+        }
+        self.redraw();
+    }
+
+    /// Back to the pane's own screen from Filter or Zoom.
+    pub(super) fn end_view(&mut self, id: PaneId) {
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.end_view();
+        }
+        if let Some(f) = self.finds.get_mut(&id).filter(|f| f.filter) {
+            f.close();
         }
         self.redraw();
     }
@@ -334,6 +373,9 @@ impl App {
         let now = Instant::now();
         match (selector, label) {
             ("performFindPanelAction:", "Find...") => {
+                if self.finds.get(&id).is_some_and(|f| f.filter) {
+                    self.end_view(id);
+                }
                 let f = self.finds.entry(id).or_default();
                 f.open();
                 f.typing = true;
@@ -354,6 +396,24 @@ impl App {
                 f.set_query("", now);
                 f.results = Results::default();
             }
+            ("filter:", _) => {
+                let f = self.finds.entry(id).or_default();
+                f.results = Results::default();
+                f.open();
+                f.typing = true;
+                f.filter = true;
+                f.set_query("", now);
+            }
+            ("zoomOnSelection:", _) => {
+                let Some(p) = self.panes.get_mut(&id) else { return true };
+                let term = p.screen.term();
+                let Some(r) = term.selection.as_ref().and_then(|s| s.to_range(term)) else { return true };
+                let (a, b) = (to_pos(&p.screen, r.start), to_pos(&p.screen, r.end));
+                let lines = crate::synthetic::zoom_lines(&p.screen, a.row, b.row);
+                let view = crate::synthetic::view(&lines, &p.screen);
+                p.show_view(view);
+            }
+            ("zoomOut:", _) => self.end_view(id),
             ("jumpToSelection:", _) => {
                 if let Some(p) = self.panes.get_mut(&id) {
                     let term = p.screen.term();

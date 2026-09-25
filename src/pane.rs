@@ -28,6 +28,9 @@ pub struct Pane {
     pub error: Option<String>,
     /// The Guid of the profile this pane runs.
     pub profile: String,
+    /// The pane's own screen while `screen` shows a Filter or Zoom view. Output keeps
+    /// going here.
+    pub live: Option<Screen>,
 }
 
 impl Pane {
@@ -36,7 +39,7 @@ impl Pane {
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new() })
+        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -45,7 +48,7 @@ impl Pane {
         let mut changed = false;
         while let Read::Data(chunk) = pty.try_read() {
             changed = true;
-            let reply = self.screen.feed(&chunk);
+            let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&chunk);
             if !reply.is_empty() {
                 if let Err(e) = pty.write(&reply) {
                     self.error = Some(e);
@@ -81,6 +84,9 @@ impl Pane {
             return;
         }
         self.screen.resize(cols as usize, rows as usize);
+        if let Some(live) = &mut self.live {
+            live.resize(cols as usize, rows as usize);
+        }
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.resize(cols, rows) {
                 self.error = Some(e);
@@ -91,6 +97,7 @@ impl Pane {
     /// iTerm2's Clear to Last Mark: clears from after the last mark above the prompt, then
     /// clears ConPTY's buffer too (keeping the cursor row), so both agree.
     pub fn clear_to_last_mark(&mut self) {
+        self.end_view();
         let lines: Vec<i32> = self.screen.marks_in_order().iter().map(|(l, _)| *l).collect();
         let cursor = self.screen.term().grid().cursor.point.line.0;
         let start = crate::marks::clear_start(&lines, self.screen.current_prompt_line(), cursor);
@@ -105,6 +112,7 @@ impl Pane {
 
     /// iTerm2's Clear Buffer: the screen and ConPTY both clear, keeping the cursor line.
     pub fn clear(&mut self) {
+        self.end_view();
         self.screen.clear(false);
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.clear() {
@@ -115,6 +123,30 @@ impl Pane {
 
     pub fn scroll(&mut self, scroll: Scroll) {
         self.screen.term_mut().scroll_display(scroll);
+    }
+
+    /// The pane's own screen, also while a view shows.
+    pub fn own(&self) -> &Screen {
+        self.live.as_ref().unwrap_or(&self.screen)
+    }
+
+    pub fn own_mut(&mut self) -> &mut Screen {
+        self.live.as_mut().unwrap_or(&mut self.screen)
+    }
+
+    /// Shows a read-only view in place of the pane's screen.
+    pub fn show_view(&mut self, view: Screen) {
+        let own = std::mem::replace(&mut self.screen, view);
+        if self.live.is_none() {
+            self.live = Some(own);
+        }
+    }
+
+    /// Back to the pane's own screen, at the scroll position it had.
+    pub fn end_view(&mut self) {
+        if let Some(own) = self.live.take() {
+            self.screen = own;
+        }
     }
 }
 

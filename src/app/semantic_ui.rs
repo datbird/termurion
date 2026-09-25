@@ -65,7 +65,7 @@ impl App {
 
     /// The pane's working directory from shell integration, when it is on this machine.
     pub(super) fn pane_dir(&self, id: PaneId) -> Option<std::path::PathBuf> {
-        let shell = &self.panes.get(&id)?.screen.shell;
+        let shell = &self.panes.get(&id)?.own().shell;
         let here = std::env::var("COMPUTERNAME").unwrap_or_default();
         if shell.host.as_ref().is_some_and(|h| !h.eq_ignore_ascii_case(&here) && !h.eq_ignore_ascii_case("localhost")) {
             return None;
@@ -132,7 +132,7 @@ impl App {
 
     /// What a Smart Selection action runs. Copy runs here and returns None.
     fn smart_action_run(&mut self, id: PaneId, a: &smartsel::RuleAction, captures: &[String], cwd: &str) -> Option<Run> {
-        let shell = &self.panes.get(&id)?.screen.shell;
+        let shell = &self.panes.get(&id)?.own().shell;
         let (host, user) = (shell.host.clone().unwrap_or_default(), shell.user.clone().unwrap_or_default());
         let text = |escape| smartsel::expand(&a.parameter, captures, cwd, &host, &user, escape);
         Some(match a.action.as_str() {

@@ -155,7 +155,7 @@ impl App {
                 c.set_checked(mode.is_some_and(|m| m.intersects(flag)));
             }
         }
-        let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.screen.marks.alert_next);
+        let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
         let action = self.globals.string("Mark Alert Action");
         for (selector, value) in super::marks_ui::CHECKS {
             let Some(item) = menus::items().iter().find(|i| i.selector == selector) else { continue };
@@ -203,6 +203,13 @@ impl App {
         let window = self.gpu.as_ref().map(|g| g.window.clone());
         if self.run_find_command(&item.selector, label) {
             return self.relayout();
+        }
+        // Commands that change the terminal itself act on the pane's own screen.
+        let sel = item.selector.as_str();
+        if sel.starts_with("terminalState") || sel.starts_with("reset") || sel.starts_with("clear") {
+            if let Some(id) = self.focused_id() {
+                self.end_view(id);
+            }
         }
         if self.run_mark_command(&item.selector, event_loop) {
             self.sync_checks();

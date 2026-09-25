@@ -13,6 +13,7 @@ pub mod marks;
 pub mod find;
 pub mod smartsel;
 pub mod semantic;
+pub mod synthetic;
 pub mod commands;
 pub mod menus;
 pub mod import;

@@ -377,7 +377,7 @@ impl App {
     /// (iTerm2 prefers the local directory for a new session).
     fn previous_dir(&self) -> Option<std::path::PathBuf> {
         let t = self.tabs.get(self.active)?;
-        let shell = &self.panes.get(&t.focused)?.screen.shell;
+        let shell = &self.panes.get(&t.focused)?.own().shell;
         let here = std::env::var("COMPUTERNAME").unwrap_or_default();
         if shell.host.as_ref().is_some_and(|h| !h.eq_ignore_ascii_case(&here) && !h.eq_ignore_ascii_case("localhost")) {
             return None;
@@ -840,6 +840,13 @@ impl App {
         if let Some(action) = base.and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);
         }
+        // Filter and Zoom views are read-only: a key ends the view (Esc only that).
+        if let Some(id) = self.focused_id().filter(|id| self.panes.get(id).is_some_and(|p| p.live.is_some())) {
+            self.end_view(id);
+            if matches!(key, Key::Escape) {
+                return;
+            }
+        }
         let mods = self.mods;
         let movement = self.focused_profile().is_some_and(|p| p.bool("Movement Keys Scroll Outside Interactive Apps"));
         let Some(pane) = self.focused_pane() else { return };
@@ -1137,7 +1144,7 @@ impl App {
             let titles: Vec<String> = self
                 .tabs
                 .iter()
-                .map(|t| self.panes.get(&t.focused).and_then(|p| p.screen.title()).unwrap_or("Shell").to_string())
+                .map(|t| self.panes.get(&t.focused).and_then(|p| p.own().title()).unwrap_or("Shell").to_string())
                 .collect();
             let bar = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
             self.tab_rects = scene::tab_bar(&mut frame, &titles, self.active, bar, cell);
@@ -1171,7 +1178,7 @@ impl App {
             self.find_mode_rect = None;
             let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused);
             if let (Some((_, rect)), Some(f)) = (bar_pane, self.finds.get(&tab.focused).filter(|f| f.open)) {
-                let count = f.results.label();
+                let count = if f.filter { "Filter".to_string() } else { f.results.label() };
                 let mode = self.find_mode();
                 let bar = scene::FindBar { query: &f.query, count: &count, mode: mode.label(), error: f.error.is_some() };
                 let mode_rect = scene::find_bar(&mut frame, &bar, rect, cell);
@@ -1193,7 +1200,7 @@ impl App {
             .tabs
             .get(self.active)
             .and_then(|t| self.panes.get(&t.focused))
-            .and_then(|p| p.screen.title())
+            .and_then(|p| p.own().title())
             .unwrap_or("Tandem")
             .to_string();
         // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
