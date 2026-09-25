@@ -23,6 +23,7 @@ impl App {
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
+                Action::PasteBuffer(_) | Action::Clipboard(_) => {}
                 Action::PaneInfo { pane, what, value } => {
                     let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
                     if let Some(io) = self.panes.get(&id).and_then(|p| p.tmux_io()) {

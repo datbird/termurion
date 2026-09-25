@@ -46,6 +46,11 @@ enum Req {
     /// A monitor's `refresh-client -B` and `display-message` replies.
     Subscribed(Key),
     Fetched(Key),
+    /// `display-message -p '#{client_name}'`, then the client list.
+    ClientName,
+    ClientList,
+    /// `show-buffer -b bufferN`.
+    ShowBuffer,
     Ignore,
 }
 
@@ -62,6 +67,8 @@ pub enum Info {
 enum Key {
     Pane(u32, Info),
     Window(u32),
+    /// The session's `#{T:get-clipboard}` (true) or `#{T:set-clipboard}` (false).
+    Clipboard(bool),
 }
 
 /// What happened in a tmux pane that may change what its monitors show (tmux before 3.2).
@@ -118,6 +125,10 @@ pub enum Action {
     PaneInfo { pane: u32, what: Info, value: String },
     /// `#{T:set-titles-string}` of a window (tmux has set-titles on).
     WindowTitle(u32, String),
+    /// tmux's paste buffer changed (`bufferN`).
+    PasteBuffer(String),
+    /// A fetched paste buffer's text.
+    Clipboard(String),
 }
 
 #[derive(Default)]
@@ -229,6 +240,12 @@ pub struct Controller {
     pub set_titles: bool,
     /// Each pane's variables as tmux has them in `@uservars`.
     user_vars: HashMap<u32, BTreeMap<String, String>>,
+    /// The other clients (tmux 3.6 and later), made once per connection.
+    tracker: Option<crate::tmux_clients::Tracker>,
+    client_name_asked: bool,
+    /// get-clipboard and set-clipboard levels.
+    clip_get: u8,
+    clip_set: u8,
 }
 
 impl Controller {
@@ -273,6 +290,10 @@ impl Controller {
             cwd_gates: HashMap::new(),
             set_titles: false,
             user_vars: HashMap::new(),
+            tracker: None,
+            client_name_asked: false,
+            clip_get: 0,
+            clip_set: 0,
         }
     }
 
@@ -670,6 +691,39 @@ impl Controller {
         gw.send(&crate::tmux_persist::user_vars_command(pane, &crate::tmux_persist::user_vars_value(vars)), None, Flags { tolerate: true, ..Default::default() });
     }
 
+    fn list_clients(&mut self, gw: &mut Gateway) {
+        let Some(cmd) = self.tracker.as_ref().map(|t| t.list_command()) else { return };
+        let t = self.tag(Req::ClientList);
+        gw.send(&cmd, Some(t), Flags { tolerate: true, ..Default::default() });
+    }
+
+    /// This client answers OSC 4 color queries of its panes.
+    pub fn answers_osc4(&self) -> bool {
+        crate::tmux_clients::answers_osc4(self.v(), self.tracker.as_ref().is_some_and(|t| t.responsible()))
+    }
+
+    /// This client answers OSC 52 clipboard reads of its panes.
+    pub fn answers_osc52(&self) -> bool {
+        crate::tmux_clients::answers_osc52(self.v(), self.tracker.as_ref().is_some_and(|t| t.responsible()), self.clip_get, self.clip_set)
+    }
+
+    /// Fetches a paste buffer for the clipboard.
+    pub fn fetch_buffer(&mut self, name: &str, gw: &mut Gateway) {
+        let t = self.tag(Req::ShowBuffer);
+        gw.send(&format!("show-buffer -b {name}"), Some(t), Flags::default());
+    }
+
+    /// A pane's foreground and background colors, for tmux to answer OSC 10 and 11 (3.4+).
+    pub fn color_reports(&mut self, pane: u32, fg: (u8, u8, u8), bg: (u8, u8, u8), gw: &mut Gateway) {
+        if self.v() < 3.4 {
+            return;
+        }
+        let tolerate = Flags { tolerate: true, ..Default::default() };
+        for (osc, rgb) in [(10, fg), (11, bg)] {
+            gw.send(&crate::tmux_clients::report_command(pane, &crate::tmux_clients::color_report(osc, rgb)), None, tolerate);
+        }
+    }
+
     /// Every monitor of a window and its panes goes.
     fn unwatch_window(&mut self, window: u32, gw: &mut Gateway) {
         self.uninstall(Key::Window(window), gw);
@@ -730,6 +784,18 @@ impl Controller {
             self.want_open = true;
             return;
         }
+        // iTerm2's initializeClientTracker (once) and the clipboard monitors (each session).
+        if self.v() >= 3.6 && !self.client_name_asked {
+            self.client_name_asked = true;
+            let t = self.tag(Req::ClientName);
+            gw.send("display-message -p '#{client_name}'", Some(t), Flags { tolerate: true, ..Default::default() });
+        }
+        if self.v() >= 3.7 {
+            self.install(Key::Clipboard(true), "", "#{T:get-clipboard}", None, gw);
+        }
+        if self.v() >= 3.6 {
+            self.install(Key::Clipboard(false), "", "#{T:set-clipboard}", None, gw);
+        }
         let t = self.tag(Req::ShowSize);
         gw.send(&format!("show -v -q -t ${s} @iterm2_size"), Some(t), Flags::default());
     }
@@ -758,6 +824,23 @@ impl Controller {
         let mut out = Vec::new();
         match req {
             Req::Ignore => {}
+            Req::ClientName => {
+                let me = text.trim();
+                if let (true, false, Some((s, _))) = (ok, me.is_empty(), self.session.clone()) {
+                    self.tracker = Some(crate::tmux_clients::Tracker::new(me, s));
+                    self.list_clients(gw);
+                }
+            }
+            Req::ClientList => {
+                if let (true, Some(t)) = (ok, self.tracker.as_mut()) {
+                    t.listed(text);
+                }
+            }
+            Req::ShowBuffer => {
+                if ok && !text.is_empty() {
+                    out.push(Action::Clipboard(text.to_string()));
+                }
+            }
             Req::Subscribed(key) => {
                 if let Some(m) = self.monitors.get_mut(&key) {
                     m.subscribed(ok);
@@ -770,7 +853,7 @@ impl Controller {
                         self.cwd_gates.entry(p).or_default().known();
                     }
                 }
-                out.extend(value.map(|v| monitor_action(key, v)));
+                out.extend(value.and_then(|v| self.monitor_value(key, v)));
             }
             Req::NewWindow(affinity) => {
                 if ok {
@@ -1023,10 +1106,17 @@ impl Controller {
                     return vec![Action::Output(pane, data)];
                 }
             }
+            Note::PasteBufferChanged(name) => return vec![Action::PasteBuffer(name)],
+            Note::ClientSessionChanged(_) => self.list_clients(gw),
+            Note::ClientDetached(name) => {
+                if let Some(t) = self.tracker.as_mut() {
+                    t.detached(&name);
+                }
+            }
             Note::SubscriptionChanged { name, value, .. } => {
                 let Some(key) = self.subscriptions.get(&name).copied() else { return Vec::new() };
                 if let Some(v) = self.monitors.get_mut(&key).and_then(|m| m.changed(&value)) {
-                    return vec![monitor_action(key, v)];
+                    return self.monitor_value(key, v).into_iter().collect();
                 }
             }
             Note::LayoutChange { window, layout, zoomed, .. } => return self.layout_changed(window, &layout, zoomed, gw),
@@ -1108,10 +1198,21 @@ impl Controller {
     }
 }
 
-fn monitor_action(key: Key, value: String) -> Action {
-    match key {
-        Key::Pane(pane, what) => Action::PaneInfo { pane, what, value },
-        Key::Window(w) => Action::WindowTitle(w, value),
+impl Controller {
+    /// A monitor's new value: an action, or (the clipboard options) a level kept here.
+    fn monitor_value(&mut self, key: Key, value: String) -> Option<Action> {
+        match key {
+            Key::Pane(pane, what) => Some(Action::PaneInfo { pane, what, value }),
+            Key::Window(w) => Some(Action::WindowTitle(w, value)),
+            Key::Clipboard(true) => {
+                self.clip_get = crate::tmux_clients::get_level(&value);
+                None
+            }
+            Key::Clipboard(false) => {
+                self.clip_set = crate::tmux_clients::set_level(&value);
+                None
+            }
+        }
     }
 }
 
@@ -1437,6 +1538,71 @@ mod tests {
         let mut old = Rig::with_version(3.0);
         old.ctl.sync_user_vars(0, &vars, &mut old.gw);
         assert_eq!(old.sent(), "", "tmux 3.0 has no pane options");
+    }
+
+    #[test]
+    fn clients_elect_one_responder() {
+        let mut r = Rig::with_version(3.6);
+        r.lines(&["%session-changed $0 main"]);
+        let sent = r.sent();
+        // Writes wait for %session-changed, so pause mode's command goes out with these.
+        assert!(sent.starts_with("refresh-client -fpause-after=120\rdisplay-message -p '#{client_name}'\r"), "{sent}");
+        assert!(sent.contains("#{T:set-clipboard}") && !sent.contains("get-clipboard"), "{sent}");
+        assert!(sent.ends_with("show -v -q -t $0 @iterm2_size\r"), "{sent}");
+        r.answer(Some("client-2"));
+        for reply in ["", "off", ""] {
+            r.answer(Some(reply));
+        }
+        let sent = r.sent();
+        assert!(sent.starts_with("list-clients -t '$0' -F '#{client_name}\t#{client_control_mode}'\r"), "{sent}");
+        assert!(!r.ctl.answers_osc4(), "not listed yet");
+        r.answer(Some("client-2\t1\nclient-5\t1"));
+        assert!(r.ctl.answers_osc4());
+        assert!(r.ctl.answers_osc52(), "set-clipboard off");
+        r.ctl.note(Note::ClientSessionChanged("client-5".into()), &mut r.gw);
+        assert!(r.sent().contains("list-clients -t '$0'"), "relisted");
+        r.ctl.note(Note::ClientDetached("client-2".into()), &mut r.gw);
+        assert!(!r.ctl.answers_osc4(), "this client is gone from the list");
+        r.lines(&["%session-changed $1 other"]);
+        assert!(!r.sent().contains("client_name"), "the tracker is made once");
+    }
+
+    #[test]
+    fn clipboard_levels_come_from_monitors() {
+        let mut r = Rig::with_version(3.7);
+        r.lines(&["%session-changed $0 main"]);
+        let sent = r.sent();
+        assert!(sent.contains("#{T:get-clipboard}") && sent.contains("#{T:set-clipboard}"), "{sent}");
+        for reply in ["client-1", "", "request", "", "on", ""] {
+            r.answer(Some(reply));
+        }
+        r.answer(Some("client-1\t1"));
+        assert!(r.ctl.answers_osc52(), "get-clipboard request");
+        let id = r.ctl.monitors[&Key::Clipboard(true)].id.clone().unwrap();
+        r.ctl.note(Note::SubscriptionChanged { name: id, args: Vec::new(), value: "off".into() }, &mut r.gw);
+        assert!(!r.ctl.answers_osc52(), "get-clipboard off with set-clipboard on");
+        assert!(!Rig::with_version(3.5).ctl.answers_osc52());
+    }
+
+    #[test]
+    fn paste_buffers_are_fetched() {
+        let mut r = opened();
+        assert_eq!(r.lines(&["%paste-buffer-changed buffer3"]), vec![Action::PasteBuffer("buffer3".into())]);
+        r.ctl.fetch_buffer("buffer3", &mut r.gw);
+        assert_eq!(r.sent(), "show-buffer -b buffer3\r");
+        assert_eq!(r.answer(Some("hello\nworld")), vec![Action::Clipboard("hello\nworld".into())]);
+        r.ctl.fetch_buffer("buffer3", &mut r.gw);
+        assert!(r.answer(Some("")).is_empty(), "an empty buffer leaves the clipboard alone");
+    }
+
+    #[test]
+    fn colors_are_reported_on_34() {
+        let mut r = opened_34();
+        r.ctl.color_reports(0, (1, 2, 3), (0x1e, 0x1e, 0x1e), &mut r.gw);
+        assert_eq!(r.sent(), "refresh-client -r \"%0:\\033]10;rgb:0101/0202/0303\\033\\\\\"\rrefresh-client -r \"%0:\\033]11;rgb:1e1e/1e1e/1e1e\\033\\\\\"\r");
+        let mut old = opened();
+        old.ctl.color_reports(0, (1, 2, 3), (4, 5, 6), &mut old.gw);
+        assert_eq!(old.sent(), "", "tmux 3.1 has no report forwarding");
     }
 
     #[test]
