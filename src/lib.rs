@@ -121,6 +121,7 @@ pub mod host;
 pub mod host_client;
 pub mod reattach;
 pub mod hotkey;
+pub mod broadcast;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;

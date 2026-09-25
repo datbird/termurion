@@ -1,0 +1,363 @@
+//! Broadcast input (iTerm2's iTermBroadcastInputHelper): per window, a mode (off, all panes
+//! in the current tab, all tabs, or custom domains), per-tab flags, and broadcast sources;
+//! who sends, who receives, and every transition the menus make, quirks included.
+
+use std::collections::BTreeSet;
+
+pub type PaneId = u64;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Off,
+    AllPanes,
+    AllTabs,
+    Custom,
+}
+
+/// A tab as the model sees it: its broadcast flag and its panes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabView {
+    pub broadcasting: bool,
+    pub panes: Vec<PaneId>,
+}
+
+/// The window: its tabs (flags are changed in place), the current tab and pane, and the
+/// panes whose shell ended.
+#[derive(Clone, Debug)]
+pub struct View {
+    pub tabs: Vec<TabView>,
+    pub current_tab: usize,
+    pub current: PaneId,
+    pub exited: BTreeSet<PaneId>,
+}
+
+impl View {
+    fn tab_of(&self, p: PaneId) -> Option<&TabView> {
+        self.tabs.iter().find(|t| t.panes.contains(&p))
+    }
+
+    fn all(&self) -> BTreeSet<PaneId> {
+        self.tabs.iter().flat_map(|t| t.panes.iter().copied()).collect()
+    }
+
+    fn cur(&self) -> Option<&TabView> {
+        self.tabs.get(self.current_tab)
+    }
+
+    fn cur_mut(&mut self) -> Option<&mut TabView> {
+        self.tabs.get_mut(self.current_tab)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Broadcast {
+    /// The mode as set; `mode` is what the menus see.
+    pub raw: Mode,
+    /// Custom mode's disjoint sets of panes.
+    pub domains: Vec<BTreeSet<PaneId>>,
+    /// Broadcast sources: in a domain with a source, only the source sends.
+    pub sources: BTreeSet<PaneId>,
+}
+
+impl Broadcast {
+    /// The mode the menus see: All Panes shows only in a tab that broadcasts.
+    pub fn mode(&self, v: &View) -> Mode {
+        match self.raw {
+            Mode::AllPanes if !v.cur().is_some_and(|t| t.broadcasting) => Mode::Off,
+            m => m,
+        }
+    }
+
+    pub fn domain_containing(&self, v: &View, p: PaneId) -> Option<BTreeSet<PaneId>> {
+        match self.raw {
+            Mode::Off => None,
+            Mode::AllTabs => Some(v.all()),
+            Mode::AllPanes => v.tab_of(p).filter(|t| t.broadcasting).map(|t| t.panes.iter().copied().collect()),
+            Mode::Custom => self.domains.iter().find(|d| d.contains(&p)).cloned(),
+        }
+    }
+
+    pub fn current_domain(&self, v: &View) -> BTreeSet<PaneId> {
+        match self.raw {
+            Mode::Off => BTreeSet::new(),
+            Mode::AllTabs => v.all(),
+            Mode::AllPanes => v.cur().filter(|t| t.broadcasting).map(|t| t.panes.iter().copied().collect()).unwrap_or_default(),
+            Mode::Custom => self.domains.iter().find(|d| d.contains(&v.current)).cloned().unwrap_or_default(),
+        }
+    }
+
+    /// Whether `p` is in a broadcast domain; with `sender`, whether that sender may send
+    /// there (a domain with a source takes input only from it).
+    pub fn should_broadcast_to(&self, v: &View, p: PaneId, sender: Option<PaneId>) -> bool {
+        if let (Some(sender), Some(d)) = (sender, self.domain_containing(v, p)) {
+            if self.sources.iter().any(|s| d.contains(s)) && !self.sources.contains(&sender) {
+                return false;
+            }
+        }
+        match self.raw {
+            Mode::Off => false,
+            Mode::AllTabs => true,
+            Mode::AllPanes => v.tab_of(p).is_some_and(|t| t.broadcasting),
+            Mode::Custom => self.domains.iter().any(|d| d.contains(&p)),
+        }
+    }
+
+    /// Where `sender`'s typed input goes: every live pane of the window's current domain
+    /// (the sender included) when it sends, else the sender alone.
+    pub fn targets(&self, v: &View, sender: PaneId) -> Vec<PaneId> {
+        if !self.should_broadcast_to(v, sender, Some(sender)) {
+            return vec![sender];
+        }
+        let all = v.all();
+        let out: Vec<PaneId> = self.current_domain(v).into_iter().filter(|p| all.contains(p) && !v.exited.contains(p)).collect();
+        if out.is_empty() { vec![sender] } else { out }
+    }
+
+    pub fn receives(&self, v: &View, p: PaneId) -> bool {
+        self.should_broadcast_to(v, p, None)
+    }
+
+    pub fn sends(&self, v: &View, p: PaneId) -> bool {
+        self.receives(v, p) && self.should_broadcast_to(v, p, Some(p))
+    }
+
+    /// The core transition. `confirm` shows the warning (going from off to on) and says
+    /// whether to go on. False when nothing changed.
+    pub fn set_mode(&mut self, v: &mut View, mode: Mode, confirm: &mut dyn FnMut(&str) -> bool) -> bool {
+        let seen = self.mode(v);
+        if mode != Mode::Custom && mode == seen {
+            // "Again" in the mode the menus show.
+            if mode == Mode::AllPanes {
+                if let Some(t) = v.cur_mut() {
+                    t.broadcasting = !t.broadcasting;
+                }
+                return true;
+            }
+            return false;
+        }
+        if mode != Mode::Off && seen == Mode::Off && !confirm(&warning_title(v, mode)) {
+            return false;
+        }
+        if let Some(t) = v.cur_mut() {
+            t.broadcasting = mode == Mode::AllPanes;
+        }
+        self.raw = mode;
+        true
+    }
+
+    /// Shell > Broadcast Input > Send Input to Current Session Only.
+    pub fn disable(&mut self, v: &mut View) -> bool {
+        self.set_mode(v, Mode::Off, &mut |_| true)
+    }
+
+    /// Broadcast Input to All Panes in All Tabs (again: off).
+    pub fn all_tabs(&mut self, v: &mut View, confirm: &mut dyn FnMut(&str) -> bool) -> bool {
+        let to = if self.raw == Mode::AllTabs { Mode::Off } else { Mode::AllTabs };
+        self.set_mode(v, to, confirm)
+    }
+
+    /// Broadcast Input to All Panes in Current Tab (again: the whole window off).
+    pub fn current_tab(&mut self, v: &mut View, confirm: &mut dyn FnMut(&str) -> bool) -> bool {
+        let to = if self.mode(v) == Mode::AllPanes { Mode::Off } else { Mode::AllPanes };
+        self.set_mode(v, to, confirm)
+    }
+
+    /// Toggle Broadcast Input to Current Session, and the context menu's toggle.
+    pub fn toggle_session(&mut self, v: &mut View, p: PaneId) {
+        match self.mode(v) {
+            Mode::AllPanes => {
+                let panes = v.cur().map(|t| t.panes.iter().copied().collect()).unwrap_or_default();
+                if let Some(t) = v.cur_mut() {
+                    t.broadcasting = false;
+                }
+                self.domains = vec![panes];
+            }
+            Mode::AllTabs => self.domains = vec![v.all()],
+            Mode::Off => self.domains.clear(),
+            Mode::Custom => {}
+        }
+        self.raw = Mode::Custom;
+        let mut removed = false;
+        for d in &mut self.domains {
+            removed |= d.remove(&p);
+        }
+        if removed {
+            self.domains.retain(|d| d.len() >= 2);
+        } else if self.domains.is_empty() {
+            self.domains.push(BTreeSet::from([p, v.current]));
+        } else if self.domains.len() == 1 {
+            self.domains[0].insert(p);
+        } else {
+            let i = self.domains.iter().position(|d| d.contains(&v.current)).unwrap_or(0);
+            self.domains[i].insert(p);
+        }
+        if self.domains.is_empty() {
+            self.raw = Mode::Off;
+        }
+    }
+
+    /// Current Session is Broadcast Source.
+    pub fn toggle_source(&mut self, v: &View, p: PaneId) {
+        let was = self.sources.contains(&p);
+        if let Some(d) = self.domain_containing(v, p) {
+            self.sources.retain(|s| !d.contains(s));
+        }
+        self.sources.remove(&p);
+        if !was {
+            self.sources.insert(p);
+        }
+    }
+}
+
+/// The warning's text for turning `mode` on.
+pub fn warning_title(v: &View, mode: Mode) -> String {
+    match mode {
+        Mode::AllTabs => {
+            let n = v.all().len();
+            if n < 2 { "Keyboard input will be sent to all panes in all tabs in this window.".into() } else { format!("Keyboard input will be sent to {n} panes across all tabs in this window.") }
+        }
+        Mode::AllPanes => {
+            let n = v.cur().map_or(0, |t| t.panes.iter().filter(|p| !v.exited.contains(p)).count());
+            if n < 2 { "Keyboard input will be sent to all panes in the current tab.".into() } else { format!("Keyboard input will be sent to {n} panes in the current tab.") }
+        }
+        Mode::Custom => "Keyboard input will be sent to multiple sessions.".into(),
+        Mode::Off => "Keyboard input will be sent to no sessions.".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tab 0: panes 1 and 2; tab 1: pane 3. Current: tab 0, pane 1.
+    fn view() -> View {
+        View { tabs: vec![TabView { broadcasting: false, panes: vec![1, 2] }, TabView { broadcasting: false, panes: vec![3] }], current_tab: 0, current: 1, exited: BTreeSet::new() }
+    }
+
+    fn yes() -> impl FnMut(&str) -> bool {
+        |_| true
+    }
+
+    #[test]
+    fn modes_toggle_like_iterm2() {
+        let (mut b, mut v) = (Broadcast::default(), view());
+        let mut asked = Vec::new();
+        assert!(b.all_tabs(&mut v, &mut |t| {
+            asked.push(t.to_string());
+            true
+        }));
+        assert_eq!(asked, vec!["Keyboard input will be sent to 3 panes across all tabs in this window.".to_string()]);
+        assert_eq!(b.mode(&v), Mode::AllTabs);
+        assert_eq!(b.targets(&v, 1), vec![1, 2, 3]);
+        b.all_tabs(&mut v, &mut yes());
+        assert_eq!(b.mode(&v), Mode::Off, "again: off");
+        assert_eq!(b.targets(&v, 1), vec![1]);
+        let mut asked = Vec::new();
+        b.current_tab(&mut v, &mut |t| {
+            asked.push(t.to_string());
+            true
+        });
+        assert_eq!(asked, vec!["Keyboard input will be sent to 2 panes in the current tab.".to_string()]);
+        assert!(v.tabs[0].broadcasting && b.mode(&v) == Mode::AllPanes);
+        assert_eq!(b.targets(&v, 2), vec![1, 2]);
+        b.current_tab(&mut v, &mut yes());
+        assert!(!v.tabs[0].broadcasting && b.mode(&v) == Mode::Off, "again: the window goes off");
+        // Cancel leaves everything as it was.
+        assert!(!b.current_tab(&mut v, &mut |_| false));
+        assert_eq!((b.raw, v.tabs[0].broadcasting), (Mode::Off, false));
+        // Current Tab to All Tabs asks nothing (the menu mode was not off).
+        b.current_tab(&mut v, &mut yes());
+        let mut asked = 0;
+        b.all_tabs(&mut v, &mut |_| {
+            asked += 1;
+            true
+        });
+        assert_eq!((asked, b.mode(&v)), (0, Mode::AllTabs));
+    }
+
+    #[test]
+    fn toggle_session_builds_domains() {
+        let (mut b, mut v) = (Broadcast::default(), view());
+        b.toggle_session(&mut v, 3);
+        assert_eq!((b.raw, b.domains.clone()), (Mode::Custom, vec![BTreeSet::from([1, 3])]), "the pane and the current one");
+        b.toggle_session(&mut v, 2);
+        assert_eq!(b.domains, vec![BTreeSet::from([1, 2, 3])]);
+        b.toggle_session(&mut v, 3);
+        assert_eq!(b.domains, vec![BTreeSet::from([1, 2])]);
+        b.toggle_session(&mut v, 2);
+        assert_eq!((b.raw, b.domains.len()), (Mode::Off, 0), "a domain of one goes, and with none the mode is off");
+        // The current pane alone: a one-member domain, kept on purpose.
+        b.toggle_session(&mut v, 1);
+        assert_eq!(b.domains, vec![BTreeSet::from([1])]);
+        assert!(b.receives(&v, 1) && b.sends(&v, 1));
+        // From Current Tab: the tab's panes become the domain, and the tab flag goes.
+        let (mut b, mut v) = (Broadcast::default(), view());
+        b.current_tab(&mut v, &mut yes());
+        b.toggle_session(&mut v, 3);
+        assert_eq!((b.raw, v.tabs[0].broadcasting), (Mode::Custom, false));
+        assert_eq!(b.domains, vec![BTreeSet::from([1, 2, 3])]);
+    }
+
+    #[test]
+    fn sources_limit_senders() {
+        let (mut b, mut v) = (Broadcast::default(), view());
+        b.all_tabs(&mut v, &mut yes());
+        b.toggle_source(&v, 1);
+        assert_eq!(b.sources, BTreeSet::from([1]));
+        assert!(b.sends(&v, 1) && !b.sends(&v, 2) && b.receives(&v, 2), "2 only receives");
+        assert_eq!(b.targets(&v, 2), vec![2], "typing in 2 stays in 2");
+        assert_eq!(b.targets(&v, 1), vec![1, 2, 3]);
+        b.toggle_source(&v, 2);
+        assert_eq!(b.sources, BTreeSet::from([2]), "one source per domain");
+        b.toggle_source(&v, 2);
+        assert!(b.sources.is_empty());
+    }
+
+    #[test]
+    fn quirks_follow_iterm2() {
+        let (mut b, mut v) = (Broadcast::default(), view());
+        b.current_tab(&mut v, &mut yes());
+        // In the other tab the menus see Off, and Current Session Only changes nothing.
+        v.current_tab = 1;
+        v.current = 3;
+        assert_eq!(b.mode(&v), Mode::Off);
+        b.disable(&mut v);
+        assert!(v.tabs[0].broadcasting && b.should_broadcast_to(&v, 1, Some(1)), "tab 0 still broadcasts inside itself");
+        // A stale flag comes back: All Tabs from tab 1 leaves tab 0's flag, and Current Tab
+        // revives it.
+        let (mut b, mut v) = (Broadcast::default(), view());
+        b.current_tab(&mut v, &mut yes());
+        v.current_tab = 1;
+        v.current = 3;
+        b.all_tabs(&mut v, &mut yes());
+        assert!(v.tabs[0].broadcasting);
+        b.current_tab(&mut v, &mut yes());
+        assert!(b.receives(&v, 1) && b.receives(&v, 3), "both tabs broadcast");
+    }
+
+    #[test]
+    fn targets_skip_gone_panes() {
+        let mut v = view();
+        v.exited.insert(2);
+        let b = Broadcast { raw: Mode::Custom, domains: vec![BTreeSet::from([1, 2, 9])], sources: BTreeSet::new() };
+        assert_eq!(b.targets(&v, 1), vec![1], "9 left the window and 2 ended");
+        // A sender outside the window's current domain: iTerm2 writes to the current domain;
+        // when that is empty, the input stays with the sender.
+        v.current = 3;
+        v.current_tab = 1;
+        assert_eq!(b.targets(&v, 1), vec![1]);
+    }
+
+    #[test]
+    fn warning_titles_count_panes() {
+        let one = View { tabs: vec![TabView { broadcasting: false, panes: vec![1] }], current_tab: 0, current: 1, exited: BTreeSet::new() };
+        assert_eq!(warning_title(&one, Mode::AllTabs), "Keyboard input will be sent to all panes in all tabs in this window.");
+        assert_eq!(warning_title(&one, Mode::AllPanes), "Keyboard input will be sent to all panes in the current tab.");
+        let mut v = view();
+        v.exited.insert(2);
+        assert_eq!(warning_title(&v, Mode::AllPanes), "Keyboard input will be sent to all panes in the current tab.", "live panes only");
+        assert_eq!(warning_title(&v, Mode::AllTabs), "Keyboard input will be sent to 3 panes across all tabs in this window.", "ended ones count here");
+        assert_eq!(warning_title(&v, Mode::Custom), "Keyboard input will be sent to multiple sessions.");
+    }
+}
