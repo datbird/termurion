@@ -103,6 +103,8 @@ struct Tab {
     focused: PaneId,
     /// Maximize Active Pane: this pane fills the tab.
     zoomed: Option<PaneId>,
+    /// Edit Tab Title's text, instead of the session title.
+    title: Option<String>,
 }
 
 /// A press whose pointer binding runs when the button comes up.
@@ -211,6 +213,11 @@ pub struct App {
     /// The current window's saved-frame slot: (profile guid, slot number).
     win_slot: Option<(String, u32)>,
     slots: crate::placement::Slots,
+    /// The current window's Lock Size and Lock Layout, and its Edit Window Title text.
+    win_locks: crate::winmodel::Locks,
+    win_title: Option<String>,
+    /// The Edit Window Title or Edit Tab Title window, and what it names.
+    title_prompt: Option<(crate::prompt_ui::PromptWindow, windows_ui::TitleEdit)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
@@ -429,6 +436,9 @@ pub fn run() {
         win_style: 0,
         win_slot: None,
         slots: Default::default(),
+        win_locks: Default::default(),
+        win_title: None,
+        title_prompt: None,
         pending_windows: Vec::new(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
@@ -722,13 +732,16 @@ impl App {
         // "Always open in a new window, never in a tab": a window opens instead (a new
         // window's first tab is the one exception).
         let prevent = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).bool("Prevent Opening in a Tab");
+        if !self.tabs.is_empty() && !self.layout_allowed(crate::winmodel::LayoutOp::AddTab) {
+            return;
+        }
         if !self.tabs.is_empty() && crate::winmodel::open_target(crate::winmodel::OpenRequest::NewTab, prevent, false) == crate::winmodel::Target::Window {
             self.pending_windows.push(windows_ui::NewWindow::Profile(guid.map(str::to_string)));
             return self.redraw();
         }
         let area = self.content_area();
         if let Some(id) = self.start_pane(area, guid) {
-            self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None });
+            self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
             self.next_tab_id += 1;
             self.active = self.tabs.len() - 1;
             self.relayout();
@@ -736,6 +749,9 @@ impl App {
     }
 
     fn split(&mut self, axis: Axis, guid: Option<&str>) {
+        if !self.layout_allowed(crate::winmodel::LayoutOp::Split) {
+            return;
+        }
         let Some(tab) = self.tabs.get(self.active) else { return };
         let target = tab.focused;
         let area = self.content_area();
@@ -905,7 +921,7 @@ impl App {
         match action {
             Action::NewTab => self.new_tab(None),
             Action::ClosePane => {
-                if let Some(id) = self.tabs.get(self.active).map(|t| t.focused).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
+                if let Some(id) = self.tabs.get(self.active).map(|t| t.focused).filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::ClosePane)).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_pane(id, event_loop);
                 }
             }
@@ -1486,7 +1502,7 @@ impl App {
                     let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: !self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows") };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
                     porthole_hits.extend(self.draw_portholes(&mut frame, id, rect, cell));
                 }
@@ -1556,7 +1572,10 @@ impl App {
 
     fn render(&mut self) {
         let frame = self.build_frame();
-        let title = self.tabs.get(self.active).map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused));
+        let title = match &self.win_title {
+            Some(t) => t.clone(),
+            None => self.tabs.get(self.active).map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused)),
+        };
         let title = crate::winmodel::title(&title, self.window_number(), self.globals.bool("WindowNumber"));
         // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
@@ -1659,6 +1678,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.new_tab(None);
         self.install_menus();
         self.place_window();
+        self.apply_window_profile(None);
         let style = self.store.default_profile().int("Window Type");
         if style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
@@ -1774,7 +1794,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

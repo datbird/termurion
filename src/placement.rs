@@ -113,6 +113,32 @@ pub fn screen_for(pref: i64, monitors: &[Rect], window_monitor: usize, cursor_mo
     }
 }
 
+/// Window > Arrange Windows Horizontally: side by side across the work area, left to right
+/// in the order the windows stood, at least 400 wide (more rows when they do not fit);
+/// each keeps its height up to its row's share.
+pub fn arrange_horizontally(work: Rect, windows: &[Rect]) -> Vec<Rect> {
+    const MIN_W: f32 = 400.0;
+    let n = windows.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut w = (work.w / n as f32).floor();
+    let per_row = if w < MIN_W { ((work.w / MIN_W).floor() as usize).max(1) } else { n };
+    if w < MIN_W {
+        w = (work.w / per_row as f32).floor();
+    }
+    let rows = n.div_ceil(per_row);
+    let row_h = (work.h / rows as f32).floor();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|a, b| windows[*a].x.total_cmp(&windows[*b].x));
+    let mut out = vec![Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }; n];
+    for (slot, i) in order.into_iter().enumerate() {
+        let (row, col) = (slot / per_row, slot % per_row);
+        out[i] = Rect { x: work.x + col as f32 * w, y: work.y + row as f32 * row_h, w, h: windows[i].h.min(row_h) };
+    }
+    out
+}
+
 /// A frame moved to another monitor at the same offset from its top-left.
 pub fn move_to(r: Rect, from: Rect, to: Rect) -> Rect {
     clamp_to_monitors(Rect { x: to.x + (r.x - from.x), y: to.y + (r.y - from.y), ..r }, &[to])
@@ -173,5 +199,17 @@ mod tests {
         assert_eq!(screen_for(7, &mons, 0, 0), WORK, "a missing monitor: the window's");
         let moved = move_to(Rect { x: 100.0, y: 50.0, w: 300.0, h: 200.0 }, WORK, right);
         assert_eq!(moved, Rect { x: 1100.0, y: 50.0, w: 300.0, h: 200.0 }, "the same offset on the other monitor");
+    }
+
+    #[test]
+    fn arrange_horizontally_tiles_by_x() {
+        let work = Rect { x: 0.0, y: 0.0, w: 1500.0, h: 900.0 };
+        let r = arrange_horizontally(work, &[Rect { x: 900.0, y: 0.0, w: 300.0, h: 400.0 }, Rect { x: 10.0, y: 0.0, w: 300.0, h: 400.0 }, Rect { x: 400.0, y: 0.0, w: 300.0, h: 400.0 }]);
+        assert_eq!(r.iter().map(|x| x.x).collect::<Vec<_>>(), vec![1000.0, 0.0, 500.0], "left to right in the order they stood");
+        assert!(r.iter().all(|x| x.w == 500.0 && x.y == 0.0 && x.h == 400.0));
+        let five = arrange_horizontally(work, &[Rect { x: 0.0, y: 0.0, w: 300.0, h: 800.0 }; 5]);
+        assert!(five.iter().all(|x| x.w == 500.0), "never under 400 wide: three a row");
+        assert_eq!(five.iter().filter(|x| x.y > 0.0).count(), 2, "a second row");
+        assert!(five.iter().all(|x| x.y + x.h <= 900.0));
     }
 }

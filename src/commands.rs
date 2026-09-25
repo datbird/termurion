@@ -43,6 +43,8 @@ pub const DONE: &[&str] = &[
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
     "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
     "moveTabToNewWindow:", "moveSessionToWindow:", "mergeAllWindows:", "duplicateWindow:",
+    "toggleSizeLocked:", "toggleLayoutLocked:", "decreaseHeight:", "increaseHeight:", "decreaseWidth:", "increaseWidth:",
+    "editWindowTitle:", "editTabTitle:", "arrangeHorizontally:",
     "showBookmarkWindow:", "installShellIntegration:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
     "previousMark:", "clearToLastMark:", "selectOutputOfLastCommand:", "selectCurrentCommand:",
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",

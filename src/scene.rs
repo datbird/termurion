@@ -175,6 +175,9 @@ pub struct Highlights<'a> {
     pub labels: &'a [(crate::find::Pos, String)],
     /// Annotated text (a yellow underline), with the note's text for a note on show.
     pub notes: &'a [(crate::find::Match, Option<String>)],
+    /// Not focused (a hollow cursor) but not dimmed: the key pane of a background window
+    /// when Dim background windows is off.
+    pub undimmed: bool,
 }
 
 /// What the find bar shows.
@@ -527,7 +530,7 @@ pub fn pane_with(
         }
     }
 
-    if !focused {
+    if !focused && !highlights.is_some_and(|h| h.undimmed) {
         frame.overlay.push(Quad { rect, color: rgba(palette.bg, DIM_ALPHA) });
     }
 }
@@ -1232,7 +1235,7 @@ mod tests {
         let m = crate::find::find_all(&s, "ab").unwrap();
         let mut f = Frame::default();
         let yellow = rgb(0xff, 0xff, 0x00);
-        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[] }));
+        pane_with(&mut f, &s, RECT, CELL, true, false, Some(&Highlights { matches: &m, color: yellow, hover: None, link: yellow, labels: &[], notes: &[], undimmed: false }));
         let y = rgba(yellow, 1.0);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 30.0, y: 0.0, w: 20.0, h: 20.0 }), "{:?}", f.quads);
         assert!(f.quads.iter().any(|q| q.color == y && q.rect == Rect { x: 60.0, y: 0.0, w: 20.0, h: 20.0 }));
@@ -1274,7 +1277,7 @@ mod tests {
         let mut f = Frame::default();
         let link = rgb(0x06, 0x45, 0xad);
         let hover = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[] };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: Some(hover), link, labels: &[], notes: &[], undimmed: false };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         let q = f.overlay.iter().find(|q| q.color == rgba(link, 1.0)).unwrap();
         assert_eq!(q.rect, Rect { x: 40.0, y: CELL.1 - 1.0, w: 40.0, h: 1.0 });
@@ -1287,7 +1290,7 @@ mod tests {
         let s = screen(b"see https://x.y now");
         let mut f = Frame::default();
         let labels = [(crate::find::Pos { row: 0, col: 4 }, "1".to_string())];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[] };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &labels, notes: &[], undimmed: false };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         let texts: Vec<String> = f.rows.iter().map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
         assert!(texts.iter().any(|t| t.starts_with("see  ttps")), "{texts:?}");
@@ -1319,7 +1322,7 @@ mod tests {
         let mut f = Frame::default();
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 4 }, end: crate::find::Pos { row: 0, col: 7 } };
         let notes = [(m, Some("a file".to_string()))];
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, undimmed: false };
         pane_with(&mut f, &s, RECT, CELL, true, false, Some(&hl));
         assert!(f.overlay.iter().any(|q| q.color == rgba(NOTE, 1.0) && q.rect == Rect { x: 40.0, y: CELL.1 - 3.0, w: 40.0, h: 1.0 }), "{:?}", f.overlay);
         assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == "a file")));
@@ -1364,7 +1367,7 @@ mod tests {
         let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 16 }, end: crate::find::Pos { row: 1_000_000, col: 19 } };
         let notes = [(m, Some("n".to_string()))];
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
-        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes, undimmed: false };
         pane_with(&mut f, &s, rect, CELL, true, false, Some(&hl));
         assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
         assert!(f.overlay.len() < 50);
@@ -1444,5 +1447,18 @@ mod tests {
         let mut none = Frame::default();
         top_right_indicators(&mut none, pane, &[], rgb(1, 2, 3), (8.0, 16.0));
         assert!(none.rows.is_empty());
+    }
+
+    #[test]
+    fn a_background_window_is_not_dimmed_unless_asked() {
+        let s = screen(b"ab");
+        let hl = |undimmed| Highlights { matches: &[], color: rgb(0, 0, 0), hover: None, link: rgb(0, 0, 0), labels: &[], notes: &[], undimmed };
+        let mut f = Frame::default();
+        pane_with(&mut f, &s, RECT, CELL, false, true, Some(&hl(true)));
+        assert!(!f.overlay.iter().any(|q| q.rect == RECT), "the key pane of a background window keeps its brightness");
+        assert!(!f.quads.iter().any(|q| q.color == rgba(s.palette.cursor, 1.0)), "its cursor is hollow");
+        let mut g = Frame::default();
+        pane_with(&mut g, &s, RECT, CELL, false, true, Some(&hl(false)));
+        assert!(g.overlay.iter().any(|q| q.rect == RECT));
     }
 }

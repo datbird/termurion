@@ -65,6 +65,64 @@ impl Registry {
     }
 }
 
+/// Window > Lock Size and Lock Layout (one at a time).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Locks {
+    pub size: bool,
+    pub layout: bool,
+}
+
+/// Changes to a window's tabs and panes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutOp {
+    AddTab,
+    CloseTab,
+    ReorderTab,
+    MoveTab,
+    Split,
+    ClosePane,
+    MovePane,
+    ResizePane,
+}
+
+impl Locks {
+    pub fn toggle_size(&mut self) {
+        self.size = !self.size;
+        if self.size {
+            self.layout = false;
+        }
+    }
+
+    pub fn toggle_layout(&mut self) {
+        self.layout = !self.layout;
+        if self.layout {
+            self.size = false;
+        }
+    }
+
+    /// Lock Layout forbids adding, closing, reordering, and moving tabs and panes; panes
+    /// still resize, and the window still closes.
+    pub fn forbids(&self, op: LayoutOp) -> bool {
+        self.layout && op != LayoutOp::ResizePane
+    }
+}
+
+/// Window > Resize Window: one cell at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resize {
+    Width(i32),
+    Height(i32),
+}
+
+/// The inner size after a Resize Window step; never below one cell.
+pub fn step_size(size: (u32, u32), cell: (f32, f32), r: Resize) -> (u32, u32) {
+    let step = |v: u32, c: f32, by: i32| ((v as f32 + by as f32 * c).max(c)).round() as u32;
+    match r {
+        Resize::Width(by) => (step(size.0, cell.0, by), size.1),
+        Resize::Height(by) => (size.0, step(size.1, cell.1, by)),
+    }
+}
+
 /// What asked for a new session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenRequest {
@@ -283,5 +341,29 @@ mod tests {
         r.close(7);
         r.open(6);
         assert_eq!(r.merge_order(8), vec![6, 9], "every other window, by number");
+    }
+
+    #[test]
+    fn locks_are_exclusive() {
+        let mut l = Locks::default();
+        l.toggle_size();
+        assert!(l.size && !l.layout);
+        l.toggle_layout();
+        assert!(l.layout && !l.size, "Lock Layout turns Lock Size off");
+        l.toggle_layout();
+        assert!(!l.layout && !l.size);
+    }
+
+    #[test]
+    fn lock_layout_forbids_moves() {
+        let l = Locks { size: false, layout: true };
+        for op in [LayoutOp::AddTab, LayoutOp::CloseTab, LayoutOp::ReorderTab, LayoutOp::MoveTab, LayoutOp::Split, LayoutOp::ClosePane, LayoutOp::MovePane] {
+            assert!(l.forbids(op), "{op:?}");
+        }
+        assert!(!l.forbids(LayoutOp::ResizePane), "panes still resize");
+        assert!(!Locks { size: true, layout: false }.forbids(LayoutOp::AddTab));
+        assert_eq!(step_size((800, 600), (10.0, 20.0), Resize::Height(-1)), (800, 580));
+        assert_eq!(step_size((800, 600), (10.0, 20.0), Resize::Width(1)), (810, 600));
+        assert_eq!(step_size((15, 25), (10.0, 20.0), Resize::Width(-1)), (10, 25), "never below one cell");
     }
 }

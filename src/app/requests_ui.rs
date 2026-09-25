@@ -166,7 +166,7 @@ impl App {
     /// A tab's title, status, and colors for the tab bar.
     pub(super) fn tab_look(&self, t: &Tab) -> scene::TabLook {
         use crate::tabstatus::{self, xterm_color};
-        let title = self.session_title(t.focused);
+        let title = t.title.clone().unwrap_or_else(|| self.session_title(t.focused));
         let panes = t.layout.panes();
         let focused = self.panes.get(&t.focused).map(|p| &p.own().tab_status);
         let others: Vec<&tabstatus::Status> = panes.iter().filter(|id| **id != t.focused).filter_map(|id| self.panes.get(id)).map(|p| &p.own().tab_status).collect();

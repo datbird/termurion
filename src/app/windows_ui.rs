@@ -29,6 +29,8 @@ pub(super) struct WinSlot {
     font_sig: String,
     win_style: i64,
     win_slot: Option<(String, u32)>,
+    win_locks: crate::winmodel::Locks,
+    win_title: Option<String>,
 }
 
 impl WinSlot {
@@ -54,6 +56,8 @@ impl WinSlot {
             font_sig: String::new(),
             win_style: 0,
             win_slot: None,
+            win_locks: Default::default(),
+            win_title: None,
         }
     }
 }
@@ -87,6 +91,8 @@ impl App {
         swap(&mut self.font_sig, &mut s.font_sig);
         swap(&mut self.win_style, &mut s.win_style);
         swap(&mut self.win_slot, &mut s.win_slot);
+        swap(&mut self.win_locks, &mut s.win_locks);
+        swap(&mut self.win_title, &mut s.win_title);
     }
 
     /// Makes a terminal window current. False for a window that is not one.
@@ -174,6 +180,7 @@ impl App {
         }
         self.install_menus();
         self.place_window();
+        self.apply_window_profile(first_guid.as_deref());
         if style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
@@ -247,6 +254,8 @@ impl WinSlot {
             font_sig: String::new(),
             win_style: 0,
             win_slot: None,
+            win_locks: Default::default(),
+            win_title: None,
         }
     }
 }
@@ -396,7 +405,7 @@ impl App {
             t.focused = t.layout.panes()[0];
             t.zoomed = None;
         }
-        let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None };
+        let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None };
         self.next_tab_id += 1;
         self.pending_windows.push(NewWindow::Tab(tab));
         self.relayout();
@@ -575,6 +584,149 @@ impl App {
         for id in ids {
             if self.enter(id) {
                 self.save_window_frame();
+            }
+        }
+    }
+}
+
+/// What Edit Window Title or Edit Tab Title names.
+pub(super) enum TitleEdit {
+    Window(WindowId),
+    Tab(WindowId, u64),
+}
+
+impl App {
+    /// The window settings a profile applies when its window opens: Hide After Opening and
+    /// Lock Window Size Automatically.
+    pub(super) fn apply_window_profile(&mut self, guid: Option<&str>) {
+        let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
+        if p.bool("Lock Window Size Automatically") {
+            self.win_locks.size = true;
+            self.win_locks.layout = false;
+        }
+        if let Some(g) = &self.gpu {
+            g.window.set_resizable(!self.win_locks.size);
+            if p.bool("Hide After Opening") {
+                g.window.set_minimized(true);
+            }
+        }
+    }
+
+    /// False (with a beep) when Lock Layout forbids the change.
+    pub(super) fn layout_allowed(&self, op: crate::winmodel::LayoutOp) -> bool {
+        if self.win_locks.forbids(op) {
+            unsafe { windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK) };
+            return false;
+        }
+        true
+    }
+
+    pub(super) fn toggle_lock(&mut self, layout: bool) {
+        if layout {
+            self.win_locks.toggle_layout();
+        } else {
+            self.win_locks.toggle_size();
+        }
+        if let Some(g) = &self.gpu {
+            g.window.set_resizable(!self.win_locks.size);
+        }
+    }
+
+    /// Window > Resize Window: one cell narrower, wider, shorter, or taller.
+    pub(super) fn resize_window_by_cell(&mut self, r: crate::winmodel::Resize) {
+        if self.win_locks.size {
+            return;
+        }
+        let cell = self.cell();
+        let Some(g) = &self.gpu else { return };
+        let inner = g.window.inner_size();
+        let (w, h) = crate::winmodel::step_size((inner.width, inner.height), cell, r);
+        let _ = g.window.request_inner_size(PhysicalSize::new(w, h));
+    }
+
+    /// Edit Window Title and Edit Tab Title: a one-line window; an empty title clears it.
+    pub(super) fn open_title_prompt(&mut self, event_loop: &ActiveEventLoop, tab: bool) {
+        if let Some((w, _)) = &self.title_prompt {
+            return w.focus();
+        }
+        let Some(win) = self.current_window() else { return };
+        let (label, target, now) = if tab {
+            let Some(t) = self.tabs.get(self.active) else { return };
+            ("Tab title:", TitleEdit::Tab(win, t.id), t.title.clone().unwrap_or_default())
+        } else {
+            ("Window title:", TitleEdit::Window(win), self.win_title.clone().unwrap_or_default())
+        };
+        let Some(g) = self.gpu.as_ref() else { return };
+        let title = if tab { "Edit Tab Title" } else { "Edit Window Title" };
+        match crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, title, label, &now) {
+            Ok(w) => self.title_prompt = Some((w, target)),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+    }
+
+    /// Events for the title window. False when `window` is not it.
+    pub(super) fn title_prompt_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
+        use crate::prompt_ui::PromptResult;
+        let Some((w, _)) = self.title_prompt.as_mut() else { return false };
+        if w.id() != window {
+            return false;
+        }
+        match event {
+            WindowEvent::CloseRequested => self.title_prompt = None,
+            WindowEvent::RedrawRequested => match w.redraw() {
+                PromptResult::Open => {}
+                PromptResult::Cancel => self.title_prompt = None,
+                PromptResult::Ok(text) => {
+                    let Some((_, target)) = self.title_prompt.take() else { return true };
+                    let text = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+                    match target {
+                        TitleEdit::Window(id) => {
+                            if self.enter(id) {
+                                self.win_title = text;
+                            }
+                        }
+                        TitleEdit::Tab(id, tab) => {
+                            if self.enter(id) {
+                                if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                                    t.title = text;
+                                }
+                            }
+                        }
+                    }
+                    self.redraw();
+                }
+            },
+            other => {
+                w.event(other);
+            }
+        }
+        true
+    }
+}
+
+impl App {
+    /// Window > Arrange Windows > Arrange Windows Horizontally, on the current window's
+    /// monitor.
+    pub(super) fn arrange_windows_horizontally(&mut self) {
+        let Some((work, _)) = self.monitor_rects() else { return };
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_of_key(k)).collect();
+        let mut frames = Vec::new();
+        for id in &ids {
+            if self.enter(*id) {
+                if let Some(g) = &self.gpu {
+                    frames.push((*id, Self::outer_rect(g)));
+                }
+            }
+        }
+        let placed = crate::placement::arrange_horizontally(work, &frames.iter().map(|f| f.1).collect::<Vec<_>>());
+        for ((id, _), r) in frames.iter().zip(placed) {
+            if self.enter(*id) {
+                if let Some(g) = &self.gpu {
+                    let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+                    let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
+                    g.window.set_outer_position(PhysicalPosition::new(r.x as i32, r.y as i32));
+                    let _ = g.window.request_inner_size(PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+                }
             }
         }
     }

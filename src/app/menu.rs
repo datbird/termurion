@@ -327,9 +327,19 @@ impl App {
                 self.open_settings(event_loop, Mode::Profiles)
             }
             "terminate:" => self.quit(event_loop),
-            "moveTabToNewWindow:" => self.move_tab_to_new_window(),
-            "moveSessionToWindow:" => self.move_session_to_window(),
-            "mergeAllWindows:" => self.merge_all_windows(),
+            "moveTabToNewWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.move_tab_to_new_window(),
+            "moveSessionToWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_window(),
+            "mergeAllWindows:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.merge_all_windows(),
+            "moveTabToNewWindow:" | "moveSessionToWindow:" | "mergeAllWindows:" => {}
+            "arrangeHorizontally:" => self.arrange_windows_horizontally(),
+            "toggleSizeLocked:" => self.toggle_lock(false),
+            "toggleLayoutLocked:" => self.toggle_lock(true),
+            "decreaseHeight:" => self.resize_window_by_cell(crate::winmodel::Resize::Height(-1)),
+            "increaseHeight:" => self.resize_window_by_cell(crate::winmodel::Resize::Height(1)),
+            "decreaseWidth:" => self.resize_window_by_cell(crate::winmodel::Resize::Width(-1)),
+            "increaseWidth:" => self.resize_window_by_cell(crate::winmodel::Resize::Width(1)),
+            "editWindowTitle:" => self.open_title_prompt(event_loop, false),
+            "editTabTitle:" => self.open_title_prompt(event_loop, true),
             "duplicateWindow:" => self.duplicate_window(),
             "closeTerminalWindow:" => {
                 if let Some(id) = self.current_window() {
@@ -389,12 +399,12 @@ impl App {
                 }
             }
             "closeCurrentSession:" => {
-                if let Some(id) = self.focused_id().filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
+                if let Some(id) = self.focused_id().filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::ClosePane)).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_pane(id, event_loop);
                 }
             }
             "closeCurrentTab:" => {
-                if let Some(t) = self.tabs.get(self.active).filter(|_| self.confirm_close(close_ui::Closing::Tab(self.active))) {
+                if let Some(t) = self.tabs.get(self.active).filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::CloseTab)).filter(|_| self.confirm_close(close_ui::Closing::Tab(self.active))) {
                     for id in t.layout.panes() {
                         self.close_pane(id, event_loop);
                     }
@@ -489,6 +499,7 @@ impl App {
                     self.active = if item.selector == "nextTab:" { (self.active + 1) % n } else { (self.active + n - 1) % n };
                 }
             }
+            "moveTabLeft:" | "moveTabRight:" if !self.layout_allowed(crate::winmodel::LayoutOp::ReorderTab) => {}
             "moveTabLeft:" | "moveTabRight:" => {
                 let n = self.tabs.len();
                 if n > 1 {
