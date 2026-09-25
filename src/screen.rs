@@ -174,6 +174,8 @@ pub struct Screen {
     capture_hold: Vec<u8>,
     /// OSC 1337 Block: the blocks this screen knows.
     pub blocks: crate::blocks::Blocks,
+    /// OSC 1337 Button: the buttons written into the text.
+    pub buttons: crate::blocks::Buttons,
     /// OSC 21337: what the pane's program says it is doing.
     pub tab_status: crate::tabstatus::Status,
     /// The program's `Env=report=all` environment, kept for the SSH integration.
@@ -280,6 +282,7 @@ impl Screen {
             trusted: true,
             tab_status: crate::tabstatus::Status::default(),
             blocks: crate::blocks::Blocks::default(),
+            buttons: crate::blocks::Buttons::default(),
             env: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
@@ -507,6 +510,68 @@ impl Screen {
             }
         }
         true
+    }
+
+    /// OSC 1337 Button: a button at the cursor, then 4 spaces (the button's room).
+    pub fn add_button(&mut self, kind: crate::blocks::ButtonKind) {
+        use alacritty_terminal::vte::ansi::Handler;
+        let point = self.term.grid().cursor.point;
+        let key = match self.term.grid()[point.line].button() {
+            0 => {
+                self.prune_buttons();
+                let k = self.buttons.new_key();
+                self.term.grid_mut()[point.line].set_button(k);
+                k
+            }
+            k => k,
+        };
+        self.buttons.add(key, point.column.0, kind);
+        for _ in 0..4 {
+            self.term.input(' ');
+        }
+    }
+
+    /// Drops the buttons of rows that are gone, once there are many keys.
+    fn prune_buttons(&mut self) {
+        if self.buttons.rows.len() < 256 {
+            return;
+        }
+        let mut live = std::collections::HashSet::new();
+        for g in [self.term.primary_grid(), self.term.grid()] {
+            let (top, bottom) = (-(g.history_size() as i32), g.screen_lines() as i32 - 1);
+            live.extend((top..=bottom).map(|l| g[Line(l)].button()).filter(|k| *k != 0));
+        }
+        self.buttons.rows.retain(|k, _| live.contains(k));
+    }
+
+    /// The buttons on a line of the grid in use.
+    pub fn buttons_on_line(&self, line: i32) -> Vec<crate::blocks::Button> {
+        let key = self.term.grid()[Line(line)].button();
+        if key == 0 {
+            return Vec::new();
+        }
+        self.buttons.rows.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// A block's text for Copy: plain, from the main screen, soft-wrapped rows joined, each
+    /// line's trailing spaces trimmed, every line ending in a newline.
+    pub fn block_text(&self, id: &str) -> Option<String> {
+        use alacritty_terminal::term::cell::Flags;
+        let (first, last) = self.block_rows(id)?;
+        let g = self.term.primary_grid();
+        let mut out = String::new();
+        let mut line = String::new();
+        for l in first..=last {
+            let row = &g[Line(l)];
+            line.extend((0..g.columns()).map(|c| &row[Column(c)]).filter(|c| !c.flags.contains(Flags::WIDE_CHAR_SPACER)).map(|c| c.c));
+            let wrapped = l < last && row[Column(g.columns() - 1)].flags.contains(Flags::WRAPLINE);
+            if !wrapped {
+                out.push_str(line.trim_end());
+                out.push('\n');
+                line.clear();
+            }
+        }
+        Some(out)
     }
 
     /// The grid lines of the newest block started with `id`, from its stamped rows.

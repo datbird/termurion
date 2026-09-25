@@ -65,11 +65,57 @@ impl App {
         rects.into_iter().map(|(r, b)| (r, id, n, b)).collect()
     }
 
-    /// A click on a pill button or in a block row's left margin. True when used.
+    /// Draws the inline buttons (OSC 1337 Button) on a pane's rows in view.
+    pub(super) fn draw_inline_buttons(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) {
+        let Some(p) = self.panes.get(&id) else { return };
+        let s = &p.screen;
+        let g = s.term().grid();
+        let off = g.display_offset() as i32;
+        let inner = self.inner(rect);
+        let mut faces = Vec::new();
+        for r in 0..g.screen_lines() {
+            for b in s.buttons_on_line(r as i32 - off) {
+                let face = match &b.kind {
+                    blocks::ButtonKind::Copy { .. } => scene::ButtonFace::Copy,
+                    blocks::ButtonKind::Custom { icon, .. } => blocks::icon_glyph(icon).map_or(scene::ButtonFace::Blank, scene::ButtonFace::Icon),
+                };
+                let at = Rect { x: inner.x + b.col as f32 * cell.0, y: inner.y + r as f32 * cell.1, w: 2.0 * cell.0, h: cell.1 };
+                faces.push((at, face, b.valid));
+            }
+        }
+        scene::inline_buttons(frame, &faces, s.palette.bg, s.palette.fg);
+    }
+
+    /// A click on an inline button: copy its block, or report a custom button's code to a
+    /// trusted program. Inert buttons let the click through. True when used.
+    fn inline_button_press(&mut self, x: f32, y: f32) -> bool {
+        let Some((id, rect)) = self.pane_at(x, y) else { return false };
+        let (col, row, _) = self.cell_at(id, rect, x, y);
+        let Some(p) = self.panes.get_mut(&id) else { return false };
+        let line = row as i32 - p.screen.term().grid().display_offset() as i32;
+        let buttons = p.screen.buttons_on_line(line);
+        let Some(b) = blocks::button_hit(&buttons, col as usize).filter(|b| b.valid) else { return false };
+        match blocks::click(b, p.screen.trusted) {
+            blocks::Click::CopyBlock(block) => self.copy_block(id, &block),
+            blocks::Click::Report(bytes) => p.reply(&bytes),
+            blocks::Click::Nothing => {}
+        }
+        true
+    }
+
+    /// A click on a pill button, an inline button, or in a block row's left margin. True
+    /// when used.
     pub(super) fn block_press(&mut self, x: f32, y: f32) -> bool {
+        if self.inline_button_press(x, y) {
+            return true;
+        }
         if let Some(&(_, pane, n, button)) = self.block_buttons.iter().find(|(r, ..)| r.contains(x, y)) {
             match button {
-                PillButton::Copy => self.copy_block(pane, n),
+                PillButton::Copy => {
+                    if let Some(id) = self.block_id(pane, n) {
+                        self.copy_block(pane, &id);
+                    }
+                }
                 PillButton::Fold => self.toggle_block_fold(pane, n),
             }
             return true;
@@ -107,13 +153,9 @@ impl App {
 
     /// The block's text on the clipboard: plain, each line's trailing spaces trimmed, ending
     /// with a newline.
-    fn copy_block(&mut self, pane: PaneId, n: u32) {
+    fn copy_block(&mut self, pane: PaneId, block: &str) {
         let Some(p) = self.panes.get(&pane) else { return };
-        let s = &p.screen;
-        let history = s.term().grid().history_size() as i32;
-        let Some((_, first, last)) = self.block_id(pane, n).and_then(|id| s.block_rows(&id)).map(|(a, b)| (n, a, b)) else { return };
-        let lines = crate::find::logical_texts_over(s, (first + history) as usize, (last + history) as usize);
-        let text: String = lines.iter().map(|l| format!("{}\n", l.trim_end())).collect();
+        let Some(text) = p.screen.block_text(block) else { return };
         if let Some(cb) = &mut self.clipboard {
             match cb.set_text(text) {
                 Ok(()) => self.show_toast("Copied"),

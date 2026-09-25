@@ -594,6 +594,11 @@ impl Screen {
                         _ => {}
                     }
                 }
+                "Button" => match crate::blocks::button_args(&crate::blocks::parse(&value)) {
+                    crate::blocks::ButtonArgs::Add(kind) => self.add_button(kind),
+                    crate::blocks::ButtonArgs::Invalidate => self.buttons.invalidate_custom(),
+                    crate::blocks::ButtonArgs::Ignore => {}
+                },
                 "Block" => {
                     let args = crate::blocks::parse(&value);
                     let alt = self.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);

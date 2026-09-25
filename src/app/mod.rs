@@ -1354,6 +1354,7 @@ impl App {
                     let pad = PAD * self.scale();
                     scene::mark_bars(&mut frame, &bars, self.inner(rect), cell.1, pad);
                     block_buttons.extend(self.draw_blocks(&mut frame, id, rect, cell));
+                    self.draw_inline_buttons(&mut frame, id, rect, cell);
                 }
             }
             if tab.zoomed.is_none() {

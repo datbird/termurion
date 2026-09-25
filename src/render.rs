@@ -272,6 +272,8 @@ pub struct Renderer {
     buffers: Vec<(Buffer, Vec<Span>, f32)>,
     family: String,
     alt_family: Option<String>,
+    /// Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets (Windows 10, same code points).
+    icon_family: String,
     h_spacing: f32,
     v_spacing: f32,
     font_px: f32,
@@ -302,11 +304,13 @@ impl Renderer {
             family: family.to_string(),
             format,
             alt_family: None,
+            icon_family: String::new(),
             h_spacing: 1.0,
             v_spacing: 1.0,
             font_px,
             cell: (0.0, 0.0),
         };
+        r.icon_family = if r.has_family("Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" }.to_string();
         r.set_font_px(font_px);
         r
     }
@@ -444,8 +448,15 @@ impl Renderer {
             buffer.set_monospace_width(Some(cw));
             let base = Attrs::new().family(Family::Name(&self.family));
             let alt = self.alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
+            let icons = Attrs::new().family(Family::Name(&self.icon_family));
             let spans = row.spans.iter().map(|s| {
-                let start = if s.alt_font { alt.clone().unwrap_or_else(|| base.clone()) } else { base.clone() };
+                let start = if s.icon {
+                    icons.clone()
+                } else if s.alt_font {
+                    alt.clone().unwrap_or_else(|| base.clone())
+                } else {
+                    base.clone()
+                };
                 let attrs = start
                     .color(Color::rgb(s.color.r, s.color.g, s.color.b))
                     .weight(if s.bold { Weight::BOLD } else { Weight::NORMAL })
@@ -639,7 +650,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
             }],
             overlay: vec![],
@@ -688,7 +699,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
             }],
             overlay: vec![],

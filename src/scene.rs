@@ -24,6 +24,8 @@ pub struct Span {
     pub italic: bool,
     /// Draw with the profile's non-ASCII font, when it has one.
     pub alt_font: bool,
+    /// Draw with the icon font (Segoe Fluent Icons).
+    pub icon: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -206,7 +208,7 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         bar.query.chars().skip(n.saturating_sub(FIELD - 1)).collect()
     };
     let field = format!("{shown}_");
-    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false };
+    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false };
     let y = r.y + 4.0;
     let query_color = if bar.error { FIND_ERROR } else { TAB_TEXT };
     frame.rows.push(TextRow {
@@ -261,7 +263,7 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
         for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > bg.x) {
             r.clip.w = (bg.x - r.clip.x).max(0.0);
         }
-        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false };
+        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false };
         frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect });
     }
 }
@@ -426,7 +428,7 @@ pub fn pane_with(
             let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
             match spans.last_mut() {
                 Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
-                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii }),
+                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false }),
             }
             if !ascii {
                 flush(&mut piece, frame);
@@ -440,7 +442,7 @@ pub fn pane_with(
         for (p, label) in h.labels {
             let row = p.row as i32 - top;
             if row >= 0 && (row as usize) < lines {
-                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false };
+                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false };
                 frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect });
             }
         }
@@ -471,7 +473,7 @@ pub fn pane_with(
                 let y = rect.y + row as f32 * ch;
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false };
+                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false };
                 frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect });
             }
         }
@@ -600,6 +602,43 @@ pub fn block_pill(frame: &mut Frame, buttons: &[(Rect, crate::blocks::PillButton
     }
 }
 
+/// How an inline button looks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ButtonFace {
+    Copy,
+    Icon(char),
+    /// A custom button whose icon has no glyph: nothing is drawn.
+    Blank,
+}
+
+/// OSC 1337 inline buttons: a faint rounded box with the icon, at 40% when inert.
+pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], bg: Rgb, fg: Rgb) {
+    for (r, face, valid) in buttons {
+        let a = if *valid { 1.0 } else { 0.4 };
+        let mix = |t: f32| rgb((bg.r as f32 + (fg.r as f32 - bg.r as f32) * t).round() as u8, (bg.g as f32 + (fg.g as f32 - bg.g as f32) * t).round() as u8, (bg.b as f32 + (fg.b as f32 - bg.b as f32) * t).round() as u8);
+        match face {
+            ButtonFace::Blank => {}
+            ButtonFace::Copy => {
+                frame.quads.push(Quad { rect: *r, color: rgba(mix(0.15 * a), 1.0) });
+                let s = (r.h * 0.6).min(r.w * 0.6);
+                let q = s * 0.7;
+                let (x, y) = (r.x + (r.w - s) / 2.0, r.y + (r.h - s) / 2.0);
+                for (dx, dy) in [(0.0, 0.0), (s - q, s - q)] {
+                    let sq = Rect { x: x + dx, y: y + dy, w: q, h: q };
+                    for e in [Rect { h: 1.0, ..sq }, Rect { y: sq.y + q - 1.0, h: 1.0, ..sq }, Rect { w: 1.0, ..sq }, Rect { x: sq.x + q - 1.0, w: 1.0, ..sq }] {
+                        frame.quads.push(Quad { rect: e, color: rgba(mix(a), 1.0) });
+                    }
+                }
+            }
+            ButtonFace::Icon(c) => {
+                frame.quads.push(Quad { rect: *r, color: rgba(mix(0.15 * a), 1.0) });
+                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true };
+                frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r });
+            }
+        }
+    }
+}
+
 /// One tab's look: its title, its OSC 21337 status text and color, the status dot, and
 /// the tab color a program chose.
 #[derive(Clone, Debug, Default)]
@@ -633,7 +672,7 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, c
         let fit = ((r.x + w - x) / cell.0).max(0.0) as usize;
         let fit = fit.saturating_sub(1);
         let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
-        let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false };
+        let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false };
         let mut spans = Vec::new();
         let mut left = fit;
         if let Some((status, c)) = &tab.status {
@@ -675,7 +714,7 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
         }
     }
     frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false };
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
     let clip = Rect { w: (text_end - r.x).max(0.0), ..r };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip });
@@ -747,7 +786,7 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
         }
     }
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
-    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false };
+    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false };
     frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r });
 }
 
@@ -756,7 +795,7 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
     let r = Rect { x: area.x, y: area.y + area.h - cell.1 - 8.0, w: area.w, h: cell.1 + 8.0 };
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
-    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false };
+    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r });
 }
 
@@ -904,6 +943,26 @@ mod tests {
         let mut f = Frame::default();
         block_bars(&mut f, &[(0, false, true)], inner, 16.0, 6.0, fg, red);
         assert_eq!(f.overlay[0].color, rgba(red, 1.0), "red when hovered");
+    }
+
+    #[test]
+    fn inline_buttons_draw_faint_when_inert() {
+        let (bg, fg) = (rgb(0, 0, 0), rgb(200, 100, 0));
+        let r = Rect { x: 20.0, y: 16.0, w: 16.0, h: 16.0 };
+        let mut f = Frame::default();
+        inline_buttons(&mut f, &[(r, ButtonFace::Icon('\u{E768}'), true)], bg, fg);
+        assert_eq!(f.rows.len(), 1, "the icon is text");
+        assert!(f.rows[0].spans[0].icon, "in the icon font");
+        assert_eq!(f.rows[0].spans[0].color, fg);
+        let mut f = Frame::default();
+        inline_buttons(&mut f, &[(r, ButtonFace::Icon('\u{E768}'), false)], bg, fg);
+        assert_eq!(f.rows[0].spans[0].color, rgb(80, 40, 0), "40% toward the background");
+        let mut f = Frame::default();
+        inline_buttons(&mut f, &[(r, ButtonFace::Copy, true)], bg, fg);
+        assert!(f.quads.len() > 1 && f.rows.is_empty(), "copy is drawn with quads");
+        let mut f = Frame::default();
+        inline_buttons(&mut f, &[(r, ButtonFace::Blank, true)], bg, fg);
+        assert!(f.quads.is_empty() && f.rows.is_empty(), "an unknown icon draws nothing");
     }
 
     #[test]

@@ -49,4 +49,8 @@ test data) is left out. Changes:
     `absorb_tags` and kept by split rows like `time`. `term/mod.rs`: `Term.block` (0 for none) is
     stamped on the row `write_at_cursor` writes and on the row a line feed leaves (OSC 1337 Block).
 
+11. `grid/row.rs`: `Row` has a `button` slot (`button()`, `set_button()`), the key of the OSC 1337
+    buttons on the row, cleared by `reset` and merged by `absorb_tags`. Split rows do not keep it:
+    a button belongs to the part it was written in.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.
