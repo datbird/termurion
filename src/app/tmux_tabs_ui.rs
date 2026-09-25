@@ -23,7 +23,28 @@ impl App {
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
-                Action::PaneInfo { .. } | Action::WindowTitle(..) => {}
+                Action::PaneInfo { pane, what, value } => {
+                    let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
+                    if let Some(io) = self.panes.get(&id).and_then(|p| p.tmux_io()) {
+                        let mut info = io.info.borrow_mut();
+                        match what {
+                            crate::tmux_controller::Info::Title => info.title = value,
+                            crate::tmux_controller::Info::Job => info.job = value,
+                            crate::tmux_controller::Info::Cwd => info.cwd = value,
+                        }
+                    }
+                    self.redraw();
+                }
+                // tmux's set-titles string names the tab (iTerm2's tmuxWindowTitle override).
+                Action::WindowTitle(window, value) => {
+                    if let Some(t) = self.tmux.get_mut(&gw) {
+                        t.window_titles.insert(window, value.clone());
+                    }
+                    let title = self.tmux_title(&value);
+                    if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
+                        self.with_tab_of(first, |t| t.title = Some(title));
+                    }
+                }
                 // AutoHideTmuxClientSession: once the attach's windows have opened (they may
                 // still wait to become windows), the gateway is buried.
                 Action::InitialWindowsOpened => {
@@ -49,6 +70,10 @@ impl App {
                     }
                 }
                 Action::Rename(window, name) => {
+                    // A set-titles string names the tab instead.
+                    if self.tmux.get(&gw).is_some_and(|t| t.window_titles.contains_key(&window)) {
+                        continue;
+                    }
                     let title = self.tmux_title(&name);
                     if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
                         self.with_tab_of(first, |t| t.title = Some(title));
@@ -72,13 +97,25 @@ impl App {
                 }
                 Action::Output(pane, data) => {
                     let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
-                    if let Some(p) = self.panes.get_mut(&id) {
-                        if let Some(io) = p.tmux_io() {
-                            io.push_output(&data);
-                        }
-                        // Read now: nothing else wakes the loop for it.
-                        p.pump();
+                    let Some(p) = self.panes.get_mut(&id) else { continue };
+                    let (title, vars) = (p.own().title().map(str::to_string), p.own().shell.vars.clone());
+                    if let Some(io) = p.tmux_io() {
+                        io.push_output(&data);
                     }
+                    // Read now: nothing else wakes the loop for it.
+                    p.pump();
+                    let title_changed = p.own().title().map(str::to_string) != title;
+                    let now_vars = (p.own().shell.vars != vars).then(|| p.own().shell.vars.iter().map(|(k, v)| (format!("user.{k}"), v.clone())).collect());
+                    let Some(t) = self.tmux.get_mut(&gw) else { continue };
+                    // OSC 0, 1, or 2: the title and job are asked for again (before tmux 3.2).
+                    if title_changed {
+                        t.ctl.pane_event(pane, crate::tmux_controller::PaneEvent::Title, &mut t.gw);
+                    }
+                    // SetUserVar: the pane's variables go to @uservars.
+                    if let Some(vars) = now_vars {
+                        t.ctl.sync_user_vars(pane, &vars, &mut t.gw);
+                    }
+                    self.tmux_flush(gw);
                 }
                 Action::SelectPane(window, pane) => {
                     let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&pane)).map(|(id, _)| *id) else { continue };
@@ -479,12 +516,31 @@ impl App {
         let (list, prefs) = triggers_ui::triggers_of(&profile);
         pane.screen.set_triggers(list, prefs);
         pane.profile = profile.guid();
+        // TERM is tmux's default-terminal, else "screen" (iTerm2's termType for tmux panes).
+        let term = self.tmux.get(&gw).and_then(|t| t.hs.default_terminal.clone()).unwrap_or_else(|| "screen".into());
+        if self.globals.bool("translateScreenToXterm") && crate::screenterm::screen_like(&term, self.globals.bool("convertItalicsToReverseVideoForTmuxBugwardsCompatible")) {
+            pane.screen_filter = Some(crate::screenterm::Filter::new(self.globals.bool("convertItalicsToReverseVideoForTmux")));
+        }
         pane.own_mut().feed_tmux_restore(&p.restore);
-        pane.feed_output(&p.pending);
+        let pending = match pane.screen_filter.as_mut() {
+            Some(f) => f.feed(&p.pending),
+            None => p.pending.clone(),
+        };
+        pane.feed_output(&pending);
+        // `@uservars`: the pane's user.* variables (iTerm2's setTmuxController).
+        for (k, v) in &p.user_vars {
+            if let Some(name) = k.strip_prefix("user.") {
+                pane.own_mut().shell.vars.insert(name.to_string(), v.clone());
+            }
+        }
         self.panes.insert(id, pane);
+        // The job is watched only when the profile shows an icon (iTerm2's PS:10098).
+        let job = profile.int("Icon") != 0;
         if let Some(t) = self.tmux.get_mut(&gw) {
             t.panes.insert(p.pane, (id, window));
+            t.ctl.watch_pane(p.pane, job, &mut t.gw);
         }
+        self.tmux_flush(gw);
         id
     }
 
@@ -809,7 +865,9 @@ impl App {
         if let Some(t) = self.tmux.get_mut(&gw) {
             t.panes.retain(|_, (x, _)| *x != id);
             t.ctl.forget_pane(pane);
+            t.ctl.unwatch_pane(pane, &mut t.gw);
         }
+        self.tmux_flush(gw);
     }
 
     /// The profile tmux panes use: the "tmux" profile with TmuxUsesDedicatedProfile (made
@@ -841,6 +899,8 @@ impl App {
             .collect();
         for (id, gw, pane, bytes) in ready {
             let Some(t) = self.tmux.get_mut(&gw) else { continue };
+            // A key press: the working directory may have changed (iTerm2's userDidPressKey).
+            t.ctl.pane_event(pane, crate::tmux_controller::PaneEvent::Key, &mut t.gw);
             match crate::tmux_keys::encode(&bytes, pane, t.hs.min, t.hs.max) {
                 Ok(cmds) => {
                     let tolerate = crate::tmux_gateway::Flags { tolerate: true, ..Default::default() };

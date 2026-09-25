@@ -324,6 +324,17 @@ impl App {
             v.session.insert("jobPid", j.pid.to_string());
         }
         v.session.insert("foregroundJobAncestors", s.shell.job_ancestors.join("\n"));
+        // A tmux pane: tmux's monitors (iTerm2's tmuxPaneTitle, jobName, and path).
+        if let Some(io) = p.tmux_io() {
+            let info = io.info.borrow();
+            v.session.insert("tmuxPaneTitle", info.title.clone());
+            if !info.job.is_empty() {
+                v.session.insert("jobName", info.job.clone());
+            }
+            if !info.cwd.is_empty() && s.shell.cwd.is_none() {
+                v.session.insert("path", info.cwd.clone());
+            }
+        }
         if let Some(pid) = p.shell_pid() {
             v.session.insert("pid", pid.to_string());
             v.session.insert("effective_root_pid", pid.to_string());

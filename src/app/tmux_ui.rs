@@ -49,6 +49,8 @@ pub(super) struct TmuxGw {
     pub(super) tab_sizes: HashMap<u32, (u32, u32)>,
     /// tmux pane id to (Tandem pane, tmux window id).
     pub(super) panes: HashMap<u32, (PaneId, u32)>,
+    /// Each window's set-titles string, once tmux sent one.
+    pub(super) window_titles: HashMap<u32, String>,
 }
 
 /// Tags for commands typed through C, above the controller's.
@@ -103,7 +105,7 @@ impl App {
         let mut ctl = crate::tmux_controller::Controller::new(tmux_handshake::FIRST_FREE_TAG);
         ctl.client = client;
         ctl.prefs = self.tmux_prefs(pane, client.1);
-        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, tab_sizes: HashMap::new(), panes: HashMap::new() });
+        self.tmux.insert(pane, TmuxGw { gw, hs: Handshake::default(), next_tag: TYPED_TAGS, typed: Default::default(), hung_asked: false, client: name, ctl, selected: None, pause_tick: None, auto_buried: false, bury_pending: false, window_titles: HashMap::new(), tab_sizes: HashMap::new(), panes: HashMap::new() });
     }
 
     fn tmux_print(&mut self, pane: PaneId, text: &str) {
@@ -148,6 +150,11 @@ impl App {
                                     t.ctl.version_known(min, tab_bug, status, &mut t.gw);
                                 }
                             }
+                        }
+                        if ask == tmux_handshake::Ask::SetTitles {
+                            let Some(t) = self.tmux.get_mut(&pane) else { return };
+                            let on = t.hs.set_titles;
+                            t.ctl.set_titles_known(on, &mut t.gw);
                         }
                     } else if t.typed.remove(&tag) {
                         // iTerm2's printTmuxCommandOutputToScreen.

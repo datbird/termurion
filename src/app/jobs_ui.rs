@@ -35,7 +35,7 @@ impl App {
         let components = profile.map_or(jobtitle::JOB as i64, |pr| pr.int("Title Components")).clamp(0, u32::MAX as i64) as u32;
         use alacritty_terminal::grid::Dimensions;
         let grid = s.term().grid();
-        let parts = TitleParts {
+        let mut parts = TitleParts {
             explicit: s.title().map(str::to_string),
             profile: profile.map(|pr| pr.name()).unwrap_or_default(),
             job: s.shell.job.as_ref().map(|j| j.title.clone()).unwrap_or_default(),
@@ -45,7 +45,21 @@ impl App {
             path: s.shell.cwd.clone().unwrap_or_default(),
             home: std::env::var("USERPROFILE").unwrap_or_default(),
             size: (grid.columns(), grid.screen_lines()),
+            tmux_pane_title: String::new(),
         };
+        // A tmux pane: what tmux's monitors report (the job is the command's name).
+        if let Some(io) = p.tmux_io() {
+            let info = io.info.borrow();
+            parts.tmux_pane_title = info.title.clone();
+            if !info.job.is_empty() {
+                parts.job = info.job.clone();
+                parts.cmdline = info.job.clone();
+            }
+            if parts.path.is_empty() {
+                parts.path = info.cwd.clone();
+                parts.home.clear();
+            }
+        }
         jobtitle::title(components, &parts)
     }
 

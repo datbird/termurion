@@ -61,11 +61,21 @@ pub struct TmuxIo {
     inbox: std::cell::RefCell<Vec<u8>>,
     outbox: std::cell::RefCell<Vec<u8>>,
     ended: std::cell::Cell<Option<u32>>,
+    /// What tmux's monitors say about the pane.
+    pub info: std::cell::RefCell<TmuxInfo>,
+}
+
+/// A tmux pane's title, foreground job, and working directory (remote paths), from tmux.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TmuxInfo {
+    pub title: String,
+    pub job: String,
+    pub cwd: String,
 }
 
 impl TmuxIo {
     pub fn new(gateway: PaneId, pane: u32) -> TmuxIo {
-        TmuxIo { gateway, pane, inbox: Default::default(), outbox: Default::default(), ended: Default::default() }
+        TmuxIo { gateway, pane, inbox: Default::default(), outbox: Default::default(), ended: Default::default(), info: Default::default() }
     }
 
     /// Output from tmux for this pane.

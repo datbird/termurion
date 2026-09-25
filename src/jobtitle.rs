@@ -31,6 +31,8 @@ pub struct TitleParts {
     pub path: String,
     pub home: String,
     pub size: (usize, usize),
+    /// A tmux pane's `#{pane_title}` (iTerm2's tmuxPaneTitle).
+    pub tmux_pane_title: String,
 }
 
 /// The path with the home folder shown as `~`.
@@ -54,7 +56,8 @@ pub fn title(components: u32, p: &TitleParts) -> String {
     // A name set by a program or trigger turns on the temporary name, unless a name
     // component already shows it (enableSessionNameTitleComponentIfPossible).
     let c = if explicit.is_some() && components & (SESSION_NAME | PROFILE_AND_SESSION | TEMPORARY_NAME) == 0 { components | TEMPORARY_NAME } else { components };
-    let session = explicit.unwrap_or(&p.profile);
+    // A tmux pane's title is its session name (iTerm2's tmuxPaneTitle).
+    let session = if p.tmux_pane_title.is_empty() { explicit.unwrap_or(&p.profile) } else { p.tmux_pane_title.as_str() };
     let mut out = String::new();
     if c & (SESSION_NAME | TEMPORARY_NAME) != 0 {
         out.push_str(session);
@@ -116,6 +119,7 @@ mod tests {
             path: r"C:\Users\me\src".into(),
             home: r"C:\Users\me".into(),
             size: (80, 24),
+            tmux_pane_title: String::new(),
         }
     }
 
@@ -134,6 +138,14 @@ mod tests {
         assert_eq!(title(USER, &TitleParts { user: String::new(), ..parts() }), " ", "nothing to show: one space");
         assert_eq!(title(0, &p), "Shell");
         assert_eq!(title(0, &TitleParts { explicit: Some("t".into()), ..parts() }), "t");
+    }
+
+    #[test]
+    fn tmux_pane_titles_use_monitors() {
+        let p = TitleParts { tmux_pane_title: "build".into(), ..parts() };
+        assert_eq!(title(SESSION_NAME | JOB, &p), "build (vim)", "the pane title is the session name");
+        assert_eq!(title(SESSION_NAME, &TitleParts { explicit: Some("x".into()), ..p.clone() }), "build");
+        assert_eq!(title(SESSION_NAME, &parts()), "Default");
     }
 
     #[test]
