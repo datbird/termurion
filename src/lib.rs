@@ -20,6 +20,7 @@ pub mod fold;
 pub mod annotations;
 pub mod images;
 pub mod inline_file;
+pub mod sixel;
 pub mod stamps;
 pub mod commands;
 pub mod menus;
