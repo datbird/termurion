@@ -581,7 +581,8 @@ mod tests {
     fn drop_returns_while_child_runs() {
         for api in apis() {
             let p = spawn(&api, "ping -n 30 127.0.0.1", 80, 24).unwrap();
-            p.read_until(b"Pinging", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+            // ConPTY can put the title sequence inside "Pinging": wait for a reply line.
+            p.read_until(b"Reply from", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
             let start = Instant::now();
             drop(p);
             assert!(start.elapsed() < secs(5), "{}: drop took {:?}", api.source.label(), start.elapsed());
