@@ -45,7 +45,7 @@ test data) is left out. Changes:
    `Term::clear_keyboard_modes` drops every program request (Terminal State > Reset), and
    `Term::scroll_region` reads the scrolling region (DECRQSS).
 
-10. `grid/row.rs`: `Row` has a `block` slot (`block()`), cleared by `reset`, merged by
+10. `grid/row.rs`: `Row` has a `block` slot (`block()`, `set_block()`), cleared by `reset`, merged by
     `absorb_tags` and kept by split rows like `time`. `term/mod.rs`: `Term.block` (0 for none) is
     stamped on the row `write_at_cursor` writes and on the row a line feed leaves (OSC 1337 Block).
 

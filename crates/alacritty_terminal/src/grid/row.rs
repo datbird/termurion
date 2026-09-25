@@ -188,6 +188,12 @@ impl<T> Row<T> {
         self.block
     }
 
+    /// Tandem patch: tags the row with an OSC 1337 block (a folded block's summary row).
+    #[inline]
+    pub fn set_block(&mut self, block: u32) {
+        self.block = block;
+    }
+
     /// Tandem patch: the fold this row stands for.
     #[inline]
     pub fn fold(&self) -> u32 {

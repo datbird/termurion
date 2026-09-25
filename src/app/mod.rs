@@ -53,6 +53,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 mod actions;
 mod annotations_ui;
 mod bgimage_ui;
+mod blocks_ui;
 mod clipboard_ui;
 mod copymode_ui;
 mod files_ui;
@@ -205,6 +206,10 @@ pub struct App {
     attention_due: Option<Instant>,
     /// A short message at the bottom of the window, and when it goes away.
     toast: Option<(String, Instant)>,
+    /// The block under the pointer (pane, number, first and last line), and the drawn pill
+    /// buttons.
+    block_hover: Option<(PaneId, u32, i32, i32)>,
+    block_buttons: Vec<blocks_ui::BlockButton>,
     /// An open Make Screenshot panel.
     shot: Option<screenshot_ui::Shot>,
     /// Page Setup's printer, paper, and margins.
@@ -354,6 +359,8 @@ pub fn run() {
         pending_urls: HashMap::new(),
         print_setup: crate::winprint::Setup::default(),
         shot: None,
+        block_hover: None,
+        block_buttons: Vec::new(),
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
@@ -1005,7 +1012,7 @@ impl App {
             self.active = i;
             return self.redraw();
         }
-        if button == MouseButton::Left && self.info_bar_press(x, y, event_loop) {
+        if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.block_press(x, y)) {
             return;
         }
         if button == MouseButton::Left {
@@ -1176,6 +1183,7 @@ impl App {
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
         self.update_hover();
+        self.update_block_hover();
         // Hover timestamps show while the pointer is at a pane's right edge.
         let near = self.near_stamp_edge();
         if near != self.stamp_near {
@@ -1300,6 +1308,7 @@ impl App {
         }
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
+        let mut block_buttons = Vec::new();
         if let Some(tab) = self.tabs.get(self.active) {
             for (id, rect) in self.visible(tab) {
                 if let Some(b) = backgrounds.iter().find(|b| b.pane == id) {
@@ -1332,15 +1341,19 @@ impl App {
                 }
                 let show = self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_none_or(|p| p.bool("Show Mark Indicators"));
                 if let Some(p) = self.panes.get(&id) {
+                    // Block bars take a row's gutter over mark bars.
+                    let block_rows = self.block_view_rows(id);
                     let bars: Vec<(usize, crate::marks::MarkColor)> = p
                         .screen
                         .visible_marks()
                         .into_iter()
+                        .filter(|(row, _)| !block_rows.contains(row))
                         .filter(|(_, m)| show || m.name.is_some())
                         .map(|(row, m)| (row, crate::marks::color(&m)))
                         .collect();
                     let pad = PAD * self.scale();
                     scene::mark_bars(&mut frame, &bars, self.inner(rect), cell.1, pad);
+                    block_buttons.extend(self.draw_blocks(&mut frame, id, rect, cell));
                 }
             }
             if tab.zoomed.is_none() {
@@ -1364,6 +1377,7 @@ impl App {
             scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         }
         self.attention_due = attention;
+        self.block_buttons = block_buttons;
         let error = self.banners.text().or_else(|| self.panes.values().find_map(|p| p.error.clone()));
         if let Some(text) = error {
             let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));

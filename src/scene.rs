@@ -544,6 +544,62 @@ pub fn mark_bars(frame: &mut Frame, marks: &[(usize, crate::marks::MarkColor)], 
     }
 }
 
+/// Block gutter bars: `(view row, folded, hovered)`, in the left padding; filled, an
+/// outline when folded, red (ANSI 1) when hovered.
+pub fn block_bars(frame: &mut Frame, bars: &[(usize, bool, bool)], inner: Rect, cell_h: f32, pad: f32, fg: Rgb, red: Rgb) {
+    let w = (pad - 2.0).max(1.0);
+    for &(row, folded, hover) in bars {
+        let r = Rect { x: inner.x - pad + 1.0, y: inner.y + row as f32 * cell_h, w, h: cell_h };
+        let color = rgba(if hover { red } else { fg }, 1.0);
+        if folded {
+            for edge in [
+                Rect { h: 1.0, ..r },
+                Rect { y: r.y + r.h - 1.0, h: 1.0, ..r },
+                Rect { w: 1.0, ..r },
+                Rect { x: r.x + r.w - 1.0, w: 1.0, ..r },
+            ] {
+                frame.overlay.push(Quad { rect: edge, color });
+            }
+        } else {
+            frame.overlay.push(Quad { rect: r, color });
+        }
+    }
+}
+
+/// A hovered block's pill: one rounded bar behind its buttons, a copy icon (two squares),
+/// and a fold icon (bars drawn closer together, or apart when folded).
+pub fn block_pill(frame: &mut Frame, buttons: &[(Rect, crate::blocks::PillButton)], folded: bool, bg: Rgb, fg: Rgb) {
+    let (Some(first), Some(last)) = (buttons.iter().map(|b| b.0.x).reduce(f32::min), buttons.iter().map(|b| b.0.x + b.0.w).reduce(f32::max)) else { return };
+    let r = buttons[0].0;
+    let pill = Rect { x: first - 6.0, y: r.y, w: last - first + 12.0, h: r.h };
+    frame.overlay.push(Quad { rect: pill, color: rgba(bg, 0.95) });
+    for edge in [Rect { h: 1.0, ..pill }, Rect { y: pill.y + pill.h - 1.0, h: 1.0, ..pill }, Rect { w: 1.0, ..pill }, Rect { x: pill.x + pill.w - 1.0, w: 1.0, ..pill }] {
+        frame.overlay.push(Quad { rect: edge, color: rgba(fg, 0.3) });
+    }
+    let c = rgba(fg, 1.0);
+    for (b, kind) in buttons {
+        let s = (b.h * 0.7).min(b.w * 0.7);
+        let (x, y) = (b.x + (b.w - s) / 2.0, b.y + (b.h - s) / 2.0);
+        match kind {
+            crate::blocks::PillButton::Copy => {
+                let q = s * 0.7;
+                for (dx, dy) in [(0.0, 0.0), (s - q, s - q)] {
+                    let sq = Rect { x: x + dx, y: y + dy, w: q, h: q };
+                    for e in [Rect { h: 1.0, ..sq }, Rect { y: sq.y + q - 1.0, h: 1.0, ..sq }, Rect { w: 1.0, ..sq }, Rect { x: sq.x + q - 1.0, w: 1.0, ..sq }] {
+                        frame.overlay.push(Quad { rect: e, color: c });
+                    }
+                }
+            }
+            crate::blocks::PillButton::Fold => {
+                let gap = if folded { s * 0.45 } else { s * 0.15 };
+                let mid = y + s / 2.0;
+                frame.overlay.push(Quad { rect: Rect { x, y: mid - gap - 1.0, w: s, h: 1.5 }, color: c });
+                frame.overlay.push(Quad { rect: Rect { x, y: mid + gap, w: s, h: 1.5 }, color: c });
+            }
+        }
+    }
+}
+
 /// One tab's look: its title, its OSC 21337 status text and color, the status dot, and
 /// the tab color a program chose.
 #[derive(Clone, Debug, Default)]
@@ -833,6 +889,21 @@ mod tests {
         assert_eq!(rects[1].x, 100.0);
         let first: String = f.rows[0].spans.iter().map(|s| s.text.as_str()).collect();
         assert!(first.chars().count() <= 8, "{first:?}");
+    }
+
+    #[test]
+    fn block_rows_get_a_gutter_bar() {
+        let inner = Rect { x: 10.0, y: 0.0, w: 100.0, h: 64.0 };
+        let (fg, red) = (rgb(200, 200, 200), rgb(255, 0, 0));
+        let mut f = Frame::default();
+        block_bars(&mut f, &[(1, false, false)], inner, 16.0, 6.0, fg, red);
+        assert_eq!(f.overlay, vec![Quad { rect: Rect { x: 5.0, y: 16.0, w: 4.0, h: 16.0 }, color: rgba(fg, 1.0) }], "filled, in the padding");
+        let mut f = Frame::default();
+        block_bars(&mut f, &[(2, true, false)], inner, 16.0, 6.0, fg, red);
+        assert_eq!(f.overlay.len(), 4, "an outline when folded");
+        let mut f = Frame::default();
+        block_bars(&mut f, &[(0, false, true)], inner, 16.0, 6.0, fg, red);
+        assert_eq!(f.overlay[0].color, rgba(red, 1.0), "red when hovered");
     }
 
     #[test]

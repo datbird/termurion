@@ -27,6 +27,8 @@ pub struct Blocks {
     /// The newest number for each id, and each number's type.
     pub by_id: std::collections::HashMap<String, u32>,
     pub types: std::collections::HashMap<u32, String>,
+    /// Folded blocks: block number to fold id.
+    pub folds: std::collections::HashMap<u32, u32>,
 }
 
 impl Blocks {
@@ -52,6 +54,26 @@ impl Blocks {
     pub fn current(&self) -> u32 {
         self.open.last().map_or(0, |(_, n)| *n)
     }
+}
+
+/// A button on a block's hover pill.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PillButton {
+    Copy,
+    Fold,
+}
+
+/// Where a hovered block's pill goes: the view row (the block's first row, or the top of
+/// the view when that scrolled off) and each button's column (fold rightmost, copy to its
+/// left; fold only for blocks of 3 or more rows, or folded ones). None when the block is
+/// out of view.
+pub fn pill(first_row: i32, last_row: i32, view_rows: usize, cols: usize, can_fold: bool) -> Option<(usize, Vec<(PillButton, usize)>)> {
+    if last_row < 0 || first_row >= view_rows as i32 || cols < 6 {
+        return None;
+    }
+    let row = first_row.max(0) as usize;
+    let buttons = if can_fold { vec![(PillButton::Fold, cols - 3), (PillButton::Copy, cols - 5)] } else { vec![(PillButton::Copy, cols - 3)] };
+    Some((row, buttons))
 }
 
 #[cfg(test)]
@@ -95,5 +117,33 @@ mod tests {
         let mut s = Screen::new(20, 5);
         s.feed(b"\x1b[?1049h\x1b]1337;Block=id=alt;attr=start\x07x\r\n\x1b]1337;Block=id=alt;attr=end\x07");
         assert_eq!(s.block_rows("alt"), None);
+    }
+    #[test]
+    fn hover_pill_sticks_to_the_top() {
+        assert_eq!(pill(5, 9, 24, 80, true), Some((5, vec![(PillButton::Fold, 77), (PillButton::Copy, 75)])));
+        assert_eq!(pill(-10, 3, 24, 80, true).map(|p| p.0), Some(0), "sticks to the top of the view");
+        assert_eq!(pill(5, 6, 24, 80, false), Some((5, vec![(PillButton::Copy, 77)])), "short blocks: copy only");
+        assert_eq!(pill(-10, -2, 24, 80, true), None, "all above the view");
+        assert_eq!(pill(30, 40, 24, 80, true), None, "below the view");
+    }
+
+    #[test]
+    fn folded_block_that_scrolled_out() {
+        let mut s = Screen::with_scrollback(20, 4, 3);
+        s.feed(b"\x1b]1337;Block=id=f;attr=start\x07a\r\nb\r\nc\r\n\x1b]1337;Block=id=f;attr=end\x07");
+        s.feed(b"\x1b]1337;UpdateBlock=id=f;action=fold\x07");
+        assert_eq!(s.fold_count(), 1, "folded");
+        let (f, l) = s.block_rows("f").unwrap();
+        assert_eq!(f, l, "one summary row, still tagged");
+        for i in 0..20 {
+            s.feed(format!("line {i}\r\n").as_bytes());
+        }
+        s.prune_tags();
+        s.feed(b"\x1b]1337;UpdateBlock=id=f;action=unfold\x07");
+        assert_eq!(s.block_rows("f"), None, "gone from the buffer; unfold did nothing");
+        s.feed(b"\x1b]1337;Block=id=g;attr=start\x07x\r\ny\r\nz\r\n\x1b]1337;Block=id=g;attr=end\x07\x1b]1337;UpdateBlock=id=g;action=fold\x07");
+        s.feed(b"\x1b]1337;UpdateBlock=id=g;action=unfold\x07");
+        let (f, l) = s.block_rows("g").unwrap();
+        assert_eq!(l - f, 2, "unfolded back to three rows");
     }
 }

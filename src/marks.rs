@@ -582,6 +582,18 @@ impl Screen {
                 "SetKeyLabel" => self.key_labels.set(&value),
                 "PushKeyLabels" => self.key_labels.push(&value),
                 "PopKeyLabels" => self.key_labels.pop(&value),
+                "UpdateBlock" => {
+                    let args = crate::blocks::parse(&value);
+                    match (crate::blocks::get(&args, "id"), crate::blocks::get(&args, "action")) {
+                        (Some(id), Some("fold")) => {
+                            self.fold_block(id);
+                        }
+                        (Some(id), Some("unfold")) => {
+                            self.unfold_block(id);
+                        }
+                        _ => {}
+                    }
+                }
                 "Block" => {
                     let args = crate::blocks::parse(&value);
                     let alt = self.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);

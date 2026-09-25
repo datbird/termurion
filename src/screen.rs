@@ -518,6 +518,59 @@ impl Screen {
         Some((*rows.first()?, *rows.last()?))
     }
 
+    /// UpdateBlock: folds a block into one summary line (iTerm2's text: first line, the
+    /// count of the lines between, last line), tagged with the block so it still shows as one.
+    pub fn fold_block(&mut self, id: &str) -> bool {
+        let Some(&n) = self.blocks.by_id.get(id) else { return false };
+        let Some((first, last)) = self.block_rows(id) else { return false };
+        // A fold opened another way (a click on its summary line) is no longer the block's.
+        if let Some(f) = self.blocks.folds.get(&n).copied() {
+            if self.folds.contains_key(&f) {
+                return false;
+            }
+            self.blocks.folds.remove(&n);
+        }
+        if last <= first {
+            return false;
+        }
+        let text = |s: &Self, l: i32| {
+            let row = &s.term.primary_grid()[Line(l)];
+            (0..s.term.columns()).map(|c| row[Column(c)].c).collect::<String>()
+        };
+        let caption = crate::fold::summary(&text(self, first), text(self, last).trim_start(), (last - first + 1 - 2) as usize, self.term.columns());
+        let Some(fold) = self.fold_as(first, last, Some(caption)) else { return false };
+        let g = self.term.primary_grid_mut();
+        let (top, bottom) = (-(g.history_size() as i32), g.screen_lines() as i32 - 1);
+        if let Some(l) = (top..=bottom).find(|l| g[Line(*l)].fold() == fold) {
+            g[Line(l)].set_block(n);
+        }
+        self.blocks.folds.insert(n, fold);
+        true
+    }
+
+    /// UpdateBlock: unfolds a folded block. False when it is not folded or its summary line
+    /// left the buffer.
+    pub fn unfold_block(&mut self, id: &str) -> bool {
+        let Some(n) = self.blocks.by_id.get(id).copied() else { return false };
+        let Some(fold) = self.blocks.folds.remove(&n) else { return false };
+        self.unfold(fold)
+    }
+
+    /// The block a view row belongs to: its number, and its first and last grid lines.
+    pub fn block_at_line(&self, line: i32) -> Option<(u32, i32, i32)> {
+        let g = self.term.grid();
+        if line < -(g.history_size() as i32) || line >= g.screen_lines() as i32 {
+            return None;
+        }
+        let n = g[Line(line)].block();
+        if n == 0 {
+            return None;
+        }
+        let (top, bottom) = (-(g.history_size() as i32), g.screen_lines() as i32 - 1);
+        let rows: Vec<i32> = (top..=bottom).filter(|l| g[Line(*l)].block() == n).collect();
+        Some((n, *rows.first()?, *rows.last()?))
+    }
+
     /// What output asked the window to do since the last call.
     pub fn take_requests(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.requests)
