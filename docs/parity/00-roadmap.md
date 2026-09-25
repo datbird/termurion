@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 82 | 166 | 66 |
-| `02-global-settings.md` | 820 | 116 | 59 | 645 |
-| `03-features-and-menus.md` | 636 | 204 | 31 | 401 |
-| Total | 1,770 | 402 | 256 | 1,112 |
+| `02-global-settings.md` | 820 | 119 | 59 | 642 |
+| `03-features-and-menus.md` | 636 | 205 | 31 | 400 |
+| Total | 1,770 | 406 | 256 | 1,108 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -49,8 +49,11 @@ SetProfileProperty, SetBackgroundImageFile, OpenURL, ReportVariable, RequestUplo
 Page Setup. Milestone 5e: Make Screenshot (a frozen copy of the pane, the panel with minimap,
 line range, Redact and Highlight, blur or solid redaction, Copy, Save, Save As, 30000 px parts),
 and OSC 1337 Block, UpdateBlock, and Button (alacritty_terminal patches 10 and 11). Milestone 5f
-(next) closes milestone 5: portholes (Block `render=1`, Edit > Replace Selection > Render
-Selection Natively, and OSC 1337 File= text documents shown rendered in place).
+closed milestone 5: portholes (a document shown rendered in place of grid rows: markdown with
+pulldown-cmark, JSON with key order kept, code highlighted by syntect in iTerm2's theme classes;
+made by Block `render=1`, File= text documents, and Render Selection Natively; close, the language
+list, Wide, selection and copy inside, Find marks, link clicks that ask; alacritty_terminal patch
+12). Milestone 6 is next.
 
 ## Order
 

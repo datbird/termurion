@@ -99,7 +99,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Paste Special > Limit Multi-Line Paste Warning to Shell Prompt | no shortcut | Restricts the multi-line paste warning to only fire at a shell prompt. (milestone 9) | missing |
 | Edit > Paste Special > Prompt to Convert Tabs to Spaces when Pasting | no shortcut | Toggles a prompt offering to convert tabs to spaces on paste. (milestone 9) | missing |
 | Edit > Paste Special > Warn Before Pasting One Line Ending in a Newline at Shell Prompt | no shortcut | Toggles a warning for a single line paste that ends with a newline at the prompt. (milestone 9) | missing |
-| Edit > Replace Selection > Render Selection Natively | Opt+Cmd+E | Renders the selected text as an image or markup instead of raw text. (milestone 4) | missing, milestone 5f (portholes) |
+| Edit > Replace Selection > Render Selection Natively | Opt+Cmd+E | Renders the selected text as an image or markup instead of raw text. (milestone 4) | have, milestone 5f: the selection's whole rows become a porthole (markdown, JSON, or highlighted code), Win+Alt+E; beeps over a porthole or with no selection |
 | Edit > Replace Selection > Replace with Pretty-Printed JSON | no shortcut | Reformats the selected JSON text with indentation. (milestone 4) | have |
 | Edit > Replace Selection > Replace with Base 64-Encoded Value | no shortcut | Replaces the selection with its base64-encoded form. (milestone 4) | have |
 | Edit > Replace Selection > Replace with Base 64-Decoded Value | no shortcut | Replaces the selection with its base64-decoded form. (milestone 4) | have |
@@ -337,7 +337,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 
 | Sequence | What it does | Tandem status |
 |---|---|---|
-| OSC 1337 ; File=... (inline images) | Displays or downloads an inline image or arbitrary file. Args include name, size, width, height, preserveAspectRatio, inline, type, mode, inset. Core of iTerm2 inline image support (imgcat). | have, inline images with iTerm2 sizing; downloads ask, then save to the Downloads folder (no "Choose..." yet) |
+| OSC 1337 ; File=... (inline images) | Displays or downloads an inline image or arbitrary file. Args include name, size, width, height, preserveAspectRatio, inline, type, mode, inset. Core of iTerm2 inline image support (imgcat). | have, inline images with iTerm2 sizing; downloads ask, then save to the Downloads folder (no "Choose..." yet); milestone 5f: text documents (`inline=1` with a text type or name, or UTF-8 that is not a picture) show rendered in place, `mode=wide` |
 | OSC 1337 ; MultipartFile=... | Same as File= but data arrives in chunks via FilePart/FileEnd. | have |
 | OSC 1337 ; FilePart=... | Appends a base64 chunk to an in-progress multipart file transfer. | have |
 | OSC 1337 ; FileEnd | Ends a multipart file transfer. | have |
@@ -382,7 +382,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; OpenURL=&lt;id&gt;:&lt;base64 url&gt; (trusted) | Asks iTerm2 to open a URL in the default browser. | partial, web and mail links open; other schemes are refused |
 | OSC 1337 ; wrap=a=start;cmd=...;uid=... (trusted) | Wraps a command for iTerm2's command wrapping/AI or Conductor pipeline. | missing, the SSH integration milestone |
 | OSC 1337 ; ExecFailed | Signals that exec of a wrapped command failed. | partial, the flag is kept; the session-ended message comes with milestone 6 |
-| OSC 1337 ; Block / UpdateBlock | Marks a folded/collapsible output block, start/end, fold/unfold, for command output blocks. | have, milestone 5e: the gutter bar, the hover pill (copy, fold), a margin click folds; `render=1` waits for milestone 5f |
+| OSC 1337 ; Block / UpdateBlock | Marks a folded/collapsible output block, start/end, fold/unfold, for command output blocks. | have, milestone 5e: the gutter bar, the hover pill (copy, fold), a margin click folds; milestone 5f: `render=1` shows the block rendered in place |
 | OSC 1337 ; Button=type=copy\|custom;... | Inserts an inline clickable button, for example a copy-output button, in a command-output block. | have, milestone 5e: copy and custom buttons, SF Symbol names drawn with Segoe Fluent Icons, the click report only when trusted |
 | OSC 1337 ; RequestUpload=&lt;params&gt; (trusted) | Asks the user to pick a local file to upload/send to the shell. | partial, files only (no folders); progress as a message, not a transfers menu |
 | OSC 1337 (bare, terminal-to-host report) | Terminal reports its iTerm2 version string as a DSR-style query. | have, `CSI 1337 n` answers `CSI ITERM2 <version> n` |

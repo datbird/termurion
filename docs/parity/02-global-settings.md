@@ -674,7 +674,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | p3 | p3 (bool, default YES) | Use P3 as default color space? If No, sRGB will be used. | missing |  |
 | fileDropCoprocess | fileDropCoprocess (string, default @"") | When files are dropped into a terminal window, execute a silent coprocess. | missing |  |
 | maxURLLength | maxURLLength (int, default 2097152) | Maximum length for OSC 8 URLs. | missing |  |
-| defaultWideMode | defaultWideMode (bool, default NO) | When rendering natively, use wide mode by default? | missing |  |
+| defaultWideMode | defaultWideMode (bool, default NO) | When rendering natively, use wide mode by default? | have | Milestone 5f, Advanced > General. |
 | bufferDepth | bufferDepth (int, default 40) | Maximum number of chunks to buffer. | missing |  |
 
 ### Hotkey
@@ -805,8 +805,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | metalRedrawPeriod | metalRedrawPeriod (float, default 0.5) | GPU renderer redraws at least this often, in seconds. | partial |  |
 | animateGraphStatusBarComponents | animateGraphStatusBarComponents (bool, default YES) | Animate graph-based status bar components? Turn this off to reduce CPU/GPU usage in WindowServer. | partial |  |
 | disableTopRightIndicators | disableTopRightIndicators (bool, default NO) | Disable indicator icons that appear in the top right of a session? This includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging. | missing |  |
-| nativeRenderingCSSLight | nativeRenderingCSSLight (string, default @"") | Path to CSS file to customize native drawing (for light background colors). | missing |  |
-| nativeRenderingCSSDark | nativeRenderingCSSDark (string, default @"") | Path to CSS file to customize native drawing (for dark background colors). | missing |  |
+| nativeRenderingCSSLight | nativeRenderingCSSLight (string, default @"") | Path to CSS file to customize native drawing (for light background colors). | have | Milestone 5f, Advanced > General; color, weight, and style rules. |
+| nativeRenderingCSSDark | nativeRenderingCSSDark (string, default @"") | Path to CSS file to customize native drawing (for dark background colors). | have | Milestone 5f, Advanced > General; color, weight, and style rules. |
 | supportPowerlineExtendedSymbols | supportPowerlineExtendedSymbols (bool, default YES) | Include extended symbols when drawing Powerline natively. | missing |  |
 | alwaysUseLineStyleMarks | alwaysUseLineStyleMarks (bool, default NO) | Always use line-style marks? | missing |  |
 | alphaForDeselectedCommandShade | alphaForDeselectedCommandShade (float, default 0.25) | Alpha value for shade that covers areas outside the currently selected command. | missing |  |
