@@ -83,6 +83,7 @@ pub mod clippings;
 pub mod clip_add_ui;
 pub mod user_actions;
 pub mod statusbar;
+pub mod statusbar_layout;
 
 #[cfg(windows)]
 pub mod conpty;
