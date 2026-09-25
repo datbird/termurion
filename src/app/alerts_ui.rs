@@ -62,6 +62,10 @@ impl App {
 
     /// Brings a pane to the front: its tab, the pane, the window.
     pub(super) fn reveal_pane(&mut self, pane: PaneId) {
+        self.enter_pane_window(pane);
+        if let Some(w) = self.current_window() {
+            self.last_window = Some(w);
+        }
         if let Some(i) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) {
             self.active = i;
             self.tabs[i].focused = pane;

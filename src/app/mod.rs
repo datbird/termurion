@@ -216,6 +216,8 @@ pub struct App {
     /// The current window's Lock Size and Lock Layout, and its Edit Window Title text.
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
+    /// The content area the current window's panes were laid out for.
+    laid_out: Option<Rect>,
     /// The Edit Window Title or Edit Tab Title window, and what it names.
     title_prompt: Option<(crate::prompt_ui::PromptWindow, windows_ui::TitleEdit)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
@@ -438,6 +440,7 @@ pub fn run() {
         slots: Default::default(),
         win_locks: Default::default(),
         win_title: None,
+        laid_out: None,
         title_prompt: None,
         pending_windows: Vec::new(),
         local_host: aps_ui::local_host(),
@@ -636,10 +639,13 @@ impl App {
 
     /// Saves after an edit in the settings window and applies it to every open pane.
     fn apply_edit(&mut self, edit: Edit) {
+        if let Some(w) = self.last_window {
+            self.enter(w);
+        }
         match edit {
             Edit::None => return,
             Edit::Open(guid, how) => match how {
-                // Separate windows arrive in milestone 7; until then a new window opens a tab.
+                // A tab or split goes to the window the person used last.
                 How::Tab => self.new_tab(Some(&guid)),
                 How::Window => self.pending_windows.push(windows_ui::NewWindow::Profile(Some(guid))),
                 How::SplitRight => self.split(Axis::Row, Some(&guid)),
@@ -693,17 +699,18 @@ impl App {
         let p = self.store.default_profile().clone();
         let mut normal = p.font("Normal Font");
         let mut alt = p.bool("Use Non-ASCII Font").then(|| p.font("Non Ascii Font").family);
-        if let Some(g) = self.gpu.as_ref() {
-            normal.family = g.renderer.resolve_family(&normal.family);
-            alt = alt.map(|a| g.renderer.resolve_family(&a));
-        }
         normal.size_pt = (normal.size_pt + self.font_offset).clamp(4.0, 128.0);
-        let sig = format!("{normal:?} {alt:?} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale());
         // Re-measuring the font re-shapes all text, so only do it when a font setting changed.
+        // The settings are compared before the font names are looked up (every frame asks).
+        let sig = format!("{normal:?} {alt:?} {} {} {} {}", p.float("Horizontal Spacing"), p.float("Vertical Spacing"), self.scale(), p.font("Badge Font").family);
         if sig == self.font_sig {
             return;
         }
         self.font_sig = sig;
+        if let Some(g) = self.gpu.as_ref() {
+            normal.family = g.renderer.resolve_family(&normal.family);
+            alt = alt.map(|a| g.renderer.resolve_family(&a));
+        }
         let Some(g) = self.gpu.as_mut() else { return };
         let px = normal.size_pt * 4.0 / 3.0 * g.window.scale_factor() as f32;
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
@@ -718,8 +725,8 @@ impl App {
     }
 
     /// Sizes the window to the default profile's Columns and Rows.
-    fn size_window(&mut self) {
-        let p = self.store.default_profile().clone();
+    fn size_window(&mut self, guid: Option<&str>) {
+        let p = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).clone();
         let (cw, ch) = self.cell();
         let pad = 2.0 * PAD * self.scale();
         let (w, h) = (p.int("Columns").max(10) as f32 * cw + pad, p.int("Rows").max(4) as f32 * ch + pad);
@@ -825,6 +832,7 @@ impl App {
     }
 
     fn relayout(&mut self) {
+        self.laid_out = Some(self.content_area());
         if let Some(t) = self.tabs.get(self.active) {
             self.mru.touch(t.id);
         }
@@ -1674,7 +1682,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.apply_fonts();
-        self.size_window();
+        self.size_window(None);
         self.new_tab(None);
         self.install_menus();
         self.place_window();
@@ -1687,6 +1695,11 @@ impl ApplicationHandler<UserEvent> for App {
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Timers (blink, bells, activity, marks, animations) act for the window the person
+        // uses; the window that drew last may be another one.
+        if let Some(w) = self.last_window {
+            self.enter(w);
+        }
         self.flush_dropped();
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
@@ -1893,7 +1906,9 @@ impl ApplicationHandler<UserEvent> for App {
                 // A font change made while another window was current reaches this one now.
                 let sig = self.font_sig.clone();
                 self.apply_fonts();
-                if sig != self.font_sig {
+                // A font change or a banner made while another window was current reaches
+                // this one now.
+                if sig != self.font_sig || self.laid_out != Some(self.content_area()) {
                     self.relayout();
                 }
                 self.render()

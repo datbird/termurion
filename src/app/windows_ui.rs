@@ -31,6 +31,9 @@ pub(super) struct WinSlot {
     win_slot: Option<(String, u32)>,
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
+    mru: Mru,
+    mru_mods: Option<Mods>,
+    laid_out: Option<Rect>,
 }
 
 impl WinSlot {
@@ -58,6 +61,9 @@ impl WinSlot {
             win_slot: None,
             win_locks: Default::default(),
             win_title: None,
+            mru: Mru::default(),
+            mru_mods: None,
+            laid_out: None,
         }
     }
 }
@@ -93,6 +99,9 @@ impl App {
         swap(&mut self.win_slot, &mut s.win_slot);
         swap(&mut self.win_locks, &mut s.win_locks);
         swap(&mut self.win_title, &mut s.win_title);
+        swap(&mut self.mru, &mut s.mru);
+        swap(&mut self.mru_mods, &mut s.mru_mods);
+        swap(&mut self.laid_out, &mut s.laid_out);
     }
 
     /// Makes a terminal window current. False for a window that is not one.
@@ -101,14 +110,13 @@ impl App {
         if self.windows.current() == Some(k) {
             return true;
         }
-        let Some(mut slot) = self.windows.remove(k) else { return false };
-        self.swap_live(&mut slot);
-        // `slot` now holds the window that was current.
-        if let Some(old) = self.windows.current() {
-            self.windows.park(old, slot);
-        }
-        self.windows.start(k);
-        true
+        // The live fields go into a slot, `Parked::enter` swaps the window in, and the slot's
+        // fields come back live.
+        let mut live = WinSlot::new_empty();
+        self.swap_live(&mut live);
+        let entered = self.windows.enter(k, &mut live);
+        self.swap_live(&mut live);
+        entered
     }
 
     /// Makes the window that shows `pane` current. False when no window shows it.
@@ -143,11 +151,25 @@ impl App {
 
     fn open_window_with(&mut self, event_loop: &ActiveEventLoop, first: NewWindow) -> Result<WindowId, String> {
         let attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
-        let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
-        let gpu = match self.gpu.as_ref() {
-            Some(g) => init_gpu_shared(window, g)?,
-            None => init_gpu(window, event_loop)?,
+        let made = event_loop.create_window(attrs).map_err(|e| e.to_string()).and_then(|w| {
+            let window = Arc::new(w);
+            match self.gpu.as_ref() {
+                Some(g) => init_gpu_shared(window, g),
+                None => init_gpu(window, event_loop),
+            }
+        });
+        let gpu = match made {
+            Ok(g) => g,
+            Err(e) => {
+                // A tab on its way to the new window stays where it was.
+                if let NewWindow::Tab(tab) = first {
+                    self.tabs.push(tab);
+                    self.relayout();
+                }
+                return Err(e);
+            }
         };
+        let previous = self.current_window();
         let id = gpu.window.id();
         let mut slot = WinSlot::new(gpu);
         self.swap_live(&mut slot);
@@ -156,13 +178,13 @@ impl App {
         }
         self.windows.start(key(id));
         self.registry.open(key(id));
-        self.apply_fonts();
-        self.size_window();
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
             NewWindow::Profiles(gs) => gs.first().cloned().flatten(),
-            NewWindow::Tab(_) => None,
+            NewWindow::Tab(t) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
         };
+        self.apply_fonts();
+        self.size_window(first_guid.as_deref());
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
@@ -180,14 +202,22 @@ impl App {
         }
         self.install_menus();
         self.place_window();
-        self.apply_window_profile(first_guid.as_deref());
         if style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
+        // After the style, so a Maximized or Full Screen style does not restore it again.
+        self.apply_window_profile(first_guid.as_deref());
         if self.tabs.is_empty() {
-            // The shell did not start: the window closes again, and the banner says why.
+            // The shell did not start: the window closes again (keeping no frame for its
+            // slot), the one before comes back, and the banner says why.
             let why = self.banners.text().unwrap_or_default();
+            if let Some((guid, slot)) = self.win_slot.take() {
+                self.slots.give(&guid, slot);
+            }
             self.drop_current_window();
+            if let Some(p) = previous {
+                self.enter(p);
+            }
             return Err(why);
         }
         Ok(id)
@@ -204,11 +234,13 @@ impl App {
         }
         let mut live = WinSlot::new_empty();
         self.swap_live(&mut live);
-        // `live` now holds the closed window; dropping it closes the OS window.
-        drop(live);
-        let Some((next, mut slot)) = self.windows.pop_parked() else { return false };
-        self.swap_live(&mut slot);
-        self.windows.start(next);
+        // `close_current` drops the closed window (which closes the OS window) and swaps the
+        // next one into `live`.
+        let next = self.windows.close_current(&mut live);
+        self.swap_live(&mut live);
+        if next.is_none() {
+            return false;
+        }
         self.relayout();
         self.redraw();
         true
@@ -256,6 +288,9 @@ impl WinSlot {
             win_slot: None,
             win_locks: Default::default(),
             win_title: None,
+            mru: Mru::default(),
+            mru_mods: None,
+            laid_out: None,
         }
     }
 }
@@ -387,6 +422,7 @@ impl App {
             return;
         }
         let tab = self.tabs.remove(self.active);
+        self.mru.forget(tab.id);
         self.active = self.active.min(self.tabs.len() - 1);
         self.pending_windows.push(NewWindow::Tab(tab));
         self.relayout();
@@ -419,6 +455,9 @@ impl App {
         for other in self.registry.merge_order(k) {
             let Some(mut slot) = self.windows.remove(other) else { continue };
             self.tabs.append(&mut slot.tabs);
+            if let Some((guid, n)) = slot.win_slot.take() {
+                self.slots.give(&guid, n);
+            }
             self.registry.close(other);
             if let Some(g) = &slot.gpu {
                 if let Ok(RawWindowHandle::Win32(h)) = g.window.window_handle().map(|h| h.as_raw()) {
@@ -531,15 +570,16 @@ impl App {
         let guid = self.tabs.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)).unwrap_or_else(|| self.store.default_guid.clone());
         let slot = self.slots.take(&guid);
         self.win_slot = Some((guid.clone(), slot));
-        let monitors: Vec<R> = super::requests_ui::work_areas().into_iter().map(to_rect).collect();
+        let monitors: Vec<R> = placement::primary_first(super::requests_ui::work_areas().into_iter().map(to_rect).collect());
         let Some(g) = self.gpu.as_ref() else { return };
         let current = Self::outer_rect(g);
         let others: Vec<R> = self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().map(Self::outer_rect)).collect();
         let inside = |r: &R, x: f32, y: f32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
         let window_monitor = monitors.iter().position(|m| inside(m, current.x + current.w / 2.0, current.y + current.h / 2.0)).unwrap_or(0);
         let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
-        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) };
-        let cursor_monitor = monitors.iter().position(|m| inside(m, pt.x as f32, pt.y as f32)).unwrap_or(0);
+        let have_cursor = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) } != 0;
+        // Without the pointer's position, "Screen with Cursor" uses the window's monitor.
+        let cursor_monitor = if have_cursor { monitors.iter().position(|m| inside(m, pt.x as f32, pt.y as f32)).unwrap_or(window_monitor) } else { window_monitor };
         let profile = self.store.get(&guid).unwrap_or_else(|| self.store.default_profile());
         let pref = profile.get("Screen").and_then(|v| v.as_integer()).unwrap_or(-1);
         let work = placement::screen_for(pref, &monitors, window_monitor, cursor_monitor);
@@ -568,7 +608,7 @@ impl App {
         let Some((guid, slot)) = self.win_slot.take() else { return };
         self.slots.give(&guid, slot);
         let Some(g) = self.gpu.as_ref() else { return };
-        if g.window.is_minimized() == Some(true) || g.window.fullscreen().is_some() {
+        if g.window.is_minimized() == Some(true) || g.window.fullscreen().is_some() || g.window.is_maximized() {
             return;
         }
         let r = Self::outer_rect(g);
@@ -713,7 +753,9 @@ impl App {
         let mut frames = Vec::new();
         for id in &ids {
             if self.enter(*id) {
-                if let Some(g) = &self.gpu {
+                // Only this monitor's windows that are showing (iTerm2 arranges per screen).
+                let here = self.monitor_rects().is_some_and(|(w, _)| w == work);
+                if let Some(g) = self.gpu.as_ref().filter(|g| here && g.window.is_minimized() != Some(true)) {
                     frames.push((*id, Self::outer_rect(g)));
                 }
             }
@@ -729,5 +771,22 @@ impl App {
                 }
             }
         }
+    }
+}
+
+impl App {
+    /// Every window's tabs, by window number: (window number, tab index, the tab's panes).
+    pub(super) fn all_tab_panes(&self) -> Vec<(usize, usize, Vec<PaneId>)> {
+        let mut out = Vec::new();
+        for k in self.registry.order() {
+            let n = self.registry.number(k).unwrap_or(0);
+            let tabs: Vec<Vec<PaneId>> = if self.windows.current() == Some(k) {
+                self.tabs.iter().map(|t| t.layout.panes()).collect()
+            } else {
+                self.windows.parked().find(|(kk, _)| **kk == k).map(|(_, s)| s.tabs.iter().map(|t| t.layout.panes()).collect()).unwrap_or_default()
+            };
+            out.extend(tabs.into_iter().enumerate().map(|(i, p)| (n, i, p)));
+        }
+        out
     }
 }

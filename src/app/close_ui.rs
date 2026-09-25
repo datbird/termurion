@@ -9,6 +9,8 @@ pub(super) enum Closing {
     Session(PaneId),
     Tab(usize),
     Window,
+    /// Quit: every session in every window.
+    App,
 }
 
 impl App {
@@ -50,6 +52,7 @@ impl App {
             Closing::Session(id) => (close_prompt::session_title(&self.session_title(id)), vec![id]),
             Closing::Tab(i) => (close_prompt::tab_title(i + 1), self.tabs.get(i).map(|t| t.layout.panes()).unwrap_or_default()),
             Closing::Window => (close_prompt::window_title(self.window_number() + 1), self.tabs.iter().flat_map(|t| t.layout.panes()).collect()),
+            Closing::App => ("Quit Tandem?".to_string(), self.panes.keys().copied().collect()),
         };
         let reasons = self.close_reasons(&panes);
         if reasons.is_empty() {

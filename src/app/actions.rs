@@ -273,6 +273,7 @@ impl App {
                     self.mru_mods = Some(self.mods);
                 }
             }
+            33 | 34 if !self.layout_allowed(crate::winmodel::LayoutOp::ReorderTab) => {}
             33 | 34 => {
                 let n = self.tabs.len();
                 if n > 1 {

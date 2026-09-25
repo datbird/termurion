@@ -653,13 +653,16 @@ impl App {
                     let pattern = find::pattern(&q, self.find_mode());
                     let mut hits = Vec::new();
                     let mut error = None;
-                    'panes: for (n, tab) in self.tabs.iter().enumerate() {
-                        for id in tab.layout.panes() {
+                    // Every window's sessions, window by window.
+                    let windows = self.registry.order().len();
+                    'panes: for (win, n, panes) in self.all_tab_panes() {
+                        for id in panes {
                             if hits.len() >= crate::global_find_ui::MAX_HITS {
                                 break 'panes;
                             }
                             let Some(p) = self.panes.get(&id) else { continue };
-                            let title = format!("Tab {}: {}", n + 1, p.own().title().unwrap_or("Shell"));
+                            let name = p.own().title().unwrap_or("Shell");
+                            let title = if windows > 1 { format!("Window {}, Tab {}: {name}", win + 1, n + 1) } else { format!("Tab {}: {name}", n + 1) };
                             match find::find_hits(&p.screen, &pattern) {
                                 Ok(found) => hits.extend(found.into_iter().map(|(m, line, r)| {
                                     let (snippet, mark) = snippet(&line, r);
@@ -678,6 +681,10 @@ impl App {
                     }
                 }
                 GlobalEvent::Pick(id, m) => {
+                    self.enter_pane_window(id);
+                    if let Some(w) = self.current_window() {
+                        self.last_window = Some(w);
+                    }
                     if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
                         self.active = t;
                         self.tabs[t].focused = id;

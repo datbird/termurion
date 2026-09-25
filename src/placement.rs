@@ -72,11 +72,20 @@ pub fn smart(work: Rect, size: (f32, f32), others: &[Rect]) -> (f32, f32) {
     best.1
 }
 
-/// A frame whose top-left is on no monitor moves onto the first one, keeping its size as
+/// Monitors with the primary one (the one holding (0, 0)) first, as iTerm2 numbers screens.
+pub fn primary_first(mut monitors: Vec<Rect>) -> Vec<Rect> {
+    if let Some(i) = monitors.iter().position(|m| m.x <= 0.0 && m.y <= 0.0 && m.x + m.w > 0.0 && m.y + m.h > 0.0) {
+        let p = monitors.remove(i);
+        monitors.insert(0, p);
+    }
+    monitors
+}
+
+/// A frame on no monitor moves onto the first one, keeping its size as
 /// far as it fits (restoreWindowsWithinScreens).
 pub fn clamp_to_monitors(r: Rect, monitors: &[Rect]) -> Rect {
-    let on = |m: &Rect| r.x >= m.x && r.x < m.x + m.w && r.y >= m.y && r.y < m.y + m.h;
-    if monitors.iter().any(on) {
+    // Any overlap counts: Windows puts a maximized or snapped frame a few pixels outside.
+    if monitors.iter().any(|m| overlap(r, *m) > 0.0) {
         return r;
     }
     let Some(m) = monitors.first() else { return r };
@@ -211,5 +220,23 @@ mod tests {
         assert!(five.iter().all(|x| x.w == 500.0), "never under 400 wide: three a row");
         assert_eq!(five.iter().filter(|x| x.y > 0.0).count(), 2, "a second row");
         assert!(five.iter().all(|x| x.y + x.h <= 900.0));
+    }
+
+    #[test]
+    fn a_frame_on_a_monitor_edge_stays() {
+        let left = Rect { x: -1920.0, y: 0.0, w: 1920.0, h: 1040.0 };
+        let right = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 };
+        // Windows puts a maximized or snapped window's outer frame a few pixels outside.
+        let snapped = Rect { x: -1927.0, y: -7.0, w: 974.0, h: 1054.0 };
+        assert_eq!(clamp_to_monitors(snapped, &[right, left]), snapped, "it still overlaps its own monitor");
+        let far = Rect { x: 5000.0, y: 0.0, w: 300.0, h: 200.0 };
+        assert!(clamp_to_monitors(far, &[right, left]).x < 1920.0);
+    }
+
+    #[test]
+    fn the_primary_monitor_comes_first() {
+        let left = Rect { x: -1920.0, y: 0.0, w: 1920.0, h: 1040.0 };
+        let primary = Rect { x: 0.0, y: 0.0, w: 2560.0, h: 1400.0 };
+        assert_eq!(primary_first(vec![left, primary]), vec![primary, left], "the primary monitor holds (0, 0)");
     }
 }

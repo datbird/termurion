@@ -35,8 +35,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 ### Shell menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Shell > New Window | Cmd+N | Opens a new terminal window with the default profile. Tandem: Opens a tab until separate windows arrive in milestone 7. | have, milestone 7a |
-| Shell > New Window with Current Profile | Opt+Cmd+Shift+N | Opens a new window reusing the current session's profile. Tandem: Opens a tab until separate windows arrive in milestone 7. | have, milestone 7a |
+| Shell > New Window | Cmd+N | Opens a new terminal window with the default profile. | have, milestone 7a |
+| Shell > New Window with Current Profile | Opt+Cmd+Shift+N | Opens a new window reusing the current session's profile. | have, milestone 7a |
 | Shell > New Tab | Cmd+T | Opens a new tab with the default profile. | have |
 | Shell > New Tab Next to Current Tab | Opt+Cmd+T | Opens a new tab immediately to the right of the current one. | have |
 | Shell > New Tab with Current Profile | Opt+Cmd+T | Opens a new tab reusing the current session's profile. | have |

@@ -584,7 +584,7 @@ impl App {
     }
 
     fn quit(&mut self, event_loop: &ActiveEventLoop) {
-        if !self.confirm_close(close_ui::Closing::Window) {
+        if !self.confirm_close(close_ui::Closing::App) {
             return;
         }
         self.save_all_window_frames();
