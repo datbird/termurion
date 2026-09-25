@@ -362,13 +362,16 @@ pub fn pane_with(
         let top = history - content.display_offset as i32;
         for (m, label) in h.notes {
             // iTerm2: a 1 px yellow line 2 px above the row's bottom under each annotated cell.
-            for r in m.start.row..=m.end.row {
+            // Only the rows on screen, and only columns inside the pane.
+            let first = m.start.row.max(top.max(0) as usize);
+            let last = m.end.row.min((top + lines as i32 - 1).max(0) as usize);
+            for r in first..=last.max(first) {
                 let row = r as i32 - top;
-                if row < 0 || row as usize >= lines {
+                if row < 0 || row as usize >= lines || r > m.end.row {
                     continue;
                 }
-                let a = if r == m.start.row { m.start.col } else { 0 };
-                let b = if r == m.end.row { m.end.col } else { cols - 1 };
+                let a = (if r == m.start.row { m.start.col } else { 0 }).min(cols - 1);
+                let b = (if r == m.end.row { m.end.col } else { cols - 1 }).min(cols - 1);
                 let y = rect.y + row as f32 * ch + ch - 3.0;
                 frame.overlay.push(Quad { rect: Rect { x: rect.x + a as f32 * cw, y, w: (b + 1 - a.min(b + 1)) as f32 * cw, h: 1.0 }, color: rgba(NOTE, 1.0) });
             }
@@ -376,7 +379,7 @@ pub fn pane_with(
             let row = m.end.row as i32 - top;
             if let (Some(text), true) = (label, row >= 0 && (row as usize) < lines) {
                 let shown: String = text.lines().next().unwrap_or_default().chars().take(40).collect();
-                let x = rect.x + (m.end.col + 2) as f32 * cw;
+                let x = rect.x + ((m.end.col + 2) as f32 * cw).min((rect.w - (shown.chars().count() as f32 + 1.0) * cw).max(0.0));
                 let y = rect.y + row as f32 * ch;
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
@@ -748,5 +751,18 @@ mod tests {
         assert!(covers(240.0, 150.0));
         assert!(covers(200.0, 190.0));
         assert!(f.overlay.iter().all(|q| q.color[3] > 0.5 && q.color[3] < 0.8));
+    }
+
+    #[test]
+    fn notes_stay_inside_the_pane() {
+        let s = Screen::new(10, 4);
+        let mut f = Frame::default();
+        let m = crate::find::Match { start: crate::find::Pos { row: 0, col: 16 }, end: crate::find::Pos { row: 1_000_000, col: 19 } };
+        let notes = [(m, Some("n".to_string()))];
+        let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 80.0 };
+        let hl = Highlights { matches: &[], color: rgb(0xff, 0xff, 0), hover: None, link: rgb(0, 0, 0xff), labels: &[], notes: &notes };
+        pane_with(&mut f, &s, rect, CELL, true, false, Some(&hl));
+        assert!(f.overlay.iter().all(|q| q.rect.x + q.rect.w <= rect.w + 0.01 && q.rect.y + q.rect.h <= rect.h + 0.01), "{:?}", f.overlay);
+        assert!(f.overlay.len() < 50);
     }
 }

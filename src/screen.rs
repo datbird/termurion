@@ -98,6 +98,7 @@ pub struct Screen {
     /// Folded lines, by fold id.
     folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
+    feeds: u32,
 }
 
 impl Screen {
@@ -124,6 +125,7 @@ impl Screen {
             notes: crate::annotations::Notes::default(),
             folds: std::collections::HashMap::new(),
             next_fold: 0,
+            feeds: 0,
         }
     }
 
@@ -194,6 +196,10 @@ impl Screen {
     /// Replaces the main screen's rows `first..=last` (grid lines) with `with`, returning
     /// the removed rows, top first. Rows above slide down when fewer come back.
     pub fn splice_rows(&mut self, first: i32, last: i32, with: Vec<Row<Cell>>) -> Vec<Row<Cell>> {
+        // Edits go to the main screen, whose rows a full-screen app's screen hides.
+        if self.alt_screen() {
+            return Vec::new();
+        }
         self.term.selection = None;
         self.term.primary_grid_mut().splice(Line(first), Line(last), with)
     }
@@ -263,16 +269,53 @@ impl Screen {
 
     /// Puts a fold's lines back. False when no row stands for it.
     pub fn unfold(&mut self, id: u32) -> bool {
+        use alacritty_terminal::term::cell::Flags;
+        if self.alt_screen() {
+            return false;
+        }
+        let grid = self.term.primary_grid();
+        let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+        let Some(line) = (top..=bottom).find(|l| grid[Line(*l)].fold() == id) else { return false };
+        // A narrower pane may have wrapped the summary line onto more rows.
+        let mut last = line;
+        while last < bottom && grid[Line(last)][Column(grid.columns() - 1)].flags.contains(Flags::WRAPLINE) {
+            last += 1;
+        }
+        let Some(rows) = self.folds.remove(&id) else { return false };
+        self.splice_rows(line, last, rows);
+        true
+    }
+
+    /// How many folds keep lines.
+    pub fn fold_count(&self) -> usize {
+        self.folds.len()
+    }
+
+    /// Drops folds and notes whose rows left the buffer (cleared, or trimmed off the top of
+    /// the scrollback), so their saved lines do not stay in memory.
+    pub fn prune_tags(&mut self) {
         let grid = self.term.primary_grid();
         let top = -(grid.history_size() as i32);
-        let Some(line) = (top..grid.screen_lines() as i32).find(|l| grid[Line(*l)].fold() == id) else { return false };
-        let Some(rows) = self.folds.remove(&id) else { return false };
-        self.splice_rows(line, line, rows);
-        true
+        let mut folds = std::collections::HashSet::new();
+        let mut notes = std::collections::HashSet::new();
+        for l in top..grid.screen_lines() as i32 {
+            let row = &grid[Line(l)];
+            folds.insert(row.fold());
+            notes.insert(row.note());
+        }
+        self.folds.retain(|id, _| folds.contains(id));
+        self.notes.by_id.retain(|_, n| notes.contains(&n.row_key));
+    }
+
+    fn alt_screen(&self) -> bool {
+        self.term.mode().contains(TermMode::ALT_SCREEN)
     }
 
     /// The fold a row stands for.
     pub fn fold_at(&self, line: i32) -> Option<u32> {
+        if self.alt_screen() {
+            return None;
+        }
         let grid = self.term.primary_grid();
         if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
             return None;
@@ -285,6 +328,11 @@ impl Screen {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
         self.parser.advance(&mut self.term, bytes);
+        // Now and then, forget folds and notes whose rows scrolled out of the buffer.
+        self.feeds = self.feeds.wrapping_add(1);
+        if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty()) {
+            self.prune_tags();
+        }
         let mut reply = Vec::new();
         while let Ok(event) = self.events.try_recv() {
             match event {
@@ -398,6 +446,7 @@ impl Screen {
             self.term.goto(0, cursor.column.0);
         }
         self.term.clear_screen(ClearMode::Saved);
+        self.prune_tags();
     }
 
     /// iTerm2's Reset (a soft reset, DECSTR): modes, attributes, margins, and charset go back
@@ -714,5 +763,54 @@ mod tests {
         assert_eq!(s.fold(1, 2), None);
         s.feed(b"\x1b[?1049h");
         assert_eq!(s.fold(0, 0), None, "not on the alternate screen");
+    }
+
+    #[test]
+    fn unfold_after_widening_fits_the_rows() {
+        let mut s = Screen::with_scrollback(20, 5, 100);
+        s.feed(b"l0\r\nl1\r\nl2\r\n$ ");
+        let id = s.fold(0, 1).unwrap();
+        s.resize(30, 5);
+        assert!(s.unfold(id));
+        let text = lines_text(&s);
+        assert!(text.starts_with("l0\nl1\nl2\n$"), "{text}");
+        let mut f = crate::scene::Frame::default();
+        crate::scene::pane(&mut f, &s, crate::layout::Rect { x: 0.0, y: 0.0, w: 300.0, h: 100.0 }, (10.0, 20.0), true, true);
+    }
+
+    #[test]
+    fn unfold_after_narrowing_leaves_no_summary() {
+        let mut s = Screen::with_scrollback(30, 5, 100);
+        s.feed(b"first line here\r\nmiddle\r\nlast line here\r\n$ ");
+        let id = s.fold(0, 2).unwrap();
+        s.resize(10, 5);
+        assert!(s.unfold(id));
+        let text = lines_text(&s);
+        assert!(!text.contains('\u{2026}'), "{text}");
+        assert!(text.contains("middle"), "{text}");
+    }
+
+    #[test]
+    fn buffer_edits_refuse_the_alternate_screen() {
+        let mut s = Screen::with_scrollback(20, 5, 100);
+        s.feed(b"a\r\nb\r\nc\r\n$ ");
+        let id = s.fold(0, 1).unwrap();
+        s.feed(b"\x1b[?1049h");
+        assert!(s.splice_rows(0, 0, Vec::new()).is_empty());
+        assert!(!s.unfold(id), "the fold waits for the main screen");
+        assert_eq!(s.add_note(0, 0, 0, 1, "x", false), 0);
+        s.feed(b"\x1b[?1049l");
+        assert!(s.unfold(id));
+    }
+
+    #[test]
+    fn clearing_forgets_folds_and_notes() {
+        let mut s = Screen::with_scrollback(20, 5, 100);
+        s.feed(b"a\r\nb\r\nc\r\n$ ");
+        s.fold(0, 1).unwrap();
+        s.add_note(2, 0, 2, 0, "n", false);
+        s.clear(false);
+        assert_eq!(s.fold_count(), 0);
+        assert!(s.notes.by_id.is_empty());
     }
 }

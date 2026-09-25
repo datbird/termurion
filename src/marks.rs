@@ -493,7 +493,11 @@ impl Screen {
                             (p.line.0, p.column.0)
                         }
                     };
-                    let last = col + len.unwrap_or(cols - col).max(1) - 1;
+                    // No longer than the cells left on the screen from there.
+                    let lines = self.term().screen_lines() as i32;
+                    let line = line.clamp(0, lines - 1);
+                    let left = (lines - line) as usize * cols - col;
+                    let last = col + len.unwrap_or(cols - col).clamp(1, left) - 1;
                     let end_line = line + (last / cols) as i32;
                     self.add_note(line, col, end_line, last % cols, &text, key == "AddHiddenAnnotation");
                 }

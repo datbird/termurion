@@ -147,6 +147,12 @@ pub fn items_for(chord: &Chord) -> Vec<&'static Item> {
 }
 
 /// "Win+Shift+D": how Windows menus show a chord.
+/// Windows keeps Win+L (Lock) with any other modifiers, so such a chord never reaches Tandem
+/// and the menu does not show it.
+pub fn reaches_tandem(c: &Chord) -> bool {
+    !(c.cmd && c.key == ChordKey::Char('l'))
+}
+
 pub fn chord_label(c: &Chord) -> String {
     let mut parts: Vec<String> = Vec::new();
     if c.cmd {
@@ -233,5 +239,13 @@ mod tests {
         for i in items().iter().filter(|i| !i.separator) {
             assert!(seen.insert(i.id()), "duplicate id {}", i.id());
         }
+    }
+
+    #[test]
+    fn win_l_chords_stay_with_windows() {
+        let l = Chord { key: ChordKey::Char('l'), cmd: true, alt: false, shift: true, ctrl: false };
+        assert!(!reaches_tandem(&l));
+        assert!(reaches_tandem(&Chord { key: ChordKey::Char('k'), ..l }));
+        assert!(reaches_tandem(&Chord { cmd: false, ..l }));
     }
 }

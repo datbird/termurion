@@ -128,6 +128,10 @@ impl App {
     /// Each note's cells, id, and text on show.
     pub(super) fn note_cells(&self, id: PaneId) -> Vec<(Match, u32, Option<String>)> {
         let Some(p) = self.panes.get(&id) else { return Vec::new() };
+        // Notes belong to the main screen; a full-screen app's screen covers them.
+        if p.screen.term().mode().contains(TermMode::ALT_SCREEN) {
+            return Vec::new();
+        }
         let grid = p.screen.term().primary_grid();
         let hist = grid.history_size() as i32;
         p.screen

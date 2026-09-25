@@ -17,6 +17,8 @@ pub struct Note {
     pub more_rows: usize,
     pub end_col: usize,
     pub hidden: bool,
+    /// The id in the row's note slot: the row's first note, shared by later notes there.
+    pub row_key: u32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -58,16 +60,22 @@ impl Screen {
     /// end_col)`, on the main screen. A row holds one note: a new one there replaces it.
     pub fn add_note(&mut self, line: i32, start_col: usize, end_line: i32, end_col: usize, text: &str, hidden: bool) -> u32 {
         let grid = self.term().primary_grid();
-        if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
+        if self.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN)
+            || line < -(grid.history_size() as i32)
+            || line >= grid.screen_lines() as i32
+        {
             return 0;
         }
+        let existing = grid[Line(line)].note();
         self.notes.next += 1;
         let id = self.notes.next;
-        let grid = self.term_mut().primary_grid_mut();
-        let old = grid[Line(line)].note();
-        grid[Line(line)].set_note(id);
-        self.notes.by_id.remove(&old);
-        let note = Note { text: text.to_string(), start_col, more_rows: (end_line - line).max(0) as usize, end_col, hidden };
+        let row_key = if existing != 0 && self.notes.by_id.values().any(|n| n.row_key == existing) {
+            existing
+        } else {
+            self.term_mut().primary_grid_mut()[Line(line)].set_note(id);
+            id
+        };
+        let note = Note { text: text.to_string(), start_col, more_rows: (end_line - line).max(0) as usize, end_col, hidden, row_key };
         self.notes.by_id.insert(id, note);
         id
     }
@@ -77,19 +85,25 @@ impl Screen {
         let grid = self.term().primary_grid();
         let top = -(grid.history_size() as i32);
         (top..grid.screen_lines() as i32)
-            .filter_map(|l| {
-                let id = grid[Line(l)].note();
-                self.notes.by_id.get(&id).map(|n| (l, id, n))
+            .filter(|l| grid[Line(*l)].note() != 0)
+            .flat_map(|l| {
+                let key = grid[Line(l)].note();
+                self.notes.by_id.iter().filter(move |(_, n)| n.row_key == key).map(move |(id, n)| (l, *id, n))
             })
             .collect()
     }
 
     pub fn remove_note(&mut self, id: u32) {
-        self.notes.by_id.remove(&id);
+        let Some(note) = self.notes.by_id.remove(&id) else { return };
+        let key = note.row_key;
+        // The row keeps its slot while other notes there share it.
+        if self.notes.by_id.values().any(|n| n.row_key == key) {
+            return;
+        }
         let grid = self.term_mut().primary_grid_mut();
         let top = -(grid.history_size() as i32);
         for l in top..grid.screen_lines() as i32 {
-            if grid[Line(l)].note() == id {
+            if grid[Line(l)].note() == key {
                 grid[Line(l)].set_note(0);
             }
         }
@@ -140,5 +154,29 @@ mod tests {
         assert_eq!(next_note(&rows, -5, false), Some(7));
         assert_eq!(next_note(&rows, 3, false), Some(2));
         assert_eq!(next_note(&[], 0, true), None);
+    }
+
+    #[test]
+    fn a_row_keeps_several_notes() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"one two three");
+        let a = s.add_note(0, 0, 0, 2, "first", false);
+        let b = s.add_note(0, 4, 0, 6, "second", false);
+        let texts: Vec<&str> = s.notes_in_order().iter().map(|(_, _, n)| n.text.as_str()).collect();
+        assert_eq!(texts, vec!["first", "second"]);
+        s.remove_note(a);
+        assert_eq!(s.notes_in_order().len(), 1);
+        s.remove_note(b);
+        assert!(s.notes_in_order().is_empty());
+    }
+
+    #[test]
+    fn a_huge_annotation_length_stops_at_the_screen() {
+        let mut s = Screen::new(20, 4);
+        s.feed(b"x\x1b]1337;AddAnnotation=160000000000|big\x07");
+        s.feed(b"\x1b]1337;AddAnnotation=18446744073709551615|max\x07");
+        for (_, _, n) in s.notes_in_order() {
+            assert!(n.more_rows < 4, "{n:?}");
+        }
     }
 }

@@ -70,6 +70,9 @@ impl App {
         if p.live.is_some() {
             return self.banners.set("action", "Replace Selection does not work in a Filter or Zoom view.");
         }
+        if p.screen.term().mode().contains(TermMode::ALT_SCREEN) {
+            return self.banners.set("action", "Replace Selection does not work while a full-screen app runs.");
+        }
         let (pa, pb) = (to_point(&p.screen, a), to_point(&p.screen, b));
         let grid = p.screen.term().grid();
         let cols = grid.columns();
@@ -94,7 +97,9 @@ impl App {
     fn clear_to_start_of_selection(&mut self, id: PaneId) {
         let Some((a, _)) = self.selection_pos(id) else { return };
         let Some(p) = self.panes.get_mut(&id) else { return };
-        p.end_view();
+        if p.live.is_some() || p.screen.term().mode().contains(TermMode::ALT_SCREEN) {
+            return self.banners.set("action", "Clear to Start of Selection works on the pane's own screen, not a view or a full-screen app.");
+        }
         let first = to_point(&p.screen, a).line.0;
         let top = -(p.screen.term().grid().history_size() as i32);
         if first > top {

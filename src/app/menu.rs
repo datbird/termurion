@@ -34,7 +34,7 @@ const NUDGE: f32 = 0.05;
 /// Windows shows "&" as a mnemonic marker, so a literal "&" is written "&&".
 fn menu_text(item: &Item) -> String {
     let label = item.label().replace('&', "&&");
-    match item.chord() {
+    match item.chord().filter(menus::reaches_tandem) {
         Some(c) => format!("{label}\t{}", menus::chord_label(&c)),
         None => label,
     }

@@ -124,8 +124,31 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let top = rows.len() as i64 - 1;
         let index = |l: Line| (lines as i64 - 1 - l.0 as i64).clamp(0, top) as usize;
         let (lo, hi) = (index(last), index(first));
-        let (taken, added) = (hi - lo + 1, with.len());
-        let mut removed: Vec<Row<T>> = rows.splice(lo..=hi, with.into_iter().rev()).collect();
+        // Rows saved at another width (a fold, before a resize) take the current width: a
+        // narrower row grows, a wider one wraps onto more rows.
+        let mut fitted: Vec<Row<T>> = Vec::with_capacity(with.len());
+        for mut row in with {
+            if row.len() < columns {
+                row.grow(columns);
+            }
+            while row.len() > columns {
+                let time = row.time;
+                let Some(mut rest) = row.shrink(columns) else { break };
+                if let Some(cell) = row.last_mut() {
+                    cell.flags_mut().insert(Flags::WRAPLINE);
+                }
+                fitted.push(row);
+                let occ = rest.len();
+                if occ < columns {
+                    rest.resize_with(columns, T::default);
+                }
+                row = Row::from_vec(rest, occ);
+                row.time = time;
+            }
+            fitted.push(row);
+        }
+        let (taken, added) = (hi - lo + 1, fitted.len());
+        let mut removed: Vec<Row<T>> = rows.splice(lo..=hi, fitted.into_iter().rev()).collect();
         removed.reverse();
         if self.cursor.point.line < first {
             let line = self.cursor.point.line.0 as i64 + taken as i64 - added as i64;

@@ -81,6 +81,19 @@ impl App {
         }
     }
 
+    /// The pointer is within 12 columns of the right edge of a pane that shows Hover
+    /// timestamps.
+    pub(super) fn near_stamp_edge(&self) -> bool {
+        let (x, y) = self.cursor;
+        let cell = self.cell();
+        let Some((id, rect)) = self.pane_at(x, y) else { return false };
+        if !self.stamps_on(id) || self.profile_of(id).map_or(1, |p| p.int("Timestamps Style")) != 2 {
+            return false;
+        }
+        let inner = self.inner(rect);
+        x >= inner.x + inner.w - 12.0 * cell.0
+    }
+
     /// Draws Find Cursor over the whole window while it is up.
     pub(super) fn draw_find_cursor(&self, frame: &mut Frame, area: Rect, cell: (f32, f32)) {
         if self.find_cursor_until.is_none() {

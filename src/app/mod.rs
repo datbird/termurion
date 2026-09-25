@@ -155,6 +155,8 @@ pub struct App {
     show_guide: HashMap<PaneId, bool>,
     /// Find Cursor is up until then (longer while Win is held).
     find_cursor_until: Option<Instant>,
+    /// The pointer is at the right edge of a pane with Hover timestamps.
+    stamp_near: bool,
     /// Copy Mode, per pane.
     copy_modes: HashMap<PaneId, crate::copymode::State>,
     /// Labels on results (Find URLs and the like), waiting for a key.
@@ -285,6 +287,7 @@ pub fn run() {
         show_stamps: HashMap::new(),
         show_guide: HashMap::new(),
         find_cursor_until: None,
+        stamp_near: false,
         note_win: None,
         note_pos: HashMap::new(),
         ctx_pending: None,
@@ -547,6 +550,12 @@ impl App {
         self.panes.remove(&id);
         self.finds.remove(&id);
         self.copy_modes.remove(&id);
+        self.note_pos.remove(&id);
+        self.show_stamps.remove(&id);
+        self.show_guide.remove(&id);
+        if self.note_win.as_ref().is_some_and(|(_, p, _)| *p == id) {
+            self.note_win = None;
+        }
         if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
             let tab = &mut self.tabs[t];
             if tab.layout.remove(id) {
@@ -1065,6 +1074,12 @@ impl App {
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
         self.update_hover();
+        // Hover timestamps show while the pointer is at a pane's right edge.
+        let near = self.near_stamp_edge();
+        if near != self.stamp_near {
+            self.stamp_near = near;
+            self.redraw();
+        }
         match &self.drag {
             Drag::Select { pane } => {
                 let pane = *pane;

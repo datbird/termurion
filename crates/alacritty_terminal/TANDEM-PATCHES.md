@@ -24,6 +24,7 @@ test data) is left out. Changes:
    has a `stamp` (Unix seconds) that `write_at_cursor` puts on the row it writes (timestamps).
 
 6. `grid/resize.rs`: `Grid::splice(first, last, with)` replaces a run of rows and returns the
-   removed ones (folds and Replace Selection).
+   removed ones (folds and Replace Selection). Rows saved at another width grow or wrap to
+   the current width.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.
