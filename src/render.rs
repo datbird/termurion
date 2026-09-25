@@ -200,7 +200,8 @@ impl ImagePipeline {
                 continue;
             }
             let (w, h) = q.size;
-            if w == 0 || h == 0 || q.pixels.len() != (w as usize) * (h as usize) * 4 {
+            let max = device.limits().max_texture_dimension_2d;
+            if w == 0 || h == 0 || w > max || h > max || q.pixels.len() != (w as usize) * (h as usize) * 4 {
                 continue;
             }
             let texture = device.create_texture_with_data(
@@ -646,5 +647,17 @@ mod tests {
         r.draw(&frame, &view, 32, 16).unwrap();
         r.draw(&frame, &view, 32, 16).unwrap();
         assert_eq!(r.uploads(), 100);
+    }
+
+    #[test]
+    fn oversized_images_are_skipped() {
+        let (device, queue) = device();
+        let mut r = Renderer::new(&device, &queue, wgpu::TextureFormat::Rgba8UnormSrgb, "Cascadia Mono", 16.0);
+        let tex = target(&device, 64, 16);
+        let view = tex.create_view(&Default::default());
+        let wide = crate::scene::ImageQuad { size: (9000, 1), pixels: std::sync::Arc::new(vec![0; 9000 * 4]), ..picture(5) };
+        let frame = Frame { images: vec![wide], ..Default::default() };
+        r.draw(&frame, &view, 64, 16).unwrap();
+        assert_eq!(r.uploads(), 0);
     }
 }

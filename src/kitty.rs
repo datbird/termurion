@@ -58,7 +58,7 @@ pub fn parse(body: &[u8]) -> Result<Command, String> {
 }
 
 /// Pixels a kitty image may have on a side.
-const MAX_SIDE: u32 = 10_000;
+const MAX_SIDE: u32 = crate::images::MAX_SIDE;
 /// A file or inflated payload may be at most this large.
 const MAX_BYTES: u64 = 400 << 20;
 
@@ -71,24 +71,50 @@ fn base64_lenient(data: &[u8]) -> Option<Vec<u8>> {
         .or_else(|| base64::engine::general_purpose::STANDARD_NO_PAD.decode(compact.strip_suffix(b"=").unwrap_or(&compact)).ok())
 }
 
+/// Every refusal of a file gets this one answer, so answers never tell whether a file
+/// exists.
+fn bad_file() -> String {
+    "EBADF:Cannot use the file".into()
+}
+
+/// A file a program asked Tandem to read: only a regular local file (no share, device, or
+/// folder); a temporary file (`t=t`) only in the temp folder with kitty's marker in its
+/// name, deleted after reading.
+fn read_file(raw: &[u8], temporary: bool) -> Option<Vec<u8>> {
+    let path = std::str::from_utf8(raw).ok()?;
+    if path.starts_with("\\\\") || path.starts_with("//") {
+        return None;
+    }
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_BYTES {
+        return None;
+    }
+    if temporary {
+        let tmp = std::fs::canonicalize(std::env::temp_dir()).ok()?;
+        let real = std::fs::canonicalize(path).ok()?;
+        let named = real.file_name()?.to_string_lossy().contains("tty-graphics-protocol");
+        if !real.starts_with(&tmp) || !named {
+            return None;
+        }
+        let bytes = std::fs::read(&real).ok();
+        let _ = std::fs::remove_file(&real);
+        return bytes;
+    }
+    std::fs::read(path).ok()
+}
+
 /// The picture a transmit or query carries: width, height, RGBA.
 fn decode_data(cmd: &Command) -> Result<(u32, u32, Vec<u8>), String> {
+    // A file that is read but is not a picture gets the same answer as one that cannot be read.
+    let from_file = matches!(cmd.char('t', 'd'), 'f' | 't');
+    decode_payload(cmd).map_err(|e| if from_file { bad_file() } else { e })
+}
+
+fn decode_payload(cmd: &Command) -> Result<(u32, u32, Vec<u8>), String> {
     let raw = base64_lenient(&cmd.payload).ok_or("EINVAL:The payload is not base64")?;
     let bytes = match cmd.char('t', 'd') {
         'd' => raw,
-        m @ ('f' | 't') => {
-            let path = String::from_utf8(raw).map_err(|_| "EINVAL:The file name is not text")?;
-            let meta = std::fs::metadata(&path).map_err(|e| format!("EBADF:{e}"))?;
-            if meta.len() > MAX_BYTES {
-                return Err("EFBIG:The file is too large".into());
-            }
-            let bytes = std::fs::read(&path).map_err(|e| format!("EBADF:{e}"))?;
-            // A temporary file is the terminal's to delete, when its name says so.
-            if m == 't' && path.contains("tty-graphics-protocol") {
-                let _ = std::fs::remove_file(&path);
-            }
-            bytes
-        }
+        m @ ('f' | 't') => read_file(&raw, m == 't').ok_or_else(bad_file)?,
         's' => return Err("EINVAL:Shared memory is not supported".into()),
         _ => return Err("EINVAL:Unknown transmission medium".into()),
     };
@@ -132,6 +158,9 @@ impl Screen {
         let cmd = match self.kitty.pending.take() {
             Some(mut first) => {
                 first.payload.extend_from_slice(&cmd.payload);
+                if first.payload.len() > self.limits.transfer {
+                    return;
+                }
                 if more {
                     self.kitty.pending = Some(first);
                     return;
@@ -139,7 +168,9 @@ impl Screen {
                 first
             }
             None if more => {
-                self.kitty.pending = Some(cmd);
+                if cmd.payload.len() <= self.limits.transfer {
+                    self.kitty.pending = Some(cmd);
+                }
                 return;
             }
             None => cmd,
@@ -241,10 +272,10 @@ impl Screen {
         // The store ids showing at a cell (1-based column and row on screen).
         let at = |s: &Screen, x: u32, y: u32| -> Vec<u32> {
             let g = s.term().grid();
-            let (l, c) = (y as i32 - 1, x as usize);
-            if x == 0 || y == 0 || l >= g.screen_lines() as i32 || c > g.columns() {
+                if x == 0 || y == 0 || y as usize > g.screen_lines() || x as usize > g.columns() {
                 return Vec::new();
             }
+            let (l, c) = (y as i32 - 1, x as usize);
             g[Line(l)][Column(c - 1)].image().map(|t| t.image).into_iter().collect()
         };
         let cursor = self.term().grid().cursor.point;
@@ -264,7 +295,8 @@ impl Screen {
                 let n = if which == 'x' { cmd.num('x') } else { cmd.num('y') }.unwrap_or(0);
                 let g = self.term().grid();
                 let mut ids = Vec::new();
-                if n > 0 {
+                let bound = if which == 'x' { g.columns() } else { g.screen_lines() };
+                if n > 0 && n as usize <= bound {
                     let cells: Vec<(i32, usize)> = if which == 'x' {
                         (0..g.screen_lines() as i32).map(|l| (l, n as usize - 1)).collect()
                     } else {
@@ -410,5 +442,58 @@ mod tests {
         assert_eq!(send(&mut s, "a=t,f=24,s=9,v=9,i=1,q=2", &[1]), "");
         assert_eq!(send(&mut s, "a=q,f=32,s=1,v=1,i=31", &[1, 2, 3, 4]), "\x1b_Gi=31;OK\x1b\\");
         assert!(s.kitty.images.get(&31).is_none(), "a query stores nothing");
+    }
+
+    #[test]
+    fn huge_delete_coordinates_are_harmless() {
+        let mut s = Screen::new(20, 6);
+        for keys in ["a=d,d=y,y=3000000000", "a=d,d=p,x=1,y=2147483649", "a=d,d=x,x=4294967295", "a=d,d=q,x=99,y=99", "a=d,d=c"] {
+            send(&mut s, keys, b"");
+        }
+    }
+
+    #[test]
+    fn file_media_refuse_what_they_should() {
+        let tmp = std::env::temp_dir();
+        let d = tmp.join(format!("tandem-kitty-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut s = Screen::new(20, 6);
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        // A folder, a share, and a missing file all get the same answer.
+        let folder = send(&mut s, "a=q,t=f,i=1", path(&d).as_bytes());
+        let share = send(&mut s, "a=q,t=f,i=1", b"\\\\server\\share\\x.png");
+        let missing = send(&mut s, "a=q,t=f,i=1", path(&d.join("none.png")).as_bytes());
+        let text = d.join("words.txt");
+        std::fs::write(&text, "not an image").unwrap();
+        let not_image = send(&mut s, "a=q,t=f,i=1", path(&text).as_bytes());
+        assert!(folder.contains("EBADF"), "{folder}");
+        assert_eq!(folder, share);
+        assert_eq!(folder, missing);
+        assert_eq!(folder, not_image, "no answer tells whether a file exists");
+        // t=t deletes only temporary files in the temp folder.
+        let outside = std::env::current_dir().unwrap().join("tty-graphics-protocol-keep.bin");
+        std::fs::write(&outside, [1, 2, 3, 4]).unwrap();
+        assert!(send(&mut s, "a=t,t=t,f=32,s=1,v=1,i=2", path(&outside).as_bytes()).contains("EBADF"));
+        assert!(outside.exists(), "a file outside the temp folder is never deleted");
+        std::fs::remove_file(&outside).unwrap();
+        let inside = tmp.join(format!("tty-graphics-protocol-{}.bin", std::process::id()));
+        std::fs::write(&inside, [1, 2, 3, 4]).unwrap();
+        assert_eq!(send(&mut s, "a=t,t=t,f=32,s=1,v=1,i=2", path(&inside).as_bytes()), "\x1b_Gi=2;OK\x1b\\");
+        assert!(!inside.exists());
+    }
+
+    #[test]
+    fn transfers_stop_at_their_cap() {
+        let mut s = Screen::new(20, 6);
+        s.limits.transfer = 64;
+        let chunk = "A".repeat(40);
+        s.feed(format!("\x1b_Ga=t,f=32,s=1,v=1,i=4,m=1;{chunk}\x1b\\").as_bytes());
+        s.feed(format!("\x1b_Gm=1;{chunk}\x1b\\").as_bytes());
+        assert!(s.kitty.pending.is_none(), "dropped past the cap");
+        s.feed(b"\x1b]1337;MultipartFile=inline=1\x07");
+        for _ in 0..3 {
+            s.feed(format!("\x1b]1337;FilePart={chunk}\x07").as_bytes());
+        }
+        assert!(s.multipart.is_none());
     }
 }

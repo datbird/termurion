@@ -2,7 +2,7 @@
 //! libsixel; Tandem decodes it here. Pixels come out opaque, as iTerm2 flattens them.
 
 /// Larger images are refused.
-pub const MAX_SIDE: usize = 10_000;
+pub const MAX_SIDE: usize = crate::images::MAX_SIDE as usize;
 /// And at most this many pixels in all.
 pub const MAX_PIXELS: usize = 50_000_000;
 

@@ -42,15 +42,23 @@ pub struct Decoded {
     pub broken: bool,
 }
 
-/// Larger pictures are refused (as iTerm2's image restore does).
-pub const MAX_SIDE: u32 = 10_000;
+/// Larger pictures are refused: a GPU texture holds at most 8192 pixels a side.
+pub const MAX_SIDE: u32 = 8192;
 /// A GIF keeps at most this many frames.
 pub const MAX_FRAMES: usize = 1_000;
 /// iTerm2 keeps an image's row in 8 bits, so an image is at most this many rows tall.
 pub const MAX_ROWS: usize = 255;
 
 /// Decodes a PNG, JPEG, GIF (every frame), BMP, WebP, TIFF, or ICO file to RGBA8.
+/// All frames of one image together may hold at most this many bytes of pixels.
+pub const FRAME_BUDGET: usize = 256 << 20;
+
+/// `decode`, stopping at `budget` bytes of frames (the first frame always counts).
 pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
+    decode_within(bytes, FRAME_BUDGET)
+}
+
+pub fn decode_within(bytes: &[u8], budget: usize) -> Result<Decoded, String> {
     use image::AnimationDecoder;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_SIDE);
@@ -61,15 +69,19 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, String> {
         let mut dec = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
         image::ImageDecoder::set_limits(&mut dec, limits).map_err(|e| e.to_string())?;
         let (width, height) = image::ImageDecoder::dimensions(&dec);
-        let frames = dec
-            .into_frames()
-            .take(MAX_FRAMES)
-            .map(|f| {
-                let f = f.map_err(|e| e.to_string())?;
-                let (n, d) = f.delay().numer_denom_ms();
-                Ok(Frame { delay_ms: n / d.max(1), rgba: Arc::new(f.into_buffer().into_raw()) })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        // A small GIF can hold a large canvas many times over: frames stop at the budget.
+        let mut frames = Vec::new();
+        let mut total = 0usize;
+        for f in dec.into_frames().take(MAX_FRAMES) {
+            let f = f.map_err(|e| e.to_string())?;
+            let (n, d) = f.delay().numer_denom_ms();
+            let rgba = f.into_buffer().into_raw();
+            total += rgba.len();
+            if !frames.is_empty() && total > budget {
+                break;
+            }
+            frames.push(Frame { delay_ms: n / d.max(1), rgba: Arc::new(rgba) });
+        }
         if frames.is_empty() {
             return Err("The GIF has no frames.".into());
         }
@@ -163,6 +175,15 @@ impl Screen {
         use alacritty_terminal::term::cell::Cell;
         use alacritty_terminal::vte::ansi::Handler;
         let (cols, rows) = (image.cols.max(1), image.rows.max(1));
+        // All images together stay under the budget: drop unused ones, else refuse.
+        let size: usize = image.frames.iter().map(|f| f.rgba.len()).sum();
+        let held = |s: &Screen| s.images.by_id.values().flat_map(|i| &i.frames).map(|f| f.rgba.len()).sum::<usize>();
+        if held(self) + size > self.limits.images {
+            self.prune_images();
+            if held(self) + size > self.limits.images {
+                return 0;
+            }
+        }
         let id = self.images.add(image);
         let stamp = self.term().stamp;
         let start = self.term().grid().cursor.point;
@@ -215,6 +236,14 @@ impl Screen {
                     if let Some(t) = row[Column(c)].image() {
                         used.insert(t.image);
                     }
+                }
+            }
+        }
+        // Folded lines keep their images for when they unfold.
+        for row in self.folded_rows() {
+            for c in 0..row.len() {
+                if let Some(t) = row[Column(c)].image() {
+                    used.insert(t.image);
                 }
             }
         }
@@ -375,5 +404,42 @@ mod tests {
     #[test]
     fn height_caps_at_255() {
         assert_eq!(size_in_cells((10, 100_000), Dim::Auto, Dim::Auto, true, (10.0, 20.0), (80, 24), 0).1, MAX_ROWS);
+    }
+
+    #[test]
+    fn images_fit_a_gpu_texture() {
+        assert!(decode(&png(8193, 1)).is_err(), "wider than 8192 px");
+        assert!(decode(&png(8192, 1)).is_ok());
+    }
+
+    #[test]
+    fn gif_frames_stop_at_the_budget() {
+        // Each 4x3 frame is 48 bytes.
+        let d = decode_within(&gif(), 60).unwrap();
+        assert_eq!(d.frames.len(), 1);
+        assert_eq!(decode_within(&gif(), 1000).unwrap().frames.len(), 2);
+    }
+
+    #[test]
+    fn folded_images_are_kept() {
+        let mut s = Screen::with_scrollback(20, 6, 100);
+        s.feed(b"a\r\n");
+        s.place_image(picture(2, 1), true);
+        s.feed(b"\r\nb\r\n$ ");
+        let f = s.fold(0, 1).unwrap();
+        s.prune_images();
+        assert!(s.unfold(f));
+        assert_eq!(s.images.by_id.len(), 1);
+    }
+
+    #[test]
+    fn the_image_store_has_a_budget() {
+        let mut s = Screen::new(20, 6);
+        s.limits.images = 1000;
+        let big = |n: usize| Image { frames: vec![Frame { rgba: Arc::new(vec![0; n]), delay_ms: 0 }], ..picture(1, 1) };
+        assert_ne!(s.place_image(big(600), true), 0);
+        assert_eq!(s.place_image(big(600), true), 0, "over the budget while the first still shows");
+        s.feed(b"\x1b[2J\x1b[3J");
+        assert_ne!(s.place_image(big(600), true), 0, "the first was dropped");
     }
 }

@@ -76,6 +76,21 @@ fn config(look: Look) -> Config {
     }
 }
 
+/// Caps on what terminal output may make a screen keep.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Bytes of pixels all inline images together may hold.
+    pub images: usize,
+    /// Bytes a kitty chunked transfer or a MultipartFile may reach.
+    pub transfer: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { images: 768 << 20, transfer: 512 << 20 }
+    }
+}
+
 pub struct Screen {
     pub(crate) term: Term<Listener>,
     parser: Processor,
@@ -103,6 +118,8 @@ pub struct Screen {
     pub kitty: crate::kitty::Kitty,
     /// Answers the terminal owes the program (kitty graphics), sent with `feed`'s reply.
     pub replies: Vec<u8>,
+    /// Caps on what output may make Tandem keep.
+    pub limits: Limits,
     /// Annotations, by id.
     pub notes: crate::annotations::Notes,
     /// Folded lines, by fold id.
@@ -137,6 +154,7 @@ impl Screen {
             multipart: None,
             kitty: crate::kitty::Kitty::default(),
             replies: Vec::new(),
+            limits: Limits::default(),
             notes: crate::annotations::Notes::default(),
             folds: std::collections::HashMap::new(),
             next_fold: 0,
@@ -193,6 +211,11 @@ impl Screen {
         }
         reply.extend(self.feed_raw(&bytes[at..]));
         reply
+    }
+
+    /// The rows folds keep.
+    pub(crate) fn folded_rows(&self) -> impl Iterator<Item = &Row<Cell>> {
+        self.folds.values().flatten()
     }
 
     /// The cell size in pixels, as the app set it.

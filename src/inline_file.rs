@@ -74,7 +74,19 @@ fn decode_base64(data: &str) -> Option<Vec<u8>> {
 /// of the name is dropped.
 pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let base = std::path::Path::new(name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let clean: String = base.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
+    // Format characters (a right-to-left override, say) could disguise the file's type.
+    let format_char = |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{061c}' | '\u{180e}' | '\u{00ad}');
+    let clean: String = base
+        .chars()
+        .filter(|c| !format_char(*c))
+        .map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c })
+        .collect();
+    // Windows drops trailing dots and spaces, and keeps some names for devices.
+    let clean = clean.trim_end_matches(['.', ' ']).to_string();
+    let stem = clean.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str())
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    let clean = if reserved { format!("_{clean}") } else { clean };
     let clean = if clean.trim().is_empty() || clean == "." || clean == ".." { "Unnamed file".to_string() } else { clean };
     let first = dir.join(&clean);
     if !first.exists() {
@@ -84,6 +96,17 @@ pub fn unique_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     (1..).map(|n| dir.join(format!("{stem} ({n}){ext}"))).find(|c| !c.exists()).unwrap_or(first)
+}
+
+/// Saves a download in `dir` under a free name, marked as coming from the internet (the
+/// Mark of the Web), so Windows warns before running it.
+pub fn save(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    let path = unique_path(dir, name);
+    std::fs::write(&path, bytes)?;
+    // The mark lives in an alternate data stream; a drive without them (FAT) cannot keep it,
+    // and the file is still saved.
+    let _ = std::fs::write(format!("{}:Zone.Identifier", path.display()), "[ZoneTransfer]\r\nZoneId=3\r\n");
+    Ok(path)
 }
 
 impl Screen {
@@ -98,6 +121,9 @@ impl Screen {
             "FilePart" => {
                 if let Some(m) = &mut self.multipart {
                     m.data.push_str(value);
+                    if m.data.len() > self.limits.transfer {
+                        self.multipart = None;
+                    }
                 }
             }
             "FileEnd" => {
@@ -116,7 +142,8 @@ impl Screen {
         use alacritty_terminal::grid::Dimensions;
         let bytes = decode_base64(data);
         if !args.inline {
-            if let Some(bytes) = bytes {
+            // One download waits at a time, so output cannot bury the window in questions.
+            if let (Some(bytes), true) = (bytes, self.downloads.is_empty()) {
                 self.downloads.push(Download { name: args.name, bytes });
             }
             return;
@@ -217,5 +244,34 @@ mod tests {
         assert_eq!(unique_path(&d, "..\\..\\evil.txt"), d.join("evil.txt"));
         assert_eq!(unique_path(&d, "sub/x.txt"), d.join("x.txt"));
         assert_eq!(unique_path(&d, ""), d.join("Unnamed file"));
+    }
+
+    #[test]
+    fn download_names_cannot_hide_their_type() {
+        let d = std::env::temp_dir().join(format!("tandem-dl2-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(unique_path(&d, "invoice\u{202e}fdp.exe"), d.join("invoicefdp.exe"));
+        assert_eq!(unique_path(&d, "a\u{200b}b.txt. . "), d.join("ab.txt"));
+        assert_eq!(unique_path(&d, "CON"), d.join("_CON"));
+        assert_eq!(unique_path(&d, "nul.txt"), d.join("_nul.txt"));
+    }
+
+    #[test]
+    fn one_download_waits_at_a_time() {
+        let mut s = Screen::new(20, 6);
+        for _ in 0..50 {
+            s.feed(b"\x1b]1337;File=name=eA==:eA==\x07");
+        }
+        assert_eq!(s.downloads.len(), 1);
+    }
+
+    #[test]
+    fn saved_downloads_are_marked_as_from_the_internet() {
+        let d = std::env::temp_dir().join(format!("tandem-dl3-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let p = save(&d, "x.bin", b"hi").unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"hi");
+        let zone = std::fs::read_to_string(format!("{}:Zone.Identifier", p.display())).unwrap();
+        assert!(zone.contains("ZoneId=3"), "{zone}");
     }
 }

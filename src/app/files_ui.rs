@@ -32,18 +32,20 @@ impl App {
     pub(super) fn take_downloads(&mut self) {
         let waiting: Vec<crate::inline_file::Download> = self.panes.values_mut().flat_map(|p| std::mem::take(&mut p.own_mut().downloads)).collect();
         for d in waiting {
-            let question = format!("Allow the terminal to download \"{}\" ({}) to your Downloads folder?", d.name, size_text(d.bytes.len()));
-            if !ask(&question) {
-                continue;
-            }
             let Some(dir) = downloads_dir() else {
                 self.banners.set("action", "No Downloads folder: USERPROFILE is not set.");
                 continue;
             };
-            let path = crate::inline_file::unique_path(&dir, &d.name);
-            match std::fs::write(&path, &d.bytes) {
-                Ok(()) => self.banners.set("action", format!("Saved {}", path.display())),
-                Err(e) => self.banners.set("action", format!("Could not save {}: {e}", path.display())),
+            // The question shows the name the file will really get.
+            let shown = crate::inline_file::unique_path(&dir, &d.name);
+            let name = shown.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let question = format!("Allow the terminal to download \"{name}\" ({}) to your Downloads folder?", size_text(d.bytes.len()));
+            if !ask(&question) {
+                continue;
+            }
+            match crate::inline_file::save(&dir, &d.name, &d.bytes) {
+                Ok(path) => self.banners.set("action", format!("Saved {}", path.display())),
+                Err(e) => self.banners.set("action", format!("Could not save {name}: {e}")),
             }
         }
     }
