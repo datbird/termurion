@@ -11,10 +11,12 @@ pub(super) const PLANE_BAR: &str = "tmux-22-plane";
 impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
     pub(super) fn tmux_actions(&mut self, gw: PaneId, actions: Vec<Action>, event_loop: &ActiveEventLoop) -> bool {
+        // Output alone changes no pane or tab: no relayout for it.
+        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..)));
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
-                Action::Relayout { window, node, added, removed } => self.tmux_relayout(gw, window, node, added, removed, event_loop),
+                Action::Relayout { window, node, added, removed, kept } => self.tmux_relayout(gw, window, node, added, removed, kept, event_loop),
                 Action::Close(window) => {
                     let ids = self.tmux_window_panes(gw, window);
                     self.tmux_forget(gw, &ids);
@@ -74,7 +76,9 @@ impl App {
                 }
             }
         }
-        self.relayout();
+        if changes {
+            self.relayout();
+        }
         true
     }
 
@@ -149,16 +153,32 @@ impl App {
                 self.active = self.tabs.len() - 1;
                 self.relayout();
             }
+            // The sibling's window is still waiting to open (every window of one attach
+            // arrives in one read): the tab joins it there.
+            Some(anchor) if self.pending_windows.iter().any(|w| matches!(w, windows_ui::NewWindow::Tabs(ts) if ts.iter().any(|t| t.layout.panes().contains(&anchor)))) => {
+                for w in self.pending_windows.iter_mut() {
+                    if let windows_ui::NewWindow::Tabs(ts) = w {
+                        if ts.iter().any(|t| t.layout.panes().contains(&anchor)) {
+                            ts.push(tab);
+                            break;
+                        }
+                    }
+                }
+            }
             _ => self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab])),
         }
     }
 
-    fn tmux_relayout(&mut self, gw: PaneId, window: u32, node: Node, added: Vec<PaneOpen>, removed: Vec<u32>, event_loop: &ActiveEventLoop) {
-        let gone: Vec<PaneId> = removed.iter().filter_map(|p| self.tmux.get(&gw).and_then(|t| t.panes.get(p)).map(|(id, _)| *id)).collect();
+    #[allow(clippy::too_many_arguments)]
+    fn tmux_relayout(&mut self, gw: PaneId, window: u32, node: Node, added: Vec<PaneOpen>, removed: Vec<u32>, kept: Vec<u32>, event_loop: &ActiveEventLoop) {
+        let tandem = |app: &App, p: u32| app.tmux.get(&gw).and_then(|t| t.panes.get(&p)).map(|(id, _)| *id).filter(|id| app.panes.contains_key(id));
+        let gone: Vec<PaneId> = removed.iter().filter_map(|p| tandem(self, *p)).collect();
+        // The tab is found through a pane it already shows, first in layout order.
+        let kept_ids: Vec<PaneId> = kept.iter().filter_map(|p| tandem(self, *p)).collect();
         for p in &added {
             self.tmux_pane(gw, window, p);
         }
-        let ids: HashMap<u32, PaneId> = self.tmux.get(&gw).map(|t| t.panes.iter().filter(|(_, (_, w))| *w == window).map(|(p, (id, _))| (*p, *id)).collect()).unwrap_or_default();
+        let ids: HashMap<u32, PaneId> = tmux_layout::panes(&node).into_iter().filter_map(|p| tandem(self, p).map(|id| (p, id))).collect();
         // The kept panes take tmux's new sizes.
         for (p, w, h) in tmux_layout::sizes(&node) {
             if let Some(pane) = ids.get(&p).and_then(|id| self.panes.get_mut(id)) {
@@ -166,19 +186,35 @@ impl App {
             }
         }
         if let Some(layout) = tmux_layout::to_layout(&node, &ids) {
-            let anchor = ids.values().copied().find(|id| !gone.contains(id));
-            if let Some(anchor) = anchor {
-                self.with_tab_of(anchor, |t| {
+            match kept_ids.first().copied() {
+                Some(anchor) => self.with_tab_of(anchor, |t| {
                     if !layout.panes().contains(&t.focused) {
                         t.focused = anchor;
                     }
                     t.layout = layout;
-                });
+                }),
+                // Tandem shows none of this window's panes any more: it opens as a new tab.
+                None => {
+                    let focused = layout.panes()[0];
+                    let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: None };
+                    self.next_tab_id += 1;
+                    self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
+                }
             }
         }
         self.tmux_forget(gw, &gone);
         for id in gone {
             self.close_pane(id, event_loop);
+        }
+    }
+
+    /// A tmux pane closed in Tandem: the controller forgets it (tmux keeps it until 8c sends
+    /// kill-pane), so the next layout that names it opens it again.
+    pub(super) fn tmux_pane_closed(&mut self, id: PaneId) {
+        let Some((gw, pane)) = self.panes.get(&id).and_then(|p| p.tmux_io()).map(|io| (io.gateway, io.pane)) else { return };
+        if let Some(t) = self.tmux.get_mut(&gw) {
+            t.panes.retain(|_, (x, _)| *x != id);
+            t.ctl.forget_pane(pane);
         }
     }
 

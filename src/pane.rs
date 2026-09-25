@@ -297,7 +297,8 @@ impl Pane {
                     crate::tmux_hook::Out::Screen(_) if dropping => {}
                     crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {
                         let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&bytes);
-                        if !reply.is_empty() {
+                        // tmux answers queries for its panes itself.
+                        if !reply.is_empty() && !matches!(pty, Io::Tmux(_)) {
                             if let Err(e) = pty.write(&reply) {
                                 self.error = Some(e);
                             }
@@ -357,7 +358,7 @@ impl Pane {
     /// Output that waited behind a tmux line.
     pub fn feed_output(&mut self, bytes: &[u8]) {
         let reply = self.own_mut().feed(bytes);
-        if !reply.is_empty() {
+        if !reply.is_empty() && self.tmux_io().is_none() {
             self.reply(&reply);
         }
     }
@@ -665,6 +666,15 @@ mod tests {
         p.tmux_io().unwrap().end();
         p.pump();
         assert_eq!(p.exited, Some(0));
+    }
+
+    #[test]
+    fn tmux_panes_do_not_answer_queries() {
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.tmux_io().unwrap().push_output(b"\x1b[c\x1b[6n");
+        p.pump();
+        p.feed_output(b"\x1b[c");
+        assert!(p.tmux_io().unwrap().take_input().is_empty(), "tmux answers for its panes; a second answer would be typed");
     }
 
     #[test]

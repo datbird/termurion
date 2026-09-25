@@ -30,7 +30,8 @@ enum Req {
     ListWindows,
     /// `display -p` for a window tmux added.
     DisplayOne,
-    Capture { window: u32, pane: u32, part: Part },
+    /// A capture for one opener (a window being opened, or one layout change's new panes).
+    Capture { opener: u64, pane: u32, part: Part },
     Ignore,
 }
 
@@ -48,8 +49,9 @@ pub struct PaneOpen {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Open { window: Window, node: Node, panes: Vec<PaneOpen>, place: Place },
-    /// A new layout: `added` panes open, `removed` panes close, the rest keep their screens.
-    Relayout { window: u32, node: Node, added: Vec<PaneOpen>, removed: Vec<u32> },
+    /// A new layout: `added` panes open, `removed` panes close, `kept` panes (in layout
+    /// order) keep their screens and name the tab.
+    Relayout { window: u32, node: Node, added: Vec<PaneOpen>, removed: Vec<u32>, kept: Vec<u32> },
     Close(u32),
     Rename(u32, String),
     /// The session changed: every tmux tab of this gateway closes.
@@ -78,8 +80,8 @@ struct Opener {
     captured: HashMap<u32, Captured>,
     initial: bool,
     anonymous: bool,
-    /// A layout change of an open window: the panes it removes.
-    update: Option<Vec<u32>>,
+    /// A layout change of an open window: the panes it removes and keeps.
+    update: Option<(Vec<u32>, Vec<u32>)>,
 }
 
 /// Preferences the controller reads.
@@ -113,7 +115,10 @@ pub struct Controller {
     hidden: BTreeSet<u32>,
     affinities: Affinities,
     pub prefs: Prefs,
-    openers: BTreeMap<u32, Opener>,
+    /// Windows and layout changes waiting for captures, by opener id (iTerm2 gives each
+    /// change its own TmuxWindowOpener).
+    openers: BTreeMap<u64, Opener>,
+    next_opener: u64,
     /// Open windows and their panes, first to last.
     pub windows: BTreeMap<u32, Vec<u32>>,
     /// Border status per window ("top", "bottom", "off").
@@ -139,6 +144,7 @@ impl Controller {
             affinities: Affinities::default(),
             prefs: Prefs::default(),
             openers: BTreeMap::new(),
+            next_opener: 0,
             windows: BTreeMap::new(),
             border: HashMap::new(),
             session_guid: None,
@@ -159,6 +165,14 @@ impl Controller {
     /// The window that shows `pane`.
     pub fn window_of(&self, pane: u32) -> Option<u32> {
         self.windows.iter().find(|(_, ps)| ps.contains(&pane)).map(|(w, _)| *w)
+    }
+
+    /// Tandem closed this pane (tmux still has it, until milestone 8c sends kill-pane): the
+    /// next layout that names it opens it again.
+    pub fn forget_pane(&mut self, pane: u32) {
+        for ps in self.windows.values_mut() {
+            ps.retain(|p| *p != pane);
+        }
     }
 
     /// iTerm2's didGuessVersion: windows wait for the version.
@@ -250,13 +264,13 @@ impl Controller {
             }
             Req::DisplayOne => {
                 if let Some(w) = tmux_windows::parse_windows(text, self.v(), self.tab_bug).into_iter().next() {
-                    if !self.windows.contains_key(&w.id) && !self.openers.contains_key(&w.id) {
+                    if !self.windows.contains_key(&w.id) && !self.openers.values().any(|o| o.window.id == w.id) {
                         out.extend(self.open_window(w, false, true, gw));
                     }
                 }
             }
-            Req::Capture { window, pane, part } => {
-                let Some(o) = self.openers.get_mut(&window) else { return Some(out) };
+            Req::Capture { opener, pane, part } => {
+                let Some(o) = self.openers.get_mut(&opener) else { return Some(out) };
                 if part != Part::Other {
                     let c = o.captured.entry(pane).or_default();
                     if ok {
@@ -271,7 +285,7 @@ impl Controller {
                 }
                 o.waiting = o.waiting.saturating_sub(1);
                 if o.waiting == 0 {
-                    let o = self.openers.remove(&window).expect("opener");
+                    let o = self.openers.remove(&opener).expect("opener");
                     out.push(self.finish_opener(o));
                 }
             }
@@ -279,8 +293,9 @@ impl Controller {
         Some(out)
     }
 
-    /// Sends the capture list for `panes` of `window`; its last command is `initial`.
-    fn capture(&mut self, window: u32, panes: &[u32], initial: bool, zoomed: bool, gw: &mut Gateway) -> usize {
+    /// Sends the capture list for `panes` of `window` under `opener`; its last command is
+    /// `initial`.
+    fn capture(&mut self, opener: u64, window: u32, panes: &[u32], initial: bool, zoomed: bool, gw: &mut Gateway) -> usize {
         let format = tmux_state::format();
         let mut list = Vec::new();
         for &p in panes {
@@ -288,12 +303,12 @@ impl Controller {
             let parts = [Part::Primary, Part::Alt, Part::State, Part::Pending, Part::Other];
             for (i, cmd) in cmds.into_iter().enumerate() {
                 let part = parts[i.min(4)];
-                let t = self.tag(Req::Capture { window, pane: p, part });
+                let t = self.tag(Req::Capture { opener, pane: p, part });
                 list.push((cmd, Some(t), Flags { tolerate: true, wants_data: true, ..Default::default() }));
             }
         }
         if zoomed {
-            let t = self.tag(Req::Capture { window, pane: u32::MAX, part: Part::Other });
+            let t = self.tag(Req::Capture { opener, pane: u32::MAX, part: Part::Other });
             list.push((format!("resize-pane -Z -t @{window}"), Some(t), Flags { tolerate: true, ..Default::default() }));
         }
         let n = list.len();
@@ -310,8 +325,10 @@ impl Controller {
         }
         let node = self.adjusted(window.id, node);
         let panes = tmux_layout::panes(&node);
-        let waiting = self.capture(window.id, &panes, initial, window.zoomed(), gw);
-        self.openers.insert(window.id, Opener { window, node, panes, waiting, captured: HashMap::new(), initial, anonymous, update: None });
+        let id = self.next_opener;
+        self.next_opener += 1;
+        let waiting = self.capture(id, window.id, &panes, initial, window.zoomed(), gw);
+        self.openers.insert(id, Opener { window, node, panes, waiting, captured: HashMap::new(), initial, anonymous, update: None });
         Vec::new()
     }
 
@@ -338,9 +355,10 @@ impl Controller {
             .collect();
         let all = tmux_layout::panes(&o.node);
         match o.update {
-            Some(removed) => {
-                self.windows.insert(o.window.id, all);
-                Action::Relayout { window: o.window.id, node: o.node, added: panes, removed }
+            // The window's pane list changed when the layout came.
+            Some((removed, kept)) => {
+                let _ = all;
+                Action::Relayout { window: o.window.id, node: o.node, added: panes, removed, kept }
             }
             None => {
                 let open: Vec<u32> = self.windows.keys().copied().collect();
@@ -368,7 +386,7 @@ impl Controller {
                 }
             }
             Note::WindowClose(window) => {
-                self.openers.remove(&window);
+                self.openers.retain(|_, o| o.window.id != window);
                 if self.windows.remove(&window).is_some() {
                     return vec![Action::Close(window)];
                 }
@@ -408,15 +426,19 @@ impl Controller {
         };
         let node = self.adjusted(window, node);
         let now = tmux_layout::panes(&node);
+        // `old` holds panes an earlier change is still capturing, so they are not added twice.
         let added: Vec<u32> = now.iter().copied().filter(|p| !old.contains(p)).collect();
         let removed: Vec<u32> = old.iter().copied().filter(|p| !now.contains(p)).collect();
+        let kept: Vec<u32> = now.iter().copied().filter(|p| old.contains(p)).collect();
+        self.windows.insert(window, now);
         if added.is_empty() {
-            self.windows.insert(window, now);
-            return vec![Action::Relayout { window, node, added: Vec::new(), removed }];
+            return vec![Action::Relayout { window, node, added: Vec::new(), removed, kept }];
         }
-        let waiting = self.capture(window, &added, false, false, gw);
+        let id = self.next_opener;
+        self.next_opener += 1;
+        let waiting = self.capture(id, window, &added, false, false, gw);
         let w = Window { id: window, layout: layout.to_string(), ..Default::default() };
-        self.openers.insert(window, Opener { window: w, node, panes: added, waiting, captured: HashMap::new(), initial: false, anonymous: false, update: Some(removed) });
+        self.openers.insert(id, Opener { window: w, node, panes: added, waiting, captured: HashMap::new(), initial: false, anonymous: false, update: Some((removed, kept)) });
         Vec::new()
     }
 }
@@ -540,8 +562,9 @@ mod tests {
             r.answer(Some(""));
         }
         let a = r.answer(Some(""));
-        let [Action::Relayout { window: 0, added, removed, .. }] = &a[..] else { panic!("{a:?}") };
+        let [Action::Relayout { window: 0, added, removed, kept, .. }] = &a[..] else { panic!("{a:?}") };
         assert_eq!((added.iter().map(|p| p.pane).collect::<Vec<_>>(), removed.clone()), (vec![1], vec![]));
+        assert_eq!(kept, &vec![0], "the tab is found through a pane it already has");
         assert_eq!(r.ctl.windows[&0], vec![0, 1]);
         // Pane 0 goes and pane 2 comes in one change.
         r.lines(&["%layout-change @0 aaaa,80x24,0,0{40x24,0,0,2,39x24,41,0,1} x *"]);
@@ -557,6 +580,43 @@ mod tests {
         assert_eq!(r.lines(&["%window-renamed @0 vi"]), vec![Action::Rename(0, "vi".into())]);
         assert_eq!(r.lines(&["%window-close @0"]), vec![Action::Close(0)]);
         assert!(r.ctl.windows.is_empty());
+    }
+
+    #[test]
+    fn two_quick_splits_each_get_their_captures() {
+        let mut r = opened();
+        r.sent();
+        r.lines(&["%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} x *"]);
+        r.lines(&["%layout-change @0 aaaa,80x24,0,0{40x24,0,0,0,19x24,41,0,1,19x24,61,0,2} x *"]);
+        let mut acts = Vec::new();
+        for i in 0..10 {
+            acts.extend(r.answer(Some(&format!("h{i}"))));
+        }
+        let added: Vec<(u32, Vec<u8>)> = acts
+            .iter()
+            .flat_map(|a| match a {
+                Action::Relayout { added, .. } => added.iter().map(|p| (p.pane, p.restore.clone())).collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(added.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![1, 2], "{acts:?}");
+        assert!(added[0].1.starts_with(b"h0"), "pane 1 gets the first change's captures");
+        assert!(added[1].1.starts_with(b"h5"), "pane 2 gets the second change's captures");
+        assert_eq!(r.ctl.windows[&0], vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_pane_closed_in_tandem_comes_back_with_the_next_layout() {
+        let mut r = opened();
+        r.sent();
+        r.lines(&["%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} x *"]);
+        for _ in 0..5 {
+            r.answer(Some(""));
+        }
+        r.ctl.forget_pane(1);
+        assert_eq!(r.ctl.windows[&0], vec![0]);
+        r.lines(&["%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} x *"]);
+        assert!(r.sent().starts_with("capture-pane -peqJN -t \"%1\""), "tmux still has it, so it opens again");
     }
 
     #[test]

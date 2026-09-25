@@ -912,6 +912,7 @@ impl App {
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
         self.enter_pane_window(id);
+        self.tmux_pane_closed(id);
         self.aps.remove(&id);
         if let Some(p) = self.panes.remove(&id) {
             if let Some(pid) = p.shell_pid() {
@@ -919,7 +920,8 @@ impl App {
             }
             // A close the person made keeps a running shell for Undo Close.
             match self.undo_capture.as_mut() {
-                Some(c) if p.exited.is_none() => {
+                // iTerm2 never offers Undo Close for a tmux pane.
+                Some(c) if p.exited.is_none() && p.tmux_io().is_none() => {
                     let mut p = p;
                     p.set_paused(true);
                     c.panes.push(p);

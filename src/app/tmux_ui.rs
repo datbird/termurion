@@ -36,7 +36,7 @@ pub(super) struct TmuxGw {
     /// iTerm2's clientName, fixed when tmux mode starts.
     client: String,
     /// The tmux session: windows, panes, and the attach.
-    ctl: crate::tmux_controller::Controller,
+    pub(super) ctl: crate::tmux_controller::Controller,
     /// The tmux pane Tandem last told tmux (or tmux told Tandem) is selected.
     pub(super) selected: Option<u32>,
     /// tmux pane id to (Tandem pane, tmux window id).
