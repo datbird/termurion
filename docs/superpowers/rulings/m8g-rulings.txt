@@ -1,0 +1,13 @@
+Task 1: Ruling: a set-titles label that already starts with the prefix is not prefixed again (iTerm2's hasPrefix check on the override) - the 8f monitor value has no prefix, so it gets one - cost if wrong: none
+Task 2: Ruling: show-buffer is sent abort-on-error as iTerm2 does (a buffer deleted before the fetch ends the connection with its error) - cost if wrong: a rare race detaches tmux
+Task 3: Ruling: the app wiring (pump OSC 4 filter, OSC 52 gate, offer bar, clipboard write, color resend, tab label) has no pure seam beyond Task 1's rules; the checklist covers it - cost if wrong: a checklist item fails
+Task 3: Ruling: "answered" is kept in NoSyncTmuxSyncClipboardAnswered because Tandem's globals drop a value equal to the default (iTerm2 checks whether TmuxSyncClipboard exists) - cost if wrong: none
+Task 3: Ruling: tmux tabs now show the session title once tmux gives a pane title (the host name by default), as iTerm2's updateTabTitleForCurrentSessionName - cost if wrong: a label users of 8b saw as the window name changes
+Task 3: Ruling: colors are resent on pane open and on any profile or appearance refresh, not on OSC 10/11 color changes by programs - cost if wrong: tmux answers a program-changed color with the profile's
+Final: minor (deferred): turning Mirror tmux paste buffer on then off in Settings brings the offer back
+Final: minor (deferred): refresh_panes resends tmux color reports on every settings edit (a color drag floods refresh-client -r)
+Final: minor (deferred): a failed client_name query is never asked again on that connection
+Final: minor (deferred): OSC 4 queries in pending bytes at open are not answered
+Final: minor (deferred): OSC 4/52 answers through the outbox count as key presses for the directory poll
+Final: minor (deferred): parity row "Window/session/pane rename sync" still says %window-renamed renames the tab
+Final: minor (deferred): no manual check for the tmux 3.7 get-clipboard rule

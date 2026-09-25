@@ -1,0 +1,19 @@
+Task 2: Ruling: a window row is renamed with a right-click (double-click reveals or opens, as iTerm2); a session row is renamed with a double-click -- egui has no in-table edit on a second click -- cost if wrong: a different gesture to rename a window.
+Task 2: Ruling: dragging windows between sessions (link-window, move-window) is not in the Dashboard -- egui tables have no drag between lists here -- cost if wrong: link and move need the tmux command line.
+Task 2: Ruling: the Dashboard opens with its list requests due at once (not after 1.5 s) so it is not empty when shown; later requests wait 1.5 s as iTerm2.
+Task 2: Ruling: the Dashboard shortcut Shift+Ctrl+Win+Return is added to the menu schema (research: iTerm2's key DQ is Return).
+Task 3: Ruling: the last session of the last window cannot be buried (a banner says why) -- Tandem ends when its last window closes, where iTerm2 keeps running with no windows -- cost if wrong: one more open window needed to bury.
+Task 3: Ruling: a restored session goes back into its tab as a split to the right (iTerm2 recreates the tab from its saved arrangement) -- cost if wrong: a different split place.
+Task 3: Ruling: AutoHideTmuxClientSession buries the gateway after the first tmux window opens (iTerm2 waits for all initial windows) -- cost if wrong: the gateway goes a moment earlier.
+Task 3: Ruling: hidden tmux windows in Buried Sessions read "prefix client - name" with a hyphen (iTerm2 uses a long dash; the style rule bans it).
+Task 4: Ruling: the prefix bindings are rebuilt from the handshake list-keys reply each time routing refreshes (iTerm2 builds them once at attach) -- the same result -- cost if wrong: none.
+Final: Ruling: I1/I2/I3/I4/I5 app wiring (bury_pending in about_to_wait, disinter_here, tmux_dash_retarget, tmux_dashboard_due wake, Bury Session on a tmux pane hides its window) has no pure seam; the controller parts are tested and the app parts are checked in the m8e checklist - cost if wrong: a checklist item fails
+Final: Ruling: I6 key is OpenTmuxDashboardIfHiddenWindows (iTerm2's spelling), default true as in iTerm2 - cost if wrong: the Dashboard opens on attach when hidden windows exist
+Final: Ruling: M2 re-graded Important; open_tmux_dashboard_on takes the gateway so Attached targets its own connection - cost if wrong: none beyond the change
+Final: minor (deferred): action 65 on the gateway pane itself does nothing
+Final: minor (deferred): stale session selection when the same session id comes back
+Final: minor (deferred): drop_current_window false return ignored in one path
+Final: minor (deferred): Dashboard window + uses Dir::Home
+Final: minor (deferred): sessions-changed relist has no debounce
+Final: minor (deferred): Buried Sessions menu refresh lags one pass
+Final: minor (deferred): Reveal chooses the lowest pane id of the window, not the active pane

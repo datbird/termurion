@@ -1,0 +1,34 @@
+Task 1: Ruling: split nodes keep their WxH,X,Y header (iTerm2 drops it except at the root) -- the binary conversion needs a child split's cells along the axis -- cost if wrong: none, extra data.
+Task 1: Ruling: `{...]` parses (iTerm2 counts either bracket kind) -- faithful -- cost if wrong: none.
+Task 2: Ruling: a pane's state is rebuilt by feeding escape sequences (captures, ?1049h, DECSTBM, HTS, modes, CUP) into its Screen, not by swapping grids -- Screen has no grid API; the sequences reach the same state -- cost if wrong: a mode tmux reports that has no sequence (none found).
+Task 2: Ruling: Io::pid is now Option (a tmux pane has no local process) -- job tracking must not read pid 0 -- cost if wrong: none.
+Task 2: Ruling: the history and screen feed of restore_bytes goes through the quiet feed in Task 4 (no triggers on restored lines, as 7d restoration); pending output goes through the normal feed.
+Task 3: Ruling: the handshake already emits Step::VersionKnown; openWindowsInitial (show @iterm2_size, then the open list) is sent by the controller in Task 4, not from tmux_handshake.rs -- the handshake stays free of window state -- cost if wrong: none.
+Task 3: Ruling: OpenTmuxWindowsIn is one enum control with iTerm2's three values (0, 1, 2) until 8e builds the General > tmux page with the phony checkbox and popup -- same stored key and values -- cost if wrong: a different control until 8e.
+Task 3: Ruling: TmuxUsesDedicatedProfile default is YES (research 6.1), and 02:167's key UseTmuxProfile is iTerm2's old name.
+Task 4: Ruling: the controller is its own module (tmux_controller.rs) rather than living in tmux_windows.rs -- it holds the attach state and tags, the window model stays stateless -- cost if wrong: a file move.
+Task 4: Ruling: %sessions-changed (the Dashboard's list-sessions refresh) waits for 8e; SessionRenamed only renames the controller's session -- nothing in 8b shows the list -- cost if wrong: none in 8b.
+Task 4: Ruling: double attach (@iterm2_id already attached in this process) waits for 8c with Detach; 8b sets @iterm2_id when it is empty, as iTerm2.
+Task 4: Ruling: %layout-change uses the layout, not the visible layout; zoom from tmux is 8c -- the initial open unzooms, as iTerm2 -- cost if wrong: a zoomed window shows all panes.
+Task 4: Ruling: when the gateway ends, its tmux panes' sessions end (exit 0) and follow "After a session ends"; the "tmux detached" text and tmuxWindowsShouldCloseAfterDetach are 8c.
+Task 4: Ruling: tmux tab titles live in Tab.title (tmuxTitlePrefix + window name), which Edit Tab Title also sets -- the tmux rename sync back to tmux is 8c.
+Task 4: Ruling: the client name is not made unique across gateways ("name (2)", TmuxControllerRegistry) until the Dashboard (8e) lists controllers.
+Task 4: Ruling: the tmux pane size lock was added inside tmux_io_queues after the code; its RED was not observed (the assertion fails on the old resize by reading).
+Task 5: Ruling: iTerm2's literal test truncates a code point to 16 bits (unsignedShortValue), so U+10041 would go as "A"; Tandem classes the full code point -- a bug, not behavior to keep -- cost if wrong: none.
+Task 5: Ruling: focus reports still go to a tmux pane as keys (iTerm2's writeLatin1EncodedData takes the tmux path), and a focus gain also sends select-pane (research 4.2 said instead; the code does both).
+Task 5: Ruling: the key-name path has no numeric-keypad test (Tandem's Key has no keypad flag at to_terminal); keypad digits under modifyOtherKeys with Ctrl go by name -- cost if wrong: tmux encodes a keypad key as its digit.
+Task 5: Ruling: Option acts as Meta for key names when the profile's left "Option Key Sends" is not Normal.
+Task 5: Ruling: writes that bypass user_write (mouse reports, Buffer Input release) go out from about_to_wait via tmux_send_input.
+Task 6: Ruling: the tmux profile is made at the first tmux pane (not at attach) and saved at once; the Profiles menu picks it up on its next rebuild -- cost if wrong: the menu lists it a moment later.
+Task 6: Ruling: the @iterm2_id GUID now comes from the uuid crate (the controller's hand-made one is gone).
+Final: fixed I1 "Tabs in a new window" opened one window per tmux window (the sibling's window was still pending) -- Ruling: app wiring with no pure seam; checklist item 8 pins it.
+Final: fixed M4 re-graded Important (a relayout per %output batch slows heavy output) -- Output-only batches skip relayout. Ruling: no pure seam.
+Final: minor (deferred): -J joined lines make the alternate-screen row cut miss by wrapped rows (count rows by cell width).
+Final: minor (deferred): Initial.hide is not saved to @hidden (8c writes session options).
+Final: minor (deferred): max_history reads the gateway profile's scrollback, not the tmux profile's.
+Final: minor (deferred): tmux sizes go through .max(2), so a 1-column tmux pane is 2 columns.
+Final: minor (deferred): a huge cursor_y saturates and the +1 overflows in debug builds.
+Final: minor (deferred): session_changed keeps old tags; a late reply from the previous session could open duplicate tabs.
+Final: minor (deferred): key-name sends skip Buffer Input.
+Final: minor (deferred): no single test covers three-deep plus hoist plus border top through sizes().
+Final: Ruling: declined-to-judge items (window sizing is 8c; a layout change during a window's first open is dropped as iTerm2; nested -CC; zoom and double attach deferred; focus reports as keys per iTerm2's code; %window-pane-changed for a pane not open yet ignored) stand -- cost if wrong: small, noted for 8c.

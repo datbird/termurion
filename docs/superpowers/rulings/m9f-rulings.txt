@@ -1,0 +1,16 @@
+Task 1: Ruling: to_table/from_table instead of to_value/from_value (the session arrangement entry is a table the caller merges) and a default model writes no keys - cost if wrong: a rename.
+Task 2: Ruling: the panel takes at most three quarters of a pane's width (iTerm2 gives a fixed gutter; a narrow Tandem split would otherwise have no terminal) - cost if wrong: a narrow pane shows a narrower panel than asked.
+Task 3: Ruling: found while wiring 9f: 9d's completion list drew its box as an overlay quad, which the renderer draws after all text, so the list showed as a blank box; fixed with scene::cut_out (terminal rows split around the box) - popups_over_text_keep_their_own_text RED->GREEN - cost if wrong: none.
+Task 3: Ruling: Shift+Win+= now goes to View > Show Clippings (first in iTerm2's menu); Make Text Bigger keeps Win+=; the shared-chord test states the new fact - cost if wrong: Shift+Win+= no longer makes text bigger.
+Task 3: Ruling: the panel's detail is plain text from its Markdown (no bold or code styling) in the prose font; iTerm2 renders it with SwiftyMarkdown - cost if wrong: less styling.
+Task 3: Ruling: button tooltips show in the strip's status area on hover (Tandem's scene has no tooltips) - cost if wrong: none.
+Task 3: Ruling: a panel click makes its session the focused one and gives the panel the keyboard; keys other than Delete, Space, arrows, Esc go to the terminal and take the keyboard back (iTerm2's table keeps typing) - cost if wrong: a letter typed with the panel active reaches the shell.
+Task 3: Ruling: double-click uses the Windows double-click time; Shift+click selects a range - cost if wrong: none.
+Task 3: Ruling: added wrap(text, cols) to clippings.rs with test details_wrap_to_the_panel (the panel wraps details by cell width) - cost if wrong: none.
+Final: Ruling: the tmux size report ignored the panel; Clippings are refused on tmux panes with a bar (tmux sizes the whole window) - cost if wrong: no Clippings in tmux tabs until the tmux window size accounts for panels.
+Final: Ruling: modifier keys alone and chords with Ctrl, Alt, or Win pass through the panel's keys (no pure seam) - cost if wrong: none.
+Final: minor (deferred): clip_hover not in swap_live (a stale tooltip in another window).
+Final: minor (deferred): resizing the panel relayouts on every move.
+Final: minor (deferred): the panel keeps the keyboard when focus leaves by keyboard.
+Final: minor (deferred): Shift+Return mid-detail leaves the inserted newline.
+Final: minor (deferred): the per-row preview (magnifier) button is not built; Space previews.

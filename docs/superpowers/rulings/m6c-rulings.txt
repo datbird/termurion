@@ -1,0 +1,39 @@
+3:Task 1: Ruling: the job watcher polls a Toolhelp snapshot (0.5 s in front, 5 s behind) instead of a per-pane Job Object with a completion port -- iTerm2's own cache runs at those rates; a Job Object on the shell also changes how its children behave (kill-on-close, breakaway) -- cost if wrong: Job Started fires up to 0.5 s late.
+4:Task 1: Ruling: processTitle is argv0's file name without ".exe", not argv0 as typed -- Windows shells pass full paths as argv0, so a title would read "C:\...\vim.exe" -- cost if wrong: the Job title shows less than iTerm2 for a program started by path.
+5:Task 1: Ruling: only processes under a pane's shell are opened (creation time, GUI flag); a process Tandem cannot open counts as created at 0 and so is never a child (stale-link rule) -- cost if wrong: an elevated child is not seen as the job.
+6:Task 1: Ruling: the Windows tests pe_subsystem_reads_the_header and a_real_tree_has_a_job were written with the code, as integration checks of the Win32 calls; the model tests were RED first.
+8:Task 2: Ruling: title parts are joined with " - " where iTerm2 uses " (em dash) " -- Tandem's text uses no em dashes (Robert's standing rule) -- cost if wrong: the separator looks different from iTerm2.
+9:Task 2: Ruling: the window title is a program's own title as it is, else the session title (iTerm2's non-tmux window-title rule); tab titles use the full Title Components port -- cost if wrong: none.
+10:Task 2: Ruling: Custom (16, Title Function) and TTY (8) show nothing: a title function needs the Python API (milestone 11) and Windows sessions have no tty name -- cost if wrong: those bits are silent.
+12:Task 3: Ruling: the Job field and Job Started/Ended names match case-insensitively with ".exe" optional; iTerm2 compares exact lowercased names -- Windows names are case-insensitive and carry ".exe" -- cost if wrong: "VIM" also matches vim.
+13:Task 3: Ruling: the editor test editor_rows_follow_iterm2 expected the "(milestone 6c)" label, which 6c removes; its expectation changed to "Event: Job Started Ring Bell".
+15:Task 4: Ruling: Jobs to Ignore defaults to ssh, telnet, plink (the schema default, so every profile without the key has it, as iTerm2 seeds its list on load) -- cost if wrong: a closing ssh session does not ask.
+16:Task 4: Ruling: the confirmation is a Windows MessageBox (OK, Cancel) with iTerm2's title and message, the reasons one per line then the footer -- iTerm2 uses a sheet -- cost if wrong: looks different.
+17:Task 4: Ruling: when the process tree cannot be read, the question asks anyway and names the error -- never hide an error behind "no jobs" -- cost if wrong: an extra question.
+19:Task 5: Ruling: terminal output waiting for a coprocess that does not read is capped at 4 MB; past it output is dropped and counted (the window reports it) -- iTerm2's buffer grows without a limit -- cost if wrong: a stalled coprocess misses output.
+20:Task 5: Ruling: every path refuses a second coprocess (menu quiet, trigger warning, others a banner) -- iTerm2 replaces and orphans the running one on the key, context-menu, Smart Selection, and Semantic History paths -- cost if wrong: a user who expected the replace must stop the first one.
+21:Task 5: Ruling: the coprocess inherits Tandem's environment; Tandem sets no session variables (TERM_PROGRAM and the rest) for its shells yet, so the coprocess matches the shell -- cost if wrong: a coprocess that reads ITERM_SESSION_ID finds none.
+22:Task 5: Ruling: the coprocess runs in the pane's known folder, else the user's folder -- iTerm2 uses its own process folder, which on Windows is arbitrary -- cost if wrong: a relative path in a command resolves differently.
+23:Task 5: Ruling: the Windows tests coprocess_round_trip and pane_close_ends_the_coprocess were written with coproc_win as integration checks; a test failure found finished() consuming a chunk (fixed with a held piece).
+25:Task 6: Ruling: the coprocess indicator has no tooltip -- Tandem's drawn UI has no tooltips yet -- cost if wrong: the icon's meaning is not shown on hover.
+26:Task 6: Ruling: Run Coprocess stays enabled in the menu while one runs and does nothing then (Tandem's menus have no per-state enabling) -- cost if wrong: the item looks available.
+27:Task 6: Ruling: key action 72 Copy Interpolated String was gated to milestone 6 with 35; it arrives now (interp exists since 6a) -- cost if wrong: none.
+28:Task 6: Ruling: Tandem had no file drop at all; a drop now pastes the paths (quoted when they hold a space) or runs fileDropCoprocess -- cost if wrong: iTerm2 escapes with backslashes on macOS; Windows quoting differs by design.
+29:Task 6: Ruling: the pure tests stderr_banner_text passed on first run (stderr_banner was written in task 5 with the model); drop_command, the indicator, the key status, and the Semantic History plan were RED first.
+31:Task 7: Ruling: a rule that starts with a drive ("C:\" or "C:/") is a path rule, and the trailing-separator match uses "\" for Windows folders -- iTerm2 reads "C:..." as host C -- cost if wrong: a one-letter host with a path must be written user@host:path.
+32:Task 7: Ruling: glob keeps iTerm2's first-place matching (a*c does not match abcabc) -- one-to-one -- cost if wrong: an unusual pattern fails as it does in iTerm2.
+33:Task 7: Ruling: stack entries hold the shared profile, not a divorced session copy -- Tandem's session copies are dropped when a pane leaves them -- cost if wrong: Edit Session changes are lost when APS returns to that profile (iTerm2 keeps them).
+34:Task 7: Ruling: preserveFontSizeOnAutomaticProfileSwitch has no effect yet: every pane shares one font size until per-pane fonts arrive -- cost if wrong: none now.
+35:Task 7: Ruling: the debug log is a file beside the settings (automatic-profile-switching.log) until the Script Console (milestone 11) -- cost if wrong: the log is not in a window.
+36:Task 7: Ruling: the "already bound" warning removes the rule from this profile only (iTerm2 also offers "Remove from X") -- cost if wrong: one more step to move a rule.
+37:Task 7: Ruling: the plan's prevent_stops_switching test is not written: the Prevent check is one condition in the window code, which has no test harness; the model tests cover the rest -- cost if wrong: a regression in that one line is not caught.
+38:Task 7: Ruling: a failed GetComputerNameExW uses COMPUTERNAME for the local host name -- both are the machine's name; no error is hidden that changes the result -- cost if wrong: a short name instead of the DNS name.
+50:Final: Ruling: I1's second case, "start cmd" (a console program in its own new window), can still become the job -- telling it apart needs a console-membership check (a helper process attaching to the pane's console) -- cost if wrong: while such a window is open, the tab names it.
+51:Final: minor (deferred): M3 the close prompt takes one Toolhelp snapshot per pane and rereads PE headers
+52:Final: minor (deferred): M4 the close prompt names GUI programs that closing will not end
+53:Final: minor (deferred): M5 a focus change or new pane waits up to 5 s for the watcher's next look
+54:Final: minor (deferred): M8 the APS debug log writes a line for every pane on every output wake
+55:Final: minor (deferred): M9 an unreadable program counts as a console program
+56:Final: minor (deferred): M10 coprocess stderr decoded per 1 KB chunk can split a character
+57:Final: minor (deferred): M11 View Errors reuses one temp file per Tandem process
+58:Final: minor (deferred): M12 Restart Session keeps the old APS stack

@@ -1,0 +1,18 @@
+Task 1: Ruling: lines are logical rows; a word does not continue across a soft wrap (iTerm2's extractor follows wraps) - cost if wrong: a word split by a wrap is two words
+Task 1: Ruling: the screen search finds every match at once (iTerm2 feeds 128 at a time on a 10 ms timer; the results are the same, only the pacing differs) - cost if wrong: a very long scrollback makes the first list slower
+Task 2: Ruling: other keys close Autocomplete and go to the terminal (iTerm2's popup takes the keyboard and filters by typing); the list is in the terminal, so typing is not captured - cost if wrong: typing does not narrow the Autocomplete list
+Task 3: Ruling: the list is drawn in the terminal (at most 10 rows shown; iTerm2's popup window shows up to 20) so the terminal keeps typing - cost if wrong: fewer rows visible at once
+Task 3: Ruling: Auto Command Completion does not check that the cursor is at the end of the command on an empty cell (iTerm2 does) - cost if wrong: the list can show while editing mid-line
+Task 3: Ruling: Autocomplete searches the last 5000 rows - cost if wrong: words further back are not offered
+Task 3: Ruling: the parity row's shortcut for Auto Command Completion is Shift+Opt+Cmd+Y (research section 0) - cost if wrong: none
+Final: Ruling: I1 Tab re-added the shell-history word (Enter then doubled it); history candidates are now added only when the list opens, as iTerm2; the flag lives in the app search with no pure seam - cost if wrong: checklist item 3 shows a doubled word
+Final: minor (deferred): the list ignores a scrolled-back view when placed
+Final: minor (deferred): the list can spill past a small pane
+Final: minor (deferred): the list stays drawn on its pane after focus moves until the next key
+Final: minor (deferred): wide (CJK) characters split words in char_rows
+Final: minor (deferred): char_rows copies 5000 rows twice on open
+Final: minor (deferred): Shift+Alt+Enter counts as Shift+Enter; Ctrl+Enter as Enter
+Final: minor (deferred): Left, Right, and editing keys leave the auto list open
+Final: minor (deferred): a remapped Open Autocomplete chord reopens instead of "more"
+Final: minor (deferred): from_commands' doc comment says "up to the cursor"
+Final: minor (deferred): turning Auto Command Completion off also closes an Autocomplete list

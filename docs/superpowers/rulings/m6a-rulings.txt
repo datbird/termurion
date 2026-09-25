@@ -1,0 +1,27 @@
+Setup: Ruling: milestone 6 splits into 6a (triggers), 6b (bell, notifications, idle and new output, badges), 6c (Automatic Profile Switching, coprocesses, foreground job) -- each is a subsystem of its own -- cost if wrong: none, order only.
+Setup: Ruling: a trigger with a job does not fire until 6c gives Tandem the foreground job -- firing without the check could run an action in the wrong program -- cost if wrong: job triggers are dead for one sub-milestone.
+Setup: Ruling: event triggers (match types 100 and up: Idle, Command Finished, and the rest) are kept in the stored list but not evaluated in 6a; they come with 6b, which owns idle and output events -- cost if wrong: none now.
+Setup: Ruling: interpolated parameters use the variables the screen knows plus a set the window pushes (session name, profile name, tab title); function calls are refused -- iTerm2 evaluates them on the main thread with its whole variable scope -- cost if wrong: a trigger using an unpushed variable gets "".
+Task 1: Ruling: captured text goes into a plain parameter as it is, so a capture holding a backslash sequence is not turned into a control character (iTerm2 replaces captures first, then escapes) -- output cannot smuggle escape sequences through a trigger -- cost if wrong: a capture with a literal \n is not a newline.
+Task 2: Ruling: the interpolated-string subset is names, matches[n], quoted strings, and ??; arithmetic and other operators are an error naming what Tandem accepts -- the full iTerm2 expression language waits for the Python API (milestone 11) -- cost if wrong: an imported trigger with arithmetic shows an error instead of a value.
+Task 3: Ruling: rows are numbered by a count of rows scrolled off the top (alacritty patch 13), for the main and alternate screens alike; switching screens, resizing, folding, or making a porthole restarts checking at the cursor -- rows move under those operations -- cost if wrong: a line written in the same read as a screen switch is not checked.
+Task 3: Ruling: cell actions (Highlight Text, Change Style, Make Hyperlink) act on every match of a line; every other action runs once per line -- iTerm2 leaves this to each action's return value -- cost if wrong: an Annotate trigger with several matches on one line makes one note, not several.
+Task 3: Ruling: a line's text ends at its last written cell (trailing blanks are not text), so `$` anchors match at the text's end -- a grid cannot tell trailing spaces from empty cells -- cost if wrong: a pattern that needs trailing spaces never matches.
+Task 4: Ruling: Inject Data's text goes through the parser as output, but any answer it provokes (a query's reply) is dropped, not sent to the program -- the program never sent that query -- cost if wrong: an injected query goes unanswered.
+Task 4: Ruling: on the cursor's row a line's text runs to the cursor, so a prompt's trailing space is part of it -- the cursor marks what was written -- cost if wrong: none seen.
+Task 4: Ruling: the stub highlight_colors written to compile the RED tests was replaced in the same task.
+Task 5: Ruling: Set Title sets the session's title (what the tab shows) until the program sets another; iTerm2 sets a trigger name in its title components -- Tandem's tab titles come from the session title -- cost if wrong: a later OSC title replaces the trigger's.
+Task 5: Ruling: Add Trigger... adds to the saved profile (with Bounce Dock Icon, iTerm2's default action) and opens Settings on it; iTerm2's sheet saves to the session and asks whether to update the profile -- Tandem's editor lives in Settings -- cost if wrong: the trigger reaches every session of that profile.
+Task 5: Ruling: Post Notification shows a bar and Ring Bell beeps until 6b brings Windows notifications and the bell settings -- cost if wrong: none now.
+Task 5: Ruling: interpolated strings get session.name (the title, else the profile name) and session.profileName from the window; tab.* variables wait for 6b's badges -- cost if wrong: a trigger using tab.title gets "".
+Task 6: Ruling: Instant rows say "Instant." in words instead of iTerm2's lightning-bolt glyph -- the glyph is an emoji in Windows fonts -- cost if wrong: none.
+Task 7: Ruling: roadmap counts moved by the parser's before and after difference on the changed rows (01 +21 have, 03 +29 have and +1 partial) -- the parser disagrees with the stored totals on 2 rows, so a full recount would shift them -- cost if wrong: none.
+Final: minor (deferred): fancy-regex's default backtrack limit lets a slow pattern freeze the window; the error is dropped.
+Final: minor (deferred): match_cells scans the line per match and regexes are cloned per line (slow for "." on long lines).
+Final: minor (deferred): scroll regions with a top margin scroll lines without numbering them, so they are not checked.
+Final: minor (deferred): a wide character wrapped to the next row adds a space to the line text; combining characters are dropped.
+Final: minor (deferred): the Instant timer wakes every 0.5 s while any Instant trigger is on, even without output.
+Final: minor (deferred): Run Command's waiting queue has no cap, and a run of failed starts recurses.
+Final: minor (deferred): captured program output goes into Run Command and Send Text as it is (iTerm2 parity); the editor could warn.
+Final: minor (deferred): the Alert bar remembers one trigger per pane, so Disable This Alert can hit the wrong one.
+Final: minor (deferred): Send Text echo loops are not guarded (iTerm2 parity).

@@ -1,0 +1,28 @@
+Task 1: Ruling: a tmux tab's size is the current window's content area in cells (Tandem's gaps count as cells, as tmux dividers), reported after every relayout; the model skips unchanged sizes -- cost if wrong: a size off by the gap rounding.
+Task 1: Ruling: fixed-size mode takes the minimum over every tmux tab this session showed (sizes remembered per tmux window across Tandem windows), as fitLayoutToWindows.
+Task 1: Ruling: rememberTmuxWindowSizes waits for @per_window_settings (Task 4); disableTmuxWindowResizing needs no code (Tandem never grows a window for tmux).
+Task 2: Ruling: the rename escape leaves `"` and `$` alone and the custom directory is escaped twice, both as iTerm2 does -- faithful quirks -- cost if wrong: a name with a quote fails in tmux as it does in iTerm2.
+Task 3: Ruling: the "What kind of tab/window" question is a Yes/No/Cancel box naming the buttons in its text (Windows cannot relabel), and its remembered answer is the bool in the silence key, as 7f's Clear/Reset questions -- cost if wrong: a different dialog look.
+Task 3: Ruling: split, zoom, swap, rename, close session, tab move, New Tab, and New Window in a tmux tab go to tmux and wait for its layout or rename; the local change is not made first (iTerm2 waits the same way) -- cost if wrong: a short delay before the change shows.
+Task 3: Ruling: new_tabs_join_their_window and the Reorder part of drags_send_one_resize_on_release were written with their code; their RED was not observed separately.
+Task 3: Ruling: the tab bar has no + button in Tandem, so New Tmux Tab comes from the menu, Win+T, and key actions only.
+Task 4: Ruling: the close questions are pane info bars with iTerm2's buttons (Hide, Cancel, Kill; Hide, Detach tmux Session, Kill, Cancel) -- MessageBox has no four labeled buttons -- cost if wrong: non-modal instead of modal.
+Task 4: Ruling: with ClosingTmuxTabKillsTmuxWindows or ClosingTmuxWindowKillsTmuxWindows on, Tandem hides without asking (iTerm2 reuses a remembered choice; Tandem's bool keeps none) -- cost if wrong: Hide instead of the person's earlier choice.
+Task 4: Ruling: 8c saves @hidden and @affinities; @origins, @per_window_settings, @per_tab_settings, and @buried_indexes wait for 8e (Dashboard, burying) since Tandem has no toolbelt and no saved origins yet -- cost if wrong: window positions are not restored on attach.
+Task 4: Ruling: a Tandem window's affinity name is "pty-<window key>", unique only within one Tandem run (iTerm2's terminal GUID lasts across runs) -- cost if wrong: after a restart, tmux windows regroup by OpenTmuxWindowsIn.
+Task 4: Ruling: 8b's deferred minor M2 is fixed here (too-many windows are saved in @hidden).
+Task 5: Ruling: "Cannot Attach" is a pane info bar with OK, Reveal, and Force Detach Other; until it is answered the second attach keeps opening windows (iTerm2's alert is modal and blocks them) -- cost if wrong: windows open, then close on OK.
+Task 5: Ruling: Tandem closes every ended session (no "After a session ends" choice yet), so detached tmux panes close; the "tmux detached" text and the tmuxWindowsShouldCloseAfterDetach question have nothing to act on -- cost if wrong: none until that profile setting exists.
+Task 5: Ruling: Shell > tmux > Detach, Force Detach, New Tmux Window, and New Tmux Tab are always enabled (Tandem's menus have no per-state enabling); with no tmux connection they do nothing.
+Final: fixed I1 the "What kind of tab/window" question never showed (schema defaults read as remembered answers) -- silence switches read as bools, on = tmux, off = ask; silenced_questions_make_tmux_tabs RED->GREEN, suite 921/921. Ruling: no remembered "Use Default Profile" answer (a bool cannot hold three choices).
+Final: fixed I3 tmux could stay paused after a drag whose release was lost, and a release in another window sent a bogus resize -- the drag is per window and is cancelled on focus loss and on any new press. Ruling: app wiring, no pure seam.
+Final: fixed I4 Close Window skipped Tandem's confirmation and Undo, and acted on one session only -- confirmation first, the question covers every session in the window, the whole-window close runs inside Undo. Ruling: app wiring, no pure seam.
+Final: fixed I5 stale "Cannot Attach" bars acted on the wrong connection -- the bars go when either gateway ends, and an answer checks both still exist. Ruling: app wiring, no pure seam.
+Final: minor (deferred): the drag amount is the cursor's movement rounded, not the divider's movement truncated.
+Final: minor (deferred): "Detach tmux Session" goes through the gateway's Esc path, not requestDetach.
+Final: minor (deferred): the tmux menu items act only when the focused pane is tmux (iTerm2 falls back to any session).
+Final: minor (deferred): a minimized window records a 0x0 tab size, which stops fixed-size resizes until it is laid out again.
+Final: minor (deferred): the hung check runs while the gateway is paused for a drag.
+Final: minor (deferred): the plan's Review Focus 5 names the Esc path; the force question belongs to the menu's requestDetach, which is what Tandem and the test do.
+Final: minor (deferred): zoom and swap relists count as outstanding resizes (harmless).
+Final: Ruling: declined-to-judge items (@hidden keeps windows killed elsewhere; the affinity race; Advanced initial directory; keyboard pane resize not sent to tmux; groups without tmux tabs; new tab first size from the profile; %exit held during a drag) stand -- cost if wrong: small.

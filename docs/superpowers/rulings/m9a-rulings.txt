@@ -1,0 +1,24 @@
+Task 1: Ruling: regex substitution uses fancy-regex (backreferences and lookaround like ICU) with $1 references; ICU-only syntax (for example \p{...} names ICU spells differently) may differ - cost if wrong: a rare expression matches differently
+Task 1: Ruling: per-line bracketing skips an empty final line after a trailing newline (the facts do not say iTerm2 brackets an empty string) - cost if wrong: a zsh/fish/bash Advanced Paste gets one fewer empty bracket pair
+Task 2: Ruling: rate_text formats with 1024-byte units and one decimal ("75.0 KB"); iTerm2's it_formatBytes output was not in the facts - cost if wrong: the toast's number reads differently
+Task 2: Ruling: the tabs question's heading "Paste Tabs" is Tandem's (the facts give only iTerm2's title text) - cost if wrong: one heading word
+Task 2: Ruling: the one-line question when not at a prompt uses the multi-line key (iTerm2 gates it on PromptForPasteWhenNotAtPrompt; its identifier was not in the facts) - cost if wrong: its "Remember my choice" silences the multi-line question too
+Task 3: Ruling: key action 65 was still gated as Later(8) since 8e, so Send tmux Command never ran; 9a sets it Done (statuses_split_now_from_later updated) - cost if wrong: none
+Task 3: Ruling: "Advanced..." in the paste questions cancels the paste until Advanced Paste exists (9b) - cost if wrong: the button does nothing visible in 9a
+Task 3: Ruling: the questions have no "Remember my choice" (Tandem's bars have no checkbox); the four Paste Special toggles and the Advanced settings silence them - cost if wrong: one more click to silence
+Task 3: Ruling: a paste does not start blocked when shell integration says a command is running (iTerm2 waits for the prompt first); wait-for-prompt pastes come only from key and pointer configurations until 9b - cost if wrong: the first line of such a paste goes before the prompt
+Task 3: Ruling: keystrokes during a paste are not queued behind it (iTerm2 queues them and offers the keyboard passthrough button) - cost if wrong: typing during a long paste interleaves with it
+Task 3: Ruling: a configuration with ChunkSize or Delay of 0 pastes at the quick speed (iTerm2 would write zero-length chunks) - cost if wrong: none
+Task 3: Ruling: WrapDroppedFilenamesInQuotesWhenPasting is not wired; Tandem already quotes dropped Windows paths that hold spaces - cost if wrong: the setting does nothing
+Task 3: Ruling: QuickPaste* schema defaults are iTerm2's effective 768 and 0.01, not the listed 667 and 0.0153 - cost if wrong: none (the listed ones are never used by iTerm2)
+Final: Ruling: ESC is always removed inside a bracketed paste (Tandem's old guard kept; iTerm2 lets a RemoveControls-off configuration end its bracket) - brackets_wrap_lines RED->GREEN - cost if wrong: a configuration cannot paste a raw ESC into a bracketed paste
+Final: minor (deferred): closing a pane leaves its paste queue and question (Undo Close resumes it with a gap)
+Final: minor (deferred): a second paste while a question waits drops the first
+Final: minor (deferred): with four bars queued the progress bar or question is refused
+Final: minor (deferred): the progress bar's close box does not cancel; no Esc to cancel; it redraws each tick
+Final: minor (deferred): continuation (PS2) prompts do not unblock a wait-for-prompts paste
+Final: minor (deferred): WaitForPrompts with bracketing keeps the newline inside the bracket (per-line bracketing unused)
+Final: minor (deferred): "Limit Multi-Line Paste Warning to Shell Prompt" is not disabled when the multi-line warning is off
+Final: minor (deferred): Paste Faster/Slower do not change a paste already running
+Final: minor (deferred): Pane::paste, paste_payload, and paste_bytes are dead code outside tests
+Final: minor (deferred): a key sequence whose paste asks a question sends its later text first

@@ -1,0 +1,23 @@
+3:Setup: Ruling: tab and window close questions use iTerm2's subject bodies ("This tab is running X."), replacing 6c's use of the quit reason text there -- iTerm2 keeps the two apart -- cost if wrong: none.
+4:Setup: Ruling: Tandem has no pinned tabs or locked sessions yet, so only the plain subjects (Session, Tab, MultiPaneTab, Window) are ported -- cost if wrong: none until those features arrive.
+5:Task 1: Ruling: the question's job list gathers the programs of every running session closing (iTerm2 keeps only the last session's list, a bug) -- cost if wrong: the list is longer than iTerm2's.
+6:Task 1: Ruling: the old app helper active_after_close moved into close_rules with the moveLeftAfterClosingTab flag; its test in app/mod.rs now calls the new one.
+8:Task 2: Ruling: the quit reasons go in the MessageBox text after "You are being prompted because:" -- a MessageBox has no disclosure ("Why am I being prompted?") -- cost if wrong: the reasons always show.
+9:Task 2: Ruling: Tandem ends when its last window closes even with Quit when all windows are closed off -- a Windows app with no window cannot be reached until hotkey windows (7e) -- cost if wrong: none until 7e, which revisits it.
+10:Task 2: Ruling: NeverBlockSystemShutdown is saved but Tandem never blocks shutdown: winit does not turn WM_QUERYENDSESSION into a close request, so no question appears at shutdown either way -- cost if wrong: running jobs end at shutdown without a question even with the setting off.
+12:Task 3: Ruling: a session brought back into its tab is split beside the tab's focused pane (to the right), not at its old place in the split tree -- the old place is gone once the layout closes around it -- cost if wrong: the pane returns on the right.
+13:Task 3: Ruling: a waiting shell keeps running and its output queues in memory, not drawn, until the deadline (iTerm2 pauses the task) -- cost if wrong: a very busy program queues output for up to the timeout.
+14:Task 3: Ruling: the timeout is the first closing session's profile's (iTerm2 reads each session's) -- cost if wrong: a tab mixing profiles uses one timeout.
+15:Task 3: Ruling: closing the last window still ends Tandem at once, so its close cannot be undone -- Tandem has no windowless state yet (7e) -- cost if wrong: none until 7e.
+17:Task 4: Ruling: the window restoration policy is stored as iTerm2's two keys (OpenArrangementAtStartup, OpenNoWindowsAtStartup) and shown as two checkboxes, the first winning when both are on -- iTerm2 shows three radio buttons over the same keys -- cost if wrong: both boxes can be ticked.
+18:Task 4: Ruling: when the plan would show nothing (no arrangement, no hotkey window), a window opens anyway -- a Windows app with nothing open cannot be reached -- cost if wrong: "Only Restore Hotkey Window" and openNewWindowAtStartup off still open a window until 7e.
+19:Task 4: Ruling: "Use System Window Restoration Setting" has no Windows counterpart; policy 0 opens one window until session restoration (7d) -- cost if wrong: none until 7d.
+27:Final: minor (deferred): a session whose window is gone comes back as a tab in the current window (iTerm2 makes a new window)
+28:Final: minor (deferred): a recreated window gets a new identity, so later undos for it make another window
+29:Final: minor (deferred): a restored window loses its title, locks, style, frame, and active tab
+30:Final: minor (deferred): a restored pane loses its tab color, timestamps and guide toggles, and its APS memory
+31:Final: minor (deferred): end_undo early returns could leak session copies (no current path)
+32:Final: minor (deferred): a restored layout could name an exited pane (not possible today)
+33:Final: minor (deferred): multi-pane wording counts panes, not running sessions (the same today)
+34:Final: minor (deferred): tests cover the pure functions, not the wiring
+35:Final: minor (deferred): close_prompt::message and FOOTER are used only by tests; startup::HOTKEY_NOTE is unused

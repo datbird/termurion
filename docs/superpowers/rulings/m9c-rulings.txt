@@ -1,0 +1,15 @@
+Task 1: Ruling: the plan's Review Focus 2 example (many old uses beat one new one) was wrong for iTerm2's formula (age counts heavily); the test pins the formula with 100 uses a day old vs one use now - cost if wrong: none, the formula is iTerm2's
+Task 1: Ruling: the store is JSON (shell_history.json), not iTerm2's Core Data SQLite - cost if wrong: iTerm2's database is not read
+Task 2: Ruling: the popups are normal egui windows sharing ListPopup with the paste history (iTerm2's is borderless at the cursor, flips above it, and forwards arrow keys to the session) - cost if wrong: they open where Windows puts them and Left/Right do not close them
+Task 2: Ruling: a directory is recorded whenever a pane's reported directory changes (iTerm2 records only pushed directories and compares with the host's last; the store also skips a repeat per host) - cost if wrong: none seen
+Task 2: Ruling: Install Now runs Tandem's own installer (Shell > Install Shell Integration); Learn More... opens iTerm2's documentation page - cost if wrong: the page describes iTerm2's scripts, not Tandem's
+Task 2: Ruling: the history is read and pruned on first use rather than at launch - cost if wrong: none
+Final: minor (deferred): Restart Session keeps the pane's feed counters, so the restarted shell's first exit codes are not stored
+Final: minor (deferred): exit codes match by command text (two runs of one command in one pass can swap codes)
+Final: minor (deferred): every change writes the whole file on the UI thread (no delay)
+Final: minor (deferred): NoSyncCommandHistoryHasEverBeenUsed is set but not saved, and set when the popup opens rather than when a command is recorded
+Final: minor (deferred): directory insertion ignores EscapeWithQuotes and inserts nothing off the prompt
+Final: minor (deferred): frecency counts uses left after pruning (iTerm2's use count never drops)
+Final: minor (deferred): the 1000-directory cap is per host (iTerm2's is overall)
+Final: minor (deferred): a trailing space typed at the prompt is dropped from the prefix
+Final: minor (deferred): ListPopup's footer is unused; the paste history window is 50 px taller; an unused tuple field

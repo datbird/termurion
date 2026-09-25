@@ -1,0 +1,30 @@
+Setup: Ruling: the plan file went into commit 6e2fa68 (the 5e fix pass) through git add -A -- cost if wrong: none, history only.
+Setup: Ruling: Q1 markdown = pulldown-cmark laid out by Tandem into styled lines drawn by the wgpu text pass (no egui in the grid) -- one renderer, no GPU switch -- cost if wrong: markdown looks plainer than SwiftyMarkdown in spots.
+Setup: Ruling: Q2 highlighting = syntect (default-fancy); auto-detect = first line (shebang) then a keyword score over 20 languages -- highlight.js relevance scoring has no Rust port -- cost if wrong: an unlabeled snippet is shown as the wrong language until the user picks one.
+Setup: Ruling: Q3 keep iTerm2's fixed row count on resize and font change -- parity -- cost if wrong: clipped content after a narrowing resize, as in iTerm2.
+Setup: Ruling: Q6 portholes live per session; arrangement saving waits for milestone 7 -- cost if wrong: none now.
+Setup: Ruling: Q7 Render Selection and File= inline text have no alternate-screen check of their own; rows are reserved on the main screen only, so they do nothing there -- cost if wrong: the menu item is on but does nothing over vim.
+Setup: Ruling: Q9 no CSV renderer, no size cap -- parity.
+Setup: Ruling: Q10 Copy with Styles inside a porthole uses 5c's writer (the same formats as the terminal's) -- cost if wrong: none.
+Task 2: Ruling: markdown headings are bold as well as scaled, and block quotes italic -- SwiftyMarkdown's system font shows headings heavier than body text; Tandem has no size-only emphasis that reads as well -- cost if wrong: headings look heavier than iTerm2's.
+Task 2: Ruling: syntect scopes map to iTerm2's highlight classes by a prefix table (storage.type.function/struct/class and similar are keywords, other storage.type is a type) -- highlight.js classes have no direct syntect match -- cost if wrong: some tokens take a neighbouring class's color.
+Task 2: Ruling: a table renders as aligned rows in the profile's font with a rule under the header (iTerm2's SwiftyMarkdown shows tables as raw text) -- cost if wrong: none, easier to read.
+Task 3: Ruling: a porthole's text trims each line's trailing spaces (a grid cell cannot tell a written space from an empty one), and base_dir is the shell's folder when the porthole is made, not the first row's -- Tandem keeps no folder per row -- cost if wrong: a document whose lines end in spaces loses them; a relative link resolves from a later folder.
+Task 4: Ruling: a porthole's text starts under a one-line control strip (close, language, Wide) instead of flowing around the controls (iTerm2's TopRightAvoidingTextContainer) -- a simpler layout with the same controls -- cost if wrong: one more row per porthole than iTerm2.
+Task 4: Ruling: the close button is Segoe Fluent Icons' Cancel glyph (U+E711) in the text color at 50%, the language button a faint box with its name, Wide a "[x] Wide" text check box -- Tandem draws its own controls in the grid pass -- cost if wrong: controls look plainer than AppKit's.
+Task 4: Ruling: prose is measured by shaping each word once with the prose font (cached); code runs are measured by cell width -- cost if wrong: none seen.
+Task 5: Ruling: output-made portholes (Block render=1, File= text) reserve rows from the terminal's own estimate (every face measured as the terminal font), and the window sets the exact count once when it first draws them -- the screen parses output without the window's fonts -- cost if wrong: the rows below shift once when the porthole first shows.
+Task 5: Ruling: Render Selection Natively checks its rules when run and beeps when they fail (Tandem's menus have no per-item enabling), and it refuses over a Filter or Zoom view -- cost if wrong: the item looks enabled when it will only beep.
+Task 5: Ruling: a File= text document starts on a fresh line when the cursor is mid-line, tabs advance to the next tab stop, other control characters are dropped -- iTerm2 appends the text at the cursor -- cost if wrong: one extra line before the porthole.
+Task 6: Ruling: Find marks porthole matches (yellow behind the text, the text keeps its color) while the find bar is open, but Next and Previous and the match count cover grid matches only -- the find engine walks grid positions -- cost if wrong: a match inside a porthole is seen but not stepped to.
+Task 6: Ruling: find matches inside a porthole are per visual line (a match cut by wrapping is not found) -- cost if wrong: a phrase split across a wrap is missed.
+Task 6: Ruling: a link click asks in a bar with Yes, Always, and No (Always sets NoSyncOpenURLFromMarkdownLink or NoSyncOpenFileFromMarkdownLink); schemes other than http, https, ftp, and mailto are refused with a message, and file links must be local Windows paths -- iTerm2 opens any URL after its alert -- cost if wrong: a custom-scheme link does not open.
+Task 7: Ruling: highlight themes read color, font-weight, and font-style only (font-family and background are ignored), and Tandem's built-in templates are its own CSS with iTerm2's class groups and placeholders -- cost if wrong: a theme's font choice does not apply.
+Task 7: Ruling: an unreadable theme file shows its error in a banner each time a porthole lays out again, and the built-in template draws meanwhile -- cost if wrong: none.
+Final: minor (deferred): closing after a widen keeps the old wraps, so a wrapped line is not joined again.
+Final: minor (deferred): File= text goes through the terminal's modes (scroll region, DEC graphics charset, autowrap off).
+Final: minor (deferred): inline code in a heading draws at 1x inside 2x of reserved space.
+Final: minor (deferred): the prose width cache can hold 200k entries whose keys are whole lines in Wide mode.
+Final: minor (deferred): the one-time exact resize of a new porthole can clear a terminal selection being dragged.
+Final: minor (deferred): a porthole split by a fold draws only its first segment.
+Final: minor (deferred): the 5000-line render test allows 3 s, the plan says 1 s (debug builds).

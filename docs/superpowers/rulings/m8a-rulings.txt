@@ -1,0 +1,18 @@
+Task 1: Ruling: tmux integration needs the shipped ConPTY; the inbox fixture is not recorded - the Windows copy delivers no control stream - cost if wrong: none, it cannot work there.
+Task 2: Ruling: a %exit line inside a reply block ends tmux mode (the plan's Review Focus 2 said it is text) - iTerm2's VT100TmuxParser does exactly this (its tmux 1.8 workaround) - cost if wrong: a reply that prints %exit ends the session, as in iTerm2.
+Task 5: Ruling: the handshake lives in src/tmux_handshake.rs, not tmux_gateway.rs -- the gateway stays the protocol queue, the handshake is TmuxController's first exchange -- cost if wrong: a file move.
+Task 5: Ruling: pause mode (refresh-client -fpause-after=N at didGuessVersion) waits for 8d; 8a sends only #{pid} (2.1+) and set-titles (2.9+) -- without pause handling, pause mode would stall panes 8a cannot show -- cost if wrong: one command at version time.
+Task 5: Ruling: gateway messages print with SGR 39;49 and do not restore the prior colors -- Screen has no saved-SGR read; the shell repaints its prompt after tmux -- cost if wrong: the shell's color after Detached is default instead of its own.
+Task 5: Ruling: Slow tmux Response and Force Detach? are pane info bars (OK / Reveal Setting / Don't Show This Again; Detach / Cancel), not modal dialogs -- MessageBox cannot label buttons Detach or Reveal Setting; the bar keeps iTerm2's labels -- cost if wrong: non-modal instead of modal.
+Task 5: Ruling: Reveal Setting opens Settings on the pane's profile (the Terminal tab holds the Tmux Newline box), not the exact control -- no deep link to a single control exists -- cost if wrong: one extra click.
+Task 5: Ruling: a gateway takes typed writes (key, paste, drop, send text, alt-click arrows) as Command Menu keys; key releases, mouse and focus reports, trigger text, uploads, and Buffer Input release are dropped -- raw bytes would corrupt tmux's command stream -- cost if wrong: none seen.
+Task 5: Ruling: the client name (preferredTmuxClientName) waits for 8b, where the controller registry uses it -- 8a shows no client name -- cost if wrong: none in 8a.
+Task 5: Ruling: Pane::pump's hook wiring has no pure seam (it needs a pty); the hook, gateway, handshake, Bars::retain, typed(), and print_message carry the tests, the checklist covers the wiring.
+Final: fixed C1 wait-exit newline dropped on %exit (tmux_ui Exit arm flushes before disconnecting) -- Ruling: app wiring with no pure seam; the gateway test unrecognized_text_aborts pins the queued newline, checklist item 5 pins the flush.
+Final: fixed M1 re-graded Important (a session started in the same read as the last %exit hung): no unhook on the %exit path -- Ruling: app wiring with no pure seam; hook tests cover re-entry.
+Final: minor (deferred): gateway state is not removed in close_pane (timers for dead ids; Undo Close of a gateway pane reads no lines).
+Final: minor (deferred): hung() counts the answering command; detach() adds tolerate (iTerm2 flags laggy only).
+Final: minor (deferred): a %begin with fewer than three words is ignored instead of aborting with "Malformed command (expected %begin command_id [flags])".
+Final: minor (deferred): Reveal Setting and Edit Session leave Settings on its current page when it is already open.
+Final: minor (deferred): the abort's detach goes out after the alert closes (MessageBoxW blocks).
+Final: Ruling: declined-to-judge items (a reply line starting %exit unhooks; info bars; logging echo per batch; recovery reads the line text) stand as faithful or ruled -- cost if wrong: small differences in rare cases.

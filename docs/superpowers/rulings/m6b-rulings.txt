@@ -1,0 +1,26 @@
+3:Setup: Ruling: notifications keep milestone 4's tray notification (Windows shows it as a toast) instead of WinRT toasts -- a toast needs an app ID from a Start Menu shortcut or an MSIX package, which Tandem does not have -- cost if wrong: Windows lists the sender as Tandem's tray icon, and a notification cannot carry an image.
+4:Setup: Ruling: the badge font comes from the default profile, like the terminal fonts -- the renderer holds one font set -- cost if wrong: a profile with its own badge font shows the default profile's.
+6:Task 2: Ruling: tab indicators are Segoe Fluent Icons glyphs (dead U+E711, bell U+EA8F, new output U+E91F, idle U+E708) drawn before the title -- iTerm2 uses its own images -- cost if wrong: glyphs look different from iTerm2's.
+7:Task 2: Ruling: Suppress All Output drops the pane's output until a key is typed (iTerm2 drops the drawing tokens too) -- cost if wrong: a program's screen is out of date after the suppression.
+8:Task 2: Ruling: activity_icons is a stub returning no indicators until task 3 fills it -- cost if wrong: none, task 3 follows.
+10:Task 3: Ruling: the tab shows the new-output indicator for unseen output within the last 2 s and the idle indicator for unseen output that went quiet; looking at the session clears both -- iTerm2's tab state machine has more states -- cost if wrong: indicators differ in edge cases.
+11:Task 3: Ruling: activity_event is a stub until tasks 4 and 5 use the events -- cost if wrong: none.
+13:Task 4: Ruling: a notification's click reveals the session of the last notification posted (the tray icon has one balloon at a time) -- cost if wrong: clicking an older notification in the Windows notification center reveals the newest one's session.
+14:Task 4: Ruling: OSC 1337 Notification's subtitle goes on the body's first line and its image is ignored -- a tray balloon has a title and a body only -- cost if wrong: no image.
+15:Task 4: Ruling: Notify on Status Change needs no toolbelt (Tandem's comes in milestone 9); it shows iTerm2's alert text in a bar with OK and Reveal on the session that changed -- cost if wrong: none.
+16:Task 4: Ruling: Progress Bar Changed requests are parsed (OSC 9;4) and wait for task 5's event triggers -- cost if wrong: none.
+18:Task 5: Ruling: an event trigger's `\0` is its first captured string (iTerm2 passes the event's strings as the capture list: exit code; folder, host, or user; timeout; command and seconds; sequence id and payload; message; appeared or disappeared; value and name) -- cost if wrong: parameters written for other numbering read the wrong string.
+19:Task 5: Ruling: an event trigger's grid actions act on the cursor's line -- an event has no matched text -- cost if wrong: a Set Mark event trigger marks the cursor's line, not another.
+20:Task 5: Ruling: Job Started and Job Ended are listed "(milestone 6c)" and never fire until Tandem knows the foreground job -- cost if wrong: none now.
+22:Task 6: Ruling: the badge outline is four one-pixel copies in the background color under the fill, and the fill is the badge color blended over the background at its alpha -- Tandem's text renderer has no stroke or per-span alpha -- cost if wrong: the outline is a little softer than iTerm2's stroke.
+23:Task 6: Ruling: badge sizes and margins are points, scaled by the window's scale -- iTerm2 works in points -- cost if wrong: none.
+35:Final: minor (deferred): M1 New Output from a burst begun within 5 s of a resize posts late instead of being dropped
+36:Final: minor (deferred): M2 changing Badge Font does nothing until the terminal font changes
+37:Final: minor (deferred): M3 idle code timed from last output, iTerm2 times it from the last key
+38:Final: minor (deferred): M4 silenced-bell offer shows four buttons; no 10 s auto-dismiss; no 5 s ignore after suppression
+39:Final: minor (deferred): M5 Bell Received fires during Silence Temporarily/Automatically
+40:Final: minor (deferred): M7 Session Ended sets last_notified; Mark Set notification does not
+41:Final: minor (deferred): M8 tray icon removed only on Quit (ghost icon on last-tab close)
+42:Final: minor (deferred): M9 OSC 1337 Notification Posted captures order differs from iTerm2
+43:Final: minor (deferred): M10 event triggers ignore the Job field
+44:Final: minor (deferred): M12 1 s wakeup while any Idle/Long-Running trigger is enabled

@@ -1,0 +1,30 @@
+3:Setup: Ruling: per-window state moves by swapping a WinSlot into App's existing fields (App::enter) instead of rewriting ~150 uses of self.tabs/self.gpu -- the lowest-risk route in a 9000-line app module -- cost if wrong: a field left out of the swap list leaks between windows (the review focus checks it).
+4:Task 1: Ruling: the swapped per-window fields are the surface and renderer, tabs, active tab, menu bar, pointer and hover state, find bar rects, tab rects, block and porthole hit lists, window focus, wheel remainders, and the font signature; panes and everything keyed by pane stay app-wide -- the fields a second window would otherwise overwrite -- cost if wrong: a missed field shows one window's hover or bar in another.
+5:Task 1: Ruling: menus and Win chords act on the last focused terminal window; each output request enters its pane's window first -- muda and the hook do not say which window -- cost if wrong: none while one window has focus.
+6:Task 1: Ruling: a font setting change reaches another window on its next frame (the font signature is per window) -- cost if wrong: one frame drawn with the old size.
+7:Task 1: Ruling: the last window closing still ends Tandem; Quit when all windows are closed and the other closing rules are 7b -- cost if wrong: none now.
+8:Task 1: Ruling: the swap itself is window code without a harness; slots_swap_cleanly and closing_one_window_keeps_the_others test the Parked model it is built on.
+10:Task 2: Ruling: new windows open at the next turn of the event loop (a pending list) -- winit needs the event loop to make a window, and most callers do not have it -- cost if wrong: none a person sees.
+11:Task 2: Ruling: the Profiles menu now lists every profile; Alt held at the click is read with GetKeyState; the "Press Option for New Window" header does not swap its text with openProfilesInNewWindow -- cost if wrong: the header reads the default wording.
+12:Task 2: Ruling: commands test known_statuses expected newWindow: to be Partial ("opens a tab"); 7a makes it Done.
+13:Task 2: Ruling: the 03 shortcut texts are fixed in task 7 with the other parity rows.
+15:Task 3: Ruling: Duplicate Window opens a tab for each tab's focused session, in its profile; splits and working folders come with arrangements (7c), which rebuild layouts -- cost if wrong: a duplicated split tab has one pane.
+16:Task 3: Ruling: dragging a tab out to a new window (allowDragOfTabIntoNewWindow) is not in 7a: the tab bar has no tab dragging yet -- cost if wrong: the menu command is the only way.
+18:Task 4: Ruling: edge, No Title Bar, and Centered No Title Bar windows are winit windows without decorations; no WM_NCHITTEST resize border is added -- winit keeps its own resize handling -- cost if wrong: a chromeless window may be hard to resize by its edge.
+19:Task 4: Ruling: a window is not re-fitted when monitors change (WM_DISPLAYCHANGE); the style applies when the window opens or the menu picks it -- cost if wrong: an edge window stays where it was after a monitor change until the style is picked again.
+20:Task 4: Ruling: the Window Type setting lists the 14 styles a person can pick (iTerm2's popup and menu); the Lion, Compact, and Accessory ids are not offered -- they are macOS or theme forms -- cost if wrong: a stored 13/16/18 opens as its Normal/Maximized/Centered form.
+21:Task 4: Ruling: commands test known_statuses pinned "Full-Width Top of Screen" as milestone 7; 7a makes it Done.
+23:Task 5: Ruling: smart layout ports iTerm2's scan exactly, including its stop below (work width - window width), so the far right column of grid spots is never tried -- one-to-one -- cost if wrong: a window lands 50 px short of a free edge.
+24:Task 5: Ruling: saved frames live in the globals table SavedWindowFrames, keyed "<guid> <slot>", as full frames in physical pixels; policy 3 uses only their top-left -- iTerm2 keeps positions and frames separately -- cost if wrong: none a person sees.
+25:Task 5: Ruling: Adjust window when changing font size (AdjustWindowForFontSizeChange) is not in 7a: all panes share one font and the window keeps its size on a font change today -- cost if wrong: after Make Text Bigger the window keeps its pixel size, as now.
+26:Task 5: Ruling: the placement test's other window was narrowed to 500 px: iTerm2's scan reaches x = 550 at most on that screen, so a 600 px window leaves no free spot.
+28:Task 6: Ruling: Lock Size and Lock Layout have no check marks in the menu (Tandem's menu items for them are plain items) -- cost if wrong: the lock state is not shown.
+29:Task 6: Ruling: Arrange Windows Horizontally tiles every window on the current window's monitor, left to right by position, rows of at least 400 px, each keeping its height up to its row -- iTerm2 also keeps rows near the highest window top and moves the window that moves least first -- cost if wrong: rows start at the top of the work area.
+30:Task 6: Ruling: a background window's key pane is no longer dimmed unless Dim background windows is on (iTerm2's default is off); Tandem dimmed every pane of a background window before -- cost if wrong: none; the inactive split panes still dim.
+50:Final: minor (deferred): stamp_near, find_cursor_until, toast, clicks, pointer_clicks, pointer_last, leader_on are app-wide (a toast or spotlight draws in every window; a click in each of two windows can count as a double click)
+51:Final: minor (deferred): style switches measure borders before set_decorations; Centered loses a row or two; styles after a DPI change use the old cell size
+52:Final: minor (deferred): Duplicate Window with a "Prevent Opening in a Tab" profile opens a window per tab
+53:Final: minor (deferred): check marks and new profiles reach other windows' menus only when they become current
+54:Final: minor (deferred): ReportVariable termid still says window 0
+55:Final: minor (deferred): redraw asks every window to draw on any output
+56:Final: minor (deferred): last_window can name a closed window (enter then fails quietly); notify::remove on Quit runs for the current window only

@@ -1,0 +1,19 @@
+Task 2: Ruling: Shift pressed and released before Control's first release still leaves a double tap (the test now adds Shift during the second press) - iTerm2's machine re-enters firstDown when only Control is held again - cost if wrong: none, it matches iTerm2.
+Task 4: Ruling: the app's user event and the registration call are wired in Task 5 with the windows they drive, not here - a registered hotkey with nothing to show would be a half state - cost if wrong: none.
+Task 5: Ruling: hotkey windows show and hide at once where iTerm2 fades (every style but top, bottom, and right edges) - whole-window alpha needs a layered window, which does not mix with wgpu's flip-model swapchain - cost if wrong: a less smooth show and hide.
+Task 5: Ruling: a hidden hotkey window is cloaked by DWM, not hidden, and has no taskbar button - no swapchain teardown and no flash at the old place - cost if wrong: a cloaked window might show in Alt+Tab on some Windows builds.
+Task 5: Ruling: Window > Pin Hotkey Window stays enabled on other windows and does nothing there (iTerm2 disables it) - the menu's enabled state is fixed at build time - cost if wrong: a menu item that does nothing.
+Task 5: Ruling: a restored arrangement skips hotkey windows entirely (iTerm2 lets one in when its hotkey has no window yet) - a hotkey window belongs to its hotkey - cost if wrong: an arrangement saved with a hotkey window restores without it.
+Task 5: Ruling: saved hotkey windows come back under policy 0 and "Only Restore Hotkey Window", not under "Open Default Window Arrangement" (iTerm2: every policy) - the saved state is not read under that policy - cost if wrong: a hotkey window's contents do not come back with that policy.
+Task 6: Ruling: the sheet's conflict notes start "Warning:" instead of iTerm2's warning-sign character - the project writes no emoji - cost if wrong: a text difference.
+Task 6: Ruling: "On Dock icon click" is shown disabled with a note (Windows has no Dock) and kept for shared profiles - hotkey windows have no taskbar button to click - cost if wrong: none.
+Task 6: Ruling: the Open Quickly hotkey waits for milestone 9 (Open Quickly), and showPinnedIndicator and hotkeyWindowsExcludedFromCycling are not added yet - cost if wrong: two advanced settings missing.
+Task 6: Ruling: "Configure Existing Profile" opens that profile's sheet and stops (iTerm2 also falls through to the new-profile sheet, which the research calls a bug) - cost if wrong: none.
+Task 7: Ruling: the app hotkey minimizes Tandem's terminal windows and hides shown hotkey windows, then restores the ones it minimized (iTerm2 hides the app) - Windows has no app hide - cost if wrong: the windows go to the taskbar instead of vanishing; the full-screen previous-app case is not built.
+Final: Ruling: I5 (errors seeded when Settings opens; the just-recorded shortcut is not test-registered), I7 (every focus path goes through bring_forward), I9 (policy 0 with a hotkey profile and nothing restored opens no window), I10 (the profile's Screen on show), M1 (enter loops restore the current window), M2 (tick checks parked slots first), M4 (recorder disarmed on OK/Cancel), M5 (minimized counts as hidden) fixed without a RED test - window wiring with no pure seam - cost if wrong: the same failure as before. The new tests' RED was a compile failure of the old hook fields, not a watched panic.
+Final: minor (deferred): M3 hotkeys re-register on every profile edit
+Final: minor (deferred): M6 Undo Close brings a hotkey window back as a regular window
+Final: minor (deferred): M7 chords and double taps read different key state under Remap Modifiers
+Final: minor (deferred): M8 a character shortcut drops VkKeyScanW's shift byte
+Final: minor (deferred): M9 a floating hotkey window stays above Tandem's own Settings and dialogs
+Final: minor (deferred): M10 host sessions of dropped windows leak after a crash under Only Restore Hotkey Window

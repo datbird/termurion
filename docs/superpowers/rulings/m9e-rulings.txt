@@ -1,0 +1,15 @@
+Ruling: Clippings split out to 9f - a per-pane gutter panel is its own milestone-sized piece - cost if wrong: one more plan file.
+Task 1: Ruling: iTerm2's menu tree drops a snippet tagged "a" after one tagged "a/b" (folder node without a snippet list) - every folder keeps a list, so both show - cost if wrong: one extra menu entry iTerm2 would hide.
+Task 2: Ruling: description(action, parameter, snippet_title) split into with_apply_mode(name, mode) and snippet_action_name(title) - the action's own name comes from settings_keys::action_summary, which already knows every parameter kind - cost if wrong: a rename.
+Task 2: Ruling: apply modes belong to every key binding, not only to actions (iTerm2's key action editor has the popup for the text, profile, coprocess, menu, tmux, preset, snippet, compose actions); shows_apply_mode lists them and Task 3 wires the popup and the fan-out for bindings too - cost if wrong: an extra popup.
+Task 3: Ruling: apply modes fan out per target for the text actions (10, 11, 12, 38, 76, 63) and coprocesses (35); the profile, menu item, tmux command, and preset actions run once in the current session - Tandem's actions act on the focused pane of the live window and a per-target focus switch would move the person's focus - cost if wrong: "all sessions" + New Tab with Profile opens one tab, not one per session.
+Task 3: Ruling: a fanned-out text goes to each target once, without its own broadcasting - iTerm2 writes through each session's broadcast path, which repeats text when broadcasting is on - cost if wrong: none a person wants.
+Task 3: Ruling: tags are typed comma-separated in Edit Snippet (egui has no token field) - cost if wrong: a tag cannot hold a comma.
+Task 3: Ruling: snippet drag reorder only with an empty search - iTerm2's filtered reorder moves the wrong row - cost if wrong: none.
+Task 3: Ruling: an import is all or nothing (iTerm2 keeps the snippets before a malformed one) - cost if wrong: a half-good file imports nothing.
+Task 3: Ruling: the Actions editor keeps the action's escaping (iTerm2's resets it to C-style); the snippet list's Edit case does not fall into Delete (iTerm2's missing break) - cost if wrong: none.
+Task 3: Ruling: menu_entries (the flat Edit > Snippets list with its lines) moved into snippets.rs with test menu_entries_follow_iterm2, so the muda building is dumb - cost if wrong: none.
+Final: fixed stale sheet row - store.replace by GUID (import_and_export_round_trip RED->GREEN); Final: Ruling: the tables are disabled while a sheet is open (no pure seam) - cost if wrong: none.
+Final: fixed (re-graded Minor 8: a second import made duplicate GUIDs, one snippet unsendable) - import needs a GUID, add_imported renews collisions; import_and_export_round_trip RED->GREEN. Ruling: collisions get new GUIDs (iTerm2 keeps duplicates) - cost if wrong: a re-imported snippet's key bindings point at the first copy.
+Final: minor (deferred): Snippets/Actions menus recomputed on every sync_checks; add a generation counter.
+Final: minor (deferred): "Press Option to Edit Before Sending" says Option and Alt may close the menu on Windows; needs a hardware check.

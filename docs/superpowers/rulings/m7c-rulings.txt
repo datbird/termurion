@@ -1,0 +1,21 @@
+Task 3: Ruling: "with contents" stores each session's text (history and screen, the last 20000 lines) under "Tandem Contents", not iTerm2's structured Contents dictionary -- Tandem's screen has no encoder for iTerm2's format -- cost if wrong: iTerm2 opening a Tandem file restores the layout but not the text.
+Task 3: Ruling: a session's Bookmark is the profile's own values (colors as r/g/b/a tables, not iTerm2 color dictionaries) -- cost if wrong: iTerm2 reading a Tandem file sees odd colors in its embedded profiles.
+Task 4: Ruling: the default arrangement is marked "(default)" in the Restore submenus but has no Shift+Cmd+R: Win chords route only to fixed menu items, not to entries built at run time -- cost if wrong: restoring the default needs the menu.
+Task 4: Ruling: at startup the default arrangement's first window fills the window Tandem opens, and the others open as new windows -- Tandem needs a window before it can restore -- cost if wrong: none a person sees.
+Task 4: Ruling: a restored pane's saved text is fed to its screen before the shell's output; it becomes history like iTerm2's restored contents -- cost if wrong: the shell's first prompt follows the old text.
+Task 4: Ruling: Duplicate Window now snapshots the window and restores it (splits, profiles, folders, title, locks, style), closing the 7a ruling that it copied only focused sessions.
+Task 5: Ruling: the trust question lists custom commands, initial text, and triggers per profile (iTerm2 also lists SSH connections and Smart Selection actions) -- cost if wrong: a file's SSH or Smart Selection actions are not named in the question.
+Task 5: Ruling: Windows' Mark of the Web (the Zone.Identifier stream) stands in for macOS quarantine -- cost if wrong: a file copied in a way that drops the stream opens without asking.
+Task 6: Ruling: the Settings Appearance page was still disabled ("comes in milestone 13"), which hid settings that 6b and 7a put there (Show new-output indicator, Show window number, New window placement, Dim background windows); it now shows every Appearance setting in the schema -- the settings existed but could not be reached -- cost if wrong: none; the page lists only what Tandem has.
+Task 6: Ruling: renaming is a text field and a Rename button under the list (iTerm2 edits the name in place in the table) -- cost if wrong: one more click.
+Task 6: Ruling: Change Profile in Arrangement opens the Settings Arrangements page, where a profile list and a button apply it (iTerm2 shows a two-step sheet) -- cost if wrong: the flow looks different.
+Final: Ruling: I5 (menu refresh cloned the store on every wakeup), M6 (jobs.forget on a partial build_tab failure), M14 (stale startup comment) fixed without a RED test - window-code wiring with no pure seam; the refresh now runs only when menus are dirty or a bar is new - cost if wrong: a stale Restore submenu until the next save
+Final: minor (deferred): M2 frame coordinates are physical pixels, iTerm2 uses points
+Final: minor (deferred): M4 tree shape: nested same-axis splits flatten into one splitter
+Final: minor (deferred): M5 edits to a session copy are not written back
+Final: minor (deferred): M7 a missing saved folder falls back without a warning
+Final: minor (deferred): M8 the trust question covers only files, not Settings imports
+Final: minor (deferred): M10 Lock Layout is not checked on Restore as Tabs
+Final: minor (deferred): M11 settings page rough edges (preview scale, rename focus)
+Final: minor (deferred): M12 other windows' Restore submenus refresh only on their next menu build
+Final: minor (deferred): M13 Save to File with a blank name

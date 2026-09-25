@@ -1,0 +1,19 @@
+Task 1: Ruling: the history file is JSON (pbhistory.json) with iTerm2's plist key names, not an NSKeyedArchiver plist - cost if wrong: iTerm2's file is not read
+Task 1: Ruling: relative dates read "just now", "N minutes ago", "N hours ago", "N days ago" (iTerm2's formatter output was not in the facts) - cost if wrong: wording
+Task 2: Ruling: the preview escapes with the backslash list even when "Escape tabs with ^V" is chosen (the tab step runs at paste time, so the preview cannot know); iTerm2's preview has the same order - cost if wrong: a tab in the preview gets a backslash that the ^V form would not
+Task 2: Ruling: durations read "N ms" under 1 s, "N sec" under an hour, "N min" beyond (iTerm2's descriptionForDuration thresholds were not in the facts) - cost if wrong: wording
+Task 3: Ruling: copies are recorded from copy_selection (every Copy path through it) and pastes from the pipeline; Copy with Styles, Copy Link Address, and the toolbelt copies are not recorded yet - cost if wrong: those copies miss the history
+Task 3: Ruling: an Advanced Paste skips every paste question (NO_WARNINGS), not only the multi-line one iTerm2 skips - cost if wrong: an over-size question does not show for an Advanced Paste
+Task 3: Ruling: the popup is a normal egui window (not a borderless window at the cursor that fades in) - cost if wrong: it opens where Windows puts it
+Task 3: Ruling: the clipboard is written before a history entry is pasted, as iTerm2 does (the popup's choice replaces the clipboard) - cost if wrong: none
+Final: Ruling: I2 a new source now rebuilds every control from its text (speed kept), I3 the popup list follows this frame's typing and redraws, I4 the popup scrolls and keeps the selection in view; egui window code with no pure seam; checklist items 2-4 cover them - cost if wrong: a checklist item fails
+Final: Ruling: re-graded the Settings rows Important (twelve remembered Advanced Paste defaults showed under General as raw fields); moved to Advanced > Pasteboard; parity notes name the real keys - cost if wrong: none
+Final: minor (deferred): Win+Return does not paste in Advanced Paste (Ctrl+Return does)
+Final: minor (deferred): Escape with the source list open cancels the window
+Final: minor (deferred): Advanced... from a Paste Slowly question starts at the quick speed
+Final: minor (deferred): an Advanced... request is dropped when Advanced Paste is already open
+Final: minor (deferred): spaces per tab is remembered only when the text had tabs
+Final: minor (deferred): each paste is sanitized twice (once to record history)
+Final: minor (deferred): the history file write is not atomic; a truncated file reads as empty
+Final: minor (deferred): the popup picks by index into the live history (a copy while it is open shifts it); times are not refreshed
+Final: minor (deferred): Advanced Paste opens with an empty clipboard

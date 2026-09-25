@@ -1,0 +1,16 @@
+Task 2: Ruling: the controller test rig runs tmux 3.1 (no pause mode) so the reply counts of earlier tests hold; the pause tests use a 3.4 rig -- test setup only -- cost if wrong: none.
+Task 2: Ruling: the controller keeps each window's last layout to size a recapture on unpause (iTerm2 reads the tab's).
+Task 3: Ruling: the pause bars are info bars with iTerm2's buttons (Unpause, Settings; Pause Settings); Settings opens Settings on General (the tmux pause controls are listed there) -- cost if wrong: one click to the control.
+Task 3: Ruling: settings changes reach the controller once a second (age limit re-sent when it changes, as TC:287-294) instead of through a change notification.
+Task 3: Ruling: an unpaused pane is reset with RIS and CSI 3 J before its captures (iTerm2's resetForTmuxUnpause and clearScrollbackBuffer).
+Task 3: Ruling: typing Ctrl+C in a paused pane has no special case (research's PS:8075-8079 cite is upload abort code, not pause).
+Task 2: Ruling: commit 166d0c0 (controller) does not build alone; the app side came in a999e6e -- the pair is the unit -- cost if wrong: a bisect step that does not build.
+Final: fixed I2 the warning bar stayed after an automatic unpause -- Unpaused drops the warning bar too. Ruling: app wiring, no pure seam.
+Final: Ruling: %extended-output latency is divided by 1000 (tmux sends milliseconds; the limit is seconds), so "about N seconds" is true; iTerm2 passes raw milliseconds -- cost if wrong: Tandem warns later than iTerm2, near the real limit.
+Final: minor (deferred): automatic unpause waits for the 1 s tick, so it takes 1 to 2 s.
+Final: minor (deferred): the warning bar is important (it does not go on a key press); iTerm2 dismisses it on a key.
+Final: minor (deferred): pause bars are not dropped at detach (Tandem closes ended panes, so none are seen).
+Final: minor (deferred): Pause Pane is never greyed out (as the other tmux items).
+Final: minor (deferred): no Screen-level test of the unpause reset and restore.
+Final: minor (deferred): the controller's nodes, paused, and warnings maps keep entries after windows close.
+Final: Ruling: declined-to-judge items (output between continue and the last capture; a pause during a recapture; RIS keeps OSC 4 changes; no unzoom on unpause; noSyncDontWarnAboutTmuxPause read though iTerm2 defines it only; flooding recapture loop) stand -- cost if wrong: small.

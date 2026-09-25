@@ -1,0 +1,17 @@
+Task 1: Ruling: fetched() and changed() report only a new value (iTerm2 calls its block every time) - a repeated value changes nothing on screen - cost if wrong: none visible
+Task 2: Ruling: forget_pane keeps its signature; the app calls unwatch_pane beside it (Task 5) - the controller also unwatches on window close, hide, layout removal, and session change - cost if wrong: a leaked subscription for a pane closed only in Tandem
+Task 2: Ruling: the set-titles fallback variable for tmux 2.9 exactly (terminalWindowName) is not ported - 2.9 is the only version it touches and the window name still shows - cost if wrong: a 2.9 server shows the window name instead of its title string
+Task 3: Ruling: decode_option now drops an odd trailing hex digit for every option (iTerm2's dataFromHexValues does) - @hidden and @affinities read the same for well-formed values - cost if wrong: none for values iTerm2 or Tandem wrote
+Task 3: Ruling: pairs are written in key order (iTerm2's dictionary order is unspecified) - the decoder does not depend on order - cost if wrong: none
+Task 5: Ruling: tmux tab labels keep 8b's "prefix + window name" (or the set-titles string); iTerm2 labels a tmux tab with the active pane's session title (pane title as the session name) - the pane title, job, and directory reach session titles and the interpolation variables (tmuxPaneTitle, jobName, path) - cost if wrong: a tmux tab reads the window name where iTerm2 shows the pane title (hostname by default); moved to 8g
+Task 5: Ruling: every typed send-keys counts as a key press for the directory poll (pastes too; iTerm2 counts only key presses) - one extra poll at most once a second - cost if wrong: a little more tmux traffic
+Task 5: Ruling: the screen filter is set only for tmux panes; local sessions keep no TERM on Windows (the profile's Terminal Type is not used for local ConPTY sessions) - cost if wrong: a local profile whose Terminal Type is screen does not convert italics
+Task 5: Ruling: user variables from @uservars are set quietly (no Variable Changed trigger), as iTerm2 sets them on setTmuxController - cost if wrong: none known
+Final: Ruling: M4 re-graded Important (a set-titles string that arrives while a new tmux window is still pending was lost, so the tab kept the window name); fixed in the app by setting the pending tab's title and clearing window_titles on close; no pure seam - cost if wrong: checklist item 1 fails for new windows
+Final: minor (deferred): a stale cwd reply recreates a closed pane's CwdGate, and a stale reply can reach a monitor reinstalled under the same key
+Final: minor (deferred): Controller::user_vars keeps entries of closed panes
+Final: minor (deferred): title polls follow title text changes, not every OSC 1/2; title and vars are cloned per %output
+Final: minor (deferred): the screen filter does not restart its CSI on a second ESC
+Final: minor (deferred): the job timer's second poll comes right after install instead of a second later
+Final: minor (deferred): SetUserVar in attach pending bytes is not synced until the next change
+Final: minor (deferred, 8g): tmux tab labels follow the session title (pane title) as in iTerm2

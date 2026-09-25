@@ -1,0 +1,20 @@
+Task 1: Ruling: a colors value that fails to parse (not #rrggbb, p3#, or none) reads as no color; iTerm2 keeps the string and NSColor fails later the same way - cost if wrong: none visible
+Task 1: Ruling: Display P3 colors from iTerm2 are read as sRGB values (Tandem draws sRGB) - cost if wrong: a slightly different shade
+Task 1: Ruling: per-window settings written by Tandem carry only size (Tandem has no toolbelt yet); an iTerm2 toolbelt entry is read and ignored - cost if wrong: none until milestone 9
+Task 2: Ruling: the four window options are saved together whenever the app saves affinities or a window moves (iTerm2 saves each on its own events); each is still sent only when changed - cost if wrong: none, the commands dedupe
+Task 2: Ruling: @origins has no outstanding-save guard (iTerm2 waits for the reply before sending the next); the last-command dedupe keeps traffic low - cost if wrong: a fast drag sends several origin saves
+Task 2: Ruling: break-pane picks -s from the minimum version (2.1+) instead of iTerm2's max < 2.1 test; the two differ only when the version is a range across 2.1 - cost if wrong: a 2.0/2.1 range server gets -s
+Task 4: Ruling: the app wiring (break-pane from the menus, window state saved on move/resize/tab changes, restore of size, origin, full screen, tab title, tab colors, tab index, the red question) has no pure seam beyond Tasks 1-3 and origins_stay_on_a_monitor; the checklist covers it - cost if wrong: a checklist item fails
+Task 4: Ruling: a restored tmux tab color is kept as a session tab color (the map a program's OSC tab color uses) instead of divorcing the profile as iTerm2 does - cost if wrong: Edit Session does not show it as the profile's color
+Task 4: Ruling: Move Session to Window or Tab on a one-pane tmux tab moves the tab (Tandem's local path) instead of sending break-pane, which tmux refuses for a window's only pane and iTerm2 would then abort on - cost if wrong: none
+Task 4: Ruling: every Tandem window is written to @per_window_settings, as iTerm2 writes every window - cost if wrong: a longer option value
+Final: Ruling: I1 minimized windows saved Windows' parked place and caption size; fixed in the app (window_geometry is None while minimized and the last good entry is kept); no pure seam - cost if wrong: a minimized window's reattach opens at an old place
+Final: Ruling: I3 across a reattach (old pty-<key> names) is not fixed: Tandem's window keys change with each run and iTerm2's replaceOldTerminalGUID mapping is not ported; a hidden tab reopened after a reattach opens in a new window, as before 8h - cost if wrong: the tab index is lost after a reattach
+Final: minor (deferred): a program's OSC tab color is saved only at the next tmux open or profile refresh
+Final: minor (deferred): any answer to the red tab color question silences it for good
+Final: minor (deferred): a failed window creation lets the saved geometry apply to the current window
+Final: minor (deferred): saved geometry applies after the window shows (one frame at the default place); size before position on mixed-DPI monitors
+Final: minor (deferred): a saved "none" tab color does not turn the profile's tab color off
+Final: minor (deferred): Dashboard Hide records no buried index; killed windows' entries are never pruned
+Final: minor (deferred): the per-window value's order follows focus, so focusing another window resends it
+Final: minor (deferred): saves between the last opener and the pending windows' creation leave those windows out until the next move
