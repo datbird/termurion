@@ -93,6 +93,9 @@ pub struct Screen {
     pub pty_backed: bool,
     /// A fixed clock for row stamps (tests); None uses the time.
     clock: Option<u32>,
+    /// Folded lines, by fold id.
+    folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
+    next_fold: u32,
 }
 
 impl Screen {
@@ -116,6 +119,8 @@ impl Screen {
             place_prompt_first_column: true,
             pty_backed: false,
             clock: None,
+            folds: std::collections::HashMap::new(),
+            next_fold: 0,
         }
     }
 
@@ -219,6 +224,57 @@ impl Screen {
             out.push(row);
         }
         out
+    }
+
+    /// Folds grid lines `first..=last` of the main screen into one summary line. None
+    /// when the alternate screen is up or the range holds the cursor.
+    pub fn fold(&mut self, first: i32, last: i32) -> Option<u32> {
+        self.fold_as(first, last, None)
+    }
+
+    /// `fold` with a caption of its own for the summary line (Fold All's).
+    pub fn fold_as(&mut self, first: i32, last: i32, caption: Option<String>) -> Option<u32> {
+        use alacritty_terminal::term::cell::Flags;
+        let grid = self.term.primary_grid();
+        let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+        let cursor = grid.cursor.point.line.0;
+        if self.term.mode().contains(TermMode::ALT_SCREEN) || first > last || first < top || last > bottom || (first..=last).contains(&cursor) {
+            return None;
+        }
+        let text = |l: i32| (0..grid.columns()).map(|c| grid[Line(l)][Column(c)].c).collect::<String>();
+        let summary = caption.unwrap_or_else(|| crate::fold::summary(&text(first), &text(last), (last - first + 1) as usize, grid.columns()));
+        self.next_fold += 1;
+        let id = self.next_fold;
+        let mut rows = self.text_rows(&[summary]);
+        rows.truncate(1);
+        for row in rows.iter_mut() {
+            for c in 0..row.len() {
+                row[Column(c)].flags.insert(Flags::DIM | Flags::ITALIC);
+            }
+            row.set_fold(id);
+        }
+        let removed = self.splice_rows(first, last, rows);
+        self.folds.insert(id, removed);
+        Some(id)
+    }
+
+    /// Puts a fold's lines back. False when no row stands for it.
+    pub fn unfold(&mut self, id: u32) -> bool {
+        let grid = self.term.primary_grid();
+        let top = -(grid.history_size() as i32);
+        let Some(line) = (top..grid.screen_lines() as i32).find(|l| grid[Line(*l)].fold() == id) else { return false };
+        let Some(rows) = self.folds.remove(&id) else { return false };
+        self.splice_rows(line, line, rows);
+        true
+    }
+
+    /// The fold a row stands for.
+    pub fn fold_at(&self, line: i32) -> Option<u32> {
+        let grid = self.term.primary_grid();
+        if line < -(grid.history_size() as i32) || line >= grid.screen_lines() as i32 {
+            return None;
+        }
+        Some(grid[Line(line)].fold()).filter(|id| *id != 0)
     }
 
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) -> Vec<u8> {
@@ -613,5 +669,47 @@ mod tests {
         use alacritty_terminal::term::cell::Flags;
         assert!(rows[0][Column(3)].flags.contains(Flags::WRAPLINE));
         assert!(!rows[1][Column(3)].flags.contains(Flags::WRAPLINE));
+    }
+
+    fn lines_text(s: &Screen) -> String {
+        s.all_text().trim_start_matches('\n').to_string()
+    }
+
+    #[test]
+    fn fold_then_unfold_is_lossless() {
+        let mut s = Screen::with_scrollback(20, 6, 100);
+        s.feed(b"l0\r\nl1\r\nl2\r\nl3\r\n$ ");
+        s.set_row_mark(1, 7);
+        let id = s.fold(1, 3).unwrap();
+        assert_eq!(lines_text(&s), "l0\nl1 \u{2026}3 lines\u{2026} l3\n$\n");
+        let line = (0..6).find(|l| s.fold_at(*l) == Some(id)).unwrap();
+        assert_eq!(s.line_text(line), "l1 \u{2026}3 lines\u{2026} l3");
+        assert!(s.unfold(id));
+        assert_eq!(lines_text(&s), "l0\nl1\nl2\nl3\n$\n");
+        assert!(s.row_marks().iter().any(|(_, m)| *m == 7), "the mark came back with its row");
+        assert!(!s.unfold(id));
+    }
+
+    #[test]
+    fn unfold_restores_lines_after_scrolling() {
+        let mut s = Screen::with_scrollback(20, 4, 100);
+        s.feed(b"a\r\nb\r\nc\r\n$ ");
+        let id = s.fold(0, 1).unwrap();
+        for i in 0..10 {
+            s.feed(format!("\r\nout{i}").as_bytes());
+        }
+        assert!(s.unfold(id));
+        let text = lines_text(&s);
+        assert!(text.starts_with("a\nb\nc\n$\nout0\n"), "{text}");
+        assert!(text.ends_with("out9\n"), "{text}");
+    }
+
+    #[test]
+    fn fold_refuses_the_cursor_row() {
+        let mut s = Screen::with_scrollback(20, 4, 100);
+        s.feed(b"a\r\nb\r\n$ ");
+        assert_eq!(s.fold(1, 2), None);
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.fold(0, 0), None, "not on the alternate screen");
     }
 }

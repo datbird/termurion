@@ -235,7 +235,12 @@ impl App {
     pub(super) fn show_context_menu_at(&mut self, at: Option<(PaneId, Point)>) {
         let mut extra: Vec<(String, CtxItem)> = Vec::new();
         let mut pending = None;
+        let mut fold = None;
         if let Some((id, point)) = at {
+            if let Some(f) = self.fold_at_point(id, point) {
+                extra.push(("Unfold".into(), CtxItem::Unfold));
+                fold = Some(f);
+            }
             if let Some(c) = self.clicked(id, point) {
                 if let Some(f) = c.found.as_ref() {
                     for (i, a) in c.rules[f.rule].actions.iter().enumerate() {
@@ -250,7 +255,9 @@ impl App {
                 let link = c.ctx.link.clone().or_else(|| semantic::url_like(&c.ctx.before, &c.ctx.after));
                 let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
                 let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
-                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd });
+                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold });
+            } else if fold.is_some() {
+                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold });
             }
         }
         self.ctx_pending = pending;
@@ -261,7 +268,11 @@ impl App {
     pub(super) fn context_picked(&mut self, id: &str) -> bool {
         let Some(item) = id.strip_prefix(CTX_ID) else { return false };
         let Some(pend) = self.ctx_pending.take() else { return true };
-        if item == "copylink" {
+        if item == "unfold" {
+            if let Some(f) = pend.fold {
+                self.unfold(pend.pane, f);
+            }
+        } else if item == "copylink" {
             if let (Some(link), Some(cb)) = (pend.link, &mut self.clipboard) {
                 if let Err(e) = cb.set_text(link) {
                     self.banners.set("clipboard", format!("Copy failed: {e}"));
@@ -311,6 +322,7 @@ pub(super) const CTX_ID: &str = "tandem.ctx.";
 pub(super) enum CtxItem {
     Action(usize),
     CopyLink,
+    Unfold,
 }
 
 impl CtxItem {
@@ -318,6 +330,7 @@ impl CtxItem {
         match self {
             CtxItem::Action(i) => format!("{CTX_ID}action.{i}"),
             CtxItem::CopyLink => format!("{CTX_ID}copylink"),
+            CtxItem::Unfold => format!("{CTX_ID}unfold"),
         }
     }
 }
@@ -329,6 +342,7 @@ pub(super) struct CtxPending {
     actions: Vec<smartsel::RuleAction>,
     captures: Vec<String>,
     cwd: String,
+    fold: Option<u32>,
 }
 
 struct Clicked {

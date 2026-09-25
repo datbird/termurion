@@ -53,6 +53,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 mod actions;
 mod copymode_ui;
 mod find_ui;
+mod fold_ui;
 mod labels_ui;
 mod semantic_ui;
 mod seltools_ui;
@@ -943,6 +944,10 @@ impl App {
             0 => {
                 let count = self.clicks.press(Instant::now(), col, row);
                 let point = self.grid_point(id, col, row);
+                let plain = !mods.shift && !mods.alt && !mods.ctrl && !mods.cmd;
+                if count == 1 && plain && self.click_unfold(id, point) {
+                    return;
+                }
                 let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
                 let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
                 if !smart {
