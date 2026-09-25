@@ -67,6 +67,8 @@ pub enum Action {
     Abort(String),
     Output(u32, Vec<u8>),
     SelectPane(u32, u32),
+    /// The session's `@iterm2_id`: another gateway of this Tandem may already show it.
+    SessionGuid(String),
     SelectWindow(u32),
 }
 
@@ -407,6 +409,9 @@ impl Controller {
                         gw.send(&format!("set -t ${s} @iterm2_id \"{guid}\""), None, Flags::default());
                         self.session_guid = Some(guid);
                     }
+                } else if ok {
+                    self.session_guid = Some(text.to_string());
+                    out.push(Action::SessionGuid(text.to_string()));
                 }
             }
             Req::Hidden => self.hidden = if ok { tmux_windows::hidden(text) } else { BTreeSet::new() },
@@ -867,6 +872,22 @@ mod tests {
         assert!(r.sent().is_empty(), "unchanged");
         r.ctl.kill_window(2, &mut r.gw);
         assert_eq!(r.sent(), "kill-window -t @2\r");
+    }
+
+    #[test]
+    fn double_attach_is_found() {
+        let mut r = Rig::new();
+        r.lines(&["%session-changed $0 main"]);
+        r.sent();
+        r.answer(Some(""));
+        r.sent();
+        let a = r.answer(Some("ABC-123"));
+        assert_eq!(a, vec![Action::SessionGuid("ABC-123".into())]);
+        assert_eq!(r.ctl.session_guid.as_deref(), Some("ABC-123"));
+        let (heading, text, buttons) = crate::tmux_persist::attach_warning(true);
+        assert_eq!((heading, text), ("Cannot Attach", "This instance of Tandem is already attached to this session"));
+        assert_eq!(buttons, vec!["OK", "Reveal", "Force Detach Other"]);
+        assert_eq!(crate::tmux_persist::attach_warning(false).2, vec!["OK"]);
     }
 
     #[test]

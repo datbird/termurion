@@ -398,6 +398,8 @@ impl App {
                     self.new_window(event_loop, None);
                 }
             }
+            "detachTmux:" => self.tmux_request_detach(),
+            "forceDetachTmux:" => self.tmux_force_detach(),
             "newTmuxWindow:" => {
                 self.tmux_new(true, false);
             }

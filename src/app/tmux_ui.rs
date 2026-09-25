@@ -200,7 +200,7 @@ impl App {
     /// `unhook`: tmux did not say `%exit` (X, an abort, Force Detach), so the hook is still
     /// reading lines. After `%exit` the hook has left already and may have started a new
     /// session read in the same batch.
-    fn tmux_disconnected(&mut self, pane: PaneId, unhook: bool) {
+    pub(super) fn tmux_disconnected(&mut self, pane: PaneId, unhook: bool) {
         if self.tmux.remove(&pane).is_none() {
             return;
         }

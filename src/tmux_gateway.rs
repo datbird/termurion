@@ -141,6 +141,16 @@ impl Gateway {
         self.detach_sent = true;
     }
 
+    /// Shell > tmux > Detach (iTerm2's requestDetach): false when a detach already went out,
+    /// so the caller asks whether to force it.
+    pub fn request_detach(&mut self) -> bool {
+        if self.detach_sent {
+            return false;
+        }
+        self.detach();
+        true
+    }
+
     /// After an Abort: `detach`, then nothing more (iTerm2's abortWithErrorMessage).
     pub fn abort(&mut self) {
         self.detach();
@@ -439,6 +449,15 @@ mod tests {
         }
         assert_eq!(menu_chars(b"Lx", true), vec!['L'], "a key counts by its first character");
         assert_eq!(menu_chars(b"LC", false), vec!['L', 'C'], "typed text counts each one");
+    }
+
+    #[test]
+    fn second_detach_offers_force() {
+        let mut g = started();
+        assert!(g.request_detach());
+        assert_eq!(g.take_writes(), b"detach\r");
+        assert!(!g.request_detach(), "a second press asks to force it");
+        assert!(g.take_writes().is_empty());
     }
 
     #[test]

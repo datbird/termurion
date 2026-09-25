@@ -11,6 +11,8 @@ pub(super) const PLANE_BAR: &str = "tmux-22-plane";
 /// this window).
 const CLOSE_TAB: &str = "tmux-close-tab:";
 const CLOSE_WIN: &str = "tmux-close-win:";
+/// "tmux-double:GW:OTHER": this gateway attached to a session OTHER already shows.
+const DOUBLE: &str = "tmux-double:";
 
 impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
@@ -75,6 +77,13 @@ impl App {
                     }
                     let _ = window;
                     self.with_tab_of(id, |t| t.focused = id);
+                }
+                Action::SessionGuid(guid) => {
+                    let other = self.tmux.iter().find(|(g, t)| **g != gw && t.ctl.session_guid.as_deref() == Some(guid.as_str())).map(|(g, _)| *g);
+                    if let Some(other) = other {
+                        let (heading, text, buttons) = crate::tmux_persist::attach_warning(true);
+                        self.ask(gw, &format!("{DOUBLE}{gw}:{other}"), &format!("{heading}: {text}"), &buttons, true);
+                    }
                 }
                 Action::SelectWindow(window) => {
                     if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
@@ -193,8 +202,60 @@ impl App {
         }
     }
 
+    /// Shell > tmux > Detach (iTerm2's requestDetach): a second request asks to force it.
+    pub(super) fn tmux_request_detach(&mut self) {
+        let Some(gw) = self.focused_id().and_then(|id| if self.tmux.contains_key(&id) { Some(id) } else { self.tmux_of(id).map(|(g, _, _)| g) }) else { return };
+        let Some(t) = self.tmux.get_mut(&gw) else { return };
+        if t.gw.request_detach() {
+            return self.tmux_flush(gw);
+        }
+        if super::close_ui::confirm(self.hwnd(), "Force Detach?", "A previous detach request has not yet been honored. Force detach?") {
+            if let Some(t) = self.tmux.get_mut(&gw) {
+                t.gw.force_disconnect();
+            }
+            self.tmux_disconnected(gw, true);
+        }
+    }
+
+    /// Shell > tmux > Force Detach: the gateway's X.
+    pub(super) fn tmux_force_detach(&mut self) {
+        let Some(gw) = self.focused_id().and_then(|id| if self.tmux.contains_key(&id) { Some(id) } else { self.tmux_of(id).map(|(g, _, _)| g) }) else { return };
+        self.tmux_gateway_input(gw, b"X", false);
+    }
+
     /// The close questions' answers. True when the bar was one of these.
     pub(super) fn tmux_close_bar(&mut self, id: &str, button: Option<&str>) -> bool {
+        if let Some(rest) = id.strip_prefix(DOUBLE) {
+            let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
+            if let (Some(Some(gw)), Some(Some(other))) = (it.next(), it.next()) {
+                match button {
+                    // The other connection goes; this one stays attached.
+                    Some("Force Detach Other") => {
+                        if let Some(t) = self.tmux.get_mut(&other) {
+                            t.gw.force_disconnect();
+                        }
+                        self.tmux_disconnected(other, true);
+                    }
+                    answer => {
+                        if answer == Some("Reveal") {
+                            if let Some(first) = self.tmux.get(&other).and_then(|t| t.panes.values().map(|(id, _)| *id).min()) {
+                                self.reveal_pane(first);
+                            }
+                        }
+                        // iTerm2 detaches this connection when the other one stays.
+                        if let Some(t) = self.tmux.get_mut(&gw) {
+                            t.gw.detach();
+                        }
+                        self.tmux_flush(gw);
+                        if let Some(t) = self.tmux.get_mut(&gw) {
+                            t.gw.force_disconnect();
+                        }
+                        self.tmux_disconnected(gw, true);
+                    }
+                }
+            }
+            return true;
+        }
         if let Some(rest) = id.strip_prefix(CLOSE_TAB) {
             let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
             if let (Some(Some(gw)), Some(Some(w))) = (it.next(), it.next()) {

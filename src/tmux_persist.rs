@@ -62,6 +62,13 @@ pub fn close_window_question(n: usize) -> Option<(&'static str, [&'static str; 4
     Some((text, ["Hide", "Detach tmux Session", "Kill", "Cancel"]))
 }
 
+/// Attaching to a session this Tandem already shows (iTerm2's tmuxDoubleAttachForSessionGUID):
+/// (heading, text, buttons); only OK when the other connection is gone.
+pub fn attach_warning(other: bool) -> (&'static str, &'static str, Vec<&'static str>) {
+    let buttons = if other { vec!["OK", "Reveal", "Force Detach Other"] } else { vec!["OK"] };
+    ("Cannot Attach", "This instance of Tandem is already attached to this session", buttons)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
