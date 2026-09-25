@@ -307,6 +307,8 @@ pub struct App {
     tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
     /// tmux windows opening in new Tandem windows: their saved origin and size, by tab.
     tmux_geometry: HashMap<u64, (Option<(i32, i32)>, Option<crate::tmux_persist::WinSize>)>,
+    /// Each Tandem window's last place and size while not minimized (by window key).
+    tmux_last_geometry: HashMap<u64, ((i32, i32), Option<crate::tmux_persist::WinSize>)>,
     /// Background images by path (None for a file that does not load), and folder
     /// rotations by folder and interval.
     bg_images: HashMap<PathBuf, Option<Arc<crate::bgimage::Loaded>>>,
@@ -604,6 +606,7 @@ pub fn run() {
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
         tmux_geometry: HashMap::new(),
+        tmux_last_geometry: HashMap::new(),
         attention_due: None,
         steal_asked: None,
         bg_images: HashMap::new(),

@@ -43,7 +43,7 @@ pub const DONE: &[&str] = &[
     "terminalStateSetEmulationLevel:", "toggleBufferInput:", "copyWithStyles:", "copyWithControlSequences:",
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
     "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
-    "moveTabToNewWindow:", "moveSessionToWindow:", "mergeAllWindows:", "duplicateWindow:", "togglePinHotkeyWindow:",
+    "moveTabToNewWindow:", "moveSessionToWindow:", "moveSessionToTab:", "mergeAllWindows:", "duplicateWindow:", "togglePinHotkeyWindow:",
     "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleBroadcastingToCurrentSession:",
     "toggleUseBackgroundPatternIndicator:", "toggleBroadcastSource:",
     "toggleSizeLocked:", "toggleLayoutLocked:", "decreaseHeight:", "increaseHeight:", "decreaseWidth:", "increaseWidth:",
@@ -246,6 +246,7 @@ mod tests {
         let find = |sel: &str, label: &str| items().iter().find(|i| i.selector == sel && i.label() == label).unwrap();
         assert_eq!(status(find("splitVertically:", "Split Vertically with Current Profile")), Status::Done);
         assert_eq!(status(find("newWindow:", "New Window")), Status::Done, "7a opens real windows");
+        assert_eq!(status(find("moveSessionToTab:", "Move Session to Tab")), Status::Done, "8h");
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
         assert!(matches!(status(find("performFindPanelAction:", "Select Matches")), Status::Partial(_)));
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);

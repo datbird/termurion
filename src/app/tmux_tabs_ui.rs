@@ -248,10 +248,13 @@ impl App {
     pub(super) fn tmux_save_affinities(&mut self, gw: PaneId) {
         let mut groups = Vec::new();
         let mut states = Vec::new();
+        let mut geometry = Vec::new();
         let overrides = self.tmux.get(&gw).map(|t| t.tab_overrides.clone()).unwrap_or_default();
         let mut add = |app: &App, key: u64, tabs: &[Tab], gpu: Option<&Gpu>| {
             let windows: Vec<u32> = tabs.iter().filter_map(|t| app.tmux_of(t.focused)).filter(|(g, _, _)| *g == gw).map(|(_, _, w)| w).collect();
-            let (origin, size) = gpu.map_or(((0, 0), None), |g| window_geometry(&g.window));
+            // A minimized window keeps the place and size it had before.
+            let (origin, size) = gpu.and_then(|g| window_geometry(&g.window)).or_else(|| app.tmux_last_geometry.get(&key).copied()).unwrap_or(((0, 0), None));
+            geometry.push((key, (origin, size)));
             let tab_titles = windows.iter().filter_map(|w| Some((*w, overrides.get(w)?.clone()))).collect();
             states.push(crate::tmux_controller::GroupState { terminal: format!("pty-{key}"), windows: windows.clone(), origin, size, tab_titles });
             groups.push(crate::tmux_persist::Group { windows, terminal: format!("pty-{key}"), full_screen: false });
@@ -262,6 +265,7 @@ impl App {
         for (k, slot) in self.windows.parked() {
             add(self, *k, &slot.tabs, slot.gpu.as_ref());
         }
+        self.tmux_last_geometry.extend(geometry);
         if let Some(t) = self.tmux.get_mut(&gw) {
             t.ctl.save_affinities(&groups, &mut t.gw);
             t.ctl.save_window_state(&states, &mut t.gw);
@@ -303,7 +307,7 @@ impl App {
             return false;
         }
         // A new window opens a little right of and below this one (iTerm2's +10, -10).
-        let point = (!to_tab).then(|| self.gpu.as_ref().map(|g| window_geometry(&g.window).0)).flatten().map(|(x, y)| (x + 10, y + 10));
+        let point = (!to_tab).then(|| self.gpu.as_ref().and_then(|g| window_geometry(&g.window)).map(|g| g.0)).flatten().map(|(x, y)| (x + 10, y + 10));
         if let Some(t) = self.tmux.get_mut(&gw) {
             t.ctl.break_pane(p, to_tab.then_some(window), point, &mut t.gw);
         }
@@ -326,7 +330,8 @@ impl App {
         }
         if let Some(p) = origin {
             let monitors: Vec<(i32, i32, i32, i32)> = w.available_monitors().map(|m| (m.position().x, m.position().y, m.size().width as i32, m.size().height as i32)).collect();
-            let (x, y) = crate::tmux_persist::visible_origin(p, &monitors);
+            let outer = w.outer_size();
+            let (x, y) = crate::tmux_persist::visible_origin(p, (outer.width as i32, outer.height as i32), &monitors);
             w.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
         }
         if size == Some(crate::tmux_persist::WinSize::FullScreen) {
@@ -733,6 +738,15 @@ impl App {
         let origin = restore.origin.filter(|_| !self.globals.bool("disableTmuxWindowPositionRestoration"));
         let tab_index = restore.tab_index;
         let tab_id = tab.id;
+        // A window hidden from a Tandem window that is still open goes back there, even
+        // when no tmux tab is left in it.
+        let home = restore.terminal.as_deref().and_then(|t| t.strip_prefix("pty-")).and_then(|k| k.parse::<u64>().ok()).and_then(|k| {
+            if self.windows.current() == Some(k) {
+                self.tabs.first().map(|t| t.focused)
+            } else {
+                self.windows.parked().find(|(x, _)| **x == k).and_then(|(_, s)| s.tabs.first().map(|t| t.focused))
+            }
+        });
         let others_here = |app: &App| app.tabs.iter().flat_map(|t| t.layout.panes()).any(|id| app.panes.get(&id).and_then(|p| p.tmux_io()).is_some_and(|io| io.gateway != gw));
         let target = match place {
             Place::WithSibling(w) => self.tmux_window_panes(gw, w).into_iter().find(|id| !ids.values().any(|x| x == id)),
@@ -741,6 +755,7 @@ impl App {
             Place::Topmost => self.tmux.get(&gw).and_then(|t| t.panes.values().map(|(id, _)| *id).find(|id| !ids.values().any(|x| x == id))),
             Place::NewWindow => None,
         };
+        let target = home.or(target);
         match target {
             Some(anchor) if self.enter_pane_window(anchor) => {
                 // A window hidden from a tab goes back to its place.
@@ -1230,11 +1245,15 @@ impl App {
 
 /// A window's outer origin (screen pixels) and its size for `@per_window_settings`: the
 /// outer size in logical pixels, or full screen.
-fn window_geometry(w: &winit::window::Window) -> ((i32, i32), Option<crate::tmux_persist::WinSize>) {
+/// None while the window is minimized (Windows parks it off screen at a caption's size).
+fn window_geometry(w: &winit::window::Window) -> Option<((i32, i32), Option<crate::tmux_persist::WinSize>)> {
+    if w.is_minimized() == Some(true) {
+        return None;
+    }
     let origin = w.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
     if w.fullscreen().is_some() {
-        return (origin, Some(crate::tmux_persist::WinSize::FullScreen));
+        return Some((origin, Some(crate::tmux_persist::WinSize::FullScreen)));
     }
     let s = w.outer_size().to_logical::<f64>(w.scale_factor());
-    (origin, Some(crate::tmux_persist::WinSize::Size(s.width.round() as i64, s.height.round() as i64)))
+    Some((origin, Some(crate::tmux_persist::WinSize::Size(s.width.round() as i64, s.height.round() as i64))))
 }

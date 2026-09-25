@@ -151,6 +151,8 @@ pub struct Restore {
     pub tab_title: Option<String>,
     /// The tab's place in its window, when it comes back from being hidden.
     pub tab_index: Option<usize>,
+    /// The Tandem window (`pty-<key>`) it was hidden from.
+    pub terminal: Option<String>,
     pub tab_colors: Vec<(u32, Option<(u8, u8, u8)>)>,
 }
 
@@ -289,7 +291,7 @@ pub struct Controller {
     /// Where a pane broken out to a new window should open (by pane).
     break_points: HashMap<u32, (i32, i32)>,
     /// Hidden windows opened again: their Tandem window and tab index.
-    unburied: HashMap<u32, usize>,
+    unburied: HashMap<u32, (String, usize)>,
     /// The last command sent for each saved option (iTerm2 skips an unchanged one).
     last_saved: HashMap<&'static str, String>,
 }
@@ -759,11 +761,13 @@ impl Controller {
         let terminal = self.affinities.class_of(&window.to_string()).into_iter().find(|n| n.starts_with("pty-"));
         // A break-out point is used once, then the saved origin (iTerm2's positionForWindowWithPanes).
         let point = panes.iter().find_map(|p| self.break_points.remove(p));
+        let unburied = self.unburied.remove(&window);
         Restore {
             settings: terminal.and_then(|t| self.per_window.get(&t).cloned()),
             origin: point.or_else(|| self.origins.get(&window).copied()),
             tab_title: self.per_tab.get(&window).cloned(),
-            tab_index: self.unburied.remove(&window),
+            tab_index: unburied.as_ref().map(|u| u.1),
+            terminal: unburied.map(|u| u.0),
             tab_colors: panes.iter().filter_map(|p| Some((*p, *self.tab_colors.get(p)?))).collect(),
         }
     }
@@ -847,7 +851,7 @@ impl Controller {
         })?;
         self.buried.retain(|_, list| !list.is_empty());
         self.affinities.set_equal(&window.to_string(), &terminal);
-        self.unburied.insert(window, index);
+        self.unburied.insert(window, (terminal.clone(), index));
         Some((terminal, index))
     }
 
@@ -1814,7 +1818,8 @@ mod tests {
         assert!(r.sent().contains(&crate::tmux_persist::option_command(0, "@buried_indexes", "pty-2:0=1")));
         assert_eq!(r.ctl.unbury(0), Some(("pty-2".into(), 1)));
         assert!(r.ctl.affinities.class_of("0").contains("pty-2"), "back to its Tandem window");
-        assert_eq!(r.ctl.restore_of(0, &[0]).tab_index, Some(1));
+        let back = r.ctl.restore_of(0, &[0]);
+        assert_eq!((back.tab_index, back.terminal.as_deref()), (Some(1), Some("pty-2")), "its window, even with no tmux tab left there");
         assert_eq!(r.ctl.unbury(0), None);
     }
 

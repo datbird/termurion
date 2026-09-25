@@ -195,7 +195,7 @@ fn parse_color(text: &str) -> Option<(u8, u8, u8)> {
 
 /// A saved window origin kept on a monitor (`monitors`: x, y, width, height): on one as it
 /// is, else moved into the nearest one.
-pub fn visible_origin(point: (i32, i32), monitors: &[(i32, i32, i32, i32)]) -> (i32, i32) {
+pub fn visible_origin(point: (i32, i32), size: (i32, i32), monitors: &[(i32, i32, i32, i32)]) -> (i32, i32) {
     let (x, y) = point;
     let inside = |&(mx, my, w, h): &(i32, i32, i32, i32)| x >= mx && x < mx + w && y >= my && y < my + h;
     if monitors.is_empty() || monitors.iter().any(inside) {
@@ -206,7 +206,9 @@ pub fn visible_origin(point: (i32, i32), monitors: &[(i32, i32, i32, i32)]) -> (
         let (cx, cy) = clamp(m);
         (cx - x) as i64 * (cx - x) as i64 + (cy - y) as i64 * (cy - y) as i64
     };
-    monitors.iter().min_by_key(|m| dist(m)).map(clamp).unwrap_or(point)
+    // The whole window goes on the nearest monitor (its left or top edge when it is larger).
+    let fit = |&(mx, my, w, h): &(i32, i32, i32, i32)| (x.clamp(mx, (mx + w - size.0).max(mx)), y.clamp(my, (my + h - size.1).max(my)));
+    monitors.iter().min_by_key(|m| dist(m)).map(fit).unwrap_or(point)
 }
 
 /// The pure red of an early iTerm2 3.6 bug (a pane whose saved color is it).
@@ -419,10 +421,12 @@ mod tests {
     #[test]
     fn origins_stay_on_a_monitor() {
         let mons = [(0, 0, 1920, 1080), (1920, 0, 2560, 1440)];
-        assert_eq!(visible_origin((100, 50), &mons), (100, 50));
-        assert_eq!(visible_origin((2000, 1300), &mons), (2000, 1300), "the second monitor");
-        assert_eq!(visible_origin((-500, 200), &mons), (0, 200), "left of every monitor");
-        assert_eq!(visible_origin((5000, 5000), &mons), (4479, 1439), "past the right one");
-        assert_eq!(visible_origin((7, 7), &[]), (7, 7), "no monitors known");
+        let size = (800, 600);
+        assert_eq!(visible_origin((100, 50), size, &mons), (100, 50));
+        assert_eq!(visible_origin((2000, 1300), size, &mons), (2000, 1300), "the second monitor");
+        assert_eq!(visible_origin((-500, 200), size, &mons), (0, 200), "left of every monitor");
+        assert_eq!(visible_origin((5000, 5000), size, &mons), (3680, 840), "the whole window fits on the right one");
+        assert_eq!(visible_origin((5000, 50), (3000, 600), &mons), (1920, 50), "wider than the monitor: its left edge");
+        assert_eq!(visible_origin((7, 7), size, &[]), (7, 7), "no monitors known");
     }
 }
