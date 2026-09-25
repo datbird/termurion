@@ -193,6 +193,22 @@ fn parse_color(text: &str) -> Option<(u8, u8, u8)> {
     Some((ch(0)?, ch(1)?, ch(2)?))
 }
 
+/// A saved window origin kept on a monitor (`monitors`: x, y, width, height): on one as it
+/// is, else moved into the nearest one.
+pub fn visible_origin(point: (i32, i32), monitors: &[(i32, i32, i32, i32)]) -> (i32, i32) {
+    let (x, y) = point;
+    let inside = |&(mx, my, w, h): &(i32, i32, i32, i32)| x >= mx && x < mx + w && y >= my && y < my + h;
+    if monitors.is_empty() || monitors.iter().any(inside) {
+        return point;
+    }
+    let clamp = |&(mx, my, w, h): &(i32, i32, i32, i32)| (x.clamp(mx, mx + w - 1), y.clamp(my, my + h - 1));
+    let dist = |m: &(i32, i32, i32, i32)| {
+        let (cx, cy) = clamp(m);
+        (cx - x) as i64 * (cx - x) as i64 + (cy - y) as i64 * (cy - y) as i64
+    };
+    monitors.iter().min_by_key(|m| dist(m)).map(clamp).unwrap_or(point)
+}
+
 /// The pure red of an early iTerm2 3.6 bug (a pane whose saved color is it).
 pub const PURE_RED: (u8, u8, u8) = (255, 0, 0);
 
@@ -398,5 +414,15 @@ mod tests {
         let (m, red) = parse_tab_colors("3=p3#ffff00000000 4=p3#80008000ffff");
         assert!(red, "iTerm2's red bug");
         assert_eq!((m[&3], m[&4]), (Some(PURE_RED), Some((128, 128, 255))));
+    }
+
+    #[test]
+    fn origins_stay_on_a_monitor() {
+        let mons = [(0, 0, 1920, 1080), (1920, 0, 2560, 1440)];
+        assert_eq!(visible_origin((100, 50), &mons), (100, 50));
+        assert_eq!(visible_origin((2000, 1300), &mons), (2000, 1300), "the second monitor");
+        assert_eq!(visible_origin((-500, 200), &mons), (0, 200), "left of every monitor");
+        assert_eq!(visible_origin((5000, 5000), &mons), (4479, 1439), "past the right one");
+        assert_eq!(visible_origin((7, 7), &[]), (7, 7), "no monitors known");
     }
 }

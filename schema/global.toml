@@ -859,6 +859,15 @@ default = true
 help = "Tandem keeps its window size and tmux's layout shrinks to fit it."
 
 [[setting]]
+key = "disableTmuxWindowPositionRestoration"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Disable window position restoration in tmux integration."
+type = "bool"
+default = false
+help = "Disable window position restoration in tmux integration."
+
+[[setting]]
 key = "rememberTmuxWindowSizes"
 tab = "Advanced"
 section = "Tmux Integration"

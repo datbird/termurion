@@ -355,6 +355,7 @@ impl App {
             "terminate:" => self.quit(event_loop),
             "moveTabToNewWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.move_tab_to_new_window(),
             "moveSessionToWindow:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_window(),
+            "moveSessionToTab:" if self.layout_allowed(crate::winmodel::LayoutOp::MovePane) => self.move_session_to_tab(),
             "mergeAllWindows:" if self.layout_allowed(crate::winmodel::LayoutOp::MoveTab) => self.merge_all_windows(),
             "moveTabToNewWindow:" | "moveSessionToWindow:" | "mergeAllWindows:" => {}
             "arrangeHorizontally:" => self.arrange_windows_horizontally(),

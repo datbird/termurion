@@ -546,6 +546,8 @@ impl Controller {
         let Some((s, _)) = self.session.clone() else { return };
         for w in windows {
             self.hidden.remove(w);
+            // A window hidden from a tab goes back to that window and place.
+            self.unbury(*w);
         }
         gw.send(&crate::tmux_persist::hidden_command(s, &self.hidden), None, Flags::default());
         if tabs {
@@ -847,6 +849,16 @@ impl Controller {
         self.affinities.set_equal(&window.to_string(), &terminal);
         self.unburied.insert(window, index);
         Some((terminal, index))
+    }
+
+    /// Windows have their own sizes (tmux 2.9 and later, tmuxVariableWindowSizesSupported).
+    pub fn variable_sizes(&self) -> bool {
+        crate::tmux_sizes::variable(self.version, self.prefs.variable_sizes)
+    }
+
+    /// The tab color saved for a pane on attach (Some(None): saved as none).
+    pub fn saved_tab_color(&self, pane: u32) -> Option<Option<(u8, u8, u8)>> {
+        self.tab_colors.get(&pane).copied()
     }
 
     /// This client answers OSC 4 color queries of its panes.

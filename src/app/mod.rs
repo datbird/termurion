@@ -305,6 +305,8 @@ pub struct App {
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
     /// SetColors `tab`: the tab color a pane's program chose.
     tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
+    /// tmux windows opening in new Tandem windows: their saved origin and size, by tab.
+    tmux_geometry: HashMap<u64, (Option<(i32, i32)>, Option<crate::tmux_persist::WinSize>)>,
     /// Background images by path (None for a file that does not load), and folder
     /// rotations by folder and interval.
     bg_images: HashMap<PathBuf, Option<Arc<crate::bgimage::Loaded>>>,
@@ -601,6 +603,7 @@ pub fn run() {
         flashes: HashMap::new(),
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
+        tmux_geometry: HashMap::new(),
         attention_due: None,
         steal_asked: None,
         bg_images: HashMap::new(),
@@ -837,6 +840,7 @@ impl App {
             pane.own_mut().set_triggers(list, prefs);
         }
         self.tmux_resend_colors();
+        self.tmux_save_tab_colors();
         self.redraw();
     }
 
@@ -2004,6 +2008,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.flush_dropped();
         for w in std::mem::take(&mut self.pending_windows) {
             self.open_pending(event_loop, w);
+            self.tmux_apply_geometry();
         }
         self.tmux_auto_bury();
         if self.save_due.is_some_and(|t| Instant::now() >= t) {
@@ -2177,6 +2182,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::CloseRequested => self.close_window(id, event_loop),
+            // tmux keeps where Tandem's windows are (@origins).
+            WindowEvent::Moved(_) => self.tmux_save_all_windows(),
             WindowEvent::Resized(size) => {
                 // Minimizing reports 0x0. Keep every pty at its size, or ConPTY reflows the screen.
                 let Some((w, h)) = usable_size(size.width, size.height) else { return };
@@ -2186,6 +2193,7 @@ impl ApplicationHandler<UserEvent> for App {
                     g.surface.configure(&g.device, &g.config);
                 }
                 self.relayout();
+                self.tmux_save_all_windows();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let _ = scale_factor;

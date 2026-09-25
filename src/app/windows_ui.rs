@@ -531,8 +531,11 @@ impl App {
     /// Session > Move Session > Move Session to Window: the focused pane leaves its tab
     /// for a new window (a one-pane tab moves whole).
     pub(super) fn move_session_to_window(&mut self) {
+        let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
+        if self.tmux_break(pane, false) {
+            return;
+        }
         let Some(t) = self.tabs.get_mut(self.active) else { return };
-        let pane = t.focused;
         if t.layout.panes().len() < 2 {
             return self.move_tab_to_new_window();
         }
@@ -543,6 +546,27 @@ impl App {
         let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None };
         self.next_tab_id += 1;
         self.pending_windows.push(NewWindow::Tab(tab));
+        self.relayout();
+        self.redraw();
+    }
+
+    /// Session > Move Session > Move Session to Tab: the focused pane leaves its tab for a
+    /// new tab of this window (only when the tab has other panes).
+    pub(super) fn move_session_to_tab(&mut self) {
+        let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
+        if self.tmux_break(pane, true) {
+            return;
+        }
+        let Some(t) = self.tabs.get_mut(self.active) else { return };
+        if t.layout.panes().len() < 2 || !t.layout.remove(pane) {
+            return;
+        }
+        t.focused = t.layout.panes()[0];
+        t.zoomed = None;
+        let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None };
+        self.next_tab_id += 1;
+        self.tabs.push(tab);
+        self.active = self.tabs.len() - 1;
         self.relayout();
         self.redraw();
     }

@@ -16,6 +16,8 @@ const PAUSE_WARN: &str = "tmux-pause-warn:";
 /// it was answered (iTerm2 checks whether TmuxSyncClipboard exists at all).
 const PASTE_OFFER: &str = "NoSyncOfferToSyncTmuxClipboard";
 const PASTE_ANSWERED: &str = "NoSyncTmuxSyncClipboardAnswered";
+/// "Fix corrupted tab colors?" (iTerm2's permanently silenceable NoSyncResetRedTmuxTabs).
+const RED_TABS: &str = "NoSyncResetRedTmuxTabs";
 /// "tmux-double:GW:OTHER": this gateway attached to a session OTHER already shows.
 const DOUBLE: &str = "tmux-double:";
 
@@ -41,7 +43,11 @@ impl App {
                         }
                     }
                 }
-                Action::RedTabColors => {}
+                Action::RedTabColors => {
+                    if !self.globals.bool(RED_TABS) {
+                        self.ask(gw, &format!("{RED_TABS}:{gw}"), "Fix corrupted tab colors? While attaching to tmux, some tabs were found whose color is pure red. This may be due to a bug in early versions of iTerm2 3.6.x. Would you like to reset those tabs' colors?", &["Reset", "Keep Red"], true);
+                    }
+                }
                 Action::Clipboard(text) => {
                     if let Some(cb) = &mut self.clipboard {
                         if let Err(e) = cb.set_text(text) {
@@ -237,23 +243,95 @@ impl App {
         true
     }
 
-    /// Saves which tmux windows share each Tandem window (iTerm2's saveAffinities).
+    /// Saves which tmux windows share each Tandem window (iTerm2's saveAffinities), and
+    /// the windows' state: size, origin, tab titles, and buried tabs.
     pub(super) fn tmux_save_affinities(&mut self, gw: PaneId) {
         let mut groups = Vec::new();
-        let mut add = |app: &App, key: u64, tabs: &[Tab]| {
+        let mut states = Vec::new();
+        let overrides = self.tmux.get(&gw).map(|t| t.tab_overrides.clone()).unwrap_or_default();
+        let mut add = |app: &App, key: u64, tabs: &[Tab], gpu: Option<&Gpu>| {
             let windows: Vec<u32> = tabs.iter().filter_map(|t| app.tmux_of(t.focused)).filter(|(g, _, _)| *g == gw).map(|(_, _, w)| w).collect();
+            let (origin, size) = gpu.map_or(((0, 0), None), |g| window_geometry(&g.window));
+            let tab_titles = windows.iter().filter_map(|w| Some((*w, overrides.get(w)?.clone()))).collect();
+            states.push(crate::tmux_controller::GroupState { terminal: format!("pty-{key}"), windows: windows.clone(), origin, size, tab_titles });
             groups.push(crate::tmux_persist::Group { windows, terminal: format!("pty-{key}"), full_screen: false });
         };
         if let Some(k) = self.windows.current() {
-            add(self, k, &self.tabs);
+            add(self, k, &self.tabs, self.gpu.as_ref());
         }
         for (k, slot) in self.windows.parked() {
-            add(self, *k, &slot.tabs);
+            add(self, *k, &slot.tabs, slot.gpu.as_ref());
         }
         if let Some(t) = self.tmux.get_mut(&gw) {
             t.ctl.save_affinities(&groups, &mut t.gw);
+            t.ctl.save_window_state(&states, &mut t.gw);
         }
         self.tmux_flush(gw);
+    }
+
+    /// Every gateway's window state (a window moved, resized, or went full screen).
+    pub(super) fn tmux_save_all_windows(&mut self) {
+        for gw in self.tmux_gateways() {
+            self.tmux_save_affinities(gw);
+        }
+    }
+
+    /// Each tmux pane's tab color (a program's or the saved one, else the profile's) goes
+    /// to `@tab_colors` (iTerm2 writes it whenever a profile is applied).
+    pub(super) fn tmux_save_tab_colors(&mut self) {
+        let dark = self.dark();
+        let mut by_gw: HashMap<PaneId, Vec<(u32, Option<(u8, u8, u8)>)>> = HashMap::new();
+        for (id, p) in &self.panes {
+            let Some(io) = p.tmux_io() else { continue };
+            let c = self.tab_colors.get(id).copied().or_else(|| self.store.get(&p.profile).and_then(|pr| pr.tab_color(dark)));
+            by_gw.entry(io.gateway).or_default().push((io.pane, c.map(|c| (c.r, c.g, c.b))));
+        }
+        for (gw, colors) in by_gw {
+            if let Some(t) = self.tmux.get_mut(&gw) {
+                t.ctl.save_tab_colors(&colors, &mut t.gw);
+            }
+            self.tmux_flush(gw);
+        }
+    }
+
+    /// Move Session to Window or to Tab on a tmux pane: tmux's break-pane moves it, and the
+    /// new tmux window opens in a new Tandem window or beside its old one. True when it was
+    /// a tmux pane (of a tab with other panes).
+    pub(super) fn tmux_break(&mut self, pane: PaneId, to_tab: bool) -> bool {
+        let Some((gw, p, window)) = self.tmux_of(pane) else { return false };
+        if self.tabs.iter().find(|t| t.layout.panes().contains(&pane)).is_none_or(|t| t.layout.panes().len() < 2) {
+            return false;
+        }
+        // A new window opens a little right of and below this one (iTerm2's +10, -10).
+        let point = (!to_tab).then(|| self.gpu.as_ref().map(|g| window_geometry(&g.window).0)).flatten().map(|(x, y)| (x + 10, y + 10));
+        if let Some(t) = self.tmux.get_mut(&gw) {
+            t.ctl.break_pane(p, to_tab.then_some(window), point, &mut t.gw);
+        }
+        self.tmux_flush(gw);
+        true
+    }
+
+    /// A tmux window that opened in a new Tandem window takes its saved size and place.
+    pub(super) fn tmux_apply_geometry(&mut self) {
+        let Some(tab) = self.tabs.iter().map(|t| t.id).find(|id| self.tmux_geometry.contains_key(id)) else { return };
+        let Some((origin, size)) = self.tmux_geometry.remove(&tab) else { return };
+        let Some(g) = self.gpu.as_ref() else { return };
+        let w = &g.window;
+        if let Some(crate::tmux_persist::WinSize::Size(x, y)) = size {
+            // The saved size is the outer frame; the window takes an inner size.
+            let scale = w.scale_factor();
+            let (outer, inner) = (w.outer_size(), w.inner_size());
+            let (dw, dh) = (outer.width.saturating_sub(inner.width) as f64 / scale, outer.height.saturating_sub(inner.height) as f64 / scale);
+            let _ = w.request_inner_size(winit::dpi::LogicalSize::new((x as f64 - dw).max(100.0), (y as f64 - dh).max(100.0)));
+        }
+        if let Some(p) = origin {
+            let monitors: Vec<(i32, i32, i32, i32)> = w.available_monitors().map(|m| (m.position().x, m.position().y, m.size().width as i32, m.size().height as i32)).collect();
+            let (x, y) = crate::tmux_persist::visible_origin(p, &monitors);
+            w.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+        }
+        if size == Some(crate::tmux_persist::WinSize::FullScreen) {
+            w.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+        }
     }
 
     /// Close Tab on a tmux tab: iTerm2's question (the window question when it is the
@@ -321,7 +399,12 @@ impl App {
             for w in windows {
                 let Some(t) = self.tmux.get_mut(gw) else { break };
                 match answer {
-                    "Hide" => actions.extend(t.ctl.hide(*w, &mut t.gw)),
+                    "Hide" => {
+                        let (gwid, win) = (*gw, *w);
+                        self.tmux_note_burial(gwid, win);
+                        let Some(t) = self.tmux.get_mut(gw) else { break };
+                        actions.extend(t.ctl.hide(win, &mut t.gw));
+                    }
                     "Kill" => t.ctl.kill_window(*w, &mut t.gw),
                     _ => {}
                 }
@@ -459,6 +542,22 @@ impl App {
                     }
                 }
                 _ => {}
+            }
+            return true;
+        }
+        if let Some(gw) = id.strip_prefix(RED_TABS).and_then(|r| r.strip_prefix(':')).and_then(|g| g.parse::<PaneId>().ok()) {
+            if button == Some("Reset") {
+                if let Some(t) = self.tmux.get_mut(&gw) {
+                    t.ctl.reset_red_tab_colors();
+                }
+                let red = crate::palette::rgb(255, 0, 0);
+                let ids: Vec<PaneId> = self.tmux.get(&gw).map(|t| t.panes.values().map(|(id, _)| *id).collect()).unwrap_or_default();
+                self.tab_colors.retain(|id, c| !(ids.contains(id) && *c == red));
+                self.tmux_save_tab_colors();
+            }
+            if button.is_some() {
+                self.globals.set(RED_TABS, toml::Value::Boolean(true));
+                self.save_globals();
             }
             return true;
         }
@@ -615,6 +714,25 @@ impl App {
         let focused = ids.get(&panes.first().map_or(0, |p| p.pane)).copied().unwrap_or(0);
         let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: Some(self.tmux_title(&window.name)) };
         self.next_tab_id += 1;
+        // What was saved about this window: the tab's title and colors, its place, and the
+        // Tandem window's size and origin.
+        let tmux_panes: Vec<u32> = panes.iter().map(|p| p.pane).collect();
+        let restore = self.tmux.get_mut(&gw).map(|t| t.ctl.restore_of(window.id, &tmux_panes)).unwrap_or_default();
+        let variable = self.tmux.get(&gw).is_some_and(|t| t.ctl.variable_sizes());
+        if let Some(title) = restore.tab_title.clone() {
+            if let Some(t) = self.tmux.get_mut(&gw) {
+                t.tab_overrides.insert(window.id, title);
+            }
+        }
+        for (p, c) in &restore.tab_colors {
+            if let (Some((r, g, b)), Some(id)) = (c, ids.get(p)) {
+                self.tab_colors.insert(*id, crate::palette::rgb(*r, *g, *b));
+            }
+        }
+        let size = restore.settings.and_then(|s| s.size).filter(|_| self.globals.bool("rememberTmuxWindowSizes") && variable);
+        let origin = restore.origin.filter(|_| !self.globals.bool("disableTmuxWindowPositionRestoration"));
+        let tab_index = restore.tab_index;
+        let tab_id = tab.id;
         let others_here = |app: &App| app.tabs.iter().flat_map(|t| t.layout.panes()).any(|id| app.panes.get(&id).and_then(|p| p.tmux_io()).is_some_and(|io| io.gateway != gw));
         let target = match place {
             Place::WithSibling(w) => self.tmux_window_panes(gw, w).into_iter().find(|id| !ids.values().any(|x| x == id)),
@@ -625,8 +743,10 @@ impl App {
         };
         match target {
             Some(anchor) if self.enter_pane_window(anchor) => {
-                self.tabs.push(tab);
-                self.active = self.tabs.len() - 1;
+                // A window hidden from a tab goes back to its place.
+                let at = tab_index.map_or(self.tabs.len(), |i| i.min(self.tabs.len()));
+                self.tabs.insert(at, tab);
+                self.active = at;
                 self.relayout();
             }
             // The sibling's window is still waiting to open (every window of one attach
@@ -641,8 +761,14 @@ impl App {
                     }
                 }
             }
-            _ => self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab])),
+            _ => {
+                if origin.is_some() || size.is_some() {
+                    self.tmux_geometry.insert(tab_id, (origin, size));
+                }
+                self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
+            }
         }
+        self.tmux_save_tab_colors();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -734,6 +860,15 @@ impl App {
             }
             self.globals.set("NoSyncAutoBurialReveal", toml::Value::Boolean(true));
             self.save_globals();
+        }
+    }
+
+    /// A tmux window hidden by Tandem: which Tandem window and tab it came from.
+    pub(super) fn tmux_note_burial(&mut self, gw: PaneId, window: u32) {
+        let Some(index) = self.tabs.iter().position(|t| self.tmux_of(t.focused).is_some_and(|(g, _, w)| g == gw && w == window)) else { return };
+        let Some(key) = self.windows.current() else { return };
+        if let Some(t) = self.tmux.get_mut(&gw) {
+            t.ctl.bury_window(window, &format!("pty-{key}"), index);
         }
     }
 
@@ -1091,4 +1226,15 @@ impl App {
             }
         }
     }
+}
+
+/// A window's outer origin (screen pixels) and its size for `@per_window_settings`: the
+/// outer size in logical pixels, or full screen.
+fn window_geometry(w: &winit::window::Window) -> ((i32, i32), Option<crate::tmux_persist::WinSize>) {
+    let origin = w.outer_position().map(|p| (p.x, p.y)).unwrap_or((0, 0));
+    if w.fullscreen().is_some() {
+        return (origin, Some(crate::tmux_persist::WinSize::FullScreen));
+    }
+    let s = w.outer_size().to_logical::<f64>(w.scale_factor());
+    (origin, Some(crate::tmux_persist::WinSize::Size(s.width.round() as i64, s.height.round() as i64)))
 }

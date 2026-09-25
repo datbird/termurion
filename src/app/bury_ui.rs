@@ -14,6 +14,7 @@ impl App {
     pub(super) fn bury_pane(&mut self, id: PaneId) -> bool {
         // A tmux pane is not buried: its tmux window is hidden (iTerm2's bury of a tmux client).
         if let Some((gw, _, window)) = self.tmux_of(id) {
+            self.tmux_note_burial(gw, window);
             let actions = self.tmux.get_mut(&gw).map(|t| t.ctl.hide(window, &mut t.gw)).unwrap_or_default();
             self.tmux_flush(gw);
             self.tmux_pending_close.push((gw, actions, false));
