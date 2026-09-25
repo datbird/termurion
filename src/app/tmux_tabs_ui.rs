@@ -603,6 +603,31 @@ impl App {
         }
     }
 
+    /// The gateway of the focused session: itself, or the gateway of its tmux pane.
+    fn focused_tmux_gateway(&self) -> Option<PaneId> {
+        let id = self.focused_id()?;
+        if self.tmux.contains_key(&id) {
+            return Some(id);
+        }
+        self.tmux_of(id).map(|(g, _, _)| g)
+    }
+
+    /// tmux's prefix bindings for the focused tmux pane (empty elsewhere).
+    pub(super) fn tmux_key_map(&self) -> toml::Table {
+        let Some(id) = self.focused_id() else { return toml::Table::new() };
+        let Some((gw, _, _)) = self.tmux_of(id) else { return toml::Table::new() };
+        self.tmux.get(&gw).map(|t| crate::tmux_prefix::key_map(&t.hs.keys)).unwrap_or_default()
+    }
+
+    /// Key action 65, Send tmux Command (iTerm2's performTmuxCommand).
+    pub(super) fn send_tmux_command(&mut self, command: &str) {
+        let Some(gw) = self.focused_tmux_gateway() else { return };
+        if let Some(t) = self.tmux.get_mut(&gw) {
+            t.gw.send(command, None, Default::default());
+        }
+        self.tmux_flush(gw);
+    }
+
     /// A tmux pane's gateway, tmux pane id, and tmux window.
     pub(super) fn tmux_of(&self, pane: PaneId) -> Option<(PaneId, u32, u32)> {
         let io = self.panes.get(&pane)?.tmux_io()?;

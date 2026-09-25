@@ -139,6 +139,7 @@ pub mod tmux_pause;
 pub mod tmux_dashboard;
 pub mod tmux_dashboard_ui;
 pub mod bury;
+pub mod tmux_prefix;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;

@@ -335,6 +335,7 @@ impl App {
                 let g = self.focused_pane_id().and_then(|id| self.panes.get(&id)).map(|p| self.store.shared_guid(&p.profile));
                 self.new_tab(g.as_deref());
             }
+            65 => self.send_tmux_command(&b.text),
             66 => {
                 for step in keyaction::sequence(&b.text) {
                     // A sequence never runs another sequence (iTerm2's editor does not allow one).

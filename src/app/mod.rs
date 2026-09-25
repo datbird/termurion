@@ -1159,7 +1159,9 @@ impl App {
     /// Runs `f` with the key routing inputs: the focused profile's map, the global map,
     /// the Leader, and the number shortcut settings.
     fn with_route<R>(&self, f: impl FnOnce(&keyroute::Context) -> R) -> R {
-        let profile_map = self.focused_profile().and_then(|p| p.get("Keyboard Map")).and_then(|v| v.as_table().cloned()).unwrap_or_default();
+        let mut profile_map = self.focused_profile().and_then(|p| p.get("Keyboard Map")).and_then(|v| v.as_table().cloned()).unwrap_or_default();
+        // A tmux pane: tmux's prefix bindings as Leader bindings over the profile's map.
+        profile_map.extend(self.tmux_key_map());
         let global_map = self.globals.table("GlobalKeyMap");
         let ctx = keyroute::Context {
             profile_map: &profile_map,
