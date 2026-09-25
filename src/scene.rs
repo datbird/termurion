@@ -756,6 +756,36 @@ pub struct TabLook {
     pub status: Option<(String, Rgb)>,
     pub dot: Option<Rgb>,
     pub color: Option<Rgb>,
+    /// The one indicator a tab shows (when no status dot does).
+    pub icon: Option<TabIcon>,
+}
+
+/// A tab's indicator, in iTerm2's order after the status dot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabIcon {
+    Dead,
+    Bell,
+    NewOutput,
+    Idle,
+}
+
+/// The indicator a tab shows: none when a status dot shows, else the first of dead, bell,
+/// new output, and idle.
+pub fn tab_icon(dot: bool, dead: bool, bell: bool, new_output: bool, idle: bool) -> Option<TabIcon> {
+    if dot {
+        return None;
+    }
+    [(dead, TabIcon::Dead), (bell, TabIcon::Bell), (new_output, TabIcon::NewOutput), (idle, TabIcon::Idle)].into_iter().find(|(on, _)| *on).map(|(_, i)| i)
+}
+
+/// Segoe Fluent Icons glyphs for the indicators.
+fn tab_icon_glyph(i: TabIcon) -> char {
+    match i {
+        TabIcon::Dead => '\u{E711}',
+        TabIcon::Bell => '\u{EA8F}',
+        TabIcon::NewOutput => '\u{E91F}',
+        TabIcon::Idle => '\u{E708}',
+    }
 }
 
 pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, cell: (f32, f32)) -> Vec<Rect> {
@@ -778,9 +808,14 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, c
             frame.quads.push(Quad { rect: Rect { x, y: r.y + ((r.h - d) / 2.0).floor(), w: d, h: d }, color: rgba(c, 1.0) });
             x += d + cell.0 / 2.0;
         }
+        let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
+        if let Some(icon) = tab.icon {
+            let span = Span { text: tab_icon_glyph(icon).to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false };
+            frame.rows.push(TextRow { x, y: r.y + ((r.h - cell.1) / 2.0).floor(), spans: vec![span], clip: r, scale: 1.0 });
+            x += cell.0 * 2.0;
+        }
         let fit = ((r.x + w - x) / cell.0).max(0.0) as usize;
         let fit = fit.saturating_sub(1);
-        let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
         let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false };
         let mut spans = Vec::new();
         let mut left = fit;
@@ -1055,6 +1090,20 @@ mod tests {
     }
 
     #[test]
+    fn tab_icons_in_iterm2_order() {
+        assert_eq!(tab_icon(true, true, true, true, true), None, "a status dot wins, and draws itself");
+        assert_eq!(tab_icon(false, true, true, true, true), Some(TabIcon::Dead));
+        assert_eq!(tab_icon(false, false, true, true, true), Some(TabIcon::Bell));
+        assert_eq!(tab_icon(false, false, false, true, true), Some(TabIcon::NewOutput));
+        assert_eq!(tab_icon(false, false, false, false, true), Some(TabIcon::Idle));
+        assert_eq!(tab_icon(false, false, false, false, false), None);
+        let mut f = Frame::default();
+        let tabs = vec![TabLook { title: "t".into(), icon: Some(TabIcon::Bell), ..TabLook::default() }, TabLook::default()];
+        tab_bar(&mut f, &tabs, 0, Rect { x: 0.0, y: 0.0, w: 200.0, h: 20.0 }, (8.0, 16.0));
+        assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.icon && s.text == "\u{EA8F}")), "the bell glyph");
+    }
+
+    #[test]
     fn porthole_chrome_and_clip() {
         use crate::porthole::render::{Face, Run, VisualLine};
         let (fg, bg) = (rgb(200, 200, 200), rgb(0, 0, 0));
@@ -1122,7 +1171,7 @@ mod tests {
         let green = rgb(0, 0xff, 0);
         let red = rgb(0xff, 0, 0);
         let tabs = vec![
-            TabLook { title: "shell".into(), status: Some(("waiting".into(), red)), dot: Some(green), color: Some(rgb(0, 0, 0xff)) },
+            TabLook { title: "shell".into(), status: Some(("waiting".into(), red)), dot: Some(green), color: Some(rgb(0, 0, 0xff)), icon: None },
             TabLook { title: "other".into(), ..TabLook::default() },
         ];
         let rects = tab_bar(&mut f, &tabs, 1, Rect { x: 0.0, y: 0.0, w: 400.0, h: 30.0 }, CELL);

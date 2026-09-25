@@ -174,7 +174,11 @@ impl App {
         });
         let dot = st.and_then(|s| s.indicator.as_deref()).and_then(xterm_color);
         let color = self.tab_colors.get(&t.focused).copied();
-        scene::TabLook { title, status, dot, color }
+        let dead = self.panes.get(&t.focused).is_some_and(|p| p.exited.is_some());
+        let bell = panes.iter().any(|id| self.bell_icons.contains(id));
+        let (new_output, idle) = self.activity_icons(&panes);
+        let icon = scene::tab_icon(dot.is_some(), dead, bell, new_output, idle);
+        scene::TabLook { title, status, dot, color, icon }
     }
 
     /// Forgets pane flashes and fireworks that are over.

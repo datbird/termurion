@@ -42,9 +42,7 @@ impl App {
             TriggerRequest::Notify(text) => {
                 self.ask(pane, "trigger-notify", &text, &["OK"], false);
             }
-            TriggerRequest::Bell => unsafe {
-                windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
-            },
+            TriggerRequest::Bell => self.ring_bell(pane),
             TriggerRequest::Bounce { until_active } => self.flash_taskbar(until_active),
             TriggerRequest::SendText(text) => {
                 if let Some(p) = self.panes.get_mut(&pane) {
@@ -167,6 +165,8 @@ impl App {
             let s = p.own_mut();
             s.app_vars.insert("session.name".into(), title);
             s.app_vars.insert("session.profileName".into(), profile);
+            let bells = s.bell_count.to_string();
+            s.app_vars.insert("session.bellCount".into(), bells);
             if s.triggers.list.iter().any(|c| c.trigger.instant && c.trigger.enabled) {
                 s.check_instant_triggers(now);
                 wake = Some(now + Duration::from_millis(500));

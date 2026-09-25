@@ -558,7 +558,10 @@ impl Screen {
             "StopTrigger" => Flow::StopAll,
             "AlertTrigger" => ask(self, TriggerRequest::Alert { trigger: i, text: value.to_string() }),
             "iTermUserNotificationTrigger" => ask(self, TriggerRequest::Notify(value.to_string())),
-            "BellTrigger" => ask(self, TriggerRequest::Bell),
+            "BellTrigger" => {
+                self.bell_count += 1;
+                ask(self, TriggerRequest::Bell)
+            }
             "BounceTrigger" => ask(self, TriggerRequest::Bounce { until_active: value.trim() != "1" }),
             "SendTextTrigger" => ask(self, TriggerRequest::SendText(value.to_string())),
             "ScriptTrigger" => ask(self, TriggerRequest::RunCommand(value.to_string())),

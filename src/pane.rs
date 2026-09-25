@@ -63,6 +63,8 @@ pub struct Pane {
     /// Make Screenshot's frozen copy is showing: views and resizes leave it alone, so the
     /// panel's lines and redactions stay where they were chosen.
     pub frozen: bool,
+    /// The bell offer's Suppress All Output: output is dropped until a key is typed.
+    pub suppress_output: bool,
 }
 
 impl Pane {
@@ -71,7 +73,7 @@ impl Pane {
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false })
+        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -80,6 +82,9 @@ impl Pane {
         let mut changed = false;
         while let Read::Data(chunk) = pty.try_read() {
             changed = true;
+            if self.suppress_output {
+                continue;
+            }
             let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&chunk);
             if !reply.is_empty() {
                 if let Err(e) = pty.write(&reply) {
@@ -98,6 +103,7 @@ impl Pane {
 
     /// What the user sends: keys, pastes. Held while Buffer Input is on.
     pub fn input(&mut self, bytes: &[u8]) {
+        self.suppress_output = false;
         if let Some(now) = self.buffer.send(bytes) {
             self.reply(&now);
         }
@@ -325,7 +331,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

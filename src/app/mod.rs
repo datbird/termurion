@@ -52,6 +52,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod annotations_ui;
+mod activity_ui;
 mod bell_ui;
 mod bgimage_ui;
 mod blocks_ui;
@@ -230,6 +231,9 @@ pub struct App {
     trigger_alerts: HashMap<PaneId, usize>,
     trigger_pool: crate::triggers::CommandPool,
     trigger_children: Vec<(PaneId, String, std::process::Child)>,
+    /// Each pane's bell state, and the panes whose tab shows a bell icon.
+    bells: HashMap<PaneId, crate::bell::Bell>,
+    bell_icons: std::collections::HashSet<PaneId>,
     /// An open Make Screenshot panel.
     shot: Option<screenshot_ui::Shot>,
     /// Page Setup's printer, paper, and margins.
@@ -391,6 +395,8 @@ pub fn run() {
         trigger_alerts: HashMap::new(),
         trigger_pool: crate::triggers::CommandPool::new(16),
         trigger_children: Vec::new(),
+        bells: HashMap::new(),
+        bell_icons: std::collections::HashSet::new(),
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
@@ -1556,6 +1562,7 @@ impl ApplicationHandler<UserEvent> for App {
         let rotation = self.tick_rotations();
         let upload = self.feed_uploads();
         let triggers = self.tick_triggers();
+        self.tick_bell();
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
