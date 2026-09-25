@@ -27,6 +27,15 @@ pub(super) fn partial(labels: &[String], typed: &str) -> bool {
     labels.iter().any(|l| l.len() > typed.len() && l.to_ascii_uppercase().starts_with(&typed.to_ascii_uppercase()))
 }
 
+/// A modifier key on its own, which must not put the labels away (Alt picks Copy).
+pub(super) fn is_modifier_key(key: &winit::keyboard::Key) -> bool {
+    use winit::keyboard::{Key, NamedKey};
+    matches!(
+        key,
+        Key::Named(NamedKey::Alt | NamedKey::AltGraph | NamedKey::Shift | NamedKey::Control | NamedKey::Super | NamedKey::Meta | NamedKey::Hyper | NamedKey::CapsLock)
+    )
+}
+
 /// The labeled results on screen in one pane.
 pub(super) struct Shortcuts {
     pub pane: PaneId,
@@ -116,6 +125,9 @@ impl App {
     /// A key while labels show. Returns true when the labels took it.
     pub(super) fn shortcut_key(&mut self, ev: &winit::event::KeyEvent) -> bool {
         let Some(sc) = self.shortcuts.as_mut() else { return false };
+        if is_modifier_key(&ev.logical_key) {
+            return true;
+        }
         let text = ev.text.as_deref().unwrap_or_default();
         let is_label_key = text.len() == 1 && text.chars().all(|c| c.is_ascii_alphanumeric());
         if !is_label_key {
@@ -176,5 +188,15 @@ mod tests {
         assert!(partial(&l, "a"));
         assert_eq!(pick(&l, "ab"), Some(10));
         assert!(!partial(&l, "Q"));
+    }
+
+    #[test]
+    fn modifier_keys_keep_the_labels() {
+        use winit::keyboard::{Key, NamedKey};
+        assert!(is_modifier_key(&Key::Named(NamedKey::Alt)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Shift)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Control)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Escape)));
+        assert!(!is_modifier_key(&Key::Character("a".into())));
     }
 }

@@ -317,10 +317,12 @@ impl Results {
     }
 
     /// New matches for the same query: the current match stays on the same text.
-    pub fn update(&mut self, matches: Vec<Match>) {
+    /// `anchor` is where the current match's text is now (the selection, which moves with
+    /// the text); without it the old position is used.
+    pub fn update(&mut self, matches: Vec<Match>, anchor: Option<Pos>) {
         let was = self.current.and_then(|i| self.matches.get(i)).map(|m| m.start);
         self.matches = matches;
-        self.current = was.and_then(|start| self.matches.iter().position(|m| m.start == start));
+        self.current = anchor.or(was).and_then(|start| self.matches.iter().position(|m| m.start == start));
     }
 
     /// "N", or "i/N" with a current match, i counted from the bottom.
@@ -450,12 +452,12 @@ mod tests {
         let mut r = Results { matches: find_all(&s, "ab").unwrap(), current: None };
         r.current = Some(0);
         s.feed(b"x\r\nab\r\nab\r\nab\r\n");
-        r.update(find_all(&s, "ab").unwrap());
+        r.update(find_all(&s, "ab").unwrap(), None);
         assert_eq!(r.matches.len(), 5);
         assert!(r.matches.windows(2).all(|w| w[0].start < w[1].start));
         assert_eq!(r.current, Some(0));
         assert_eq!(r.matches[0].start, at(0, 0));
-        r.update(Vec::new());
+        r.update(Vec::new(), None);
         assert_eq!(r.current, None);
     }
 
@@ -485,5 +487,31 @@ mod tests {
 
     fn at_pos(row: usize, col: usize) -> Pos {
         Pos { row, col }
+    }
+
+    #[test]
+    fn the_current_match_follows_its_text_when_rows_drift() {
+        let m = |r| Match { start: at_pos(r, 0), end: at_pos(r, 1) };
+        let mut r = Results { matches: vec![m(5), m(6), m(7)], current: Some(1) };
+        // Scrollback is full: 3 lines dropped off the top, so every row moved up by 3.
+        r.update(vec![m(2), m(3), m(4), m(8)], Some(at_pos(3, 0)));
+        assert_eq!(r.current, Some(1));
+        assert_eq!(r.label(), "3/4");
+    }
+
+    #[test]
+    fn find_over_a_large_buffer_is_quick() {
+        let n = 100_000;
+        let mut s = Screen::with_scrollback(80, 24, n);
+        let mut text = String::new();
+        for i in 0..n {
+            text.push_str(&format!("line {i} {}\r\n", if i % 1000 == 0 { "needle" } else { "hay" }));
+        }
+        s.feed(text.as_bytes());
+        let t = std::time::Instant::now();
+        let hits = find_all(&s, "needle").unwrap();
+        let took = t.elapsed();
+        assert_eq!(hits.len(), 100);
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
     }
 }

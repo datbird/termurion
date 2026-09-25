@@ -124,9 +124,9 @@ pub fn expand(parameter: &str, captures: &[String], cwd: &str, host: &str, user:
         }
         match chars.peek().copied() {
             Some(d @ '0'..='8') => out.push_str(&quote(captures.get(d as usize - '0' as usize).map_or("", String::as_str))),
-            Some('d') => out.push_str(cwd),
-            Some('h') => out.push_str(host),
-            Some('u') => out.push_str(user),
+            Some('d') => out.push_str(&quote(cwd)),
+            Some('h') => out.push_str(&quote(host)),
+            Some('u') => out.push_str(&quote(user)),
             Some('n') => out.push('\n'),
             Some('\\') => out.push('\\'),
             _ => {
@@ -204,5 +204,11 @@ mod tests {
         let caps = vec!["a b".to_string(), "x\"y".to_string()];
         assert_eq!(expand("open \\0 in \\d on \\h as \\u\\n\\\\", &caps, "C:\\w", "box", "me", Escape::None), "open a b in C:\\w on box as me\n\\");
         assert_eq!(expand("code \\0 \\1 \\2", &caps, "", "", "", Escape::Cmd), "code \"a b\" \"x\"\"y\" \"\"");
+    }
+
+    #[test]
+    fn folder_host_and_user_are_quoted_for_cmd() {
+        let caps = vec!["m".to_string()];
+        assert_eq!(expand("x \\d \\h \\u", &caps, "C:\\a&b", "h&calc", "u\"x", Escape::Cmd), "x \"C:\\a&b\" \"h&calc\" \"u\"\"x\"");
     }
 }

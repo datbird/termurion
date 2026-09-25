@@ -15,11 +15,18 @@ pub fn zoom_lines(screen: &Screen, first: usize, last: usize) -> Vec<String> {
     find::logical_texts_over(screen, first, last)
 }
 
+/// The lines `new` adds after `old`, when `new` only grew at the end.
+pub fn appended<'a>(old: &[String], new: &'a [String]) -> Option<&'a [String]> {
+    (new.len() >= old.len() && new[..old.len()] == *old).then(|| &new[old.len()..])
+}
+
 /// A screen showing `lines`, scrolled to the bottom, with room for all of them.
 pub fn view(lines: &[String], like: &Screen) -> Screen {
     use alacritty_terminal::grid::Dimensions;
     let (cols, rows) = (like.term().columns(), like.term().screen_lines());
-    let look = Look { scrollback: lines.len() * (1 + lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) / cols.max(1)) + rows, ..Look::default() };
+    // Room for every line, and for Filter to add more as output arrives.
+    let wrap = 1 + lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) / cols.max(1);
+    let look = Look { scrollback: lines.len() * wrap + rows + 10_000, ..Look::default() };
     let mut s = Screen::with_look(cols, rows, like.palette.clone(), look);
     // No cursor: the view is read-only.
     s.feed(b"\x1b[?25l");
@@ -71,5 +78,15 @@ mod tests {
         let many: Vec<String> = (0..50).map(|i| format!("l{i}")).collect();
         let v = view(&many, &s);
         assert!(v.all_text().starts_with("l0\nl1\n"), "the view keeps every line");
+    }
+
+    #[test]
+    fn new_output_appends_to_the_filter_view() {
+        let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let old = v(&["a1", "a2"]);
+        assert_eq!(appended(&old, &v(&["a1", "a2", "a3"])), Some(&v(&["a3"])[..]));
+        assert_eq!(appended(&old, &v(&["a1", "a2"])), Some(&[][..]));
+        assert_eq!(appended(&old, &v(&["a2", "a3"])), None);
+        assert_eq!(appended(&old, &v(&["a1"])), None);
     }
 }

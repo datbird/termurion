@@ -28,6 +28,15 @@ pub fn snippet(line: &str, r: std::ops::Range<usize>) -> (String, std::ops::Rang
     (line[start..end].to_string(), r.start - start..r.end - start)
 }
 
+/// Most results listed; past this the list says how many it left out.
+pub const MAX_HITS: usize = 1000;
+
+/// Find Globally searches as you type from three characters; a shorter query waits for Return.
+pub fn should_search(query: &str, enter: bool) -> bool {
+    let n = query.chars().count();
+    n >= 3 || (enter && n > 0)
+}
+
 /// Hits grouped by session, in the order the sessions first appear.
 pub fn group(hits: Vec<Hit>) -> Vec<(u64, String, Vec<Hit>)> {
     let mut out: Vec<(u64, String, Vec<Hit>)> = Vec::new();
@@ -101,7 +110,8 @@ impl GlobalFindWindow {
                         out = GlobalEvent::Search(query.clone());
                     }
                 }
-                if r.changed() {
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (r.changed() || enter) && should_search(query, enter) {
                     out = GlobalEvent::Search(query.clone());
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -162,5 +172,13 @@ mod tests {
         assert_eq!((s.as_str(), r), ("a needle b", 2..8));
         let (s, r) = snippet("\u{4e2d}\u{6587}needle", 6..12);
         assert_eq!(&s[r], "needle");
+    }
+
+    #[test]
+    fn short_queries_wait_for_return() {
+        assert!(!should_search("ab", false));
+        assert!(should_search("ab", true));
+        assert!(should_search("abc", false));
+        assert!(!should_search("", true));
     }
 }

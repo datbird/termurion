@@ -184,8 +184,7 @@ impl App {
         let dark = self.dark();
         if let Some(pane) = self.focused_pane() {
             pane.profile = p.guid();
-            pane.screen.set_palette(crate::palette::Palette::from_profile(&p, dark));
-            pane.screen.set_look(crate::screen::Look::from_profile(&p));
+            pane.restyle(crate::palette::Palette::from_profile(&p, dark), crate::screen::Look::from_profile(&p));
         }
     }
 

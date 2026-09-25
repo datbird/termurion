@@ -73,8 +73,8 @@ impl Pane {
     }
 
     pub fn paste(&mut self, text: &str) {
-        let bracketed = self.screen.term().mode().contains(TermMode::BRACKETED_PASTE);
-        self.input(&paste_bytes(text, bracketed));
+        let bytes = self.paste_payload(text);
+        self.input(&bytes);
     }
 
     /// Resizes the screen and the pty. A pane squeezed to nothing keeps 2x1.
@@ -123,6 +123,29 @@ impl Pane {
 
     pub fn scroll(&mut self, scroll: Scroll) {
         self.screen.term_mut().scroll_display(scroll);
+    }
+
+    /// What a paste sends: bracketed when the pane's own screen asks for it.
+    pub fn paste_payload(&self, text: &str) -> Vec<u8> {
+        let bracketed = self.own().term().mode().contains(TermMode::BRACKETED_PASTE);
+        paste_bytes(text, bracketed)
+    }
+
+    /// New colors and cursor for the pane, on its own screen and any view.
+    pub fn restyle(&mut self, palette: crate::palette::Palette, look: crate::screen::Look) {
+        if let Some(live) = &mut self.live {
+            live.set_palette(palette.clone());
+            live.set_look(look.clone());
+        }
+        self.screen.set_palette(palette);
+        self.screen.set_look(look);
+    }
+
+    pub fn set_cell_px(&mut self, w: u16, h: u16) {
+        if let Some(live) = &mut self.live {
+            live.set_cell_px(w, h);
+        }
+        self.screen.set_cell_px(w, h);
     }
 
     /// The pane's own screen, also while a view shows.
@@ -311,5 +334,19 @@ mod tests {
         let t = Instant::now();
         drop(p);
         assert!(t.elapsed() < Duration::from_millis(500), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn a_view_keeps_the_panes_own_modes_and_style() {
+        let mut p = start("cmd.exe");
+        p.own_mut().feed(b"\x1b[?2004h");
+        let view = crate::synthetic::view(&["x".to_string()], p.own());
+        p.show_view(view);
+        assert!(p.paste_payload("a\nb").starts_with(b"\x1b[200~"));
+        let mut red = crate::palette::Palette::default();
+        red.bg = crate::palette::rgb(0x80, 0, 0);
+        p.restyle(red.clone(), crate::screen::Look::default());
+        p.end_view();
+        assert_eq!(p.screen.palette.bg, red.bg);
     }
 }

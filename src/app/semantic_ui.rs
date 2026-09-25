@@ -185,6 +185,19 @@ impl App {
                 }
             }
             Run::Later(name, m) => self.banners.set("action", format!("{name} comes in milestone {m}.")),
+            Run::Blocked(why) => self.banners.set("action", why),
+            Run::Reveal(path) => {
+                // Explorer shows the file selected; nothing runs it.
+                let mut cmd = std::process::Command::new("explorer.exe");
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.raw_arg(format!("/select,{}", semantic::cmd_quote(&path)));
+                }
+                if let Err(e) = cmd.spawn() {
+                    self.banners.set("action", format!("Could not show {path}: {e}"));
+                }
+            }
         }
         self.redraw();
     }
@@ -200,8 +213,14 @@ impl App {
             .and_then(|(id, rect)| {
                 let (col, row, _) = self.cell_at(id, rect, x, y);
                 let point = self.grid_point(id, col, row);
-                self.target_at(id, point).map(|(_, _, cells)| (id, cells))
+                self.target_at(id, point).map(|(_, target, cells)| (id, cells, target))
             });
+        // A link's text can differ from where it goes, so the target shows while hovering.
+        match hover.as_ref().map(|(_, _, t)| t) {
+            Some(Target::Link(u) | Target::Url(u)) => self.banners.set("hover", format!("Win-click opens {u}")),
+            _ => self.banners.clear("hover"),
+        }
+        let hover = hover.map(|(id, cells, _)| (id, cells));
         if hover != self.hover {
             self.hover = hover;
             if let Some(g) = &self.gpu {

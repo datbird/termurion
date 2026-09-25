@@ -366,8 +366,7 @@ impl App {
         }
         match Pane::start(id, &self.api, &cmd, Some(&cwd), cols, rows, self.notify.clone()) {
             Ok(mut pane) => {
-                pane.screen.set_palette(Palette::from_profile(&p, self.dark()));
-                pane.screen.set_look(Look::from_profile(&p));
+                pane.restyle(Palette::from_profile(&p, self.dark()), Look::from_profile(&p));
                 pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
                 pane.profile = p.guid();
                 self.panes.insert(id, pane);
@@ -440,9 +439,8 @@ impl App {
         let dark = self.dark();
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
-            pane.screen.set_palette(Palette::from_profile(p, dark));
-            pane.screen.set_look(Look::from_profile(p));
-            pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+            pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
+            pane.own_mut().place_prompt_first_column = p.bool("Place Prompt at First Column");
         }
         self.redraw();
     }
@@ -562,7 +560,7 @@ impl App {
         for (id, (cols, rows)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 p.resize(cols, rows);
-                p.screen.set_cell_px(cw as u16, ch as u16);
+                p.set_cell_px(cw as u16, ch as u16);
             }
         }
         self.redraw();
@@ -755,7 +753,7 @@ impl App {
     fn key_bytes(&self, key: &Key, base: Option<&Key>, text: Option<&str>, keypad: bool) -> Option<Vec<u8>> {
         let t = self.tabs.get(self.active)?;
         let pane = self.panes.get(&t.focused)?;
-        let mode = *pane.screen.term().mode();
+        let mode = *pane.own().term().mode();
         let opts = self.store.get(&pane.profile).map_or(KeyOptions { left_option: 2, right_option: 2, option_is_alt: true, app_keypad_allowed: false }, KeyOptions::from_profile);
         keys::press_bytes_with(key, base, text, self.mods, self.alt_side, mode.contains(TermMode::APP_CURSOR), mode.contains(TermMode::APP_KEYPAD), keypad, &opts)
     }
@@ -1163,7 +1161,8 @@ impl App {
                     let shortcuts = self.shortcuts.as_ref().filter(|s| s.pane == id);
                     let labeled: Vec<crate::find::Match> = shortcuts.map(|s| s.items.iter().map(|(_, m, _)| *m).collect()).unwrap_or_default();
                     let labels: Vec<(crate::find::Pos, String)> = shortcuts.map(|s| s.items.iter().map(|(l, m, _)| (m.start, l.clone())).collect()).unwrap_or_default();
-                    let matches = if labeled.is_empty() { self.finds.get(&id).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
+                    // Find highlights show only while the find bar is open.
+                    let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels };
                     scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));

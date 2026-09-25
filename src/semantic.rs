@@ -135,6 +135,9 @@ fn existing(text: &str, cwd: Option<&Path>) -> Option<PathBuf> {
             tries.push(rest.to_string());
         }
     }
+    // A share name ("\\\\host\\x", "//host/x") or URL text would make Windows try the
+    // network, which can take 20 s and hands the host the user's credentials.
+    tries.retain(|t| !(t.starts_with("\\\\") || t.starts_with("//") || t.contains("://")));
     tries.into_iter().find_map(|t| {
         let p = match t.strip_prefix("~/").or_else(|| t.strip_prefix("~\\")) {
             Some(rest) => home()?.join(rest),
@@ -255,6 +258,94 @@ pub enum Run {
     Send(String),
     /// An action a later milestone brings: its name and the milestone.
     Later(&'static str, u8),
+    /// Show a file in Explorer instead of running it.
+    Reveal(String),
+    /// Not opened, and why.
+    Blocked(String),
+}
+
+/// What opening `target` (a URL or a path) runs. Only http, https, mailto, and ftp links
+/// open; a file: link is a path; a program or script is shown, never run.
+pub fn guard_open(target: &str, has_code: bool) -> Run {
+    let scheme = target.split_once(':').map(|(s, _)| s).filter(|s| {
+        // A drive letter ("C:") is a path, not a scheme.
+        s.len() > 1 && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+    });
+    match scheme.map(str::to_ascii_lowercase).as_deref() {
+        None => file_open(target, None, None, has_code),
+        Some("http" | "https" | "mailto" | "ftp") => Run::Open(target.to_string()),
+        Some("file") => match file_url_path(target) {
+            Some(p) => file_open(&p, None, None, has_code),
+            None => Run::Blocked(format!("Tandem does not open network file links: {target}")),
+        },
+        Some(s) => Run::Blocked(format!("Tandem opens only http, https, mailto, and ftp links, not {s}: links.")),
+    }
+}
+
+/// Programs and scripts: "open" would run them, so Tandem shows them instead.
+const RUNNABLE: &[&str] = &[
+    "exe", "com", "bat", "cmd", "btm", "js", "jse", "vbs", "vbe", "vb", "wsf", "wsh", "ws", "hta", "msi", "msp", "msc",
+    "lnk", "scr", "pif", "cpl", "reg", "url", "ps1", "psm1", "py", "pyw", "pyc", "pyz", "jar", "appref-ms",
+    "application", "gadget", "inf", "scf", "sct", "chm", "library-ms", "settingcontent-ms", "appx", "msix",
+    "appinstaller", "diagcab",
+];
+
+fn runnable(path: &str) -> bool {
+    let Some(ext) = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()) else { return false };
+    RUNNABLE.contains(&ext.as_str())
+        || std::env::var("PATHEXT").is_ok_and(|p| p.split(';').any(|e| e.trim_start_matches('.').eq_ignore_ascii_case(&ext)))
+}
+
+/// A local file: link as a Windows path. None for a link to another machine.
+fn file_url_path(url: &str) -> Option<String> {
+    let rest = &url[url.find(':')? + 1..];
+    let rest = rest.strip_prefix("//").map_or(Some(rest), |r| {
+        let (host, path) = r.split_at(r.find('/').unwrap_or(r.len()));
+        (host.is_empty() || host.eq_ignore_ascii_case("localhost")).then_some(path)
+    })?;
+    let bytes = rest.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&rest[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    let path = String::from_utf8_lossy(&out).to_string();
+    // "/C:/x" is "C:\x".
+    let path = match path.strip_prefix('/') {
+        Some(p) if p.as_bytes().get(1) == Some(&b':') => p.to_string(),
+        _ => path,
+    };
+    (!path.starts_with("//")).then(|| path.replace('/', "\\"))
+}
+
+/// Opening a file: its default app, except a program or script, which VS Code opens when
+/// it is on the PATH and Explorer shows otherwise.
+fn file_open(p: &str, line: Option<u32>, column: Option<u32>, has_code: bool) -> Run {
+    let goto = || {
+        let mut at = p.to_string();
+        if let Some(n) = line {
+            at.push_str(&format!(":{n}"));
+            if let Some(c) = column {
+                at.push_str(&format!(":{c}"));
+            }
+        }
+        cmd_quote(&at)
+    };
+    if has_code && (line.is_some() || runnable(p)) {
+        Run::Command(format!("code -g {}", goto()))
+    } else if runnable(p) {
+        Run::Reveal(p.to_string())
+    } else {
+        Run::Open(p.to_string())
+    }
 }
 
 /// The text around the click and the session's folder, for \\3, \\4, and \\5.
@@ -299,7 +390,7 @@ pub fn fill(template: &str, values: [&str; 5], each: impl Fn(&str) -> String) ->
 /// caller's (they carry their own parameters).
 pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> Option<Run> {
     match target {
-        Target::Link(u) | Target::Url(u) => Some(Run::Open(u.clone())),
+        Target::Link(u) | Target::Url(u) => Some(guard_open(u, has_code)),
         Target::Action { .. } => None,
         Target::RawCommand(word) => (prefs.action == "raw command")
             .then(|| Run::Command(fill(&prefs.text, [word, "", around.prefix, around.suffix, around.cwd], cmd_quote))),
@@ -319,14 +410,13 @@ pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> 
                 cmd_quote(&at)
             };
             Some(match prefs.action.as_str() {
-                "url" => Run::Open(fill(&prefs.text, values, percent_encode)),
+                "url" => guard_open(&fill(&prefs.text, values, percent_encode), has_code),
                 "editor" if prefs.editor.to_lowercase().contains("code") => Run::Command(format!("{} -g {}", cmd_quote(&prefs.editor), goto())),
                 "editor" => Run::Command(format!("{} {}", cmd_quote(&prefs.editor), cmd_quote(&p))),
                 "command" | "raw command" => Run::Command(fill(&prefs.text, values, cmd_quote)),
                 "coprocess" => Run::Later("Run Coprocess", 6),
                 "send text" => Run::Send(fill(&prefs.text, values, str::to_string)),
-                _ if has_code && line.is_some() => Run::Command(format!("code -g {}", goto())),
-                _ => Run::Open(p),
+                _ => file_open(&p, *line, *column, has_code),
             })
         }
     }
@@ -459,7 +549,7 @@ mod tests {
         let co = Prefs { action: "coprocess".into(), text: "x".into(), editor: String::new() };
         assert_eq!(plan(&file, &co, &around, false), Some(Run::Later("Run Coprocess", 6)));
         assert_eq!(plan(&Target::Url("https://a/".into()), &co, &around, false), Some(Run::Open("https://a/".into())));
-        assert_eq!(plan(&Target::Link("file:///c:/x".into()), &best, &around, false), Some(Run::Open("file:///c:/x".into())));
+        assert_eq!(plan(&Target::Link("file:///c:/x".into()), &best, &around, false), Some(Run::Open("c:\\x".into())));
     }
 
     #[test]
@@ -491,5 +581,45 @@ mod tests {
         let (before, after) = click("(www.ex|ample.com)");
         let (_, r) = resolve_range(&ClickContext { before: before.clone(), after: after.clone(), ..Default::default() }).unwrap();
         assert_eq!(&format!("{before}{after}")[r.unwrap()], "www.example.com");
+    }
+
+    #[test]
+    fn unc_paths_are_never_probed() {
+        // A dead address: probing it as a share takes about 21 s on Windows.
+        let t = std::time::Instant::now();
+        assert_eq!(find_path("see ", "\\\\10.255.255.1\\x\\y", None), None);
+        assert_eq!(find_path("go ", "//10.255.255.1/x", None), None);
+        let d = dir("unc", &[]);
+        let (b, a) = click("at https://10.255.255.1/x|/y now");
+        assert_eq!(find_path(&b, &a, Some(&d)), None);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+    }
+
+    #[test]
+    fn executables_are_shown_not_run() {
+        let best = Prefs::from_value(None);
+        for name in ["setup.py", "build.js", "x.EXE", "run.bat", "a.lnk", "b.ps1"] {
+            let file = Target::File { path: PathBuf::from(format!("C:\\w\\{name}")), line: None, column: None };
+            assert_eq!(plan(&file, &best, &Around::default(), false), Some(Run::Reveal(format!("C:\\w\\{name}"))), "{name}");
+        }
+        let script = Target::File { path: PathBuf::from("C:\\w\\setup.py"), line: Some(2), column: None };
+        assert_eq!(plan(&script, &best, &Around::default(), true), Some(Run::Command("code -g \"C:\\w\\setup.py:2\"".into())));
+        let text = Target::File { path: PathBuf::from("C:\\w\\notes.txt"), line: None, column: None };
+        assert_eq!(plan(&text, &best, &Around::default(), false), Some(Run::Open("C:\\w\\notes.txt".into())));
+    }
+
+    #[test]
+    fn links_open_only_safe_schemes() {
+        assert_eq!(guard_open("https://docs.rs/x", false), Run::Open("https://docs.rs/x".into()));
+        assert_eq!(guard_open("mailto:a@b.c", false), Run::Open("mailto:a@b.c".into()));
+        assert!(matches!(guard_open("ms-msdt:/id x", false), Run::Blocked(_)));
+        assert!(matches!(guard_open("search-ms:query=x", false), Run::Blocked(_)));
+        assert_eq!(guard_open("file:///C:/Users/u/Downloads/x.exe", false), Run::Reveal("C:\\Users\\u\\Downloads\\x.exe".into()));
+        assert_eq!(guard_open("file:///C:/docs/a%20b.txt", false), Run::Open("C:\\docs\\a b.txt".into()));
+        assert_eq!(guard_open("C:\\tools\\x.bat", false), Run::Reveal("C:\\tools\\x.bat".into()));
+        let best = Prefs::from_value(None);
+        let link = Target::Link("file:///C:/x/evil.cmd".into());
+        assert_eq!(plan(&link, &best, &Around::default(), false), Some(Run::Reveal("C:\\x\\evil.cmd".into())));
+        assert!(matches!(plan(&Target::Url("javascript://x".into()), &best, &Around::default(), false), Some(Run::Blocked(_))));
     }
 }

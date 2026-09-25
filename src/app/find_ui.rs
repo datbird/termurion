@@ -42,6 +42,48 @@ pub(super) enum Outcome {
     PasteMatch,
 }
 
+/// What must happen before Find Next or Find Previous steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PreStep {
+    /// Nothing waits: step.
+    Step,
+    /// A new query: search it; that search picks the match, so do not step after.
+    Fresh,
+    /// New output: search again keeping the current match, then step.
+    Refresh,
+}
+
+/// Where a key goes while the find bar has the keyboard.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum BarRoute {
+    Key(BarKey),
+    /// Paste the clipboard into the query.
+    Paste,
+    /// The bar keeps the key and does nothing with it.
+    Swallow,
+    /// The key goes on to key routing (Ctrl+Tab).
+    Pass,
+}
+
+/// The find bar's handling of a key.
+pub(super) fn route_key(key: &WKey, text: Option<&str>, mods: crate::mouse::Mods) -> BarRoute {
+    let printable = text.filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+    match key {
+        WKey::Named(NamedKey::Enter) if mods.alt => BarRoute::Key(BarKey::PasteMatch),
+        WKey::Named(NamedKey::Enter) if mods.shift => BarRoute::Key(BarKey::Previous),
+        WKey::Named(NamedKey::Enter) => BarRoute::Key(BarKey::Next),
+        WKey::Named(NamedKey::Escape) => BarRoute::Key(BarKey::Close),
+        WKey::Named(NamedKey::Backspace) => BarRoute::Key(BarKey::Backspace),
+        // Ctrl+Tab still cycles tabs.
+        WKey::Named(NamedKey::Tab) if mods.ctrl => BarRoute::Pass,
+        WKey::Named(NamedKey::Tab) => BarRoute::Key(BarKey::Grow),
+        WKey::Character(c) if mods.ctrl && !mods.alt && c.eq_ignore_ascii_case("v") => BarRoute::Paste,
+        // Plain typing, and AltGr (which arrives as Ctrl+Alt) typing a character.
+        _ if printable.is_some() && mods.ctrl == mods.alt => BarRoute::Key(BarKey::Text(printable.unwrap_or_default().to_string())),
+        _ => BarRoute::Swallow,
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct FindState {
     pub open: bool,
@@ -58,6 +100,8 @@ pub(super) struct FindState {
     pub typing: bool,
     /// The bar is Filter's: the query picks the lines the pane shows.
     pub filter: bool,
+    /// The lines the Filter view shows.
+    pub shown: Vec<String>,
 }
 
 impl FindState {
@@ -79,10 +123,19 @@ impl FindState {
 
     /// New output arrived: search again soon, keeping the current match.
     pub fn output_changed(&mut self, now: Instant) {
-        if (!self.query.is_empty() || self.filter) && !self.pending {
+        if self.open && (!self.query.is_empty() || self.filter) && !self.pending {
             self.pending = true;
             self.fresh = false;
             self.changed_at = Some(now);
+        }
+    }
+
+    pub fn before_step(&self) -> PreStep {
+        match (self.pending, self.fresh) {
+            (true, true) => PreStep::Fresh,
+            (true, false) => PreStep::Refresh,
+            (false, _) if self.results.matches.is_empty() => PreStep::Fresh,
+            (false, _) => PreStep::Step,
         }
     }
 
@@ -140,6 +193,7 @@ impl FindState {
         self.open = false;
         self.typing = false;
         self.filter = false;
+        self.shown.clear();
         self.pending = false;
         self.error = None;
         self.results = Results::default();
@@ -207,30 +261,14 @@ impl App {
     /// to the terminal (chords with Ctrl or Alt it has no use for).
     pub(super) fn find_key(&mut self, ev: &KeyEvent) -> bool {
         let Some(id) = self.typing_in_find() else { return false };
-        let m = self.mods;
-        let key = match &ev.logical_key {
-            WKey::Named(NamedKey::Enter) if m.alt => BarKey::PasteMatch,
-            WKey::Named(NamedKey::Enter) if m.shift => BarKey::Previous,
-            WKey::Named(NamedKey::Enter) => BarKey::Next,
-            WKey::Named(NamedKey::Escape) => BarKey::Close,
-            WKey::Named(NamedKey::Backspace) => BarKey::Backspace,
-            WKey::Named(NamedKey::Tab) if !m.ctrl => BarKey::Grow,
-            WKey::Character(c) if m.ctrl && !m.alt && c.eq_ignore_ascii_case("v") => {
-                match self.clipboard.as_mut().map(|cb| cb.get_text()) {
-                    Some(Ok(t)) => BarKey::Text(t.replace(['\r', '\n'], " ")),
-                    Some(Err(e)) => {
-                        self.banners.set("clipboard", format!("Paste failed: {e}"));
-                        return true;
-                    }
-                    None => return true,
-                }
+        let key = match route_key(&ev.logical_key, ev.text.as_deref(), self.mods) {
+            BarRoute::Key(k) => k,
+            BarRoute::Paste => {
+                self.paste_into_find(id);
+                return true;
             }
-            // AltGr arrives as Ctrl+Alt and types text.
-            _ if (!m.ctrl || m.alt) && ev.text.as_deref().is_some_and(|t| !t.chars().any(char::is_control)) => {
-                BarKey::Text(ev.text.as_deref().unwrap_or_default().to_string())
-            }
-            WKey::Named(_) if !m.ctrl && !m.alt => return true,
-            _ => return false,
+            BarRoute::Swallow => return true,
+            BarRoute::Pass => return false,
         };
         let now = Instant::now();
         let Some(f) = self.finds.get_mut(&id) else { return false };
@@ -256,6 +294,19 @@ impl App {
         true
     }
 
+    /// Pastes the clipboard into the find query, on one line.
+    fn paste_into_find(&mut self, id: PaneId) {
+        let text = match self.clipboard.as_mut().map(|cb| cb.get_text()) {
+            Some(Ok(t)) => t.replace(['\r', '\n'], " "),
+            Some(Err(e)) => return self.banners.set("clipboard", format!("Paste failed: {e}")),
+            None => return,
+        };
+        if let Some(f) = self.finds.get_mut(&id) {
+            f.key(BarKey::Text(text), Instant::now());
+        }
+        self.redraw();
+    }
+
     /// Runs the searches whose time has come. Returns when the next one is due.
     pub(super) fn run_due_searches(&mut self) -> Option<Instant> {
         let now = Instant::now();
@@ -263,7 +314,7 @@ impl App {
             self.finds.iter_mut().filter_map(|(id, f)| f.take_due(now).map(|fresh| (*id, fresh))).collect();
         for (id, fresh) in due {
             if self.finds.get(&id).is_some_and(|f| f.filter) {
-                self.refilter(id);
+                self.refilter(id, fresh);
             } else {
                 self.search(id, fresh);
             }
@@ -292,22 +343,50 @@ impl App {
             }
             Ok(matches) => {
                 f.error = None;
-                f.results.update(matches);
+                // The selection moves with the text, so it finds the current match again
+                // after lines drop off the top of a full scrollback.
+                let term = p.screen.term();
+                let anchor = f.results.current.and(term.selection.as_ref().and_then(|s| s.to_range(term))).map(|r| to_pos(&p.screen, r.start));
+                f.results.update(matches, anchor);
             }
         }
         self.redraw();
     }
 
-    /// Filter: the pane shows the lines of its own screen that match the query.
-    fn refilter(&mut self, id: PaneId) {
+    /// Filter: the pane shows the lines of its own screen that match the query. An empty
+    /// query shows the pane's own screen. New output adds its matching lines to the view,
+    /// which keeps its scroll position and selection.
+    fn refilter(&mut self, id: PaneId, fresh: bool) {
         let mode = self.find_mode();
         let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
+        if f.query.is_empty() {
+            f.error = None;
+            f.shown.clear();
+            p.end_view();
+            return self.redraw();
+        }
         match crate::synthetic::filter_lines(p.own(), &find::pattern(&f.query, mode)) {
             Err(e) => f.error = Some(e),
             Ok(lines) => {
                 f.error = None;
-                let view = crate::synthetic::view(&lines, p.own());
-                p.show_view(view);
+                let tail = (!fresh && p.live.is_some()).then(|| crate::synthetic::appended(&f.shown, &lines)).flatten();
+                match tail {
+                    Some(tail) => {
+                        let mut bytes = String::new();
+                        for (i, l) in tail.iter().enumerate() {
+                            if i > 0 || !f.shown.is_empty() {
+                                bytes.push_str("\r\n");
+                            }
+                            bytes.push_str(l);
+                        }
+                        p.screen.feed(bytes.as_bytes());
+                    }
+                    None => {
+                        let view = crate::synthetic::view(&lines, p.own());
+                        p.show_view(view);
+                    }
+                }
+                f.shown = lines;
             }
         }
         self.redraw();
@@ -326,14 +405,19 @@ impl App {
 
     /// Find Next (`up`) or Find Previous, with the pane's query, opening nothing.
     pub(super) fn find_step(&mut self, id: PaneId, up: bool) {
-        if self.finds.get(&id).is_some_and(|f| f.results.matches.is_empty() || f.pending) {
-            if let Some(f) = self.finds.get_mut(&id) {
-                f.pending = false;
-            }
-            self.search(id, true);
-            // The fresh search already made a match current.
-            if self.finds.get(&id).is_some_and(|f| f.results.current.is_some()) {
-                return;
+        let pre = self.finds.get(&id).map_or(PreStep::Fresh, FindState::before_step);
+        if let Some(f) = self.finds.get_mut(&id) {
+            f.pending = false;
+        }
+        match pre {
+            PreStep::Step => {}
+            PreStep::Refresh => self.search(id, false),
+            PreStep::Fresh => {
+                self.search(id, true);
+                // The fresh search already made a match current.
+                if self.finds.get(&id).is_some_and(|f| f.results.current.is_some()) {
+                    return;
+                }
             }
         }
         let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
@@ -376,6 +460,11 @@ impl App {
 
     /// The find bar's menu commands. Returns false for other selectors.
     pub(super) fn run_find_command(&mut self, selector: &str, label: &str) -> bool {
+        // Win+V while the bar has the keyboard pastes into the query, as Cmd+V does in iTerm2.
+        if let (Some(id), "paste:") = (self.typing_in_find(), selector) {
+            self.paste_into_find(id);
+            return true;
+        }
         let Some(id) = self.focused_id() else { return true };
         let now = Instant::now();
         match (selector, label) {
@@ -556,8 +645,11 @@ impl App {
                     let pattern = find::pattern(&q, self.find_mode());
                     let mut hits = Vec::new();
                     let mut error = None;
-                    for (n, tab) in self.tabs.iter().enumerate() {
+                    'panes: for (n, tab) in self.tabs.iter().enumerate() {
                         for id in tab.layout.panes() {
+                            if hits.len() >= crate::global_find_ui::MAX_HITS {
+                                break 'panes;
+                            }
                             let Some(p) = self.panes.get(&id) else { continue };
                             let title = format!("Tab {}: {}", n + 1, p.own().title().unwrap_or("Shell"));
                             match find::find_hits(&p.screen, &pattern) {
@@ -568,6 +660,10 @@ impl App {
                                 Err(e) => error = Some(e),
                             }
                         }
+                    }
+                    if hits.len() >= crate::global_find_ui::MAX_HITS {
+                        hits.truncate(crate::global_find_ui::MAX_HITS);
+                        error = error.or(Some(format!("Showing the first {} matches.", crate::global_find_ui::MAX_HITS)));
                     }
                     if let Some(w) = self.global_find.as_mut() {
                         w.set_results(group(hits), error);
@@ -685,5 +781,48 @@ mod tests {
         assert_eq!(f.key(BarKey::PasteMatch, t), Outcome::PasteMatch);
         assert_eq!(f.key(BarKey::Text("d".into()), t), Outcome::Nothing);
         assert_eq!(f.query, "abcd");
+    }
+
+    #[test]
+    fn a_closed_bar_does_not_search_on_output() {
+        let t = Instant::now();
+        let mut f = typed("abc", t);
+        f.take_due(t);
+        f.key(BarKey::Close, t);
+        f.output_changed(t);
+        assert_eq!(f.due(), None);
+    }
+
+    #[test]
+    fn find_next_during_output_searches_then_steps() {
+        let t = Instant::now();
+        let mut f = typed("abc", t);
+        assert_eq!(f.before_step(), PreStep::Fresh);
+        f.take_due(t);
+        f.results.matches.push(crate::find::Match { start: Default::default(), end: Default::default() });
+        assert_eq!(f.before_step(), PreStep::Step);
+        f.output_changed(t);
+        assert_eq!(f.before_step(), PreStep::Refresh);
+        let empty = FindState::default();
+        assert_eq!(empty.before_step(), PreStep::Fresh);
+    }
+
+    #[test]
+    fn ctrl_chords_stay_in_the_bar() {
+        use crate::mouse::Mods;
+        let none = Mods::default();
+        let ctrl = Mods { ctrl: true, ..none };
+        let c = |s: &str| WKey::Character(s.into());
+        assert_eq!(route_key(&c("c"), Some("\u{3}"), ctrl), BarRoute::Swallow);
+        assert_eq!(route_key(&c("d"), Some("\u{4}"), ctrl), BarRoute::Swallow);
+        assert_eq!(route_key(&c("v"), Some("\u{16}"), ctrl), BarRoute::Paste);
+        assert_eq!(route_key(&WKey::Named(NamedKey::Tab), None, ctrl), BarRoute::Pass);
+        assert_eq!(route_key(&WKey::Named(NamedKey::Tab), None, none), BarRoute::Key(BarKey::Grow));
+        assert_eq!(route_key(&c("x"), Some("x"), none), BarRoute::Key(BarKey::Text("x".into())));
+        let altgr = Mods { ctrl: true, alt: true, ..none };
+        assert_eq!(route_key(&c("@"), Some("@"), altgr), BarRoute::Key(BarKey::Text("@".into())));
+        assert_eq!(route_key(&WKey::Named(NamedKey::Enter), None, Mods { alt: true, ..none }), BarRoute::Key(BarKey::PasteMatch));
+        assert_eq!(route_key(&WKey::Named(NamedKey::ArrowUp), None, none), BarRoute::Swallow);
+        assert_eq!(route_key(&c("b"), Some("b"), Mods { alt: true, ..none }), BarRoute::Swallow);
     }
 }
