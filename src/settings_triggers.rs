@@ -225,6 +225,7 @@ fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String) -> bool {
 /// the profile's triggers changed.
 pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
     let mut list = profile.get("Triggers").map(|v| triggers::parse_list(&v)).unwrap_or_default();
+    let interpolated = profile.bool("Triggers Use Interpolated Strings");
     let sel_id = egui::Id::new("trigger-selected");
     let mut selected: Option<usize> = take_focus(list.len()).or_else(|| ui.data(|d| d.get_temp(sel_id))).filter(|i: &usize| *i < list.len());
     let mut changed = false;
@@ -299,6 +300,12 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
             });
             if let Err(e) = fancy_regex::Regex::new(&t.regex) {
                 ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("This expression does not compile, so the trigger never fires: {e}"));
+            }
+            // An interpolated parameter that cannot be evaluated (iTerm2: Error in Trigger Parameter).
+            if interpolated && t.parameter.contains("\\(") {
+                if let Err(e) = crate::interp::evaluate(&t.parameter, &|_| None, &[]) {
+                    ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("Error in Trigger Parameter: {e}"));
+                }
             }
             if !t.job.is_empty() {
                 ui.weak("Job triggers fire once Tandem knows the program in front (milestone 6c).");

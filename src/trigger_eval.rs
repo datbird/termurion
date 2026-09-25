@@ -36,6 +36,8 @@ pub enum TriggerRequest {
     ProfileSetting { key: String, on: bool },
     Coprocess { cmd: String, silent: bool },
     Unavailable { trigger: usize, title: String, milestone: u8 },
+    /// An interpolated parameter that cannot be evaluated (shown once).
+    ParameterError { trigger: usize, text: String },
 }
 
 /// A trigger with its compiled pattern (or the pattern's error).
@@ -46,6 +48,8 @@ pub struct Compiled {
     pub error: Option<String>,
     /// The line an Instant trigger last fired on.
     last_line: Option<i64>,
+    /// Show Alert's Disable This Alert: off for this session, not in the profile.
+    pub off_here: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -188,18 +192,32 @@ const RADIUS: i32 = 3;
 const INSTANT_EVERY: Duration = Duration::from_millis(500);
 
 impl Screen {
+    /// The profile's triggers. A trigger that is unchanged keeps its state (the line an
+    /// Instant trigger fired on, Disable This Alert), so a settings refresh fires nothing.
     pub fn set_triggers(&mut self, list: Vec<Trigger>, prefs: TriggerPrefs) {
+        let old = std::mem::take(&mut self.triggers.list);
         self.triggers.list = list
             .into_iter()
-            .map(|trigger| {
+            .enumerate()
+            .map(|(i, trigger)| {
+                if let Some(prev) = old.get(i).filter(|p| p.trigger == trigger) {
+                    return prev.clone();
+                }
                 let (re, error) = match fancy_regex::Regex::new(&trigger.regex) {
                     Ok(re) => (Some(re), None),
                     Err(e) => (None, Some(e.to_string())),
                 };
-                Compiled { trigger, re, error, last_line: None }
+                Compiled { trigger, re, error, last_line: None, off_here: false }
             })
             .collect();
         self.triggers.prefs = prefs;
+    }
+
+    /// Disable This Alert: trigger `i` stays off for this session.
+    pub fn disable_trigger_here(&mut self, i: usize) {
+        if let Some(c) = self.triggers.list.get_mut(i) {
+            c.off_here = true;
+        }
     }
 
     /// Patterns that do not compile: (index, error).
@@ -208,7 +226,7 @@ impl Screen {
     }
 
     fn row_number(&self, line: i32) -> i64 {
-        self.term.scrolled_off as i64 + line as i64
+        self.term.grid().scrolled_off() as i64 + line as i64
     }
 
     fn cursor_row(&self) -> i64 {
@@ -228,21 +246,35 @@ impl Screen {
     pub(crate) fn run_triggers_after_feed(&mut self) {
         let cursor = self.cursor_row();
         let alt = self.term.mode().contains(TermMode::ALT_SCREEN);
-        if alt != self.triggers.alt || !self.triggers_active() {
+        if alt != self.triggers.alt {
+            // Another grid, other row numbers.
             self.triggers.alt = alt;
+            self.triggers.next = cursor;
+            return;
+        }
+        if !self.triggers_active() {
             if !self.triggers.busy {
-                self.triggers.next = cursor;
+                self.triggers.next = self.triggers.next.max(cursor);
             }
             return;
         }
         let g = self.term.grid();
-        let (history, lines, cols) = (g.history_size() as i64, g.screen_lines() as i32, g.columns());
-        let first = self.triggers.next.max(self.term.scrolled_off as i64 - history);
-        self.triggers.next = cursor;
+        let (history, cols) = (g.history_size() as i64, g.columns());
+        let first = self.triggers.next.max(g.scrolled_off() as i64 - history);
+        // A high-water mark: a cursor moving up does not bring lines back to check.
+        self.triggers.next = self.triggers.next.max(cursor);
         for row in first..cursor {
-            let line = (row - self.term.scrolled_off as i64) as i32;
-            if line >= lines {
+            // An action (Inject Data) may have switched screens: that grid's rows are not these.
+            if self.term.mode().contains(TermMode::ALT_SCREEN) != alt {
                 break;
+            }
+            let g = self.term.grid();
+            let line = (row - g.scrolled_off() as i64) as i32;
+            if line >= g.screen_lines() as i32 {
+                break;
+            }
+            if line < -(g.history_size() as i32) {
+                continue;
             }
             let wraps = self.term.grid()[Line(line)][Column(cols - 1)].flags.contains(Flags::WRAPLINE);
             if !wraps {
@@ -316,7 +348,7 @@ impl Screen {
             let c = &self.triggers.list[i];
             let t = &c.trigger;
             // Jobs are known from milestone 6c; event triggers come with 6b.
-            if !t.enabled || c.re.is_none() || t.match_type != 0 || !t.job.is_empty() {
+            if !t.enabled || c.off_here || c.re.is_none() || t.match_type != 0 || !t.job.is_empty() {
                 continue;
             }
             let multi = triggers::action_info(&t.action).is_some_and(|a| a.multi_fire);
@@ -334,11 +366,15 @@ impl Screen {
                 let Ok(caps) = caps else { break };
                 let Some(m) = caps.get(0).filter(|m| m.start() < m.end()) else { continue };
                 let groups: Vec<Option<&str>> = (0..caps.len()).map(|g| caps.get(g).map(|m| m.as_str())).collect();
-                let value = if self.triggers.prefs.interpolated {
+                // iTerm2 interpolates only a parameter holding an expression.
+                let value = if self.triggers.prefs.interpolated && param.contains("\\(") {
                     match crate::interp::evaluate(&param, &|n| self.trigger_var(n, row), &groups) {
                         Ok(v) => v,
                         Err(e) => {
-                            self.triggers.list[i].error = Some(e);
+                            if self.triggers.list[i].error.as_ref() != Some(&e) {
+                                self.requests.push(Request::Trigger(TriggerRequest::ParameterError { trigger: i, text: e.clone() }));
+                                self.triggers.list[i].error = Some(e);
+                            }
                             break;
                         }
                     }
@@ -507,7 +543,8 @@ impl Screen {
                 self.feed(value.as_bytes());
                 self.triggers.busy = false;
                 self.triggers_from_cursor();
-                Flow::Done
+                // The line's cells may have moved: later triggers wait for the next line.
+                Flow::StopAll
             }
             "iTermSetUserVariableTrigger" => {
                 if let Some((name, v)) = value.split_once('\u{1}') {
@@ -533,7 +570,8 @@ impl Screen {
             }
             "iTermBufferInputTrigger" => ask(self, TriggerRequest::BufferInput(value.trim() != "1")),
             "iTermSetProfileBooleanTrigger" => match value.split_once('\u{1}') {
-                Some((key, on)) if !key.is_empty() => ask(self, TriggerRequest::ProfileSetting { key: key.into(), on: on.trim() == "1" }),
+                // Only a profile check box (never the trigger list or another value).
+                Some((key, on)) if crate::schema::find(key).is_some_and(|s| s.kind == crate::schema::Kind::Bool) => ask(self, TriggerRequest::ProfileSetting { key: key.into(), on: on.trim() == "1" }),
                 _ => Flow::Done,
             },
             "CoprocessTrigger" | "MuteCoprocessTrigger" => ask(self, TriggerRequest::Coprocess { cmd: value.to_string(), silent: info.class == "MuteCoprocessTrigger" }),
@@ -614,7 +652,9 @@ mod tests {
         s.set_triggers(vec![trig("line", "HighlightTrigger", "{#ff0000,}", false)], TriggerPrefs::default());
         let text: String = (0..50).map(|i| format!("line {i}\r\n")).collect();
         s.feed(text.as_bytes());
-        assert!(s.triggers.lines_checked > 0 && s.triggers.lines_checked <= 5, "{}", s.triggers.lines_checked);
+        // The read goes in pieces, so every line is checked before it scrolls away, and no
+        // cell action touches a row that is gone.
+        assert_eq!(s.triggers.lines_checked, 50);
     }
 
     #[test]
@@ -806,5 +846,97 @@ mod tests {
             }).collect();
             assert_eq!(got, vec![want], "{action}");
         }
+    }
+
+    #[test]
+    fn moving_the_cursor_up_does_not_recheck() {
+        let mut s = Screen::new(40, 8);
+        s.set_triggers(vec![trig("done", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed(b"a done\r\nb\r\nc\r\n");
+        assert_eq!(alerts(&mut s), 1);
+        // A progress display: up three rows, redraw, back down.
+        s.feed(b"\x1b[3A\rA done");
+        s.feed(b"\x1b[3B\r");
+        s.feed(b"d\r\n");
+        assert_eq!(alerts(&mut s), 0, "no line checked twice");
+    }
+
+    #[test]
+    fn a_read_bigger_than_the_scrollback_checks_every_line() {
+        let mut s = Screen::with_scrollback(40, 5, 100);
+        s.set_triggers(vec![trig(r"^line (\d+)$", "iTermSetUserVariableTrigger", "last\u{1}\\1", false)], TriggerPrefs::default());
+        let text: String = (0..3000).map(|i| format!("line {i}\r\n")).collect();
+        s.feed(text.as_bytes());
+        assert_eq!(s.triggers.lines_checked, 3000);
+        assert_eq!(s.shell.vars.get("last").map(String::as_str), Some("2999"));
+    }
+
+    #[test]
+    fn clear_and_alternate_visits_keep_row_numbers() {
+        let mut s = Screen::with_scrollback(40, 5, 100);
+        s.set_triggers(vec![trig("x", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed(b"a\r\nb\r\n\x1b[H\x1b[2Jx1\r\nx2\r\n");
+        assert_eq!(s.triggers.lines_checked, 4, "lines after a clear in the same read are checked");
+        assert_eq!(alerts(&mut s), 2);
+        let alt: String = (0..20).map(|i| format!("alt {i}\r\n")).collect();
+        s.feed(format!("\x1b[?1049h{alt}\x1b[?1049lx3\r\n").as_bytes());
+        assert_eq!(s.triggers.lines_checked, 5, "the alternate screen's scrolling does not renumber the main screen");
+        assert_eq!(alerts(&mut s), 1);
+    }
+
+    #[test]
+    fn interpolation_only_with_an_expression() {
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig(r"id=(\w+)", "SendTextTrigger", "\\1\\r", false)], TriggerPrefs { interactive: false, interpolated: true });
+        s.feed(b"id=abc\r\n");
+        let got: Vec<TriggerRequest> = s.take_requests().into_iter().filter_map(|r| match r {
+            Request::Trigger(t) => Some(t),
+            _ => None,
+        }).collect();
+        assert_eq!(got, vec![TriggerRequest::SendText("abc\r".into())], "no \\( in the parameter: plain backreferences");
+    }
+
+    #[test]
+    fn parameter_errors_are_reported_once() {
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig("x", "AlertTrigger", "\\(f(1))", false)], TriggerPrefs { interactive: false, interpolated: true });
+        s.feed(b"x\r\nx\r\n");
+        let errors: Vec<TriggerRequest> = s.take_requests().into_iter().filter_map(|r| match r {
+            Request::Trigger(t @ TriggerRequest::ParameterError { .. }) => Some(t),
+            _ => None,
+        }).collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
+    #[test]
+    fn refreshing_settings_keeps_trigger_state() {
+        let mut s = Screen::new(40, 5);
+        let list = vec![trig("Password:", "AlertTrigger", "x", true)];
+        s.set_triggers(list.clone(), TriggerPrefs::default());
+        s.feed(b"Password:");
+        let t0 = std::time::Instant::now();
+        s.check_instant_triggers(t0);
+        assert_eq!(alerts(&mut s), 1);
+        s.set_triggers(list.clone(), TriggerPrefs::default());
+        s.check_instant_triggers(t0 + std::time::Duration::from_secs(1));
+        assert_eq!(alerts(&mut s), 0, "a settings refresh does not fire it again");
+        s.disable_trigger_here(0);
+        s.set_triggers(list, TriggerPrefs::default());
+        assert!(s.triggers.list[0].off_here, "Disable This Alert lasts the session");
+    }
+
+    #[test]
+    fn inject_that_switches_screens_stops_the_line() {
+        let mut s = Screen::with_scrollback(40, 5, 100);
+        s.set_triggers(vec![trig("go", "iTermInjectTrigger", "\\e[?1049h", false), trig(".", "HighlightTrigger", "", false)], TriggerPrefs::default());
+        let text: String = std::iter::once("go\r\n".to_string()).chain((0..20).map(|i| format!("l{i}\r\n"))).collect();
+        s.feed(text.as_bytes());
+        assert!(s.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN));
+    }
+
+    #[test]
+    fn profile_setting_needs_a_check_box_key() {
+        let mut s = one("go", "iTermSetProfileBooleanTrigger", "Triggers\u{1}1", b"go\r\n");
+        assert!(s.take_requests().is_empty(), "not a check box setting");
     }
 }

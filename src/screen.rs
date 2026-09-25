@@ -371,6 +371,30 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // With triggers, a read holding more lines than the buffer keeps goes in pieces, so
+        // every line is checked before it scrolls away.
+        let g = self.term.grid();
+        let limit = ((g.max_scroll_limit() + g.screen_lines()) / 2).max(1);
+        if self.triggers.list.is_empty() || bytes.len() < limit {
+            return self.feed_chunk(bytes);
+        }
+        let mut reply = Vec::new();
+        let (mut start, mut lines) = (0, 0);
+        for (i, b) in bytes.iter().enumerate() {
+            if *b == b'\n' {
+                lines += 1;
+                if lines == limit {
+                    reply.extend(self.feed_chunk(&bytes[start..=i]));
+                    start = i + 1;
+                    lines = 0;
+                }
+            }
+        }
+        reply.extend(self.feed_chunk(&bytes[start..]));
+        reply
+    }
+
+    fn feed_chunk(&mut self, bytes: &[u8]) -> Vec<u8> {
         if self.keys.literal {
             let reply = self.feed_raw(&literal(bytes));
             self.run_triggers_after_feed();

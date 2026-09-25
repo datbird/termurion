@@ -29,7 +29,13 @@ impl Trigger {
         Trigger {
             regex: s("regex"),
             action: s("action"),
-            parameter: s("parameter"),
+            // iTerm2 saves a menu choice as a number.
+            parameter: match t.get("parameter") {
+                Some(toml::Value::Integer(n)) => n.to_string(),
+                Some(toml::Value::Float(f)) if f.fract() == 0.0 => (*f as i64).to_string(),
+                Some(toml::Value::Float(f)) => f.to_string(),
+                _ => s("parameter"),
+            },
             instant: b("partial"),
             enabled: !b("disabled"),
             name: s("name"),
@@ -353,5 +359,13 @@ mod tests {
         let list = parse_list(&v["list"]);
         assert!(set_all_enabled(&list, true).iter().all(|t| t.enabled));
         assert!(set_all_enabled(&list, false).iter().all(|t| !t.enabled));
+    }
+
+    #[test]
+    fn number_parameters_from_iterm2() {
+        let v: toml::Value = toml::from_str(r#"list = [{ regex = "a", action = "BounceTrigger", parameter = 1 }, { regex = "b", action = "HighlightTrigger", parameter = 2.0 }]"#).unwrap();
+        let list = parse_list(&v["list"]);
+        assert_eq!(list[0].parameter, "1");
+        assert_eq!(list[1].parameter, "2");
     }
 }

@@ -276,10 +276,6 @@ pub struct Term<T> {
     /// to; 0 for none.
     pub block: u32,
 
-    /// Tandem patch: rows that have scrolled up off the top of the screen, ever (so a row
-    /// has one number while it stays in the buffer).
-    pub scrolled_off: u64,
-
     /// Cursor for keyboard selection.
     pub vi_mode_cursor: ViModeCursor,
 
@@ -445,7 +441,6 @@ impl<T> Term<T> {
         Term {
             stamp: 0,
             block: 0,
-            scrolled_off: 0,
             inactive_grid,
             scroll_region,
             event_proxy,
@@ -830,10 +825,6 @@ impl<T> Term<T> {
         self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
 
         self.grid.scroll_up(&region, lines);
-        // Tandem patch: count rows that leave the top of the screen.
-        if region.start == 0 {
-            self.scrolled_off += lines as u64;
-        }
 
         // Scroll vi mode cursor.
         let viewport_top = Line(-(self.grid.display_offset() as i32));

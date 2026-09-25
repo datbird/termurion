@@ -135,6 +135,10 @@ pub struct Grid<T> {
 
     /// Maximum number of lines in history.
     max_scroll_limit: usize,
+
+    /// Tandem patch: rows that have scrolled up off the top of this grid's screen, ever.
+    #[cfg_attr(feature = "serde", serde(default))]
+    scrolled_off: u64,
 }
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
@@ -142,6 +146,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         Grid {
             raw: Storage::with_capacity(lines, columns),
             max_scroll_limit,
+            scrolled_off: 0,
             display_offset: 0,
             saved_cursor: Cursor::default(),
             cursor: Cursor::default(),
@@ -270,6 +275,9 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Only rotate the entire history if the active region starts at the top.
         if region.start == 0 {
+            // Tandem patch: count rows that leave the top of the screen.
+            self.scrolled_off += positions as u64;
+
             // Create scrollback for the new lines.
             self.increase_scroll_limit(positions);
 
@@ -377,6 +385,12 @@ impl<T> Grid<T> {
         for line in (start.0..end.0).map(Line::from) {
             self.raw[line].reset(&self.cursor.template);
         }
+    }
+
+    /// Tandem patch: rows that have scrolled up off the top of the screen (numbering rows).
+    #[inline]
+    pub fn scrolled_off(&self) -> u64 {
+        self.scrolled_off
     }
 
     /// Tandem patch: how many lines of history the grid keeps at most.

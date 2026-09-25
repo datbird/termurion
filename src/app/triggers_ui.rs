@@ -90,6 +90,7 @@ impl App {
                 self.set_session_values(pane, &[(key, Some(toml::Value::Boolean(on)))]);
             }
             TriggerRequest::Coprocess { .. } => self.tell_once(pane, "Run Coprocess", "Coprocesses come in milestone 6c."),
+            TriggerRequest::ParameterError { trigger, text } => self.tell_once(pane, &format!("parameter-{trigger}"), &format!("Error in Trigger Parameter: {text}")),
             TriggerRequest::Unavailable { title, milestone, .. } => {
                 let text = if milestone == 0 { format!("The trigger action \u{201c}{title}\u{201d} is not available in Tandem yet.") } else { format!("The trigger action \u{201c}{title}\u{201d} comes in milestone {milestone}.") };
                 self.tell_once(pane, &title, &text);
@@ -140,8 +141,8 @@ impl App {
             return false;
         }
         if let (Some("Disable This Alert"), Some(i)) = (button, self.trigger_alerts.remove(&pane)) {
-            if let Some(c) = self.panes.get_mut(&pane).and_then(|p| p.own_mut().triggers.list.get_mut(i)) {
-                c.trigger.enabled = false;
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.own_mut().disable_trigger_here(i);
             }
         }
         true
