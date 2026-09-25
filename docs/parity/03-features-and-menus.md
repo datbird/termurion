@@ -468,7 +468,10 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### status bar
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Status bar | Status bar framework | An optional bar at top or bottom of a session showing a configurable, ordered row of components with per-component settings and priorities. | missing | |
+| Status bar | Status bar framework | An optional bar at top or bottom of a session showing a configurable, ordered row of components with per-component settings and priorities. | have | Milestone 9g: the profile's Status Bar Layout (iTerm2's dictionary, unknown classes kept), one bar per window or per pane, iTerm2's margins, priorities, minimum and maximum widths, background, component bands, separators, the edge separator, and the placeholder "Click here to configure status bar". The content components are milestone 9h. |
+| Status bar | Layout algorithms | Stable (equal shares, stable positions) and Tightly Packed (preferred widths, springs take the rest), with removal by priority and "Remove components with empty values". | have | Milestone 9g: both of iTerm2's algorithms, surprises included (Stable counts margins twice; no separator after a fixed spacer). |
+| Status bar | Auto-rainbow | Colors the components in a hue sweep: Light Colors, Dark Colors, or Automatic by the bar's background. | have | Milestone 9g: on the bar (every visible component) and in the setup window (every component, written to its text color; editing a text color turns it off). |
+| Status bar | Component context menu | Right-click on the bar: Copy, Configure and Hide the component, Configure Status Bar, Disable Status Bar, and checkbox knobs. | have | Milestone 9g: Hide removes every component of the class and writes the saved profile; checkbox knobs show their default and edit the profile the session uses. No 9g component has a Copy string or a checkbox knob yet (9h). |
 | Status bar | Battery Level component | Shows current battery charge percentage/state. | missing | |
 | Status bar | CPU Utilization component | Shows live CPU usage as text or a graphic/sparkline. | missing | |
 | Status bar | Memory Utilization component | Shows live memory usage. | missing | |
@@ -486,11 +489,11 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Status bar | Search Tool component | Embeds a find/search field directly in the status bar instead of an overlay. | missing | |
 | Status bar | Filter component | Filters/hides scrollback lines that do not match a live query. | missing | |
 | Status bar | Composer component | Embeds the multi-line Composer text-entry box in the status bar. | missing | |
-| Status bar | Fixed-size Spacer component | A layout spacer of fixed width, for arranging other components. | missing | |
-| Status bar | Spring component | A flexible/expanding layout spacer, for arranging other components. | missing | |
+| Status bar | Fixed-size Spacer component | A layout spacer of fixed width, for arranging other components. | have | Milestone 9g: Width (5 when unset or 0), Color, Priority; exemplar ╠══╣. |
+| Status bar | Spring component | A flexible/expanding layout spacer, for arranging other components. | have | Milestone 9g: "Spring" under Tightly Packed (Compression Resistance) and "Empty Space" under Stable (Size Multiple), with Color; Hide removes every spring. |
 | Status bar | Interpolated String component | Shows arbitrary text built from an interpolated string expression referencing session variables. | missing | |
 | Status bar | Call Script Function component | Shows text/value returned by a registered Python API script function, refreshed live. | missing | |
-| Status bar | Setup/configure UI | A drag-and-drop editor for choosing, ordering, and configuring which components appear per profile. | missing | |
+| Status bar | Setup/configure UI | A drag-and-drop editor for choosing, ordering, and configuring which components appear per profile. | have | Milestone 9g: iTerm2's window: the component menu, Active Components (drag in, reorder, drag out or Delete), Configure Component (checkbox, text, number with stepper and infinity, color with no color, action, invocation, font), Auto-Rainbow, help, Advanced (three colors, font, tight packing, remove empty, edge separator), Cancel and OK; each change applies at once and Cancel restores the layout. |
 
 ### toolbelt
 | Subsystem | Feature | What it does | Tandem status | Windows note |

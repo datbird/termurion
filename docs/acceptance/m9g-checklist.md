@@ -1,0 +1,35 @@
+# Milestone 9g acceptance checklist
+
+Close any open Tandem window. Copy `tandem.exe`, `tandem-host.exe`, `conpty.dll`, and
+`OpenConsole.exe` from `C:\Users\datbi\src\tandem\target\release\` together, then run `tandem.exe`.
+Mark each line pass or fail.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Settings > Profiles > Session: "Status bar enabled" is off and "Configure Status Bar" is greyed out. Hover the checkbox: "Shows a configurable status bar at the top of each session." | |
+| 2 | Turn "Status bar enabled" on: a bar 21 points high appears at the top of the tab area, in the tab bar's color, and the terminal loses that much room (its rows shrink by one or two). The bar reads "Click here to configure status bar", centered vertically in the bar. | |
+| 3 | Click the placeholder text: the "Configure Status Bar" window opens (about 918 by 526). "Status Bar Component Menu" shows "Fixed-size Spacer" (╠══╣) and "Empty Space" (a blank box). Hover each: its description shows ("Adds a fixed amount of space"; "Empty space that draws only a background color."). | |
+| 4 | Drag "Fixed-size Spacer" into Active Components: a line shows where it lands, and on release it is added. The bar behind the window changes at once (the placeholder is gone). Drag "Empty Space" in before the spacer, then a second spacer after it. | |
+| 5 | Drag the first Active item to the end: the order changes (the line shows the drop point; a drop is always before the item under the pointer). The bar follows. | |
+| 6 | Select an Active item and press Delete (or Backspace): it goes. Drag another Active item out of the Active area and release it over the menu or empty window space: it goes too. | |
+| 7 | Select a spacer, press Configure Component: the sheet shows "Color" (a color button and "No Color"), "Width" (5, with - and + buttons) and "Priority:" (5). Set Width to 40 and a red color, OK: the bar shows a red band 40 points wide. Open it again and Cancel after a change: nothing changes. Esc cancels the sheet; Return is OK. | |
+| 8 | Configure the spring: under Stable its knob is "Size Multiple:" (1). Type `abc` and leave the field: it reads 0 (iTerm2 reads text that is not a number as 0); type 1 again. Give the spring a color, OK: the bar's empty space takes it. | |
+| 9 | Advanced...: Separator Color (with alpha), Background Color, Default Text Color, each with "No Color"; Font "System Font" with Change; the three checkboxes with their tooltips ("Remove components with empty values" carries the tight-packing tooltip, as in iTerm2). Set a background color and tick "Draw separator between status bar and terminal", OK: the bar takes the color and a one-point line shows on the edge that touches the terminal. | |
+| 10 | Advanced > "Prefer tight packing to stable positioning", OK: the menu now names the spring "Spring" with the ║〜〜║ exemplar (not a box of missing glyphs), and its Configure sheet shows "Compression Resistance:" (0.01). | |
+| 11 | Font: Change, type `Segoe UI 16`: the label reads "16pt Segoe UI" and bar text (the placeholder, with an empty layout) grows; "Reset to System Font" returns to "System Font". | |
+| 12 | Auto-Rainbow with three or more Active items: Light Colors, Dark Colors, Automatic, then Disabled. While it is on, the Active items' exemplars take a red-to-purple sweep (the spring and spacer have no text on the bar itself, so the bar does not change until the 9h text components). | |
+| 13 | The ? button opens https://iterm2.com/status-bar-layout in the browser. | |
+| 14 | Make changes, then Cancel (or Esc, or close the window): the bar goes back to the layout it had when the window opened. Open it again, change something, OK (or Return): the change stays, and survives a restart. | |
+| 15 | Stable layout: with a spacer, a spring, and a spacer, the spring takes the free width; narrow the window until the spacers cannot fit: the lowest priority (then the rightmost) goes first, springs before anything. Separators draw between components, never after the last one and never to the right of a fixed spacer. | |
+| 16 | Tightly Packed: spacer, spring, spacer: the spacers keep their widths and the spring takes the rest, so the second spacer sits at the right edge. | |
+| 17 | Right-click the bar on the spring: "Configure Empty Space" (or "Configure Spring" under tight packing), "Hide Empty Space", "Configure Status Bar", "Disable Status Bar". Configure opens the setup window with the spring selected and its sheet open. Hide removes every spring. Right-click empty bar space: only Configure Status Bar and Disable Status Bar. | |
+| 18 | Disable Status Bar: the bar goes and the terminal grows back; the profile's "Status bar enabled" is off. | |
+| 19 | Appearance > General "Status bar location": Bottom moves the bar under the terminal (the edge separator moves to its top edge); Top moves it back. | |
+| 20 | Appearance > Panes "Separate status bars per pane": split the pane; each pane with a bar-enabled profile gets its own bar. Turn it off: one bar for the window, the current session's. | |
+| 21 | Two panes, one whose profile shows a bar and one whose profile does not (bars not per pane): move focus between them. The bar comes and goes with the focus, and the terminal resizes each time (run `mode` or `$Host.UI.RawUI.WindowSize` to see the rows change). | |
+| 22 | The same in a tmux tab (`tmux -CC`): the tab has one bar for the window even with bars per pane on, and tmux is told the size without the bar (`tmux display -p '#{window_height}'` changes when the bar comes and goes). | |
+| 23 | Run a program with mouse reporting on (for example `vim` in WSL with `:set mouse=a`) and click the bar several times, left and right: the program never sees a click or release (the cursor does not move, no visual selection starts). | |
+| 24 | Advanced > General > statusBarHeight set to 30: the bar grows to 30 points (Tandem applies it at once; iTerm2 needs a restart). Set it back to 21. | |
+| 25 | A session with its own profile copy (a program changed one of its settings, for example with OSC 1337 SetProfileProperty, allowed): right-click its bar, Configure Status Bar, add a spacer, OK. The saved profile changes and the session's copy follows it, so every session of that profile shows the spacer. | |
+| 26 | Import an iTerm2 profile whose status bar has a clock and a spring (milestone 2's iTerm2 import): the bar shows the spring only; the setup window lists "Clock" in grey in Active Components; after OK Tandem's saved profile still has the clock component. | |
+| 27 | General > tmux shows "Status bar shows tmux status bar content, not native components" (on); its help says it comes in milestone 9h. | |

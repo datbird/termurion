@@ -1,0 +1,30 @@
+Ruling: the status bar splits into 9g (framework + setup) and 9h (the 19 content components and tmux status) - cost if wrong: one more plan.
+Task 1: Ruling: Spring's Stable identity ("Empty Space", seven-space exemplar) is not expressible through the brief's algorithm-free info(); Task 4 adds info_for(class, algorithm) in statusbar.rs and the palette uses it - cost if wrong: the palette names the spring "Spring" under Stable.
+Task 1: minor (deferred): Cargo.lock sync for sha2 deps bundled into the status bar model commit.
+Task 2: minor (deferred): distribute divides by zero when every view is a FixedSpacer (unused branch, same as iTerm2).
+Task 2: minor (deferred): a FixedSpacer with priority INFINITY gets no desired entry and layout() would panic (unreachable, same gap as iTerm2).
+Task 2: minor (deferred): preallocate() has no test.
+Task 2: minor (deferred): per-item mandatory leaves the two-mandatory tiebreak untested.
+Task 3: Ruling: bar text keeps 1 iTerm2 point = 1 logical px (the plan's rule for all bar geometry, so text fits the 21 px bar as in iTerm2); the terminal's 4/3 point conversion is for terminal fonts only - cost if wrong: bar text reads small next to terminal text, a one-line change.
+Task 3: Ruling: the checkbox knob toggle's default and divorced-session index bugs (statusbar_ui.rs:432-438) are fixed in Task 4, which owns knob_values - cost if wrong: none.
+Task 3: minor (deferred): statusBarHeight read live (iTerm2 reads once).
+Task 3: minor (deferred): status_press takes the press before pointer-down state; check the release never reaches a mouse-reporting terminal on first launch.
+Task 3: minor (deferred): no test for content_area_for, pane_bar_split, status_bars.
+Task 3: minor (deferred): new collapsible-if clippy notes.
+Task 4: Ruling: the setup window is its own window (Tandem's egui windows are separate top-level windows) rather than a sheet on Settings; opening it from the bar does not open Settings - cost if wrong: one call to open Settings first.
+Task 4: Ruling: the setup window edits the session's own profile copy when that copy overrides Status Bar Layout or Show Status Bar, else the saved profile (PS:23052-23066); Profiles > Session's button edits the selected saved profile - cost if wrong: an edit lands in the other profile.
+Task 4: Ruling: a checkbox knob toggle reads its value with knob_values (saved, else the knob's default) from the layout the bar shows, and writes the session's copy when it overrides Status Bar Layout, else the saved profile (statusBarSetLayout:, PS:23113-23128) - cost if wrong: none while no 9g component has a checkbox knob.
+Task 4: Ruling: Configure component from the bar selects the clicked instance by index, where iTerm2 selects the first component of that class (its identifier is per class) - cost if wrong: with two of a class, the other one opens.
+Task 4: Ruling: Cancel puts back the profile's stored value exactly (removing the key when it had none); iTerm2 writes back the layout as its controller rebuilt it at open time - cost if wrong: none visible.
+Task 4: Ruling: Escape is Cancel in the setup window; iTerm2 gives Escape to both Cancel and Configure Component (SXIB:127-152) - cost if wrong: Escape does not open the Configure sheet.
+Task 4: Ruling: the "Auto-Rainbow:" label drops iTerm2's rainbow emoji (no emoji anywhere) - cost if wrong: the label differs by one glyph.
+Task 4: Ruling: Configure Component replaces the component's knobs with only its knobs' values, as iTerm2 does (statusBarComponentSetKnobValues:), so a Spring configured under one algorithm loses the other algorithm's key - cost if wrong: that key returns to its default.
+Task 4: Ruling: the setup window writes auto-rainbow colors into every component's "shared text color" knob and refreshes each component's copy of the advanced configuration on every change, so the saved dictionary matches iTerm2's - cost if wrong: extra keys in the profile.
+Task 4: Ruling: font controls (the Advanced Font and a Custom Font knob) are a text field holding a font string ("Segoe UI 12"), with Reset to System Font; only the size is used (the family stays the prose font, the plan's rule) - cost if wrong: a font picker dialog later.
+Task 4: Ruling: an Action knob's "Configure Action..." opens the key action editor inline in the Configure sheet (title, action, parameter, apply mode), stored as iTerm2's action dictionary; no 9g component has one - cost if wrong: a separate sheet.
+Task 4: Ruling: a component whose class Tandem does not show yet appears in Active Components in grey under its short class name, can be moved or deleted, and has no Configure sheet - cost if wrong: iTerm2 would have dropped it; Tandem keeps it (Task 1).
+Task 4: Ruling: the exemplars need glyphs egui's fonts lack (the wave dash), so the setup window adds MS Gothic (else Yu Gothic, else Segoe UI Symbol) as egui's last fallback - cost if wrong: a box for a missing glyph.
+Task 4: Ruling: one setup window at a time (iTerm2's is a sheet); a second request brings it to the front - cost if wrong: none.
+Task 4: Ruling: the roadmap's counts table was last updated at milestone 7c; it is recounted from the three files as they stand (status column, first word) - cost if wrong: the numbers are off by a row or two.
+Task 4: minor (deferred): an infinite Size Multiple or Compression Resistance typed into a spring gives NaN widths in the layout (no panic; iTerm2 allows the same values).
+Task 4: minor (deferred): the setup window has no GUI test; drag and drop, the sheets, and the live bar are in the checklist.

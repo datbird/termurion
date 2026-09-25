@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 152 | 138 | 24 |
-| `02-global-settings.md` | 820 | 144 | 78 | 598 |
-| `03-features-and-menus.md` | 640 | 287 | 31 | 322 |
-| Total | 1,774 | 583 | 247 | 944 |
+| `01-profile-settings.md` | 314 | 167 | 126 | 21 |
+| `02-global-settings.md` | 820 | 232 | 73 | 515 |
+| `03-features-and-menus.md` | 643 | 378 | 32 | 233 |
+| Total | 1,777 | 777 | 231 | 769 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -76,7 +76,13 @@ window close questions and the quit question with iTerm2's rules and texts, Undo
 Closing and Startup settings. Milestone 7c: window arrangements (save, restore as windows or
 tabs, files in iTerm2's plist form with a trust question for downloaded ones, the Settings
 Arrangements page, Change Profile in Arrangement, the default arrangement at startup, and
-Duplicate Window rebuilt from a snapshot).
+Duplicate Window rebuilt from a snapshot). Milestone 9g: the status bar framework (the profile's Status Bar
+Layout in iTerm2's dictionary form, one bar per window or per pane at the top or bottom, the
+Stable and Tightly Packed layout algorithms, component bands, separators, the edge separator,
+auto-rainbow, the placeholder, the Spring and the Fixed-size Spacer, the bar's right-click menu)
+and iTerm2's setup window (the component menu, Active Components with drag, drop, reorder, and
+delete, Configure Component for every knob type, Auto-Rainbow, Advanced, live apply with Cancel
+restoring the layout); the content components come in milestone 9h.
 
 ## Order
 
