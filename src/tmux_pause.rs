@@ -108,13 +108,15 @@ impl Monitor {
                 s.red = 0;
                 continue;
             }
+            // Five red ticks before the first warning, then every tick while red.
             if red {
                 s.red += 1;
                 if s.red < 5 {
                     continue;
                 }
+            } else {
+                s.red = 0;
             }
-            s.red = 0;
             out.push((pane, ttl, red));
         }
         out
@@ -207,7 +209,8 @@ mod tests {
             }
         }
         assert_eq!(emitted.first(), Some(&(1, 15.0, 5, true)), "five red ticks first (red below 10 s)");
-        assert_eq!(emitted.get(1), Some(&(1, 20.0, 0, true)));
+        assert_eq!(emitted.get(1), Some(&(1, 16.0, 4, true)), "then every tick while it stays red");
+        assert_eq!(emitted.len(), 6);
         // Samples older than two seconds start over.
         let mut m = Monitor::new(20.0);
         for t in 1..=4 {

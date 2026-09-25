@@ -96,6 +96,8 @@ impl App {
                         let Some(id) = self.tmux.get(&gw).and_then(|t| t.panes.get(&p.pane)).map(|(id, _)| *id) else { continue };
                         self.drop_bar(id, &format!("{PAUSED}{gw}:{}:1", p.pane));
                         self.drop_bar(id, &format!("{PAUSED}{gw}:{}:0", p.pane));
+                        // iTerm2's unpauseTmux dismisses the warning too (one announcement id).
+                        self.drop_bar(id, &format!("{PAUSE_WARN}{gw}:{}", p.pane));
                         if let Some(pane) = self.panes.get_mut(&id) {
                             // iTerm2's resetForTmuxUnpause and clearScrollbackBuffer, then the captures.
                             pane.own_mut().feed_tmux_restore(b"\x1bc\x1b[3J");
