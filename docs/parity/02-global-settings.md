@@ -270,8 +270,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Paste Special: use bracketed paste mode | PasteSpecialBracketedPasteMode | Default on/off for wrapping the pasted text in bracketed-paste escape sequences. | have | Milestone 9b: remembered by Advanced Paste (Advanced > Pasteboard). |
 | Paste Special: use regex substitution / regex / substitution | PasteSpecialUseRegexSubstitution / PasteSpecialRegex / PasteSpecialSubstitution | Default on/off and pattern/replacement text for an optional regex find-and-replace pass during Paste Special. | have | Milestone 9b: remembered by Advanced Paste (Advanced > Pasteboard). |
 | Paste warning: number of spaces per tab | PasteWarningNumberOfSpacesPerTab | Spaces-per-tab value used when iTerm2 warns about pasting text containing tabs. | have | Milestone 9a: PasteTabToStringTabStopSize, used by the tabs question's "Convert tabs to spaces". |
-| Actions | Actions | User-defined list of reusable Action snippets (send text, run command, etc) available from the Actions menu/toolbelt. | missing |  |
-| Snippets | Snippets | User-defined list of reusable text Snippets available from the Snippets menu/toolbelt/Composer. | missing |  |
+| Actions | Actions | User-defined list of reusable Action snippets (send text, run command, etc) available from the Actions menu/toolbelt. | have | Milestone 9e: Settings > Shortcuts > Actions (the editor, import and export of .it2actions) and Edit > Actions; the toolbelt tool and status bar components come later in milestone 9. |
+| Snippets | Snippets | User-defined list of reusable text Snippets available from the Snippets menu/toolbelt/Composer. | have | Milestone 9e: kept in %APPDATA%\Tandem\snippets.json; Settings > Shortcuts > Snippets (search, the Edit Snippet sheet, the context menu, drag reorder, .it2snippets import and export) and Edit > Snippets. Tags are typed comma-separated (no token field). |
 
 
 ## Keys
@@ -420,7 +420,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Invoke Script Function... | KEY_ACTION_INVOKE_SCRIPT_FUNCTION | Calls a registered Python API script function. | missing | Comes in milestone 11. |
 | Duplicate Tab | KEY_ACTION_DUPLICATE_TAB | Opens a new tab that is a copy of the current one (same profile/directory). | have |  |
 | Move to Split Pane | KEY_ACTION_MOVE_TO_SPLIT_PANE | Moves the current session into an adjacent split pane. | missing | Comes in milestone 7. |
-| Send Snippet... | KEY_ACTION_SEND_SNIPPET | Sends a saved Snippet's text. | missing | Comes in milestone 9. |
+| Send Snippet... | KEY_ACTION_SEND_SNIPPET | Sends a saved Snippet's text. | have | Milestone 9e: a snippet picker; the snippet's own escaping; a deleted snippet does nothing. |
 | Open Composer | KEY_ACTION_COMPOSE | Opens the Composer overlay for multi-line command editing. | missing | Comes in milestone 9. |
 | Send tmux Command... | KEY_ACTION_SEND_TMUX_COMMAND | Sends a literal tmux control-mode command to the attached tmux server. | have | Milestone 8e: sends its text as a tmux command through the focused session's gateway; tmux prefix bindings become Leader bindings that run it. |
 | Run Sequence of Actions | KEY_ACTION_SEQUENCE | Runs an ordered list of other key-binding actions as one binding. | have |  |

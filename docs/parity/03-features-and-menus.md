@@ -105,8 +105,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Replace Selection > Replace with Base 64-Decoded Value | no shortcut | Replaces the selection with its base64-decoded form. (milestone 4) | have |
 | Edit > Engage Artificial Intelligence | Cmd+Y | Opens an AI prompt to turn a natural-language request into a shell command. (milestone 12) | missing |
 | Edit > Explain Output with AI | Opt+Cmd+Y | Sends recent terminal output to AI and shows an explanation. (milestone 12) | missing |
-| Edit > Snippets | no shortcut | Dynamic submenu listing saved text snippets to insert into the session. | missing |
-| Edit > Actions | no shortcut | Dynamic submenu listing saved actions, macro-like keystroke, text, or script triggers. | missing |
+| Edit > Snippets | no shortcut | Dynamic submenu listing saved text snippets to insert into the session. | have |
+| Edit > Actions | no shortcut | Dynamic submenu listing saved actions, macro-like keystroke, text, or script triggers. | have |
 | Edit > Open Selection | Opt+Cmd+O | Opens the current selection as a URL or file path. (milestone 4) | have |
 | Edit > Jump to Selection | Cmd+J | Scrolls the viewport so the current selection is visible. (milestone 4) | have |
 | Edit > Select All | Cmd+A | Selects all text in the current session's scrollback. | have |
