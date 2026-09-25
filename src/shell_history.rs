@@ -156,6 +156,11 @@ impl Store {
         found.into_iter().take(LIMIT).map(|(c, t)| (c.command.clone(), t)).collect()
     }
 
+    /// Every command of the host: (command, uses, last use), for Autocomplete.
+    pub fn command_stats(&self, host: &str) -> Vec<(String, usize, f64)> {
+        self.hosts.get(host).map(|h| h.commands.iter().map(|c| (c.command.clone(), c.uses.len(), c.last_use())).collect()).unwrap_or_default()
+    }
+
     /// The host's directories in iTerm2's order.
     pub fn dirs(&self, host: &str) -> Vec<Dir> {
         let Some(h) = self.hosts.get(host) else { return Vec::new() };

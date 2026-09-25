@@ -34,6 +34,11 @@ impl App {
         h
     }
 
+    /// The paste history's entries (value, time), for Autocomplete.
+    pub(super) fn paste_history_entries(&mut self) -> Vec<(String, f64)> {
+        self.history().entries.iter().map(|e| (e.value.clone(), e.time)).collect()
+    }
+
     /// A copy or a paste goes into the history (saved to disk with "Save copy/paste and
     /// command history to disk").
     pub(super) fn remember_paste(&mut self, text: &str) {

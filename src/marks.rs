@@ -224,6 +224,29 @@ impl Screen {
         Some(self.term.bounds_to_string(a, b))
     }
 
+    /// The last `max` rows (scrollback and screen) as characters, and the cursor's row in
+    /// them and column, for Autocomplete.
+    pub fn char_rows(&self, max: usize) -> (Vec<Vec<char>>, usize, usize) {
+        use alacritty_terminal::grid::Dimensions;
+        let grid = self.term.grid();
+        let top = -(grid.history_size() as i32);
+        let bottom = grid.screen_lines() as i32 - 1;
+        let first = (bottom - max as i32 + 1).max(top);
+        let cols = grid.columns();
+        let rows: Vec<Vec<char>> = (first..=bottom)
+            .map(|l| {
+                let row = &grid[Line(l)];
+                let mut v: Vec<char> = (0..cols).map(|c| row[Column(c)].c).collect();
+                while v.last() == Some(&' ') {
+                    v.pop();
+                }
+                v
+            })
+            .collect();
+        let cursor = grid.cursor.point;
+        ((rows), (cursor.line.0 - first) as usize, cursor.column.0)
+    }
+
     /// Prompts seen so far.
     pub fn prompts_seen(&self) -> usize {
         self.marks.prompts

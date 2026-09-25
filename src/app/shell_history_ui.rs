@@ -108,6 +108,18 @@ impl App {
         }
     }
 
+    pub(super) fn shell_history_pub(&mut self) -> &mut Store {
+        self.shell_history()
+    }
+
+    pub(super) fn powers_pub(&self) -> Powers {
+        self.powers()
+    }
+
+    pub(super) fn history_host_pub(&self, pane: PaneId) -> String {
+        self.history_host(pane)
+    }
+
     /// The focused session's host record key.
     fn history_host(&self, pane: PaneId) -> String {
         let s = self.panes.get(&pane).map(|p| p.own());

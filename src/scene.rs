@@ -938,6 +938,39 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close, scale: 1.0 });
 }
 
+/// The completion list at the cursor (Autocomplete, Auto Command Completion): rows with
+/// the chosen one marked, and a footer. `at`: the cell below the cursor's top-left corner.
+pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, footer: Option<&str>, at: (f32, f32), bounds: Rect, cell: (f32, f32)) {
+    const SHOWN: usize = 10;
+    if rows.is_empty() {
+        return;
+    }
+    let first = selected.saturating_sub(SHOWN - 1);
+    let visible = &rows[first..rows.len().min(first + SHOWN)];
+    let widest = visible.iter().map(|r| r.chars().count()).chain(footer.map(|f| f.chars().count())).max().unwrap_or(10).clamp(10, 60);
+    let h = (visible.len() + usize::from(footer.is_some())) as f32 * cell.1 + 4.0;
+    let w = (widest + 2) as f32 * cell.0;
+    // Below the cursor, or above it when it would not fit; kept inside the pane.
+    let mut y = at.1;
+    if y + h > bounds.y + bounds.h {
+        y = (at.1 - cell.1 - h).max(bounds.y);
+    }
+    let x = at.0.min(bounds.x + bounds.w - w).max(bounds.x);
+    let r = Rect { x, y, w, h };
+    frame.overlay.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+    for (i, text) in visible.iter().enumerate() {
+        let ry = y + 2.0 + i as f32 * cell.1;
+        if first + i == selected {
+            frame.overlay.push(Quad { rect: Rect { x, y: ry, w, h: cell.1 }, color: rgba(BAR_BUTTON, 1.0) });
+        }
+        frame.rows.push(TextRow { x: x + cell.0, y: ry, spans: vec![span(text.clone())], clip: r, scale: 1.0 });
+    }
+    if let Some(f) = footer {
+        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + visible.len() as f32 * cell.1, spans: vec![span(f.to_string())], clip: r, scale: 1.0 });
+    }
+}
+
 /// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
 /// small camera (a body, a lens, and a viewfinder).
 pub fn camera_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {

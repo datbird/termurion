@@ -1037,6 +1037,24 @@ default = 1.0
 help = "Command history's age weight (the power of log10(10 + age in seconds)) in its ranking."
 
 [[setting]]
+key = "AutoCommandHistory"
+tab = "General"
+section = "Settings"
+label = "Auto Command Completion"
+type = "bool"
+default = false
+help = "Shows the commands from the shell history that start with what is typed at the prompt, as you type."
+
+[[setting]]
+key = "AutocompleteMaxOptions"
+tab = "Advanced"
+section = "Session"
+label = "Number of autocomplete options to present."
+type = "int"
+default = 20
+help = "Number of autocomplete options to present.\nA value less than 100 is recommended."
+
+[[setting]]
 key = "NoSyncSuppressBroadcastInputWarning"
 tab = "Advanced"
 section = "Warnings"

@@ -54,6 +54,7 @@ mod actions;
 mod paste_ui;
 mod history_ui;
 mod shell_history_ui;
+mod completion_ui;
 mod annotations_ui;
 mod activity_ui;
 mod alerts_ui;
@@ -378,6 +379,10 @@ pub struct App {
     shell_history: Option<crate::shell_history::Store>,
     shell_fed: HashMap<PaneId, shell_history_ui::Fed>,
     list_popup: Option<(crate::list_popup_ui::ListPopup, PaneId, shell_history_ui::PopupFor, Vec<String>)>,
+    /// The completion list at a pane's cursor, and Auto Command Completion's typed text
+    /// and when it may show.
+    completion: Option<(PaneId, crate::completion::List)>,
+    auto_typed: Option<(PaneId, String, Instant)>,
     upload_due: Option<Instant>,
     /// SetProfileProperty values and SetBackgroundImageFile paths waiting for an answer.
     pending_properties: HashMap<PaneId, Vec<(String, toml::Value)>>,
@@ -626,6 +631,8 @@ pub fn run() {
         shell_history: None,
         shell_fed: HashMap::new(),
         list_popup: None,
+        completion: None,
+        auto_typed: None,
         upload_due: None,
         pending_background: HashMap::new(),
         toast: None,
@@ -1285,7 +1292,7 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
-        if self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) {
+        if self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
             return;
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
@@ -1759,6 +1766,7 @@ impl App {
                     scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
                 self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell, (sends, receives));
+                self.draw_completion(&mut frame, id, self.inner(rect), cell);
                 self.draw_info_bar(&mut frame, id, rect, cell);
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
@@ -2060,7 +2068,7 @@ impl ApplicationHandler<UserEvent> for App {
         let toast = self.toast_due();
         let rotation = self.tick_rotations();
         let upload = self.feed_uploads();
-        let paste_due = self.paste_tick();
+        let paste_due = self.paste_tick().into_iter().chain(self.auto_command_tick()).min();
         let triggers = self.tick_triggers();
         self.tick_bell();
         let activity = self.tick_activity();

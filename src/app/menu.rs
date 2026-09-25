@@ -508,6 +508,16 @@ impl App {
             "openPasteHistory:" => self.open_paste_history(event_loop),
             "openCommandHistory:" => self.open_command_history(event_loop),
             "openDirectories:" => self.open_recent_dirs(event_loop),
+            "openAutocomplete:" => self.open_autocomplete(),
+            "toggleAutoCommandHistory:" => {
+                let on = !self.globals.bool("AutoCommandHistory");
+                self.globals.set("AutoCommandHistory", toml::Value::Boolean(on));
+                self.save_globals();
+                if !on {
+                    self.completion = None;
+                }
+                self.menus_dirty = true;
+            }
             "pasteSelection:" => {
                 let text = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| p.screen.term().selection_to_string());
                 if let (Some(text), Some(id)) = (text, self.focused_id()) {
