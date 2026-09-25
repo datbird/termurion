@@ -3,7 +3,9 @@
 //! events run or its frame is drawn.
 
 use super::*;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use winit::window::Fullscreen;
 
 /// What belongs to one window.
 pub(super) struct WinSlot {
@@ -25,6 +27,7 @@ pub(super) struct WinSlot {
     wheel_acc: f32,
     wheel_acc_x: f32,
     font_sig: String,
+    win_style: i64,
 }
 
 impl WinSlot {
@@ -48,6 +51,7 @@ impl WinSlot {
             wheel_acc: 0.0,
             wheel_acc_x: 0.0,
             font_sig: String::new(),
+            win_style: 0,
         }
     }
 }
@@ -79,6 +83,7 @@ impl App {
         swap(&mut self.wheel_acc, &mut s.wheel_acc);
         swap(&mut self.wheel_acc_x, &mut s.wheel_acc_x);
         swap(&mut self.font_sig, &mut s.font_sig);
+        swap(&mut self.win_style, &mut s.win_style);
     }
 
     /// Makes a terminal window current. False for a window that is not one.
@@ -144,6 +149,12 @@ impl App {
         self.registry.open(key(id));
         self.apply_fonts();
         self.size_window();
+        let first_guid = match &first {
+            NewWindow::Profile(g) => g.clone(),
+            NewWindow::Profiles(gs) => gs.first().cloned().flatten(),
+            NewWindow::Tab(_) => None,
+        };
+        let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
             NewWindow::Profiles(guids) => {
@@ -159,6 +170,9 @@ impl App {
             }
         }
         self.install_menus();
+        if style != crate::frames::NORMAL {
+            self.apply_window_style(style, false);
+        }
         if self.tabs.is_empty() {
             // The shell did not start: the window closes again, and the banner says why.
             let why = self.banners.text().unwrap_or_default();
@@ -226,6 +240,7 @@ impl WinSlot {
             wheel_acc: 0.0,
             wheel_acc_x: 0.0,
             font_sig: String::new(),
+            win_style: 0,
         }
     }
 }
@@ -409,5 +424,74 @@ impl App {
             self.pending_windows.push(NewWindow::Profiles(guids));
             self.redraw();
         }
+    }
+}
+
+impl App {
+    /// The current window's monitor: its work area and whole area.
+    fn monitor_rects(&self) -> Option<(Rect, Rect)> {
+        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+        let hwnd = self.hwnd()?;
+        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        let m = unsafe { MonitorFromWindow(hwnd as _, MONITOR_DEFAULTTONEAREST) };
+        if unsafe { GetMonitorInfoW(m, &mut info) } == 0 {
+            return None;
+        }
+        let r = |r: windows_sys::Win32::Foundation::RECT| Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 };
+        Some((r(info.rcWork), r(info.rcMonitor)))
+    }
+
+    /// Applies an iTerm2 window style to the current window. The Window Style menu makes
+    /// the edge styles span the whole edge (100 percent), as iTerm2's menu does.
+    pub(super) fn apply_window_style(&mut self, style: i64, from_menu: bool) {
+        use crate::frames::{self, Input};
+        let Some((work, screen)) = self.monitor_rects() else {
+            return self.banners.set("window", "Could not read this window's monitor.");
+        };
+        let profile = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).and_then(|p| self.store.get(&p.profile)).unwrap_or_else(|| self.store.default_profile()).clone();
+        let mut percent = (profile.float("Width Percentage"), profile.float("Height Percentage"));
+        let s = frames::unthemed(style);
+        if from_menu {
+            match s {
+                frames::TOP_PERCENT | frames::BOTTOM_PERCENT => percent.0 = 100.0,
+                frames::LEFT_PERCENT | frames::RIGHT_PERCENT => percent.1 = 100.0,
+                _ => {}
+            }
+        }
+        let Some(g) = self.gpu.as_ref() else { return };
+        let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+        let pos = g.window.outer_position().unwrap_or_default();
+        let (cw, ch) = self.cell();
+        let area = self.content_area();
+        let pad = 2.0 * PAD * self.scale();
+        let chrome = (pad, inner.height as f32 - area.h + pad);
+        let input = Input {
+            style: s,
+            percent,
+            cells: (profile.int("Columns").clamp(1, 1000) as u16, profile.int("Rows").clamp(1, 1000) as u16),
+            cell: (cw, ch),
+            chrome,
+            initial: Rect { x: pos.x as f32, y: pos.y as f32, w: outer.width as f32, h: outer.height as f32 },
+            work,
+            screen,
+        };
+        let f = frames::frame(&input);
+        let w = &g.window;
+        if f.fullscreen {
+            w.set_fullscreen(Some(Fullscreen::Borderless(w.current_monitor())));
+        } else {
+            w.set_fullscreen(None);
+            w.set_decorations(f.decorations);
+            w.set_maximized(f.maximized);
+            if !f.maximized && s != frames::NORMAL && s != frames::NO_TITLE_BAR {
+                // The frame is the outer frame; the inner size leaves the borders out.
+                let (dw, dh) = if f.decorations { (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height)) } else { (0, 0) };
+                w.set_outer_position(PhysicalPosition::new(f.rect.x.round() as i32, f.rect.y.round() as i32));
+                let _ = w.request_inner_size(PhysicalSize::new((f.rect.w as u32).saturating_sub(dw).max(1), (f.rect.h as u32).saturating_sub(dh).max(1)));
+            }
+        }
+        self.win_style = s;
+        self.redraw();
     }
 }

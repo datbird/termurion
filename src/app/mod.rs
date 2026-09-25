@@ -206,6 +206,8 @@ pub struct App {
     windows: crate::winmodel::Parked<windows_ui::WinSlot>,
     registry: crate::winmodel::Registry,
     last_window: Option<WindowId>,
+    /// The current window's style (iTerm2's window type id).
+    win_style: i64,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
@@ -421,6 +423,7 @@ pub fn run() {
         windows: Default::default(),
         registry: Default::default(),
         last_window: None,
+        win_style: 0,
         pending_windows: Vec::new(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),

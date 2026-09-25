@@ -348,18 +348,8 @@ impl App {
             }
             "toggleFullScreenMode:" => toggle_fullscreen(window.as_deref()),
             "setWindowStyle:" => {
-                if let Some(w) = &window {
-                    match label {
-                        "Full Screen" => w.set_fullscreen(Some(Fullscreen::Borderless(None))),
-                        "Maximized" => {
-                            w.set_fullscreen(None);
-                            w.set_maximized(true);
-                        }
-                        _ => {
-                            w.set_fullscreen(None);
-                            w.set_maximized(false);
-                        }
-                    }
+                if let Some((id, _)) = crate::frames::MENU.iter().find(|(_, n)| *n == label) {
+                    self.apply_window_style(*id, true);
                 }
             }
             "arrangeInFront:" => {

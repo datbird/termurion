@@ -56,6 +56,11 @@ pub const DONE: &[&str] = &[
     "replaceSelectionWithPrettyPrintedJSON:", "replaceSelectionWithBase64Encoded:", "replaceSelectionWithBase64Decoded:",
     "clearToStartOfSelection:", "toggleCopyMode:", "foldSelection:", "foldAll:", "addNoteAtCursor:", "annotateSelection:", "nextAnnotation:",
     "previousAnnotation:", "showHideNotes:", "toggleCursorGuide:", "findCursor:", "editSessionNote:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "setWindowStyle:|No Title Bar", "setWindowStyle:|Centered", "setWindowStyle:|Centered, No Title Bar",
+    "setWindowStyle:|Full-Width Bottom of Screen", "setWindowStyle:|Full-Width Top of Screen",
+    "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
+    "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
+    "setWindowStyle:|Right of Screen",
 ];
 
 /// Commands that work with a known difference for now.
@@ -240,6 +245,6 @@ mod tests {
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
         assert_eq!(status(find("detachTmux:", "Detach")), Status::Later(8));
         assert_eq!(status(find("setWindowStyle:", "Maximized")), Status::Done);
-        assert_eq!(status(find("setWindowStyle:", "Full-Width Top of Screen")), Status::Later(7));
+        assert_eq!(status(find("setWindowStyle:", "Full-Width Top of Screen")), Status::Done, "every style arrives in 7a");
     }
 }
