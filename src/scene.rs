@@ -643,7 +643,7 @@ pub const PORTHOLE_MARGIN: f32 = 8.0;
 /// A porthole over its rows (iTerm2's chrome): the background moved 20% toward grey, a 1 px
 /// border in the text color at 50%, the close button, the language button, and Wide at the
 /// top right, then the laid-out lines (`lines` holds the ones in view), all cut to `clip`.
-pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porthole::render::VisualLine], chrome: &PortholeChrome, cell: (f32, f32)) -> PortholeControls {
+pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porthole::render::VisualLine], marks: &[(Rect, Rgb, f32)], chrome: &PortholeChrome, cell: (f32, f32)) -> PortholeControls {
     let (fg, bg) = (chrome.fg, chrome.bg);
     let back = blend(bg, rgb(128, 128, 128), 0.2);
     if let Some(r) = cut(rect, clip) {
@@ -676,6 +676,12 @@ pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porth
     let Some(area) = cut(inner, clip) else { return PortholeControls { close, language, wide } };
     let ox = rect.x + PORTHOLE_MARGIN - chrome.scroll_x;
     let oy = rect.y + PORTHOLE_MARGIN + s;
+    // Selection and find marks, from the text's top left, under the text.
+    for (m, color, alpha) in marks {
+        if let Some(r) = cut(Rect { x: ox + m.x, y: oy + m.y, ..*m }, area) {
+            frame.quads.push(Quad { rect: r, color: rgba(*color, *alpha) });
+        }
+    }
     for l in lines {
         let y = oy + l.y;
         if l.code_bg {
@@ -1053,13 +1059,13 @@ mod tests {
         use crate::porthole::render::{Face, Run, VisualLine};
         let (fg, bg) = (rgb(200, 200, 200), rgb(0, 0, 0));
         let run = |t: &str, face| Run { text: t.into(), color: fg, bold: false, italic: false, underline: t == "link", face, link: None };
-        let line = |y: f32, runs: Vec<Run>, scale: f32| VisualLine { spans: runs.iter().enumerate().map(|(i, _)| (i as f32 * 40.0, 40.0)).collect(), runs, x: 10.0, y, h: 20.0 * scale, scale, code_bg: false, rule: false };
+        let line = |y: f32, runs: Vec<Run>, scale: f32| VisualLine { spans: runs.iter().enumerate().map(|(i, _)| (i as f32 * 40.0, 40.0)).collect(), runs, x: 10.0, y, h: 20.0 * scale, scale, code_bg: false, rule: false, block: 0 };
         let lines = vec![line(0.0, vec![run("Title", Face::Prose)], 2.0), line(40.0, vec![run("code", Face::Code), run("link", Face::Prose)], 1.0)];
         let rect = Rect { x: 0.0, y: -40.0, w: 200.0, h: 200.0 };
         let clip = Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
         let mut f = Frame::default();
         let chrome = PortholeChrome { fg, bg, language: "Markdown", wide: false, scroll_x: 0.0 };
-        let c = porthole(&mut f, rect, clip, &lines, &chrome, (10.0, 20.0));
+        let c = porthole(&mut f, rect, clip, &lines, &[], &chrome, (10.0, 20.0));
         assert_eq!(f.quads[0].rect, clip, "the background, cut to the pane");
         assert_eq!(f.quads[0].color, rgba(rgb(26, 26, 26), 1.0), "20% toward grey");
         assert!(f.quads.iter().all(|q| q.rect.y >= clip.y && q.rect.y + q.rect.h <= clip.y + clip.h), "nothing outside the pane");

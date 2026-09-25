@@ -104,6 +104,8 @@ enum Drag {
     Select { pane: PaneId },
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
     App { pane: PaneId, button: Button },
+    /// Selecting text in a porthole (its frame when the drag began).
+    Porthole { pane: PaneId, id: u32, frame: Rect },
 }
 
 struct Gpu {
@@ -214,6 +216,11 @@ pub struct App {
     /// Porthole layouts by pane and id, and the portholes drawn last frame.
     porthole_views: HashMap<(PaneId, u32), porthole_ui::PView>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
+    /// A link under a porthole press (opened when the button comes up without a drag), the
+    /// links waiting on a bar, and the language list a popup shows.
+    porthole_link: Option<(PaneId, u32, String)>,
+    porthole_link_asks: HashMap<PaneId, crate::porthole::LinkTarget>,
+    porthole_languages: Option<(PaneId, u32, Vec<crate::porthole::detect::Language>)>,
     /// An open Make Screenshot panel.
     shot: Option<screenshot_ui::Shot>,
     /// Page Setup's printer, paper, and margins.
@@ -367,6 +374,9 @@ pub fn run() {
         block_buttons: Vec::new(),
         porthole_views: HashMap::new(),
         porthole_hits: Vec::new(),
+        porthole_link: None,
+        porthole_link_asks: HashMap::new(),
+        porthole_languages: None,
         uploads: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
@@ -734,6 +744,9 @@ impl App {
     }
 
     fn copy_selection(&mut self, id: PaneId) {
+        if self.copy_porthole_selection(id, porthole_ui::CopyAs::Plain) {
+            return;
+        }
         let Some(text) = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) else { return };
         if let Some(cb) = &mut self.clipboard {
             if let Err(e) = cb.set_text(text) {
@@ -1018,7 +1031,7 @@ impl App {
             self.active = i;
             return self.redraw();
         }
-        if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.block_press(x, y)) {
+        if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y)) {
             return;
         }
         if button == MouseButton::Left {
@@ -1104,6 +1117,8 @@ impl App {
                     // iTerm2 copies a selection as soon as it is made.
                     self.copy_selection(id);
                 }
+                // A terminal selection ends any porthole's.
+                self.clear_porthole_selections();
                 // A Smart Selection is whole; moving the pointer does not reshape it.
                 self.drag = if smart { Drag::None } else { Drag::Select { pane: id } };
                 let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
@@ -1153,6 +1168,7 @@ impl App {
         }
         let alt_click = self.alt_click.take();
         match std::mem::replace(&mut self.drag, Drag::None) {
+            Drag::Porthole { pane, id, .. } => self.porthole_release(pane, id),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
@@ -1197,6 +1213,10 @@ impl App {
             self.redraw();
         }
         match &self.drag {
+            Drag::Porthole { pane, id, frame } => {
+                let (pane, id, frame) = (*pane, *id, *frame);
+                self.porthole_drag(pane, id, frame, x, y);
+            }
             Drag::Select { pane } => {
                 let pane = *pane;
                 let Some(rect) = self.pane_rect(pane) else { return };
@@ -1252,6 +1272,9 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
             MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
+        if self.porthole_wheel(dx, dy) {
+            return;
+        }
         self.wheel_acc += dy;
         self.wheel_acc_x += dx;
         self.wheel_horizontal();

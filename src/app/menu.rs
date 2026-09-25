@@ -173,6 +173,30 @@ impl App {
         self.popup_menu = Some(context);
     }
 
+    /// A porthole's language list as a popup: `items` in order, None for a separator. The
+    /// picks come back as `porthole-lang:<index>`.
+    pub(super) fn show_porthole_languages(&mut self, items: &[Option<String>]) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let menu = Menu::new();
+        let mut index = 0;
+        let mut results = Vec::new();
+        for item in items {
+            results.push(match item {
+                Some(name) => {
+                    let r = menu.append(&MenuItem::with_id(format!("porthole-lang:{index}"), name.replace('&', "&&"), true, None));
+                    index += 1;
+                    r
+                }
+                None => menu.append(&PredefinedMenuItem::separator()),
+            });
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Language menu: {e}"));
+        }
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        self.popup_menu = Some(menu);
+    }
+
     /// Check marks follow the focused pane's terminal modes.
     pub(super) fn sync_checks(&mut self) {
         let mode = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| *p.screen.term().mode());
@@ -229,7 +253,7 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
-        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) {
+        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) {
             return;
         }
         if let Some(item) = menus::by_id(id) {

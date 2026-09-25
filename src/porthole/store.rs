@@ -114,7 +114,12 @@ impl Screen {
         let detected = detect::detect(&text, source.hint.as_deref(), source.filename.as_deref());
         let mut p = Porthole { id, text, detected, filename: source.filename, base_dir: self.shell.cwd.clone(), wide: source.wide, rows: 0, saved: Vec::new(), sized: false };
         p.rows = rows_for(&p).max(1);
-        let rows = blank_rows(self.term.columns(), p.rows, id);
+        let mut rows = blank_rows(self.term.columns(), p.rows, id);
+        // A rendered block's rows still belong to it (hover, copy, fold).
+        let block = self.term.primary_grid()[Line(first)].block();
+        for r in rows.iter_mut() {
+            r.set_block(block);
+        }
         p.saved = self.splice_rows(first, last, rows);
         self.portholes.insert(id, p);
         Some(id)
@@ -126,6 +131,16 @@ impl Screen {
         let (cw, ch) = self.cell_px();
         let cell = (cw.max(1) as f32, ch.max(1) as f32);
         self.render_range(first, last, source, &|p| estimate_rows(p, &palette, dark, cols, cell))
+    }
+
+    /// Selects text in a porthole (one selection at a time: the terminal's goes).
+    pub fn select_in_porthole(&mut self, id: u32, anchor: super::render::Pos, head: super::render::Pos) {
+        self.term.selection = None;
+        self.porthole_selection = Some((id, anchor, head));
+    }
+
+    pub fn clear_porthole_selection(&mut self) {
+        self.porthole_selection = None;
     }
 
     /// The grid lines a porthole stands on.

@@ -4,6 +4,79 @@ pub mod detect;
 pub mod render;
 pub mod store;
 
+/// Where a link in a rendered document goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkTarget {
+    Url(String),
+    File(String),
+}
+
+/// A markdown link's target: web and mail links; `file://` URLs, drive paths, and paths
+/// relative to the porthole's folder when they are local Windows paths (never a network
+/// path: opening one sends the NTLM hash). Other schemes are refused.
+pub fn link_target(link: &str, base_dir: Option<&str>) -> Option<LinkTarget> {
+    use crate::prompted::local_path_ok;
+    let link = link.trim();
+    let windows = |p: &str| p.replace('/', "\\");
+    if link.len() > 7 && link[..7].eq_ignore_ascii_case("file://") {
+        let path = windows(link[7..].trim_start_matches('/'));
+        return local_path_ok(&path).then_some(LinkTarget::File(path));
+    }
+    if let Some((scheme, rest)) = link.split_once(':') {
+        if scheme.len() > 1 && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)) {
+            let ok = matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "ftp" | "mailto") && !rest.is_empty();
+            return ok.then(|| LinkTarget::Url(link.to_string()));
+        }
+    }
+    let path = windows(link);
+    if local_path_ok(&path) {
+        return Some(LinkTarget::File(path));
+    }
+    if path.starts_with('\\') {
+        return None;
+    }
+    let base = base_dir.filter(|b| local_path_ok(b))?;
+    let joined = format!("{}\\{}", base.trim_end_matches(['\\', '/']), path);
+    local_path_ok(&joined).then_some(LinkTarget::File(joined))
+}
+
+/// The question a link click asks, and the setting that silences it for good.
+pub fn link_prompt(target: &LinkTarget) -> (String, &'static str) {
+    match target {
+        LinkTarget::Url(u) => (format!("Open URL {u}?"), "NoSyncOpenURLFromMarkdownLink"),
+        LinkTarget::File(f) => (format!("Open file at {f}?"), "NoSyncOpenFileFromMarkdownLink"),
+    }
+}
+
+/// Copy with Control Sequences for rendered text: each run in its colors and styles.
+pub fn sgr(rows: &[(Vec<render::Run>, bool)]) -> String {
+    let mut out = String::new();
+    for (runs, hard) in rows {
+        for r in runs {
+            let mut codes = format!("\x1b[0;38;2;{};{};{}", r.color.r, r.color.g, r.color.b);
+            if r.bold {
+                codes.push_str(";1");
+            }
+            if r.italic {
+                codes.push_str(";3");
+            }
+            if r.underline {
+                codes.push_str(";4");
+            }
+            out.push_str(&codes);
+            out.push('m');
+            out.push_str(&r.text);
+        }
+        if *hard {
+            out.push_str("\x1b[0m\n");
+        }
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
 /// Render Selection Natively is on for one selection that is not being dragged and does not
 /// cover a porthole.
 pub fn selection_can_render(selections: usize, dragging: bool, overlaps: bool) -> bool {
@@ -82,5 +155,49 @@ mod tests {
         assert!(!smells_like_image(Some("text/plain"), None));
         assert!(!smells_like_image(Some("Markdown"), None));
         assert!(!smells_like_image(Some(".zzz"), None), "anything else is tried as text");
+    }
+
+    #[test]
+    fn links_resolve_and_ask() {
+        assert_eq!(link_target("https://x.org/a", None), Some(LinkTarget::Url("https://x.org/a".into())));
+        assert_eq!(link_target("mailto:a@b.c", None), Some(LinkTarget::Url("mailto:a@b.c".into())));
+        assert_eq!(link_target("javascript:alert(1)", None), None, "other schemes are refused");
+        assert_eq!(link_target("notes.md", Some("C:\\docs")), Some(LinkTarget::File("C:\\docs\\notes.md".into())));
+        assert_eq!(link_target("sub/notes.md", Some("C:\\docs\\")), Some(LinkTarget::File("C:\\docs\\sub\\notes.md".into())));
+        assert_eq!(link_target("file:///C:/x/y.txt", None), Some(LinkTarget::File("C:\\x\\y.txt".into())));
+        assert_eq!(link_target("\\\\server\\share\\x", None), None, "network paths leak the NTLM hash");
+        assert_eq!(link_target("notes.md", Some("/home/me")), None, "a WSL folder is not a Windows path");
+        assert_eq!(link_target("notes.md", None), None);
+        assert_eq!(link_prompt(&LinkTarget::Url("https://x.org".into())), ("Open URL https://x.org?".to_string(), "NoSyncOpenURLFromMarkdownLink"));
+        assert_eq!(link_prompt(&LinkTarget::File("C:\\a".into())), ("Open file at C:\\a?".to_string(), "NoSyncOpenFileFromMarkdownLink"));
+    }
+
+    #[test]
+    fn block_copy_uses_raw_rows() {
+        let mut s = Screen::new(30, 10);
+        s.feed(b"\x1b]1337;Block=id=r;attr=start\x07{\"a\": 1}\r\n\x1b]1337;Block=id=r;attr=end;render=1\x07");
+        assert_eq!(s.portholes.len(), 1);
+        assert!(s.block_text("r").expect("the block still has rows").starts_with("{\"a\": 1}\n"), "{:?}", s.block_text("r"));
+    }
+
+    #[test]
+    fn selection_is_exclusive() {
+        let mut s = Screen::new(30, 10);
+        s.feed(b"# T\r\nx\r\n$ ");
+        let id = s.render_range_estimated(0, 1, store::Source::default()).unwrap();
+        s.term_mut().selection = Some(alacritty_terminal::selection::Selection::new(
+            alacritty_terminal::selection::SelectionType::Simple,
+            alacritty_terminal::index::Point::new(alacritty_terminal::index::Line(0), alacritty_terminal::index::Column(0)),
+            alacritty_terminal::index::Side::Left,
+        ));
+        let a = render::Pos { line: 0, col: 0 };
+        let b = render::Pos { line: 0, col: 1 };
+        s.select_in_porthole(id, a, b);
+        assert!(s.term().selection.is_none(), "a porthole selection clears the terminal's");
+        assert_eq!(s.porthole_selection, Some((id, a, b)));
+        s.select_in_porthole(99, b, a);
+        assert_eq!(s.porthole_selection, Some((99, b, a)), "one porthole selection at a time");
+        s.clear_porthole_selection();
+        assert_eq!(s.porthole_selection, None);
     }
 }

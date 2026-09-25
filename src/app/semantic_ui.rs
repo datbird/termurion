@@ -371,7 +371,7 @@ fn has_code() -> bool {
 /// Opens a file, folder, or URL with its default app. `background` asks the app not to
 /// take the focus.
 #[cfg(windows)]
-fn shell_open(target: &str, cwd: Option<&std::path::Path>, background: bool) -> Result<(), String> {
+pub(super) fn shell_open(target: &str, cwd: Option<&std::path::Path>, background: bool) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, SW_SHOWNORMAL};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
@@ -386,6 +386,6 @@ fn shell_open(target: &str, cwd: Option<&std::path::Path>, background: bool) -> 
 }
 
 #[cfg(not(windows))]
-fn shell_open(target: &str, _cwd: Option<&std::path::Path>, _background: bool) -> Result<(), String> {
+pub(super) fn shell_open(target: &str, _cwd: Option<&std::path::Path>, _background: bool) -> Result<(), String> {
     Err(format!("opening {target} needs Windows"))
 }

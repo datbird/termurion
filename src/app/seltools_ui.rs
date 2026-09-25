@@ -17,6 +17,9 @@ pub(super) const CHECKED: &[&str] =
 impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
     fn copy_with_styles(&mut self, id: PaneId) {
+        if self.copy_porthole_selection(id, super::porthole_ui::CopyAs::Styles) {
+            return;
+        }
         let Some(p) = self.panes.get(&id) else { return };
         // The user selects in the screen on show: a Filter or Zoom view while one is up.
         let screen = &p.screen;
@@ -117,6 +120,9 @@ impl App {
                 }
             }
             "copyWithControlSequences:" => {
+                if self.copy_porthole_selection(id, super::porthole_ui::CopyAs::ControlSequences) {
+                    return true;
+                }
                 let text = self.panes.get(&id).map(|p| p.sgr_copy());
                 if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut()) {
                     if let Err(e) = cb.set_text(text) {

@@ -572,6 +572,15 @@ pub struct VisualLine {
     pub scale: f32,
     pub code_bg: bool,
     pub rule: bool,
+    /// The document block it belongs to (a wrapped paragraph's lines share one).
+    pub block: usize,
+}
+
+/// A place in a layout: a visual line and a character in it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Pos {
+    pub line: usize,
+    pub col: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -588,6 +597,114 @@ impl Layout {
         let start = self.lines.partition_point(|l| l.y + l.h <= y0);
         let end = self.lines.partition_point(|l| l.y < y1);
         &self.lines[start..end.max(start)]
+    }
+
+    /// A visual line's text.
+    pub fn line_text(&self, i: usize) -> String {
+        self.lines.get(i).map_or(String::new(), |l| l.runs.iter().map(|r| r.text.as_str()).collect())
+    }
+
+    /// Each character of a line with the run it is in.
+    fn chars(&self, i: usize) -> Vec<(char, &Run)> {
+        self.lines.get(i).map_or(Vec::new(), |l| l.runs.iter().flat_map(|r| r.text.chars().map(move |c| (c, r))).collect())
+    }
+
+    /// The character at `x`, `y` (from the text's top left); a line's end past its last
+    /// character. None below the last line or above the first.
+    pub fn position(&self, x: f32, y: f32, measure: &dyn Fn(&str, Face, f32) -> f32) -> Option<Pos> {
+        if y < 0.0 {
+            return None;
+        }
+        let line = self.lines.partition_point(|l| l.y + l.h <= y);
+        let l = self.lines.get(line)?;
+        let mut at = l.x;
+        let chars = self.chars(line);
+        for (col, (c, run)) in chars.iter().enumerate() {
+            let w = measure(&c.to_string(), run.face, l.scale);
+            if x < at + w {
+                return Some(Pos { line, col });
+            }
+            at += w;
+        }
+        Some(Pos { line, col: chars.len() })
+    }
+
+    /// Where a position's character starts, from the text's left.
+    pub fn x_of(&self, pos: Pos, measure: &dyn Fn(&str, Face, f32) -> f32) -> f32 {
+        let Some(l) = self.lines.get(pos.line) else { return 0.0 };
+        l.x + self.chars(pos.line).iter().take(pos.col).map(|(c, r)| measure(&c.to_string(), r.face, l.scale)).sum::<f32>()
+    }
+
+    fn ordered(a: Pos, b: Pos) -> (Pos, Pos) {
+        if a <= b { (a, b) } else { (b, a) }
+    }
+
+    /// The runs of each visual line between two positions, cut to them, and whether each
+    /// line ends its paragraph (not a wrap).
+    pub fn rows_between(&self, a: Pos, b: Pos) -> Vec<(Vec<Run>, bool)> {
+        let (a, b) = Self::ordered(a, b);
+        let mut out = Vec::new();
+        for i in a.line..=b.line.min(self.lines.len().saturating_sub(1)) {
+            let (from, to) = (if i == a.line { a.col } else { 0 }, if i == b.line { b.col } else { usize::MAX });
+            let mut runs: Vec<Run> = Vec::new();
+            let mut col = 0;
+            for run in &self.lines[i].runs {
+                let n = run.text.chars().count();
+                let (s, e) = (from.max(col), to.min(col + n));
+                if s < e {
+                    let text: String = run.text.chars().skip(s - col).take(e - s).collect();
+                    runs.push(Run { text, ..run.clone() });
+                }
+                col += n;
+            }
+            let hard = self.lines.get(i + 1).is_none_or(|n| n.block != self.lines[i].block);
+            out.push((runs, hard));
+        }
+        out
+    }
+
+    /// The plain text between two positions: wrapped lines join, paragraphs end in a newline.
+    pub fn text(&self, a: Pos, b: Pos) -> String {
+        let rows = self.rows_between(a, b);
+        let n = rows.len();
+        let mut out = String::new();
+        for (i, (runs, hard)) in rows.into_iter().enumerate() {
+            out.extend(runs.iter().map(|r| r.text.as_str()));
+            if hard && i + 1 < n {
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// Matches in the rendered text, line by line.
+    pub fn find(&self, re: &regex::Regex) -> Vec<(Pos, Pos)> {
+        let mut out = Vec::new();
+        for i in 0..self.lines.len() {
+            let t = self.line_text(i);
+            for m in re.find_iter(&t) {
+                if m.start() == m.end() {
+                    continue;
+                }
+                let col = |byte: usize| t[..byte].chars().count();
+                out.push((Pos { line: i, col: col(m.start()) }, Pos { line: i, col: col(m.end()) }));
+            }
+        }
+        out
+    }
+
+    /// The link a character belongs to.
+    pub fn link_at(&self, pos: Pos) -> Option<&str> {
+        let l = self.lines.get(pos.line)?;
+        let mut col = 0;
+        for run in &l.runs {
+            let n = run.text.chars().count();
+            if pos.col < col + n {
+                return run.link.as_deref();
+            }
+            col += n;
+        }
+        None
     }
 }
 
@@ -617,7 +734,7 @@ pub fn layout(doc: &Doc, width: f32, cell_h: f32, measure: &dyn Fn(&str, Face, f
     let cell_w = measure(" ", Face::Code, 1.0).max(1.0);
     let mut out = Layout::default();
     let mut y = 0.0;
-    for b in &doc.blocks {
+    for (block, b) in doc.blocks.iter().enumerate() {
         let x = b.indent * cell_w;
         let avail = (width - x).max(cell_w);
         let h = cell_h * b.scale;
@@ -673,7 +790,7 @@ pub fn layout(doc: &Doc, width: f32, cell_h: f32, measure: &dyn Fn(&str, Face, f
                     (at - w, w)
                 })
                 .collect();
-            out.lines.push(VisualLine { runs, spans, x, y, h, scale: b.scale, code_bg: b.code_bg, rule: b.rule });
+            out.lines.push(VisualLine { runs, spans, x, y, h, scale: b.scale, code_bg: b.code_bg, rule: b.rule, block });
             y += h;
         }
     }
@@ -783,5 +900,39 @@ mod tests {
         let seen = l.visible(1000.0, 1100.0);
         assert!(!seen.is_empty() && seen.len() <= 6, "only the lines in view: {}", seen.len());
         assert!(seen.iter().all(|v| v.y + v.h > 1000.0 && v.y < 1100.0));
+    }
+
+    #[test]
+    fn porthole_copy_uses_rendered_text() {
+        let p = Palette::default();
+        let doc = render("# Title\n\nsome **bold** words here", &Language::Markdown, &p, true);
+        let l = layout(&doc, 100.0, 20.0, &measure, false);
+        let texts: Vec<String> = (0..l.lines.len()).map(|i| l.line_text(i)).collect();
+        assert_eq!(texts, vec!["Title", "", "some bold ", "words here"]);
+        let end = Pos { line: 3, col: 10 };
+        assert_eq!(l.text(Pos { line: 0, col: 0 }, end), "Title\n\nsome bold words here", "wrapped lines of one paragraph join");
+        assert_eq!(l.text(end, Pos { line: 2, col: 5 }), "bold words here", "either order");
+        let rows = l.rows_between(Pos { line: 2, col: 5 }, Pos { line: 2, col: 9 });
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].0.iter().any(|r| r.text == "bold" && r.bold), "styles kept for Copy with Styles");
+        assert_eq!(l.position(15.0, 65.0, &measure), Some(Pos { line: 2, col: 1 }), "x 15 is in the second character");
+        assert_eq!(l.position(999.0, 65.0, &measure), Some(Pos { line: 2, col: 10 }), "past the end: the line's end");
+        assert_eq!(l.position(0.0, 999.0, &measure), None);
+        assert_eq!(l.x_of(Pos { line: 2, col: 5 }, &measure), 50.0);
+    }
+
+    #[test]
+    fn find_sees_rendered_text() {
+        let p = Palette::default();
+        let doc = render("# Heading\n\nfind **me** and me", &Language::Markdown, &p, true);
+        let l = layout(&doc, 1000.0, 20.0, &measure, false);
+        let re = regex::Regex::new("me").unwrap();
+        let hits = l.find(&re);
+        assert_eq!(hits.len(), 2, "markdown markers are not searched: {hits:?}");
+        assert_eq!(hits[0], (Pos { line: 2, col: 5 }, Pos { line: 2, col: 7 }));
+        let link = render("[here](https://x.org)", &Language::Markdown, &p, true);
+        let ll = layout(&link, 1000.0, 20.0, &measure, false);
+        assert_eq!(ll.link_at(Pos { line: 0, col: 1 }), Some("https://x.org"));
+        assert_eq!(ll.link_at(Pos { line: 0, col: 9 }), None);
     }
 }

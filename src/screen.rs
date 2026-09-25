@@ -179,6 +179,8 @@ pub struct Screen {
     /// Portholes by id, and the last id given.
     pub portholes: std::collections::HashMap<u32, crate::porthole::store::Porthole>,
     pub(crate) next_porthole: u32,
+    /// Text selected in a porthole: its id and the two ends.
+    pub porthole_selection: Option<(u32, crate::porthole::render::Pos, crate::porthole::render::Pos)>,
     /// The global defaultWideMode: portholes start in Wide mode.
     pub porthole_wide_default: bool,
     /// OSC 21337: what the pane's program says it is doing.
@@ -291,6 +293,7 @@ impl Screen {
             portholes: std::collections::HashMap::new(),
             next_porthole: 0,
             porthole_wide_default: false,
+            porthole_selection: None,
             env: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
@@ -570,8 +573,23 @@ impl Screen {
         let g = self.term.primary_grid();
         let mut out = String::new();
         let mut line = String::new();
+        let mut shown = std::collections::HashSet::new();
         for l in first..=last {
             let row = &g[Line(l)];
+            // A rendered block copies the raw lines its porthole keeps.
+            if let Some(p) = Some(row.porthole()).filter(|p| *p != 0).and_then(|p| self.portholes.get(&p)) {
+                if shown.insert(p.id) {
+                    for saved in &p.saved {
+                        line.extend((0..saved.len()).map(|c| &saved[Column(c)]).filter(|c| !c.flags.contains(Flags::WIDE_CHAR_SPACER)).map(|c| c.c));
+                        if !saved.last().is_some_and(|c| c.flags.contains(Flags::WRAPLINE)) {
+                            out.push_str(line.trim_end());
+                            out.push('\n');
+                            line.clear();
+                        }
+                    }
+                }
+                continue;
+            }
             line.extend((0..g.columns()).map(|c| &row[Column(c)]).filter(|c| !c.flags.contains(Flags::WIDE_CHAR_SPACER)).map(|c| c.c));
             let wrapped = l < last && row[Column(g.columns() - 1)].flags.contains(Flags::WRAPLINE);
             if !wrapped {
