@@ -190,6 +190,8 @@ pub struct Pane {
     /// What the hook found, in order, for the window's tmux gateway. Output behind a tmux
     /// line waits here too, so "Detached" lands before what followed `%exit`.
     tmux_q: Vec<crate::tmux_hook::Out>,
+    /// A screen-like TERM: italics as reverse video (iTerm2's translateFromScreenTerminal).
+    pub screen_filter: Option<crate::screenterm::Filter>,
     /// A tmux gateway: its pty carries tmux commands only, so no input reaches it.
     pub gateway: bool,
     /// A tmux pane's size is tmux's, whatever its rect (milestone 8c asks tmux for others).
@@ -276,7 +278,7 @@ impl Pane {
     fn with_io(id: PaneId, io: Io, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None }
+        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -296,6 +298,10 @@ impl Pane {
                 match out {
                     crate::tmux_hook::Out::Screen(_) if dropping => {}
                     crate::tmux_hook::Out::Screen(bytes) if self.tmux_q.is_empty() => {
+                        let bytes = match self.screen_filter.as_mut() {
+                            Some(f) => f.feed(&bytes),
+                            None => bytes,
+                        };
                         let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&bytes);
                         // tmux answers queries for its panes itself.
                         if !reply.is_empty() && !matches!(pty, Io::Tmux(_)) {
@@ -679,7 +685,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -691,7 +697,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

@@ -68,6 +68,7 @@ pub mod reports;
 pub mod layout;
 pub mod palette;
 pub mod screen;
+pub mod screenterm;
 
 #[cfg(windows)]
 pub mod conpty;

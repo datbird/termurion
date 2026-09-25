@@ -623,6 +623,33 @@ default = 10.0
 help = "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
 
 [[setting]]
+key = "translateScreenToXterm"
+tab = "Advanced"
+section = "Terminal"
+label = "Support TERM=screen"
+type = "bool"
+default = true
+help = "Support TERM=screen\nMost notably, this fixes italics replacing inverse text."
+
+[[setting]]
+key = "convertItalicsToReverseVideoForTmux"
+tab = "Advanced"
+section = "Terminal"
+label = "Convert italics to reverse video in tmux integration?"
+type = "bool"
+default = true
+help = "Convert italics to reverse video in tmux integration?\nThis is effective when the default TERM reported by tmux matches *screen*."
+
+[[setting]]
+key = "convertItalicsToReverseVideoForTmuxBugwardsCompatible"
+tab = "Advanced"
+section = "Terminal"
+label = "Convert italics to reverse video in tmux integration, even when TERM matches *tmux*?"
+type = "bool"
+default = false
+help = "Convert italics to reverse video in tmux integration, even when TERM matches *tmux*?\nThis was the default behavior for a long time, but it was incorrect. The conversion should only be done when TERM matches *screen*."
+
+[[setting]]
 key = "restoreWindowContents"
 tab = "Advanced"
 section = "Terminal"
@@ -785,6 +812,15 @@ type = "enum"
 default = 1
 choices = [ { value = 0, label = "New window" }, { value = 1, label = "Focused window" }, { value = 2, label = "Topmost session window" } ]
 help = "\"Focused window\" (the default) attaches the window as a tab of whichever Tandem window currently has keyboard focus, unless it has tabs of another tmux session."
+
+[[setting]]
+key = "pollForTmuxForegroundJob"
+tab = "Advanced"
+section = "Tmux Integration"
+label = "Poll for foreground job name in tmux integration with tmux < 3.2?"
+type = "bool"
+default = false
+help = "Poll for foreground job name in tmux integration with tmux < 3.2?\nThis enables tab icons but can cause a lot of background traffic. This has no effect in tmux 3.2 and later, where polling is unnecessary."
 
 [[setting]]
 key = "tmuxTitlePrefix"
