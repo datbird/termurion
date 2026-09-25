@@ -3,7 +3,7 @@
 //! selection's cells.
 
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
@@ -294,7 +294,7 @@ fn color_code(c: Color, base: usize, ext: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alacritty_terminal::index::Side;
+    use alacritty_terminal::index::{Point, Side};
     use alacritty_terminal::selection::{Selection, SelectionType};
 
     fn select(s: &mut Screen, from: (i32, usize), to: (i32, usize)) {
