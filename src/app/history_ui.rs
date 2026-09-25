@@ -45,7 +45,7 @@ impl App {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Err(e) = std::fs::write(&path, json) {
+        if let Err(e) = crate::shell_history::write_whole(&path, &json) {
             self.banners.set("history", format!("Could not save the paste history: {e}"));
         }
     }

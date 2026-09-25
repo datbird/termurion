@@ -103,7 +103,7 @@ impl App {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Err(e) = std::fs::write(&path, json) {
+        if let Err(e) = shell_history::write_whole(&path, &json) {
             self.banners.set("history", format!("Could not save the command history: {e}"));
         }
     }
@@ -195,10 +195,10 @@ impl App {
             }
             // At a prompt, the path shell-escaped (newlines too).
             PopupFor::Dirs => {
-                if self.panes.get(&pane).and_then(|p| p.own().at_prompt()) == Some(true) {
-                    let job = crate::paste::Job::new(value, crate::paste::ESCAPE);
-                    let escaped = crate::paste::sanitize(&job, &crate::paste::Prefs::default()).replace('\n', "\\\n");
-                    self.user_write(pane, escaped.as_bytes(), Write::SendText);
+                let Some(s) = self.panes.get(&pane).map(|p| p.own()) else { return };
+                if s.at_prompt() == Some(true) {
+                    let text = shell_history::insertable_dir(value, s.shell.shell.as_deref());
+                    self.user_write(pane, text.as_bytes(), Write::SendText);
                 }
             }
         }

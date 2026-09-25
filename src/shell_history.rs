@@ -74,6 +74,35 @@ pub fn remainder(command: &str, typed: &str) -> String {
     command.chars().skip(typed.chars().count()).collect()
 }
 
+/// A recent directory as the shell at the prompt takes it: a local Windows path
+/// (`/C:/x` from OSC 7) as `C:\x`; PowerShell and cmd quote it when it needs quoting; a
+/// POSIX shell gets iTerm2's backslash escaping, newlines too. `shell`: the shell's name
+/// from shell integration.
+pub fn insertable_dir(path: &str, shell: Option<&str>) -> String {
+    let shell = shell.unwrap_or("").to_ascii_lowercase();
+    let windows = matches!(shell.as_str(), "pwsh" | "powershell" | "cmd");
+    let local = crate::profile::local_path(path).map(|p| p.to_string_lossy().into_owned());
+    match (local, windows) {
+        (Some(p), _) if shell == "cmd" => {
+            if p.contains([' ', '&', '(', ')', '^', '|', '<', '>', '%', '!']) { format!("\"{p}\"") } else { p }
+        }
+        (Some(p), _) => {
+            if p.contains([' ', '\'', '"', '`', '$', ';', '&', '(', ')', '{', '}', '@', '#', ',', '|', '<', '>']) { format!("'{}'", p.replace('\'', "''")) } else { p }
+        }
+        (None, _) => {
+            let job = crate::paste::Job::new(path, crate::paste::ESCAPE);
+            crate::paste::sanitize(&job, &crate::paste::Prefs::default()).replace('\r', "\\\r").replace('\n', "\\\n")
+        }
+    }
+}
+
+/// Writes `text` to `path` through a temporary file, so a crash never leaves half a file.
+pub fn write_whole(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
 impl Store {
     pub fn record_command(&mut self, host: &str, command: &str, dir: Option<&str>, time: f64) {
         let command = command.trim();
@@ -305,6 +334,24 @@ mod tests {
         assert_eq!(remainder("git status", "gi"), "t status");
         assert_eq!(remainder("git", "GIT"), "");
         assert_eq!(remainder("\u{e9}cho x", "\u{e9}"), "cho x");
+    }
+
+    #[test]
+    fn directories_insert_for_their_shell() {
+        assert_eq!(insertable_dir("/C:/Users/rob", Some("pwsh")), "C:\\Users\\rob");
+        assert_eq!(insertable_dir("/C:/Users/rob/My Docs", Some("pwsh")), "'C:\\Users\\rob\\My Docs'");
+        assert_eq!(insertable_dir("/C:/it's here", Some("powershell")), "'C:\\it''s here'");
+        assert_eq!(insertable_dir("/C:/a b", Some("cmd")), "\"C:\\a b\"");
+        assert_eq!(insertable_dir("/home/me/My Docs", Some("bash")), "/home/me/My\\ Docs");
+        assert_eq!(insertable_dir("/tmp/a\nb", None), "/tmp/a\\\nb", "POSIX: newlines escaped too");
+        let dir = std::env::temp_dir().join(format!("tandem-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("h.json");
+        write_whole(&f, "one").unwrap();
+        write_whole(&f, "two").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "two");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary file left");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
