@@ -212,6 +212,299 @@ pub fn expand_vim(s: &str) -> String {
     out
 }
 
+/// How fast a paste goes: UTF-16 units per write and seconds between writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Speed {
+    pub units: usize,
+    pub delay: f64,
+}
+
+/// iTerm2's effective defaults (QuickPaste*, SlowPaste*).
+pub const QUICK: Speed = Speed { units: 768, delay: 0.01 };
+pub const SLOW: Speed = Speed { units: 16, delay: 0.125 };
+
+/// Paste Faster (1.5) and Paste Slower (0.66): more per write, less wait, within bounds.
+pub fn faster(s: Speed, factor: f64) -> Speed {
+    let units = ((s.units as f64 * factor) as usize).clamp(1, 1_048_576);
+    Speed { units, delay: (s.delay / factor).clamp(0.001, 10.0) }
+}
+
+/// "Pasting at up to 75.0 KB/sec".
+pub fn rate_text(s: Speed) -> String {
+    let rate = s.units as f64 / s.delay.max(1e-9);
+    let text = if rate < 1024.0 {
+        format!("{rate:.0} bytes")
+    } else if rate < 1024.0 * 1024.0 {
+        format!("{:.1} KB", rate / 1024.0)
+    } else {
+        format!("{:.1} MB", rate / (1024.0 * 1024.0))
+    };
+    format!("Pasting at up to {text}/sec")
+}
+
+/// The end (exclusive) of the next write from `at`: `units` long, never ending inside a
+/// surrogate pair, and ending after the first newline when pasting waits for prompts.
+pub fn next_chunk(text: &[u16], at: usize, units: usize, block_at_newline: bool) -> usize {
+    let mut end = (at + units.max(1)).min(text.len());
+    if end < text.len() && (0xd800..0xdc00).contains(&text[end - 1]) {
+        end += 1;
+    }
+    if block_at_newline {
+        if let Some(i) = text[at..end].iter().position(|c| *c == b'\n' as u16 || *c == b'\r' as u16) {
+            end = at + i + 1;
+        }
+    }
+    end
+}
+
+/// iTerm2 shows its progress bar when a paste takes over 3 s, or waits for prompts.
+pub fn shows_progress(len: usize, s: Speed, commands: bool) -> bool {
+    commands || s.delay * len as f64 / s.units.max(1) as f64 + (len / 10_000) as f64 > 3.0
+}
+
+/// The settings the warnings read.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WarnPrefs {
+    /// NoSyncDoNotWarnBeforeMultilinePaste.
+    pub multiline_off: bool,
+    /// NoSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt.
+    pub one_line_off: bool,
+    /// PromptForPasteWhenNotAtPrompt.
+    pub when_not_at_prompt: bool,
+    /// SuppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline.
+    pub skip_one_line_newline: bool,
+    /// SuppressMultilinePasteWarningWhenNotAtShellPrompt.
+    pub skip_not_at_prompt: bool,
+    /// AlwaysWarnBeforePastingOverSize (-1: off).
+    pub size_limit: i64,
+    /// AboutToPasteTabsWithCancel.
+    pub tabs_off: bool,
+}
+
+/// A question before a paste.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Warning {
+    Tabs,
+    Size(usize),
+    Lines { n: usize, at_prompt: bool },
+    OneLine { at_prompt: bool },
+}
+
+impl Warning {
+    pub fn text(&self) -> String {
+        match self {
+            Warning::Tabs => "You're about to paste a string with tabs.".into(),
+            Warning::Size(n) => format!("OK to paste {n} characters?"),
+            Warning::Lines { n, at_prompt: true } => format!("OK to paste {n} lines at shell prompt?"),
+            Warning::Lines { n, at_prompt: false } => format!("OK to paste {n} lines?"),
+            Warning::OneLine { at_prompt: true } => "OK to paste one line ending in a newline at shell prompt?".into(),
+            Warning::OneLine { at_prompt: false } => "OK to paste one line ending in a newline?".into(),
+        }
+    }
+
+    /// iTerm2's heading over the question.
+    pub fn heading(&self) -> &'static str {
+        match self {
+            Warning::Tabs => "Paste Tabs",
+            Warning::Size(_) => "Paste Limit Exceeded",
+            Warning::Lines { .. } | Warning::OneLine { .. } => "Confirm Multi-Line Paste",
+        }
+    }
+
+    pub fn buttons(&self) -> &'static [&'static str] {
+        match self {
+            Warning::Tabs => &["OK", "Cancel", "Convert tabs to spaces", "Advanced..."],
+            Warning::Size(_) => &["OK", "Cancel", "Advanced..."],
+            Warning::Lines { .. } => &["Paste", "Cancel", "Advanced..."],
+            Warning::OneLine { .. } => &["Paste", "Paste Without Newline", "Cancel", "Advanced..."],
+        }
+    }
+
+    /// The key "Remember my choice" sets (None: it cannot be silenced).
+    pub fn silence_key(&self) -> Option<&'static str> {
+        match self {
+            Warning::Tabs => Some("AboutToPasteTabsWithCancel"),
+            Warning::Size(_) => None,
+            Warning::OneLine { at_prompt: true } => Some("NoSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt"),
+            Warning::Lines { .. } | Warning::OneLine { .. } => Some("NoSyncDoNotWarnBeforeMultilinePaste"),
+        }
+    }
+}
+
+/// The questions a paste asks, in iTerm2's order (tabs, size, then lines).
+/// `at_prompt`: None without shell integration.
+pub fn check(text: &str, at_prompt: Option<bool>, bracketed: bool, flags: u32, p: &WarnPrefs) -> Vec<Warning> {
+    let mut out = Vec::new();
+    if text.is_empty() || flags & (COMMANDS | NO_WARNINGS) != 0 {
+        return out;
+    }
+    if !bracketed && text.contains('\t') && !p.tabs_off {
+        out.push(Warning::Tabs);
+    }
+    let n = text.encode_utf16().count();
+    if p.size_limit >= 0 && n as i64 > p.size_limit {
+        out.push(Warning::Size(n));
+    }
+    if flags & REMOVE_NEWLINES != 0 || !text.contains(['\r', '\n']) {
+        return out;
+    }
+    let only_last = text.find(['\r', '\n']) == Some(text.len() - 1);
+    let at = at_prompt == Some(true);
+    if (p.skip_one_line_newline && only_last) || (p.skip_not_at_prompt && !at) {
+        return out;
+    }
+    // iTerm2's componentsSeparatedByRegex drops trailing empty lines.
+    let mut lines: Vec<&str> = text.split("\r\n").flat_map(|l| l.split(['\r', '\n'])).collect();
+    while lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let w = if lines.len() > 1 { Warning::Lines { n: lines.len(), at_prompt: at } } else { Warning::OneLine { at_prompt: at } };
+    let off = match w {
+        Warning::OneLine { at_prompt: true } => p.one_line_off,
+        _ => p.multiline_off || (!at && !p.when_not_at_prompt),
+    };
+    if !off {
+        out.push(w);
+    }
+    out
+}
+
+/// A paste configuration that key and pointer actions carry (iTerm2's JSON).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Config {
+    pub chunk_size: i64,
+    pub delay: f64,
+    pub tab_stop_size: i64,
+    pub tab_transform: i64,
+    pub convert_newlines: bool,
+    pub remove_newlines: bool,
+    pub convert_punctuation: bool,
+    pub escape_for_shell: bool,
+    pub remove_controls: bool,
+    pub bracket_allowed: bool,
+    pub base64: bool,
+    pub use_regex: bool,
+    pub regex: String,
+    pub substitution: String,
+    pub wait_for_prompts: bool,
+}
+
+impl Config {
+    /// Missing keys read as 0, false, or empty (iTerm2's).
+    pub fn decode(json: &str) -> Config {
+        let v: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+        let b = |k: &str| v.get(k).and_then(|x| x.as_bool()).unwrap_or(false);
+        let i = |k: &str| v.get(k).and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64))).unwrap_or(0);
+        let st = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        Config {
+            chunk_size: i("ChunkSize"),
+            delay: v.get("Delay").and_then(|x| x.as_f64()).unwrap_or(0.0),
+            tab_stop_size: i("TabStopSize"),
+            tab_transform: i("TabTransform"),
+            convert_newlines: b("ConvertNewlines"),
+            remove_newlines: b("RemoveNewlines"),
+            convert_punctuation: b("ConvertUnicodePunctuation"),
+            escape_for_shell: b("EscapeForShell"),
+            remove_controls: b("RemoveControls"),
+            bracket_allowed: b("BracketAllowed"),
+            base64: b("Base64"),
+            use_regex: b("UseRegexSubstitution"),
+            regex: st("Regex"),
+            substitution: st("Substitution"),
+            wait_for_prompts: b("WaitForPrompts"),
+        }
+    }
+
+    pub fn encode(&self) -> String {
+        serde_json::json!({
+            "ChunkSize": self.chunk_size,
+            "Delay": self.delay,
+            "TabStopSize": self.tab_stop_size,
+            "TabTransform": self.tab_transform,
+            "ConvertNewlines": self.convert_newlines,
+            "RemoveNewlines": self.remove_newlines,
+            "ConvertUnicodePunctuation": self.convert_punctuation,
+            "EscapeForShell": self.escape_for_shell,
+            "RemoveControls": self.remove_controls,
+            "BracketAllowed": self.bracket_allowed,
+            "Base64": self.base64,
+            "UseRegexSubstitution": self.use_regex,
+            "Regex": self.regex,
+            "Substitution": self.substitution,
+            "WaitForPrompts": self.wait_for_prompts,
+        })
+        .to_string()
+    }
+
+    /// The paste this configuration makes of `text`, and its speed.
+    pub fn job(&self, text: &str) -> (Job, Speed) {
+        let pairs = [
+            (self.convert_newlines, NEWLINES),
+            (self.remove_newlines, REMOVE_NEWLINES),
+            (self.escape_for_shell, ESCAPE),
+            (self.remove_controls, CONTROLS),
+            (self.bracket_allowed, BRACKET),
+            (self.base64, BASE64),
+            (self.wait_for_prompts, COMMANDS),
+            (self.convert_punctuation, PUNCTUATION),
+            (self.use_regex, REGEX),
+        ];
+        let flags = pairs.iter().filter(|(on, _)| *on).fold(0, |f, (_, bit)| f | bit);
+        let tabs = match self.tab_transform {
+            1 => Tabs::Spaces(self.tab_stop_size.max(0) as usize),
+            2 => Tabs::CtrlV,
+            _ => Tabs::Keep,
+        };
+        let job = Job { text: text.to_string(), flags, tabs, regex: self.regex.clone(), substitution: self.substitution.clone() };
+        (job, Speed { units: self.chunk_size.max(0) as usize, delay: self.delay })
+    }
+
+    /// The summary in the key and pointer lists.
+    pub fn summary(&self) -> String {
+        let mut p: Vec<String> = Vec::new();
+        if self.base64 {
+            p.push("Base64".into());
+        }
+        if self.wait_for_prompts {
+            p.push("WaitForPrompts".into());
+        }
+        match self.tab_transform {
+            1 => p.push(format!("Tabs->{} spcs", self.tab_stop_size)),
+            2 => p.push("^V+Tab".into()),
+            _ => {}
+        }
+        if self.delay > 1.0 {
+            p.push("V.Slow".into());
+        } else if self.delay > 0.25 {
+            p.push("Slow".into());
+        } else if self.chunk_size > 100_000 {
+            p.push("HugeChunks".into());
+        }
+        if self.escape_for_shell {
+            p.push("\\Escape".into());
+        }
+        if !self.remove_controls {
+            p.push("UnsafeControls".into());
+        }
+        if !self.bracket_allowed {
+            p.push("BracketingOff".into());
+        }
+        if !self.convert_newlines {
+            p.push("NoCRLFConversion".into());
+        }
+        if self.remove_newlines {
+            p.push("RemoveNewlines".into());
+        }
+        if self.convert_punctuation {
+            p.push("ConvertPunctuation".into());
+        }
+        if self.use_regex {
+            p.push(format!("s/{}/{}/g", self.regex, self.substitution));
+        }
+        p.join(", ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +562,72 @@ mod tests {
         assert_eq!(bracket("ls\rpwd", false), "\x1b[200~ls\rpwd\x1b[201~");
         assert_eq!(bracket("ls\rpwd\r", true), "\x1b[200~ls\x1b[201~\r\x1b[200~pwd\x1b[201~\r");
         assert_eq!(bracket("a\r\nb", true), "\x1b[200~a\x1b[201~\r\n\x1b[200~b\x1b[201~");
+    }
+
+    #[test]
+    fn speeds_follow_iterm2() {
+        let f = faster(QUICK, 1.5);
+        assert_eq!(f.units, 1152);
+        assert!((f.delay - 0.01 / 1.5).abs() < 1e-12);
+        let sl = faster(QUICK, 0.66);
+        assert_eq!(sl.units, 506, "truncated");
+        assert_eq!(faster(Speed { units: 1_000_000, delay: 0.001 }, 1.5), Speed { units: 1_048_576, delay: 0.001 }, "bounds");
+        assert_eq!(faster(Speed { units: 1, delay: 9.0 }, 0.66), Speed { units: 1, delay: 10.0 });
+        assert_eq!(rate_text(QUICK), "Pasting at up to 75.0 KB/sec");
+        assert!(shows_progress(1_000_000, QUICK, false), "13 s");
+        assert!(!shows_progress(10_000, QUICK, false));
+        assert!(shows_progress(5, QUICK, true), "waiting for prompts always shows it");
+    }
+
+    #[test]
+    fn chunks_never_split_surrogates() {
+        let t: Vec<u16> = "ab\u{1f600}cd".encode_utf16().collect();
+        assert_eq!(next_chunk(&t, 0, 3, false), 4, "the pair stays whole");
+        assert_eq!(next_chunk(&t, 0, 2, false), 2);
+        assert_eq!(next_chunk(&t, 4, 100, false), t.len());
+        let lines: Vec<u16> = "ls\rpwd\r".encode_utf16().collect();
+        assert_eq!(next_chunk(&lines, 0, 100, true), 3, "one line when waiting for prompts");
+        assert_eq!(next_chunk(&lines, 3, 100, true), 7);
+    }
+
+    #[test]
+    fn warnings_follow_iterm2() {
+        let p = WarnPrefs { size_limit: -1, ..Default::default() };
+        assert_eq!(check("abc\n", Some(true), true, NEWLINES, &p), vec![Warning::OneLine { at_prompt: true }]);
+        assert_eq!(Warning::OneLine { at_prompt: true }.text(), "OK to paste one line ending in a newline at shell prompt?");
+        assert_eq!(Warning::OneLine { at_prompt: true }.buttons(), &["Paste", "Paste Without Newline", "Cancel", "Advanced..."]);
+        assert_eq!(check("a\nb\n", Some(true), true, 0, &p), vec![Warning::Lines { n: 2, at_prompt: true }]);
+        assert_eq!(check("a\n\nb", Some(true), true, 0, &p), vec![Warning::Lines { n: 3, at_prompt: true }]);
+        assert_eq!(Warning::Lines { n: 2, at_prompt: true }.text(), "OK to paste 2 lines at shell prompt?");
+        assert!(check("a\nb", Some(false), true, 0, &p).is_empty(), "not at a prompt: only with PromptForPasteWhenNotAtPrompt");
+        assert!(check("a\nb", None, true, 0, &p).is_empty(), "no shell integration: not at a prompt");
+        let q = WarnPrefs { when_not_at_prompt: true, ..p };
+        assert_eq!(check("a\nb", Some(false), true, 0, &q), vec![Warning::Lines { n: 2, at_prompt: false }]);
+        assert!(check("a\nb", Some(true), true, NO_WARNINGS, &p).is_empty());
+        assert!(check("a\nb", Some(true), true, COMMANDS, &p).is_empty());
+        assert!(check("a\nb", Some(true), true, REMOVE_NEWLINES, &p).is_empty());
+        assert!(check("a\nb", Some(true), true, 0, &WarnPrefs { multiline_off: true, ..p }).is_empty());
+        assert!(check("ab\n", Some(true), true, 0, &WarnPrefs { skip_one_line_newline: true, ..p }).is_empty());
+        assert_eq!(check("a\tb", Some(false), false, 0, &p), vec![Warning::Tabs], "tabs with bracketing off");
+        assert!(check("a\tb", Some(false), true, 0, &p).is_empty(), "bracketing on: tabs go as they are");
+        assert_eq!(Warning::Tabs.text(), "You're about to paste a string with tabs.");
+        assert_eq!(check("abcdef", None, true, 0, &WarnPrefs { size_limit: 3, ..p }), vec![Warning::Size(6)]);
+        assert_eq!(Warning::Size(6).text(), "OK to paste 6 characters?");
+        assert_eq!(Warning::Size(6).silence_key(), None);
+        assert_eq!(Warning::Lines { n: 2, at_prompt: true }.silence_key(), Some("NoSyncDoNotWarnBeforeMultilinePaste"));
+    }
+
+    #[test]
+    fn configs_decode_like_iterm2() {
+        let c = Config::decode(r#"{"Base64":true,"TabTransform":1,"TabStopSize":2,"Delay":0.5}"#);
+        assert_eq!((c.base64, c.tab_transform, c.tab_stop_size, c.chunk_size, c.convert_newlines), (true, 1, 2, 0, false), "missing keys read as 0 and false");
+        assert_eq!(Config::decode(&c.encode()), c);
+        assert_eq!(c.summary(), "Base64, Tabs->2 spcs, Slow, UnsafeControls, BracketingOff, NoCRLFConversion");
+        let (job, speed) = c.job("a\tb");
+        assert_eq!((job.flags, job.tabs, speed), (BASE64, Tabs::Spaces(2), Speed { units: 0, delay: 0.5 }));
+        let full = Config { convert_newlines: true, remove_controls: true, bracket_allowed: true, escape_for_shell: true, use_regex: true, regex: "a".into(), substitution: "b".into(), tab_transform: 2, ..Default::default() };
+        assert_eq!(full.summary(), "^V+Tab, \\Escape, s/a/b/g");
+        assert_eq!(full.job("x").0.flags, NEWLINES | CONTROLS | BRACKET | ESCAPE | REGEX);
+        assert_eq!(Config::decode("not json"), Config::default());
     }
 }
