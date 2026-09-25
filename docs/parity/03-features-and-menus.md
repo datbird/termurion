@@ -318,7 +318,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. (milestone 10) | missing |
 | Window > AI Chats | Cmd+Y | Opens the window listing all AI chat conversations. (milestone 12) | missing |
 | Window > Cockpit | Opt+Cmd+C | Opens the Cockpit window, a command and session overview dashboard. (milestone 12) | missing |
-| Window > Pin Hotkey Window | Shift+Cmd+- | Pins the hotkey (Quake-style dropdown) window so it stays open. (milestone 7) | missing |
+| Window > Pin Hotkey Window | Shift+Cmd+- | Pins the hotkey (Quake-style dropdown) window so it stays open. (milestone 7) | have |
 | Window > Bring All To Front | no shortcut | Brings all of the app's windows to the front. | have |
 
 ### Help menu
@@ -657,16 +657,16 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### hotkey windows
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Hotkey windows | Global hotkey summon/dismiss | A system-wide key combo shows or hides a dedicated terminal window from any app. | missing | Needs a Windows global hotkey API, RegisterHotKey or a low-level keyboard hook, in place of macOS Carbon hotkeys/event tap. |
-| Hotkey windows | Per-profile hotkey binding | Any profile can be assigned its own dedicated hotkey window. | missing | |
-| Hotkey windows | Modifier-only activation | Can trigger on holding a modifier key alone, for example double-tap Option, instead of a full chord. | missing | Would map to a different low-level hook approach on Windows. |
-| Hotkey windows | Auto-hide on focus loss | Window disappears automatically when it loses focus. | missing | |
-| Hotkey windows | Show on app activation | Auto-hidden hotkey window reappears when the app is activated again. | missing | |
-| Hotkey windows | Animated show/hide | Slide/fade animation when the hotkey window appears or disappears. | missing | |
-| Hotkey windows | Floating (always-on-top) | Keeps the hotkey window above all other windows. | missing | Maps to a Windows topmost window style. |
-| Hotkey windows | Alternate shortcuts | A hotkey window can respond to more than one key combination. | missing | |
+| Hotkey windows | Global hotkey summon/dismiss | A system-wide key combo shows or hides a dedicated terminal window from any app. | have |  |
+| Hotkey windows | Per-profile hotkey binding | Any profile can be assigned its own dedicated hotkey window. | have |  |
+| Hotkey windows | Modifier-only activation | Can trigger on holding a modifier key alone, for example double-tap Option, instead of a full chord. | have |  |
+| Hotkey windows | Auto-hide on focus loss | Window disappears automatically when it loses focus. | have |  |
+| Hotkey windows | Show on app activation | Auto-hidden hotkey window reappears when the app is activated again. | have |  |
+| Hotkey windows | Animated show/hide | Slide/fade animation when the hotkey window appears or disappears. | partial |  |
+| Hotkey windows | Floating (always-on-top) | Keeps the hotkey window above all other windows. | have |  |
+| Hotkey windows | Alternate shortcuts | A hotkey window can respond to more than one key combination. | have |  |
 | Hotkey windows | Dock icon preference | Controls whether the app shows in the Dock while only a hotkey window is open. | missing | Maps to taskbar visibility on Windows. |
-| Hotkey windows | Multiple independent hotkey windows | Several different profiles can each have their own hotkey window active simultaneously. | missing | |
+| Hotkey windows | Multiple independent hotkey windows | Several different profiles can each have their own hotkey window active simultaneously. | have |  |
 
 ### AI / chat features
 | Subsystem | Feature | What it does | Tandem status | Windows note |

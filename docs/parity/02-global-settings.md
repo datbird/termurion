@@ -13,7 +13,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | Open profiles window | OpenBookmark | At launch, opens the profiles/bookmarks window instead of a terminal window. | have | Milestone 7b. |
-| Window restoration mode | OpenArrangementAtStartup / OpenNoWindowsAtStartup | Three-way choice at startup: use system window restoration, open the default saved window arrangement, or open no windows. | partial | Milestone 7d: policy 0 restores the windows saved at the last run (Windows has no system setting, so it always restores); the default arrangement opens with 7c; hotkey windows come with 7e. |
+| Window restoration mode | OpenArrangementAtStartup / OpenNoWindowsAtStartup | Three-way choice at startup: use system window restoration, open the default saved window arrangement, or open no windows. | partial | Milestone 7e: all three policies work (hotkey windows come back hidden; "Only Restore Hotkey Window" shows nothing at launch when a hotkey profile exists); Windows has no system setting, so policy 0 always restores. |
 | Always open at least one terminal window at startup | AlwaysOpenWindowAtStartup | Forces at least one terminal window even if system restoration would otherwise open none. | partial | Milestone 7b: saved; it matters once hotkey windows (7e) can stop the startup window, and one always opens until then. |
 | Restore windows to same Spaces | RestoreWindowsToSameSpaces | When restoring windows, puts each one back on the macOS Space it was on. | missing | macOS Spaces concept; no direct Windows virtual-desktop equivalent wired up. |
 
@@ -303,12 +303,12 @@ A table of global keystroke to action bindings (add/remove rows, each with a key
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Create a Dedicated Hotkey Window... | n/a (button, opens profile-hotkey-window setup) | Opens a flow to designate a profile as a dedicated Hotkey Window (a Quake-style dropdown/global-summon terminal). | missing | Tandem has no hotkey window feature. |
-| Show/hide all windows with a system-wide hotkey | HotkeyEnabled | Turns on a single global hotkey that shows/hides all iTerm2 windows at once, independent of any per-profile hotkey window. | missing |  |
-| App Hotkey | HotKeyCode / HotkeyCharacter / HotkeyModifiers | The actual key chord bound to the show/hide-all-windows global hotkey. | missing |  |
+| Create a Dedicated Hotkey Window... | n/a (button, opens profile-hotkey-window setup) | Opens a flow to designate a profile as a dedicated Hotkey Window (a Quake-style dropdown/global-summon terminal). | have | Milestone 7e: iTerm2's warning, sheet, clone ("Hotkey Window", top of screen, 25 rows, Win+T new tab), and success message. |
+| Show/hide all windows with a system-wide hotkey | HotkeyEnabled | Turns on a single global hotkey that shows/hides all iTerm2 windows at once, independent of any per-profile hotkey window. | have | Milestone 7e: stored as iTerm2's Hotkey key; minimizes and restores the terminal windows (Windows has no app hide). |
+| App Hotkey | HotKeyCode / HotkeyCharacter / HotkeyModifiers | The actual key chord bound to the show/hide-all-windows global hotkey. | have | Milestone 7e: stored as HotkeyCode, HotkeyChar, HotkeyModifiers; Alt+Space when turned on with no key. |
 | Open Quickly Hotkey | OpenQuicklyHotKeyCode / OpenQuicklyHotkeyCharacter / OpenQuicklyHotkeyModifiers | A global hotkey that opens the Open Quickly command palette without first activating iTerm2. | missing |  |
 | When set, the Open Quickly window can be opened even when another app is active | n/a (explanatory text tied to the Open Quickly hotkey) | Describes that the Open Quickly hotkey works system-wide, not just while iTerm2 is frontmost. | missing |  |
-| Hotkey Window | n/a (per-profile flag surfaced here as a shortcut link) | Jumps to the profile editor's Keys tab to configure which profile is the hotkey window and its dropdown behavior. | missing |  |
+| Hotkey Window | n/a (per-profile flag surfaced here as a shortcut link) | Jumps to the profile editor's Keys tab to configure which profile is the hotkey window and its dropdown behavior. | have | Milestone 7e: the Create a Dedicated Hotkey Window... row. |
 | Remap modifiers globally | RemapModifiersGlobally | Applies the Keys > Remap Modifiers mapping system-wide (via an event tap) instead of only while iTerm2 is frontmost. | partial | Saved and shown; Tandem remaps while it is in front whatever the setting, and does not yet stop when it is off. |
 | Haptic feedback for Esc | EnableHapticFeedbackForEsc | Triggers a trackpad haptic tap when pressing Esc, as tactile confirmation. | missing | macOS trackpad haptics; no Windows equivalent hardware. |
 | Sound for Esc | EnableSoundForEsc | Plays a sound when Esc is pressed, as audible confirmation. | missing |  |
@@ -402,7 +402,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Load Color Preset... | KEY_ACTION_LOAD_COLOR_PRESET | Applies a saved color preset to the current session. | missing | Comes in milestone 13. |
 | Paste Special... | KEY_ACTION_PASTE_SPECIAL | Pastes the clipboard using Paste Special's transform rules. | missing | Comes in milestone 9. |
 | Paste Special from Selection... | KEY_ACTION_PASTE_SPECIAL_FROM_SELECTION | Pastes the current selection (not the clipboard) using Paste Special's transform rules. | missing | Comes in milestone 9. |
-| Toggle Pin Hotkey Window | KEY_ACTION_TOGGLE_HOTKEY_WINDOW_PINNING | Pins/unpins a hotkey window so it stays open when it loses focus. | missing | Comes in milestone 7. |
+| Toggle Pin Hotkey Window | KEY_ACTION_TOGGLE_HOTKEY_WINDOW_PINNING | Pins/unpins a hotkey window so it stays open when it loses focus. | have | Milestone 7e: flips the session's original profile. |
 | Undo | KEY_ACTION_UNDO | Undoes the last undoable terminal action (e.g. closing a session). | missing | Comes in milestone 7. |
 | Move End of Selection Left | KEY_ACTION_MOVE_END_OF_SELECTION_LEFT | Extends/shrinks the selection by moving its end point left, keyboard-driven. | have |  |
 | Move End of Selection Right | KEY_ACTION_MOVE_END_OF_SELECTION_RIGHT | Extends/shrinks the selection by moving its end point right, keyboard-driven. | have |  |
@@ -681,12 +681,12 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| hotkeyTermAnimationDuration | hotkeyTermAnimationDuration (float, default 0.25) | Duration in seconds of the hotkey window animation. | missing |  |
+| hotkeyTermAnimationDuration | hotkeyTermAnimationDuration (float, default 0.25) | Duration in seconds of the hotkey window animation. | have | Milestone 7e. |
 | openQuicklyAnimationDuration | openQuicklyAnimationDuration (float, default 0.12) | Duration in seconds of the Open Quickly window height animation. | missing |  |
 | dockIconTogglesWindow | dockIconTogglesWindow (bool, default NO) | If the only window is a hotkey window, then clicking the dock icon shows or hides it. | missing |  |
 | hotkeyWindowFloatsAboveOtherWindows | hotkeyWindowFloatsAboveOtherWindows (bool, default NO) | The hotkey window floats above other windows even when another application is active. | missing |  |
-| hotKeyDoubleTapMaxDelay | hotKeyDoubleTapMaxDelay (float, default 0.3) | The maximum amount of time allowed between presses of a modifier key when performing a modifier double-tap. | missing |  |
-| hotKeyDoubleTapMinDelay | hotKeyDoubleTapMinDelay (float, default 0.01) | The minimum amount of time required between presses of a modifier key when performing a modifier double-tap. | missing |  |
+| hotKeyDoubleTapMaxDelay | hotKeyDoubleTapMaxDelay (float, default 0.3) | The maximum amount of time allowed between presses of a modifier key when performing a modifier double-tap. | have | Milestone 7e. |
+| hotKeyDoubleTapMinDelay | hotKeyDoubleTapMinDelay (float, default 0.01) | The minimum amount of time required between presses of a modifier key when performing a modifier double-tap. | have | Milestone 7e. |
 | showPinnedIndicator | showPinnedIndicator (bool, default NO) | Show indicator for pinned hotkey windows. | missing |  |
 
 ### General
