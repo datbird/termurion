@@ -400,16 +400,20 @@ impl App {
             }
             "closeCurrentSession:" => {
                 if let Some(id) = self.focused_id().filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::ClosePane)).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
-                    self.close_pane(id, event_loop);
+                    self.close_session_undoable(id, event_loop);
                 }
             }
             "closeCurrentTab:" => {
                 if let Some(t) = self.tabs.get(self.active).filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::CloseTab)).filter(|_| self.confirm_close(close_ui::Closing::Tab(self.active))) {
-                    for id in t.layout.panes() {
+                    let panes = t.layout.panes();
+                    self.begin_undo(crate::undo_close::Kind::Tab, &panes);
+                    for id in panes {
                         self.close_pane(id, event_loop);
                     }
+                    self.end_undo();
                 }
             }
+            "undoCloseSession:" => self.undo_close(),
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
                     self.restart_pane(id);
@@ -588,6 +592,7 @@ impl App {
             return;
         }
         self.save_all_window_frames();
+        self.clear_undo();
         if let Some(h) = self.hwnd() {
             crate::notify::remove(h);
         }

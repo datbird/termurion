@@ -52,6 +52,7 @@ pub mod aps;
 pub mod coprocess;
 pub mod close_prompt;
 pub mod close_rules;
+pub mod undo_close;
 pub mod jobtitle;
 pub mod profile;
 pub mod prompted;

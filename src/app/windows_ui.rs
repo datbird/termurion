@@ -162,10 +162,12 @@ impl App {
             Ok(g) => g,
             Err(e) => {
                 // A tab on its way to the new window stays where it was.
-                if let NewWindow::Tab(tab) = first {
-                    self.tabs.push(tab);
-                    self.relayout();
+                match first {
+                    NewWindow::Tab(tab) => self.tabs.push(tab),
+                    NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
+                    _ => {}
                 }
+                self.relayout();
                 return Err(e);
             }
         };
@@ -182,6 +184,7 @@ impl App {
             NewWindow::Profile(g) => g.clone(),
             NewWindow::Profiles(gs) => gs.first().cloned().flatten(),
             NewWindow::Tab(t) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
+            NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
         };
         self.apply_fonts();
         self.size_window(first_guid.as_deref());
@@ -196,6 +199,11 @@ impl App {
             }
             NewWindow::Tab(tab) => {
                 self.tabs.push(tab);
+                self.active = 0;
+                self.relayout();
+            }
+            NewWindow::Tabs(tabs) => {
+                self.tabs.extend(tabs);
                 self.active = 0;
                 self.relayout();
             }
@@ -253,9 +261,20 @@ impl App {
             return;
         }
         let panes: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+        self.begin_undo(crate::undo_close::Kind::Window, &panes);
         for p in panes {
             self.close_pane(p, event_loop);
         }
+        self.end_undo();
+    }
+
+    /// A session the person closes: alone in its tab it closes as the tab.
+    pub(super) fn close_session_undoable(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        let panes = self.tabs.iter().find(|t| t.layout.panes().contains(&id)).map(|t| t.layout.panes()).unwrap_or_default();
+        let kind = if panes.len() > 1 { crate::undo_close::Kind::Session } else { crate::undo_close::Kind::Tab };
+        self.begin_undo(kind, if kind == crate::undo_close::Kind::Session { std::slice::from_ref(&id) } else { &panes });
+        self.close_pane(id, event_loop);
+        self.end_undo();
     }
 
     pub(super) fn window_number(&self) -> usize {
@@ -370,6 +389,8 @@ pub(super) enum NewWindow {
     Profiles(Vec<Option<String>>),
     /// A tab moved from another window.
     Tab(Tab),
+    /// Tabs brought back by Undo Close.
+    Tabs(Vec<Tab>),
 }
 
 impl App {

@@ -82,6 +82,7 @@ mod close_ui;
 mod coprocess_ui;
 mod aps_ui;
 mod windows_ui;
+mod undo_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -96,6 +97,7 @@ pub enum UserEvent {
     JobsChanged,
 }
 
+#[derive(Clone)]
 struct Tab {
     /// Stable across moves, for the most-recently-used order.
     id: u64,
@@ -218,6 +220,9 @@ pub struct App {
     win_title: Option<String>,
     /// The content area the current window's panes were laid out for.
     laid_out: Option<Rect>,
+    /// Undo Close: closed things waiting, and the close being collected now.
+    undo: crate::undo_close::Stack<undo_ui::Undone>,
+    undo_capture: Option<undo_ui::Capture>,
     /// The Edit Window Title or Edit Tab Title window, and what it names.
     title_prompt: Option<(crate::prompt_ui::PromptWindow, windows_ui::TitleEdit)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
@@ -442,6 +447,8 @@ pub fn run() {
         win_title: None,
         laid_out: None,
         title_prompt: None,
+        undo: Default::default(),
+        undo_capture: None,
         pending_windows: Vec::new(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
@@ -781,9 +788,13 @@ impl App {
         self.enter_pane_window(id);
         self.aps.remove(&id);
         if let Some(p) = self.panes.remove(&id) {
-            self.forget_session_profile(&p.profile);
             if let Some(pid) = p.shell_pid() {
                 self.jobs.forget(pid);
+            }
+            // A close the person made keeps a running shell for Undo Close.
+            match self.undo_capture.as_mut() {
+                Some(c) if p.exited.is_none() => c.panes.push(p),
+                _ => self.forget_session_profile(&p.profile),
             }
         }
         if self.shot.as_ref().is_some_and(|s| s.pane == id) {
@@ -930,7 +941,7 @@ impl App {
             Action::NewTab => self.new_tab(None),
             Action::ClosePane => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused).filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::ClosePane)).filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
-                    self.close_pane(id, event_loop);
+                    self.close_session_undoable(id, event_loop);
                 }
             }
             Action::SplitRight => self.split(Axis::Row, None),
@@ -1723,7 +1734,8 @@ impl ApplicationHandler<UserEvent> for App {
             self.prune_attention();
             self.redraw();
         }
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes].into_iter().flatten().min();
+        let undo_due = self.expire_undo();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
