@@ -124,6 +124,7 @@ pub mod hotkey;
 pub mod broadcast;
 mod tmux_probe;
 pub mod tmux_hook;
+pub mod tmux_proto;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;
