@@ -41,7 +41,7 @@ pub const DONE: &[&str] = &[
     "terminalStateToggleApplicationKeypad:|Report Associated Text", "terminalStateToggleLiteralMode:",
     "terminalStateSetEmulationLevel:", "toggleBufferInput:", "copyWithStyles:", "copyWithControlSequences:",
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
-    "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:",
+    "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
     "showBookmarkWindow:", "installShellIntegration:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
     "previousMark:", "clearToLastMark:", "selectOutputOfLastCommand:", "selectCurrentCommand:",
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",
@@ -59,8 +59,6 @@ pub const DONE: &[&str] = &[
 
 /// Commands that work with a known difference for now.
 const PARTIAL: &[(&str, &str)] = &[
-    ("newWindow:", "Opens a tab until separate windows arrive in milestone 7."),
-    ("newWindowWithSameProfile:", "Opens a tab until separate windows arrive in milestone 7."),
     ("biggerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("smallerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("filter:", "Shows the matching lines without their colors."),
@@ -235,7 +233,7 @@ mod tests {
     fn known_statuses() {
         let find = |sel: &str, label: &str| items().iter().find(|i| i.selector == sel && i.label() == label).unwrap();
         assert_eq!(status(find("splitVertically:", "Split Vertically with Current Profile")), Status::Done);
-        assert!(matches!(status(find("newWindow:", "New Window")), Status::Partial(_)));
+        assert_eq!(status(find("newWindow:", "New Window")), Status::Done, "7a opens real windows");
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);
         assert!(matches!(status(find("performFindPanelAction:", "Select Matches")), Status::Partial(_)));
         assert_eq!(status(find("performFindPanelAction:", "Find...")), Status::Done);

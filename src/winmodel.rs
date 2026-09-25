@@ -55,6 +55,34 @@ impl Registry {
     }
 }
 
+/// What asked for a new session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenRequest {
+    NewTab,
+    NewWindow,
+    /// A profile picked from the Profiles menu, with Option (Alt) held or not.
+    ProfileMenu { option: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Tab,
+    Window,
+}
+
+/// Where a new session opens: `prevent_tab` is the profile's "Always open in a new window,
+/// never in a tab"; `profiles_in_new_window` is `openProfilesInNewWindow`.
+pub fn open_target(request: OpenRequest, prevent_tab: bool, profiles_in_new_window: bool) -> Target {
+    let wanted = match request {
+        OpenRequest::NewWindow => Target::Window,
+        OpenRequest::NewTab => Target::Tab,
+        OpenRequest::ProfileMenu { option } => {
+            if option != profiles_in_new_window { Target::Window } else { Target::Tab }
+        }
+    };
+    if prevent_tab { Target::Window } else { wanted }
+}
+
 /// A window's title: "N. " first when Show window number is on (number shown from 1).
 pub fn title(base: &str, number: usize, show_number: bool) -> String {
     if show_number { format!("{}. {base}", number + 1) } else { base.to_string() }
@@ -211,5 +239,18 @@ mod tests {
         assert_eq!(p.ids(), vec![2, 3]);
         assert_eq!(p.remove(3), Some(vec![3]), "closing a parked window takes its state out");
         assert_eq!(p.close_current(&mut live), None, "the last window closes");
+    }
+
+    #[test]
+    fn open_target_follows_iterm2() {
+        use OpenRequest::*;
+        assert_eq!(open_target(NewWindow, false, false), Target::Window);
+        assert_eq!(open_target(NewTab, false, false), Target::Tab);
+        assert_eq!(open_target(NewTab, true, false), Target::Window, "Always open in a new window, never in a tab");
+        assert_eq!(open_target(ProfileMenu { option: false }, false, false), Target::Tab);
+        assert_eq!(open_target(ProfileMenu { option: true }, false, false), Target::Window, "Option for a new window");
+        assert_eq!(open_target(ProfileMenu { option: false }, false, true), Target::Window, "openProfilesInNewWindow swaps them");
+        assert_eq!(open_target(ProfileMenu { option: true }, false, true), Target::Tab);
+        assert_eq!(open_target(ProfileMenu { option: true }, true, true), Target::Window, "the profile still refuses a tab");
     }
 }

@@ -458,3 +458,12 @@ label = "Show window number"
 type = "bool"
 default = true
 help = "Window titles start with the window's number (1, 2, ...), which Alt+Win+number switches to."
+
+[[setting]]
+key = "openProfilesInNewWindow"
+tab = "Advanced"
+section = "General"
+label = "Profiles menu opens new windows"
+type = "bool"
+default = false
+help = "A profile picked in the Profiles menu opens in a new window, and with Alt held in a new tab (the reverse of the usual)."

@@ -68,7 +68,13 @@ pub(super) struct MenuBar {
     pub(super) named_items: Vec<(u32, String)>,
     /// The focused pane and its named marks when the menu was last built.
     pub(super) named_key: (Option<PaneId>, Vec<(u32, Option<String>)>),
+    /// The Profiles menu, its fixed items, and the profiles listed after them.
+    pub(super) profiles: Option<(Submenu, usize)>,
+    pub(super) profile_items: Vec<(String, String)>,
 }
+
+/// Menu ids of the Profiles menu's profile entries.
+pub(super) const PROFILE_ID: &str = "profile-open:";
 
 impl App {
     pub(super) fn hwnd(&self) -> Option<isize> {
@@ -141,7 +147,11 @@ impl App {
             self.banners.set("keys", format!("Win chords are unavailable: {e}"));
         }
         let named = subs.get(&vec!["Edit".to_string(), "Named Marks".to_string()]).cloned();
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]) });
+        let profiles = subs.get(&vec!["Profiles".to_string()]).cloned().map(|s| {
+            let fixed = s.items().len();
+            (s, fixed)
+        });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new() });
         self.sync_checks();
     }
 
@@ -226,6 +236,7 @@ impl App {
         let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
         let action = self.globals.string("Mark Alert Action");
         self.refresh_named_marks();
+        self.refresh_profiles_menu();
         let Some(bar) = &self.menu_bar else { return };
         for selector in super::seltools_ui::CHECKED {
             let Some(item) = menus::items().iter().find(|i| i.selector == *selector) else { continue };
@@ -253,6 +264,9 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
+        if let Some(guid) = id.strip_prefix(PROFILE_ID) {
+            return self.open_profile_from_menu(guid);
+        }
         if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) {
             return;
         }

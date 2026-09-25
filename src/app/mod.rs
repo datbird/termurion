@@ -206,6 +206,8 @@ pub struct App {
     windows: crate::winmodel::Parked<windows_ui::WinSlot>,
     registry: crate::winmodel::Registry,
     last_window: Option<WindowId>,
+    /// Windows to open at the next turn of the event loop (new windows need it).
+    pending_windows: Vec<Option<String>>,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
     aps: HashMap<PaneId, crate::aps::Switcher>,
     local_host: String,
@@ -419,6 +421,7 @@ pub fn run() {
         windows: Default::default(),
         registry: Default::default(),
         last_window: None,
+        pending_windows: Vec::new(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
         coprocess_errors: HashMap::new(),
@@ -619,7 +622,8 @@ impl App {
             Edit::None => return,
             Edit::Open(guid, how) => match how {
                 // Separate windows arrive in milestone 7; until then a new window opens a tab.
-                How::Tab | How::Window => self.new_tab(Some(&guid)),
+                How::Tab => self.new_tab(Some(&guid)),
+                How::Window => self.pending_windows.push(Some(guid)),
                 How::SplitRight => self.split(Axis::Row, Some(&guid)),
                 How::SplitDown => self.split(Axis::Column, Some(&guid)),
             },
@@ -707,6 +711,13 @@ impl App {
     }
 
     fn new_tab(&mut self, guid: Option<&str>) {
+        // "Always open in a new window, never in a tab": a window opens instead (a new
+        // window's first tab is the one exception).
+        let prevent = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).bool("Prevent Opening in a Tab");
+        if !self.tabs.is_empty() && crate::winmodel::open_target(crate::winmodel::OpenRequest::NewTab, prevent, false) == crate::winmodel::Target::Window {
+            self.pending_windows.push(guid.map(str::to_string));
+            return self.redraw();
+        }
         let area = self.content_area();
         if let Some(id) = self.start_pane(area, guid) {
             self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None });
@@ -1644,6 +1655,9 @@ impl ApplicationHandler<UserEvent> for App {
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.flush_dropped();
+        for guid in std::mem::take(&mut self.pending_windows) {
+            self.new_window(event_loop, guid.as_deref());
+        }
         if self.save_due.is_some_and(|t| Instant::now() >= t) {
             self.save_now();
         }

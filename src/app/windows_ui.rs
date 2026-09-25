@@ -256,3 +256,38 @@ impl App {
         }
     }
 }
+
+impl App {
+    /// The Profiles menu lists every profile after its fixed items.
+    pub(super) fn refresh_profiles_menu(&mut self) {
+        let items: Vec<(String, String)> = self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
+        let Some(bar) = &mut self.menu_bar else { return };
+        if bar.profile_items == items {
+            return;
+        }
+        let Some((sub, fixed)) = &bar.profiles else { return };
+        while sub.remove_at(*fixed).is_some() {}
+        for (guid, name) in &items {
+            let entry = muda::MenuItem::with_id(format!("{}{guid}", menu::PROFILE_ID), name.replace('&', "&&"), true, None);
+            if let Err(e) = sub.append(&entry) {
+                self.banners.set("menu", format!("Profiles menu: {e}"));
+            }
+        }
+        bar.profile_items = items;
+    }
+
+    /// A profile picked in the Profiles menu: a tab, or a window with Alt held (swapped by
+    /// openProfilesInNewWindow; a profile that refuses tabs always gets a window).
+    pub(super) fn open_profile_from_menu(&mut self, guid: &str) {
+        use crate::winmodel::{OpenRequest, Target, open_target};
+        let option = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+        let prevent = self.store.get(guid).is_some_and(|p| p.bool("Prevent Opening in a Tab"));
+        match open_target(OpenRequest::ProfileMenu { option }, prevent, self.globals.bool("openProfilesInNewWindow")) {
+            Target::Tab => self.new_tab(Some(guid)),
+            Target::Window => {
+                self.pending_windows.push(Some(guid.to_string()));
+                self.redraw();
+            }
+        }
+    }
+}

@@ -239,6 +239,13 @@ impl App {
                 Some(item) => self.run_command(item, event_loop),
                 None => self.banners.set("action", format!("No menu item {:?}.", b.text)),
             },
+            26 => {
+                if self.store.get(&b.text).is_some() {
+                    self.pending_windows.push(Some(b.text.clone()));
+                } else {
+                    self.banners.set("action", format!("No profile with Guid {}.", b.text));
+                }
+            }
             27 => self.open_with_profile(&b.text, None),
             36 => self.find_regex(&b.text),
             73 => self.copy_mode_commands(&b.text),
