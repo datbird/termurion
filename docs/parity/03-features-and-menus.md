@@ -71,10 +71,10 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > ssh > Disconnect | no shortcut | Disconnects the built in SSH integration session. | missing, the SSH integration milestone |
 | Shell > ssh > Download Files... | no shortcut | Downloads files from the remote host over the SSH integration channel. | missing, the SSH integration milestone |
 | Shell > ssh > Remote host can control iTerm2 | no shortcut | Lets escape sequences from the remote SSH host control iTerm2 features. | missing, the SSH integration milestone |
-| Shell > Page Setup... | Cmd+P | Opens the macOS page setup dialog for printing. | missing, milestone 5d |
-| Shell > Print > Screen | Cmd+P | Prints the visible screen contents. | missing, milestone 5d |
-| Shell > Print > Selection | Opt+Cmd+P | Prints the current text selection. | missing, milestone 5d |
-| Shell > Print > Buffer | Opt+Cmd+P | Prints the full scrollback buffer. | missing, milestone 5d |
+| Shell > Page Setup... | Cmd+P | Opens the macOS page setup dialog for printing. | have |
+| Shell > Print > Screen | Cmd+P | Prints the visible screen contents. | partial, prints the rows in view; black and white is asked before the print dialog; inline images do not print |
+| Shell > Print > Selection | Opt+Cmd+P | Prints the current text selection. | partial, as Screen |
+| Shell > Print > Buffer | Opt+Cmd+P | Prints the full scrollback buffer. | partial, as Screen |
 
 ### Edit menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
@@ -203,7 +203,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. (milestone 6) | missing |
 | Session > Log > Import Recording | no shortcut | Loads a previously exported session recording for playback. (milestone 10) | missing |
 | Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. (milestone 10) | missing |
-| Session > Make Screenshot... | no shortcut | Captures a screenshot of the session content. | missing, milestone 5d |
+| Session > Make Screenshot... | no shortcut | Captures a screenshot of the session content. | missing, milestone 5e |
 | Session > Terminal State > Alternate Screen | no shortcut | Manually toggles the alternate screen buffer mode. | have |
 | Session > Terminal State > Focus Reporting | no shortcut | Manually toggles DECSET focus in/out event reporting. | have |
 | Session > Terminal State > Mouse Reporting | no shortcut | Manually toggles mouse tracking/reporting mode. | have |
@@ -350,7 +350,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; CurrentDir=&lt;path&gt; | Reports current working directory for shell integration, trusted only. | have |
 | OSC 1337 ; RemoteHost=&lt;user@host&gt; | Reports remote user/host for shell integration, for example after ssh, trusted only. | have |
 | OSC 1337 ; ShellIntegrationVersion=&lt;n&gt; | Announces shell integration script version and shell type. | have |
-| OSC 1337 ; SetProfile=&lt;name&gt; | Switches the session's profile on the fly, trusted only. | missing, milestone 5d |
+| OSC 1337 ; SetProfile=&lt;name&gt; | Switches the session's profile on the fly, trusted only. | have |
 | OSC 1337 ; AddNote / AddAnnotation=&lt;text&gt; | Adds a visible annotation bound to the current text. | have |
 | OSC 1337 ; AddHiddenNote / AddHiddenAnnotation=&lt;text&gt; | Adds a hidden annotation. | have |
 | OSC 1337 ; HighlightCursorLine[=bool] | Toggles cursor line highlighting from the shell. | have |
@@ -358,8 +358,8 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; CopyToClipboard=&lt;dest&gt; ... OSC 1337 ; EndCopy | Legacy iTerm2 copy-to-pasteboard sequence, streams text until EndCopy, trusted only. | have, named pasteboards all go to the clipboard |
 | OSC 1337 ; Copy=&lt;mode&gt;[;uid] ... | Copies arbitrary pasteboard data, monolithic or segmented, into the system clipboard, trusted only. | have |
 | OSC 1337 ; RequestAttention=fireworks\|once\|flash\|1\|0 | Bounces the dock icon, flashes the screen, or fires a fireworks animation to get user attention. | have, the taskbar button flashes where the dock icon bounces |
-| OSC 1337 ; SetBackgroundImageFile=&lt;path&gt; | Sets the session's background image, trusted only. | missing, milestone 5d |
-| OSC 1337 ; SetProfileProperty=&lt;key&gt;=&lt;base64 JSON&gt; | Changes a single profile property at runtime, trusted only. | missing, milestone 5d |
+| OSC 1337 ; SetBackgroundImageFile=&lt;path&gt; | Sets the session's background image, trusted only. | have |
+| OSC 1337 ; SetProfileProperty=&lt;key&gt;=&lt;base64 JSON&gt; | Changes a single profile property at runtime, trusted only. | have, the session gets its own profile copy; several keys are listed in the bar text |
 | OSC 1337 ; SetBadgeFormat=&lt;base64&gt; | Sets the session badge text/template shown in the corner of the pane. | missing, milestone 6 (badges) |
 | OSC 1337 ; SetUserVar=&lt;name&gt;=&lt;base64 value&gt; | Sets a user-defined variable exposed to status bar, badges, and scripting. | have |
 | OSC 1337 ; ReportCellSize (query) | Terminal reports character cell size in points and scale factor. | have |
@@ -371,7 +371,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; SetKeyLabel=&lt;key&gt;=&lt;label&gt; | Sets the on screen label for a Touch Bar key. | partial, Windows has no Touch Bar: labels are kept, not shown |
 | OSC 1337 ; PushKeyLabels / PopKeyLabels | Saves/restores a set of Touch Bar key labels. | partial, Windows has no Touch Bar: labels are kept, not shown |
 | OSC 1337 ; Disinter | Detaches (disinters) a session from its buried state. | partial, accepted; nothing to restore until milestone 7 adds Bury |
-| OSC 1337 ; ReportVariable=&lt;base64 name&gt; (trusted) | Terminal reports the value of a named session variable. | missing, milestone 5d |
+| OSC 1337 ; ReportVariable=&lt;base64 name&gt; (trusted) | Terminal reports the value of a named session variable. | partial, the session, user, tab, window, and app names Tandem has |
 | OSC 1337 ; Custom=&lt;params&gt;:&lt;payload&gt; (trusted) | Fires a user-defined custom escape-sequence trigger with key/value params and a payload. | missing, milestone 6 (triggers and the API) |
 | OSC 1337 ; Notification=&lt;text&gt; | Posts a rich user notification (toast). | missing, milestone 6 (notifications) |
 | OSC 1337 ; Capabilities (query, trusted) | Terminal reports its capability set. | have |
@@ -379,12 +379,12 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 1337 ; it2ssh=&lt;params&gt; | Begins iTerm2's own SSH integration (Conductor) session. | missing, the SSH integration milestone |
 | OSC 1337 ; SendConductor=&lt;data&gt; | Sends data to the Conductor SSH integration channel. | missing, the SSH integration milestone |
 | OSC 1337 ; EndSSH=&lt;id&gt; | Ends an SSH integration session, trusted only. | missing, the SSH integration milestone |
-| OSC 1337 ; OpenURL=&lt;id&gt;:&lt;base64 url&gt; (trusted) | Asks iTerm2 to open a URL in the default browser. | missing, milestone 5d |
+| OSC 1337 ; OpenURL=&lt;id&gt;:&lt;base64 url&gt; (trusted) | Asks iTerm2 to open a URL in the default browser. | partial, web and mail links open; other schemes are refused |
 | OSC 1337 ; wrap=a=start;cmd=...;uid=... (trusted) | Wraps a command for iTerm2's command wrapping/AI or Conductor pipeline. | missing, the SSH integration milestone |
 | OSC 1337 ; ExecFailed | Signals that exec of a wrapped command failed. | partial, the flag is kept; the session-ended message comes with milestone 6 |
-| OSC 1337 ; Block / UpdateBlock | Marks a folded/collapsible output block, start/end, fold/unfold, for command output blocks. | missing, milestone 5d |
-| OSC 1337 ; Button=type=copy\|custom;... | Inserts an inline clickable button, for example a copy-output button, in a command-output block. | missing, milestone 5d |
-| OSC 1337 ; RequestUpload=&lt;params&gt; (trusted) | Asks the user to pick a local file to upload/send to the shell. | missing, milestone 5d |
+| OSC 1337 ; Block / UpdateBlock | Marks a folded/collapsible output block, start/end, fold/unfold, for command output blocks. | missing, milestone 5e |
+| OSC 1337 ; Button=type=copy\|custom;... | Inserts an inline clickable button, for example a copy-output button, in a command-output block. | missing, milestone 5e |
+| OSC 1337 ; RequestUpload=&lt;params&gt; (trusted) | Asks the user to pick a local file to upload/send to the shell. | partial, files only (no folders); progress as a message, not a transfers menu |
 | OSC 1337 (bare, terminal-to-host report) | Terminal reports its iTerm2 version string as a DSR-style query. | have, `CSI 1337 n` answers `CSI ITERM2 <version> n` |
 | OSC 21337 (tab status) | Sets a structured tab status key/value payload shown in the tab. | partial, the dot, status text, and priority; the notification and taskbar badge come with milestone 6 |
 | OSC 133 ; A / N / P (FTCS_PROMPT_START) | Marks the start of a shell prompt, optionally forcing a fresh line, carries k=&lt;kind&gt; and aid=&lt;id&gt;. Basis of iTerm2's command marks and prompt navigation. | have |

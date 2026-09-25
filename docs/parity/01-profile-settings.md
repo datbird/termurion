@@ -182,12 +182,12 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Blur | Blur | Enables a Gaussian-style blur of content behind the window, visible through transparent regions. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Blur Radius | Blur Radius | Sets the strength of the background blur effect. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Use background image | n/a | Toggles whether a background image is shown at all. | missing |  |
-| Background image source mode | Background Image Source Mode | Chooses a single fixed image versus rotating automatically through a folder. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Background image (path) | Background Image Location | Path to the single background image file. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Background image folder (path) | Background Image Folder Location | Path to a folder of images to rotate through. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Background image rotation interval | Background Image Folder Interval | Seconds between automatic image changes in folder rotation mode. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Background image scaling mode | Background Image Mode | Chooses stretch, tile, scale to fill, or scale to fit for the background image. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| Blending | Blend | Sets how much of the background color shows through over the background image. | partial | Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| Background image source mode | Background Image Source Mode | Chooses a single fixed image versus rotating automatically through a folder. | have | Milestone 5d. |
+| Background image (path) | Background Image Location | Path to the single background image file. | have | Milestone 5d. |
+| Background image folder (path) | Background Image Folder Location | Path to a folder of images to rotate through. | have | Milestone 5d. |
+| Background image rotation interval | Background Image Folder Interval | Seconds between automatic image changes in folder rotation mode. | have | Milestone 5d. |
+| Background image scaling mode | Background Image Mode | Chooses stretch, tile, scale to fill, or scale to fit for the background image. | have | Milestone 5d. |
+| Blending | Blend | Sets how much of the background color shows through over the background image. | have | Milestone 5d. |
 
 ## Terminal
 

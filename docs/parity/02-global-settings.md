@@ -237,7 +237,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 |---|---|---|---|---|
 | Show per-pane title bars | ShowPaneTitles | Shows a small title bar above each split pane. | missing |  |
 | ...even if there is only one pane | ShowPaneTitlesEvenIfOnlyOnePane | Keeps the per-pane title bar visible even when a tab has just one pane. | missing |  |
-| Separate background images per pane | PerPaneBackgroundImage | Lets each split pane show its own profile background image instead of one shared image spanning the window. | missing |  |
+| Separate background images per pane | PerPaneBackgroundImage | Lets each split pane show its own profile background image instead of one shared image spanning the window. | have | Milestone 5d. |
 
 
 ### Dimming

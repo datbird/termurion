@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 76 | 172 | 66 |
-| `02-global-settings.md` | 820 | 114 | 59 | 647 |
-| `03-features-and-menus.md` | 636 | 197 | 25 | 414 |
-| Total | 1,770 | 387 | 256 | 1,127 |
+| `01-profile-settings.md` | 314 | 82 | 166 | 66 |
+| `02-global-settings.md` | 820 | 115 | 59 | 646 |
+| `03-features-and-menus.md` | 636 | 201 | 31 | 404 |
+| Total | 1,770 | 398 | 256 | 1,116 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -42,10 +42,12 @@ write and read with iTerm2's policy, OSC 1337 Copy and CopyToClipboard), the esc
 trust gate, iTerm2's announcement bar in the pane, the small OSC 1337 keys (CursorShape,
 ClearScrollback, HighlightCursorLine, RequestAttention, the cell size and window and screen
 frames, UnicodeVersion, SetColors, Capabilities, key labels, StealFocus), OSC 133 E to H, OSC
-21337 tab status, Copy with Styles, Copy with Control Sequences, and Buffer Input. Milestone 5d
-(next) closes the rest of milestone 5: Print and Page Setup, Make Screenshot, the OSC 1337 keys
-that ask first (SetProfile, SetProfileProperty, SetBackgroundImageFile, OpenURL, ReportVariable,
-RequestUpload), and Block, UpdateBlock, and Button.
+21337 tab status, Copy with Styles, Copy with Control Sequences, and Buffer Input. Milestone 5d:
+session-local profiles (iTerm2's divorced sessions), profile background images (the four modes,
+Blend, folder rotation, per-pane or shared), the OSC 1337 keys that ask first (SetProfile,
+SetProfileProperty, SetBackgroundImageFile, OpenURL, ReportVariable, RequestUpload), and Print and
+Page Setup. Milestone 5e (next) closes milestone 5: Make Screenshot, and Block, UpdateBlock, and
+Button.
 
 ## Order
 
