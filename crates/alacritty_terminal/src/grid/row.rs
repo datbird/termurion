@@ -43,6 +43,9 @@ pub struct Row<T> {
     /// Tandem patch: the annotation that starts on this row (0 for none).
     #[cfg_attr(feature = "serde", serde(default))]
     pub(crate) note: u32,
+
+    /// Tandem patch: the OSC 1337 block this row belongs to (0 for none).
+    pub(crate) block: u32,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -73,7 +76,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0, mark: 0, manual: 0, time: 0, fold: 0, note: 0 }
+        Row { inner, occ: 0, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0 }
     }
 
     /// Increase the number of columns in the row.
@@ -133,6 +136,7 @@ impl<T: Default> Row<T> {
         self.time = 0;
         self.fold = 0;
         self.note = 0;
+        self.block = 0;
     }
 }
 
@@ -140,7 +144,7 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ, mark: 0, manual: 0, time: 0, fold: 0, note: 0 }
+        Row { inner: vec, occ, mark: 0, manual: 0, time: 0, fold: 0, note: 0, block: 0 }
     }
 
     /// Tandem patch: the mark id on this row, 0 for none.
@@ -178,6 +182,12 @@ impl<T> Row<T> {
         self.time = time;
     }
 
+    /// Tandem patch: the OSC 1337 block this row belongs to.
+    #[inline]
+    pub fn block(&self) -> u32 {
+        self.block
+    }
+
     /// Tandem patch: the fold this row stands for.
     #[inline]
     pub fn fold(&self) -> u32 {
@@ -204,7 +214,7 @@ impl<T> Row<T> {
     /// row has none) and its time (when later).
     #[inline]
     pub(crate) fn absorb_tags(&mut self, other: &Row<T>) {
-        for (mine, theirs) in [(&mut self.mark, other.mark), (&mut self.manual, other.manual), (&mut self.fold, other.fold), (&mut self.note, other.note)] {
+        for (mine, theirs) in [(&mut self.mark, other.mark), (&mut self.manual, other.manual), (&mut self.fold, other.fold), (&mut self.note, other.note), (&mut self.block, other.block)] {
             if *mine == 0 {
                 *mine = theirs;
             }

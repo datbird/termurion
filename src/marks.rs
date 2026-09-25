@@ -582,6 +582,23 @@ impl Screen {
                 "SetKeyLabel" => self.key_labels.set(&value),
                 "PushKeyLabels" => self.key_labels.push(&value),
                 "PopKeyLabels" => self.key_labels.pop(&value),
+                "Block" => {
+                    let args = crate::blocks::parse(&value);
+                    let alt = self.term().mode().contains(alacritty_terminal::term::TermMode::ALT_SCREEN);
+                    match (crate::blocks::get(&args, "id"), crate::blocks::get(&args, "attr")) {
+                        (Some(id), Some("start")) if !alt => {
+                            let n = self.blocks.start(id, crate::blocks::get(&args, "type"));
+                            self.term.block = n;
+                        }
+                        (Some(id), Some("end")) => {
+                            // A block that never started is not ended.
+                            if self.blocks.by_id.contains_key(id) {
+                                self.term.block = self.blocks.end(id);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 "EndCopy" if self.trusted => {
                     self.capture_hold_clear();
                     if let Some(c) = self.capture.take() {

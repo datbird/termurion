@@ -172,6 +172,8 @@ pub struct Screen {
     /// The start of an escape sequence split across reads during a capture: dropped if it
     /// turns out to be one Tandem acts on, else added to the capture.
     capture_hold: Vec<u8>,
+    /// OSC 1337 Block: the blocks this screen knows.
+    pub blocks: crate::blocks::Blocks,
     /// OSC 21337: what the pane's program says it is doing.
     pub tab_status: crate::tabstatus::Status,
     /// The program's `Env=report=all` environment, kept for the SSH integration.
@@ -277,6 +279,7 @@ impl Screen {
             keys: KeyState::new(look.csi_u),
             trusted: true,
             tab_status: crate::tabstatus::Status::default(),
+            blocks: crate::blocks::Blocks::default(),
             env: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
@@ -504,6 +507,15 @@ impl Screen {
             }
         }
         true
+    }
+
+    /// The grid lines of the newest block started with `id`, from its stamped rows.
+    pub fn block_rows(&self, id: &str) -> Option<(i32, i32)> {
+        let n = *self.blocks.by_id.get(id)?;
+        let g = self.term.primary_grid();
+        let (top, bottom) = (-(g.history_size() as i32), g.screen_lines() as i32 - 1);
+        let rows: Vec<i32> = (top..=bottom).filter(|l| g[Line(*l)].block() == n).collect();
+        Some((*rows.first()?, *rows.last()?))
     }
 
     /// What output asked the window to do since the last call.

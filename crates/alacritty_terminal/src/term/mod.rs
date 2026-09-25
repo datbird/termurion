@@ -272,6 +272,10 @@ pub struct Term<T> {
     /// Tandem patch: the time written rows are stamped with (Unix seconds).
     pub stamp: u32,
 
+    /// Tandem patch: the OSC 1337 block written rows (and rows a line feed leaves) belong
+    /// to; 0 for none.
+    pub block: u32,
+
     /// Cursor for keyboard selection.
     pub vi_mode_cursor: ViModeCursor,
 
@@ -436,6 +440,7 @@ impl<T> Term<T> {
 
         Term {
             stamp: 0,
+            block: 0,
             inactive_grid,
             scroll_region,
             event_proxy,
@@ -1033,6 +1038,9 @@ impl<T> Term<T> {
         // Tandem patch: the row remembers when it was last written.
         let line = self.grid.cursor.point.line;
         self.grid[line].time = self.stamp;
+        if self.block != 0 {
+            self.grid[line].block = self.block;
+        }
 
         let mut cursor_cell = self.grid.cursor_cell();
 
@@ -1496,6 +1504,11 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn linefeed(&mut self) {
         trace!("Linefeed");
+        // Tandem patch: a line feed inside a block keeps the row it leaves (blank lines too).
+        if self.block != 0 {
+            let line = self.grid.cursor.point.line;
+            self.grid[line].block = self.block;
+        }
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
             self.scroll_up(1);
