@@ -20,6 +20,31 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', "")).into_bytes()
 }
 
+/// Shell > Toggle Buffer Input: while on, what the user sends waits here.
+#[derive(Default)]
+pub struct InputBuffer {
+    pub on: bool,
+    queue: Vec<u8>,
+}
+
+impl InputBuffer {
+    /// The bytes to send now, or None when they wait.
+    pub fn send(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        if self.on {
+            self.queue.extend_from_slice(bytes);
+            None
+        } else {
+            Some(bytes.to_vec())
+        }
+    }
+
+    /// Turns buffering off and returns what waited, in order.
+    pub fn release(&mut self) -> Vec<u8> {
+        self.on = false;
+        std::mem::take(&mut self.queue)
+    }
+}
+
 pub struct Pane {
     pub id: PaneId,
     pub screen: Screen,
@@ -33,6 +58,8 @@ pub struct Pane {
     pub live: Option<Screen>,
     /// View > Show Session Note's text.
     pub session_note: String,
+    /// Shell > Toggle Buffer Input.
+    pub buffer: InputBuffer,
 }
 
 impl Pane {
@@ -41,7 +68,7 @@ impl Pane {
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new() })
+        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default() })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -66,7 +93,27 @@ impl Pane {
         changed
     }
 
+    /// What the user sends: keys, pastes. Held while Buffer Input is on.
     pub fn input(&mut self, bytes: &[u8]) {
+        if let Some(now) = self.buffer.send(bytes) {
+            self.reply(&now);
+        }
+    }
+
+    /// Turns Buffer Input on or off; off sends what waited.
+    pub fn set_buffering(&mut self, on: bool) {
+        if on {
+            self.buffer.on = true;
+        } else {
+            let waited = self.buffer.release();
+            if !waited.is_empty() {
+                self.reply(&waited);
+            }
+        }
+    }
+
+    /// What the terminal answers the program (reports): never held by Buffer Input.
+    pub fn reply(&mut self, bytes: &[u8]) {
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
                 self.error = Some(e);
@@ -144,7 +191,7 @@ impl Pane {
         // A background that crossed between dark and light is reported (mode 2031).
         let reply = self.screen.take_replies();
         if !reply.is_empty() {
-            self.input(&reply);
+            self.reply(&reply);
         }
     }
 
@@ -161,7 +208,7 @@ impl Pane {
         }
         let reply = screen.flush_sync();
         if !reply.is_empty() {
-            self.input(&reply);
+            self.reply(&reply);
         }
         true
     }
@@ -210,6 +257,19 @@ impl Drop for Pane {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn buffered_input_waits_for_release() {
+        let mut b = super::InputBuffer::default();
+        assert_eq!(b.send(b"ls\r"), Some(b"ls\r".to_vec()), "off: sent at once");
+        b.on = true;
+        assert_eq!(b.send(b"echo "), None);
+        assert_eq!(b.send(b"hi\r"), None);
+        assert_eq!(b.release(), b"echo hi\r");
+        assert!(!b.on);
+        assert_eq!(b.send(b"x"), Some(b"x".to_vec()));
+        assert_eq!(b.release(), b"", "nothing waited");
+    }
+
     use super::*;
     use crate::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;

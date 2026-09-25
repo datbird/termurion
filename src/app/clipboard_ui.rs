@@ -84,7 +84,7 @@ impl App {
             None => return,
         };
         if let Some(p) = self.panes.get_mut(&pane) {
-            p.input(&clipboard_osc::read_reply(pc, &text));
+            p.reply(&clipboard_osc::read_reply(pc, &text));
         }
         self.show_toast("Clipboard contents reported");
     }

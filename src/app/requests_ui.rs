@@ -70,7 +70,7 @@ impl App {
 
     fn reply(&mut self, pane: PaneId, bytes: &[u8]) {
         if let Some(p) = self.panes.get_mut(&pane) {
-            p.input(bytes);
+            p.reply(bytes);
         }
     }
 

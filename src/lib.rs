@@ -26,6 +26,7 @@ pub mod inline_file;
 pub mod sixel;
 pub mod kitty;
 pub mod stamps;
+pub mod styled_copy;
 pub mod clipboard_osc;
 pub mod commands;
 pub mod menus;
@@ -76,6 +77,7 @@ pub mod settings_keys;
 pub mod settings_advanced;
 
 #[cfg(windows)]
+pub mod winclip;
 pub mod winkeys;
 
 #[cfg(windows)]

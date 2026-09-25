@@ -13,6 +13,10 @@ pub enum Status {
     Later(u8),
 }
 
+/// Commands iTerm2 keeps disabled while a terminal has focus: Undo and Redo have nothing
+/// to undo there, and Cut is never allowed.
+pub const DISABLED_IN_SESSION: &[&str] = &["undo:", "redo:", "cut:"];
+
 /// Commands that work now. "selector|Label" names one item of a shared selector.
 pub const DONE: &[&str] = &[
     "showAbout:", "showPrefWindow:", "terminate:", "hide:", "newSession:", "newSessionAlternate:",
@@ -35,7 +39,8 @@ pub const DONE: &[&str] = &[
     "terminalStateToggleApplicationKeypad:|Report Alternate Keys",
     "terminalStateToggleApplicationKeypad:|Report All Keys as Escape Codes",
     "terminalStateToggleApplicationKeypad:|Report Associated Text", "terminalStateToggleLiteralMode:",
-    "terminalStateSetEmulationLevel:",
+    "terminalStateSetEmulationLevel:", "toggleBufferInput:", "copyWithStyles:", "copyWithControlSequences:",
+    "undo:", "redo:", "cut:",
     "showBookmarkWindow:", "installShellIntegration:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
     "previousMark:", "clearToLastMark:", "selectOutputOfLastCommand:", "selectCurrentCommand:",
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",

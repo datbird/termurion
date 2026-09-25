@@ -615,6 +615,16 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
     frame.rows.push(TextRow { x: l.close.x + cell.0 / 2.0, y: r.y + 4.0, spans: vec![span("x".into())], clip: l.close });
 }
 
+/// Buffer Input's sign at the pane's top right: two bars, as a pause symbol.
+pub fn buffering_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {
+    let h = cell.1;
+    let w = (cell.0 / 3.0).max(2.0);
+    let x = pane.x + pane.w - 2.0 * cell.0;
+    for dx in [0.0, w * 2.0] {
+        frame.overlay.push(Quad { rect: Rect { x: x + dx, y: pane.y + cell.1 / 2.0, w, h }, color: rgba(TAB_TEXT, 0.9) });
+    }
+}
+
 /// RequestAttention=flash: the pane goes white and fades back (`strength` 1 to 0).
 pub fn pane_flash(frame: &mut Frame, pane: Rect, strength: f32) {
     frame.overlay.push(Quad { rect: pane, color: rgba(rgb(0xff, 0xff, 0xff), 0.6 * strength.clamp(0.0, 1.0)) });

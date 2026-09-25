@@ -12,9 +12,23 @@ use crate::seltools::{self, End};
 
 /// Menu items with a check mark that milestone 4c adds, by selector.
 pub(super) const CHECKED: &[&str] =
-    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:"];
+    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:", "toggleBufferInput:"];
 
 impl App {
+    /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
+    fn copy_with_styles(&mut self, id: PaneId) {
+        let Some(p) = self.panes.get(&id) else { return };
+        let screen = p.own();
+        let Some(text) = screen.term().selection_to_string() else { return };
+        let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
+        let rows = crate::styled_copy::runs(screen);
+        let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg));
+        let rtf = crate::styled_copy::rtf(&rows, &font.family, font.size_pt);
+        if let Err(e) = crate::winclip::set(&text, &html, &rtf) {
+            self.banners.set("clipboard", format!("Copy failed: {e}"));
+        }
+    }
+
     /// Whether a checkable menu item shows its check mark.
     pub(super) fn is_checked(&self, selector: &str) -> bool {
         match selector {
@@ -24,6 +38,7 @@ impl App {
             "editSessionNote:" => self.focused_id().is_some_and(|id| self.note_win.as_ref().is_some_and(|(_, p, n)| *p == id && n.is_none())),
             "toggleCursorGuide:" => self.focused_id().is_some_and(|id| self.guide_on(id)),
             "showHideNotes:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.own().notes.by_id.values().any(|n| !n.hidden)),
+            "toggleBufferInput:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.buffer.on),
             _ => false,
         }
     }
@@ -50,6 +65,21 @@ impl App {
             "replaceSelectionWithBase64Encoded:" => self.replace_selection(id, |t| Ok(seltools::base64_encode(t))),
             "replaceSelectionWithBase64Decoded:" => self.replace_selection(id, seltools::base64_decode),
             "clearToStartOfSelection:" => self.clear_to_start_of_selection(id),
+            "toggleBufferInput:" => {
+                if let Some(p) = self.panes.get_mut(&id) {
+                    let on = !p.buffer.on;
+                    p.set_buffering(on);
+                }
+            }
+            "copyWithStyles:" => self.copy_with_styles(id),
+            "copyWithControlSequences:" => {
+                let text = self.panes.get(&id).map(|p| crate::styled_copy::sgr_text(p.own()));
+                if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut()) {
+                    if let Err(e) = cb.set_text(text) {
+                        self.banners.set("clipboard", format!("Copy failed: {e}"));
+                    }
+                }
+            }
             "toggleSelectionRespectsSoftBoundaries:" => {
                 let on = !self.globals.bool("Selection Respects Soft Boundaries");
                 self.globals.set("Selection Respects Soft Boundaries", toml::Value::Boolean(on));

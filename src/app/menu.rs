@@ -93,7 +93,7 @@ impl App {
                 subs.insert(item.path.clone(), s.clone());
                 (&item.path[..item.path.len() - 1], Box::new(s))
             } else {
-                let enabled = !matches!(commands::status(item), Status::Later(_));
+                let enabled = !matches!(commands::status(item), Status::Later(_)) && !commands::DISABLED_IN_SESSION.contains(&item.selector.as_str());
                 let parent = &item.path[..item.path.len() - 1];
                 let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str());
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";

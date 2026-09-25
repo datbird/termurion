@@ -428,6 +428,7 @@ impl App {
                 pane.restyle(Palette::from_profile(&p, self.dark()), Look::from_profile(&p));
                 pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
                 pane.profile = p.guid();
+                pane.set_buffering(p.bool("Buffer Input by Default"));
                 self.panes.insert(id, pane);
                 true
             }
@@ -1261,6 +1262,9 @@ impl App {
                 self.draw_view_extras(&mut frame, id, self.inner(rect), cell);
                 if let Some((row, col, selecting)) = self.copy_cursor_on_screen(id) {
                     scene::copy_cursor(&mut frame, self.inner(rect), cell, row, col, selecting);
+                }
+                if self.panes.get(&id).is_some_and(|p| p.buffer.on) {
+                    scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
                 self.draw_info_bar(&mut frame, id, rect, cell);
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
