@@ -81,6 +81,46 @@ pub fn active_after_close(active: usize, closed: usize, remaining: usize, move_l
     a.min(remaining.saturating_sub(1))
 }
 
+
+pub const CONFIRM_QUIT: &str = "\u{201c}Settings > General > Closing > Confirm Quit Tandem\u{201d} is enabled and there is at least one terminal window.";
+pub const CONFIRM_QUIT_NO_WINDOWS: &str = "\u{201c}Settings > General > Closing > Confirm Quit Tandem\u{201d} and \u{201c}Even if there are no windows\u{201d} is enabled.";
+pub const CONFIRM_MULTIPLE: &str = "\u{201c}Settings > General > Closing > Confirm closing multiple sessions\u{201d} is enabled.";
+
+/// The Closing settings a quit reads.
+#[derive(Clone, Copy, Debug)]
+pub struct QuitPrefs {
+    /// PromptOnQuit.
+    pub prompt_on_quit: bool,
+    /// PromptOnQuitEvenIfThereAreNoWindows.
+    pub even_if_no_windows: bool,
+    /// OnlyWhenMoreTabs.
+    pub confirm_multiple: bool,
+}
+
+/// Why quitting asks, in iTerm2's priority order: Confirm Quit, then more than one session,
+/// then each profile's Prompt Before Closing reasons. `last_window_closed` is a quit that
+/// closing the last window caused (no Confirm Quit reason then).
+pub fn quit_reasons(profile_reasons: &[String], windows: usize, sessions: usize, p: QuitPrefs, last_window_closed: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    if !last_window_closed && p.prompt_on_quit {
+        if windows > 0 {
+            out.push(CONFIRM_QUIT.to_string());
+        } else if p.even_if_no_windows {
+            out.push(CONFIRM_QUIT_NO_WINDOWS.to_string());
+        }
+    }
+    if p.confirm_multiple && sessions > 1 {
+        out.push(CONFIRM_MULTIPLE.to_string());
+    }
+    out.extend(profile_reasons.iter().cloned());
+    out
+}
+
+/// The quit question's text (iTerm2 folds the reasons into a disclosure).
+pub fn quit_text(reasons: &[String]) -> String {
+    format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{}", reasons.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +165,17 @@ mod tests {
         assert_eq!(active_after_close(0, 0, 2, true), 0);
         assert_eq!(active_after_close(3, 1, 3, false), 2, "a tab before the active one closed");
         assert_eq!(active_after_close(2, 2, 2, false), 1, "the last tab closed");
+    }
+
+    #[test]
+    fn quit_asks_for_the_right_reasons() {
+        let q = |profile: &[&str], windows, sessions, on, even, multi, last| quit_reasons(&n(profile), windows, sessions, QuitPrefs { prompt_on_quit: on, even_if_no_windows: even, confirm_multiple: multi }, last);
+        assert!(q(&[], 1, 1, false, false, true, false).is_empty(), "Confirm Quit off, one session: no question");
+        assert_eq!(q(&[], 1, 1, true, false, true, false), vec![CONFIRM_QUIT.to_string()]);
+        assert_eq!(q(&[], 0, 0, true, false, true, false), Vec::<String>::new(), "no windows");
+        assert_eq!(q(&[], 0, 0, true, true, true, false), vec![CONFIRM_QUIT_NO_WINDOWS.to_string()]);
+        assert_eq!(q(&["The profile \u{201c}P\u{201d} always requires confirmation."], 2, 3, true, false, true, false), vec![CONFIRM_QUIT.to_string(), CONFIRM_MULTIPLE.to_string(), "The profile \u{201c}P\u{201d} always requires confirmation.".to_string()], "iTerm2's priority order");
+        assert!(q(&[], 1, 1, true, false, true, true).is_empty(), "closing the last window skips Confirm Quit");
+        assert_eq!(quit_text(&[CONFIRM_QUIT.to_string()]), format!("All sessions will be closed.\n\nYou are being prompted because:\n\n{CONFIRM_QUIT}"));
     }
 }

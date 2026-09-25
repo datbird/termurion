@@ -72,11 +72,16 @@ impl App {
             Closing::Window => (Kind::Window, close_prompt::window_title(self.window_number() + 1), self.tabs.iter().flat_map(|t| t.layout.panes()).collect()),
             Closing::App => {
                 let panes: Vec<PaneId> = self.panes.keys().copied().collect();
-                let reasons = self.close_reasons(&panes);
+                let prefs = close_rules::QuitPrefs {
+                    prompt_on_quit: self.globals.bool("PromptOnQuit"),
+                    even_if_no_windows: self.globals.bool("PromptOnQuitEvenIfThereAreNoWindows"),
+                    confirm_multiple: self.globals.bool("OnlyWhenMoreTabs"),
+                };
+                let reasons = close_rules::quit_reasons(&self.close_reasons(&panes), self.registry.order().len(), panes.len(), prefs, false);
                 if reasons.is_empty() {
                     return true;
                 }
-                return confirm(self.hwnd(), "Quit Tandem?", &close_prompt::message(&reasons));
+                return confirm(self.hwnd(), "Quit Tandem?", &close_rules::quit_text(&reasons));
             }
         };
         let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none())).count();

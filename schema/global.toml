@@ -504,3 +504,39 @@ label = "Select the tab to the left after closing a tab"
 type = "bool"
 default = false
 help = "After the selected tab closes, the tab to its left is selected instead of the one to its right."
+
+[[setting]]
+key = "PromptOnQuit"
+tab = "General"
+section = "Closing"
+label = "Confirm \"Quit Tandem\""
+type = "bool"
+default = true
+help = "Quitting asks first while a terminal window is open."
+
+[[setting]]
+key = "PromptOnQuitEvenIfThereAreNoWindows"
+tab = "General"
+section = "Closing"
+label = "Even if there are no windows"
+type = "bool"
+default = false
+help = "Quitting asks first even with no terminal window open (only with Confirm \"Quit Tandem\")."
+
+[[setting]]
+key = "QuitWhenAllWindowsClosed"
+tab = "General"
+section = "Closing"
+label = "Quit when all windows are closed"
+type = "bool"
+default = false
+help = "Tandem ends when its last window closes. On Windows a Tandem with no window cannot be reached, so Tandem also ends when this is off, until hotkey windows (milestone 7e) can bring one back."
+
+[[setting]]
+key = "NeverBlockSystemShutdown"
+tab = "General"
+section = "Closing"
+label = "Disable all confirmations on system shutdown, restart, and log out"
+type = "bool"
+default = false
+help = "Windows shutting down, restarting, or signing out never waits for Tandem's questions."
