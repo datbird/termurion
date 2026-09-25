@@ -94,6 +94,27 @@ impl App {
         x >= inner.x + inner.w - 12.0 * cell.0
     }
 
+    /// Animated images on screen: redraws when a frame is due, and says when the next one is.
+    pub(super) fn next_animation_frame(&mut self) -> Option<Instant> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let tab = self.tabs.get(self.active)?;
+        let next = tab
+            .layout
+            .panes()
+            .iter()
+            .filter_map(|id| self.panes.get(id))
+            .flat_map(|p| p.screen.images.by_id.values())
+            .filter_map(|img| scene::ms_to_next_frame(&img.frames, now))
+            .min()?;
+        if self.anim_due.is_some_and(|due| Instant::now() >= due) {
+            self.redraw();
+        }
+        // Frames shorter than 20 ms (a GIF quirk) draw at 50 frames a second.
+        let due = Instant::now() + Duration::from_millis(next.max(20));
+        self.anim_due = Some(due);
+        Some(due)
+    }
+
     /// Draws Find Cursor over the whole window while it is up.
     pub(super) fn draw_find_cursor(&self, frame: &mut Frame, area: Rect, cell: (f32, f32)) {
         if self.find_cursor_until.is_none() {

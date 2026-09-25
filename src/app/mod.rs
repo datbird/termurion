@@ -158,6 +158,8 @@ pub struct App {
     find_cursor_until: Option<Instant>,
     /// The pointer is at the right edge of a pane with Hover timestamps.
     stamp_near: bool,
+    /// When an animated image next changes frame.
+    anim_due: Option<Instant>,
     /// Copy Mode, per pane.
     copy_modes: HashMap<PaneId, crate::copymode::State>,
     /// Labels on results (Find URLs and the like), waiting for a key.
@@ -289,6 +291,7 @@ pub fn run() {
         show_guide: HashMap::new(),
         find_cursor_until: None,
         stamp_near: false,
+        anim_due: None,
         note_win: None,
         note_pos: HashMap::new(),
         ctx_pending: None,
@@ -1368,7 +1371,8 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let find_due = self.run_due_searches();
         let spotlight = self.tick_find_cursor();
-        let wake = [self.save_due, find_due, spotlight].into_iter().flatten().min();
+        let animation = self.next_animation_frame();
+        let wake = [self.save_due, find_due, spotlight, animation].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

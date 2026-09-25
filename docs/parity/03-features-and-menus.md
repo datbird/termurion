@@ -337,10 +337,10 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 
 | Sequence | What it does | Tandem status |
 |---|---|---|
-| OSC 1337 ; File=... (inline images) | Displays or downloads an inline image or arbitrary file. Args include name, size, width, height, preserveAspectRatio, inline, type, mode, inset. Core of iTerm2 inline image support (imgcat). | missing |
-| OSC 1337 ; MultipartFile=... | Same as File= but data arrives in chunks via FilePart/FileEnd. | missing |
-| OSC 1337 ; FilePart=... | Appends a base64 chunk to an in-progress multipart file transfer. | missing |
-| OSC 1337 ; FileEnd | Ends a multipart file transfer. | missing |
+| OSC 1337 ; File=... (inline images) | Displays or downloads an inline image or arbitrary file. Args include name, size, width, height, preserveAspectRatio, inline, type, mode, inset. Core of iTerm2 inline image support (imgcat). | have, inline images with iTerm2 sizing; downloads ask, then save to the Downloads folder (no "Choose..." yet) |
+| OSC 1337 ; MultipartFile=... | Same as File= but data arrives in chunks via FilePart/FileEnd. | have |
+| OSC 1337 ; FilePart=... | Appends a base64 chunk to an in-progress multipart file transfer. | have |
+| OSC 1337 ; FileEnd | Ends a multipart file transfer. | have |
 | OSC 1337 ; SetMark | Places a manual mark at the current line for mark navigation. | have |
 | OSC 1337 ; StealFocus | Brings the iTerm2 window/tab to the foreground, trusted only. | missing |
 | OSC 1337 ; ClearScrollback | Clears the scrollback buffer. | missing |
@@ -396,8 +396,8 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | OSC 8 ; params ; url ST ... text ... OSC 8 ; ; ST | Standard terminal hyperlinks; iTerm2 tracks link start/end and renders clickable text. | have, links draw a dashed underline; Win-click opens them; the right-click menu and a pointer action copy the address |
 | OSC 52 (PASTE64) set/query clipboard | Reads or writes the system clipboard, and other X11-style selections, via a base64 payload. | partial, alacritty_terminal parses OSC 52 set/query, but Tandem has not confirmed it wires the result to the Windows clipboard or enables it by policy |
 | DECRQSS / DECRPSS (SGR, DECSCL, DECSCUSR, DECSCA, DECSTBM, DECSLRM, DECSLPP) | Request/report current terminal settings, graphic rendition, conformance level, cursor style, protection attribute, margins, page size, as an ANSI-standard report-settings sequence. | missing |
-| Sixel graphics (DECSIXEL, via VT100SixelParser/VT100DCSParser) | Parses and renders sixel bitmap graphics sent by an application, for example img2sixel. | missing |
-| Kitty graphics protocol (transmit, put, delete, animate, compose, query) | Parses and renders the kitty terminal graphics protocol for inline images and animations, rendered via a dedicated Metal renderer. | missing |
+| Sixel graphics (DECSIXEL, via VT100SixelParser/VT100DCSParser) | Parses and renders sixel bitmap graphics sent by an application, for example img2sixel. | partial, decoded by Tandem (palette, HLS, repeats, raster size); pixels opaque as in iTerm2; DECSDM comes in milestone 5b |
+| Kitty graphics protocol (transmit, put, delete, animate, compose, query) | Parses and renders the kitty terminal graphics protocol for inline images and animations, rendered via a dedicated Metal renderer. | partial, transmit (direct, file, temp file, zlib, chunks), display, delete, query; z-index, pixel offsets, unicode placeholders, and animation are not drawn (iTerm2 does not animate either) |
 | Kitty keyboard protocol (progressive enhancement, CSI u key reporting) | Disambiguated keyboard reporting mode used by some modern CLI apps. | missing |
 | Synchronized output, DEC private mode 2026 (BSU/ESU) | Suppresses screen redraws between begin and end markers so a full-screen app can update atomically without tearing. | missing |
 | DEC private mode 996/997 (dark-mode query) | Application asks the terminal whether the OS is in dark or light mode; terminal replies with mode 997. | missing |
@@ -550,7 +550,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Marks and navigation | Exit-code coloring | Colors a command mark green/red based on success/failure of the exit code, visible in the scrollbar gutter. | have | In the left margin (Tandem has no scrollbar). |
 | Marks and navigation | Manual mark | A mark the user places explicitly, not tied to a command, for bookmarking a scrollback position. | have |  |
 | Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | have | The Named Marks tool comes in milestone 9. |
-| Marks and navigation | Image mark | A mark type used to anchor an inline image's position in the buffer. | missing | Depends on inline-image support, which Tandem also lacks. |
+| Marks and navigation | Image mark | A mark type used to anchor an inline image's position in the buffer. | have | Images live in their cells, so they move with their lines. |
 | Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | partial | Folds work from the Edit menu; the Fold trigger comes with triggers in milestone 6. |
 | Marks and navigation | Block mark / Button mark | Marks used by block-based UI, for example clickable inline buttons in output such as AI suggestions. | missing | |
 | Marks and navigation | Next/previous mark navigation | Keyboard commands to jump the viewport to the next or previous mark in scrollback. | have | Tandem has scrollback but no mark concept to navigate between; plain scroll-by-page exists instead. |

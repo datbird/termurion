@@ -71,6 +71,23 @@ pub fn frame_at(frames: &[crate::images::Frame], now_ms: u64) -> usize {
     0
 }
 
+/// Milliseconds until an animated image shows its next frame (None for a still image).
+pub fn ms_to_next_frame(frames: &[crate::images::Frame], now_ms: u64) -> Option<u64> {
+    let total: u64 = frames.iter().map(|f| f.delay_ms as u64).sum();
+    if frames.len() < 2 || total == 0 {
+        return None;
+    }
+    let mut t = now_ms % total;
+    for f in frames {
+        let d = f.delay_ms as u64;
+        if t < d {
+            return Some(d - t);
+        }
+        t -= d;
+    }
+    None
+}
+
 /// The image pieces for one cell showing `tile` of `image` at `cell_rect`.
 pub fn tile_quad(image: &crate::images::Image, tile: alacritty_terminal::term::cell::Tile, cell_rect: Rect, frame: usize) -> Option<ImageQuad> {
     let (cw, ch) = (cell_rect.w, cell_rect.h);
@@ -882,5 +899,14 @@ mod tests {
         assert_eq!(frame_at(&frames, 120), 1);
         assert_eq!(frame_at(&frames, 160), 0);
         assert_eq!(frame_at(&[f(0)], 999), 0);
+    }
+
+    #[test]
+    fn animation_wakes_at_the_next_frame() {
+        let f = |d| crate::images::Frame { rgba: std::sync::Arc::new(vec![]), delay_ms: d };
+        assert_eq!(ms_to_next_frame(&[f(100), f(50)], 30), Some(70));
+        assert_eq!(ms_to_next_frame(&[f(100), f(50)], 120), Some(30));
+        assert_eq!(ms_to_next_frame(&[f(100)], 30), None);
+        assert_eq!(ms_to_next_frame(&[f(0), f(0)], 30), None);
     }
 }

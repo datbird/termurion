@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 73 | 175 | 66 |
-| `02-global-settings.md` | 820 | 111 | 59 | 650 |
-| `03-features-and-menus.md` | 633 | 146 | 15 | 472 |
-| Total | 1,767 | 330 | 249 | 1,188 |
+| `02-global-settings.md` | 820 | 112 | 59 | 649 |
+| `03-features-and-menus.md` | 633 | 151 | 17 | 465 |
+| Total | 1,767 | 336 | 251 | 1,180 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -29,7 +29,10 @@ Selection, and the Smart Selection and Semantic History editors. Milestone 4c: C
 actions 45 to 48 and 73), Replace Selection, Clear to Start of Selection, soft boundaries, folds,
 annotations (and OSC 1337 AddAnnotation), the session note, per-line timestamps, the cursor
 guide, Find Cursor, and the Named Marks menu (two more alacritty_terminal patches: row time,
-fold, and note slots, and Grid::splice).
+fold, and note slots, and Grid::splice). Milestone 5a: inline images (OSC 1337 File and
+multipart files with iTerm2's sizing, downloads to the Downloads folder after asking, sixel, the
+kitty graphics protocol, animated GIFs), drawn by a textured-quad pipeline from image tiles kept
+in the grid cells (alacritty_terminal patches 7 and 8).
 
 ## Order
 

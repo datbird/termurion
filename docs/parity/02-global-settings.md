@@ -1063,7 +1063,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | proportionalScrollWheelReporting | proportionalScrollWheelReporting (bool, default YES) | Report multiple mouse scroll events when scrolling quickly? | missing |  |
 | useModernScrollWheelAccumulator | useModernScrollWheelAccumulator (bool, default YES) | Use modern scroll wheel accumulator. | missing |  |
 | resetSGROnPrompt | resetSGROnPrompt (bool, default YES) | Reset colors at shell prompt? Uses shell integration to detect a shell prompt and, if enabled, resets colors to their defaults. | missing |  |
-| retinaInlineImages | retinaInlineImages (bool, default YES) | Show inline images at Retina resolution. | missing |  |
+| retinaInlineImages | retinaInlineImages (bool, default YES) | Show inline images at Retina resolution. | have | Images draw at their pixel size on the real screen pixels, which is what Retina mode does. |
 | throttleMetalConcurrentFrames | throttleMetalConcurrentFrames (bool, default YES) | Reduce number of frames in flight when GPU can't produce drawables quickly. | missing |  |
 | metalSynchronizedDrawing | metalSynchronizedDrawing (bool, default NO) | Use synchronized Metal drawable presentation? Defers drawable acquisition until rendering completes, presents synchronously with Core Animation, and acquires drawables on the private render queue. | missing |  |
 | metalRowOutputCacheEnabled | metalRowOutputCacheEnabled (bool, default NO) | Cache per-row GPU build output? Skips rebuilding the glyph and color data for rows whose content and configuration have not changed since the last frame. | missing |  |
