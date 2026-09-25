@@ -115,6 +115,8 @@ pub struct Marks {
     made: bool,
     /// Alert on Next Mark is set for this session.
     pub alert_next: bool,
+    /// Prompts seen so far (a paste that waits for prompts counts them).
+    prompts: usize,
 }
 
 /// Decodes %XX escapes (bytes, then UTF-8; Latin-1 when that fails, as iTerm2 does).
@@ -205,6 +207,17 @@ impl Screen {
         let grid = self.term.grid_mut();
         grid[Line(0)] = saved;
         grid.cursor.point = Point::new(Line(0), cursor.column);
+    }
+
+    /// At the shell prompt, typing a command (iTerm2's currentCommand); None without shell
+    /// integration.
+    pub fn at_prompt(&self) -> Option<bool> {
+        (self.marks.prompts > 0).then_some(self.marks.in_command)
+    }
+
+    /// Prompts seen so far.
+    pub fn prompts_seen(&self) -> usize {
+        self.marks.prompts
     }
 
     /// The mark line of the prompt being typed at, if any.
@@ -371,6 +384,7 @@ impl Screen {
         self.marks.records.get_mut(&id).unwrap().aid = aid;
         self.marks.current = Some(id);
         self.marks.in_command = false;
+        self.marks.prompts += 1;
         self.fire_event(crate::trigger_events::EventKind::PromptDetected, &Default::default(), &[]);
     }
 

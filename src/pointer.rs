@@ -60,7 +60,6 @@ pub fn status(b: &PointerBinding) -> Status {
         "kQuickLookAction" => Status::Partial("Opens the target with its default app, since Windows has no Quick Look."),
         "kNextWindowPointerAction" | "kPrevWindowPointerAction" | "kNewWindowWithProfilePointerAction" | "kMovePanePointerAction" => Status::Later(7),
         "kInvokeScriptFunction" => Status::Later(11),
-        "kPasteFromClipboardPointerAction" | "kPasteFromSelectionPointerAction" if !b.argument.is_empty() => Status::Later(9),
         _ => Status::Done,
     }
 }
@@ -325,6 +324,6 @@ mod tests {
         assert_eq!(name("kContextMenuPointerAction"), "Open Context Menu");
         assert_eq!(status(&PointerBinding::new("kOpenTargetPointerAction", "")), Status::Done);
         assert_eq!(status(&PointerBinding::new("kPasteFromClipboardPointerAction", "")), Status::Done);
-        assert_eq!(status(&PointerBinding::new("kPasteFromClipboardPointerAction", "x")), Status::Later(9));
+        assert_eq!(status(&PointerBinding::new("kPasteFromClipboardPointerAction", "x")), Status::Done, "9a");
     }
 }

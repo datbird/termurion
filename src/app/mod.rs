@@ -51,6 +51,7 @@ const BLINK: std::time::Duration = std::time::Duration::from_millis(530);
 const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
+mod paste_ui;
 mod annotations_ui;
 mod activity_ui;
 mod alerts_ui;
@@ -360,6 +361,10 @@ pub struct App {
     /// OpenURL requests waiting for an answer, by pane and host; uploads being sent.
     pending_urls: HashMap<(PaneId, String), String>,
     uploads: HashMap<PaneId, prompted_ui::Upload>,
+    /// Each pane's pastes being written (the queue, how they are written, and whether the
+    /// progress bar shows), and pastes waiting on a question.
+    pastes: HashMap<PaneId, (crate::paste::Queue, crate::broadcast::Write, bool)>,
+    paste_asks: HashMap<PaneId, paste_ui::Asking>,
     upload_due: Option<Instant>,
     /// SetProfileProperty values and SetBackgroundImageFile paths waiting for an answer.
     pending_properties: HashMap<PaneId, Vec<(String, toml::Value)>>,
@@ -599,6 +604,8 @@ pub fn run() {
         idle_sent: HashMap::new(),
         started: Instant::now(),
         uploads: HashMap::new(),
+        pastes: HashMap::new(),
+        paste_asks: HashMap::new(),
         upload_due: None,
         pending_background: HashMap::new(),
         toast: None,
@@ -1101,14 +1108,7 @@ impl App {
     }
 
     fn paste(&mut self) {
-        let text = match self.clipboard.as_mut().map(|cb| cb.get_text()) {
-            Some(Ok(t)) => t,
-            Some(Err(e)) => {
-                self.banners.set("clipboard", format!("Paste failed: {e}"));
-                return self.redraw();
-            }
-            None => return,
-        };
+        let Some(text) = self.clipboard_text() else { return self.redraw() };
         if let Some(id) = self.focused_id() {
             self.user_paste(id, &text, crate::broadcast::Write::Paste);
         }
@@ -2039,6 +2039,7 @@ impl ApplicationHandler<UserEvent> for App {
         let toast = self.toast_due();
         let rotation = self.tick_rotations();
         let upload = self.feed_uploads();
+        let paste_due = self.paste_tick();
         let triggers = self.tick_triggers();
         self.tick_bell();
         let activity = self.tick_activity();
@@ -2059,7 +2060,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

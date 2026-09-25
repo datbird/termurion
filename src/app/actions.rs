@@ -336,6 +336,14 @@ impl App {
                 self.new_tab(g.as_deref());
             }
             65 => self.send_tmux_command(&b.text),
+            // Paste... and Paste from Selection... with their paste configuration.
+            41 | 42 => {
+                let Some(id) = self.focused_id() else { return };
+                let text = if b.action == 41 { self.clipboard_text() } else { self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()) };
+                if let Some(t) = text.filter(|t| !t.is_empty()) {
+                    self.paste_with_config(id, &t, &b.text);
+                }
+            }
             66 => {
                 for step in keyaction::sequence(&b.text) {
                     // A sequence never runs another sequence (iTerm2's editor does not allow one).
@@ -394,11 +402,21 @@ impl App {
     fn run_pointer_action_here(&mut self, b: &PointerBinding, pane: PaneId, cell: (u32, u32), event_loop: &ActiveEventLoop) {
         let text = |b: &PointerBinding| keyaction::expand(&b.argument, b.escaping());
         match b.action.as_str() {
+            // With an argument: iTerm2's paste configuration (Paste from Clipboard...).
+            "kPasteFromClipboardPointerAction" if !b.argument.is_empty() => {
+                if let (Some(t), Some(id)) = (self.clipboard_text(), self.focused_id()) {
+                    self.paste_with_config(id, &t, &b.argument);
+                }
+            }
             "kPasteFromClipboardPointerAction" => self.paste(),
             "kPasteFromSelectionPointerAction" => {
                 let sel = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string());
                 if let (Some(s), Some(id)) = (sel, self.focused_id()) {
-                    self.user_paste(id, &s, crate::broadcast::Write::Paste);
+                    if b.argument.is_empty() {
+                        self.user_paste(id, &s, crate::broadcast::Write::Paste);
+                    } else {
+                        self.paste_with_config(id, &s, &b.argument);
+                    }
                 }
             }
             "kExtendSelectionPointerAction" => {

@@ -379,9 +379,8 @@ pub fn status(code: i64) -> Status {
         44 | 62 => Status::Later(7),
         15 => Status::Later(10),
         40 => Status::Later(13),
-        41 | 42 | 63 | 64 => Status::Later(9),
+        63 | 64 => Status::Later(9),
         60 => Status::Later(11),
-        65 => Status::Later(8),
         _ => Status::Done,
     }
 }
@@ -438,7 +437,8 @@ mod tests {
             assert_eq!(status(code), Status::Done, "{code}");
         }
         assert_eq!(status(15), Status::Later(10));
-        assert_eq!(status(65), Status::Later(8));
+        assert_eq!(status(65), Status::Done, "8e: Send tmux Command");
+        assert_eq!((status(41), status(42)), (Status::Done, Status::Done), "9a");
         assert_eq!((status(1), status(3)), (Status::Done, Status::Done), "Next and Previous Window arrive in 7a");
         assert_eq!(status(26), Status::Done, "New Window with Profile arrives in 7a");
         assert_eq!(status(73), Status::Done);

@@ -505,6 +505,78 @@ impl Config {
     }
 }
 
+/// One pane's pastes: the one being written and the ones waiting (iTerm2 queues a paste
+/// that arrives while another is still going).
+#[derive(Default)]
+pub struct Queue {
+    running: Option<Running>,
+    waiting: std::collections::VecDeque<(Vec<u16>, Speed, bool)>,
+}
+
+struct Running {
+    units: Vec<u16>,
+    at: usize,
+    speed: Speed,
+    /// Wait for the shell prompt after each line.
+    commands: bool,
+    /// Blocked until more prompts than this have been seen.
+    wait_for: Option<usize>,
+    next: f64,
+}
+
+impl Queue {
+    pub fn push(&mut self, text: &str, speed: Speed, commands: bool) {
+        self.waiting.push_back((text.encode_utf16().collect(), speed, commands));
+    }
+
+    /// The next write when it is due (`now` in seconds; `prompts`: prompts seen so far).
+    pub fn tick(&mut self, now: f64, prompts: usize) -> Option<String> {
+        if self.running.is_none() {
+            let (units, speed, commands) = self.waiting.pop_front()?;
+            self.running = Some(Running { units, at: 0, speed, commands, wait_for: None, next: now });
+        }
+        let r = self.running.as_mut()?;
+        if r.wait_for.is_some_and(|n| prompts <= n) || now < r.next {
+            return None;
+        }
+        r.wait_for = None;
+        let end = next_chunk(&r.units, r.at, r.speed.units, r.commands);
+        let chunk = String::from_utf16_lossy(&r.units[r.at..end]);
+        r.at = end;
+        r.next = now + r.speed.delay;
+        if r.commands && chunk.ends_with(['\r', '\n']) {
+            r.wait_for = Some(prompts);
+        }
+        if r.at >= r.units.len() {
+            self.running = None;
+        }
+        Some(chunk)
+    }
+
+    /// Cancel: the paste being written stops; the next one starts.
+    pub fn cancel(&mut self) {
+        self.running = None;
+    }
+
+    /// (sent, total) of the paste being written.
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        self.running.as_ref().map(|r| (r.at, r.units.len()))
+    }
+
+    /// When the next write is due (None: nothing to write, or waiting for a prompt).
+    pub fn next_due(&self) -> Option<f64> {
+        match &self.running {
+            Some(r) if r.wait_for.is_some() => None,
+            Some(r) => Some(r.next),
+            None => (!self.waiting.is_empty()).then_some(0.0),
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        self.running.is_some() || !self.waiting.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,5 +701,29 @@ mod tests {
         assert_eq!(full.summary(), "^V+Tab, \\Escape, s/a/b/g");
         assert_eq!(full.job("x").0.flags, NEWLINES | CONTROLS | BRACKET | ESCAPE | REGEX);
         assert_eq!(Config::decode("not json"), Config::default());
+    }
+
+    #[test]
+    fn paste_jobs_queue_in_order() {
+        let mut q = Queue::default();
+        q.push("abcd", Speed { units: 2, delay: 1.0 }, false);
+        q.push("xy", Speed { units: 2, delay: 1.0 }, false);
+        assert_eq!(q.tick(0.0, 0).as_deref(), Some("ab"));
+        assert_eq!(q.progress(), Some((2, 4)));
+        assert_eq!(q.tick(0.5, 0), None, "a second between writes");
+        assert_eq!(q.next_due(), Some(1.0));
+        assert_eq!(q.tick(1.0, 0).as_deref(), Some("cd"));
+        assert_eq!(q.tick(1.0, 0).as_deref(), Some("xy"), "the next paste starts");
+        assert!(!q.busy());
+        q.push("ls\rpwd\r", Speed { units: 100, delay: 0.0 }, true);
+        assert_eq!(q.tick(5.0, 3).as_deref(), Some("ls\r"));
+        assert_eq!(q.tick(5.0, 3), None, "waits for the next prompt");
+        assert_eq!(q.next_due(), None);
+        assert_eq!(q.tick(5.0, 4).as_deref(), Some("pwd\r"));
+        q.push("long text", Speed { units: 1, delay: 1.0 }, false);
+        q.push("next", Speed { units: 10, delay: 1.0 }, false);
+        q.tick(9.0, 0);
+        q.cancel();
+        assert_eq!(q.tick(9.0, 0).as_deref(), Some("next"), "Cancel starts the next one");
     }
 }

@@ -62,3 +62,27 @@ pub fn set(text: &str, html: &str, rtf: &str) -> Result<(), String> {
     unsafe { CloseClipboard() };
     result
 }
+
+/// The first file on the clipboard (a copied file in Explorer), if any.
+pub fn first_file() -> Option<std::path::PathBuf> {
+    use windows_sys::Win32::System::DataExchange::{GetClipboardData, IsClipboardFormatAvailable};
+    use windows_sys::Win32::System::Ole::CF_HDROP;
+    use windows_sys::Win32::UI::Shell::{DragQueryFileW, HDROP};
+    if unsafe { IsClipboardFormatAvailable(CF_HDROP as u32) } == 0 {
+        return None;
+    }
+    if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return None;
+    }
+    let drop = unsafe { GetClipboardData(CF_HDROP as u32) } as HDROP;
+    let path = if drop.is_null() {
+        None
+    } else {
+        let len = unsafe { DragQueryFileW(drop, 0, std::ptr::null_mut(), 0) };
+        let mut buf = vec![0u16; len as usize + 1];
+        let got = unsafe { DragQueryFileW(drop, 0, buf.as_mut_ptr(), buf.len() as u32) };
+        (got > 0).then(|| std::path::PathBuf::from(String::from_utf16_lossy(&buf[..got as usize])))
+    };
+    unsafe { CloseClipboard() };
+    path
+}

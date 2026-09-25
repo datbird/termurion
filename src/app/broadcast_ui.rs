@@ -59,11 +59,6 @@ impl App {
         self.tmux_send_input();
     }
 
-    /// A paste from `sender`: bracketed by the sender's mode, then written like typing.
-    pub(super) fn user_paste(&mut self, sender: PaneId, text: &str, what: Write) {
-        let Some(bytes) = self.panes.get(&sender).map(|p| p.paste_payload(text)) else { return };
-        self.user_write(sender, &bytes, what);
-    }
 
     /// Shell > Broadcast Input's items. False for other selectors.
     pub(super) fn broadcast_command(&mut self, selector: &str) -> bool {

@@ -109,7 +109,7 @@ impl App {
             } else {
                 let enabled = !matches!(commands::status(item), Status::Later(_)) && !commands::DISABLED_IN_SESSION.contains(&item.selector.as_str());
                 let parent = &item.path[..item.path.len() - 1];
-                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str());
+                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:");
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
                 if alert_check || state_check {
                     let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, None);
@@ -264,6 +264,11 @@ impl App {
                 c.set_checked(self.is_checked(selector));
             }
         }
+        for item in menus::items().iter().filter(|i| matches!(i.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:")) {
+            if let (Some(c), Some(on)) = (bar.checks.get(item.label()), self.paste_checked(item.label())) {
+                c.set_checked(on);
+            }
+        }
         for (selector, value) in super::marks_ui::CHECKS {
             let Some(item) = menus::items().iter().find(|i| i.selector == selector) else { continue };
             let on = match selector {
@@ -319,6 +324,9 @@ impl App {
         }
         let label = item.label();
         let window = self.gpu.as_ref().map(|g| g.window.clone());
+        if self.paste_command(&item.selector, label) {
+            return self.sync_checks();
+        }
         if self.run_find_command(&item.selector, label) || self.run_seltools_command(&item.selector) || self.run_copymode_command(&item.selector) || self.run_fold_command(&item.selector) || self.run_view_command(&item.selector) || self.run_note_command(&item.selector, event_loop) {
             return self.relayout();
         }

@@ -740,6 +740,141 @@ default = 0.01
 help = "The minimum amount of time required between presses of a modifier key when performing a modifier double-tap."
 
 [[setting]]
+key = "QuickPasteBytesPerCall"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Number of bytes to paste in each chunk when pasting normally."
+type = "int"
+default = 768
+help = "Number of bytes to paste in each chunk when pasting normally."
+
+[[setting]]
+key = "QuickPasteDelayBetweenCalls"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Delay in seconds between chunks when pasting normally."
+type = "float"
+default = 0.01
+help = "Delay in seconds between chunks when pasting normally."
+
+[[setting]]
+key = "SlowPasteBytesPerCall"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Number of bytes to paste in each chunk when pasting slowly."
+type = "int"
+default = 16
+help = "Number of bytes to paste in each chunk when pasting slowly."
+
+[[setting]]
+key = "SlowPasteDelayBetweenCalls"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Delay in seconds between chunks when pasting slowly"
+type = "float"
+default = 0.125
+help = "Delay in seconds between chunks when pasting slowly"
+
+[[setting]]
+key = "PastingClearsSelection"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Pasting text will remove the selection."
+type = "bool"
+default = true
+help = "Pasting text will remove the selection."
+
+[[setting]]
+key = "PromptForPasteWhenNotAtPrompt"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Warn before pasting when not at shell prompt?"
+type = "bool"
+default = false
+help = "Warn before pasting when not at shell prompt?"
+
+[[setting]]
+key = "AlwaysWarnBeforePastingOverSize"
+tab = "Advanced"
+section = "Pasteboard"
+label = "When pasting more than this many characters, require confirmation."
+type = "int"
+default = -1
+help = "When pasting more than this many characters, require confirmation.\nSet to -1 to disable warning.\nCharacters are counted in UTF-16."
+
+[[setting]]
+key = "EscapeWithQuotes"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Escape file names with single quotes instead of backslashes."
+type = "bool"
+default = false
+help = "Escape file names with single quotes instead of backslashes.\nThis is intended for users of xonsh, which does not accept backslash escaping."
+
+[[setting]]
+key = "StripZeroWidthFormatCharactersOnPaste"
+tab = "Advanced"
+section = "Pasteboard"
+label = "Strip zero-width bidi/format characters when pasting?"
+type = "bool"
+default = false
+help = "Strip zero-width bidi/format characters when pasting?\nCharacters like the Zero-Width Non-Joiner (U+200C, the Persian half-space), ZWJ, LRM, and RLM are invisible but line editors like zsh render them as a visible <200c> at the prompt. Turn this on to remove them from pasted text so the command line stays clean. Off by default because these characters are meaningful; enabling this changes the pasted text."
+
+[[setting]]
+key = "PasteTabToStringTabStopSize"
+tab = "Advanced"
+section = "Pasteboard"
+label = "The number of spaces for each tab when a paste converts tabs to spaces."
+type = "int"
+default = 4
+help = "The number of spaces for each tab when a paste converts tabs to spaces."
+
+[[setting]]
+key = "SuppressMultilinePasteWarningWhenPastingOneLineWithTerminalNewline"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning about multi-line paste when pasting a single line ending with a newline."
+type = "bool"
+default = false
+help = "Suppress warning about multi-line paste when pasting a single line ending with a newline.\nThis suppresses all multi-line paste warnings when a single line is being pasted."
+
+[[setting]]
+key = "SuppressMultilinePasteWarningWhenNotAtShellPrompt"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning about multi-line paste when not at prompt."
+type = "bool"
+default = false
+help = "Suppress warning about multi-line paste when not at prompt.\nRequires Shell Integration to be installed."
+
+[[setting]]
+key = "AboutToPasteTabsWithCancel"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning when pasting tabs with offer to convert them to spaces or perform advanced paste."
+type = "bool"
+default = false
+help = "Suppress warning when pasting tabs with offer to convert them to spaces or perform advanced paste."
+
+[[setting]]
+key = "NoSyncDoNotWarnBeforeMultilinePaste"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning about multi-line pastes (or a single line ending in a newline)."
+type = "bool"
+default = false
+help = "Suppress warning about multi-line pastes (or a single line ending in a newline).\nThis applies whether you are at the shell prompt or not, provided two or more lines are being pasted."
+
+[[setting]]
+key = "NoSyncDoNotWarnBeforePastingOneLineEndingInNewlineAtShellPrompt"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning about pasting a single line ending in a newline when at the shell prompt."
+type = "bool"
+default = false
+help = "Suppress warning about pasting a single line ending in a newline when at the shell prompt.\nThis requires Shell Integration to be installed."
+
+[[setting]]
 key = "NoSyncSuppressBroadcastInputWarning"
 tab = "Advanced"
 section = "Warnings"

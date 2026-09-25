@@ -470,7 +470,7 @@ impl App {
         self.tmux_gateway_input(gw, b"X", false);
     }
 
-    fn drop_bar(&mut self, pane: PaneId, id: &str) {
+    pub(super) fn drop_bar(&mut self, pane: PaneId, id: &str) {
         if let Some(b) = self.bars.get_mut(&pane) {
             b.retain(|x| x.id != id);
         }
