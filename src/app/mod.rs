@@ -191,6 +191,8 @@ pub struct App {
     fireworks: HashMap<PaneId, (Instant, (usize, usize))>,
     /// SetColors `tab`: the tab color a pane's program chose.
     tab_colors: HashMap<PaneId, alacritty_terminal::vte::ansi::Rgb>,
+    /// When the last StealFocus question closed.
+    steal_asked: Option<Instant>,
     /// When a pane flash or fireworks needs the next frame.
     attention_due: Option<Instant>,
     /// A short message at the bottom of the window, and when it goes away.
@@ -334,6 +336,7 @@ pub fn run() {
         fireworks: HashMap::new(),
         tab_colors: HashMap::new(),
         attention_due: None,
+        steal_asked: None,
         typing: None,
         cursor: (0.0, 0.0),
         drag: Drag::None,
@@ -1559,7 +1562,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // Focus reporting (DECSET 1004): tell the app the window gained or lost focus.
                 if let Some(p) = self.focused_pane() {
                     if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {
-                        p.input(if f { b"\x1b[I" } else { b"\x1b[O" });
+                        p.focus_report(f);
                     }
                 }
                 self.redraw();
@@ -1651,6 +1654,19 @@ fn tab_hit(rects: &[Rect], tabs: usize, x: f32, y: f32) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steal_focus_asks_once() {
+        use crate::screen::Request;
+        let now = Instant::now();
+        let many: Vec<(PaneId, Request)> = (0..1000).map(|_| (1, Request::StealFocus)).chain([(2, Request::StealFocus), (1, Request::ReportCellSize)]).collect();
+        let kept = clipboard_ui::thin_requests(many.clone(), None, now);
+        assert_eq!(kept.iter().filter(|(p, r)| *p == 1 && *r == Request::StealFocus).count(), 1);
+        assert_eq!(kept.iter().filter(|(p, r)| *p == 2 && *r == Request::StealFocus).count(), 1);
+        assert!(kept.contains(&(1, Request::ReportCellSize)), "other requests stay");
+        let quiet = clipboard_ui::thin_requests(many, Some(now), now + std::time::Duration::from_millis(500));
+        assert!(!quiet.iter().any(|(_, r)| *r == Request::StealFocus), "none right after a question");
+    }
 
     #[test]
     fn closing_an_earlier_tab_keeps_the_same_tab_active() {

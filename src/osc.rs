@@ -126,6 +126,9 @@ fn sixel_body(buf: &[u8]) -> Option<Vec<u8>> {
 #[derive(Default)]
 pub struct Scanner {
     state: State,
+    /// After a scan: where an unfinished escape sequence began in those bytes (0 when it
+    /// began in an earlier read), or None when the bytes ended between sequences.
+    pub pending: Option<usize>,
 }
 
 fn could_be_wanted(buf: &[u8]) -> bool {
@@ -318,6 +321,7 @@ impl Scanner {
             }
             i += 1;
         }
+        self.pending = (!matches!(self.state, State::Ground)).then_some(began);
         out
     }
 }

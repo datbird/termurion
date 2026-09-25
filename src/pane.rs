@@ -112,6 +112,27 @@ impl Pane {
         }
     }
 
+    /// Copy with Control Sequences of the selection the user made (in a Filter or Zoom
+    /// view, the view's).
+    pub fn sgr_copy(&self) -> String {
+        crate::styled_copy::sgr_text(&self.screen)
+    }
+
+    /// The selection's styled rows, for Copy with Styles.
+    pub fn styled_rows(&self) -> Vec<crate::styled_copy::Row> {
+        crate::styled_copy::runs(&self.screen)
+    }
+
+    /// Focus reporting (DECSET 1004): a report, so Buffer Input never holds it.
+    pub fn focus_report(&mut self, gained: bool) {
+        self.reply(if gained { b"\x1b[I" } else { b"\x1b[O" });
+    }
+
+    /// Bytes Buffer Input holds now.
+    pub fn waiting(&self) -> usize {
+        self.buffer.queue.len()
+    }
+
     /// What the terminal answers the program (reports): never held by Buffer Input.
     pub fn reply(&mut self, bytes: &[u8]) {
         if let Some(pty) = &self.pty {
@@ -433,5 +454,30 @@ mod tests {
         p.restyle(red.clone(), crate::screen::Look::default());
         p.end_view();
         assert_eq!(p.screen.palette.bg, red.bg);
+    }
+    #[test]
+    fn copies_read_the_screen_the_user_selects_in() {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::{Selection, SelectionType};
+        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        let mut view = Screen::new(20, 4);
+        view.feed(b"from the view");
+        let mut sel = Selection::new(SelectionType::Simple, Point::new(Line(0), Column(0)), Side::Left);
+        sel.update(Point::new(Line(0), Column(12)), Side::Right);
+        view.term_mut().selection = Some(sel);
+        let own = std::mem::replace(&mut p.screen, view);
+        p.live = Some(own);
+        assert!(p.sgr_copy().contains("from the view"), "{:?}", p.sgr_copy());
+        assert_eq!(p.styled_rows().len(), 1);
+    }
+
+    #[test]
+    fn focus_reports_are_not_held() {
+        let mut p = start("cmd /c ping -n 3 127.0.0.1 >nul");
+        p.set_buffering(true);
+        p.focus_report(true);
+        assert_eq!(p.waiting(), 0);
+        p.input(b"x");
+        assert_eq!(p.waiting(), 1);
     }
 }

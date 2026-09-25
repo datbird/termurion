@@ -24,6 +24,11 @@ pub fn cursor_shape(value: &str) -> Option<CursorShape> {
 }
 
 /// iTerm2's `%0.2f` with trailing zeros (and a trailing point) removed.
+/// How deep the UnicodeVersion and key-label stacks go, and how many labels a pane keeps:
+/// past these the oldest go, so output cannot grow them without end.
+const STACK_MAX: usize = 64;
+const LABELS_MAX: usize = 64;
+
 pub fn number(n: f64) -> String {
     let s = format!("{n:.2}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -109,7 +114,12 @@ impl Unicode {
     pub fn apply(&mut self, value: &str) {
         let (word, label) = value.split_once(' ').unwrap_or((value, ""));
         match word {
-            "push" => self.stack.push((label.to_string(), self.version)),
+            "push" => {
+                if self.stack.len() >= STACK_MAX {
+                    self.stack.remove(0);
+                }
+                self.stack.push((label.to_string(), self.version));
+            }
             "pop" => {
                 while let Some((l, v)) = self.stack.pop() {
                     if label.is_empty() || l == label {
@@ -143,13 +153,16 @@ impl KeyLabels {
         }
         if label.is_empty() {
             self.current.remove(key);
-        } else {
+        } else if self.current.len() < LABELS_MAX || self.current.contains_key(key) {
             self.current.insert(key.to_string(), label.to_string());
         }
     }
 
     /// Saves the labels; they are cleared unless the name starts with `.`.
     pub fn push(&mut self, name: &str) {
+        if self.stack.len() >= STACK_MAX {
+            self.stack.remove(0);
+        }
         self.stack.push((name.to_string(), self.current.clone()));
         if !name.starts_with('.') {
             self.current.clear();
@@ -365,5 +378,22 @@ mod tests {
         assert!(s.exec_failed);
         assert_eq!(s.unicode.version, 8);
         assert_eq!(s.key_labels.current.get("F1").map(String::as_str), Some("Go"));
+    }
+    #[test]
+    fn stacks_and_labels_are_bounded() {
+        let mut k = KeyLabels::default();
+        for i in 0..1000 {
+            k.set(&format!("F{i}=x"));
+        }
+        assert!(k.current.len() <= 64, "{}", k.current.len());
+        for i in 0..1000 {
+            k.push(&format!(".n{i}"));
+        }
+        assert!(k.stack.len() <= 64);
+        let mut u = Unicode::default();
+        for _ in 0..1000 {
+            u.apply("push x");
+        }
+        assert!(u.stack.len() <= 64);
     }
 }

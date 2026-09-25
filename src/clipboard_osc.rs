@@ -218,6 +218,7 @@ mod tests {
     #[test]
     fn copy_to_clipboard_captures_raw_bytes() {
         let mut s = Screen::new(20, 4);
+        s.clipboard_allowed = true;
         s.feed(b"\x1b]1337;CopyToClipboard=\x07hello ");
         s.feed(b"world\x1b]1337;EndCopy\x07after");
         assert_eq!(s.take_requests(), vec![Request::ClipboardWrite("hello world".into())]);
@@ -228,6 +229,7 @@ mod tests {
     #[test]
     fn copy_to_clipboard_caps_its_capture() {
         let mut s = Screen::new(20, 4);
+        s.clipboard_allowed = true;
         s.limits.copy = 10;
         s.feed(b"\x1b]1337;CopyToClipboard=\x07");
         for _ in 0..100 {
@@ -258,5 +260,29 @@ mod tests {
         assert!(String::from_utf8(s.feed(b"\x1b[c")).unwrap().ends_with(";52c"));
         s.set_clipboard_advertised(false);
         assert_eq!(String::from_utf8(s.feed(b"\x1b[c")).unwrap(), "\x1b[?64;1;2;4;6;17;18;21;22c");
+    }
+    #[test]
+    fn a_split_end_copy_is_not_captured() {
+        let mut s = Screen::new(40, 4);
+        s.clipboard_allowed = true;
+        s.feed(b"\x1b]1337;CopyToClipboard=\x07text\x1b]1337;EndC");
+        s.feed(b"opy\x07");
+        assert_eq!(s.take_requests(), vec![Request::ClipboardWrite("text".into())]);
+        // A sequence Tandem does not act on, split across reads, is part of the text.
+        s.feed(b"\x1b]1337;CopyToClipboard=\x07a\x1b[3");
+        s.feed(b"1mb\x1b]1337;End");
+        s.feed(b"C");
+        s.feed(b"opy\x07");
+        assert_eq!(s.take_requests(), vec![Request::ClipboardWrite("a\x1b[31mb".into())]);
+    }
+
+    #[test]
+    fn no_capture_without_clipboard_access() {
+        let mut s = Screen::new(20, 4);
+        s.clipboard_allowed = false;
+        s.feed(b"\x1b]1337;CopyToClipboard=\x07lots of output");
+        assert!(s.capture.is_none(), "nothing kept when the result would be thrown away");
+        s.feed(b"\x1b]1337;EndCopy\x07");
+        assert_eq!(s.take_requests(), vec![]);
     }
 }

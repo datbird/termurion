@@ -21,7 +21,9 @@ impl App {
             }
             Request::Attention(a) => self.attention(pane, a),
             Request::StealFocus => {
-                if files_ui::ask("A control sequence attempted to activate a session. Allow it?") {
+                let allow = files_ui::ask("A control sequence attempted to activate a session. Allow it?");
+                self.steal_asked = Some(Instant::now());
+                if allow {
                     self.reveal(pane);
                 }
             }

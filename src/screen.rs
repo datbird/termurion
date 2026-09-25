@@ -169,6 +169,9 @@ pub struct Screen {
     /// OSC 1337 `Copy=` in progress, and `CopyToClipboard` capture.
     pub(crate) copy: crate::clipboard_osc::Copy,
     pub(crate) capture: Option<Vec<u8>>,
+    /// The start of an escape sequence split across reads during a capture: dropped if it
+    /// turns out to be one Tandem acts on, else added to the capture.
+    capture_hold: Vec<u8>,
     /// OSC 21337: what the pane's program says it is doing.
     pub tab_status: crate::tabstatus::Status,
     /// The program's `Env=report=all` environment, kept for the SSH integration.
@@ -275,6 +278,7 @@ impl Screen {
             requests: Vec::new(),
             copy: crate::clipboard_osc::Copy::default(),
             capture: None,
+            capture_hold: Vec::new(),
             color_reports: false,
             last_dark: true,
         }
@@ -333,8 +337,24 @@ impl Screen {
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
         let events = self.osc.scan_spans(bytes);
+        let pending = self.osc.pending;
         let mut reply = Vec::new();
         let mut at = 0;
+        let mut still_held = false;
+        if self.capture.is_some() && !self.capture_hold.is_empty() {
+            if events.first().is_some_and(|e| e.0 == 0) {
+                // The held bytes began a sequence that ended here as an event: not text.
+                self.capture_hold.clear();
+            } else if events.is_empty() && pending == Some(0) {
+                // Still inside the same sequence.
+                let room = self.limits.copy.saturating_sub(self.capture_hold.len());
+                self.capture_hold.extend_from_slice(&bytes[..bytes.len().min(room)]);
+                still_held = true;
+            } else {
+                let held = std::mem::take(&mut self.capture_hold);
+                self.capture_bytes(&held);
+            }
+        }
         for (start, end, osc) in events {
             self.capture_bytes(&bytes[at..start.max(at)]);
             reply.extend(self.feed_raw(&bytes[at..end]));
@@ -356,7 +376,15 @@ impl Screen {
             }
             reply.append(&mut self.replies);
         }
-        self.capture_bytes(&bytes[at..]);
+        if !still_held {
+            match pending.filter(|p| *p >= at) {
+                Some(p) if self.capture.is_some() => {
+                    self.capture_bytes(&bytes[at..p]);
+                    self.capture_hold = bytes[p..].to_vec();
+                }
+                _ => self.capture_bytes(&bytes[at..]),
+            }
+        }
         reply.extend(self.feed_raw(&bytes[at..]));
         reply.extend(self.color_scheme_change());
         reply
@@ -478,6 +506,10 @@ impl Screen {
     /// Whether DA1 claims clipboard support (`52`).
     pub fn set_clipboard_advertised(&mut self, on: bool) {
         self.term.da1_clipboard = on;
+    }
+
+    pub(crate) fn capture_hold_clear(&mut self) {
+        self.capture_hold.clear();
     }
 
     /// `CopyToClipboard`: output bytes join the capture, up to the cap.

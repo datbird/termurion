@@ -171,4 +171,10 @@ mod tests {
         sc.feed(b"\x1b]133;A\x07");
         assert!(sc.tab_status.is_empty());
     }
+    #[test]
+    fn secondary_prompts_keep_the_status() {
+        let mut sc = Screen::new(20, 4);
+        sc.feed(b"\x1b]21337;status=busy\x07\x1b]133;A;k=s\x07\x1b]133;P;k=c\x07");
+        assert_eq!(sc.tab_status.status.as_deref(), Some("busy"));
+    }
 }

@@ -5,6 +5,16 @@ use super::*;
 use crate::clipboard_osc::{self, ReadPolicy};
 use crate::screen::Request;
 
+/// StealFocus asks at most once per pane per batch, and not again this soon after the
+/// last question closed, so output full of StealFocus cannot pile up message boxes.
+pub(super) const STEAL_FOCUS_QUIET: std::time::Duration = std::time::Duration::from_secs(2);
+
+pub(super) fn thin_requests(reqs: Vec<(PaneId, Request)>, last_asked: Option<std::time::Instant>, now: std::time::Instant) -> Vec<(PaneId, Request)> {
+    let quiet = last_asked.is_some_and(|t| now < t + STEAL_FOCUS_QUIET);
+    let mut asked = std::collections::HashSet::new();
+    reqs.into_iter().filter(|(p, r)| *r != Request::StealFocus || (!quiet && asked.insert(*p))).collect()
+}
+
 /// The bars this file asks with.
 pub(super) const DENIED: &str = "clipboard-denied";
 pub(super) const READ: &str = "clipboard-read";
@@ -32,6 +42,7 @@ impl App {
     pub(super) fn take_requests(&mut self) {
         let asked: Vec<(PaneId, Request)> =
             self.panes.iter_mut().flat_map(|(id, p)| p.own_mut().take_requests().into_iter().map(|r| (*id, r)).collect::<Vec<_>>()).collect();
+        let asked = thin_requests(asked, self.steal_asked, std::time::Instant::now());
         for (pane, r) in asked {
             match r {
                 Request::ClipboardWrite(text) => self.clipboard_write(pane, text),

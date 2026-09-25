@@ -18,10 +18,11 @@ impl App {
     /// Edit > Copy with Styles: plain text, HTML, and RTF in the profile's font and colors.
     fn copy_with_styles(&mut self, id: PaneId) {
         let Some(p) = self.panes.get(&id) else { return };
-        let screen = p.own();
+        // The user selects in the screen on show: a Filter or Zoom view while one is up.
+        let screen = &p.screen;
         let Some(text) = screen.term().selection_to_string() else { return };
         let font = self.profile_of(id).map(|pr| pr.font("Normal Font")).unwrap_or(crate::profile::FontSpec { family: "Cascadia Mono".into(), size_pt: 12.0 });
-        let rows = crate::styled_copy::runs(screen);
+        let rows = p.styled_rows();
         let html = crate::styled_copy::cf_html(&crate::styled_copy::html(&rows, &font.family, font.size_pt, screen.palette.bg));
         let rtf = crate::styled_copy::rtf(&rows, &font.family, font.size_pt);
         if let Err(e) = crate::winclip::set(&text, &html, &rtf) {
@@ -73,7 +74,7 @@ impl App {
             }
             "copyWithStyles:" => self.copy_with_styles(id),
             "copyWithControlSequences:" => {
-                let text = self.panes.get(&id).map(|p| crate::styled_copy::sgr_text(p.own()));
+                let text = self.panes.get(&id).map(|p| p.sgr_copy());
                 if let (Some(text), Some(cb)) = (text, self.clipboard.as_mut()) {
                     if let Err(e) = cb.set_text(text) {
                         self.banners.set("clipboard", format!("Copy failed: {e}"));

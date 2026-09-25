@@ -341,11 +341,11 @@ impl Screen {
     }
 
     fn prompt_start(&mut self, kind: PromptKind, aid: Option<String>, fresh_line: bool) {
-        // A new prompt ends whatever the last program said it was doing (OSC 21337).
-        self.tab_status = crate::tabstatus::Status::default();
         if !matches!(kind, PromptKind::Initial | PromptKind::Unknown) {
             return;
         }
+        // A new prompt ends whatever the last program said it was doing (OSC 21337).
+        self.tab_status = crate::tabstatus::Status::default();
         if fresh_line && self.place_prompt_first_column && !self.pty_backed && self.cursor_point().column.0 > 0 {
             self.feed_raw(b"\r\n");
         }
@@ -509,7 +509,8 @@ impl Screen {
                         self.requests.push(crate::screen::Request::ClipboardWrite(t));
                     }
                 }
-                "CopyToClipboard" if self.trusted => self.capture = Some(Vec::new()),
+                // Without clipboard access the text would be thrown away: keep nothing.
+                "CopyToClipboard" if self.trusted && self.clipboard_allowed => self.capture = Some(Vec::new()),
                 "CursorShape" => {
                     if let Some(shape) = crate::osc1337::cursor_shape(&value) {
                         self.term.set_cursor_shape(shape);
@@ -570,6 +571,7 @@ impl Screen {
                 "PushKeyLabels" => self.key_labels.push(&value),
                 "PopKeyLabels" => self.key_labels.pop(&value),
                 "EndCopy" if self.trusted => {
+                    self.capture_hold_clear();
                     if let Some(c) = self.capture.take() {
                         self.requests.push(crate::screen::Request::ClipboardWrite(String::from_utf8_lossy(&c).into_owned()));
                     }
