@@ -993,6 +993,105 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     }
 }
 
+/// One clipping as the panel draws it: its title and its detail's lines.
+pub struct ClipRow {
+    pub title: String,
+    pub detail: Vec<String>,
+}
+
+/// What a Clippings panel shows.
+pub struct ClipDraw<'a> {
+    pub layout: &'a crate::clippings::Layout,
+    pub panel: Rect,
+    pub rows: &'a [ClipRow],
+    pub selected: &'a [usize],
+    pub enabled: crate::clippings::Enabled,
+    /// "N/M" while an archive shows, or a hovered button's tooltip.
+    pub status: Option<&'a str>,
+    /// Where a dragged row would land.
+    pub drop_y: Option<f32>,
+}
+
+const CLIP_BG: Rgb = rgb(0x25, 0x25, 0x28);
+const CLIP_SELECTED: Rgb = rgb(0x2f, 0x5f, 0xa8);
+const CLIP_DISABLED: Rgb = rgb(0x5a, 0x5a, 0x5a);
+
+fn clip_span(text: String, color: Rgb, bold: bool, icon: bool) -> Span {
+    Span { text, color, bold, italic: false, alt_font: false, icon, prose: !icon, badge: false }
+}
+
+/// The Clippings panel at the right of a session: the rows, the button strip, the status.
+pub fn clippings_panel(frame: &mut Frame, d: &ClipDraw, cell: (f32, f32), scale: f32) {
+    use crate::clippings::Button;
+    let l = d.layout;
+    frame.quads.push(Quad { rect: d.panel, color: rgba(CLIP_BG, 1.0) });
+    frame.quads.push(Quad { rect: Rect { w: 1.0, ..d.panel }, color: rgba(DIVIDER, 1.0) });
+    let pad = 6.0 * scale;
+    for (i, (row, r)) in d.rows.iter().zip(&l.rows).enumerate() {
+        if r.y >= l.list.y + l.list.h || r.y + r.h <= l.list.y {
+            continue;
+        }
+        let top = r.y.max(l.list.y);
+        let clip = Rect { x: r.x, y: top, w: r.w, h: (r.y + r.h).min(l.list.y + l.list.h) - top };
+        if d.selected.contains(&i) {
+            frame.quads.push(Quad { rect: clip, color: rgba(CLIP_SELECTED, 1.0) });
+        }
+        let line_y = r.y + r.h - 1.0;
+        if line_y >= l.list.y && line_y < l.list.y + l.list.h {
+            frame.quads.push(Quad { rect: Rect { x: r.x, y: line_y, w: r.w, h: 1.0 }, color: rgba(DIVIDER, 0.6) });
+        }
+        let x = r.x + 10.0 * scale;
+        frame.rows.push(TextRow { x, y: r.y + pad, spans: vec![clip_span(row.title.clone(), TAB_TEXT, true, false)], clip, scale: 1.0 });
+        for (k, line) in row.detail.iter().enumerate() {
+            let y = r.y + pad + cell.1 + 2.0 * scale + k as f32 * cell.1;
+            frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT_DIM, false, false)], clip, scale: 1.0 });
+        }
+    }
+    if let Some(y) = d.drop_y {
+        frame.quads.push(Quad { rect: Rect { x: l.list.x, y: y - 1.0, w: l.list.w, h: 2.0 }, color: rgba(CLIP_SELECTED, 1.0) });
+    }
+    let e = d.enabled;
+    for (b, r) in &l.buttons {
+        let (glyph, on) = match b {
+            Button::Add => ('\u{E710}', e.add),
+            Button::Remove => ('\u{E738}', e.remove),
+            Button::Archive => ('\u{E7B8}', e.archive),
+            Button::Send => ('\u{E724}', e.send),
+            Button::Copy => ('\u{E8C8}', e.copy),
+            Button::Back => ('\u{E76B}', e.back),
+            Button::Forward => ('\u{E76C}', e.forward),
+            Button::Close => ('\u{E711}', true),
+        };
+        frame.quads.push(Quad { rect: *r, color: rgba(TAB_ACTIVE, 1.0) });
+        let color = if on { TAB_TEXT } else { CLIP_DISABLED };
+        frame.rows.push(TextRow { x: r.x + (r.w - cell.0) / 2.0, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(glyph.to_string(), color, false, true)], clip: *r, scale: 1.0 });
+    }
+    if let Some(text) = d.status {
+        let r = l.status;
+        frame.rows.push(TextRow { x: r.x, y: r.y + (r.h - cell.1) / 2.0, spans: vec![clip_span(text.to_string(), TAB_TEXT_DIM, false, false)], clip: r, scale: 1.0 });
+    }
+}
+
+/// A clipping's preview over the terminal: its title and all of its detail that fits.
+pub fn clip_preview(frame: &mut Frame, area: Rect, title: &str, lines: &[String], cell: (f32, f32), scale: f32) {
+    let w = (700.0 * scale).min(area.w - 2.0 * cell.0).max(cell.0 * 10.0);
+    let h = ((lines.len() + 2) as f32 * cell.1 + 16.0 * scale).min(480.0 * scale).min(area.h - cell.1);
+    let r = Rect { x: area.x + (area.w - w) / 2.0, y: area.y + (area.h - h) / 2.0, w, h };
+    cut_out(frame, r);
+    frame.quads.push(Quad { rect: r, color: rgba(CLIP_BG, 1.0) });
+    let x = r.x + 12.0 * scale;
+    let mut y = r.y + 8.0 * scale;
+    frame.rows.push(TextRow { x, y, spans: vec![clip_span(title.to_string(), TAB_TEXT, true, false)], clip: r, scale: 1.0 });
+    y += cell.1 * 1.5;
+    for line in lines {
+        if y + cell.1 > r.y + r.h {
+            break;
+        }
+        frame.rows.push(TextRow { x, y, spans: vec![clip_span(line.clone(), TAB_TEXT, false, false)], clip: r, scale: 1.0 });
+        y += cell.1;
+    }
+}
+
 /// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
 /// small camera (a body, a lens, and a viewfinder).
 pub fn camera_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {

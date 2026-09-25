@@ -44,7 +44,7 @@ pub const DONE: &[&str] = &[
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
     "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
     "moveTabToNewWindow:", "moveSessionToWindow:", "moveSessionToTab:", "paste:|Paste Slowly", "pasteFaster:", "pasteSlower:",
-    "pasteSlowlyFaster:", "pasteSlowlySlower:", "pasteBase64Encoded:", "pasteOptions:", "openPasteHistory:", "openCommandHistory:", "openDirectories:", "openAutocomplete:", "toggleAutoCommandHistory:", "toggleMultiLinePasteWarning:|Warn Before Multi-Line Paste",
+    "pasteSlowlyFaster:", "pasteSlowlySlower:", "pasteBase64Encoded:", "pasteOptions:", "openPasteHistory:", "openCommandHistory:", "openDirectories:", "openAutocomplete:", "toggleAutoCommandHistory:", "toggleShowClippings:", "toggleMultiLinePasteWarning:|Warn Before Multi-Line Paste",
     "toggleMultiLinePasteWarning:|Limit Multi-Line Paste Warning to Shell Prompt",
     "toggleMultiLinePasteWarning:|Warn Before Pasting One Line Ending in a Newline at Shell Prompt", "promptToConvertTabsToSpacesWhenPasting:", "mergeAllWindows:", "duplicateWindow:", "togglePinHotkeyWindow:",
     "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleBroadcastingToCurrentSession:",
@@ -223,10 +223,10 @@ mod tests {
 
     #[test]
     fn a_shared_chord_goes_to_the_command_that_works() {
-        // Show Clippings (Shift+Cmd+=) comes first in the menu but arrives in milestone 9;
-        // Make Text Bigger (Cmd++) works now and gets the chord.
+        // Show Clippings (Shift+Cmd+=) comes first in iTerm2's menu and works since
+        // milestone 9f, so it gets the chord; Make Text Bigger keeps Cmd+=.
         use crate::menus::ChordKey::Char;
-        assert_eq!(command_for_chord(&win(Char('='), true)).unwrap().selector, "biggerFont:");
+        assert_eq!(command_for_chord(&win(Char('='), true)).unwrap().selector, "toggleShowClippings:");
         assert_eq!(command_for_chord(&win(Char('='), false)).unwrap().selector, "biggerFont:");
     }
 

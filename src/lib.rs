@@ -80,6 +80,7 @@ pub mod screenterm;
 pub mod shell_history;
 pub mod snippets;
 pub mod clippings;
+pub mod clip_add_ui;
 pub mod user_actions;
 
 #[cfg(windows)]

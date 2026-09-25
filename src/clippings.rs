@@ -335,6 +335,50 @@ pub fn hit(l: &Layout, x: f32, y: f32) -> Hit {
     l.rows.iter().position(|r| r.contains(x, y)).map_or(Hit::Nothing, Hit::Row)
 }
 
+/// Text broken into lines of at most `cols` characters: at spaces where it can, else
+/// mid-word; its own newlines stay.
+pub fn wrap(text: &str, cols: usize) -> Vec<String> {
+    let cols = cols.max(1);
+    let mut out = Vec::new();
+    if text.is_empty() {
+        return out;
+    }
+    for para in text.split('\n') {
+        let mut line = String::new();
+        let mut n = 0;
+        for word in para.split(' ') {
+            let w = word.chars().count();
+            if w > cols {
+                if n > 0 {
+                    out.push(std::mem::take(&mut line));
+                }
+                let chars: Vec<char> = word.chars().collect();
+                let mut chunks = chars.chunks(cols).map(|c| c.iter().collect::<String>()).peekable();
+                while let Some(c) = chunks.next() {
+                    if chunks.peek().is_some() {
+                        out.push(c);
+                    } else {
+                        n = c.chars().count();
+                        line = c;
+                    }
+                }
+            } else if n == 0 && line.is_empty() {
+                line.push_str(word);
+                n = w;
+            } else if n + 1 + w <= cols {
+                line.push(' ');
+                line.push_str(word);
+                n += 1 + w;
+            } else {
+                out.push(std::mem::replace(&mut line, word.to_string()));
+                n = w;
+            }
+        }
+        out.push(line);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,5 +536,14 @@ mod tests {
         let l2 = layout(panel, &[(16.0, 30.0)], 0.0, 2.0);
         assert_eq!(l2.rows[0].h, 16.0 + 30.0 + 2.0 * 14.0);
         assert_eq!(l2.list.h, 400.0 - 56.0);
+    }
+
+    #[test]
+    fn details_wrap_to_the_panel() {
+        assert_eq!(wrap("one two three", 7), ["one two", "three"]);
+        assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("a\n\nb", 10), ["a", "", "b"]);
+        assert_eq!(wrap("", 10), Vec::<String>::new());
+        assert_eq!(wrap("x y", 0), ["x", "y"]);
     }
 }

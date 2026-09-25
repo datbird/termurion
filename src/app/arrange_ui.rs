@@ -62,6 +62,9 @@ impl App {
         if let (Some((key, text)), Some(t)) = (saved, v.as_table_mut()) {
             t.insert(key.into(), Value::String(text));
         }
+        if let Some(t) = v.as_table_mut() {
+            t.extend(self.clippings_table(id));
+        }
         // Session restoration: the host session, so a later launch can take the shell back.
         if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
             t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));
@@ -264,6 +267,7 @@ impl App {
                             p.screen.feed_inert(&format!("{text}\n"));
                         }
                     }
+                    self.restore_clippings(id, &session);
                     started.push(id);
                     id
                 }

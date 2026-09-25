@@ -55,6 +55,7 @@ mod paste_ui;
 mod history_ui;
 mod shell_history_ui;
 mod snippets_ui;
+mod clippings_ui;
 mod completion_ui;
 mod annotations_ui;
 mod activity_ui;
@@ -139,6 +140,8 @@ enum Drag {
     App { pane: PaneId, button: Button },
     /// Selecting text in a porthole (its frame when the drag began).
     Porthole { pane: PaneId, id: u32, frame: Rect },
+    /// A Clippings panel's width or one of its rows.
+    Clip { pane: PaneId, kind: clippings_ui::ClipDrag },
 }
 
 struct Gpu {
@@ -380,6 +383,11 @@ pub struct App {
     shell_history: Option<crate::shell_history::Store>,
     /// The snippets file (Edit > Snippets, Send Snippet, Settings > Shortcuts).
     snippets: crate::snippets::Store,
+    /// Each session's clippings and panel, the New Clipping sheet (for its pane), and the
+    /// panel button under the pointer.
+    clips: HashMap<PaneId, clippings_ui::ClipState>,
+    add_clip_win: Option<(crate::clip_add_ui::AddClipWindow, PaneId)>,
+    clip_hover: Option<(PaneId, crate::clippings::Button)>,
     shell_fed: HashMap<PaneId, shell_history_ui::Fed>,
     list_popup: Option<(crate::list_popup_ui::ListPopup, PaneId, shell_history_ui::PopupFor, Vec<String>)>,
     /// The completion list at a pane's cursor, and Auto Command Completion's typed text
@@ -629,6 +637,9 @@ pub fn run() {
         paste_asks: HashMap::new(),
         paste_history: None,
         snippets: snippets_ui::load_snippets(),
+        clips: HashMap::new(),
+        add_clip_win: None,
+        clip_hover: None,
         paste_history_win: None,
         advanced_paste_win: None,
         advanced_paste_request: None,
@@ -1025,6 +1036,10 @@ impl App {
         if self.note_win.as_ref().is_some_and(|(_, p, _)| *p == id) {
             self.note_win = None;
         }
+        self.clips.remove(&id);
+        if self.add_clip_win.as_ref().is_some_and(|(_, p)| *p == id) {
+            self.add_clip_win = None;
+        }
         if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
             let tab = &mut self.tabs[t];
             if tab.layout.remove(id) {
@@ -1298,7 +1313,7 @@ impl App {
         self.blink_on = true;
         self.last_blink = Instant::now();
         self.banners.clear("action");
-        if self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
+        if self.clip_key(ev) || self.shortcut_key(ev) || self.find_key(ev) || self.copy_mode_key(ev) || self.completion_key(ev) {
             return;
         }
         let base = keystroke::key_of(&ev.key_without_modifiers(), None);
@@ -1421,6 +1436,13 @@ impl App {
         if let Some(i) = tab_hit(&self.tab_rects, self.tabs.len(), x, y) {
             self.active = i;
             return self.redraw();
+        }
+        if button == MouseButton::Left && self.clip_press(x, y, event_loop) {
+            return;
+        }
+        // Other buttons in a panel do nothing (the terminal is not under it).
+        if self.clip_split_hit(x, y) {
+            return;
         }
         if button == MouseButton::Left && (self.info_bar_press(x, y, event_loop) || self.porthole_press(x, y) || self.block_press(x, y)) {
             return;
@@ -1561,6 +1583,7 @@ impl App {
         let alt_click = self.alt_click.take();
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Porthole { pane, id, .. } => self.porthole_release(pane, id),
+            Drag::Clip { pane, kind } => self.clip_release(pane, kind),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
@@ -1597,6 +1620,7 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        self.clip_move(x, y);
         self.update_hover();
         self.update_block_hover();
         // Hover timestamps show while the pointer is at a pane's right edge.
@@ -1610,6 +1634,7 @@ impl App {
                 let (pane, id, frame) = (*pane, *id, *frame);
                 self.porthole_drag(pane, id, frame, x, y);
             }
+            Drag::Clip { .. } => {}
             Drag::Select { pane } => {
                 let pane = *pane;
                 let Some(rect) = self.pane_rect(pane) else { return };
@@ -1665,7 +1690,7 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
             MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
-        if self.porthole_wheel(dx, dy) {
+        if self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
             return;
         }
         self.wheel_acc += dy;
@@ -1795,6 +1820,7 @@ impl App {
                     self.draw_inline_buttons(&mut frame, id, rect, cell);
                 }
             }
+            self.draw_clippings(&mut frame, cell);
             if tab.zoomed.is_none() {
                 scene::dividers(&mut frame, &tab.layout.dividers(area, GAP));
             }
@@ -2189,7 +2215,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

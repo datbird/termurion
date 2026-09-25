@@ -518,6 +518,7 @@ impl App {
             "openCommandHistory:" => self.open_command_history(event_loop),
             "openDirectories:" => self.open_recent_dirs(event_loop),
             "openAutocomplete:" => self.open_autocomplete(),
+            "toggleShowClippings:" => self.toggle_clippings(),
             "toggleAutoCommandHistory:" => {
                 let on = !self.globals.bool("AutoCommandHistory");
                 self.globals.set("AutoCommandHistory", toml::Value::Boolean(on));
@@ -706,8 +707,9 @@ impl App {
     }
 
     /// The rectangles the active tab shows (only the zoomed pane when one is zoomed).
+    /// Each shown pane's terminal rectangle (a Clippings panel takes the right of it).
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
-        visible_rects(&tab.layout, tab.zoomed, self.content_area(), GAP)
+        visible_rects(&tab.layout, tab.zoomed, self.content_area(), GAP).into_iter().map(|(id, r)| (id, self.clip_split(id, r).0)).collect()
     }
 }
 

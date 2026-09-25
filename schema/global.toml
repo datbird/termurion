@@ -1055,6 +1055,15 @@ default = 20
 help = "Number of autocomplete options to present.\nA value less than 100 is recommended."
 
 [[setting]]
+key = "clippingSeparator"
+tab = "Advanced"
+section = "Session"
+label = "Separator inserted between multiple clippings when sending or copying them."
+type = "string"
+default = "\\n--\\n"
+help = "Separator inserted between multiple clippings when sending or copying them.\nThe value should use Vim syntax, such as \\n for newline and \\e for escape."
+
+[[setting]]
 key = "NoSyncSuppressBroadcastInputWarning"
 tab = "Advanced"
 section = "Warnings"
