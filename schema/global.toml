@@ -467,3 +467,13 @@ label = "Profiles menu opens new windows"
 type = "bool"
 default = false
 help = "A profile picked in the Profiles menu opens in a new window, and with Alt held in a new tab (the reverse of the usual)."
+
+[[setting]]
+key = "WindowPlacement"
+tab = "Appearance"
+section = "Windows"
+label = "New window placement"
+type = "enum"
+default = 3
+choices = [ { value = 0, label = "Let Windows decide the position of new windows and use size from profile" }, { value = 1, label = "Smart Window Placement" }, { value = 2, label = "Remember the size and position of previously closed windows" }, { value = 3, label = "Remember the position of previously closed windows and use size from profile" } ]
+help = "Where a new window opens. Smart Window Placement puts new windows where the most free space is available. Saved frames are kept per profile."

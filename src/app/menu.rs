@@ -576,6 +576,7 @@ impl App {
         if !self.confirm_close(close_ui::Closing::Window) {
             return;
         }
+        self.save_all_window_frames();
         if let Some(h) = self.hwnd() {
             crate::notify::remove(h);
         }

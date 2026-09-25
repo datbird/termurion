@@ -208,6 +208,9 @@ pub struct App {
     last_window: Option<WindowId>,
     /// The current window's style (iTerm2's window type id).
     win_style: i64,
+    /// The current window's saved-frame slot: (profile guid, slot number).
+    win_slot: Option<(String, u32)>,
+    slots: crate::placement::Slots,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
@@ -424,6 +427,8 @@ pub fn run() {
         registry: Default::default(),
         last_window: None,
         win_style: 0,
+        win_slot: None,
+        slots: Default::default(),
         pending_windows: Vec::new(),
         local_host: aps_ui::local_host(),
         dropped: Vec::new(),
@@ -1653,6 +1658,11 @@ impl ApplicationHandler<UserEvent> for App {
         self.size_window();
         self.new_tab(None);
         self.install_menus();
+        self.place_window();
+        let style = self.store.default_profile().int("Window Type");
+        if style != crate::frames::NORMAL {
+            self.apply_window_style(style, false);
+        }
     }
 
     /// Runs the cursor blink when the focused pane's profile asks for it.

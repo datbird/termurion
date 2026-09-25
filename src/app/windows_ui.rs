@@ -28,6 +28,7 @@ pub(super) struct WinSlot {
     wheel_acc_x: f32,
     font_sig: String,
     win_style: i64,
+    win_slot: Option<(String, u32)>,
 }
 
 impl WinSlot {
@@ -52,6 +53,7 @@ impl WinSlot {
             wheel_acc_x: 0.0,
             font_sig: String::new(),
             win_style: 0,
+            win_slot: None,
         }
     }
 }
@@ -84,6 +86,7 @@ impl App {
         swap(&mut self.wheel_acc_x, &mut s.wheel_acc_x);
         swap(&mut self.font_sig, &mut s.font_sig);
         swap(&mut self.win_style, &mut s.win_style);
+        swap(&mut self.win_slot, &mut s.win_slot);
     }
 
     /// Makes a terminal window current. False for a window that is not one.
@@ -170,6 +173,7 @@ impl App {
             }
         }
         self.install_menus();
+        self.place_window();
         if style != crate::frames::NORMAL {
             self.apply_window_style(style, false);
         }
@@ -186,6 +190,7 @@ impl App {
     /// False when it was the last one.
     pub(super) fn drop_current_window(&mut self) -> bool {
         let Some(k) = self.windows.current() else { return false };
+        self.save_window_frame();
         self.registry.close(k);
         if let Some(h) = self.hwnd() {
             crate::winkeys::remove_window(h);
@@ -241,6 +246,7 @@ impl WinSlot {
             wheel_acc_x: 0.0,
             font_sig: String::new(),
             win_style: 0,
+            win_slot: None,
         }
     }
 }
@@ -493,5 +499,83 @@ impl App {
         }
         self.win_style = s;
         self.redraw();
+    }
+}
+
+const SAVED_FRAMES: &str = "SavedWindowFrames";
+
+fn to_rect(t: (f64, f64, f64, f64)) -> Rect {
+    Rect { x: t.0 as f32, y: t.1 as f32, w: t.2 as f32, h: t.3 as f32 }
+}
+
+impl App {
+    fn outer_rect(g: &Gpu) -> Rect {
+        let p = g.window.outer_position().unwrap_or_default();
+        let s = g.window.outer_size();
+        Rect { x: p.x as f32, y: p.y as f32, w: s.width as f32, h: s.height as f32 }
+    }
+
+    /// Where a new window goes: New window placement, the profile's saved slot, and its
+    /// Screen setting.
+    pub(super) fn place_window(&mut self) {
+        use crate::placement::{self, Rect as R};
+        let guid = self.tabs.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)).unwrap_or_else(|| self.store.default_guid.clone());
+        let slot = self.slots.take(&guid);
+        self.win_slot = Some((guid.clone(), slot));
+        let monitors: Vec<R> = super::requests_ui::work_areas().into_iter().map(to_rect).collect();
+        let Some(g) = self.gpu.as_ref() else { return };
+        let current = Self::outer_rect(g);
+        let others: Vec<R> = self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().map(Self::outer_rect)).collect();
+        let inside = |r: &R, x: f32, y: f32| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+        let window_monitor = monitors.iter().position(|m| inside(m, current.x + current.w / 2.0, current.y + current.h / 2.0)).unwrap_or(0);
+        let mut pt = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) };
+        let cursor_monitor = monitors.iter().position(|m| inside(m, pt.x as f32, pt.y as f32)).unwrap_or(0);
+        let profile = self.store.get(&guid).unwrap_or_else(|| self.store.default_profile());
+        let pref = profile.get("Screen").and_then(|v| v.as_integer()).unwrap_or(-1);
+        let work = placement::screen_for(pref, &monitors, window_monitor, cursor_monitor);
+        let saved = self.globals.table(SAVED_FRAMES).get(&placement::slot_key(&guid, slot)).and_then(|v| v.as_array()).and_then(|a| {
+            let n: Vec<f32> = a.iter().filter_map(|x| x.as_float().or_else(|| x.as_integer().map(|i| i as f64))).map(|f| f as f32).collect();
+            (n.len() == 4).then(|| R { x: n[0], y: n[1], w: n[2], h: n[3] })
+        });
+        let policy = self.globals.get("WindowPlacement").and_then(|v| v.as_integer()).unwrap_or(placement::POSITION);
+        let count = self.registry.order().len();
+        let target = placement::place(policy, saved, count, work, &others, current, &monitors).or_else(|| {
+            // A Screen preference moves even a window Windows placed.
+            (pref != -1).then(|| placement::move_to(current, monitors.get(window_monitor).copied().unwrap_or(work), work))
+        });
+        let Some(r) = target else { return };
+        let w = &g.window;
+        w.set_outer_position(PhysicalPosition::new(r.x.round() as i32, r.y.round() as i32));
+        if (r.w, r.h) != (current.w, current.h) {
+            let (outer, inner) = (w.outer_size(), w.inner_size());
+            let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
+            let _ = w.request_inner_size(PhysicalSize::new((r.w as u32).saturating_sub(dw).max(1), (r.h as u32).saturating_sub(dh).max(1)));
+        }
+    }
+
+    /// Keeps the current window's frame for its profile slot (when it closes, or at quit).
+    pub(super) fn save_window_frame(&mut self) {
+        let Some((guid, slot)) = self.win_slot.take() else { return };
+        self.slots.give(&guid, slot);
+        let Some(g) = self.gpu.as_ref() else { return };
+        if g.window.is_minimized() == Some(true) || g.window.fullscreen().is_some() {
+            return;
+        }
+        let r = Self::outer_rect(g);
+        let mut t = self.globals.table(SAVED_FRAMES);
+        t.insert(crate::placement::slot_key(&guid, slot), toml::Value::Array([r.x, r.y, r.w, r.h].iter().map(|v| toml::Value::Float(*v as f64)).collect()));
+        self.globals.set(SAVED_FRAMES, toml::Value::Table(t));
+        self.save_globals();
+    }
+
+    /// Quit: every window keeps its frame.
+    pub(super) fn save_all_window_frames(&mut self) {
+        let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_of_key(k)).collect();
+        for id in ids {
+            if self.enter(id) {
+                self.save_window_frame();
+            }
+        }
     }
 }

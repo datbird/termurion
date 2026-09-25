@@ -227,7 +227,7 @@ fn primary_height() -> f64 {
 }
 
 /// Each monitor's work area (without the taskbar) in virtual-screen pixels.
-fn work_areas() -> Vec<(f64, f64, f64, f64)> {
+pub(super) fn work_areas() -> Vec<(f64, f64, f64, f64)> {
     use windows_sys::Win32::Foundation::{LPARAM, RECT};
     use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
     unsafe extern "system" fn each(m: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> windows_sys::Win32::Foundation::BOOL {
