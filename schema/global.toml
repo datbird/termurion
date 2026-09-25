@@ -159,6 +159,15 @@ default = true
 help = "Win-click opens the clicked path or URL (Semantic History, milestone 4)."
 
 [[setting]]
+key = "DoubleClickPerformsSmartSelection"
+tab = "Pointer"
+section = "Selection"
+label = "Double-click performs smart selection"
+type = "bool"
+default = false
+help = "A double click makes a Smart Selection and a quadruple click selects a word, the other way round from the default. iTerm2 keeps this under General > Selection."
+
+[[setting]]
 key = "PassOnControlClick"
 tab = "Pointer"
 section = "General"

@@ -630,6 +630,11 @@ pub fn pointer_page(ui: &mut egui::Ui, g: &mut Globals, st: &mut KeysState, prof
             changed |= global_control(ui, g, s, s.key != "CommandSelection");
         }
         ui.add_space(8.0);
+        ui.strong("Selection");
+        for s in globals_in("Selection").into_iter().filter(|s| s.tab == "Pointer") {
+            changed |= global_control(ui, g, s, true);
+        }
+        ui.add_space(8.0);
         ui.strong("Bindings");
         let mut map = g.table("PointerActions");
         match table(ui, "pointer", &pointer_rows(&map), &mut st.pointer_selected) {

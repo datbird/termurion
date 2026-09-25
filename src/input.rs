@@ -16,16 +16,38 @@ pub struct Clicks {
 }
 
 impl Clicks {
-    /// Counts a press: 1, 2 or 3 for a single, double or triple click on one cell.
+    /// Counts a press: 1 to 4 for a single to a quadruple click on one cell.
     pub fn press(&mut self, now: Instant, col: u32, row: u32) -> u8 {
         self.count = match self.last {
-            Some((t, c, r)) if now.duration_since(t) <= MULTI_CLICK && (c, r) == (col, row) && self.count < 3 => {
+            Some((t, c, r)) if now.duration_since(t) <= MULTI_CLICK && (c, r) == (col, row) && self.count < 4 => {
                 self.count + 1
             }
             _ => 1,
         };
         self.last = Some((now, col, row));
         self.count
+    }
+}
+
+/// What a left press selects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    Type(SelectionType),
+    /// Smart Selection's best rule match, else a word.
+    Smart,
+}
+
+/// iTerm2's clicks: double selects a word, triple a line, quadruple a Smart Selection.
+/// Double-click performs smart selection swaps the double and quadruple clicks.
+pub fn click_pick(clicks: u8, mods: Mods, double_is_smart: bool) -> Pick {
+    if mods.ctrl && mods.alt {
+        return Pick::Type(SelectionType::Block);
+    }
+    match (clicks, double_is_smart) {
+        (2, true) | (4, false) => Pick::Smart,
+        (2, false) | (4, true) => Pick::Type(SelectionType::Semantic),
+        (3, _) => Pick::Type(SelectionType::Lines),
+        _ => Pick::Type(SelectionType::Simple),
     }
 }
 
@@ -79,16 +101,33 @@ mod tests {
     const NONE: Mods = Mods { shift: false, alt: false, ctrl: false, cmd: false };
 
     #[test]
-    fn clicks_count_up_to_three() {
+    fn clicks_count_up_to_four() {
         let mut c = Clicks::default();
         let t = Instant::now();
         let ms = Duration::from_millis;
         assert_eq!(c.press(t, 1, 1), 1);
         assert_eq!(c.press(t + ms(100), 1, 1), 2);
         assert_eq!(c.press(t + ms(200), 1, 1), 3);
-        assert_eq!(c.press(t + ms(300), 1, 1), 1);
+        assert_eq!(c.press(t + ms(300), 1, 1), 4);
+        assert_eq!(c.press(t + ms(350), 1, 1), 1);
         assert_eq!(c.press(t + ms(400), 2, 1), 1);
         assert_eq!(c.press(t + ms(1500), 2, 1), 1);
+    }
+
+    #[test]
+    fn quad_click_is_smart_selection() {
+        assert_eq!(click_pick(4, NONE, false), Pick::Smart);
+        assert_eq!(click_pick(2, NONE, false), Pick::Type(SelectionType::Semantic));
+        assert_eq!(click_pick(3, NONE, false), Pick::Type(SelectionType::Lines));
+        assert_eq!(click_pick(1, NONE, false), Pick::Type(SelectionType::Simple));
+    }
+
+    #[test]
+    fn double_click_setting_swaps_word_and_smart() {
+        assert_eq!(click_pick(2, NONE, true), Pick::Smart);
+        assert_eq!(click_pick(4, NONE, true), Pick::Type(SelectionType::Semantic));
+        let block = Mods { ctrl: true, alt: true, shift: false, cmd: false };
+        assert_eq!(click_pick(2, block, true), Pick::Type(SelectionType::Block));
     }
 
     #[test]

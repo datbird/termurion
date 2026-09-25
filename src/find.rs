@@ -66,6 +66,25 @@ pub struct Logical {
 }
 
 impl Logical {
+    /// Lines joined into one with `sep` between them.
+    pub fn join(lines: &[Logical], sep: &str) -> Logical {
+        let mut out = Logical { text: String::new(), cells: Vec::new() };
+        for (i, l) in lines.iter().enumerate() {
+            if i > 0 {
+                out.text.push_str(sep);
+            }
+            let base = out.text.len();
+            out.cells.extend(l.cells.iter().map(|(o, p)| (o + base, *p)));
+            out.text.push_str(&l.text);
+        }
+        out
+    }
+
+    /// The byte offset of the character in cell `at`.
+    pub fn offset_of(&self, at: Pos) -> Option<usize> {
+        self.cells.iter().find(|(_, p)| *p == at).map(|(o, _)| *o)
+    }
+
     /// The cell of the character at byte `offset`, or of the last one before it.
     pub fn pos_before(&self, offset: usize) -> Pos {
         let i = self.cells.partition_point(|(o, _)| *o <= offset);
@@ -77,6 +96,56 @@ impl Logical {
 /// spacers left out, trailing spaces trimmed.
 pub fn logical_lines(screen: &Screen) -> Vec<Logical> {
     use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    logical_between(screen, -(grid.history_size() as i32), grid.screen_lines() as i32 - 1)
+}
+
+fn wraps(screen: &Screen, line: i32) -> bool {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    let grid = screen.term().grid();
+    grid[Line(line)][Column(grid.columns() - 1)].flags.contains(alacritty_terminal::term::cell::Flags::WRAPLINE)
+}
+
+/// The logical line holding buffer row `row`, with up to `radius` more each way, and the
+/// index of the one holding `row`.
+pub fn logical_lines_around(screen: &Screen, row: usize, radius: usize) -> (Vec<Logical>, usize) {
+    use alacritty_terminal::grid::Dimensions;
+    let grid = screen.term().grid();
+    let (top, bottom) = (-(grid.history_size() as i32), grid.screen_lines() as i32 - 1);
+    let line = (row as i32 + top).clamp(top, bottom);
+    let start_of = |mut l: i32| {
+        while l > top && wraps(screen, l - 1) {
+            l -= 1;
+        }
+        l
+    };
+    let end_of = |mut l: i32| {
+        while l < bottom && wraps(screen, l) {
+            l += 1;
+        }
+        l
+    };
+    let own = start_of(line);
+    let mut first = own;
+    let mut above = 0;
+    while above < radius && first > top {
+        first = start_of(first - 1);
+        above += 1;
+    }
+    let mut last = end_of(line);
+    for _ in 0..radius {
+        if last >= bottom {
+            break;
+        }
+        last = end_of(last + 1);
+    }
+    (logical_between(screen, first, last), above)
+}
+
+/// Logical lines over grid lines `top..=bottom`, which must start a logical line.
+fn logical_between(screen: &Screen, top: i32, bottom: i32) -> Vec<Logical> {
+    use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::cell::Flags;
     let grid = screen.term().grid();
@@ -84,7 +153,7 @@ pub fn logical_lines(screen: &Screen) -> Vec<Logical> {
     let cols = grid.columns();
     let mut out = Vec::new();
     let mut cur = Logical { text: String::new(), cells: Vec::new() };
-    for l in -history..grid.screen_lines() as i32 {
+    for l in top..=bottom {
         let row = &grid[Line(l)];
         let r = (l + history) as usize;
         for c in 0..cols {
@@ -98,15 +167,12 @@ pub fn logical_lines(screen: &Screen) -> Vec<Logical> {
                 cur.text.push(*z);
             }
         }
-        if !row[Column(cols - 1)].flags.contains(Flags::WRAPLINE) {
+        if !row[Column(cols - 1)].flags.contains(Flags::WRAPLINE) || l == bottom {
             let kept = cur.text.trim_end_matches(' ').len();
             cur.text.truncate(kept);
             cur.cells.retain(|(o, _)| *o < kept);
             out.push(std::mem::replace(&mut cur, Logical { text: String::new(), cells: Vec::new() }));
         }
-    }
-    if !cur.cells.is_empty() {
-        out.push(cur);
     }
     out
 }
@@ -313,5 +379,24 @@ mod tests {
         }
         assert_eq!(Mode::from_i64(9), Mode::SmartCase);
         assert_eq!(Mode::SmartCase.label(), "Smart Case");
+    }
+
+    #[test]
+    fn lines_around_a_row_follow_wrapping() {
+        // 20 columns: the second line wraps onto two rows.
+        let s = screen("l0\nl1\n..................wrap\nl3\nl4\nl5");
+        let (lines, at) = logical_lines_around(&s, 3, 1);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["l1", "..................wrap", "l3"]);
+        assert_eq!(at, 1);
+        let joined = Logical::join(&lines, "\n");
+        assert_eq!(joined.text, "l1\n..................wrap\nl3");
+        let o = joined.offset_of(at_pos(3, 1)).unwrap();
+        assert_eq!(&joined.text[o..o + 1], "p");
+        assert_eq!(joined.pos_before(o), at_pos(3, 1));
+    }
+
+    fn at_pos(row: usize, col: usize) -> Pos {
+        Pos { row, col }
     }
 }

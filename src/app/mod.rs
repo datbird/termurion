@@ -52,6 +52,7 @@ const SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 mod actions;
 mod find_ui;
+mod semantic_ui;
 mod marks_ui;
 mod menu;
 
@@ -905,9 +906,21 @@ impl App {
             0 => {
                 let count = self.clicks.press(Instant::now(), col, row);
                 let point = self.grid_point(id, col, row);
-                let ty = input::selection_type(count, mods);
-                self.panes.get_mut(&id).unwrap().screen.term_mut().selection = Some(Selection::new(ty, point, side));
-                self.drag = Drag::Select { pane: id };
+                let pick = input::click_pick(count, mods, self.globals.bool("DoubleClickPerformsSmartSelection"));
+                let smart = pick == input::Pick::Smart && self.smart_select(id, point, false).is_some();
+                if !smart {
+                    let ty = match pick {
+                        input::Pick::Type(t) => t,
+                        input::Pick::Smart => input::SelectionType::Semantic,
+                    };
+                    self.panes.get_mut(&id).unwrap().screen.term_mut().selection = Some(Selection::new(ty, point, side));
+                }
+                if smart {
+                    // iTerm2 copies a selection as soon as it is made.
+                    self.copy_selection(id);
+                }
+                // A Smart Selection is whole; moving the pointer does not reshape it.
+                self.drag = if smart { Drag::None } else { Drag::Select { pane: id } };
                 let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
                 self.alt_click = (count == 1 && alt_only).then_some((id, (col, row)));
             }

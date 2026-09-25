@@ -146,12 +146,12 @@ impl FindState {
 /// Menu item ids of the find bar's mode menu.
 const MODE_ID: &str = "tandem.findmode.";
 
-fn to_point(screen: &crate::screen::Screen, p: Pos) -> Point {
+pub(super) fn to_point(screen: &crate::screen::Screen, p: Pos) -> Point {
     let history = screen.term().grid().history_size() as i32;
     Point::new(Line(p.row as i32 - history), Column(p.col))
 }
 
-fn to_pos(screen: &crate::screen::Screen, p: Point) -> Pos {
+pub(super) fn to_pos(screen: &crate::screen::Screen, p: Point) -> Pos {
     let history = screen.term().grid().history_size() as i32;
     Pos { row: (p.line.0 + history).max(0) as usize, col: p.column.0 }
 }
@@ -164,7 +164,7 @@ fn view_bottom(screen: &crate::screen::Screen) -> Pos {
 }
 
 /// Selects `m` and scrolls it into the middle of the view when it is off screen.
-fn reveal(pane: &mut crate::pane::Pane, m: &Match) {
+pub(super) fn reveal(pane: &mut crate::pane::Pane, m: &Match) {
     let (a, b) = (to_point(&pane.screen, m.start), to_point(&pane.screen, m.end));
     let mut sel = Selection::new(SelectionType::Simple, a, Side::Left);
     sel.update(b, Side::Right);
