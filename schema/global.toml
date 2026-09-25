@@ -168,6 +168,15 @@ default = false
 help = "A double click makes a Smart Selection and a quadruple click selects a word, the other way round from the default. iTerm2 keeps this under General > Selection."
 
 [[setting]]
+key = "Selection Respects Soft Boundaries"
+tab = "Pointer"
+section = "Selection"
+label = "Selection respects soft boundaries"
+type = "bool"
+default = false
+help = "Double-click and Smart Selection stop at vertical pane dividers drawn by tmux or vim (Edit > Selection Respects Soft Boundaries)."
+
+[[setting]]
 key = "PassOnControlClick"
 tab = "Pointer"
 section = "General"

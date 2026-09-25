@@ -35,7 +35,9 @@ pub const DONE: &[&str] = &[
     "movePaneDividerRight:", "arrangeSplitPanesEvenly:", "restartSession:", "duplicateSession:", "showHelp:",
     "arrangeInFront:", "performFindPanelAction:|Find...", "performFindPanelAction:|Use Selection for Find",
     "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "zoomOut:", "findUrls:",
-    "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openSelection:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openSelection:",
+    "replaceSelectionWithPrettyPrintedJSON:", "replaceSelectionWithBase64Encoded:", "replaceSelectionWithBase64Decoded:",
+    "clearToStartOfSelection:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
 ];
 
 /// Commands that work with a known difference for now.
@@ -45,6 +47,7 @@ const PARTIAL: &[(&str, &str)] = &[
     ("biggerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("smallerFont:", "Changes every pane, since all panes share one font until per-pane fonts arrive."),
     ("filter:", "Shows the matching lines without their colors."),
+    ("toggleSelectionRespectsSoftBoundaries:", "Double-click and Smart Selection stop at pane dividers; a drag still crosses them."),
     ("zoomOnSelection:", "Shows the selected lines without their colors."),
     ("performFindPanelAction:|Select Matches", "Selects from the first match to the last and copies every match, one per line, since a selection is one range."),
 ];
@@ -67,7 +70,9 @@ fn owner(item: &Item) -> u8 {
     let path = item.id();
     let has = |needle: &str| path.contains(needle);
     let sel = |needle: &str| s.contains(needle);
-    if has("tmux") || sel("Tmux") {
+    if sel("renderSelection") {
+        5
+    } else if has("tmux") || sel("Tmux") {
         8
     } else if has("Scripts") || sel("Script") || sel("REPL") || sel("PythonRuntime") || sel("Dependency") {
         11

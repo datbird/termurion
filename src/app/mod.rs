@@ -54,6 +54,7 @@ mod actions;
 mod find_ui;
 mod labels_ui;
 mod semantic_ui;
+mod seltools_ui;
 mod marks_ui;
 mod menu;
 
@@ -945,6 +946,9 @@ impl App {
                         input::Pick::Smart => input::SelectionType::Semantic,
                     };
                     self.panes.get_mut(&id).unwrap().screen.term_mut().selection = Some(Selection::new(ty, point, side));
+                }
+                if smart || pick == input::Pick::Type(input::SelectionType::Semantic) {
+                    self.clip_selection_to_dividers(id, point);
                 }
                 if smart {
                     // iTerm2 copies a selection as soon as it is made.

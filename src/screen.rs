@@ -190,34 +190,35 @@ impl Screen {
         self.term.primary_grid_mut().splice(Line(first), Line(last), with)
     }
 
-    /// Rows holding `lines` as plain text, one row per line, cut at the width.
+    /// Rows holding `lines` as plain text; a line longer than the width wraps onto more rows.
     pub fn text_rows(&self, lines: &[String]) -> Vec<Row<Cell>> {
         use alacritty_terminal::term::cell::Flags;
         use unicode_width::UnicodeWidthChar;
         let cols = self.term.columns();
-        lines
-            .iter()
-            .map(|l| {
-                let mut row: Row<Cell> = Row::new(cols);
-                let mut c = 0;
-                for ch in l.chars() {
-                    let w = ch.width().unwrap_or(0);
-                    if w == 0 || c + w > cols {
-                        if c + w > cols {
-                            break;
-                        }
-                        continue;
-                    }
-                    row[Column(c)].c = ch;
-                    if w == 2 {
-                        row[Column(c)].flags.insert(Flags::WIDE_CHAR);
-                        row[Column(c + 1)].flags.insert(Flags::WIDE_CHAR_SPACER);
-                    }
-                    c += w;
+        let mut out = Vec::new();
+        for l in lines {
+            let mut row: Row<Cell> = Row::new(cols);
+            let mut c = 0;
+            for ch in l.chars() {
+                let w = ch.width().unwrap_or(0);
+                if w == 0 || w > cols {
+                    continue;
                 }
-                row
-            })
-            .collect()
+                if c + w > cols {
+                    row[Column(cols - 1)].flags.insert(Flags::WRAPLINE);
+                    out.push(std::mem::replace(&mut row, Row::new(cols)));
+                    c = 0;
+                }
+                row[Column(c)].c = ch;
+                if w == 2 {
+                    row[Column(c)].flags.insert(Flags::WIDE_CHAR);
+                    row[Column(c + 1)].flags.insert(Flags::WIDE_CHAR_SPACER);
+                }
+                c += w;
+            }
+            out.push(row);
+        }
+        out
     }
 
     pub(crate) fn feed_raw(&mut self, bytes: &[u8]) -> Vec<u8> {
@@ -601,5 +602,16 @@ mod tests {
         s.splice_rows(line, line, removed);
         assert_eq!(s.all_text().trim_start_matches('\n'), "l0\nl1\nl2\nl3\nl4\nprompt\n");
         assert_eq!(s.line_text(s.term().grid().cursor.point.line.0), "prompt");
+    }
+
+    #[test]
+    fn text_rows_wrap_long_lines() {
+        let s = Screen::new(4, 3);
+        let rows = s.text_rows(&["abcdefg".to_string(), "h".to_string()]);
+        let text = |r: &Row<Cell>| (0..4).map(|c| r[Column(c)].c).collect::<String>();
+        assert_eq!(rows.iter().map(text).collect::<Vec<_>>(), vec!["abcd", "efg ", "h   "]);
+        use alacritty_terminal::term::cell::Flags;
+        assert!(rows[0][Column(3)].flags.contains(Flags::WRAPLINE));
+        assert!(!rows[1][Column(3)].flags.contains(Flags::WRAPLINE));
     }
 }

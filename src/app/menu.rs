@@ -70,7 +70,7 @@ impl App {
             } else {
                 let enabled = !matches!(commands::status(item), Status::Later(_));
                 let parent = &item.path[..item.path.len() - 1];
-                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector);
+                let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str());
                 if alert_check || (parent.last().is_some_and(|p| p == "Terminal State") && TOGGLES.iter().any(|t| t.0 == item.label())) {
                     let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, None);
                     checks.insert(item.label().to_string(), c.clone());
@@ -157,6 +157,12 @@ impl App {
         }
         let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
         let action = self.globals.string("Mark Alert Action");
+        for selector in super::seltools_ui::CHECKED {
+            let Some(item) = menus::items().iter().find(|i| i.selector == *selector) else { continue };
+            if let Some(c) = bar.checks.get(item.label()) {
+                c.set_checked(self.is_checked(selector));
+            }
+        }
         for (selector, value) in super::marks_ui::CHECKS {
             let Some(item) = menus::items().iter().find(|i| i.selector == selector) else { continue };
             let on = match selector {
@@ -201,7 +207,7 @@ impl App {
         }
         let label = item.label();
         let window = self.gpu.as_ref().map(|g| g.window.clone());
-        if self.run_find_command(&item.selector, label) {
+        if self.run_find_command(&item.selector, label) || self.run_seltools_command(&item.selector) {
             return self.relayout();
         }
         // Commands that change the terminal itself act on the pane's own screen.

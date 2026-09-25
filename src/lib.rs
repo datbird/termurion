@@ -14,6 +14,7 @@ pub mod find;
 pub mod smartsel;
 pub mod semantic;
 pub mod synthetic;
+pub mod seltools;
 pub mod commands;
 pub mod menus;
 pub mod import;
