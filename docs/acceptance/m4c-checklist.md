@@ -12,7 +12,7 @@ Cmd is the Win key and Option is Alt. Mark each line pass or fail.
 | 5 | `echo {"a":1,"b":[2,3]}`, triple-click that output line, Edit > Replace Selection > Replace with Pretty-Printed JSON: the line becomes indented JSON. Nothing is typed into the shell. Base 64 encode then decode brings the text back. | |
 | 6 | Select several output lines, Edit > Fold Selected Lines (Win+Shift+L): they become one grey italic line like `first …5 lines… last`. Click it: the lines come back. Fold again, right-click the fold: Unfold. | |
 | 7 | Run a few commands with shell integration, then Edit > Fold All: everything above the prompt folds into one line with the time and the first and last commands. | |
-| 8 | Select a line in the middle, Edit > Clear to Start of Selection (Win+L): everything above it is gone, the rest stays. | |
+| 8 | Select a line in the middle, Edit > Clear to Start of Selection (from the menu; Win+L stays with Windows as Lock): everything above it is gone, the rest stays. | |
 | 9 | Edit > Marks and Annotations > Add Annotation at Cursor (Win+Alt+M): a small window opens; type a note. The text at the cursor gets a yellow underline and the note shows beside it. Click the underlined text: the note opens again. Delete asks "Really remove annotation?". | |
 | 10 | Select text, Annotate Selection. Then Next Annotation and Previous Annotation jump between notes. View > Show Annotations (Win+\\) hides all notes (underlines stay), and again shows them. | |
 | 11 | In WSL: `printf '\e]1337;AddAnnotation=5|hello\a'; echo world`: `world` gets an annotation reading hello. | |
