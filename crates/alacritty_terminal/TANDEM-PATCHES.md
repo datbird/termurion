@@ -34,3 +34,13 @@ test data) is left out. Changes:
    ANSI color), as iTerm2 does, so apps know sixel works.
 
 To update alacritty_terminal, copy the new version here and apply these changes again.
+
+## 9. modifyOtherKeys, and the kitty stack's depth cap
+
+`term/mod.rs`: `Term.modify_other_keys` (0, 1, 2) is set by `CSI > 4 ; n m` and reported for
+`CSI ? 4 m` as `CSI > 4 ; n m`; RIS clears it. `Config.kitty_keyboard` now means "programs may
+change how keys are reported" (Tandem's profile setting Allow modifyOtherKeys) and gates both
+kitty flags and modifyOtherKeys. Upstream's `push_keyboard_mode` removed the oldest entry from
+the title stack when the keyboard stack was full, which panics on an empty title stack; it now
+removes from the keyboard stack. `Term::clear_keyboard_modes` drops every program request
+(Session > Terminal State > Reset).

@@ -55,6 +55,7 @@ mod annotations_ui;
 mod copymode_ui;
 mod files_ui;
 mod find_ui;
+mod keyproto_ui;
 mod fold_ui;
 mod labels_ui;
 mod semantic_ui;
@@ -180,6 +181,10 @@ pub struct App {
     panes: HashMap<PaneId, Pane>,
     next_id: PaneId,
     mods: Mods,
+    /// Keys whose press went to the program, so their release may too.
+    sent_keys: std::collections::HashSet<PhysicalKey>,
+    /// The physical key of the press being routed now.
+    typing: Option<PhysicalKey>,
     cursor: (f32, f32),
     drag: Drag,
     clicks: Clicks,
@@ -305,6 +310,8 @@ pub fn run() {
         panes: HashMap::new(),
         next_id: 1,
         mods: Mods::default(),
+        sent_keys: std::collections::HashSet::new(),
+        typing: None,
         cursor: (0.0, 0.0),
         drag: Drag::None,
         clicks: Clicks::default(),
@@ -795,7 +802,7 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
-        if ev.state != ElementState::Pressed {
+        if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
             return;
         }
         // Typing shows the cursor at once and restarts the blink.
@@ -821,8 +828,10 @@ impl App {
                 _ => None,
             }
         };
-        let fallback = self.key_bytes(&key, base.as_ref(), ev.text.as_deref(), keypad);
+        let fallback = self.protocol_bytes(ev, &key, base.as_ref()).or_else(|| self.key_bytes(&key, base.as_ref(), ev.text.as_deref(), keypad));
+        self.typing = Some(ev.physical_key);
         self.dispatch(keyroute::Press { stroke, digit }, fallback, Some((key, base)), None, event_loop);
+        self.typing = None;
     }
 
     /// Runs a key press: the Leader, number shortcuts, key mappings, then the terminal
@@ -901,6 +910,9 @@ impl App {
         if let Some(bytes) = bytes {
             pane.scroll(Scroll::Bottom);
             pane.input(&bytes);
+            if let Some(k) = self.typing.take() {
+                self.sent_keys.insert(k);
+            }
         }
     }
 

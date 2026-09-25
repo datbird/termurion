@@ -21,7 +21,7 @@ use crate::term::cell::{Cell, Flags, LineLength};
 use crate::term::color::Colors;
 use crate::vi_mode::{ViModeCursor, ViMotion};
 use crate::vte::ansi::{
-    self, Attr, CharsetIndex, Color, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
+    self, Attr, CharsetIndex, Color, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes, ModifyOtherKeys,
     KeyboardModesApplyBehavior, NamedColor, NamedMode, NamedPrivateMode, PrivateMode, Rgb,
     StandardCharset,
 };
@@ -322,6 +322,9 @@ pub struct Term<T> {
     /// The stack for the keyboard modes.
     keyboard_mode_stack: Vec<KeyboardModes>,
 
+    /// Tandem: xterm's modifyOtherKeys level (0, 1, or 2), set when `kitty_keyboard` allows.
+    pub modify_other_keys: u8,
+
     /// Currently inactive keyboard mode stack.
     inactive_keyboard_mode_stack: Vec<KeyboardModes>,
 
@@ -436,6 +439,7 @@ impl<T> Term<T> {
             tabs,
             inactive_keyboard_mode_stack: Default::default(),
             keyboard_mode_stack: Default::default(),
+            modify_other_keys: 0,
             active_charset: Default::default(),
             vi_mode_cursor: Default::default(),
             cursor_style: Default::default(),
@@ -646,6 +650,15 @@ impl<T> Term<T> {
     }
 
     /// Access to the raw grid data structure.
+    /// Tandem: drops every program key reporting request (kitty flags on both screens,
+    /// modifyOtherKeys).
+    pub fn clear_keyboard_modes(&mut self) {
+        self.keyboard_mode_stack.clear();
+        self.inactive_keyboard_mode_stack.clear();
+        self.modify_other_keys = 0;
+        self.mode &= !TermMode::KITTY_KEYBOARD_PROTOCOL;
+    }
+
     /// Tandem patch: the main screen's grid, also while the alternate screen is up.
     pub fn primary_grid(&self) -> &Grid<Cell> {
         if self.mode.contains(TermMode::ALT_SCREEN) { &self.inactive_grid } else { &self.grid }
@@ -1313,7 +1326,8 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Pushing `{mode:?}` keyboard mode into the stack");
 
         if self.keyboard_mode_stack.len() >= KEYBOARD_MODE_STACK_MAX_DEPTH {
-            let removed = self.title_stack.remove(0);
+            // Tandem: upstream removed from the title stack here (a panic when it is empty).
+            let removed = self.keyboard_mode_stack.remove(0);
             trace!(
                 "Removing '{removed:?}' from bottom of keyboard mode stack that exceeds its \
                  maximum depth"
@@ -1346,6 +1360,24 @@ impl<T: EventListener> Handler for Term<T> {
         }
 
         self.set_keyboard_mode(mode.into(), apply);
+    }
+
+    #[inline]
+    fn set_modify_other_keys(&mut self, mode: ModifyOtherKeys) {
+        if !self.config.kitty_keyboard {
+            return;
+        }
+        self.modify_other_keys = match mode {
+            ModifyOtherKeys::Reset => 0,
+            ModifyOtherKeys::EnableExceptWellDefined => 1,
+            ModifyOtherKeys::EnableAll => 2,
+        };
+    }
+
+    #[inline]
+    fn report_modify_other_keys(&mut self) {
+        let text = format!("\x1b[>4;{}m", self.modify_other_keys);
+        self.event_proxy.send_event(Event::PtyWrite(text));
     }
 
     #[inline]
@@ -1868,6 +1900,7 @@ impl<T: EventListener> Handler for Term<T> {
         self.vi_mode_cursor = Default::default();
         self.keyboard_mode_stack = Default::default();
         self.inactive_keyboard_mode_stack = Default::default();
+        self.modify_other_keys = 0;
 
         // Preserve vi mode across resets.
         self.mode &= TermMode::VI;

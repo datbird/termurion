@@ -27,6 +27,26 @@ const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
     ("Application Keypad", "\x1b=", "\x1b>", TermMode::APP_KEYPAD),
 ];
 
+/// Session > Terminal State's key reporting radio group.
+const KEY_MODES: [(&str, crate::keyproto::KeyMode); 5] = [
+    ("Standard Key Reporting Mode", crate::keyproto::KeyMode::Standard),
+    ("modifyOtherKeys Mode 1", crate::keyproto::KeyMode::Mok1),
+    ("modifyOtherKeys Mode 2", crate::keyproto::KeyMode::Mok2),
+    ("CSI u Mode", crate::keyproto::KeyMode::CsiU),
+    ("Raw Key Reporting Mode", crate::keyproto::KeyMode::Raw),
+];
+
+/// Session > Terminal State's kitty keyboard flags.
+const KITTY_FLAGS: [(&str, u8); 5] = [
+    ("Disambiguate Escape", crate::keyproto::DISAMBIGUATE),
+    ("Report All Event Types", crate::keyproto::EVENT_TYPES),
+    ("Report Alternate Keys", crate::keyproto::ALTERNATE_KEYS),
+    ("Report All Keys as Escape Codes", crate::keyproto::ALL_AS_ESCAPES),
+    ("Report Associated Text", crate::keyproto::ASSOCIATED_TEXT),
+];
+
+/// Session > Terminal State > Emulation Level.
+const LEVELS: [(&str, u16); 5] = [("VT100", 100), ("VT200", 200), ("VT300", 300), ("VT400", 400), ("VT500", 500)];
 
 /// How far one Move Divider command moves a divider, as a share of its split.
 const NUDGE: f32 = 0.05;
@@ -76,7 +96,8 @@ impl App {
                 let enabled = !matches!(commands::status(item), Status::Later(_));
                 let parent = &item.path[..item.path.len() - 1];
                 let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str());
-                if alert_check || (parent.last().is_some_and(|p| p == "Terminal State") && TOGGLES.iter().any(|t| t.0 == item.label())) {
+                let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
+                if alert_check || state_check {
                     let c = CheckMenuItem::with_id(item.id(), menu_text(item), enabled, false, None);
                     checks.insert(item.label().to_string(), c.clone());
                     (parent, Box::new(c))
@@ -161,6 +182,23 @@ impl App {
                 c.set_checked(mode.is_some_and(|m| m.intersects(flag)));
             }
         }
+        let screen = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).map(|p| p.own());
+        let kb = screen.map(|s| s.keyboard());
+        let check = |label: &str, on: bool| {
+            if let Some(c) = bar.checks.get(label) {
+                c.set_checked(on);
+            }
+        };
+        for (label, m) in KEY_MODES {
+            check(label, kb.is_some_and(|k| k.mode == m));
+        }
+        for (label, bit) in KITTY_FLAGS {
+            check(label, kb.is_some_and(|k| k.kitty & bit != 0));
+        }
+        for (label, level) in LEVELS {
+            check(label, screen.is_some_and(|s| s.keys.level == level));
+        }
+        check("Literal Controls", screen.is_some_and(|s| s.keys.literal));
         let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
         let action = self.globals.string("Mark Alert Action");
         self.refresh_named_marks();
@@ -342,6 +380,26 @@ impl App {
                     let term = p.screen.term_mut();
                     term.configure_charset(CharsetIndex::G0, StandardCharset::Ascii);
                     term.set_active_charset(CharsetIndex::G0);
+                }
+            }
+            "terminalStateToggleLiteralMode:" => {
+                if let Some(p) = self.focused_pane() {
+                    p.screen.keys.literal = !p.screen.keys.literal;
+                }
+            }
+            "terminalStateSetEmulationLevel:" => {
+                if let (Some((_, level)), Some(p)) = (LEVELS.iter().find(|l| l.0 == label), self.focused_pane()) {
+                    p.screen.keys.level = *level;
+                }
+            }
+            s if s.starts_with("terminalStateToggle") && KEY_MODES.iter().any(|m| m.0 == label) => {
+                if let (Some((_, mode)), Some(p)) = (KEY_MODES.iter().find(|m| m.0 == label), self.focused_pane()) {
+                    p.screen.set_key_mode(*mode);
+                }
+            }
+            s if s.starts_with("terminalStateToggle") && KITTY_FLAGS.iter().any(|m| m.0 == label) => {
+                if let (Some((_, bit)), Some(p)) = (KITTY_FLAGS.iter().find(|m| m.0 == label), self.focused_pane()) {
+                    p.screen.toggle_kitty_flag(*bit);
                 }
             }
             s if s.starts_with("terminalStateToggle") => {

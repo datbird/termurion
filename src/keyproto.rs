@@ -25,6 +25,46 @@ pub struct KeyEvent<'a> {
     pub vk: u16,
 }
 
+/// Which protocol reports keys, besides kitty's flags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KeyMode {
+    #[default]
+    Standard,
+    Mok1,
+    Mok2,
+    CsiU,
+    Raw,
+}
+
+/// A pane's key reporting: the mode, and kitty's flags (which win when any is set).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Keyboard {
+    pub mode: KeyMode,
+    pub kitty: u8,
+}
+
+impl Keyboard {
+    /// Whether key releases go to the program.
+    pub fn wants_releases(&self) -> bool {
+        self.kitty & EVENT_TYPES != 0 || (self.kitty == 0 && self.mode == KeyMode::Raw)
+    }
+}
+
+/// The bytes a key event sends under `kb`. None: the standard bytes (presses only).
+pub fn encode(kb: Keyboard, ev: &KeyEvent) -> Option<Vec<u8>> {
+    if kb.kitty != 0 {
+        return kitty(ev, kb.kitty);
+    }
+    match kb.mode {
+        KeyMode::Raw => Some(raw(ev)),
+        KeyMode::Mok1 => modify_other_keys(ev, 1),
+        KeyMode::Mok2 => modify_other_keys(ev, 2),
+        KeyMode::CsiU => csi_u(ev),
+        KeyMode::Standard if ev.kind == Kind::Release => Some(Vec::new()),
+        KeyMode::Standard => None,
+    }
+}
+
 /// The kitty flags.
 pub const DISAMBIGUATE: u8 = 1;
 pub const EVENT_TYPES: u8 = 2;
@@ -272,6 +312,55 @@ fn hex(s: &str) -> String {
     s.bytes().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A modifier key, as kitty numbers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Modifier {
+    LeftShift,
+    LeftCtrl,
+    LeftAlt,
+    LeftSuper,
+    RightShift,
+    RightCtrl,
+    RightAlt,
+    RightSuper,
+}
+
+/// A modifier key's own press or release under kitty flag 8. `mods` is the state before
+/// the event; the report carries the state after it. None: nothing to send.
+pub fn kitty_modifier(key: Modifier, mods: Mods, kind: Kind, flags: u8) -> Option<Vec<u8>> {
+    use Modifier::*;
+    if flags & ALL_AS_ESCAPES == 0 || (kind == Kind::Release && flags & EVENT_TYPES == 0) {
+        return None;
+    }
+    let (code, bit) = match key {
+        LeftShift => (57441, 1),
+        LeftCtrl => (57442, 4),
+        LeftAlt => (57443, 2),
+        LeftSuper => (57444, 8),
+        RightShift => (57447, 1),
+        RightCtrl => (57448, 4),
+        RightAlt => (57449, 2),
+        RightSuper => (57450, 8),
+    };
+    // Win (Super) is never reported as a modifier, but its key is.
+    let before = param(mods) - 1;
+    let after = if kind == Kind::Release { before & !bit } else { before | bit } & 7;
+    let event = match kind {
+        Kind::Press => 1,
+        Kind::Repeat if flags & EVENT_TYPES != 0 => 2,
+        Kind::Repeat => 1,
+        Kind::Release => 3,
+    };
+    let text = if event == 1 && after == 0 {
+        format!("\x1b[{code}u")
+    } else if event == 1 {
+        format!("\x1b[{code};{}u", after + 1)
+    } else {
+        format!("\x1b[{code};{}:{event}u", after + 1)
+    };
+    Some(text.into_bytes())
+}
+
 /// iTerm2's raw key reporting: `OSC 1337 ; d|u ; flags ; hex(text) ; key code ;
 /// hex(base) BEL`, with Windows virtual key codes. Tandem does not tell the left and
 /// right modifiers apart, so both count as the left one.
@@ -420,5 +509,29 @@ mod tests {
         e.kind = Kind::Repeat;
         assert!(String::from_utf8(raw(&e)).unwrap().starts_with("\x1b]1337;d;258;"));
         assert_eq!(String::from_utf8(raw_modifiers(m(false, false, true))).unwrap(), "\x1b]1337;f;17\x07");
+    }
+    #[test]
+    fn encode_picks_the_protocol() {
+        let a = Key::Text("a".into());
+        let ctrl_a = ev(&a, Some('a'), Some("a"), m(false, false, true));
+        let kb = |mode, kitty| Keyboard { mode, kitty };
+        assert_eq!(encode(kb(KeyMode::Standard, 0), &ctrl_a), None);
+        assert_eq!(s(encode(kb(KeyMode::Mok2, 0), &ctrl_a)).as_deref(), Some("\x1b[27;5;97~"));
+        assert_eq!(s(encode(kb(KeyMode::CsiU, 0), &ctrl_a)).as_deref(), Some("\x01"));
+        assert_eq!(s(encode(kb(KeyMode::Mok2, DISAMBIGUATE), &ctrl_a)).as_deref(), Some("\x1b[97;5u"), "kitty wins");
+        assert!(s(encode(kb(KeyMode::Raw, 0), &ctrl_a)).unwrap().starts_with("\x1b]1337;d;"));
+        let mut up = ctrl_a;
+        up.kind = Kind::Release;
+        assert_eq!(s(encode(kb(KeyMode::Standard, 0), &up)).as_deref(), Some(""));
+        assert!(!kb(KeyMode::Mok2, DISAMBIGUATE).wants_releases());
+        assert!(kb(KeyMode::Standard, EVENT_TYPES).wants_releases());
+        assert!(kb(KeyMode::Raw, 0).wants_releases());
+    }
+
+    #[test]
+    fn kitty_reports_modifier_keys() {
+        assert_eq!(s(kitty_modifier(Modifier::LeftShift, NONE, Kind::Press, ALL_AS_ESCAPES)).as_deref(), Some("\x1b[57441;2u"));
+        assert_eq!(s(kitty_modifier(Modifier::RightCtrl, m(false, false, true), Kind::Release, ALL_AS_ESCAPES | EVENT_TYPES)).as_deref(), Some("\x1b[57448;1:3u"));
+        assert_eq!(kitty_modifier(Modifier::LeftAlt, NONE, Kind::Press, DISAMBIGUATE), None, "only with flag 8");
     }
 }

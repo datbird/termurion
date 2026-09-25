@@ -27,6 +27,16 @@ const VK_RWIN: u16 = 0x5C;
 /// An unassigned virtual key. Sending it while Win is down keeps the Start menu closed.
 const VK_MASK: u16 = 0xE8;
 
+/// The Windows virtual key code of a physical key (0 when it has none).
+pub fn vk_of(key: winit::keyboard::PhysicalKey) -> u16 {
+    use winit::platform::scancode::PhysicalKeyExtScancode;
+    const MAPVK_VSC_TO_VK_EX: u32 = 3;
+    match key.to_scancode() {
+        Some(scan) => unsafe { MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX) as u16 },
+        None => 0,
+    }
+}
+
 pub fn vk_to_key(vk: u16) -> Option<ChordKey> {
     Some(match vk {
         0x41..=0x5A => ChordKey::Char((vk as u8 + 32) as char),

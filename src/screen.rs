@@ -47,6 +47,10 @@ pub struct Look {
     pub cursor_shape: CursorShape,
     pub cursor_blink: bool,
     pub scrollback: usize,
+    /// The profile's Allow modifyOtherKeys: programs may change how keys are reported.
+    pub app_key_modes: bool,
+    /// The profile's Use libtickit protocol: keys start in CSI u mode.
+    pub csi_u: bool,
 }
 
 impl Look {
@@ -58,7 +62,13 @@ impl Look {
         };
         // alacritty_terminal keeps at most 100,000 lines; that is Tandem's "unlimited".
         let scrollback = if p.bool("Unlimited Scrollback") { 100_000 } else { p.int("Scrollback Lines").clamp(0, 100_000) as usize };
-        Look { cursor_shape, cursor_blink: p.bool("Blinking Cursor"), scrollback }
+        Look {
+            cursor_shape,
+            cursor_blink: p.bool("Blinking Cursor"),
+            scrollback,
+            app_key_modes: p.bool("Allow modifyOtherKeys"),
+            csi_u: p.bool("Use libtickit protocol"),
+        }
     }
 }
 
@@ -68,9 +78,29 @@ impl Default for Look {
     }
 }
 
+/// Literal Controls: each C0 control byte and DEL as a caret glyph in reverse video. A
+/// line feed also starts a new line, so the output stays readable.
+fn literal(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    for &b in bytes {
+        if b < 0x20 || b == 0x7f {
+            out.extend_from_slice(b"\x1b[7m^");
+            out.push(b ^ 0x40);
+            out.extend_from_slice(b"\x1b[27m");
+            if b == b'\n' {
+                out.extend_from_slice(b"\r\n");
+            }
+        } else {
+            out.push(b);
+        }
+    }
+    out
+}
+
 fn config(look: Look) -> Config {
     Config {
         scrolling_history: look.scrollback,
+        kitty_keyboard: look.app_key_modes,
         default_cursor_style: CursorStyle { shape: look.cursor_shape, blinking: look.cursor_blink },
         ..Config::default()
     }
@@ -126,6 +156,32 @@ pub struct Screen {
     folds: std::collections::HashMap<u32, Vec<Row<Cell>>>,
     next_fold: u32,
     feeds: u32,
+    /// Key reporting chosen in the menu (on top of the program's requests).
+    pub keys: KeyState,
+}
+
+/// Key reporting and emulation chosen in Session > Terminal State.
+#[derive(Clone, Copy, Debug)]
+pub struct KeyState {
+    /// CSI u mode (the profile's Use libtickit protocol, or the menu).
+    pub csi_u: bool,
+    /// Raw key reporting (the menu).
+    pub raw: bool,
+    /// Kitty flags the menu turned on, and ones it turned off.
+    pub kitty_on: u8,
+    pub kitty_off: u8,
+    /// Literal Controls: control bytes show as carets instead of acting.
+    pub literal: bool,
+    /// The emulation level: 100 to 500.
+    pub level: u16,
+    /// The profile's Use libtickit protocol.
+    pub profile_csi_u: bool,
+}
+
+impl KeyState {
+    pub fn new(csi_u: bool) -> Self {
+        KeyState { csi_u, raw: false, kitty_on: 0, kitty_off: 0, literal: false, level: 500, profile_csi_u: csi_u }
+    }
 }
 
 impl Screen {
@@ -159,6 +215,7 @@ impl Screen {
             folds: std::collections::HashMap::new(),
             next_fold: 0,
             feeds: 0,
+            keys: KeyState::new(look.csi_u),
         }
     }
 
@@ -172,6 +229,11 @@ impl Screen {
     }
 
     pub fn set_look(&mut self, look: Look) {
+        // A new profile default for CSI u applies unless the menu chose otherwise.
+        if self.keys.csi_u == self.keys.profile_csi_u {
+            self.keys.csi_u = look.csi_u;
+        }
+        self.keys.profile_csi_u = look.csi_u;
         self.term.set_options(config(look));
     }
 
@@ -198,6 +260,9 @@ impl Screen {
     /// Feeds app output. Returns the bytes the terminal must send back, such as
     /// answers to device, color, and size queries. An app that gets no answer may hang.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<u8> {
+        if self.keys.literal {
+            return self.feed_raw(&literal(bytes));
+        }
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
         let events = self.osc.scan(bytes);
@@ -211,6 +276,59 @@ impl Screen {
         }
         reply.extend(self.feed_raw(&bytes[at..]));
         reply
+    }
+
+    /// How keys are reported now: the program's requests and the menu's choices.
+    pub fn keyboard(&self) -> crate::keyproto::Keyboard {
+        use crate::keyproto::{self as kp, KeyMode, Keyboard};
+        let m = self.term.mode();
+        let mut app = 0;
+        for (bit, flag) in [
+            (kp::DISAMBIGUATE, TermMode::DISAMBIGUATE_ESC_CODES),
+            (kp::EVENT_TYPES, TermMode::REPORT_EVENT_TYPES),
+            (kp::ALTERNATE_KEYS, TermMode::REPORT_ALTERNATE_KEYS),
+            (kp::ALL_AS_ESCAPES, TermMode::REPORT_ALL_KEYS_AS_ESC),
+            (kp::ASSOCIATED_TEXT, TermMode::REPORT_ASSOCIATED_TEXT),
+        ] {
+            if m.contains(flag) {
+                app |= bit;
+            }
+        }
+        let kitty = (app | self.keys.kitty_on) & !self.keys.kitty_off;
+        let mode = if self.keys.raw {
+            KeyMode::Raw
+        } else {
+            match self.term.modify_other_keys {
+                1 => KeyMode::Mok1,
+                2 => KeyMode::Mok2,
+                _ if self.keys.csi_u => KeyMode::CsiU,
+                _ => KeyMode::Standard,
+            }
+        };
+        Keyboard { mode, kitty }
+    }
+
+    /// Session > Terminal State's key reporting radio group.
+    pub fn set_key_mode(&mut self, mode: crate::keyproto::KeyMode) {
+        use crate::keyproto::KeyMode;
+        self.keys.raw = mode == KeyMode::Raw;
+        self.keys.csi_u = mode == KeyMode::CsiU;
+        self.term.modify_other_keys = match mode {
+            KeyMode::Mok1 => 1,
+            KeyMode::Mok2 => 2,
+            _ => 0,
+        };
+    }
+
+    /// Flips one kitty flag from the menu.
+    pub fn toggle_kitty_flag(&mut self, flag: u8) {
+        if self.keyboard().kitty & flag != 0 {
+            self.keys.kitty_on &= !flag;
+            self.keys.kitty_off |= flag;
+        } else {
+            self.keys.kitty_off &= !flag;
+            self.keys.kitty_on |= flag;
+        }
     }
 
     /// The rows folds keep.
@@ -501,6 +619,9 @@ impl Screen {
         const DECSTR: &[u8] = b"\x1b[?25h\x1b[?1l\x1b>\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\
             \x1b[?2004l\x1b[?1004l\x1b[4l\x1b[0m\x1b[r\x1b[?6l\x1b[?7h\x1b(B";
         self.feed(DECSTR);
+        // Key reporting goes back to the profile's: no program flags, no menu choices.
+        self.term.clear_keyboard_modes();
+        self.keys = KeyState { level: self.keys.level, literal: self.keys.literal, ..KeyState::new(self.keys.profile_csi_u) };
     }
 
     pub fn mouse_modes(&self) -> Modes {
@@ -857,5 +978,75 @@ mod tests {
         s.clear(false);
         assert_eq!(s.fold_count(), 0);
         assert!(s.notes.by_id.is_empty());
+    }
+    #[test]
+    fn app_requests_follow_the_profile() {
+        use crate::keyproto::{KeyMode, Keyboard};
+        let mut s = Screen::new(80, 24);
+        assert_eq!(s.keyboard(), Keyboard { mode: KeyMode::Standard, kitty: 0 });
+        s.feed(b"\x1b[>4;2m\x1b[>1u");
+        assert_eq!(s.keyboard(), Keyboard { mode: KeyMode::Mok2, kitty: 1 });
+        assert_eq!(s.feed(b"\x1b[?4m\x1b[?u"), b"\x1b[>4;2m\x1b[?1u");
+        s.feed(b"\x1b[>4;0m");
+        assert_eq!(s.keyboard().mode, KeyMode::Standard);
+
+        let mut locked = Screen::with_look(80, 24, Palette::default(), Look { app_key_modes: false, ..Look::default() });
+        locked.feed(b"\x1b[>4;2m\x1b[>1u");
+        assert_eq!(locked.keyboard(), Keyboard { mode: KeyMode::Standard, kitty: 0 });
+
+        let tickit = Screen::with_look(80, 24, Palette::default(), Look { csi_u: true, ..Look::default() });
+        assert_eq!(tickit.keyboard().mode, KeyMode::CsiU);
+    }
+
+    #[test]
+    fn menu_flags_join_the_apps() {
+        use crate::keyproto::{self, KeyMode};
+        let mut s = Screen::new(80, 24);
+        s.feed(b"\x1b[>1u");
+        s.toggle_kitty_flag(keyproto::EVENT_TYPES);
+        assert_eq!(s.keyboard().kitty, keyproto::DISAMBIGUATE | keyproto::EVENT_TYPES);
+        s.toggle_kitty_flag(keyproto::DISAMBIGUATE);
+        assert_eq!(s.keyboard().kitty, keyproto::EVENT_TYPES, "the menu can turn off an app's flag");
+        s.set_key_mode(KeyMode::Mok1);
+        assert_eq!(s.keyboard().mode, KeyMode::Mok1);
+        assert_eq!(s.feed(b"\x1b[?4m"), b"\x1b[>4;1m");
+        s.set_key_mode(KeyMode::CsiU);
+        assert_eq!(s.keyboard().mode, KeyMode::CsiU);
+        s.set_key_mode(KeyMode::Raw);
+        assert_eq!(s.keyboard().mode, KeyMode::Raw);
+        s.set_key_mode(KeyMode::Standard);
+        assert_eq!(s.keyboard().mode, KeyMode::Standard);
+    }
+
+    #[test]
+    fn reset_clears_keyboard_modes() {
+        use crate::keyproto::{KeyMode, Keyboard};
+        let mut s = Screen::new(80, 24);
+        s.feed(b"\x1b[>4;2m\x1b[>11u");
+        s.feed(b"\x1bc");
+        assert_eq!(s.keyboard(), Keyboard { mode: KeyMode::Standard, kitty: 0 }, "RIS");
+        s.feed(b"\x1b[>4;2m\x1b[>11u");
+        s.toggle_kitty_flag(crate::keyproto::ASSOCIATED_TEXT);
+        s.set_key_mode(KeyMode::Raw);
+        s.soft_reset();
+        assert_eq!(s.keyboard(), Keyboard { mode: KeyMode::Standard, kitty: 0 }, "Terminal State > Reset");
+        // A program that pushes past the stack's depth does not crash the terminal.
+        for _ in 0..5000 {
+            s.feed(b"\x1b[>1u");
+        }
+        assert_eq!(s.keyboard().kitty, 1);
+    }
+
+    #[test]
+    fn literal_controls_show_carets() {
+        use alacritty_terminal::term::cell::Flags;
+        let mut s = Screen::new(20, 4);
+        s.keys.literal = true;
+        s.feed(b"a\x1bb\r\nc");
+        let row = |l: i32| (0..20).map(|c| s.term.grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string();
+        assert_eq!(row(0), "a^[b^M^J");
+        assert_eq!(row(1), "c");
+        assert!(s.term.grid()[Line(0)][Column(1)].flags.contains(Flags::INVERSE));
+        assert!(!s.term.grid()[Line(0)][Column(3)].flags.contains(Flags::INVERSE));
     }
 }
