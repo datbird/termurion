@@ -932,7 +932,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | noSyncNewWindowOrTabFromTmuxOpensTmux | noSyncNewWindowOrTabFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of tab/window to open in tmux integration. | missing |  |
 | noSyncNewWindowFromTmuxOpensTmux | noSyncNewWindowFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of window to open in tmux integration. | missing |  |
 | noSyncNewTabFromTmuxOpensTmux | noSyncNewTabFromTmuxOpensTmux (bool, default NO) | Suppress alert asking what kind of tab to open in tmux integration. | missing |  |
-| tolerateUnrecognizedTmuxCommands | tolerateUnrecognizedTmuxCommands (bool, default NO) | Tolerate unrecognized commands from server. | missing |  |
+| tolerateUnrecognizedTmuxCommands | tolerateUnrecognizedTmuxCommands (bool, default NO) | Tolerate unrecognized commands from server. | have | Milestone 8a: text that is not tmux is kept and printed at %exit under "** ERROR **". |
 | useBlackFillerColorForTmuxInFullScreen | useBlackFillerColorForTmuxInFullScreen (bool, default NO) | Use black for filler area in tmux windows in full screen. | missing |  |
 | tmuxWindowsShouldCloseAfterDetach | tmuxWindowsShouldCloseAfterDetach (bool?, default nil) | Close tmux windows after detaching? This only takes effect when “Settings > Profiles > Session > After a session ends” is set to “No Action”. | missing |  |
 | disableTmuxWindowPositionRestoration | disableTmuxWindowPositionRestoration (bool, default NO) | Disable window position restoration in tmux integration. | missing |  |

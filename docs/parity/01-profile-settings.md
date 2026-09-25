@@ -233,7 +233,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Cmd-click on path opens navigator | Prompt Path Click Opens Navigator | Makes a click on a shell-integration-reported path open it in the file navigator. | partial | Requires shell integration; also a macOS Cmd-click convention. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Show Offscreen Command Line | Show Offscreen Command line | Shows a floating bar with the current prompt when it has scrolled off the top. | partial | Requires shell integration. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
 | Show offscreen command line for current command | Show Offscreen Command line for Current Command | Extends the floating bar to show the running command, not just the prompt. | partial | Requires shell integration. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
-| tmux uses newline (vs CRLF) | Tmux Newline | Controls whether tmux integration sends newline or CRLF line endings. | partial | Tandem has no tmux integration. Saved and shown in Settings (milestone 2); the effect comes in a later milestone, see 00-roadmap.md. |
+| tmux uses newline (vs CRLF) | Tmux Newline | Controls whether tmux integration sends newline or CRLF line endings. | have | Milestone 8a: tmux commands end with "\n" when on, "\r" when off. |
 | Filter Alerts | n/a | Opens the sheet containing the per-event alert filter checkboxes. | have | Milestone 6b: Windows notifications (a tray balloon shown as a toast); a click reveals the session. |
 
 ## Session

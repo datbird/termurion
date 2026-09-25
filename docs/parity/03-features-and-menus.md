@@ -414,7 +414,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### tmux integration
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| tmux integration | tmux -CC control mode | Attaches to a tmux session over a control-mode connection so tmux windows appear as native windows/tabs instead of a text UI. | missing | |
+| tmux integration | tmux -CC control mode | Attaches to a tmux session over a control-mode connection so tmux windows appear as native windows/tabs instead of a text UI. | partial | Milestone 8a: the gateway (ESC P 1000 p found across reads, the banner and Command Menu keys esc, X, L, C, logging, "Detaching...", "Detached", the abort and exit texts) and the control protocol. tmux windows open as tabs in 8b. It needs the shipped ConPTY (conpty.dll and OpenConsole.exe beside tandem.exe); the Windows inbox ConPTY does not pass ESC P 1000 p. |
 | tmux integration | Session dashboard | Lists all tmux sessions on the server with a picker to attach, rename, or create a new one. | missing | |
 | tmux integration | Window to tab/window mapping | Maps each tmux window to a native window or tab, tracks window IDs, opens new tmux windows automatically. | missing | |
 | tmux integration | Pane layout sync | Parses tmux's layout string and reproduces the split-pane geometry natively, keeps it in sync as tmux panes are added, closed, or resized. | missing | |
@@ -433,7 +433,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | tmux integration | OSC 4/10/11/52 responder election | Decides whether iTerm2 or tmux itself is the designated responder for color and clipboard OSC queries when multiple clients are attached. | missing | Tandem's alacritty_terminal core answers OSC 4/10/11 directly; there is no tmux passthrough layer to arbitrate. |
 | tmux integration | Local vs remote tmux detection | Distinguishes a tmux server running on the local machine from one reached over SSH, to decide default behaviors such as default TERM and local file access. | missing | |
 | tmux integration | User variables over tmux | Carries iTerm2 shell integration user variables through the tmux control protocol, since tmux would otherwise swallow OSC 1337. | missing | |
-| tmux integration | Gateway ping/keepalive and version guessing | Sends periodic pings and probes tmux server version/capabilities, for example UTF-8 support, to adapt protocol handling. | missing | |
+| tmux integration | Gateway ping/keepalive and version guessing | Sends periodic pings and probes tmux server version/capabilities, for example UTF-8 support, to adapt protocol handling. | have | Milestone 8a: the kick-off (phony-command with the 5 s "Slow tmux Response" warning, refresh-client wait-exit), the aggressive-resize and UTF-8 checks with their alerts, and the version from #{version} or the 2.3/2.2/2.1/1.9 probes. tmux has no periodic ping; iTerm2 sends none either. |
 
 ### shell integration
 | Subsystem | Feature | What it does | Tandem status | Windows note |
