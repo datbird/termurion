@@ -309,6 +309,12 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            if s.key == "Triggers" {
+                                if crate::settings_triggers::editor(ui, profile) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
                             if s.key == "Smart Selection Rules" || s.key == "Semantic History" {
                                 let done = if s.key == "Smart Selection Rules" {
                                     crate::settings_advanced::smart_selection_rules(ui, profile)
