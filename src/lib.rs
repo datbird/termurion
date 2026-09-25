@@ -135,6 +135,7 @@ pub mod tmux_keys;
 pub mod tmux_sizes;
 pub mod tmux_edits;
 pub mod tmux_persist;
+pub mod tmux_pause;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;
