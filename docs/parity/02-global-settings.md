@@ -1002,7 +1002,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | copyWithStylesByDefault | copyWithStylesByDefault (bool, default NO) | Copy to pasteboard on selection includes color and font style. | partial |  |
 | copyBackgroundColor | copyBackgroundColor (bool, default YES) | Exclude the default background color when text is copied with color and font style? When off, the default background color will be left unset. | missing |  |
 | pasteHistoryMaxOptions | pasteHistoryMaxOptions (int, default 20) | Number of entries to save in Paste History. | have | Milestone 9b. |
-| clippingSeparator | clippingSeparator (string, default @"\\n--\\n") | Separator inserted between multiple clippings when sending or copying them. | partial |  |
+| clippingSeparator | clippingSeparator (string, default @"\\n--\\n") | Separator inserted between multiple clippings when sending or copying them. | have | Milestone 9f: Vim syntax, default \n--\n (Advanced > Session). |
 | workgroupAutoSendSubmitDelay | workgroupAutoSendSubmitDelay (float, default 0.501) | Delay in seconds before the Return that submits an auto-sent code review. | missing |  |
 | disallowCopyEmptyString | disallowCopyEmptyString (bool, default NO) | Disallow copying empty string to pasteboard. | partial |  |
 | typingClearsSelection | typingClearsSelection (bool, default YES) | Pressing a key will remove the selection. | partial |  |

@@ -160,7 +160,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Zoom Out | no shortcut | Reverses Zoom In on Selection. (milestone 4) | have |
 | View > Find Cursor | Cmd+/ | Flashes a highlight around the cursor to help locate it. (milestone 4) | have |
 | View > Show Annotations | Cmd+\ | Shows or hides annotation markers in the buffer. (milestone 4) | have |
-| View > Show Clippings | Shift+Cmd+= | Shows the Clippings/Snippets quick-insert panel. (milestone 9) | missing |
+| View > Show Clippings | Shift+Cmd+= | Shows the session's Clippings panel (titled notes with an archive) at its right. Milestone 9f: Shift+Win+=; the add_clipping function comes with the scripting API (milestone 11). | have |
 | View > Show Inline Chat | Shift+Cmd+, | Shows an inline AI chat panel attached to the session. (milestone 12) | missing |
 | View > Show Composer | Shift+Cmd+. | Shows the Composer, a multi-line command editor above the prompt. (milestone 9) | missing |
 | View > Show Cursor Guide | Opt+Cmd+; | Shows a horizontal highlight line tracking the cursor's row. (milestone 4) | have |
