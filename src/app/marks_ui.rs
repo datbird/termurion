@@ -38,6 +38,23 @@ pub(super) const CHECKS: [(&str, &str); 5] = [
     ("enableMarkAlertRingsBell:", "Ring Bell"),
 ];
 
+/// Edit > Named Marks: each named mark's id and menu text, top first ("Unnamed Mark" for
+/// an empty name).
+pub(super) fn named_marks(marks: &[(i32, crate::marks::Mark)]) -> Vec<(u32, String)> {
+    let mut named: Vec<&(i32, crate::marks::Mark)> = marks.iter().filter(|(_, m)| m.name.is_some()).collect();
+    named.sort_by_key(|(l, _)| *l);
+    named
+        .into_iter()
+        .map(|(_, m)| {
+            let name = m.name.clone().unwrap_or_default();
+            (m.id, if name.is_empty() { "Unnamed Mark".to_string() } else { name })
+        })
+        .collect()
+}
+
+/// Menu item ids of Edit > Named Marks.
+pub(super) const NAMED_MARK_ID: &str = "tandem.namedmark.";
+
 /// The display offset that puts grid line `line` at the top of the view (or centers it).
 pub(super) fn offset_for(line: i32, rows: usize, history: usize, center: bool) -> usize {
     let top = if center { line - rows as i32 / 2 } else { line };
@@ -50,7 +67,7 @@ impl App {
     }
 
     /// Scrolls pane `id` so grid line `line` is at the top (or centered).
-    fn show_line(&mut self, id: PaneId, line: i32, center: bool) {
+    pub(super) fn show_line(&mut self, id: PaneId, line: i32, center: bool) {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let grid = p.screen.term().grid();
         let want = offset_for(line, grid.screen_lines(), grid.history_size(), center) as i32;
@@ -240,9 +257,73 @@ impl App {
     }
 }
 
+impl App {
+    /// Rebuilds Edit > Named Marks from the focused pane's named marks, when they changed.
+    pub(super) fn refresh_named_marks(&mut self) {
+        // The buffer scan runs only when the focused pane or its named marks changed.
+        let focused = self.focused_id();
+        let key: (Option<PaneId>, Vec<(u32, Option<String>)>) = (
+            focused,
+            focused
+                .and_then(|id| self.panes.get(&id))
+                .map(|p| p.screen.marks.records.values().filter(|m| m.name.is_some()).map(|m| (m.id, m.name.clone())).collect())
+                .unwrap_or_default(),
+        );
+        if self.menu_bar.as_ref().is_some_and(|b| b.named_key == key) {
+            return;
+        }
+        let items = focused.and_then(|id| self.panes.get_mut(&id)).map(|p| named_marks(&p.screen.marks_in_order())).unwrap_or_default();
+        let Some(bar) = &mut self.menu_bar else { return };
+        bar.named_key = key;
+        if bar.named_items == items {
+            return;
+        }
+        let Some(sub) = &bar.named else { return };
+        while sub.remove_at(0).is_some() {}
+        for (id, label) in &items {
+            let entry = muda::MenuItem::with_id(format!("{NAMED_MARK_ID}{id}"), label.replace('&', "&&"), true, None);
+            if let Err(e) = sub.append(&entry) {
+                self.banners.set("menu", format!("Named Marks menu: {e}"));
+            }
+        }
+        bar.named_items = items;
+    }
+
+    /// A pick from Edit > Named Marks. Returns false for other menu ids.
+    pub(super) fn named_mark_picked(&mut self, menu_id: &str) -> bool {
+        let Some(mark) = menu_id.strip_prefix(NAMED_MARK_ID).and_then(|n| n.parse::<u32>().ok()) else { return false };
+        let Some(id) = self.focused_id() else { return true };
+        let line = self.panes.get_mut(&id).and_then(|p| p.screen.marks_in_order().into_iter().find(|(_, m)| m.id == mark).map(|(l, _)| l));
+        if let Some(line) = line {
+            self.show_line(id, line, false);
+            self.mark_pos.insert(id, mark);
+        }
+        self.redraw();
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_marks_sort_by_row() {
+        use crate::marks::{Kind, Mark};
+        let mark = |id: u32, name: Option<&str>| Mark {
+            id,
+            kind: Kind::Manual,
+            command: String::new(),
+            code: None,
+            start: None,
+            end: None,
+            aid: None,
+            name: name.map(str::to_string),
+            command_range: None,
+        };
+        let marks = vec![(5, mark(1, Some("b"))), (-3, mark(2, Some(""))), (0, mark(3, None)), (2, mark(4, Some("a")))];
+        assert_eq!(named_marks(&marks), vec![(2, "Unnamed Mark".to_string()), (4, "a".to_string()), (1, "b".to_string())]);
+    }
 
     #[test]
     fn marks_scroll_to_the_top_or_the_middle() {

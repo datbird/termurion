@@ -38,7 +38,7 @@ pub const DONE: &[&str] = &[
     "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openSelection:",
     "replaceSelectionWithPrettyPrintedJSON:", "replaceSelectionWithBase64Encoded:", "replaceSelectionWithBase64Decoded:",
     "clearToStartOfSelection:", "toggleCopyMode:", "foldSelection:", "foldAll:", "addNoteAtCursor:", "annotateSelection:", "nextAnnotation:",
-    "previousAnnotation:", "showHideNotes:", "toggleCursorGuide:", "findCursor:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
+    "previousAnnotation:", "showHideNotes:", "toggleCursorGuide:", "findCursor:", "editSessionNote:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
 ];
 
 /// Commands that work with a known difference for now.

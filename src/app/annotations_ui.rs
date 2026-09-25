@@ -16,6 +16,20 @@ impl App {
             "addNoteAtCursor:" => self.note_at_cursor(id, event_loop),
             "annotateSelection:" => self.annotate_selection(id, event_loop),
             "nextAnnotation:" | "previousAnnotation:" => self.step_note(id, selector == "nextAnnotation:", event_loop),
+            "editSessionNote:" => {
+                if self.note_win.as_ref().is_some_and(|(_, p, n)| *p == id && n.is_none()) {
+                    self.note_win = None;
+                } else {
+                    let text = self.panes.get(&id).map(|p| p.session_note.clone()).unwrap_or_default();
+                    self.note_win = None;
+                    let Some(g) = self.gpu.as_ref() else { return true };
+                    match NoteWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Session Note", &text, false) {
+                        Ok(w) => self.note_win = Some((w, id, None)),
+                        Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+                    }
+                }
+                self.sync_checks();
+            }
             "showHideNotes:" => {
                 let Some(p) = self.panes.get_mut(&id) else { return true };
                 let any_shown = p.own().notes.by_id.values().any(|n| !n.hidden);
@@ -135,7 +149,10 @@ impl App {
         }
         let (pane, note) = (*pane, *note);
         match event {
-            WindowEvent::CloseRequested => self.note_win = None,
+            WindowEvent::CloseRequested => {
+                self.note_win = None;
+                self.sync_checks();
+            }
             WindowEvent::RedrawRequested => match w.redraw() {
                 NoteEvent::None => {}
                 NoteEvent::Close => self.note_win = None,

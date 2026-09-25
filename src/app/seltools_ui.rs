@@ -12,7 +12,7 @@ use crate::seltools::{self, End};
 
 /// Menu items with a check mark that milestone 4c adds, by selector.
 pub(super) const CHECKED: &[&str] =
-    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:"];
+    &["toggleSelectionRespectsSoftBoundaries:", "toggleCopyMode:", "toggleShowTimestamps:", "toggleCursorGuide:", "showHideNotes:", "editSessionNote:"];
 
 impl App {
     /// Whether a checkable menu item shows its check mark.
@@ -21,6 +21,7 @@ impl App {
             "toggleSelectionRespectsSoftBoundaries:" => self.globals.bool("Selection Respects Soft Boundaries"),
             "toggleCopyMode:" => self.focused_id().is_some_and(|id| self.copy_modes.contains_key(&id)),
             "toggleShowTimestamps:" => self.focused_id().is_some_and(|id| self.stamps_on(id)),
+            "editSessionNote:" => self.focused_id().is_some_and(|id| self.note_win.as_ref().is_some_and(|(_, p, n)| *p == id && n.is_none())),
             "toggleCursorGuide:" => self.focused_id().is_some_and(|id| self.guide_on(id)),
             "showHideNotes:" => self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.own().notes.by_id.values().any(|n| !n.hidden)),
             _ => false,

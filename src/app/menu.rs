@@ -43,6 +43,11 @@ fn menu_text(item: &Item) -> String {
 pub(super) struct MenuBar {
     _menu: Menu,
     checks: HashMap<String, CheckMenuItem>,
+    /// Edit > Named Marks, rebuilt as marks change, and what it lists now.
+    pub(super) named: Option<Submenu>,
+    pub(super) named_items: Vec<(u32, String)>,
+    /// The focused pane and its named marks when the menu was last built.
+    pub(super) named_key: (Option<PaneId>, Vec<(u32, Option<String>)>),
 }
 
 impl App {
@@ -114,7 +119,8 @@ impl App {
         if let Err(e) = crate::winkeys::install(hwnd, send, bound, self.remap_tags.clone(), exempt) {
             self.banners.set("keys", format!("Win chords are unavailable: {e}"));
         }
-        self.menu_bar = Some(MenuBar { _menu: menu, checks });
+        let named = subs.get(&vec!["Edit".to_string(), "Named Marks".to_string()]).cloned();
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]) });
         self.sync_checks();
     }
 
@@ -157,6 +163,8 @@ impl App {
         }
         let alert_next = self.tabs.get(self.active).and_then(|t| self.panes.get(&t.focused)).is_some_and(|p| p.own().marks.alert_next);
         let action = self.globals.string("Mark Alert Action");
+        self.refresh_named_marks();
+        let Some(bar) = &self.menu_bar else { return };
         for selector in super::seltools_ui::CHECKED {
             let Some(item) = menus::items().iter().find(|i| i.selector == *selector) else { continue };
             if let Some(c) = bar.checks.get(item.label()) {
@@ -183,7 +191,7 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
-        if self.find_mode_picked(id) || self.context_picked(id) {
+        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) {
             return;
         }
         if let Some(item) = menus::by_id(id) {
