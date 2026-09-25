@@ -7,10 +7,8 @@ use crate::tmux_layout::{self, Node};
 use crate::tmux_windows::{Place, Window};
 
 pub(super) const PLANE_BAR: &str = "tmux-22-plane";
-/// Close questions: "tmux-close-tab:GW:WINDOW" and "tmux-close-win:GW" (every tmux tab of
-/// this window).
+/// The tab close question: "tmux-close-tab:GW:WINDOW" (window questions: tmux_persist).
 const CLOSE_TAB: &str = "tmux-close-tab:";
-const CLOSE_WIN: &str = "tmux-close-win:";
 /// "tmux-double:GW:OTHER": this gateway attached to a session OTHER already shows.
 const DOUBLE: &str = "tmux-double:";
 
@@ -122,83 +120,104 @@ impl App {
         self.tmux_flush(gw);
     }
 
-    /// Close Tab on a tmux tab: iTerm2's question (a window question when it is the
-    /// session's only tab here). True when the question took over the close.
+    /// Close Tab on a tmux tab: iTerm2's question (the window question when it is the
+    /// session's only tab here; only the tab closes). True when the question took over.
     pub(super) fn tmux_close_tab(&mut self, index: usize) -> bool {
         let Some(focused) = self.tabs.get(index).map(|t| t.focused) else { return false };
         let Some((gw, _, window)) = self.tmux_of(focused) else { return false };
         let same = self.tabs.iter().filter(|t| self.tmux_of(t.focused).is_some_and(|(g, _, _)| g == gw)).count();
         if same > 1 {
             if self.globals.bool("ClosingTmuxTabKillsTmuxWindows") {
-                self.tmux_close_answer(gw, &[window], "Hide", false);
+                self.tmux_close_answer(&[(gw, vec![window])], "Hide", false);
                 return true;
             }
             let (text, buttons) = crate::tmux_persist::close_tab_question();
             self.ask(focused, &format!("{CLOSE_TAB}{gw}:{window}"), text, &buttons, true);
             return true;
         }
-        self.tmux_close_window_question(focused, gw)
+        self.tmux_close_window_question(focused, Some(gw), false)
     }
 
-    /// Closing a window that shows tmux tabs of the session `gw` (or of any session when
-    /// `gw` is None): iTerm2's four-way question.
-    fn tmux_close_window_question(&mut self, anchor: PaneId, gw: PaneId) -> bool {
-        let n = self.tabs.iter().filter(|t| self.tmux_of(t.focused).is_some_and(|(g, _, _)| g == gw)).count();
+    /// iTerm2's four-way question for the tmux tabs of `gw` (every session when None) in
+    /// this window; `whole`: the window closes after the answer.
+    fn tmux_close_window_question(&mut self, anchor: PaneId, gw: Option<PaneId>, whole: bool) -> bool {
+        let scope = self.tmux_scope(gw);
+        let n: usize = scope.iter().map(|(_, ws)| ws.len()).sum();
         let Some((text, buttons)) = crate::tmux_persist::close_window_question(n) else { return false };
         if self.globals.bool("ClosingTmuxWindowKillsTmuxWindows") {
-            let windows = self.tmux_windows_here(gw);
-            self.tmux_close_answer(gw, &windows, "Hide", true);
+            self.tmux_close_answer(&scope, "Hide", whole);
             return true;
         }
-        self.ask(anchor, &format!("{CLOSE_WIN}{gw}"), text, &buttons, true);
+        self.ask(anchor, &crate::tmux_persist::close_win_id(gw.unwrap_or(0), whole), text, &buttons, true);
         true
     }
 
-    /// Close Window with tmux tabs: the question first. True when it took over the close.
+    /// Close Window with tmux tabs, after Tandem's own confirmation: the question first.
+    /// True when it took over the close.
     pub(super) fn tmux_close_window(&mut self) -> bool {
-        let Some((anchor, gw)) = self.tabs.iter().find_map(|t| self.tmux_of(t.focused).map(|(g, _, _)| (t.focused, g))) else { return false };
-        self.tmux_close_window_question(anchor, gw)
+        let Some(anchor) = self.tabs.iter().find(|t| self.tmux_of(t.focused).is_some()).map(|t| t.focused) else { return false };
+        self.tmux_close_window_question(anchor, None, true)
     }
 
-    fn tmux_windows_here(&self, gw: PaneId) -> Vec<u32> {
-        self.tabs.iter().filter_map(|t| self.tmux_of(t.focused)).filter(|(g, _, _)| *g == gw).map(|(_, _, w)| w).collect()
-    }
-
-    /// Hide, Kill, or Detach tmux Session for `windows`; `whole` closes this window's tabs
-    /// right away (iTerm2 closes the window without waiting for tmux).
-    fn tmux_close_answer(&mut self, gw: PaneId, windows: &[u32], answer: &str, whole: bool) {
-        let mut actions = Vec::new();
-        match answer {
-            "Hide" => {
-                for w in windows {
-                    if let Some(t) = self.tmux.get_mut(&gw) {
-                        actions.extend(t.ctl.hide(*w, &mut t.gw));
-                    }
-                }
+    /// The tmux windows in this Tandem window, by session (`gw`, or every session).
+    fn tmux_scope(&self, gw: Option<PaneId>) -> Vec<(PaneId, Vec<u32>)> {
+        let mut out: Vec<(PaneId, Vec<u32>)> = Vec::new();
+        for (g, _, w) in self.tabs.iter().filter_map(|t| self.tmux_of(t.focused)) {
+            if gw.is_some_and(|x| x != g) {
+                continue;
             }
-            "Kill" => {
-                for w in windows {
-                    if let Some(t) = self.tmux.get_mut(&gw) {
-                        t.ctl.kill_window(*w, &mut t.gw);
-                    }
-                }
+            match out.iter_mut().find(|(x, _)| *x == g) {
+                Some((_, ws)) => ws.push(w),
+                None => out.push((g, vec![w])),
             }
-            "Detach tmux Session" => self.tmux_gateway_input(gw, b"\x1b", true),
-            _ => return,
         }
-        self.tmux_flush(gw);
-        self.tmux_pending_close = Some((gw, actions, whole));
+        out
     }
 
-    /// Runs the close a question's answer left (needs the event loop).
-    pub(super) fn tmux_finish_close(&mut self, event_loop: &ActiveEventLoop) {
-        let Some((gw, actions, whole)) = self.tmux_pending_close.take() else { return };
-        self.tmux_actions(gw, actions, event_loop);
-        if whole {
-            let panes: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
-            for p in panes {
-                self.close_pane(p, event_loop);
+    /// Hide, Kill, or Detach tmux Session for each session's windows; `whole` closes this
+    /// window afterwards (iTerm2 closes the window without waiting for tmux).
+    fn tmux_close_answer(&mut self, scope: &[(PaneId, Vec<u32>)], answer: &str, whole: bool) {
+        if !matches!(answer, "Hide" | "Kill" | "Detach tmux Session") {
+            return;
+        }
+        for (i, (gw, windows)) in scope.iter().enumerate() {
+            let mut actions = Vec::new();
+            for w in windows {
+                let Some(t) = self.tmux.get_mut(gw) else { break };
+                match answer {
+                    "Hide" => actions.extend(t.ctl.hide(*w, &mut t.gw)),
+                    "Kill" => t.ctl.kill_window(*w, &mut t.gw),
+                    _ => {}
+                }
             }
+            if answer == "Detach tmux Session" {
+                self.tmux_gateway_input(*gw, b"\x1b", true);
+            }
+            self.tmux_flush(*gw);
+            self.tmux_pending_close.push((*gw, actions, whole && i + 1 == scope.len()));
+        }
+    }
+
+    /// Runs the closes the answers left (they need the event loop).
+    pub(super) fn tmux_finish_close(&mut self, event_loop: &ActiveEventLoop) {
+        for (gw, actions, whole) in std::mem::take(&mut self.tmux_pending_close) {
+            self.tmux_actions(gw, actions, event_loop);
+            if whole {
+                let panes: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+                self.begin_undo(crate::undo_close::Kind::Window, &panes);
+                for p in panes {
+                    self.close_pane(p, event_loop);
+                }
+                self.end_undo();
+            }
+        }
+    }
+
+    /// A gateway ended: its "Cannot Attach" bars, here and on the other gateway, go.
+    pub(super) fn tmux_drop_double_bars(&mut self, gw: PaneId) {
+        let names = |id: &str| id.strip_prefix(DOUBLE).is_some_and(|r| r.split(':').any(|x| x == gw.to_string()));
+        for bars in self.bars.values_mut() {
+            bars.retain(|b| !names(&b.id));
         }
     }
 
@@ -228,6 +247,10 @@ impl App {
         if let Some(rest) = id.strip_prefix(DOUBLE) {
             let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
             if let (Some(Some(gw)), Some(Some(other))) = (it.next(), it.next()) {
+                // Either connection may have ended since the bar came up.
+                if !self.tmux.contains_key(&gw) || !self.tmux.contains_key(&other) {
+                    return true;
+                }
                 match button {
                     // The other connection goes; this one stays attached.
                     Some("Force Detach Other") => {
@@ -260,15 +283,15 @@ impl App {
             let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
             if let (Some(Some(gw)), Some(Some(w))) = (it.next(), it.next()) {
                 if let Some(b) = button {
-                    self.tmux_close_answer(gw, &[w as u32], b, false);
+                    self.tmux_close_answer(&[(gw, vec![w as u32])], b, false);
                 }
             }
             return true;
         }
-        if let Some(rest) = id.strip_prefix(CLOSE_WIN) {
-            if let (Ok(gw), Some(b)) = (rest.parse::<u64>(), button) {
-                let windows = self.tmux_windows_here(gw);
-                self.tmux_close_answer(gw, &windows, b, true);
+        if let Some((gw, whole)) = crate::tmux_persist::parse_close_win(id) {
+            if let Some(b) = button {
+                let scope = self.tmux_scope((gw != 0).then_some(gw));
+                self.tmux_close_answer(&scope, b, whole);
             }
             return true;
         }
@@ -520,14 +543,13 @@ impl App {
         let pane = self.focused_id()?;
         let (gw, _, tmux_window) = self.tmux_of(pane)?;
         if ask {
-            let legacy = self.globals.get("NoSyncNewWindowOrTabFromTmuxOpensTmux").and_then(|v| v.as_bool()).is_some();
-            let key = crate::tmux_edits::new_kind_key(window, legacy);
-            let answer = match self.globals.get(key).and_then(|v| v.as_bool()) {
-                Some(a) => Some(a),
-                None => {
-                    let (heading, text, b) = crate::tmux_edits::new_kind_question(window);
-                    super::broadcast_ui::yes_no_cancel(self.hwnd(), heading, &format!("{text}\n\nYes: {}. No: {}.", b[0], b[1]))
-                }
+            let legacy = self.globals.bool("NoSyncNewWindowOrTabFromTmuxOpensTmux");
+            let specific = self.globals.bool(crate::tmux_edits::new_kind_key(window, false));
+            let answer = if crate::tmux_edits::skip_new_kind_question(legacy, specific) {
+                Some(true)
+            } else {
+                let (heading, text, b) = crate::tmux_edits::new_kind_question(window);
+                super::broadcast_ui::yes_no_cancel(self.hwnd(), heading, &format!("{text}\n\nYes: {}. No: {}.", b[0], b[1]))
             };
             match answer {
                 None => return Some(()),
@@ -546,30 +568,26 @@ impl App {
 
     /// A divider drag in a tmux tab starts: tmux's lines wait until it ends.
     pub(super) fn tmux_drag_start(&mut self, path: &[bool], axis: Axis) {
+        self.tmux_drag_cancel();
         let Some(tab) = self.tabs.get(self.active) else { return };
-        // The first pane right of or below the divider.
-        let mut node = tab.layout.tree();
-        for step in path {
-            node = match node {
-                crate::layout::Tree::Split { a, b, .. } => if *step { *b } else { *a },
-                leaf => leaf,
-            };
-        }
-        let after = match node {
-            crate::layout::Tree::Split { b, .. } => b.leaves().first().copied().copied(),
-            _ => None,
-        };
-        let Some((gw, p, _)) = after.and_then(|id| self.tmux_of(id)) else { return };
+        let before = crate::layout::pane_before(&tab.layout.tree(), path);
+        let Some((gw, p, _)) = before.and_then(|id| self.tmux_of(id)) else { return };
+        let Some(win) = self.windows.current() else { return };
         let pos = if axis == Axis::Row { self.cursor.0 } else { self.cursor.1 };
         if let Some(t) = self.tmux.get_mut(&gw) {
             t.gw.pause();
         }
-        self.tmux_drag = Some((gw, p, axis == Axis::Row, pos));
+        self.tmux_drag = Some((win, gw, p, axis == Axis::Row, pos));
     }
 
-    /// The drag ended: one resize-pane for how far it moved, then tmux's held lines.
+    /// The drag ended in its window: one resize-pane for how far it moved, then tmux's
+    /// held lines.
     pub(super) fn tmux_drag_end(&mut self, event_loop: &ActiveEventLoop) {
-        let Some((gw, p, horizontal, start)) = self.tmux_drag.take() else { return };
+        let Some((win, gw, p, horizontal, start)) = self.tmux_drag.take() else { return };
+        if self.windows.current() != Some(win) {
+            self.tmux_drag = Some((win, gw, p, horizontal, start));
+            return;
+        }
         let (cw, ch) = self.cell();
         let pos = if horizontal { self.cursor.0 } else { self.cursor.1 };
         let cells = ((pos - start) / if horizontal { cw } else { ch }).round() as i32;
@@ -578,6 +596,15 @@ impl App {
         let events = t.gw.resume();
         self.tmux_flush(gw);
         self.tmux_events(gw, events, event_loop);
+    }
+
+    /// A drag that never got its release (focus lost, another press): tmux's lines go on
+    /// and nothing is resized.
+    pub(super) fn tmux_drag_cancel(&mut self) {
+        let Some((_, gw, ..)) = self.tmux_drag.take() else { return };
+        let Some(t) = self.tmux.get_mut(&gw) else { return };
+        let events = t.gw.resume();
+        self.tmux_held_events.push((gw, events));
     }
 
     /// A tmux pane closed in Tandem: the controller forgets it (tmux keeps it until 8c sends

@@ -216,9 +216,12 @@ pub struct App {
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// A tmux close question's answer, waiting for the event loop: gateway, actions, and
     /// whether the whole window closes.
-    tmux_pending_close: Option<(PaneId, Vec<crate::tmux_controller::Action>, bool)>,
-    /// A divider drag in a tmux tab: gateway, pane after the divider, horizontal, start.
-    tmux_drag: Option<(PaneId, u32, bool, f32)>,
+    tmux_pending_close: Vec<(PaneId, Vec<crate::tmux_controller::Action>, bool)>,
+    /// A divider drag in a tmux tab: window key, gateway, pane before the divider,
+    /// horizontal, start.
+    tmux_drag: Option<(u64, PaneId, u32, bool, f32)>,
+    /// tmux lines a cancelled drag released, run on the next pass.
+    tmux_held_events: Vec<(PaneId, Vec<crate::tmux_gateway::Event>)>,
     /// tmux gateways, by the pane that runs `tmux -CC`.
     tmux: HashMap<PaneId, tmux_ui::TmuxGw>,
     /// A gateway's C key waits for the event loop to open its window.
@@ -518,7 +521,8 @@ pub fn run() {
         prompt: None,
         co_prompt: None,
         tmux_drag: None,
-        tmux_pending_close: None,
+        tmux_pending_close: Vec::new(),
+        tmux_held_events: Vec::new(),
         tmux: HashMap::new(),
         tmux_ask_command: None,
         tmux_prompt: None,
@@ -1347,6 +1351,8 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        // A press starts over: a tmux drag whose release never came lets tmux go on.
+        self.tmux_drag_cancel();
         let (x, y) = self.cursor;
         if let Some(i) = tab_hit(&self.tab_rects, self.tabs.len(), x, y) {
             self.active = i;
@@ -2016,6 +2022,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.tmux_send_input();
         self.tmux_focus_tick();
         self.tmux_finish_close(event_loop);
+        for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
+            self.tmux_events(gw, events, event_loop);
+        }
         let tmux_due = self.tick_tmux();
         let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
         let blinks = self
@@ -2159,6 +2168,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.relayout();
             }
             WindowEvent::Focused(f) => {
+                // A divider drag loses its release when focus goes.
+                if !f {
+                    self.tmux_drag_cancel();
+                }
                 self.focused = f;
                 // Tandem going to the background saves the windows (iTerm2 saves on resign
                 // active); a switch between Tandem's own windows gains focus again at once.

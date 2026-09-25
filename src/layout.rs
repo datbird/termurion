@@ -46,6 +46,22 @@ pub struct Divider {
     pub parent: Rect,
 }
 
+/// The pane before the divider at `path` (left of it or above it): tmux resizes that one,
+/// as iTerm2 resizes the view before the splitter.
+pub fn pane_before(tree: &Tree<PaneId>, path: &[bool]) -> Option<PaneId> {
+    let mut node = tree;
+    for step in path {
+        node = match node {
+            Tree::Split { a, b, .. } => if *step { b } else { a },
+            Tree::Leaf(_) => return None,
+        };
+    }
+    match node {
+        Tree::Split { a, .. } => a.leaves().first().map(|p| **p),
+        Tree::Leaf(_) => None,
+    }
+}
+
 /// A layout's shape with any leaf type (arrangements carry sessions in the leaves).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tree<T> {
@@ -366,6 +382,19 @@ pub fn visible_rects(layout: &Layout, zoomed: Option<PaneId>, area: Rect, gap: f
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pane_before_a_divider() {
+        let t: Tree<PaneId> = Tree::Split {
+            axis: Axis::Row,
+            ratio: 0.3,
+            a: Box::new(Tree::Leaf(1)),
+            b: Box::new(Tree::Split { axis: Axis::Row, ratio: 0.5, a: Box::new(Tree::Leaf(2)), b: Box::new(Tree::Leaf(3)) }),
+        };
+        assert_eq!(pane_before(&t, &[]), Some(1), "A|B: A, not B");
+        assert_eq!(pane_before(&t, &[true]), Some(2), "B|C: B");
+        assert_eq!(pane_before(&Tree::Leaf(1), &[]), None);
+    }
+
     #[test]
     fn swapping_panes_keeps_the_shape() {
         let mut l = Layout::new(1);

@@ -62,6 +62,17 @@ pub fn close_window_question(n: usize) -> Option<(&'static str, [&'static str; 4
     Some((text, ["Hide", "Detach tmux Session", "Kill", "Cancel"]))
 }
 
+/// The bar id of a window question: `gw` 0 means every tmux session in the window;
+/// `whole`: the window closes too (Close Window), else only the tmux tabs (Close Tab).
+pub fn close_win_id(gw: u64, whole: bool) -> String {
+    format!("tmux-close-win:{gw}:{}", u8::from(whole))
+}
+
+pub fn parse_close_win(id: &str) -> Option<(u64, bool)> {
+    let (gw, whole) = id.strip_prefix("tmux-close-win:")?.split_once(':')?;
+    Some((gw.parse().ok()?, whole == "1"))
+}
+
 /// Attaching to a session this Tandem already shows (iTerm2's tmuxDoubleAttachForSessionGUID):
 /// (heading, text, buttons); only OK when the other connection is gone.
 pub fn attach_warning(other: bool) -> (&'static str, &'static str, Vec<&'static str>) {
@@ -90,6 +101,14 @@ mod tests {
         let a = Affinities::parse(cmd.split('"').nth(1).unwrap());
         assert!(a.class_of("1").contains("2") && a.class_of("3").contains("pty-B"));
         assert_eq!(escape_quotes("a\"b\\"), "a\\\"b\\\\");
+    }
+
+    #[test]
+    fn close_bars_carry_their_scope() {
+        assert_eq!(parse_close_win(&close_win_id(7, false)), Some((7, false)), "a tab's close closes only the tab");
+        assert_eq!(parse_close_win(&close_win_id(0, true)), Some((0, true)), "a window's close: every session, the whole window");
+        assert_eq!(parse_close_win("tmux-close-win:x"), None);
+        assert_eq!(parse_close_win("other"), None);
     }
 
     #[test]

@@ -213,6 +213,7 @@ impl App {
             }
         }
         self.bars.entry(pane).or_default().retain(|b| b.id != SLOW_BAR && b.id != HUNG_BAR);
+        self.tmux_drop_double_bars(pane);
         self.redraw();
     }
 
