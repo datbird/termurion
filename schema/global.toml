@@ -349,7 +349,34 @@ section = "Tabs"
 label = "Show new-output indicator"
 type = "bool"
 default = true
-help = "A tab whose session printed something you have not looked at shows a dot."
+help = "A tab whose session printed something you have not looked at shows the new-output mark."
+
+[[setting]]
+key = "silentUserNotifications"
+tab = "Advanced"
+section = "Notifications"
+label = "Notifications make no sound"
+type = "bool"
+default = false
+help = "Notifications from Tandem show without the Windows notification sound."
+
+[[setting]]
+key = "simpleNotifications"
+tab = "Advanced"
+section = "Notifications"
+label = "Escape-sequence notifications show only their message"
+type = "bool"
+default = false
+help = "An OSC 9 or OSC 1337 notification without a title shows only its message, without the session name and tab number."
+
+[[setting]]
+key = "sessionEndMessageText"
+tab = "Advanced"
+section = "Notifications"
+label = "Session Ended notification title"
+type = "string"
+default = ""
+help = "The title of the notification that a session ended. Empty: \"Session Ended\"."
 
 [[setting]]
 key = "ShowSessionStatusInTabSubtitle"

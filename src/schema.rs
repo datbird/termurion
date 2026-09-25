@@ -159,4 +159,11 @@ mod tests {
             assert!(seen.insert(s.key.as_str()), "duplicate key {}", s.key);
         }
     }
+
+    #[test]
+    fn notification_settings_can_be_set() {
+        for k in ["silentUserNotifications", "simpleNotifications", "sessionEndMessageText"] {
+            assert!(find_global(k).is_some(), "{k} is used but not in schema/global.toml");
+        }
+    }
 }

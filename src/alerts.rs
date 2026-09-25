@@ -72,6 +72,18 @@ pub fn idle_code_due(last_output: Instant, last_sent: Option<Instant>, now: Inst
     now.saturating_duration_since(from) >= period
 }
 
+/// Whether the user sees a session: Tandem in front and the session's tab shown. A split
+/// that is visible but not focused counts as seen.
+pub fn looked_at(front: bool, tab_shown: bool) -> bool {
+    front && tab_shown
+}
+
+/// A time from the settings, in `lo..=hi` seconds (a negative, huge, or NaN value would
+/// panic in Duration).
+pub fn safe_secs(v: f64, lo: f64, hi: f64) -> Duration {
+    Duration::from_secs_f64(if v.is_nan() { lo } else { v.clamp(lo, hi) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +147,29 @@ mod tests {
         assert!(idle_code_due(t0, None, t0 + Duration::from_secs(60), p));
         assert!(!idle_code_due(t0, Some(t0 + Duration::from_secs(60)), t0 + Duration::from_secs(100), p), "a minute after the last one sent");
         assert!(idle_code_due(t0, Some(t0 + Duration::from_secs(60)), t0 + Duration::from_secs(120), p));
+    }
+
+    #[test]
+    fn a_visible_split_is_looked_at() {
+        assert!(looked_at(true, true), "Tandem in front, the pane's tab shown (focused or not)");
+        assert!(!looked_at(false, true), "Tandem in the background");
+        assert!(!looked_at(true, false), "another tab");
+    }
+
+    #[test]
+    fn times_from_settings_are_safe() {
+        use std::time::Duration;
+        assert_eq!(safe_secs(-1.0, 1.0, 86400.0), Duration::from_secs(1));
+        assert_eq!(safe_secs(1e30, 1.0, 86400.0), Duration::from_secs(86400));
+        assert_eq!(safe_secs(f64::NAN, 1.0, 86400.0), Duration::from_secs(1));
+        assert_eq!(safe_secs(5.0, 1.0, 86400.0), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn conemu_osc9_is_not_a_notification() {
+        let mut s = crate::screen::Screen::new(20, 4);
+        s.feed(b"\x1b]9;9;\"C:\\Users\\me\"\x07\x1b]9;1;500\x07");
+        assert!(!s.take_requests().iter().any(|r| matches!(r, crate::screen::Request::Notify { .. })));
+        assert_eq!(s.shell.cwd.as_deref(), Some("C:\\Users\\me"), "9;9 reports the folder");
     }
 }

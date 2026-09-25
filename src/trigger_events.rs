@@ -1,7 +1,7 @@
 //! Event triggers (iTerm2's match types 100 to 115): which events exist, their filters, and
 //! the strings they capture.
 
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Instant, SystemTime};
 
 use crate::screen::Screen;
 use crate::triggers;
@@ -110,6 +110,12 @@ pub fn param_secs(params: Option<&toml::Table>, key: &str, default: f64) -> f64 
     params.and_then(|p| p.get(key)).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(default)
 }
 
+/// How deep events an action causes may go.
+const MAX_EVENT_DEPTH: u8 = 3;
+
+/// The longest wait an event trigger takes: a year.
+const LONGEST_WAIT: f64 = 365.0 * 86400.0;
+
 fn user_name(n: &str) -> String {
     format!("user.{}", n.strip_prefix("user.").unwrap_or(n))
 }
@@ -149,6 +155,17 @@ pub struct EventState {
 impl Screen {
     /// Runs the triggers for an event. `captures` are `\0`, `\1`, and on.
     pub(crate) fn fire_event(&mut self, kind: EventKind, facts: &EventFacts, captures: &[String]) {
+        // Output an action injects runs no triggers, and an event an action causes (a
+        // variable it sets) goes only a few levels deep: a trigger cannot feed itself forever.
+        if self.triggers.busy || self.triggers.event_depth >= MAX_EVENT_DEPTH {
+            return;
+        }
+        self.triggers.event_depth += 1;
+        self.fire_event_inner(kind, facts, captures);
+        self.triggers.event_depth -= 1;
+    }
+
+    fn fire_event_inner(&mut self, kind: EventKind, facts: &EventFacts, captures: &[String]) {
         let wanted: Vec<usize> = self
             .triggers
             .list
@@ -197,8 +214,9 @@ impl Screen {
             let params = c.trigger.extra.get("eventParams").and_then(|v| v.as_table()).cloned();
             let t = c.trigger.match_type;
             if idle.contains(&t) && !c.events.quiet {
-                let timeout = param_secs(params.as_ref(), "timeout", 30.0);
-                if self.last_output.is_some_and(|l| now.saturating_duration_since(l) >= Duration::from_secs_f64(timeout)) {
+                let wait = crate::alerts::safe_secs(param_secs(params.as_ref(), "timeout", 30.0), 0.0, LONGEST_WAIT);
+                let timeout = wait.as_secs_f64();
+                if self.last_output.is_some_and(|l| now.saturating_duration_since(l) >= wait) {
                     self.triggers.list[i].events.quiet = true;
                     if t == EventKind::Idle.match_type() {
                         self.fire_trigger_with(i, &[format!("{}", timeout as i64)]);
@@ -207,7 +225,7 @@ impl Screen {
             }
             if t == EventKind::LongRunningCommand.match_type() {
                 let Some((id, command, Some(start))) = running.clone() else { continue };
-                let threshold = param_secs(params.as_ref(), "threshold", 60.0);
+                let threshold = crate::alerts::safe_secs(param_secs(params.as_ref(), "threshold", 60.0), 0.0, LONGEST_WAIT).as_secs_f64();
                 let elapsed = SystemTime::now().duration_since(start).unwrap_or_default().as_secs_f64();
                 let facts = EventFacts { value: command.clone(), ..Default::default() };
                 if elapsed >= threshold && self.triggers.list[i].events.long_fired != Some(id) && passes(EventKind::LongRunningCommand, params.as_ref(), &facts) {
@@ -366,5 +384,30 @@ mod tests {
         let v = base64::engine::general_purpose::STANDARD.encode("ok");
         s.feed(format!("\x1b]1337;SetUserVar=build={v}\x07\x1b]1337;SetUserVar=other={v}\x07\x1b]9;4;1;50\x07\x1b]9;4;0\x07").as_bytes());
         assert_eq!(alerts(&mut s), vec!["user.build=ok", "bar appeared"]);
+    }
+
+    #[test]
+    fn events_cannot_feed_themselves() {
+        let mut s = Screen::new(40, 4);
+        let mut t = event(EventKind::VariableChanged, "n\u{1}\\0.", &[("variableName", toml::Value::String("user.n".into()))]);
+        t.action = "iTermSetUserVariableTrigger".into();
+        s.set_triggers(vec![t], TriggerPrefs::default());
+        use base64::Engine;
+        s.feed(format!("\x1b]1337;SetUserVar=n={}\x07", base64::engine::general_purpose::STANDARD.encode("a")).as_bytes());
+        assert!(s.shell.vars["n"].len() <= 4, "a bounded chain, not a stack overflow: {:?}", s.shell.vars["n"]);
+        let mut b = Screen::new(40, 4);
+        let mut t = event(EventKind::BellReceived, "\\a", &[]);
+        t.action = "iTermInjectTrigger".into();
+        b.set_triggers(vec![t], TriggerPrefs::default());
+        b.feed(b"\x07");
+        assert!(b.bell_count <= 3, "{}", b.bell_count);
+    }
+
+    #[test]
+    fn bad_timeouts_do_not_panic() {
+        let mut s = Screen::new(40, 4);
+        s.set_triggers(vec![event(EventKind::Idle, "x", &[("timeout", toml::Value::Float(-1.0))]), event(EventKind::LongRunningCommand, "y", &[("threshold", toml::Value::Float(f64::NAN))])], TriggerPrefs::default());
+        s.feed(b"x");
+        s.check_event_timers(std::time::Instant::now() + std::time::Duration::from_secs(5));
     }
 }

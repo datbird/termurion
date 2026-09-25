@@ -377,10 +377,21 @@ pub fn parse(payload: &str) -> Option<Osc> {
             })
         }
         "7" => Some(Osc::Location(rest.to_string())),
-        "9" => Some(match rest.strip_prefix("4;") {
-            Some(p) => Osc::Progress(p.to_string()),
-            None => Osc::Notify(rest.to_string()),
-        }),
+        "9" => {
+            if let Some(p) = rest.strip_prefix("4;") {
+                return Some(Osc::Progress(p.to_string()));
+            }
+            // ConEmu's subcommands (`9;<n>;...`, which Windows shells send): 9;9 reports the
+            // current folder (quoted or not); the others are not notifications.
+            let (n, arg) = rest.split_once(';').unwrap_or((rest, ""));
+            if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) {
+                return (n == "9").then(|| {
+                    let path = arg.strip_prefix('"').and_then(|a| a.strip_suffix('"')).unwrap_or(arg);
+                    Osc::Kv("CurrentDir".into(), path.to_string())
+                });
+            }
+            Some(Osc::Notify(rest.to_string()))
+        }
         "52" => Some(Osc::Clipboard(rest.as_bytes().to_vec())),
         "21337" => Some(Osc::TabStatus(rest.to_string())),
         "1337" => {

@@ -64,7 +64,9 @@ pub struct TriggerState {
     alt: bool,
     last_instant: Option<Instant>,
     /// Inside an action (Inject Data): output does not run triggers again.
-    busy: bool,
+    pub(crate) busy: bool,
+    /// Events nested inside an action's own event (see `fire_event`).
+    pub(crate) event_depth: u8,
     pub lines_checked: u64,
 }
 

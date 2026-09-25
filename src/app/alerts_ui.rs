@@ -34,8 +34,9 @@ impl App {
 
     /// Posts an alert when the profile and the user's view allow it.
     pub(super) fn post_alert(&mut self, pane: PaneId, kind: AlertKind) {
-        let looking = self.looking_at(pane);
-        if !alerts::should_post(&kind, self.alert_prefs(pane), looking, looking) {
+        let shown = self.tabs.get(self.active).is_some_and(|t| t.layout.panes().contains(&pane));
+        let looking = alerts::looked_at(self.focused, shown);
+        if !alerts::should_post(&kind, self.alert_prefs(pane), looking, self.looking_at(pane)) {
             return;
         }
         let (name, tab) = self.session_label(pane);
@@ -66,6 +67,8 @@ impl App {
             self.tabs[i].focused = pane;
         }
         if let Some(g) = self.gpu.as_ref() {
+            // A minimized window takes no focus until it is restored.
+            g.window.set_minimized(false);
             g.window.focus_window();
         }
         self.relayout();
@@ -118,7 +121,7 @@ impl App {
             .iter()
             .filter_map(|(id, p)| {
                 let pr = self.store.get(&p.profile)?;
-                pr.bool("Send Code When Idle").then(|| (*id, pr.int("Idle Code").clamp(0, 255) as u8, Duration::from_secs_f64(pr.float("Idle Period").max(1.0))))
+                pr.bool("Send Code When Idle").then(|| (*id, pr.int("Idle Code").clamp(0, 255) as u8, alerts::safe_secs(pr.float("Idle Period"), 1.0, 86400.0)))
             })
             .collect();
         for (id, code, period) in due {

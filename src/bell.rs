@@ -104,6 +104,11 @@ impl Bell {
         Ring { effects: Some(Effects { beep: !prefs.silence, icon: prefs.icon, flash: prefs.flash }), offer }
     }
 
+    /// The window could not show the offer (its bar row was full): it may come again.
+    pub fn offer_not_shown(&mut self) {
+        self.offer_open = false;
+    }
+
     /// The offer's answer. Never and Automatically are saved by the window.
     pub fn answer(&mut self, now: Instant, a: Answer) {
         self.offer_open = false;
@@ -115,6 +120,12 @@ impl Bell {
             Answer::SuppressOutput | Answer::Never => {}
         }
     }
+}
+
+/// The Bell notification posts when the tab's bell icon has just turned on (iTerm2 posts it
+/// inside its bell-icon code), so it posts once until the session is seen.
+pub fn bell_notification_due(icon_on: bool, newly_marked: bool) -> bool {
+    icon_on && newly_marked
 }
 
 #[cfg(test)]
@@ -171,5 +182,22 @@ mod tests {
         let bells = s.take_requests().into_iter().filter(|r| matches!(r, crate::screen::Request::Bell)).count();
         assert_eq!(bells, 2);
         assert_eq!(s.bell_count, 2);
+    }
+
+    #[test]
+    fn bell_notification_once_until_seen() {
+        assert!(bell_notification_due(true, true), "the icon just went on");
+        assert!(!bell_notification_due(true, false), "already marked: no second toast");
+        assert!(!bell_notification_due(false, true), "no icon, no notification (iTerm2)");
+    }
+
+    #[test]
+    fn an_offer_not_shown_comes_again() {
+        let mut b = Bell::default();
+        let t0 = Instant::now();
+        let first = (0..3000).position(|i| b.ring(t0 + Duration::from_millis(i), ON).offer).expect("an offer");
+        b.offer_not_shown();
+        let again = (first as u64 + 1..6000).any(|i| b.ring(t0 + Duration::from_millis(i), ON).offer);
+        assert!(again, "a full bar row must not end the offers for good");
     }
 }

@@ -39,11 +39,8 @@ impl App {
                     windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);
                 }
             }
-            if e.icon && !self.looking_at(pane) {
-                self.bell_icons.insert(pane);
-            }
-            // iTerm2 posts the Bell notification only with the bell icon on.
-            if e.icon {
+            let marked = e.icon && !self.looking_at(pane) && self.bell_icons.insert(pane);
+            if crate::bell::bell_notification_due(e.icon, marked) {
                 self.post_alert(pane, crate::alerts::AlertKind::Bell);
             }
             if e.flash {
@@ -53,7 +50,9 @@ impl App {
         }
         if ring.offer {
             let text = if prefs.silence { "The bell is ringing a lot. Want to suppress all output until things calm down?" } else { "The bell is ringing a lot. Silence it?" };
-            self.ask(pane, OFFER_BAR, text, &["_Silence Bell Temporarily", "Suppress _All Output", "Don't Offer Again", "Silence Automatically"], false);
+            if !self.ask(pane, OFFER_BAR, text, &["_Silence Bell Temporarily", "Suppress _All Output", "Don't Offer Again", "Silence Automatically"], false) {
+                self.bells.entry(pane).or_default().offer_not_shown();
+            }
         }
     }
 

@@ -7,6 +7,9 @@ use crate::layout::Rect;
 pub const LINE: f32 = 1.2;
 const SMALLEST: f32 = 4.0;
 const LARGEST: f32 = 100.0;
+/// The most characters a badge shows; a longer text is cut (a badge is a label, and a huge
+/// one would be measured word by word at every size).
+pub const MAX_TEXT: usize = 300;
 
 /// The profile's badge box: shares of the pane's width and height, and margins in pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,9 +30,12 @@ pub struct BadgeLayout {
 }
 
 /// Word wrap at a size; None when a word is wider than the box.
-fn wrap(text: &str, width: f32, size: f32, measure: &dyn Fn(&str, f32) -> f32) -> Option<(Vec<String>, Vec<f32>)> {
+fn wrap(text: &str, width: f32, size: f32, max_lines: usize, measure: &dyn Fn(&str, f32) -> f32) -> Option<(Vec<String>, Vec<f32>)> {
     let mut lines = Vec::new();
     for para in text.split('\n') {
+        if lines.len() >= max_lines {
+            return None;
+        }
         let mut line = String::new();
         for word in para.split_whitespace() {
             let next = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
@@ -39,7 +45,7 @@ fn wrap(text: &str, width: f32, size: f32, measure: &dyn Fn(&str, f32) -> f32) -
                 return None;
             } else {
                 lines.push(std::mem::replace(&mut line, word.to_string()));
-                if measure(&line, size) > width {
+                if lines.len() >= max_lines || measure(&line, size) > width {
                     return None;
                 }
             }
@@ -53,14 +59,14 @@ fn wrap(text: &str, width: f32, size: f32, measure: &dyn Fn(&str, f32) -> f32) -
 /// The badge for `text` in a pane of `pane` pixels: the largest whole size from 4 to 100 at
 /// which the wrapped text fits the box (4 when none does). None for empty text.
 pub fn layout(text: &str, pane: (f32, f32), prefs: BadgePrefs, measure: &dyn Fn(&str, f32) -> f32) -> Option<BadgeLayout> {
-    let text = text.trim();
+    let text = cut(text.trim());
     if text.is_empty() {
         return None;
     }
     let box_w = pane.0 * prefs.max_w.clamp(0.01, 1.0);
     let box_h = pane.1 * prefs.max_h.clamp(0.0, 1.0);
     // A hundredth of a pixel of slack for float rounding (100 x 1.2 is not exactly 120).
-    let fits = |s: f32| wrap(text, box_w + 0.01, s, measure).filter(|(l, _)| l.len() as f32 * s * LINE <= box_h + 0.01);
+    let fits = |s: f32| wrap(text, box_w + 0.01, s, ((box_h + 0.01) / (s * LINE)) as usize, measure).filter(|(l, _)| l.len() as f32 * s * LINE <= box_h + 0.01);
     let (mut lo, mut hi) = (SMALLEST as i32, LARGEST as i32);
     let mut best = None;
     while lo <= hi {
@@ -88,12 +94,16 @@ pub fn layout(text: &str, pane: (f32, f32), prefs: BadgePrefs, measure: &dyn Fn(
 /// the badge.
 pub fn text(template: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
     if !template.contains("\\(") {
-        return template.to_string();
+        return cut(template).to_string();
     }
     match crate::interp::evaluate(template, lookup, &[]) {
-        Ok(v) => v,
-        Err(e) => format!("Error: {e}"),
+        Ok(v) => cut(&v).to_string(),
+        Err(e) => cut(&format!("Error: {e}")).to_string(),
     }
+}
+
+fn cut(s: &str) -> &str {
+    s.char_indices().nth(MAX_TEXT).map_or(s, |(i, _)| &s[..i])
 }
 
 #[cfg(test)]
@@ -138,5 +148,16 @@ mod tests {
         s.feed(format!("\x1b]1337;SetBadgeFormat={}\x07\x1b]1337;SetBadgeFormat={}\x07", b("\\(user.x)"), b("\\(f())")).as_bytes());
         let got: Vec<crate::screen::Request> = s.take_requests();
         assert_eq!(got, vec![crate::screen::Request::SetBadge("\\(user.x)".into()), crate::screen::Request::BadgeRefused]);
+    }
+
+    #[test]
+    fn a_huge_badge_stays_fast_and_short() {
+        let long = "word ".repeat(10_000);
+        let t = std::time::Instant::now();
+        let l = layout(&long, (800.0, 600.0), PREFS, &measure).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
+        assert!(l.lines.iter().map(|x| x.chars().count()).sum::<usize>() <= MAX_TEXT);
+        let vars = |_: &str| None;
+        assert_eq!(text(&"x".repeat(5000), &vars).chars().count(), MAX_TEXT);
     }
 }
