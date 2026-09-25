@@ -364,6 +364,12 @@ impl App {
                 let g = self.focused_guid();
                 self.split(Axis::Column, g.as_deref());
             }
+            "runCoprocess:" => self.open_coprocess_prompt(event_loop),
+            "stopCoprocess:" => {
+                if let Some(id) = self.focused_id() {
+                    self.stop_coprocess(id);
+                }
+            }
             "closeCurrentSession:" => {
                 if let Some(id) = self.focused_id().filter(|id| self.confirm_close(close_ui::Closing::Session(*id))) {
                     self.close_pane(id, event_loop);

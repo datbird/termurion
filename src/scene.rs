@@ -796,6 +796,19 @@ pub fn tab_icon(dot: bool, dead: bool, bell: bool, new_output: bool, idle: bool)
     [(dead, TabIcon::Dead), (bell, TabIcon::Bell), (new_output, TabIcon::NewOutput), (idle, TabIcon::Idle)].into_iter().find(|(on, _)| *on).map(|(_, i)| i)
 }
 
+/// The top-right indicator for a running coprocess (Segoe Fluent Icons "Switch").
+pub const COPROCESS_GLYPH: char = '\u{E8AB}';
+
+/// A pane's top-right indicators, right to left from the corner.
+pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], color: Rgb, cell: (f32, f32)) {
+    let step = cell.0 * 2.5;
+    for (i, g) in glyphs.iter().enumerate() {
+        let x = pane.x + pane.w - (i as f32 + 1.0) * step;
+        let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false };
+        frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0 });
+    }
+}
+
 /// Segoe Fluent Icons glyphs for the indicators.
 fn tab_icon_glyph(i: TabIcon) -> char {
     match i {
@@ -1417,5 +1430,19 @@ mod tests {
         assert_eq!(ms_to_next_frame(&[f(100), f(50)], 120), Some(30));
         assert_eq!(ms_to_next_frame(&[f(100)], 30), None);
         assert_eq!(ms_to_next_frame(&[f(0), f(0)], 30), None);
+    }
+
+    #[test]
+    fn indicators_sit_top_right() {
+        let mut f = Frame::default();
+        let pane = Rect { x: 100.0, y: 50.0, w: 400.0, h: 300.0 };
+        top_right_indicators(&mut f, pane, &[COPROCESS_GLYPH], rgb(1, 2, 3), (8.0, 16.0));
+        assert_eq!(f.rows.len(), 1);
+        let r = &f.rows[0];
+        assert!(r.spans[0].icon && r.spans[0].text == COPROCESS_GLYPH.to_string());
+        assert!(r.x > pane.x + pane.w - 40.0 && r.x < pane.x + pane.w && (r.y - pane.y).abs() < 8.0, "{} {}", r.x, r.y);
+        let mut none = Frame::default();
+        top_right_indicators(&mut none, pane, &[], rgb(1, 2, 3), (8.0, 16.0));
+        assert!(none.rows.is_empty());
     }
 }

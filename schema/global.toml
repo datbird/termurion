@@ -404,3 +404,39 @@ label = "Print in black and white"
 type = "bool"
 default = true
 help = "Shell > Print leaves out text and background colors."
+
+[[setting]]
+key = "fileDropCoprocess"
+tab = "Advanced"
+section = "General"
+label = "Coprocess for dropped files"
+type = "string"
+default = ""
+help = "A command run as a silent coprocess when files are dropped on a session; \\(filenames) becomes the dropped paths. Empty: the paths are pasted."
+
+[[setting]]
+key = "disableTopRightIndicators"
+tab = "Advanced"
+section = "General"
+label = "Hide the indicators at the top right of a session"
+type = "bool"
+default = false
+help = "Hides the icons in a session's top-right corner, such as the one that shows a coprocess is running."
+
+[[setting]]
+key = "showAutomaticProfileSwitchingBanner"
+tab = "Advanced"
+section = "General"
+label = "Say when Automatic Profile Switching changes the profile"
+type = "bool"
+default = true
+help = "Shows \"Switched to profile\" when a session's profile changes because of an Automatic Profile Switching rule."
+
+[[setting]]
+key = "preserveFontSizeOnAutomaticProfileSwitch"
+tab = "Advanced"
+section = "General"
+label = "Keep the text size when Automatic Profile Switching changes the profile"
+type = "bool"
+default = true
+help = "A session that was made bigger or smaller keeps that change when its profile switches."

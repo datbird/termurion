@@ -286,7 +286,7 @@ impl App {
     }
 
     /// The session's variables, as ReportVariable names them.
-    fn variables(&self, pane: PaneId) -> prompted::Vars {
+    pub(super) fn variables(&self, pane: PaneId) -> prompted::Vars {
         let mut v = prompted::Vars::default();
         let tab_index = self.tabs.iter().position(|t| t.layout.panes().contains(&pane));
         let Some(p) = self.panes.get(&pane) else { return v };

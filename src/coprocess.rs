@@ -164,6 +164,17 @@ pub fn trigger_warning(action_title: &str) -> String {
     format!("{} trigger: Can't run two coprocesses at once.", action_title.trim_end_matches('\u{2026}').trim_end_matches("..."))
 }
 
+/// `fileDropCoprocess`: the command for dropped files, `\(filenames)` filled with the
+/// paths (quoted when they hold a space). None when the setting is empty.
+pub fn drop_command(template: &str, files: &[String]) -> Option<String> {
+    let t = template.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let names = files.iter().map(|f| if f.contains(char::is_whitespace) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ");
+    Some(t.replace("\\(filenames)", &names))
+}
+
 /// The banner when a coprocess ends with stderr output.
 pub fn stderr_banner(command: &str) -> String {
     format!("Coprocess \u{201c}{command}\u{201d} terminated with output on stderr.")
@@ -230,5 +241,18 @@ mod tests {
         assert_eq!(start_policy(true, Entry::KeyBinding), Err(Refusal::Banner));
         assert_eq!(start_policy(true, Entry::FileDrop), Err(Refusal::Quiet));
         assert_eq!(trigger_warning("Run Coprocess\u{2026}"), "Run Coprocess trigger: Can't run two coprocesses at once.");
+    }
+
+    #[test]
+    fn stderr_banner_text() {
+        assert_eq!(stderr_banner("grep x"), "Coprocess \u{201c}grep x\u{201d} terminated with output on stderr.");
+    }
+
+    #[test]
+    fn file_drop_command() {
+        let files = vec![r"C:\a b\x.txt".to_string(), r"C:\y.txt".to_string()];
+        assert_eq!(drop_command("", &files), None, "no fileDropCoprocess: a drop pastes as usual");
+        assert_eq!(drop_command("upload \\(filenames)", &files).as_deref(), Some(r#"upload "C:\a b\x.txt" C:\y.txt"#));
+        assert_eq!(drop_command("upload", &files).as_deref(), Some("upload"));
     }
 }

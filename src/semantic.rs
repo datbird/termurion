@@ -258,6 +258,8 @@ pub enum Run {
     Send(String),
     /// An action a later milestone brings: its name and the milestone.
     Later(&'static str, u8),
+    /// A coprocess command for the session.
+    Coprocess(String),
     /// Show a file in Explorer instead of running it.
     Reveal(String),
     /// Not opened, and why.
@@ -414,7 +416,7 @@ pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> 
                 "editor" if prefs.editor.to_lowercase().contains("code") => Run::Command(format!("{} -g {}", cmd_quote(&prefs.editor), goto())),
                 "editor" => Run::Command(format!("{} {}", cmd_quote(&prefs.editor), cmd_quote(&p))),
                 "command" | "raw command" => Run::Command(fill(&prefs.text, values, cmd_quote)),
-                "coprocess" => Run::Later("Run Coprocess", 6),
+                "coprocess" => Run::Coprocess(fill(&prefs.text, values, cmd_quote)),
                 "send text" => Run::Send(fill(&prefs.text, values, str::to_string)),
                 _ => file_open(&p, *line, *column, has_code),
             })
@@ -547,7 +549,7 @@ mod tests {
         let send = Prefs { action: "send text".into(), text: "open \\1\\n".into(), editor: String::new() };
         assert_eq!(plan(&file, &send, &around, false), Some(Run::Send("open C:\\a b\\x.rs\\n".into())));
         let co = Prefs { action: "coprocess".into(), text: "x".into(), editor: String::new() };
-        assert_eq!(plan(&file, &co, &around, false), Some(Run::Later("Run Coprocess", 6)));
+        assert_eq!(plan(&file, &co, &around, false), Some(Run::Coprocess("x".into())));
         assert_eq!(plan(&Target::Url("https://a/".into()), &co, &around, false), Some(Run::Open("https://a/".into())));
         assert_eq!(plan(&Target::Link("file:///c:/x".into()), &best, &around, false), Some(Run::Open("c:\\x".into())));
     }

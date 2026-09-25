@@ -84,7 +84,7 @@ impl App {
             TriggerRequest::ProfileSetting { key, on } => {
                 self.set_session_values(pane, &[(key, Some(toml::Value::Boolean(on)))]);
             }
-            TriggerRequest::Coprocess { .. } => self.tell_once(pane, "Run Coprocess", "Coprocesses come in milestone 6c."),
+            TriggerRequest::Coprocess { cmd, silent } => self.start_coprocess(pane, &cmd, silent, crate::coprocess::Entry::Trigger),
             TriggerRequest::ParameterError { trigger, text } => self.tell_once(pane, &format!("parameter-{trigger}"), &format!("Error in Trigger Parameter: {text}")),
             TriggerRequest::Unavailable { title, milestone, .. } => {
                 let text = if milestone == 0 { format!("The trigger action \u{201c}{title}\u{201d} is not available in Tandem yet.") } else { format!("The trigger action \u{201c}{title}\u{201d} comes in milestone {milestone}.") };
@@ -94,7 +94,7 @@ impl App {
     }
 
     /// A message shown once per pane and action.
-    fn tell_once(&mut self, pane: PaneId, key: &str, text: &str) {
+    pub(super) fn tell_once(&mut self, pane: PaneId, key: &str, text: &str) {
         if self.trigger_told.insert((pane, key.to_string())) {
             self.ask(pane, &format!("trigger-told-{key}"), text, &["OK"], false);
         }

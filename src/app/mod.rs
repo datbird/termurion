@@ -79,6 +79,7 @@ mod triggers_ui;
 mod requests_ui;
 mod jobs_ui;
 mod close_ui;
+mod coprocess_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -197,6 +198,12 @@ pub struct App {
     global_find: Option<crate::global_find_ui::GlobalFindWindow>,
     /// The Set Named Mark window, and the pane it names a mark in.
     prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
+    /// Session > Run Coprocess's window.
+    co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
+    /// A coprocess's stderr waiting for its banner's answer: (command, text).
+    coprocess_errors: HashMap<PaneId, (String, String)>,
+    /// Files dropped on the window, handled together once the drop ends.
+    dropped: Vec<(PaneId, String)>,
     api: Api,
     shell: String,
     gpu: Option<Gpu>,
@@ -398,6 +405,9 @@ pub fn run() {
         note_pos: HashMap::new(),
         ctx_pending: None,
         prompt: None,
+        co_prompt: None,
+        dropped: Vec::new(),
+        coprocess_errors: HashMap::new(),
         global_find: None,
         api,
         shell: default_shell(),
@@ -1444,6 +1454,7 @@ impl App {
                 if self.panes.get(&id).is_some_and(|p| p.buffer.on) {
                     scene::buffering_sign(&mut frame, self.inner(rect), cell);
                 }
+                self.draw_coprocess_indicator(&mut frame, id, self.inner(rect), cell);
                 self.draw_info_bar(&mut frame, id, rect, cell);
                 if let Some(t) = self.draw_attention(&mut frame, id, self.inner(rect), cell) {
                     attention = Some(attention.map_or(t, |a: Instant| a.min(t)));
@@ -1598,6 +1609,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     /// Runs the cursor blink when the focused pane's profile asks for it.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.flush_dropped();
         if self.save_due.is_some_and(|t| Instant::now() >= t) {
             self.save_now();
         }
@@ -1681,6 +1693,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.take_requests();
             self.close_pane(id, event_loop);
         }
+        self.check_coprocesses();
         if changed {
             self.take_downloads();
             self.take_requests();
@@ -1691,7 +1704,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.global_find_event(id, &event) || self.note_event(id, &event) || self.shot_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -1716,6 +1729,13 @@ impl ApplicationHandler<UserEvent> for App {
         }
         match event {
             WindowEvent::ThemeChanged(_) => self.refresh_panes(),
+            WindowEvent::DroppedFile(path) => {
+                let (x, y) = self.cursor;
+                let pane = self.pane_at(x, y).map(|(p, _)| p).or_else(|| self.focused_id());
+                if let Some(p) = pane {
+                    self.dropped.push((p, path.to_string_lossy().to_string()));
+                }
+            }
             WindowEvent::CloseRequested => {
                 if !self.confirm_close(close_ui::Closing::Window) {
                     return;

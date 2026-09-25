@@ -138,7 +138,7 @@ impl App {
         Some(match a.action.as_str() {
             "openFile:" | "openUrl:" => Run::Open(text(Escape::None)),
             "runCommand:" | "runCommandInWindow:" => Run::Command(text(Escape::Cmd)),
-            "runCoprocess:" => Run::Later("Run Coprocess", 6),
+            "runCoprocess:" => Run::Coprocess(text(Escape::Cmd)),
             "sendText:" => Run::Send(text(Escape::None)),
             "copy:" => {
                 let t = text(Escape::None);
@@ -185,6 +185,7 @@ impl App {
                 }
             }
             Run::Later(name, m) => self.banners.set("action", format!("{name} comes in milestone {m}.")),
+            Run::Coprocess(command) => self.start_coprocess(id, &command, false, crate::coprocess::Entry::SemanticHistory),
             Run::Blocked(why) => self.banners.set("action", why),
             Run::Reveal(path) => {
                 // Explorer shows the file selected; nothing runs it.
@@ -260,6 +261,13 @@ impl App {
                 pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold });
             }
         }
+        // Stop Coprocess shows only while one runs (iTerm2's context menu).
+        if let Some((id, _)) = at.filter(|(id, _)| self.panes.get(id).is_some_and(|p| p.coprocess_command().is_some())) {
+            extra.push(("Stop Coprocess".into(), CtxItem::StopCoprocess));
+            if pending.is_none() {
+                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None });
+            }
+        }
         self.ctx_pending = pending;
         self.show_context_menu_with(&extra);
     }
@@ -268,7 +276,9 @@ impl App {
     pub(super) fn context_picked(&mut self, id: &str) -> bool {
         let Some(item) = id.strip_prefix(CTX_ID) else { return false };
         let Some(pend) = self.ctx_pending.take() else { return true };
-        if item == "unfold" {
+        if item == "stopcoprocess" {
+            self.stop_coprocess(pend.pane);
+        } else if item == "unfold" {
             if let Some(f) = pend.fold {
                 self.unfold(pend.pane, f);
             }
@@ -323,6 +333,7 @@ pub(super) enum CtxItem {
     Action(usize),
     CopyLink,
     Unfold,
+    StopCoprocess,
 }
 
 impl CtxItem {
@@ -331,6 +342,7 @@ impl CtxItem {
             CtxItem::Action(i) => format!("{CTX_ID}action.{i}"),
             CtxItem::CopyLink => format!("{CTX_ID}copylink"),
             CtxItem::Unfold => format!("{CTX_ID}unfold"),
+            CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
         }
     }
 }

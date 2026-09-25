@@ -166,4 +166,11 @@ mod tests {
             assert!(find_global(k).is_some(), "{k} is used but not in schema/global.toml");
         }
     }
+
+    #[test]
+    fn coprocess_and_aps_settings_can_be_set() {
+        for k in ["fileDropCoprocess", "disableTopRightIndicators", "showAutomaticProfileSwitchingBanner", "preserveFontSizeOnAutomaticProfileSwitch"] {
+            assert!(find_global(k).is_some(), "{k} is used but not in schema/global.toml");
+        }
+    }
 }

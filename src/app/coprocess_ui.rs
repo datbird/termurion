@@ -1,0 +1,216 @@
+//! Coprocesses in the window: Session > Run Coprocess and Stop Coprocess, the trigger,
+//! key, Smart Selection, Semantic History, and file-drop starts, the indicator, and the
+//! banners.
+
+use super::*;
+use crate::coprocess::{self, Entry, Refusal};
+use crate::prompt_ui::{PromptResult, PromptWindow};
+
+const STDERR_BAR: &str = "coprocess-stderr";
+const TRIGGER_BAR: &str = "coprocess-trigger";
+
+fn string_list(v: Option<toml::Value>) -> Vec<String> {
+    v.and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())).unwrap_or_default()
+}
+
+impl App {
+    /// Starts a coprocess in a pane, or says why not.
+    pub(super) fn start_coprocess(&mut self, pane: PaneId, command: &str, mute: bool, entry: Entry) {
+        let running = self.panes.get(&pane).is_some_and(|p| p.coprocess_command().is_some());
+        match coprocess::start_policy(running, entry) {
+            Ok(()) => {}
+            Err(Refusal::Quiet) => return,
+            Err(Refusal::TriggerWarning) => {
+                if !self.globals.bool(coprocess::SUPPRESS_TRIGGER_WARNING_KEY) && self.trigger_told.insert((pane, TRIGGER_BAR.to_string())) {
+                    let title = if mute { "Run Silent Coprocess\u{2026}" } else { "Run Coprocess\u{2026}" };
+                    self.ask(pane, TRIGGER_BAR, &coprocess::trigger_warning(title), &["Silence Warning"], false);
+                }
+                return;
+            }
+            Err(Refusal::Banner) => {
+                self.banners.set("coprocess", "A coprocess is already running in this session. Stop it first (Session > Stop Coprocess).");
+                return self.redraw();
+            }
+        }
+        let cwd = self.pane_dir(pane).filter(|d| d.is_dir()).or_else(|| std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)).unwrap_or_else(std::env::temp_dir);
+        let notify = self.notify.clone();
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        match p.run_coprocess(command, mute, &cwd, notify) {
+            Ok(()) => {
+                self.banners.clear("coprocess");
+                let mut mru = string_list(self.globals.get(coprocess::MRU_KEY));
+                coprocess::mru_add(&mut mru, command);
+                self.globals.set(coprocess::MRU_KEY, toml::Value::Array(mru.into_iter().map(toml::Value::String).collect()));
+                self.save_globals();
+            }
+            Err(e) => self.banners.set("coprocess", format!("Failed to launch coprocess. ({e})")),
+        }
+        self.redraw();
+    }
+
+    pub(super) fn stop_coprocess(&mut self, pane: PaneId) {
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.stop_coprocess();
+        }
+        self.redraw();
+    }
+
+    /// Session > Run Coprocess...: the command window, for the focused pane.
+    pub(super) fn open_coprocess_prompt(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some((w, _)) = &self.co_prompt {
+            return w.focus();
+        }
+        let Some(id) = self.focused_id() else { return };
+        // The menu item is off while one runs.
+        if self.panes.get(&id).is_none_or(|p| p.coprocess_command().is_some()) {
+            return;
+        }
+        let Some(g) = self.gpu.as_ref() else { return };
+        let mru = string_list(self.globals.get(coprocess::MRU_KEY));
+        let ignored = string_list(self.globals.get(coprocess::IGNORE_ERRORS_KEY));
+        let first = mru.first().cloned().unwrap_or_default();
+        match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Run Coprocess", "Coprocess command to run:", &first) {
+            Ok(w) => self.co_prompt = Some((w.with_choices(mru).with_check("Silently ignore errors from this command", ignored).refuse_blank(), id)),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+    }
+
+    /// Events for the Run Coprocess window. False when `window` is not it.
+    pub(super) fn coprocess_prompt_event(&mut self, window: winit::window::WindowId, event: &WindowEvent) -> bool {
+        let Some((w, pane)) = self.co_prompt.as_mut() else { return false };
+        if w.id() != window {
+            return false;
+        }
+        let pane = *pane;
+        match event {
+            WindowEvent::CloseRequested => self.co_prompt = None,
+            WindowEvent::RedrawRequested => match w.redraw() {
+                PromptResult::Open => {}
+                PromptResult::Cancel => self.co_prompt = None,
+                PromptResult::Ok(command) => {
+                    let ignore = w.checked();
+                    self.co_prompt = None;
+                    let command = command.trim().to_string();
+                    let mut list = string_list(self.globals.get(coprocess::IGNORE_ERRORS_KEY));
+                    list.retain(|c| *c != command);
+                    if ignore {
+                        list.push(command.clone());
+                    }
+                    self.globals.set(coprocess::IGNORE_ERRORS_KEY, toml::Value::Array(list.into_iter().map(toml::Value::String).collect()));
+                    self.start_coprocess(pane, &command, false, Entry::Menu);
+                }
+            },
+            other => {
+                w.event(other);
+            }
+        }
+        true
+    }
+
+    /// Coprocesses that ended: stderr output shows a banner unless the command's errors
+    /// are ignored; lost input is reported once.
+    pub(super) fn check_coprocesses(&mut self) {
+        let ignored = string_list(self.globals.get(coprocess::IGNORE_ERRORS_KEY));
+        let mut ended = Vec::new();
+        for (id, p) in self.panes.iter_mut() {
+            if p.coprocess_dropped() > 0 {
+                self.banners.set("coprocess-input", "A coprocess is not reading its input: terminal output it missed was dropped.");
+            }
+            if let Some(end) = p.take_coprocess_end() {
+                ended.push((*id, end));
+            }
+        }
+        for (id, (command, stderr)) in ended {
+            if !stderr.trim().is_empty() && !ignored.contains(&command) {
+                self.coprocess_errors.insert(id, (command.clone(), stderr));
+                self.ask(id, STDERR_BAR, &coprocess::stderr_banner(&command), &["View Errors", "Ignore Errors from This Command"], false);
+            }
+            self.redraw();
+        }
+    }
+
+    /// The coprocess bars' answers. False for other bars.
+    pub(super) fn coprocess_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>) -> bool {
+        match id {
+            TRIGGER_BAR => {
+                if button == Some("Silence Warning") {
+                    self.globals.set(coprocess::SUPPRESS_TRIGGER_WARNING_KEY, toml::Value::Boolean(true));
+                    self.save_globals();
+                }
+                true
+            }
+            STDERR_BAR => {
+                let Some((command, stderr)) = self.coprocess_errors.remove(&pane) else { return true };
+                match button {
+                    Some("View Errors") => {
+                        let path = std::env::temp_dir().join(format!("coprocess-stderr.{}.txt", std::process::id()));
+                        match std::fs::write(&path, stderr) {
+                            Ok(()) => {
+                                if let Err(e) = std::process::Command::new("notepad.exe").arg(&path).spawn() {
+                                    self.banners.set("coprocess", format!("Could not open {}: {e}", path.display()));
+                                }
+                            }
+                            Err(e) => self.banners.set("coprocess", format!("Could not write {}: {e}", path.display())),
+                        }
+                    }
+                    Some("Ignore Errors from This Command") => {
+                        let mut list = string_list(self.globals.get(coprocess::IGNORE_ERRORS_KEY));
+                        if !list.contains(&command) {
+                            list.push(command);
+                        }
+                        self.globals.set(coprocess::IGNORE_ERRORS_KEY, toml::Value::Array(list.into_iter().map(toml::Value::String).collect()));
+                        self.save_globals();
+                    }
+                    _ => {}
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The top-right coprocess indicator.
+    pub(super) fn draw_coprocess_indicator(&self, frame: &mut Frame, id: PaneId, rect: Rect, cell: (f32, f32)) {
+        if self.globals.bool("disableTopRightIndicators") {
+            return;
+        }
+        if let Some(p) = self.panes.get(&id).filter(|p| p.coprocess_command().is_some()) {
+            scene::top_right_indicators(frame, rect, &[scene::COPROCESS_GLYPH], p.own().palette.fg, cell);
+        }
+    }
+
+    /// Copy Interpolated String (key action 72): the text with the session's variables.
+    pub(super) fn copy_interpolated(&mut self, template: &str) {
+        let Some(id) = self.focused_id() else { return };
+        let vars = self.variables(id);
+        let text = match crate::interp::evaluate(template, &|n| crate::prompted::variable(n.strip_prefix("session.").unwrap_or(n), &vars), &[]) {
+            Ok(t) => t,
+            Err(e) => return self.banners.set("action", format!("Copy Interpolated String: {e}")),
+        };
+        if let Some(cb) = &mut self.clipboard {
+            if let Err(e) = cb.set_text(text) {
+                self.banners.set("clipboard", format!("Copy failed: {e}"));
+            }
+        }
+    }
+
+    /// Files dropped on the window: a silent coprocess when `fileDropCoprocess` is set,
+    /// else the paths are pasted (quoted when they hold a space).
+    pub(super) fn flush_dropped(&mut self) {
+        if self.dropped.is_empty() {
+            return;
+        }
+        let dropped = std::mem::take(&mut self.dropped);
+        let pane = dropped[0].0;
+        let files: Vec<String> = dropped.into_iter().map(|(_, f)| f).collect();
+        match coprocess::drop_command(&self.globals.string("fileDropCoprocess"), &files) {
+            Some(cmd) => self.start_coprocess(pane, &cmd, true, Entry::FileDrop),
+            None => {
+                let text = files.iter().map(|f| if f.contains(char::is_whitespace) { format!("\"{f}\"") } else { f.clone() }).collect::<Vec<_>>().join(" ");
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    p.paste(&text);
+                }
+            }
+        }
+    }
+}

@@ -206,6 +206,12 @@ impl App {
         }
         let window = self.gpu.as_ref().map(|g| g.window.clone());
         match b.action {
+            35 => {
+                if let Some(id) = self.focused_id() {
+                    self.start_coprocess(id, &b.text, false, crate::coprocess::Entry::KeyBinding);
+                }
+            }
+            72 => self.copy_interpolated(&b.text),
             0 => self.step_tab(true),
             2 => self.step_tab(false),
             4 => self.focused_pane().map_or((), |p| p.scroll(Scroll::Bottom)),
