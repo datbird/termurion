@@ -127,6 +127,12 @@ pub fn highlight(rgba: &mut [u8], w: usize, h: usize, group: &[Rect], dark_bg: b
 
 /// Which buffer line each minimap row shows: every line when they fit, else the middle
 /// line of each bucket.
+/// The minimap's line count: at most 296 (iTerm2), and few enough that the image fits a
+/// texture of `max_px`.
+pub fn minimap_rows(total: usize, line_px: usize, max_px: usize) -> usize {
+    total.min(296).min(max_px / line_px.max(1)).max(1)
+}
+
 pub fn minimap_lines(total: usize, rows: usize) -> Vec<usize> {
     if total <= rows {
         return (0..total).collect();
@@ -203,5 +209,13 @@ mod tests {
         assert_eq!(minimap_lines(5, 10), vec![0, 1, 2, 3, 4]);
         assert_eq!(minimap_lines(100, 10), vec![5, 15, 25, 35, 45, 55, 65, 75, 85, 95]);
         assert_eq!(minimap_lines(0, 10), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn minimap_fits_the_texture_limit() {
+        assert_eq!(minimap_rows(1000, 29, 8192), 282, "296 rows of 29 px would pass 8192");
+        assert_eq!(minimap_rows(100, 20, 8192), 100);
+        assert_eq!(minimap_rows(1000, 10, 8192), 296);
+        assert_eq!(minimap_rows(1000, 20000, 8192), 1, "never 0");
     }
 }

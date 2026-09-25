@@ -359,6 +359,10 @@ impl App {
     fn refilter(&mut self, id: PaneId, fresh: bool) {
         let mode = self.find_mode();
         let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
+        // Make Screenshot's frozen copy is not filtered.
+        if p.frozen {
+            return;
+        }
         if f.query.is_empty() {
             f.error = None;
             f.shown.clear();

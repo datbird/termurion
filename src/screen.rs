@@ -533,7 +533,7 @@ impl Screen {
 
     /// Drops the buttons of rows that are gone, once there are many keys.
     fn prune_buttons(&mut self) {
-        if self.buttons.rows.len() < 256 {
+        if !self.buttons.prune_due() {
             return;
         }
         let mut live = std::collections::HashSet::new();
@@ -542,6 +542,7 @@ impl Screen {
             live.extend((top..=bottom).map(|l| g[Line(l)].button()).filter(|k| *k != 0));
         }
         self.buttons.rows.retain(|k, _| live.contains(k));
+        self.buttons.pruned();
     }
 
     /// The buttons on a line of the grid in use.
@@ -617,8 +618,13 @@ impl Screen {
     /// left the buffer.
     pub fn unfold_block(&mut self, id: &str) -> bool {
         let Some(n) = self.blocks.by_id.get(id).copied() else { return false };
-        let Some(fold) = self.blocks.folds.remove(&n) else { return false };
-        self.unfold(fold)
+        let Some(&fold) = self.blocks.folds.get(&n) else { return false };
+        // The fold stays the block's when it cannot open now (the alternate screen is up).
+        if !self.unfold(fold) {
+            return false;
+        }
+        self.blocks.folds.remove(&n);
+        true
     }
 
     /// The block a view row belongs to: its number, and its first and last grid lines.
@@ -631,9 +637,17 @@ impl Screen {
         if n == 0 {
             return None;
         }
+        // Walk the block's own rows out from this one (a mouse move must not scan the
+        // whole buffer).
         let (top, bottom) = (-(g.history_size() as i32), g.screen_lines() as i32 - 1);
-        let rows: Vec<i32> = (top..=bottom).filter(|l| g[Line(*l)].block() == n).collect();
-        Some((n, *rows.first()?, *rows.last()?))
+        let (mut first, mut last) = (line, line);
+        while first > top && g[Line(first - 1)].block() == n {
+            first -= 1;
+        }
+        while last < bottom && g[Line(last + 1)].block() == n {
+            last += 1;
+        }
+        Some((n, first, last))
     }
 
     /// What output asked the window to do since the last call.

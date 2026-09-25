@@ -49,7 +49,7 @@ impl EguiHost {
         };
         surface.configure(device, &config);
         let ctx = egui::Context::default();
-        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, None);
+        let state = egui_winit::State::new(ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(device.limits().max_texture_dimension_2d as usize));
         let renderer = egui_wgpu::Renderer::new(device, format, egui_wgpu::RendererOptions::default());
         Ok(EguiHost { surface, config, device: device.clone(), queue: queue.clone(), ctx, state, renderer, window })
     }

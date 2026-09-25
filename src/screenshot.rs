@@ -193,6 +193,18 @@ pub fn file_name(y: u16, mo: u16, d: u16, h: u16, mi: u16, s: u16) -> String {
 }
 
 /// Part `i` (1-based) of `n` of a screenshot saved as `base` (a name without `.png`).
+/// The files a save writes to: the chosen path itself for one part (`.png` added when it
+/// has another ending), else numbered parts named from it without its `.png`.
+pub fn save_paths(chosen: &std::path::Path, n: usize) -> Vec<std::path::PathBuf> {
+    let name = chosen.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let is_png = name.len() > 4 && name[name.len() - 4..].eq_ignore_ascii_case(".png");
+    if n <= 1 {
+        return vec![if is_png { chosen.to_path_buf() } else { chosen.with_file_name(format!("{name}.png")) }];
+    }
+    let stem = if is_png { &name[..name.len() - 4] } else { &name[..] };
+    (1..=n).map(|i| chosen.with_file_name(part_name(stem, i, n))).collect()
+}
+
 pub fn part_name(base: &str, i: usize, n: usize) -> String {
     format!("{base}-part-{i}-of-{n}.png")
 }
@@ -308,5 +320,13 @@ mod tests {
     fn names_have_the_time() {
         assert_eq!(file_name(2026, 9, 5, 1, 2, 3), "Tandem-Screenshot-2026-09-05-01-02-03.png");
         assert_eq!(part_name("Tandem-Screenshot-x", 2, 3), "Tandem-Screenshot-x-part-2-of-3.png");
+    }
+
+    #[test]
+    fn save_paths_keep_the_chosen_name() {
+        use std::path::{Path, PathBuf};
+        assert_eq!(save_paths(Path::new("C:/a/build.v2.png"), 1), vec![PathBuf::from("C:/a/build.v2.png")]);
+        assert_eq!(save_paths(Path::new("C:/a/shot"), 1), vec![PathBuf::from("C:/a/shot.png")]);
+        assert_eq!(save_paths(Path::new("C:/a/build.v2.PNG"), 2), vec![PathBuf::from("C:/a/build.v2-part-1-of-2.png"), PathBuf::from("C:/a/build.v2-part-2-of-2.png")]);
     }
 }

@@ -65,8 +65,7 @@ impl App {
         let (history, rows) = (g.history_size(), g.screen_lines());
         let top = history - p.screen.term().grid().display_offset().min(history);
         let panel = screenshot::Panel::new(history + rows, (top, top + rows - 1));
-        p.end_view();
-        p.show_view(snap);
+        p.freeze(snap);
         let Some(g) = self.gpu.as_ref() else { return };
         match crate::shot_ui::ShotWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, panel) {
             Ok(window) => {
@@ -77,7 +76,7 @@ impl App {
             }
             Err(e) => {
                 if let Some(p) = self.panes.get_mut(&pane) {
-                    p.end_view();
+                    p.thaw();
                 }
                 self.banners.set("window", format!("Could not open the window: {e}"));
             }
@@ -123,7 +122,9 @@ impl App {
             use alacritty_terminal::grid::Dimensions;
             let g = snap.term().grid();
             let total = g.history_size() + g.screen_lines();
-            let lines = crate::shotimage::minimap_lines(total, 296);
+            let max = app.gpu.as_ref().map_or(8192, |g| g.device.limits().max_texture_dimension_2d as usize);
+            let rows = crate::shotimage::minimap_rows(total, app.cell().1.ceil() as usize, max);
+            let lines = crate::shotimage::minimap_lines(total, rows);
             let picked = screenshot::pick(snap, &lines);
             let last = lines.len().max(1) - 1;
             app.render_lines(pane, &picked, 0, last)
@@ -222,23 +223,17 @@ impl App {
         self.redraw();
     }
 
-    /// Renders the whole range, part by part, as PNG files named from `base` (a path
-    /// without `.png`). The first file's path.
-    fn save_shot(&mut self, base: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    /// Renders the whole range, part by part, as PNG files named from `chosen` (see
+    /// `screenshot::save_paths`). The first file's path.
+    fn save_shot(&mut self, chosen: &std::path::Path) -> Result<std::path::PathBuf, String> {
         let (start, end) = self.shot.as_ref().ok_or("no screenshot")?.window.panel.range;
         let cell = self.cell();
         let cols = self.shot.as_ref().and_then(|s| self.panes.get(&s.pane)).map_or(80, |p| { use alacritty_terminal::grid::Dimensions; p.screen.term().columns() });
         let width = (cols as f32 * cell.0 + 2.0 * (PAD * self.scale()).round()).ceil() as usize;
         let parts = screenshot::parts(end + 1 - start, cell.1.round().max(1.0) as usize, width, screenshot::MAX_PX);
-        let n = parts.len();
+        let paths = screenshot::save_paths(chosen, parts.len());
         let mut first_path = None;
-        for (i, part) in parts.into_iter().enumerate() {
-            let path = if n == 1 {
-                base.with_extension("png")
-            } else {
-                let name = base.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-                base.with_file_name(screenshot::part_name(&name, i + 1, n))
-            };
+        for (part, path) in parts.into_iter().zip(paths) {
             let (w, h, px) = self.render_annotated(start + part.start, start + part.end - 1).ok_or("no screenshot")??;
             let img = image::RgbaImage::from_raw(w, h, px).ok_or("the image had the wrong size")?;
             img.save_with_format(&path, image::ImageFormat::Png).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -263,7 +258,7 @@ impl App {
 
     fn close_shot(&mut self, shot: Shot) {
         if let Some(p) = self.panes.get_mut(&shot.pane) {
-            p.end_view();
+            p.thaw();
         }
         self.redraw();
     }
@@ -320,9 +315,9 @@ impl App {
                             screenshot::file_name(t.0, t.1, t.2, t.3, t.4, t.5)
                         };
                         let base = if ev == ShotEvent::SaveAs {
-                            rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name(&name).save_file().map(|p| p.with_extension(""))
+                            rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name(&name).save_file()
                         } else {
-                            self.shot_folder().map(|d| d.join(name.trim_end_matches(".png")))
+                            self.shot_folder().map(|d| d.join(&name))
                         };
                         let Some(base) = base else { return true };
                         match self.save_shot(&base) {

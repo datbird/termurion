@@ -17,6 +17,10 @@ pub fn get<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
     pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 }
 
+/// Blocks still open at once, at most: a program that starts blocks and never ends them
+/// drops the oldest.
+pub const MAX_OPEN: usize = 64;
+
 /// Blocks a screen knows: each started block gets a number (stamped on its rows), and an
 /// id names the newest block started with it.
 #[derive(Clone, Debug, Default)]
@@ -36,6 +40,9 @@ impl Blocks {
     pub fn start(&mut self, id: &str, kind: Option<&str>) -> u32 {
         self.next += 1;
         let n = self.next;
+        if self.open.len() >= MAX_OPEN {
+            self.open.remove(0);
+        }
         self.open.push((id.to_string(), n));
         self.by_id.insert(id.to_string(), n);
         if let Some(k) = kind {
@@ -121,10 +128,23 @@ fn int_value(s: &str) -> i64 {
 pub struct Buttons {
     next_id: u32,
     next_key: u32,
+    /// The key count at which the next prune runs.
+    prune_at: usize,
     pub rows: std::collections::HashMap<u32, Vec<Button>>,
 }
 
 impl Buttons {
+    /// Time to drop the buttons of rows that are gone: at 256 keys, then at twice what the
+    /// last prune kept, so a flood of buttons costs one scan per doubling.
+    pub fn prune_due(&self) -> bool {
+        self.rows.len() >= self.prune_at.max(256)
+    }
+
+    /// A prune ran.
+    pub fn pruned(&mut self) {
+        self.prune_at = (self.rows.len() * 2).max(256);
+    }
+
     /// A new key for a row with no buttons yet.
     pub fn new_key(&mut self) -> u32 {
         self.next_key += 1;
@@ -351,5 +371,58 @@ mod tests {
         s.feed(b"\x1b[?1049hfull screen");
         assert_eq!(s.block_text("c").as_deref(), Some("ab\n0123456789xy\ncd\n"), "read from the main screen");
         assert_eq!(s.block_text("none"), None);
+    }
+
+    #[test]
+    fn block_hover_walks_rows_and_skips_the_alt_screen() {
+        let mut s = Screen::new(20, 8);
+        s.feed(b"\x1b]1337;Block=id=b;attr=start\x07a\r\nb\r\nc\x1b]1337;Block=id=b;attr=end\x07\r\nx");
+        let n = s.blocks.by_id["b"];
+        assert_eq!(s.block_at_line(1), Some((n, 0, 2)));
+        s.feed(b"\x1b]1337;Block=id=v;attr=start\x07");
+        s.feed(b"\x1b[?1049hvim\r\nrows");
+        assert_eq!(s.block_at_line(0), None, "no bars or pill over a full-screen app");
+    }
+
+    #[test]
+    fn open_blocks_and_button_prunes_are_bounded() {
+        let mut b = Blocks::default();
+        for i in 0..1000 {
+            b.start(&format!("never{i}"), None);
+        }
+        assert!(b.open.len() <= MAX_OPEN, "blocks that never end do not pile up");
+        let mut bs = Buttons::default();
+        for _ in 0..300 {
+            let k = bs.new_key();
+            bs.add(k, 0, ButtonKind::Copy { block: "x".into() });
+        }
+        assert!(bs.prune_due());
+        bs.pruned();
+        assert!(!bs.prune_due(), "after a prune that kept everything, the next waits for twice as many");
+        for _ in 0..300 {
+            let k = bs.new_key();
+            bs.add(k, 0, ButtonKind::Copy { block: "x".into() });
+        }
+        assert!(bs.prune_due());
+    }
+
+    #[test]
+    fn unfold_on_the_alt_screen_keeps_the_fold() {
+        let mut s = Screen::new(20, 8);
+        s.feed(b"\x1b]1337;Block=id=f;attr=start\x07a\r\nb\r\nc\r\n\x1b]1337;Block=id=f;attr=end\x07");
+        assert!(s.fold_block("f"));
+        s.feed(b"\x1b[?1049h");
+        assert!(!s.unfold_block("f"));
+        s.feed(b"\x1b[?1049l");
+        assert!(s.unfold_block("f"), "the fold still belongs to the block");
+    }
+
+    #[test]
+    fn buttons_past_the_edge_are_dropped() {
+        let mut s = Screen::new(12, 4);
+        s.feed(b"12345\x1b]1337;Button=type=copy;block=b\x07");
+        assert_eq!(s.buttons_on_line(0).len(), 1);
+        s.resize(6, 4);
+        assert!(s.buttons_on_line(0).is_empty(), "a button at column 5 does not fit 6 columns");
     }
 }

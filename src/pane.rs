@@ -60,6 +60,9 @@ pub struct Pane {
     pub session_note: String,
     /// Shell > Toggle Buffer Input.
     pub buffer: InputBuffer,
+    /// Make Screenshot's frozen copy is showing: views and resizes leave it alone, so the
+    /// panel's lines and redactions stay where they were chosen.
+    pub frozen: bool,
 }
 
 impl Pane {
@@ -68,7 +71,7 @@ impl Pane {
         let pty = pty::spawn_notify(api, cmdline, cwd, cols, rows, notify)?;
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default() })
+        Ok(Pane { id, screen, pty: Some(pty), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false })
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -153,7 +156,9 @@ impl Pane {
         if (self.screen.term().columns(), self.screen.term().screen_lines()) == (cols as usize, rows as usize) {
             return;
         }
-        self.screen.resize(cols as usize, rows as usize);
+        if !self.frozen {
+            self.screen.resize(cols as usize, rows as usize);
+        }
         if let Some(live) = &mut self.live {
             live.resize(cols as usize, rows as usize);
         }
@@ -252,14 +257,34 @@ impl Pane {
 
     /// Shows a read-only view in place of the pane's screen.
     pub fn show_view(&mut self, view: Screen) {
+        if self.frozen {
+            return;
+        }
         let own = std::mem::replace(&mut self.screen, view);
         if self.live.is_none() {
             self.live = Some(own);
         }
     }
 
+    /// Make Screenshot: `snap` shows in place of any view until `thaw`.
+    pub fn freeze(&mut self, snap: Screen) {
+        self.frozen = false;
+        self.end_view();
+        self.show_view(snap);
+        self.frozen = true;
+    }
+
+    /// The panel closed: back to the pane's own screen.
+    pub fn thaw(&mut self) {
+        self.frozen = false;
+        self.end_view();
+    }
+
     /// Back to the pane's own screen, at the scroll position it had.
     pub fn end_view(&mut self) {
+        if self.frozen {
+            return;
+        }
         if let Some(own) = self.live.take() {
             self.screen = own;
         }
@@ -295,6 +320,25 @@ mod tests {
     use crate::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn frozen_pane_keeps_its_copy() {
+        let mut own = Screen::new(10, 4);
+        own.feed(b"live");
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false };
+        let mut snap = Screen::new(10, 4);
+        snap.feed(b"frozen");
+        p.freeze(snap);
+        p.resize(6, 3);
+        assert_eq!(p.screen.term().columns(), 10, "the frozen copy keeps its size (redactions stay on their lines)");
+        assert_eq!(p.own().term().columns(), 6, "the live screen follows the pane");
+        p.show_view(Screen::new(10, 4));
+        p.end_view();
+        assert!(p.screen.line_text(0).starts_with("frozen"), "Filter and Zoom leave the frozen copy alone");
+        p.thaw();
+        assert!(p.screen.line_text(0).starts_with("live"));
+        assert!(!p.frozen);
+    }
 
     fn start(cmd: &str) -> Pane {
         let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
