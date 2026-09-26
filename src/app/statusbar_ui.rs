@@ -79,9 +79,9 @@ fn placeholder_content() -> Content {
 }
 
 impl Piece {
-    /// The piece for a layout component's class; None for a class Tandem does not show
-    /// (a 9i class, a content class a later task fills in, or one it does not know): kept
-    /// in the profile, skipped on screen.
+    /// The piece for a layout component's class; None for a class Tandem does not show (a
+    /// content class it does not place, or one it does not know): kept in the profile,
+    /// skipped on screen.
     pub(super) fn of(class: &str) -> Option<Piece> {
         match class {
             SPRING_CLASS => Some(Piece::Spring),
@@ -105,7 +105,8 @@ impl Piece {
                 | Kind::Battery
                 | Kind::Cpu
                 | Kind::Memory
-                | Kind::Network) => Some(Piece::Content(k)),
+                | Kind::Network
+                | Kind::Git) => Some(Piece::Content(k)),
                 _ => None,
             },
         }
@@ -116,8 +117,9 @@ impl Piece {
     /// maximum follow `BLA:261-283`: the larger of the component's own minimum and its
     /// "minwidth" knob; the maximum is `statusBarComponentMaximumWidth` (`MAX(24,
     /// "maxwidth" ?: INFINITY)`). A text component's own minimum is its narrowest variant
-    /// and its preferred width its widest (`TXT:178-229`); Job Name and Current Directory
-    /// clamp the preferred width by the knobs (`clampedWidth:`, `JOB:60-62`, `VAR:278-280`).
+    /// and its preferred width its widest (`TXT:178-229`); Job Name, Current Directory and
+    /// git state clamp the preferred width by the knobs (`clampedWidth:`, `JOB:60-62`,
+    /// `VAR:278-280`, `GIT:136-138`). git's own minimum is its text for branch `M`.
     /// A button (Call Script Function, `FN:127-142`) is its label plus `BUTTON_PAD_PT`,
     /// both minimum and preferred.
     pub(super) fn item(self, c: &Component, algorithm: Algorithm, content: &Content, widths: &[(String, f32)], min_text_pt: Option<f32>) -> Item {
@@ -141,11 +143,13 @@ impl Piece {
                     None => {
                         let (narrow, wide) = if widths.is_empty() { (0.0, 0.0) } else { (sbt::narrowest(widths), sbt::widest(widths)) };
                         let pad = if content.button { BUTTON_PAD_PT } else { 0.0 };
-                        (min_text_pt.map_or(narrow, |m| m.min(wide)) + pad, wide + pad)
+                        // git's minimum is its text for branch `M` (`GIT:240-243`).
+                        let own_min = if self == Piece::Content(Kind::Git) { min_text_pt.unwrap_or(0.0) } else { min_text_pt.map_or(narrow, |m| m.min(wide)) };
+                        (own_min + pad, wide + pad)
                     }
                 };
                 let preferred = match self {
-                    Piece::Content(Kind::JobName | Kind::CurrentDirectory) => {
+                    Piece::Content(Kind::JobName | Kind::CurrentDirectory | Kind::Git) => {
                         let raw_max = c.knobs.get(statusbar::MAX_WIDTH_KEY).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).map_or(f32::INFINITY, |m| m as f32);
                         preferred.max(knob_min).min(raw_max)
                     }
@@ -192,6 +196,8 @@ struct Shown {
     widths: Vec<(String, f32)>,
     min_text_pt: Option<f32>,
     text_scale: f32,
+    /// A `tail` content's first variant cut to its placed room, and its width in points.
+    tail: Option<(String, f32)>,
 }
 
 impl Shown {
@@ -419,13 +425,13 @@ impl App {
                     Piece::Content(kind) => Some(self.content(bar.pane, kind, c)),
                     _ => None,
                 };
-                shown.push(Shown { index, temporary: index.is_none(), piece, component: c.clone(), content, widths: Vec::new(), min_text_pt: None, text_scale: self.status_text_scale(&layout, c) });
+                shown.push(Shown { index, temporary: index.is_none(), piece, component: c.clone(), content, widths: Vec::new(), min_text_pt: None, text_scale: self.status_text_scale(&layout, c), tail: None });
             }
         }
         if shown.is_empty() {
             let c = Component { class: PLACEHOLDER_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
             let text_scale = self.status_text_scale(&layout, &c);
-            shown.push(Shown { index: None, temporary: false, piece: Piece::Placeholder, component: c, content: Some(placeholder_content()), widths: Vec::new(), min_text_pt: None, text_scale });
+            shown.push(Shown { index: None, temporary: false, piece: Piece::Placeholder, component: c, content: Some(placeholder_content()), widths: Vec::new(), min_text_pt: None, text_scale, tail: None });
         }
         let scale = self.scale();
         let cell_w = self.cell().0;
@@ -471,6 +477,17 @@ impl App {
         }
         let width_pt = bar.rect.w / scale;
         let placed = sbl::layout(&items, width_pt, algorithm, layout.advanced.remove_empty);
+        // A `tail` content draws its first variant cut to the room beside its icon.
+        for pl in &placed {
+            let s = &mut shown[pl.index];
+            let Some(content) = s.content.as_ref().filter(|c| c.tail) else { continue };
+            let icon_pt = if content.icon.is_some() { ICON_PT } else { 0.0 };
+            let first = content.variants.first().cloned().unwrap_or_default();
+            let scale = s.text_scale;
+            let text = sbt::tail_fit(&first, (pl.width - icon_pt).max(0.0), &mut |t| measure(t, scale));
+            let w = if text.is_empty() { 0.0 } else { measure(&text, scale) };
+            s.tail = Some((text, w));
+        }
         Placement { layout, shown, items, placed, width_pt }
     }
 
@@ -482,6 +499,13 @@ impl App {
         let scale = self.scale();
         for bar in bars {
             let p = self.place_bar(&bar);
+            // Whether the git component has a place on this bar (`tick_git`'s bump when it
+            // comes onto the screen).
+            if p.placed.iter().any(|pl| p.shown[pl.index].piece == Piece::Content(Kind::Git)) {
+                self.git_placed.insert(bar.pane);
+            } else {
+                self.git_placed.remove(&bar.pane);
+            }
             let adv = &p.layout.advanced;
             let background = adv.background_color.as_ref().and_then(color_of).unwrap_or((scene::STATUS_BAR_BG, 1.0));
             let default_text = adv.default_text_color.as_ref().and_then(color_of).map_or(scene::STATUS_BAR_TEXT, |(c, _)| c);
@@ -539,12 +563,20 @@ impl App {
                 }
                 // The widest variant that fits beside the icon (`TXT:178-229`); User Name
                 // always draws its full name (`VAR:249-251`).
+                // git truncates its first variant's tail instead (`ATXT:271-278`).
                 let room = (pl.width - icon_pt - 2.0 * pad_pt).max(0.0);
-                let text = if content.min_text.is_some() { content.variants.first().cloned().unwrap_or_default() } else { sbt::pick(&s.widths, room) };
+                let text = match &s.tail {
+                    Some((t, _)) => t.clone(),
+                    None if content.min_text.is_some() => content.variants.first().cloned().unwrap_or_default(),
+                    None => sbt::pick(&s.widths, room),
+                };
                 if text.is_empty() {
                     continue;
                 }
-                let text_pt = s.widths.iter().find(|(v, _)| *v == text).map_or(0.0, |(_, w)| *w);
+                let text_pt = match &s.tail {
+                    Some((_, w)) => *w,
+                    None => s.widths.iter().find(|(v, _)| *v == text).map_or(0.0, |(_, w)| *w),
+                };
                 let left = pl.x + icon_pt + pad_pt + if content.right_align { (room - text_pt).max(0.0) } else { 0.0 };
                 let text_clip = Rect { x: px(pl.x + icon_pt + pad_pt), w: (room * scale).round(), ..clip };
                 texts.push(scene::BarText { x: px(left), text, color, scale: s.text_scale, clip: text_clip, icon: false, dy });
@@ -1059,7 +1091,6 @@ mod tests {
         assert_eq!(Piece::of(SPACER_CLASS), Some(Piece::Spacer));
         assert_eq!(Piece::of("iTermStatusBarClockComponent"), Some(Piece::Content(Kind::Clock)));
         assert_eq!(Piece::of("iTermStatusBarWorkingDirectoryComponent"), Some(Piece::Content(Kind::CurrentDirectory)));
-        assert_eq!(Piece::of("iTermStatusBarGitComponent"), None, "git stays off screen until Task 5");
         assert_eq!(placeholder_content().variants, vec!["Click here to configure status bar".to_string()]);
         assert_eq!(placeholder_content().click, Click::Configure);
 
@@ -1143,7 +1174,7 @@ mod tests {
         let menu = Content { uncopyable: true, click: Click::Menu(Kind::ActionsMenu), ..Content::text(vec!["Perform Action\u{2026}".into()]) };
         let menu_item = Piece::Content(Kind::ActionsMenu).item(&component(ACTIONS_MENU_CLASS, &[]), Algorithm::Stable, &menu, &widths(&[("Perform Action\u{2026}", 90.0)]), None);
         assert_eq!((menu_item.min, menu_item.preferred, menu_item.stretch), (90.0, 90.0, true));
-        let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::ActionsMenu), component: component(ACTIONS_MENU_CLASS, &[]), content: Some(menu), widths: widths(&[("Perform Action\u{2026}", 90.0)]), min_text_pt: None, text_scale: 1.0 };
+        let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::ActionsMenu), component: component(ACTIONS_MENU_CLASS, &[]), content: Some(menu), widths: widths(&[("Perform Action\u{2026}", 90.0)]), min_text_pt: None, text_scale: 1.0, tail: None };
         assert_eq!(shown.copyable(), None, "no Copy for a menu");
     }
 
@@ -1172,13 +1203,60 @@ mod tests {
                     assert_eq!(placed[0].width, size + ICON_PT, "{class}");
                 }
             }
-            let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(kind), component: c, content: Some(content), widths: Vec::new(), min_text_pt: None, text_scale: 1.0 };
+            let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(kind), component: c, content: Some(content), widths: Vec::new(), min_text_pt: None, text_scale: 1.0, tail: None };
             assert_eq!(shown.copyable(), None, "{class} has no Copy");
         }
         let no_battery = graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, false, None);
         assert!(no_battery.empty);
         assert_eq!(no_battery.icon, Some(sbc::NO_BATTERY_GLYPH));
         assert_eq!(graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, true, None).icon, Some(sbc::BATTERY_GLYPH));
+    }
+
+    /// `GIT:136-151,240-297`, `ATXT:271-278,307-313`: git's minimum is the width of its
+    /// text for branch `M`, its preferred the rendered width clamped by the minwidth and
+    /// maxwidth knobs (`clampedWidth:`); it stretches, shows its icon, truncates its tail,
+    /// copies the branch, and is empty without a branch unless the timeout warning shows.
+    #[test]
+    fn git_item_sizes_like_iterm2() {
+        use super::super::git_ui::git_content_of;
+        use crate::git_state::{GitState, TIMED_OUT_ICON, TIMED_OUT_SHORT};
+        use crate::statusbar_components::GIT_CLASS;
+        assert_eq!(Piece::of(GIT_CLASS), Some(Piece::Content(Kind::Git)));
+        let st = GitState { branch: "feature/login".into(), dirty: true, ..Default::default() };
+        let content = git_content_of(Some(&st), None, true, false);
+        assert_eq!(content.variants, vec!["feature/login\u{2009}\u{25CF}".to_string()]);
+        assert_eq!(content.min_text.as_deref(), Some("M\u{2009}\u{25CF}"));
+        assert!(content.tail && !content.empty && !content.uncopyable);
+        assert_eq!(content.copy.as_deref(), Some("feature/login"));
+        assert_eq!(content.click, Click::Menu(Kind::Git));
+        assert_eq!(content.icon, Some('\u{E8AB}'));
+        let w = widths(&[("feature/login\u{2009}\u{25CF}", 90.0)]);
+        let sized = |c: &Component, content: &Content, w: &[(String, f32)], m: Option<f32>| Piece::Content(Kind::Git).item(c, Algorithm::Stable, content, w, m);
+        let item = sized(&component(GIT_CLASS, &[]), &content, &w, Some(20.0));
+        assert_eq!((item.min, item.preferred, item.stretch, item.icon, item.empty), (20.0, 90.0, true, true, false));
+        let capped = sized(&component(GIT_CLASS, &[("maxwidth", toml::Value::Float(50.0))]), &content, &w, Some(20.0));
+        assert_eq!((capped.min, capped.preferred), (20.0, 50.0));
+        let floor = sized(&component(GIT_CLASS, &[("minwidth", toml::Value::Integer(120))]), &content, &w, Some(20.0));
+        assert_eq!((floor.min, floor.preferred), (120.0, 120.0));
+        let shown = |content: Content, w: Vec<(String, f32)>| Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::Git), component: component(GIT_CLASS, &[]), content: Some(content), widths: w, min_text_pt: None, text_scale: 1.0, tail: None };
+        assert_eq!(shown(content.clone(), w.clone()).copyable().as_deref(), Some("feature/login"), "Copy is the branch, not the text");
+
+        // No branch: empty, nothing to copy, no minimum.
+        let none = git_content_of(None, None, true, false);
+        assert!(none.empty && none.min_text.is_none());
+        assert_eq!(none.variants, vec![String::new()]);
+        assert_eq!(sized(&component(GIT_CLASS, &[]), &none, &widths(&[("", 0.0)]), None).min, 0.0);
+        assert_eq!(shown(none, widths(&[("", 0.0)])).copyable(), None);
+
+        // Timed out: the long warning first, never empty, still nothing to copy.
+        let timed_out = git_content_of(None, None, true, true);
+        assert_eq!(timed_out.variants, vec![TIMED_OUT_SHORT.to_string(), TIMED_OUT_ICON.to_string()]);
+        assert!(!timed_out.empty && timed_out.tail);
+        assert_eq!(shown(timed_out, widths(&[(TIMED_OUT_SHORT, 60.0), (TIMED_OUT_ICON, 12.0)])).copyable(), None);
+
+        // A running command's status stands in for the branch, the minimum too.
+        let busy = git_content_of(Some(&st), Some("Pushing\u{2026}"), true, false);
+        assert_eq!((busy.variants[0].as_str(), busy.min_text.as_deref()), ("Pushing\u{2026}", Some("Pushing\u{2026}")));
     }
 
     #[test]

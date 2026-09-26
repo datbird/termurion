@@ -90,7 +90,7 @@ pub const UPLOAD_COLOR_KEY: &str = "Network upload color";
 pub const UPLOAD_TEXT_COLOR_KEY: &str = "Network upload text color";
 /// `iTermStatusBarGitComponentPollingIntervalKey` (`GIT:113-134`), iTerm2's own key,
 /// verbatim.
-const GIT_POLLING_INTERVAL_KEY: &str = "iTermStatusBarGitComponentPollingIntervalKey";
+pub const GIT_POLLING_INTERVAL_KEY: &str = "iTermStatusBarGitComponentPollingIntervalKey";
 
 /// One content class this milestone knows, `com.iterm2.<class>` minus the prefix. Every
 /// variant but the last three (internal: no palette entry, no Configure sheet) is offered

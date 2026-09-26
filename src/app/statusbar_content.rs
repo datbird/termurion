@@ -175,6 +175,9 @@ pub(super) struct Content {
     pub(super) click: Click,
     /// A field component's drawing, in place of text.
     pub(super) widget: Option<Widget>,
+    /// `truncatesTail` (git state, `ATXT:271-278`): the first variant always draws, its
+    /// tail cut with U+2026 to the room.
+    pub(super) tail: bool,
 }
 
 impl Content {
@@ -183,7 +186,7 @@ impl Content {
     pub(super) fn text(variants: Vec<String>) -> Content {
         let variants = if variants.is_empty() { vec![String::new()] } else { variants };
         let empty = variants.iter().all(|v| v.is_empty());
-        Content { variants, min_text: None, copy: None, empty, icon: None, right_align: false, fixed: None, button: false, uncopyable: false, click: Click::None, widget: None }
+        Content { variants, min_text: None, copy: None, empty, icon: None, right_align: false, fixed: None, button: false, uncopyable: false, click: Click::None, widget: None, tail: false }
     }
 }
 
@@ -252,7 +255,7 @@ pub(super) struct MenuAt {
 
 /// A reported path as shown and copied: the Windows form of an OSC 7 path (`/C:/x`),
 /// else as reported.
-fn shown_path(raw: &str) -> String {
+pub(super) fn shown_path(raw: &str) -> String {
     crate::profile::local_path(raw).map_or_else(|| raw.to_string(), |p| p.to_string_lossy().into_owned())
 }
 
@@ -482,9 +485,8 @@ impl App {
             }
             // The four graphs (`metrics_ui`).
             Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network => self.graph_content(kind, c),
-            // git state: `Piece::of` does not map it yet (Task 5), so this arm is never
-            // reached; it keeps the match exhaustive.
-            Kind::Git => Content::text(Vec::new()),
+            // git state (`git_ui`).
+            Kind::Git => self.git_content(pane, c),
         };
         // The kind's generic icon, unless the arm chose one (Battery's depends on the
         // computer).
@@ -700,12 +702,13 @@ impl App {
         }
     }
 
-    /// The status bars' clocks: the Clock's and the graphs' (`tick_meters`). When to come
-    /// back.
+    /// The status bars' clocks: the Clock's, the graphs' (`tick_meters`) and the git
+    /// pollers' (`tick_git`, which also drains the git worker's answers). When to come back.
     pub(super) fn tick_status_bars(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let meters = self.tick_meters(now);
-        [self.tick_clock(now), meters].into_iter().flatten().min()
+        let git = self.tick_git(now);
+        [self.tick_clock(now), meters, git].into_iter().flatten().min()
     }
 
     /// The Clock's cadence (`CLK`, 1 s): while a bar on screen shows a Clock, every window

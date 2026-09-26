@@ -278,6 +278,31 @@ pub fn user_min_text(full: &str) -> String {
     }
 }
 
+/// NSTextField's tail truncation (`NSLineBreakByTruncatingTail`, `ATXT:271-278`): the text
+/// whole when it fits `room`, else its longest prefix that fits with U+2026 after it, else
+/// `""`. `measure` gives a text's width in the same unit as `room`.
+pub fn tail_fit(text: &str, room: f32, measure: &mut dyn FnMut(&str) -> f32) -> String {
+    if measure(text) <= room {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |n: usize| chars[..n].iter().collect::<String>() + "\u{2026}";
+    if measure("\u{2026}") > room {
+        return String::new();
+    }
+    // The widest prefix that fits: widths only grow with the prefix, so a binary search.
+    let (mut lo, mut hi) = (0, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if measure(&cut(mid)) <= room {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    cut(lo)
+}
+
 /// `NSHost.it_hostnameIsThisMachine:`'s exact-match rule (`HOST:16-27, 123-135`), minus the
 /// live-lookup and remembered-name parts: this module has no Win32, so it takes the
 /// candidate local names (localhost, the computer name, `<name>.local`, ...) as a
@@ -389,6 +414,19 @@ pub fn format_tr35(pattern: &str, civil: &Civil) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// NSTextField truncates the tail: the prefix that fits beside U+2026, the whole text
+    /// when it fits, nothing when not even U+2026 fits.
+    #[test]
+    fn tail_fit_follows_nstextfield() {
+        let mut ten = |t: &str| t.chars().count() as f32 * 10.0;
+        assert_eq!(tail_fit("feature/login", 60.0, &mut ten), "featu\u{2026}");
+        assert_eq!(tail_fit("feature/login", 200.0, &mut ten), "feature/login");
+        assert_eq!(tail_fit("feature/login", 130.0, &mut ten), "feature/login", "exactly as wide fits");
+        assert_eq!(tail_fit("feature/login", 5.0, &mut ten), "");
+        assert_eq!(tail_fit("feature/login", 10.0, &mut ten), "\u{2026}");
+        assert_eq!(tail_fit("", 0.0, &mut ten), "");
+    }
 
     #[test]
     fn widest_fitting_variant_wins() {

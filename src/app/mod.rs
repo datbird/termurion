@@ -100,6 +100,7 @@ mod bury_ui;
 mod statusbar_ui;
 mod statusbar_content;
 mod metrics_ui;
+mod git_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -356,6 +357,12 @@ pub struct App {
     meters: crate::statusbar_metrics::Meters,
     samplers: crate::metrics_win::WinSamplers,
     graph_frame_due: Option<Instant>,
+    /// The git components' pollers by pane (a pane's first git component), the worker
+    /// that runs git off this thread, and the panes whose bar placed its git component at
+    /// the last draw (app-wide: keyed by pane, like `activity`).
+    git: HashMap<PaneId, git_ui::GitPane>,
+    git_worker: git_ui::GitWorker,
+    git_placed: std::collections::HashSet<PaneId>,
     /// Triggers: the Show Alert limit, messages already shown, the Alert bar's trigger, and
     /// Run Command's pool and processes.
     trigger_limits: crate::triggers::RateLimit<(PaneId, usize)>,
@@ -531,6 +538,7 @@ pub fn run() {
     } else {
         (None, None)
     };
+    let git_worker = git_ui::GitWorker::new(Arc::new(crate::git_run_win::WinGitRun), notify.clone());
     let mut app = App {
         host,
         hotkey: None,
@@ -641,6 +649,9 @@ pub fn run() {
         meters: crate::statusbar_metrics::Meters::new(),
         samplers: crate::metrics_win::WinSamplers,
         graph_frame_due: None,
+        git: HashMap::new(),
+        git_worker,
+        git_placed: std::collections::HashSet::new(),
         trigger_limits: crate::triggers::RateLimit::default(),
         trigger_told: std::collections::HashSet::new(),
         trigger_alerts: HashMap::new(),
