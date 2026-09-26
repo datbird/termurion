@@ -85,7 +85,9 @@ pub mod user_actions;
 pub mod statusbar;
 pub mod statusbar_components;
 pub mod statusbar_layout;
+pub mod statusbar_metrics;
 pub mod statusbar_setup_ui;
+pub mod statusbar_sparkline;
 pub mod statusbar_text;
 
 #[cfg(windows)]
