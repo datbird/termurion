@@ -531,7 +531,7 @@ mod tests {
         for tool in ToolId::ALL {
             assert_eq!(tool_from_menu_id(&tool_menu_id(tool)), Some(tool));
         }
-        assert_eq!(tool_from_menu_id("toolbelt:tool:Notes"), None);
+        assert_eq!(tool_from_menu_id("toolbelt:tool:Bogus"), None);
         assert_eq!(tool_from_menu_id("Paste History"), None);
     }
 

@@ -188,6 +188,14 @@ pub enum ToolButton {
     Edit,
     Trash,
     Help,
+    /// Session Status' notify-on-change bell (`TS:595-625`).
+    Bell,
+    /// Session Status' snooze (`TS:1239-1255`).
+    Snooze,
+    /// Session Status' gear, opening its settings popover (`TS:394-431`).
+    Settings,
+    /// Jobs' "Inspect the selected process" (`JT:352-356`).
+    Inspect,
 }
 
 impl ToolButton {
@@ -202,6 +210,10 @@ impl ToolButton {
             ToolButton::Edit => '\u{E70F}',
             ToolButton::Trash => '\u{E74D}',
             ToolButton::Help => '\u{E897}',
+            ToolButton::Bell => '\u{E7ED}',
+            ToolButton::Snooze => '\u{E708}',
+            ToolButton::Settings => '\u{E713}',
+            ToolButton::Inspect => '\u{E721}',
         }
     }
 
@@ -218,6 +230,10 @@ impl ToolButton {
             ToolButton::Edit => "Edit",
             ToolButton::Trash => "Clear",
             ToolButton::Help => "Help",
+            ToolButton::Bell => "Notify on status change",
+            ToolButton::Snooze => "Snooze",
+            ToolButton::Settings => "Settings",
+            ToolButton::Inspect => "Inspect",
         }
     }
 }
@@ -585,5 +601,18 @@ mod tests {
 
         assert_eq!(ToolButton::Edit.label(), "Edit");
         assert_eq!(ToolButton::Trash.label(), "Clear");
+    }
+
+    #[test]
+    fn new_buttons_follow_iterm2() {
+        assert_eq!(ToolButton::Bell.glyph(), '\u{E7ED}');
+        assert_eq!(ToolButton::Snooze.glyph(), '\u{E708}');
+        assert_eq!(ToolButton::Settings.glyph(), '\u{E713}');
+        assert_eq!(ToolButton::Inspect.glyph(), '\u{E721}');
+
+        assert_eq!(ToolButton::Bell.label(), "Notify on status change");
+        assert_eq!(ToolButton::Snooze.label(), "Snooze");
+        assert_eq!(ToolButton::Settings.label(), "Settings");
+        assert_eq!(ToolButton::Inspect.label(), "Inspect");
     }
 }

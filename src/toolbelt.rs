@@ -6,39 +6,56 @@
 
 use toml::{Table, Value};
 
-/// The seven tools 9j shows. Names double as identifiers (iTerm2's `TBV:33-55,95-106`); the
+/// The twelve built-in tools (9j's seven plus 9k's Captured Output, Session Status, Jobs,
+/// Notes and Codecierge). Names double as identifiers (iTerm2's `TBV:33-55,95-106`); the
 /// English display name equals the name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ToolId {
     Actions,
+    CapturedOutput,
     CommandHistory,
     NamedMarks,
+    SessionStatus,
+    RecentDirectories,
+    Jobs,
+    Notes,
     PasteHistory,
     Profiles,
-    RecentDirectories,
     Snippets,
+    Codecierge,
 }
 
 impl ToolId {
-    pub const ALL: [ToolId; 7] = [
+    /// iTerm2's registration order (`TBV:33-55`).
+    pub const ALL: [ToolId; 12] = [
         ToolId::Actions,
+        ToolId::CapturedOutput,
         ToolId::CommandHistory,
         ToolId::NamedMarks,
+        ToolId::SessionStatus,
+        ToolId::RecentDirectories,
+        ToolId::Jobs,
+        ToolId::Notes,
         ToolId::PasteHistory,
         ToolId::Profiles,
-        ToolId::RecentDirectories,
         ToolId::Snippets,
+        ToolId::Codecierge,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             ToolId::Actions => "Actions",
+            ToolId::CapturedOutput => "Captured Output",
             ToolId::CommandHistory => "Command History",
             ToolId::NamedMarks => "Named Marks",
+            ToolId::SessionStatus => "Session Status",
+            ToolId::RecentDirectories => "Recent Directories",
+            ToolId::Jobs => "Jobs",
+            ToolId::Notes => "Notes",
             ToolId::PasteHistory => "Paste History",
             ToolId::Profiles => "Profiles",
-            ToolId::RecentDirectories => "Recent Directories",
             ToolId::Snippets => "Snippets",
+            ToolId::Codecierge => "Codecierge",
         }
     }
 
@@ -47,16 +64,22 @@ impl ToolId {
     }
 
     /// The wrapper's content minimum, iTerm2's per-tool minimum (Resume notes, "The seven
-    /// tools"); `toolbelt_layout::wrapper_minimum` adds the wrapper's own 31.
+    /// tools", "Captured Output", "Session Status", "Jobs", "Notes and Codecierge");
+    /// `toolbelt_layout::wrapper_minimum` adds the wrapper's own 31.
     pub fn minimum_height(self) -> f32 {
         match self {
             ToolId::Actions => 60.0,
+            ToolId::CapturedOutput => 91.0,
             ToolId::CommandHistory => 88.0,
             ToolId::NamedMarks => 60.0,
+            ToolId::SessionStatus => 36.0,
+            ToolId::RecentDirectories => 88.0,
+            ToolId::Jobs => 76.0,
+            ToolId::Notes => 68.0,
             ToolId::PasteHistory => 60.0,
             ToolId::Profiles => 110.0,
-            ToolId::RecentDirectories => 88.0,
             ToolId::Snippets => 87.0,
+            ToolId::Codecierge => 130.0,
         }
     }
 }
@@ -225,18 +248,23 @@ mod tests {
     fn tools_follow_iterm2() {
         let pairs = [
             (ToolId::Actions, "Actions"),
+            (ToolId::CapturedOutput, "Captured Output"),
             (ToolId::CommandHistory, "Command History"),
             (ToolId::NamedMarks, "Named Marks"),
+            (ToolId::SessionStatus, "Session Status"),
+            (ToolId::RecentDirectories, "Recent Directories"),
+            (ToolId::Jobs, "Jobs"),
+            (ToolId::Notes, "Notes"),
             (ToolId::PasteHistory, "Paste History"),
             (ToolId::Profiles, "Profiles"),
-            (ToolId::RecentDirectories, "Recent Directories"),
             (ToolId::Snippets, "Snippets"),
+            (ToolId::Codecierge, "Codecierge"),
         ];
         for (tool, name) in pairs {
             assert_eq!(tool.name(), name);
             assert_eq!(ToolId::from_name(name), Some(tool));
         }
-        let heights = [60.0, 88.0, 60.0, 60.0, 110.0, 88.0, 87.0];
+        let heights = [60.0, 91.0, 88.0, 60.0, 36.0, 88.0, 76.0, 68.0, 60.0, 110.0, 87.0, 130.0];
         for (tool, h) in ToolId::ALL.into_iter().zip(heights) {
             assert_eq!(tool.minimum_height(), h, "{tool:?}");
         }
@@ -245,7 +273,7 @@ mod tests {
         assert!(stored_names(Some(&Value::Array(vec![]))).is_empty());
 
         let names: Vec<String> = ["Notes", "Snippets", "Bogus", "Profiles"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(shown_tools(&names), vec![ToolId::Snippets, ToolId::Profiles]);
+        assert_eq!(shown_tools(&names), vec![ToolId::Notes, ToolId::Snippets, ToolId::Profiles]);
 
         let profiles_only = vec!["Profiles".to_string()];
         assert_eq!(toggle_name(&profiles_only, ToolId::Snippets), vec!["Profiles".to_string(), "Snippets".to_string()]);
@@ -253,9 +281,25 @@ mod tests {
         let notes_and_profiles = vec!["Notes".to_string(), "Profiles".to_string()];
         assert_eq!(toggle_name(&notes_and_profiles, ToolId::Profiles), vec!["Notes".to_string()]);
 
+        let order = menu_order();
+        assert_eq!(order.len(), 12);
+        assert_eq!(&order[..4], &[ToolId::Actions, ToolId::CapturedOutput, ToolId::Codecierge, ToolId::CommandHistory]);
         assert_eq!(
-            menu_order(),
-            vec![ToolId::Actions, ToolId::CommandHistory, ToolId::NamedMarks, ToolId::PasteHistory, ToolId::Profiles, ToolId::RecentDirectories, ToolId::Snippets]
+            order,
+            vec![
+                ToolId::Actions,
+                ToolId::CapturedOutput,
+                ToolId::Codecierge,
+                ToolId::CommandHistory,
+                ToolId::Jobs,
+                ToolId::NamedMarks,
+                ToolId::Notes,
+                ToolId::PasteHistory,
+                ToolId::Profiles,
+                ToolId::RecentDirectories,
+                ToolId::SessionStatus,
+                ToolId::Snippets,
+            ]
         );
 
         assert_eq!(NO_TOOLS, "No Tools enabled. Select them from the menu above.");

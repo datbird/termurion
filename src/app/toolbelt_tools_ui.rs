@@ -68,6 +68,9 @@ pub(super) enum Shown {
     Actions(Vec<String>),
     /// The focused session's named marks, top first: id and name.
     Marks(Vec<(u32, String)>),
+    /// A tool not yet built (9k's Captured Output, Session Status, Jobs, Notes and Codecierge):
+    /// drawn as an empty list until its own task wires it up.
+    Pending,
 }
 
 impl Shown {
@@ -80,6 +83,7 @@ impl Shown {
             Shown::Snippets { rows, .. } => rows.len(),
             Shown::Actions(v) => v.len(),
             Shown::Marks(v) => v.len(),
+            Shown::Pending => 0,
         }
     }
 }
@@ -232,6 +236,8 @@ impl App {
             ToolId::Actions => ListSpec { left: vec![ToolButton::Apply], right: vec![ToolButton::Add, ToolButton::Remove, ToolButton::Edit], ..ListSpec::default() },
             // Edit, Remove, Add at the right (`ToolNamedMarks.swift:104-112`).
             ToolId::NamedMarks => ListSpec { right: vec![ToolButton::Add, ToolButton::Remove, ToolButton::Edit], ..ListSpec::default() },
+            // Not yet built (9k tasks 2 through 4): an empty list, nothing drawn.
+            ToolId::CapturedOutput | ToolId::SessionStatus | ToolId::Jobs | ToolId::Notes | ToolId::Codecierge => ListSpec::default(),
         }
     }
 
@@ -380,6 +386,8 @@ impl App {
             ToolId::Snippets => self.snippet_shown(&query),
             ToolId::Actions => Shown::Actions(tt::action_rows(&user_actions::load(self.globals.get("Actions").as_ref()))),
             ToolId::NamedMarks => Shown::Marks(self.mark_shown()),
+            // Not yet built (9k tasks 2 through 4).
+            ToolId::CapturedOutput | ToolId::SessionStatus | ToolId::Jobs | ToolId::Notes | ToolId::Codecierge => Shown::Pending,
         });
         self.belt.shown.insert(tool, (key, shown.clone()));
         shown
@@ -432,6 +440,7 @@ impl App {
                 }
                 Shown::Actions(v) => plain(v[i].clone(), false),
                 Shown::Marks(v) => plain(v[i].1.clone(), false),
+                Shown::Pending => unreachable!("Shown::Pending is always empty"),
             })
             .collect()
     }
@@ -659,7 +668,7 @@ impl App {
             // Option wins over Shift (`TS:372-396`).
             Shown::Snippets { .. } => return self.apply_snippets(tt::snippet_pick(alt, shift), false, event_loop),
             Shown::Actions(_) => return self.apply_actions(event_loop),
-            Shown::Marks(_) => return,
+            Shown::Marks(_) | Shown::Pending => return,
         }
         self.belt.focus = None;
         self.redraw();

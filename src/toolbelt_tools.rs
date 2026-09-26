@@ -5,8 +5,10 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 use crate::marks::Mark;
+use crate::proctree::Proc;
 use crate::shell_history::{self, Dir, Use};
 use crate::snippets::{self, Snippet};
 use crate::user_actions::UserAction;
@@ -485,6 +487,183 @@ pub fn profile_open(ctrl: bool, alt: bool, shift: bool) -> ProfileOpen {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Jobs (`JT` = `iTermJobTreeViewController.m`/`ToolJobs.m`, min 76).
+// ---------------------------------------------------------------------------------------------
+
+/// One row of the Jobs tool's tree: a process's pid, its depth under the shell, its display
+/// text, whether it has children (even while collapsed) and whether it is being watched for
+/// termination (the app draws the bell glyph before it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct JobRow {
+    pub pid: u32,
+    pub depth: usize,
+    pub text: String,
+    pub has_children: bool,
+    pub watched: bool,
+}
+
+/// A row's text: the command line, else the name, cut to 256 characters with `\n` as a space
+/// (`JT:245,265-275,771,792-795`); "(terminated)" when neither is there.
+fn job_row_text(p: &Proc) -> String {
+    let raw = p.cmdline.as_deref().filter(|c| !c.is_empty()).unwrap_or(p.name.as_str());
+    if raw.is_empty() {
+        return "(terminated)".to_string();
+    }
+    raw.replace('\n', " ").chars().take(256).collect()
+}
+
+/// The Jobs tool's tree, rooted at the shell (`root`), depth-first, a node's children in pid
+/// order (`ToolJobs.m:101-104`). The same cycle guard as `proctree::walk` (a child never older
+/// than its parent, each pid visited once) keeps a stale or looping pid table from hanging the
+/// walk. A pid in `collapsed` still shows its own row but hides its subtree; `has_children` is
+/// set either way, so a collapsed row still shows its disclosure. A pid in `watched` is flagged
+/// for the app to draw the bell glyph before it.
+pub fn job_rows(procs: &[Proc], root: u32, collapsed: &BTreeSet<u32>, watched: &BTreeSet<u32>) -> Vec<JobRow> {
+    let Some(r) = procs.iter().find(|p| p.pid == root) else { return Vec::new() };
+    let mut seen: HashSet<u32> = HashSet::from([root]);
+    let mut out = Vec::new();
+    // An explicit stack, not recursion: a node's children are pushed in reverse pid order so
+    // the smallest pid is the next one popped, giving a pre-order walk in pid order.
+    let mut stack: Vec<(&Proc, usize)> = vec![(r, 0)];
+    while let Some((node, depth)) = stack.pop() {
+        let mut kids: Vec<&Proc> = procs.iter().filter(|q| q.ppid == node.pid && q.created >= node.created && !seen.contains(&q.pid)).collect();
+        kids.sort_by_key(|q| q.pid);
+        for k in &kids {
+            seen.insert(k.pid);
+        }
+        let has_children = !kids.is_empty();
+        out.push(JobRow { pid: node.pid, depth, text: job_row_text(node), has_children, watched: watched.contains(&node.pid) });
+        if !collapsed.contains(&node.pid) {
+            for k in kids.into_iter().rev() {
+                stack.push((k, depth + 1));
+            }
+        }
+    }
+    out
+}
+
+/// The six signals Jobs can send (`JT:52-60`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signal {
+    Hup,
+    Int,
+    Quit,
+    Abrt,
+    Kill,
+    Term,
+}
+
+impl Signal {
+    pub fn name(self) -> &'static str {
+        match self {
+            Signal::Hup => "HUP",
+            Signal::Int => "INT",
+            Signal::Quit => "QUIT",
+            Signal::Abrt => "ABRT",
+            Signal::Kill => "KILL",
+            Signal::Term => "TERM",
+        }
+    }
+
+    pub fn number(self) -> i32 {
+        match self {
+            Signal::Hup => 1,
+            Signal::Int => 2,
+            Signal::Quit => 3,
+            Signal::Abrt => 6,
+            Signal::Kill => 9,
+            Signal::Term => 15,
+        }
+    }
+}
+
+/// The signal box's rows, in order; the default matches iTerm2's (`JT:52-60`).
+pub const SIGNALS: [Signal; 6] = [Signal::Hup, Signal::Int, Signal::Quit, Signal::Abrt, Signal::Kill, Signal::Term];
+pub const DEFAULT_SIGNAL: Signal = Signal::Kill;
+
+/// How a signal reaches a process on Windows (Decisions, "Jobs signals on Windows"): INT and
+/// QUIT are console events sent to the whole console; the rest are `TerminateProcess` with an
+/// exit code of 128 plus the signal number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignalWay {
+    CtrlC,
+    CtrlBreak,
+    Terminate(u32),
+}
+
+pub fn signal_way(s: Signal) -> SignalWay {
+    match s {
+        Signal::Int => SignalWay::CtrlC,
+        Signal::Quit => SignalWay::CtrlBreak,
+        other => SignalWay::Terminate(128 + other.number() as u32),
+    }
+}
+
+/// The advanced setting that permanently silences the confirmation (`JT:398-455`).
+pub const SEND_SIGNAL_KEY: &str = "NoSyncSuppressSendSignal";
+
+/// The "Confirmation Needed" question before sending a signal (`JT:398-455`): "processes" even
+/// for a single one (the kept iTerm2 bug), "and their children" only when a selected row has
+/// children.
+pub fn signal_question(count: usize, any_children: bool) -> (&'static str, String) {
+    let suffix = if any_children { " and their children." } else { "." };
+    ("Confirmation Needed", format!("Are you sure? This may terminate {count} processes{suffix}"))
+}
+
+/// A terminated job's display name, "(unknown)" for an empty one
+/// (`iTermJobTerminationMonitor.swift:139`).
+fn job_display_name(name: &str) -> &str {
+    if name.is_empty() { "(unknown)" } else { name }
+}
+
+fn job_terminated_sentence(name: &str, pid: u32) -> String {
+    format!("The job {} with process ID {pid} has terminated.", job_display_name(name))
+}
+
+/// "Notify on Termination"'s alert, one job or several (`iTermJobTerminationMonitor.swift:
+/// 123-141`): a single job's own sentence, or several bulleted with `"\u{2022} "` and joined by
+/// newlines.
+pub fn job_terminated_text(jobs: &[(String, u32)]) -> (&'static str, String) {
+    if let [(name, pid)] = jobs {
+        return ("Job Terminated", job_terminated_sentence(name, *pid));
+    }
+    let text = jobs.iter().map(|(name, pid)| format!("\u{2022} {}", job_terminated_sentence(name, *pid))).collect::<Vec<_>>().join("\n");
+    ("Jobs Terminated", text)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Codecierge (`CC` = `ToolCodecierge.swift`, min 130).
+// ---------------------------------------------------------------------------------------------
+
+/// Codecierge's three states (`CC:646-709`, Decisions: `EnableAI` is off until milestone 12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeciergeState {
+    /// `GenerativeAIAllowed` false: Get Started is disabled.
+    AdminDisabled,
+    /// `EnableAI` false: Reveal Setting offers Settings.
+    NeedsAi,
+    Ready,
+}
+
+pub fn codecierge_state(admin_allowed: bool, ai_enabled: bool) -> CodeciergeState {
+    if !admin_allowed {
+        CodeciergeState::AdminDisabled
+    } else if !ai_enabled {
+        CodeciergeState::NeedsAi
+    } else {
+        CodeciergeState::Ready
+    }
+}
+
+pub fn codecierge_text(s: CodeciergeState) -> &'static str {
+    match s {
+        CodeciergeState::AdminDisabled => "Generative AI has been disabled by the system administrator.",
+        CodeciergeState::NeedsAi => "You must enable AI features to use Codecierge.",
+        CodeciergeState::Ready => "Codecierge uses AI to help you in your terminal.",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -704,5 +883,93 @@ mod tests {
         assert_eq!(ERASE_PASTE, ("Erase Paste History", "Paste history will be erased. Continue?"));
         assert_eq!(ERASE_COMMANDS, ("Erase Command History", "Command history for all hosts will be erased. Continue?"));
         assert_eq!(ERASE_DIRS, ("Erase Saved Directories?", ""));
+    }
+
+    fn proc(pid: u32, ppid: u32, name: &str, created: u64, cmdline: Option<&str>) -> Proc {
+        Proc { pid, ppid, name: name.into(), created, gui: false, cmdline: cmdline.map(str::to_string) }
+    }
+
+    #[test]
+    fn jobs_rules_follow_iterm2() {
+        // The shell (1) first at depth 0; its children (10, 11) in pid order below it, not
+        // creation order; 11's own child (12) nested under it.
+        let procs = vec![
+            proc(1, 0, "bash", 0, None),
+            proc(11, 1, "vim", 2, Some("vim notes.md")),
+            proc(10, 1, "git", 1, None),
+            proc(12, 11, "gpg", 3, None),
+        ];
+        let empty = BTreeSet::new();
+        let rows = job_rows(&procs, 1, &empty, &empty);
+        assert_eq!(rows.iter().map(|r| (r.pid, r.depth)).collect::<Vec<_>>(), vec![(1, 0), (10, 1), (11, 1), (12, 2)]);
+        assert_eq!(rows[0].text, "bash", "no command line: the name");
+        assert_eq!(rows[2].text, "vim notes.md", "a command line wins over the name");
+        assert!(rows[2].has_children && !rows[3].has_children);
+
+        // A newline in the command line becomes a space, and it cuts to 256 characters.
+        let long = "x".repeat(300);
+        let with_line = vec![proc(1, 0, "bash", 0, None), proc(10, 1, "cat", 1, Some(&format!("cat a\nb {long}")))];
+        let rows = job_rows(&with_line, 1, &empty, &empty);
+        assert_eq!(rows[1].text.len(), 256);
+        assert!(!rows[1].text.contains('\n'));
+        assert!(rows[1].text.starts_with("cat a b x"));
+
+        // An unknown name (and no command line) reads as terminated.
+        let unknown = vec![proc(1, 0, "bash", 0, None), proc(10, 1, "", 1, None)];
+        assert_eq!(job_rows(&unknown, 1, &empty, &empty)[1].text, "(terminated)");
+
+        // A collapsed pid still shows its own row (with has_children set) but hides its subtree.
+        let mut collapsed = BTreeSet::new();
+        collapsed.insert(11);
+        let rows = job_rows(&procs, 1, &collapsed, &empty);
+        assert_eq!(rows.iter().map(|r| r.pid).collect::<Vec<_>>(), vec![1, 10, 11]);
+        assert!(rows[2].has_children, "the disclosure still shows on a collapsed row");
+
+        // A watched pid is flagged.
+        let mut watched = BTreeSet::new();
+        watched.insert(10);
+        let rows = job_rows(&procs, 1, &empty, &watched);
+        assert!(rows.iter().find(|r| r.pid == 10).unwrap().watched);
+        assert!(!rows.iter().find(|r| r.pid == 11).unwrap().watched);
+
+        // No shell: no rows.
+        assert!(job_rows(&procs, 999, &empty, &empty).is_empty());
+
+        // Signals: names, numbers, order.
+        let names: Vec<&str> = SIGNALS.iter().map(|s| s.name()).collect();
+        assert_eq!(names, vec!["HUP", "INT", "QUIT", "ABRT", "KILL", "TERM"]);
+        let numbers: Vec<i32> = SIGNALS.iter().map(|s| s.number()).collect();
+        assert_eq!(numbers, vec![1, 2, 3, 6, 9, 15]);
+        assert_eq!(DEFAULT_SIGNAL, Signal::Kill);
+
+        assert_eq!(signal_way(Signal::Int), SignalWay::CtrlC);
+        assert_eq!(signal_way(Signal::Quit), SignalWay::CtrlBreak);
+        assert_eq!(signal_way(Signal::Hup), SignalWay::Terminate(129));
+        assert_eq!(signal_way(Signal::Abrt), SignalWay::Terminate(134));
+        assert_eq!(signal_way(Signal::Kill), SignalWay::Terminate(137));
+        assert_eq!(signal_way(Signal::Term), SignalWay::Terminate(143));
+
+        assert_eq!(SEND_SIGNAL_KEY, "NoSyncSuppressSendSignal");
+
+        assert_eq!(signal_question(1, false), ("Confirmation Needed", "Are you sure? This may terminate 1 processes.".to_string()));
+        let (title, text) = signal_question(2, true);
+        assert_eq!(title, "Confirmation Needed");
+        assert!(text.ends_with("2 processes and their children."), "{text}");
+
+        assert_eq!(job_terminated_text(&[("vim".to_string(), 7)]), ("Job Terminated", "The job vim with process ID 7 has terminated.".to_string()));
+        let (title, text) = job_terminated_text(&[("vim".to_string(), 7), ("ls".to_string(), 8)]);
+        assert_eq!(title, "Jobs Terminated");
+        assert_eq!(text, "\u{2022} The job vim with process ID 7 has terminated.\n\u{2022} The job ls with process ID 8 has terminated.");
+        // An empty name reads as unknown.
+        let (_, text) = job_terminated_text(&[(String::new(), 9)]);
+        assert!(text.contains("(unknown)"));
+
+        assert_eq!(codecierge_state(false, false), CodeciergeState::AdminDisabled);
+        assert_eq!(codecierge_state(false, true), CodeciergeState::AdminDisabled);
+        assert_eq!(codecierge_state(true, false), CodeciergeState::NeedsAi);
+        assert_eq!(codecierge_state(true, true), CodeciergeState::Ready);
+        assert_eq!(codecierge_text(CodeciergeState::AdminDisabled), "Generative AI has been disabled by the system administrator.");
+        assert_eq!(codecierge_text(CodeciergeState::NeedsAi), "You must enable AI features to use Codecierge.");
+        assert_eq!(codecierge_text(CodeciergeState::Ready), "Codecierge uses AI to help you in your terminal.");
     }
 }
