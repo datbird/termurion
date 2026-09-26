@@ -183,6 +183,7 @@ pub mod tool_list;
 pub mod toolbelt_tools;
 pub mod text_edit;
 pub mod notes;
+pub mod open_quickly;
 
 #[cfg(windows)]
 pub mod winclip;
