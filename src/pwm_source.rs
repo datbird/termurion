@@ -68,7 +68,10 @@ impl Kind {
 }
 
 /// An Add Account checkbox a source declares (the adapter protocol's `AddAccountToggle`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `Deserialize` with the protocol's camelCase names so `pwm_adapter`'s `HandshakeResponse`
+/// decodes straight into it, with no separate wire type to keep in step (Task 5 decision).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Toggle {
     pub key: String,
     pub label: String,
@@ -76,8 +79,10 @@ pub struct Toggle {
     pub default_value: bool,
 }
 
-/// A field in a source's Settings sheet (the adapter protocol's `SettingsField`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A field in a source's Settings sheet (the adapter protocol's `SettingsField`). `Deserialize`
+/// for the same reason as `Toggle` (Task 5 decision).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Field {
     pub key: String,
     pub label: String,

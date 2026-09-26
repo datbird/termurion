@@ -205,6 +205,7 @@ pub mod echo_probe;
 pub mod pwm_source;
 pub mod pwm_run;
 pub mod pwm_cli;
+pub mod pwm_adapter;
 
 #[cfg(windows)]
 pub mod winclip;
