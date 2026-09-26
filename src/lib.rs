@@ -17,6 +17,7 @@ pub mod smartsel;
 pub mod semantic;
 pub mod synthetic;
 pub mod tabstatus;
+pub mod status_tool;
 pub mod seltools;
 pub mod copymode;
 pub mod fold;

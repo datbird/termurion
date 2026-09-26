@@ -102,14 +102,18 @@ impl Status {
 pub const PRIORITIES: [&str; 3] = ["wait", "work", "idle"];
 
 /// The status a tab shows: the focused pane's if it has one, else the other panes' status
-/// whose text matches the earliest priority pattern (case-insensitive substring).
+/// whose text matches the earliest priority pattern (case-insensitive substring). A status
+/// with no text ranks below every pattern, matched or not (`count + 1`; `SPS:86-97`).
 pub fn aggregate<'a>(focused: Option<&'a Status>, others: &[&'a Status], priorities: &[&str]) -> Option<&'a Status> {
     if let Some(f) = focused.filter(|f| !f.is_empty()) {
         return Some(f);
     }
-    let rank = |s: &Status| {
-        let text = s.status.as_deref().unwrap_or("").to_lowercase();
-        priorities.iter().position(|p| text.contains(&p.to_lowercase())).unwrap_or(priorities.len())
+    let rank = |s: &Status| match s.status.as_deref() {
+        Some(text) => {
+            let text = text.to_lowercase();
+            priorities.iter().position(|p| text.contains(&p.to_lowercase())).unwrap_or(priorities.len())
+        }
+        None => priorities.len() + 1,
     };
     others.iter().copied().filter(|s| !s.is_empty()).enumerate().min_by_key(|(i, s)| (rank(s), *i)).map(|(_, s)| s)
 }
