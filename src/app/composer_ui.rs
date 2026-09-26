@@ -14,7 +14,6 @@
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::Duration;
 
 use unicode_width::UnicodeWidthChar;
@@ -23,17 +22,13 @@ use winit::keyboard::{Key as WKey, NamedKey};
 use super::*;
 use super::toolbelt_tools_ui::{is_modifier, now_ms};
 use crate::broadcast::Write;
-use crate::command_syntax::{self, Check, Checker, Request};
+use crate::command_syntax::{self, Check, Checker};
+use crate::composer_worker::{Job, Reply};
 use crate::composer::{self, Act, Key as CKey, Mods as CMods, Shown};
 use crate::composer_suggest::{self as suggest, Item, ItemKind};
 use crate::palette::Rgb;
 use crate::text_edit::{self, EditKey, EditOut, VisualLine};
 
-/// Most entries read from one directory for a listing (a huge folder or a long PATH never
-/// stalls the worker for long, and the popup shows at most 256 anyway).
-const MAX_DIR_ENTRIES: usize = 4096;
-/// How long a PATH directory's listing is reused before it is read again.
-const PATH_TTL: Duration = Duration::from_secs(30);
 /// A fade's frame interval.
 const FRAME: Duration = Duration::from_millis(16);
 /// The info bar the AI button and Win+Y show.
@@ -141,16 +136,34 @@ fn text_width(s: &str, cw: f32) -> f32 {
     s.chars().map(|c| if c == '\t' { 4 } else { c.width().unwrap_or(0) }).sum::<usize>() as f32 * cw
 }
 
+/// The composer's one wrap (the Task 1 ruling): every draw and hit test goes through it, so a
+/// prompt prefix can never put drawing and hit testing out of step. `text` is the editor's
+/// text (with the ghost inserted when drawing). The prefix sits in the same storage
+/// (`CTV:475-505`), so it wraps with the text: the first line's indent and `prefix_breaks`
+/// come from `wrap_params` (none for the dropdown; Task 7's drawn prompt sets them).
+fn composer_wrap(c: &composer::Composer, text: &str, max_w: f32, cw: f32) -> Vec<VisualLine> {
+    let (indent, breaks) = wrap_params(c);
+    text_edit::wrap_indented(text, max_w, indent, breaks, &|s: &str| text_width(s, cw))
+}
+
+/// The first line's indent and whether the prefix ends in a break opportunity, for
+/// `composer_wrap`: a prefix kept in the storage needs neither.
+fn wrap_params(c: &composer::Composer) -> (f32, bool) {
+    let _ = c;
+    (0.0, false)
+}
+
+/// Which pane a press on a composer focuses (a left press on another pane's composer focuses
+/// that pane, as a left press on its terminal does), or None.
+fn press_focus(left: bool, pane: PaneId, focused: Option<PaneId>) -> Option<PaneId> {
+    (left && focused != Some(pane)).then_some(pane)
+}
+
 /// A line as drawn: tabs as 4 spaces (as `text_width` measures them).
 fn shown(s: &str) -> String {
     s.replace('\t', "    ")
 }
 
-/// `a` at `alpha` over `b`.
-fn blend(a: Rgb, b: Rgb, alpha: f32) -> Rgb {
-    let m = |x: u8, y: u8| (f32::from(x) * alpha + f32::from(y) * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
-    crate::palette::rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
-}
 
 fn glyph(kind: ItemKind) -> char {
     match kind {
@@ -257,162 +270,12 @@ pub(super) struct Windows {
     advanced_paste: Option<PaneId>,
 }
 
-enum Job {
-    Files { pane: PaneId, generation: u64, dirs: Vec<(PathBuf, bool)>, pathext: Vec<String> },
-    Check { pane: PaneId, request: Request, cwd: Option<PathBuf> },
-}
-
-enum Reply {
-    Files { pane: PaneId, generation: u64, entries: Vec<(String, bool)> },
-    /// None: the worker failed on it (it will never be answered).
-    Check { pane: PaneId, request: Request, ok: Option<bool> },
-}
-
-/// The composer's worker thread: file and PATH listings and the command and file checks, off
-/// the UI thread (as the git poller runs git). Started on first use; a thread that ended is
-/// started again on the next job.
-pub(super) struct Worker {
-    notify: Notify,
-    link: Option<(mpsc::Sender<Job>, mpsc::Receiver<Reply>)>,
-}
-
-impl Worker {
-    pub(super) fn new(notify: Notify) -> Worker {
-        Worker { notify, link: None }
-    }
-
-    /// Hands a job to the thread; the job back when no thread takes it.
-    fn send(&mut self, job: Job) -> Result<(), Job> {
-        if self.link.is_none() {
-            let (jtx, jrx) = mpsc::channel::<Job>();
-            let (rtx, rrx) = mpsc::channel::<Reply>();
-            let notify = self.notify.clone();
-            let started = std::thread::Builder::new().name("composer".into()).spawn(move || {
-                let mut cache: HashMap<PathBuf, (Instant, Vec<(String, bool)>)> = HashMap::new();
-                for job in jrx {
-                    let reply = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_job(&job, &mut cache))) {
-                        Ok(r) => r,
-                        Err(_) => failed(&job),
-                    };
-                    if rtx.send(reply).is_err() {
-                        break;
-                    }
-                    notify();
-                }
-            });
-            if started.is_err() {
-                return Err(job);
-            }
-            self.link = Some((jtx, rrx));
-        }
-        let Some((tx, _)) = &self.link else { return Err(job) };
-        tx.send(job).map_err(|e| {
-            self.link = None;
-            e.0
-        })
-    }
-
-    fn replies(&mut self) -> Vec<Reply> {
-        let Some((_, rx)) = &self.link else { return Vec::new() };
-        let mut out = Vec::new();
-        loop {
-            match rx.try_recv() {
-                Ok(r) => out.push(r),
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.link = None;
-                    break;
-                }
-            }
-        }
-        out
-    }
-}
-
-/// The reply for a job the worker could not finish.
-fn failed(job: &Job) -> Reply {
-    match job {
-        Job::Files { pane, generation, .. } => Reply::Files { pane: *pane, generation: *generation, entries: Vec::new() },
-        Job::Check { pane, request, .. } => Reply::Check { pane: *pane, request: request.clone(), ok: None },
-    }
-}
-
 fn env_list(name: &str) -> Vec<String> {
     std::env::var(name).unwrap_or_default().split(';').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect()
 }
 
 fn home() -> String {
     std::env::var("USERPROFILE").unwrap_or_default()
-}
-
-/// A directory's entries, at most `MAX_DIR_ENTRIES` (name, is a directory). Never a UNC path.
-fn list_dir(dir: &Path) -> Vec<(String, bool)> {
-    if crate::prompted::network_path(&dir.to_string_lossy()) {
-        return Vec::new();
-    }
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-    rd.flatten().take(MAX_DIR_ENTRIES).map(|e| (e.file_name().to_string_lossy().into_owned(), e.file_type().is_ok_and(|t| t.is_dir()))).collect()
-}
-
-/// One job on the worker. Listings: a PATH directory (`true`) gives its executables (PATHEXT
-/// files, extension dropped) from a cache kept `PATH_TTL`; any other directory everything.
-/// Checks: a command is valid when a PATH/PATHEXT candidate is a file (`FC:195-242`), a file
-/// argument when it exists (relative to the session's directory). Nothing UNC is touched, and
-/// nothing is run.
-fn run_job(job: &Job, cache: &mut HashMap<PathBuf, (Instant, Vec<(String, bool)>)>) -> Reply {
-    match job {
-        Job::Files { pane, generation, dirs, pathext } => {
-            let mut entries: Vec<(String, bool)> = Vec::new();
-            let mut seen = std::collections::HashSet::new();
-            for (dir, on_path) in dirs {
-                let listed = if *on_path {
-                    let fresh = cache.get(dir).filter(|(t, _)| t.elapsed() < PATH_TTL).map(|(_, v)| v.clone());
-                    let v = fresh.unwrap_or_else(|| {
-                        let v: Vec<(String, bool)> = list_dir(dir)
-                            .into_iter()
-                            .filter(|(_, is_dir)| !is_dir)
-                            .filter_map(|(name, _)| {
-                                let lower = name.to_lowercase();
-                                pathext.iter().find(|e| lower.ends_with(&e.to_lowercase())).map(|e| (name[..name.len() - e.len()].to_string(), false))
-                            })
-                            .collect();
-                        cache.insert(dir.clone(), (Instant::now(), v.clone()));
-                        v
-                    });
-                    v
-                } else {
-                    list_dir(dir)
-                };
-                for (name, is_dir) in listed {
-                    if !name.is_empty() && seen.insert(name.to_lowercase()) {
-                        entries.push((name, is_dir));
-                    }
-                }
-            }
-            Reply::Files { pane: *pane, generation: *generation, entries }
-        }
-        Job::Check { pane, request, cwd } => {
-            let ok = match request {
-                Request::Command(cmd) => {
-                    let candidates = command_syntax::command_candidates(cmd, &env_list("PATH"), &env_list("PATHEXT"), &home());
-                    candidates.iter().filter(|c| !crate::prompted::network_path(c)).any(|c| Path::new(c).is_file())
-                }
-                Request::File(arg) => {
-                    let p = if arg == "~" {
-                        Some(PathBuf::from(home()))
-                    } else if let Some(rest) = arg.strip_prefix("~/").or_else(|| arg.strip_prefix("~\\")) {
-                        Some(Path::new(&home()).join(rest))
-                    } else if Path::new(arg).is_absolute() || arg.starts_with('\\') || arg.starts_with('/') {
-                        Some(PathBuf::from(arg))
-                    } else {
-                        cwd.as_ref().map(|d| d.join(arg))
-                    };
-                    p.is_some_and(|p| !crate::prompted::network_path(&p.to_string_lossy()) && p.exists())
-                }
-            };
-            Reply::Check { pane: *pane, request: request.clone(), ok: Some(ok) }
-        }
-    }
 }
 
 impl App {
@@ -460,7 +323,7 @@ impl App {
 
     /// The global dropdown height (`ComposerHeight`, 135).
     fn composer_height(&self) -> f32 {
-        self.globals.get(HEIGHT_KEY).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).map_or(composer::DEFAULT_HEIGHT, |f| f as f32)
+        self.globals.number(HEIGHT_KEY).map_or(composer::DEFAULT_HEIGHT, |f| f as f32)
     }
 
     /// The profile's `Composer Top Offset` (a session copy reads its saved profile, which is
@@ -468,7 +331,7 @@ impl App {
     fn composer_top_offset(&self, pane: PaneId) -> f32 {
         let Some(p) = self.panes.get(&pane) else { return 0.0 };
         let guid = self.store.shared_guid(&p.profile);
-        self.store.get(&guid).or_else(|| self.store.get(&p.profile)).and_then(|pr| pr.get(TOP_OFFSET)).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).map_or(0.0, |f| f as f32)
+        self.store.get(&guid).or_else(|| self.store.get(&p.profile)).map_or(0.0, |pr| pr.float(TOP_OFFSET) as f32)
     }
 
     /// The dropdown's parts over pane rectangle `rect` (pixels): `minimal_rect` in points.
@@ -485,7 +348,8 @@ impl App {
         let rect = self.pane_rect(pane)?;
         let l = self.composer_layout(pane, rect);
         let cw = self.cell().0;
-        let lines = text_edit::wrap(&self.panes.get(&pane)?.composer.edit.text, l.text.w, &|s: &str| text_width(s, cw));
+        let c = &self.panes.get(&pane)?.composer;
+        let lines = composer_wrap(c, &c.edit.text, l.text.w, cw);
         Some((l, lines))
     }
 
@@ -800,7 +664,7 @@ impl App {
             vec![(join(&base), false)]
         };
         v.waiting = Some(fetch);
-        let job = Job::Files { pane, generation, dirs, pathext: env_list("PATHEXT") };
+        let job = Job::Files { pane, generation, dirs };
         if self.composer_worker.send(job).is_err() {
             self.composer_found(pane, generation, Vec::new());
         }
@@ -1101,8 +965,9 @@ impl App {
             if !self.composer_shown(pane) {
                 continue;
             }
-            if let Some(row) = self.composer_popup_hit(pane, rect, x, y) {
-                if button == MouseButton::Left {
+            if let Some(hit) = self.composer_popup_hit(pane, rect, x, y) {
+                self.composer_focus_pane(button, pane);
+                if let (Some(row), MouseButton::Left) = (hit, button) {
                     if let Some(v) = self.composers.get_mut(&pane) {
                         if let Some(pop) = v.popup.as_mut() {
                             pop.selected = row;
@@ -1121,6 +986,7 @@ impl App {
             if button != MouseButton::Left {
                 return true;
             }
+            self.composer_focus_pane(button, pane);
             self.composer_take_keys(pane);
             if let Some(v) = self.composers.get_mut(&pane) {
                 v.popup = None;
@@ -1153,6 +1019,70 @@ impl App {
         }
         self.composer_yield_keys();
         false
+    }
+
+    /// A press on `pane`'s composer focuses that pane first, the way a press on its terminal
+    /// does (`press_focus`).
+    fn composer_focus_pane(&mut self, button: MouseButton, pane: PaneId) {
+        if let Some(p) = press_focus(button == MouseButton::Left, pane, self.focused_id()) {
+            if let Some(t) = self.tabs.get_mut(self.active) {
+                t.focused = p;
+            }
+            self.refresh_route();
+        }
+    }
+
+    /// The wheel over a shown dropdown scrolls its text (never the program under it). True
+    /// when the pointer is over one.
+    pub(super) fn composer_wheel(&mut self, dy: f32) -> bool {
+        let (x, y) = self.cursor;
+        let panes: Vec<(PaneId, Rect)> = self.tabs.get(self.active).map(|t| self.visible(t)).unwrap_or_default();
+        for (pane, rect) in panes {
+            if !self.composer_shown(pane) || !self.composer_layout(pane, rect).panel.contains(x, y) {
+                continue;
+            }
+            let Some((l, lines)) = self.composer_lines(pane) else { return true };
+            let line_h = self.cell().1;
+            let content = lines.len() as f32 * line_h;
+            let v = self.composers.entry(pane).or_default();
+            v.scroll = (v.scroll - dy * line_h).clamp(0.0, (content - l.text.h).max(0.0));
+            self.redraw();
+            return true;
+        }
+        false
+    }
+
+    /// The focused pane or tab changed (from the keyboard as from the tab bar): a composer in
+    /// a pane that is no longer focused lets the keyboard go (`PS:21021-21026`: it takes it
+    /// back only with the terminal's).
+    pub(super) fn composer_focus_follows(&mut self) {
+        let focused = self.focused_id();
+        let mut any = false;
+        for (id, p) in self.panes.iter_mut() {
+            if p.composer.focused && Some(*id) != focused {
+                p.composer.focused = false;
+                any = true;
+                if let Some(v) = self.composers.get_mut(id) {
+                    v.popup = None;
+                    v.ghost = None;
+                }
+            }
+        }
+        if any {
+            self.refresh_route();
+            self.redraw();
+        }
+    }
+
+    /// The pointer over a dropdown's Help button shows its tooltip (the Clippings buttons'
+    /// precedent).
+    fn composer_hover_move(&mut self, x: f32, y: f32) {
+        let panes: Vec<(PaneId, Rect)> = self.tabs.get(self.active).map(|t| self.visible(t)).unwrap_or_default();
+        let hover = panes.into_iter().find(|(pane, rect)| self.composer_shown(*pane) && self.composer_layout(*pane, *rect).help.contains(x, y)).map(|(p, _)| p);
+        if hover != self.composer_hover {
+            self.composer_hover = hover;
+            self.redraw();
+        }
     }
 
     /// The byte index under a point of `pane`'s text, its visual line and x, and whether it is
@@ -1221,6 +1151,7 @@ impl App {
     /// Pointer motion during a composer drag: the selection (or the box of carets), the
     /// height (saved on every move, `MCVC:581-607`), or the offset from the pane's top.
     pub(super) fn composer_move(&mut self, x: f32, y: f32) {
+        self.composer_hover_move(x, y);
         let Drag::Composer { pane, kind } = self.drag else { return };
         let scale = self.scale();
         match kind {
@@ -1263,28 +1194,39 @@ impl App {
         self.redraw();
     }
 
-    /// The popup row under a point, when `pane`'s popup shows.
-    fn composer_popup_hit(&self, pane: PaneId, rect: Rect, x: f32, y: f32) -> Option<usize> {
-        let (caret, rows, selected, detail, widest) = self.composer_popup_geometry(pane, rect)?;
+    /// What a point on `pane`'s popup hits: Some(Some(row)) a row, Some(None) the popup
+    /// without a row (the "Thinking..." placeholder), None not the popup.
+    fn composer_popup_hit(&self, pane: PaneId, rect: Rect, x: f32, y: f32) -> Option<Option<usize>> {
+        let (caret, rows, selected, detail, widest, thinking) = self.composer_popup_geometry(pane, rect)?;
         let scale = self.scale();
         let (r, first) = scene::composer_popup_frame(caret, rect, rows, selected, detail, widest, scale);
         if !r.contains(x, y) {
             return None;
         }
+        if thinking {
+            return Some(None);
+        }
         let k = ((y - r.y - scene::POPUP_SPACING * scale) / ((scene::POPUP_ROW + scene::POPUP_SPACING) * scale)).floor();
         let row = first + k.max(0.0) as usize;
-        Some(row.min(rows.saturating_sub(1)))
+        Some(Some(row.min(rows.saturating_sub(1))))
     }
 
     /// The popup's caret (x, top, bottom), rows, selection, whether it has a detail strip,
-    /// and its widest row (the same numbers `composer_popup` draws with).
-    fn composer_popup_geometry(&self, pane: PaneId, rect: Rect) -> Option<((f32, f32, f32), usize, Option<usize>, bool, f32)> {
+    /// its widest row (the same numbers `composer_popup` draws with), and whether it is the
+    /// "Thinking..." placeholder alone.
+    fn composer_popup_geometry(&self, pane: PaneId, rect: Rect) -> Option<((f32, f32, f32), usize, Option<usize>, bool, f32, bool)> {
         let v = self.composers.get(&pane)?;
-        let pop = v.popup.as_ref()?;
         let caret = self.composer_caret_rect(pane, rect)?;
+        let at = (caret.x, caret.y, caret.y + caret.h);
         let cw = self.cell().0;
-        let widest = pop.items.iter().map(|i| (suggest::row_text(i, &pop.typed).0.chars().count() as f32 + 3.0) * cw).fold(0.0, f32::max);
-        Some(((caret.x, caret.y, caret.y + caret.h), pop.items.len(), Some(pop.selected), true, widest))
+        match v.popup.as_ref() {
+            Some(pop) => {
+                let widest = pop.items.iter().map(|i| (suggest::row_text(i, &pop.typed).0.chars().count() as f32 + 3.0) * cw).fold(0.0, f32::max);
+                Some((at, pop.items.len(), Some(pop.selected), true, widest, false))
+            }
+            None if v.waiting.as_ref().is_some_and(|f| f.explicit) => Some((at, 1, None, false, 0.0, true)),
+            None => None,
+        }
     }
 
     /// The primary caret's rectangle on screen.
@@ -1292,7 +1234,7 @@ impl App {
         let l = self.composer_layout(pane, rect);
         let (cw, line_h) = self.cell();
         let c = &self.panes.get(&pane)?.composer;
-        let lines = text_edit::wrap(&c.edit.text, l.text.w, &|s: &str| text_width(s, cw));
+        let lines = composer_wrap(c, &c.edit.text, l.text.w, cw);
         let (line, x) = c.edit.caret_line(&lines, &|s: &str| text_width(s, cw));
         let scroll = self.composers.get(&pane).map_or(0.0, |v| v.scroll);
         Some(Rect { x: l.text.x + x, y: l.text.y + line as f32 * line_h - scroll, w: 1.0, h: line_h })
@@ -1330,7 +1272,7 @@ impl App {
             None => text.to_string(),
         };
         let at = |i: usize| if i > caret { i + g } else { i };
-        let lines = text_edit::wrap(&display, l.text.w, &width);
+        let lines = composer_wrap(c, &display, l.text.w, cw);
         let mut segs: Vec<(Range<usize>, Rgb, bool)> = Vec::new();
         for (r, color, bold) in valid_spans(text, v.map_or(&[][..], |v| &v.spans)) {
             if g > 0 && r.start < caret && r.end > caret {
@@ -1341,7 +1283,7 @@ impl App {
             }
         }
         if g > 0 {
-            segs.push((caret..caret + g, blend(pal.fg, pal.bg, 0.5), false));
+            segs.push((caret..caret + g, scene::blend(pal.bg, pal.fg, 0.5), false));
         }
         segs.sort_by_key(|(r, _, _)| r.start);
         let content = lines.len() as f32 * line_h;
@@ -1392,6 +1334,7 @@ impl App {
             help: l.help,
             ai: ai.then_some(l.ai),
             tip,
+            tooltip: (self.composer_hover == Some(pane) && open).then_some(composer::HELP_TIP),
             small: SMALL,
             line_h,
         };
@@ -1676,6 +1619,16 @@ mod tests {
         assert!(composer_takes(m(false, true, true, false), &CKey::Edit(EditKey::Enter), false));
         // AltGr typing is typing.
         assert!(composer_takes(m(true, true, false, false), &text("@"), false));
+    }
+
+    #[test]
+    fn a_press_on_a_composer_focuses_its_pane() {
+        // Another pane's composer: focus moves to it; its own pane: nothing to do.
+        assert_eq!(press_focus(true, 2, Some(1)), Some(2));
+        assert_eq!(press_focus(true, 2, Some(2)), None);
+        assert_eq!(press_focus(true, 2, None), Some(2));
+        // Only a left press.
+        assert_eq!(press_focus(false, 2, Some(1)), None);
     }
 
     #[test]

@@ -1425,7 +1425,7 @@ impl App {
         if !l.frame.contains(x, y) {
             return;
         }
-        self.belt.focus = Some((ToolId::Notes, Focus::Field));
+        self.belt_take_focus(ToolId::Notes, Focus::Field);
         self.notes_sync();
         let (at, end) = self.note_index_at(&l, x, y);
         let shift = self.mods.shift;

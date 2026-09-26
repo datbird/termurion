@@ -282,9 +282,11 @@ pub struct App {
     /// Each pane's composer view (drawing, highlighting, suggestions; app-wide, by pane), its
     /// worker thread, the windows it opens, and the last multi-caret copy's groups.
     composers: HashMap<PaneId, composer_ui::View>,
-    composer_worker: composer_ui::Worker,
+    composer_worker: crate::composer_worker::Worker,
     composer_windows: composer_ui::Windows,
     composer_clip: Option<(String, Vec<usize>)>,
+    /// The pane whose dropdown's Help button is under the pointer (its tooltip shows).
+    composer_hover: Option<PaneId>,
     /// The Actions as they were when the toolbelt opened the Edit Action sheet, and its window:
     /// the sheet's OK pushes them on that window's Actions undo (`iTermToolActions.m:267-276`).
     action_edit_undo: Option<(WindowId, toml::Value)>,
@@ -605,7 +607,7 @@ pub fn run() {
         (None, None)
     };
     let git_worker = git_ui::GitWorker::new(Arc::new(crate::git_run_win::WinGitRun), notify.clone());
-    let composer_worker = composer_ui::Worker::new(notify.clone());
+    let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let mut app = App {
         host,
         hotkey: None,
@@ -684,6 +686,7 @@ pub fn run() {
         composer_worker,
         composer_windows: Default::default(),
         composer_clip: None,
+        composer_hover: None,
         action_edit_undo: None,
         laid_out: None,
         title_prompt: None,
@@ -1911,7 +1914,7 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
             MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
-        if self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
+        if self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
             return;
         }
         self.wheel_acc += dy;
@@ -2315,6 +2318,7 @@ impl ApplicationHandler<UserEvent> for App {
         let key = (self.current_window(), self.active, self.tabs.get(self.active).map(|t| t.focused));
         if self.checks_key != Some(key) {
             self.checks_key = Some(key);
+            self.composer_focus_follows();
             self.sync_checks();
         }
         let active = hotkey_ui::tandem_in_front();

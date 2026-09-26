@@ -106,6 +106,12 @@ impl Globals {
         }
     }
 
+    /// A number stored as a float or an integer, else iTerm2's default; None when neither
+    /// the file nor the schema has one (an undeclared key read with its own default).
+    pub fn number(&self, key: &str) -> Option<f64> {
+        self.get(key).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+    }
+
     pub fn bool(&self, key: &str) -> bool {
         self.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
     }

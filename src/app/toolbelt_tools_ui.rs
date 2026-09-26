@@ -626,7 +626,7 @@ impl App {
                 let lead = if r.watched { scene::lead_width(&[(ToolButton::Bell.glyph(), scene::LIST_SELECTED)], scale) } else { 0.0 };
                 let left = rect.x + tool_list_inset(scale) + r.depth as f32 * scene::LIST_INDENT * scale + lead;
                 if x >= left && x < left + glyph_w + 2.0 * scale {
-                    self.belt.focus = Some((tool, Focus::List));
+                    self.belt_take_focus(tool, Focus::List);
                     let pid = r.pid;
                     self.toggle_job(pid, None);
                     return self.redraw();
@@ -640,7 +640,7 @@ impl App {
                 let glyph_w = (self.list_metrics().row_h - 2.0 * tool_list_inset(scale)) / 1.2;
                 let left = rect.x + tool_list_inset(scale) + r.depth as f32 * scene::LIST_INDENT * scale;
                 if x < left + glyph_w + 2.0 * scale {
-                    self.belt.focus = Some((tool, Focus::List));
+                    self.belt_take_focus(tool, Focus::List);
                     self.toggle_folder(path, None);
                     return self.redraw();
                 }
@@ -681,9 +681,9 @@ impl App {
         let Mods { ctrl, shift, .. } = self.mods;
         let mut activated = false;
         match (hit, button) {
-            (ListHit::Field, MouseButton::Left) => self.belt.focus = Some((tool, Focus::Field)),
+            (ListHit::Field, MouseButton::Left) => self.belt_take_focus(tool, Focus::Field),
             (ListHit::Row(i), MouseButton::Left) => {
-                self.belt.focus = Some((tool, Focus::List));
+                self.belt_take_focus(tool, Focus::List);
                 // Multiple selection (`ToolProfiles.m`, `TS:147`, `iTermToolActions.m:83`,
                 // `ToolNamedMarks.swift:49`); the history lists pick one.
                 let multi = matches!(tool, ToolId::Profiles | ToolId::Snippets | ToolId::Actions | ToolId::NamedMarks | ToolId::Jobs);
@@ -707,7 +707,7 @@ impl App {
             }
             (ListHit::Row(i), MouseButton::Right) => self.tool_row_menu(tool, i),
             (ListHit::Empty, MouseButton::Left) => {
-                self.belt.focus = Some((tool, Focus::List));
+                self.belt_take_focus(tool, Focus::List);
                 self.tool_state(tool).selection.rows.clear();
             }
             (ListHit::Button(b), MouseButton::Left) => self.tool_button(tool, b, event_loop),
@@ -1059,6 +1059,13 @@ impl App {
     /// Another key consumer in the window takes the keyboard (find typing, Copy Mode, the
     /// autocomplete list, the shortcut labels): no tool keeps it, or its keys would still go to
     /// the tool, which `key` asks first.
+    /// A tool takes the keyboard: a composer that had it lets it go (and the keyboard hook
+    /// stops taking the composer's Win chords).
+    pub(super) fn belt_take_focus(&mut self, tool: ToolId, focus: Focus) {
+        self.belt.focus = Some((tool, focus));
+        self.composer_yield_keys();
+    }
+
     pub(super) fn belt_yield_keys(&mut self) {
         self.belt.focus = None;
         self.composer_yield_keys();
@@ -1152,7 +1159,7 @@ impl App {
             FieldOut::Enter | FieldOut::Kept => {}
             FieldOut::GiveBack => self.belt.focus = None,
             FieldOut::Up | FieldOut::Down => self.tool_step(tool, out == FieldOut::Down),
-            FieldOut::ToList => self.belt.focus = Some((tool, Focus::List)),
+            FieldOut::ToList => self.belt_take_focus(tool, Focus::List),
         }
     }
 
@@ -1169,7 +1176,7 @@ impl App {
                 }
             }
             ListKey::Enter if tool == ToolId::Profiles => self.tool_activate(tool, event_loop),
-            ListKey::Tab if self.tool_spec(tool).field => self.belt.focus = Some((tool, Focus::Field)),
+            ListKey::Tab if self.tool_spec(tool).field => self.belt_take_focus(tool, Focus::Field),
             ListKey::Escape => self.belt.focus = None,
             // The Mac delete key (`kVK_Delete`, Windows' Backspace), and Windows' Delete, remove
             // without a question (`TS:421-428`, `iTermToolActions.m:177-183`,

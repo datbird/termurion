@@ -945,11 +945,7 @@ fn mix(a: Rgb, b: Rgb) -> Rgb {
     crate::palette::rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
 }
 
-/// `a` at alpha `alpha` over `b` (text has no alpha of its own).
-fn blend(a: Rgb, b: Rgb, alpha: f32) -> Rgb {
-    let m = |x: u8, y: u8| (f32::from(x) * alpha + f32::from(y) * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
-    crate::palette::rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
-}
+use scene::blend;
 
 /// How a widget draws: the text color, it at half alpha, the text size, and the scale.
 struct WidgetLook {
@@ -1051,11 +1047,11 @@ fn draw_widget(widget: &Widget, room: Rect, widths: &[(String, f32)], look: &Wid
             }
             let dy = -scale;
             if !g.left.is_empty() {
-                texts.push(scene::BarText { x: room.x, text: g.left.clone(), color: g.left_color.map_or(look.color, |(c, a)| blend(c, look.background, a)), scale: look.text_scale, clip: room, icon: false, dy });
+                texts.push(scene::BarText { x: room.x, text: g.left.clone(), color: g.left_color.map_or(look.color, |(c, a)| blend(look.background, c, a)), scale: look.text_scale, clip: room, icon: false, dy });
             }
             if !g.right.is_empty() {
                 let r = at((w_pt - right_reserve).max(0.0), w_pt);
-                texts.push(scene::BarText { x: r.x, text: g.right.clone(), color: g.right_color.map_or(look.color, |(c, a)| blend(c, look.background, a)), scale: look.text_scale, clip: room, icon: false, dy });
+                texts.push(scene::BarText { x: r.x, text: g.right.clone(), color: g.right_color.map_or(look.color, |(c, a)| blend(look.background, c, a)), scale: look.text_scale, clip: room, icon: false, dy });
             }
             if g.charging {
                 let r = at((w_pt - CHARGING_PT - 2.0).max(0.0), (w_pt - 2.0).max(0.0));

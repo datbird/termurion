@@ -44,7 +44,7 @@ impl App {
     }
 
     fn powers(&self) -> Powers {
-        let f = |k: &str, d: f64| self.globals.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(d);
+        let f = |k: &str, d: f64| self.globals.number(k).unwrap_or(d);
         Powers { uses: f("CommandHistoryUsePower", 3.0), age: f("CommandHistoryAgePower", 1.0) }
     }
 

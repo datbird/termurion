@@ -641,7 +641,9 @@ fn cut(r: Rect, clip: Rect) -> Option<Rect> {
     (x1 > x0 && y1 > y0).then_some(Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
 }
 
-fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
+/// `a` moved `t` of the way toward `b`: `b` at alpha `t` over `a` (text has no alpha of its
+/// own; the one blend for scene, the status bar and the composer).
+pub fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
     let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
 }
@@ -1601,6 +1603,8 @@ pub struct ComposerDraw<'a> {
     pub help: Rect,
     pub ai: Option<Rect>,
     pub tip: Option<(f32, f32, &'a str)>,
+    /// The Help button's tooltip while the pointer is over it.
+    pub tooltip: Option<&'a str>,
     /// The accessory row's text size against the pane's font.
     pub small: f32,
     pub line_h: f32,
@@ -1612,11 +1616,6 @@ pub const COMPOSER_BORDER: Rgb = rgb(0x80, 0x80, 0x80);
 pub const COMPOSER_CLOSE_GLYPH: char = '\u{E711}';
 pub const COMPOSER_HELP_GLYPH: char = '\u{E897}';
 
-/// `a` at `alpha` over `b`, for text that fades with its panel.
-fn fade(a: Rgb, b: Rgb, alpha: f32) -> Rgb {
-    let m = |x: u8, y: u8| (f32::from(x) * alpha + f32::from(y) * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
-    rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
-}
 
 fn plain_span(text: String, color: Rgb, bold: bool) -> Span {
     Span { text, color, bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }
@@ -1646,7 +1645,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
             frame.popups.push(Quad { rect: c, color: rgba(color, a) });
         }
     }
-    let under = |c: Rgb| fade(c, d.under, a);
+    let under = |c: Rgb| blend(d.under, c, a);
     for (x, y, runs) in d.lines {
         let spans: Vec<Span> = runs.iter().filter(|(t, _, _)| !t.is_empty()).map(|(t, c, b)| plain_span(t.clone(), under(*c), *b)).collect();
         if !spans.is_empty() {
@@ -1667,6 +1666,15 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
     }
     if let Some((x, y, tip)) = d.tip {
         frame.rows.push(TextRow { x, y, spans: vec![plain_span(tip.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small });
+    }
+    // The tooltip above the Help button, a small box of its own over the text.
+    if let Some(t) = d.tooltip {
+        let (w, h) = ((t.chars().count() as f32 + 2.0) * cell.0 * d.small, cell.1 * d.small + 6.0);
+        let r = Rect { x: d.help.x, y: (d.help.y - h - 2.0).max(d.panel.y), w, h };
+        cut_out(frame, r, d.line_h);
+        frame.popups.push(Quad { rect: r, color: rgba(FIND_BAR, a) });
+        frame_lines(&mut frame.popups, r, rgba(DIVIDER, a));
+        frame.rows.push(TextRow { x: r.x + cell.0 * d.small, y: r.y + 3.0, spans: vec![plain_span(t.to_string(), TAB_TEXT, false)], clip: r, scale: d.small });
     }
 }
 
