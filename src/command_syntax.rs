@@ -17,7 +17,7 @@
 //! PowerShell Verb-Noun cmdlet shape, and a short list of common PowerShell aliases are all
 //! valid.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
@@ -578,12 +578,30 @@ pub struct Checker {
     files: HashMap<String, FileEntry>,
     queue: Vec<Request>,
     in_flight: usize,
+    /// Requests the checker itself gave up waiting on (a command's pending timeout, or a
+    /// file swept by `clear_files`) that were already handed out via `requests` (so a
+    /// worker might still answer them late). `answer` checks this so a straggling answer
+    /// does not free a second, still-legitimately-occupied slot (fix round 1, finding 2).
+    abandoned: HashSet<Request>,
 }
 
 impl Checker {
     fn make_request(&mut self, r: Request) {
         self.in_flight += 1;
         self.queue.push(r);
+    }
+
+    /// Frees `r`'s outstanding slot because the checker, not a real answer, is done waiting
+    /// on it: dropped outright if it was still sitting in the undrained queue (nothing was
+    /// ever handed to a worker, so nothing will ever answer it), otherwise marked so a later
+    /// `answer` for it is a no-op instead of double-freeing.
+    fn abandon(&mut self, r: Request) {
+        if let Some(pos) = self.queue.iter().position(|q| *q == r) {
+            self.queue.remove(pos);
+        } else {
+            self.abandoned.insert(r);
+        }
+        self.in_flight = self.in_flight.saturating_sub(1);
     }
 
     /// `LocalFileChecker.commandIsValid` (`FC:166-236`), simplified to one answer per
@@ -600,8 +618,12 @@ impl Checker {
                 CommandEntry::Pending(_) => {
                     // Unanswered past the pending timeout: give up waiting and read as
                     // invalid rather than iTerm2's silent retry, so the caller sees a
-                    // definite answer (Decision, see the brief's own worked example).
+                    // definite answer (Decision, see the brief's own worked example). The
+                    // slot this request held is freed too (fix round 1, finding 2), or a
+                    // stalled command would permanently starve every command check once
+                    // MAX_CHECKS had ever timed out.
                     self.commands.insert(cmd.to_string(), CommandEntry::Invalid(now));
+                    self.abandon(Request::Command(cmd.to_string()));
                     return Check::No;
                 }
                 _ => {
@@ -618,8 +640,15 @@ impl Checker {
     }
 
     /// `FileChecker.cachedCheckIfFileExists`/`checkIfFileExists` (`FC:52-82`): no per-entry
-    /// expiry, only the wholesale `clear_files` a composer dismissal does.
+    /// expiry, only the wholesale `clear_files` a composer dismissal does. Never queues a
+    /// stat for a UNC-looking path (fix round 1, finding 1: `command_candidates` already
+    /// refused these, but `file` - used for a command's plain-argument words too - did not;
+    /// probing one would leak the user's Windows credentials to whatever `host` is, project
+    /// invariant 5).
     pub fn file(&mut self, path: &str) -> Check {
+        if crate::prompted::network_path(path) {
+            return Check::No;
+        }
         if let Some(entry) = self.files.get(path).copied() {
             return match entry {
                 FileEntry::Known(true) => Check::Yes,
@@ -640,9 +669,11 @@ impl Checker {
         std::mem::take(&mut self.queue)
     }
 
-    /// Records a request's result and frees its outstanding slot.
+    /// Records a request's result and frees its outstanding slot, unless the checker had
+    /// already given up on and freed it itself (fix round 1, finding 2: a straggling answer
+    /// for an abandoned request updates the cache but must not free a second slot).
     pub fn answer(&mut self, r: Request, ok: bool, now: Instant) {
-        match r {
+        match r.clone() {
             Request::Command(cmd) => {
                 self.commands.insert(cmd, if ok { CommandEntry::Valid(now) } else { CommandEntry::Invalid(now) });
             }
@@ -650,18 +681,25 @@ impl Checker {
                 self.files.insert(path, FileEntry::Known(ok));
             }
         }
-        self.in_flight = self.in_flight.saturating_sub(1);
+        if !self.abandoned.remove(&r) {
+            self.in_flight = self.in_flight.saturating_sub(1);
+        }
     }
 
     /// The composer's dismissal resets the file cache (`FC:46-50`, `reset`); command
-    /// validity is left alone (PATH does not change just because the composer closed).
+    /// validity is left alone (PATH does not change just because the composer closed). Any
+    /// file check still pending is abandoned too (fix round 1, finding 2's "same for file
+    /// requests"): unlike a command, a file check has no timeout of its own to give up with
+    /// (`file` takes no `now`), so dismissal is the one moment a stalled file check's slot
+    /// can be freed short of the worker itself finally answering it.
     pub fn clear_files(&mut self) {
+        let stale: Vec<String> =
+            self.files.iter().filter(|(_, e)| **e == FileEntry::Pending).map(|(p, _)| p.clone()).collect();
         self.files.clear();
+        for path in stale {
+            self.abandon(Request::File(path));
+        }
     }
-}
-
-fn is_unc(path: &str) -> bool {
-    path.starts_with("\\\\") || path.starts_with("//")
 }
 
 fn is_drive_rooted(path: &str) -> bool {
@@ -672,11 +710,12 @@ fn is_drive_rooted(path: &str) -> bool {
 /// Every path a bare command name could resolve to: an absolute or `~` path is checked
 /// directly with no PATHEXT variants (`FC:195-207`); otherwise each `path` directory is
 /// tried bare and with each `pathext` suffix appended, directories first (`FC:208-225`). A
-/// UNC-looking command (`\\host\...` or `//host/...`) never becomes a candidate at all
-/// (project invariant: never probe a UNC path as a file, which would leak NTLM credentials
-/// to whatever `host` is).
+/// UNC-looking or device command (`\\host\...`, `//host/...`, `\\?\UNC\...`, ...) never
+/// becomes a candidate at all (project invariant 5: never probe a UNC path as a file, which
+/// would leak NTLM credentials to whatever `host` is); `Checker::file` refuses the same
+/// shapes for plain-argument words that were never run through this function.
 pub fn command_candidates(cmd: &str, path: &[String], pathext: &[String], home: &str) -> Vec<String> {
-    if is_unc(cmd) {
+    if crate::prompted::network_path(cmd) {
         return Vec::new();
     }
     if cmd.starts_with('/') || cmd.starts_with('\\') || is_drive_rooted(cmd) {
@@ -736,6 +775,17 @@ pub const POWERSHELL_ALIASES: &[&str] = &[
     "write", "kill", "clear", "man", "diff", "cpi", "mi", "ni", "rni", "gjb", "sajb", "gcm", "gv", "iex", "cnsn",
 ];
 
+/// PowerShell's approved verbs (a representative common subset: `Get-Verb`'s full list runs
+/// to about 100). Fix round 1, finding 4: typed lowercase, a Verb-Noun command with one of
+/// these verbs is still recognizably a cmdlet (`get-childitem`), unlike a plain hyphenated
+/// argument word with no approved verb (`dry-run`).
+pub const POWERSHELL_APPROVED_VERBS: &[&str] = &[
+    "get", "set", "new", "remove", "add", "clear", "copy", "move", "rename", "start", "stop", "restart", "test",
+    "invoke", "import", "export", "select", "where", "foreach", "sort", "measure", "out", "write", "read",
+    "format", "convert", "convertto", "convertfrom", "enable", "disable", "install", "uninstall", "update",
+    "find", "save", "resolve", "split", "join", "push", "pop", "wait", "show", "hide", "enter", "exit",
+];
+
 fn looks_like_cmdlet(cmd: &str) -> bool {
     let Some(dash) = cmd.find('-') else { return false };
     let (verb, rest) = cmd.split_at(dash);
@@ -748,9 +798,22 @@ fn looks_like_cmdlet(cmd: &str) -> bool {
         && noun.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
+/// A Verb-Noun command in any case, so long as the verb is one of PowerShell's approved
+/// verbs; a plain hyphenated word (`dry-run`) whose first part isn't an approved verb stays
+/// a non-command (fix round 1, finding 4).
+fn looks_like_approved_verb_noun(cmd: &str) -> bool {
+    let Some(dash) = cmd.find('-') else { return false };
+    let (verb, rest) = cmd.split_at(dash);
+    let noun = &rest[1..];
+    !noun.is_empty()
+        && noun.chars().all(|c| c.is_ascii_alphanumeric())
+        && POWERSHELL_APPROVED_VERBS.contains(&verb.to_ascii_lowercase().as_str())
+}
+
 /// The controller ruling's non-PATH validity: a builtin of cmd, PowerShell or a POSIX shell,
-/// the PowerShell Verb-Noun cmdlet shape, or a common PowerShell alias. The app's
-/// `command_ok` closure (a later task) is this or-ed with a real PATH/PATHEXT hit.
+/// the PowerShell Verb-Noun cmdlet shape (capitalized, or any case with an approved verb),
+/// or a common PowerShell alias. The app's `command_ok` closure (a later task) is this
+/// or-ed with a real PATH/PATHEXT hit.
 pub fn known_shell_command(cmd: &str) -> bool {
     let lower = cmd.to_ascii_lowercase();
     CMD_BUILTINS.contains(&lower.as_str())
@@ -758,6 +821,7 @@ pub fn known_shell_command(cmd: &str) -> bool {
         || POSIX_BUILTINS.contains(&lower.as_str())
         || POWERSHELL_ALIASES.contains(&lower.as_str())
         || looks_like_cmdlet(cmd)
+        || looks_like_approved_verb_noun(cmd)
 }
 
 #[cfg(test)]
@@ -964,6 +1028,52 @@ mod tests {
         assert!(known_shell_command("Get-ChildItem"), "Verb-Noun cmdlet shape");
         assert!(known_shell_command("Set-Location"), "Verb-Noun cmdlet shape");
         assert!(!known_shell_command("frobnicate"), "not a builtin, alias or cmdlet shape");
-        assert!(!known_shell_command("get-childitem"), "cmdlet shape requires capitalized Verb-Noun");
+        // Fix round 1, finding 4: a lowercase-typed Verb-Noun with an approved verb is a
+        // cmdlet too (`get-childitem`), but a plain hyphenated word with no approved verb
+        // (`dry-run`) is not.
+        assert!(known_shell_command("get-childitem"), "approved verb, lowercase");
+        assert!(known_shell_command("Get-CHILDITEM"), "approved verb, mixed case noun");
+        assert!(!known_shell_command("dry-run"), "not an approved verb");
+    }
+
+    #[test]
+    fn file_refuses_unc_paths() {
+        // Fix round 1, finding 1: Checker::file must never enqueue a stat for a UNC-looking
+        // path (project invariant 5, an NTLM leak), matching command_candidates.
+        let mut c = Checker::default();
+        for p in ["\\\\host\\share\\x", "//host/share/x", "\\\\?\\UNC\\host\\share\\x"] {
+            assert_eq!(c.file(p), Check::No, "{p}");
+        }
+        assert!(c.requests().is_empty(), "no stat was ever queued for a UNC path");
+    }
+
+    #[test]
+    fn command_timeout_frees_its_slot_and_a_late_answer_does_not_double_free() {
+        // Fix round 1, finding 2: a Pending command entry that times out must free its
+        // in_flight slot (so a later distinct command can still be dispatched), and a
+        // straggling answer for that same abandoned request must not free a second slot.
+        let mut c = Checker::default();
+        let t0 = Instant::now();
+        for i in 0..5 {
+            assert_eq!(c.command(&format!("s{i}"), t0), Check::Pending);
+        }
+        let reqs = c.requests();
+        assert_eq!(reqs.len(), 5);
+
+        let t1 = t0 + Duration::from_secs(11);
+        // s0 times out from the checker's own point of view.
+        assert_eq!(c.command("s0", t1), Check::No);
+        // A slot is free: a 6th, previously-blocked command can now be dispatched.
+        assert_eq!(c.command("fresh", t1), Check::Pending);
+        assert_eq!(c.requests(), vec![Request::Command("fresh".to_string())]);
+
+        // Every slot is genuinely full again (s1..s4 still outstanding, plus fresh).
+        assert_eq!(c.command("overflow", t1), Check::Pending, "no slot available");
+        assert!(c.requests().is_empty(), "overflow was never actually queued");
+
+        // The worker's answer for the abandoned s0 finally arrives late.
+        c.answer(reqs[0].clone(), true, t1);
+        assert!(c.requests().is_empty(), "answering the abandoned request queues nothing new");
+        assert_eq!(c.command("overflow2", t1), Check::Pending, "the late answer did not double-free a slot");
     }
 }
