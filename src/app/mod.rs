@@ -2092,6 +2092,8 @@ impl App {
     }
 
     fn render(&mut self) {
+        // A status bar field whose bar went away gives the keyboard back before drawing.
+        self.check_composer_fields();
         let frame = self.build_frame();
         let title = match &self.win_title {
             Some(t) => t.clone(),

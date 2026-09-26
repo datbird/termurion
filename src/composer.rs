@@ -57,6 +57,14 @@ pub struct Composer {
     /// A temporary status bar component seeded from `saved` (`CM:192-215`).
     pub temporary: bool,
     pub focused: bool,
+    /// The layout's own Composer field (a component of the profile's status bar layout): its
+    /// own text, apart from the composer's (`_comboBox.stringValue`, `SBCVC:88-94`), which
+    /// only the temporary field shares.
+    pub field: TextEdit,
+    /// The layout's Composer field has the keyboard.
+    pub field_focused: bool,
+    /// Up and Down's place in a field's history list (`NSComboBox`), None before the first.
+    pub field_pick: Option<usize>,
     /// The Auto Composer is suppressed (the alternate screen, or the feature turned off with
     /// one still up): drawing and routing skip it without losing its text.
     pub hidden: bool,
@@ -256,6 +264,22 @@ pub fn drain(queue: &mut VecDeque<String>, marks_added: u32) -> Vec<String> {
     out
 }
 
+/// Up or Down in a status bar field (`NSComboBox`: the arrow keys select the list's items,
+/// filling the text; iTerm2 does not override them): Down goes to the first (newest) item,
+/// then older ones; Up to newer ones, from nothing selected staying there; both stop at the
+/// ends. None for an empty list.
+pub fn step_field_pick(current: Option<usize>, len: usize, down: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    match (current, down) {
+        (None, true) => Some(0),
+        (None, false) => None,
+        (Some(i), true) => Some((i + 1).min(len - 1)),
+        (Some(i), false) => Some(i.saturating_sub(1).min(len - 1)),
+    }
+}
+
 /// `shouldRevealStatusBarComposerInViewController:` (`CM:173-178`): a status bar composer is
 /// used only when there is a status bar at all, and then only when the setting always wants
 /// it or a Composer component is already visible.
@@ -383,17 +407,46 @@ impl Composer {
         self.shown = if status_bar { Shown::Field } else { Shown::Dropdown };
     }
 
-    /// `showWithCommand:` (key action 64, `CM:123-139`): sets the text and reveals it,
-    /// wherever it already is or, when nothing is shown, per `status_bar`/`field_visible`.
+    /// `showWithCommand:` (key action 64, `CM:123-139`) after `setStringValue:`
+    /// (`CM:114-121`): the text becomes the saved text and goes into the shown dropdown or
+    /// temporary field; with neither shown, into the layout's field when one is visible
+    /// (`field_visible`, which then takes the keyboard); else the composer toggles: the
+    /// temporary field when `status_bar`, else the dropdown, both seeded from it.
     pub fn show_with(&mut self, s: &str, status_bar: bool, field_visible: bool) {
         self.saved = Some(s.to_string());
-        self.set_string(s, true);
-        self.shown = match self.shown {
-            Shown::Dropdown | Shown::Field => self.shown,
-            Shown::Hidden if field_visible => Shown::Field,
-            Shown::Hidden if status_bar => Shown::Field,
-            Shown::Hidden => Shown::Dropdown,
-        };
+        match self.shown {
+            Shown::Dropdown | Shown::Field => self.set_string(s, true),
+            Shown::Hidden if field_visible => self.field.load(s),
+            Shown::Hidden => {
+                self.reveal(status_bar);
+                self.temporary = status_bar;
+            }
+        }
+    }
+
+    /// The expand button (`revealComposer:`, `SBCVC:124-126`, `revealMinimal`,
+    /// `CM:180-190`): the field's text (the layout's own when `permanent`, else the temporary
+    /// field's) becomes the saved text and the dropdown shows with it, the layout's field
+    /// unchanged; a dropdown already shown takes it only when it is not empty
+    /// (`showMinimalComposerInView:`, `if (_saved.length)`). The temporary field becomes the
+    /// dropdown with its text (ending its edit).
+    pub fn expand(&mut self, permanent: bool) {
+        self.field_focused = false;
+        self.field_pick = None;
+        if !permanent && self.shown == Shown::Field {
+            self.shown = Shown::Dropdown;
+            self.temporary = false;
+            return;
+        }
+        let text = if permanent { self.field.text.clone() } else { self.saved.clone().unwrap_or_default() };
+        if self.shown == Shown::Dropdown {
+            if !text.is_empty() {
+                self.set_string(&text, true);
+            }
+            return;
+        }
+        self.saved = Some(text);
+        self.reveal(false);
     }
 
     /// `showOrAppendToDropdownWithString:` (`CM:84-94`): appends a joined line to an already
@@ -556,14 +609,21 @@ impl Composer {
         self.temporary = false;
     }
 
-    /// The status bar field's Enter (`SBC`/`SBCVC`, popup already closed): sends the raw text
-    /// with "\n" appended and clears it; nothing on an empty field.
-    pub fn field_enter(&mut self) -> Vec<Act> {
-        let text = self.contents();
-        if text.is_empty() {
-            return Vec::new();
-        }
-        self.set_string("", true);
+    /// The status bar field's Enter (`SBCVC:134-137,162-171`, popup already closed): sends
+    /// the raw text with "\n" appended, even when empty (`SBC:168-171` writes `command +
+    /// "\n"` with no check), and clears it. `permanent`: the layout's own field, else the
+    /// temporary one.
+    pub fn field_enter(&mut self, permanent: bool) -> Vec<Act> {
+        self.field_pick = None;
+        let text = if permanent {
+            let t = self.field.text.clone();
+            self.field.load("");
+            t
+        } else {
+            let t = self.contents();
+            self.set_string("", true);
+            t
+        };
         vec![Act::SendRaw(format!("{text}\n"))]
     }
 
@@ -575,6 +635,8 @@ impl Composer {
         self.saved = None;
         self.temporary = false;
         self.focused = false;
+        self.field_focused = false;
+        self.field_pick = None;
         self.hidden = false;
         self.shell_provided = false;
         self.queue.clear();
@@ -1239,9 +1301,9 @@ mod tests {
 
         let mut c = Composer::default();
         c.edit.load("ls");
-        assert_eq!(c.field_enter(), vec![Act::SendRaw("ls\n".to_string())]);
+        assert_eq!(c.field_enter(false), vec![Act::SendRaw("ls\n".to_string())]);
         assert_eq!(c.edit.text, "");
-        assert_eq!(c.field_enter(), Vec::<Act>::new());
+        assert_eq!(c.field_enter(false), vec![Act::SendRaw("\n".to_string())], "an empty Enter still sends");
 
         // set_string with a prefix keeps it uneditable: a mutating key starting inside it is
         // refused (nothing changes) and the caret clamps to just after it.

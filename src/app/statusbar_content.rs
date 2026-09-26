@@ -56,9 +56,9 @@ pub(super) const CLOSE_GLYPH: char = '\u{E711}';
 /// (FullScreen, the 9j set).
 pub(super) const CHEVRON_DOWN: char = '\u{E70D}';
 pub const EXPAND_GLYPH: char = '\u{E740}';
-/// The most history entries the Composer's chevron lists (the combo box scrolls through all
-/// of them five at a time; a menu cannot).
-const FIELD_HISTORY_MAX: usize = 256;
+/// The most history entries the Composer's chevron lists (the combo box lists every use, five
+/// rows at a time; a Windows menu scrolls too, and this bounds what building it costs).
+const FIELD_HISTORY_MAX: usize = 1000;
 
 /// One use of a command, as the shell history keeps it: the command and the use.
 pub(super) type CommandRecord = (String, crate::shell_history::Use);
@@ -511,21 +511,9 @@ impl App {
                 let widget = Widget::Field { text, placeholder, label, error, focused, magnifier: true, chevrons, close, history: false, expand: false, caret: None };
                 Content { empty: false, uncopyable: true, fixed: Some(FIELD_SIZE), click: Click::Field, widget: Some(widget), ..Content::text(Vec::new()) }
             }
-            // The pane's composer while it is the field (`Shown::Field`), else the text it
-            // keeps (`saved`), so the field holds its text between edits.
-            Kind::Composer => {
-                let c = self.panes.get(&pane).map(|p| &p.composer);
-                let editing = c.is_some_and(|c| c.shown == crate::composer::Shown::Field);
-                let text = match c {
-                    Some(c) if editing => c.contents(),
-                    Some(c) if c.shown == crate::composer::Shown::Hidden => c.saved.clone().unwrap_or_default(),
-                    _ => String::new(),
-                };
-                let focused = editing && c.is_some_and(|c| c.focused) && self.focused_id() == Some(pane);
-                // The caret in the command (the field never has a prompt prefix).
-                let caret = c.filter(|_| focused).map(|c| c.edit.caret.saturating_sub(c.text().len() - text.len()).min(text.len()));
-                composer_content(&text, focused, caret)
-            }
+            // A layout's Composer: its own text (`place_components` asks for the temporary
+            // one's).
+            Kind::Composer => self.composer_field_content(pane, false),
             // `iTermStatusBarProgressComponent.m`: minimum 125, preferred 200; the paste's
             // fraction sent, and a cancel glyph.
             Kind::Progress => {
@@ -552,6 +540,25 @@ impl App {
             content.icon = sbc::icon(kind);
         }
         content
+    }
+
+    /// A Composer field of the pane's bar: the layout's own (its own text, `Composer::field`)
+    /// or, when `temporary`, the temporary right one (the composer's text while it is
+    /// `Shown::Field`); the caret while it has the keyboard.
+    pub(super) fn composer_field_content(&self, pane: PaneId, temporary: bool) -> Content {
+        let Some(c) = self.panes.get(&pane).map(|p| &p.composer) else { return composer_content("", false, None) };
+        let mine = self.focused_id() == Some(pane);
+        if temporary {
+            let editing = c.shown == crate::composer::Shown::Field;
+            let text = if editing { c.contents() } else { String::new() };
+            let focused = editing && c.focused && mine;
+            // The caret in the command (the temporary field never has a prompt prefix).
+            let caret = focused.then(|| c.edit.caret.saturating_sub(c.text().len() - text.len()).min(text.len()));
+            composer_content(&text, focused, caret)
+        } else {
+            let focused = c.field_focused && mine;
+            composer_content(&c.field.text, focused, focused.then(|| c.field.caret.min(c.field.text.len())))
+        }
     }
 
     /// An interpolated string evaluated in the session (`iTermSwiftyString` with no side
@@ -999,16 +1006,70 @@ mod tests {
         assert_eq!(field_history(&records), vec!["ls", "pwd", "ls"]);
         assert!(field_history(&[]).is_empty());
 
+        // The temporary field: Enter sends and clears, an empty Enter still sends "\n"
+        // (`SBC:168-171` has no check), ending the edit keeps the text as the draft.
+        use crate::composer::Shown;
         let mut c = Composer::default();
         c.toggle(true);
         c.edit.load("ls");
-        assert_eq!(c.field_enter(), vec![Act::SendRaw("ls\n".to_string())]);
+        assert_eq!(c.field_enter(false), vec![Act::SendRaw("ls\n".to_string())]);
         assert_eq!(c.contents(), "", "cleared");
-        assert_eq!(c.field_enter(), Vec::<Act>::new(), "an empty Enter sends nothing");
+        assert_eq!(c.field_enter(false), vec![Act::SendRaw("\n".to_string())], "an empty Enter sends a newline");
         c.edit.load("half");
         c.field_ended(&c.contents());
         assert_eq!(c.saved.as_deref(), Some("half"));
-        assert_eq!(c.shown, crate::composer::Shown::Hidden);
+        assert_eq!(c.shown, Shown::Hidden);
+
+        // The layout's own field keeps its own text (`_comboBox.stringValue`): its Enter sends
+        // it, not the composer's; key action 64 with nothing shown fills it (`CM:114-121`).
+        let mut c = Composer::default();
+        c.saved = Some("draft".into());
+        c.field.load("make");
+        assert_eq!(c.field_enter(true), vec![Act::SendRaw("make\n".to_string())]);
+        assert_eq!((c.field.text.as_str(), c.saved.as_deref()), ("", Some("draft")));
+        c.show_with("hi", true, true);
+        assert_eq!((c.field.text.as_str(), c.field.caret, c.shown), ("hi", 2, Shown::Hidden));
+        // Nothing visible: the temporary field, seeded from the text.
+        let mut t = Composer::default();
+        t.show_with("hi", true, false);
+        assert_eq!((t.shown, t.temporary, t.contents().as_str()), (Shown::Field, true, "hi"));
+
+        // Expand (`CM:180-190`): the layout field's text goes to the dropdown, the field keeps
+        // it; a shown dropdown keeps its edits when the field is empty and takes the field's
+        // text when it is not.
+        let mut c = Composer::default();
+        c.field.load("git log");
+        c.expand(true);
+        assert_eq!((c.shown, c.contents().as_str(), c.field.text.as_str()), (Shown::Dropdown, "git log", "git log"));
+        let mut c = Composer::default();
+        c.show_or_append("stale");
+        c.edit.load("edited");
+        c.expand(true);
+        assert_eq!(c.contents(), "edited", "an empty field leaves the dropdown's edits");
+        c.field.load("new");
+        c.expand(true);
+        assert_eq!(c.contents(), "new");
+        // The temporary field becomes the dropdown with its text.
+        let mut c = Composer::default();
+        c.show_with("tmp", true, false);
+        c.expand(false);
+        assert_eq!((c.shown, c.temporary, c.contents().as_str()), (Shown::Dropdown, false, "tmp"));
+
+        // Up and Down step through the history (`NSComboBox`), stopping at the ends.
+        use crate::composer::step_field_pick;
+        assert_eq!(step_field_pick(None, 3, true), Some(0));
+        assert_eq!(step_field_pick(Some(0), 3, true), Some(1));
+        assert_eq!(step_field_pick(Some(2), 3, true), Some(2));
+        assert_eq!(step_field_pick(Some(1), 3, false), Some(0));
+        assert_eq!(step_field_pick(Some(0), 3, false), Some(0));
+        assert_eq!(step_field_pick(None, 3, false), None);
+        assert_eq!(step_field_pick(None, 0, true), None);
+
+        // A field keeps the keyboard only while its bar shows and places it.
+        use super::super::composer_ui::field_keeps_keyboard;
+        assert!(field_keeps_keyboard(true, true));
+        assert!(!field_keeps_keyboard(false, true), "the bar was turned off");
+        assert!(!field_keeps_keyboard(true, false), "the component was hidden or dropped for room");
 
         assert_eq!(crate::keyaction::status(64), crate::commands::Status::Done);
         let b = crate::keyaction::Binding::new(64, "hi");

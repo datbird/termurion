@@ -429,6 +429,8 @@ impl App {
             let index = j.checked_sub(n_left).filter(|&i| i < layout.components.len());
             if let Some(piece) = Piece::of(&c.class) {
                 let content = match piece {
+                    // The temporary Composer shows the composer's text, a layout's one its own.
+                    Piece::Content(Kind::Composer) if index.is_none() => Some(self.composer_field_content(bar.pane, true)),
                     Piece::Content(kind) => Some(self.content(bar.pane, kind, c)),
                     _ => None,
                 };
@@ -675,8 +677,8 @@ impl App {
                             FieldPart::Close => self.bar_field_close(bar.pane, kind),
                             // The Composer's combo box chevron, its expand button and its text.
                             FieldPart::History => self.composer_history_menu(bar.pane),
-                            FieldPart::Expand => self.composer_field_expand(bar.pane),
-                            FieldPart::Text if kind == Kind::Composer => self.composer_field_focus(bar.pane),
+                            FieldPart::Expand => self.composer_field_expand(bar.pane, !p.shown[i].temporary),
+                            FieldPart::Text if kind == Kind::Composer => self.composer_field_focus(bar.pane, p.shown[i].temporary),
                             FieldPart::Text => self.bar_field_focus(bar.pane, kind),
                         }
                     }
@@ -718,7 +720,7 @@ impl App {
 
     /// The pane's bar in the current window, laid out, with where its Composer field sits (a
     /// layout's own when `temporary` is false, else any).
-    fn composer_placed(&mut self, pane: PaneId, temporary: bool) -> Option<(Bar, sbl::Placed)> {
+    pub(super) fn composer_placed(&mut self, pane: PaneId, temporary: bool) -> Option<(Bar, sbl::Placed)> {
         let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&pane))?;
         let bar = self.status_bars(tab).into_iter().find(|b| b.pane == pane)?;
         let p = self.place_bar(&bar);
