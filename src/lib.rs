@@ -202,6 +202,7 @@ pub mod notes;
 pub mod open_quickly;
 pub mod pwm;
 pub mod echo_probe;
+pub mod pwm_source;
 
 #[cfg(windows)]
 pub mod winclip;
@@ -209,6 +210,8 @@ pub mod winclip;
 pub mod winprint;
 #[cfg(windows)]
 pub mod winkeys;
+#[cfg(windows)]
+pub mod pwm_credman;
 
 #[cfg(windows)]
 pub mod notify;
