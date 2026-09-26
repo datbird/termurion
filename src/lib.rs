@@ -215,6 +215,8 @@ pub mod winprint;
 pub mod winkeys;
 #[cfg(windows)]
 pub mod pwm_credman;
+#[cfg(windows)]
+pub mod pwm_ui;
 
 #[cfg(windows)]
 pub mod notify;

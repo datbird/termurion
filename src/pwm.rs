@@ -32,6 +32,43 @@ impl Secret {
     pub fn duplicate(&self) -> Secret {
         Secret(self.0.clone())
     }
+
+    /// Appends `s` (a password field's typing). When the buffer must grow, the new one is
+    /// allocated first and the old one wiped, so no unzeroed copy is left behind.
+    pub fn push_str(&mut self, s: &str) {
+        let need = self.0.len() + s.len();
+        if need > self.0.capacity() {
+            let mut grown = String::with_capacity(need.max(self.0.capacity() * 2).max(64));
+            grown.push_str(&self.0);
+            drop(Secret(std::mem::replace(&mut self.0, grown)));
+        }
+        self.0.push_str(s);
+    }
+
+    /// Removes the last character (Backspace), wiping its bytes.
+    pub fn pop(&mut self) {
+        if let Some(c) = self.0.chars().next_back() {
+            let keep = self.0.len() - c.len_utf8();
+            self.wipe_from(keep);
+        }
+    }
+
+    /// Empties the secret, wiping its bytes; the buffer is kept for reuse.
+    pub fn clear(&mut self) {
+        self.wipe_from(0);
+    }
+
+    fn wipe_from(&mut self, at: usize) {
+        // SAFETY: the bytes from `at` (a char boundary) are overwritten with 0, which is valid
+        // UTF-8, and then truncated away.
+        unsafe {
+            for b in self.0.as_bytes_mut()[at..].iter_mut() {
+                std::ptr::write_volatile(b, 0);
+            }
+        }
+        compiler_fence(Ordering::SeqCst);
+        self.0.truncate(at);
+    }
 }
 
 impl fmt::Debug for Secret {
@@ -401,6 +438,337 @@ pub const CONFIRM_DELETE_PASSWORD: &str = "Are you sure you want to delete this 
 pub const ALERT_COULD_NOT_SAVE_CHANGES: &str = "Could Not Save Changes";
 pub const ALERT_GENERIC_EDIT_ERROR: &str = "The password manager reported an error.";
 
+pub const TITLE_WINDOW: &str = "Password Manager";
+/// The window's content size, which is also its minimum (`WX:36-39`).
+pub const WINDOW_SIZE: (f32, f32) = (860.0, 360.0);
+/// The password column's cell (`W:2157-2159`).
+pub const PASSWORD_CELL: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
+pub const PLACEHOLDER_SEARCH: &str = "Account Name";
+pub const PLACEHOLDER_TWO_FACTOR: &str = "2-Factor Code";
+pub const TITLE_ADD: &str = "+";
+pub const TITLE_REMOVE: &str = "-";
+pub const TITLE_EDIT: &str = "Edit";
+pub const TITLE_CLOSE: &str = "Close";
+pub const TITLE_OK: &str = "OK";
+pub const TITLE_CANCEL: &str = "Cancel";
+pub const TITLE_COPY: &str = "Copy";
+/// The adapter Settings sheet's reveal button (iTerm2's eye button, accessibility "Show").
+pub const TITLE_SHOW: &str = "Show";
+
+/// One entry of the gear menu or the row menu.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Entry<T> {
+    Separator,
+    Item { title: String, checked: bool, enabled: bool, act: T },
+}
+
+fn item<T>(title: &str, checked: bool, enabled: bool, act: T) -> Entry<T> {
+    Entry::Item { title: title.to_string(), checked, enabled, act }
+}
+
+/// What a gear menu item does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GearItem {
+    RequireOpen,
+    RequireLock,
+    RequireEvery,
+    Probe,
+    SendReturn,
+    Source(crate::pwm_source::Kind),
+    Reset,
+    SwitchAccount,
+    /// An adapter's "Settings\u{2026}".
+    Settings,
+    /// An adapter's custom command, by name.
+    Command(String),
+    Reload,
+}
+
+/// What the gear menu shows: the stored settings as they are (the menu applies iTerm2's
+/// validation to them) and what the current source can do.
+#[derive(Clone, Debug)]
+pub struct Gear {
+    /// Every item is disabled while not authenticated (`W:1740-1742`).
+    pub authenticated: bool,
+    pub require_open: bool,
+    pub require_lock: bool,
+    pub require_every: bool,
+    /// `should_probe`.
+    pub probe: bool,
+    pub send_return: bool,
+    pub source: crate::pwm_source::Kind,
+    /// `reset_title`.
+    pub reset_title: String,
+    /// The source's `canResetConfiguration`.
+    pub reset_on: bool,
+    /// The source's `supportsMultipleAccounts`.
+    pub switch_on: bool,
+    /// The source is an adapter with Settings fields.
+    pub adapter_settings: bool,
+    /// An adapter's custom commands as (name, label).
+    pub commands: Vec<(String, String)>,
+}
+
+pub const GEAR_REQUIRE_OPEN: &str = "Require Authentication to Open Password Manager";
+pub const GEAR_REQUIRE_LOCK: &str = "Require Authentication after Screen Locks";
+pub const GEAR_REQUIRE_EVERY: &str = "Require Authentication on Every Open";
+pub const GEAR_PROBE: &str = "Probe Before Sending Password";
+pub const GEAR_SEND_RETURN: &str = "Automatically Send Return Key after Password";
+pub const GEAR_RESET_INTEGRATION: &str = "Reset Integration Configuration";
+pub const GEAR_SWITCH_ACCOUNT: &str = "Switch Account";
+pub const GEAR_SETTINGS: &str = "Settings\u{2026}";
+pub const GEAR_RELOAD: &str = "Reload Items";
+
+/// Probe Before Sending Password is checked only when it is on and `echoProbeDuration` is
+/// positive (`shouldProbe`).
+pub fn should_probe(on: bool, duration: f64) -> bool {
+    on && duration > 0.0
+}
+
+/// The Reset item names the source when it can reset (`W:1787-1790`).
+pub fn reset_title(can_reset: bool, name: &str) -> String {
+    if can_reset {
+        format!("Reset {name} Configuration")
+    } else {
+        GEAR_RESET_INTEGRATION.to_string()
+    }
+}
+
+/// The gear menu in the xib's order (`WX:243-314`) with iTerm2's `validateMenuItem:`
+/// (`W:1739-1813`): nothing while unauthenticated; the screen-lock and every-open items only
+/// with authentication required, and the screen-lock item checked and disabled while every-open
+/// is on (a kept bug: its stored value is not shown). An adapter's Settings and custom commands
+/// go after Switch Account with a separator before them (`W:1670-1729`); the xib's separator
+/// before Reload Items stays.
+pub fn gear_menu(g: &Gear) -> Vec<Entry<GearItem>> {
+    use crate::pwm_source::Kind;
+    let mut v = vec![
+        item(GEAR_REQUIRE_OPEN, g.require_open, true, GearItem::RequireOpen),
+        item(GEAR_REQUIRE_LOCK, g.require_lock || (g.require_open && g.require_every), g.require_open && !g.require_every, GearItem::RequireLock),
+        item(GEAR_REQUIRE_EVERY, g.require_every, g.require_open, GearItem::RequireEvery),
+        Entry::Separator,
+        item(GEAR_PROBE, g.probe, true, GearItem::Probe),
+        item(GEAR_SEND_RETURN, g.send_return, true, GearItem::SendReturn),
+        Entry::Separator,
+    ];
+    v.extend(Kind::ALL.into_iter().map(|k| item(k.menu_title(), k == g.source, true, GearItem::Source(k))));
+    v.push(Entry::Separator);
+    v.push(item(&g.reset_title, false, g.reset_on, GearItem::Reset));
+    v.push(item(GEAR_SWITCH_ACCOUNT, false, g.switch_on, GearItem::SwitchAccount));
+    if g.adapter_settings || !g.commands.is_empty() {
+        v.push(Entry::Separator);
+        if g.adapter_settings {
+            v.push(item(GEAR_SETTINGS, false, true, GearItem::Settings));
+        }
+        for (name, label) in &g.commands {
+            v.push(item(label, false, true, GearItem::Command(name.clone())));
+        }
+    }
+    v.push(Entry::Separator);
+    v.push(item(GEAR_RELOAD, false, true, GearItem::Reload));
+    if !g.authenticated {
+        for e in &mut v {
+            if let Entry::Item { enabled, .. } = e {
+                *enabled = false;
+            }
+        }
+    }
+    v
+}
+
+/// What a row menu item does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RowItem {
+    AppendOtp,
+    Reveal,
+    Copy,
+}
+
+pub const ROW_APPEND_OTP: &str = "Append OTP";
+pub const ROW_REVEAL_PASSWORD: &str = "Reveal Password";
+pub const ROW_COPY_PASSWORD: &str = "Copy Password";
+
+/// The row's context menu (`WX:378-394`): Append OTP is checked when the account sends its
+/// code and enabled only when it has one (`W:1798-1808`).
+pub fn row_menu(a: &Account) -> Vec<Entry<RowItem>> {
+    vec![
+        item(ROW_APPEND_OTP, a.has_otp && a.send_otp, a.has_otp, RowItem::AppendOtp),
+        Entry::Separator,
+        item(ROW_REVEAL_PASSWORD, false, true, RowItem::Reveal),
+        item(ROW_COPY_PASSWORD, false, true, RowItem::Copy),
+    ]
+}
+
+/// The New Account / Edit Account panel as the app opens it (`W:710-837`, `W:1102-1137`). The
+/// window keeps the typed fields; a new `serial` means a new panel and reseeds them from here.
+#[derive(Clone, Debug)]
+pub struct AccountPanel {
+    pub serial: u64,
+    pub editing: bool,
+    /// The fields' starting text.
+    pub name: String,
+    pub user: String,
+    /// The Edit panel is fetching the current password: a spinner shows in the field's place
+    /// and OK is off until `fetched`.
+    pub fetching: bool,
+    /// The password field (and the dice) can be used at all.
+    pub password_on: bool,
+    pub placeholder: Option<&'static str>,
+    /// The source's first Add Account toggle; never when editing (the vault is fixed).
+    pub toggle: Option<crate::pwm_source::Toggle>,
+}
+
+pub const PANEL_WIDTH: f32 = 330.0;
+/// The panel's content heights without and with the toggle row.
+pub const PANEL_HEIGHTS: (f32, f32) = (136.0, 196.0);
+
+impl AccountPanel {
+    /// Add: the name starts as the window's default account name; a source that generates its
+    /// own passwords shows "Autogenerated" in a disabled field.
+    pub fn add(serial: u64, default_name: &str, caps: &crate::pwm_source::Caps) -> AccountPanel {
+        AccountPanel {
+            serial,
+            editing: false,
+            name: default_name.to_string(),
+            user: String::new(),
+            fetching: false,
+            password_on: !caps.generated_only,
+            placeholder: caps.generated_only.then_some(PLACEHOLDER_AUTOGENERATED),
+            toggle: caps.add_toggle.clone(),
+        }
+    }
+
+    /// Edit: opens at once with the account's names; a source that can change passwords fetches
+    /// the current one, one that cannot says so in a disabled field.
+    pub fn edit(serial: u64, a: &Account, caps: &crate::pwm_source::Caps) -> AccountPanel {
+        AccountPanel {
+            serial,
+            editing: true,
+            name: a.account_name.clone(),
+            user: a.user_name.clone(),
+            fetching: caps.can_edit_password,
+            password_on: caps.can_edit_password,
+            placeholder: (!caps.can_edit_password).then_some(PLACEHOLDER_CANNOT_CHANGE_PASSWORD_HERE),
+            toggle: None,
+        }
+    }
+
+    pub fn title(&self) -> &'static str {
+        if self.editing {
+            TITLE_EDIT_ACCOUNT
+        } else {
+            TITLE_NEW_ACCOUNT
+        }
+    }
+
+    pub fn width(&self) -> f32 {
+        PANEL_WIDTH
+    }
+
+    pub fn height(&self) -> f32 {
+        if self.toggle.is_some() {
+            PANEL_HEIGHTS.1
+        } else {
+            PANEL_HEIGHTS.0
+        }
+    }
+
+    /// OK needs a name and no fetch in flight (`updateNewAccountOkButtonEnabled`).
+    pub fn ok_on(&self, typed_name: &str) -> bool {
+        !typed_name.is_empty() && !self.fetching
+    }
+
+    pub fn dice_on(&self) -> bool {
+        self.password_on && !self.fetching
+    }
+
+    /// The Edit panel's fetch finished, with or without a password (`endPasswordPrefetchUI`).
+    pub fn fetched(&mut self) {
+        self.fetching = false;
+    }
+
+    /// Add refused an empty password: the field says why (`W:973-980`).
+    pub fn needs_password(&mut self) {
+        self.placeholder = Some(PLACEHOLDER_ENTER_OR_GENERATE_PASSWORD);
+    }
+}
+
+pub const HEADING_ARE_YOU_SURE: &str = "Are you sure?";
+pub const RESET_WARNING: &str = "This will erase Tandem\u{2019}s configuration settings for this password manager. The actual passwords will remain unaffected. You\u{2019}ll have to go through some setup steps to use it again. This action cannot be undone.";
+pub const ALERT_COMMAND_FAILED: &str = "Command Failed";
+pub const ALERT_AN_ERROR_OCCURRED: &str = "An error occurred.";
+
+/// An alert shown modally inside the window. `buttons[0]` is the default (Return); a button
+/// titled "Cancel" also answers Escape, as an NSAlert's does.
+#[derive(Debug)]
+pub struct Alert {
+    pub heading: String,
+    pub text: String,
+    /// Reveal's password (and one-time code on a second line). `Secret`, so `Debug` of an
+    /// alert never shows it.
+    pub secret: Option<Secret>,
+    /// The adapter Settings sheet's rows with their current values.
+    pub fields: Vec<(crate::pwm_source::Field, Secret)>,
+    pub buttons: Vec<&'static str>,
+}
+
+impl Alert {
+    /// A plain alert with OK (the sources' alerts, "Authentication Error" and the like).
+    pub fn message(heading: &str, text: &str) -> Alert {
+        Alert { heading: heading.to_string(), text: text.to_string(), secret: None, fields: Vec::new(), buttons: vec![TITLE_OK] }
+    }
+
+    /// The Remove confirmation (`W:1082-1088`).
+    pub fn confirm_delete() -> Alert {
+        Alert { buttons: vec![TITLE_OK, TITLE_CANCEL], ..Alert::message(CONFIRM_DELETE_PASSWORD, "") }
+    }
+
+    /// Reveal Password (`W:1582-1621`): OK and Copy.
+    pub fn reveal(account: &str, password: &Secret, otp: Option<&Secret>) -> Alert {
+        let shown = match otp {
+            Some(o) => {
+                let mut s = password.duplicate();
+                s.push_str("\n");
+                s.push_str(o.expose());
+                s
+            }
+            None => password.duplicate(),
+        };
+        Alert { secret: Some(shown), buttons: vec![TITLE_OK, TITLE_COPY], ..Alert::message(&format!("Password for {account}"), "") }
+    }
+
+    /// A failed edit (`W:1015-1025`); an empty error reads as the generic one.
+    pub fn save_failed(error: &str) -> Alert {
+        Alert::message(ALERT_COULD_NOT_SAVE_CHANGES, if error.is_empty() { ALERT_GENERIC_EDIT_ERROR } else { error })
+    }
+
+    /// Reset configuration (`W:626-638`).
+    pub fn reset() -> Alert {
+        Alert { buttons: vec![TITLE_OK, TITLE_CANCEL], ..Alert::message(HEADING_ARE_YOU_SURE, RESET_WARNING) }
+    }
+
+    /// An adapter's Settings sheet (`W:1347-1492`).
+    pub fn settings(name: &str, fields: Vec<(crate::pwm_source::Field, Secret)>) -> Alert {
+        Alert { fields, buttons: vec![TITLE_OK, TITLE_CANCEL], ..Alert::message(&format!("{name} Settings"), "") }
+    }
+
+    /// A custom command that failed (`W:1509-1516`): the error (or the generic text), then the
+    /// command's message after a blank line.
+    pub fn command_failed(error: &str, message: &str) -> Alert {
+        let mut text = if error.is_empty() { ALERT_AN_ERROR_OCCURRED.to_string() } else { error.to_string() };
+        if !message.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(message);
+        }
+        Alert::message(ALERT_COMMAND_FAILED, &text)
+    }
+
+    /// A custom command that succeeded with a message: headed by the command's name.
+    pub fn command_result(name: &str, message: &str) -> Alert {
+        Alert::message(name, message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +893,209 @@ mod tests {
         assert_eq!(row_name(&labeled), "name (Classic)");
         let unlabeled = account("1", "name", "u", None);
         assert_eq!(row_name(&unlabeled), "name");
+    }
+
+    #[test]
+    fn window_texts_follow_iterm2() {
+        use crate::pwm_source::{Caps, Field, Kind, Toggle};
+
+        assert_eq!((COLUMN_ACCOUNT_NAME, COLUMN_USER_NAME, COLUMN_PASSWORD), ("Account Name", "User Name", "Password"));
+        assert_eq!(PASSWORD_CELL, "\u{2022}".repeat(8));
+        assert_eq!(PLACEHOLDER_SEARCH, "Account Name");
+        assert_eq!(PLACEHOLDER_TWO_FACTOR, "2-Factor Code");
+        assert_eq!(TITLE_WINDOW, "Password Manager");
+        assert_eq!(WINDOW_SIZE, (860.0, 360.0));
+        assert_eq!(BUSY_WORKING, "Working\u{2026}");
+
+        let titles = |v: &[Entry<GearItem>]| -> Vec<String> {
+            v.iter()
+                .map(|e| match e {
+                    Entry::Separator => "-".to_string(),
+                    Entry::Item { title, .. } => title.clone(),
+                })
+                .collect()
+        };
+        let gear = Gear {
+            authenticated: true,
+            require_open: true,
+            require_lock: false,
+            require_every: false,
+            probe: should_probe(true, 0.5),
+            send_return: false,
+            source: Kind::CredentialManager,
+            reset_title: reset_title(false, "Windows Credential Manager"),
+            reset_on: false,
+            switch_on: false,
+            adapter_settings: false,
+            commands: Vec::new(),
+        };
+        let menu = gear_menu(&gear);
+        assert_eq!(
+            titles(&menu),
+            vec![
+                "Require Authentication to Open Password Manager",
+                "Require Authentication after Screen Locks",
+                "Require Authentication on Every Open",
+                "-",
+                "Probe Before Sending Password",
+                "Automatically Send Return Key after Password",
+                "-",
+                "Windows Credential Manager",
+                "1Password Integration",
+                "LastPass Integration",
+                "KeePassXC Integration",
+                "Bitwarden Integration",
+                "Keeper Security",
+                "-",
+                "Reset Integration Configuration",
+                "Switch Account",
+                "-",
+                "Reload Items",
+            ]
+        );
+        let item = |v: &[Entry<GearItem>], want: GearItem| -> (bool, bool) {
+            v.iter()
+                .find_map(|e| match e {
+                    Entry::Item { checked, enabled, act, .. } if *act == want => Some((*checked, *enabled)),
+                    _ => None,
+                })
+                .expect("the item is in the menu")
+        };
+        assert_eq!(item(&menu, GearItem::RequireOpen), (true, true));
+        assert_eq!(item(&menu, GearItem::RequireLock), (false, true));
+        assert_eq!(item(&menu, GearItem::Probe), (true, true));
+        assert_eq!(item(&menu, GearItem::Source(Kind::CredentialManager)), (true, true));
+        assert_eq!(item(&menu, GearItem::Source(Kind::OnePassword)), (false, true));
+        assert_eq!(item(&menu, GearItem::Reset), (false, false));
+        assert_eq!(item(&menu, GearItem::SwitchAccount), (false, false));
+        assert!(!should_probe(true, 0.0) && !should_probe(false, 0.5));
+
+        // The kept bug: after-screen-locks shows checked and disabled while every-open is on.
+        let every = Gear { require_every: true, ..gear.clone() };
+        assert_eq!(item(&gear_menu(&every), GearItem::RequireLock), (true, false));
+        assert_eq!(item(&gear_menu(&every), GearItem::RequireEvery), (true, true));
+        let open_off = Gear { require_open: false, ..gear.clone() };
+        assert_eq!(item(&gear_menu(&open_off), GearItem::RequireLock).1, false);
+        assert_eq!(item(&gear_menu(&open_off), GearItem::RequireEvery).1, false);
+        let locked = Gear { authenticated: false, ..gear.clone() };
+        assert!(gear_menu(&locked).iter().all(|e| !matches!(e, Entry::Item { enabled: true, .. })));
+
+        // An adapter's Settings and commands go after Switch Account, a separator before them.
+        let adapter = Gear {
+            source: Kind::KeePassXC,
+            reset_title: reset_title(true, "KeePassXC"),
+            reset_on: true,
+            switch_on: true,
+            adapter_settings: true,
+            commands: vec![("sync".to_string(), "Sync Now".to_string())],
+            ..gear.clone()
+        };
+        let menu = gear_menu(&adapter);
+        assert_eq!(
+            titles(&menu)[14..].to_vec(),
+            vec!["Reset KeePassXC Configuration", "Switch Account", "-", "Settings\u{2026}", "Sync Now", "-", "Reload Items"]
+        );
+        assert_eq!(item(&menu, GearItem::Command("sync".to_string())), (false, true));
+        assert_eq!(item(&menu, GearItem::Reset), (false, true));
+
+        let mut a = account("1", "name", "user", None);
+        let row = |a: &Account| -> Vec<(String, bool, bool)> {
+            row_menu(a)
+                .into_iter()
+                .map(|e| match e {
+                    Entry::Separator => ("-".to_string(), false, false),
+                    Entry::Item { title, checked, enabled, .. } => (title, checked, enabled),
+                })
+                .collect()
+        };
+        assert_eq!(
+            row(&a),
+            vec![
+                ("Append OTP".to_string(), false, false),
+                ("-".to_string(), false, false),
+                ("Reveal Password".to_string(), false, true),
+                ("Copy Password".to_string(), false, true),
+            ]
+        );
+        a.has_otp = true;
+        a.send_otp = true;
+        assert_eq!(row(&a)[0], ("Append OTP".to_string(), true, true));
+
+        assert_eq!((LABEL_ACCOUNT, LABEL_USER_NAME, LABEL_PASSWORD, PLACEHOLDER_REQUIRED), ("Account:", "User name:", "Password:", "Required"));
+        assert_eq!(TOOLTIP_GENERATE_PASSWORD, "Generate a random password. Hold Alt to use only alphanumerics.");
+        assert_eq!(TOOLTIP_TWO_FACTOR, "This value is appended to the password.");
+        let toggle = Toggle { key: "classic".to_string(), label: "Classic".to_string(), note: Some("A note".to_string()), default_value: true };
+        let caps = Caps { add_toggle: Some(toggle.clone()), can_edit_password: true, ..Caps::default() };
+        let add = AccountPanel::add(1, "github", &caps);
+        assert_eq!(add.title(), "New Account");
+        assert_eq!((add.name.as_str(), add.user.as_str()), ("github", ""));
+        assert_eq!(add.toggle, Some(toggle));
+        assert_eq!(add.width(), 330.0);
+        assert_eq!(add.height(), 196.0);
+        assert!(add.password_on && add.dice_on() && !add.fetching && add.placeholder.is_none());
+        assert!(add.ok_on("x") && !add.ok_on(""));
+        let generated = AccountPanel::add(2, "", &Caps { generated_only: true, ..Caps::default() });
+        assert_eq!(generated.placeholder, Some("Autogenerated"));
+        assert!(!generated.password_on && !generated.dice_on());
+        assert_eq!(generated.height(), 136.0);
+
+        let mut edit = AccountPanel::edit(3, &account("1", "name", "user", None), &caps);
+        assert_eq!(edit.title(), "Edit Account");
+        assert_eq!((edit.name.as_str(), edit.user.as_str()), ("name", "user"));
+        assert!(edit.toggle.is_none(), "no toggle when editing");
+        assert!(edit.fetching && !edit.ok_on("name") && !edit.dice_on());
+        edit.fetched();
+        assert!(edit.ok_on("name") && edit.dice_on());
+        let fixed = AccountPanel::edit(4, &account("1", "name", "user", None), &Caps::default());
+        assert_eq!(fixed.placeholder, Some("Cannot change password here"));
+        assert!(!fixed.fetching && !fixed.password_on && fixed.ok_on("name"));
+        let mut needs = AccountPanel::add(5, "", &Caps { requires_password: true, ..Caps::default() });
+        needs.needs_password();
+        assert_eq!(needs.placeholder, Some("Enter or generate a password"));
+
+        let del = Alert::confirm_delete();
+        assert_eq!((del.heading.as_str(), del.buttons.clone()), ("Are you sure you want to delete this password?", vec!["OK", "Cancel"]));
+        let pw = Secret::new("hunter2".to_string());
+        let otp = Secret::new("123456".to_string());
+        let reveal = Alert::reveal("github", &pw, Some(&otp));
+        assert_eq!(reveal.heading, "Password for github");
+        assert_eq!(reveal.secret.as_ref().map(Secret::expose), Some("hunter2\n123456"));
+        assert_eq!(reveal.buttons, vec!["OK", "Copy"]);
+        assert!(!format!("{:?}", reveal).contains("hunter2"), "an alert never prints its secret");
+        assert_eq!(Alert::reveal("x", &pw, None).secret.as_ref().map(Secret::expose), Some("hunter2"));
+        let failed = Alert::save_failed("");
+        assert_eq!((failed.heading.as_str(), failed.text.as_str()), ("Could Not Save Changes", "The password manager reported an error."));
+        assert_eq!(Alert::save_failed("Denied.").text, "Denied.");
+        let reset = Alert::reset();
+        assert_eq!(reset.heading, "Are you sure?");
+        assert_eq!(reset.text, "This will erase Tandem\u{2019}s configuration settings for this password manager. The actual passwords will remain unaffected. You\u{2019}ll have to go through some setup steps to use it again. This action cannot be undone.");
+        assert_eq!(reset.buttons, vec!["OK", "Cancel"]);
+        let field = Field { key: "master".to_string(), label: "Password".to_string(), placeholder: None, is_secret: true, note: None, persist_in_keychain: false };
+        let settings = Alert::settings("KeePassXC", vec![(field, Secret::new("s3cret".to_string()))]);
+        assert_eq!(settings.heading, "KeePassXC Settings");
+        assert_eq!(settings.buttons, vec!["OK", "Cancel"]);
+        assert!(!format!("{:?}", settings).contains("s3cret"));
+        let cmd = Alert::command_failed("", "details");
+        assert_eq!((cmd.heading.as_str(), cmd.text.as_str()), ("Command Failed", "An error occurred.\n\ndetails"));
+        assert_eq!(Alert::command_failed("Boom.", "").text, "Boom.");
+        let done = Alert::command_result("sync", "Synced 3 items.");
+        assert_eq!((done.heading.as_str(), done.text.as_str(), done.buttons.clone()), ("sync", "Synced 3 items.", vec!["OK"]));
+
+        // A password field edits its Secret in place and wipes what it drops.
+        let mut s = Secret::new(String::new());
+        for c in "p\u{e9}ss".chars() {
+            s.push_str(&c.to_string());
+        }
+        s.push_str(&"x".repeat(100));
+        assert_eq!(s.expose(), format!("p\u{e9}ss{}", "x".repeat(100)));
+        s.clear();
+        s.push_str("ab\u{e9}");
+        s.pop();
+        assert_eq!(s.expose(), "ab");
+        s.clear();
+        assert!(s.is_empty());
+        s.pop();
+        assert!(s.is_empty());
     }
 
     #[test]
