@@ -2720,6 +2720,8 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::RedrawRequested => {
                 // A tab or pane change in this window ends or shows Instant Replay.
                 self.replay_follow_focus(event_loop);
+                // Closing a loaded recording's pane there can close this window and make
+                // another current; then this window has nothing left to draw.
                 if self.gpu.as_ref().is_none_or(|g| g.window.id() != id) {
                     return;
                 }

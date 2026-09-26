@@ -10,8 +10,6 @@ pub const TITLE: &str = "Instant Replay Control";
 pub const SIZE: (f32, f32) = (602.0, 43.0);
 /// `IRW:268-271`: width may not shrink below this; height is fixed.
 pub const MIN_WIDTH: f32 = 270.0;
-/// `IRW:13,106-113`: 0.9 normally, 1 while the pointer is over the panel.
-pub const ALPHA: f32 = 0.9;
 pub const LIVE: &str = "Live View";
 pub const NOW: &str = "Now";
 pub const EXPORT: &str = "Export\u{2026}";

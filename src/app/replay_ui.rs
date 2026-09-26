@@ -117,14 +117,8 @@ impl App {
         match act {
             IrKey::Pass => {}
             IrKey::Beep => find_ui::beep(),
-            // Esc is the Cancel button's key equivalent while it shows (`IRX:92-99`);
-            // key equivalents run before the session's keyDown.
-            IrKey::Exit if self.replay_window.as_ref().is_some_and(|w| w.panel.export != replay_panel::Export::Normal) => {
-                if let Some(w) = self.replay_window.as_mut() {
-                    w.panel.cancel();
-                }
-                self.update_replay_panel();
-            }
+            // Esc leaves replay in every export state: the panel is never key (`IRW:80-86`),
+            // so its Cancel button's Esc equivalent never fires (`PS:12863-12866`).
             IrKey::Exit => {
                 self.close_instant_replay(true, event_loop);
             }

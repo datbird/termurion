@@ -1,8 +1,9 @@
 //! The Instant Replay Control panel (`IRX`, `IRW`): the earliest time, a continuous slider
 //! with the recording's tick marks over it, the current time under the knob, "Now", and the
 //! Export and Cancel buttons. It never takes activation from the terminal window (iTerm2's
-//! never-key panel), is 0.9 opaque and fully opaque while the pointer is over it, and
-//! resizes in width only.
+//! never-key panel) and resizes in width only. It is opaque: iTerm2's 0.9 alpha (1 under
+//! the pointer) would need a layered window, which wgpu's swap chains do not draw into
+//! reliably.
 
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -81,12 +82,10 @@ impl ReplayWindow {
         let dark = host.window.theme().is_none_or(|t| t == winit::window::Theme::Dark);
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         if let Some(hwnd) = host.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_LAYERED, WS_EX_NOACTIVATE};
-            unsafe { SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, GetWindowLongPtrW(hwnd as _, GWL_EXSTYLE) | (WS_EX_NOACTIVATE | WS_EX_LAYERED) as isize) };
+            use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE};
+            unsafe { SetWindowLongPtrW(hwnd as _, GWL_EXSTYLE, GetWindowLongPtrW(hwnd as _, GWL_EXSTYLE) | WS_EX_NOACTIVATE as isize) };
         }
-        let win = ReplayWindow { host, panel: Panel { export: Export::Normal, ticks_at_open: ticks }, slider: 1.0, shown: false };
-        win.set_alpha(replay_panel::ALPHA);
-        Ok(win)
+        Ok(ReplayWindow { host, panel: Panel { export: Export::Normal, ticks_at_open: ticks }, slider: 1.0, shown: false })
     }
 
     pub fn id(&self) -> WindowId {
@@ -127,21 +126,8 @@ impl ReplayWindow {
         self.host.request_redraw();
     }
 
-    fn set_alpha(&self, a: f32) {
-        if let Some(h) = self.host.hwnd() {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{LWA_ALPHA, SetLayeredWindowAttributes};
-            unsafe { SetLayeredWindowAttributes(h as _, 0, (a * 255.0).round() as u8, LWA_ALPHA) };
-        }
-    }
-
-    /// Feeds a window event to egui; the pointer entering and leaving sets the opacity
-    /// (`IRW:106-113`). True when the panel should redraw.
+    /// Feeds a window event to egui. True when the panel should redraw.
     pub fn event(&mut self, e: &WindowEvent) -> bool {
-        match e {
-            WindowEvent::CursorEntered { .. } => self.set_alpha(1.0),
-            WindowEvent::CursorLeft { .. } => self.set_alpha(replay_panel::ALPHA),
-            _ => {}
-        }
         self.host.event(e)
     }
 
