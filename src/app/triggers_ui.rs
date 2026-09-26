@@ -85,6 +85,9 @@ impl App {
                 self.set_session_values(pane, &[(key, Some(toml::Value::Boolean(on)))]);
             }
             TriggerRequest::Coprocess { cmd, silent } => self.start_coprocess(pane, &cmd, silent, crate::coprocess::Entry::Trigger),
+            // The Captured Output tool and its "not visible" / "no shell integration" alerts
+            // are Task 6; for now the model side just asks for a redraw.
+            TriggerRequest::Captured { .. } => self.redraw(),
             TriggerRequest::ParameterError { trigger, text } => self.tell_once(pane, &format!("parameter-{trigger}"), &format!("Error in Trigger Parameter: {text}")),
             TriggerRequest::Unavailable { title, milestone, .. } => {
                 let text = if milestone == 0 { format!("The trigger action \u{201c}{title}\u{201d} is not available in Tandem yet.") } else { format!("The trigger action \u{201c}{title}\u{201d} comes in milestone {milestone}.") };

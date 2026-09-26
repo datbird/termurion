@@ -44,11 +44,16 @@ pub struct Mark {
     pub name: Option<String>,
     /// Where the command text is: from the end of the prompt to where output began.
     pub command_range: Option<(Anchor, Anchor)>,
+    /// Capture Output trigger hits on this command (the Captured Output tool's source).
+    pub captured: Vec<crate::captured::Captured>,
+    /// Bumped by OSC 1337 ClearCapturedOutput; a Clear against a newer generation than the
+    /// tool's own view shows nothing until it catches up (`captured::visible`).
+    pub clear_count: u32,
 }
 
 impl Mark {
     pub fn new(id: u32, kind: Kind) -> Mark {
-        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None }
+        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0 }
     }
 }
 
@@ -259,6 +264,11 @@ impl Screen {
     /// The mark line of the prompt being typed at, if any.
     pub fn current_prompt_line(&self) -> Option<i32> {
         self.mark_line(self.marks.current?)
+    }
+
+    /// The mark of the last command, for the Capture Output trigger.
+    pub fn last_command_mark(&self) -> Option<&Mark> {
+        self.marks.records.get(&self.marks.last_command?)
     }
 
     fn cursor_point(&self) -> Point {
@@ -660,6 +670,14 @@ impl Screen {
                     let line = self.cursor_point().line.0;
                     self.new_mark(line, Kind::Manual);
                 }
+                "ClearCapturedOutput" => {
+                    if let Some(id) = self.marks.last_command {
+                        if let Some(m) = self.marks.records.get_mut(&id) {
+                            m.clear_count += 1;
+                        }
+                    }
+                    self.requests.push(crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::Captured { needs_shell_integration: false }));
+                }
                 "File" | "MultipartFile" | "FilePart" | "FileEnd" => self.file_osc(&key, &value),
                 // The clipboard keys need trust (Disable Potentially Insecure Escape Sequences off).
                 "Copy" if self.trusted => {
@@ -926,6 +944,22 @@ mod tests {
         assert!(!s.take_new_mark());
         let id = s.set_manual_mark(0, Some("here".into()));
         assert_eq!(s.marks.records[&id].name.as_deref(), Some("here"));
+    }
+
+    #[test]
+    fn clear_captured_output_bumps_the_mark_and_asks_the_tool_to_refresh() {
+        let mut s = Screen::new(40, 10);
+        prompt(&mut s, "cmd", 0);
+        let id = s.last_command_mark().unwrap().id;
+        assert_eq!(s.marks.records[&id].clear_count, 0);
+        s.feed(b"\x1b]1337;ClearCapturedOutput\x07");
+        assert_eq!(s.marks.records[&id].clear_count, 1);
+        let reqs = s.take_requests();
+        assert!(reqs.iter().any(|r| matches!(r, crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::Captured { needs_shell_integration: false }))), "{reqs:?}");
+        // No command mark: nothing to bump, but the tool still gets asked to refresh.
+        let mut t = Screen::new(40, 10);
+        t.feed(b"\x1b]1337;ClearCapturedOutput\x07");
+        assert!(t.take_requests().iter().any(|r| matches!(r, crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::Captured { needs_shell_integration: false }))));
     }
 
     #[test]

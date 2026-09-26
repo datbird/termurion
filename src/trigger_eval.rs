@@ -35,6 +35,9 @@ pub enum TriggerRequest {
     BufferInput(bool),
     ProfileSetting { key: String, on: bool },
     Coprocess { cmd: String, silent: bool },
+    /// A Capture Output trigger fired; the tool should refresh (or warn: no shell integration
+    /// means no command mark to store it on).
+    Captured { needs_shell_integration: bool },
     Unavailable { trigger: usize, title: String, milestone: u8 },
     /// An interpolated parameter that cannot be evaluated (shown once).
     ParameterError { trigger: usize, text: String },
@@ -444,7 +447,7 @@ impl Screen {
                     triggers::substitute(&param, &groups)
                 };
                 fired = true;
-                match self.trigger_action(i, &value, (m.start(), m.end()), &line) {
+                match self.trigger_action(i, &value, (m.start(), m.end()), &line, row, &groups) {
                     Flow::More => {}
                     Flow::Done => break,
                     Flow::StopAll => {
@@ -463,9 +466,10 @@ impl Screen {
     }
 
     /// An event trigger's action, on the cursor's line. True to stop the rest.
-    pub(crate) fn run_event_action(&mut self, i: usize, value: &str) -> bool {
+    pub(crate) fn run_event_action(&mut self, i: usize, value: &str, groups: &[Option<&str>]) -> bool {
         let line = self.logical_line(self.term.grid().cursor.point.line.0);
-        matches!(self.trigger_action(i, value, (0, 0), &line), Flow::StopAll)
+        let row = self.cursor_row();
+        matches!(self.trigger_action(i, value, (0, 0), &line, row, groups), Flow::StopAll)
     }
 
     /// The cells of a match: (line, column), from byte offsets in the logical line.
@@ -483,8 +487,10 @@ impl Screen {
         }
     }
 
-    /// Runs trigger `i`'s action on a match (byte range in the line).
-    fn trigger_action(&mut self, i: usize, value: &str, span: (usize, usize), line: &LineText) -> Flow {
+    /// Runs trigger `i`'s action on a match (byte range in the line). `row` is the line's
+    /// absolute row number and `groups` its capture groups (event triggers pass their own
+    /// captured strings; a plain regex match its `captures_iter` groups).
+    fn trigger_action(&mut self, i: usize, value: &str, span: (usize, usize), line: &LineText, row: i64, groups: &[Option<&str>]) -> Flow {
         let raw = self.triggers.list[i].trigger.action.clone();
         let Some(info) = triggers::action_info(&raw) else {
             self.requests.push(Request::Trigger(TriggerRequest::Unavailable { trigger: i, title: raw, milestone: 0 }));
@@ -646,6 +652,19 @@ impl Screen {
                 _ => Flow::Done,
             },
             "CoprocessTrigger" | "MuteCoprocessTrigger" => ask(self, TriggerRequest::Coprocess { cmd: value.to_string(), silent: info.class == "MuteCoprocessTrigger" }),
+            "CaptureTrigger" => {
+                let needs_shell_integration = self.marks.last_command.is_none();
+                if let Some(id) = self.marks.last_command {
+                    let command = (!value.is_empty()).then(|| value.to_string());
+                    let values: Vec<String> = groups.iter().skip(1).map(|g| (*g).unwrap_or("").to_string()).collect();
+                    let entry = crate::captured::Captured { line: line.text.clone(), values, command, state: false, abs_line: row, mark: id };
+                    if let Some(m) = self.marks.records.get_mut(&id) {
+                        crate::captured::add(&mut m.captured, entry);
+                    }
+                }
+                self.requests.push(Request::Trigger(TriggerRequest::Captured { needs_shell_integration }));
+                Flow::More
+            }
             _ => Flow::Done,
         }
     }
@@ -1005,7 +1024,7 @@ mod tests {
             ("MuteCoprocessTrigger", "cat", TriggerRequest::Coprocess { cmd: "cat".into(), silent: true }),
             ("iTermUserNotificationTrigger", "done", TriggerRequest::Notify("done".into())),
             ("GrowlTrigger", "done", TriggerRequest::Notify("done".into())),
-            ("CaptureTrigger", "", TriggerRequest::Unavailable { trigger: 0, title: "Capture Output".into(), milestone: 9 }),
+            ("CaptureTrigger", "", TriggerRequest::Captured { needs_shell_integration: true }),
         ];
         for (action, param, want) in cases {
             let mut s = one("go", action, param, b"go\r\n");
@@ -1107,5 +1126,42 @@ mod tests {
     fn profile_setting_needs_a_check_box_key() {
         let mut s = one("go", "iTermSetProfileBooleanTrigger", "Triggers\u{1}1", b"go\r\n");
         assert!(s.take_requests().is_empty(), "not a check box setting");
+    }
+
+    fn trigger_requests(s: &mut Screen) -> Vec<TriggerRequest> {
+        s.take_requests().into_iter().filter_map(|r| match r {
+            Request::Trigger(t) => Some(t),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn capture_follows_iterm2() {
+        let mut s = Screen::new(40, 10);
+        s.set_triggers(vec![trig(r"error: (\w+)", "CaptureTrigger", "run \\1", false)], TriggerPrefs::default());
+        // No command mark: nothing is stored, and the request says shell integration is needed.
+        s.feed(b"error: x\r\n");
+        assert_eq!(trigger_requests(&mut s), vec![TriggerRequest::Captured { needs_shell_integration: true }]);
+        assert!(s.last_command_mark().is_none());
+
+        // A prompt and a command: output starts, so there is a command mark to store on.
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07");
+        s.feed(b"error: x\r\n");
+        let mark_id = s.last_command_mark().unwrap().id;
+        let captured = s.last_command_mark().unwrap().captured.clone();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].line, "error: x");
+        assert_eq!(captured[0].values, vec!["x".to_string()]);
+        assert_eq!(captured[0].command.as_deref(), Some("run x"));
+        assert_eq!(captured[0].mark, mark_id);
+        assert!(!captured[0].state);
+        assert_eq!(trigger_requests(&mut s), vec![TriggerRequest::Captured { needs_shell_integration: false }]);
+
+        // A different line appends (the merge rule itself is `captured::add`'s job, tested there).
+        s.feed(b"error: q\r\n");
+        let captured = s.last_command_mark().unwrap().captured.clone();
+        assert_eq!(captured.len(), 2, "a different line appends");
+        assert_eq!(captured[1].line, "error: q");
+        assert_eq!(captured[1].values, vec!["q".to_string()]);
     }
 }

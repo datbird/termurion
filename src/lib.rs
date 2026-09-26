@@ -11,6 +11,7 @@ pub mod mru;
 pub mod osc;
 pub mod osc1337;
 pub mod marks;
+pub mod captured;
 pub mod find;
 pub mod smartsel;
 pub mod semantic;

@@ -448,7 +448,7 @@ mod tests {
         let r = row(&t);
         assert_eq!(r.detail, "Instant. Job: vim /err/ Highlight Text\u{2026} {#ff0000,}");
         assert!(r.faint, "disabled rows are faint");
-        assert_eq!(row(&trig("", "x", "CaptureTrigger", "")).detail, "/x/ Capture Output (milestone 9)");
+        assert_eq!(row(&trig("", "x", "CaptureTrigger", "")).detail, "/x/ Capture Output");
         assert_eq!(row(&trig("", "x", "NoSuch", "")).detail, "/x/ NoSuch (not in Tandem)");
         assert_eq!(action_label(crate::triggers::action_info("iTermEnterWorkgroupTrigger").unwrap()), "Enter Workgroup\u{2026} (later)");
         let mut ev = trig("", "", "BellTrigger", "");

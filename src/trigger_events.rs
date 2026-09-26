@@ -305,7 +305,7 @@ impl Screen {
         } else {
             triggers::substitute(&param, &groups)
         };
-        self.run_event_action(i, &value)
+        self.run_event_action(i, &value, &groups)
     }
 }
 

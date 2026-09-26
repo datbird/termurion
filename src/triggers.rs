@@ -119,7 +119,7 @@ pub const CATALOG: &[ActionInfo] = &[
     act("AnnotateTrigger", "Annotate\u{2026}", Kind::Text, "Enter annotation", false),
     act("BounceTrigger", "Bounce Dock Icon", Kind::Popup(BOUNCE), "", true),
     act("iTermBufferInputTrigger", "Buffer Input\u{2026}", Kind::Popup(BUFFER), "", true),
-    ActionInfo { later: Some(9), ..act("CaptureTrigger", "Capture Output", Kind::Text, "Coprocess to run on activation", false) },
+    act("CaptureTrigger", "Capture Output", Kind::Text, "Coprocess to run on activation", false),
     act("iTermSGRTrigger", "Change Style\u{2026}", Kind::Text, "Enter SGR codes. See help button for details.", false),
     ActionInfo { later: Some(0), ..act("iTermEnterWorkgroupTrigger", "Enter Workgroup\u{2026}", Kind::Text, "", true) },
     ActionInfo { later: Some(0), ..act("iTermExitWorkgroupTrigger", "Exit Workgroup", Kind::None, "", true) },
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(titles, sorted, "menu order is by title");
         assert_eq!(action_info("GrowlTrigger").map(|a| a.title), Some("Post Notification\u{2026}"), "iTerm2's synonym");
         assert_eq!(action_info("iTermSGRTrigger").map(|a| a.kind), Some(Kind::Text));
-        assert_eq!(action_info("CaptureTrigger").and_then(|a| a.later), Some(9));
+        assert_eq!(action_info("CaptureTrigger").and_then(|a| a.later), None);
         assert_eq!(action_info("iTermRPCTrigger").and_then(|a| a.later), Some(11));
         assert_eq!(action_info("PasswordTrigger").and_then(|a| a.later), Some(10));
         assert!(action_info("HighlightTrigger").is_some_and(|a| a.idempotent && a.multi_fire));
