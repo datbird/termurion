@@ -58,7 +58,7 @@ pub(super) fn foreground() -> isize {
 }
 
 /// A window of this process (a terminal window, Settings, a dialog).
-fn ours(hwnd: isize) -> bool {
+pub(super) fn ours(hwnd: isize) -> bool {
     let mut pid = 0u32;
     unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd as _, &mut pid) };
     pid == std::process::id()

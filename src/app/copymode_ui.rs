@@ -48,6 +48,14 @@ impl App {
         true
     }
 
+    /// Copy Mode ends in pane `id`, if on (an Instant Replay frame shown, `PS:15314-15375`).
+    pub(super) fn leave_copy_mode(&mut self, id: PaneId) {
+        if self.copy_modes.remove(&id).is_some() {
+            self.composer_follow_copy_mode(id);
+            self.sync_checks();
+        }
+    }
+
     /// Copy Mode starts at the selection's end, else at the terminal cursor.
     fn enter_copy_mode(&mut self, id: PaneId) {
         let Some(p) = self.panes.get(&id) else { return };

@@ -200,7 +200,7 @@ impl FindState {
     }
 }
 
-fn beep() {
+pub(super) fn beep() {
     #[cfg(windows)]
     unsafe {
         windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK);

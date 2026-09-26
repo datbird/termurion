@@ -8,9 +8,10 @@ use std::time::{Duration, Instant};
 /// A visible, busy session at a low byte rate: 60 frames a second (`activeUpdateCadence` and
 /// `maximumFrameRate`, 60).
 pub const FAST_GAP: Duration = Duration::from_millis(16);
-/// A visible session receiving at least `THROUGHPUT_LIMIT` bytes a second: `slowFrameRate`
-/// (15 fps).
-pub const SLOW_GAP: Duration = Duration::from_nanos(1_000_000_000 / 15);
+/// A visible session receiving at least `THROUGHPUT_LIMIT` bytes a second. Tandem draws on
+/// the GPU like iTerm2's default Metal path, so this is `metalSlowFrameRate` (30 fps,
+/// `iTermAdvancedSettingsModel.m:570`), not the non-Metal `slowFrameRate` (15).
+pub const SLOW_GAP: Duration = Duration::from_nanos(1_000_000_000 / 30);
 /// A session in no visible tab, or idle: `kBackgroundUpdateCadence` (`UC:20`).
 pub const BACKGROUND_GAP: Duration = Duration::from_secs(1);
 /// `adaptiveFrameRateThroughputThreshold` (10000 bytes a second).
@@ -18,7 +19,7 @@ pub const THROUGHPUT_LIMIT: i64 = 10_000;
 /// `isIdle` (`PS:6584-6587`): no output for more than `idleTimeSeconds` (2) plus one.
 pub const IDLE_AFTER: Duration = Duration::from_secs(3);
 
-/// `changeCadenceIfNeeded:` (`UC:145-191`) on the non-Metal path with iTerm2's defaults:
+/// `changeCadenceIfNeeded:` (`UC:145-191`) on the Metal path with iTerm2's defaults:
 /// idle or not in a visible tab is the background period; in an alternate screen the
 /// adaptive rate is off (`disableAdaptiveFrameRateInInteractiveApps`, `PS:22126-22128`), so
 /// the fast one; else fast only while `0 < throughput < THROUGHPUT_LIMIT`, slow otherwise.
@@ -103,7 +104,7 @@ mod tests {
 
     #[test]
     fn cadence_follows_iterm2() {
-        assert_eq!(SLOW_GAP, Duration::from_nanos(66_666_666));
+        assert_eq!(SLOW_GAP, Duration::from_nanos(33_333_333), "metalSlowFrameRate 30");
         assert_eq!(frame_gap(false, false, false, 500), BACKGROUND_GAP, "not in a visible tab");
         assert_eq!(frame_gap(true, true, false, 500), BACKGROUND_GAP, "idle");
         assert_eq!(frame_gap(false, true, true, 0), BACKGROUND_GAP);

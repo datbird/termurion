@@ -279,6 +279,13 @@ impl App {
             38 => self.send_to_focused(keyaction::expand(&b.text, b.vim_escaping()).as_bytes()),
             // Send Text without Broadcasting.
             76 => self.send_focused_as(keyaction::expand(&b.text, b.vim_escaping()).as_bytes(), crate::broadcast::Write::SendTextLocal),
+            // Start Instant Replay (`PS:12035-12042`): not in a tmux gateway; a bound key keeps
+            // stepping back once replaying.
+            15 => {
+                if !self.focused_id().is_some_and(|id| self.is_tmux_gateway(id)) {
+                    self.ir_advance(-1, event_loop);
+                }
+            }
             16 => self.send_to_focused(&[0x08]),
             17 => self.send_to_focused(&[0x7f]),
             18 => self.select_pane_dir(Dir::Left),

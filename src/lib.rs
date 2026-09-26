@@ -147,6 +147,8 @@ pub mod shot_ui;
 pub mod global_find_ui;
 #[cfg(windows)]
 pub mod open_quickly_ui;
+#[cfg(windows)]
+pub mod replay_window;
 
 pub mod settings_keys;
 pub mod settings_advanced;

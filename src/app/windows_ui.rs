@@ -39,6 +39,9 @@ pub(super) struct WinSlot {
     broadcast: crate::broadcast::Broadcast,
     broadcast_tabs: std::collections::BTreeSet<u64>,
     belt: super::toolbelt_ui::Belt,
+    /// Instant Replay's panel, and the tab and pane it last saw in front.
+    replay_window: Option<crate::replay_window::ReplayWindow>,
+    replay_seen: Option<(u64, PaneId)>,
 }
 
 impl WinSlot {
@@ -78,6 +81,8 @@ impl WinSlot {
             broadcast: Default::default(),
             broadcast_tabs: Default::default(),
             belt: Default::default(),
+            replay_window: None,
+            replay_seen: None,
         }
     }
 }
@@ -120,6 +125,28 @@ impl App {
         swap(&mut self.broadcast, &mut s.broadcast);
         swap(&mut self.broadcast_tabs, &mut s.broadcast_tabs);
         swap(&mut self.belt, &mut s.belt);
+        swap(&mut self.replay_window, &mut s.replay_window);
+        swap(&mut self.replay_seen, &mut s.replay_seen);
+    }
+
+    /// The terminal window whose Instant Replay panel is `panel`, when it is parked.
+    pub(super) fn window_of_replay_panel(&self, panel: WindowId) -> Option<WindowId> {
+        self.windows.parked().find(|(_, s)| s.replay_window.as_ref().is_some_and(|w| w.id() == panel)).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()))
+    }
+
+    /// Every window's Instant Replay panel hides while Tandem is not the active app
+    /// (`hidesOnDeactivate`, `IRX:23`).
+    pub(super) fn replay_panels_follow_app(&mut self) {
+        let fg = super::hotkey_ui::foreground();
+        let active = fg != 0 && super::hotkey_ui::ours(fg);
+        if let Some(w) = self.replay_window.as_mut() {
+            w.set_shown(active);
+        }
+        for (_, s) in self.windows.parked_mut() {
+            if let Some(w) = s.replay_window.as_mut() {
+                w.set_shown(active);
+            }
+        }
     }
 
     /// Makes a terminal window current. False for a window that is not one.
@@ -342,6 +369,8 @@ impl App {
         if !self.enter(id) || !self.confirm_close(close_ui::Closing::Window) || self.tmux_close_window() {
             return;
         }
+        let focused = self.focused_id();
+        self.replay_event(crate::replay::ReplayEvent::WindowClosed, focused, event_loop);
         let panes: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
         self.begin_undo(crate::undo_close::Kind::Window, &panes);
         for p in panes {
@@ -399,6 +428,8 @@ impl WinSlot {
             broadcast: Default::default(),
             broadcast_tabs: Default::default(),
             belt: Default::default(),
+            replay_window: None,
+            replay_seen: None,
         }
     }
 }

@@ -582,6 +582,13 @@ impl App {
                 }
             }
             "clearBuffer:" => self.clear_or_reset(true),
+            "clearInstantReplay:" => self.clear_instant_replay(),
+            // Disabled while the focused pane replays (`PT:13940-13941`).
+            "irPrev:" => {
+                if self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.replay.is_none()) {
+                    self.ir_advance(-1, event_loop);
+                }
+            }
             "clearScrollbackBuffer:" => self.focused_pane().map_or((), |p| p.screen.clear(true)),
             "reset:" => self.clear_or_reset(false),
             "terminalStateReset:" => self.focused_pane().map_or((), |p| p.screen.soft_reset()),

@@ -106,6 +106,7 @@ mod toolbelt_ui;
 mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
 mod open_quickly_app;
+mod replay_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -457,6 +458,12 @@ pub struct App {
     started: Instant,
     /// An open Make Screenshot panel.
     shot: Option<screenshot_ui::Shot>,
+    /// This window's Instant Replay Control panel (per window: `swap_live`).
+    replay_window: Option<crate::replay_window::ReplayWindow>,
+    /// The tab and pane in front when last looked, for what ends Instant Replay (per window).
+    replay_seen: Option<(u64, PaneId)>,
+    /// Keys whose press Instant Replay took, so their releases are taken too.
+    replay_keys: toolbelt_tools_ui::TakenKeys<PhysicalKey>,
     /// Page Setup's printer, paper, and margins.
     print_setup: crate::winprint::Setup,
     /// OpenURL requests waiting for an answer, by pane and host; uploads being sent.
@@ -720,6 +727,9 @@ pub fn run() {
         pending_urls: HashMap::new(),
         print_setup: crate::winprint::Setup::default(),
         shot: None,
+        replay_window: None,
+        replay_seen: None,
+        replay_keys: Default::default(),
         block_hover: None,
         block_buttons: Vec::new(),
         porthole_views: HashMap::new(),
@@ -1202,6 +1212,10 @@ impl App {
         if !self.layout_allowed(crate::winmodel::LayoutOp::Split) {
             return;
         }
+        // No split while Instant Replay shows (`PT:11124-11129`).
+        if crate::replay::on_event(self.in_instant_replay(), crate::replay::ReplayEvent::Split) == crate::replay::Close::Refuse {
+            return;
+        }
         let Some(target) = self.tabs.get(self.active).map(|t| t.focused) else { return };
         if self.tmux_split(target, axis == Axis::Row) {
             return;
@@ -1231,6 +1245,21 @@ impl App {
             self.menus_dirty = true;
         }
         self.enter_pane_window(id);
+        // Instant Replay closes before the pane (and its recorder) goes (`PT:2766-2770`); the
+        // panel of the pane itself closes with it.
+        if self.in_instant_replay() {
+            if self.focused_id() == Some(id) {
+                self.replay_window = None;
+            } else {
+                let focused = self.focused_id();
+                self.replay_event(crate::replay::ReplayEvent::PaneClosed, focused, event_loop);
+            }
+        }
+        if let Some(p) = self.panes.get_mut(&id) {
+            if p.replay.take().is_some() {
+                p.end_view();
+            }
+        }
         self.tmux_pane_closed(id);
         self.aps.remove(&id);
         self.focus_order.remove(&id);
@@ -1328,13 +1357,22 @@ impl App {
             .map(|(id, rect)| (id, self.grid_size(rect)))
             .collect();
         self.tmux_report_sizes();
+        let mut reframe = Vec::new();
         for (id, (cols, rows)) in sizes {
             if let Some(p) = self.panes.get_mut(&id) {
                 if p.resize(cols, rows) {
                     self.activity.entry(id).or_default().resized(Instant::now());
+                    if p.replay.is_some() {
+                        reframe.push(id);
+                    }
                 }
                 p.set_cell_px(cw as u16, ch as u16);
             }
+        }
+        // A replaying pane's frame is fit to its new size again (the window is never
+        // resized to the frame).
+        for id in reframe {
+            self.refit_frame(id);
         }
         self.redraw();
     }
@@ -1542,6 +1580,10 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // Instant Replay takes its keys before anything else (`PS:12795-12802`).
+        if self.replay_key(ev, event_loop) {
+            return;
+        }
         // A tool with the keyboard takes its keys, releases too, before any reach the session.
         if self.toolbelt_key(ev, event_loop) {
             return;
@@ -2368,6 +2410,8 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let lost = std::mem::take(&mut self.focus_lost);
         self.save_state(lost);
+        self.replay_follow_focus(event_loop);
+        self.replay_panels_follow_app();
         // Menu checks that follow the current tab and pane (broadcast input) refresh when
         // either changes.
         let key = (self.current_window(), self.active, self.tabs.get(self.active).map(|t| t.focused));
@@ -2530,7 +2574,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -2595,6 +2639,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if !f {
                     self.tmux_drag_cancel();
                     self.belt_keys.clear();
+                    self.replay_keys.clear();
                     self.composer_keys.clear();
                 }
                 self.focused = f;
@@ -2665,6 +2710,11 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => self.mouse_release(button, event_loop),
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::RedrawRequested => {
+                // A tab or pane change in this window ends or shows Instant Replay.
+                self.replay_follow_focus(event_loop);
+                if self.gpu.as_ref().is_none_or(|g| g.window.id() != id) {
+                    return;
+                }
                 // A font change made while another window was current reaches this one now.
                 let sig = self.font_sig.clone();
                 self.apply_fonts();

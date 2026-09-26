@@ -114,6 +114,45 @@ pub fn ir_key(key: &Key, shift: bool, win: bool) -> IrKey {
     }
 }
 
+/// What happened in a window, for what it does to Instant Replay there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplayEvent {
+    /// Another pane of the tab became active (`TAB:907-909`).
+    OtherPaneActive,
+    /// A tab came to the front; `replaying` when its active pane shows a frame
+    /// (`showOrHideInstantReplayBar`, `PT:7520-7528`).
+    TabShown { replaying: bool },
+    /// Split selection mode began (`PT:12223-12226`).
+    SplitSelection,
+    /// A pane of the window closed (`closeSessionWithoutConfirmation:`, `PT:2766-2770`).
+    PaneClosed,
+    /// The window closed (`PT:4910-4914`).
+    WindowClosed,
+    /// A split was asked for (`canSplitPaneVertically:`, `PT:11124-11129`).
+    Split,
+}
+
+/// What an event does to the window's Instant Replay panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Close {
+    Nothing,
+    ClosePanel,
+    OpenPanel,
+    /// The asked-for action does not happen.
+    Refuse,
+}
+
+/// iTerm2's closers: with the panel open, every event closes it except a split (refused)
+/// and a tab whose active pane replays (shown); with it closed, only that tab opens it.
+pub fn on_event(panel_open: bool, e: ReplayEvent) -> Close {
+    match (panel_open, e) {
+        (_, ReplayEvent::TabShown { replaying: true }) => Close::OpenPanel,
+        (false, _) => Close::Nothing,
+        (true, ReplayEvent::Split) => Close::Refuse,
+        (true, _) => Close::ClosePanel,
+    }
+}
+
 /// A frame's row fit to `cols`: the source's left columns, kept or padded blank on the
 /// right (`VT100Grid.m:2198-2245`, `charsToCopyPerLine`).
 fn fit_row(src: &Row<Cell>, cols: usize) -> Row<Cell> {
@@ -210,6 +249,21 @@ mod tests {
         assert!(can_prev(Some(&r5), &d), "at the newest: not the first");
 
         assert_eq!(current(None), -1);
+    }
+
+    #[test]
+    fn replay_closers_follow_iterm2() {
+        use ReplayEvent::*;
+        for e in [OtherPaneActive, SplitSelection, PaneClosed, WindowClosed] {
+            assert_eq!(on_event(true, e), Close::ClosePanel, "{e:?}");
+        }
+        assert_eq!(on_event(true, Split), Close::Refuse);
+        assert_eq!(on_event(true, TabShown { replaying: true }), Close::OpenPanel);
+        assert_eq!(on_event(true, TabShown { replaying: false }), Close::ClosePanel);
+        for e in [OtherPaneActive, SplitSelection, PaneClosed, WindowClosed, Split, TabShown { replaying: false }] {
+            assert_eq!(on_event(false, e), Close::Nothing, "{e:?}");
+        }
+        assert_eq!(on_event(false, TabShown { replaying: true }), Close::OpenPanel);
     }
 
     #[test]

@@ -377,7 +377,6 @@ pub fn info(code: i64) -> Option<&'static ActionInfo> {
 pub fn status(code: i64) -> Status {
     match code {
         44 | 62 => Status::Later(7),
-        15 => Status::Later(10),
         40 => Status::Later(13),
         60 => Status::Later(11),
         _ => Status::Done,
@@ -435,7 +434,7 @@ mod tests {
         for code in [0, 2, 4, 9, 10, 11, 12, 13, 16, 17, 18, 21, 23, 25, 27, 28, 29, 30, 31, 32, 33, 34, 37, 38, 39, 49, 52, 53, 56, 59, 61, 66, 67, 68, 69, 70, 74, 75, 76] {
             assert_eq!(status(code), Status::Done, "{code}");
         }
-        assert_eq!(status(15), Status::Later(10));
+        assert_eq!(status(15), Status::Done, "10a: Start Instant Replay");
         assert_eq!(status(65), Status::Done, "8e: Send tmux Command");
         assert_eq!((status(41), status(42)), (Status::Done, Status::Done), "9a");
         assert_eq!((status(1), status(3)), (Status::Done, Status::Done), "Next and Previous Window arrive in 7a");
