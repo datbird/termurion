@@ -185,3 +185,13 @@ Final review: Ruling: a loaded recording's pane is never put in the Undo Close c
 Final review: Ruling: Restart Session on a replaying pane ends its replay and closes the panel before the new shell starts - cost if wrong: the panel stays open over a fresh live pane until Esc.
 
 Final review: Ruling (follow-up, supersedes the loaded-recording part of the move ruling above): a loaded recording's pane is never moved to another window. Move Tab to New Window is refused for a tab holding one, Move Session to Window is refused for one, and Merge All Windows leaves every tab that holds one where it is, keeping that window open (a merged window whose active tab moved loses its panel and shows its first kept tab). A live pane that is replaying still ends its replay and moves - cost if wrong: a loaded recording can never be gathered into another window; the alternative left a blank pane with no pty, a dead end.
+
+Final re-review: minor (deferred): closing the Filter tool on a replaying pane leaves the filter open (end_view returns before the filter closes); Esc then closing Filter works.
+
+Final re-review: minor (deferred): a chunked paste already running when a replay starts loses its remaining chunks (the shell gets part of the paste); iTerm2 keeps writing it. Workaround: do not start a replay mid-paste.
+
+Final re-review: minor (deferred): a window that Merge All Windows leaves behind keeps the moved tabs in its tab-cycling order, so one cycle key press can land on a missing tab and do nothing.
+
+Final re-review: minor (deferred): with Broadcast Input on and the sender replaying, a Send Text chord still reaches the other broadcast panes while a paste reaches none.
+
+Final re-review: minor (deferred, older than the fix wave): Make Screenshot on a replaying pane puts the live screen back while the replay stays active; Esc recovers.
