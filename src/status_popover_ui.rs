@@ -9,6 +9,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
 use crate::egui_host::EguiHost;
+use crate::layout::Rect;
 use crate::status_tool::{self, Pattern};
 
 /// The settings popover's size, points (`SPS`, `contentSize`).
@@ -35,9 +36,10 @@ pub enum PopoverEvent {
 }
 
 /// A frameless, taskbar-less window of `w` by `h` points, its bottom centered on `at` (screen
-/// pixels) as a popover above its button (`preferredEdge: .maxY`), kept on the screen.
+/// pixels) as a popover above its button (`preferredEdge: .maxY`), kept on `work`, the work
+/// area of the button's monitor (`place`).
 #[allow(clippy::too_many_arguments)]
-fn popover_window(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, w: f64, h: f64, at: (f64, f64)) -> Result<EguiHost, String> {
+fn popover_window(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, w: f64, h: f64, at: (f64, f64), work: Option<Rect>) -> Result<EguiHost, String> {
     use winit::platform::windows::WindowAttributesExtWindows;
     let attrs = Window::default_attributes()
         .with_title(title)
@@ -48,11 +50,26 @@ fn popover_window(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapt
     let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
     let scale = host.window.scale_factor();
     let (pw, ph) = (w * scale, h * scale);
-    let (x, y) = (at.0 - pw / 2.0, at.1 - ph);
-    host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x.max(0.0), y.max(0.0)));
+    let (x, y) = place(at, pw, ph, work);
+    host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
     host.window.set_visible(true);
     host.focus();
     Ok(host)
+}
+
+/// Where a popover of `pw` by `ph` pixels goes: its bottom centered on `at`, moved inside
+/// `work` (the monitor's work area, screen pixels; its top-left edge wins when it is too
+/// small), or kept off negative coordinates without one.
+fn place(at: (f64, f64), pw: f64, ph: f64, work: Option<Rect>) -> (f64, f64) {
+    let (x, y) = (at.0 - pw / 2.0, at.1 - ph);
+    match work {
+        Some(r) => {
+            let (l, t) = (f64::from(r.x), f64::from(r.y));
+            let (rr, b) = (l + f64::from(r.w), t + f64::from(r.h));
+            (x.min(rr - pw).max(l), y.min(b - ph).max(t))
+        }
+        None => (x.max(0.0), y.max(0.0)),
+    }
 }
 
 /// Whether a popover event closes it: its own close, or a focus loss after it had focus (the
@@ -95,9 +112,10 @@ impl StatusPopover {
         merge: bool,
         subtitle: bool,
         at: (f64, f64),
+        work: Option<Rect>,
         dark: bool,
     ) -> Result<StatusPopover, String> {
-        let host = popover_window(event_loop, instance, adapter, device, queue, "Session Status", SETTINGS_W, SETTINGS_H, at)?;
+        let host = popover_window(event_loop, instance, adapter, device, queue, "Session Status", SETTINGS_W, SETTINGS_H, at, work)?;
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         Ok(StatusPopover { host, patterns, merge, subtitle, selected: None, dirty: false, focused: false, hold: false })
     }
@@ -244,10 +262,11 @@ impl InfoPopover {
         queue: &wgpu::Queue,
         lines: Vec<(String, String)>,
         at: (f64, f64),
+        work: Option<Rect>,
         dark: bool,
     ) -> Result<InfoPopover, String> {
         let h = lines.len().max(1) as f64 * INFO_LINE + 2.0 * f64::from(MARGIN);
-        let host = popover_window(event_loop, instance, adapter, device, queue, "Info", INFO_W, h, at)?;
+        let host = popover_window(event_loop, instance, adapter, device, queue, "Info", INFO_W, h, at, work)?;
         host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
         Ok(InfoPopover { host, lines, focused: false })
     }
@@ -287,5 +306,26 @@ impl InfoPopover {
             }
         });
         open
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popover_stays_on_its_buttons_monitor() {
+        // A second monitor to the right of the first, its work area 1920..3840 by 0..1040.
+        let work = Some(Rect { x: 1920.0, y: 0.0, w: 1920.0, h: 1040.0 });
+        // Above the button, centered, when it fits.
+        assert_eq!(place((2500.0, 600.0), 200.0, 300.0, work), (2400.0, 300.0));
+        // Near the monitor's left edge it stays on that monitor, not on the first.
+        assert_eq!(place((1950.0, 600.0), 200.0, 300.0, work), (1920.0, 300.0));
+        // Near its right edge and its top.
+        assert_eq!(place((3830.0, 100.0), 200.0, 300.0, work), (3640.0, 0.0));
+        // Too small: the top-left edge wins.
+        assert_eq!(place((2000.0, 100.0), 4000.0, 300.0, work), (1920.0, 0.0));
+        // No monitor known: only kept off negative coordinates.
+        assert_eq!(place((50.0, 100.0), 200.0, 300.0, None), (0.0, 0.0));
     }
 }

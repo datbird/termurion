@@ -546,12 +546,19 @@ impl App {
         self.tools_changed();
     }
 
-    /// Toggle Checkmark on shown row `row` (`CO:377-384`).
-    pub(super) fn toggle_captured_check(&mut self, row: usize) {
-        let shown = self.tool_shown(ToolId::CapturedOutput);
-        let Shown::Captured(c) = &*shown else { return };
-        let (Some(pane), Some(&i)) = (c.pane, c.index.get(row)) else { return };
-        if let Some(e) = self.panes.get_mut(&pane).and_then(|p| p.screen.marks.records.get_mut(&c.mark)).and_then(|m| m.captured.get_mut(i)) {
+    /// The Toggle Checkmark menu's key for shown row `row`: `pane:mark:line:nth`
+    /// (`captured::key_of`).
+    pub(super) fn captured_check_key(&self, c: &CapturedShown, row: usize) -> Option<String> {
+        let (pane, &i) = (c.pane?, c.index.get(row)?);
+        let list = &self.panes.get(&pane)?.screen.marks.records.get(&c.mark)?.captured;
+        let (line, nth) = captured::key_of(list, i)?;
+        Some(format!("{pane}:{}:{line}:{nth}", c.mark))
+    }
+
+    /// Toggle Checkmark on the entry its menu was opened on (`CO:377-384`).
+    pub(super) fn toggle_captured_check(&mut self, pane: PaneId, mark: u32, key: (i64, usize)) {
+        let Some(list) = self.panes.get_mut(&pane).and_then(|p| p.screen.marks.records.get_mut(&mark)).map(|m| &mut m.captured) else { return };
+        if let Some(e) = captured::find(list, key).and_then(|i| list.get_mut(i)) {
             e.state = !e.state;
         }
         self.tools_changed();
@@ -770,10 +777,12 @@ impl App {
         let (l, ..) = self.tool_layout(ToolId::SessionStatus, area);
         let Some(&(_, r)) = l.buttons.iter().find(|(b, _)| *b == tool_list::ToolButton::Settings) else { return };
         let (patterns, merge, subtitle, dark) = (self.status_patterns(), self.globals.bool(status_tool::MERGE_KEY), self.globals.bool(status_tool::SUBTITLE_KEY), self.dark());
+        // The button is in this window: the popover stays on this window's monitor.
+        let work = self.monitor_rects().map(|(w, _)| w);
         let Some(g) = self.gpu.as_ref() else { return };
         let origin = g.window.inner_position().unwrap_or_default();
         let at = (origin.x as f64 + f64::from(r.x + r.w / 2.0), origin.y as f64 + f64::from(r.y));
-        match crate::status_popover_ui::StatusPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, patterns, merge, subtitle, at, dark) {
+        match crate::status_popover_ui::StatusPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, patterns, merge, subtitle, at, work, dark) {
             Ok(w) => self.status_popover = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -1112,10 +1121,11 @@ impl App {
         let (l, ..) = self.tool_layout(ToolId::Jobs, area);
         let Some(&(_, r)) = l.buttons.iter().find(|(b, _)| *b == tool_list::ToolButton::Inspect) else { return };
         let dark = self.dark();
+        let work = self.monitor_rects().map(|(w, _)| w);
         let Some(g) = self.gpu.as_ref() else { return };
         let origin = g.window.inner_position().unwrap_or_default();
         let at = (origin.x as f64 + f64::from(r.x + r.w / 2.0), origin.y as f64 + f64::from(r.y));
-        match crate::status_popover_ui::InfoPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, lines, at, dark) {
+        match crate::status_popover_ui::InfoPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, lines, at, work, dark) {
             Ok(w) => self.jobs_popover = Some(w),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -1281,9 +1291,14 @@ impl App {
     }
 
     /// Runs `f` with the editor and its width measure: the toolbelt font, a tab as four spaces.
-    fn with_note_measure<R>(&mut self, f: impl FnOnce(&mut super::toolbelt_ui::Belt, &dyn Fn(&str) -> f32) -> R) -> R {
+    fn with_note_measure<R>(&mut self, f: impl FnOnce(&mut super::toolbelt_ui::Belt, &dyn Fn(&str) -> f32, u64) -> R) -> R {
         let scale = self.scale();
         let renderer = self.gpu.as_mut().map(|g| RefCell::new(&mut g.renderer));
+        // The measure's own key, for the editor's wrap cache (`text_edit::WrapCache`).
+        let font = match &renderer {
+            Some(r) => r.borrow().toolbelt_font_key(scale),
+            None => 1 << 63 | u64::from(scale.to_bits()),
+        };
         let measure = |s: &str| {
             let s = s.replace('\t', TAB_AS);
             match &renderer {
@@ -1291,7 +1306,7 @@ impl App {
                 None => s.chars().count() as f32 * 7.0 * scale,
             }
         };
-        f(&mut self.belt, &measure)
+        f(&mut self.belt, &measure, font)
     }
 
     /// The editor's text changed: the note it holds takes it (the global note is saved and
@@ -1347,11 +1362,11 @@ impl App {
         let l = note_layout(area, self.scale());
         let line_h = self.list_metrics().line.max(1.0);
         let cut = key == EditKey::Cut;
-        let (out, caret_line) = self.with_note_measure(|belt, measure| {
-            let lines = text_edit::wrap(&belt.note_edit.text, l.text.w, measure);
+        let (out, caret_line) = self.with_note_measure(|belt, measure, font| {
+            let lines = belt.note_wrap.wrap(&belt.note_edit.text, l.text.w, font, measure);
             belt.note_edit.page_lines = ((l.text.h / line_h).floor() as usize).max(1);
             let out = belt.note_edit.key(key, mods.shift, &lines, measure);
-            let lines = text_edit::wrap(&belt.note_edit.text, l.text.w, measure);
+            let lines = belt.note_wrap.wrap(&belt.note_edit.text, l.text.w, font, measure);
             (out, belt.note_edit.caret_line(&lines, measure).0)
         });
         match out {
@@ -1385,9 +1400,9 @@ impl App {
     fn note_index_at(&mut self, l: &NoteLayout, x: f32, y: f32) -> (usize, bool) {
         let line_h = self.list_metrics().line.max(1.0);
         let scroll = self.belt.note_scroll;
-        self.with_note_measure(|belt, measure| {
+        self.with_note_measure(|belt, measure, font| {
             let text = &belt.note_edit.text;
-            let lines = text_edit::wrap(text, l.text.w, measure);
+            let lines = belt.note_wrap.wrap(text, l.text.w, font, measure);
             let line = (((y - l.text.y + scroll) / line_h).floor().max(0.0) as usize).min(lines.len().saturating_sub(1));
             let at = text_edit::index_at(text, &lines, line, x - l.text.x, measure);
             (at, text_edit::ends_line(&lines, line, at))
@@ -1448,10 +1463,11 @@ impl App {
         let Some(g) = self.gpu.as_mut() else { return };
         let renderer = RefCell::new(&mut g.renderer);
         let measure = |s: &str| renderer.borrow_mut().toolbelt_width(&s.replace('\t', TAB_AS), scale);
+        let font = renderer.borrow().toolbelt_font_key(scale);
         let label_w = |s: &str| renderer.borrow_mut().text_width(s, true, m.text_scale);
         let belt = &mut self.belt;
         let edit = &mut belt.note_edit;
-        let lines = text_edit::wrap(&edit.text, l.text.w, &measure);
+        let lines = belt.note_wrap.wrap(&edit.text, l.text.w, font, &measure);
         edit.page_lines = ((l.text.h / line_h).floor() as usize).max(1);
         let content = lines.len() as f32 * line_h;
         belt.note_scroll = belt.note_scroll.clamp(0.0, (content - l.text.h).max(0.0));

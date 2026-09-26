@@ -615,7 +615,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Open Quickly | Search profiles | Opens a new session/tab from a matching profile. | have | Milestone 9k: opens a new tab, or the profile's hotkey window when it has one and none is open. |
 | Open Quickly | Change profile in place | Re-applies a different profile's settings to the current session. | have | Milestone 9k: preserves the row's own name only for a program-set title, since Tandem's session name otherwise follows the profile's Title Components. |
 | Open Quickly | Search saved arrangements | Restores a saved window arrangement by name. | have | Milestone 9k: restores in tabs into the current window. |
-| Open Quickly | Search help topics | Jumps to a help/documentation entry. | have | Milestone 9k: the "." tip line shows and fills the field; Tandem has no navigable help system to search, so the tip is the whole of this command. |
+| Open Quickly | Search help topics | Jumps to a help/documentation entry. | have | Milestone 9k: Open Quickly has no help-topic command or tip of its own; typing "/" lists every restriction letter's tip, which is the only in-palette help. Tandem has no navigable help system to search. |
 | Open Quickly | Search scripts | Runs an installed Python/AppleScript automation script. | partial | Milestone 9k: the "s" tip shows; running a script needs milestone 11's scripting API. |
 | Open Quickly | Search color presets | Applies a color preset to the current session. | partial | Milestone 9k: the "c" tip shows; color presets themselves are milestone 13. |
 | Open Quickly | Search actions | Runs a user-defined Action, a saved key-action. | have | Milestone 9k: runs the action's key binding on the snapshot taken when the palette opened. |

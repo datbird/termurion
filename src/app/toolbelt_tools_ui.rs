@@ -969,7 +969,12 @@ impl App {
                 Some(d) => vec![(format!("{CTX_ID}star:{}", d.path), "Toggle Star")],
                 None => return,
             },
-            Shown::Captured(c) if row < c.entries.len() => vec![(format!("{CTX_ID}captured-check:{row}"), "Toggle Checkmark")],
+            // Keyed by the entry (pane, mark, line and place on it), not the row: captures that
+            // arrive while the menu is up shift the rows.
+            Shown::Captured(c) if row < c.entries.len() => match self.captured_check_key(c, row) {
+                Some(key) => vec![(format!("{CTX_ID}captured-check:{key}"), "Toggle Checkmark")],
+                None => return,
+            },
             _ => return,
         };
         let menu = muda::Menu::new();
@@ -1010,8 +1015,11 @@ impl App {
                 }
             }
             "captured-check" => {
-                if let Ok(row) = arg.parse::<usize>() {
-                    self.toggle_captured_check(row);
+                let f: Vec<&str> = arg.split(':').collect();
+                if let [pane, mark, line, nth] = f[..] {
+                    if let (Ok(pane), Ok(mark), Ok(line), Ok(nth)) = (pane.parse::<PaneId>(), mark.parse::<u32>(), line.parse::<i64>(), nth.parse::<usize>()) {
+                        self.toggle_captured_check(pane, mark, (line, nth));
+                    }
                 }
             }
             "signal" => {

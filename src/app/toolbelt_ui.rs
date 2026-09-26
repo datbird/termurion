@@ -123,6 +123,8 @@ pub(super) struct Belt {
     /// (pixels) and the note the editor holds now (a different one loads, clearing the undo).
     pub(super) notes_mode: crate::notes::Mode,
     pub(super) note_edit: crate::text_edit::TextEdit,
+    /// The editor's wrapped lines, kept between frames, keys and drag moves.
+    pub(super) note_wrap: crate::text_edit::WrapCache,
     pub(super) note_scroll: f32,
     pub(super) note_source: Option<super::toolbelt_more_ui::NoteSource>,
     /// The saved proportions were offered to this window's split (its first layout, or an

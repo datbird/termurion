@@ -136,3 +136,18 @@ Task 8: Ruling (fix round): focus_order is pruned in close_pane (beside aps.remo
 Task 8: minor (deferred): no warning when the Open Quickly chord equals a profile/app hotkey.
 Task 8: minor (deferred): Change Profile does not keep a Title Components session name (checklist line).
 Task 8: minor (deferred): some tests never seen RED; Ctrl+P/N wrap untested on the arrow path.
+
+Task 3: Ruling: HELP_TEXT reproduces ToolStatus.helpMarkdown (ToolStatus.swift:394-431) with the Swift line continuations joined and paragraph breaks kept; non-ASCII characters are \u{...} escapes - cost if wrong: a cosmetic help-text mismatch.
+Task 3: Ruling: SETTINGS_TEXT, NEW_PATTERN, MERGE_LABEL and SUBTITLE_LABEL are the String(localized:defaultValue:) texts of StatusPrioritySettings.swift:255-330, verbatim - cost if wrong: none.
+Task 4: Ruling: an index where a soft wrap breaks belongs to the line it starts, unless the caret's affinity (at_line_end) puts it at the end of the line before - cost if wrong: the caret draws on the other line.
+Task 4: Ruling: Up on the first line goes to index 0 and Down on the last line goes to the end of the text (NSTextView and Windows 11 Notepad) - cost if wrong: the old Win32 EDIT control does nothing there.
+Task 7: Ruling (fix round): Inspect is disabled without a selection (JT:573-578), as the signal popup is - cost if wrong: none.
+Task 7: Ruling (fix round): when no selected process is left to signal, the banner reads "No signal was sent: the selected processes have already ended." - cost if wrong: wording.
+Task 7: Ruling (fix round): the Notes editor takes the Windows clipboard keys Shift+Insert (paste), Ctrl+Insert (copy) and Shift+Delete (cut); a plain Insert is swallowed - cost if wrong: none.
+Task 7: Ruling (fix round): the GlobalNote store moved into src/notes.rs (plain std::fs, testable without Windows); the app glue stays in toolbelt_more_ui.rs - cost if wrong: none.
+
+Final: Notes wrap measures only near each visual line (text_edit::fit_end gallops then halves, O(n log n) on a 100 KiB line, assuming a longer prefix is never narrower); the toolbelt width cache holds runs of 512 bytes or less, capped at 8 MiB of text; the Notes tool keeps its wrapped lines between frames, keys and drags in a text_edit::WrapCache keyed by text, width and font - cost if wrong: none.
+Final: GlobalNote::flush keeps typing over an unreadable file in notes-discarded.txt when the write is still Deferred at quit - cost if wrong: none.
+Final: the Session Status and Inspect popovers clamp to the work area of the window's monitor (windows_ui::monitor_rects_of, the monitor nearest the window holding the button), not to screen 0 - cost if wrong: a button on a second monitor of a window that mostly sits on the first puts the popover on the first.
+Final: Captured Output's Toggle Checkmark menu is keyed by the entry (pane, mark, abs_line and its place among that line's entries, captured::key_of), not the row - cost if wrong: none.
+Final: the "Search help topics" parity row no longer claims a "." tip; the roadmap separates milestone-bound items from browser bookmarks, which have no target milestone - cost if wrong: none.

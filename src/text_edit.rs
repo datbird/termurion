@@ -841,36 +841,56 @@ pub fn wrap_indented(text: &str, max_w: f32, first_indent: f32, prefix_breaks: b
     lines
 }
 
+/// `wrap` remembered between calls (the Notes tool wraps on every frame, key and drag move):
+/// the lines are reused while the text, the width and the font (`font`, a key the caller
+/// derives from the measure it passes) are unchanged, else wrapped again.
+#[derive(Clone, Debug, Default)]
+pub struct WrapCache {
+    key: Option<(String, u32, u64)>,
+    lines: Vec<VisualLine>,
+}
+
+impl WrapCache {
+    /// `wrap(text, max_w, width)`, from the last call when nothing it depends on changed.
+    pub fn wrap(&mut self, text: &str, max_w: f32, font: u64, width: &dyn Fn(&str) -> f32) -> Vec<VisualLine> {
+        let hit = self.key.as_ref().is_some_and(|(t, w, f)| *w == max_w.to_bits() && *f == font && t == text);
+        if !hit {
+            self.lines = wrap(text, max_w, width);
+            self.key = Some((text.to_string(), max_w.to_bits(), font));
+        }
+        self.lines.clone()
+    }
+}
+
 /// One hard line `text[start..end]` into `lines`, its first visual line `indent` in; with
 /// `break_before`, that line may be empty when no word fits it (`wrap_indented`).
+///
+/// Each visual line measures only text near its own length (`fit_end`), never the rest of the
+/// paragraph, so a long pasted line wraps in O(n log n) measuring rather than O(n^2). This
+/// relies on the width growing with the text (a longer prefix is never narrower).
 fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, break_before: bool, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
+    let bytes = text.as_bytes();
     let mut line = start;
     let mut room = max_w - indent;
     loop {
-        if width(text[line..end].trim_end_matches(' ')) <= room {
+        // A line's trailing spaces hang past the edge and do not count.
+        let trimmed = line + text[line..end].trim_end_matches(' ').len();
+        let reach = if trimmed == line { line } else { fit_end(text, line, end, room, width) };
+        let fits = if trimmed == line { width("") <= room } else { reach >= trimmed };
+        if fits {
             lines.push(VisualLine { start: line, end });
             return;
         }
-        // The last space-ended word boundary whose text (less its spaces) still fits.
+        // The last space-ended word boundary whose text (less its spaces) still fits: the last
+        // run of spaces starting at or before `reach`. Leading spaces belong to the first word.
+        let lead = line + text[line..end].len() - text[line..end].trim_start_matches(' ').len();
         let mut cut = None;
-        let mut i = line;
-        while let Some(off) = text[i..end].find(' ') {
-            let space = i + off;
-            let after = space + text[space..end].len() - text[space..end].trim_start_matches(' ').len();
-            if space == line {
-                // Leading spaces belong to the first word.
-                i = after;
-                if after >= end {
-                    break;
-                }
-            } else if width(&text[line..space]) <= room {
+        if lead < reach {
+            let upto = if bytes.get(reach) == Some(&b' ') { reach + 1 } else { reach };
+            if let Some(off) = text[lead..upto].rfind(' ') {
+                let space = lead + off;
+                let after = space + text[space..end].len() - text[space..end].trim_start_matches(' ').len();
                 cut = Some(after);
-                i = after;
-                if after >= end {
-                    break;
-                }
-            } else {
-                break;
             }
         }
         if cut.is_none() && break_before && line == start && room < max_w && line < end {
@@ -879,18 +899,8 @@ fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, brea
             room = max_w;
             continue;
         }
-        let cut = cut.unwrap_or_else(|| {
-            // One word too wide: the longest char prefix that fits, at least one character.
-            let mut c = next_boundary(text, line);
-            while c < end {
-                let n = next_boundary(text, c);
-                if width(&text[line..n]) > room {
-                    break;
-                }
-                c = n;
-            }
-            c
-        });
+        // One word too wide: the longest char prefix that fits, at least one character.
+        let cut = cut.unwrap_or_else(|| reach.max(next_boundary(text, line)));
         lines.push(VisualLine { start: line, end: cut });
         if cut >= end {
             // A last character too wide for the line on its own.
@@ -899,6 +909,40 @@ fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, brea
         line = cut;
         room = max_w;
     }
+}
+
+/// The furthest char boundary `b` in `line..=end` with `text[line..b]` no wider than `room`
+/// (`line` itself when not even one character fits). Gallops out from `line` in doubling steps
+/// and then halves back, so it makes O(log k) measures of at most about 3k bytes, k the bytes
+/// that fit, however far `end` is.
+fn fit_end(text: &str, line: usize, end: usize, room: f32, width: &dyn Fn(&str) -> f32) -> usize {
+    let probe = |lo: usize, to: usize| {
+        let p = floor_boundary(text, to.min(end));
+        if p <= lo { next_boundary(text, lo) } else { p }
+    };
+    let mut lo = line;
+    let mut step = 16;
+    let mut hi = loop {
+        if lo >= end {
+            return end;
+        }
+        let p = probe(lo, lo + step);
+        if width(&text[line..p]) > room {
+            break p;
+        }
+        lo = p;
+        step *= 2;
+    };
+    // `lo` fits and `hi` does not.
+    while next_boundary(text, lo) < hi {
+        let mid = probe(lo, lo + (hi - lo) / 2);
+        if width(&text[line..mid]) > room {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    lo
 }
 
 /// The byte index on visual line `line` whose caret sits nearest `x` (an earlier index wins a
@@ -1745,5 +1789,133 @@ mod tests {
             assert_eq!(wrap_indented(t, 40.0, 0.0, false, &w), wrap(t, 40.0, &w), "{t:?}");
             assert_eq!(wrap_indented(t, 40.0, 0.0, true, &w), wrap(t, 40.0, &w), "{t:?}");
         }
+    }
+
+    #[test]
+    fn wrapping_a_long_line_measures_in_n_log_n() {
+        // A 100 KiB paste (one word, then words): each visual line measures only text near its
+        // own length, so the calls and the bytes measured grow as n log n, not n squared.
+        let calls = std::cell::Cell::new(0usize);
+        let bytes = std::cell::Cell::new(0usize);
+        let counted = |s: &str| {
+            calls.set(calls.get() + 1);
+            bytes.set(bytes.get() + s.len());
+            w(s)
+        };
+        for text in ["x".repeat(100 * 1024), "abcdefg ".repeat(100 * 1024 / 8)] {
+            calls.set(0);
+            bytes.set(0);
+            let lines = wrap(&text, 800.0, &counted);
+            let n = text.len();
+            assert!(lines.len() >= n / 80, "{} lines", lines.len());
+            assert!(calls.get() <= 20 * lines.len(), "{} width calls for {} lines", calls.get(), lines.len());
+            assert!(bytes.get() <= 40 * n, "{} bytes measured for {n}", bytes.get());
+        }
+    }
+
+    #[test]
+    fn wrap_matches_the_whole_paragraph_measure() {
+        // The bounded measure breaks exactly where measuring the whole paragraph did.
+        let texts = [
+            "aaaa bbbb", "abcdefghij", "", "a\n", "ab cd ef", "aaaa bbbb\nc\ndddd", "  lead  spaces  here  ",
+            "one two three four five six seven", "a  b   c    d     e", "\u{e9}\u{e9}\u{e9} \u{e9}\u{e9}\u{e9}\u{e9}\u{e9}",
+            "word\n\n  \nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx yy", "ab    ", "    ", "x y",
+        ];
+        for t in texts {
+            for max_w in [5.0, 10.0, 25.0, 40.0, 60.0, 95.0, 400.0] {
+                for (indent, breaks) in [(0.0, false), (20.0, false), (20.0, true), (50.0, true), (50.0, false)] {
+                    let mut want = Vec::new();
+                    let mut hard = 0;
+                    for (i, part) in t.split('\n').enumerate() {
+                        let ind = if i == 0 { indent } else { 0.0 };
+                        old_wrap_hard(t, hard, hard + part.len(), max_w, ind, breaks && i == 0, &w, &mut want);
+                        hard += part.len() + 1;
+                    }
+                    assert_eq!(wrap_indented(t, max_w, indent, breaks, &w), want, "{t:?} {max_w} {indent} {breaks}");
+                }
+            }
+        }
+    }
+
+    /// The wrap as it was before the bounded measure, the reference for the test above.
+    fn old_wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, break_before: bool, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
+        let mut line = start;
+        let mut room = max_w - indent;
+        loop {
+            if width(text[line..end].trim_end_matches(' ')) <= room {
+                lines.push(VisualLine { start: line, end });
+                return;
+            }
+            // The last space-ended word boundary whose text (less its spaces) still fits.
+            let mut cut = None;
+            let mut i = line;
+            while let Some(off) = text[i..end].find(' ') {
+                let space = i + off;
+                let after = space + text[space..end].len() - text[space..end].trim_start_matches(' ').len();
+                if space == line {
+                    // Leading spaces belong to the first word.
+                    i = after;
+                    if after >= end {
+                        break;
+                    }
+                } else if width(&text[line..space]) <= room {
+                    cut = Some(after);
+                    i = after;
+                    if after >= end {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if cut.is_none() && break_before && line == start && room < max_w && line < end {
+                // The prefix's own break: the first word moves down whole.
+                lines.push(VisualLine { start: line, end: line });
+                room = max_w;
+                continue;
+            }
+            let cut = cut.unwrap_or_else(|| {
+                // One word too wide: the longest char prefix that fits, at least one character.
+                let mut c = next_boundary(text, line);
+                while c < end {
+                    let n = next_boundary(text, c);
+                    if width(&text[line..n]) > room {
+                        break;
+                    }
+                    c = n;
+                }
+                c
+            });
+            lines.push(VisualLine { start: line, end: cut });
+            if cut >= end {
+                // A last character too wide for the line on its own.
+                return;
+            }
+            line = cut;
+            room = max_w;
+        }
+    }
+
+    #[test]
+    fn wrap_cache_rewraps_only_on_change() {
+        let calls = std::cell::Cell::new(0usize);
+        let counted = |s: &str| {
+            calls.set(calls.get() + 1);
+            w(s)
+        };
+        let mut c = WrapCache::default();
+        assert_eq!(c.wrap("aaaa bbbb", 40.0, 1, &counted), wrap("aaaa bbbb", 40.0, &w));
+        let first = calls.get();
+        assert!(first > 0);
+        assert_eq!(c.wrap("aaaa bbbb", 40.0, 1, &counted), wrap("aaaa bbbb", 40.0, &w));
+        assert_eq!(calls.get(), first, "a hit measures nothing");
+        c.wrap("aaaa bbbb", 60.0, 1, &counted);
+        assert!(calls.get() > first, "a new width wraps again");
+        let n = calls.get();
+        c.wrap("aaaa bbbb", 60.0, 2, &counted);
+        assert!(calls.get() > n, "a new font wraps again");
+        let n = calls.get();
+        assert_eq!(c.wrap("aaaa bbbbc", 60.0, 2, &counted), wrap("aaaa bbbbc", 60.0, &w));
+        assert!(calls.get() > n, "new text wraps again");
     }
 }

@@ -225,11 +225,20 @@ impl GlobalNote {
         self.write_retrying(now)
     }
 
-    /// Writes a pending change now (Tandem is quitting).
+    /// Writes a pending change now (Tandem is quitting). A file that still cannot be read is
+    /// left alone, and typing over its emptied view is kept aside in `notes-discarded.txt`, as
+    /// an adopting write keeps it: no later retry will save it.
     pub fn flush(&mut self) -> Result<Wrote, String> {
         self.saver.flush();
         self.retry_at = None;
-        if self.dirty { self.write() } else { Ok(Wrote::Nothing) }
+        if !self.dirty {
+            return Ok(Wrote::Nothing);
+        }
+        let r = self.write();
+        if r == Ok(Wrote::Deferred) && self.edited_since_failed && !self.text.is_empty() {
+            std::fs::write(self.beside("notes-discarded.txt"), self.text.as_bytes()).map_err(|e| format!("Could not keep the unsaved notes: {e}"))?;
+        }
+        r
     }
 
     /// `write`, retried after `DEBOUNCE` (at most `NOTE_RETRIES` times) while the file
@@ -408,6 +417,19 @@ mod tests {
         assert_eq!(g.tick(now), Ok(Wrote::Nothing));
         assert_eq!(g.flush(), Ok(Wrote::Written));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), big);
+
+        // Still unreadable at quit: the flush leaves the file and keeps the typing aside.
+        std::fs::remove_file(&path).unwrap();
+        let _ = std::fs::remove_file(path.with_file_name("notes-discarded.txt"));
+        std::fs::create_dir(&path).unwrap();
+        let mut g = GlobalNote::new(path.clone());
+        assert!(g.ensure_loaded().is_some());
+        assert_eq!(g.flush(), Ok(Wrote::Nothing), "nothing typed, nothing kept");
+        assert!(!path.with_file_name("notes-discarded.txt").exists());
+        assert_eq!(g.edited("typed at quit".into(), now), Ok(Wrote::Deferred));
+        assert_eq!(g.flush(), Ok(Wrote::Deferred));
+        assert!(path.is_dir());
+        assert_eq!(std::fs::read_to_string(path.with_file_name("notes-discarded.txt")).unwrap(), "typed at quit");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

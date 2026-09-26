@@ -67,6 +67,20 @@ pub fn visible(list: &[Captured], mark: u32, clear_count: u32, cleared: &Cleared
     list.iter().enumerate().filter(|(_, c)| c.mark == mark && !(for_this_mark && c.abs_line <= cleared.abs_line)).map(|(i, _)| i).collect()
 }
 
+/// A stable key for entry `i` of a mark's `list`, which survives entries added after it (a menu
+/// picked later must toggle the entry it was opened on, not whatever row is there now): its
+/// line and its place among the entries on that line. `add` merges into the last entry in
+/// place, so the key holds through a merge too.
+pub fn key_of(list: &[Captured], i: usize) -> Option<(i64, usize)> {
+    let c = list.get(i)?;
+    Some((c.abs_line, list[..i].iter().filter(|e| e.abs_line == c.abs_line).count()))
+}
+
+/// The entry `key_of` gave `key`.
+pub fn find(list: &[Captured], key: (i64, usize)) -> Option<usize> {
+    list.iter().enumerate().filter(|(_, e)| e.abs_line == key.0).nth(key.1).map(|(i, _)| i)
+}
+
 /// The Capture Output trigger's warnings (`PS:25167-25233`).
 pub const NOT_VISIBLE: &str = "A Capture Output trigger fired, but the Captured Output tool is not visible.";
 pub const NO_SHELL_INTEGRATION: &str = "A Capture Output trigger fired, but Shell Integration is not installed.";
@@ -78,6 +92,20 @@ pub const RUN_TITLE: &str = "Captured Output trigger";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_key_survives_later_captures() {
+        let mut list = vec![c("a", &[], None, 5, 1), c("b", &[], Some("x"), 5, 1), c("c", &[], None, 7, 1)];
+        let key = key_of(&list, 1).unwrap();
+        assert_eq!(key, (5, 1));
+        // Entries added after (and a merge into the last) leave the key on the same entry.
+        add(&mut list, c("cc", &[], None, 7, 1));
+        add(&mut list, c("d", &[], None, 9, 1));
+        assert_eq!(find(&list, key), Some(1));
+        assert_eq!(find(&list, key_of(&list, 2).unwrap()), Some(2));
+        assert_eq!(find(&list, (6, 0)), None);
+        assert_eq!(key_of(&list, 10), None);
+    }
 
     fn c(line: &str, values: &[&str], command: Option<&str>, abs_line: i64, mark: u32) -> Captured {
         Captured { line: line.into(), values: values.iter().map(|s| s.to_string()).collect(), command: command.map(str::to_string), state: false, abs_line, mark }

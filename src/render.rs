@@ -281,7 +281,7 @@ pub struct Renderer {
     /// Widths of prose words already measured: (text, scale bits) to pixels.
     widths: std::collections::HashMap<(String, u32), f32>,
     /// Widths of runs already measured in the toolbelt font: (text, pixel size bits) to pixels.
-    toolbelt_widths: std::collections::HashMap<(String, u32), f32>,
+    toolbelt_widths: WidthCache,
     family: String,
     alt_family: Option<String>,
     /// Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets (Windows 10, same code points).
@@ -322,7 +322,7 @@ impl Renderer {
             toolbelt_family: "Consolas".into(),
             toolbelt_pt: 11.0,
             widths: std::collections::HashMap::new(),
-            toolbelt_widths: std::collections::HashMap::new(),
+            toolbelt_widths: WidthCache::default(),
             h_spacing: 1.0,
             v_spacing: 1.0,
             font_px,
@@ -434,9 +434,8 @@ impl Renderer {
     /// their rows every frame).
     pub fn toolbelt_width(&mut self, text: &str, scale: f32) -> f32 {
         let px = self.toolbelt_px(scale).max(1.0);
-        let key = (text.to_string(), px.to_bits());
-        if let Some(w) = self.toolbelt_widths.get(&key) {
-            return *w;
+        if let Some(w) = self.toolbelt_widths.get(text, px.to_bits()) {
+            return w;
         }
         let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, px * 1.2));
         b.set_size(None, None);
@@ -444,11 +443,18 @@ impl Renderer {
         b.set_text(text, &Attrs::new().family(Family::Name(&self.toolbelt_family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
         let w = b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
-        if self.toolbelt_widths.len() > 200_000 {
-            self.toolbelt_widths.clear();
-        }
-        self.toolbelt_widths.insert(key, w);
+        self.toolbelt_widths.insert(text, px.to_bits(), w);
         w
+    }
+
+    /// A key for the toolbelt font at `scale` (family and pixel size): a width measured with
+    /// one key holds for as long as the key does (`text_edit::WrapCache`).
+    pub fn toolbelt_font_key(&self, scale: f32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.toolbelt_family.hash(&mut h);
+        self.toolbelt_px(scale).max(1.0).to_bits().hash(&mut h);
+        h.finish()
     }
 
     /// A badge line's width at `px` pixels, in the bold badge font.
@@ -693,6 +699,45 @@ impl Renderer {
     }
 }
 
+/// Measured widths, (text, size bits) to pixels, capped by the bytes of text held: a run
+/// longer than `WIDTH_CACHE_LONGEST` is measured every time (a wrapped Notes line is short; a
+/// whole pasted paragraph is not worth keeping), and past `WIDTH_CACHE_BYTES` the cache starts
+/// over.
+#[derive(Default)]
+struct WidthCache {
+    map: std::collections::HashMap<(String, u32), f32>,
+    bytes: usize,
+}
+
+const WIDTH_CACHE_LONGEST: usize = 512;
+const WIDTH_CACHE_BYTES: usize = 8 << 20;
+
+impl WidthCache {
+    fn get(&self, text: &str, size: u32) -> Option<f32> {
+        if text.len() > WIDTH_CACHE_LONGEST {
+            return None;
+        }
+        self.map.get(&(text.to_string(), size)).copied()
+    }
+
+    fn insert(&mut self, text: &str, size: u32, w: f32) {
+        if text.len() > WIDTH_CACHE_LONGEST {
+            return;
+        }
+        if self.bytes + text.len() > WIDTH_CACHE_BYTES {
+            self.clear();
+        }
+        if self.map.insert((text.to_string(), size), w).is_none() {
+            self.bytes += text.len();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.bytes = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,5 +950,23 @@ mod tests {
         let frame = Frame { images: vec![wide], ..Default::default() };
         r.draw(&frame, &view, 64, 16).unwrap();
         assert_eq!(r.uploads(), 0);
+    }
+
+    #[test]
+    fn width_cache_is_capped_by_bytes() {
+        let mut c = WidthCache::default();
+        let long = "x".repeat(WIDTH_CACHE_LONGEST + 1);
+        c.insert(&long, 1, 5.0);
+        assert_eq!(c.get(&long, 1), None, "a long run is not kept");
+        assert_eq!(c.bytes, 0);
+        c.insert("ab", 1, 2.0);
+        c.insert("ab", 1, 2.0);
+        assert_eq!((c.get("ab", 1), c.get("ab", 2), c.bytes), (Some(2.0), None, 2));
+        let run = "y".repeat(WIDTH_CACHE_LONGEST);
+        for i in 0..WIDTH_CACHE_BYTES / WIDTH_CACHE_LONGEST + 1 {
+            c.insert(&run, i as u32, 1.0);
+            assert!(c.bytes <= WIDTH_CACHE_BYTES);
+        }
+        assert_eq!(c.get("ab", 1), None, "past the cap the cache starts over");
     }
 }

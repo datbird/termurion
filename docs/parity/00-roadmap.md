@@ -117,8 +117,9 @@ arrangements, actions, snippets, named marks and menu items, with its minimum-su
 commands, preview and activation, keeping iTerm2's own bugs (Jobs' plural "processes" for one, Open
 Quickly's x button closing instead of clearing, tips scoring below matches, the reversed
 color-preset quotes, the double modifier symbol for a double-tap hotkey). Codecierge shows only its
-onboarding panel (EnableAI stays off until milestone 12); dynamic web tools, color presets, scripts,
-function invocations and browser bookmarks stay missing (milestones 11, 12 and 13).
+onboarding panel (EnableAI stays off until milestone 12). Dynamic web tools, scripts and function
+invocations wait for milestone 11 and color presets for milestone 13. Browser bookmarks stay
+missing with no target milestone: Tandem has no browser profiles to read them from.
 
 ## Order
 
