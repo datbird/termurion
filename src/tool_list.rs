@@ -22,6 +22,12 @@ pub enum ListKey {
     Right,
     Tab,
     Delete,
+    /// Home, End, Page Up and Page Down, for the Notes editor (`text_edit`); a list or field
+    /// does nothing with them.
+    Home,
+    End,
+    PageUp,
+    PageDown,
 }
 
 /// Which part of a tool has the keyboard.

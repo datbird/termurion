@@ -181,6 +181,8 @@ pub mod toolbelt;
 pub mod toolbelt_layout;
 pub mod tool_list;
 pub mod toolbelt_tools;
+pub mod text_edit;
+pub mod notes;
 
 #[cfg(windows)]
 pub mod winclip;
