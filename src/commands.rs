@@ -69,7 +69,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Full-Width Bottom of Screen", "setWindowStyle:|Full-Width Top of Screen",
     "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
-    "setWindowStyle:|Right of Screen",
+    "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
 ];
 
 /// Commands that work with a known difference for now.
@@ -256,5 +256,7 @@ mod tests {
         assert_eq!(status(find("openDashboard:", "Dashboard")), Status::Done, "8e");
         assert_eq!(status(find("setWindowStyle:", "Maximized")), Status::Done);
         assert_eq!(status(find("setWindowStyle:", "Full-Width Top of Screen")), Status::Done, "every style arrives in 7a");
+        assert_eq!(status(find("toggleToolbeltVisibility:", "Show Toolbelt")), Status::Done, "9j");
+        assert_eq!(status(find("setDefaultToolbeltWidth:", "Set Default Width")), Status::Done, "9j");
     }
 }

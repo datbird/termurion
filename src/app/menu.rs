@@ -84,6 +84,8 @@ pub(super) struct MenuBar {
     pub(super) snippet_items: Option<Vec<crate::snippets::MenuEntry>>,
     pub(super) actions: Option<Submenu>,
     pub(super) action_items: Vec<(String, String)>,
+    /// View > Toolbelt's tool items, after its separator.
+    pub(super) toolbelt_checks: Vec<(crate::toolbelt::ToolId, CheckMenuItem)>,
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -168,12 +170,13 @@ impl App {
             }
             Ok(()) => {}
         }
+        let toolbelt_checks = subs.get(&["View", "Toolbelt"].map(str::to_string).to_vec()).cloned().map(|s| self.append_toolbelt_menu(&s)).unwrap_or_default();
         let named = subs.get(&vec!["Edit".to_string(), "Named Marks".to_string()]).cloned();
         let profiles = subs.get(&vec!["Profiles".to_string()]).cloned().map(|s| {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))] });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt_checks });
         self.sync_checks();
     }
 
@@ -262,6 +265,7 @@ impl App {
         self.refresh_arrangement_menus();
         self.refresh_buried_menu();
         self.refresh_snippet_menus();
+        self.sync_toolbelt_checks();
         self.menus_dirty = false;
         let Some(bar) = &self.menu_bar else { return };
         for selector in super::seltools_ui::CHECKED {
@@ -304,7 +308,7 @@ impl App {
         if let Some(guid) = id.strip_prefix(PROFILE_ID) {
             return self.open_profile_from_menu(guid);
         }
-        if self.snippet_or_action_picked(id, event_loop) {
+        if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;
         }
         if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.status_bar_picked(id, event_loop) {
@@ -522,6 +526,8 @@ impl App {
             "openDirectories:" => self.open_recent_dirs(event_loop),
             "openAutocomplete:" => self.open_autocomplete(),
             "toggleShowClippings:" => self.toggle_clippings(),
+            "toggleToolbeltVisibility:" => self.toggle_toolbelt(),
+            "setDefaultToolbeltWidth:" => self.set_default_toolbelt_width(),
             "toggleAutoCommandHistory:" => {
                 let on = !self.globals.bool("AutoCommandHistory");
                 self.globals.set("AutoCommandHistory", toml::Value::Boolean(on));

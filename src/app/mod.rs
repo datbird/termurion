@@ -101,6 +101,7 @@ mod statusbar_ui;
 mod statusbar_content;
 mod metrics_ui;
 mod git_ui;
+mod toolbelt_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -146,6 +147,8 @@ enum Drag {
     Porthole { pane: PaneId, id: u32, frame: Rect },
     /// A Clippings panel's width or one of its rows.
     Clip { pane: PaneId, kind: clippings_ui::ClipDrag },
+    /// The toolbelt's width, a divider between its tools, or a tool's row.
+    Belt(toolbelt_ui::BeltDrag),
 }
 
 struct Gpu {
@@ -261,6 +264,8 @@ pub struct App {
     /// The current window's Lock Size and Lock Layout, and its Edit Window Title text.
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
+    /// The current window's toolbelt.
+    belt: toolbelt_ui::Belt,
     /// What the current window's terminals were laid out for: the content area and every
     /// pane's terminal rectangle, per-pane bars included.
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -617,6 +622,7 @@ pub fn run() {
         slots: Default::default(),
         win_locks: Default::default(),
         win_title: None,
+        belt: Default::default(),
         laid_out: None,
         title_prompt: None,
         arrange_prompt: None,
@@ -745,12 +751,19 @@ impl App {
         if self.tabs.len() > 1 { (self.cell().1 * 1.6).round() } else { 0.0 }
     }
 
-    /// The window's room for tabs: below the tab bar, above any banner.
-    fn window_area(&self) -> Rect {
+    /// The window's room below the tab bar and above any banner, the toolbelt's included.
+    fn window_room(&self) -> Rect {
         let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let top = self.tab_height();
         let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
         Rect { x: 0.0, y: top, w, h: (h - top - bottom).max(1.0) }
+    }
+
+    /// The window's room for tabs: below the tab bar, above any banner, left of the toolbelt.
+    /// Every pane rectangle and tmux's size report come from here, so tmux is told the size
+    /// without the toolbelt.
+    fn window_area(&self) -> Rect {
+        self.belt_split().0
     }
 
     /// The area the active tab's panes share (less the window's status bar, when it shows).
@@ -1009,6 +1022,10 @@ impl App {
         g.renderer.set_fonts(&normal.family, alt.as_deref(), px, p.float("Horizontal Spacing") as f32, p.float("Vertical Spacing") as f32);
         let badge = p.font("Badge Font").family;
         g.renderer.set_badge_family(if badge.is_empty() { "Helvetica" } else { &badge });
+        // Read with the window's other fonts, not on every change (iTerm2: "Changing this
+        // setting does not affect existing windows").
+        g.renderer.set_toolbelt_family(&self.globals.string("toolbeltFont"));
+        g.renderer.set_toolbelt_size(self.globals.get("toolbeltFontSize").and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0) as f32);
         let missing: Vec<String> = std::iter::once(normal.family).chain(alt).filter(|f| !g.renderer.has_family(f)).collect();
         if missing.is_empty() {
             self.banners.clear("font");
@@ -1162,6 +1179,7 @@ impl App {
 
     fn relayout(&mut self) {
         self.mark_state_dirty();
+        self.layout_toolbelt();
         self.laid_out = Some(self.room());
         if let Some(t) = self.tabs.get(self.active) {
             self.mru.touch(t.id);
@@ -1526,6 +1544,9 @@ impl App {
         if self.status_press(button, x, y, event_loop) {
             return;
         }
+        if self.toolbelt_press(button, x, y, event_loop) {
+            return;
+        }
         if button == MouseButton::Left && self.clip_press(x, y, event_loop) {
             return;
         }
@@ -1673,6 +1694,7 @@ impl App {
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Porthole { pane, id, .. } => self.porthole_release(pane, id),
             Drag::Clip { pane, kind } => self.clip_release(pane, kind),
+            Drag::Belt(d) => self.toolbelt_release(d),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
@@ -1709,6 +1731,7 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        self.toolbelt_move(x, y);
         self.clip_move(x, y);
         self.update_hover();
         self.update_block_hover();
@@ -1723,7 +1746,7 @@ impl App {
                 let (pane, id, frame) = (*pane, *id, *frame);
                 self.porthole_drag(pane, id, frame, x, y);
             }
-            Drag::Clip { .. } => {}
+            Drag::Clip { .. } | Drag::Belt(_) => {}
             Drag::Select { pane } => {
                 let pane = *pane;
                 let Some(rect) = self.pane_rect(pane) else { return };
@@ -1779,7 +1802,7 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
             MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
-        if self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
+        if self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
             return;
         }
         self.wheel_acc += dy;
@@ -1927,6 +1950,7 @@ impl App {
                 self.find_mode_rect = Some(mode_rect);
             }
         }
+        self.draw_toolbelt(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);

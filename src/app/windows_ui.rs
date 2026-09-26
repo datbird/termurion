@@ -38,6 +38,7 @@ pub(super) struct WinSlot {
     pub(super) hotkey: Option<super::hotkey_ui::HotkeyWin>,
     broadcast: crate::broadcast::Broadcast,
     broadcast_tabs: std::collections::BTreeSet<u64>,
+    belt: super::toolbelt_ui::Belt,
 }
 
 impl WinSlot {
@@ -71,6 +72,7 @@ impl WinSlot {
             hotkey: None,
             broadcast: Default::default(),
             broadcast_tabs: Default::default(),
+            belt: Default::default(),
         }
     }
 }
@@ -112,6 +114,7 @@ impl App {
         swap(&mut self.hotkey, &mut s.hotkey);
         swap(&mut self.broadcast, &mut s.broadcast);
         swap(&mut self.broadcast_tabs, &mut s.broadcast_tabs);
+        swap(&mut self.belt, &mut s.belt);
     }
 
     /// Makes a terminal window current. False for a window that is not one.
@@ -276,6 +279,11 @@ impl App {
         // After the style, so a Maximized or Full Screen style does not restore it again.
         if steps.profile_window && !hotkey {
             self.apply_window_profile(first_guid.as_deref());
+            // Open Toolbelt: the first tab of a new window (`PT:8200-8207`).
+            let open = self.profile(first_guid.as_deref()).bool("Open Toolbelt");
+            if crate::toolbelt::opens_on_first_tab(0, self.tabs.len(), open, self.belt.visible) {
+                self.set_toolbelt_visible(true, true);
+            }
         }
         if self.tabs.is_empty() {
             // The shell did not start: the window closes again (keeping no frame for its
@@ -386,6 +394,7 @@ impl WinSlot {
             hotkey: None,
             broadcast: Default::default(),
             broadcast_tabs: Default::default(),
+            belt: Default::default(),
         }
     }
 }
@@ -628,7 +637,7 @@ impl App {
 
 impl App {
     /// The current window's monitor: its work area and whole area.
-    fn monitor_rects(&self) -> Option<(Rect, Rect)> {
+    pub(super) fn monitor_rects(&self) -> Option<(Rect, Rect)> {
         use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
         let hwnd = self.hwnd()?;
         let mut info: MONITORINFO = unsafe { std::mem::zeroed() };

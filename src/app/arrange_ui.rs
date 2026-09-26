@@ -105,6 +105,9 @@ impl App {
             cells: (profile.int("Columns").clamp(1, 1000) as u16, profile.int("Rows").clamp(1, 1000) as u16),
         };
         let mut w = arrangement::window(facts, tabs);
+        if let Some(t) = w.as_table_mut() {
+            crate::toolbelt::write_arrangement(t, &self.toolbelt_arranged());
+        }
         if let (Some(h), Some(t)) = (&self.hotkey, w.as_table_mut()) {
             t.insert(arrangement::HOTKEY_WINDOW_KEY.into(), Value::Boolean(true));
             t.insert(arrangement::HOTKEY_GUID_KEY.into(), Value::String(h.guid.clone()));
@@ -327,6 +330,7 @@ impl App {
         if f.style != crate::frames::NORMAL {
             self.apply_window_style(f.style, false);
         }
+        self.restore_toolbelt(&crate::toolbelt::read_arrangement(w));
         self.relayout();
         Ok(())
     }

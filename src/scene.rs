@@ -30,6 +30,8 @@ pub struct Span {
     pub prose: bool,
     /// Draw with the badge font (bold).
     pub badge: bool,
+    /// Draw with the toolbelt font (`toolbeltFont`, else Consolas).
+    pub toolbelt: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -219,7 +221,7 @@ pub fn find_bar(frame: &mut Frame, bar: &FindBar, pane: Rect, cell: (f32, f32)) 
         bar.query.chars().skip(n.saturating_sub(FIELD - 1)).collect()
     };
     let field = format!("{shown}_");
-    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+    let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     let y = r.y + 4.0;
     let query_color = if bar.error { FIND_ERROR } else { TAB_TEXT };
     frame.rows.push(TextRow {
@@ -275,7 +277,7 @@ pub fn timestamps(frame: &mut Frame, labels: &[(usize, String)], rect: Rect, cel
         for r in frame.rows.iter_mut().filter(|r| r.y == y && r.clip.x + r.clip.w > bg.x) {
             r.clip.w = (bg.x - r.clip.x).max(0.0);
         }
-        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+        let span = Span { text: text.clone(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
         frame.rows.push(TextRow { x: right - (n + 1.0) * cw, y, spans: vec![span], clip: rect, scale: 1.0 });
     }
 }
@@ -440,7 +442,7 @@ pub fn pane_with(
             let (_, spans) = piece.get_or_insert_with(|| (col, Vec::new()));
             match spans.last_mut() {
                 Some(s) if s.color == c.fg && s.bold == c.bold && s.italic == c.italic => s.text.push_str(&c.text),
-                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false }),
+                _ => spans.push(Span { text: c.text.clone(), color: c.fg, bold: c.bold, italic: c.italic, alt_font: !ascii, icon: false, prose: false, badge: false, toolbelt: false }),
             }
             if !ascii {
                 flush(&mut piece, frame);
@@ -454,7 +456,7 @@ pub fn pane_with(
         for (p, label) in h.labels {
             let row = p.row as i32 - top;
             if row >= 0 && (row as usize) < lines {
-                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+                let span = Span { text: label.clone(), color: LABEL_TEXT, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
                 frame.rows.push(TextRow { x: rect.x + p.col as f32 * cw, y: rect.y + row as f32 * ch, spans: vec![span], clip: rect, scale: 1.0 });
             }
         }
@@ -485,7 +487,7 @@ pub fn pane_with(
                 let y = rect.y + row as f32 * ch;
                 let r = Rect { x, y, w: (shown.chars().count() as f32 + 1.0) * cw, h: ch };
                 frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+                let span = Span { text: shown, color: rgb(0, 0, 0), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
                 frame.rows.push(TextRow { x: x + cw * 0.5, y, spans: vec![span], clip: rect, scale: 1.0 });
             }
         }
@@ -667,7 +669,7 @@ pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porth
     let language = Rect { x: close.x - 4.0 - lw, y: close.y, w: lw, h: s };
     let ww = 8.0 * cell.0;
     let wide = Rect { x: language.x - 2.0 - ww, y: close.y, w: ww, h: s };
-    let text = |t: String, color: Rgb, icon: bool| Span { text: t, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false };
+    let text = |t: String, color: Rgb, icon: bool| Span { text: t, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false };
     if let Some(c) = cut(close, clip) {
         frame.rows.push(TextRow { x: close.x + (s - cell.0) / 2.0, y: close.y, spans: vec![text("\u{E711}".into(), blend(bg, fg, 0.5), true)], clip: c, scale: 1.0 });
     }
@@ -711,7 +713,7 @@ pub fn porthole(frame: &mut Frame, rect: Rect, clip: Rect, lines: &[crate::porth
         let spans = l
             .runs
             .iter()
-            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false })
+            .map(|r| Span { text: r.text.clone(), color: r.color, bold: r.bold, italic: r.italic, alt_font: false, icon: false, prose: r.face == crate::porthole::render::Face::Prose, badge: false, toolbelt: false })
             .collect();
         frame.rows.push(TextRow { x: ox + l.x, y, spans, clip: area, scale: l.scale });
     }
@@ -728,7 +730,7 @@ pub fn badge(frame: &mut Frame, pane: Rect, l: &crate::badge::BadgeLayout, color
         for (i, (text, w)) in l.lines.iter().zip(&l.widths).enumerate() {
             let x = pane.x + l.rect.x + l.rect.w - w + dx;
             let y = pane.y + l.rect.y + i as f32 * line_h + dy;
-            let span = Span { text: text.clone(), color: c, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: true };
+            let span = Span { text: text.clone(), color: c, bold: true, italic: false, alt_font: false, icon: false, prose: false, badge: true, toolbelt: false };
             frame.rows.push(TextRow { x, y, spans: vec![span], clip: pane, scale });
         }
     }
@@ -764,7 +766,7 @@ pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], b
             }
             ButtonFace::Icon(c) => {
                 frame.quads.push(Quad { rect: *r, color: rgba(mix(0.15 * a), 1.0) });
-                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false };
+                let span = Span { text: c.to_string(), color: mix(a), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
                 frame.rows.push(TextRow { x: r.x + r.w / 4.0, y: r.y, spans: vec![span], clip: *r, scale: 1.0 });
             }
         }
@@ -844,7 +846,7 @@ pub fn top_right_indicators(frame: &mut Frame, pane: Rect, glyphs: &[char], colo
     let step = cell.0 * 2.5;
     for (i, g) in glyphs.iter().enumerate() {
         let x = pane.x + pane.w - (i as f32 + 1.0) * step;
-        let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false };
+        let span = Span { text: g.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
         frame.rows.push(TextRow { x, y: pane.y + 4.0, spans: vec![span], clip: pane, scale: 1.0 });
     }
 }
@@ -881,13 +883,13 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, c
         }
         let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
         if let Some(icon) = tab.icon {
-            let span = Span { text: tab_icon_glyph(icon).to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false };
+            let span = Span { text: tab_icon_glyph(icon).to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
             frame.rows.push(TextRow { x, y: r.y + ((r.h - cell.1) / 2.0).floor(), spans: vec![span], clip: r, scale: 1.0 });
             x += cell.0 * 2.0;
         }
         let fit = ((r.x + w - x) / cell.0).max(0.0) as usize;
         let fit = fit.saturating_sub(1);
-        let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+        let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
         let mut spans = Vec::new();
         let mut left = fit;
         if let Some((status, c)) = &tab.status {
@@ -929,7 +931,7 @@ pub fn info_bar(frame: &mut Frame, bar: &crate::infobar::Bar, l: &crate::infobar
         }
     }
     frame.quads.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     let text_end = l.buttons.first().map_or(l.close.x, |b| b.x);
     let clip = Rect { w: (text_end - r.x).max(0.0), ..r };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span(bar.shown_text())], clip, scale: 1.0 });
@@ -1029,7 +1031,7 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
     for t in d.texts {
         let line_h = cell.1 * t.scale;
         let y = r.y + ((r.h - line_h) / 2.0).round() + t.dy;
-        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false };
+        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false, toolbelt: false };
         frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale });
     }
     if let Some(e) = d.edge {
@@ -1081,7 +1083,7 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     let r = Rect { x, y, w, h };
     cut_out(frame, r, cell.1);
     frame.popups.push(Quad { rect: r, color: rgba(NOTE_BG, 1.0) });
-    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+    let span = |text: String| Span { text, color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     for (i, text) in visible.iter().enumerate() {
         let ry = y + 2.0 + i as f32 * cell.1;
         if first + i == selected {
@@ -1118,7 +1120,7 @@ const CLIP_SELECTED: Rgb = rgb(0x2f, 0x5f, 0xa8);
 const CLIP_DISABLED: Rgb = rgb(0x5a, 0x5a, 0x5a);
 
 fn clip_span(text: String, color: Rgb, bold: bool, icon: bool) -> Span {
-    Span { text, color, bold, italic: false, alt_font: false, icon, prose: !icon, badge: false }
+    Span { text, color, bold, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false }
 }
 
 /// The Clippings panel at the right of a session: the rows, the button strip, the status.
@@ -1193,6 +1195,80 @@ pub fn clip_preview(frame: &mut Frame, area: Rect, title: &str, lines: &[String]
     }
 }
 
+/// What the toolbelt panel shows. The app measures the text (the scene cannot): `titles` are
+/// already tail truncated to their title rectangles, with their widths in `title_widths`, and
+/// `empty` is `NO_TOOLS` wrapped to the empty label's width, each line with its width.
+pub struct BeltDraw<'a> {
+    pub layout: &'a crate::toolbelt_layout::BeltLayout,
+    pub titles: &'a [&'a str],
+    pub dark: bool,
+    pub title_widths: &'a [f32],
+    pub empty: &'a [(String, f32)],
+    /// The rows' text size against the terminal font, for 13 point text.
+    pub text_scale: f32,
+}
+
+/// The panel's background: iTerm2's sidebar is clear in dark (Tandem has no vibrancy, so a
+/// sidebar gray) and white in light.
+const BELT_BG_DARK: Rgb = rgb(0x25, 0x25, 0x28);
+const BELT_BG_LIGHT: Rgb = rgb(0xff, 0xff, 0xff);
+/// Dividers: white 122/255 at alpha 0.25 (`TBV:338`).
+const BELT_DIVIDER: Rgb = rgb(122, 122, 122);
+const BELT_TEXT_LIGHT: Rgb = rgb(0x1e, 0x1e, 0x1e);
+const BELT_ICON_LIGHT: Rgb = rgb(0x6e, 0x6e, 0x6e);
+/// The close glyph (Segoe Fluent Icons Cancel) and the hamburger (More).
+pub const BELT_CLOSE_GLYPH: char = '\u{E711}';
+pub const BELT_MENU_GLYPH: char = '\u{E712}';
+
+fn belt_span(text: String, color: Rgb, icon: bool) -> Span {
+    Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false }
+}
+
+/// The toolbelt at the right of a window: the background, the dividers between wrappers, each
+/// wrapper's close glyph and centered title, the hamburger, and the empty label. Tools draw
+/// their own content (`scene::tool_list`) into each wrapper's content rectangle.
+pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
+    let l = d.layout;
+    let _ = scale;
+    let bg = if d.dark { BELT_BG_DARK } else { BELT_BG_LIGHT };
+    let (text, icon) = if d.dark { (TAB_TEXT, TAB_TEXT_DIM) } else { (BELT_TEXT_LIGHT, BELT_ICON_LIGHT) };
+    frame.quads.push(Quad { rect: l.panel, color: rgba(bg, 1.0) });
+    for r in &l.dividers {
+        frame.quads.push(Quad { rect: *r, color: rgba(BELT_DIVIDER, 0.25) });
+    }
+    let line_h = cell.1 * d.text_scale;
+    // Glyph width: the font's size, a line being 1.2 of it.
+    let glyph_w = line_h / 1.2;
+    let glyph = |frame: &mut Frame, r: Rect, c: char| {
+        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(c.to_string(), icon, true)], clip: r, scale: d.text_scale });
+    };
+    for (i, w) in l.wrappers.iter().enumerate() {
+        glyph(frame, w.close, BELT_CLOSE_GLYPH);
+        let (Some(title), Some(&width)) = (d.titles.get(i), d.title_widths.get(i)) else { continue };
+        let r = w.title;
+        if r.w <= 0.0 || title.is_empty() {
+            continue;
+        }
+        let x = r.x + ((r.w - width) / 2.0).max(0.0);
+        let clip = Rect { y: w.frame.y, h: w.frame.h.min(r.y - w.frame.y + r.h.max(line_h)), ..r };
+        frame.rows.push(TextRow { x, y: r.y + (r.h - line_h) / 2.0, spans: vec![belt_span(title.to_string(), text, false)], clip, scale: d.text_scale });
+    }
+    glyph(frame, l.hamburger, BELT_MENU_GLYPH);
+    if let Some(r) = l.empty_label {
+        // Centered in the room below the 22 point band, or not at all when it does not fit
+        // (`TBV:382-398`).
+        let h = d.empty.len() as f32 * line_h;
+        if h <= r.h {
+            let mut y = r.y + (r.h - h) / 2.0;
+            for (line, width) in d.empty {
+                let x = r.x + ((r.w - width) / 2.0).max(0.0);
+                frame.rows.push(TextRow { x, y, spans: vec![belt_span(line.clone(), text, false)], clip: r, scale: d.text_scale });
+                y += line_h;
+            }
+        }
+    }
+}
+
 /// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
 /// small camera (a body, a lens, and a viewfinder).
 pub fn camera_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {
@@ -1254,7 +1330,7 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
         }
     }
     frame.quads.push(Quad { rect: r, color: rgba(STAMP_BG, 1.0) });
-    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+    let span = Span { text: text.to_string(), color: TAB_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + 2.0 * cell.0, y: r.y + 6.0, spans: vec![span], clip: r, scale: 1.0 });
 }
 
@@ -1263,7 +1339,7 @@ pub fn toast(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
 pub fn banner(frame: &mut Frame, text: &str, area: Rect, cell: (f32, f32)) {
     let r = Rect { x: area.x, y: area.y + area.h - cell.1 - 8.0, w: area.w, h: cell.1 + 8.0 };
     frame.quads.push(Quad { rect: r, color: rgba(BANNER, 1.0) });
-    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+    let span = Span { text: text.to_string(), color: rgb(0xff, 0xff, 0xff), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
     frame.rows.push(TextRow { x: r.x + cell.0, y: r.y + 4.0, spans: vec![span], clip: r, scale: 1.0 });
 }
 
@@ -1296,6 +1372,36 @@ mod broadcast_tests {
 #[cfg(test)]
 mod tests {
 
+    /// The toolbelt: its background by theme, the dividers at alpha 0.25, a close glyph per
+    /// wrapper, the titles, the hamburger; the empty label only without tools.
+    #[test]
+    fn toolbelt_draws_wrappers_and_dividers() {
+        use super::*;
+        use crate::toolbelt::ToolId;
+        use crate::toolbelt_layout::{Split, layout};
+        let panel = Rect { x: 700.0, y: 0.0, w: 250.0, h: 401.0 };
+        let split = Split { tools: vec![ToolId::Profiles, ToolId::Snippets], heights: vec![200.0, 200.0], collapsed: vec![false, false] };
+        let l = layout(panel, &split, 1.0);
+        let mut f = Frame::default();
+        let d = BeltDraw { layout: &l, titles: &["Profiles", "Snippets"], dark: true, title_widths: &[50.0, 55.0], empty: &[], text_scale: 1.0 };
+        toolbelt(&mut f, &d, (8.0, 16.0), 1.0);
+        assert_eq!(f.quads[0], Quad { rect: panel, color: rgba(rgb(0x25, 0x25, 0x28), 1.0) });
+        assert_eq!(f.quads[1].color, rgba(rgb(122, 122, 122), 0.25));
+        assert_eq!(f.quads.len(), 2);
+        let texts: Vec<&str> = f.rows.iter().map(|r| r.spans[0].text.as_str()).collect();
+        assert_eq!(texts, vec!["\u{E711}", "Profiles", "\u{E711}", "Snippets", "\u{E712}"]);
+        assert!(f.rows[1].x >= l.wrappers[0].title.x, "a title is centered in its rectangle");
+
+        let empty = Split::default();
+        let l = layout(panel, &empty, 1.0);
+        let mut f = Frame::default();
+        let lines = vec![("No Tools enabled.".to_string(), 100.0)];
+        let d = BeltDraw { layout: &l, titles: &[], dark: false, title_widths: &[], empty: &lines, text_scale: 1.0 };
+        toolbelt(&mut f, &d, (8.0, 16.0), 1.0);
+        assert_eq!(f.quads[0].color, rgba(rgb(0xff, 0xff, 0xff), 1.0));
+        assert_eq!(f.rows.last().unwrap().spans[0].text, "No Tools enabled.");
+    }
+
     /// A button face: the corner rows are inset, the middle is full width, and the box
     /// covers exactly its own rows.
     #[test]
@@ -1322,7 +1428,7 @@ mod tests {
         // Overlay quads draw after all text, so a popup's box must not be one: the terminal
         // text under the box is cut out instead, and the popup's own text shows.
         let mut f = Frame::default();
-        let span = Span { text: "terminal".into(), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+        let span = Span { text: "terminal".into(), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
         let under = Rect { x: 0.0, y: 0.0, w: 400.0, h: 16.0 };
         f.rows.push(TextRow { x: 0.0, y: 0.0, spans: vec![span], clip: under, scale: 1.0 });
         let bounds = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
@@ -1342,7 +1448,7 @@ mod tests {
         let mut f = Frame::default();
         let pane = Rect { x: 0.0, y: 0.0, w: 400.0, h: 160.0 };
         for i in 0..10 {
-            let span = Span { text: format!("line {i}"), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false };
+            let span = Span { text: format!("line {i}"), color: LABEL_TEXT, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
             f.rows.push(TextRow { x: 0.0, y: i as f32 * 16.0, spans: vec![span], clip: pane, scale: 1.0 });
         }
         completion_list(&mut f, &["one".into(), "two".into()], 0, None, (100.0, 64.0), pane, (8.0, 16.0));

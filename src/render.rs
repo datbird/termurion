@@ -274,6 +274,10 @@ pub struct Renderer {
     prose_family: String,
     /// The badge font (bold): the default profile's Badge Font, Arial when not installed.
     badge_family: String,
+    /// The toolbelt's list font: `toolbeltFont` when installed, else Consolas.
+    toolbelt_family: String,
+    /// The toolbelt font's size in points (`toolbeltFontSize`, 0 meaning 11).
+    toolbelt_pt: f32,
     /// Widths of prose words already measured: (text, scale bits) to pixels.
     widths: std::collections::HashMap<(String, u32), f32>,
     family: String,
@@ -313,6 +317,8 @@ impl Renderer {
             icon_family: String::new(),
             prose_family: String::new(),
             badge_family: "Arial".into(),
+            toolbelt_family: "Consolas".into(),
+            toolbelt_pt: 11.0,
             widths: std::collections::HashMap::new(),
             h_spacing: 1.0,
             v_spacing: 1.0,
@@ -400,6 +406,35 @@ impl Renderer {
     pub fn set_badge_family(&mut self, name: &str) {
         let resolved = self.resolve_family(name);
         self.badge_family = if self.has_family(&resolved) { resolved } else { "Arial".into() };
+    }
+
+    /// The toolbelt font: `name` when installed (Menlo, iTerm2's default, is not on Windows),
+    /// else Consolas, Windows' monospaced system font.
+    pub fn set_toolbelt_family(&mut self, name: &str) {
+        let resolved = self.resolve_family(name);
+        self.toolbelt_family = if self.has_family(&resolved) { resolved } else { "Consolas".into() };
+    }
+
+    /// The toolbelt font's size in points; 0 is the system default, 11 points
+    /// (`smallSystemFontSize`).
+    pub fn set_toolbelt_size(&mut self, points: f32) {
+        self.toolbelt_pt = if points > 0.0 { points } else { 11.0 };
+    }
+
+    /// The toolbelt font's size in pixels at `scale`.
+    pub fn toolbelt_px(&self, scale: f32) -> f32 {
+        self.toolbelt_pt * 4.0 / 3.0 * scale
+    }
+
+    /// A run's width in the toolbelt font at its size, at `scale`.
+    pub fn toolbelt_width(&mut self, text: &str, scale: f32) -> f32 {
+        let px = self.toolbelt_px(scale).max(1.0);
+        let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, px * 1.2));
+        b.set_size(None, None);
+        b.set_wrap(Wrap::None);
+        b.set_text(text, &Attrs::new().family(Family::Name(&self.toolbelt_family)), Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.font_system, false);
+        b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)
     }
 
     /// A badge line's width at `px` pixels, in the bold badge font.
@@ -502,17 +537,21 @@ impl Renderer {
             let metrics = Metrics::new(self.font_px * row.scale, ch * row.scale);
             buffer.set_metrics_and_size(metrics, Some(row.clip.w + cw * row.scale), Some(ch * row.scale));
             buffer.set_wrap(Wrap::None);
-            buffer.set_monospace_width(Some(cw));
+            // The toolbelt font keeps its own advance (it is not the terminal's cell).
+            buffer.set_monospace_width((!row.spans.iter().any(|s| s.toolbelt)).then_some(cw));
             let base = Attrs::new().family(Family::Name(&self.family));
             let alt = self.alt_family.as_deref().map(|f| Attrs::new().family(Family::Name(f)));
             let icons = Attrs::new().family(Family::Name(&self.icon_family));
             let prose = Attrs::new().family(Family::Name(&self.prose_family));
             let badge = Attrs::new().family(Family::Name(&self.badge_family));
+            let toolbelt = Attrs::new().family(Family::Name(&self.toolbelt_family));
             let spans = row.spans.iter().map(|s| {
                 let start = if s.icon {
                     icons.clone()
                 } else if s.badge {
                     badge.clone()
+                } else if s.toolbelt {
+                    toolbelt.clone()
                 } else if s.prose {
                     prose.clone()
                 } else if s.alt_font {
@@ -722,7 +761,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 0.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false }],
+                spans: vec![Span { text: "\u{2588}".repeat(n), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
                 clip: Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 },
                 scale: 1.0,
             }],
@@ -773,7 +812,7 @@ mod tests {
             rows: vec![TextRow {
                 x: 36.0,
                 y: 0.0,
-                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false }],
+                spans: vec![Span { text: "\u{2588}".into(), color: rgb(255, 255, 255), bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }],
                 clip: Rect { x: 32.0, y: 0.0, w: 32.0, h: 32.0 },
                 scale: 1.0,
             }],

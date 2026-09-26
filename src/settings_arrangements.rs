@@ -120,6 +120,14 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, profiles: &[(String, String, tom
             if let Some(tree) = tabs.get(selected).and_then(|t| t.get("Root")).and_then(|r| arrangement::tree_of(r).ok()) {
                 draw_tree(&painter, &tree, cell.shrink2(egui::vec2(4.0, 16.0)).translate(egui::vec2(0.0, 8.0)), stroke);
             }
+            // A window with its toolbelt: a white strip, 10 percent of the width, framed in
+            // black at the right (`PT:3525-3534`).
+            if crate::toolbelt::read_arrangement(w).has {
+                let tw = (cell.width() * 0.1).floor();
+                let strip = egui::Rect::from_min_size(egui::pos2(cell.right() - tw, cell.top()), egui::vec2((tw - 1.0).max(1.0), cell.height()));
+                painter.rect_filled(strip, 0.0, egui::Color32::WHITE);
+                painter.rect_stroke(strip, 0.0, egui::Stroke::new(1.0, egui::Color32::BLACK), egui::StrokeKind::Inside);
+            }
         }
     }
     if changed {

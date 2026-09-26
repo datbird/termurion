@@ -1389,3 +1389,30 @@ label = "Animate graph status bar components"
 type = "bool"
 default = true
 help = "Off: the graphs jump once a second instead of sliding, which redraws less."
+
+[[setting]]
+key = "Default Toolbelt Width"
+tab = "Appearance"
+section = "Toolbelt"
+label = "Default toolbelt width"
+type = "float"
+default = 250.0
+help = "Width in points of the toolbelt in new windows. View > Toolbelt > Set Default Width records the current width."
+
+[[setting]]
+key = "toolbeltFont"
+tab = "Advanced"
+section = "Toolbelt"
+label = "Toolbelt font family name"
+type = "string"
+default = "Menlo"
+help = "Menlo is not on Windows: a missing font draws in Consolas."
+
+[[setting]]
+key = "toolbeltFontSize"
+tab = "Advanced"
+section = "Toolbelt"
+label = "Toolbelt font size in points"
+type = "float"
+default = 0.0
+help = "Toolbelt font size in points.\nSet to 0 to use the system default (11 points). Changing this setting does not affect existing windows."
