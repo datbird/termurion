@@ -36,3 +36,8 @@ Final: Ruling: Erase Search History clears every pane's kept query and results e
 Final: Ruling: Triggers Menu items now carry the place in the stored array (parse_indexed), so a non-table entry before a trigger no longer shifts the toggle onto the wrong entry - cost if wrong: none.
 Final: Ruling: the Settings editor and Session > Triggers > Add Trigger write through merge_list: non-table entries keep their places, an unchanged trigger keeps its stored table byte for byte, edited ones are rewritten, and after a removal the remaining triggers fill the table places in order - cost if wrong: after a removal, triggers past it are rewritten in normalized form (a numeric popup parameter becomes a string), as before this fix.
 Final: Ruling: Enable All and Disable All write disabled on every table entry of the stored list, read from the pane's profile, not rebuilt from the compiled trigger list - cost if wrong: none.
+Task 7: Ruling: Storage::swap replaced by a whole-row swap (upstream copied four qwords; Tandem's Row is eight), recorded under patch 14 - cost if wrong: none, review confirmed.
+Task 7: minor (deferred): with the flag off, a selection in a top region moves as if its lines went to scrollback.
+Final: minor (deferred): Configure Status Bar on a tmux bar edits the saved profile's layout (iTerm2 edits the session copy).
+Final: minor (deferred): after a trigger is removed in the Settings editor, the triggers after it are rewritten in normalized form.
+Final: minor (deferred): with no Clock, each event loop turn re-parses bar layouts.
