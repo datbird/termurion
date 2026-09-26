@@ -1579,6 +1579,197 @@ pub fn note_editor(frame: &mut Frame, d: &NoteDraw, cell: (f32, f32), text_scale
     }
 }
 
+/// What the minimal composer shows (milestone 9l, `MCVC`/`MCXIB`): its panel (rounded, a 1
+/// pixel gray border, the session's background), the editor's text lines already laid out,
+/// wrapped, scrolled and colored in the pane's font (x, y, colored runs), the selection's
+/// rectangles, the caret in the cursor color while it has the keyboard, the close glyph at the
+/// top right, and the accessory row: the Help glyph, "AI" (when allowed) and the send tip
+/// (x, y). `alpha` is the fade; `under` what the panel fades over (text has no alpha of its
+/// own).
+pub struct ComposerDraw<'a> {
+    pub panel: Rect,
+    pub radius: f32,
+    pub alpha: f32,
+    pub bg: Rgb,
+    pub under: Rgb,
+    pub fg: Rgb,
+    pub clip: Rect,
+    pub lines: &'a [(f32, f32, Vec<(String, Rgb, bool)>)],
+    pub selection: &'a [Rect],
+    pub caret: Option<(Rect, Rgb)>,
+    pub close: Rect,
+    pub help: Rect,
+    pub ai: Option<Rect>,
+    pub tip: Option<(f32, f32, &'a str)>,
+    /// The accessory row's text size against the pane's font.
+    pub small: f32,
+    pub line_h: f32,
+}
+
+/// The composer's gray border (`MCVC:154-156`, `NSColor.grayColor`).
+pub const COMPOSER_BORDER: Rgb = rgb(0x80, 0x80, 0x80);
+/// The close glyph (Segoe Fluent Icons Cancel) and the Help glyph (Help).
+pub const COMPOSER_CLOSE_GLYPH: char = '\u{E711}';
+pub const COMPOSER_HELP_GLYPH: char = '\u{E897}';
+
+/// `a` at `alpha` over `b`, for text that fades with its panel.
+fn fade(a: Rgb, b: Rgb, alpha: f32) -> Rgb {
+    let m = |x: u8, y: u8| (f32::from(x) * alpha + f32::from(y) * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
+    rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
+}
+
+fn plain_span(text: String, color: Rgb, bold: bool) -> Span {
+    Span { text, color, bold, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false }
+}
+
+/// The minimal composer over its pane (`ComposerDraw`). The panel is a popup box: the pane's
+/// text under it is cut out and the box goes in `popups`, with the selection and the caret on
+/// it; its own text rows come after.
+pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
+    let a = d.alpha.clamp(0.0, 1.0);
+    if a <= 0.0 || d.panel.w <= 2.0 || d.panel.h <= 2.0 {
+        return;
+    }
+    cut_out(frame, d.panel, d.line_h);
+    rounded_box(&mut frame.popups, d.panel, d.radius, rgba(COMPOSER_BORDER, a));
+    let inner = Rect { x: d.panel.x + 1.0, y: d.panel.y + 1.0, w: d.panel.w - 2.0, h: d.panel.h - 2.0 };
+    rounded_box(&mut frame.popups, inner, (d.radius - 1.0).max(0.0), rgba(d.bg, a));
+    for r in d.selection {
+        let r = clip_rect(*r, d.clip);
+        if r.w > 0.0 && r.h > 0.0 {
+            frame.popups.push(Quad { rect: r, color: rgba(LIST_SELECTED, NOTE_SELECTION_ALPHA * a) });
+        }
+    }
+    if let Some((c, color)) = d.caret {
+        let c = clip_rect(c, d.clip);
+        if c.h > 0.0 && c.w > 0.0 {
+            frame.popups.push(Quad { rect: c, color: rgba(color, a) });
+        }
+    }
+    let under = |c: Rgb| fade(c, d.under, a);
+    for (x, y, runs) in d.lines {
+        let spans: Vec<Span> = runs.iter().filter(|(t, _, _)| !t.is_empty()).map(|(t, c, b)| plain_span(t.clone(), under(*c), *b)).collect();
+        if !spans.is_empty() {
+            frame.rows.push(TextRow { x: *x, y: *y, spans, clip: d.clip, scale: 1.0 });
+        }
+    }
+    let icon = |frame: &mut Frame, r: Rect, glyph: char| {
+        let (w, h) = (cell.0, cell.1);
+        let span = Span { text: glyph.to_string(), color: under(d.fg), bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - h) / 2.0).max(0.0), spans: vec![span], clip: r, scale: 1.0 });
+    };
+    icon(frame, d.close, COMPOSER_CLOSE_GLYPH);
+    icon(frame, d.help, COMPOSER_HELP_GLYPH);
+    let small_h = cell.1 * d.small;
+    if let Some(r) = d.ai {
+        let w = 2.0 * cell.0 * d.small;
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + ((r.h - small_h) / 2.0).max(0.0), spans: vec![plain_span("AI".into(), under(d.fg), false)], clip: r, scale: d.small });
+    }
+    if let Some((x, y, tip)) = d.tip {
+        frame.rows.push(TextRow { x, y, spans: vec![plain_span(tip.to_string(), under(TAB_TEXT_DIM), false)], clip: inner, scale: d.small });
+    }
+}
+
+/// What the composer's completion popup shows (`CW:199-274`): rows of (text, the bold typed
+/// part's byte range, the kind's glyph), the selected row, the selected item's detail strip,
+/// or the "Thinking..." placeholder alone; placed at the caret (`caret`: its x, top and
+/// bottom) inside `bounds`.
+pub struct ComposerPopupDraw<'a> {
+    pub caret: (f32, f32, f32),
+    pub bounds: Rect,
+    pub rows: &'a [(String, Option<std::ops::Range<usize>>, char)],
+    pub selected: Option<usize>,
+    pub detail: Option<&'a str>,
+    pub placeholder: Option<&'a str>,
+    pub dark: bool,
+    pub scale: f32,
+}
+
+/// The popup's sizes in points (`CW`): a row and the space between rows, the width's range,
+/// the most height it takes, the detail strip, the corner radius, and how far left of the
+/// caret it starts.
+pub const POPUP_ROW: f32 = 20.0;
+pub const POPUP_SPACING: f32 = 2.0;
+pub const POPUP_MIN_W: f32 = 300.0;
+pub const POPUP_MAX_W: f32 = 500.0;
+pub const POPUP_MAX_H: f32 = 200.0;
+pub const POPUP_DETAIL: f32 = 30.0;
+pub const POPUP_RADIUS: f32 = 8.0;
+pub const POPUP_LEFT: f32 = 24.0;
+
+/// The popup's frame and the first row shown, for drawing and hit tests: below the caret, or
+/// above it (2 points up) when it would run past `bounds`' bottom; nudged into `bounds`
+/// horizontally. `widest` is the widest row's width in pixels.
+pub fn composer_popup_frame(caret: (f32, f32, f32), bounds: Rect, rows: usize, selected: Option<usize>, detail: bool, widest: f32, scale: f32) -> (Rect, usize) {
+    let pitch = (POPUP_ROW + POPUP_SPACING) * scale;
+    let strip = if detail { POPUP_DETAIL * scale } else { 0.0 };
+    let max_rows = (((POPUP_MAX_H * scale - strip) / pitch).floor() as usize).max(1);
+    let shown = rows.clamp(1, max_rows);
+    let h = shown as f32 * pitch + POPUP_SPACING * scale + strip;
+    let w = widest.clamp(POPUP_MIN_W * scale, POPUP_MAX_W * scale);
+    let (x, top, bottom) = caret;
+    let mut y = bottom;
+    if y + h > bounds.y + bounds.h {
+        y = top - 2.0 * scale - h;
+    }
+    let x = (x - POPUP_LEFT * scale).min(bounds.x + bounds.w - w).max(bounds.x);
+    let first = selected.map_or(0, |s| s.saturating_sub(shown - 1)).min(rows.saturating_sub(shown));
+    (Rect { x, y, w, h }, first)
+}
+
+/// Draws the popup (`ComposerPopupDraw`) as a popup box; returns its frame.
+pub fn composer_popup(frame: &mut Frame, d: &ComposerPopupDraw, cell: (f32, f32)) -> Rect {
+    let scale = d.scale;
+    let n = if d.placeholder.is_some() { 1 } else { d.rows.len() };
+    let widest = d.rows.iter().map(|(t, _, _)| (t.chars().count() as f32 + 3.0) * cell.0).fold(0.0, f32::max);
+    let (r, first) = composer_popup_frame(d.caret, d.bounds, n, d.selected, d.detail.is_some(), widest, scale);
+    let (bg, text) = if d.dark { (FIND_BAR, TAB_TEXT) } else { (rgb(0xff, 0xff, 0xff), BELT_TEXT_LIGHT) };
+    cut_out(frame, r, cell.1);
+    rounded_box(&mut frame.popups, r, POPUP_RADIUS * scale, rgba(DIVIDER, 1.0));
+    let inner = Rect { x: r.x + 1.0, y: r.y + 1.0, w: r.w - 2.0, h: r.h - 2.0 };
+    rounded_box(&mut frame.popups, inner, (POPUP_RADIUS * scale - 1.0).max(0.0), rgba(bg, 1.0));
+    let pitch = (POPUP_ROW + POPUP_SPACING) * scale;
+    let row_h = POPUP_ROW * scale;
+    let text_y = |ry: f32| ry + ((row_h - cell.1) / 2.0).max(0.0);
+    if let Some(p) = d.placeholder {
+        let ry = r.y + POPUP_SPACING * scale;
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![plain_span(p.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0 });
+        return r;
+    }
+    let strip = if d.detail.is_some() { POPUP_DETAIL * scale } else { 0.0 };
+    let list = Rect { h: (inner.h - strip).max(0.0), ..inner };
+    for (k, (t, bold, glyph)) in d.rows.iter().enumerate().skip(first) {
+        let ry = r.y + POPUP_SPACING * scale + (k - first) as f32 * pitch;
+        if ry + row_h > list.y + list.h + 0.5 {
+            break;
+        }
+        let on = d.selected == Some(k);
+        let color = if on { rgb(0xff, 0xff, 0xff) } else { text };
+        if on {
+            let sel = Rect { x: r.x + 4.0 * scale, y: ry, w: r.w - 8.0 * scale, h: row_h };
+            rounded_box(&mut frame.popups, sel, 4.0 * scale, rgba(LIST_SELECTED, 1.0));
+        }
+        let icon = Span { text: glyph.to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: text_y(ry), spans: vec![icon], clip: list, scale: 1.0 });
+        let mut spans = Vec::new();
+        match bold.clone().filter(|b| b.end <= t.len() && t.is_char_boundary(b.end)) {
+            Some(b) => {
+                spans.push(plain_span(t[..b.end].to_string(), color, true));
+                spans.push(plain_span(t[b.end..].to_string(), color, false));
+            }
+            None => spans.push(plain_span(t.clone(), color, false)),
+        }
+        spans.retain(|s| !s.text.is_empty());
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale + 2.0 * cell.0, y: text_y(ry), spans, clip: list, scale: 1.0 });
+    }
+    if let Some(detail) = d.detail {
+        let sy = r.y + r.h - strip;
+        frame.popups.push(Quad { rect: Rect { x: inner.x, y: sy, w: inner.w, h: 1.0 }, color: rgba(DIVIDER, 1.0) });
+        frame.rows.push(TextRow { x: r.x + 8.0 * scale, y: sy + ((strip - cell.1) / 2.0).max(0.0), spans: vec![plain_span(detail.to_string(), TAB_TEXT_DIM, false)], clip: inner, scale: 1.0 });
+    }
+    r
+}
+
 /// What Codecierge shows (`CC:646-709`): its label's lines, centered (x, y, text), a button
 /// (its rectangle, label, label width) dimmed when disabled.
 pub struct CodeciergeDraw<'a> {

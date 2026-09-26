@@ -1061,6 +1061,7 @@ impl App {
     /// the tool, which `key` asks first.
     pub(super) fn belt_yield_keys(&mut self) {
         self.belt.focus = None;
+        self.composer_yield_keys();
     }
 
     /// Keys while a tool's field or list has the keyboard (`tool_list::takes_key`): nothing

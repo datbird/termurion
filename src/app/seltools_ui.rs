@@ -123,12 +123,16 @@ impl App {
                     p.set_buffering(on);
                 }
             }
+            // With a dropdown composer holding the keyboard these do nothing; an Auto
+            // Composer forwards them to the terminal's selection (`CTV:348-398`).
+            "copyWithStyles:" if self.composer_blocks_styled_copy() => {}
             "copyWithStyles:" => self.copy_with_styles(id),
             "runPageLayout:" => {
                 if let Some(hwnd) = self.hwnd() {
                     crate::winprint::page_setup(hwnd as _, &mut self.print_setup);
                 }
             }
+            "copyWithControlSequences:" if self.composer_blocks_styled_copy() => {}
             "copyWithControlSequences:" => {
                 if self.copy_porthole_selection(id, super::porthole_ui::CopyAs::ControlSequences) {
                     return true;

@@ -187,20 +187,25 @@ fn longest_common_prefix(values: &[&str]) -> String {
     first[..len].to_string()
 }
 
-/// The ghost text for a set of items (`LCVC:706-711`, `749-756`): the longest common prefix
-/// of every non-replacement item's value, except that an explicit request (Tab) with at least
-/// one file or folder item shows that item's value outright instead of the common prefix
-/// (`LCVC:749-756`'s `inlineFilenameCompletions[0].value` override).
-pub fn ghost(items: &[Item], explicit: bool) -> Option<String> {
+/// The ghost text for a set of items (`LCVC:786-796`, `didFindCompletions:`): the longest
+/// common prefix of every non-replacement item's value. Without `suggestion_only` (the local
+/// fetch passes `!byUserRequest`, `PS:24528`, so only Tab clears it) an empty common prefix
+/// falls back to the first inline item's value, and then the first filename item (any
+/// non-history item, `inlineFilenameCompletions[0]`) overrides whatever was chosen. An empty
+/// result is no ghost.
+pub fn ghost(items: &[Item], suggestion_only: bool) -> Option<String> {
     let inline: Vec<&Item> = items.iter().filter(|i| !i.replacement).collect();
-    if explicit {
-        if let Some(file) = inline.iter().find(|i| matches!(i.kind, ItemKind::File | ItemKind::Folder)) {
-            return Some(file.value.clone());
+    let values: Vec<&str> = inline.iter().map(|i| i.value.as_str()).collect();
+    let mut suggestion = longest_common_prefix(&values);
+    if !suggestion_only {
+        if suggestion.is_empty() {
+            suggestion = inline.first().map(|i| i.value.clone()).unwrap_or_default();
+        }
+        if let Some(file) = inline.iter().find(|i| i.kind != ItemKind::History) {
+            suggestion = file.value.clone();
         }
     }
-    let values: Vec<&str> = inline.iter().map(|i| i.value.as_str()).collect();
-    let lcp = longest_common_prefix(&values);
-    if lcp.is_empty() { None } else { Some(lcp) }
+    (!suggestion.is_empty()).then_some(suggestion)
 }
 
 /// The ghost text actually shown (`CTV:76`, `1199-1211`): the whole thing when the caret sits
@@ -294,28 +299,34 @@ mod tests {
         let cmd_space = files(&[("a nice file".to_string(), false)], "a", 64, Some("cmd"));
         assert_eq!(cmd_space[0].value, "\" nice file\"", "cmd: double-quoted like insertable_dir quotes a path with a space");
 
-        // ghost: the longest common prefix of non-replacement values; an explicit request
-        // takes the first file item outright; a replacement item is never folded in.
+        // ghost (`LCVC:786-796`, `didFindCompletions`): with `suggestion_only` (typing, the
+        // local fetch's `!byUserRequest`) only the longest common prefix of the
+        // non-replacement values; without it (Tab) an empty common prefix falls back to the
+        // first inline item's value, and the first filename item wins outright; a
+        // replacement item is never folded in.
         let common = vec![
             Item { value: "status".into(), detail: String::new(), kind: ItemKind::History, replacement: false },
             Item { value: "stash".into(), detail: String::new(), kind: ItemKind::History, replacement: false },
         ];
+        assert_eq!(ghost(&common, true).as_deref(), Some("sta"));
         assert_eq!(ghost(&common, false).as_deref(), Some("sta"));
         let no_common = vec![
             Item { value: "abc".into(), detail: String::new(), kind: ItemKind::History, replacement: false },
             Item { value: "xyz".into(), detail: String::new(), kind: ItemKind::History, replacement: false },
         ];
-        assert_eq!(ghost(&no_common, false), None);
+        assert_eq!(ghost(&no_common, true), None, "typing: no common prefix, no ghost");
+        assert_eq!(ghost(&no_common, false).as_deref(), Some("abc"), "Tab: the first inline value");
         let with_file = vec![
-            Item { value: "adme.md".into(), detail: String::new(), kind: ItemKind::History, replacement: false },
             Item { value: "adme2.md".into(), detail: String::new(), kind: ItemKind::File, replacement: false },
+            Item { value: "adme.md".into(), detail: String::new(), kind: ItemKind::History, replacement: false },
         ];
-        assert_eq!(ghost(&with_file, false).as_deref(), Some("adme"), "not explicit: the common prefix still wins");
-        assert_eq!(ghost(&with_file, true).as_deref(), Some("adme2.md"), "explicit: the first file item outright");
+        assert_eq!(ghost(&with_file, true).as_deref(), Some("adme"), "suggestion only: the common prefix still wins");
+        assert_eq!(ghost(&with_file, false).as_deref(), Some("adme2.md"), "Tab: the first filename item outright");
         let ignores_replacement = vec![
             Item { value: "totally different command".into(), detail: String::new(), kind: ItemKind::Command, replacement: true },
             Item { value: "status".into(), detail: String::new(), kind: ItemKind::History, replacement: false },
         ];
+        assert_eq!(ghost(&ignores_replacement, true).as_deref(), Some("status"));
         assert_eq!(ghost(&ignores_replacement, false).as_deref(), Some("status"));
         assert_eq!(ghost(&[], false), None);
 

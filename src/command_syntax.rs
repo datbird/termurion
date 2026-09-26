@@ -664,6 +664,34 @@ impl Checker {
         Check::Pending
     }
 
+    /// A handed-out request whose worker died or failed before answering (it never will, so
+    /// every dispatched request ends in exactly one `answer` or one `lost`): its slot is freed
+    /// once and its pending entry forgotten, so a later lookup asks again. Unlike the
+    /// checker's own give-ups (`abandon`, where a late answer may still come), nothing is
+    /// recorded to swallow a later answer; a request the checker had already abandoned (its
+    /// slot already freed) frees nothing more.
+    pub fn lost(&mut self, r: Request) {
+        if self.abandoned.remove(&r) {
+            return;
+        }
+        match &r {
+            Request::Command(cmd) => {
+                if matches!(self.commands.get(cmd), Some(CommandEntry::Pending(_))) {
+                    self.commands.remove(cmd);
+                }
+            }
+            Request::File(path) => {
+                if self.files.get(path) == Some(&FileEntry::Pending) {
+                    self.files.remove(path);
+                }
+            }
+        }
+        if let Some(pos) = self.queue.iter().position(|q| *q == r) {
+            self.queue.remove(pos);
+        }
+        self.in_flight = self.in_flight.saturating_sub(1);
+    }
+
     /// The requests newly created since the last call, for the caller to actually run.
     pub fn requests(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.queue)
@@ -1075,5 +1103,42 @@ mod tests {
         c.answer(reqs[0].clone(), true, t1);
         assert!(c.requests().is_empty(), "answering the abandoned request queues nothing new");
         assert_eq!(c.command("overflow2", t1), Check::Pending, "the late answer did not double-free a slot");
+    }
+
+    #[test]
+    fn lost_requests_free_their_slot_once() {
+        // A worker that dies (or panics) never answers: the request's slot is freed once,
+        // its pending entry forgotten so a later lookup asks again, and a later real answer
+        // for a new ask of the same thing frees its own slot normally.
+        let t0 = Instant::now();
+        let mut c = Checker::default();
+        for i in 0..MAX_CHECKS {
+            assert_eq!(c.command(&format!("c{i}"), t0), Check::Pending);
+        }
+        let reqs = c.requests();
+        assert_eq!(c.command("extra", t0), Check::Pending);
+        assert!(c.requests().is_empty(), "full");
+        c.lost(reqs[0].clone());
+        // One slot free: a new command is asked.
+        assert_eq!(c.command("extra", t0), Check::Pending);
+        assert_eq!(c.requests(), vec![Request::Command("extra".to_string())]);
+        // The lost command is asked again (not stuck pending), once a slot frees.
+        c.answer(Request::Command("extra".to_string()), true, t0);
+        assert_eq!(c.command("c0", t0), Check::Pending);
+        assert_eq!(c.requests(), vec![Request::Command("c0".to_string())]);
+        // Its answer frees its slot (nothing left abandoned to swallow it).
+        c.answer(Request::Command("c0".to_string()), false, t0);
+        assert_eq!(c.command("more", t0), Check::Pending);
+        assert_eq!(c.requests(), vec![Request::Command("more".to_string())]);
+        // The pending timeout of a lost command never frees a second slot.
+        let t1 = t0 + PENDING + Duration::from_secs(1);
+        assert_eq!(c.command("c1", t1), Check::No);
+        // A lost file check is asked again too.
+        let mut f = Checker::default();
+        assert_eq!(f.file("a.txt"), Check::Pending);
+        let r = f.requests();
+        f.lost(r[0].clone());
+        assert_eq!(f.file("a.txt"), Check::Pending);
+        assert_eq!(f.requests(), vec![Request::File("a.txt".to_string())]);
     }
 }

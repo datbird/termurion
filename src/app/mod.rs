@@ -57,6 +57,7 @@ mod shell_history_ui;
 mod snippets_ui;
 mod clippings_ui;
 mod completion_ui;
+mod composer_ui;
 mod annotations_ui;
 mod activity_ui;
 mod alerts_ui;
@@ -152,6 +153,8 @@ enum Drag {
     Clip { pane: PaneId, kind: clippings_ui::ClipDrag },
     /// The toolbelt's width, a divider between its tools, or a tool's row.
     Belt(toolbelt_ui::BeltDrag),
+    /// A composer's text selection, drag handle, or border.
+    Composer { pane: PaneId, kind: composer_ui::ComposerDrag },
 }
 
 struct Gpu {
@@ -274,6 +277,14 @@ pub struct App {
     tool_gen: u64,
     /// The keys whose press a focused toolbelt tool took: their releases are its too.
     belt_keys: toolbelt_tools_ui::TakenKeys<PhysicalKey>,
+    /// The keys whose press a focused composer took: their releases are its too.
+    composer_keys: toolbelt_tools_ui::TakenKeys<PhysicalKey>,
+    /// Each pane's composer view (drawing, highlighting, suggestions; app-wide, by pane), its
+    /// worker thread, the windows it opens, and the last multi-caret copy's groups.
+    composers: HashMap<PaneId, composer_ui::View>,
+    composer_worker: composer_ui::Worker,
+    composer_windows: composer_ui::Windows,
+    composer_clip: Option<(String, Vec<usize>)>,
     /// The Actions as they were when the toolbelt opened the Edit Action sheet, and its window:
     /// the sheet's OK pushes them on that window's Actions undo (`iTermToolActions.m:267-276`).
     action_edit_undo: Option<(WindowId, toml::Value)>,
@@ -594,6 +605,7 @@ pub fn run() {
         (None, None)
     };
     let git_worker = git_ui::GitWorker::new(Arc::new(crate::git_run_win::WinGitRun), notify.clone());
+    let composer_worker = composer_ui::Worker::new(notify.clone());
     let mut app = App {
         host,
         hotkey: None,
@@ -667,6 +679,11 @@ pub fn run() {
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
+        composer_keys: Default::default(),
+        composers: HashMap::new(),
+        composer_worker,
+        composer_windows: Default::default(),
+        composer_clip: None,
         action_edit_undo: None,
         laid_out: None,
         title_prompt: None,
@@ -1191,6 +1208,7 @@ impl App {
             self.shot = None;
         }
         self.finds.remove(&id);
+        self.composers.remove(&id);
         self.copy_modes.remove(&id);
         self.note_pos.remove(&id);
         self.show_stamps.remove(&id);
@@ -1415,7 +1433,9 @@ impl App {
 
     /// Hands the keyboard hook what it needs after a focus, profile, or settings change.
     fn refresh_route(&self) {
-        *self.route_snapshot.write().unwrap() = self.with_route(keyroute::Snapshot::new);
+        let mut snapshot = self.with_route(keyroute::Snapshot::new);
+        snapshot.composer = self.composer_has_keys();
+        *self.route_snapshot.write().unwrap() = snapshot;
         let exempt: toml::Table = self
             .globals
             .table("GlobalKeyMap")
@@ -1479,6 +1499,10 @@ impl App {
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
         // A tool with the keyboard takes its keys, releases too, before any reach the session.
         if self.toolbelt_key(ev, event_loop) {
+            return;
+        }
+        // A composer with the keyboard takes its keys, releases too (Review Focus 5).
+        if self.composer_key(ev) {
             return;
         }
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
@@ -1615,6 +1639,10 @@ impl App {
         // bar and the status bar too).
         if !self.toolbelt_panel().is_some_and(|p| p.contains(x, y)) {
             self.belt.focus = None;
+        }
+        // A press on a shown composer is its own; anywhere else takes the keyboard from it.
+        if self.composer_press(button, x, y) {
+            return;
         }
         if let Some(i) = tab_hit(&self.tab_rects, self.tabs.len(), x, y) {
             self.active = i;
@@ -1774,6 +1802,7 @@ impl App {
             Drag::Porthole { pane, id, .. } => self.porthole_release(pane, id),
             Drag::Clip { pane, kind } => self.clip_release(pane, kind),
             Drag::Belt(d) => self.toolbelt_release(d),
+            Drag::Composer { pane, kind } => self.composer_release(pane, kind),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
@@ -1811,6 +1840,7 @@ impl App {
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
         self.toolbelt_move(x, y);
+        self.composer_move(x, y);
         self.clip_move(x, y);
         self.update_hover();
         self.update_block_hover();
@@ -1825,7 +1855,7 @@ impl App {
                 let (pane, id, frame) = (*pane, *id, *frame);
                 self.porthole_drag(pane, id, frame, x, y);
             }
-            Drag::Clip { .. } | Drag::Belt(_) => {}
+            Drag::Clip { .. } | Drag::Belt(_) | Drag::Composer { .. } => {}
             Drag::Select { pane } => {
                 let pane = *pane;
                 let Some(rect) = self.pane_rect(pane) else { return };
@@ -2009,7 +2039,9 @@ impl App {
                     block_buttons.extend(self.draw_blocks(&mut frame, id, rect, cell));
                     self.draw_inline_buttons(&mut frame, id, rect, cell);
                 }
-                // Last in the pane, so everything under it is cut out.
+                // The composer over the pane, then the completion list last, so everything under
+                // them is cut out.
+                self.draw_composer(&mut frame, id, rect, cell);
                 self.draw_completion(&mut frame, id, self.inner(rect), cell);
             }
             self.draw_clippings(&mut frame, cell);
@@ -2308,6 +2340,8 @@ impl ApplicationHandler<UserEvent> for App {
         let notes_due = self.tick_notes();
         let jobs_due = self.tick_jobs_tool();
         let quickly_due = self.tick_quickly();
+        let composer_due = self.tick_composer();
+        self.open_composer_windows(event_loop);
         self.open_jobs_confirm(event_loop);
         self.open_git_log(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
@@ -2327,7 +2361,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -2421,7 +2455,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -2486,6 +2520,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if !f {
                     self.tmux_drag_cancel();
                     self.belt_keys.clear();
+                    self.composer_keys.clear();
                 }
                 self.focused = f;
                 // Tandem going to the background saves the windows (iTerm2 saves on resign

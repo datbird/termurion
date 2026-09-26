@@ -133,6 +133,9 @@ pub struct Snapshot {
     leader: Option<Keystroke>,
     leader_on: bool,
     switch: [i64; 3],
+    /// A composer has the keyboard: its own Win chords (`composer::chord`) are Tandem's even
+    /// when nothing else binds them (Win+Y).
+    pub composer: bool,
 }
 
 impl Snapshot {
@@ -147,14 +150,14 @@ impl Snapshot {
                 }
             }
         }
-        Snapshot { keys, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab] }
+        Snapshot { keys, leader: ctx.leader.clone(), leader_on: ctx.leader_on, switch: [ctx.switch_window, ctx.switch_pane, ctx.switch_tab], composer: false }
     }
 }
 
 /// True when Tandem has something for this Win chord: the Leader, a number shortcut,
 /// a key mapping, or a working menu command.
 pub fn win_chord_bound(s: &Snapshot, chord: &Chord) -> bool {
-    if s.leader_on {
+    if s.leader_on || (s.composer && crate::composer::chord_of(chord).is_some()) {
         return true;
     }
     let p = press_from_chord(chord);

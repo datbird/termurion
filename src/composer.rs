@@ -15,6 +15,7 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 
+use crate::layout::Rect;
 use crate::styled_copy;
 use crate::text_edit::{self, EditKey, TextEdit, VisualLine};
 
@@ -641,20 +642,16 @@ impl Composer {
     }
 }
 
-/// `characterRangeOfCommand(atCharacterIndex:)` (`CTV:1045-1150`), without the prefix
-/// adjustment (the caller strips it): the paragraph (a line, its trailing "\n" included
-/// unless it is the text's last) holding byte index `at`, extended forward and backward over
-/// any paragraph that ends in a line-continuing backslash, so a `"a \\\nb"` pair is taken as
-/// one. Returns the raw text of the span (backslashes and newlines untouched; iTerm2 only
-/// blanks them for its explainshell query, not for `take`). `None` on an empty document.
-/// `NSRange.minus` (`CTV:1330-1360`), specialized to what `take` needs: adjusts every
-/// not-yet-processed range in `remaining` for the removal of `removed` (already deleted from
-/// the text, so `remaining`'s entries must stop referring to characters at their old
-/// positions). A plain caret inside `removed` is dropped (there is nothing left where it
-/// pointed - not collapsed to `removed.start` and asked what command sits there now, which
-/// would hand it its neighbor's next command instead of nothing); a range reaching into
-/// `removed` has its end clipped to `removed.start`, dropped too if that empties it; anything
-/// strictly after `removed` shifts back by its length; anything strictly before is untouched.
+/// Adjusts every not-yet-processed range in `remaining` for the removal of `removed` (already
+/// deleted from the text, so `remaining`'s entries must stop referring to characters at their
+/// old positions). Not a port: a deliberate divergence from iTerm2's `take`, which keeps its
+/// captured ranges and shifts them with `NSRange.minus` (`CTV:1330-1360`), collapsing a range
+/// the removal covered to the removal's start (then asking what command sits there now, which
+/// hands a swallowed caret its neighbor's next command, or crashes past the end). Here a plain
+/// caret inside `removed` is dropped (there is nothing left where it pointed); a range reaching
+/// into `removed` has its end clipped to `removed.start`, dropped too if that empties it;
+/// anything strictly after `removed` shifts back by its length; anything strictly before is
+/// untouched (the Task 2 ruling).
 ///
 /// `removed` always reaches at least to the position of the caret that produced it, which (by
 /// `TextEdit` never letting carets or selections overlap, and `remaining` holding only carets
@@ -685,6 +682,12 @@ fn drop_or_shift(remaining: &mut [Option<Range<usize>>], removed: &Range<usize>)
     }
 }
 
+/// `characterRangeOfCommand(atCharacterIndex:)` (`CTV:1045-1150`), without the prefix
+/// adjustment (the caller strips it): the paragraph (a line, its trailing "\n" included
+/// unless it is the text's last) holding byte index `at`, extended forward and backward over
+/// any paragraph that ends in a line-continuing backslash, so a `"a \\\nb"` pair is taken as
+/// one. Returns the raw text of the span (backslashes and newlines untouched; iTerm2 only
+/// blanks them for its explainshell query, not for `take`). `None` on an empty document.
 pub fn command_at(text: &str, at: usize) -> Option<(Range<usize>, String)> {
     fn paragraph_at(text: &str, i: usize) -> Option<Range<usize>> {
         if text.is_empty() {
@@ -722,6 +725,221 @@ pub fn command_at(text: &str, at: usize) -> Option<(Range<usize>, String)> {
         span.start = prev.start;
     }
     Some((span.clone(), text[span].to_string()))
+}
+
+// ---------------------------------------------------------------------------------------
+// Geometry and texts of the minimal composer (milestone 9l Task 6)
+// ---------------------------------------------------------------------------------------
+
+/// The dropdown's height before any drag (`ComposerHeight`'s default, `MCVC:141-142`), in
+/// points.
+pub const DEFAULT_HEIGHT: f32 = 135.0;
+/// The shortest the dropdown gets (`MCVC:319-329`).
+pub const MIN_HEIGHT: f32 = 62.0;
+/// Space left and right of the dropdown (`sideMargin`, `CM:221-223`; 0 for the Auto Composer).
+pub const SIDE_MARGIN: f32 = 20.0;
+/// The narrowest the dropdown gets, its decoration included (`PS:24236-24249`).
+pub const MIN_WIDTH: f32 = 217.0;
+/// The editor's inset inside the panel (`MCXIB:33`, the wrapper at 9, 9).
+pub const INSET: f32 = 9.0;
+/// The panel's corner radius (`MCVC:154-156`).
+pub const RADIUS: f32 = 6.0;
+/// The close button at the top right (`MCXIB:66-77`), width and height.
+pub const CLOSE: (f32, f32) = (24.0, 23.0);
+/// The fade in on show (`MCVC:16-17`) and out on dismiss (`CM:478`), seconds.
+pub const FADE_IN: f32 = 0.25;
+pub const FADE_OUT: f32 = 0.125;
+
+/// The dropdown's frame over `pane` (points, top-left origin) for a wanted `height` and the
+/// profile's `Composer Top Offset` (`PS:24236-24249`, flipped from AppKit's bottom-left
+/// origin): `SIDE_MARGIN` in from the left, `top_offset` down from the top, pushed up to end
+/// at the pane's bottom when that would run past it, at least `MIN_WIDTH` wide. iTerm2's
+/// further shrink for a height taller than the pane assigns a variable it never reads again
+/// (dead code, kept dead): the height is always the one asked for; `clamp_height` already keeps
+/// it inside the pane.
+pub fn minimal_rect(pane: Rect, height: f32, top_offset: f32) -> Rect {
+    let width = MIN_WIDTH.max(pane.w - 2.0 * SIDE_MARGIN);
+    let from_bottom = (pane.h - height - top_offset).max(0.0);
+    Rect { x: pane.x + SIDE_MARGIN, y: pane.y + pane.h - from_bottom - height, w: width, h: height }
+}
+
+/// A dragged or saved height kept between `MIN_HEIGHT` and 8 points short of the pane
+/// (`MCVC:319-329`, `CM:390-392`: `max(min, superview height - 8)`).
+pub fn clamp_height(h: f32, pane_h: f32) -> f32 {
+    h.min(MIN_HEIGHT.max(pane_h - 8.0)).max(MIN_HEIGHT)
+}
+
+/// The help popover's lines, key then description (`LCVC:361-377`), with Windows key words in
+/// place of the Mac glyphs; the AI lookup line only when generative AI is allowed.
+pub fn help_lines(ai_allowed: bool) -> Vec<(&'static str, &'static str)> {
+    let mut v = vec![
+        ("Ctrl+Shift+Up", "Add cursor above"),
+        ("Ctrl+Shift+Down", "Add cursor below"),
+        ("Ctrl+Shift+click", "Add cursor"),
+        ("Alt+drag", "Add cursors"),
+    ];
+    if ai_allowed {
+        v.push(("Win+Y", "Natural language AI lookup"));
+    }
+    v.extend([
+        ("Win+F", "Open Find bar"),
+        ("Win+Alt+V", "Open in Advanced Paste"),
+        ("Win+click", "Open in explainshell.com"),
+        ("Shift+Enter", "Send contents or selection"),
+        ("Alt+Shift+Enter", "Send command at cursor"),
+        ("Alt+Enter", "Enqueue command at cursor"),
+        ("Win+Shift+;", "View command history"),
+    ]);
+    v
+}
+
+/// The Help button's tooltip (`LCXIB:62`).
+pub const HELP_TIP: &str = "Describes how to use the composer.";
+/// The accessory row's right-aligned tip (`LCXIB:89`, "Press \u{21e7}\u{21a9} to send.").
+pub const SEND_TIP: &str = "Press Shift+Enter to send.";
+/// The AI completion warning (`LCXIB:98`); shown only with AI completions on, which Tandem
+/// does not have before milestone 12.
+pub const AI_WARNING: &str = "AI completion enabled: all text sent to AI";
+/// What the AI button, Win+Y and an AI completion answer until milestone 12.
+pub const AI_LATER: &str = "AI features come in milestone 12.";
+
+/// Whether the send tip shows at this accessory width (`LCVC:160-168`): hidden under 180
+/// points, or under 418 while the AI warning shows.
+pub fn send_tip_shows(width: f32, ai_warning: bool) -> bool {
+    !((ai_warning && width < 418.0) || width < 180.0)
+}
+
+/// The explainshell question (`CE:63-86`): its heading, and its permanent-silence key.
+pub const EXPLAIN_HEADING: &str = "Open ExplainShell?";
+pub const EXPLAIN_KEY: &str = "NoSyncExplainShell";
+
+/// The question's text (`CE:74`).
+pub fn explain_text(url: &str, browser: &str) -> String {
+    format!("This will open {url} in {browser}.")
+}
+
+/// `https://explainshell.com/explain?cmd=...` for `command` (`CE:66-73`, `URLQueryItem`
+/// encoding). Decision: `&`, `=`, `+` and `#` are percent-encoded too, so a command can never
+/// add a parameter or be cut short (`NSURLComponents` leaves `+` raw, which explainshell would
+/// read as a space) - cost if wrong: none.
+pub fn explain_url(command: &str) -> String {
+    let mut q = String::new();
+    for b in command.bytes() {
+        let keep = b.is_ascii_alphanumeric() || b"-._~!$'()*,;:@/?".contains(&b);
+        if keep {
+            q.push(b as char);
+        } else {
+            q.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("https://explainshell.com/explain?cmd={q}")
+}
+
+/// The command a Win+click at byte `at` of the command text asks explainshell about
+/// (`CTV:1045-1150`): `command_at`'s span with each continuation backslash and the line end
+/// after it turned into spaces (the only place iTerm2 rewrites them).
+pub fn explain_command(text: &str, at: usize) -> Option<String> {
+    let (_, raw) = command_at(text, at)?;
+    let mut out = String::with_capacity(raw.len());
+    let lines: Vec<&str> = raw.split_inclusive('\n').collect();
+    for (i, line) in lines.iter().enumerate() {
+        let body = line.strip_suffix('\n');
+        match body.and_then(|b| b.strip_suffix('\\')) {
+            Some(b) if i + 1 < lines.len() => {
+                out.push_str(b);
+                out.push_str("  ");
+            }
+            _ => out.push_str(line),
+        }
+    }
+    Some(out)
+}
+
+/// Key actions that send text (`iTermKeyBindingAction.m:526-543`, `sendsText`): a profile
+/// mapping to one of these is not run while the composer has the keyboard
+/// (`PS:24389-24407`). Codes from `iTermKeyBindingAction.h`: escape sequence, hex, text,
+/// ^H and ^? backspaces, run coprocess, vim text, the two Paste Specials, send snippet,
+/// compose, send tmux command, copy or send, paste or send, vim text without broadcasting.
+pub fn sends_text(action: i64) -> bool {
+    matches!(action, 10 | 11 | 12 | 16 | 17 | 35 | 38 | 41 | 42 | 63 | 64 | 65 | 69 | 70 | 76)
+}
+
+/// A composer Win chord (`CTV:610-638`, `PS:24608-24625`, `LCVC:361-377`), from the chord's
+/// key and exact modifiers (`c` the key's unshifted character, or an arrow).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Chord {
+    /// Win+Shift+Up or Down: the previous or next mark.
+    Mark { down: bool },
+    AdvancedPaste,
+    Ai,
+    Find,
+    Close,
+    History,
+}
+
+/// The composer chord for a Win chord (`key` the unshifted character, `up`/`down` an arrow;
+/// Win is implied), or None.
+pub fn chord(key: Option<char>, up: bool, down: bool, alt: bool, shift: bool, ctrl: bool) -> Option<Chord> {
+    if ctrl {
+        return None;
+    }
+    match (key.map(|c| c.to_ascii_lowercase()), up, down, alt, shift) {
+        (None, true, false, false, true) => Some(Chord::Mark { down: false }),
+        (None, false, true, false, true) => Some(Chord::Mark { down: true }),
+        (Some('v'), _, _, true, false) => Some(Chord::AdvancedPaste),
+        (Some('y'), _, _, false, false) => Some(Chord::Ai),
+        (Some('f'), _, _, false, false) => Some(Chord::Find),
+        (Some('w'), _, _, false, false) => Some(Chord::Close),
+        (Some(';'), _, _, false, true) => Some(Chord::History),
+        _ => None,
+    }
+}
+
+/// `chord` for a Win chord from the keyboard hook (None without Win).
+pub fn chord_of(c: &crate::menus::Chord) -> Option<Chord> {
+    use crate::menus::ChordKey;
+    if !c.cmd {
+        return None;
+    }
+    let key = match c.key {
+        ChordKey::Char(ch) => Some(ch),
+        _ => None,
+    };
+    chord(key, c.key == ChordKey::Up, c.key == ChordKey::Down, c.alt, c.shift, c.ctrl)
+}
+
+/// Where the dropdown's parts sit inside its panel (`MCXIB`, `LCXIB`; `scale` pixels per
+/// point): the close button 8 in from the right and 9 down; the editor's wrapper `INSET` in;
+/// in it the text 5 in from the sides, 11 from the top and 19 from the bottom, and the
+/// accessory row (27 high, its bottom 1 below the wrapper's) with the Help button (16 by 17,
+/// 5 up), the AI button (32 wide, 21 in) and the send tip's right edge 10 in from the
+/// wrapper's; the bottom drag handle 8 in, 6 up and 10 high.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layout {
+    pub panel: Rect,
+    pub close: Rect,
+    pub text: Rect,
+    pub accessory: Rect,
+    pub help: Rect,
+    pub ai: Rect,
+    pub handle: Rect,
+}
+
+pub fn layout(panel: Rect, scale: f32) -> Layout {
+    let s = scale;
+    let wrap = Rect { x: panel.x + INSET * s, y: panel.y + INSET * s, w: (panel.w - 2.0 * INSET * s).max(0.0), h: (panel.h - 2.0 * INSET * s).max(0.0) };
+    let bottom = wrap.y + wrap.h + s;
+    let accessory = Rect { x: wrap.x + 5.0 * s, y: bottom - 27.0 * s, w: (wrap.w - 15.0 * s).max(0.0), h: 27.0 * s };
+    let text = Rect { x: wrap.x + 5.0 * s, y: wrap.y + 11.0 * s, w: (wrap.w - 10.0 * s).max(0.0), h: (wrap.h - 30.0 * s).max(0.0) };
+    Layout {
+        panel,
+        close: Rect { x: panel.x + panel.w - (8.0 + CLOSE.0) * s, y: panel.y + 9.0 * s, w: CLOSE.0 * s, h: CLOSE.1 * s },
+        text,
+        accessory,
+        help: Rect { x: accessory.x - s, y: bottom - 22.0 * s, w: 16.0 * s, h: 17.0 * s },
+        ai: Rect { x: accessory.x + 21.0 * s, y: bottom - 27.0 * s, w: 32.0 * s, h: 27.0 * s },
+        handle: Rect { x: panel.x + 8.0 * s, y: panel.y + panel.h - 16.0 * s, w: (panel.w - 20.0 * s).max(0.0), h: 10.0 * s },
+    }
 }
 
 #[cfg(test)]
@@ -1211,5 +1429,51 @@ mod tests {
         let mut c = Composer::default();
         let lines = wrap(&c.edit.text, 1000.0, &w);
         assert_eq!(c.apply(Action::ControlIfEmpty(4), &lines, &w), vec![Act::Control(vec![4])]);
+    }
+
+    #[test]
+    fn geometry_follows_iterm2() {
+        let pane = |w: f32| Rect { x: 0.0, y: 0.0, w, h: 600.0 };
+        assert_eq!(minimal_rect(pane(800.0), 135.0, 0.0), Rect { x: 20.0, y: 0.0, w: 760.0, h: 135.0 });
+        assert_eq!(minimal_rect(pane(200.0), 135.0, 0.0).w, 217.0);
+        // An offset that would run past the bottom pushes it up to end at the bottom.
+        assert_eq!(minimal_rect(pane(800.0), 135.0, 500.0).y, 465.0);
+        assert_eq!(minimal_rect(pane(800.0), 135.0, 100.0).y, 100.0);
+        assert_eq!(clamp_height(10.0, 600.0), 62.0);
+        assert_eq!(clamp_height(900.0, 600.0), 592.0);
+        assert_eq!(clamp_height(200.0, 600.0), 200.0);
+
+        let plain = help_lines(false);
+        assert_eq!(plain.len(), 11);
+        assert_eq!(plain[0], ("Ctrl+Shift+Up", "Add cursor above"));
+        assert_eq!(plain[4], ("Win+F", "Open Find bar"));
+        assert_eq!(plain[10], ("Win+Shift+;", "View command history"));
+        let ai = help_lines(true);
+        assert_eq!(ai.len(), 12);
+        assert_eq!(ai[4], ("Win+Y", "Natural language AI lookup"));
+        assert_eq!(ai[5], ("Win+F", "Open Find bar"));
+
+        assert!(!send_tip_shows(179.0, false));
+        assert!(send_tip_shows(180.0, false));
+        assert!(!send_tip_shows(300.0, true));
+        assert!(send_tip_shows(420.0, true));
+        assert_eq!(SEND_TIP, "Press Shift+Enter to send.");
+        assert_eq!(AI_WARNING, "AI completion enabled: all text sent to AI");
+
+        assert_eq!(EXPLAIN_HEADING, "Open ExplainShell?");
+        assert_eq!(EXPLAIN_KEY, "NoSyncExplainShell");
+        assert_eq!(explain_url("ls -l"), "https://explainshell.com/explain?cmd=ls%20-l");
+        assert_eq!(explain_url("a&b=c+d#"), "https://explainshell.com/explain?cmd=a%26b%3Dc%2Bd%23");
+        assert_eq!(explain_text("https://x", "Edge"), "This will open https://x in Edge.");
+        // Continuations become spaces for explainshell; a following command is not included.
+        assert_eq!(explain_command("ls \\\n-l\nrm", 0).as_deref(), Some("ls   -l\n"));
+        assert_eq!(explain_command("", 0), None);
+
+        assert!(sends_text(12) && sends_text(64) && !sends_text(0) && !sends_text(25));
+        assert_eq!(chord(Some('y'), false, false, false, false, false), Some(Chord::Ai));
+        assert_eq!(chord(Some('v'), false, false, true, false, false), Some(Chord::AdvancedPaste));
+        assert_eq!(chord(None, true, false, false, true, false), Some(Chord::Mark { down: false }));
+        assert_eq!(chord(Some(';'), false, false, false, true, false), Some(Chord::History));
+        assert_eq!(chord(Some('c'), false, false, false, false, false), None);
     }
 }

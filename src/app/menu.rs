@@ -298,6 +298,11 @@ impl App {
         if self.toolbelt_chord(chord) {
             return;
         }
+        // A composer's own Win chords (Win+W closes a dropdown; Win+Y, Win+Alt+V, the marks,
+        // the history).
+        if self.composer_chord(chord) {
+            return;
+        }
         self.banners.clear("action");
         self.dispatch(crate::keyroute::press_from_chord(chord), None, None, Some(chord), event_loop);
     }
@@ -506,6 +511,9 @@ impl App {
                 }
             }
             "copy:" => {
+                if self.composer_copy_menu() {
+                    return;
+                }
                 if let Some(id) = self.focused_id() {
                     self.copy_selection(id);
                 }
@@ -520,14 +528,27 @@ impl App {
                     self.print(id, what);
                 }
             }
-            "paste:" => self.paste(),
+            "paste:" => {
+                if !self.composer_paste_menu() {
+                    self.paste();
+                }
+            }
             "pasteOptions:" => {
+                if self.composer_advanced_paste_menu() {
+                    return;
+                }
                 if let Some(id) = self.focused_id() {
                     self.open_advanced_paste(event_loop, id, None);
                 }
             }
             "openPasteHistory:" => self.open_paste_history(event_loop),
             "openCommandHistory:" => self.open_command_history(event_loop),
+            // View > Show Composer (enabled once `commands::DONE` lists it, milestone 9l Task 7).
+            "compose:" => {
+                if let Some(id) = self.focused_id() {
+                    self.compose(id);
+                }
+            }
             "openDirectories:" => self.open_recent_dirs(event_loop),
             "openAutocomplete:" => self.open_autocomplete(),
             "toggleShowClippings:" => self.toggle_clippings(),

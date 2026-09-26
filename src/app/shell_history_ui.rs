@@ -141,14 +141,30 @@ impl App {
     /// Session > Open Command History....
     pub(super) fn open_command_history(&mut self, event_loop: &ActiveEventLoop) {
         let Some(pane) = self.focused_id() else { return };
+        let typed = self.panes.get(&pane).and_then(|p| p.own().typed_command()).unwrap_or_default();
+        self.open_command_history_with(event_loop, pane, typed.trim_start(), false, false);
+    }
+
+    /// Command History for `prefix` (`openCommandHistoryWithPrefix:sortChronologically:
+    /// currentSessionOnly:`): newest first when `chronological` (else by frecency), and with
+    /// `session_only` only commands this session ran (the composer's Up and Down at its edges,
+    /// Ctrl+R and Win+Shift+;, `PS:24360-24364`).
+    pub(super) fn open_command_history_with(&mut self, event_loop: &ActiveEventLoop, pane: PaneId, prefix: &str, chronological: bool, session_only: bool) {
         if self.shell_integration_needed(pane) {
             return;
         }
-        let typed = self.panes.get(&pane).and_then(|p| p.own().typed_command()).unwrap_or_default();
         let host = self.history_host(pane);
         let (now, powers) = (unix(std::time::SystemTime::now()), self.powers());
-        let rows: Vec<(String, String)> = self.shell_history().commands(&host, typed.trim_start(), now, powers).into_iter().map(|(c, t)| (c, crate::paste_history::ago(t, now))).collect();
-        self.open_list_popup(event_loop, pane, "Command History", ["Command", "Last Used"], rows, PopupFor::Commands(typed.trim_start().to_string()));
+        let mut found = self.shell_history().commands(&host, prefix, now, powers);
+        if session_only {
+            let ran: std::collections::HashSet<String> = self.panes.get(&pane).map(|p| p.own().shell.history.iter().map(|r| r.command.trim().to_string()).collect()).unwrap_or_default();
+            found.retain(|(c, _)| ran.contains(c.trim()));
+        }
+        if chronological {
+            found.sort_by(|a, b| b.1.total_cmp(&a.1));
+        }
+        let rows: Vec<(String, String)> = found.into_iter().map(|(c, t)| (c, crate::paste_history::ago(t, now))).collect();
+        self.open_list_popup(event_loop, pane, "Command History", ["Command", "Last Used"], rows, PopupFor::Commands(prefix.to_string()));
     }
 
     /// Session > Open Recent Directories....
@@ -204,11 +220,19 @@ impl App {
             // Only what was not typed yet goes (iTerm2's CommandHistoryPopup).
             PopupFor::Commands(typed) => {
                 let rest = shell_history::remainder(value, typed);
+                // A shown dropdown takes the pick (`PS:20422-20425`).
+                if self.composer_shown(pane) {
+                    return self.composer_insert(pane, &rest);
+                }
                 self.user_write(pane, rest.as_bytes(), Write::SendText);
             }
             // At a prompt, the path shell-escaped (newlines too).
             PopupFor::Dirs => {
                 let Some(s) = self.panes.get(&pane).map(|p| p.own()) else { return };
+                if self.composer_shown(pane) {
+                    let text = shell_history::insertable_dir(value, s.shell.shell.as_deref());
+                    return self.composer_insert(pane, &text);
+                }
                 if s.at_prompt() == Some(true) {
                     let text = shell_history::insertable_dir(value, s.shell.shell.as_deref());
                     self.user_write(pane, text.as_bytes(), Write::SendText);

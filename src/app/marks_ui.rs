@@ -86,7 +86,7 @@ impl App {
         self.panes.get(&id).map_or(0, |p| -(p.screen.term().grid().display_offset() as i32))
     }
 
-    fn step_mark(&mut self, id: PaneId, forward: bool) {
+    pub(super) fn step_mark(&mut self, id: PaneId, forward: bool) {
         let Some(p) = self.panes.get_mut(&id) else { return };
         let marks = p.screen.marks_in_order();
         let lines: Vec<i32> = marks.iter().map(|(l, _)| *l).collect();
@@ -241,6 +241,8 @@ impl App {
 
     /// After new output: a new mark resets mark navigation, and alerts when asked to.
     pub(super) fn check_marks(&mut self) {
+        // The composer's queue: one command per new mark (`PS:16613-16617`).
+        self.drain_composer_queues();
         let active: Vec<PaneId> = self.tabs.get(self.active).map(|t| t.layout.panes()).unwrap_or_default();
         let offscreen = self.globals.bool("Alert On Marks in Offscreen Sessions");
         let mut alerts = Vec::new();
