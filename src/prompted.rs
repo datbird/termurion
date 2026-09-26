@@ -115,11 +115,23 @@ pub fn set_profile_decision(prevent: Option<bool>) -> Decision {
 }
 
 /// A path from a program that Tandem may touch: a local absolute path (`C:\...`). Network
-/// and device paths (`\\server\share`, `//host`, `\\?\`) are refused before any file is
-/// opened, since opening one sends the user's Windows credentials to that server.
+/// and device paths (`\\server\share`, `//host`, `/\host`, `\\?\`, `\??\UNC\`) are
+/// refused before any file is opened, since opening one sends the user's Windows
+/// credentials to that server. Only a drive letter start passes, so every `network_path`
+/// spelling fails here too.
 pub fn local_path_ok(path: &str) -> bool {
     let b = path.as_bytes();
-    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') && !network_path(path)
+}
+
+/// A path Windows would open on another computer or as a device: two leading separators
+/// in any mix of `\` and `/` (`\\host`, `//host`, `/\host`, `\/host`, `\\?\UNC\`,
+/// `\\.\`) or the NT prefix `\??\`. For values that are not required to be paths at all
+/// (config values), where `local_path_ok` would refuse too much.
+pub fn network_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    let sep = |c: u8| c == b'\\' || c == b'/';
+    (b.len() >= 2 && sep(b[0]) && sep(b[1])) || (b.len() >= 4 && sep(b[0]) && b[1] == b'?' && b[2] == b'?' && sep(b[3]))
 }
 
 /// A ReportVariable name Tandem will look up or ask about: letters, digits, `_`, and `.`.
@@ -432,6 +444,13 @@ mod tests {
         assert!(!local_path_ok("relative\\x.png"));
         assert!(!local_path_ok("\\rooted-no-drive.png"));
         assert!(!local_path_ok("C:relative.png"));
+        for p in ["/\\host\\s\\x", "\\/host/s/x", "\\??\\UNC\\host\\s", "\\\\?\\UNC\\host\\s", "\\\\.\\pipe\\x", "//host"] {
+            assert!(!local_path_ok(p), "{p}");
+            assert!(network_path(p), "{p}");
+        }
+        for p in ["C:\\x", "relative", "\\rooted", "/rooted", "https://example.com/x", "?"] {
+            assert!(!network_path(p), "{p}");
+        }
         let unc = serde_json::json!("\\\\attacker\\s\\x.png");
         assert_eq!(valid("Background Image Location", &unc), None);
         assert_eq!(valid("Background Image Folder Location", &unc), None);

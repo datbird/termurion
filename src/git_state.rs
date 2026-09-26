@@ -23,15 +23,20 @@
 //! (only when status rewrites the index, which `--no-optional-locks` stops), and the clean
 //! filters of `.gitattributes` drivers (`filter.<name>.clean`/`.process`, run when a file's
 //! stat data changed and git hashes it). `-c` has no wildcard, so every filter driver the
-//! repository's config defines is switched off by name. A lazy fetch of a partial clone is
-//! stopped with `GIT_NO_LAZY_FETCH`. Hooks, pagers, diff drivers and credential helpers are
-//! not reached by `status --porcelain`, `rev-parse` or `for-each-ref`.
+//! repository's config defines is switched off by name. A repository whose config defines a
+//! git-lfs extension is not polled (the trusted global lfs filter would run its command). A
+//! lazy fetch of a partial clone is stopped with `GIT_NO_LAZY_FETCH`; on git older than
+//! 2.44 a partial clone is not polled. `-c protocol.ext.allow=never` and
+//! `-c core.virtualFilesystem=` are defense in depth. Links inside the git directory must
+//! stay local too. Hooks, pagers, diff drivers and credential helpers are not reached by
+//! `status --porcelain`, `rev-parse` or `for-each-ref`. Menu commands never pass a branch
+//! that git could read as an option.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::prompted::local_path_ok;
+use crate::prompted::{local_path_ok, network_path};
 
 /// The repository operation in progress (libgit2's `git_repository_state`, folded as
 /// `GCL:660-689` folds it).
@@ -156,9 +161,11 @@ pub fn parse_porcelain(z: &[u8]) -> Option<GitState> {
 
 /// The operation in progress, from files in the git directory in libgit2's
 /// `git_repository_state` order. The caller has checked `git_dir` with `local_path_ok`.
+/// Links are not followed: a link is neither a file nor a folder here.
 pub fn repo_state(git_dir: &Path) -> RepoState {
-    let file = |p: &str| git_dir.join(p).is_file();
-    let dir = |p: &str| git_dir.join(p).is_dir();
+    let meta = |p: &str| std::fs::symlink_metadata(git_dir.join(p)).ok();
+    let file = |p: &str| meta(p).is_some_and(|m| m.is_file());
+    let dir = |p: &str| meta(p).is_some_and(|m| m.is_dir());
     if file("rebase-merge/interactive") || dir("rebase-merge") || file("rebase-apply/rebasing") {
         RepoState::Rebase
     } else if file("rebase-apply/applying") || dir("rebase-apply") {
@@ -200,8 +207,8 @@ pub trait GitRun: Send + Sync {
 
 /// The branch, counts and entries (`GCL:590-630` with the CLI). Every git line starts
 /// with `--no-optional-locks` and the same `-c` hardening: no fsmonitor hook, no implicit
-/// bare repository (a folder of repository files git would find on its own), and paths
-/// printed raw.
+/// bare repository (a folder of repository files git would find on its own), paths printed
+/// raw, no `ext::` transport, and no microsoft/git virtual filesystem hook.
 pub const STATUS_ARGS: &[&str] = &[
     "--no-optional-locks",
     "-c",
@@ -212,6 +219,10 @@ pub const STATUS_ARGS: &[&str] = &[
     "safe.bareRepository=explicit",
     "-c",
     "core.quotepath=false",
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "core.virtualFilesystem=",
     "status",
     "--porcelain=v2",
     "--branch",
@@ -231,6 +242,10 @@ pub const GIT_DIR_ARGS: &[&str] = &[
     "safe.bareRepository=explicit",
     "-c",
     "core.quotepath=false",
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "core.virtualFilesystem=",
     "rev-parse",
     "--absolute-git-dir",
 ];
@@ -245,6 +260,10 @@ pub const BRANCHES_ARGS: &[&str] = &[
     "safe.bareRepository=explicit",
     "-c",
     "core.quotepath=false",
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "core.virtualFilesystem=",
     "for-each-ref",
     "--count=8",
     "--sort=-committerdate",
@@ -257,26 +276,31 @@ pub const GIT_ENV: &[(&str, &str)] = &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIO
 /// repository than the one the checks looked at.
 pub const GIT_ENV_REMOVED: &[&str] =
     &["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"];
-/// Stdout kept from `rev-parse` and `for-each-ref`.
+/// Stdout kept from `rev-parse`, `for-each-ref` and `version`.
 const SMALL_CAP: usize = 64 * 1024;
+/// Stdout kept from `status`; a longer answer (about 80000 untracked files) is no state.
+pub const STATUS_CAP: usize = 4 * 1024 * 1024;
+/// The first git with `GIT_NO_LAZY_FETCH`.
+pub const NO_LAZY_FETCH_VERSION: (u32, u32) = (2, 44);
 /// The recent branches the menu offers (`GIT:361`).
 pub const MENU_BRANCHES: usize = 7;
 
 /// The git the status bar runs, from `gitSearchPath`: empty is `git` from PATH (see
 /// `find_git`), else the first `;`-separated folder's `git.exe`; a folder that fails
-/// `local_path_ok` is no git.
+/// `local_path_ok`, or with a link on the way to a network path, is no git.
 pub fn git_program(search_path: &str) -> Option<PathBuf> {
     let first = unquote(search_path.split(';').next().unwrap_or(""));
     if first.is_empty() {
         return Some(PathBuf::from("git"));
     }
-    local_path_ok(first).then(|| exe_in(first))
+    (local_path_ok(first) && links_local(&exe_in(first), 0)).then(|| exe_in(first))
 }
 
-/// `git.exe` in the first local PATH folder that has it. Network and relative folders are
-/// skipped without being looked at (a UNC entry probed on every poll would leak).
+/// `git.exe` in the first local PATH folder that has it. Network and relative folders, and
+/// folders reached through a link to a network path, are skipped without being looked in
+/// (a UNC entry probed on every poll would leak).
 pub fn find_git(path_var: &str, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
-    path_var.split(';').map(unquote).filter(|d| local_path_ok(d)).map(exe_in).find(|p| is_file(p))
+    path_var.split(';').map(unquote).filter(|d| local_path_ok(d)).map(exe_in).find(|p| links_local(p, 0) && is_file(p))
 }
 
 fn unquote(s: &str) -> &str {
@@ -304,15 +328,27 @@ pub fn timeout_of(setting: f64) -> Duration {
 /// git's `MAX_INCLUDE_DEPTH`, also the limit on links followed.
 const MAX_DEPTH: usize = 10;
 
+/// What the checks found in a repository that may be polled.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Vetted {
+    /// `-c` arguments that switch off the filter drivers the repositories' own config
+    /// defines.
+    pub args: Vec<String>,
+    /// A partial clone (`extensions.partialClone` or a `remote.*.promisor`): git may start
+    /// a lazy fetch, which only `GIT_NO_LAZY_FETCH` (git 2.44) stops.
+    pub partial_clone: bool,
+}
+
 /// The checks before any git run, in `dir` and every repository git could find above it
 /// (see the module comment). `None` refuses: git does not run and the component is empty,
-/// as for a folder outside any repository. `Some` holds the `-c` arguments that switch off
-/// the filter drivers the repositories' own config defines.
-pub fn vet_repo(dir: &Path) -> Option<Vec<String>> {
+/// as for a folder outside any repository.
+pub fn vet_repo(dir: &Path) -> Option<Vetted> {
     if !local_path_ok(dir.to_str()?) || !links_local(dir, 0) {
         return None;
     }
     let mut filters = BTreeSet::new();
+    let mut partial_clone = false;
+    let mut v = Vet { filters: &mut filters, partial_clone: &mut partial_clone };
     for a in dir.ancestors() {
         let dotgit = a.join(".git");
         if std::fs::symlink_metadata(&dotgit).is_ok() {
@@ -320,18 +356,24 @@ pub fn vet_repo(dir: &Path) -> Option<Vec<String>> {
                 return None;
             }
             if dotgit.is_dir() {
-                vet_git_dir(&dotgit, &mut filters)?;
+                vet_git_dir(&dotgit, a, &mut v)?;
             } else if dotgit.is_file() {
-                vet_git_dir(&gitdir_target(&dotgit)?, &mut filters)?;
+                vet_git_dir(&gitdir_target(&dotgit)?, a, &mut v)?;
             }
         }
         // A bare repository here: `safe.bareRepository=explicit` refuses it, but git reads
         // its config first.
         if a.join("HEAD").is_file() && a.join("config").is_file() {
-            vet_git_dir(a, &mut filters)?;
+            vet_git_dir(a, a, &mut v)?;
         }
     }
-    Some(filter_args(&filters))
+    Some(Vetted { args: filter_args(&filters), partial_clone })
+}
+
+/// What `vet_config` collects.
+struct Vet<'a> {
+    filters: &'a mut BTreeSet<String>,
+    partial_clone: &'a mut bool,
 }
 
 /// A `.git` file's `gitdir:` (a worktree or submodule), when it is relative or local.
@@ -344,7 +386,7 @@ fn gitdir_target(dotgit: &Path) -> Option<PathBuf> {
 /// `p` resolved against `base` when relative; an absolute `p` must be local. Either way no
 /// link on the way leaves this computer.
 fn local_target(base: &Path, p: &str) -> Option<PathBuf> {
-    if p.is_empty() {
+    if p.is_empty() || network_path(p) {
         return None;
     }
     let path = if is_relative(p) {
@@ -362,16 +404,43 @@ fn is_relative(p: &str) -> bool {
     !p.starts_with(['\\', '/']) && p.as_bytes().get(1) != Some(&b':')
 }
 
-/// A git directory's own files: its config (and a worktree's), its common directory's
-/// config, and the object alternates.
-fn vet_git_dir(git_dir: &Path, filters: &mut BTreeSet<String>) -> Option<()> {
+/// The folders whose entries git opens without the checks seeing each path: every entry
+/// of these must be a plain file or folder, or a link to a local path. Loose objects and
+/// nested refs are not listed (thousands of entries a poll); a link there still needs a
+/// hostile writer inside an already checked folder.
+const LISTED: &[&str] = &["", "objects", "objects/info", "objects/pack", "info", "refs", "refs/heads"];
+
+/// Every entry of `dir` is not a link, or a link to a local path. A folder that is not
+/// there has nothing to check.
+fn entries_local(dir: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else { return true };
+    for e in rd {
+        let Ok(e) = e else { return false };
+        let Ok(ft) = e.file_type() else { return false };
+        if ft.is_symlink() && !link_ok(&e.path(), 0) {
+            return false;
+        }
+    }
+    true
+}
+
+/// A git directory's own files: no link inside it to a network path, its config (and a
+/// worktree's), its common directory's, and the object alternates. `root` is the working
+/// tree folder git would run in, for relative config paths.
+fn vet_git_dir(git_dir: &Path, root: &Path, v: &mut Vet) -> Option<()> {
     let mut dirs = vec![git_dir.to_path_buf()];
+    if !entries_local(git_dir) {
+        return None;
+    }
     if let Some(text) = read_optional(&git_dir.join("commondir"))? {
         dirs.push(local_target(git_dir, text.trim())?);
     }
     for d in &dirs {
-        vet_config(&d.join("config"), filters, 0)?;
-        vet_config(&d.join("config.worktree"), filters, 0)?;
+        if !LISTED.iter().all(|sub| entries_local(&d.join(sub))) {
+            return None;
+        }
+        vet_config(&d.join("config"), root, v, 0)?;
+        vet_config(&d.join("config.worktree"), root, v, 0)?;
         let objects = d.join("objects");
         if let Some(text) = read_optional(&objects.join("info").join("alternates"))? {
             for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
@@ -382,35 +451,55 @@ fn vet_git_dir(git_dir: &Path, filters: &mut BTreeSet<String>) -> Option<()> {
     Some(())
 }
 
-/// One config file: no value that names a network path, filter driver names `-c` can
-/// carry, and each included file checked the same way.
-fn vet_config(file: &Path, filters: &mut BTreeSet<String>, depth: usize) -> Option<()> {
+/// A path value from a config file, as git resolves it: `~/` is the user's folder, a
+/// relative path is against `base`. `%(prefix)` and `~user` are refused.
+fn config_path(v: &str, base: &Path) -> Option<PathBuf> {
+    if let Some(rest) = v.strip_prefix("~/").or_else(|| v.strip_prefix("~\\")) {
+        let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
+        local_target(Path::new(&home), rest)
+    } else if v.starts_with('~') || v.starts_with("%(") {
+        None
+    } else {
+        local_target(base, v)
+    }
+}
+
+/// One config file: no value that names a network path, path-valued keys with no link to
+/// one, filter driver names `-c` can carry, no git-lfs extension (the trusted global lfs
+/// filter would run its command), whether it is a partial clone, and each included file
+/// checked the same way.
+fn vet_config(file: &Path, root: &Path, v: &mut Vet, depth: usize) -> Option<()> {
     if depth > MAX_DEPTH {
         return None;
     }
     let Some(text) = read_optional(file)? else { return Some(()) };
+    let here = file.parent()?;
     for e in config_entries(&text)? {
-        let v = e.value.trim();
-        if v.starts_with("\\\\") || v.starts_with("//") {
+        let val = e.value.trim();
+        if network_path(val) {
             return None;
         }
-        if e.section == "filter" {
-            let name = e.sub.as_deref().unwrap_or("");
-            if name.is_empty() || name.contains(['=', '\n', '\r', '\0']) {
-                return None;
+        let sub = e.sub.as_deref().unwrap_or("");
+        match (e.section.as_str(), e.key.as_str()) {
+            ("filter", _) => {
+                if sub.is_empty() || sub.contains(['=', '\n', '\r', '\0']) {
+                    return None;
+                }
+                v.filters.insert(sub.to_string());
             }
-            filters.insert(name.to_string());
-        }
-        if (e.section == "include" || e.section == "includeif") && e.key == "path" {
-            let target = if let Some(rest) = v.strip_prefix("~/").or_else(|| v.strip_prefix("~\\")) {
-                let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
-                local_target(Path::new(&home), rest)?
-            } else if v.starts_with('~') || v.starts_with("%(") {
-                return None;
-            } else {
-                local_target(file.parent()?, v)?
-            };
-            vet_config(&target, filters, depth + 1)?;
+            ("lfs", _) if sub.to_ascii_lowercase().starts_with("extension") => return None,
+            ("extensions", "partialclone") | ("remote", "promisor") => *v.partial_clone = true,
+            ("core", "attributesfile" | "excludesfile" | "hookspath") if !val.is_empty() => {
+                config_path(val, root)?;
+            }
+            ("core", "worktree") if !val.is_empty() => {
+                config_path(val, here)?;
+            }
+            ("include" | "includeif", "path") => {
+                let target = config_path(val, here)?;
+                vet_config(&target, root, v, depth + 1)?;
+            }
+            _ => {}
         }
     }
     Some(())
@@ -464,6 +553,9 @@ fn link_ok(p: &Path, depth: usize) -> bool {
     let Some(t) = target.to_str() else { return false };
     // `read_link` gives `\\?\C:\x` for an absolute target.
     let t = t.strip_prefix(r"\\?\").or_else(|| t.strip_prefix(r"\??\")).filter(|r| local_path_ok(r)).unwrap_or(t);
+    if network_path(t) {
+        return false;
+    }
     if is_relative(t) {
         p.parent().is_some_and(|base| links_local(&base.join(t), depth + 1))
     } else {
@@ -608,22 +700,30 @@ pub struct Fetched {
 /// Exit 128 (not a repository, or `safe.directory` refused it) is no state, not a timeout.
 pub fn fetch_state(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) -> Fetched {
     let start = Instant::now();
+    let left = || timeout.saturating_sub(start.elapsed());
     let none = Fetched::default();
     let timed_out = Fetched { state: None, timed_out: true };
-    let Some(extra) = vet_repo(dir) else { return none };
-    let mut state = match run.run(git, dir, &with_extra(STATUS_ARGS, &extra), timeout, None) {
-        RunResult::Exit { code: 0, stdout, .. } => match parse_porcelain(&stdout) {
+    let Some(vet) = vet_repo(dir) else { return none };
+    match lazy_fetch_safe(run, git, dir, &vet, left()) {
+        Some(true) => {}
+        Some(false) => return none,
+        None => return timed_out,
+    }
+    if left().is_zero() {
+        return timed_out;
+    }
+    let mut state = match run.run(git, dir, &with_extra(STATUS_ARGS, &vet.args), left(), Some(STATUS_CAP)) {
+        RunResult::Exit { code: 0, stdout, capped: false } => match parse_porcelain(&stdout) {
             Some(s) => s,
             None => return none,
         },
         RunResult::TimedOut => return timed_out,
         _ => return none,
     };
-    let left = timeout.saturating_sub(start.elapsed());
-    if left.is_zero() {
+    if left().is_zero() {
         return timed_out;
     }
-    match run.run(git, dir, &with_extra(GIT_DIR_ARGS, &extra), left, Some(SMALL_CAP)) {
+    match run.run(git, dir, &with_extra(GIT_DIR_ARGS, &vet.args), left(), Some(SMALL_CAP)) {
         RunResult::Exit { code: 0, stdout, capped: false } => {
             let d = String::from_utf8_lossy(&stdout).trim().to_string();
             if local_path_ok(&d) && links_local(Path::new(&d), 0) {
@@ -639,11 +739,56 @@ pub fn fetch_state(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) 
 /// The 8 most recently committed branches, newest first; none when git may not run or
 /// fails.
 pub fn recent_branches(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) -> Vec<String> {
-    let Some(extra) = vet_repo(dir) else { return Vec::new() };
-    match run.run(git, dir, &with_extra(BRANCHES_ARGS, &extra), timeout, Some(SMALL_CAP)) {
+    let start = Instant::now();
+    let Some(vet) = vet_repo(dir) else { return Vec::new() };
+    if lazy_fetch_safe(run, git, dir, &vet, timeout) != Some(true) {
+        return Vec::new();
+    }
+    let left = timeout.saturating_sub(start.elapsed());
+    match run.run(git, dir, &with_extra(BRANCHES_ARGS, &vet.args), left, Some(SMALL_CAP)) {
         RunResult::Exit { code: 0, stdout, .. } => parse_branches(&stdout),
         _ => Vec::new(),
     }
+}
+
+/// Whether git cannot start a lazy fetch here: not a partial clone, or a git that honors
+/// `GIT_NO_LAZY_FETCH`. An older git, or one whose version cannot be read, refuses the
+/// repository (the fetch would run its remote's transport, `uploadpack` or
+/// `core.sshCommand`). `None` when asking for the version timed out.
+fn lazy_fetch_safe(run: &dyn GitRun, git: &Path, dir: &Path, vet: &Vetted, timeout: Duration) -> Option<bool> {
+    if !vet.partial_clone {
+        return Some(true);
+    }
+    match git_version(run, git, dir, timeout) {
+        Ok(v) => Some(v >= NO_LAZY_FETCH_VERSION),
+        Err(true) => None,
+        Err(false) => Some(false),
+    }
+}
+
+/// `git version`'s major and minor, asked once per git program and remembered. `Err(true)`
+/// when it timed out (not remembered, so a later poll asks again).
+fn git_version(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) -> Result<(u32, u32), bool> {
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, Option<(u32, u32)>>>> = std::sync::OnceLock::new();
+    let known = KNOWN.get_or_init(Default::default);
+    if let Some(v) = known.lock().unwrap_or_else(|e| e.into_inner()).get(git) {
+        return v.ok_or(false);
+    }
+    let v = match run.run(git, dir, &["version".to_string()], timeout, Some(SMALL_CAP)) {
+        RunResult::Exit { code: 0, stdout, .. } => parse_git_version(&stdout),
+        RunResult::TimedOut => return Err(true),
+        _ => None,
+    };
+    known.lock().unwrap_or_else(|e| e.into_inner()).insert(git.to_path_buf(), v);
+    v.ok_or(false)
+}
+
+/// `git version 2.43.0.windows.1` as `(2, 43)`.
+pub fn parse_git_version(stdout: &[u8]) -> Option<(u32, u32)> {
+    let text = String::from_utf8_lossy(stdout);
+    let v = text.strip_prefix("git version ")?.split_whitespace().next()?;
+    let mut parts = v.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
 
 /// `GPW`'s cache TTL.
@@ -783,11 +928,15 @@ pub struct Polls {
     pub invalidate: Option<String>,
 }
 
-/// The knob as a cadence: 0 reads as 1 (`GIT:245-247`); so do a negative or non-number
-/// value, which would make the timer spin.
+/// The knob as a cadence: 0 reads as 1 (`GIT:245-247`). iTerm2 has no other floor (only
+/// NSTimer's 0.1 ms); Tandem floors at 1 s (controller ruling), so a tiny or non-number
+/// value cannot make the timer spin on the UI thread.
 fn cadence_of(knob: f64) -> f64 {
-    if knob.is_finite() && knob > 0.0 { knob.min(1e9) } else { 1.0 }
+    if knob.is_finite() && knob > 0.0 { knob.clamp(MIN_CADENCE, 1e9) } else { 1.0 }
 }
+
+/// The shortest polling interval, in seconds.
+const MIN_CADENCE: f64 = 1.0;
 
 impl GitPoller {
     /// Disabled until `set_enabled`, the timer started at `cadence` (`GP:24-34`).
@@ -859,9 +1008,11 @@ impl GitPoller {
         let invalidate = self.fire_limiter(now);
         let mut request = None;
         if now >= self.next_fire {
-            while self.next_fire <= now {
-                self.next_fire += self.interval;
-            }
+            // The first fire time after `now` on the timer's grid, in one step however late
+            // the tick is.
+            let every = self.interval.as_nanos().max(1);
+            let late = now.duration_since(self.next_fire).as_nanos() % every;
+            self.next_fire = now + Duration::from_nanos((every - late) as u64);
             request = self.poll(gate, now);
         }
         Polls { request, invalidate }
@@ -1100,16 +1251,16 @@ pub enum GitCommand {
 }
 
 impl GitCommand {
-    /// git's arguments (none for Debug Info).
+    /// git's arguments (none for Debug Info). A branch is never read as an option.
     pub fn args(&self) -> Vec<String> {
         let v: &[&str] = match self {
             GitCommand::Commit => &["commit"],
             GitCommand::AddCommit => &["commit", "-a"],
             GitCommand::Stash => &["stash"],
             GitCommand::Log => &["log"],
-            GitCommand::Push(b) => return vec!["push".into(), "origin".into(), b.clone()],
-            GitCommand::Pull(b) => return vec!["pull".into(), "origin".into(), b.clone()],
-            GitCommand::Checkout(b) => return vec!["checkout".into(), b.clone()],
+            GitCommand::Push(b) => return vec!["push".into(), "origin".into(), ref_arg(b)],
+            GitCommand::Pull(b) => return vec!["pull".into(), "origin".into(), ref_arg(b)],
+            GitCommand::Checkout(b) => return vec!["checkout".into(), ref_arg(b)],
             GitCommand::Debug => &[],
         };
         v.iter().map(|s| s.to_string()).collect()
@@ -1133,6 +1284,14 @@ impl GitCommand {
     }
 }
 
+/// A branch as an argument git cannot read as an option. A hostile repository's HEAD can
+/// name `refs/heads/--upload-pack=x`, and `--` or `--end-of-options` do not help (pull
+/// rebuilds fetch's argument list without them; checkout reads `--` as pathspecs), so a
+/// name starting with `-` goes as its full ref name. The menu never offers one.
+fn ref_arg(branch: &str) -> String {
+    if branch.starts_with('-') { format!("refs/heads/{branch}") } else { branch.to_string() }
+}
+
 /// A menu row; a disabled one shows but does nothing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GitItem {
@@ -1142,20 +1301,22 @@ pub struct GitItem {
 }
 
 /// The menu for a state with a branch (`GIT:343-404`); `None` is a separator. The branch
-/// list is cut to 7 before the current branch is skipped (iTerm2's, kept).
+/// list is cut to 7 before the current branch is skipped (iTerm2's, kept). A branch whose
+/// name starts with `-` is never offered: Push and Pull are disabled, and Check out skips it.
 pub fn git_menu(state: &GitState, branches: &[String]) -> Vec<Option<GitItem>> {
     let item = |title: &str, enabled: bool, command: GitCommand| Some(GitItem { title: title.to_string(), enabled, command });
     let b = &state.branch;
+    let safe = !b.starts_with('-');
     let mut m = vec![
         item("Commit", state.dirty, GitCommand::Commit),
         item("Add & Commit", state.dirty, GitCommand::AddCommit),
         item("Stash", state.dirty, GitCommand::Stash),
         item("Log", true, GitCommand::Log),
-        item(&format!("Push origin {b}"), ns_integer(&state.ahead) > 0 || state.ahead == "error", GitCommand::Push(b.clone())),
-        item(&format!("Pull origin {b}"), !state.dirty, GitCommand::Pull(b.clone())),
+        item(&format!("Push origin {b}"), (ns_integer(&state.ahead) > 0 || state.ahead == "error") && safe, GitCommand::Push(b.clone())),
+        item(&format!("Pull origin {b}"), !state.dirty && safe, GitCommand::Pull(b.clone())),
         None,
     ];
-    for other in branches.iter().take(MENU_BRANCHES).filter(|o| !o.is_empty() && *o != b) {
+    for other in branches.iter().take(MENU_BRANCHES).filter(|o| !o.is_empty() && *o != b && !o.starts_with('-')) {
         m.push(item(&format!("Check out {other}"), true, GitCommand::Checkout(other.clone())));
     }
     m.push(None);
@@ -1216,7 +1377,7 @@ mod tests {
     }
 
     fn sub(args: &[String]) -> String {
-        args.iter().find(|a| matches!(a.as_str(), "status" | "rev-parse" | "for-each-ref")).cloned().unwrap_or_default()
+        args.iter().find(|a| matches!(a.as_str(), "status" | "rev-parse" | "for-each-ref" | "version")).cloned().unwrap_or_default()
     }
 
     fn exit(out: &[u8]) -> RunResult {
@@ -1321,6 +1482,9 @@ mod tests {
     }
 
     #[test]
+    // The file-backed checks need real local paths: `local_path_ok` accepts only drive
+    // paths, so on Linux every temp folder is refused (the suite runs on Windows).
+    #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
     fn git_never_runs_off_local_paths() {
         let fake = Fake::new(|_| exit(PORC));
         for d in [r"\\server\share\repo", "//server/share/repo", r"\\?\C:\x", r"\\?\UNC\server\share"] {
@@ -1375,6 +1539,9 @@ mod tests {
     }
 
     #[test]
+    // The file-backed checks need real local paths: `local_path_ok` accepts only drive
+    // paths, so on Linux every temp folder is refused (the suite runs on Windows).
+    #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
     fn repo_config_cannot_run_programs_or_reach_shares() {
         let fake = Fake::new(|_| exit(PORC));
         let d = temp_repo("filters");
@@ -1427,19 +1594,25 @@ mod tests {
     }
 
     #[test]
+    // The file-backed checks need real local paths: `local_path_ok` accepts only drive
+    // paths, so on Linux every temp folder is refused (the suite runs on Windows).
+    #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
     fn fetch_state_shares_one_deadline() {
         let d = temp_repo("deadline");
         let mut fake = Fake::new(|s| if s == "status" { exit(PORC) } else { exit(b"") });
         fake.delay = ms(50);
         assert_eq!(fetch_state(&fake, Path::new(GIT), &d, 4 * SEC), fetched(Some(main_state()), false));
         let calls = fake.calls();
-        assert_eq!((sub(&calls[0].0).as_str(), calls[0].1), ("status", 4 * SEC));
+        assert_eq!(sub(&calls[0].0), "status");
+        assert!(calls[0].1 <= 4 * SEC && calls[0].1 > 3 * SEC, "status gets what the checks left: {:?}", calls[0].1);
         assert_eq!(sub(&calls[1].0), "rev-parse");
         assert!(calls[1].1 <= 4 * SEC - ms(50) && calls[1].1 > 3 * SEC, "{:?}", calls[1].1);
 
         let not_repo = Fake::new(|_| RunResult::Exit { code: 128, stdout: Vec::new(), capped: false });
         assert_eq!(fetch_state(&not_repo, Path::new(GIT), &d, 4 * SEC), fetched(None, false));
         assert_eq!(not_repo.calls().len(), 1);
+        let huge = Fake::new(|_| RunResult::Exit { code: 0, stdout: PORC.to_vec(), capped: true });
+        assert_eq!(fetch_state(&huge, Path::new(GIT), &d, 4 * SEC), fetched(None, false), "a capped status is no state");
         let failed = Fake::new(|_| RunResult::Failed("no git".into()));
         assert_eq!(fetch_state(&failed, Path::new(GIT), &d, 4 * SEC), fetched(None, false));
         let slow = Fake::new(|_| RunResult::TimedOut);
@@ -1605,6 +1778,18 @@ mod tests {
         p.set_cadence(0.0);
         assert_eq!(p.cadence, 1.0, "an interval of 0 is 1");
         assert_eq!(GitPoller::new(0.0, t0).cadence, 1.0);
+        for knob in [1e-12, 0.5, f64::NAN, -2.0, f64::INFINITY] {
+            p.set_cadence(knob);
+            assert_eq!(p.cadence, 1.0, "{knob} floors at 1 s");
+        }
+        // However late the tick, the catch-up is one step onto the timer's grid.
+        let mut tiny = GitPoller::new(1e-12, t0);
+        tiny.set_enabled(true);
+        tiny.set_directory(Some("C:\\r".into()), &visible(), t0);
+        tiny.bump(&visible(), t0);
+        let late = t0 + Duration::from_secs(10_000_000) + ms(250);
+        tiny.tick(&visible(), late);
+        assert_eq!(tiny.next_due(), Some(t0 + Duration::from_secs(10_000_001)));
 
         // Cache invalidation on a directory change, at most every 0.5 s.
         let t = t0 + 20 * SEC;
@@ -1749,6 +1934,16 @@ This often happens in very large repositories or when the working tree is on a s
             .collect();
         assert_eq!(buried, [false, false, true, false, true, true, true, false]);
 
+        // A branch named like an option is never offered, and never passed as one.
+        let evil = GitState { branch: "--upload-pack=tools/evil".into(), ahead: "1".into(), ..Default::default() };
+        let m = titles(&git_menu(&evil, &s(&["-x", "ok", "--exec=y"])));
+        assert_eq!(m[4], t("Push origin --upload-pack=tools/evil", false));
+        assert_eq!(m[5], t("Pull origin --upload-pack=tools/evil", false));
+        assert_eq!(&m[6..9], [None, t("Check out ok", true), None]);
+        assert_eq!(GitCommand::Pull("--upload-pack=x".into()).args(), s(&["pull", "origin", "refs/heads/--upload-pack=x"]));
+        assert_eq!(GitCommand::Push("-x".into()).args(), s(&["push", "origin", "refs/heads/-x"]));
+        assert_eq!(GitCommand::Checkout("-x".into()).args(), s(&["checkout", "refs/heads/-x"]));
+
         assert_eq!(cancel_title("Committing\u{2026}"), "Cancel Committing");
         assert_eq!(remote_command(&s(&["checkout", "my branch"])), "git checkout my\\ branch");
         assert_eq!(remote_command(&s(&["checkout", "a$b\nc"])), "git checkout a\\$b\\\nc");
@@ -1781,6 +1976,90 @@ This often happens in very large repositories or when the working tree is on a s
         assert_eq!((s.lines_inserted, s.lines_deleted, s.files_added, s.files_modified, s.files_deleted), (10, 4, 1, 2, -3));
         v.insert("gitAdds".into(), "many".into());
         assert_eq!(remote_state(&v).unwrap().adds, 0, "integerValue of text is 0");
+    }
+
+    #[test]
+    // The file-backed checks need real local paths: `local_path_ok` accepts only drive
+    // paths, so on Linux every temp folder is refused (the suite runs on Windows).
+    #[cfg_attr(not(windows), ignore = "needs a drive-letter temp folder")]
+    fn hostile_repos_are_not_polled() {
+        let refused = |name: &str, file: &str, text: &str| {
+            let d = temp_repo(name);
+            let p = d.join(".git").join(file);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, text).unwrap();
+            let ok = repo_path_ok(&d);
+            fs::remove_dir_all(&d).unwrap();
+            !ok
+        };
+        // git-lfs, trusted globally, runs extension commands from the repository's config.
+        assert!(refused("lfs-ext", "config", "[lfs \"extension.foo\"]\n\tclean = evil %f\n"));
+        assert!(refused("lfs-legacy", "config", "[lfs.extension.bar]\n\tsmudge = evil\n"));
+        let d = temp_repo("lfs-included");
+        fs::write(d.join(".git").join("config"), "[include]\n\tpath = x.cfg\n").unwrap();
+        fs::write(d.join(".git").join("x.cfg"), "[lfs \"Extension.z\"]\n\tclean = evil\n").unwrap();
+        assert!(!repo_path_ok(&d), "an lfs extension in an included file");
+        fs::remove_dir_all(&d).unwrap();
+        assert!(!refused("lfs-url", "config", "[lfs]\n\turl = https://example.com/lfs\n"), "other lfs keys are fine");
+
+        // Every spelling Windows opens as a share.
+        for v in ["/\\\\server\\\\share\\\\a", "\\\\/server/share/a", "\\\\??\\\\UNC\\\\server\\\\s", "\\\\\\\\?\\\\UNC\\\\server\\\\s"] {
+            assert!(refused("mixed", "config", &format!("[core]\n\tattributesFile = {v}\n")), "{v}");
+        }
+        assert!(refused("mixed-inc", "config", "[include]\n\tpath = /\\\\server/x\n"));
+        assert!(refused("mixed-any", "config", "[remote \"x\"]\n\turl = \\\\/server/x\n"), "any value, not only path keys");
+        assert!(!refused("local-paths", "config", "[core]\n\texcludesFile = ~/.gitignore_global\n\tattributesFile = .gitattributes-local\n\thooksPath = C:/hooks\n"));
+
+        // A partial clone on git without GIT_NO_LAZY_FETCH is not polled; on 2.44 it is.
+        let d = temp_repo("partial");
+        fs::write(d.join(".git").join("config"), "[extensions]\n\tpartialClone = origin\n").unwrap();
+        assert!(vet_repo(&d).unwrap().partial_clone);
+        let old = Fake::new(|s| if s == "version" { exit(b"git version 2.43.0.windows.1\n") } else { exit(PORC) });
+        let old_git = Path::new("C:\\old\\git.exe");
+        assert_eq!(fetch_state(&old, old_git, &d, 4 * SEC), fetched(None, false));
+        assert!(recent_branches(&old, old_git, &d, 4 * SEC).is_empty());
+        assert_eq!(old.calls().iter().map(|(a, _)| sub(a)).collect::<Vec<_>>(), ["version"], "asked once, then remembered");
+        let new = Fake::new(|s| if s == "version" { exit(b"git version 2.44.1\n") } else { exit(PORC) });
+        assert_eq!(fetch_state(&new, Path::new("C:\\new\\git.exe"), &d, 4 * SEC), fetched(Some(main_state()), false));
+        fs::write(d.join(".git").join("config"), "[remote \"origin\"]\n\tpromisor = true\n").unwrap();
+        assert!(vet_repo(&d).unwrap().partial_clone);
+        assert_eq!(fetch_state(&old, old_git, &d, 4 * SEC), fetched(None, false));
+        let slow = Fake::new(|_| RunResult::TimedOut);
+        assert_eq!(fetch_state(&slow, Path::new("C:\\slow\\git.exe"), &d, 4 * SEC), fetched(None, true));
+        fs::write(d.join(".git").join("config"), "[core]\n\tbare = false\n").unwrap();
+        assert!(!vet_repo(&d).unwrap().partial_clone);
+        assert_eq!(parse_git_version(b"git version 2.45.2\n"), Some((2, 45)));
+        assert_eq!(parse_git_version(b"nonsense"), None);
+        fs::remove_dir_all(&d).unwrap();
+
+        // Every git line carries the transport and virtual filesystem overrides.
+        for base in [STATUS_ARGS, GIT_DIR_ARGS, BRANCHES_ARGS] {
+            assert!(base.contains(&"protocol.ext.allow=never") && base.contains(&"core.virtualFilesystem="));
+        }
+    }
+
+    /// A link inside `.git` to a share is refused before anything reads through it. Making
+    /// a symbolic link needs Developer Mode or the privilege; without it that half is
+    /// skipped. A junction (no privilege needed) to a local folder is fine.
+    #[cfg(windows)]
+    #[test]
+    fn links_inside_git_dir_stay_local() {
+        let d = temp_repo("links");
+        let local = temp("links-target");
+        let junction = d.join(".git").join("objects");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&local).output().unwrap();
+        assert!(made.status.success(), "{made:?}");
+        assert!(repo_path_ok(&d), "a local junction");
+        fs::remove_dir(&junction).unwrap();
+        if std::os::windows::fs::symlink_file("\\\\server\\share\\config", d.join(".git").join("config")).is_ok() {
+            assert!(!repo_path_ok(&d), "config linked to a share");
+            fs::remove_file(d.join(".git").join("config")).unwrap();
+        }
+        if std::os::windows::fs::symlink_dir("\\\\server\\share\\pack", d.join(".git").join("pack-link")).is_ok() {
+            assert!(!repo_path_ok(&d), "any entry linked to a share");
+        }
+        let _ = fs::remove_dir_all(&d);
+        fs::remove_dir_all(&local).unwrap();
     }
 
     #[test]
