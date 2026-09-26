@@ -255,7 +255,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Toolbelt default width | DefaultToolbeltWidth | Default pixel width of the Toolbelt side panel (default 250). | missing | Tandem has no Toolbelt panel. |
+| Toolbelt default width | Default Toolbelt Width | Default point width of the Toolbelt side panel (default 250). | have | Milestone 9j: the real key has a space in it, not `DefaultToolbeltWidth`; read on a window's first show, written by Set Default Width from the panel's current width. |
 | Left (side) tab bar width | LeftTabBarWidth | Pixel width of the tab bar when positioned on the left/right side of the window (default 150). | missing |  |
 | Size changes affect profile | SizeChangesAffectProfile | When resizing a window, also updates the profile's saved default size. | missing |  |
 | Alert on marks in offscreen sessions | AlertOnMarksInOffscreenSessions | Shows a system notification when a shell-integration success/failure mark appears in a session that isn't visible. | missing | Requires shell integration marks. |
@@ -913,8 +913,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | windowBorderColorUnfocused | windowBorderColorUnfocused (string, default @"") | Border color for unfocused windows. | missing |  |
 | useShortcutAccessoryViewController | useShortcutAccessoryViewController (bool, default YES) | Show window number in titlebar accessory? | missing |  |
 | includeShortcutInWindowsMenu | includeShortcutInWindowsMenu (bool, default YES) | Include keyboard shortcut for windows in Window menu? | missing |  |
-| toolbeltFontSize | toolbeltFontSize (float, default 0) | Toolbelt font size in points. | missing |  |
-| toolbeltFont | toolbeltFont (string, default @"Menlo") | Toolbelt font family name. | missing |  |
+| toolbeltFontSize | toolbeltFontSize (float, default 0) | Toolbelt font size in points. | have | Milestone 9j: 0 means 11 points, as in iTerm2; a change takes effect only when a window's other fonts are next re-applied. |
+| toolbeltFont | toolbeltFont (string, default @"Menlo") | Toolbelt font family name. | have | Milestone 9j: the named family when installed, else Consolas (Windows' monospaced system font, standing in for iTerm2's system-font fallback). |
 | fakeNotchHeight | fakeNotchHeight (float, default 0) | Simulated notch height. | missing |  |
 | splitPaneColor | splitPaneColor (string, default @"") | Custom color for split pane dividers. | partial |  |
 | splitPaneDividerWidth | splitPaneDividerWidth (float, default 0) | Custom width for split pane dividers in points (1-5). | partial |  |

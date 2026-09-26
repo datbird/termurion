@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 168 | 125 | 21 |
-| `02-global-settings.md` | 820 | 237 | 71 | 512 |
-| `03-features-and-menus.md` | 643 | 396 | 35 | 212 |
-| Total | 1,777 | 801 | 231 | 745 |
+| `01-profile-settings.md` | 314 | 169 | 124 | 21 |
+| `02-global-settings.md` | 820 | 240 | 71 | 509 |
+| `03-features-and-menus.md` | 643 | 408 | 35 | 200 |
+| Total | 1,777 | 817 | 230 | 730 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -99,7 +99,18 @@ UI thread with the git CLI standing in for libgit2 (porcelain v2 status, rev-par
 repo-operation files), hardened against hostile repo config and UNC paths anywhere on the way, with
 the timeout warning, iTerm2's click menu (Commit, Add & Commit, Stash, Log, Push, Pull, Check out,
 Show Debug Info) run through single-use windows and a small tandem-git.exe wrapper, a Log popover,
-and the user.git* session variables for a remote host.
+and the user.git* session variables for a remote host. Milestone 9j: the toolbelt, a native sidebar
+panel (quads and text, no egui) drawn at the right of each window, taken from the window's own room
+before the panes and the tmux size report, with iTerm2's geometry (width clamp, growth and shrink at
+the screen edge, Default Toolbelt Width, Set Default Width), split view (collapse, expand, divider
+drag, saved per-window proportions), the hamburger tool picker, View > Toolbelt (Show Toolbelt,
+Set Default Width), window arrangements, toolbeltFont/toolbeltFontSize, and the Open Toolbelt profile
+setting; and the seven tools iTerm2 ships (Actions, Command History, Named Marks, Paste History,
+Profiles, Recent Directories, Snippets) with their rows, search fields, buttons, click and
+double-click rules, modifiers, context menus, alerts, and undo, each keeping iTerm2's own small bugs
+(the Snippets reorder index, Command History's unescaped Option-cd, the proportions prefix match, the
+close glyph hiding the toolbelt everywhere). Captured Output, Session Status, Jobs, Notes, Codecierge
+and the dynamic web tools stay missing for milestone 9k.
 
 ## Order
 

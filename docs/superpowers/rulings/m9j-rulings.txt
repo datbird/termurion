@@ -1,0 +1,131 @@
+Plan: Ruling: the toolbelt and its lists are drawn natively (quads and text rows); no egui in the terminal window - cost if wrong: this milestone's whole rendering approach would need to move to an egui overlay.
+Plan: Ruling: 9j shows seven tools; the menu and the hamburger list only them; stored names of other tools stay in ToolbeltTools untouched - cost if wrong: a foreign tool name a user already saved is left alone and simply reappears once a later milestone adds that tool.
+Plan: Ruling: toolbeltFont is used when installed, else Consolas (Windows' monospaced system font); size 0 is 11 points; title bars use the prose font at 13 points - cost if wrong: the wrong font shows in the panel until fixed, cosmetic only.
+Plan: Ruling: glyphs are Segoe Fluent Icons (close E711, hamburger E712, Send/Apply/Open E768, Advanced Paste E77F, Add E710, Remove E738, Edit E70F, Clear E74D, Help E897, snippet E8BD, folder E8B7, disclosure E76C/E70D) - cost if wrong: a mismatched icon glyph, cosmetic only.
+Plan: Ruling: background is #252528 in dark mode, white in light mode, no vibrancy; selection color is rgb(17,108,214) - cost if wrong: a visual mismatch with iTerm2's own vibrancy look, no functional effect.
+Plan: Ruling: the panel's room is subtracted in window_area; banners and the tab bar keep their places - cost if wrong: a pane could be drawn under the toolbelt, or tmux could be told the wrong size.
+Plan: Ruling: only a Normal or No Title Bar window that is not maximized, full screen, minimized or size-locked grows for the toolbelt; other windows give the toolbelt content room instead - cost if wrong: a maximized or full-screen window resizes unexpectedly when the toolbelt is shown or hidden.
+Plan: Ruling: Show Toolbelt and Set Default Width stay enabled always; with no tools Show Toolbelt shows the empty label, and Set Default Width does nothing while hidden - cost if wrong: a menu item stays enabled in a case where iTerm2 would grey it out; no crash either way.
+Plan: Ruling: a click in a tool's field or list takes the keyboard; a click in a terminal, or Esc, gives it back; Tab moves between field and list; Ctrl, Alt and Win chords pass except Ctrl+V into a field; Win+Z undoes the last Snippets or Actions change while that tool has the keyboard - cost if wrong: a chord meant for the app is swallowed by a tool, or a tool leaks keys to the shell.
+Plan: Ruling: Ctrl+click toggles a row and Shift+click extends; the Profiles double-click with Ctrl still means a horizontal split - cost if wrong: list selection would not match ordinary Windows list conventions.
+Plan: Ruling: alerts are MessageBox OK/Cancel (close_ui::confirm) with iTerm2's heading and text - cost if wrong: an alert looks like a plain Windows box instead of iTerm2's own sheet, but reads the same text either way.
+Plan: Ruling: Add and Edit open Settings > Shortcuts with the existing sheet open; no new editors are built for the toolbelt - cost if wrong: a duplicate editor UI would need to be built and kept in sync with Settings.
+Plan: Ruling: Snippets' Shift path shows COMPOSER_REFUSAL in an info bar with OK (the 9h precedent) until 9l - cost if wrong: none, matches the existing precedent until the Composer milestone closes it.
+Plan: Ruling: Named Marks has no in-place editing; Edit and Enter open the Set Named Mark prompt with the name; renaming adds no annotation (Tandem's Set Named Mark adds none) - cost if wrong: none, matches Tandem's own existing Set Named Mark flow.
+Plan: Ruling: Profiles has no tags pane; the "Toolbelt" arrangement dictionary is kept as read and written back unchanged - cost if wrong: the arrangement dictionary could drift from what iTerm2 expects on a shared arrangement file.
+Plan: Ruling: no drag to other applications and no text drop onto Snippets (no OLE drag and drop); reorder within Actions and the Snippets root only - cost if wrong: a user who expects to drag a snippet or profile to another app finds it unsupported.
+Plan: Ruling: no tooltips (the scene has none): Recent Directories' full-path tooltip and the Profiles row tooltip are dropped - cost if wrong: a user loses the full path or profile name on hover in a narrow panel.
+Plan: Ruling: the Paste History secure-keyboard warning never shows (Windows has no Secure Keyboard Entry) - cost if wrong: none, Windows has no such feature to warn about.
+Plan: Ruling: the Command History prefixes are drawn through font fallback; the April 1 variant is kept - cost if wrong: a system missing the fallback glyph shows a box instead of the intended icon on that one day.
+Plan: Ruling: directory abbreviation splits on / and \; a Windows drive path keeps its own form without the leading "/" - cost if wrong: a drive path renders with a stray leading slash.
+Plan: Ruling: tmux's per-window toolbelt= setting is parsed and ignored as today, not written (deferred) - cost if wrong: none now; a tmux session's own toolbelt state is simply not restored from that variable until a later milestone writes it.
+Plan: Ruling: Snippet folders start collapsed; their state is per window and not saved - cost if wrong: a user's expanded folders reset every launch, cosmetic only.
+Plan: Ruling: a Command History use is this session's when the focused pane's own shell.history has that command at that start time; its mark is the one with that command and start - cost if wrong: a row shows as this session's own bold entry when it was actually run elsewhere, or the reverse.
+Plan: Ruling: parity rows are found by title, not by line number - cost if wrong: none, matches the 9i precedent for line-number drift across edits.
+
+Task 1: Ruling: stored_names keeps every string in the array, including duplicates and unknown tool names, per the brief's ruling that Tandem does not drop unknown names on read (unlike iTerm2); shown_tools is what filters to the seven known tools for display - cost if wrong: low; a stray duplicate name would only matter once toggle_name/persistence logic reads it, and toggle_name already treats an exact-string match as present so a duplicate collapses to one entry on toggle.
+Task 1: Ruling: read_arrangement takes &Value (the whole window value) rather than &Table, matching the existing convention in src/arrangement.rs (window_facts(w: &Value)) - cost if wrong: none, matches the brief's literal signature.
+Task 1: Ruling: menu_order sorts ToolId::ALL by name().to_lowercase() comparison rather than a locale-aware localizedStandardCompare equivalent, since the seven names are plain ASCII and a lowercase ordinal sort produces the same order as iTerm2's for this fixed set - cost if wrong: none observable now; would only diverge if a tool name changed to include non-ASCII or numerals, which none do.
+Task 1: minor (deferred): names_value has no direct test.
+Task 1: minor (deferred): toggle_name removes every duplicate entry (report said "collapsed to one").
+
+Task 2: Ruling: proportions example follows iTerm2 source (282/118, minimum enforced) over brief's 300/100 - source wins (invariant 7) - cost if wrong: none, matches iTerm2.
+Task 2: minor (deferred): apply_proportions with a prefix list leaves heights short of total (Task 5 must call resize after apply_proportions).
+Task 2: minor (deferred): apply_proportions gives a collapsed wrapper a proportional height until next resize.
+Task 2: minor (deferred): stored collapsed height can drift from 22 vs drawn height.
+Task 2: minor (deferred): empty label hides under 16 inner width (source), report did not say so.
+Task 2: minor (deferred): 1 point divider hit area; consider slop in the app task.
+Task 2: minor (deferred): reconcile test does not assert the 400/max(1,n-1) initial height.
+Task 2: minor (deferred): no RED run captured.
+
+Task 3: Ruling: ListHit has both Empty (inside the list, on no row) and Nothing (outside the list, field, buttons and popup entirely), where clippings::Hit only has one Nothing for both cases - cost if wrong: a consumer that only matches Nothing still compiles (a strict superset of information); one that assumed clippings' single-Nothing semantics would need to add an Empty arm, a one-line fix.
+Task 3: Ruling: Selection::step's empty-selection start point is direction-aware (Down starts at row 0, Up at the last row), by symmetry; only the Down-from-none case is named in the brief - cost if wrong: a tool's first Up press with nothing selected lands on a different row than iTerm2's own list; a one-line fix once a real tool exercises it.
+Task 3: Ruling: ToolButton::AdvancedPaste label "Advanced Paste" kept (labels are accessibility text only; no tooltips drawn) - cost if wrong: a label string differs from iTerm2's "Open in Advanced Paste", invisible on screen.
+Task 3: Ruling: a tool's own popup menu (ListSpec::popup_w, ListLayout::popup) has no geometry spec in the brief or the Resume notes for this task; placed right-aligned at the list's top, one strip tall, purely so hit's Popup arm is exercised and reachable - cost if wrong: the first tool that actually uses a popup (Profiles' Open menu, most likely) overrides the position in its own layout call; no test depends on the exact rectangle.
+Task 3: Ruling: Selection::click's Shift-anchor is only updated on a plain click (no Ctrl, no Shift); a Ctrl-click leaves the anchor where it was - untested by the brief either way; matches ordinary Windows list-view behavior.
+Task 3: Ruling: Field::key's catch-all arm (Left, Right, Delete, Paste, and Up/Down without arrows_to_list) returns Kept, since Field tracks no caret position - cost if wrong: a later task wires real caret editing into Field and this arm gets split up; no interface change needed.
+Task 3: minor (deferred): first_if_none untested.
+Task 3: minor (deferred): popup rect geometry is a placeholder.
+
+Task 4: Ruling: command: also matches profile name (iTerm2 ProfileModel.m behavior, verified by review) - cost if wrong: none.
+Task 4: Ruling: kept titleEqualsValueUpToLength:40 in snippet_text (the source short-circuits to the 40-cut value whenever the 40-truncated title equals the 40-truncated value, not just when the title is literally empty); cost if wrong is low (it only changes rows where a snippet's title and value are identical up to 40 chars, an edge case not in the named tests either way).
+Task 4: Ruling: Windows drive-path display form in dir_text is a best-effort rule (a path whose first component matches [A-Za-z]: joins with \ and has no leading /); everything else keeps the POSIX form - cost if wrong: isolated to this one untested formatting corner for Windows paths in the Recent Directories row text.
+Task 4: Ruling: mark_rows' "(Unnamed)" substitutes only for None, not for Some(""), matching ToolNamedMarks.swift's nil-coalescing (not an empty-string check) - cost if wrong: low, a mark explicitly named with an empty string would show blank instead of "(Unnamed)".
+Task 4: Ruling: move_actions/move_snippets share a private generic move_items helper reproducing iTermActionsModel.m's and iTermSnippetsModel.m's identical algorithm; move_snippets alone applies iTerm2's kept bug of using the outline child index directly as an index into the unfiltered list - cost if wrong: none, this is the bug being kept, not fixed.
+Task 4: minor (deferred): profile_matches command: splits on whitespace only (iTerm2 also splits on non-alphanumerics); anchored queries diverge.
+Task 4: minor (deferred): DirTree::safe marks off-tree components unsafe (iTerm2 nil = safe); unreachable today.
+Task 4: minor (deferred): dir_components comment omits the \ separator change.
+
+Task 5: Ruling: arrangement without "Hiding Toolbelt Should Resize Window" restores false (PT:4201-4202, confirmed by review); screen-edge rule (initial_hiding_resizes) applies to a NEW window after Open Toolbelt, measured on the grown frame (PT:782-787,1061-1076) - cost if wrong: hide shrinks or not in edge cases.
+Task 5: Ruling: Open Toolbelt also applies to hotkey windows (iTerm2 fires on any 0->1 tab window, PT:8200-8207), but a hotkey window never grows; restored arrangements use their own "Has Toolbelt" key instead - cost if wrong: a hotkey window opens with a toolbelt when its profile says so.
+Task 5: Ruling: initial_hiding_resizes uses a fabs distance (iTerm2 PT:1068) - cost if wrong: a window past the screen edge shrinks on hide.
+Task 5: Ruling: source over brief on restore, source wins per invariant 7: an arrangement without "Hiding Toolbelt Should Resize Window" restores the flag as false, so toolbelt::initial_hiding_resizes is unused for restored windows - cost if wrong: a hand-made or foreign arrangement with the toolbelt and no key does not shrink the window on hide.
+Task 5: Ruling: BeltDraw carries three fields beyond the brief's (title_widths, empty lines with widths, text_scale), since the scene cannot measure text and the app must truncate, wrap and measure - cost if wrong: an interface shape change Task 6 must follow.
+Task 5: Ruling: Belt has one private extra field proportions_tried so the saved proportions apply exactly once per window, or not at all when an arrangement brought its own - cost if wrong: none visible.
+Task 5: Ruling: added Renderer::set_toolbelt_size and toolbelt_px beyond the brief's named family setter and width; toolbelt_width(text, scale) measures at the toolbelt size times the DPI scale - cost if wrong: a rename in Task 6.
+Task 5: Ruling: show_growth's view width is the inner width plus the toolbelt width (the view if fully grown), all in points - cost if wrong: the 0.5 cap on an overage-reduced width differs by the decoration width.
+Task 5: Ruling: hiding shrinks by the panel's current width (points), not the stored width, since the stored width can sit over the clamp - cost if wrong: none unless the window was resized narrower than twice the width in between.
+Task 5: Ruling: the stored width is never re-clamped on window resize (the clamp applies at layout), so a window that shrinks then grows back gets its toolbelt width back; iTerm2 constrains the stored width - cost if wrong: minor width difference after a resize.
+Task 5: Ruling: a handle drag redraws on move and relayouts (ptys, tmux) on release, per the brief, while the Clippings handle relayouts on every move - cost if wrong: panes show their old grid size during the drag.
+Task 5: Ruling: the split is reconciled and resized on every relayout even while hidden, using the room's height - cost if wrong: none.
+Task 5: Ruling: the hamburger's menu is placed at the button's bottom-left in client pixels (like the status bar menus) - cost if wrong: menu offset.
+Task 5: Ruling: #[allow(dead_code)] on ToolState, Belt.tools and BeltDrag::Row (Task 6 reads/constructs them), removed when Task 6 landed - cost if wrong: none.
+Task 5: Ruling: a press in the panel with a non-left button is swallowed (nothing happens), a press anywhere else clears belt.focus - cost if wrong: Task 6's context menus need to hook the right button there.
+Task 5: Ruling: glyphs are drawn at the title's 13 pt size, centered by an estimated advance (line height / 1.2) - cost if wrong: the glyph sits a pixel or two off center.
+Task 5: Ruling: Open Toolbelt is checked only where the window profile step runs (new, non-arranged, non-hotkey windows), as the brief places it - cost if wrong: an arrangement with one tab and an Open Toolbelt profile does not open it (iTerm2's tab-count hook might).
+Task 5: Ruling: the tmux guard relies on Windows applying request_inner_size synchronously; if it ever does not, the size looks unchanged and the old immediate relayout runs (the safe fallback) - cost if wrong: the transient size report returns in that case only.
+Task 5: minor (deferred): show_growth view width passes inner+width, iTerm2 uses inner+width-overage (half cap slightly generous on narrow windows).
+Task 5: minor (deferred): divider slop press jumps divider up to 3 points on first move (no grab offset).
+Task 5: minor (deferred): float_of duplicates apply_fonts' float closure.
+Task 5: minor (deferred): "Toolbelt" arrangement dict written only when one was read (iTerm2 always writes); add a checklist line.
+Task 5: minor (deferred): no unit tests for divider slop/handle precedence or restore flag rule.
+Task 5: minor (deferred): scene::toolbelt has unused scale param.
+Task 5: minor (deferred): if Windows does not apply the resize synchronously the old immediate relayout (transient tmux size) runs.
+Task 5: minor (deferred -> carried to Task 6): opens_on_first_tab doc comment sits above new_window_hiding_resizes.
+
+Task 6: Ruling: Enter with Ctrl/Alt and lone modifier keys are kept by a focused tool (NSSearchField takes Return with modifiers; nothing reaches the shell) - cost if wrong: Ctrl+Enter does not reach the shell while a tool has focus. Checklist lines.
+Task 6: Ruling: three source-over-brief layout/behavior departures accepted (popup opens at once, Command History Help/Clear right of field, Profiles popup in bottom row) - verified by review.
+Task 6: Ruling: Return (Enter) is taken with Ctrl or Alt held, and list_key maps it with any modifiers; the one exception to "Ctrl/Alt chords pass", because Profiles opens by the modifiers on Return and Snippets does the same in Task 7 - cost if wrong: Ctrl+Enter or Alt+Enter would reach the shell again while a tool has the keyboard; a one-line change in toolbelt_key and list_key.
+Task 6: Ruling: modifier keys alone (Shift, Ctrl, Alt, Win) are swallowed while a tool has the keyboard, otherwise a kitty-mode app would see modifier press and release reports; a Ctrl+C chord still reaches the app, without the Ctrl press report before it - cost if wrong: a kitty app misses a modifier report during tool typing.
+Task 6: Ruling: Esc clears non-empty text first in every field (field_rules), not only in Profiles, since NSSearchField's own cancel clears the text and only Profiles' field overrides that to pass Esc on when empty - cost if wrong: in Command History and Recent Directories, Esc with text would need a second press to give the keyboard back.
+Task 6: Ruling: source over brief: choosing a Profiles popup item opens the selected profiles at once and also remembers the pick for Open, since the NSPopUpButton items carry the open actions - cost if wrong: remove one open_profiles call in tool_menu_picked.
+Task 6: Ruling: tool_rows takes what the tool shows plus a visible range instead of the brief's tool_rows(tool, width), because Command History can hold thousands of uses and would be measured every frame otherwise - cost if wrong: an interface rename only.
+Task 6: Ruling: toolbelt_key takes event_loop as well as the brief's ev, because Return activation (tool_activate) takes one - cost if wrong: none at runtime.
+Task 6: Ruling: toolbelt:ctx: is routed inside toolbelt_picked, which run_menu_id already calls for every toolbelt: id; menu.rs needed no change - cost if wrong: none.
+Task 6: Ruling: "scrolled to the end unless the list has the keyboard" is applied when the row count changes (tracked in ToolState::seen), not on every frame, so the wheel can still scroll a list without the keyboard; applies to Paste History, Command History and Recent Directories - cost if wrong: a list that grows while the user reads it with the wheel jumps to the end.
+Task 6: Ruling: every activation (double-click, Return, the Open button, a popup pick) gives the keyboard back to the session; the brief says this for Command History and Recent Directories, and it is extended here to Profiles (the new session is focused) and Paste History (the paste lands in the session) - cost if wrong: the tool keeps the keyboard after a paste or an open.
+Task 6: Ruling: a left click on the empty part of a list clears the selection and takes the keyboard, as NSTableView does - cost if wrong: small.
+Task 6: Ruling: a Ctrl+double-click on a Profiles row puts the row back into the selection before opening, since the second click's Ctrl toggle would otherwise remove it, and Ctrl+double-click still means a horizontal split - cost if wrong: none found.
+Task 6: Ruling: the Profiles tag line uses the prose (system) font, 2 points smaller than the toolbelt font, or 3 points smaller when the toolbelt font is over 11 points; rows are the toolbelt line plus a 2 point inset above and below - cost if wrong: visual only.
+Task 6: Ruling: the field shows the tail of its text that fits, with the caret after it; search fields have no placeholder text - cost if wrong: visual only.
+Task 6: Ruling: the Command History row click finds the mark through p.screen.marks_in_order(), matching the trimmed command and the start time, since CommandRecord and Mark share one SystemTime::now() so the unix seconds compare exactly - cost if wrong: a click does not scroll the pane.
+Task 6: Ruling: the Paste History menu ids carry the entry's index, oldest first, and the Toggle Star id carries the path - cost if wrong: if the history changes while its menu is open, Copy could act on the neighboring entry.
+Task 6: Ruling: belt_keys is app-wide, not per window, so a key pressed in one window and released after a switch still pairs correctly, and losing focus clears it anyway - cost if wrong: none found.
+Task 6: Ruling: open_profiles still builds the Profiles rows directly, since it is a one-off action, not per frame - cost if wrong: none.
+Task 6: Ruling: row heights and tool_list::layout still run over every row each frame, since this is plain arithmetic over one float per row with no text measured or formatted - cost if wrong: a very long list costs a small amount of CPU per frame.
+Task 6: Ruling: the date is read on every tool_shown call for Command History, since GetLocalTime is a cheap call and a timer would add a new moving part - cost if wrong: one system call per frame while Command History shows.
+Task 6: minor (deferred): Paste History scroll-to-end keyed on row count; a full list does not jump to a new entry.
+Task 6: minor (deferred): POPUP_FILL sentinel 10000.0.
+Task 6: minor (deferred): unused event_loop params in tool_activate/tool_button.
+Task 6: minor (deferred): fit_end quadratic measure.
+Task 6: minor (deferred): row menu ids carry an index that can drift if history changes while the menu is open.
+
+Task 7: Ruling: snippet "searching" is per snippet (source iTermToolSnippets.m:692) = query or profile Snippets Filter non-empty - cost if wrong: row text cut to 40 in a slightly different case.
+Task 7: Ruling: Named Marks key uses a live row scan every frame while that tool is shown (a counter cannot see scrollback eviction without patching the vendored grid) - cost if wrong: CPU per frame with huge scrollback while Named Marks is visible.
+Task 7: Ruling: Backspace removes as well as Delete, since iTerm2 checks kVK_Delete (the Mac delete key, which is Windows' Backspace) while Windows lists use Delete - cost if wrong: Backspace in a focused list would do nothing instead.
+Task 7: Ruling: Actions' Add and Edit push an undo when the Settings sheet's OK changes the actions; the toolbelt records the actions and its window when it opens the sheet, and settle_action_undo runs on the next GlobalsChanged once no action sheet is open, pushing the recorded actions onto that window's Actions undo if they differ - cost if wrong: after a Cancel, a later Settings table edit of the actions would also become undoable from the toolbelt (it still restores the true earlier list).
+Task 7: Ruling: Win+Z with Snippets or Actions focused is consumed even when that tool's undo stack is empty - cost if wrong: none (Edit > Undo does nothing in sessions).
+Task 7: Ruling: a row drag moves the selection as it stands after the press; a plain press on a row of a multi-selection first reduces the selection to that row (Windows list click rule) - cost if wrong: dragging a multi-selection needs Ctrl or Shift held on the press.
+Task 7: Ruling: a drop's place is the half of the row under the pointer (above or below); Snippets refuse any gap whose next row is inside a folder; the list's end is a root drop; there is no drop "on" a row - cost if wrong: dropping onto a folder in iTerm2 is refused anyway, so only the end-of-open-folder case can differ.
+Task 7: Ruling: activating a snippet or an action gives the keyboard back to the session (Task 6's rule for activations) - cost if wrong: the tool keeps focus in iTerm2 after Send; a one-line change.
+Task 7: Ruling: Snippets' Left and Right only close and open the selected folder; NSOutlineView's Left-to-parent and Right-to-first-child moves are not done - cost if wrong: keyboard navigation in deep trees is one step longer.
+Task 7: Ruling: snippet rows get no disclosure-column indent at their depth; only folders draw the disclosure glyph - cost if wrong: visual only.
+Task 7: Ruling: removing a named mark leaves any notes on its line (iTerm2 removes the line's annotations); Tandem's Set Named Mark adds none, so a note there is the user's own - cost if wrong: a user note would survive where iTerm2 deletes it.
+Task 7: Ruling: Named Marks list marks whose name is Some; an empty name shows as empty text, following marks[row].name ?? "(Unnamed)" in the source - cost if wrong: visual only.
+Task 7: Ruling: the Help info bar shows SEARCH_HELP with its line breaks turned into spaces, since info bars are one line - cost if wrong: visual only.
+Task 7: Ruling: show_shortcuts_editor queues the sheet for the next Settings frame, since it has no globals for the actions and edit_snippet(Some(i), ..) has no snippets, so the sheet is filled by fill_snippet_editor inside page() - cost if wrong: none (the sheet opens one frame later).
+Task 7: minor (deferred): Actions undo recorded at sheet open outlives a Cancel (next Settings edit becomes toolbelt-undoable; stale snapshot across windows).
+Task 7: minor (deferred): Enter on Named Marks renames with several rows selected (Edit button needs exactly one).
+Task 7: minor (deferred): Snippets Advanced Paste with no clipboard opens on old clipboard text (same as Edit > Snippets).
+Task 7: minor (deferred): Settings snippet edit tied to row index, not guid.
+Task 7: minor (deferred): live_named_marks, prune_marks, marks_in_order each re-derive the live set.

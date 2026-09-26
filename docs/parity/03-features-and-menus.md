@@ -152,8 +152,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 |---|---|---|---|
 | View > Show Tabs in Fullscreen | Cmd+U | Toggles whether the tab bar is shown while in full screen mode. (milestone 7) | missing |
 | View > Toggle Full Screen | Ctrl+Cmd+F | Toggles native full screen mode for the window. | have |
-| View > Toolbelt > Show Toolbelt | Cmd+B | Shows or hides the Toolbelt sidebar of utility panels. (milestone 9) | missing |
-| View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. (milestone 9) | missing |
+| View > Toolbelt > Show Toolbelt | Shift+Cmd+B | Shows or hides the Toolbelt sidebar of utility panels. (milestone 9) | have |
+| View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. (milestone 9) | have |
 | View > Use Transparency | Cmd+U | Toggles background transparency for the window. (milestone 7) | missing |
 | View > Disable Transparency for Active Window | no shortcut | Forces the current window to be opaque regardless of the profile setting. (milestone 7) | missing |
 | View > Zoom In on Selection | Opt+Cmd+Z | Temporarily enlarges the pane to focus on the current selection. (milestone 4) | partial |
@@ -254,7 +254,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 ### Toolbelt menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| Toolbelt (menu location) | no shortcut | In this iTerm2 build the Toolbelt commands live under View > Toolbelt rather than a standalone top-level menu; see Show Toolbelt and Set Default Width in the View menu above. | missing |
+| Toolbelt (menu location) | no shortcut | In this iTerm2 build the Toolbelt commands live under View > Toolbelt rather than a standalone top-level menu; see Show Toolbelt and Set Default Width in the View menu above. | have |
 
 ### Window menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
@@ -498,20 +498,20 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### toolbelt
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Toolbelt | Toolbelt panel | A dockable sidebar panel hosting a stack of tool widgets, shown/hidden per window. | missing | |
-| Toolbelt | Actions tool | Lists user-defined quick actions, same actions as the status bar Action Menu, for one-click invocation. | missing | |
-| Toolbelt | Captured Output tool | Lists text captured by Capture Output triggers, with click-to-jump to the source line. | missing | |
-| Toolbelt | Command History tool | Lists commands run in the session, from shell integration prompt marks, searchable, grouped by host. | missing | |
-| Toolbelt | Named Marks tool | Lists user-named marks (bookmarked lines) for quick navigation. | missing | |
-| Toolbelt | Session Status tool | Shows live status/state info about the current session. | missing | |
-| Toolbelt | Recent Directories tool | Lists recently visited, and optionally starred/pinned, working directories, click to cd or open. | missing | |
-| Toolbelt | Jobs tool | Lists running child processes/jobs in the current session, with the ability to signal/kill them. | missing | |
-| Toolbelt | Notes tool | A free-form notes pane, either global or scoped per session. | missing | |
-| Toolbelt | Paste History tool | Lists recently pasted text snippets for reuse, disabled automatically when secure keyboard entry is on. | missing | |
-| Toolbelt | Profiles tool | Lists all saved profiles with buttons to open one in a new tab, window, or split. | missing | |
-| Toolbelt | Snippets tool | Lists saved reusable text snippets to insert into the session. | missing | |
-| Toolbelt | Codecierge tool | An AI assistant panel that suggests or walks through commands, part of iTerm2's AI features. | missing | |
-| Toolbelt | Dynamic web tools | User-added tools that embed an arbitrary web page inside the toolbelt as a persistent panel. | missing | |
+| Toolbelt | Toolbelt panel | A dockable sidebar panel hosting a stack of tool widgets, shown/hidden per window. | have | Milestone 9j: drawn natively (quads and text, no egui) at the right of the window, full height below the tab bar, its room subtracted from window_area before panes and the tmux size report; width clamp max(min(w, view*0.5), min(100, view*0.05)), Default Toolbelt Width read on first show; showing grows the window by the width, or shrinks the toolbelt at the screen edge past the 100 point floor and leaves the window otherwise; hiding shrinks only a window that grew; split view with bottom-up collapse, top-down expand, divider drag, and saved per-window proportions (a saved list that is a prefix of the tools still applies, kept iTerm2 quirk); hamburger tool picker; persisted in window arrangements. Kept iTerm2 bug: the only tool's close glyph hides the toolbelt in every window, not just its own. |
+| Toolbelt | Actions tool | Lists user-defined quick actions, same actions as the status bar Action Menu, for one-click invocation. | have | Milestone 9j: titles ("Untitled" when empty), Apply (play) on the left, Edit (pencil)/Remove/Add on the right; Apply needs one or more rows selected, Edit exactly one; Apply or double-click runs each selected action through its own apply mode; Remove, Delete/Backspace, Add, Edit, and reorder (drop above a row only) each push an undo that Win+Z pops while the tool has the keyboard. |
+| Toolbelt | Captured Output tool | Lists text captured by Capture Output triggers, with click-to-jump to the source line. | missing | milestone 9k |
+| Toolbelt | Command History tool | Lists commands run in the session, from shell integration prompt marks, searchable, grouped by host. | have | Milestone 9j: every use for the session's host, oldest first, case-sensitive filter; double-click inserts the command, Option "cd " + dir (kept iTerm2 bug: not shell-escaped), Shift appends a newline; a selection scrolls to the mark; Clear asks "Erase Command History". Source departure, kept: Help and Clear sit to the right of the field instead of their own row. Kept iTerm2 bug: a nonzero exit gets a text prefix, swapped for an April Fools variant on April 1. |
+| Toolbelt | Named Marks tool | Lists user-named marks (bookmarked lines) for quick navigation. | have | Milestone 9j: one row per named mark in buffer order, "(Unnamed)" for no name; a selection jumps to the mark, no double-click; Edit (exactly one) and Enter open the Set Named Mark prompt prefilled with the current name (no in-place editing); Add runs Add Named Mark; Remove and Delete remove the mark itself. Ruling: the key scans every row each frame while the tool shows, since Tandem's grid keeps no eviction counter for scrollback trimming. |
+| Toolbelt | Session Status tool | Shows live status/state info about the current session. | missing | milestone 9k |
+| Toolbelt | Recent Directories tool | Lists recently visited, and optionally starred/pinned, working directories, click to cd or open. | have | Milestone 9j: host directories best-first then reversed, case-insensitive filter, star/plain prefix with per-letter abbreviation kept unambiguous across every host's directory tree; double-click inserts the escaped path, Option "cd " first, Shift a newline; menu Toggle Star; Clear asks "Erase Saved Directories?" with no further text. |
+| Toolbelt | Jobs tool | Lists running child processes/jobs in the current session, with the ability to signal/kill them. | missing | milestone 9k |
+| Toolbelt | Notes tool | A free-form notes pane, either global or scoped per session. | missing | milestone 9k |
+| Toolbelt | Paste History tool | Lists recently pasted text snippets for reuse, disabled automatically when secure keyboard entry is on. | have | Milestone 9j: oldest first, newlines turned to spaces, cut to 256 characters with no ellipsis; no search field, no help button; Clear asks "Erase Paste History"; double-click sets the clipboard and pastes. Ruling: the secure-keyboard warning never shows (Windows has no Secure Keyboard Entry). |
+| Toolbelt | Profiles tool | Lists all saved profiles with buttons to open one in a new tab, window, or split. | have | Milestone 9j: search field with tag:/name:/command: tokens (command: also matches the profile name, per source), multi-select rows with tags on a second line, no shortcut column, no tags pane; New Tab/New Window/New Horizontal Split/New Vertical Split/Open popup, each disabled with nothing selected; double-click opens a split/window/tab per Ctrl/Option/Shift, for every selected profile. Source departure, kept: choosing a popup item opens the selected profiles at once, not only remembers the pick. |
+| Toolbelt | Snippets tool | Lists saved reusable text snippets to insert into the session. | have | Milestone 9j: search field and Help; tree with untagged snippets before folders, folders sorted case-insensitively, folders start collapsed and not saved; Send/Advanced Paste on the left, Edit/Remove/Add on the right, each needing their own selection counts; Option wins over Shift on double-click, Send and Return (Advanced Paste vs Composer, which shows the milestone 9h refusal text until 9l); Remove and Delete push undo, the root-only drag reorder does not. Kept iTerm2 bug: a root reorder passes the outline child index straight into the unfiltered list. |
+| Toolbelt | Codecierge tool | An AI assistant panel that suggests or walks through commands, part of iTerm2's AI features. | missing | milestone 9k |
+| Toolbelt | Dynamic web tools | User-added tools that embed an arbitrary web page inside the toolbelt as a persistent panel. | missing | milestone 9k |
 
 ### triggers
 | Subsystem | Feature | What it does | Tandem status | Windows note |
@@ -557,7 +557,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Marks and navigation | Command mark (prompt-based) | A mark automatically placed at each shell prompt via shell integration, carrying the command text, start/end time, and exit code. | have |  |
 | Marks and navigation | Exit-code coloring | Colors a command mark green/red based on success/failure of the exit code, visible in the scrollbar gutter. | have | In the left margin (Tandem has no scrollbar). |
 | Marks and navigation | Manual mark | A mark the user places explicitly, not tied to a command, for bookmarking a scrollback position. | have |  |
-| Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | have | The Named Marks tool comes in milestone 9. |
+| Marks and navigation | Named mark | A manual or triggered mark with a user-supplied label, surfaced in the Named Marks toolbelt tool. | have | Milestone 9j: surfaced in the Named Marks toolbelt tool (see the toolbelt rows above). |
 | Marks and navigation | Image mark | A mark type used to anchor an inline image's position in the buffer. | have | Images live in their cells, so they move with their lines. |
 | Marks and navigation | Fold mark | Marks a block of lines as folded/collapsed, paired with the Fold trigger. | have, milestone 6a adds the Fold to Named Mark trigger |  |
 | Marks and navigation | Block mark / Button mark | Marks used by block-based UI, for example clickable inline buttons in output such as AI suggestions. | missing | |
@@ -602,7 +602,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Paste special | Convert Unicode punctuation | Normalizes smart quotes/dashes to plain ASCII equivalents. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
 | Paste special | Chunked/slow paste with delay | Splits large pastes into chunks with a configurable delay between them, to avoid overwhelming the shell. | have | Milestone 9a/9b: the paste pipeline and the Advanced Paste window (iTerm2's controls, enabling rules, and remembered defaults). |
 | Paste history | Paste History popup | Shows a searchable list of everything previously pasted. | missing | |
-| Paste history | Paste History toolbelt tool | Toolbelt panel listing past pastes, selectable to re-paste. | missing | Tandem has no toolbelt. |
+| Paste history | Paste History toolbelt tool | Toolbelt panel listing past pastes, selectable to re-paste. | have | Milestone 9j: see the Paste History tool row above. |
 | Paste history | Erase paste history | Clears all remembered paste entries. | missing | |
 | Paste | Plain paste (Ctrl+V / middle-click) | Directly injects clipboard text into the pty with no transform. | have | Milestone 9a: newlines to CR, unsafe control codes removed, bracketing when asked; 768 units every 0.01 s, a "Pasting..." bar with Cancel after 3 s, the multi-line, one-line, size, and tabs questions. |
 
