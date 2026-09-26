@@ -15,15 +15,22 @@
 
 /// The widest variant whose width fits `available`, both rounded up first so a variant
 /// exactly as wide as a fractional `available` still counts as fitting (`TXT:178-229`:
-/// "draw = widest with `ceil(w) <= ceil(available)`, else empty"). `""` when none fit.
+/// "draw = widest with `ceil(w) <= ceil(available)`, else empty"). `""` when none fit. On a
+/// tie, the FIRST widest-fitting variant wins, matching `maxWithBlock:`'s own tie-break
+/// (`NSArray+iTerm.m:531-544`: it replaces its running max only on a strictly-greater
+/// comparison, so an equal later element never displaces an earlier one); `Iterator::
+/// max_by` does the opposite (keeps the LAST maximum on a tie), so this is a manual scan
+/// rather than that combinator.
 pub fn pick(widths: &[(String, f32)], available: f32) -> String {
     let available_ceil = available.ceil();
-    widths
-        .iter()
-        .filter(|(_, w)| w.ceil() <= available_ceil)
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(s, _)| s.clone())
-        .unwrap_or_default()
+    let mut best: Option<&(String, f32)> = None;
+    for entry in widths.iter().filter(|(_, w)| w.ceil() <= available_ceil) {
+        match best {
+            Some(b) if entry.1 <= b.1 => {}
+            _ => best = Some(entry),
+        }
+    }
+    best.map(|(s, _)| s.clone()).unwrap_or_default()
 }
 
 /// The narrowest variant's width (`TXT:178-229`: "minimum = narrowest's"). `f32::INFINITY`
@@ -167,17 +174,33 @@ pub fn dir_variants(display: &str) -> Vec<String> {
 /// a case-insensitive compare (the resume note's correction over the research; macOS paths
 /// are case-sensitive, `%USERPROFILE%` is not) so a drive-letter or user-name case
 /// mismatch still abbreviates. The replacement keeps the raw suffix's own casing.
+///
+/// Compares by character, not by byte length: `home.len()` in bytes is not necessarily a
+/// char boundary in `raw` (a `char::to_lowercase()` case pair can differ in UTF-8 width,
+/// e.g. `\u{1e9e}` (3 bytes) folding to `\u{df}` (2 bytes)), so slicing `raw` at that byte
+/// offset can land mid-character and panic. Each `home` character is matched against the
+/// corresponding `raw` character by comparing their own lowercased forms (which may
+/// themselves differ in length without upsetting the pairing), and the cut point in `raw`
+/// is found through `char_indices`, which only ever returns character-boundary offsets.
 pub fn display_dir(raw: &str, home: &str) -> String {
-    if home.is_empty() || raw.len() < home.len() {
+    if home.is_empty() {
         return raw.to_string();
     }
-    let normalize = |s: &str| s.replace('/', "\\").to_lowercase();
-    let (raw_head, raw_tail) = raw.split_at(home.len());
-    if normalize(raw_head) == normalize(home) {
-        format!("~{raw_tail}")
-    } else {
-        raw.to_string()
+    let fold = |c: char| -> String {
+        let c = if c == '/' { '\\' } else { c };
+        c.to_lowercase().collect()
+    };
+    let home_chars: Vec<char> = home.chars().collect();
+    let raw_chars: Vec<char> = raw.chars().collect();
+    if raw_chars.len() < home_chars.len() {
+        return raw.to_string();
     }
+    let prefix_matches = raw_chars[..home_chars.len()].iter().zip(home_chars.iter()).all(|(&r, &h)| fold(r) == fold(h));
+    if !prefix_matches {
+        return raw.to_string();
+    }
+    let cut = raw.char_indices().nth(home_chars.len()).map(|(i, _)| i).unwrap_or(raw.len());
+    format!("~{}", &raw[cut..])
 }
 
 /// `iTermStatusBarJobComponent.stringVariants` and `variantsOfChain:` (`JOB:85-149`):
@@ -377,6 +400,11 @@ mod tests {
         assert_eq!(pick(&widths, 30.0), "");
         assert_eq!(narrowest(&widths), 40.0);
         assert_eq!(widest(&widths), 120.0);
+
+        // A tie at the widest-fitting width keeps the FIRST such variant
+        // (`NSArray+iTerm.m:531-544`'s `maxWithBlock:` only replaces on strictly-greater).
+        let tied = [("first".to_string(), 80.0f32), ("second".to_string(), 80.0), ("too-wide".to_string(), 120.0)];
+        assert_eq!(pick(&tied, 100.0), "first");
     }
 
     #[test]
@@ -439,6 +467,22 @@ mod tests {
         assert_eq!(display_dir("C:\\USERS\\RB\\Src", home), "~\\Src");
         // No prefix match: unchanged.
         assert_eq!(display_dir("D:\\other", home), "D:\\other");
+
+        // Non-ASCII, case-insensitive: e with acute (U+00E9, 2 bytes) case-folds against
+        // its capital (U+00C9, also 2 bytes), so this one happens to land on a char
+        // boundary either way, but it is still real non-ASCII prefix-fold coverage.
+        let accented_home = "C:\\Users\\Jos\u{00e9}";
+        assert_eq!(display_dir("C:\\users\\JOS\u{00c9}\\src", accented_home), "~\\src");
+
+        // A case pair whose UTF-8 widths differ: capital sharp S (U+1E9E, 3 bytes) folds to
+        // lowercase sharp S (U+00DF, 2 bytes). `home`'s byte length lands on the LAST byte
+        // of `raw`'s 3-byte character here (bytes 12..15 in `raw`, home.len() == 14): a
+        // byte-offset `raw.split_at(home.len())` would panic mid-character. The char-based
+        // comparison must not panic and must still recognize the fold.
+        let sharp_s_home = "C:\\Users\\Wei\u{df}"; // "...Weiß"
+        assert_eq!(sharp_s_home.len(), 14);
+        let sharp_s_raw = "C:\\users\\WEI\u{1e9e}\\src"; // "...WEIẞ\src"
+        assert_eq!(display_dir(sharp_s_raw, sharp_s_home), "~\\src");
     }
 
     #[test]
