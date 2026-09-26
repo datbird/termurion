@@ -101,6 +101,8 @@ pub mod pty;
 pub mod jobwatch;
 #[cfg(windows)]
 pub mod coproc_win;
+#[cfg(windows)]
+pub mod metrics_win;
 
 #[cfg(windows)]
 pub mod pane;

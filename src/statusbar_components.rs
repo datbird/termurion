@@ -77,17 +77,17 @@ const LABEL_KEY: &str = "label";
 const FUNCTION_INVOCATION_KEY: &str = "function invocation";
 const TIMEOUT_KEY: &str = "timeout";
 /// `BAT:18-19`, iTerm2's own key, verbatim.
-const SHOW_PERCENTAGE_KEY: &str = "ShowPercentage";
+pub const SHOW_PERCENTAGE_KEY: &str = "ShowPercentage";
 /// `BAT:19`, iTerm2's own key, verbatim.
-const SHOW_TIME_KEY: &str = "ShowTime";
+pub const SHOW_TIME_KEY: &str = "ShowTime";
 /// `NET:19-22`, iTerm2's own key, verbatim.
-const DOWNLOAD_COLOR_KEY: &str = "Network download color";
+pub const DOWNLOAD_COLOR_KEY: &str = "Network download color";
 /// `NET:19-22`, iTerm2's own key, verbatim.
-const DOWNLOAD_TEXT_COLOR_KEY: &str = "Network download text color";
+pub const DOWNLOAD_TEXT_COLOR_KEY: &str = "Network download text color";
 /// `NET:19-22`, iTerm2's own key, verbatim.
-const UPLOAD_COLOR_KEY: &str = "Network upload color";
+pub const UPLOAD_COLOR_KEY: &str = "Network upload color";
 /// `NET:19-22`, iTerm2's own key, verbatim.
-const UPLOAD_TEXT_COLOR_KEY: &str = "Network upload text color";
+pub const UPLOAD_TEXT_COLOR_KEY: &str = "Network upload text color";
 /// `iTermStatusBarGitComponentPollingIntervalKey` (`GIT:113-134`), iTerm2's own key,
 /// verbatim.
 const GIT_POLLING_INTERVAL_KEY: &str = "iTermStatusBarGitComponentPollingIntervalKey";

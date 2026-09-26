@@ -99,6 +99,7 @@ mod tmux_dashboard_app;
 mod bury_ui;
 mod statusbar_ui;
 mod statusbar_content;
+mod metrics_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -350,6 +351,11 @@ pub struct App {
     status_setup: Option<statusbar_ui::StatusSetup>,
     /// The next whole second a status bar Clock redraws at.
     status_clock_due: Option<Instant>,
+    /// The status bar graphs' meters and their Windows samplers (app-wide: every window's
+    /// graphs show the same machine), and the slide animation's next frame.
+    meters: crate::statusbar_metrics::Meters,
+    samplers: crate::metrics_win::WinSamplers,
+    graph_frame_due: Option<Instant>,
     /// Triggers: the Show Alert limit, messages already shown, the Alert bar's trigger, and
     /// Run Command's pool and processes.
     trigger_limits: crate::triggers::RateLimit<(PaneId, usize)>,
@@ -632,6 +638,9 @@ pub fn run() {
         status_menu: None,
         status_setup: None,
         status_clock_due: None,
+        meters: crate::statusbar_metrics::Meters::new(),
+        samplers: crate::metrics_win::WinSamplers,
+        graph_frame_due: None,
         trigger_limits: crate::triggers::RateLimit::default(),
         trigger_told: std::collections::HashSet::new(),
         trigger_alerts: HashMap::new(),

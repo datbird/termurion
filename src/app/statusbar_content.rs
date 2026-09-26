@@ -16,6 +16,7 @@
 use super::statusbar_ui::Click;
 use super::*;
 use crate::broadcast::Write;
+use crate::palette::Rgb;
 use crate::statusbar::Component;
 use crate::statusbar_components::{self as sbc, Kind};
 use crate::statusbar_text as sbt;
@@ -63,6 +64,27 @@ pub(super) enum Widget {
     Field { text: String, placeholder: &'static str, label: String, error: bool, focused: bool, magnifier: bool, chevrons: bool, close: bool },
     /// The paste's track, filled to the fraction, and a cancel glyph.
     Progress(f32),
+    /// A graph component's sparkline and texts (milestone 9i, `metrics_ui`).
+    Graph(Graph),
+}
+
+/// What a graph draws (`SPK:447-543`): a left and a right text, each series' drawn values
+/// and color, over a baseline. `None` colors are the component's text color. A reserve is
+/// a text `place_components` measures plus extra points; the graph sits between them.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Graph {
+    pub(super) left: String,
+    pub(super) right: String,
+    pub(super) left_reserve: (String, f32),
+    pub(super) right_reserve: (String, f32),
+    pub(super) left_color: Option<Rgb>,
+    pub(super) right_color: Option<Rgb>,
+    pub(super) series: Vec<(Vec<f64>, Option<Rgb>)>,
+    pub(super) ceiling: f64,
+    /// Battery: the charging glyph at the right.
+    pub(super) charging: bool,
+    /// Since the last sample, while the graphs animate; None draws the path in place.
+    pub(super) since_sample: Option<std::time::Duration>,
 }
 
 /// A field's parts, in points from its left edge: (from, to) each.
@@ -457,12 +479,17 @@ impl App {
                 let (left, right) = self.tmux_status_of(pane).unwrap_or_default();
                 if kind == Kind::TmuxLeft { Content::text(sbt::tmux_left_variants(&left)) } else { Content { right_align: true, ..Content::text(sbt::tmux_right_variants(&right)) } }
             }
-            // Milestone 9i Task 1's five: `Piece::of` (`statusbar_ui.rs`) never maps them
-            // to a `Piece::Content`, so this arm is never reached yet; it exists only to
-            // keep this match exhaustive over `Kind`. Tasks 3 and 5 replace it.
-            Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network | Kind::Git => Content::text(Vec::new()),
+            // The four graphs (`metrics_ui`).
+            Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network => self.graph_content(kind, c),
+            // git state: `Piece::of` does not map it yet (Task 5), so this arm is never
+            // reached; it keeps the match exhaustive.
+            Kind::Git => Content::text(Vec::new()),
         };
-        content.icon = sbc::icon(kind);
+        // The kind's generic icon, unless the arm chose one (Battery's depends on the
+        // computer).
+        if content.icon.is_none() {
+            content.icon = sbc::icon(kind);
+        }
         content
     }
 
@@ -672,10 +699,17 @@ impl App {
         }
     }
 
-    /// The Clock's cadence (`CLK`, 1 s): while a bar on screen shows a Clock, every window
-    /// redraws on each whole second. When to come back.
+    /// The status bars' clocks: the Clock's and the graphs' (`tick_meters`). When to come
+    /// back.
     pub(super) fn tick_status_bars(&mut self) -> Option<Instant> {
         let now = Instant::now();
+        let meters = self.tick_meters(now);
+        [self.tick_clock(now), meters].into_iter().flatten().min()
+    }
+
+    /// The Clock's cadence (`CLK`, 1 s): while a bar on screen shows a Clock, every window
+    /// redraws on each whole second.
+    fn tick_clock(&mut self, now: Instant) -> Option<Instant> {
         if let Some(due) = self.status_clock_due {
             if now < due {
                 return Some(due);

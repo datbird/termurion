@@ -16,6 +16,8 @@ use crate::statusbar_setup_ui::SetupEvent;
 use crate::statusbar_layout::{self as sbl, Item, ItemKind, Placed, Position};
 use crate::statusbar_components::{self as sbc, Kind};
 use crate::statusbar_text as sbt;
+use crate::statusbar_sparkline as sp;
+use super::metrics_ui::CHARGING_PT;
 use super::statusbar_content::{self as sbx, Content, FieldPart, MenuAt, Widget, BUTTON_DY_PT, BUTTON_PAD_PT, GLYPH_PT};
 
 /// `iTermStatusBarPlaceholderComponent`'s text.
@@ -99,7 +101,11 @@ impl Piece {
                 | Kind::SearchTool
                 | Kind::FilterTool
                 | Kind::Composer
-                | Kind::Progress) => Some(Piece::Content(k)),
+                | Kind::Progress
+                | Kind::Battery
+                | Kind::Cpu
+                | Kind::Memory
+                | Kind::Network) => Some(Piece::Content(k)),
                 _ => None,
             },
         }
@@ -152,7 +158,7 @@ impl Piece {
 }
 
 /// A `{r, g, b, a}` table as a color and its alpha.
-fn color_of(v: &toml::Value) -> Option<(Rgb, f32)> {
+pub(super) fn color_of(v: &toml::Value) -> Option<(Rgb, f32)> {
     let t = v.as_table()?;
     let c = |k: &str| t.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
     let byte = |f: f64| (f.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -338,7 +344,7 @@ impl App {
     /// 2.9 or later server shows tmux's status lines with `UseTmuxStatusBar` on or an empty
     /// profile layout (`PTYSession.m:10077-10091`). Tandem computes it when drawing; it is
     /// never written to a profile.
-    fn bar_layout(&self, pane: PaneId) -> (Layout, bool) {
+    pub(super) fn bar_layout(&self, pane: PaneId) -> (Layout, bool) {
         let layout = self.status_layout(pane);
         let server = self.panes.get(&pane).and_then(|p| p.tmux_io()).and_then(|io| self.tmux.get(&io.gateway)).and_then(|t| t.hs.min);
         if sbc::uses_tmux_layout(self.globals.bool("UseTmuxStatusBar"), &layout, server) {
@@ -435,6 +441,16 @@ impl App {
                 // A field's label and text, measured for drawing: the label first.
                 Some(Content { widget: Some(Widget::Field { text, label, .. }), .. }) => {
                     s.widths = [label, text].into_iter().map(|t| (t.clone(), if t.is_empty() { 0.0 } else { measure(t, s.text_scale) })).collect();
+                }
+                // A graph's reserves (a text plus extra points), then its left and right texts.
+                Some(Content { widget: Some(Widget::Graph(g)), .. }) => {
+                    let mut w = |t: &str| if t.is_empty() { 0.0 } else { measure(t, s.text_scale) };
+                    s.widths = vec![
+                        (g.left_reserve.0.clone(), w(&g.left_reserve.0) + g.left_reserve.1),
+                        (g.right_reserve.0.clone(), w(&g.right_reserve.0) + g.right_reserve.1),
+                        (g.left.clone(), w(&g.left)),
+                        (g.right.clone(), w(&g.right)),
+                    ];
                 }
                 Some(content) if content.fixed.is_none() => {
                     s.widths = content.variants.iter().map(|v| (v.clone(), measure(v, s.text_scale))).collect();
@@ -967,6 +983,40 @@ fn draw_widget(widget: &Widget, room: Rect, widths: &[(String, f32)], look: &Wid
             boxes.push((Rect { w: (track.w * fraction).round(), ..track }, look.color, 1.0));
             glyph(texts, (track_w, w_pt), sbx::CLOSE_GLYPH);
         }
+        // `SPK:447-543`: the sparklines in the content rect between the reserves, over the
+        // baseline; the left text at the view's left and the right one at its reserve,
+        // both 1 point above the centered line (`SPK:436-445`'s -1 fudge); the charging
+        // glyph 2 points in from the right.
+        Widget::Graph(g) => {
+            let reserve = |i: usize| widths.get(i).map_or(0.0, |(_, w)| *w);
+            let (left_reserve, right_reserve) = (reserve(0), reserve(1));
+            let rect = sp::graph_rect(w_pt, room.h / scale, left_reserve, right_reserve);
+            let to_px = |r: Rect| Rect { x: room.x + r.x * scale, y: room.y + r.y * scale, w: r.w * scale, h: r.h * scale };
+            let clip = to_px(rect);
+            if clip.w > 0.0 && clip.h > 0.0 {
+                let base = to_px(sp::baseline(rect));
+                boxes.push((Rect { y: base.y.round(), h: scale.round().max(1.0), ..base }, look.color, 0.5));
+                let shift = sp::slide(g.since_sample, true, sp::bar_width(rect.w));
+                for (values, color) in &g.series {
+                    let points: Vec<(f32, f32)> = sp::path(values, rect, g.ceiling.max(1.0), shift).into_iter().map(|(x, y)| (room.x + x * scale, room.y + y * scale)).collect();
+                    for r in sp::polyline_rects(&points, scale, clip) {
+                        boxes.push((r, color.unwrap_or(look.color), 1.0));
+                    }
+                }
+            }
+            let dy = -scale;
+            if !g.left.is_empty() {
+                texts.push(scene::BarText { x: room.x, text: g.left.clone(), color: g.left_color.unwrap_or(look.color), scale: look.text_scale, clip: room, icon: false, dy });
+            }
+            if !g.right.is_empty() {
+                let r = at((w_pt - right_reserve).max(0.0), w_pt);
+                texts.push(scene::BarText { x: r.x, text: g.right.clone(), color: g.right_color.unwrap_or(look.color), scale: look.text_scale, clip: room, icon: false, dy });
+            }
+            if g.charging {
+                let r = at((w_pt - CHARGING_PT - 2.0).max(0.0), (w_pt - 2.0).max(0.0));
+                texts.push(scene::BarText { x: r.x, text: sbc::CHARGING_GLYPH.to_string(), color: look.color, scale: look.text_scale, clip: r, icon: true, dy: 0.0 });
+            }
+        }
     }
 }
 
@@ -997,7 +1047,7 @@ mod tests {
         assert_eq!(Piece::of(SPACER_CLASS), Some(Piece::Spacer));
         assert_eq!(Piece::of("iTermStatusBarClockComponent"), Some(Piece::Content(Kind::Clock)));
         assert_eq!(Piece::of("iTermStatusBarWorkingDirectoryComponent"), Some(Piece::Content(Kind::CurrentDirectory)));
-        assert_eq!(Piece::of("iTermStatusBarCPUUtilizationComponent"), None, "a 9i class stays off screen");
+        assert_eq!(Piece::of("iTermStatusBarGitComponent"), None, "git stays off screen until Task 5");
         assert_eq!(placeholder_content().variants, vec!["Click here to configure status bar".to_string()]);
         assert_eq!(placeholder_content().click, Click::Configure);
 
@@ -1083,6 +1133,40 @@ mod tests {
         assert_eq!((menu_item.min, menu_item.preferred, menu_item.stretch), (90.0, 90.0, true));
         let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::ActionsMenu), component: component(ACTIONS_MENU_CLASS, &[]), content: Some(menu), widths: widths(&[("Perform Action\u{2026}", 90.0)]), min_text_pt: None, text_scale: 1.0 };
         assert_eq!(shown.copyable(), None, "no Copy for a menu");
+    }
+
+    /// `BAT:98-108`, `CPU:53-76`, `MEM:39-62`, `NET:80-103`: a graph is 120 points (170
+    /// for Network), minimum and preferred, beside its 17 point icon; none stretches; none
+    /// has Copy (`GFX`/`SPK` never return a copyable string); Battery is empty on a
+    /// computer with no battery (`BAT:59-79`).
+    #[test]
+    fn graph_items_size_like_iterm2() {
+        use super::super::metrics_ui::graph_of;
+        use crate::statusbar_components::{BATTERY_CLASS, CPU_CLASS, MEMORY_CLASS, NETWORK_CLASS};
+        let meters = crate::statusbar_metrics::Meters::new();
+        for (class, kind, size) in [(BATTERY_CLASS, Kind::Battery, 120.0), (CPU_CLASS, Kind::Cpu, 120.0), (MEMORY_CLASS, Kind::Memory, 120.0), (NETWORK_CLASS, Kind::Network, 170.0)] {
+            assert_eq!(Piece::of(class), Some(Piece::Content(kind)), "{class}");
+            let c = component(class, &[]);
+            let content = graph_of(kind, &c, &meters, true, None);
+            assert!(matches!(content.widget, Some(Widget::Graph(_))), "{class}");
+            assert!(!content.empty, "{class}");
+            for algorithm in [Algorithm::Stable, Algorithm::TightlyPacked] {
+                let item = Piece::Content(kind).item(&c, algorithm, &content, &[], None);
+                assert_eq!((item.min, item.preferred, item.stretch, item.icon), (size, size, false, true), "{class} {algorithm:?}");
+                // Tightly packed, a lone graph takes its size and the icon's column (Stable
+                // gives every component its share of the bar, stretching or not).
+                if algorithm == Algorithm::TightlyPacked {
+                    let placed = sbl::layout(&[item], 1000.0, algorithm, false);
+                    assert_eq!(placed[0].width, size + ICON_PT, "{class}");
+                }
+            }
+            let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(kind), component: c, content: Some(content), widths: Vec::new(), min_text_pt: None, text_scale: 1.0 };
+            assert_eq!(shown.copyable(), None, "{class} has no Copy");
+        }
+        let no_battery = graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, false, None);
+        assert!(no_battery.empty);
+        assert_eq!(no_battery.icon, Some(sbc::NO_BATTERY_GLYPH));
+        assert_eq!(graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, true, None).icon, Some(sbc::BATTERY_GLYPH));
     }
 
     #[test]

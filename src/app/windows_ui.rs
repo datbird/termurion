@@ -148,8 +148,13 @@ impl App {
     /// The tab each window other than the current one has in front, for windows on screen
     /// (not minimized, not a hidden hotkey window).
     pub(super) fn parked_front_tabs(&self) -> Vec<&Tab> {
+        self.parked_fronts().into_iter().map(|(_, t)| t).collect()
+    }
+
+    /// Those windows, each with the tab it has in front.
+    pub(super) fn parked_fronts(&self) -> Vec<(&Window, &Tab)> {
         let on_screen = |w: &Window| w.is_visible() != Some(false) && w.is_minimized() != Some(true);
-        self.windows.parked().filter(|(_, s)| s.gpu.as_ref().is_some_and(|g| on_screen(&g.window))).filter_map(|(_, s)| s.tabs.get(s.active)).collect()
+        self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().filter(|g| on_screen(&g.window)).and_then(|g| s.tabs.get(s.active).map(|t| (&*g.window, t)))).collect()
     }
 
     /// Asks every window to draw.
