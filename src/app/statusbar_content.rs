@@ -206,18 +206,16 @@ pub(super) fn custom_action_error(error: &str) -> String {
     format!("{LADYBUG} {error}")
 }
 
-/// The session's own trigger dictionaries, in order (`PS`: `_config.triggerProfileDicts`).
-fn trigger_list(p: Option<&crate::profile::Profile>) -> Vec<crate::triggers::Trigger> {
-    p.and_then(|p| p.get("Triggers")).map(|v| crate::triggers::parse_list(&v)).unwrap_or_default()
+/// The session's own trigger dictionaries, in order, each with its place in the stored
+/// list (`PS`: `_config.triggerProfileDicts`).
+fn trigger_list(p: Option<&crate::profile::Profile>) -> Vec<(usize, crate::triggers::Trigger)> {
+    p.and_then(|p| p.get("Triggers")).map(|v| crate::triggers::parse_indexed(&v)).unwrap_or_default()
 }
 
-/// The Triggers Menu's items (`PS:23172-23187`): (place in the list, title, on) for each
-/// trigger whose action Tandem knows; iTerm2 leaves out a trigger it cannot build.
-pub(super) fn trigger_items(list: &[crate::triggers::Trigger]) -> Vec<(usize, String, bool)> {
-    list.iter()
-        .enumerate()
-        .filter_map(|(i, t)| crate::triggers::action_info(&t.action).map(|a| (i, sbc::trigger_menu_title(a.title, &t.regex), t.enabled)))
-        .collect()
+/// The Triggers Menu's items (`PS:23172-23187`): (place in the stored list, title, on) for
+/// each trigger whose action Tandem knows; iTerm2 leaves out a trigger it cannot build.
+pub(super) fn trigger_items(list: &[(usize, crate::triggers::Trigger)]) -> Vec<(usize, String, bool)> {
+    list.iter().filter_map(|(i, t)| crate::triggers::action_info(&t.action).map(|a| (*i, sbc::trigger_menu_title(a.title, &t.regex), t.enabled))).collect()
 }
 
 /// Where a component's menu opens, in window pixels: at the component's left, beside the
@@ -453,13 +451,11 @@ impl App {
             // `iTermStatusBarLayout+tmux.m`: an Interpolated String (of `tmuxStatusLeft` or
             // `tmuxStatusRight`) whose variants drop `" | "` parts, trailing ones on the
             // left and leading ones on the right; the right one sits at the right.
+            // The expression is fixed, so the line is read directly: evaluating it would
+            // gather every session variable each frame.
             Kind::TmuxLeft | Kind::TmuxRight => {
-                let expression = knob_str(c, kind, EXPRESSION_KEY).unwrap_or_default();
-                match self.evaluate_for(pane, &expression) {
-                    Ok(value) if kind == Kind::TmuxLeft => Content::text(sbt::tmux_left_variants(&value)),
-                    Ok(value) => Content { right_align: true, ..Content::text(sbt::tmux_right_variants(&value)) },
-                    Err(e) => Content { click: Click::Error(evaluation_error(&expression, &e)), ..Content::text(vec![LADYBUG.to_string()]) },
-                }
+                let (left, right) = self.tmux_status_of(pane).unwrap_or_default();
+                if kind == Kind::TmuxLeft { Content::text(sbt::tmux_left_variants(&left)) } else { Content { right_align: true, ..Content::text(sbt::tmux_right_variants(&right)) } }
             }
         };
         content.icon = sbc::icon(kind);
@@ -467,10 +463,15 @@ impl App {
     }
 
     /// An interpolated string evaluated in the session (`iTermSwiftyString` with no side
-    /// effects). The session's variables are gathered only when the string names one.
+    /// effects). The session's variables are gathered only when the string names one, and
+    /// the selection only when it names `selection` or `selectionLength`.
     fn evaluate_for(&self, pane: PaneId, expression: &str) -> Result<String, String> {
-        let vars = std::cell::OnceCell::new();
-        let lookup = |n: &str| crate::prompted::variable(n.strip_prefix("session.").unwrap_or(n), vars.get_or_init(|| self.variables(pane)));
+        let (light, full) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
+        let lookup = |n: &str| {
+            let n = n.strip_prefix("session.").unwrap_or(n);
+            let vars = if crate::prompted::names_selection(n) { full.get_or_init(|| self.variables_with(pane, true)) } else { light.get_or_init(|| self.variables_with(pane, false)) };
+            crate::prompted::variable(n, vars)
+        };
         crate::interp::evaluate(expression, &lookup, &[])
     }
 
@@ -568,12 +569,12 @@ impl App {
     }
 
     /// `PS:4506-4512`: the trigger's `disabled` flips in the session's own profile (a
-    /// session copy, made now when there is none), so other sessions keep theirs.
+    /// session copy, made now when there is none), so other sessions keep theirs. The rest
+    /// of the list stays as stored.
     fn toggle_session_trigger(&mut self, pane: PaneId, index: usize) {
-        let mut list = trigger_list(self.profile_of(pane));
-        let Some(t) = list.get_mut(index) else { return };
-        t.enabled = !t.enabled;
-        self.set_session_values(pane, &[("Triggers".to_string(), Some(crate::triggers::to_value(&list)))]);
+        let stored = self.profile_of(pane).and_then(|p| p.get("Triggers"));
+        let Some(list) = stored.and_then(|v| crate::triggers::toggle_disabled_at(&v, index)) else { return };
+        self.set_session_values(pane, &[("Triggers".to_string(), Some(list))]);
         self.sync_checks();
         self.redraw_all();
     }
@@ -809,8 +810,9 @@ mod tests {
     fn trigger_menu_items_follow_iterm2() {
         use crate::triggers::Trigger;
         let t = |regex: &str, action: &str, enabled: bool| Trigger { regex: regex.into(), action: action.into(), parameter: String::new(), instant: false, enabled, name: String::new(), job: String::new(), match_type: 0, extra: toml::Table::new() };
-        let list = vec![t("err", "HighlightTrigger", true), t("x", "NoSuchTrigger", true), t("y", "BellTrigger", false)];
-        assert_eq!(trigger_items(&list), vec![(0, "Highlight Text \u{2014} err".to_string(), true), (2, "Ring Bell \u{2014} y".to_string(), false)]);
+        // Places in the stored list: 1 is an entry that is not a table.
+        let list = vec![(0, t("err", "HighlightTrigger", true)), (2, t("x", "NoSuchTrigger", true)), (3, t("y", "BellTrigger", false))];
+        assert_eq!(trigger_items(&list), vec![(0, "Highlight Text \u{2014} err".to_string(), true), (3, "Ring Bell \u{2014} y".to_string(), false)]);
         assert!(trigger_items(&[]).is_empty());
         assert_eq!(custom_action_error("bad"), "\u{1F41E} bad");
         assert_eq!(SCRIPT_REFUSAL, "Script functions need the Python API, which arrives in milestone 11.");

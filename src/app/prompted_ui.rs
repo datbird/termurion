@@ -287,6 +287,20 @@ impl App {
 
     /// The session's variables, as ReportVariable names them.
     pub(super) fn variables(&self, pane: PaneId) -> prompted::Vars {
+        self.variables_with(pane, true)
+    }
+
+    /// The tmux status bar's lines of a tmux pane's window (iTermTmuxStatusBarMonitor):
+    /// status-left and status-right, empty before the first reply. None off tmux.
+    pub(super) fn tmux_status_of(&self, pane: PaneId) -> Option<(String, String)> {
+        let io = self.panes.get(&pane)?.tmux_io()?;
+        let window = self.tmux.get(&io.gateway).and_then(|t| t.panes.get(&io.pane)).map(|(_, w)| *w);
+        Some(window.and_then(|w| self.tmux_status.get(&(io.gateway, w))).cloned().unwrap_or_default())
+    }
+
+    /// The session's variables; `selection` and `selectionLength` only with `selection`,
+    /// since building them copies the whole selection.
+    pub(super) fn variables_with(&self, pane: PaneId, selection: bool) -> prompted::Vars {
         let mut v = prompted::Vars::default();
         let tab_index = self.tabs.iter().position(|t| t.layout.panes().contains(&pane));
         let Some(p) = self.panes.get(&pane) else { return v };
@@ -338,8 +352,7 @@ impl App {
                 v.session.insert("path", info.cwd.clone());
             }
             // The tmux status bar's lines of the pane's window (iTermTmuxStatusBarMonitor).
-            let window = self.tmux.get(&io.gateway).and_then(|t| t.panes.get(&io.pane)).map(|(_, w)| *w);
-            let (left, right) = window.and_then(|w| self.tmux_status.get(&(io.gateway, w))).cloned().unwrap_or_default();
+            let (left, right) = self.tmux_status_of(pane).unwrap_or_default();
             v.session.insert("tmuxStatusLeft", left);
             v.session.insert("tmuxStatusRight", right);
         }
@@ -350,7 +363,7 @@ impl App {
         if let Some(c) = s.shell.history.last() {
             v.session.insert("lastCommand", c.command.clone());
         }
-        if let Some(sel) = s.term().selection_to_string() {
+        if let Some(sel) = selection.then(|| s.term().selection_to_string()).flatten() {
             v.session.insert("selectionLength", sel.chars().count().to_string());
             v.session.insert("selection", sel);
         }

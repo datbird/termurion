@@ -212,10 +212,11 @@ impl App {
                 let text = self.panes.get(&id).and_then(|p| p.screen.term().selection_to_string()).unwrap_or_default();
                 let Some(guid) = self.panes.get(&id).map(|p| self.store.shared_guid(&p.profile)) else { return true };
                 if let Some(profile) = self.store.get_mut(&guid) {
-                    let mut list = profile.get("Triggers").map(|v| triggers::parse_list(&v)).unwrap_or_default();
+                    let stored = profile.get("Triggers");
+                    let mut list = stored.as_ref().map(triggers::parse_list).unwrap_or_default();
                     let line = text.lines().next().unwrap_or("").to_string();
                     list.push(Trigger { regex: triggers::escape_regex(&line), action: "BounceTrigger".into(), parameter: "0".into(), instant: false, enabled: true, name: line, job: String::new(), match_type: 0, extra: toml::Table::new() });
-                    profile.set("Triggers", triggers::to_value(&list));
+                    profile.set("Triggers", triggers::merge_list(stored.as_ref(), &list));
                     crate::settings_triggers::focus_last();
                 }
                 self.save_due = Some(Instant::now() + SAVE_DELAY);
@@ -233,8 +234,10 @@ impl App {
             "toggleNotifyOnStatusChange:" => self.notify_status_armed = !self.notify_status_armed,
             "enableAllTriggers:" | "disableAllTriggers:" => {
                 let on = selector == "enableAllTriggers:";
-                let list = self.panes.get(&id).map(|p| p.own().triggers.list.iter().map(|c| c.trigger.clone()).collect::<Vec<_>>()).unwrap_or_default();
-                self.set_session_values(id, &[("Triggers".into(), Some(triggers::to_value(&triggers::set_all_enabled(&list, on))))]);
+                // In place: entries Tandem cannot read, and every other key, stay as stored.
+                if let Some(list) = self.profile_of(id).and_then(|p| p.get("Triggers")).and_then(|v| triggers::set_all_disabled(&v, !on)) {
+                    self.set_session_values(id, &[("Triggers".into(), Some(list))]);
+                }
             }
             _ => return false,
         }

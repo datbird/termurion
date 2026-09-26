@@ -577,8 +577,9 @@ impl App {
         self.redraw();
     }
 
-    /// The mode menu's items, with `title` for each mode; the status bar Search Tool's adds
-    /// a separator and "Erase Search History" (`iTermMiniSearchFieldViewController.xib`).
+    /// The mode menu's items, with `title` for each mode; the find bar's and the status bar
+    /// Search Tool's add a separator and "Erase Search History"
+    /// (`iTermMiniSearchFieldViewController.xib`).
     fn find_mode_menu(&mut self, title: fn(find::Mode) -> &'static str, erase: bool) -> muda::Menu {
         let current = self.find_mode();
         let menu = muda::Menu::new();
@@ -606,7 +607,9 @@ impl App {
     /// Opens the find bar's mode menu under the mode label.
     pub(super) fn show_find_mode_menu(&mut self) {
         let Some(hwnd) = self.hwnd() else { return };
-        let menu = self.find_mode_menu(find::Mode::label, false);
+        // As the bar's fields: Search has "Erase Search History", Filter does not.
+        let search = !self.focused_id().and_then(|id| self.finds.get(&id)).is_some_and(|f| f.filter);
+        let menu = self.find_mode_menu(find::Mode::label, search);
         let at = self.find_mode_rect.map(|r| muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(r.x as i32, (r.y + r.h) as i32)));
         use muda::ContextMenu;
         unsafe { menu.show_context_menu_for_hwnd(hwnd, at) };
@@ -616,13 +619,16 @@ impl App {
 
     /// A pick from the mode menu. Returns false for other menu ids.
     pub(super) fn find_mode_picked(&mut self, id: &str) -> bool {
-        // `eraseSearchHistory`: the pane's query goes (Tandem keeps one per pane).
+        // `eraseSearchHistory`: iTerm2 clears the search history and the find pasteboard
+        // every session shares; Tandem's stand-in is each pane's kept query, so every
+        // pane's goes. A pane filtering keeps its filter (iTerm2's filter is its own field).
         if id == ERASE_ID {
-            if let Some(f) = self.focused_id().and_then(|id| self.finds.get_mut(&id)) {
-                f.set_query("", Instant::now());
+            let now = Instant::now();
+            for f in self.finds.values_mut().filter(|f| !(f.open && f.filter)) {
+                f.set_query("", now);
                 f.results = Results::default();
             }
-            self.redraw();
+            self.redraw_all();
             return true;
         }
         let Some(n) = id.strip_prefix(MODE_ID).and_then(|n| n.parse::<i64>().ok()) else { return false };

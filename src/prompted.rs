@@ -187,6 +187,12 @@ pub struct Vars {
     pub app: std::collections::BTreeMap<&'static str, String>,
 }
 
+/// Whether a name (as `variable` takes it) is one that copies the session's selection to
+/// build, so a caller that runs every frame gathers it only when asked for.
+pub fn names_selection(name: &str) -> bool {
+    matches!(name, "selection" | "selectionLength")
+}
+
 /// A variable by iTerm2's name in the session scope: bare session names, `user.`,
 /// `tab.`, `tab.window.`, `iterm2.`. Anything else (`session.name` too) is None.
 pub fn variable(name: &str, vars: &Vars) -> Option<String> {
@@ -359,6 +365,15 @@ mod tests {
         assert_eq!(variable("nope", &v), None);
         assert_eq!(variable_reply(Some("zsh")), b"\x1b]1337;ReportVariable=enNo\x07");
         assert_eq!(variable_reply(None), b"\x1b]1337;ReportVariable=\x07");
+    }
+
+    #[test]
+    fn only_the_selection_names_need_the_selection() {
+        assert!(names_selection("selection"));
+        assert!(names_selection("selectionLength"));
+        for n in ["user.selection", "tab.selection", "name", "tmuxStatusLeft", "Selection", ""] {
+            assert!(!names_selection(n), "{n}");
+        }
     }
 
     #[test]

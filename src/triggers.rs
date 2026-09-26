@@ -64,6 +64,12 @@ pub fn parse_list(v: &toml::Value) -> Vec<Trigger> {
     v.as_array().map(|a| a.iter().filter_map(|e| e.as_table()).map(Trigger::from_table).collect()).unwrap_or_default()
 }
 
+/// As `parse_list`, with each trigger's place in the stored list (the index the in-place
+/// writers take).
+pub fn parse_indexed(v: &toml::Value) -> Vec<(usize, Trigger)> {
+    v.as_array().map(|a| a.iter().enumerate().filter_map(|(i, e)| e.as_table().map(|t| (i, Trigger::from_table(t)))).collect()).unwrap_or_default()
+}
+
 pub fn to_value(list: &[Trigger]) -> toml::Value {
     toml::Value::Array(list.iter().map(|t| toml::Value::Table(t.to_table())).collect())
 }
@@ -194,9 +200,46 @@ pub fn substitute(param: &str, captures: &[Option<&str>]) -> String {
     out
 }
 
-/// Every trigger on or off (Enable All, Disable All).
-pub fn set_all_enabled(list: &[Trigger], on: bool) -> Vec<Trigger> {
-    list.iter().map(|t| Trigger { enabled: on, ..t.clone() }).collect()
+/// Enable All and Disable All in place: `disabled` set on every entry that is a table;
+/// everything else stays as stored. None when the value is not a list.
+pub fn set_all_disabled(v: &toml::Value, disabled: bool) -> Option<toml::Value> {
+    let mut a = v.as_array()?.clone();
+    for t in a.iter_mut().filter_map(toml::Value::as_table_mut) {
+        t.insert("disabled".into(), disabled.into());
+    }
+    Some(toml::Value::Array(a))
+}
+
+/// `toggleTriggerEnabledAtIndex:` (`PS:4506-4512`) in place: `disabled` flips on the stored
+/// list's entry `index`; every other entry, and every other key of this one, stays as
+/// stored. None when the entry is missing or not a table.
+pub fn toggle_disabled_at(v: &toml::Value, index: usize) -> Option<toml::Value> {
+    let mut a = v.as_array()?.clone();
+    let t = a.get_mut(index)?.as_table_mut()?;
+    let disabled = Trigger::from_table(t).enabled;
+    t.insert("disabled".into(), disabled.into());
+    Some(toml::Value::Array(a))
+}
+
+/// The Settings editor's write: `list` (the stored value as `parse_list` read it, then
+/// edited) back into the stored list. Entries that are not tables keep their places; a
+/// trigger the editor left alone keeps its stored table as is; the rest fill the table
+/// places in order, and triggers beyond them are appended.
+pub fn merge_list(stored: Option<&toml::Value>, list: &[Trigger]) -> toml::Value {
+    let mut next = list.iter();
+    let mut out = Vec::new();
+    for e in stored.and_then(toml::Value::as_array).into_iter().flatten() {
+        match e.as_table() {
+            Some(t) => {
+                if let Some(trigger) = next.next() {
+                    out.push(if Trigger::from_table(t) == *trigger { e.clone() } else { toml::Value::Table(trigger.to_table()) });
+                }
+            }
+            None => out.push(e.clone()),
+        }
+    }
+    out.extend(next.map(|t| toml::Value::Table(t.to_table())));
+    toml::Value::Array(out)
 }
 
 /// Run Command's pool: at most `max` commands at once; the rest wait their turn.
@@ -353,12 +396,77 @@ mod tests {
         assert!(limit.allow((1, 0), t0 + second, second));
     }
 
+    /// A stored list with an entry that is not a table, a numeric popup parameter, an
+    /// integer `disabled` and a key Tandem does not know.
+    fn odd_list() -> toml::Value {
+        let v: toml::Value = toml::from_str(r#"list = [{ regex = "a", action = "BounceTrigger", parameter = 1, disabled = 1, extra = "x" }, "junk", { regex = "b", action = "BellTrigger" }]"#).unwrap();
+        v["list"].clone()
+    }
+
     #[test]
-    fn enable_all_rewrites_disabled() {
-        let v: toml::Value = toml::from_str(r#"list = [{ regex = "a", action = "BellTrigger", disabled = true }, { regex = "b", action = "BellTrigger" }]"#).unwrap();
-        let list = parse_list(&v["list"]);
-        assert!(set_all_enabled(&list, true).iter().all(|t| t.enabled));
-        assert!(set_all_enabled(&list, false).iter().all(|t| !t.enabled));
+    fn enable_all_sets_disabled_in_place() {
+        let v = odd_list();
+        let on = set_all_disabled(&v, false).unwrap();
+        let off = set_all_disabled(&v, true).unwrap();
+        assert!(parse_list(&on).iter().all(|t| t.enabled));
+        assert!(parse_list(&off).iter().all(|t| !t.enabled));
+        for out in [&on, &off] {
+            let a = out.as_array().unwrap();
+            assert_eq!(a.len(), 3);
+            assert_eq!(a[1], toml::Value::String("junk".into()), "a non-table entry stays in place");
+            assert_eq!(a[0]["parameter"], toml::Value::Integer(1), "the stored type stays");
+            assert_eq!(a[0]["extra"], toml::Value::String("x".into()));
+            assert_eq!(a[2].as_table().unwrap().len(), 3, "only disabled is added");
+        }
+        assert!(set_all_disabled(&toml::Value::String("x".into()), true).is_none());
+    }
+
+    #[test]
+    fn toggle_flips_one_entry_in_place() {
+        let v = odd_list();
+        let out = toggle_disabled_at(&v, 0).unwrap();
+        let a = out.as_array().unwrap();
+        assert_eq!(a[0]["disabled"], toml::Value::Boolean(false), "1 read as true, flipped");
+        assert_eq!(a[0]["parameter"], toml::Value::Integer(1));
+        assert_eq!(a[1], v[1]);
+        assert_eq!(a[2], v[2], "other entries byte for byte");
+        let again = toggle_disabled_at(&out, 2).unwrap();
+        assert_eq!(again[2]["disabled"], toml::Value::Boolean(true));
+        assert_eq!(again[0], out[0]);
+        assert!(toggle_disabled_at(&v, 1).is_none(), "not a table");
+        assert!(toggle_disabled_at(&v, 3).is_none(), "past the end");
+    }
+
+    #[test]
+    fn indexes_are_places_in_the_stored_array() {
+        let places: Vec<(usize, String)> = parse_indexed(&odd_list()).into_iter().map(|(i, t)| (i, t.regex)).collect();
+        assert_eq!(places, vec![(0, "a".to_string()), (2, "b".to_string())]);
+    }
+
+    #[test]
+    fn editor_write_keeps_what_it_cannot_parse() {
+        let v = odd_list();
+        let mut list = parse_list(&v);
+        // Unchanged: the stored value comes back as it was.
+        assert_eq!(merge_list(Some(&v), &list), v);
+        // One edited, one added: the junk stays in place, the untouched entry as stored.
+        list[1].regex = "c".into();
+        list.push(Trigger { regex: "d".into(), ..list[1].clone() });
+        let out = merge_list(Some(&v), &list);
+        let a = out.as_array().unwrap();
+        assert_eq!(a.len(), 4);
+        assert_eq!(a[0], v[0]);
+        assert_eq!(a[1], v[1]);
+        assert_eq!(a[2]["regex"], toml::Value::String("c".into()));
+        assert_eq!(a[3]["regex"], toml::Value::String("d".into()));
+        // One removed: the tables left fill the table places in order, the junk stays.
+        let out = merge_list(Some(&v), &parse_list(&v)[1..]);
+        let a = out.as_array().unwrap();
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0]["regex"], toml::Value::String("b".into()));
+        assert_eq!(a[1], v[1]);
+        // Nothing stored yet.
+        assert_eq!(merge_list(None, &list[..1]), to_value(&list[..1]));
     }
 
     #[test]

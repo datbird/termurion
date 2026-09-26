@@ -420,7 +420,9 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
         None => d.remove::<usize>(sel_id),
     });
     if changed {
-        profile.set("Triggers", triggers::to_value(&list));
+        // Entries the list could not read stay in place; untouched triggers stay as stored.
+        let stored = profile.get("Triggers");
+        profile.set("Triggers", triggers::merge_list(stored.as_ref(), &list));
     }
     changed
 }

@@ -872,10 +872,12 @@ impl App {
     }
 
     /// Disable Status Bar (`PS:23070-23080`): the session's own copy when it has one, else
-    /// the shared profile (every session using it).
+    /// the shared profile (every session using it). A bar showing the tmux layout writes
+    /// the session's copy: iTerm2 divorced that session to install the layout
+    /// (`PS:10085-10090`), so its Disable never reaches the saved profile.
     fn disable_status_bar(&mut self, pane: PaneId) {
         let Some(guid) = self.panes.get(&pane).map(|p| p.profile.clone()) else { return };
-        if self.store.sessions.iter().any(|s| s.profile.guid() == guid) {
+        if self.bar_layout(pane).1 || self.store.sessions.iter().any(|s| s.profile.guid() == guid) {
             self.set_session_values(pane, &[(SHOW_KEY.to_string(), Some(toml::Value::Boolean(false)))]);
             return self.relayout();
         }

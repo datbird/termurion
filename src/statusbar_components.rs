@@ -492,6 +492,15 @@ mod tests {
             assert_eq!(placed.iter().map(|p| p.index).collect::<Vec<_>>(), vec![0], "{algorithm:?}");
             assert!(placed[0].width >= 100.0, "{algorithm:?}");
         }
+        // The real field: `SRCH` minimum 125, preferred 200, at the temporary's priority.
+        // Stable keeps it down to 151 points and drops it at 150 (its margins no longer
+        // fit); Tightly Packed keeps it at 150.
+        let priority = temporary(Kind::SearchTool).priority() as f32;
+        let field = [item(125.0, 200.0, priority), item(40.0, 60.0, 5.0), item(40.0, 60.0, 5.0), item(40.0, 60.0, 5.0)];
+        let indexes = |width: f32, algorithm| layout(&field, width, algorithm, false).iter().map(|p| p.index).collect::<Vec<_>>();
+        assert_eq!(indexes(151.0, Algorithm::Stable), vec![0], "Stable at 151 keeps the field alone");
+        assert_eq!(indexes(150.0, Algorithm::Stable), Vec::<usize>::new(), "Stable at 150 drops it");
+        assert_eq!(indexes(150.0, Algorithm::TightlyPacked), vec![0], "Tightly Packed at 150 keeps it");
     }
 
     #[test]
