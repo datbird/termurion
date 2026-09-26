@@ -16,7 +16,7 @@ use crate::statusbar_setup_ui::SetupEvent;
 use crate::statusbar_layout::{self as sbl, Item, ItemKind, Placed, Position};
 use crate::statusbar_components::Kind;
 use crate::statusbar_text as sbt;
-use super::statusbar_content::Content;
+use super::statusbar_content::{Content, MenuAt, BUTTON_DY_PT, BUTTON_PAD_PT};
 
 /// `iTermStatusBarPlaceholderComponent`'s text.
 pub(super) const PLACEHOLDER_TEXT: &str = "Click here to configure status bar";
@@ -24,6 +24,11 @@ const LAYOUT_KEY: &str = "Status Bar Layout";
 const SHOW_KEY: &str = "Show Status Bar";
 /// The info bar a failed Interpolated String's click shows.
 const STATUS_ERROR_BAR: &str = "statusbar:error";
+/// The info bar a click that does nothing yet shows.
+const STATUS_REFUSE_BAR: &str = "statusbar:refuse";
+/// A button face's corner radius, and its inset from the bar's top and bottom, in points.
+const BUTTON_RADIUS_PT: f32 = 4.0;
+const BUTTON_INSET_PT: f32 = 2.0;
 /// An icon's column, in points.
 const ICON_PT: f32 = 17.0;
 /// The status bar font's size when neither the layout nor the component sets one
@@ -55,18 +60,16 @@ pub(super) enum Click {
     Menu(Kind),
     /// Shows why the component failed (an Interpolated String's evaluation error).
     Error(String),
-    /// Performs the component's action (a button). This and the three below are made by
-    /// the button, field and temporary components (Tasks 4 and 5).
-    #[allow(dead_code)]
+    /// Performs the component's action (Custom Action).
     Run,
-    /// Focuses the component's field.
+    /// Focuses the component's field. This and the one below are made by the field and
+    /// temporary components (Task 5).
     #[allow(dead_code)]
     Field,
     /// Closes a temporary component.
     #[allow(dead_code)]
     Cancel,
-    /// Says why the click does nothing yet.
-    #[allow(dead_code)]
+    /// Says why the click does nothing yet, in an info bar with OK.
     Refuse(&'static str),
 }
 
@@ -84,7 +87,17 @@ impl Piece {
             SPRING_CLASS => Some(Piece::Spring),
             SPACER_CLASS => Some(Piece::Spacer),
             _ => match Kind::of(class)? {
-                k @ (Kind::Clock | Kind::HostName | Kind::UserName | Kind::JobName | Kind::CurrentDirectory | Kind::InterpolatedString) => Some(Piece::Content(k)),
+                k @ (Kind::Clock
+                | Kind::HostName
+                | Kind::UserName
+                | Kind::JobName
+                | Kind::CurrentDirectory
+                | Kind::InterpolatedString
+                | Kind::CustomAction
+                | Kind::ActionsMenu
+                | Kind::SnippetsMenu
+                | Kind::TriggersMenu
+                | Kind::CallScriptFunction) => Some(Piece::Content(k)),
                 _ => None,
             },
         }
@@ -97,6 +110,8 @@ impl Piece {
     /// "maxwidth" ?: INFINITY)`). A text component's own minimum is its narrowest variant
     /// and its preferred width its widest (`TXT:178-229`); Job Name and Current Directory
     /// clamp the preferred width by the knobs (`clampedWidth:`, `JOB:60-62`, `VAR:278-280`).
+    /// A button (Call Script Function, `FN:127-142`) is its label plus `BUTTON_PAD_PT`,
+    /// both minimum and preferred.
     pub(super) fn item(self, c: &Component, algorithm: Algorithm, content: &Content, widths: &[(String, f32)], min_text_pt: Option<f32>) -> Item {
         let knob_min = c.min_width_knob() as f32;
         let max = c.max_width_knob() as f32;
@@ -117,7 +132,8 @@ impl Piece {
                     Some(fixed) => fixed,
                     None => {
                         let (narrow, wide) = if widths.is_empty() { (0.0, 0.0) } else { (sbt::narrowest(widths), sbt::widest(widths)) };
-                        (min_text_pt.map_or(narrow, |m| m.min(wide)), wide)
+                        let pad = if content.button { BUTTON_PAD_PT } else { 0.0 };
+                        (min_text_pt.map_or(narrow, |m| m.min(wide)) + pad, wide + pad)
                     }
                 };
                 let preferred = match self {
@@ -172,7 +188,7 @@ impl Shown {
     /// `statusBarComponentCopyableString`: the content's own, else a text component's
     /// widest variant (`TXT`: `longestStringValue`); the framework's pieces have none.
     fn copyable(&self) -> Option<String> {
-        let content = self.content.as_ref().filter(|_| matches!(self.piece, Piece::Content(_)))?;
+        let content = self.content.as_ref().filter(|c| matches!(self.piece, Piece::Content(_)) && !c.uncopyable)?;
         content.copy.clone().or_else(|| (!self.widths.is_empty()).then(|| sbt::pick(&self.widths, f32::INFINITY))).filter(|t| !t.is_empty())
     }
 }
@@ -386,10 +402,14 @@ impl App {
             // rather than the bar's own background).
             let rainbow = if adv.rainbow == Rainbow::Disabled { Vec::new() } else { statusbar::rainbow_colors(p.placed.len(), adv.rainbow, self.dark()) };
             let px = |x: f32| bar.rect.x + (x * scale).round();
+            // A button's background color is its face, not a band (`FN:78-96`).
+            let is_button = |i: usize| p.shown[i].content.as_ref().is_some_and(|c| c.button);
             let bands: Vec<(f32, f32, Rgb, f32)> = sbl::bands(&p.placed, &p.items, p.width_pt)
                 .into_iter()
+                .filter(|&(_, _, i)| !is_button(i))
                 .filter_map(|(a, b, i)| p.shown[i].component.background_color().as_ref().and_then(color_of).map(|(c, al)| (px(a), px(b), c, al)))
                 .collect();
+            let mut buttons = Vec::new();
             let separators: Vec<f32> = sbl::separators(&p.placed, &p.items).into_iter().map(px).collect();
             // `PS:22983-23010`: the layout's separator color, else the default text color at
             // a quarter alpha.
@@ -404,23 +424,33 @@ impl App {
                 };
                 let x = px(pl.x);
                 let clip = Rect { x, y: bar.rect.y, w: (pl.width * scale).round(), h: bar.rect.h };
+                // A button's face: its room, inset from the bar's edges, and its label 6
+                // points in (`FN`: a borderless rounded button sized to fit).
+                if content.button {
+                    if let Some((c, a)) = s.component.background_color().as_ref().and_then(color_of) {
+                        let inset = (BUTTON_INSET_PT * scale).round();
+                        buttons.push((Rect { y: clip.y + inset, h: (clip.h - 2.0 * inset).max(0.0), ..clip }, c, a, BUTTON_RADIUS_PT * scale));
+                    }
+                }
+                let pad_pt = if content.button { BUTTON_PAD_PT / 2.0 } else { 0.0 };
+                let dy = if content.button { BUTTON_DY_PT * scale } else { 0.0 };
                 // The icon's 17 point column at the left, tinted with the text color.
                 let icon_pt = if content.icon.is_some() { ICON_PT } else { 0.0 };
                 if let Some(glyph) = content.icon {
                     let icon_clip = Rect { w: (ICON_PT * scale).round().min(clip.w), ..clip };
-                    texts.push(scene::BarText { x, text: glyph.to_string(), color, scale: s.text_scale, clip: icon_clip, icon: true });
+                    texts.push(scene::BarText { x, text: glyph.to_string(), color, scale: s.text_scale, clip: icon_clip, icon: true, dy: 0.0 });
                 }
                 // The widest variant that fits beside the icon (`TXT:178-229`); User Name
                 // always draws its full name (`VAR:249-251`).
-                let room = (pl.width - icon_pt).max(0.0);
+                let room = (pl.width - icon_pt - 2.0 * pad_pt).max(0.0);
                 let text = if content.min_text.is_some() { content.variants.first().cloned().unwrap_or_default() } else { sbt::pick(&s.widths, room) };
                 if text.is_empty() {
                     continue;
                 }
                 let text_pt = s.widths.iter().find(|(v, _)| *v == text).map_or(0.0, |(_, w)| *w);
-                let left = pl.x + icon_pt + if content.right_align { (room - text_pt).max(0.0) } else { 0.0 };
-                let text_clip = Rect { x: px(pl.x + icon_pt), w: (room * scale).round(), ..clip };
-                texts.push(scene::BarText { x: px(left), text, color, scale: s.text_scale, clip: text_clip, icon: false });
+                let left = pl.x + icon_pt + pad_pt + if content.right_align { (room - text_pt).max(0.0) } else { 0.0 };
+                let text_clip = Rect { x: px(pl.x + icon_pt + pad_pt), w: (room * scale).round(), ..clip };
+                texts.push(scene::BarText { x: px(left), text, color, scale: s.text_scale, clip: text_clip, icon: false, dy });
             }
             // `SV:73-149`: one point on the edge that touches the terminal.
             let edge = adv.edge_separator.then(|| {
@@ -431,7 +461,7 @@ impl App {
                 };
                 Rect { y, h, ..bar.rect }
             });
-            let d = scene::StatusBarDraw { rect: bar.rect, background, bands: &bands, separators: &separators, separator_color, texts: &texts, edge, scale };
+            let d = scene::StatusBarDraw { rect: bar.rect, background, bands: &bands, separators: &separators, separator_color, buttons: &buttons, texts: &texts, edge, scale };
             scene::status_bar(frame, &d, cell);
         }
     }
@@ -453,24 +483,37 @@ impl App {
                 let click = hit.and_then(|i| p.shown[i].content.as_ref()).map_or(Click::None, |c| c.click.clone());
                 match click {
                     Click::Configure => self.configure_status_bar(bar.pane, event_loop),
-                    Click::Menu(Kind::CurrentDirectory) => {
+                    Click::Menu(kind) => {
                         let Some(i) = hit else { return true };
-                        let path = p.shown[i].content.as_ref().and_then(|c| c.copy.clone());
-                        // At the component's left, beside the bar on the terminal's side.
+                        // At the component's left, below a bar at the top and above one at
+                        // the bottom.
                         let left = p.placed.iter().find(|pl| pl.index == i).map_or(0.0, |pl| pl.x);
-                        let y = match self.status_bar_position() {
-                            Position::Top => bar.rect.y + bar.rect.h,
-                            Position::Bottom => bar.rect.y,
+                        let at = match self.status_bar_position() {
+                            Position::Top => MenuAt { x: bar.rect.x + left * self.scale(), y: bar.rect.y + bar.rect.h, above: false },
+                            Position::Bottom => MenuAt { x: bar.rect.x + left * self.scale(), y: bar.rect.y, above: true },
                         };
-                        self.show_dir_menu(bar.pane, path, (bar.rect.x + left * self.scale(), y));
+                        match kind {
+                            Kind::CurrentDirectory => {
+                                let path = p.shown[i].content.as_ref().and_then(|c| c.copy.clone());
+                                self.show_dir_menu(bar.pane, path, at);
+                            }
+                            _ => self.show_component_menu(bar.pane, kind, at),
+                        }
+                    }
+                    Click::Run => {
+                        if let Some(i) = hit {
+                            self.run_custom_action(&p.shown[i].component, event_loop);
+                        }
                     }
                     // `SWS`: the evaluation error, with OK.
                     Click::Error(message) => {
                         self.ask(bar.pane, STATUS_ERROR_BAR, &message.replace('\n', " "), &["OK"], false);
                     }
-                    Click::Refuse(why) => self.banners.set("statusbar", why),
-                    // Tasks 4 and 5: buttons, other menus, and fields.
-                    Click::None | Click::Menu(_) | Click::Run | Click::Field | Click::Cancel => {}
+                    Click::Refuse(why) => {
+                        self.ask(bar.pane, STATUS_REFUSE_BAR, why, &["OK"], false);
+                    }
+                    // Task 5: fields and temporary components.
+                    Click::None | Click::Field | Click::Cancel => {}
                 }
             }
             MouseButton::Right => self.show_status_menu(bar.pane, &p, hit),
@@ -528,7 +571,7 @@ impl App {
     pub(super) fn status_bar_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         let Some(what) = id.strip_prefix("statusbar:") else { return false };
         let Some(m) = self.status_menu.take() else { return true };
-        if self.dir_menu_picked(what, m.pane, &m.choices, m.path.as_deref(), event_loop) {
+        if self.dir_menu_picked(what, m.pane, &m.choices, m.path.as_deref(), event_loop) || self.component_menu_picked(what, m.pane, event_loop) {
             return true;
         }
         match what {
@@ -799,6 +842,30 @@ mod tests {
         // The minwidth knob raises the minimum.
         let wide = component(HOST_NAME_CLASS, &[("minwidth", toml::Value::Float(60.0))]);
         assert_eq!(Piece::Content(Kind::HostName).item(&wide, Algorithm::Stable, &content, &two, None).min, 60.0);
+    }
+
+    /// The menu and button components are placed; a button is its label plus 12 points
+    /// and does not stretch (`FN:127-150`); the menus and buttons offer no Copy.
+    #[test]
+    fn buttons_and_menus_size_like_iterm2() {
+        use crate::statusbar_components::{ACTIONS_MENU_CLASS, CALL_SCRIPT_FUNCTION_CLASS, CUSTOM_ACTION_CLASS, SNIPPETS_MENU_CLASS, TRIGGERS_MENU_CLASS};
+        for (class, kind) in [
+            (CUSTOM_ACTION_CLASS, Kind::CustomAction),
+            (ACTIONS_MENU_CLASS, Kind::ActionsMenu),
+            (SNIPPETS_MENU_CLASS, Kind::SnippetsMenu),
+            (TRIGGERS_MENU_CLASS, Kind::TriggersMenu),
+            (CALL_SCRIPT_FUNCTION_CLASS, Kind::CallScriptFunction),
+        ] {
+            assert_eq!(Piece::of(class), Some(Piece::Content(kind)), "{class}");
+        }
+        let button = Content { button: true, uncopyable: true, click: Click::Refuse(super::super::statusbar_content::SCRIPT_REFUSAL), ..Content::text(vec!["Reload".into()]) };
+        let item = Piece::Content(Kind::CallScriptFunction).item(&component(CALL_SCRIPT_FUNCTION_CLASS, &[]), Algorithm::Stable, &button, &widths(&[("Reload", 40.0)]), None);
+        assert_eq!((item.min, item.preferred, item.stretch), (52.0, 52.0, false));
+        let menu = Content { uncopyable: true, click: Click::Menu(Kind::ActionsMenu), ..Content::text(vec!["Perform Action\u{2026}".into()]) };
+        let menu_item = Piece::Content(Kind::ActionsMenu).item(&component(ACTIONS_MENU_CLASS, &[]), Algorithm::Stable, &menu, &widths(&[("Perform Action\u{2026}", 90.0)]), None);
+        assert_eq!((menu_item.min, menu_item.preferred, menu_item.stretch), (90.0, 90.0, true));
+        let shown = Shown { index: Some(0), piece: Piece::Content(Kind::ActionsMenu), component: component(ACTIONS_MENU_CLASS, &[]), content: Some(menu), widths: widths(&[("Perform Action\u{2026}", 90.0)]), min_text_pt: None, text_scale: 1.0 };
+        assert_eq!(shown.copyable(), None, "no Copy for a menu");
     }
 
     #[test]

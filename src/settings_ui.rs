@@ -117,6 +117,15 @@ impl SettingsWindow {
         self.focus();
     }
 
+    /// Shows Settings > Shortcuts on one of its tabs (the status bar menus' Edit Actions
+    /// and Edit Snippets, iTerm2's `sessionEditActions` and `sessionEditSnippets`).
+    pub fn show_shortcuts_tab(&mut self, tab: crate::settings_shortcuts::Tab) {
+        self.page = Page::Shortcuts;
+        self.shortcuts.show_tab(tab);
+        self.host.window.request_redraw();
+        self.focus();
+    }
+
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, mode: Mode) -> Result<Self, String> {
         let (title, w, h) = match mode {
             Mode::Settings => ("Tandem Settings", 980.0, 720.0),

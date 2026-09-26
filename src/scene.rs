@@ -957,6 +957,8 @@ pub struct BarText {
     pub clip: Rect,
     /// Drawn with the icon font (a component's Segoe Fluent Icons glyph).
     pub icon: bool,
+    /// Pixels below the centered line (`statusBarComponentVerticalOffset`).
+    pub dy: f32,
 }
 
 /// What a status bar shows, already placed in window pixels (`iTermStatusBarView`).
@@ -968,6 +970,8 @@ pub struct StatusBarDraw<'a> {
     /// Separator lines' x; drawn only with a color.
     pub separators: &'a [f32],
     pub separator_color: Option<(Rgb, f32)>,
+    /// Button faces (Call Script Function): rounded boxes, with the corner radius.
+    pub buttons: &'a [(Rect, Rgb, f32, f32)],
     pub texts: &'a [BarText],
     /// The line between the bar and the terminal ("Draw separator between status bar and
     /// terminal"), already placed.
@@ -976,8 +980,28 @@ pub struct StatusBarDraw<'a> {
     pub scale: f32,
 }
 
+/// A rounded box as quads, one per pixel row inside each corner (a circle's inset there)
+/// and one for the middle.
+pub fn rounded_box(quads: &mut Vec<Quad>, r: Rect, radius: f32, color: [f32; 4]) {
+    let rr = radius.round().clamp(0.0, (r.w / 2.0).min(r.h / 2.0).floor());
+    let rows = rr as usize;
+    for k in 0..rows {
+        let d = rr - k as f32 - 0.5;
+        let inset = (rr - (rr * rr - d * d).max(0.0).sqrt()).round();
+        let w = r.w - 2.0 * inset;
+        for y in [r.y + k as f32, r.y + r.h - 1.0 - k as f32] {
+            quads.push(Quad { rect: Rect { x: r.x + inset, y, w, h: 1.0 }, color });
+        }
+    }
+    let h = r.h - 2.0 * rr;
+    if h > 0.0 {
+        quads.push(Quad { rect: Rect { y: r.y + rr, h, ..r }, color });
+    }
+}
+
 /// A status bar (`SV:151-162`): the background, the component bands, the separators (one
-/// point wide, three points in from the top and bottom), the text, and the edge line.
+/// point wide, three points in from the top and bottom), button faces, the text, and the
+/// edge line.
 pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
     let r = d.rect;
     frame.quads.push(Quad { rect: r, color: rgba(d.background.0, d.background.1) });
@@ -993,9 +1017,12 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
             frame.quads.push(Quad { rect: Rect { x, y: r.y + inset, w, h: (r.h - 2.0 * inset).max(0.0) }, color: rgba(c, a) });
         }
     }
+    for &(b, c, a, radius) in d.buttons {
+        rounded_box(&mut frame.quads, b, radius, rgba(c, a));
+    }
     for t in d.texts {
         let line_h = cell.1 * t.scale;
-        let y = r.y + ((r.h - line_h) / 2.0).round();
+        let y = r.y + ((r.h - line_h) / 2.0).round() + t.dy;
         let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false };
         frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale });
     }
@@ -1262,6 +1289,27 @@ mod broadcast_tests {
 
 #[cfg(test)]
 mod tests {
+
+    /// A button face: the corner rows are inset, the middle is full width, and the box
+    /// covers exactly its own rows.
+    #[test]
+    fn rounded_box_trims_corners() {
+        use super::*;
+        let mut q = Vec::new();
+        let r = Rect { x: 10.0, y: 20.0, w: 40.0, h: 16.0 };
+        rounded_box(&mut q, r, 4.0, [1.0; 4]);
+        let top = q.iter().filter(|q| q.rect.y == 20.0).map(|q| q.rect).collect::<Vec<_>>();
+        assert_eq!(top.len(), 1);
+        assert!(top[0].x > 10.0 && top[0].x + top[0].w < 50.0, "{top:?}");
+        let middle = q.last().unwrap().rect;
+        assert_eq!(middle, Rect { x: 10.0, y: 24.0, w: 40.0, h: 8.0 });
+        let rows: f32 = q.iter().map(|q| q.rect.h).sum();
+        assert_eq!(rows, 16.0);
+        let mut square = Vec::new();
+        rounded_box(&mut square, r, 0.0, [1.0; 4]);
+        assert_eq!(square.len(), 1);
+        assert_eq!(square[0].rect, r);
+    }
 
     #[test]
     fn popups_over_text_keep_their_own_text() {

@@ -7,7 +7,9 @@ use crate::snippets::{self, MenuEntry, Store};
 use crate::user_actions;
 
 const SNIPPET_ID: &str = "snippet-send:";
-const ACTION_ID: &str = "action-apply:";
+/// Edit > Actions' item ids, one per action by its place in `Actions`; the status bar's
+/// Actions Menu uses them too, so a pick runs the same way.
+pub(super) const ACTION_ID: &str = "action-apply:";
 
 pub(super) fn snippets_path() -> std::path::PathBuf {
     std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("snippets.json")
@@ -18,14 +20,31 @@ pub(super) fn load_snippets() -> Store {
     Store::from_read(std::fs::read_to_string(snippets_path()).map_err(|e| e.kind()))
 }
 
-fn append(parent: &muda::Submenu, item: &dyn muda::IsMenuItem, errors: &mut Vec<String>) {
-    if let Err(e) = parent.append(item) {
+/// A menu that takes items: Edit > Snippets (a submenu) or a status bar menu.
+pub(super) trait Parent {
+    fn add(&self, item: &dyn muda::IsMenuItem) -> muda::Result<()>;
+}
+
+impl Parent for muda::Submenu {
+    fn add(&self, item: &dyn muda::IsMenuItem) -> muda::Result<()> {
+        self.append(item)
+    }
+}
+
+impl Parent for muda::Menu {
+    fn add(&self, item: &dyn muda::IsMenuItem) -> muda::Result<()> {
+        self.append(item)
+    }
+}
+
+fn append(parent: &dyn Parent, item: &dyn muda::IsMenuItem, errors: &mut Vec<String>) {
+    if let Err(e) = parent.add(item) {
         errors.push(e.to_string());
     }
 }
 
 /// Builds entries into `parent` up to the end of the current folder.
-fn build(parent: &muda::Submenu, entries: &[MenuEntry], at: &mut usize, errors: &mut Vec<String>) {
+fn build(parent: &dyn Parent, entries: &[MenuEntry], at: &mut usize, errors: &mut Vec<String>) {
     while *at < entries.len() {
         let e = &entries[*at];
         *at += 1;
@@ -42,6 +61,13 @@ fn build(parent: &muda::Submenu, entries: &[MenuEntry], at: &mut usize, errors: 
     }
 }
 
+/// The snippets menu's items: the disabled Option hint, a separator, and the tag tree.
+fn fill_snippets(parent: &dyn Parent, entries: &[MenuEntry], errors: &mut Vec<String>) {
+    append(parent, &muda::MenuItem::new("Press Option to Edit Before Sending", false, None), errors);
+    append(parent, &muda::PredefinedMenuItem::separator(), errors);
+    build(parent, entries, &mut 0, errors);
+}
+
 impl App {
     /// The focused session's profile "Snippets Filter".
     fn snippets_filter(&self) -> Vec<String> {
@@ -49,18 +75,28 @@ impl App {
         p.get("Snippets Filter").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())).unwrap_or_default()
     }
 
+    /// Edit > Snippets' entries: the snippets the focused session's filter lets through,
+    /// as a tag tree.
+    fn snippet_entries(&self) -> Vec<MenuEntry> {
+        let s = &self.snippets.snippets;
+        snippets::menu_entries(s, &snippets::filtered(s, &self.snippets_filter()))
+    }
+
+    /// Edit > Snippets' items into `parent`: the disabled Option hint, a separator, and the
+    /// tag tree. The status bar's Snippets Menu opens with the same items.
+    pub(super) fn append_snippet_items(&self, parent: &dyn Parent, errors: &mut Vec<String>) {
+        fill_snippets(parent, &self.snippet_entries(), errors);
+    }
+
     /// Edit > Snippets and Edit > Actions, rebuilt when what they list changes.
     pub(super) fn refresh_snippet_menus(&mut self) {
-        let s = &self.snippets.snippets;
-        let entries = snippets::menu_entries(s, &snippets::filtered(s, &self.snippets_filter()));
+        let entries = self.snippet_entries();
         let actions: Vec<(String, String)> = user_actions::load(self.globals.get("Actions").as_ref()).iter().enumerate().map(|(i, a)| (format!("{ACTION_ID}{i}"), a.title.clone())).collect();
         let mut errors = Vec::new();
         let Some(bar) = &mut self.menu_bar else { return };
         if let Some(sub) = bar.snippets.as_ref().filter(|_| bar.snippet_items.as_ref() != Some(&entries)) {
             while sub.remove_at(0).is_some() {}
-            append(sub, &muda::MenuItem::new("Press Option to Edit Before Sending", false, None), &mut errors);
-            append(sub, &muda::PredefinedMenuItem::separator(), &mut errors);
-            build(sub, &entries, &mut 0, &mut errors);
+            fill_snippets(sub, &entries, &mut errors);
             bar.snippet_items = Some(entries);
         }
         if let Some(sub) = bar.actions.as_ref().filter(|_| bar.action_items != actions) {

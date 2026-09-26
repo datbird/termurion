@@ -1,12 +1,15 @@
 //! What each content component on a status bar shows (milestone 9h): a component and its
 //! session become a `Content` (width variants, copy text, empty, icon, click), which
 //! `statusbar_ui` measures, lays out and draws. Text components here: Clock, Host Name,
-//! User Name, Job Name, Current Directory (and its click menu), Interpolated String.
+//! User Name, Job Name, Current Directory (and its click menu), Interpolated String; the
+//! menu and button components: Custom Action, Actions Menu, Snippets Menu, Triggers Menu
+//! (and their menus), Call Script Function.
 //!
 //! Citations use `.superpowers/research/m9-facts.md` section 2's abbreviations (`TXT` =
 //! `iTermStatusBarTextComponent.m`, `VAR` = `iTermStatusBarVariableBaseComponent.m`, `JOB`
 //! = `iTermStatusBarJobComponent.m`, `CLK` = `iTermStatusBarClockComponent.m`, `SWS` =
-//! `iTermStatusBarSwiftyStringComponent.m`).
+//! `iTermStatusBarSwiftyStringComponent.m`, `ACT` = `iTermStatusBarActionComponent.m`,
+//! `FN` = `iTermStatusBarFunctionCallComponent.m`, `PS` = `PTYSession.m`).
 
 use super::statusbar_ui::Click;
 use super::*;
@@ -21,6 +24,14 @@ const LOCALIZE_KEY: &str = "localize";
 const DEFAULT_CLOCK_FORMAT: &str = "M/dd h:mm";
 const ABBREVIATE_LOCALHOST_KEY: &str = "abbreviate-localhost";
 const EXPRESSION_KEY: &str = "expression";
+const ACTION_KEY: &str = "action";
+const LABEL_KEY: &str = "label";
+/// Call Script Function's click until milestone 11 brings the Python API.
+pub(super) const SCRIPT_REFUSAL: &str = "Script functions need the Python API, which arrives in milestone 11.";
+/// A button's face is its label plus this many points (6 on each side).
+pub(super) const BUTTON_PAD_PT: f32 = 12.0;
+/// `FN`: `statusBarComponentVerticalOffset`.
+pub(super) const BUTTON_DY_PT: f32 = 0.5;
 /// `SWS:130`: what an Interpolated String shows when its expression fails.
 pub(super) const LADYBUG: &str = "\u{1F41E}";
 
@@ -44,6 +55,11 @@ pub(super) struct Content {
     pub(super) right_align: bool,
     /// A component sized by numbers, not text: (minimum, preferred) points.
     pub(super) fixed: Option<(f32, f32)>,
+    /// A button (Call Script Function): its label on a rounded box in its background
+    /// color, `BUTTON_PAD_PT` wider than the label.
+    pub(super) button: bool,
+    /// `statusBarComponentCopyableString` is nil: no Copy in the right-click menu.
+    pub(super) uncopyable: bool,
     pub(super) click: Click,
 }
 
@@ -53,7 +69,7 @@ impl Content {
     pub(super) fn text(variants: Vec<String>) -> Content {
         let variants = if variants.is_empty() { vec![String::new()] } else { variants };
         let empty = variants.iter().all(|v| v.is_empty());
-        Content { variants, min_text: None, copy: None, empty, icon: None, right_align: false, fixed: None, click: Click::None }
+        Content { variants, min_text: None, copy: None, empty, icon: None, right_align: false, fixed: None, button: false, uncopyable: false, click: Click::None }
     }
 }
 
@@ -92,6 +108,34 @@ pub(super) fn dir_title(path: &str, starred: bool) -> String {
 /// `SWS:132`: the message a click on a failed Interpolated String shows.
 pub(super) fn evaluation_error(expression: &str, error: &str) -> String {
     format!("Error while evaluating \u{201C}{expression}\u{201D}:\n{error}")
+}
+
+/// `ACT:75-80`: what a Custom Action shows when its title does not evaluate.
+pub(super) fn custom_action_error(error: &str) -> String {
+    format!("{LADYBUG} {error}")
+}
+
+/// The session's own trigger dictionaries, in order (`PS`: `_config.triggerProfileDicts`).
+fn trigger_list(p: Option<&crate::profile::Profile>) -> Vec<crate::triggers::Trigger> {
+    p.and_then(|p| p.get("Triggers")).map(|v| crate::triggers::parse_list(&v)).unwrap_or_default()
+}
+
+/// The Triggers Menu's items (`PS:23172-23187`): (place in the list, title, on) for each
+/// trigger whose action Tandem knows; iTerm2 leaves out a trigger it cannot build.
+pub(super) fn trigger_items(list: &[crate::triggers::Trigger]) -> Vec<(usize, String, bool)> {
+    list.iter()
+        .enumerate()
+        .filter_map(|(i, t)| crate::triggers::action_info(&t.action).map(|a| (i, sbc::trigger_menu_title(a.title, &t.regex), t.enabled)))
+        .collect()
+}
+
+/// Where a component's menu opens, in window pixels: at the component's left, beside the
+/// bar on the terminal's side (`above`: its bottom at `y`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct MenuAt {
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) above: bool,
 }
 
 /// A reported path as shown and copied: the Windows form of an OSC 7 path (`/C:/x`),
@@ -241,37 +285,178 @@ impl App {
             // click shows why.
             Kind::InterpolatedString => {
                 let expression = knob_str(c, kind, EXPRESSION_KEY).unwrap_or_default();
-                let vars = self.variables(pane);
-                let lookup = |n: &str| crate::prompted::variable(n.strip_prefix("session.").unwrap_or(n), &vars);
-                match crate::interp::evaluate(&expression, &lookup, &[]) {
+                match self.evaluate_for(pane, &expression) {
                     Ok(value) => Content::text(vec![value]),
                     Err(e) => Content { click: Click::Error(evaluation_error(&expression, &e)), ..Content::text(vec![LADYBUG.to_string()]) },
                 }
             }
-            // Tasks 4 and 5 fill these in; `Piece::of` does not place them yet.
-            Kind::CustomAction
-            | Kind::ActionsMenu
-            | Kind::SnippetsMenu
-            | Kind::TriggersMenu
-            | Kind::SearchTool
-            | Kind::FilterTool
-            | Kind::Composer
-            | Kind::CallScriptFunction
-            | Kind::TmuxLeft
-            | Kind::TmuxRight
-            | Kind::Progress => Content::text(Vec::new()),
+            // `ACT:19-135`: the action's title, evaluated, shortened a word at a time; a
+            // failed title shows the ladybug and the error. Never empty, never copied; a
+            // click performs the action.
+            Kind::CustomAction => {
+                let action = c.knobs.get(ACTION_KEY).and_then(crate::user_actions::UserAction::from_value);
+                let title = action.as_ref().map(|a| a.title.clone()).unwrap_or_default();
+                let variants = match self.evaluate_for(pane, &title) {
+                    Ok(value) => sbt::action_variants(&value),
+                    Err(e) => vec![custom_action_error(&e)],
+                };
+                let click = if action.is_some() { Click::Run } else { Click::None };
+                Content { empty: false, uncopyable: true, click, ..Content::text(variants) }
+            }
+            // `ACT:137-232`, `iTermStatusBarSnippetComponent.m`,
+            // `iTermStatusBarTriggersComponent.swift`: one fixed text, a click opens the
+            // component's menu, never copied, empty by `menu_empty`.
+            Kind::ActionsMenu | Kind::SnippetsMenu | Kind::TriggersMenu => {
+                let text = match kind {
+                    Kind::ActionsMenu => sbc::ACTIONS_MENU_TEXT,
+                    Kind::SnippetsMenu => sbc::SNIPPETS_MENU_TEXT,
+                    _ => sbc::TRIGGERS_MENU_TEXT,
+                };
+                let empty = match kind {
+                    Kind::ActionsMenu => sbc::menu_empty(kind, crate::user_actions::load(self.globals.get("Actions").as_ref()).len(), 0, 0),
+                    Kind::SnippetsMenu => sbc::menu_empty(kind, 0, self.snippets.snippets.len(), 0),
+                    _ => sbc::menu_empty(kind, 0, 0, self.session_trigger_count(pane)),
+                };
+                Content { empty, uncopyable: true, click: Click::Menu(kind), ..Content::text(vec![text.to_string()]) }
+            }
+            // `FN`: a button sized to its label; a click would call the function (milestone
+            // 11), so it says why it does not.
+            Kind::CallScriptFunction => {
+                let label = c.knobs.get(LABEL_KEY).and_then(toml::Value::as_str).unwrap_or_default().to_string();
+                Content { empty: false, button: true, uncopyable: true, click: Click::Refuse(SCRIPT_REFUSAL), ..Content::text(vec![label]) }
+            }
+            // Task 5 fills these in; `Piece::of` does not place them yet.
+            Kind::SearchTool | Kind::FilterTool | Kind::Composer | Kind::TmuxLeft | Kind::TmuxRight | Kind::Progress => Content::text(Vec::new()),
         };
         content.icon = sbc::icon(kind);
         content
     }
 
+    /// An interpolated string evaluated in the session (`iTermSwiftyString` with no side
+    /// effects). The session's variables are gathered only when the string names one.
+    fn evaluate_for(&self, pane: PaneId, expression: &str) -> Result<String, String> {
+        let vars = std::cell::OnceCell::new();
+        let lookup = |n: &str| crate::prompted::variable(n.strip_prefix("session.").unwrap_or(n), vars.get_or_init(|| self.variables(pane)));
+        crate::interp::evaluate(expression, &lookup, &[])
+    }
+
+    /// How many triggers the session's profile has (`PS:23168-23170`).
+    fn session_trigger_count(&self, pane: PaneId) -> usize {
+        self.profile_of(pane).and_then(|p| p.get("Triggers")).and_then(|v| v.as_array().map(Vec::len)).unwrap_or(0)
+    }
+
+    /// Custom Action's click (`ACT:129-133`, `PS:23137-23139`): the action runs as Edit >
+    /// Actions runs it, apply mode and all, in the bar's session (already the focused one).
+    pub(super) fn run_custom_action(&mut self, c: &Component, event_loop: &ActiveEventLoop) {
+        if let Some(a) = c.knobs.get(ACTION_KEY).and_then(crate::user_actions::UserAction::from_value) {
+            self.run_key_action(&a.binding(), None, None, event_loop);
+        }
+    }
+
+    /// Shows a component's menu at `at`. Windows drops a menu down from its point; one
+    /// that must open above the bar is moved up as it appears, its bottom on `at.y`.
+    pub(super) fn show_menu_at(&mut self, menu: muda::Menu, at: MenuAt) {
+        use muda::ContextMenu;
+        let Some(hwnd) = self.hwnd() else { return };
+        let position = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.x as i32, at.y as i32));
+        let lift = at.above.then(|| above::Lift::new(hwnd, at.x, at.y));
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(position)) };
+        drop(lift);
+        self.popup_menu = Some(menu);
+    }
+
+    /// The Actions, Snippets and Triggers Menus' clicks. Actions (`ACT:196-226`): one item
+    /// per action, with Edit > Actions' ids, a separator (there even with no actions), and
+    /// Edit Actions. Snippets (`iTermStatusBarSnippetComponent.m:77-92`): Edit > Snippets'
+    /// items, a separator, and Edit Snippets. Triggers (`iTermStatusBarTriggersComponent
+    /// .swift:91-111`): one checked-when-on item per trigger, a separator, Add Trigger and
+    /// Edit Triggers.
+    pub(super) fn show_component_menu(&mut self, pane: PaneId, kind: Kind, at: MenuAt) {
+        use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+        let menu = Menu::new();
+        let mut errors = Vec::new();
+        let add = |item: &dyn muda::IsMenuItem, errors: &mut Vec<String>| {
+            if let Err(e) = menu.append(item) {
+                errors.push(e.to_string());
+            }
+        };
+        match kind {
+            Kind::ActionsMenu => {
+                for (i, a) in crate::user_actions::load(self.globals.get("Actions").as_ref()).iter().enumerate() {
+                    add(&MenuItem::with_id(format!("{}{i}", super::snippets_ui::ACTION_ID), a.title.replace('&', "&&"), true, None), &mut errors);
+                }
+                add(&PredefinedMenuItem::separator(), &mut errors);
+                add(&MenuItem::with_id("statusbar:edit-actions", "Edit Actions\u{2026}", true, None), &mut errors);
+            }
+            Kind::SnippetsMenu => {
+                self.append_snippet_items(&menu, &mut errors);
+                add(&PredefinedMenuItem::separator(), &mut errors);
+                add(&MenuItem::with_id("statusbar:edit-snippets", "Edit Snippets\u{2026}", true, None), &mut errors);
+            }
+            Kind::TriggersMenu => {
+                for (i, title, on) in trigger_items(&trigger_list(self.profile_of(pane))) {
+                    add(&CheckMenuItem::with_id(format!("statusbar:trigger:{i}"), title.replace('&', "&&"), true, on, None), &mut errors);
+                }
+                add(&PredefinedMenuItem::separator(), &mut errors);
+                add(&MenuItem::with_id("statusbar:add-trigger", "Add Trigger\u{2026}", true, None), &mut errors);
+                add(&MenuItem::with_id("statusbar:edit-triggers", "Edit Triggers\u{2026}", true, None), &mut errors);
+            }
+            _ => return,
+        }
+        if let Some(e) = errors.first() {
+            self.banners.set("menu", format!("Status bar menu: {e}"));
+        }
+        self.status_menu = Some(super::statusbar_ui::StatusMenu::for_component(pane, kind.class(), Vec::new(), None));
+        self.show_menu_at(menu, at);
+    }
+
+    /// A pick from the Actions, Snippets or Triggers Menu (their action and snippet items
+    /// go through Edit > Actions' and Edit > Snippets' own path). True when `what` was one.
+    pub(super) fn component_menu_picked(&mut self, what: &str, pane: PaneId, event_loop: &ActiveEventLoop) -> bool {
+        use crate::settings_shortcuts::Tab;
+        match what {
+            // `statusBarEditActions`, `statusBarEditSnippets` (`PS:23141-23147`).
+            "edit-actions" => self.open_shortcuts_tab(Tab::Actions, event_loop),
+            "edit-snippets" => self.open_shortcuts_tab(Tab::Snippets, event_loop),
+            // `PS:23189-23195`: as Session > Triggers does it.
+            "add-trigger" => {
+                self.run_trigger_command_menu("addTrigger:", event_loop);
+            }
+            "edit-triggers" => {
+                self.run_trigger_command_menu("editTriggers:", event_loop);
+            }
+            _ => {
+                let Some(i) = what.strip_prefix("trigger:").and_then(|i| i.parse::<usize>().ok()) else { return false };
+                self.toggle_session_trigger(pane, i);
+            }
+        }
+        true
+    }
+
+    /// `PS:4506-4512`: the trigger's `disabled` flips in the session's own profile (a
+    /// session copy, made now when there is none), so other sessions keep theirs.
+    fn toggle_session_trigger(&mut self, pane: PaneId, index: usize) {
+        let mut list = trigger_list(self.profile_of(pane));
+        let Some(t) = list.get_mut(index) else { return };
+        t.enabled = !t.enabled;
+        self.set_session_values(pane, &[("Triggers".to_string(), Some(crate::triggers::to_value(&list)))]);
+        self.sync_checks();
+        self.redraw_all();
+    }
+
+    /// Settings > Shortcuts on one tab.
+    fn open_shortcuts_tab(&mut self, tab: crate::settings_shortcuts::Tab, event_loop: &ActiveEventLoop) {
+        self.open_settings_page(event_loop, crate::settings_ui::Page::Shortcuts);
+        if let Some(s) = self.settings.as_mut() {
+            s.show_shortcuts_tab(tab);
+        }
+    }
+
     /// Current Directory's click (`VAR:355-413`): the host's ten best recent directories
     /// (picking one types `cd <path>`), then, with a known path, Copy Path, Copy Folder
-    /// Name, Show in Explorer, New Session Here in New Window and in New Tab. `at` is the
-    /// component's corner in window pixels.
-    pub(super) fn show_dir_menu(&mut self, pane: PaneId, path: Option<String>, at: (f32, f32)) {
-        use muda::{ContextMenu, Menu, MenuItem, PredefinedMenuItem};
-        let Some(hwnd) = self.hwnd() else { return };
+    /// Name, Show in Explorer, New Session Here in New Window and in New Tab.
+    pub(super) fn show_dir_menu(&mut self, pane: PaneId, path: Option<String>, at: MenuAt) {
+        use muda::{Menu, MenuItem, PredefinedMenuItem};
         let host = self.history_host_pub(pane);
         let dirs: Vec<crate::shell_history::Dir> = self.shell_history_pub().dirs(&host).into_iter().take(10).collect();
         if dirs.is_empty() && path.is_none() {
@@ -296,9 +481,7 @@ impl App {
         }
         let choices = dirs.into_iter().map(|d| d.path).collect();
         self.status_menu = Some(super::statusbar_ui::StatusMenu::for_component(pane, Kind::CurrentDirectory.class(), choices, path));
-        let position = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
-        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(position)) };
-        self.popup_menu = Some(menu);
+        self.show_menu_at(menu, at);
     }
 
     /// A pick from the directory menu (`VAR:415-495`). True when `what` was one.
@@ -373,6 +556,92 @@ impl App {
     }
 }
 
+/// Opening a menu above a point: while a `Lift` lives, the first menu window this thread
+/// creates (class `#32768`) is subclassed, and each move it gets puts its bottom on the
+/// point (never above the top of the monitor's work area). Submenus open where Windows
+/// puts them.
+mod above {
+    use std::cell::Cell;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+    use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, GetClassNameW, GetWindowRect, SetWindowsHookExW, UnhookWindowsHookEx, HCBT_CREATEWND, HHOOK, SWP_NOMOVE, SWP_NOSIZE, WH_CBT, WINDOWPOS, WM_NCDESTROY,
+        WM_WINDOWPOSCHANGING,
+    };
+
+    const SUBCLASS_ID: usize = 0x7462_6D75;
+
+    thread_local! {
+        /// The screen y the menu's bottom goes to, while a `Lift` lives.
+        static BOTTOM: Cell<Option<i32>> = const { Cell::new(None) };
+        /// The menu window being lifted, once created.
+        static MENU: Cell<Option<isize>> = const { Cell::new(None) };
+    }
+
+    pub(super) struct Lift {
+        hook: HHOOK,
+    }
+
+    impl Lift {
+        /// `x`, `y`: the point in `hwnd`'s client pixels.
+        pub(super) fn new(hwnd: isize, x: f32, y: f32) -> Lift {
+            let mut pt = POINT { x: x as i32, y: y as i32 };
+            unsafe { ClientToScreen(hwnd as HWND, &mut pt) };
+            BOTTOM.with(|b| b.set(Some(pt.y)));
+            MENU.with(|m| m.set(None));
+            let hook = unsafe { SetWindowsHookExW(WH_CBT, Some(cbt), std::ptr::null_mut(), GetCurrentThreadId()) };
+            Lift { hook }
+        }
+    }
+
+    impl Drop for Lift {
+        fn drop(&mut self) {
+            if !self.hook.is_null() {
+                unsafe { UnhookWindowsHookEx(self.hook) };
+            }
+            BOTTOM.with(|b| b.set(None));
+            MENU.with(|m| m.set(None));
+        }
+    }
+
+    unsafe extern "system" fn cbt(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code == HCBT_CREATEWND as i32 && BOTTOM.with(Cell::get).is_some() && MENU.with(Cell::get).is_none() {
+            let hwnd = wparam as HWND;
+            let mut name = [0u16; 16];
+            let n = unsafe { GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32) };
+            if name[..n.max(0) as usize] == *"#32768".encode_utf16().collect::<Vec<u16>>() {
+                MENU.with(|m| m.set(Some(hwnd as isize)));
+                unsafe { SetWindowSubclass(hwnd, Some(place), SUBCLASS_ID, 0) };
+            }
+        }
+        unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+    }
+
+    unsafe extern "system" fn place(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+        if msg == WM_WINDOWPOSCHANGING {
+            let wp = unsafe { &mut *(lparam as *mut WINDOWPOS) };
+            if let Some(bottom) = BOTTOM.with(Cell::get).filter(|_| wp.flags & SWP_NOMOVE == 0) {
+                let cy = if wp.flags & SWP_NOSIZE == 0 {
+                    wp.cy
+                } else {
+                    let mut r: RECT = unsafe { std::mem::zeroed() };
+                    unsafe { GetWindowRect(hwnd, &mut r) };
+                    r.bottom - r.top
+                };
+                let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+                info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+                let top = if unsafe { GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) } != 0 { info.rcWork.top } else { i32::MIN };
+                wp.y = (bottom - cy).max(top);
+            }
+        } else if msg == WM_NCDESTROY {
+            unsafe { RemoveWindowSubclass(hwnd, Some(place), SUBCLASS_ID) };
+        }
+        unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +666,20 @@ mod tests {
         assert_eq!(sbt::job_variants(&job_chain(Some(""), &[], Some("pwsh"))), vec!["\u{2026}"]);
         let login = vec!["vim".to_string()];
         assert_eq!(job_chain(Some("vim"), &login, Some("login")), vec!["vim"], "login is left out");
+    }
+
+    /// `PS:23172-23187`: a known trigger's item is its action title less U+2026, U+2014,
+    /// its regex, checked when on, by its place in the list; an unknown action is left out.
+    /// `ACT:75-80`: a Custom Action whose title fails shows the ladybug and the error.
+    #[test]
+    fn trigger_menu_items_follow_iterm2() {
+        use crate::triggers::Trigger;
+        let t = |regex: &str, action: &str, enabled: bool| Trigger { regex: regex.into(), action: action.into(), parameter: String::new(), instant: false, enabled, name: String::new(), job: String::new(), match_type: 0, extra: toml::Table::new() };
+        let list = vec![t("err", "HighlightTrigger", true), t("x", "NoSuchTrigger", true), t("y", "BellTrigger", false)];
+        assert_eq!(trigger_items(&list), vec![(0, "Highlight Text \u{2014} err".to_string(), true), (2, "Ring Bell \u{2014} y".to_string(), false)]);
+        assert!(trigger_items(&[]).is_empty());
+        assert_eq!(custom_action_error("bad"), "\u{1F41E} bad");
+        assert_eq!(SCRIPT_REFUSAL, "Script functions need the Python API, which arrives in milestone 11.");
     }
 
     #[test]

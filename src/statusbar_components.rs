@@ -290,6 +290,33 @@ pub fn icon(kind: Kind) -> Option<char> {
     }
 }
 
+/// The Actions Menu's text on the bar (`ACT:164-166`).
+pub const ACTIONS_MENU_TEXT: &str = "Perform Action\u{2026}";
+/// The Snippets Menu's text on the bar (`iTermStatusBarSnippetComponent.m:41-43`).
+pub const SNIPPETS_MENU_TEXT: &str = "Send Snippet\u{2026}";
+/// The Triggers Menu's text on the bar (`iTermStatusBarTriggersComponent.swift:55-57`).
+pub const TRIGGERS_MENU_TEXT: &str = "Triggers\u{2026}";
+
+/// `statusBarComponentIsEmpty` for the menu components, from how many actions, snippets
+/// and session triggers there are: the Actions Menu with no actions, the Snippets Menu
+/// with no snippets, and the Triggers Menu when there ARE triggers (iTerm2's inverted
+/// test, kept). Every other kind is not empty by this rule (Custom Action never is).
+pub fn menu_empty(kind: Kind, actions: usize, snippets: usize, triggers: usize) -> bool {
+    match kind {
+        Kind::ActionsMenu => actions == 0,
+        Kind::SnippetsMenu => snippets == 0,
+        Kind::TriggersMenu => triggers > 0,
+        _ => false,
+    }
+}
+
+/// A trigger's item in the Triggers Menu (`PTYSession.m:23172-23180`): the action's title
+/// less one trailing U+2026, U+2014, and the regex.
+pub fn trigger_menu_title(action_title: &str, regex: &str) -> String {
+    let title = action_title.strip_suffix('\u{2026}').unwrap_or(action_title);
+    format!("{title} \u{2014} {regex}")
+}
+
 /// `statusBarComponentExemplarWithBackgroundColor:textColor:` for a content class Tandem
 /// knows; None for one it does not (the framework's own classes, or a 9i one), so the
 /// caller (`statusbar::exemplar`) falls back to that class's static `Info::exemplar`.
@@ -501,5 +528,27 @@ mod tests {
 
         // A class this module does not know: None, so the caller falls back.
         assert_eq!(exemplar("iTermStatusBarBatteryComponent", &none, "", "", ""), None);
+    }
+
+    /// `ACT:202-226`, the Snippets Menu's `statusBarComponentIsEmpty`, and the Triggers
+    /// Menu's, which is inverted in iTerm2 (empty when there ARE triggers; kept, the 9c
+    /// ruling); `PTYSession.m:23172-23180` for a trigger's title.
+    #[test]
+    fn menu_components_follow_iterm2() {
+        assert!(menu_empty(Kind::ActionsMenu, 0, 3, 3));
+        assert!(!menu_empty(Kind::ActionsMenu, 1, 0, 0));
+        assert!(menu_empty(Kind::SnippetsMenu, 3, 0, 3));
+        assert!(!menu_empty(Kind::SnippetsMenu, 0, 2, 0));
+        assert!(menu_empty(Kind::TriggersMenu, 0, 0, 2), "iTerm2's bug: empty WITH triggers");
+        assert!(!menu_empty(Kind::TriggersMenu, 3, 3, 0), "iTerm2's bug: shown with none");
+        assert!(!menu_empty(Kind::CustomAction, 0, 0, 0), "Custom Action is never empty");
+
+        assert_eq!(trigger_menu_title("Highlight Text\u{2026}", "err.*"), "Highlight Text \u{2014} err.*");
+        assert_eq!(trigger_menu_title("Ring Bell", "^\\$ "), "Ring Bell \u{2014} ^\\$ ");
+        assert_eq!(trigger_menu_title("A\u{2026}\u{2026}", "x"), "A\u{2026} \u{2014} x", "one suffix only");
+
+        assert_eq!(ACTIONS_MENU_TEXT, "Perform Action\u{2026}");
+        assert_eq!(SNIPPETS_MENU_TEXT, "Send Snippet\u{2026}");
+        assert_eq!(TRIGGERS_MENU_TEXT, "Triggers\u{2026}");
     }
 }

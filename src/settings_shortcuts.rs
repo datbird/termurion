@@ -51,6 +51,13 @@ pub struct State {
     search_help: bool,
 }
 
+impl State {
+    /// Turns to one tab (Edit Actions and Edit Snippets on the status bar's menus).
+    pub fn show_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+    }
+}
+
 /// The snippet editor's escaping choices, with iTerm2's names.
 const SNIPPET_ESCAPINGS: [(Escaping, &str); 3] = [(Escaping::None, "Unescaped Literal Text"), (Escaping::Compatibility, "Backward Compatibility Escaping"), (Escaping::Common, "C-Style Backslash Escaping")];
 
