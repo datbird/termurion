@@ -1352,4 +1352,4 @@ section = "tmux"
 label = "Status bar shows tmux status bar content, not native components"
 type = "bool"
 default = true
-help = "In a tmux tab with the status bar on, the bar shows tmux's status-left and status-right instead of the profile's components. Takes effect with milestone 9h's tmux status bar."
+help = "In a tmux tab with the status bar on, the bar shows tmux's status-left and status-right instead of the profile's components."

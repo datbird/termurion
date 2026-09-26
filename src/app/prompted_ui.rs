@@ -337,6 +337,11 @@ impl App {
             if !info.cwd.is_empty() && s.shell.cwd.is_none() {
                 v.session.insert("path", info.cwd.clone());
             }
+            // The tmux status bar's lines of the pane's window (iTermTmuxStatusBarMonitor).
+            let window = self.tmux.get(&io.gateway).and_then(|t| t.panes.get(&io.pane)).map(|(_, w)| *w);
+            let (left, right) = window.and_then(|w| self.tmux_status.get(&(io.gateway, w))).cloned().unwrap_or_default();
+            v.session.insert("tmuxStatusLeft", left);
+            v.session.insert("tmuxStatusRight", right);
         }
         if let Some(pid) = p.shell_pid() {
             v.session.insert("pid", pid.to_string());

@@ -114,6 +114,14 @@ impl Monitor {
         (!self.valid && !self.outstanding).then_some(next)
     }
 
+    /// A new timer interval (iTerm2's setInterval and startTimer): the next tick comes the
+    /// new interval after the last one. No timer (subscriptions carry it) stays none.
+    pub fn set_interval(&mut self, secs: f64) {
+        if let Some((interval, next)) = self.timer {
+            self.timer = Some((secs, next - interval + secs));
+        }
+    }
+
     /// The timer's poll, when it is due.
     pub fn tick(&mut self, now: f64) -> Option<String> {
         let (interval, next) = self.timer?;
@@ -123,6 +131,26 @@ impl Monitor {
         self.timer = Some((interval, now + interval));
         self.update_once()
     }
+}
+
+/// A tmux status line as the bar shows it (iTerm2's iTermTmuxStatusBarMonitor
+/// sanitizedString): `<'name' not ready>` placeholders and `#[style]` directives go. The
+/// rest is shown as plain text; nothing in it is interpreted.
+pub fn sanitize_status(raw: &str) -> String {
+    use std::sync::OnceLock;
+    static RES: OnceLock<[regex::Regex; 2]> = OnceLock::new();
+    let res = RES.get_or_init(|| [regex::Regex::new(r"<'.*?' not ready>").unwrap(), regex::Regex::new(r"#\[.*?\]").unwrap()]);
+    let mut s = raw.to_string();
+    for re in res {
+        s = re.replace_all(&s, "").into_owned();
+    }
+    s
+}
+
+/// The status line has a part tmux has not computed yet (a `#()` job still running): the
+/// monitors poll again soon (accelerateUpdateIfStringContainsNotReady).
+pub fn not_ready(raw: &str) -> bool {
+    raw.contains("' not ready>")
 }
 
 /// When a tmux pane's working directory is asked for again (iTerm2's
@@ -205,6 +233,26 @@ mod tests {
         t.fetched(Some("bash"));
         assert_eq!(t.tick(1.0), None, "a second between");
         assert!(t.tick(1.6).is_some());
+    }
+
+    /// `iTermTmuxStatusBarMonitor.m` sanitizedString and accelerateUpdateIfStringContainsNotReady.
+    #[test]
+    fn tmux_status_follows_iterm2() {
+        assert_eq!(sanitize_status("#[fg=red]a#[default] | b"), "a | b");
+        assert_eq!(sanitize_status("x <'git' not ready> y"), "x  y");
+        assert_eq!(sanitize_status("\u{1b}[1m plain"), "\u{1b}[1m plain", "escapes stay text");
+        assert!(not_ready("x <'git' not ready> y"));
+        assert!(!not_ready("x <'git' ready> y"));
+        let (mut m, _) = Monitor::new("@1", "#{T:status-left}", false, Some(1.0));
+        m.fetched(Some("a"));
+        assert!(m.tick(0.0).is_some());
+        m.fetched(Some("a"));
+        m.set_interval(5.0);
+        assert_eq!(m.tick(4.0), None, "5 s after the last tick");
+        assert!(m.tick(5.0).is_some());
+        let (mut sub, _) = Monitor::new("@1", "#{T:status-left}", true, None);
+        sub.set_interval(5.0);
+        assert_eq!(sub.next_tick(), None, "a subscription has no timer");
     }
 
     #[test]

@@ -61,6 +61,8 @@ enum Req {
     LivePanes,
     /// `break-pane -P`: the tmux window whose Tandem window gets the new one (None: a new window).
     BreakPane(Option<u32>),
+    /// `display-message -p "#{status-interval}"` for the status monitors.
+    StatusInterval,
     Ignore,
 }
 
@@ -72,6 +74,13 @@ pub enum Info {
     Cwd,
 }
 
+/// Which of tmux's status lines: `status-left` or `status-right`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Side {
+    Left,
+    Right,
+}
+
 /// A monitor's subject: a pane's value, or a window's title (set-titles).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Key {
@@ -79,6 +88,8 @@ enum Key {
     Window(u32),
     /// The session's `#{T:get-clipboard}` (true) or `#{T:set-clipboard}` (false).
     Clipboard(bool),
+    /// A window's `#{T:status-left}` or `#{T:status-right}` (the tmux status bar).
+    Status(u32, Side),
 }
 
 /// What happened in a tmux pane that may change what its monitors show (tmux before 3.2).
@@ -141,6 +152,8 @@ pub enum Action {
     Clipboard(String),
     /// `@tab_colors` held iTerm2's pure red: ask "Fix corrupted tab colors?".
     RedTabColors,
+    /// A window's tmux status line, sanitized (`tmux_monitor::sanitize_status`).
+    StatusLine { window: u32, side: Side, value: String },
 }
 
 /// What Tandem saved about a tmux window's Tandem window and tab.
@@ -294,6 +307,14 @@ pub struct Controller {
     unburied: HashMap<u32, (String, usize)>,
     /// The last command sent for each saved option (iTerm2 skips an unchanged one).
     last_saved: HashMap<&'static str, String>,
+    /// The status monitors' timer interval (tmux's `status-interval`, at least 1 s), and
+    /// whether it was asked for.
+    status_interval: f64,
+    status_interval_asked: bool,
+    /// A not-ready status line was seen (iTerm2's `_accelerated`, never reset), and the one
+    /// early poll of that window's pair it scheduled.
+    accelerated: bool,
+    accelerated_due: Option<(u32, f64)>,
 }
 
 impl Controller {
@@ -350,6 +371,10 @@ impl Controller {
             break_points: HashMap::new(),
             unburied: HashMap::new(),
             last_saved: HashMap::new(),
+            status_interval: 1.0,
+            status_interval_asked: false,
+            accelerated: false,
+            accelerated_due: None,
         }
     }
 
@@ -488,7 +513,12 @@ impl Controller {
 
     /// When the next Dashboard list is due (the app wakes for it).
     pub fn next_due(&self) -> Option<f64> {
-        self.sessions_due.into_iter().chain(self.windows_due.iter().map(|(_, t)| *t)).chain(self.monitors.values().filter_map(|m| m.next_tick())).reduce(f64::min)
+        self.sessions_due
+            .into_iter()
+            .chain(self.windows_due.iter().map(|(_, t)| *t))
+            .chain(self.monitors.values().filter_map(|m| m.next_tick()))
+            .chain(self.accelerated_due.map(|(_, t)| t))
+            .reduce(f64::min)
     }
 
     /// The Dashboard's window list of the attached session goes stale: list it again.
@@ -508,6 +538,11 @@ impl Controller {
         for (key, cmd) in ticks {
             let t = self.tag(Req::Fetched(key));
             gw.send(&cmd, Some(t), Flags { tolerate: true, ..Default::default() });
+        }
+        if let Some((w, _)) = self.accelerated_due.filter(|(_, t)| *t <= now) {
+            self.accelerated_due = None;
+            self.update(Key::Status(w, Side::Left), gw);
+            self.update(Key::Status(w, Side::Right), gw);
         }
         if self.sessions_due.is_some_and(|t| t <= now) {
             self.sessions_due = None;
@@ -696,6 +731,45 @@ impl Controller {
     fn watch_window(&mut self, window: u32, gw: &mut Gateway) {
         if self.set_titles && self.v() >= 2.9 && !self.monitors.contains_key(&Key::Window(window)) {
             self.install(Key::Window(window), &format!("@{window}"), "#{T:set-titles-string}", None, gw);
+        }
+    }
+
+    /// The tmux status bar of a window (iTerm2's iTermTmuxStatusBarMonitor, tmux 2.9 and
+    /// later): `status-left` and `status-right` watched on `@window` (on) or no longer (off).
+    /// tmux's `status-interval` is asked for once; before 3.2 the monitors poll on it.
+    pub fn watch_status(&mut self, window: u32, on: bool, gw: &mut Gateway) {
+        if !on {
+            self.uninstall(Key::Status(window, Side::Left), gw);
+            self.uninstall(Key::Status(window, Side::Right), gw);
+            return;
+        }
+        if self.v() < 2.9 || self.monitors.contains_key(&Key::Status(window, Side::Left)) {
+            return;
+        }
+        if !self.status_interval_asked {
+            self.status_interval_asked = true;
+            let t = self.tag(Req::StatusInterval);
+            gw.send("display-message -p \"#{status-interval}\"", Some(t), Flags::default());
+        }
+        let timer = (self.v() < 3.2).then_some(self.status_interval);
+        let target = format!("@{window}");
+        self.install(Key::Status(window, Side::Left), &target, "#{T:status-left}", timer, gw);
+        self.install(Key::Status(window, Side::Right), &target, "#{T:status-right}", timer, gw);
+    }
+
+    /// The windows whose tmux status lines are watched.
+    pub fn status_windows(&self) -> BTreeSet<u32> {
+        self.monitors.keys().filter_map(|k| if let Key::Status(w, _) = k { Some(*w) } else { None }).collect()
+    }
+
+    /// A status line came back: a not-ready part polls both of its window's lines once more
+    /// 0.01 s later, once per controller (accelerateUpdateIfStringContainsNotReady).
+    fn status_not_ready(&mut self, key: Key, raw: &str) {
+        if let Key::Status(w, _) = key {
+            if !self.accelerated && crate::tmux_monitor::not_ready(raw) {
+                self.accelerated = true;
+                self.accelerated_due = Some((w, self.clock + 0.01));
+            }
         }
     }
 
@@ -895,6 +969,7 @@ impl Controller {
     /// Every monitor of a window and its panes goes.
     fn unwatch_window(&mut self, window: u32, gw: &mut Gateway) {
         self.uninstall(Key::Window(window), gw);
+        self.watch_status(window, false, gw);
         for p in self.windows.get(&window).cloned().unwrap_or_default() {
             self.unwatch_pane(p, gw);
         }
@@ -1053,7 +1128,23 @@ impl Controller {
                     m.subscribed(ok);
                 }
             }
+            Req::StatusInterval => {
+                // handleStatusIntervalResponse: `integerValue`, at least 1.
+                if ok {
+                    let digits: String = text.trim().chars().enumerate().take_while(|(i, c)| c.is_ascii_digit() || (*i == 0 && *c == '-')).map(|(_, c)| c).collect();
+                    self.status_interval = digits.parse::<i64>().unwrap_or(0).max(1) as f64;
+                    let interval = self.status_interval;
+                    for (k, m) in self.monitors.iter_mut() {
+                        if matches!(k, Key::Status(..)) {
+                            m.set_interval(interval);
+                        }
+                    }
+                }
+            }
             Req::Fetched(key) => {
+                if ok {
+                    self.status_not_ready(key, text);
+                }
                 let value = self.monitors.get_mut(&key).and_then(|m| m.fetched(ok.then_some(text)));
                 if let Key::Pane(p, Info::Cwd) = key {
                     if ok {
@@ -1322,6 +1413,7 @@ impl Controller {
             }
             Note::SubscriptionChanged { name, value, .. } => {
                 let Some(key) = self.subscriptions.get(&name).copied() else { return Vec::new() };
+                self.status_not_ready(key, &value);
                 if let Some(v) = self.monitors.get_mut(&key).and_then(|m| m.changed(&value)) {
                     return self.monitor_value(key, v).into_iter().collect();
                 }
@@ -1419,6 +1511,7 @@ impl Controller {
                 self.clip_set = crate::tmux_clients::set_level(&value);
                 None
             }
+            Key::Status(window, side) => Some(Action::StatusLine { window, side, value: crate::tmux_monitor::sanitize_status(&value) }),
         }
     }
 }
@@ -1848,6 +1941,90 @@ mod tests {
         assert!(!r.ctl.answers_osc4(), "this client is gone from the list");
         r.lines(&["%session-changed $1 other"]);
         assert!(!r.sent().contains("client_name"), "the tracker is made once");
+    }
+
+    /// `iTermTmuxStatusBarMonitor.m`, `PTYSession.m:10077-10091`: 2.9 and later only; the
+    /// interval asked once and `max(1, value)`; one early poll of both after 0.01 s, ever.
+    #[test]
+    fn status_monitors_follow_iterm2() {
+        let line = |side, v: &str| Action::StatusLine { window: 1, side, value: v.into() };
+        // Attached: tmux takes commands and sends notifications.
+        let rig = |v: f64| {
+            let mut r = Rig::with_version(v);
+            r.gw.enable_writes();
+            r.gw.accept_notifications();
+            r.sent();
+            r
+        };
+        let mut r = rig(2.9);
+        r.ctl.set_clock(10.0);
+        r.ctl.watch_status(1, true, &mut r.gw);
+        assert_eq!(r.sent(), "display-message -p \"#{status-interval}\"\rdisplay-message -t '@1' -p '#{T:status-left}'\rdisplay-message -t '@1' -p '#{T:status-right}'\r");
+        r.ctl.watch_status(1, true, &mut r.gw);
+        assert_eq!(r.sent(), "", "already watched");
+        assert!(r.answer(Some("5")).is_empty());
+        assert_eq!(r.answer(Some("#[fg=red]a#[default] | b")), vec![line(Side::Left, "a | b")]);
+        assert_eq!(r.answer(Some("c")), vec![line(Side::Right, "c")]);
+        // The timers' first tick comes at once, then every 5 s.
+        r.ctl.poll(10.0, &mut r.gw);
+        assert_eq!(r.sent().matches("display-message -t '@1'").count(), 2);
+        assert!(r.answer(Some("#[fg=red]a#[default] | b")).is_empty(), "unchanged");
+        assert_eq!(r.answer(Some("x <'git' not ready> y")), vec![line(Side::Right, "x  y")]);
+        assert_eq!(r.ctl.next_due(), Some(10.01), "one accelerated poll 0.01 s later");
+        r.ctl.poll(10.01, &mut r.gw);
+        let sent = r.sent();
+        assert_eq!(sent.matches("display-message -t '@1'").count(), 2, "one poll of both: {sent}");
+        r.answer(Some("a"));
+        r.answer(Some("x <'git' not ready> y"));
+        assert_eq!(r.ctl.next_due(), Some(15.0), "a second not-ready value schedules none");
+        r.ctl.poll(14.9, &mut r.gw);
+        assert_eq!(r.sent(), "");
+        r.ctl.poll(15.0, &mut r.gw);
+        assert_eq!(r.sent().matches("display-message").count(), 2, "5 s later");
+        r.answer(Some("a"));
+        r.answer(Some("y"));
+        assert_eq!(r.ctl.status_windows(), BTreeSet::from([1]));
+        r.ctl.watch_status(1, false, &mut r.gw);
+        assert!(r.ctl.status_windows().is_empty());
+        r.ctl.poll(30.0, &mut r.gw);
+        assert_eq!(r.sent(), "", "uninstalled: no timers");
+        // 0 is at least 1 s.
+        let mut z = rig(2.9);
+        z.ctl.watch_status(1, true, &mut z.gw);
+        z.sent();
+        z.answer(Some("0"));
+        z.answer(Some("l"));
+        z.answer(Some("r"));
+        z.ctl.poll(0.0, &mut z.gw);
+        z.sent();
+        z.answer(Some("l"));
+        z.answer(Some("r"));
+        z.ctl.poll(0.9, &mut z.gw);
+        assert_eq!(z.sent(), "");
+        z.ctl.poll(1.0, &mut z.gw);
+        assert_eq!(z.sent().matches("display-message").count(), 2, "1 s");
+        // 3.2: subscriptions, no timers; off unsubscribes.
+        let mut s = rig(3.2);
+        s.ctl.watch_status(1, true, &mut s.gw);
+        let sent = s.sent();
+        assert!(sent.starts_with("display-message -p \"#{status-interval}\"\r"), "{sent}");
+        assert!(sent.contains(":@1:#{T:status-left}'\rdisplay-message -t '@1' -p '#{T:status-left}'\r"), "{sent}");
+        assert!(sent.contains(":@1:#{T:status-right}'\rdisplay-message -t '@1' -p '#{T:status-right}'\r"), "{sent}");
+        s.answer(Some("5"));
+        s.answer(Some(""));
+        s.answer(Some("L"));
+        s.answer(Some(""));
+        s.answer(Some("R"));
+        assert_eq!(s.ctl.next_due(), None, "no timers on 3.2");
+        let id = s.ctl.monitors[&Key::Status(1, Side::Left)].id.clone().unwrap();
+        assert_eq!(s.lines(&[&format!("%subscription-changed {id} $0 @1 0 %0 : #[bold]L2")]), vec![line(Side::Left, "L2")]);
+        s.ctl.watch_status(1, false, &mut s.gw);
+        assert_eq!(s.sent().matches("refresh-client -B 'it2_").count(), 2);
+        // 2.8: nothing.
+        let mut old = rig(2.8);
+        old.ctl.watch_status(1, true, &mut old.gw);
+        assert_eq!(old.sent(), "");
+        assert!(old.ctl.status_windows().is_empty());
     }
 
     #[test]

@@ -24,8 +24,8 @@ const DOUBLE: &str = "tmux-double:";
 impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
     pub(super) fn tmux_actions(&mut self, gw: PaneId, actions: Vec<Action>, event_loop: &ActiveEventLoop) -> bool {
-        // Output alone changes no pane or tab: no relayout for it.
-        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..)));
+        // Output and status lines change no pane or tab: no relayout for them.
+        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. }));
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
@@ -225,6 +225,19 @@ impl App {
                         crate::tmux_pause::Bar::Dismiss => self.drop_bar(id, &bid),
                     }
                 }
+                // The tmux status bar's text: the bar shows it (iTerm2's tmuxStatusLeft and
+                // tmuxStatusRight session variables).
+                Action::StatusLine { window, side, value } => {
+                    let line = self.tmux_status.entry((gw, window)).or_default();
+                    let slot = match side {
+                        crate::tmux_controller::Side::Left => &mut line.0,
+                        crate::tmux_controller::Side::Right => &mut line.1,
+                    };
+                    if *slot != value {
+                        *slot = value;
+                        self.redraw_all();
+                    }
+                }
                 Action::SelectWindow(window) => {
                     if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
                         if self.enter_pane_window(first) {
@@ -239,8 +252,46 @@ impl App {
         if changes {
             self.relayout();
             self.tmux_save_affinities(gw);
+            self.tmux_watch_status(gw);
         }
         true
+    }
+
+    /// The tmux status bar (`PTYSession.m:10077-10091`, `PTYSession.m:6272`): each tmux
+    /// window with a pane whose profile has "Status bar enabled" has its status lines
+    /// watched, and no other. A window that closed, a pane that moved to another window,
+    /// or a profile turned off stops them; its text goes.
+    pub(super) fn tmux_watch_status(&mut self, gw: PaneId) {
+        let Some(t) = self.tmux.get(&gw) else { return };
+        let want: std::collections::BTreeSet<u32> = t.panes.values().filter(|(id, _)| self.shows_status_bar(*id)).map(|(_, w)| *w).collect();
+        let have = t.ctl.status_windows();
+        let Some(t) = self.tmux.get_mut(&gw) else { return };
+        for w in have.difference(&want) {
+            t.ctl.watch_status(*w, false, &mut t.gw);
+        }
+        for w in want.difference(&have) {
+            t.ctl.watch_status(*w, true, &mut t.gw);
+        }
+        let watched = t.ctl.status_windows();
+        self.tmux_status.retain(|(g, w), _| *g != gw || watched.contains(w));
+        self.tmux_flush(gw);
+    }
+
+    /// The profiles that are tmux sessions' own copies (Settings disables their status bar
+    /// controls, `PSV:569-573`).
+    pub(super) fn tmux_session_profiles(&self) -> std::collections::HashSet<String> {
+        let own = |g: &String| self.store.sessions.iter().any(|s| s.profile.guid() == *g);
+        self.panes.values().filter(|p| p.tmux_io().is_some()).map(|p| p.profile.clone()).filter(own).collect()
+    }
+
+    /// `tmux_watch_status` for every gateway; the text of a gateway that ended goes.
+    pub(super) fn tmux_watch_status_all(&mut self) {
+        let gws: Vec<PaneId> = self.tmux.keys().copied().collect();
+        for gw in gws {
+            self.tmux_watch_status(gw);
+        }
+        let tmux = &self.tmux;
+        self.tmux_status.retain(|(g, _), _| tmux.contains_key(g));
     }
 
     /// Saves which tmux windows share each Tandem window (iTerm2's saveAffinities), and
@@ -1123,6 +1174,7 @@ impl App {
             t.ctl.unwatch_pane(pane, &mut t.gw);
         }
         self.tmux_flush(gw);
+        self.tmux_watch_status(gw);
     }
 
     /// The profile tmux panes use: the "tmux" profile with TmuxUsesDedicatedProfile (made

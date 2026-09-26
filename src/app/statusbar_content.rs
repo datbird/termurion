@@ -450,8 +450,17 @@ impl App {
                 let fraction = self.pastes.get(&pane).and_then(|(q, _, _)| q.progress()).map_or(0.0, |(sent, total)| sent as f32 / total.max(1) as f32);
                 Content { empty: false, uncopyable: true, fixed: Some(FIELD_SIZE), click: Click::Cancel, widget: Some(Widget::Progress(fraction.clamp(0.0, 1.0))), ..Content::text(Vec::new()) }
             }
-            // Task 6.
-            Kind::TmuxLeft | Kind::TmuxRight => Content::text(Vec::new()),
+            // `iTermStatusBarLayout+tmux.m`: an Interpolated String (of `tmuxStatusLeft` or
+            // `tmuxStatusRight`) whose variants drop `" | "` parts, trailing ones on the
+            // left and leading ones on the right; the right one sits at the right.
+            Kind::TmuxLeft | Kind::TmuxRight => {
+                let expression = knob_str(c, kind, EXPRESSION_KEY).unwrap_or_default();
+                match self.evaluate_for(pane, &expression) {
+                    Ok(value) if kind == Kind::TmuxLeft => Content::text(sbt::tmux_left_variants(&value)),
+                    Ok(value) => Content { right_align: true, ..Content::text(sbt::tmux_right_variants(&value)) },
+                    Err(e) => Content { click: Click::Error(evaluation_error(&expression, &e)), ..Content::text(vec![LADYBUG.to_string()]) },
+                }
+            }
         };
         content.icon = sbc::icon(kind);
         content

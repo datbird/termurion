@@ -256,7 +256,7 @@ impl StatusMenu {
 
 impl App {
     /// The session's profile has "Status bar enabled".
-    fn shows_status_bar(&self, id: PaneId) -> bool {
+    pub(super) fn shows_status_bar(&self, id: PaneId) -> bool {
         self.panes.get(&id).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool(SHOW_KEY))
     }
 
@@ -328,9 +328,23 @@ impl App {
         visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().filter_map(|(id, r)| self.pane_bar_split(tab, id, r).1.map(|rect| Bar { pane: id, rect })).collect()
     }
 
+    /// The session's profile layout (what edits change).
     fn status_layout(&self, pane: PaneId) -> Layout {
         let v = self.profile_of(pane).and_then(|p| p.get(LAYOUT_KEY));
         Layout::from_value(v.as_ref())
+    }
+
+    /// The layout the session's bar shows, and whether it is the tmux one: a tmux pane of a
+    /// 2.9 or later server shows tmux's status lines with `UseTmuxStatusBar` on or an empty
+    /// profile layout (`PTYSession.m:10077-10091`). Tandem computes it when drawing; it is
+    /// never written to a profile.
+    fn bar_layout(&self, pane: PaneId) -> (Layout, bool) {
+        let layout = self.status_layout(pane);
+        let server = self.panes.get(&pane).and_then(|p| p.tmux_io()).and_then(|io| self.tmux.get(&io.gateway)).and_then(|t| t.hs.min);
+        if server.is_some_and(|v| v >= 2.9) && sbc::uses_tmux_layout(self.globals.bool("UseTmuxStatusBar"), &layout) {
+            return (sbc::tmux_layout(&layout), true);
+        }
+        (layout, false)
     }
 
     /// The text size for a component: its "Custom Font" knob, else the layout's font,
@@ -348,8 +362,20 @@ impl App {
     /// first; with one, it becomes mandatory (`SessionView.m:778-800`). A slow paste's
     /// progress is the temporary right component (`iTermPasteViewManager.m:77-89`), else
     /// Filter's when the layout's Filter Tool is not on the bar (`SessionView.m:762-776`).
+    /// A tmux layout's components are not the profile's: nothing to configure or hide.
     fn place_bar(&mut self, bar: &Bar) -> Placement {
-        let layout = self.status_layout(bar.pane);
+        let (layout, tmux) = self.bar_layout(bar.pane);
+        let mut p = self.place_bar_with(bar, layout);
+        if tmux {
+            for s in &mut p.shown {
+                s.index = None;
+                s.temporary = true;
+            }
+        }
+        p
+    }
+
+    fn place_bar_with(&mut self, bar: &Bar, layout: Layout) -> Placement {
         let find = self.finds.get(&bar.pane).filter(|f| f.open).map(|f| f.filter);
         let has = |kind: Kind| layout.components.iter().any(|c| c.class == kind.class());
         let search = find == Some(false);
@@ -840,7 +866,7 @@ impl App {
     /// any other window on screen.
     pub(super) fn any_clock_shown(&self) -> bool {
         let clock = Kind::Clock.class();
-        let has_clock = |tab: &Tab| self.status_bars(tab).iter().any(|b| self.status_layout(b.pane).components.iter().any(|c| c.class == clock));
+        let has_clock = |tab: &Tab| self.status_bars(tab).iter().any(|b| self.bar_layout(b.pane).0.components.iter().any(|c| c.class == clock));
         let current = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && g.window.is_visible() != Some(false));
         (current && self.tabs.get(self.active).is_some_and(has_clock)) || self.parked_front_tabs().into_iter().any(has_clock)
     }

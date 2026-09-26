@@ -395,12 +395,52 @@ pub fn with_temporaries(components: &[statusbar::Component], left: Option<status
     out
 }
 
+/// `iTermStatusBarLayout+tmux.m` tmuxLayoutWithController: the profile layout's advanced
+/// configuration with tmux's left line, a Spring, and tmux's right line as its components,
+/// each an Interpolated String of the session's `tmuxStatusLeft` or `tmuxStatusRight`.
+pub fn tmux_layout(profile_layout: &statusbar::Layout) -> statusbar::Layout {
+    let interpolated = |class: &str, variable: &str| {
+        let mut knobs = toml::Table::new();
+        knobs.insert(EXPRESSION_KEY.into(), Value::String(format!("\\({variable})")));
+        statusbar::Component { class: class.into(), knobs, config: toml::Table::new() }
+    };
+    let spring = statusbar::Component { class: statusbar::SPRING_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
+    statusbar::Layout { components: vec![interpolated(TMUX_LEFT_CLASS, "tmuxStatusLeft"), spring, interpolated(TMUX_RIGHT_CLASS, "tmuxStatusRight")], ..profile_layout.clone() }
+}
+
+/// A tmux tab's bar shows `tmux_layout` (`PTYSession.m:10085-10090`): with
+/// `UseTmuxStatusBar` on, or when the profile's layout has no components
+/// (shouldOverrideLayout).
+pub fn uses_tmux_layout(use_tmux: bool, profile_layout: &statusbar::Layout) -> bool {
+    use_tmux || profile_layout.components.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn table(pairs: &[(&str, Value)]) -> toml::Table {
         pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+    }
+
+    /// `iTermStatusBarLayout+tmux.m`.
+    #[test]
+    fn tmux_layout_follows_iterm2() {
+        let clock = statusbar::Component { class: CLOCK_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
+        let mut profile = statusbar::Layout { components: vec![clock], ..Default::default() };
+        profile.advanced.remove_empty = true;
+        profile.advanced.font = Some("Menlo 13".into());
+        let t = tmux_layout(&profile);
+        assert_eq!(t.advanced, profile.advanced, "the profile's advanced configuration is kept");
+        let classes: Vec<&str> = t.components.iter().map(|c| c.class.as_str()).collect();
+        assert_eq!(classes, vec![TMUX_LEFT_CLASS, statusbar::SPRING_CLASS, TMUX_RIGHT_CLASS]);
+        assert_eq!(t.components[0].knobs, table(&[("expression", Value::String("\\(tmuxStatusLeft)".into()))]));
+        assert!(t.components[1].knobs.is_empty(), "a Spring with no knobs");
+        assert_eq!(t.components[2].knobs, table(&[("expression", Value::String("\\(tmuxStatusRight)".into()))]));
+        assert_eq!(Kind::of(&t.components[0].class), Some(Kind::TmuxLeft));
+        assert!(uses_tmux_layout(true, &profile));
+        assert!(!uses_tmux_layout(false, &profile));
+        assert!(uses_tmux_layout(false, &statusbar::Layout::default()), "no components");
     }
 
     /// `iTermStatusBarViewController.m:248-293`: the temporary left component goes first,

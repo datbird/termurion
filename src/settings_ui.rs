@@ -98,6 +98,8 @@ pub struct SettingsWindow {
     /// Profiles > Session's "Configure Status Bar" was pressed for this profile Guid: the
     /// status bar setup window opens for it (the app takes it after each frame).
     pub configure_status_bar: Option<String>,
+    /// The profile Guids that are tmux sessions' own profiles (the app sets them).
+    tmux_profiles: std::collections::HashSet<String>,
 }
 
 impl SettingsWindow {
@@ -150,7 +152,13 @@ impl SettingsWindow {
             shortcuts: Default::default(),
             hotkeys: Default::default(),
             configure_status_bar: None,
+            tmux_profiles: Default::default(),
         })
+    }
+
+    /// The profiles of tmux sessions' own copies: their status bar settings are disabled.
+    pub fn set_tmux_profiles(&mut self, guids: std::collections::HashSet<String>) {
+        self.tmux_profiles = guids;
     }
 
     /// Shows this profile in the editor (Edit Session).
@@ -218,6 +226,7 @@ impl SettingsWindow {
         settings_keys::set_snippets(&snippets.snippets);
         let hk = &mut self.hotkeys;
         let configure_status_bar = &mut self.configure_status_bar;
+        let tmux_session = self.tmux_profiles.contains(&selected);
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -397,9 +406,14 @@ impl SettingsWindow {
                                 continue;
                             }
                             // iTerm2's "Configure Status Bar" button, enabled with the
-                            // "Status bar enabled" checkbox above it (PSV:569-573).
+                            // "Status bar enabled" checkbox above it; both disabled for a
+                            // tmux session's own profile (PSV:569-573).
+                            if s.key == "Show Status Bar" && tmux_session {
+                                ui.add_enabled_ui(false, |ui| control(ui, profile, s, dark, is_default));
+                                continue;
+                            }
                             if s.key == "Status Bar Layout" {
-                                let on = profile.bool("Show Status Bar");
+                                let on = status_bar_configurable(tmux_session, profile.bool("Show Status Bar"));
                                 if ui.add_enabled(on, egui::Button::new("Configure Status Bar")).on_hover_text(&s.help).clicked() {
                                     *configure_status_bar = Some(selected.clone());
                                 }
@@ -444,6 +458,12 @@ impl SettingsWindow {
         }
         edit
     }
+}
+
+/// Configure Status Bar is enabled (`PSV:569-573`): not for a tmux session's own profile,
+/// and only with "Status bar enabled" on.
+pub fn status_bar_configurable(tmux_session: bool, show: bool) -> bool {
+    !tmux_session && show
 }
 
 /// The key a control edits. With separate Light and Dark colors on, a color with
@@ -598,4 +618,11 @@ mod tests {
         assert_eq!(rgb_of(&v), [255, 128, 0]);
     }
 
+    /// `PSV:569-573`: a tmux session's own profile disables both status bar controls.
+    #[test]
+    fn status_bar_settings_follow_psv() {
+        assert!(status_bar_configurable(false, true));
+        assert!(!status_bar_configurable(false, false));
+        assert!(!status_bar_configurable(true, true));
+    }
 }

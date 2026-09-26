@@ -241,6 +241,8 @@ pub struct App {
     tmux_held_events: Vec<(PaneId, Vec<crate::tmux_gateway::Event>)>,
     /// tmux gateways, by the pane that runs `tmux -CC`.
     tmux: HashMap<PaneId, tmux_ui::TmuxGw>,
+    /// Each watched tmux window's status lines, by gateway and window: (left, right).
+    tmux_status: HashMap<(PaneId, u32), (String, String)>,
     /// A gateway's C key waits for the event loop to open its window.
     tmux_ask_command: Option<PaneId>,
     /// C's window, "Enter command to send tmux:".
@@ -581,6 +583,7 @@ pub fn run() {
         tmux_dash_gw: None,
         buried: Default::default(),
         tmux: HashMap::new(),
+        tmux_status: HashMap::new(),
         tmux_ask_command: None,
         tmux_prompt: None,
         aps: HashMap::new(),
@@ -918,6 +921,8 @@ impl App {
         }
         self.tmux_resend_colors();
         self.tmux_save_tab_colors();
+        // "Status bar enabled" may have changed for a tmux tab.
+        self.tmux_watch_status_all();
         self.redraw();
     }
 
@@ -2263,6 +2268,9 @@ impl ApplicationHandler<UserEvent> for App {
                     crate::winkeys::set_recording(false);
                 }
                 WindowEvent::RedrawRequested => {
+                    let tmux_profiles = self.tmux_session_profiles();
+                    let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
+                    slot.as_mut().unwrap().set_tmux_profiles(tmux_profiles);
                     let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
