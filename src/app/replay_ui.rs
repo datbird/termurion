@@ -18,6 +18,12 @@ impl App {
     /// back from it enters replay (nothing when nothing was recorded) and steps; a replay
     /// steps, beeping at either end.
     pub(super) fn ir_advance(&mut self, dir: i32, event_loop: &ActiveEventLoop) {
+        self.ir_advance_by(dir, 1, event_loop);
+    }
+
+    /// `irAdvance:` `count` times (Shift+Left/Right steps 15), beeping per step, with the
+    /// frame built once at the end.
+    fn ir_advance_by(&mut self, dir: i32, count: u32, event_loop: &ActiveEventLoop) {
         let Some(id) = self.focused_id().filter(|id| self.panes.contains_key(id)) else { return };
         if self.panes.get(&id).is_some_and(|p| p.replay.is_none()) {
             if dir > 0 {
@@ -27,12 +33,14 @@ impl App {
                 return;
             }
         }
-        let stepped = self.panes.get_mut(&id).is_some_and(|p| match p.replay.as_mut() {
-            Some(r) => replay::step(r, &p.dvr, dir),
-            None => false,
-        });
-        if !stepped {
-            find_ui::beep();
+        for _ in 0..count {
+            let stepped = self.panes.get_mut(&id).is_some_and(|p| match p.replay.as_mut() {
+                Some(r) => replay::step(r, &p.dvr, dir),
+                None => false,
+            });
+            if !stepped {
+                find_ui::beep();
+            }
         }
         self.show_frame(id);
         self.update_replay_panel();
@@ -91,6 +99,30 @@ impl App {
         self.redraw();
     }
 
+    /// Panes leaving their window (Move Tab or Move Session to New Window, Merge All
+    /// Windows) or restarting end their replay first, and the panel closes when it was the
+    /// focused pane's: the replay does not follow the pane.
+    pub(super) fn end_replays(&mut self, panes: &[PaneId]) {
+        let focused = self.focused_id();
+        for &id in panes {
+            if !self.panes.get(&id).is_some_and(|p| p.replay.is_some()) {
+                continue;
+            }
+            if focused == Some(id) {
+                self.replay_window = None;
+            }
+            self.end_replay(id);
+        }
+    }
+
+    /// Bury Session is refused for `pane`: its tab holds a replaying pane, or it is a
+    /// loaded recording's (a synthetic session).
+    pub(super) fn bury_refused(&self, pane: PaneId) -> bool {
+        let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&pane));
+        let replaying = tab.is_some_and(|t| t.layout.panes().iter().any(|id| self.panes.get(id).is_some_and(|p| p.replay.is_some())));
+        replaying || self.panes.get(&pane).is_some_and(|p| p.dvr.read_only)
+    }
+
     /// A key while the panel shows (`maybeHandleInstantReplayKeyEvent:`,
     /// `PS:12795-12891`): runs before every other key handler, and every key but a Win
     /// chord is taken, its release too, so none reaches the session or a tool.
@@ -122,11 +154,7 @@ impl App {
             IrKey::Exit => {
                 self.close_instant_replay(true, event_loop);
             }
-            IrKey::Step { dir, count } => {
-                for _ in 0..count {
-                    self.ir_advance(dir, event_loop);
-                }
-            }
+            IrKey::Step { dir, count } => self.ir_advance_by(dir, count, event_loop),
         }
         taken
     }

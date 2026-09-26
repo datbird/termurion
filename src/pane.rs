@@ -467,8 +467,19 @@ impl Pane {
         self.tmux_hook.unhook();
     }
 
-    /// What the user sends: keys, pastes. Held while Buffer Input is on.
+    /// What the user sends: keys, pastes. Held while Buffer Input is on. Nothing reaches a
+    /// replaying pane: iTerm2's tab then shows the replay's synthetic session, which has no
+    /// task (`PS:1457-1467`).
     pub fn input(&mut self, bytes: &[u8]) {
+        if self.replay.is_some() {
+            return;
+        }
+        self.live_input(bytes);
+    }
+
+    /// What the live session itself sends (a trigger's Send Text, an upload its program
+    /// asked for): a replay view does not stop it, as the live session keeps running.
+    pub fn live_input(&mut self, bytes: &[u8]) {
         if self.gateway {
             return;
         }
@@ -925,6 +936,22 @@ mod tests {
         p.gateway = true;
         p.input(b"b");
         assert_eq!(p.buffer.release(), b"a", "a tmux gateway's pty carries only tmux commands");
+    }
+
+    #[test]
+    fn replaying_pane_takes_no_user_input() {
+        // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
+        // the user sends reaches the live shell; the live session's own writes (a
+        // trigger's Send Text) still do.
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None };
+        p.buffer.on = true;
+        p.input(b"a");
+        p.replay = Some(replay::Replay { decoder: None, read_only: false });
+        p.input(b"b");
+        p.live_input(b"c");
+        p.replay = None;
+        p.input(b"d");
+        assert_eq!(p.buffer.release(), b"acd");
     }
 
     #[test]

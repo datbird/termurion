@@ -149,6 +149,10 @@ impl App {
             }
         };
         for t in if all { targets } else { vec![me] } {
+            // A replaying pane's buffer is not touched (its replay view has no shell).
+            if self.panes.get(&t).is_some_and(|p| p.replay.is_some()) {
+                continue;
+            }
             if !clear {
                 // A Filter or Zoom view would take the reset instead of the shell's screen.
                 self.end_view(t);

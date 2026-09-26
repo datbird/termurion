@@ -361,8 +361,8 @@ impl App {
     fn refilter(&mut self, id: PaneId, fresh: bool) {
         let mode = self.find_mode();
         let (Some(f), Some(p)) = (self.finds.get_mut(&id), self.panes.get_mut(&id)) else { return };
-        // Make Screenshot's frozen copy is not filtered.
-        if p.frozen {
+        // Make Screenshot's frozen copy is not filtered, nor a replay's frame.
+        if p.frozen || p.replay.is_some() {
             return;
         }
         if f.query.is_empty() {
@@ -400,8 +400,9 @@ impl App {
 
     /// Back to the pane's own screen from Filter or Zoom.
     pub(super) fn end_view(&mut self, id: PaneId) {
-        // The screenshot's frozen copy stays until its panel closes.
-        if self.shot.as_ref().is_some_and(|s| s.pane == id) {
+        // The screenshot's frozen copy stays until its panel closes, and a replay's frame
+        // until the replay ends (`end_replay`).
+        if self.shot.as_ref().is_some_and(|s| s.pane == id) || self.panes.get(&id).is_some_and(|p| p.replay.is_some()) {
             return;
         }
         if let Some(p) = self.panes.get_mut(&id) {

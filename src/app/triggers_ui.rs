@@ -41,9 +41,10 @@ impl App {
             TriggerRequest::Notify(text) => self.post_alert(pane, crate::alerts::AlertKind::Trigger(text)),
             TriggerRequest::Bell => self.ring_bell(pane),
             TriggerRequest::Bounce { until_active } => self.flash_taskbar(until_active),
+            // The live session's own write: it reaches the shell during a replay too.
             TriggerRequest::SendText(text) => {
                 if let Some(p) = self.panes.get_mut(&pane) {
-                    p.input(text.as_bytes());
+                    p.live_input(text.as_bytes());
                 }
             }
             TriggerRequest::RunCommand(cmd) => {
@@ -76,7 +77,7 @@ impl App {
                         p.buffer.on = true;
                     } else {
                         let held = p.buffer.release();
-                        p.input(&held);
+                        p.live_input(&held);
                     }
                 }
                 self.redraw();

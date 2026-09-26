@@ -585,6 +585,9 @@ impl App {
         if self.tabs.len() < 2 {
             return;
         }
+        if let Some(panes) = self.tabs.get(self.active).map(|t| t.layout.panes()) {
+            self.end_replays(&panes);
+        }
         let tab = self.tabs.remove(self.active);
         self.mru.forget(tab.id);
         self.active = self.active.min(self.tabs.len() - 1);
@@ -604,6 +607,8 @@ impl App {
         if t.layout.panes().len() < 2 {
             return self.move_tab_to_new_window();
         }
+        self.end_replays(&[pane]);
+        let Some(t) = self.tabs.get_mut(self.active) else { return };
         if t.layout.remove(pane) {
             t.focused = t.layout.panes()[0];
             t.zoomed = None;
@@ -642,6 +647,14 @@ impl App {
         let Some(k) = self.windows.current() else { return };
         for other in self.registry.merge_order(k) {
             let Some(mut slot) = self.windows.remove(other) else { continue };
+            // Its panel goes with its slot; its replays end.
+            let panes: Vec<PaneId> = slot.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+            for id in panes {
+                if let Some(p) = self.panes.get_mut(&id).filter(|p| p.replay.is_some()) {
+                    p.replay = None;
+                    p.end_view();
+                }
+            }
             self.tabs.append(&mut slot.tabs);
             if let Some((guid, n)) = slot.win_slot.take() {
                 self.slots.give(&guid, n);

@@ -352,10 +352,14 @@ impl App {
         if self.run_find_command(&item.selector, label) || self.run_seltools_command(&item.selector) || self.run_copymode_command(&item.selector) || self.run_fold_command(&item.selector) || self.run_view_command(&item.selector) || self.run_note_command(&item.selector, event_loop) {
             return self.relayout();
         }
-        // Commands that change the terminal itself act on the pane's own screen.
+        // Commands that change the terminal itself act on the pane's own screen, and do
+        // nothing on a replaying pane (iTerm2 sends them to the shell-less replay view).
         let sel = item.selector.as_str();
-        if sel.starts_with("terminalState") || sel.starts_with("reset") || sel.starts_with("clear") {
+        if crate::replay::blocks_command(sel) {
             if let Some(id) = self.focused_id() {
+                if self.panes.get(&id).is_some_and(|p| p.replay.is_some()) {
+                    return;
+                }
                 self.end_view(id);
             }
         }
@@ -441,8 +445,10 @@ impl App {
                 }
             }
             "detachTmux:" => self.tmux_request_detach(),
+            // A replay view cannot be buried (`textViewCanBury`, `PS:14820-14822`): refused
+            // while the tab holds a replaying pane or the focused pane is a loaded recording.
             "bury:" => {
-                if let Some(id) = self.focused_id() {
+                if let Some(id) = self.focused_id().filter(|id| !self.bury_refused(*id)) {
                     self.bury_pane(id);
                 }
             }

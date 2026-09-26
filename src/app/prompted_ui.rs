@@ -425,7 +425,8 @@ impl App {
             let end = (up.sent + UPLOAD_CHUNK).min(up.data.len());
             if let Some(p) = self.panes.get_mut(id) {
                 // An upload is pasted text: unbracketed, and held by Buffer Input like typing.
-                p.input(&up.data[up.sent..end]);
+                // Its program asked for it, so a replay view does not stop it.
+                p.live_input(&up.data[up.sent..end]);
             }
             up.sent = end;
             let pct = up.sent * 100 / up.data.len().max(1);

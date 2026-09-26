@@ -24,6 +24,13 @@ pub struct Replay {
     pub read_only: bool,
 }
 
+/// A menu command that acts on the terminal itself (Clear Buffer, Clear Scrollback, Reset,
+/// the Terminal State items), which does nothing on a replaying pane: iTerm2 sends it to
+/// the replay's shell-less synthetic session. Clear Instant Replay has its own path.
+pub fn blocks_command(selector: &str) -> bool {
+    selector != "clearInstantReplay:" && ["terminalState", "reset", "clear"].iter().any(|p| selector.starts_with(p))
+}
+
 /// `setDvr:liveSession:` (`PS:1470-1480`): None when nothing was recorded; else the
 /// decoder seeked to the newest frame. Entering alone shows the newest frame; the kept
 /// bug (the first Start Instant Replay shows the second-newest) comes from the caller's
@@ -190,6 +197,17 @@ pub fn frame_screen(frame: &dvr::Decoder, cols: usize, rows: usize, palette: Pal
 mod tests {
     use super::*;
     use alacritty_terminal::grid::Dimensions;
+
+    #[test]
+    fn terminal_commands_do_nothing_on_a_replay() {
+        // iTerm2 sends them to the replay's synthetic session, which has no shell.
+        for sel in ["clearBuffer:", "clearScrollbackBuffer:", "clearToLastMark:", "clearToStartOfSelection:", "reset:", "resetCharset:", "terminalStateReset:", "terminalStateToggleMouseReporting:"] {
+            assert!(blocks_command(sel), "{sel}");
+        }
+        assert!(!blocks_command("clearInstantReplay:"), "it has its own path");
+        assert!(!blocks_command("copy:"));
+        assert!(!blocks_command("paste:"));
+    }
 
     fn row(cols: usize, ch: char) -> Row<Cell> {
         let mut r: Row<Cell> = Row::new(cols);

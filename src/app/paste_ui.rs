@@ -58,7 +58,8 @@ impl App {
         if job.text.is_empty() {
             return;
         }
-        let Some(p) = self.panes.get(&sender) else { return };
+        // A replaying pane takes no input (`Pane::input`): no question, no progress bar.
+        let Some(p) = self.panes.get(&sender).filter(|p| p.replay.is_none()) else { return };
         let bracketed = self.paste_bracketed(sender);
         let warnings = paste::check(&job.text, p.own().at_prompt(), bracketed, job.flags, &self.warn_prefs());
         if warnings.is_empty() {

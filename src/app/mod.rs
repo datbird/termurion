@@ -908,6 +908,8 @@ impl App {
     /// Restart Session: a new shell in the same pane, with the same profile.
     fn restart_pane(&mut self, id: PaneId) {
         let Some(rect) = self.pane_rect(id) else { return };
+        // Instant Replay closes first; the new shell starts live.
+        self.end_replays(&[id]);
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
         if let Some(pid) = self.panes.remove(&id).and_then(|p| p.shell_pid()) {
             self.jobs.forget(pid);
@@ -983,6 +985,11 @@ impl App {
         let now_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64);
         let visible = self.replay_visible_panes();
         for (id, p) in self.panes.iter_mut() {
+            // No gap is shorter than FAST_GAP: a pane that captured within it cannot record
+            // yet, so its gap is not worked out.
+            if p.replay_at.is_some_and(|t| now.saturating_duration_since(t) < crate::cadence::FAST_GAP) {
+                continue;
+            }
             let gap = p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()));
             p.record_frame(now, now_us, gap);
         }
@@ -1276,8 +1283,9 @@ impl App {
             }
             // A close the person made keeps a running shell for Undo Close.
             match self.undo_capture.as_mut() {
-                // iTerm2 never offers Undo Close for a tmux pane.
-                Some(c) if p.exited.is_none() && p.tmux_io().is_none() => {
+                // iTerm2 never offers Undo Close for a tmux pane, nor for a loaded
+                // recording's (a synthetic session, `PS:3931`).
+                Some(c) if p.exited.is_none() && p.tmux_io().is_none() && !p.dvr.read_only => {
                     let mut p = p;
                     p.set_paused(true);
                     c.panes.push(p);
@@ -1690,8 +1698,9 @@ impl App {
         if let Some(action) = base.and_then(|b| keys::shortcut(b, self.mods)) {
             return self.action(action, event_loop);
         }
-        // A pane showing a frozen screenshot copy takes no keys until its panel closes.
-        if self.shot.as_ref().is_some_and(|s| Some(s.pane) == self.focused_id()) {
+        // A pane showing a frozen screenshot copy takes no keys until its panel closes, nor
+        // a replaying pane (the replay view has no shell).
+        if self.shot.as_ref().is_some_and(|s| Some(s.pane) == self.focused_id()) || self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.replay.is_some()) {
             return;
         }
         // Filter and Zoom views are read-only: a key ends the view (Esc only that).
