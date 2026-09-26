@@ -656,14 +656,16 @@ impl Screen {
                 let needs_shell_integration = self.marks.last_command.is_none();
                 if let Some(id) = self.marks.last_command {
                     let command = (!value.is_empty()).then(|| value.to_string());
-                    let values: Vec<String> = groups.iter().skip(1).map(|g| (*g).unwrap_or("").to_string()).collect();
+                    let values: Vec<String> = groups.iter().map(|g| (*g).unwrap_or("").to_string()).collect();
                     let entry = crate::captured::Captured { line: line.text.clone(), values, command, state: false, abs_line: row, mark: id };
                     if let Some(m) = self.marks.records.get_mut(&id) {
                         crate::captured::add(&mut m.captured, entry);
                     }
                 }
                 self.requests.push(Request::Trigger(TriggerRequest::Captured { needs_shell_integration }));
-                Flow::More
+                // One fire per line (CaptureTrigger.m:65 returns NO; Trigger.m:367-372 stops
+                // enumerating that trigger's matches, not the whole trigger list).
+                Flow::Done
             }
             _ => Flow::Done,
         }
@@ -1144,14 +1146,16 @@ mod tests {
         assert_eq!(trigger_requests(&mut s), vec![TriggerRequest::Captured { needs_shell_integration: true }]);
         assert!(s.last_command_mark().is_none());
 
-        // A prompt and a command: output starts, so there is a command mark to store on.
+        // A prompt and a command: output starts, so there is a command mark to store on. The
+        // match is only part of the line, so `values[0]` (the whole match) differs from `line`
+        // (the whole line).
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\r\n\x1b]133;C\x07");
-        s.feed(b"error: x\r\n");
+        s.feed(b"see error: x here\r\n");
         let mark_id = s.last_command_mark().unwrap().id;
         let captured = s.last_command_mark().unwrap().captured.clone();
         assert_eq!(captured.len(), 1);
-        assert_eq!(captured[0].line, "error: x");
-        assert_eq!(captured[0].values, vec!["x".to_string()]);
+        assert_eq!(captured[0].line, "see error: x here");
+        assert_eq!(captured[0].values, vec!["error: x".to_string(), "x".to_string()], "group 0 (the match), then the numbered groups");
         assert_eq!(captured[0].command.as_deref(), Some("run x"));
         assert_eq!(captured[0].mark, mark_id);
         assert!(!captured[0].state);
@@ -1162,6 +1166,14 @@ mod tests {
         let captured = s.last_command_mark().unwrap().captured.clone();
         assert_eq!(captured.len(), 2, "a different line appends");
         assert_eq!(captured[1].line, "error: q");
-        assert_eq!(captured[1].values, vec!["q".to_string()]);
+        assert_eq!(captured[1].values, vec!["error: q".to_string(), "q".to_string()]);
+
+        // Two matches on one line: only one fire (CaptureTrigger.m:65 returns NO, stopping that
+        // trigger's own match enumeration, not the trigger list).
+        s.feed(b"error: a error: b\r\n");
+        let captured = s.last_command_mark().unwrap().captured.clone();
+        assert_eq!(captured.len(), 3, "one entry, not two, for the two matches on this line");
+        assert_eq!(captured[2].line, "error: a error: b");
+        assert_eq!(captured[2].values, vec!["error: a".to_string(), "a".to_string()], "the first match only");
     }
 }
