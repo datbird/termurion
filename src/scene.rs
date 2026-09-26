@@ -955,6 +955,8 @@ pub struct BarText {
     pub color: Rgb,
     pub scale: f32,
     pub clip: Rect,
+    /// Drawn with the icon font (a component's Segoe Fluent Icons glyph).
+    pub icon: bool,
 }
 
 /// What a status bar shows, already placed in window pixels (`iTermStatusBarView`).
@@ -994,7 +996,7 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
     for t in d.texts {
         let line_h = cell.1 * t.scale;
         let y = r.y + ((r.h - line_h) / 2.0).round();
-        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: false, prose: true, badge: false };
+        let span = Span { text: t.text.clone(), color: t.color, bold: false, italic: false, alt_font: false, icon: t.icon, prose: !t.icon, badge: false };
         frame.rows.push(TextRow { x: t.x, y, spans: vec![span], clip: t.clip, scale: t.scale });
     }
     if let Some(e) = d.edge {

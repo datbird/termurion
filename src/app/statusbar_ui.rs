@@ -14,18 +14,24 @@ use crate::palette::Rgb;
 use crate::statusbar::{self, Algorithm, Component, KnobKind, Layout, Rainbow, PLACEHOLDER_CLASS, SPACER_CLASS, SPRING_CLASS};
 use crate::statusbar_setup_ui::SetupEvent;
 use crate::statusbar_layout::{self as sbl, Item, ItemKind, Placed, Position};
+use crate::statusbar_components::Kind;
+use crate::statusbar_text as sbt;
+use super::statusbar_content::Content;
 
 /// `iTermStatusBarPlaceholderComponent`'s text.
 pub(super) const PLACEHOLDER_TEXT: &str = "Click here to configure status bar";
 const LAYOUT_KEY: &str = "Status Bar Layout";
 const SHOW_KEY: &str = "Show Status Bar";
+/// The info bar a failed Interpolated String's click shows.
+const STATUS_ERROR_BAR: &str = "statusbar:error";
+/// An icon's column, in points.
+const ICON_PT: f32 = 17.0;
 /// The status bar font's size when neither the layout nor the component sets one
 /// (`[NSFont systemFontOfSize:12]`).
 const DEFAULT_FONT_PT: f32 = 12.0;
 
-/// What one on-screen component is and does. Milestone 9h's content components add their
-/// own variants here: `text` then returns what they show now, `copyable` their Copy
-/// string, and `click` what a left click does; `item` sizes them from their text.
+/// What one on-screen component is and does. The framework's own pieces, and the content
+/// components (`statusbar_content`), whose `Content` says what they show and do now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Piece {
     /// `iTermStatusBarSpringComponent`: empty space that draws only a background color.
@@ -35,51 +41,63 @@ pub(super) enum Piece {
     /// `iTermStatusBarPlaceholderComponent`, shown alone when a layout has no component
     /// Tandem knows.
     Placeholder,
+    /// A content component (milestone 9h).
+    Content(Kind),
 }
 
 /// What a left click on a component does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Click {
     None,
     /// Opens the profile's status bar settings (the placeholder's click).
     Configure,
+    /// Opens the component's menu at the component.
+    Menu(Kind),
+    /// Shows why the component failed (an Interpolated String's evaluation error).
+    Error(String),
+    /// Performs the component's action (a button). This and the three below are made by
+    /// the button, field and temporary components (Tasks 4 and 5).
+    #[allow(dead_code)]
+    Run,
+    /// Focuses the component's field.
+    #[allow(dead_code)]
+    Field,
+    /// Closes a temporary component.
+    #[allow(dead_code)]
+    Cancel,
+    /// Says why the click does nothing yet.
+    #[allow(dead_code)]
+    Refuse(&'static str),
+}
+
+/// The placeholder's content: its one text, and a click that opens the settings.
+fn placeholder_content() -> Content {
+    Content { click: Click::Configure, ..Content::text(vec![PLACEHOLDER_TEXT.to_string()]) }
 }
 
 impl Piece {
     /// The piece for a layout component's class; None for a class Tandem does not show
-    /// (the 9h classes, or one it does not know): kept in the profile, skipped on screen.
+    /// (a 9i class, a content class a later task fills in, or one it does not know): kept
+    /// in the profile, skipped on screen.
     pub(super) fn of(class: &str) -> Option<Piece> {
         match class {
             SPRING_CLASS => Some(Piece::Spring),
             SPACER_CLASS => Some(Piece::Spacer),
-            _ => None,
+            _ => match Kind::of(class)? {
+                k @ (Kind::Clock | Kind::HostName | Kind::UserName | Kind::JobName | Kind::CurrentDirectory | Kind::InterpolatedString) => Some(Piece::Content(k)),
+                _ => None,
+            },
         }
     }
 
-    pub(super) fn text(self) -> Option<String> {
-        match self {
-            Piece::Placeholder => Some(PLACEHOLDER_TEXT.to_string()),
-            Piece::Spring | Piece::Spacer => None,
-        }
-    }
-
-    /// `statusBarComponentCopyableString`: none of the framework's own components has one.
-    pub(super) fn copyable(self) -> Option<String> {
-        None
-    }
-
-    pub(super) fn click(self) -> Click {
-        match self {
-            Piece::Placeholder => Click::Configure,
-            Piece::Spring | Piece::Spacer => Click::None,
-        }
-    }
-
-    /// The layout algorithms' sizing facts, in points. `text_pt` is the width of the
-    /// piece's text. Minimum and maximum follow `BLA:261-283`: the larger of the
-    /// component's own minimum and its "minwidth" knob; the maximum is
-    /// `statusBarComponentMaximumWidth` (`MAX(24, "maxwidth" ?: INFINITY)`).
-    fn item(self, c: &Component, algorithm: Algorithm, text_pt: f32) -> Item {
+    /// The layout algorithms' sizing facts, in points. `widths` are the content's variants
+    /// with their measured widths, `min_text_pt` the width of its `min_text`. Minimum and
+    /// maximum follow `BLA:261-283`: the larger of the component's own minimum and its
+    /// "minwidth" knob; the maximum is `statusBarComponentMaximumWidth` (`MAX(24,
+    /// "maxwidth" ?: INFINITY)`). A text component's own minimum is its narrowest variant
+    /// and its preferred width its widest (`TXT:178-229`); Job Name and Current Directory
+    /// clamp the preferred width by the knobs (`clampedWidth:`, `JOB:60-62`, `VAR:278-280`).
+    pub(super) fn item(self, c: &Component, algorithm: Algorithm, content: &Content, widths: &[(String, f32)], min_text_pt: Option<f32>) -> Item {
         let knob_min = c.min_width_knob() as f32;
         let max = c.max_width_knob() as f32;
         let spring = c.spring_constant(algorithm) as f32;
@@ -93,8 +111,24 @@ impl Piece {
                 let w = c.spacer_width() as f32;
                 Item { min: w.max(knob_min), preferred: w, kind: ItemKind::FixedSpacer, ..base }
             }
-            // A one-variant text component: its text's width, stretchable.
-            Piece::Placeholder => Item { min: text_pt.max(knob_min), preferred: text_pt, stretch: true, ..base },
+            Piece::Placeholder | Piece::Content(_) => {
+                let stretch = statusbar::info_for(&c.class, algorithm).is_none_or(|i| i.stretch);
+                let (own_min, preferred) = match content.fixed {
+                    Some(fixed) => fixed,
+                    None => {
+                        let (narrow, wide) = if widths.is_empty() { (0.0, 0.0) } else { (sbt::narrowest(widths), sbt::widest(widths)) };
+                        (min_text_pt.map_or(narrow, |m| m.min(wide)), wide)
+                    }
+                };
+                let preferred = match self {
+                    Piece::Content(Kind::JobName | Kind::CurrentDirectory) => {
+                        let raw_max = c.knobs.get(statusbar::MAX_WIDTH_KEY).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).map_or(f32::INFINITY, |m| m as f32);
+                        preferred.max(knob_min).min(raw_max)
+                    }
+                    _ => preferred,
+                };
+                Item { min: own_min.max(knob_min), preferred, stretch, icon: content.icon.is_some(), empty: content.empty, ..base }
+            }
         }
     }
 }
@@ -122,13 +156,25 @@ pub(super) struct Bar {
 }
 
 /// One component a bar shows: where it is in the layout (None for the placeholder), what
-/// it is, and its text at its font size (pixels, and as a scale of the terminal font).
+/// it is, what it shows now (None for a spring or spacer), its variants measured in
+/// points, and its text size as a scale of the terminal font.
 struct Shown {
     index: Option<usize>,
     piece: Piece,
     component: Component,
-    text: Option<String>,
+    content: Option<Content>,
+    widths: Vec<(String, f32)>,
+    min_text_pt: Option<f32>,
     text_scale: f32,
+}
+
+impl Shown {
+    /// `statusBarComponentCopyableString`: the content's own, else a text component's
+    /// widest variant (`TXT`: `longestStringValue`); the framework's pieces have none.
+    fn copyable(&self) -> Option<String> {
+        let content = self.content.as_ref().filter(|_| matches!(self.piece, Piece::Content(_)))?;
+        content.copy.clone().or_else(|| (!self.widths.is_empty()).then(|| sbt::pick(&self.widths, f32::INFINITY))).filter(|t| !t.is_empty())
+    }
 }
 
 /// A bar laid out, in points from the bar's left edge.
@@ -174,6 +220,18 @@ pub(super) struct StatusMenu {
     copy: Option<String>,
     /// Checkbox knobs' keys, in menu order.
     checkboxes: Vec<String>,
+    /// A component menu's numbered choices (`statusbar:<name>:<n>`), such as Current
+    /// Directory's recent directories.
+    choices: Vec<String>,
+    /// The path a component menu acts on (Current Directory's).
+    path: Option<String>,
+}
+
+impl StatusMenu {
+    /// A component's own (left-click) menu.
+    pub(super) fn for_component(pane: PaneId, class: &str, choices: Vec<String>, path: Option<String>) -> StatusMenu {
+        StatusMenu { pane, class: class.to_string(), index: None, copy: None, checkboxes: Vec::new(), choices, path }
+    }
 }
 
 impl App {
@@ -272,29 +330,39 @@ impl App {
         let mut shown: Vec<Shown> = Vec::new();
         for (i, c) in layout.components.iter().enumerate() {
             if let Some(piece) = Piece::of(&c.class) {
-                shown.push(Shown { index: Some(i), piece, component: c.clone(), text: piece.text(), text_scale: self.status_text_scale(&layout, c) });
+                let content = match piece {
+                    Piece::Content(kind) => Some(self.content(bar.pane, kind, c)),
+                    _ => None,
+                };
+                shown.push(Shown { index: Some(i), piece, component: c.clone(), content, widths: Vec::new(), min_text_pt: None, text_scale: self.status_text_scale(&layout, c) });
             }
         }
         if shown.is_empty() {
             let c = Component { class: PLACEHOLDER_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
             let text_scale = self.status_text_scale(&layout, &c);
-            shown.push(Shown { index: None, piece: Piece::Placeholder, component: c, text: Piece::Placeholder.text(), text_scale });
+            shown.push(Shown { index: None, piece: Piece::Placeholder, component: c, content: Some(placeholder_content()), widths: Vec::new(), min_text_pt: None, text_scale });
         }
         let scale = self.scale();
         let cell_w = self.cell().0;
-        let mut items = Vec::with_capacity(shown.len());
-        for s in &shown {
-            let text_pt = match &s.text {
-                Some(t) => {
-                    let px = match self.gpu.as_mut() {
-                        Some(g) => g.renderer.text_width(t, true, s.text_scale),
-                        None => t.chars().count() as f32 * cell_w * s.text_scale,
-                    };
-                    (px / scale).ceil()
-                }
-                None => 0.0,
+        // A text's width in points: `Renderer::text_width` in pixels over the scale, rounded
+        // up (no NSTextField padding).
+        let mut measure = |t: &str, text_scale: f32| -> f32 {
+            let px = match self.gpu.as_mut() {
+                Some(g) => g.renderer.text_width(t, true, text_scale),
+                None => t.chars().count() as f32 * cell_w * text_scale,
             };
-            items.push(s.piece.item(&s.component, algorithm, text_pt));
+            (px / scale).ceil()
+        };
+        let mut items = Vec::with_capacity(shown.len());
+        for s in &mut shown {
+            if let Some(content) = &s.content {
+                if content.fixed.is_none() {
+                    s.widths = content.variants.iter().map(|v| (v.clone(), measure(v, s.text_scale))).collect();
+                    s.min_text_pt = content.min_text.as_deref().map(|m| measure(m, s.text_scale));
+                }
+            }
+            let empty = Content::text(Vec::new());
+            items.push(s.piece.item(&s.component, algorithm, s.content.as_ref().unwrap_or(&empty), &s.widths, s.min_text_pt));
         }
         let width_pt = bar.rect.w / scale;
         let placed = sbl::layout(&items, width_pt, algorithm, layout.advanced.remove_empty);
@@ -329,14 +397,30 @@ impl App {
             let mut texts = Vec::new();
             for (k, pl) in p.placed.iter().enumerate() {
                 let s = &p.shown[pl.index];
-                let Some(text) = s.text.clone() else { continue };
+                let Some(content) = &s.content else { continue };
                 let color = match rainbow.get(k) {
                     Some(&(h, sat, b)) => hsb(h, sat, b),
                     None => s.component.text_color().as_ref().and_then(color_of).map_or(default_text, |(c, _)| c),
                 };
                 let x = px(pl.x);
                 let clip = Rect { x, y: bar.rect.y, w: (pl.width * scale).round(), h: bar.rect.h };
-                texts.push(scene::BarText { x, text, color, scale: s.text_scale, clip });
+                // The icon's 17 point column at the left, tinted with the text color.
+                let icon_pt = if content.icon.is_some() { ICON_PT } else { 0.0 };
+                if let Some(glyph) = content.icon {
+                    let icon_clip = Rect { w: (ICON_PT * scale).round().min(clip.w), ..clip };
+                    texts.push(scene::BarText { x, text: glyph.to_string(), color, scale: s.text_scale, clip: icon_clip, icon: true });
+                }
+                // The widest variant that fits beside the icon (`TXT:178-229`); User Name
+                // always draws its full name (`VAR:249-251`).
+                let room = (pl.width - icon_pt).max(0.0);
+                let text = if content.min_text.is_some() { content.variants.first().cloned().unwrap_or_default() } else { sbt::pick(&s.widths, room) };
+                if text.is_empty() {
+                    continue;
+                }
+                let text_pt = s.widths.iter().find(|(v, _)| *v == text).map_or(0.0, |(_, w)| *w);
+                let left = pl.x + icon_pt + if content.right_align { (room - text_pt).max(0.0) } else { 0.0 };
+                let text_clip = Rect { x: px(pl.x + icon_pt), w: (room * scale).round(), ..clip };
+                texts.push(scene::BarText { x: px(left), text, color, scale: s.text_scale, clip: text_clip, icon: false });
             }
             // `SV:73-149`: one point on the edge that touches the terminal.
             let edge = adv.edge_separator.then(|| {
@@ -366,8 +450,27 @@ impl App {
         let hit = p.hit((x - bar.rect.x) / self.scale());
         match button {
             MouseButton::Left => {
-                if hit.is_some_and(|i| p.shown[i].piece.click() == Click::Configure) {
-                    self.configure_status_bar(bar.pane, event_loop);
+                let click = hit.and_then(|i| p.shown[i].content.as_ref()).map_or(Click::None, |c| c.click.clone());
+                match click {
+                    Click::Configure => self.configure_status_bar(bar.pane, event_loop),
+                    Click::Menu(Kind::CurrentDirectory) => {
+                        let Some(i) = hit else { return true };
+                        let path = p.shown[i].content.as_ref().and_then(|c| c.copy.clone());
+                        // At the component's left, beside the bar on the terminal's side.
+                        let left = p.placed.iter().find(|pl| pl.index == i).map_or(0.0, |pl| pl.x);
+                        let y = match self.status_bar_position() {
+                            Position::Top => bar.rect.y + bar.rect.h,
+                            Position::Bottom => bar.rect.y,
+                        };
+                        self.show_dir_menu(bar.pane, path, (bar.rect.x + left * self.scale(), y));
+                    }
+                    // `SWS`: the evaluation error, with OK.
+                    Click::Error(message) => {
+                        self.ask(bar.pane, STATUS_ERROR_BAR, &message.replace('\n', " "), &["OK"], false);
+                    }
+                    Click::Refuse(why) => self.banners.set("statusbar", why),
+                    // Tasks 4 and 5: buttons, other menus, and fields.
+                    Click::None | Click::Menu(_) | Click::Run | Click::Field | Click::Cancel => {}
                 }
             }
             MouseButton::Right => self.show_status_menu(bar.pane, &p, hit),
@@ -384,7 +487,7 @@ impl App {
         let algorithm = p.layout.advanced.algorithm;
         let shown = hit.map(|i| &p.shown[i]);
         let class = shown.map_or(String::new(), |s| s.component.class.clone());
-        let copy = shown.and_then(|s| s.piece.copyable()).filter(|t| !t.is_empty());
+        let copy = shown.and_then(Shown::copyable);
         let menu = Menu::new();
         let mut results = Vec::new();
         if copy.is_some() {
@@ -416,7 +519,7 @@ impl App {
         if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
             self.banners.set("menu", format!("Status bar menu: {e}"));
         }
-        self.status_menu = Some(StatusMenu { pane, class, index: shown.and_then(|s| s.index), copy, checkboxes: checkboxes.into_iter().map(|k| k.key).collect() });
+        self.status_menu = Some(StatusMenu { pane, class, index: shown.and_then(|s| s.index), copy, checkboxes: checkboxes.into_iter().map(|k| k.key).collect(), choices: Vec::new(), path: None });
         unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
         self.popup_menu = Some(menu);
     }
@@ -425,12 +528,13 @@ impl App {
     pub(super) fn status_bar_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         let Some(what) = id.strip_prefix("statusbar:") else { return false };
         let Some(m) = self.status_menu.take() else { return true };
+        if self.dir_menu_picked(what, m.pane, &m.choices, m.path.as_deref(), event_loop) {
+            return true;
+        }
         match what {
             "copy" => {
-                if let (Some(text), Some(cb)) = (m.copy, self.clipboard.as_mut()) {
-                    if let Err(err) = cb.set_text(text) {
-                        self.banners.set("clipboard", format!("Could not copy: {err}"));
-                    }
+                if let Some(text) = m.copy {
+                    self.copy_status_text(text);
                 }
             }
             "configure-bar" => self.configure_status_bar(m.pane, event_loop),
@@ -583,6 +687,12 @@ impl App {
         true
     }
 
+    /// Some session whose profile shows a status bar has a Clock in its layout.
+    pub(super) fn any_clock_shown(&self) -> bool {
+        let clock = Kind::Clock.class();
+        self.panes.keys().any(|&id| self.shows_status_bar(id) && self.status_layout(id).components.iter().any(|c| c.class == clock))
+    }
+
     /// Disable Status Bar (`PS:23070-23080`): the session's own copy when it has one, else
     /// the shared profile (every session using it).
     fn disable_status_bar(&mut self, pane: PaneId) {
@@ -622,24 +732,70 @@ mod tests {
     fn pieces_size_like_iterm2() {
         assert_eq!(Piece::of(SPRING_CLASS), Some(Piece::Spring));
         assert_eq!(Piece::of(SPACER_CLASS), Some(Piece::Spacer));
-        assert_eq!(Piece::of("iTermStatusBarClockComponent"), None);
-        assert_eq!(Piece::Placeholder.text().as_deref(), Some("Click here to configure status bar"));
-        assert_eq!(Piece::Placeholder.click(), Click::Configure);
+        assert_eq!(Piece::of("iTermStatusBarClockComponent"), Some(Piece::Content(Kind::Clock)));
+        assert_eq!(Piece::of("iTermStatusBarWorkingDirectoryComponent"), Some(Piece::Content(Kind::CurrentDirectory)));
+        assert_eq!(Piece::of("iTermStatusBarCPUUtilizationComponent"), None, "a 9i class stays off screen");
+        assert_eq!(placeholder_content().variants, vec!["Click here to configure status bar".to_string()]);
+        assert_eq!(placeholder_content().click, Click::Configure);
 
-        let spring = Piece::Spring.item(&component(SPRING_CLASS, &[]), Algorithm::TightlyPacked, 0.0);
+        let none = Content::text(Vec::new());
+        let spring = Piece::Spring.item(&component(SPRING_CLASS, &[]), Algorithm::TightlyPacked, &none, &[], None);
         assert_eq!((spring.kind, spring.min, spring.stretch, spring.margins), (ItemKind::Spring, 0.0, true, false));
         assert!(spring.preferred.is_infinite());
 
         // The spacer's width knob, 5 when absent or 0.
-        let spacer = Piece::Spacer.item(&component(SPACER_CLASS, &[]), Algorithm::Stable, 0.0);
+        let spacer = Piece::Spacer.item(&component(SPACER_CLASS, &[]), Algorithm::Stable, &none, &[], None);
         assert_eq!((spacer.kind, spacer.min, spacer.preferred, spacer.stretch), (ItemKind::FixedSpacer, 5.0, 5.0, false));
-        let zero = Piece::Spacer.item(&component(SPACER_CLASS, &[(SPACER_WIDTH_KEY, toml::Value::Float(0.0))]), Algorithm::Stable, 0.0);
+        let zero = Piece::Spacer.item(&component(SPACER_CLASS, &[(SPACER_WIDTH_KEY, toml::Value::Float(0.0))]), Algorithm::Stable, &none, &[], None);
         assert_eq!(zero.min, 5.0);
-        let wide = Piece::Spacer.item(&component(SPACER_CLASS, &[(SPACER_WIDTH_KEY, toml::Value::Integer(30))]), Algorithm::Stable, 0.0);
+        let wide = Piece::Spacer.item(&component(SPACER_CLASS, &[(SPACER_WIDTH_KEY, toml::Value::Integer(30))]), Algorithm::Stable, &none, &[], None);
         assert_eq!(wide.min, 30.0);
 
-        let placeholder = Piece::Placeholder.item(&component(PLACEHOLDER_CLASS, &[]), Algorithm::Stable, 180.0);
+        let placeholder = Piece::Placeholder.item(&component(PLACEHOLDER_CLASS, &[]), Algorithm::Stable, &placeholder_content(), &widths(&[(PLACEHOLDER_TEXT, 180.0)]), None);
         assert_eq!((placeholder.min, placeholder.preferred, placeholder.stretch, placeholder.margins), (180.0, 180.0, true, true));
+    }
+
+    fn widths(v: &[(&str, f32)]) -> Vec<(String, f32)> {
+        v.iter().map(|(s, w)| (s.to_string(), *w)).collect()
+    }
+
+    /// `TXT:178-229`: a text component's minimum is its narrowest variant and its
+    /// preferred its widest; Job and Current Directory clamp the preferred width by the
+    /// min and max knobs (`JOB:60-62`, `VAR:278-280`), no other text component does.
+    #[test]
+    fn content_items_size_by_variants() {
+        use crate::statusbar_components::{HOST_NAME_CLASS, JOB_NAME_CLASS, USER_NAME_CLASS};
+        let two = widths(&[("a", 30.0), ("abc", 90.0)]);
+        let content = Content::text(vec!["a".into(), "abc".into()]);
+        let host = Piece::Content(Kind::HostName).item(&component(HOST_NAME_CLASS, &[]), Algorithm::Stable, &content, &two, None);
+        assert_eq!((host.min, host.preferred, host.stretch, host.icon, host.empty), (30.0, 90.0, true, false, false));
+        let capped = component(HOST_NAME_CLASS, &[("maxwidth", toml::Value::Float(50.0))]);
+        assert_eq!(Piece::Content(Kind::HostName).item(&capped, Algorithm::Stable, &content, &two, None).preferred, 90.0, "Host Name does not clamp");
+
+        let job = component(JOB_NAME_CLASS, &[("maxwidth", toml::Value::Float(50.0))]);
+        let clamped = Piece::Content(Kind::JobName).item(&job, Algorithm::Stable, &content, &two, None);
+        assert_eq!((clamped.min, clamped.preferred), (30.0, 50.0));
+
+        let with_icon = Content { icon: Some('\u{E756}'), ..content.clone() };
+        assert!(Piece::Content(Kind::JobName).item(&component(JOB_NAME_CLASS, &[]), Algorithm::Stable, &with_icon, &two, None).icon);
+
+        let fixed = Content { fixed: Some((125.0, 200.0)), ..Content::text(Vec::new()) };
+        let f = Piece::Content(Kind::HostName).item(&component(HOST_NAME_CLASS, &[]), Algorithm::Stable, &fixed, &[], None);
+        assert_eq!((f.min, f.preferred), (125.0, 200.0));
+
+        let empty = Content::text(vec![String::new()]);
+        assert!(empty.empty);
+        assert!(Piece::Content(Kind::HostName).item(&component(HOST_NAME_CLASS, &[]), Algorithm::Stable, &empty, &widths(&[("", 0.0)]), None).empty);
+
+        // User Name: the minimum is the narrower of the full name and its first character
+        // plus U+2026 (`VAR:234-247`).
+        let user = Content::text(vec!["robert".into()]);
+        let u = Piece::Content(Kind::UserName).item(&component(USER_NAME_CLASS, &[]), Algorithm::Stable, &user, &widths(&[("robert", 40.0)]), Some(12.0));
+        assert_eq!((u.min, u.preferred), (12.0, 40.0));
+
+        // The minwidth knob raises the minimum.
+        let wide = component(HOST_NAME_CLASS, &[("minwidth", toml::Value::Float(60.0))]);
+        assert_eq!(Piece::Content(Kind::HostName).item(&wide, Algorithm::Stable, &content, &two, None).min, 60.0);
     }
 
     #[test]
@@ -657,7 +813,7 @@ mod tests {
     #[test]
     fn bar_hit_test_leaves_empty_space_unhit() {
         let c = component(SPACER_CLASS, &[(SPACER_WIDTH_KEY, toml::Value::Float(20.0))]);
-        let item = Piece::Spacer.item(&c, Algorithm::Stable, 0.0);
+        let item = Piece::Spacer.item(&c, Algorithm::Stable, &Content::text(Vec::new()), &[], None);
         let placed = vec![sbl::Placed { index: 0, x: 6.0, width: 20.0 }];
         let placement = Placement { layout: Layout::default(), shown: Vec::new(), items: vec![item], placed, width_pt: 200.0 };
         assert_eq!(placement.hit(10.0), Some(0));

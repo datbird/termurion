@@ -313,6 +313,9 @@ impl App {
         if let Some(h) = &s.shell.host {
             v.session.insert("hostname", h.clone());
         }
+        // Whether the session is on this computer (no reported host yet counts).
+        let local = super::statusbar_content::is_localhost(s.shell.host.as_deref());
+        v.session.insert("isLocalhost", if local { "1" } else { "0" }.to_string());
         if let Some(u) = &s.shell.user {
             v.session.insert("username", u.clone());
         }

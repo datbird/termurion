@@ -98,6 +98,7 @@ mod tmux_tabs_ui;
 mod tmux_dashboard_app;
 mod bury_ui;
 mod statusbar_ui;
+mod statusbar_content;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -345,6 +346,8 @@ pub struct App {
     status_menu: Option<statusbar_ui::StatusMenu>,
     /// The status bar setup window (one at a time, like iTerm2's sheet).
     status_setup: Option<statusbar_ui::StatusSetup>,
+    /// The next whole second a status bar Clock redraws at.
+    status_clock_due: Option<Instant>,
     /// Triggers: the Show Alert limit, messages already shown, the Alert bar's trigger, and
     /// Run Command's pool and processes.
     trigger_limits: crate::triggers::RateLimit<(PaneId, usize)>,
@@ -625,6 +628,7 @@ pub fn run() {
         porthole_languages: None,
         status_menu: None,
         status_setup: None,
+        status_clock_due: None,
         trigger_limits: crate::triggers::RateLimit::default(),
         trigger_told: std::collections::HashSet::new(),
         trigger_alerts: HashMap::new(),
@@ -2133,6 +2137,7 @@ impl ApplicationHandler<UserEvent> for App {
         let activity = self.tick_activity();
         self.tick_status_change();
         let idle_codes = self.tick_idle_codes();
+        let status_bars = self.tick_status_bars();
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
@@ -2150,7 +2155,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
