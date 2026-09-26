@@ -287,6 +287,8 @@ pub struct App {
     composer_clip: Option<(String, Vec<usize>)>,
     /// The pane whose dropdown's Help button is under the pointer (its tooltip shows).
     composer_hover: Option<PaneId>,
+    /// The tab and pane the composer's keyboard was last settled for (`composer_focus_follows`).
+    composer_focus_key: Option<(usize, Option<PaneId>)>,
     /// The Actions as they were when the toolbelt opened the Edit Action sheet, and its window:
     /// the sheet's OK pushes them on that window's Actions undo (`iTermToolActions.m:267-276`).
     action_edit_undo: Option<(WindowId, toml::Value)>,
@@ -687,6 +689,7 @@ pub fn run() {
         composer_windows: Default::default(),
         composer_clip: None,
         composer_hover: None,
+        composer_focus_key: None,
         action_edit_undo: None,
         laid_out: None,
         title_prompt: None,
@@ -2322,9 +2325,15 @@ impl ApplicationHandler<UserEvent> for App {
         // Menu checks that follow the current tab and pane (broadcast input) refresh when
         // either changes.
         let key = (self.current_window(), self.active, self.tabs.get(self.active).map(|t| t.focused));
+        // A tab or pane change inside the window (not a switch of windows) moves the
+        // composer's keyboard.
+        let focus_key = (key.1, key.2);
+        if self.composer_focus_key != Some(focus_key) {
+            self.composer_focus_key = Some(focus_key);
+            self.composer_focus_follows();
+        }
         if self.checks_key != Some(key) {
             self.checks_key = Some(key);
-            self.composer_focus_follows();
             self.sync_checks();
         }
         let active = hotkey_ui::tandem_in_front();
@@ -2584,6 +2593,12 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => self.key(&event, event_loop),
+            // The pointer left the window: no Help tooltip stays up.
+            WindowEvent::CursorLeft { .. } => {
+                if self.composer_hover.take().is_some() {
+                    self.redraw();
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as f32, position.y as f32),
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => self.mouse_release(button, event_loop),

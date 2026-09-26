@@ -164,6 +164,12 @@ fn press_focus(left: bool, pane: PaneId, focused: Option<PaneId>) -> Option<Pane
     (left && focused != Some(pane)).then_some(pane)
 }
 
+/// The composers of one window's `panes` (each with whether it holds the keyboard) that let it
+/// go when `focused` is that window's focused pane: every holder but the focused pane's.
+fn composers_to_release(panes: &[(PaneId, bool)], focused: Option<PaneId>) -> Vec<PaneId> {
+    panes.iter().filter(|(id, holds)| *holds && Some(*id) != focused).map(|(id, _)| *id).collect()
+}
+
 /// A line as drawn: tabs as 4 spaces (as `text_width` measures them).
 fn shown(s: &str) -> String {
     s.replace('\t', "    ")
@@ -1357,7 +1363,14 @@ impl App {
         let (x, y) = self.cursor;
         let panes: Vec<(PaneId, Rect)> = self.tabs.get(self.active).map(|t| self.visible(t)).unwrap_or_default();
         for (pane, rect) in panes {
-            if !self.composer_shown(pane) || !self.composer_layout(pane, rect).panel.contains(x, y) {
+            if !self.composer_shown(pane) {
+                continue;
+            }
+            // The suggestion popup, where it reaches past the panel, swallows the wheel too.
+            if self.composer_popup_hit(pane, rect, x, y).is_some() {
+                return true;
+            }
+            if !self.composer_layout(pane, rect).panel.contains(x, y) {
                 continue;
             }
             let Some((l, lines)) = self.composer_lines(pane) else { return true };
@@ -1376,15 +1389,18 @@ impl App {
     /// back only with the terminal's).
     pub(super) fn composer_focus_follows(&mut self) {
         let focused = self.focused_id();
-        let mut any = false;
-        for (id, p) in self.panes.iter_mut() {
-            if p.composer.focused && Some(*id) != focused {
+        // Only this window's panes: another window keeps its composer's keyboard for when it
+        // comes back (a window restores its first responder).
+        let mine: Vec<(PaneId, bool)> = self.tabs.iter().flat_map(|t| t.layout.panes()).filter_map(|id| self.panes.get(&id).map(|p| (id, p.composer.focused))).collect();
+        let release = composers_to_release(&mine, focused);
+        let any = !release.is_empty();
+        for id in release {
+            if let Some(p) = self.panes.get_mut(&id) {
                 p.composer.focused = false;
-                any = true;
-                if let Some(v) = self.composers.get_mut(id) {
-                    v.popup = None;
-                    v.ghost = None;
-                }
+            }
+            if let Some(v) = self.composers.get_mut(&id) {
+                v.popup = None;
+                v.ghost = None;
             }
         }
         if any {
@@ -1436,17 +1452,19 @@ impl App {
             return self.composer_explain(pane, at);
         }
         let Some(p) = self.panes.get_mut(&pane) else { return };
-        let e = &mut p.composer.edit;
+        let c = &mut p.composer;
         let kind = if m.ctrl && m.shift && !m.alt {
-            e.click_add(at);
+            c.edit.click_add(at);
             None
         } else if m.alt && !m.ctrl {
-            e.set_carets(&[text_edit::Caret { at, anchor: None }]);
+            c.edit.set_carets(&[text_edit::Caret { at, anchor: None }]);
             Some(ComposerDrag::Select { from: Some((line, lx)) })
         } else {
-            e.click(at, end, m.shift, now_ms(), super::clippings_ui::double_click_ms());
+            c.click(at, end, m.shift, now_ms(), super::clippings_ui::double_click_ms());
             Some(ComposerDrag::Select { from: None })
         };
+        // A press inside the prompt prefix lands at its end (the next key is typed there).
+        c.keep_out_of_prefix();
         if let Some(kind) = kind {
             self.drag = Drag::Composer { pane, kind };
         }
@@ -1492,6 +1510,7 @@ impl App {
                     Some(start) => p.composer.edit.box_select(start, (line, lx), &lines, &|s: &str| text_width(s, cw)),
                     None => p.composer.edit.drag_to(at, end),
                 }
+                p.composer.keep_out_of_prefix();
             }
             ComposerDrag::Resize { start_y, start_h } => {
                 let Some(rect) = self.pane_rect(pane) else { return };
@@ -2000,6 +2019,17 @@ mod tests {
         assert_eq!(press_focus(true, 2, None), Some(2));
         // Only a left press.
         assert_eq!(press_focus(false, 2, Some(1)), None);
+    }
+
+    #[test]
+    fn only_the_windows_other_panes_let_the_keyboard_go() {
+        // A tab or pane change inside the window: the old pane's composer lets go.
+        assert_eq!(composers_to_release(&[(1, true), (2, false)], Some(2)), vec![1]);
+        // The focused pane's composer keeps it.
+        assert_eq!(composers_to_release(&[(1, true), (2, false)], Some(1)), Vec::<PaneId>::new());
+        // Another window's panes are never passed in, so switching windows releases nothing
+        // there; nothing held, nothing released.
+        assert_eq!(composers_to_release(&[(3, false)], Some(3)), Vec::<PaneId>::new());
     }
 
     #[test]

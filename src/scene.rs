@@ -1696,7 +1696,7 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
         cut_out(frame, r, d.line_h);
         frame.popups.push(Quad { rect: r, color: rgba(FIND_BAR, a) });
         frame_lines(&mut frame.popups, r, rgba(DIVIDER, a));
-        frame.rows.push(TextRow { x: r.x + cell.0 * d.small, y: r.y + 3.0, spans: vec![plain_span(t.to_string(), TAB_TEXT, false)], clip: r, scale: d.small });
+        frame.rows.push(TextRow { x: r.x + cell.0 * d.small, y: r.y + 3.0, spans: vec![plain_span(t.to_string(), under(TAB_TEXT), false)], clip: r, scale: d.small });
     }
 }
 

@@ -300,6 +300,21 @@ impl Composer {
         }
     }
 
+    /// A click at byte `at` (`TextEdit::click`), kept out of the prefix: a click inside the
+    /// prompt puts the caret at its end, so the next key is typed there rather than refused by
+    /// the prefix guard (NSTextView's `shouldChangeText` guard, `CTV:1281-1320`, only ever sees
+    /// carets in the editable range).
+    pub fn click(&mut self, at: usize, at_line_end: bool, shift: bool, now_ms: u128, double_ms: u128) {
+        self.edit.click(at, at_line_end, shift, now_ms, double_ms);
+        self.clamp_prefix();
+    }
+
+    /// After any other pointer edit (a drag, an added caret, a box of carets): no caret or
+    /// selection end stays inside the prefix.
+    pub fn keep_out_of_prefix(&mut self) {
+        self.clamp_prefix();
+    }
+
     /// `cursorAtEnd && !canMoveUp/!canMoveDown && count <= 1` (`CTV:885-908,1165-1173`): a
     /// single caret, nothing selected, sitting at the end of the *whole* text (not just the
     /// end of its own line: "abc\ndef" with the caret after "abc" is not this, even though
@@ -1589,5 +1604,26 @@ mod tests {
         c.set_prefix(Some(p));
         assert_eq!(c.text(), "info\nPS> ls");
         assert_eq!(c.contents(), "ls");
+    }
+
+    #[test]
+    fn a_click_in_the_prefix_types_normally() {
+        // A click inside the prompt prefix puts the caret at the prefix's end, so the next key
+        // is typed there instead of being refused by the prefix guard.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("ls", false);
+        c.click(0, false, false, 0, 500);
+        assert_eq!(c.edit.caret, 2);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        c.apply(Action::Edit(EditKey::Text("x".to_string())), &lines, &w);
+        assert_eq!(c.edit.text, "$ xls");
+        // A drag or box that reaches into the prefix is kept out of it too.
+        c.edit.set_carets(&[Caret { at: 1, anchor: Some(4) }]);
+        c.keep_out_of_prefix();
+        assert_eq!(c.edit.selection(), Some(2..4));
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        c.apply(Action::Edit(EditKey::Text("y".to_string())), &lines, &w);
+        assert_eq!(c.edit.text, "$ ys");
     }
 }
