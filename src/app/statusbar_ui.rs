@@ -28,6 +28,8 @@ const SHOW_KEY: &str = "Show Status Bar";
 const STATUS_ERROR_BAR: &str = "statusbar:error";
 /// The info bar a click that does nothing yet shows.
 const STATUS_REFUSE_BAR: &str = "statusbar:refuse";
+/// The Composer's history menu items: `statusbar:composer-history:<n>`.
+const COMPOSER_HISTORY_ID: &str = "composer-history:";
 /// A button face's corner radius, and its inset from the bar's top and bottom, in points.
 const BUTTON_RADIUS_PT: f32 = 4.0;
 const BUTTON_INSET_PT: f32 = 2.0;
@@ -377,6 +379,8 @@ impl App {
     /// first; with one, it becomes mandatory (`SessionView.m:778-800`). A slow paste's
     /// progress is the temporary right component (`iTermPasteViewManager.m:77-89`), else
     /// Filter's when the layout's Filter Tool is not on the bar (`SessionView.m:762-776`).
+    /// A status bar composer's temporary field beats both while it edits (`CM:192-215`); they
+    /// come back when it leaves (`PS:24370-24373`).
     /// A tmux layout's components are not the profile's: nothing to configure or hide.
     fn place_bar(&mut self, bar: &Bar) -> Placement {
         let (layout, tmux) = self.bar_layout(bar.pane);
@@ -396,7 +400,10 @@ impl App {
         let search = find == Some(false);
         let left = (search && !has(Kind::SearchTool)).then(|| sbc::temporary(Kind::SearchTool));
         let progress = self.paste_shows_progress(bar.pane);
-        let right = if progress {
+        let composing = self.panes.get(&bar.pane).is_some_and(|p| p.composer.shown == crate::composer::Shown::Field && p.composer.temporary);
+        let right = if composing {
+            Some(sbc::temporary(Kind::Composer))
+        } else if progress {
             Some(sbc::temporary(Kind::Progress))
         } else if find == Some(true) && !has(Kind::FilterTool) {
             Some(sbc::temporary(Kind::FilterTool))
@@ -405,7 +412,7 @@ impl App {
         };
         let p = self.place_components(bar, layout.clone(), left.clone(), right, search);
         let filter_shown = p.placed.iter().any(|pl| p.shown[pl.index].piece == Piece::Content(Kind::FilterTool));
-        if find == Some(true) && !progress && !filter_shown && has(Kind::FilterTool) {
+        if find == Some(true) && !composing && !progress && !filter_shown && has(Kind::FilterTool) {
             return self.place_components(bar, layout, left, Some(sbc::temporary(Kind::FilterTool)), search);
         }
         p
@@ -447,9 +454,14 @@ impl App {
         let mut items = Vec::with_capacity(shown.len());
         for s in &mut shown {
             match s.content.as_ref() {
-                // A field's label and text, measured for drawing: the label first.
-                Some(Content { widget: Some(Widget::Field { text, label, .. }), .. }) => {
-                    s.widths = [label, text].into_iter().map(|t| (t.clone(), if t.is_empty() { 0.0 } else { measure(t, s.text_scale) })).collect();
+                // A field's label and text, measured for drawing: the label first; then the
+                // text before its caret, when it draws one.
+                Some(Content { widget: Some(Widget::Field { text, label, caret, .. }), .. }) => {
+                    let before = caret.and_then(|i| text.get(..i)).map(str::to_string);
+                    s.widths = [Some(label.clone()), Some(text.clone()), before].into_iter().flatten().map(|t| {
+                        let w = if t.is_empty() { 0.0 } else { measure(&t, s.text_scale) };
+                        (t, w)
+                    }).collect();
                 }
                 // A graph's reserves (a text plus extra points), then its left and right texts.
                 Some(Content { widget: Some(Widget::Graph(g)), .. }) => {
@@ -661,6 +673,10 @@ impl App {
                             FieldPart::Prev => self.find_step(bar.pane, false),
                             FieldPart::Next => self.find_step(bar.pane, true),
                             FieldPart::Close => self.bar_field_close(bar.pane, kind),
+                            // The Composer's combo box chevron, its expand button and its text.
+                            FieldPart::History => self.composer_history_menu(bar.pane),
+                            FieldPart::Expand => self.composer_field_expand(bar.pane),
+                            FieldPart::Text if kind == Kind::Composer => self.composer_field_focus(bar.pane),
                             FieldPart::Text => self.bar_field_focus(bar.pane, kind),
                         }
                     }
@@ -698,6 +714,55 @@ impl App {
         let f = self.finds.get(&pane).filter(|f| f.open)?;
         let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&pane))?;
         self.status_bars(tab).iter().any(|b| b.pane == pane).then_some(if f.filter { Kind::FilterTool } else { Kind::SearchTool })
+    }
+
+    /// The pane's bar in the current window, laid out, with where its Composer field sits (a
+    /// layout's own when `temporary` is false, else any).
+    fn composer_placed(&mut self, pane: PaneId, temporary: bool) -> Option<(Bar, sbl::Placed)> {
+        let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&pane))?;
+        let bar = self.status_bars(tab).into_iter().find(|b| b.pane == pane)?;
+        let p = self.place_bar(&bar);
+        let pl = p.placed.iter().find(|pl| p.shown[pl.index].piece == Piece::Content(Kind::Composer) && (temporary || !p.shown[pl.index].temporary)).copied()?;
+        Some((bar, pl))
+    }
+
+    /// `visibleComponentWithIdentifier:` for the Composer (`CM:173-178`): the pane's bar shows
+    /// a Composer component of its layout (placed, not dropped for room).
+    pub(super) fn composer_component_visible(&mut self, pane: PaneId) -> bool {
+        self.composer_placed(pane, false).is_some()
+    }
+
+    /// The pane whose bar's Composer field is under a point of the current tab, if any.
+    pub(super) fn composer_field_under(&mut self, x: f32, y: f32) -> Option<PaneId> {
+        let tab = self.tabs.get(self.active)?;
+        let bar = self.status_bars(tab).into_iter().find(|b| b.rect.contains(x, y))?;
+        let p = self.place_bar(&bar);
+        let i = p.hit((x - bar.rect.x) / self.scale())?;
+        (p.shown[i].piece == Piece::Content(Kind::Composer)).then_some(bar.pane)
+    }
+
+    /// The Composer's combo box chevron (`SBC:173-178`): a menu of the session's command uses,
+    /// newest first, at the field; a pick fills the field.
+    pub(super) fn composer_history_menu(&mut self, pane: PaneId) {
+        use muda::{Menu, MenuItem};
+        let Some((bar, pl)) = self.composer_placed(pane, true) else { return };
+        let host = self.history_host_pub(pane);
+        let choices = sbx::field_history(&self.shell_history_pub().uses(&host));
+        if choices.is_empty() {
+            return;
+        }
+        let menu = Menu::new();
+        let mut results = Vec::new();
+        for (n, c) in choices.iter().enumerate() {
+            let title: String = c.lines().next().unwrap_or_default().replace('&', "&&");
+            results.push(menu.append(&MenuItem::with_id(format!("statusbar:{COMPOSER_HISTORY_ID}{n}"), title, true, None)));
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Status bar menu: {e}"));
+        }
+        let at = self.menu_at(&bar, pl.x);
+        self.status_menu = Some(StatusMenu::for_component(pane, Kind::Composer.class(), choices, None));
+        self.show_menu_at(menu, at);
     }
 
     /// A bar shows for the pane, in any window (the tab it is in shows its bar).
@@ -755,6 +820,12 @@ impl App {
     pub(super) fn status_bar_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         let Some(what) = id.strip_prefix("statusbar:") else { return false };
         let Some(m) = self.status_menu.take() else { return true };
+        if let Some(n) = what.strip_prefix(COMPOSER_HISTORY_ID) {
+            if let Some(text) = n.parse::<usize>().ok().and_then(|n| m.choices.get(n)) {
+                self.composer_field_fill(m.pane, text);
+            }
+            return true;
+        }
         if self.dir_menu_picked(what, m.pane, &m.choices, m.path.as_deref(), event_loop) || self.git_menu_picked(what, m.pane, event_loop) || self.component_menu_picked(what, m.pane, event_loop) {
             return true;
         }
@@ -966,10 +1037,10 @@ const TRACK_PT: f32 = 6.0;
 /// a component `width_pt` wide; the parts are in points from the field's left, which is
 /// the returned offset (its icon's column) into the component.
 fn field_parts_of(s: &Shown, width_pt: f32) -> Option<(sbx::FieldParts, f32)> {
-    let Some(Widget::Field { magnifier, chevrons, close, .. }) = s.content.as_ref()?.widget.as_ref() else { return None };
+    let Some(Widget::Field { magnifier, chevrons, close, history, expand, .. }) = s.content.as_ref()?.widget.as_ref() else { return None };
     let icon = if s.content.as_ref()?.icon.is_some() { ICON_PT } else { 0.0 };
     let label_w = s.widths.first().map_or(0.0, |(_, w)| *w);
-    Some((sbx::field_parts((width_pt - icon).max(0.0), *magnifier, *chevrons, *close, label_w), icon))
+    Some((sbx::field_parts((width_pt - icon).max(0.0), *magnifier, *chevrons, *close, label_w, *history || *expand), icon))
 }
 
 /// Draws a field (a one point border in the text color at half alpha, full alpha while it
@@ -985,7 +1056,7 @@ fn draw_widget(widget: &Widget, room: Rect, widths: &[(String, f32)], look: &Wid
     };
     let w_pt = room.w / scale;
     match widget {
-        Widget::Field { text, placeholder, label, error, focused, magnifier, chevrons, close } => {
+        Widget::Field { text, placeholder, label, error, focused, magnifier, chevrons, close, history, expand, caret } => {
             let inset = (BUTTON_INSET_PT * scale).round();
             let b = Rect { y: room.y + inset, h: (room.h - 2.0 * inset).max(0.0), ..room };
             let t = scale.round().max(1.0);
@@ -995,11 +1066,11 @@ fn draw_widget(widget: &Widget, room: Rect, widths: &[(String, f32)], look: &Wid
             }
             let label_w = widths.first().map_or(0.0, |(_, w)| *w);
             let text_w = widths.get(1).map_or(0.0, |(_, w)| *w);
-            let parts = sbx::field_parts(w_pt, *magnifier, *chevrons, *close, label_w);
+            let parts = sbx::field_parts(w_pt, *magnifier, *chevrons, *close, label_w, *history || *expand);
             if let Some(m) = parts.mode {
                 glyph(texts, m, sbx::MAGNIFIER);
             }
-            for (part, c) in [(parts.prev, sbx::CHEVRON_LEFT), (parts.next, sbx::CHEVRON_RIGHT), (parts.close, sbx::CLOSE_GLYPH)] {
+            for (part, c) in [(parts.prev, sbx::CHEVRON_LEFT), (parts.next, sbx::CHEVRON_RIGHT), (parts.close, sbx::CLOSE_GLYPH), (parts.history, sbx::CHEVRON_DOWN), (parts.expand, sbx::EXPAND_GLYPH)] {
                 if let Some(part) = part {
                     glyph(texts, part, c);
                 }
@@ -1010,6 +1081,14 @@ fn draw_widget(widget: &Widget, room: Rect, widths: &[(String, f32)], look: &Wid
             let room_pt = parts.text.1 - parts.text.0;
             let left = if !text.is_empty() && text_w > room_pt { parts.text.1 - text_w } else { parts.text.0 };
             texts.push(scene::BarText { x: room.x + (left * scale).round(), text: shown, color, scale: look.text_scale, clip, icon: false, dy: 0.0 });
+            // The caret while it has the keyboard: one point in the text color, after the
+            // text before it, kept inside the text's room.
+            if let (true, Some(_)) = (*focused, caret) {
+                let before_w = widths.get(2).map_or(0.0, |(_, w)| *w);
+                let x_pt = if text.is_empty() { parts.text.0 } else { left + before_w };
+                let x = room.x + (x_pt.clamp(parts.text.0, parts.text.1) * scale).round();
+                boxes.push((Rect { x, w: t, y: b.y + 2.0 * t, h: (b.h - 4.0 * t).max(0.0) }, look.color, 1.0));
+            }
             if !label.is_empty() {
                 let r = at(parts.label.0, parts.label.1);
                 texts.push(scene::BarText { x: r.x, text: label.clone(), color: look.dim, scale: look.text_scale, clip: r, icon: false, dy: 0.0 });

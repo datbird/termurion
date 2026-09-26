@@ -508,7 +508,8 @@ pub const SEARCH_TEMPORARY_KEY: &str = "search: temporary";
 /// `StatusBarFilterComponent.isTemporaryKey` (`StatusBarFilterComponent.swift:12`).
 pub const FILTER_TEMPORARY_KEY: &str = "filter: temporary";
 
-/// A temporary component (`SessionView.m:713-760`, `iTermPasteViewManager.m:77-89`):
+/// A temporary component (`SessionView.m:713-760`, `iTermPasteViewManager.m:77-89`,
+/// `iTermComposerManager.m:204-205`):
 /// priority infinity, so the layout drops everything else first, and, for the Search and
 /// Filter Tools, the key that marks it temporary (it shows a close glyph).
 pub fn temporary(kind: Kind) -> statusbar::Component {
@@ -602,7 +603,8 @@ mod tests {
     /// `iTermStatusBarViewController.m:248-293`: the temporary left component goes first,
     /// the temporary right one last with a Spring (spring constant 1) before it;
     /// `SessionView.m:713-760`: each temporary has priority infinity and its own key;
-    /// `iTermPasteViewManager.m:77-89`: the progress one only the priority.
+    /// `iTermPasteViewManager.m:77-89`: the progress one only the priority, as the
+    /// composer's.
     #[test]
     fn temporaries_follow_iterm2() {
         let search = temporary(Kind::SearchTool);
@@ -615,6 +617,10 @@ mod tests {
         assert!(filter.knobs.get("search: temporary").is_none());
         let progress = temporary(Kind::Progress);
         assert_eq!(progress.knobs.len(), 1);
+        // `CM:204-205`: the status bar composer's temporary field, only the priority.
+        let composer = temporary(Kind::Composer);
+        assert_eq!((composer.class.as_str(), composer.knobs.len()), (COMPOSER_CLASS, 1));
+        assert!(composer.priority().is_infinite() && !is_temporary(&composer));
         assert!(is_temporary(&search) && is_temporary(&filter));
 
         let clock = statusbar::Component { class: CLOCK_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };

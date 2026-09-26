@@ -41,8 +41,7 @@ const FOLDER_CLOSED: char = '\u{E76C}';
 const FOLDER_OPEN: char = '\u{E70D}';
 /// A tagged snippet's row is 1.8 rows tall (`TS:836-842`).
 const TAGGED_ROW: f32 = 1.8;
-/// Info bar ids: the Composer's refusal and Snippets' search help.
-const COMPOSER_BAR: &str = "toolbelt-composer";
+/// Info bar id: Snippets' search help.
 const SNIPPET_HELP_BAR: &str = "toolbelt-snippet-help";
 /// A row press becomes a reorder once the pointer moved this far, points.
 const DRAG_SLOP: f32 = 4.0;
@@ -1213,7 +1212,7 @@ impl App {
             .collect()
     }
 
-    /// Sends, opens in Advanced Paste, or refuses for the Composer, each selected snippet
+    /// Sends, opens in Advanced Paste, or opens in the Composer, each selected snippet
     /// (`TS:560-588`); with `only_match` and nothing selected, the search's only match
     /// (Return in the field). The keyboard goes back to the session.
     fn apply_snippets(&mut self, pick: SnippetPick, only_match: bool, event_loop: &ActiveEventLoop) {
@@ -1248,9 +1247,8 @@ impl App {
                     }
                     self.open_advanced_paste(event_loop, pane, None);
                 }
-                SnippetPick::Composer => {
-                    self.ask(pane, COMPOSER_BAR, super::statusbar_content::COMPOSER_REFUSAL, &["OK"], false);
-                }
+                // `TS:581-582`: appended to the dropdown, escaped by the snippet's mode.
+                SnippetPick::Composer => self.open_composer_with(pane, &s.value, s.escaping),
             }
         }
         self.belt.focus = None;

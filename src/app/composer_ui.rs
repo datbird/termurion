@@ -43,6 +43,8 @@ const HEIGHT_KEY: &str = "ComposerHeight";
 const SMALL: f32 = 0.8;
 /// View > Auto Composer's global (`kPreferenceAutoComposer`), menu-only.
 const AUTO_KEY: &str = "AutoComposer";
+/// Advanced > Session: Show Composer always uses the status bar when one shows (`ADV:676`).
+const ALWAYS_BAR_KEY: &str = "alwaysUseStatusBarComposer";
 /// Shell integration fed the history once (`kCommandHistoryHasEverBeenUsed`).
 const EVER_USED_KEY: &str = "NoSyncCommandHistoryHasEverBeenUsed";
 /// Popup row glyphs (Segoe Fluent Icons: History, Page, Folder, CommandPrompt).
@@ -346,16 +348,15 @@ impl App {
     /// Another key consumer takes the keyboard (find typing, Copy Mode, the autocomplete list,
     /// the shortcut labels, a toolbelt tool): no composer keeps it; their popups close.
     pub(super) fn composer_yield_keys(&mut self) {
-        let mut any = false;
-        for (id, p) in self.panes.iter_mut() {
-            if p.composer.focused {
-                p.composer.focused = false;
-                any = true;
-                if let Some(v) = self.composers.get_mut(id) {
-                    v.popup = None;
-                    v.ghost = None;
-                }
-            }
+        self.composer_yield_keys_but(None);
+    }
+
+    /// `composer_yield_keys`, except `keep`'s composer (a press on its own status bar field).
+    pub(super) fn composer_yield_keys_but(&mut self, keep: Option<PaneId>) {
+        let ids: Vec<PaneId> = self.panes.iter().filter(|(id, p)| p.composer.focused && Some(**id) != keep).map(|(id, _)| *id).collect();
+        let any = !ids.is_empty();
+        for id in ids {
+            self.composer_let_go(id);
         }
         if any {
             self.refresh_route();
@@ -363,9 +364,27 @@ impl App {
         }
     }
 
+    /// `pane`'s composer lets the keyboard go: its popup and ghost close, and a status bar
+    /// field ends its edit (`controlTextDidEndEditing:`, `SBCVC`), so a temporary one leaves
+    /// with its text kept (`CM:314-322`) and the paste Progress or Filter temporary comes
+    /// back (`PS:24370-24373`). The caller refreshes the route.
+    fn composer_let_go(&mut self, pane: PaneId) {
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        p.composer.focused = false;
+        if p.composer.shown == Shown::Field {
+            let text = p.composer.contents();
+            p.composer.field_ended(&text);
+        }
+        if let Some(v) = self.composers.get_mut(&pane) {
+            v.popup = None;
+            v.ghost = None;
+        }
+    }
+
     /// `pane`'s composer takes the keyboard: every other key consumer lets it go.
     fn composer_take_keys(&mut self, pane: PaneId) {
-        self.belt_yield_keys();
+        self.belt.focus = None;
+        self.composer_yield_keys_but(Some(pane));
         if let Some(p) = self.panes.get_mut(&pane) {
             p.composer.focused = true;
         }
@@ -633,7 +652,8 @@ impl App {
         }
         p.composer.hidden = on;
         if on {
-            if std::mem::take(&mut p.composer.focused) {
+            if p.composer.focused {
+                self.composer_let_go(pane);
                 self.refresh_route();
             }
         } else if self.have_auto_composer(pane) && self.focused_id() == Some(pane) {
@@ -663,8 +683,13 @@ impl App {
 
     /// View > Show Composer for `pane` (`PS:8655-8661`, `CM:146-158`): the composer becomes an
     /// Auto Composer when the session wants one; a command already typed at the prompt is
-    /// cleared from the shell and carried into it (`set_composer_string`); then the dropdown
-    /// toggles, taking the keyboard when it opens. (The status bar route is Task 8's.)
+    /// cleared from the shell and carried into it (`set_composer_string`); then it toggles.
+    /// With a status bar that wants the composer (`using_status_bar`: the bar shows,
+    /// `alwaysUseStatusBarComposer` or a visible Composer component) a shown dropdown saves
+    /// and hides, else the status bar field takes the keyboard (`CM:192-215`): the visible
+    /// component, or a temporary right one seeded from the saved text; a field that already
+    /// has the keyboard opens the dropdown with its text (`SBCVC:78-84`). Otherwise the
+    /// dropdown toggles, taking the keyboard when it opens.
     pub(super) fn compose(&mut self, pane: PaneId) {
         if !self.composer_allowed(pane) {
             return;
@@ -677,15 +702,178 @@ impl App {
         if let Some(command) = current.filter(|c| !c.is_empty()) {
             self.set_composer_string(pane, &command, false);
         }
+        let (status_bar, visible) = self.composer_routing(pane);
         let Some(p) = self.panes.get_mut(&pane) else { return };
         let before = p.composer.shown;
-        let after = p.composer.toggle(false);
+        if before == Shown::Field {
+            if status_bar && p.composer.focused {
+                return self.composer_field_expand(pane);
+            }
+            // The field lost its reason to be (the setting or the component went away): its
+            // edit ends before the dropdown toggles.
+            if !status_bar {
+                let text = p.composer.contents();
+                p.composer.field_ended(&text);
+            }
+        }
+        let after = p.composer.toggle(status_bar);
         if after == Shown::Dropdown {
             self.composer_opened(pane);
             self.composer_take_keys(pane);
         } else if before == Shown::Dropdown {
             self.composer_closed(pane);
+        } else if after == Shown::Field {
+            self.composer_field_took(pane, !visible);
         }
+        self.redraw();
+    }
+
+    /// Where Show Composer goes for `pane` (`CM:173-178`): whether the status bar takes it,
+    /// and whether the pane's bar shows a Composer component of its layout.
+    fn composer_routing(&mut self, pane: PaneId) -> (bool, bool) {
+        let shown = self.bar_shown_for(pane);
+        let visible = shown && self.composer_component_visible(pane);
+        (composer::using_status_bar(shown, self.globals.bool(ALWAYS_BAR_KEY), visible), visible)
+    }
+
+    /// The pane's composer became the status bar field (`shown` is already `Field`): it takes
+    /// the keyboard, as the temporary right component when `temporary` (no Composer component
+    /// shows), and the find field stops typing.
+    fn composer_field_took(&mut self, pane: PaneId, temporary: bool) {
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.composer.temporary = temporary;
+        }
+        if let Some(f) = self.finds.get_mut(&pane) {
+            f.typing = false;
+        }
+        self.composer_take_keys(pane);
+        self.redraw();
+    }
+
+    /// A press on the text of `pane`'s Composer field: a shown dropdown takes the keyboard
+    /// instead (the two share one text); else the field does, with the text it kept.
+    pub(super) fn composer_field_focus(&mut self, pane: PaneId) {
+        if !self.composer_allowed(pane) {
+            return;
+        }
+        let Some(p) = self.panes.get(&pane) else { return };
+        match p.composer.shown {
+            Shown::Dropdown => {
+                if !p.composer.hidden {
+                    self.composer_take_keys(pane);
+                }
+            }
+            Shown::Field if p.composer.focused => {}
+            Shown::Field => self.composer_field_took(pane, p.composer.temporary),
+            Shown::Hidden => {
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    p.composer.toggle(true);
+                }
+                self.composer_field_took(pane, false);
+            }
+        }
+        self.redraw();
+    }
+
+    /// The field's edit ends (Esc, `cancelOperation:`, `SBCVC:152-158`): it keeps its text, a temporary one
+    /// leaves, and the terminal has the keyboard again.
+    fn composer_field_end(&mut self, pane: PaneId) {
+        self.composer_let_go(pane);
+        self.refresh_route();
+        self.redraw();
+    }
+
+    /// The expand button (`revealComposer:`, `SBCVC:124-126`; `revealMinimal`, `CM:180-190`): the field's text
+    /// becomes the saved text and the dropdown shows with it, taking the keyboard.
+    pub(super) fn composer_field_expand(&mut self, pane: PaneId) {
+        if !self.composer_allowed(pane) {
+            return;
+        }
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let c = &mut p.composer;
+        let text = match c.shown {
+            Shown::Field => c.contents(),
+            _ => c.saved.clone().unwrap_or_default(),
+        };
+        let opened = c.shown != Shown::Dropdown;
+        c.focused = false;
+        c.temporary = false;
+        if opened {
+            c.saved = Some(text);
+            c.shown = Shown::Hidden;
+            c.toggle(false);
+        } else if !text.is_empty() {
+            c.set_string(&text, true);
+        }
+        if opened {
+            self.composer_opened(pane);
+        }
+        self.composer_take_keys(pane);
+        self.redraw();
+    }
+
+    /// A pick from the field's history menu fills it (the combo box's selection), and the
+    /// field takes the keyboard.
+    pub(super) fn composer_field_fill(&mut self, pane: PaneId, text: &str) {
+        let focused = self.panes.get(&pane).is_some_and(|p| p.composer.shown == Shown::Field && p.composer.focused);
+        if !focused {
+            self.composer_field_focus(pane);
+        }
+        let Some(p) = self.panes.get_mut(&pane).filter(|p| p.composer.shown == Shown::Field) else { return };
+        p.composer.set_string(text, true);
+        self.redraw();
+    }
+
+    /// Key action 64, Compose... (`PS:11996-12003`, `CM:123-139` `showWithCommand:`): ignored
+    /// on an ended session or a tmux gateway; the text goes into the shown dropdown or field,
+    /// caret at the end, else the composer reveals as Show Composer's status bar route would.
+    pub(super) fn composer_show_with(&mut self, pane: PaneId, text: &str) {
+        if !self.composer_allowed(pane) {
+            return;
+        }
+        let (status_bar, visible) = self.composer_routing(pane);
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let before = p.composer.shown;
+        p.composer.show_with(text, status_bar, visible);
+        match p.composer.shown {
+            Shown::Dropdown => {
+                if before != Shown::Dropdown {
+                    self.composer_opened(pane);
+                }
+                if !self.panes.get(&pane).is_some_and(|p| p.composer.hidden) {
+                    self.composer_take_keys(pane);
+                }
+            }
+            Shown::Field => {
+                let temporary = if before == Shown::Field { self.panes.get(&pane).is_some_and(|p| p.composer.temporary) } else { !visible };
+                self.composer_field_took(pane, temporary);
+            }
+            Shown::Hidden => {}
+        }
+        self.redraw();
+    }
+
+    /// The Snippets tool's Composer (`PS:15202-15205` `openComposerWithString:escaping:`):
+    /// the snippet escaped by its mode, appended to a shown dropdown or opening it
+    /// (`showOrAppendToDropdownWithString:`), which takes the keyboard.
+    pub(super) fn open_composer_with(&mut self, pane: PaneId, text: &str, escaping: crate::keyaction::Escaping) {
+        if !self.composer_allowed(pane) {
+            return;
+        }
+        let escaped = crate::keyaction::expand(text, escaping);
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        if p.composer.shown == Shown::Field {
+            let t = p.composer.contents();
+            p.composer.field_ended(&t);
+        }
+        let opened = p.composer.shown != Shown::Dropdown;
+        p.composer.show_or_append(&escaped);
+        if opened {
+            self.composer_opened(pane);
+        } else if let Some(v) = self.composers.get_mut(&pane) {
+            v.highlight_due = Some(Instant::now());
+        }
+        self.composer_take_keys(pane);
         self.redraw();
     }
 
@@ -727,13 +915,116 @@ impl App {
         if ev.state != ElementState::Pressed {
             return self.composer_keys.release(&ev.physical_key);
         }
-        let Some(pane) = self.focused_composer() else {
-            self.composer_keys.press(ev.physical_key, false);
-            return false;
+        let taken = if let Some(pane) = self.focused_composer() {
+            self.composer_key_press(pane, ev)
+        } else if let Some(pane) = self.focused_field() {
+            self.composer_field_press(pane, ev)
+        } else {
+            false
         };
-        let taken = self.composer_key_press(pane, ev);
         self.composer_keys.press(ev.physical_key, taken);
         taken
+    }
+
+    /// The pane whose status bar Composer field has the keyboard: the focused pane's, while no
+    /// toolbelt tool has it.
+    fn focused_field(&self) -> Option<PaneId> {
+        let id = self.focused_id()?;
+        let c = &self.panes.get(&id)?.composer;
+        (c.shown == Shown::Field && c.focused && self.belt.focus.is_none()).then_some(id)
+    }
+
+    /// A key for the focused Composer field: as the dropdown's, nothing it takes reaches the
+    /// session; a key it does not take goes on only as `composer_unhandled` lets it.
+    fn composer_field_press(&mut self, pane: PaneId, ev: &KeyEvent) -> bool {
+        if is_modifier(&ev.logical_key) {
+            return true;
+        }
+        let m = CMods { ctrl: self.mods.ctrl, alt: self.mods.alt, shift: self.mods.shift, win: self.mods.cmd };
+        let Some((key, _)) = decode(&ev.logical_key, ev.text.as_deref(), m) else { return self.composer_unhandled(pane, ev) };
+        if self.composer_field_key(pane, key) {
+            return true;
+        }
+        self.composer_unhandled(pane, ev)
+    }
+
+    /// One key in `pane`'s Composer field, a one-line combo box (`SBCVC:162-176`): Enter
+    /// sends the raw text plus "\n" through `user_write` and clears it (no shell history,
+    /// `SBC:168-171`, a kept bug); Esc and Tab end the edit (`cancelOperation:`,
+    /// `controlTextDidEndEditing:`); the plain edit keys edit it. False for a key it does not
+    /// take.
+    pub(super) fn composer_field_key(&mut self, pane: PaneId, key: CKey) -> bool {
+        let m = CMods { ctrl: self.mods.ctrl, alt: self.mods.alt, shift: self.mods.shift, win: self.mods.cmd };
+        if m.win {
+            return false;
+        }
+        match key {
+            CKey::Esc => self.composer_field_end(pane),
+            CKey::Edit(EditKey::Enter) => {
+                let acts = self.panes.get_mut(&pane).map(|p| p.composer.field_enter()).unwrap_or_default();
+                for act in acts {
+                    if let Act::SendRaw(s) = act {
+                        self.user_write(pane, &line_ends(&s), Write::SendText);
+                    }
+                }
+                self.redraw();
+            }
+            CKey::Edit(EditKey::Tab) if !m.ctrl && !m.alt && !m.shift => self.composer_field_end(pane),
+            key => {
+                let Some(composer::Action::Edit(k)) = composer::action(&key, m, false, false) else { return false };
+                if !composer_takes(m, &key, false) {
+                    return false;
+                }
+                self.composer_field_edit(pane, k, m.shift);
+            }
+        }
+        true
+    }
+
+    /// One edit key in the field, on its one line (the composer's wrap at no width limit): a
+    /// Shift move extends, Copy and Cut fill the clipboard, Paste reads it.
+    fn composer_field_edit(&mut self, pane: PaneId, k: EditKey, shift: bool) {
+        let cw = self.cell().0;
+        let width = move |s: &str| text_width(s, cw);
+        let clip = matches!(k, EditKey::Paste(_)).then(|| self.clipboard_text().unwrap_or_default());
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        let c = &mut p.composer;
+        let lines = composer_wrap(c, &c.edit.text, f32::INFINITY, cw);
+        let before = c.edit.text.clone();
+        let copied = match k {
+            k if shift && is_move(&k) => {
+                c.edit.key(k, true, &lines, &width);
+                None
+            }
+            EditKey::Copy => match c.edit.key(EditKey::Copy, false, &lines, &width) {
+                EditOut::Copied(t) => Some(t),
+                _ => None,
+            },
+            EditKey::Cut => {
+                let piece = c.edit.clone().key(EditKey::Copy, false, &lines, &width);
+                c.edit.key(EditKey::Cut, false, &lines, &width);
+                match piece {
+                    EditOut::Copied(t) if c.edit.text != before => Some(t),
+                    _ => None,
+                }
+            }
+            EditKey::Paste(_) => {
+                c.edit.key(EditKey::Paste(clip.unwrap_or_default()), false, &lines, &width);
+                None
+            }
+            k => {
+                c.edit.key(k, false, &lines, &width);
+                None
+            }
+        };
+        if let Some(text) = copied {
+            if let Some(cb) = self.clipboard.as_mut() {
+                if let Err(e) = cb.set_text(text) {
+                    self.banners.set("clipboard", format!("Could not copy: {e}"));
+                }
+            }
+        }
+        self.redraw();
     }
 
     fn composer_key_press(&mut self, pane: PaneId, ev: &KeyEvent) -> bool {
@@ -1193,13 +1484,16 @@ impl App {
     /// Copy in a focused composer (`CTV:384-392`): its own selection; else, with an Auto
     /// Composer, the terminal's (`PS:24442-24447`). True when a composer had the keyboard.
     pub(super) fn composer_copy_menu(&mut self) -> bool {
-        let Some(pane) = self.focused_composer() else { return false };
+        let Some(pane) = self.focused_composer().or_else(|| self.focused_field()) else { return false };
         self.composer_copy(pane);
         true
     }
 
     fn composer_copy(&mut self, pane: PaneId) {
         let Some(p) = self.panes.get(&pane) else { return };
+        if p.composer.shown == Shown::Field {
+            return self.composer_field_edit(pane, EditKey::Copy, false);
+        }
         let has_selection = p.composer.edit.carets().iter().any(|r| !r.is_empty());
         if has_selection {
             self.composer_apply(pane, composer::Action::Edit(EditKey::Copy), false);
@@ -1211,6 +1505,10 @@ impl App {
     /// Paste in a focused composer, or into the focused pane's Auto Composer, which takes the
     /// keyboard unless Copy Mode hides it (`PS:13053-13057`). True when a composer took it.
     pub(super) fn composer_paste_menu(&mut self) -> bool {
+        if let Some(pane) = self.focused_field() {
+            self.composer_paste(pane);
+            return true;
+        }
         let auto = self.focused_id().filter(|id| self.have_auto_composer(*id) && self.panes.get(id).is_some_and(|p| !p.composer.hidden));
         let Some(pane) = self.focused_composer().or(auto) else { return false };
         self.composer_take_keys(pane);
@@ -1219,6 +1517,9 @@ impl App {
     }
 
     fn composer_paste(&mut self, pane: PaneId) {
+        if self.panes.get(&pane).is_some_and(|p| p.composer.shown == Shown::Field) {
+            return self.composer_field_edit(pane, EditKey::Paste(String::new()), false);
+        }
         self.composer_apply(pane, composer::Action::Edit(EditKey::Paste(String::new())), false);
     }
 
@@ -1340,7 +1641,9 @@ impl App {
             self.redraw();
             return true;
         }
-        self.composer_yield_keys();
+        // A press on a Composer field keeps its keyboard (the bar acts on it next).
+        let keep = self.composer_field_under(x, y);
+        self.composer_yield_keys_but(keep);
         false
     }
 
@@ -1393,13 +1696,7 @@ impl App {
         let release = composers_to_release(&mine, focused);
         let any = !release.is_empty();
         for id in release {
-            if let Some(p) = self.panes.get_mut(&id) {
-                p.composer.focused = false;
-            }
-            if let Some(v) = self.composers.get_mut(&id) {
-                v.popup = None;
-                v.ghost = None;
-            }
+            self.composer_let_go(id);
         }
         if any {
             self.refresh_route();

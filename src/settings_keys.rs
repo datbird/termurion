@@ -50,6 +50,8 @@ fn action_name(b: &Binding) -> String {
     let arg = keyaction::info(b.action).map_or(Arg::None, |a| a.arg);
     match arg {
         Arg::None => name,
+        // Compose...: `Compose \u{201c}<text>\u{201d}`, the whole text (`iTermKeyBindingAction.m:291-292`).
+        _ if b.action == 64 => format!("Compose \u{201c}{}\u{201d}", b.text),
         Arg::Sequence => format!("{name} ({} steps)", keyaction::sequence(&b.text).len()),
         _ if b.text.is_empty() => name,
         // Paste... and Paste from Selection...: the configuration's summary (iTerm2's).
@@ -378,6 +380,15 @@ pub(crate) fn apply_mode_combo(ui: &mut egui::Ui, salt: &str, b: &mut Binding) -
     changed
 }
 
+/// The parameter field's placeholder for an action (`iTermEditKeyActionWindowController.m
+/// :98-101`), when it has one.
+pub fn param_placeholder(action: i64) -> Option<&'static str> {
+    match action {
+        64 => Some("Text for composer"),
+        _ => None,
+    }
+}
+
 pub(crate) fn param_editor(ui: &mut egui::Ui, salt: &str, b: &mut Binding, profiles: &[(String, String)]) -> bool {
     let arg = keyaction::info(b.action).map_or(Arg::None, |a| a.arg);
     let mut changed = false;
@@ -400,7 +411,10 @@ pub(crate) fn param_editor(ui: &mut egui::Ui, salt: &str, b: &mut Binding, profi
                 }
             });
         }
-        Arg::VimText | Arg::Other => changed |= ui.text_edit_singleline(&mut b.text).changed(),
+        Arg::VimText | Arg::Other => {
+            let edit = egui::TextEdit::singleline(&mut b.text).hint_text(param_placeholder(b.action).unwrap_or(""));
+            changed |= ui.add(edit).changed();
+        }
         Arg::Hex => {
             changed |= ui.text_edit_singleline(&mut b.text).changed();
             ui.label("Hex codes, for example 0x1b 0x5b");

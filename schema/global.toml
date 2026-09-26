@@ -614,6 +614,24 @@ default = true
 help = "When restoring a session without restoring a running job, draw a banner saying \"Session Contents Restored\" below the restored contents."
 
 [[setting]]
+key = "composerClearSequence"
+tab = "Advanced"
+section = "Session"
+label = "Hex codes to send to clear the command line when entering the composer"
+type = "string"
+default = "0x15 0x0b"
+help = "Hex codes to send to clear the command line when entering the composer.\n0x15 is ^U, 0x0b is ^K."
+
+[[setting]]
+key = "alwaysUseStatusBarComposer"
+tab = "Advanced"
+section = "Session"
+label = "Use the status bar composer when a status bar is present"
+type = "bool"
+default = false
+help = "Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present."
+
+[[setting]]
 key = "timeoutForDaemonAttachment"
 tab = "Advanced"
 section = "Session"

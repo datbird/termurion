@@ -4,8 +4,8 @@
 //! User Name, Job Name, Current Directory (and its click menu), Interpolated String; the
 //! menu and button components: Custom Action, Actions Menu, Snippets Menu, Triggers Menu
 //! (and their menus), Call Script Function; the field components: Search Tool, Filter
-//! Tool (both bound to the pane's find bar), the Composer stub, and the paste Progress
-//! Indicator.
+//! Tool (both bound to the pane's find bar), the Composer (the pane's composer as a one-line
+//! field), and the paste Progress Indicator.
 //!
 //! Citations use `.superpowers/research/m9-facts.md` section 2's abbreviations (`TXT` =
 //! `iTermStatusBarTextComponent.m`, `VAR` = `iTermStatusBarVariableBaseComponent.m`, `JOB`
@@ -43,8 +43,6 @@ const FILTER_PLACEHOLDER: &str = "Filter";
 const COMPOSER_PLACEHOLDER: &str = "Command";
 /// The Search and Filter Tools' and the Progress Indicator's (minimum, preferred) points.
 const FIELD_SIZE: (f32, f32) = (125.0, 200.0);
-/// The Composer's click until its milestone.
-pub(super) const COMPOSER_REFUSAL: &str = "The Composer arrives with its own milestone.";
 /// A glyph's column in a field (the magnifier, a chevron, the close glyph), in points.
 pub(super) const GLYPH_PT: f32 = 17.0;
 /// The room between a field's text, its label and its edges, in points.
@@ -54,14 +52,26 @@ pub(super) const MAGNIFIER: char = '\u{E721}';
 pub(super) const CHEVRON_LEFT: char = '\u{E76B}';
 pub(super) const CHEVRON_RIGHT: char = '\u{E76C}';
 pub(super) const CLOSE_GLYPH: char = '\u{E711}';
+/// The Composer's combo box chevron (Segoe Fluent Icons ChevronDown) and its expand button
+/// (FullScreen, the 9j set).
+pub(super) const CHEVRON_DOWN: char = '\u{E70D}';
+pub const EXPAND_GLYPH: char = '\u{E740}';
+/// The most history entries the Composer's chevron lists (the combo box scrolls through all
+/// of them five at a time; a menu cannot).
+const FIELD_HISTORY_MAX: usize = 256;
+
+/// One use of a command, as the shell history keeps it: the command and the use.
+pub(super) type CommandRecord = (String, crate::shell_history::Use);
 
 /// What a field component draws in its room, instead of text.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Widget {
     /// A bordered field: the query (or the placeholder at half alpha), the results label,
     /// and the glyphs it has.
-    /// `focused`: it has the keyboard.
-    Field { text: String, placeholder: &'static str, label: String, error: bool, focused: bool, magnifier: bool, chevrons: bool, close: bool },
+    /// `focused`: it has the keyboard. `history` and `expand`: the Composer's combo box
+    /// chevron and expand button. `caret`: where the caret sits in `text` (bytes) while it
+    /// has the keyboard, for a field that draws one.
+    Field { text: String, placeholder: &'static str, label: String, error: bool, focused: bool, magnifier: bool, chevrons: bool, close: bool, history: bool, expand: bool, caret: Option<usize> },
     /// The paste's track, filled to the fraction, and a cancel glyph.
     Progress(f32),
     /// A graph component's sparkline and texts (milestone 9i, `metrics_ui`).
@@ -97,6 +107,8 @@ pub(super) struct FieldParts {
     pub(super) prev: Option<(f32, f32)>,
     pub(super) next: Option<(f32, f32)>,
     pub(super) close: Option<(f32, f32)>,
+    pub(super) history: Option<(f32, f32)>,
+    pub(super) expand: Option<(f32, f32)>,
 }
 
 /// Where a click on a field lands.
@@ -107,12 +119,16 @@ pub(super) enum FieldPart {
     Prev,
     Next,
     Close,
+    History,
+    Expand,
 }
 
 /// A field `w` points wide (`iTermMiniSearchFieldViewController.xib`, `MiniFilterViewController
 /// .xib`): the magnifier's column at the left; at the right the close glyph, before it the
 /// two chevrons, before them the results label `label_w` wide; the text in what is left.
-pub(super) fn field_parts(w: f32, magnifier: bool, chevrons: bool, close: bool, label_w: f32) -> FieldParts {
+/// `combo` (`iTermsStatusBarComposerViewController.xib`): the expand button at the right
+/// and the combo box's chevron before it.
+pub(super) fn field_parts(w: f32, magnifier: bool, chevrons: bool, close: bool, label_w: f32, combo: bool) -> FieldParts {
     let mut right = w;
     let mut take = |on: bool| {
         on.then(|| {
@@ -121,6 +137,8 @@ pub(super) fn field_parts(w: f32, magnifier: bool, chevrons: bool, close: bool, 
             part
         })
     };
+    let expand = take(combo);
+    let history = take(combo);
     let close = take(close);
     let next = take(chevrons);
     let prev = take(chevrons);
@@ -128,7 +146,7 @@ pub(super) fn field_parts(w: f32, magnifier: bool, chevrons: bool, close: bool, 
     let label = ((label_right - label_w).max(0.0), label_right);
     let text_right = if label_w > 0.0 { label.0 } else { right };
     let left = if magnifier { GLYPH_PT.min(w) } else { FIELD_PAD_PT.min(w) };
-    FieldParts { mode: magnifier.then_some((0.0, left)), text: (left, (text_right - FIELD_PAD_PT).max(left)), label, prev, next, close }
+    FieldParts { mode: magnifier.then_some((0.0, left)), text: (left, (text_right - FIELD_PAD_PT).max(left)), label, prev, next, close, history, expand }
 }
 
 /// The part of a field under `x` (points from its left); the text and label focus it.
@@ -136,6 +154,10 @@ pub(super) fn part_at(parts: &FieldParts, x: f32) -> FieldPart {
     let within = |p: Option<(f32, f32)>| p.is_some_and(|(a, b)| x >= a && x < b);
     if within(parts.mode) {
         FieldPart::Mode
+    } else if within(parts.expand) {
+        FieldPart::Expand
+    } else if within(parts.history) {
+        FieldPart::History
     } else if within(parts.close) {
         FieldPart::Close
     } else if within(parts.next) {
@@ -209,6 +231,33 @@ pub(super) fn job_chain(job: Option<&str>, ancestors: &[String], root: Option<&s
         chain.push(root.to_string());
     }
     chain
+}
+
+/// The Composer (`SBC:54-66`, `iTermsStatusBarComposerViewController.xib`): minimum 200,
+/// preferred infinity, not stretchable; a field with the placeholder "Command", the combo
+/// box's chevron and the expand button, showing `text` (the caret at `caret` while
+/// `focused`).
+pub(super) fn composer_content(text: &str, focused: bool, caret: Option<usize>) -> Content {
+    let widget = Widget::Field {
+        text: text.to_string(),
+        placeholder: COMPOSER_PLACEHOLDER,
+        label: String::new(),
+        error: false,
+        focused,
+        magnifier: false,
+        chevrons: false,
+        close: false,
+        history: true,
+        expand: true,
+        caret: caret.filter(|_| focused),
+    };
+    Content { empty: false, uncopyable: true, fixed: Some((200.0, f32::INFINITY)), click: Click::Field, widget: Some(widget), ..Content::text(Vec::new()) }
+}
+
+/// The Composer's history (`SBC:168-178`): the session's command uses reversed, so newest
+/// first (repeats kept), at most `FIELD_HISTORY_MAX`.
+pub(super) fn field_history(history: &[CommandRecord]) -> Vec<String> {
+    history.iter().rev().take(FIELD_HISTORY_MAX).map(|(c, _)| c.clone()).collect()
 }
 
 /// The last component of a path, either separator (`lastPathComponent`).
@@ -459,14 +508,23 @@ impl App {
                 };
                 let error = active && f.is_some_and(|f| f.error.is_some());
                 let focused = active && f.is_some_and(|f| f.typing);
-                let widget = Widget::Field { text, placeholder, label, error, focused, magnifier: true, chevrons, close };
+                let widget = Widget::Field { text, placeholder, label, error, focused, magnifier: true, chevrons, close, history: false, expand: false, caret: None };
                 Content { empty: false, uncopyable: true, fixed: Some(FIELD_SIZE), click: Click::Field, widget: Some(widget), ..Content::text(Vec::new()) }
             }
-            // `COMP:54-66`: minimum 200, preferred infinity, not stretchable; a stub until
-            // its milestone: an inert field, and a click that says so.
+            // The pane's composer while it is the field (`Shown::Field`), else the text it
+            // keeps (`saved`), so the field holds its text between edits.
             Kind::Composer => {
-                let widget = Widget::Field { text: String::new(), placeholder: COMPOSER_PLACEHOLDER, label: String::new(), error: false, focused: false, magnifier: false, chevrons: false, close: false };
-                Content { empty: false, uncopyable: true, fixed: Some((200.0, f32::INFINITY)), click: Click::Refuse(COMPOSER_REFUSAL), widget: Some(widget), ..Content::text(Vec::new()) }
+                let c = self.panes.get(&pane).map(|p| &p.composer);
+                let editing = c.is_some_and(|c| c.shown == crate::composer::Shown::Field);
+                let text = match c {
+                    Some(c) if editing => c.contents(),
+                    Some(c) if c.shown == crate::composer::Shown::Hidden => c.saved.clone().unwrap_or_default(),
+                    _ => String::new(),
+                };
+                let focused = editing && c.is_some_and(|c| c.focused) && self.focused_id() == Some(pane);
+                // The caret in the command (the field never has a prompt prefix).
+                let caret = c.filter(|_| focused).map(|c| c.edit.caret.saturating_sub(c.text().len() - text.len()).min(text.len()));
+                composer_content(&text, focused, caret)
             }
             // `iTermStatusBarProgressComponent.m`: minimum 125, preferred 200; the paste's
             // fraction sent, and a cancel glyph.
@@ -877,7 +935,7 @@ mod tests {
     /// chevrons, the text between; a click lands on one of them.
     #[test]
     fn field_parts_follow_iterm2() {
-        let search = field_parts(200.0, true, true, true, 30.0);
+        let search = field_parts(200.0, true, true, true, 30.0, false);
         assert_eq!(search.mode, Some((0.0, 17.0)));
         assert_eq!(search.close, Some((183.0, 200.0)));
         assert_eq!(search.next, Some((166.0, 183.0)));
@@ -892,25 +950,70 @@ mod tests {
         assert_eq!(part_at(&search, 120.0), FieldPart::Text, "the label focuses the field");
 
         // A layout's own Search Tool: no close glyph; the chevrons move right.
-        let permanent = field_parts(200.0, true, true, false, 0.0);
+        let permanent = field_parts(200.0, true, true, false, 0.0, false);
         assert_eq!((permanent.close, permanent.next), (None, Some((183.0, 200.0))));
         assert_eq!(permanent.text, (17.0, 162.0));
 
         // The Filter Tool: a close glyph, no chevrons, no label.
-        let filter = field_parts(125.0, true, false, true, 0.0);
+        let filter = field_parts(125.0, true, false, true, 0.0, false);
         assert_eq!((filter.prev, filter.next, filter.close), (None, None, Some((108.0, 125.0))));
         assert_eq!(filter.text, (17.0, 104.0));
 
-        // The Composer's inert field: text only.
-        let composer = field_parts(200.0, false, false, false, 0.0);
-        assert_eq!((composer.mode, composer.text), (None, (4.0, 196.0)));
+        // The Composer's field (`iTermsStatusBarComposerViewController.xib`): the combo box's
+        // chevron, then the expand button at the right; the text before them.
+        let composer = field_parts(200.0, false, false, false, 0.0, true);
+        assert_eq!((composer.mode, composer.expand, composer.history), (None, Some((183.0, 200.0)), Some((166.0, 183.0))));
+        assert_eq!(composer.text, (4.0, 162.0));
         assert_eq!(part_at(&composer, 2.0), FieldPart::Text);
+        assert_eq!(part_at(&composer, 170.0), FieldPart::History);
+        assert_eq!(part_at(&composer, 190.0), FieldPart::Expand);
 
         // Too narrow: the text's room never goes negative.
-        let tiny = field_parts(40.0, true, true, true, 30.0);
+        let tiny = field_parts(40.0, true, true, true, 30.0, false);
         assert!(tiny.text.1 >= tiny.text.0);
+    }
 
-        assert_eq!(COMPOSER_REFUSAL, "The Composer arrives with its own milestone.");
+    /// `SBC:37-79,168-178`, `SBCVC:70-176`, `CM:314-322`: the Composer is a field with the
+    /// placeholder "Command", the combo box's chevron and the expand button, at least 200
+    /// points and preferring infinity, never stretched; its history is the session's command
+    /// uses newest first; Enter (list closed) writes the raw text plus "\n" and clears, an
+    /// empty Enter sends nothing, ending the edit keeps the text. Key action 64 works now and
+    /// its summary names its text (`iTermKeyBindingAction.m:291-292`).
+    #[test]
+    fn status_bar_composer_follows_iterm2() {
+        use crate::composer::{Act, Composer};
+        let content = composer_content("git st", true, Some(3));
+        let Some(Widget::Field { text, placeholder, focused, magnifier, chevrons, close, history, expand, caret, .. }) = content.widget.clone() else { panic!("a field") };
+        assert_eq!((text.as_str(), placeholder, focused, caret), ("git st", "Command", true, Some(3)));
+        assert_eq!((magnifier, chevrons, close, history, expand), (false, false, false, true, true));
+        assert_eq!(content.fixed, Some((200.0, f32::INFINITY)));
+        assert_eq!(content.click, Click::Field);
+        assert!(!content.empty && content.uncopyable);
+        assert!(!crate::statusbar::info_for(sbc::COMPOSER_CLASS, crate::statusbar::Algorithm::Stable).unwrap().stretch, "cannot stretch");
+        assert_eq!(EXPAND_GLYPH, '\u{E740}');
+        let idle = composer_content("", false, None);
+        assert!(matches!(idle.widget, Some(Widget::Field { focused: false, caret: None, .. })));
+
+        let use_at = |t: f64| crate::shell_history::Use { time: t, dir: None, code: None };
+        let records: Vec<CommandRecord> = vec![("ls".into(), use_at(1.0)), ("pwd".into(), use_at(2.0)), ("ls".into(), use_at(3.0))];
+        assert_eq!(field_history(&records), vec!["ls", "pwd", "ls"]);
+        assert!(field_history(&[]).is_empty());
+
+        let mut c = Composer::default();
+        c.toggle(true);
+        c.edit.load("ls");
+        assert_eq!(c.field_enter(), vec![Act::SendRaw("ls\n".to_string())]);
+        assert_eq!(c.contents(), "", "cleared");
+        assert_eq!(c.field_enter(), Vec::<Act>::new(), "an empty Enter sends nothing");
+        c.edit.load("half");
+        c.field_ended(&c.contents());
+        assert_eq!(c.saved.as_deref(), Some("half"));
+        assert_eq!(c.shown, crate::composer::Shown::Hidden);
+
+        assert_eq!(crate::keyaction::status(64), crate::commands::Status::Done);
+        let b = crate::keyaction::Binding::new(64, "hi");
+        assert_eq!(crate::settings_keys::action_summary(&b), "Compose \u{201c}hi\u{201d}");
+        assert_eq!(crate::settings_keys::param_placeholder(64), Some("Text for composer"));
     }
 
     #[test]
