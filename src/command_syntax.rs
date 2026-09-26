@@ -17,7 +17,7 @@
 //! PowerShell Verb-Noun cmdlet shape, and a short list of common PowerShell aliases are all
 //! valid.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
@@ -580,9 +580,13 @@ pub struct Checker {
     in_flight: usize,
     /// Requests the checker itself gave up waiting on (a command's pending timeout, or a
     /// file swept by `clear_files`) that were already handed out via `requests` (so a
-    /// worker might still answer them late). `answer` checks this so a straggling answer
-    /// does not free a second, still-legitimately-occupied slot (fix round 1, finding 2).
-    abandoned: HashSet<Request>,
+    /// worker might still answer them late). A count, not a set (fix round 2, finding 2's
+    /// residual gap): `Request` carries no per-dispatch identity, so the same command
+    /// string or file path can be abandoned more than once (timed out, redispatched, timed
+    /// out again) before its stale workers answer; each abandonment must swallow exactly
+    /// one later `answer` or `lost`, or a second one for the same key would decrement
+    /// `in_flight` again for a slot that redispatching had already re-occupied.
+    abandoned: HashMap<Request, u32>,
 }
 
 impl Checker {
@@ -593,15 +597,27 @@ impl Checker {
 
     /// Frees `r`'s outstanding slot because the checker, not a real answer, is done waiting
     /// on it: dropped outright if it was still sitting in the undrained queue (nothing was
-    /// ever handed to a worker, so nothing will ever answer it), otherwise marked so a later
-    /// `answer` for it is a no-op instead of double-freeing.
+    /// ever handed to a worker, so nothing will ever answer it), otherwise credited in
+    /// `abandoned` so a later `answer` or `lost` for it is a no-op instead of double-freeing.
     fn abandon(&mut self, r: Request) {
         if let Some(pos) = self.queue.iter().position(|q| *q == r) {
             self.queue.remove(pos);
         } else {
-            self.abandoned.insert(r);
+            *self.abandoned.entry(r).or_insert(0) += 1;
         }
         self.in_flight = self.in_flight.saturating_sub(1);
+    }
+
+    /// Consumes one abandoned credit for `r`, if any, and reports whether it did: `true`
+    /// means a prior `abandon` already freed this slot, so the caller (`answer` or `lost`)
+    /// must not free it again.
+    fn consume_abandoned(&mut self, r: &Request) -> bool {
+        let Some(count) = self.abandoned.get_mut(r) else { return false };
+        *count -= 1;
+        if *count == 0 {
+            self.abandoned.remove(r);
+        }
+        true
     }
 
     /// `LocalFileChecker.commandIsValid` (`FC:166-236`), simplified to one answer per
@@ -671,7 +687,7 @@ impl Checker {
     /// recorded to swallow a later answer; a request the checker had already abandoned (its
     /// slot already freed) frees nothing more.
     pub fn lost(&mut self, r: Request) {
-        if self.abandoned.remove(&r) {
+        if self.consume_abandoned(&r) {
             return;
         }
         match &r {
@@ -709,7 +725,7 @@ impl Checker {
                 self.files.insert(path, FileEntry::Known(ok));
             }
         }
-        if !self.abandoned.remove(&r) {
+        if !self.consume_abandoned(&r) {
             self.in_flight = self.in_flight.saturating_sub(1);
         }
     }
@@ -1140,5 +1156,72 @@ mod tests {
         f.lost(r[0].clone());
         assert_eq!(f.file("a.txt"), Check::Pending);
         assert_eq!(f.requests(), vec![Request::File("a.txt".to_string())]);
+    }
+
+    #[test]
+    fn abandoning_the_same_key_twice_keeps_in_flight_exact() {
+        // Fix round 2, finding 2's residual gap: `abandoned` had no per-request identity, so
+        // the same command string abandoned twice (timed out, redispatched, timed out again)
+        // before both stale workers answered would only swallow the first late answer; the
+        // second would decrement in_flight for a slot a fresh dispatch had already
+        // re-occupied, letting more than MAX_CHECKS ever be truly outstanding.
+        let mut c = Checker::default();
+        let t0 = Instant::now();
+        for i in 0..5 {
+            assert_eq!(c.command(&format!("k{i}"), t0), Check::Pending);
+        }
+        let reqs = c.requests();
+        assert_eq!(reqs.len(), 5);
+
+        // Two abandonments of the very same request (as if it timed out, was redispatched
+        // once its Invalid cache entry itself went stale, and its second worker also went
+        // silent), each promptly followed by a distinct command claiming the freed slot.
+        c.abandon(Request::Command("k0".to_string()));
+        assert_eq!(c.command("k5", t0), Check::Pending);
+        assert_eq!(c.requests(), vec![Request::Command("k5".to_string())]);
+        c.abandon(Request::Command("k0".to_string()));
+        assert_eq!(c.command("k6", t0), Check::Pending);
+        assert_eq!(c.requests(), vec![Request::Command("k6".to_string())]);
+
+        // Every slot (k1..k4, k5, k6) is genuinely occupied now: a 7th is refused.
+        assert_eq!(c.command("k7", t0), Check::Pending, "capacity check only");
+        assert!(c.requests().is_empty(), "k7 was never actually queued");
+
+        // Both stale workers now answer late for the very same original request.
+        c.answer(reqs[0].clone(), true, t0);
+        c.answer(reqs[0].clone(), true, t0);
+
+        // Neither late answer freed anything further: capacity is still exactly full.
+        assert_eq!(c.command("k8", t0), Check::Pending, "still no slot: no double-free");
+        assert!(c.requests().is_empty());
+    }
+
+    #[test]
+    fn clear_files_swept_twice_for_the_same_path_keeps_in_flight_exact() {
+        let mut c = Checker::default();
+        let t0 = Instant::now();
+        assert_eq!(c.file("/tmp/a"), Check::Pending);
+        let first = c.requests();
+        assert_eq!(first, vec![Request::File("/tmp/a".to_string())]);
+        c.clear_files(); // still Pending: abandoned once, in_flight freed.
+
+        assert_eq!(c.file("/tmp/a"), Check::Pending); // re-requested, a fresh Pending entry.
+        let second = c.requests();
+        assert_eq!(second, vec![Request::File("/tmp/a".to_string())]);
+        c.clear_files(); // abandoned a second time for the same path.
+
+        // Fill every slot with distinct commands to make the count observable.
+        for i in 0..5 {
+            assert_eq!(c.command(&format!("c{i}"), t0), Check::Pending);
+        }
+        assert_eq!(c.requests().len(), 5);
+
+        // Both stale workers answer late for the same original path.
+        c.answer(first[0].clone(), true, t0);
+        c.answer(second[0].clone(), true, t0);
+
+        // Still exactly full: the two file sweeps' late answers freed nothing further.
+        assert_eq!(c.command("overflow", t0), Check::Pending, "no slot: no double-free from the file sweeps");
+        assert!(c.requests().is_empty());
     }
 }
