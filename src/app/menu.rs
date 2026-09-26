@@ -705,6 +705,7 @@ impl App {
         }
         // Before any window closes, so the saved state holds every window.
         self.save_state_for_quit();
+        self.flush_notes();
         let keep = self.keep_jobs_on_quit();
         self.save_all_window_frames();
         self.clear_undo();

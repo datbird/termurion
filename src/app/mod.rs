@@ -415,6 +415,21 @@ pub struct App {
     status_popover: Option<crate::status_popover_ui::StatusPopover>,
     status_popover_closed: Option<Instant>,
     status_prompt: Option<crate::prompt_ui::PromptWindow>,
+    /// The Notes tool's global note (one for every window) and its file.
+    global_note: toolbelt_more_ui::GlobalNote,
+    /// Jobs' Notify on Termination: each watched process's pid, creation time and name.
+    job_watches: Vec<(u32, u64, String)>,
+    /// The shell each window's Jobs shows, the trees the watcher keeps for them, the tree
+    /// generation last seen, and when the termination watches look next.
+    jobs_wanted: HashMap<WindowId, u32>,
+    jobs_wanting: std::collections::HashSet<u32>,
+    jobs_tree_seen: u64,
+    jobs_watch_at: Option<Instant>,
+    /// Jobs' Inspect popover (and when it last closed), and the signal question with what it
+    /// will send (the window opens on the next loop turn).
+    jobs_popover: Option<crate::status_popover_ui::InfoPopover>,
+    jobs_popover_closed: Option<Instant>,
+    jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest)>,
     idle_sent: HashMap<PaneId, Instant>,
     started: Instant,
     /// An open Make Screenshot panel.
@@ -709,6 +724,15 @@ pub fn run() {
         status_popover: None,
         status_popover_closed: None,
         status_prompt: None,
+        global_note: toolbelt_more_ui::GlobalNote::new(toolbelt_more_ui::notes_path(&std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))),
+        job_watches: Vec::new(),
+        jobs_wanted: HashMap::new(),
+        jobs_wanting: Default::default(),
+        jobs_tree_seen: 0,
+        jobs_watch_at: None,
+        jobs_popover: None,
+        jobs_popover_closed: None,
+        jobs_confirm: None,
         idle_sent: HashMap::new(),
         started: Instant::now(),
         uploads: HashMap::new(),
@@ -1196,6 +1220,7 @@ impl App {
             // The window's last tab closed: the window goes; the last window ends Tandem.
             if !self.drop_current_window() {
                 self.save_empty_state();
+                self.flush_notes();
                 // The last window closed: its shells end (iTerm2), and the host hears it.
                 self.leave_host(false);
                 if self.save_due.is_some() {
@@ -2266,6 +2291,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.tick_status_change();
         let idle_codes = self.tick_idle_codes();
         let status_bars = self.tick_status_bars();
+        let notes_due = self.tick_notes();
+        let jobs_due = self.tick_jobs_tool();
+        self.open_jobs_confirm(event_loop);
         self.open_git_log(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -2284,7 +2312,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -2378,7 +2406,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

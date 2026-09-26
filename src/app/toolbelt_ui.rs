@@ -50,7 +50,7 @@ pub(super) fn wrap_words(text: &str, max_w: f32, width: &dyn Fn(&str) -> f32) ->
 
 /// One tool's state in one window: its search field, its selection, its scroll, its open
 /// folders, its popup's pick and its undo stack (`toolbelt_tools_ui`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(super) struct ToolState {
     pub(super) field: tool_list::Field,
     pub(super) selection: tool_list::Selection,
@@ -68,6 +68,28 @@ pub(super) struct ToolState {
     /// it was for (mark ids are per session).
     pub(super) cleared: crate::captured::Cleared,
     pub(super) cleared_pane: Option<PaneId>,
+    /// Jobs' collapsed processes (every parent starts expanded, `JT:484-569`).
+    pub(super) collapsed: BTreeSet<u32>,
+    /// Jobs' signal: an index into `toolbelt_tools::SIGNALS`, KILL at first (`JT:52-60`).
+    pub(super) signal: usize,
+}
+
+impl Default for ToolState {
+    fn default() -> Self {
+        ToolState {
+            field: Default::default(),
+            selection: Default::default(),
+            scroll: 0.0,
+            expanded: BTreeSet::new(),
+            popup: 0,
+            undo: Vec::new(),
+            seen: 0,
+            cleared: Default::default(),
+            cleared_pane: None,
+            collapsed: BTreeSet::new(),
+            signal: crate::toolbelt_tools::SIGNALS.iter().position(|s| *s == crate::toolbelt_tools::DEFAULT_SIGNAL).unwrap_or(0),
+        }
+    }
 }
 
 /// One window's toolbelt. The tool list, the saved proportions and the default width are
@@ -92,6 +114,12 @@ pub(super) struct Belt {
     /// Session Status' snoozed sessions, each with its `tab_status_gen` when snoozed: a
     /// snooze holds until that session's status changes (`TS`, `snoozedSessionIDs`).
     pub(super) snoozed: std::collections::BTreeMap<u64, u64>,
+    /// Notes' mode (Global first, not saved, `TN:91-99`), its editor, the editor's scroll
+    /// (pixels) and the note the editor holds now (a different one loads, clearing the undo).
+    pub(super) notes_mode: crate::notes::Mode,
+    pub(super) note_edit: crate::text_edit::TextEdit,
+    pub(super) note_scroll: f32,
+    pub(super) note_source: Option<super::toolbelt_more_ui::NoteSource>,
     /// The saved proportions were offered to this window's split (its first layout, or an
     /// arrangement's own).
     proportions_tried: bool,
@@ -107,6 +135,8 @@ pub(super) enum BeltDrag {
     /// A row of Snippets or Actions being reordered (started by `tool_press`): the pointer's
     /// y when it was pressed.
     Row { tool: ToolId, start_y: f32 },
+    /// A selection being dragged out in the Notes editor.
+    Note,
 }
 
 fn float_of(v: Option<toml::Value>) -> Option<f32> {
@@ -381,7 +411,10 @@ impl App {
     /// Draws this window's toolbelt: the wrappers (title, close) and the dividers; each
     /// tool's content is its own.
     pub(super) fn draw_toolbelt(&mut self, frame: &mut Frame, cell: (f32, f32)) {
-        let Some(l) = self.belt_layout() else { return };
+        let Some(l) = self.belt_layout() else {
+            // A hidden toolbelt shows no Jobs: the watcher lets this window's tree go.
+            return self.jobs_want(false);
+        };
         let scale = self.scale();
         let dark = self.dark();
         let Some(g) = self.gpu.as_mut() else { return };
@@ -479,6 +512,7 @@ impl App {
             }
             // The drop line follows the pointer.
             BeltDrag::Row { .. } => {}
+            BeltDrag::Note => self.notes_drag(x, y),
         }
         self.redraw();
     }
@@ -493,6 +527,7 @@ impl App {
                 self.save_globals();
             }
             BeltDrag::Row { tool, start_y } => self.tool_drop(tool, start_y),
+            BeltDrag::Note => {}
         }
         self.redraw();
     }

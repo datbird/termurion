@@ -52,6 +52,15 @@ impl NoteWindow {
         self.host.event(event)
     }
 
+    /// The note changed elsewhere (the Notes tool edits the same session note): the window
+    /// shows it.
+    pub fn set_text(&mut self, text: &str) {
+        if self.text != text {
+            self.text = text.to_string();
+            self.host.request_redraw();
+        }
+    }
+
     pub fn redraw(&mut self) -> NoteEvent {
         let mut out = NoteEvent::None;
         let (text, deletable, confirming, first) = (&mut self.text, self.deletable, &mut self.confirming, &mut self.first);

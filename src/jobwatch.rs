@@ -6,12 +6,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{BOOL, CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
+use windows_sys::Win32::System::Console::{AttachConsole, CTRL_BREAK_EVENT, CTRL_C_EVENT, FreeConsole, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess};
 
 use crate::proctree::{self, Job, Proc};
+use crate::toolbelt_tools::SignalWay;
 
 /// How often the watcher looks while Tandem is in front, and while it is not (iTerm2's
 /// process cache rates).
@@ -131,6 +133,16 @@ pub struct Cache {
 /// The processes under the given shells, with creation times, GUI flags, and the command
 /// lines of each shell's job. Only processes under a shell are opened.
 pub fn snapshot(roots: &[u32], cache: &mut Cache) -> Result<Vec<Proc>, String> {
+    snapshot_trees(roots, &[], cache).map(|(procs, _)| procs)
+}
+
+/// Each shell's whole tree, the shell first.
+pub type Trees = HashMap<u32, Vec<Proc>>;
+
+/// `snapshot`, plus each shell in `trees` (one of `roots`) with every process under it, the
+/// shell first, each with its command line (the Jobs tool's tree). Command lines are read once
+/// per process, kept by pid and creation time while the process lives.
+pub fn snapshot_trees(roots: &[u32], trees: &[u32], cache: &mut Cache) -> Result<(Vec<Proc>, Trees), String> {
     let all = toolhelp()?;
     let mut kids: HashMap<u32, Vec<usize>> = HashMap::new();
     for (i, (pid, ppid, _)) in all.iter().enumerate() {
@@ -158,9 +170,7 @@ pub fn snapshot(roots: &[u32], cache: &mut Cache) -> Result<Vec<Proc>, String> {
         procs.push(Proc { pid, ppid, name: name.clone(), created: made, gui, cmdline: None });
     }
     let mut live = HashSet::new();
-    for &root in roots {
-        let Some(job) = proctree::display_job(&procs, root) else { continue };
-        let Some(p) = procs.iter_mut().find(|p| p.pid == job.pid) else { continue };
+    let mut line_of = |p: &mut Proc, cache: &mut Cache| {
         let key = (p.pid, p.created);
         live.insert(key);
         if !cache.lines.contains_key(&key) {
@@ -168,9 +178,23 @@ pub fn snapshot(roots: &[u32], cache: &mut Cache) -> Result<Vec<Proc>, String> {
             cache.lines.insert(key, line);
         }
         p.cmdline = cache.lines[&key].clone();
+    };
+    for &root in roots {
+        let Some(job) = proctree::display_job(&procs, root) else { continue };
+        let Some(p) = procs.iter_mut().find(|p| p.pid == job.pid) else { continue };
+        line_of(p, cache);
+    }
+    let mut out = HashMap::new();
+    for &root in trees {
+        let Some(shell) = procs.iter().find(|p| p.pid == root).cloned() else { continue };
+        let mut tree: Vec<Proc> = std::iter::once(shell).chain(proctree::descendants(&procs, root).into_iter().cloned()).collect();
+        for p in &mut tree {
+            line_of(p, cache);
+        }
+        out.insert(root, tree);
     }
     cache.lines.retain(|k, _| live.contains(k));
-    Ok(procs)
+    Ok((procs, out))
 }
 
 /// What the window knows about one shell's job.
@@ -188,6 +212,11 @@ struct Shared {
     jobs: HashMap<u32, ShellJob>,
     fast: bool,
     error: Option<String>,
+    /// Shells whose whole tree the Jobs tool shows, and each one's last tree.
+    trees_wanted: HashSet<u32>,
+    trees: HashMap<u32, Vec<Proc>>,
+    /// Bumped whenever a kept tree changes (the Jobs tool refreshes on it).
+    tree_gen: u64,
 }
 
 /// The watcher: a thread that looks at the registered shells' trees and calls `notify`
@@ -205,19 +234,32 @@ impl JobWatch {
             let mut cache = Cache::default();
             loop {
                 let Some(shared) = weak.upgrade() else { return };
-                let (roots, fast) = {
+                let (roots, trees, fast) = {
                     let s = shared.lock().unwrap_or_else(|e| e.into_inner());
-                    (s.roots.iter().copied().collect::<Vec<u32>>(), s.fast)
+                    let trees: Vec<u32> = s.trees_wanted.iter().copied().collect();
+                    let roots: Vec<u32> = s.roots.union(&s.trees_wanted).copied().collect();
+                    (roots, trees, s.fast)
                 };
                 drop(shared);
                 if !roots.is_empty() {
-                    let result = snapshot(&roots, &mut cache);
+                    let result = snapshot_trees(&roots, &trees, &mut cache);
                     let Some(shared) = weak.upgrade() else { return };
                     let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     let mut changed = false;
                     match result {
-                        Ok(procs) => {
+                        Ok((procs, got)) => {
                             s.error = None;
+                            for r in &trees {
+                                // A tree dropped while this snapshot ran stays dropped.
+                                if !s.trees_wanted.contains(r) {
+                                    continue;
+                                }
+                                let now = got.get(r).cloned().unwrap_or_default();
+                                if s.trees.get(r) != Some(&now) {
+                                    s.trees.insert(*r, now);
+                                    s.tree_gen = s.tree_gen.wrapping_add(1);
+                                }
+                            }
                             for r in roots {
                                 let now = ShellJob { job: proctree::display_job(&procs, r), ancestors: proctree::ancestors(&procs, r), root: proctree::root_name(&procs, r) };
                                 if s.roots.contains(&r) && s.jobs.get(&r) != Some(&now) {
@@ -254,6 +296,35 @@ impl JobWatch {
         let mut s = self.lock();
         s.roots.remove(&shell);
         s.jobs.remove(&shell);
+        s.trees_wanted.remove(&shell);
+        if s.trees.remove(&shell).is_some() {
+            s.tree_gen = s.tree_gen.wrapping_add(1);
+        }
+    }
+
+    /// The Jobs tool shows (or stops showing) this shell's tree: the watcher keeps the whole
+    /// tree, command lines included, from its snapshots.
+    pub fn set_tree_wanted(&self, shell: u32, on: bool) {
+        let mut s = self.lock();
+        if on {
+            s.trees_wanted.insert(shell);
+        } else {
+            s.trees_wanted.remove(&shell);
+            if s.trees.remove(&shell).is_some() {
+                s.tree_gen = s.tree_gen.wrapping_add(1);
+            }
+        }
+    }
+
+    /// The shell and every process under it, from the last snapshot (empty until the watcher
+    /// has looked, or when the tree is not wanted). The UI thread never snapshots.
+    pub fn tree(&self, shell: u32) -> Vec<Proc> {
+        self.lock().trees.get(&shell).cloned().unwrap_or_default()
+    }
+
+    /// Changes whenever a kept tree changed.
+    pub fn tree_gen(&self) -> u64 {
+        self.lock().tree_gen
     }
 
     /// Tandem in front: look every 0.5 s; else every 5 s.
@@ -269,6 +340,81 @@ impl JobWatch {
     pub fn error(&self) -> Option<String> {
         self.lock().error.clone()
     }
+}
+
+/// Whether the process `pid` still runs and is the one created at `created` (a reused pid is
+/// another process). A cheap open, not a snapshot.
+pub fn process_alive(pid: u32, created: u64) -> bool {
+    let Some(h) = open(pid) else { return false };
+    let mut code = 0u32;
+    let running = unsafe { GetExitCodeProcess(h.0, &mut code) } != 0 && code == STILL_ACTIVE as u32;
+    running && self::created(&h) == created
+}
+
+/// Sends one of the Jobs tool's signals to `pid` (`toolbelt_tools::signal_way`).
+pub fn send_signal(pid: u32, way: SignalWay) -> Result<(), String> {
+    signal_process(pid, None, way)
+}
+
+/// `send_signal`, only to the process created at `created` when given (a pid the tree showed
+/// may have been reused since): `Terminate(code)` opens the process for termination and ends
+/// it with that exit code; `CtrlC` and `CtrlBreak` are console events sent to the whole
+/// console `pid` runs on, from a worker thread that attaches to it for the moment.
+pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay) -> Result<(), String> {
+    let access = match way {
+        SignalWay::Terminate(_) => PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+        SignalWay::CtrlC | SignalWay::CtrlBreak => PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let h = unsafe { OpenProcess(access, 0, pid) };
+    if h.is_null() {
+        return Err(os_err("OpenProcess"));
+    }
+    let h = Handle(h);
+    if created.is_some_and(|c| self::created(&h) != c) {
+        return Err(format!("process {pid} has already ended"));
+    }
+    match way {
+        SignalWay::Terminate(code) => {
+            if unsafe { TerminateProcess(h.0, code) } == 0 {
+                return Err(os_err("TerminateProcess"));
+            }
+            Ok(())
+        }
+        SignalWay::CtrlC => console_event(pid, CTRL_C_EVENT),
+        SignalWay::CtrlBreak => console_event(pid, CTRL_BREAK_EVENT),
+    }
+}
+
+/// One console event at a time: the console a process is attached to is process-wide.
+static CONSOLE: Mutex<()> = Mutex::new(());
+
+/// Tandem's own answer to the Ctrl+C and Ctrl+Break it sends while attached: handled, so they
+/// never end Tandem. Registered once and kept (the null handler's ignore flag would be
+/// inherited by every shell started after it, and removing a handler before the event's
+/// thread runs here would let the default handler exit).
+unsafe extern "system" fn ignore_ctrl(kind: u32) -> BOOL {
+    (kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT) as BOOL
+}
+
+fn console_event(pid: u32, event: u32) -> Result<(), String> {
+    std::thread::spawn(move || {
+        let _one = CONSOLE.lock().unwrap_or_else(|e| e.into_inner());
+        static HANDLER: std::sync::Once = std::sync::Once::new();
+        HANDLER.call_once(|| unsafe {
+            SetConsoleCtrlHandler(Some(ignore_ctrl), 1);
+        });
+        unsafe {
+            if AttachConsole(pid) == 0 {
+                return Err(os_err("AttachConsole"));
+            }
+            let sent = GenerateConsoleCtrlEvent(event, 0) != 0;
+            let err = (!sent).then(|| os_err("GenerateConsoleCtrlEvent"));
+            FreeConsole();
+            err.map_or(Ok(()), Err)
+        }
+    })
+    .join()
+    .unwrap_or_else(|_| Err("the signal thread stopped".into()))
 }
 
 /// Every process under a shell now (for the close prompt), with its name.
@@ -307,5 +453,29 @@ mod tests {
         assert_eq!(job.name.to_lowercase(), "ping", "{procs:?}");
         assert!(job.cmdline.to_lowercase().contains("127.0.0.1"), "{}", job.cmdline);
         assert_eq!(proctree::ancestors(&procs, child.id()), vec!["ping"]);
+    }
+
+    #[test]
+    fn a_tree_has_every_command_line_and_signals_reach_it() {
+        let mut child = std::process::Command::new("cmd.exe").args(["/d", "/c", "ping -n 30 127.0.0.1 >NUL"]).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        let root = child.id();
+        let mut cache = Cache::default();
+        let (_, trees) = snapshot_trees(&[root], &[root], &mut cache).unwrap();
+        let tree = trees.get(&root).cloned().unwrap_or_default();
+        assert_eq!(tree.first().map(|p| p.pid), Some(root), "the shell leads its tree");
+        let ping = tree.iter().find(|p| p.name.eq_ignore_ascii_case("ping.exe")).cloned();
+        let ping = ping.unwrap_or_else(|| panic!("{tree:?}"));
+        assert!(ping.cmdline.as_deref().is_some_and(|c| c.contains("127.0.0.1")), "{ping:?}");
+        assert!(tree[0].cmdline.as_deref().is_some_and(|c| c.to_lowercase().contains("cmd")), "{:?}", tree[0]);
+        assert!(process_alive(ping.pid, ping.created));
+        // A pid with another creation time is another process: never signalled.
+        assert!(signal_process(ping.pid, Some(ping.created.wrapping_add(1)), SignalWay::Terminate(137)).is_err());
+        assert!(process_alive(ping.pid, ping.created));
+        signal_process(root, Some(tree[0].created), SignalWay::Terminate(137)).unwrap();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(137), "KILL ends with 128 + 9");
+        assert!(!process_alive(root, tree[0].created));
+        let _ = signal_process(ping.pid, Some(ping.created), SignalWay::Terminate(143));
     }
 }

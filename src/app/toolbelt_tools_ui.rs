@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use super::close_ui::confirm;
 use super::statusbar_content::MenuAt;
-use super::toolbelt_more_ui::{self as more, CapturedShown, StatusShown};
+use super::toolbelt_more_ui::{self as more, CapturedShown, JobsShown, StatusShown};
 use super::toolbelt_ui::{BeltDrag, ToolState};
 use super::*;
 use crate::broadcast::Write;
@@ -71,9 +71,10 @@ pub(super) enum Shown {
     Marks(Vec<(u32, String)>),
     Captured(CapturedShown),
     Status(StatusShown),
-    /// A tool not yet built (9k's Jobs, Notes and Codecierge): drawn as an empty list until
-    /// its own task wires it up.
-    Pending,
+    Jobs(JobsShown),
+    /// Notes and Codecierge draw with their own scene calls, not the list: no rows.
+    Notes,
+    Codecierge(crate::toolbelt_tools::CodeciergeState),
 }
 
 impl Shown {
@@ -88,7 +89,8 @@ impl Shown {
             Shown::Marks(v) => v.len(),
             Shown::Captured(c) => c.entries.len(),
             Shown::Status(st) => st.items.len(),
-            Shown::Pending => 0,
+            Shown::Jobs(j) => j.rows.len(),
+            Shown::Notes | Shown::Codecierge(_) => 0,
         }
     }
 }
@@ -144,13 +146,13 @@ impl<K: Hash + Eq> TakenKeys<K> {
 
 /// Text sizes for the tools' lists, in pixels unless named a scale.
 #[derive(Clone, Copy)]
-struct ListMetrics {
+pub(super) struct ListMetrics {
     /// The toolbelt font against the terminal font.
-    text_scale: f32,
+    pub(super) text_scale: f32,
     /// A row: the font's line plus a 2 point inset above and below (`NSTableView+iTerm.m:36-89`).
-    row_h: f32,
+    pub(super) row_h: f32,
     /// The font's line (each further line of a wrapped row).
-    line: f32,
+    pub(super) line: f32,
     /// Profiles' tag line.
     second_h: f32,
     second_scale: f32,
@@ -168,7 +170,7 @@ fn sticks_to_end(tool: ToolId) -> bool {
     matches!(tool, ToolId::PasteHistory | ToolId::CommandHistory | ToolId::RecentDirectories)
 }
 
-fn now_ms() -> u128 {
+pub(super) fn now_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())
 }
 
@@ -176,7 +178,7 @@ pub(super) fn unix(t: std::time::SystemTime) -> f64 {
     t.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-fn is_modifier(key: &WKey) -> bool {
+pub(super) fn is_modifier(key: &WKey) -> bool {
     matches!(key, WKey::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::AltGraph))
 }
 
@@ -247,12 +249,15 @@ impl App {
             ToolId::CapturedOutput => ListSpec { field: true, top: vec![ToolButton::Trash, ToolButton::Help], ..ListSpec::default() },
             // Bell and Snooze at the left; Help at the right, Settings left of it (`TS:246-275`).
             ToolId::SessionStatus => ListSpec { left: vec![ToolButton::Bell, ToolButton::Snooze], right: vec![ToolButton::Help, ToolButton::Settings], ..ListSpec::default() },
-            // Not yet built (9k tasks 7 and 8): an empty list, nothing drawn.
-            ToolId::Jobs | ToolId::Notes | ToolId::Codecierge => ListSpec::default(),
+            // The signal popup at the left; Send, then Inspect at the right (`JT:336-356`,
+            // `viewDidLayout`).
+            ToolId::Jobs => ListSpec { right: vec![ToolButton::Inspect, ToolButton::Send], popup_w: more::SIGNAL_POPUP_W, ..ListSpec::default() },
+            // Their own layouts (`more::note_layout`, Codecierge's onboarding view).
+            ToolId::Notes | ToolId::Codecierge => ListSpec::default(),
         }
     }
 
-    fn list_metrics(&self) -> ListMetrics {
+    pub(super) fn list_metrics(&self) -> ListMetrics {
         let scale = self.scale();
         let (_, ch) = self.cell();
         let (px, font_px) = self.gpu.as_ref().map_or((11.0 * 4.0 / 3.0 * scale, ch / 1.2), |g| (g.renderer.toolbelt_px(scale), g.renderer.font_px()));
@@ -341,6 +346,8 @@ impl App {
             ToolId::Snippets => self.snippets_filter().hash(&mut h),
             ToolId::CapturedOutput => self.captured_extra(&mut h),
             ToolId::SessionStatus => self.status_extra(&mut h),
+            ToolId::Jobs => self.jobs_extra(&mut h),
+            ToolId::Codecierge => (self.codecierge_now() as u8).hash(&mut h),
             _ => {}
         }
         h.finish()
@@ -395,8 +402,9 @@ impl App {
             ToolId::NamedMarks => Shown::Marks(self.mark_shown()),
             ToolId::CapturedOutput => self.captured_shown(&query),
             ToolId::SessionStatus => self.status_shown(),
-            // Not yet built (9k tasks 7 and 8).
-            ToolId::Jobs | ToolId::Notes | ToolId::Codecierge => Shown::Pending,
+            ToolId::Jobs => self.jobs_shown(),
+            ToolId::Notes => Shown::Notes,
+            ToolId::Codecierge => Shown::Codecierge(self.codecierge_now()),
         });
         self.belt.shown.insert(tool, (key, shown.clone()));
         shown
@@ -430,6 +438,7 @@ impl App {
         let plain = |text: String, bold: bool| scene::ListRow { text: tool_list::truncate_tail(&text, avail, &width), bold, ..scene::ListRow::default() };
         let glyph_w = (m.row_h - 2.0 * tool_list_inset(scale)) / 1.2;
         let expanded = self.belt.tools.get(&ToolId::Snippets).map(|t| t.expanded.clone()).unwrap_or_default();
+        let collapsed = self.belt.tools.get(&ToolId::Jobs).map(|t| t.collapsed.clone()).unwrap_or_default();
         range
             .map(|i| match shown {
                 Shown::Profiles(v) => {
@@ -456,7 +465,8 @@ impl App {
                 Shown::Marks(v) => plain(v[i].1.clone(), false),
                 Shown::Captured(c) => more::captured_list_row(c.wraps.borrow().lines.get(i).map_or(&[][..], Vec::as_slice)),
                 Shown::Status(st) => more::status_list_row(&st.items[i], st.wraps.borrow().lines.get(i).map_or(&[][..], Vec::as_slice), st.separator == Some(i), avail, scale, dark, &width),
-                Shown::Pending => unreachable!("Shown::Pending is always empty"),
+                Shown::Jobs(j) => more::job_list_row(&j.rows[i], collapsed.contains(&j.rows[i].pid), avail, glyph_w, scale, &width),
+                Shown::Notes | Shown::Codecierge(_) => unreachable!("Notes and Codecierge have no rows"),
             })
             .collect()
     }
@@ -514,7 +524,19 @@ impl App {
         let dark = self.dark();
         let m = self.list_metrics();
         let areas: Vec<(ToolId, Rect)> = bl.wrappers.iter().zip(self.belt.split.tools.clone()).filter_map(|(w, t)| w.content.map(|c| (t, c))).collect();
+        self.jobs_want(areas.iter().any(|(t, _)| *t == ToolId::Jobs));
         for (tool, area) in areas {
+            match tool {
+                ToolId::Notes => {
+                    self.draw_notes(frame, area, cell);
+                    continue;
+                }
+                ToolId::Codecierge => {
+                    self.draw_codecierge(frame, area, cell);
+                    continue;
+                }
+                _ => {}
+            }
             let (l, rows, first, shown) = self.tool_layout(tool, area);
             let st = self.belt.tools.get(&tool).cloned().unwrap_or_default();
             let focus = self.belt.focus.filter(|(t, _)| *t == tool).map(|(_, f)| f);
@@ -553,7 +575,11 @@ impl App {
                 Drag::Belt(BeltDrag::Row { tool: t, start_y }) if t == tool && (self.cursor.1 - start_y).abs() >= DRAG_SLOP * scale => drop_slot(&shown, &l.rows, self.cursor.1).map(|slot| l.rows.get(slot).map_or_else(|| l.rows.last().map_or(l.list.y, |r| r.y + r.h), |r| r.y)),
                 _ => None,
             };
-            let popup = matches!(*shown, Shown::Profiles(_)).then(|| (tt::PROFILE_OPENS[st.popup.min(tt::PROFILE_OPENS.len() - 1)].1, !none));
+            let popup = match &*shown {
+                Shown::Profiles(_) => Some((tt::PROFILE_OPENS[st.popup.min(tt::PROFILE_OPENS.len() - 1)].1, !none)),
+                Shown::Jobs(_) => Some((tt::SIGNALS[st.signal.min(tt::SIGNALS.len() - 1)].name(), true)),
+                _ => None,
+            };
             let d = scene::ListDraw {
                 layout: &l,
                 rows: &rows,
@@ -574,8 +600,28 @@ impl App {
 
     /// A press in `tool`'s content.
     pub(super) fn tool_press(&mut self, tool: ToolId, area: Rect, button: MouseButton, x: f32, y: f32, event_loop: &ActiveEventLoop) {
+        match tool {
+            ToolId::Notes => return self.notes_press(area, button, x, y),
+            ToolId::Codecierge => return self.codecierge_press(area, button, x, y),
+            _ => {}
+        }
         let (l, _, _, shown) = self.tool_layout(tool, area);
         let hit = tool_list::hit(&l, x, y);
+        // A parent's disclosure hides or shows its subtree, and selects nothing (NSOutlineView).
+        if let (ListHit::Row(i), MouseButton::Left, Shown::Jobs(j)) = (hit, button, &*shown) {
+            if let (Some(r), Some(rect)) = (j.rows.get(i).filter(|r| r.has_children), l.rows.get(i)) {
+                let scale = self.scale();
+                let glyph_w = (self.list_metrics().row_h - 2.0 * tool_list_inset(scale)) / 1.2;
+                let lead = if r.watched { scene::lead_width(&[(ToolButton::Bell.glyph(), scene::LIST_SELECTED)], scale) } else { 0.0 };
+                let left = rect.x + tool_list_inset(scale) + r.depth as f32 * scene::LIST_INDENT * scale + lead;
+                if x >= left && x < left + glyph_w + 2.0 * scale {
+                    self.belt.focus = Some((tool, Focus::List));
+                    let pid = r.pid;
+                    self.toggle_job(pid, None);
+                    return self.redraw();
+                }
+            }
+        }
         // A folder's disclosure glyph opens or closes it, and selects nothing (NSOutlineView).
         if let (ListHit::Row(i), MouseButton::Left, Shown::Snippets { rows, paths, .. }) = (hit, button, &*shown) {
             if let (Some(path), Some(r), Some(rect)) = (&paths[i], rows.get(i), l.rows.get(i)) {
@@ -629,7 +675,7 @@ impl App {
                 self.belt.focus = Some((tool, Focus::List));
                 // Multiple selection (`ToolProfiles.m`, `TS:147`, `iTermToolActions.m:83`,
                 // `ToolNamedMarks.swift:49`); the history lists pick one.
-                let multi = matches!(tool, ToolId::Profiles | ToolId::Snippets | ToolId::Actions | ToolId::NamedMarks);
+                let multi = matches!(tool, ToolId::Profiles | ToolId::Snippets | ToolId::Actions | ToolId::NamedMarks | ToolId::Jobs);
                 // Snippets' and Actions' rows drag (`tool_press`): a press on a selected row
                 // keeps the others until the release (`tool_drop`).
                 let draggable = matches!(tool, ToolId::Snippets | ToolId::Actions);
@@ -748,7 +794,7 @@ impl App {
             Shown::Snippets { .. } => return self.apply_snippets(tt::snippet_pick(alt, shift), false, event_loop),
             Shown::Actions(_) => return self.apply_actions(event_loop),
             Shown::Captured(_) => return self.run_captured(first),
-            Shown::Marks(_) | Shown::Status(_) | Shown::Pending => return,
+            Shown::Marks(_) | Shown::Status(_) | Shown::Jobs(_) | Shown::Notes | Shown::Codecierge(_) => return,
         }
         self.belt.focus = None;
         self.redraw();
@@ -846,6 +892,8 @@ impl App {
             }
             (ToolId::SessionStatus, ToolButton::Help) => self.status_help(),
             (ToolId::SessionStatus, ToolButton::Settings) => self.open_status_popover(event_loop),
+            (ToolId::Jobs, ToolButton::Send) => self.jobs_send(),
+            (ToolId::Jobs, ToolButton::Inspect) => self.jobs_inspect(event_loop),
             (ToolId::CommandHistory | ToolId::RecentDirectories, ToolButton::Help) => {
                 let url = if tool == ToolId::CommandHistory { COMMAND_HELP } else { DIRS_HELP };
                 if let Some(pane) = self.focused_id() {
@@ -859,6 +907,15 @@ impl App {
 
     /// Profiles' popup, from its rectangle: the four ways to open, the last pick checked.
     fn tool_popup_menu(&mut self, tool: ToolId) {
+        // Jobs' signal popup (always enabled, `JT:52-60`).
+        if tool == ToolId::Jobs {
+            let Some(area) = self.tool_area(tool) else { return };
+            let (l, ..) = self.tool_layout(tool, area);
+            if let Some(r) = l.popup {
+                self.job_signal_menu(MenuAt { x: r.x, y: r.y + r.h, above: false });
+            }
+            return;
+        }
         if tool != ToolId::Profiles || self.belt.tools.get(&tool).is_none_or(|t| t.selection.rows.is_empty()) {
             return;
         }
@@ -878,6 +935,9 @@ impl App {
     /// A row's menu: Paste History's Copy and Open in Advanced Paste
     /// (`ToolPasteHistory.m:96-144`), Recent Directories' Toggle Star, on the clicked row.
     fn tool_row_menu(&mut self, tool: ToolId, row: usize) {
+        if tool == ToolId::Jobs {
+            return self.job_row_menu(row);
+        }
         let shown = self.tool_shown(tool);
         // Session Status' Snooze, checked while snoozed (`TS:1187-1218`).
         if let Shown::Status(st) = &*shown {
@@ -940,6 +1000,23 @@ impl App {
                     self.toggle_captured_check(row);
                 }
             }
+            "signal" => {
+                if let Ok(i) = arg.parse::<usize>() {
+                    if i < tt::SIGNALS.len() {
+                        self.tool_state(ToolId::Jobs).signal = i;
+                    }
+                }
+            }
+            "job-copy" | "job-pid" => {
+                if let Ok(pid) = arg.parse::<u32>() {
+                    self.copy_job(pid, what == "job-copy");
+                }
+            }
+            "job-notify" => {
+                if let Ok(pid) = arg.parse::<u32>() {
+                    self.toggle_job_watch(pid);
+                }
+            }
             "snooze" => {
                 if let Ok(pane) = arg.parse::<PaneId>() {
                     self.toggle_snooze(pane);
@@ -983,6 +1060,12 @@ impl App {
             self.belt.focus = None;
             self.belt_keys.press(ev.physical_key, false);
             return false;
+        }
+        // The Notes editor reads its own keys (`text_edit::takes`).
+        if tool == ToolId::Notes {
+            let taken = self.notes_key(ev);
+            self.belt_keys.press(ev.physical_key, taken);
+            return taken;
         }
         let mods = self.mods;
         let key = list_key(&ev.logical_key, ev.text.as_deref(), mods);
@@ -1055,6 +1138,15 @@ impl App {
     fn tool_list_key(&mut self, tool: ToolId, key: ListKey, event_loop: &ActiveEventLoop) {
         match key {
             ListKey::Up | ListKey::Down => self.tool_step(tool, key == ListKey::Down),
+            // Space toggles Inspect (`JT:40-46`); Right opens the selected parent, Left closes
+            // it (NSOutlineView).
+            ListKey::Text(t) if t == " " && tool == ToolId::Jobs => self.jobs_inspect(event_loop),
+            ListKey::Right | ListKey::Left if tool == ToolId::Jobs => {
+                let row = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied());
+                if let Some((pid, true)) = row.and_then(|r| self.job_at(r)) {
+                    self.toggle_job(pid, Some(key == ListKey::Right));
+                }
+            }
             ListKey::Enter if tool == ToolId::Profiles => self.tool_activate(tool, event_loop),
             ListKey::Tab if self.tool_spec(tool).field => self.belt.focus = Some((tool, Focus::Field)),
             ListKey::Escape => self.belt.focus = None,
@@ -1385,6 +1477,11 @@ impl App {
         let (x, y) = self.cursor;
         let Some(bl) = self.belt_layout() else { return };
         let Some((tool, area)) = bl.wrappers.iter().zip(self.belt.split.tools.clone()).find_map(|(w, t)| w.content.filter(|c| c.contains(x, y)).map(|c| (t, c))) else { return };
+        match tool {
+            ToolId::Notes => return self.notes_wheel(dy),
+            ToolId::Codecierge => return,
+            _ => {}
+        }
         let row_h = self.list_metrics().row_h;
         let (l, ..) = self.tool_layout(tool, area);
         let st = self.tool_state(tool);

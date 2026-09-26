@@ -1291,6 +1291,24 @@ default = false
 help = "Suppress warning that a Capture Output trigger fired without Shell Integration.\nSet by the warning's Silence Warning button."
 
 [[setting]]
+key = "NoSyncSuppressSendSignal"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the confirmation before the Jobs tool sends a signal."
+type = "bool"
+default = false
+help = "Suppress the confirmation before the Jobs tool sends a signal.\nSet by the confirmation's \"Suppress this message permanently\" checkbox."
+
+[[setting]]
+key = "GenerativeAIAllowed"
+tab = "Advanced"
+section = "AI"
+label = "Allow the use of large language model APIs?"
+type = "bool"
+default = true
+help = "Allow the use of large language model APIs?\nThe purpose of this setting is to make it easy for managed environments to disable the use of LLMs. The user defaults key is `GenerativeAIAllowed`."
+
+[[setting]]
 key = "noSyncDontWarnAboutTmuxPause"
 tab = "Advanced"
 section = "Warnings"

@@ -158,6 +158,77 @@ impl PromptWindow {
     }
 }
 
+/// What a `ConfirmWindow` answered.
+pub enum ConfirmResult {
+    Open,
+    Cancel,
+    /// OK, and whether "Suppress this message permanently" was checked.
+    Ok { suppress: bool },
+}
+
+/// An OK and Cancel question with iTerm2's permanently silenceable checkbox
+/// (`iTermWarning.m:400-406,517-520`: "Suppress this message permanently", remembered only on
+/// OK). Enter is OK and Escape Cancel.
+pub struct ConfirmWindow {
+    host: EguiHost,
+    text: String,
+    suppress: bool,
+}
+
+impl ConfirmWindow {
+    /// The checkbox's label (`iTermWarning.m:400-406`).
+    pub const SUPPRESS: &'static str = "Suppress this message permanently";
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        heading: &str,
+        text: &str,
+    ) -> Result<ConfirmWindow, String> {
+        let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 420.0, 130.0)?;
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false })
+    }
+
+    pub fn id(&self) -> WindowId {
+        self.host.id()
+    }
+
+    pub fn focus(&self) {
+        self.host.focus();
+    }
+
+    pub fn event(&mut self, event: &WindowEvent) -> bool {
+        self.host.event(event)
+    }
+
+    pub fn redraw(&mut self) -> ConfirmResult {
+        let mut result = ConfirmResult::Open;
+        let (text, suppress) = (&self.text, &mut self.suppress);
+        self.host.paint(|ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.label(text.as_str());
+                ui.add_space(6.0);
+                ui.checkbox(suppress, Self::SUPPRESS);
+                ui.add_space(6.0);
+                let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() || enter {
+                        result = ConfirmResult::Ok { suppress: *suppress };
+                    }
+                    if ui.button("Cancel").clicked() || escape {
+                        result = ConfirmResult::Cancel;
+                    }
+                });
+            });
+        });
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

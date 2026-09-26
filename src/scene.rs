@@ -1513,6 +1513,100 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
     }
 }
 
+/// What the Notes tool shows (`TN`): the mode control's segments (each rectangle, label and
+/// label width; `selected` is lit), the editor's frame with a 1 pixel border, its text lines
+/// (x, y and text, already laid out and scrolled), the selection's rectangles, the caret while
+/// it has the keyboard, and the scroller's thumb when the text is taller than the editor.
+pub struct NoteDraw<'a> {
+    pub segments: &'a [(Rect, &'a str, f32)],
+    pub selected: usize,
+    pub frame: Rect,
+    /// The text's room inside the frame: lines, selection and caret are clipped to it.
+    pub clip: Rect,
+    pub lines: &'a [(f32, f32, String)],
+    pub selection: &'a [Rect],
+    pub caret: Option<Rect>,
+    pub focused: bool,
+    pub thumb: Option<Rect>,
+    pub dark: bool,
+    /// The segments' labels' size against the terminal font (the prose font).
+    pub label_scale: f32,
+}
+
+/// The Notes selection: the brief's 17, 108, 214 at alpha 0.4.
+pub const NOTE_SELECTION_ALPHA: f32 = 0.4;
+
+/// A rectangle clipped to `clip` (zero-sized when outside it).
+fn clip_rect(r: Rect, clip: Rect) -> Rect {
+    let x = r.x.max(clip.x);
+    let y = r.y.max(clip.y);
+    let w = ((r.x + r.w).min(clip.x + clip.w) - x).max(0.0);
+    let h = ((r.y + r.h).min(clip.y + clip.h) - y).max(0.0);
+    Rect { x, y, w, h }
+}
+
+/// The Notes tool: the "Global" / "Session" segmented control, then the plain-text editor in
+/// the toolbelt font (`NoteDraw`). `text_scale` is the toolbelt font against the terminal's.
+pub fn note_editor(frame: &mut Frame, d: &NoteDraw, cell: (f32, f32), text_scale: f32, scale: f32) {
+    let (text, field_bg) = if d.dark { (TAB_TEXT, FIELD_BG_DARK) } else { (BELT_TEXT_LIGHT, FIELD_BG_LIGHT) };
+    let edge = rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 });
+    let label_h = cell.1 * d.label_scale;
+    for (i, (r, label, w)) in d.segments.iter().enumerate() {
+        let on = i == d.selected;
+        frame.quads.push(Quad { rect: *r, color: rgba(if on { LIST_SELECTED } else { field_bg }, 1.0) });
+        frame_lines(&mut frame.quads, *r, edge);
+        let color = if on { rgb(0xff, 0xff, 0xff) } else { text };
+        frame.rows.push(TextRow { x: r.x + ((r.w - w) / 2.0).max(0.0), y: r.y + (r.h - label_h) / 2.0, spans: vec![list_span(label.to_string(), color, false, 1)], clip: *r, scale: d.label_scale });
+    }
+    frame.quads.push(Quad { rect: d.frame, color: rgba(field_bg, 1.0) });
+    frame_lines(&mut frame.quads, d.frame, if d.focused { rgba(LIST_SELECTED, 1.0) } else { edge });
+    for r in d.selection {
+        let r = clip_rect(*r, d.clip);
+        if r.w > 0.0 && r.h > 0.0 {
+            frame.quads.push(Quad { rect: r, color: rgba(LIST_SELECTED, NOTE_SELECTION_ALPHA) });
+        }
+    }
+    for (x, y, line) in d.lines {
+        if !line.is_empty() {
+            frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 0)], clip: d.clip, scale: text_scale });
+        }
+    }
+    if let Some(c) = d.caret.map(|c| clip_rect(c, d.clip)).filter(|c| c.h > 0.0) {
+        frame.quads.push(Quad { rect: Rect { w: scale.max(1.0), ..c }, color: rgba(text, 1.0) });
+    }
+    if let Some(t) = d.thumb {
+        frame.quads.push(Quad { rect: t, color: rgba(TAB_TEXT_DIM, 0.6) });
+    }
+}
+
+/// What Codecierge shows (`CC:646-709`): its label's lines, centered (x, y, text), a button
+/// (its rectangle, label, label width) dimmed when disabled.
+pub struct CodeciergeDraw<'a> {
+    pub lines: &'a [(f32, f32, String)],
+    pub clip: Rect,
+    pub button: Rect,
+    pub label: &'a str,
+    pub label_w: f32,
+    pub enabled: bool,
+    pub dark: bool,
+}
+
+/// Codecierge's onboarding view: the label and its one button, in the prose font at
+/// `text_scale`.
+pub fn codecierge(frame: &mut Frame, d: &CodeciergeDraw, cell: (f32, f32), text_scale: f32, scale: f32) {
+    let (text, disabled, field_bg) = if d.dark { (TAB_TEXT, LIST_DISABLED_DARK, FIELD_BG_DARK) } else { (BELT_TEXT_LIGHT, LIST_DISABLED_LIGHT, FIELD_BG_LIGHT) };
+    let line_h = cell.1 * text_scale;
+    for (x, y, line) in d.lines {
+        frame.rows.push(TextRow { x: *x, y: *y, spans: vec![list_span(line.clone(), text, false, 1)], clip: d.clip, scale: text_scale });
+    }
+    let b = d.button;
+    rounded_box(&mut frame.quads, b, 4.0 * scale, rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 }));
+    let inner = Rect { x: b.x + 1.0, y: b.y + 1.0, w: (b.w - 2.0).max(0.0), h: (b.h - 2.0).max(0.0) };
+    rounded_box(&mut frame.quads, inner, 3.0 * scale, rgba(field_bg, 1.0));
+    let color = if d.enabled { text } else { disabled };
+    frame.rows.push(TextRow { x: b.x + ((b.w - d.label_w) / 2.0).max(0.0), y: b.y + (b.h - line_h) / 2.0, spans: vec![list_span(d.label.to_string(), color, false, 1)], clip: clip_rect(b, d.clip), scale: text_scale });
+}
+
 /// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
 /// small camera (a body, a lens, and a viewfinder).
 pub fn camera_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {

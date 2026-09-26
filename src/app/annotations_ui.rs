@@ -171,6 +171,11 @@ impl App {
                             None => p.session_note = text,
                         }
                     }
+                    // The Notes tool's Session mode shows the same note, in every window.
+                    if note.is_none() {
+                        self.tools_changed();
+                        self.redraw_all();
+                    }
                     self.redraw();
                 }
                 NoteEvent::Delete => {
