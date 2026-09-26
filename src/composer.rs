@@ -268,12 +268,20 @@ impl Composer {
 
     /// The command alone, the prefix stripped (`stringExcludingPrefix`, `MCVC:445-451`).
     pub fn contents(&self) -> String {
-        let n = self.prefix_len();
-        self.edit.text[n.min(self.edit.text.len())..].to_string()
+        self.edit.text[self.prefix_len()..].to_string()
     }
 
+    /// The prefix's length in bytes, as it actually sits at the start of `edit.text` right
+    /// now: 0 unless `edit.text` truly starts with it. `set_string` always keeps the two in
+    /// sync, but `prefix` is a plain pub field, so a caller that assigns it directly (Task 3,
+    /// seeding a freshly captured prompt) without re-syncing the text through `set_string`
+    /// first must not make every slice on `edit.text[prefix_len()..]` a potential mid-char
+    /// panic: `starts_with` both proves the byte length is a real prefix of the text and, on
+    /// success, guarantees that length is already a valid char boundary.
     fn prefix_len(&self) -> usize {
-        self.prefix.as_ref().map_or(0, |p| p.text.join("\n").len())
+        let Some(p) = &self.prefix else { return 0 };
+        let raw = p.text.join("\n");
+        if self.edit.text.starts_with(&raw) { raw.len() } else { 0 }
     }
 
     /// No caret or selection reaches into the prefix (`shouldChangeText`'s guard,
@@ -362,8 +370,8 @@ impl Composer {
     }
 
     /// `showOrAppendToDropdownWithString:` (`CM:84-94`): appends a joined line to an already
-    /// open dropdown (dropping its own prefix, as the source does), else opens it seeded with
-    /// `s`.
+    /// open dropdown (`set_string` always reattaches the prefix, if any, so it stays), else
+    /// opens it seeded with `s`.
     pub fn show_or_append(&mut self, s: &str) {
         if self.shown == Shown::Dropdown {
             let joined = format!("{}\n{}", self.contents(), s);
@@ -465,35 +473,42 @@ impl Composer {
     }
 
     /// `take()` (`CTV:920-953`): each caret's selection, or else `command_at` at a plain
-    /// caret, removed one at a time from the last caret back (so earlier ones keep their byte
-    /// offsets, and a caret in an already-consumed command finds nothing left there instead of
-    /// repeating its neighbor's piece) and returned in text order. Never reaches into the
-    /// prefix: a selection is clipped to the command portion (nothing taken if it was entirely
-    /// inside the prefix) and a plain caret sitting in the prefix takes nothing. The removals
-    /// bypass the undo stack (several independent ranges, not one caret's edit), so it is
-    /// cleared; the caret is left where the last (leftmost) piece was removed, or 0 if nothing
-    /// was.
+    /// caret, removed one at a time from the last caret back (so earlier, not yet processed
+    /// carets keep pointing at the same characters) and returned in text order. Never reaches
+    /// into the prefix: a selection is clipped to the command portion (nothing taken if it was
+    /// entirely inside the prefix) and a plain caret sitting in the prefix takes nothing.
+    ///
+    /// A caret's own `command_at` search can range far past its own position (a backslash
+    /// continuation chases forward and backward through several lines), so it can cover -
+    /// and remove - text an earlier, not yet processed caret was pointing into. Every not yet
+    /// processed range is adjusted after each removal (`drop_or_shift`) instead of being read
+    /// from a stale snapshot, so a caret whose target was swallowed by a neighbor's take
+    /// contributes nothing instead of the next unrelated command, and a selection that
+    /// reached into it is clipped to what still precedes it, dropped too if that empties it.
+    ///
+    /// The removals bypass the undo stack (several independent ranges, not one caret's edit),
+    /// so it is cleared; the caret is left where the last (leftmost) piece was removed, or 0
+    /// if nothing was.
     pub fn take(&mut self) -> Vec<String> {
         let n = self.prefix_len();
-        let ranges = self.edit.carets();
+        let mut ranges: Vec<Option<Range<usize>>> = self.edit.carets().into_iter().map(Some).collect();
         let mut taken: Vec<String> = Vec::new();
         let mut caret_at = 0;
-        for r in ranges.iter().rev() {
-            if !r.is_empty() {
+        for i in (0..ranges.len()).rev() {
+            let Some(r) = ranges[i].clone() else { continue };
+            let piece = if !r.is_empty() {
                 let (start, end) = (r.start.max(n), r.end.max(n));
-                if start < end {
-                    taken.push(self.edit.text[start..end].to_string());
-                    self.edit.text.replace_range(start..end, "");
-                    caret_at = start;
-                }
+                (start < end).then(|| (start..end, self.edit.text[start..end].to_string()))
             } else if r.start >= n {
-                if let Some((rel, text)) = command_at(&self.edit.text[n..], r.start - n) {
-                    let (start, end) = (rel.start + n, rel.end + n);
-                    taken.push(text);
-                    self.edit.text.replace_range(start..end, "");
-                    caret_at = start;
-                }
-            }
+                command_at(&self.edit.text[n..], r.start - n).map(|(rel, text)| (rel.start + n..rel.end + n, text))
+            } else {
+                None
+            };
+            let Some((removed, text)) = piece else { continue };
+            taken.push(text);
+            self.edit.text.replace_range(removed.clone(), "");
+            caret_at = removed.start;
+            drop_or_shift(&mut ranges[..i], &removed);
         }
         if taken.is_empty() {
             return Vec::new();
@@ -568,12 +583,14 @@ impl Composer {
             Action::Control(b) => vec![Act::Control(vec![b])],
             // `CTV:739-748`: with text present this is not handled as a control byte, but as
             // whatever else Ctrl+D is bound to; a plain text editor's binding for it is delete
-            // forward.
+            // forward. Through the same prefix guard as any other mutating key (in practice
+            // this can only matter if the caret itself sits in the prefix, which should not
+            // happen at rest, but a Delete's own reach never looks left of the caret anyway).
             Action::ControlIfEmpty(b) => {
                 if self.contents().is_empty() {
                     vec![Act::Control(vec![b])]
                 } else {
-                    self.edit.key(EditKey::Delete, false, lines, width);
+                    self.edit_guarded(EditKey::Delete, lines, width);
                     Vec::new()
                 }
             }
@@ -601,22 +618,26 @@ impl Composer {
                 vec![Act::OpenHistory { prefix: self.contents(), search: false }]
             }
             Action::Edit(k) => {
-                let n = self.prefix_len();
-                // A mutating key is refused outright when the range it would actually change
-                // (its selection, or where a delete reaches from the caret; an insert never
-                // reaches left of the caret) starts inside the prefix - not merely when the
-                // caret itself does, which would let a plain Backspace right after the prefix
-                // (caret == n, deleting n-1..n) eat its last character.
-                if n > 0 && mutates(&k) && self.edit.reach(&k).iter().any(|r| r.start < n) {
-                    Vec::new()
-                } else {
-                    self.edit.key(k, false, lines, width);
-                    Vec::new()
-                }
+                self.edit_guarded(k, lines, width);
+                Vec::new()
             }
         };
         self.clamp_prefix();
         acts
+    }
+
+    /// One `EditKey`, refused outright when the range it would actually change (its
+    /// selection, or where a delete reaches from the caret; an insert never reaches left of
+    /// the caret) starts inside the prefix - not merely when the caret itself does, which
+    /// would let a plain Backspace right after the prefix (caret == n, deleting n-1..n) eat
+    /// its last character. Shared by `apply`'s `Action::Edit` and `ControlIfEmpty`'s
+    /// not-empty fallback, so neither bypasses it.
+    fn edit_guarded(&mut self, k: EditKey, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) {
+        let n = self.prefix_len();
+        if n > 0 && mutates(&k) && self.edit.reach(&k).iter().any(|r| r.start < n) {
+            return;
+        }
+        self.edit.key(k, false, lines, width);
     }
 }
 
@@ -626,6 +647,44 @@ impl Composer {
 /// any paragraph that ends in a line-continuing backslash, so a `"a \\\nb"` pair is taken as
 /// one. Returns the raw text of the span (backslashes and newlines untouched; iTerm2 only
 /// blanks them for its explainshell query, not for `take`). `None` on an empty document.
+/// `NSRange.minus` (`CTV:1330-1360`), specialized to what `take` needs: adjusts every
+/// not-yet-processed range in `remaining` for the removal of `removed` (already deleted from
+/// the text, so `remaining`'s entries must stop referring to characters at their old
+/// positions). A plain caret inside `removed` is dropped (there is nothing left where it
+/// pointed - not collapsed to `removed.start` and asked what command sits there now, which
+/// would hand it its neighbor's next command instead of nothing); a range reaching into
+/// `removed` has its end clipped to `removed.start`, dropped too if that empties it; anything
+/// strictly after `removed` shifts back by its length; anything strictly before is untouched.
+///
+/// `removed` always reaches at least to the position of the caret that produced it, which (by
+/// `TextEdit` never letting carets or selections overlap, and `remaining` holding only carets
+/// at or before that position in the original text) is always at or after every entry here's
+/// own end - so an entry's end can never survive past `removed.end`; there is no case of a
+/// tail surviving a removal that cuts into an entry's middle.
+fn drop_or_shift(remaining: &mut [Option<Range<usize>>], removed: &Range<usize>) {
+    let len = removed.end - removed.start;
+    for slot in remaining.iter_mut() {
+        let Some(r) = slot.clone() else { continue };
+        *slot = if r.is_empty() {
+            if removed.contains(&r.start) {
+                None
+            } else if r.start >= removed.end {
+                Some(r.start - len..r.start - len)
+            } else {
+                Some(r)
+            }
+        } else if r.start >= removed.end {
+            Some(r.start - len..r.end - len)
+        } else if r.end > removed.start {
+            let end = removed.start.min(r.end);
+            let start = r.start.min(end);
+            (start < end).then_some(start..end)
+        } else {
+            Some(r)
+        };
+    }
+}
+
 pub fn command_at(text: &str, at: usize) -> Option<(Range<usize>, String)> {
     fn paragraph_at(text: &str, i: usize) -> Option<Range<usize>> {
         if text.is_empty() {
@@ -1000,6 +1059,59 @@ mod tests {
         let lines = wrap(&c.edit.text, 1000.0, &w);
         assert_eq!(c.apply(Action::Edit(EditKey::Undo), &lines, &w), Vec::<Act>::new());
         assert_eq!(c.edit.text, "two");
+    }
+
+    #[test]
+    fn take_remaps_ranges_after_each_removal() {
+        // A later (rightmost) caret's command can range, via backslash continuation, back
+        // over an earlier caret's own position - captured once, that earlier range would then
+        // be sliced against the shorter, post-removal text.
+        //
+        // Repro 1 (round 2, finding 3): a selection entirely swallowed by a later caret's much
+        // larger command must be dropped, not sliced at its old (now out of range) offsets.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("\u{e9} \\\nb", false);
+        c.edit.set_carets(&[Caret { at: 2, anchor: Some(4) }, Caret { at: 8, anchor: None }]);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::SendEach, &lines, &w), vec![Act::Send("\u{e9} \\\nb\n".to_string())]);
+        assert_eq!(c.edit.text, "$ ");
+
+        // Repro 2: an earlier plain caret that lands inside a command a later caret already
+        // took is dropped, not re-looked-up at its collapsed (and here, mid-character)
+        // position.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("ab\n\u{e9}x", false);
+        c.edit.set_carets(&[Caret { at: 3, anchor: None }, Caret { at: 4, anchor: None }]);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::SendEach, &lines, &w), vec![Act::Send("ab\n\n".to_string())]);
+        assert_eq!(c.edit.text, "$ \u{e9}x");
+
+        // Repro 3: the same shape, but the text after the consumed command is itself a
+        // plausible-looking command ("rm -rf x") - the dropped caret must not send it.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("ab\nrm -rf x", false);
+        c.edit.set_carets(&[Caret { at: 3, anchor: None }, Caret { at: 4, anchor: None }]);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::SendEach, &lines, &w), vec![Act::Send("ab\n\n".to_string())]);
+        assert_eq!(c.edit.text, "$ rm -rf x");
+    }
+
+    #[test]
+    fn prefix_length_is_safe_against_a_mismatched_text() {
+        // `prefix` assigned directly (as Task 3 will do when a fresh prompt is captured)
+        // without going through `set_string` to keep `edit.text` in sync: `contents` and
+        // `apply` must not panic, and must treat the text as having no prefix rather than
+        // slicing into the middle of it (the guessed length here would land mid-character).
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.edit.load("h\u{e9}");
+        assert_eq!(c.contents(), "h\u{e9}");
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::Edit(EditKey::Text("!".to_string())), &lines, &w), Vec::<Act>::new());
+        assert_eq!(c.edit.text, "h\u{e9}!");
     }
 
     #[test]
