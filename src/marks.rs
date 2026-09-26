@@ -133,6 +133,10 @@ pub struct Marks {
     prompt_range: ((i64, usize), (i64, usize)),
 }
 
+/// The most cells one accrue check reads: a part that long is over `MAX_ACCRUED` anyway
+/// (`prompt_state::output` would drop it).
+const ACCRUE_CELLS: u64 = 4 * crate::prompt_state::MAX_ACCRUED as u64;
+
 /// Decodes %XX escapes (bytes, then UTF-8; Latin-1 when that fails, as iTerm2 does).
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
@@ -428,18 +432,27 @@ impl Screen {
             .unzip()
     }
 
-    /// What the shell echoed from the B anchor to the cursor: the cells' characters, wide
-    /// spacers skipped, a row that ends in a line break trimmed of its trailing blanks.
-    fn echo_since(&self, start: Point) -> String {
+    /// What the shell echoed between two absolute cursors: the cells' characters, wide
+    /// spacers skipped, a row that ends in a line break trimmed of its trailing blanks. None
+    /// once it passes `MAX_ACCRUED` characters or `ACCRUE_CELLS` cells: such a part is over
+    /// the cap and dropped anyway. Also returns the cells read.
+    fn echo_between(&self, from: (i64, usize), to: (i64, usize)) -> (Option<String>, u64) {
+        use crate::prompt_state::MAX_ACCRUED;
         let g = self.term.grid();
-        let (cursor, cols) = (g.cursor.point, g.columns());
-        let mut out = String::new();
-        for line in start.line.0..=cursor.line.0 {
-            let from = if line == start.line.0 { start.column.0 } else { 0 };
-            let to = if line == cursor.line.0 { cursor.column.0 } else { cols };
+        let (off, cols) = (g.scrolled_off() as i64, g.columns());
+        let top = -(g.history_size() as i64);
+        // A start that left the buffer begins at its first line.
+        let (fl, fc) = if from.0 - off < top { (top, 0) } else { (from.0 - off, from.1) };
+        let tl = to.0 - off;
+        let (mut out, mut chars, mut cells) = (String::new(), 0usize, 0u64);
+        for line in fl..=tl {
+            let line = line as i32;
+            let first = if line as i64 == fl { fc } else { 0 };
+            let last = if line as i64 == tl { to.1 } else { cols };
             let row = &g[Line(line)];
             let mut text = String::new();
-            for c in from..to.min(cols) {
+            for c in first..last.min(cols) {
+                cells += 1;
                 let cell = &row[Column(c)];
                 if cell.flags.intersects(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER) {
                     continue;
@@ -449,32 +462,45 @@ impl Screen {
                     text.extend(extra);
                 }
             }
-            if line != cursor.line.0 && !self.wrapped(line) {
+            if line as i64 != tl && !self.wrapped(line) {
                 text.truncate(text.trim_end_matches(' ').len());
             }
+            chars += text.chars().count();
             out.push_str(&text);
+            if chars > MAX_ACCRUED || cells > ACCRUE_CELLS {
+                return (None, cells);
+            }
         }
-        out
+        (Some(out), cells)
     }
 
     /// The accrue check (`PSM:386-433` applied to the grid, milestone 9l Decision): while a
-    /// command is entered, the echo since the B anchor that is new since the last check is
-    /// the part, with the cursor after it. Runs before each shell-integration event and after
+    /// command is entered, the echo from the last checked cursor to the cursor now is the
+    /// part. A cursor that moved back (a backspace) only moves the checkpoint. Each read
+    /// scans only what is new, never past `ACCRUE_CELLS`, and nothing once the text is at
+    /// `MAX_ACCRUED` (no part can fit). Runs before each shell-integration event and after
     /// each read.
     pub(crate) fn composer_accrue(&mut self) {
         if !self.prompt_state.enabled || !self.prompt_state.entering() || !self.marks.in_command {
             return;
         }
-        let Some(start) = self.marks.command_start.and_then(|a| self.resolve(a)) else { return };
-        let cursor = self.cursor_point();
-        let text = if cursor > start { self.echo_since(start) } else { String::new() };
-        let n = text.chars().count();
-        if n > self.composer_seen {
-            let part: String = text.chars().skip(self.composer_seen).collect();
-            let events = self.prompt_state.output(&part, self.abs_cursor());
+        if let crate::prompt_state::State::Accruing { so_far, .. } = &self.prompt_state.state {
+            if so_far.encode_utf16().count() >= crate::prompt_state::MAX_ACCRUED {
+                return;
+            }
+        }
+        let Some(from) = self.composer_from else { return };
+        let cursor = self.abs_cursor();
+        self.composer_from = Some(cursor);
+        if cursor <= from {
+            return;
+        }
+        let (part, cells) = self.echo_between(from, cursor);
+        self.composer_scanned += cells;
+        if let Some(part) = part.filter(|p| !p.is_empty()) {
+            let events = self.prompt_state.output(&part, cursor);
             self.composer_events.extend(events);
         }
-        self.composer_seen = n;
     }
 
     /// The code of the command before the newest one, for the alert sound.
@@ -612,8 +638,10 @@ impl Screen {
                 None => {}
             },
             Osc::Prompt { kind, aid, fresh_line } => {
+                // Any A reaches the machine (`PSM:291-305`); only the kinds that make a mark
+                // move the prompt range, which stays with the marks.
                 let counted = matches!(kind, PromptKind::Initial | PromptKind::Unknown);
-                let events = if counted { self.prompt_state.a() } else { Vec::new() };
+                let events = self.prompt_state.a();
                 self.composer_events.extend(events);
                 let redraw = self.marks.in_command;
                 self.prompt_start(kind, aid, fresh_line);
@@ -629,7 +657,7 @@ impl Screen {
                 self.composer_events.extend(events);
                 self.marks.in_command = true;
                 self.marks.command_start = self.marks.current.and_then(|c| self.anchor_here(c));
-                self.composer_seen = 0;
+                self.composer_from = Some(self.abs_cursor());
                 // The prompt is captured unless its range did not change (`MS:4749-4777`).
                 let range = crate::prompt_state::prompt_range(self.marks.prompt_range.0, self.abs_cursor());
                 if range != self.marks.prompt_range {
@@ -1344,5 +1372,61 @@ mod tests {
         assert!(s.take_composer_events().is_empty());
         assert!(s.prompt_state.eligible);
         assert!(s.prompt_state.entering());
+    }
+    #[test]
+    fn accruing_through_long_output_does_bounded_work() {
+        use crate::prompt_state::{Event, State, MAX_ACCRUED};
+        // A shell that sends A and B but C late stays Accruing through the output.
+        let mut s = Screen::with_scrollback(40, 10, 1000);
+        s.prompt_state.enabled = true;
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
+        s.take_composer_events();
+        let before = s.composer_scanned;
+        for i in 0..300 {
+            s.feed(format!("\r\noutput line {i:04}").as_bytes());
+        }
+        // Each read scans only what is new: about one row or two per read, not every row
+        // since B (which would be about 300 * 150 rows of 40 cells).
+        let scanned = s.composer_scanned - before;
+        assert!(scanned <= 300 * 2 * 40, "scanned {scanned} cells");
+        // At the cap, nothing more is read at all.
+        let State::Accruing { so_far, .. } = &s.prompt_state.state else { panic!("{:?}", s.prompt_state.state) };
+        let mut s2 = Screen::with_scrollback(40, 10, 1000);
+        s2.prompt_state.enabled = true;
+        s2.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        s2.feed("x".repeat(MAX_ACCRUED).as_bytes());
+        assert!(matches!(&s2.prompt_state.state, State::Accruing { so_far, .. } if so_far.len() == MAX_ACCRUED));
+        let at_cap = s2.composer_scanned;
+        s2.feed(b"\r\nmore output\r\nand more");
+        assert_eq!(s2.composer_scanned, at_cap);
+        assert!(!so_far.is_empty());
+        // A part larger than the cap is dropped without reading past the bound.
+        let mut s3 = Screen::with_scrollback(40, 10, 1000);
+        s3.prompt_state.enabled = true;
+        s3.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
+        s3.take_composer_events();
+        let before = s3.composer_scanned;
+        s3.feed("y".repeat(MAX_ACCRUED * 3).as_bytes());
+        assert!(s3.take_composer_events().is_empty());
+        assert!(s3.composer_scanned - before <= 4 * MAX_ACCRUED as u64 + 40);
+        s3.feed(b"z");
+        assert_eq!(s3.take_composer_events(), vec![Event::Append("z".into())]);
+    }
+
+    #[test]
+    fn any_prompt_kind_reaches_the_machine() {
+        use crate::prompt_state::{Event, State};
+        let mut s = Screen::new(40, 10);
+        s.prompt_state.enabled = true;
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        s.take_composer_events();
+        let marks = s.marks_in_order().len();
+        // A continuation prompt (k=s) dismisses as PSM:291 does for any A, makes no mark, and
+        // keeps the prompt range (so B does not re-capture: the range is unchanged).
+        s.feed(b"\r\n\x1b]133;A;k=s\x07> ");
+        assert_eq!(s.take_composer_events(), vec![Event::Dismiss]);
+        assert_eq!(s.prompt_state.state, State::ReceivingPrompt);
+        assert_eq!(s.marks_in_order().len(), marks);
+        assert_eq!(s.prompt_rows().1, vec!["$ ".to_string()]);
     }
 }

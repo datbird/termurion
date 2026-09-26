@@ -218,8 +218,10 @@ pub struct Screen {
     pub prompt_state: crate::prompt_state::PromptState,
     /// What the machine asked of the app, taken by it.
     pub(crate) composer_events: Vec<crate::prompt_state::Event>,
-    /// Characters from the B anchor to the cursor at the last accrue check.
-    pub(crate) composer_seen: usize,
+    /// The cursor (absolute line, column) at the last accrue check; set at B.
+    pub(crate) composer_from: Option<(i64, usize)>,
+    /// Cells the accrue check has read (a test counter for its bound).
+    pub(crate) composer_scanned: u64,
     /// The alternate screen was showing at the last check.
     composer_alt: bool,
 }
@@ -376,7 +378,8 @@ impl Screen {
             last_dark: true,
             prompt_state: Default::default(),
             composer_events: Vec::new(),
-            composer_seen: 0,
+            composer_from: None,
+            composer_scanned: 0,
             composer_alt: false,
         }
     }
