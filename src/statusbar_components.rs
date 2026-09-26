@@ -80,10 +80,14 @@ const TIMEOUT_KEY: &str = "timeout";
 const SHOW_PERCENTAGE_KEY: &str = "ShowPercentage";
 /// `BAT:19`, iTerm2's own key, verbatim.
 const SHOW_TIME_KEY: &str = "ShowTime";
-const DOWNLOAD_COLOR_KEY: &str = "download color";
-const DOWNLOAD_TEXT_COLOR_KEY: &str = "download text color";
-const UPLOAD_COLOR_KEY: &str = "upload color";
-const UPLOAD_TEXT_COLOR_KEY: &str = "upload text color";
+/// `NET:19-22`, iTerm2's own key, verbatim.
+const DOWNLOAD_COLOR_KEY: &str = "Network download color";
+/// `NET:19-22`, iTerm2's own key, verbatim.
+const DOWNLOAD_TEXT_COLOR_KEY: &str = "Network download text color";
+/// `NET:19-22`, iTerm2's own key, verbatim.
+const UPLOAD_COLOR_KEY: &str = "Network upload color";
+/// `NET:19-22`, iTerm2's own key, verbatim.
+const UPLOAD_TEXT_COLOR_KEY: &str = "Network upload text color";
 /// `iTermStatusBarGitComponentPollingIntervalKey` (`GIT:113-134`), iTerm2's own key,
 /// verbatim.
 const GIT_POLLING_INTERVAL_KEY: &str = "iTermStatusBarGitComponentPollingIntervalKey";
@@ -827,6 +831,10 @@ mod tests {
 
         let network = knobs(Kind::Network, Algorithm::Stable);
         assert_eq!(labels(&network), ["Background Color:", "Priority:", "Text Color:", "Download Color:", "Download Text Color:", "Upload Color:", "Upload Text Color:"]);
+        // `NET:19-22`: iTerm2's own keys, verbatim (the "Network " prefix is part of the
+        // key, not just the label).
+        let network_keys: Vec<&str> = network[3..].iter().map(|k| k.key.as_str()).collect();
+        assert_eq!(network_keys, ["Network download color", "Network download text color", "Network upload color", "Network upload text color"]);
         for k in &network[3..] {
             assert_eq!(k.kind, KnobKind::Color);
             assert!(k.default.is_none(), "{}", k.label);
