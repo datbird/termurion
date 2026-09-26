@@ -138,7 +138,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Instant Replay memory usage limit | InstantReplayMemoryMegabytes | Megabytes of memory reserved per session for the Instant Replay scrollback-video-like history. | missing | Tandem has no Instant Replay feature. |
+| Instant Replay memory usage limit | InstantReplayMemoryMegabytes | Megabytes of memory reserved per session for the Instant Replay scrollback-video-like history. | have | Milestone 10a: key `IRMemory`, General > Instant Replay, 0 to 1000 MB, default 4; read when a pane is installed, so a change applies to sessions started after it. |
 | Save copy/paste and command history to disk | SavePasteAndCommandHistory | Persists paste history and (with shell integration) command history to disk between launches. | have | Milestone 9b/9c: paste history (pbhistory.json) and shell history (shell_history.json) in %APPDATA%\Tandem. |
 | Add Bonjour hosts to Profiles | AddBonjourHostsToProfiles | Automatically creates dynamic profiles for SSH hosts discovered via Bonjour/mDNS. | missing |  |
 | Ignore non-critical shell integration updates | NotifyOnlyForCriticalShellIntegrationUpdates | Suppresses shell-integration-outdated nags except for critical/breaking updates. | missing |  |
@@ -374,7 +374,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Send Text... | KEY_ACTION_TEXT | Sends literal text, optionally with placeholders for Tab/Esc/etc. | have |  |
 | Ignore | KEY_ACTION_IGNORE | Swallows the keystroke; nothing is sent to the terminal. | have |  |
 | Unsupported Command (deprecated) | KEY_ACTION_IR_FORWARD | Formerly stepped Instant Replay forward; deprecated. | have | Does nothing, as in iTerm2 (retired). |
-| Start Instant Replay | KEY_ACTION_IR_BACKWARD | Opens Instant Replay to scrub backward through recent screen history. | missing | Comes in milestone 10. |
+| Start Instant Replay | KEY_ACTION_IR_BACKWARD | Opens Instant Replay to scrub backward through recent screen history. | have | Milestone 10a: key action 15; does nothing in a tmux gateway pane. |
 | Send ^H Backspace | KEY_ACTION_SEND_C_H_BACKSPACE | Sends the ASCII BS (0x08) character for Backspace. | have |  |
 | Send ^? Backspace | KEY_ACTION_SEND_C_QM_BACKSPACE | Sends the ASCII DEL (0x7F) character for Backspace. | have |  |
 | Select Split Pane on Left | KEY_ACTION_SELECT_PANE_LEFT | Moves focus to the split pane to the left. | have |  |
@@ -1041,7 +1041,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | browserProxyEnabled | browserProxyEnabled (bool, default NO) | Enable HTTP proxy for web browser? When enabled, routes all browser traffic through the configured proxy server. | missing |  |
 | browserProxyHost | browserProxyHost (string, default @"127.0.0.1") | HTTP proxy hostname or IP address The address of the proxy server to use for browser connections. | missing |  |
 | browserProxyPort | browserProxyPort (int, default 8118) | HTTP proxy port The port number of the proxy server. | missing |  |
-| webInstantReplayFrameRate | webInstantReplayFrameRate (float, default 60.0) | Instant replay frame rate for web browser sessions. | missing |  |
+| webInstantReplayFrameRate | webInstantReplayFrameRate (float, default 60.0) | Instant replay frame rate for web browser sessions. | missing | Tandem has no web browser sessions; Instant Replay's own cadence (milestone 10a) is unrelated to this setting. |
 | browserPluginPathHint | browserPluginPathHint (string, default @"") | Location of browser plugin if it cannot be auto-detected. | missing |  |
 
 ### Experimental Features

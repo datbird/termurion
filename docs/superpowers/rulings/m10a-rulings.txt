@@ -1,0 +1,175 @@
+Plan: Ruling: frames are alacritty rows cloned from the active grid; dirty lines come from alacritty's damage tracking, read and reset only by the recorder; no alacritty patch - cost if wrong: cursor-only moves count as damage (as iTerm2's dirty bits do).
+
+Plan: Ruling: the byte ring is emulated exactly with Tandem's cell size, line metadata payloads counted 0 - cost if wrong: the number of frames a given IRMemory holds differs from iTerm2's by the cell-size ratio.
+
+Plan: Ruling (superseded below): recording cadence is at most one frame per pane per 16 ms, from the pump pass (damage accumulates between frames) - cost if wrong: none visible.
+
+Task 2: CORRECTION (fix round 1, source wins, supersedes the plan-level 16 ms rule above): recording cadence follows iTerm2's changeCadenceIfNeeded: instead - idle (no output for 3 s) or not in a visible tab: 1 s; on the alternate screen: 16 ms; otherwise 16 ms (fast) when throughput is strictly between 0 and 10000 B/s, else slow. Tandem renders on the GPU like iTerm2's default Metal path (UseMetal YES), so the slow rate is metalSlowFrameRate 30 fps (iTermAdvancedSettingsModel.m:570), not iTerm2's non-Metal 15 fps - cost if wrong: busy panes record twice as many frames; a background pane's replay would cover minutes like iTerm2 instead of seconds.
+
+Plan: Ruling: a frame of a different size than the pane is cropped or padded, and the window is not resized (iTerm2 resizes the window to the frame) - cost if wrong: a frame recorded in a larger pane shows cut off.
+
+Plan: Ruling: the panel is an egui host window that never activates; Tandem's keys reach it only through the pane (as iTerm2's never-key panel) - cost if wrong: none.
+
+Plan: Ruling: the .itr file is Tandem's own (gzip of JSON rows); iTerm2 recordings are not readable (NSKeyedArchiver and screen_char_t with process-local complex characters) - cost if wrong: no exchange of recordings with iTerm2.
+
+Plan: Ruling: a loaded recording opens as a session-local profile copy in a tab at index 0; closing its panel closes that tab, not the whole window (iTerm2 closes the window) - cost if wrong: differs from iTerm2 in the user's favor.
+
+Plan: Ruling: user text replaces "iTerm2" with "Tandem"; times use the Windows locale's short date and medium time formats - cost if wrong: none.
+
+Plan: Ruling: Win chords reach the menus during replay (iTerm2's key equivalents run before the session's keyDown); every other key is taken - cost if wrong: none.
+
+Plan: Ruling: the replay pane keeps the live pane's title and status bar; tmux panes record and replay like others (no window resize, so the tmux size lock is untouched) - cost if wrong: none.
+
+Plan: Ruling: IRMemory is read when a pane is installed; a change applies to panes started later (iTerm2 reads it once per screen) - cost if wrong: none.
+
+Plan: Ruling: frame rows carry the Tandem row patches (marks, folds, notes, blocks, buttons, portholes, image tiles) because they are whole rows; an image tile whose image the store has since dropped draws blank in replay - cost if wrong: a replayed inline image can be missing.
+
+Plan: Ruling: diff frames store cloned rows (no sharing between frames), so the byte budget is also the real memory bound, within the cell-size ratio - cost if wrong: none.
+
+Plan: Ruling: a tmux gateway pane has no recorder (it shows no screen); key action 15 there does nothing - cost if wrong: none.
+
+Plan: Ruling: the recorder always reads the pane's own screen, so a Zoom or Filter view, the composer, and Make Screenshot's frozen copy never enter a recording - cost if wrong: none.
+
+Plan: Ruling: parity rows are found by title - cost if wrong: none.
+
+Task 1: Ruling: two crash-avoidance departures are kept where iTerm2 would assert or dereference nil - reserve stops freeing once it would have to free past the ring's last block (only reachable at exactly half capacity), and a frame that would be diff-eligible with no frame left in the recorder after eviction becomes a key frame instead, so the key-frame counter does not advance for it - cost if wrong: none visible; iTerm2 would hang (the first case) or its decoder would assert (the second) if Tandem followed it exactly.
+
+Task 1: Ruling: Info.cursor is stored as (column, line), the reverse of iTerm2's (cursorX, cursorY) pair order - cost if wrong: a caller swaps the pair (resolved in Task 2, no lingering cost).
+
+Task 1: Ruling: clear() refuses only a read-only recorder; the replaying half of iTerm2's canClear is left to the caller's can_clear(replaying), since the Rust recorder keeps no decoder list - cost if wrong: a caller that skips can_clear could clear during a replay (the stranded decoder then shows stale rows, no crash); Task 5 calls can_clear before clear, so Clear Instant Replay during a replay clears nothing (kept bug, see the checklist).
+
+Task 1: Ruling: copy_range over the whole range (from == first && to == last) returns a clone, keeping read_only; a partial copy is never read-only - cost if wrong: none for export.
+
+Task 1: Ruling: the key-frame counter wraps (wrapping_add) where iTerm2's int overflows - cost if wrong: none (2^32 eligible frames).
+
+Task 1: Ruling: pub mod dvr; is placed after mru in lib.rs - cost if wrong: none (module order only).
+
+Task 1: minor (deferred): no test for the reserve guard (an exact-half-capacity frame appended three times).
+
+Task 1: minor (deferred): last clones full key-frame rows but only is_some() is read.
+
+Task 1: minor (deferred, carried to Task 2): counted bytes understate diff memory by about 3x (a constant factor); a 0-row frame counts 0 bytes and is never evicted, so Task 2 must never record an empty screen.
+
+Task 2: Ruling: a line is dirty when alacritty damaged it OR its content differs from the last capture, because Tandem's own grid edits made outside alacritty's handlers (image tiles, trigger highlights, folds through splice_rows) carry no alacritty damage and would otherwise replay stale rows; a damaged line stays dirty even when its content is unchanged, as in iTerm2 - cost if wrong: frames are slightly more often diffs than iTerm2's for the same output, plus one screen of memory per pane.
+
+Task 2: Ruling: when the cursor has not moved, alacritty's automatic cursor-cell damage is ignored unless the cursor line's content changed (iTerm2 forces the cursor lines dirty only on a move) - cost if wrong: a same-character overwrite at an unmoved cursor makes no frame, which would look identical anyway.
+
+Task 2: Ruling: a view scrolled back (display_offset > 0) counts as full damage, because alacritty's damage cannot be mapped back to grid lines once shifted by the offset - cost if wrong: a few key frames appear where diffs were possible while the user is scrolled back.
+
+Task 2: Ruling: a Tandem edit with no alacritty damage at all (a fold with no following output) enters the recording only with the next damage - cost if wrong: a fold or unfold shows in replay one frame late.
+
+Task 2: Ruling: replay_at is set whenever a capture happened even if the recorder refused the frame (TooBig); about_to_wait also calls record_replay_frames and wakes at replay_at plus the pane's own gap for a pane that captured recently, so output landing in the gap after a burst is not left out of the recording until an unrelated event - cost if wrong: one extra event-loop pass per recorded frame during output.
+
+Task 2: Ruling: tmux panes size their recorder from IRMemory in tmux_pane (src/app/tmux_tabs_ui.rs), since they bypass install_pane; a new Pane otherwise starts with Dvr::new(capacity_for(4)), the setting's default - cost if wrong: tmux panes would record at the 4 MB default whatever the setting; any other construction path would ignore a changed IRMemory.
+
+Task 2: Ruling: the IRMemory row sits under a new "Instant Replay" section after General > Startup - cost if wrong: section order on the General page only.
+
+Task 2: Ruling: now_us is wall-clock microseconds (iTerm2's timestamps are wall-clock too); a commit stamp is max(now_us, last + 1), so stamps never repeat or run backward on a clock change - cost if wrong: a clock change could reorder timestamps, though the frame gap still keeps frames apart.
+
+Task 2: CORRECTION (fix round 1, critical): idle full damage no longer makes a frame every 16 ms. In the "no clean line" case (TermDamage::Full, which insert mode returns on every read, or a view scrolled back), Screen::replay_capture now returns None when the size, cursor and every row are unchanged from the last capture; only a real change gives a frame with no clean line - this withdraws the initial behavior - cost if wrong (of the withdrawn behavior): a background or idle pane with insert mode on, or scrolled back, would record at 60 Hz, filling the buffer with duplicate frames.
+
+Task 2: Ruling (fix round 1): iTerm2's Metal path features beyond the slow-rate change above (adaptive rate only with maximizeThroughput), ProMotion, low power mode, and live resize are not modeled; iTerm2's 1 ms scheduling knock and its deferral of a slower cadence until the next tick are not modeled; state.active (blinking text, transient titles) does not keep a pane out of idle, since blinking does not damage alacritty rows - cost if wrong: slightly different frame counts under heavy output; the first frame after throughput rises can come about 50 ms later than in iTerm2; none visible for the blinking case.
+
+Task 2: Ruling (fix round 1): replay_rows is refreshed only for dirty lines (clean lines are already known equal) and replaced whole only on a size change; when the recorder cannot hold a frame at all (key_bytes > capacity / 2, including IRMemory 0) or is read-only, record_frame calls the new Screen::replay_discard, which reads and resets the damage without copying or comparing anything - cost if wrong: none, an internal efficiency measure with no visible effect.
+
+Task 2: minor (deferred): an idle insert-mode or scrolled-back pane does a full-grid row compare per loop pass after its gap (CPU cost only).
+
+Task 2: minor (deferred): the throughput bucket clock starts at first add, not at pane creation.
+
+Task 3: Ruling: ir_key's key type is crate::keys::Key; the brief's interface list names a keystroke::Key path that does not exist in the codebase - cost if wrong: none (a one-line import fix).
+
+Task 3: Ruling: frame_screen's row-crop direction when a frame is taller than the pane is bottom-aligned (VT100Grid.m:2198-2245 sourceLineOffset), keeping the frame's newest rows, with the cursor's Y clamped by the same offset; a shorter frame is top-aligned with blank padding, as the brief already states - cost if wrong: a replayed frame recorded in a taller pane would show its top rows instead of its bottom rows when replayed in a shorter one.
+
+Task 3: Ruling: timestamp_for_fraction multiplies in f32 precision, not f64, because Objective-C's long long range * float f promotes to float before assigning back into the long long - cost if wrong: a negligible precision difference for any replay duration under years long.
+
+Task 3: Ruling: Replay.read_only is set from d.read_only at enter time and otherwise unused by Task 3; it exists so Task 5 can tell a loaded recording's Esc (closes the session) from a live session's replay (returns to live) - cost if wrong: Task 5 would need a different source of truth; no Task 3 code depends on its exact semantics.
+
+Task 3: Ruling: step's decoder-less branch (never reached; enter always produces Some(decoder)) returns false without touching Replay, matching "a None decoder beeps" - cost if wrong: none identified, no caller constructs a Replay with decoder: None.
+
+Task 3: minor (deferred): seek_fraction returns -1 with no decoder (unreachable in practice, undocumented).
+
+Task 4: Ruling: Panel's methods (export_button, cancel, buttons, band) are pub fn though the brief's interface list wrote them as plain fn, matching every other pure model in the codebase, since a private method would be unreachable from replay_ui.rs - cost if wrong: none, a one-line visibility change.
+
+Task 4: Ruling: slider, band and ticks all treat a non-positive span (last <= first) as None / 0.0 / no ticks rather than propagating a panic, since an empty recording has first_timestamp() == last_timestamp() == 0 and the panel must never crash on it - cost if wrong: none observed.
+
+Task 4: Ruling: ticks' repeat-drop compares only to the immediately preceding pushed x, matching xFromFraction:'s lastX variable, which is equivalent to full deduplication for the sorted timestamp input every caller passes - cost if wrong: none for sorted input.
+
+Task 4: Ruling (initial, superseded below): the panel's fallback origin (no room above or below the window) sets the panel's bottom edge flush under the tab strip, extending upward (origin_y = tabs_bottom - size.1), read from the brief's prose - cost if wrong: the panel would sit one panel-height off in the rare case a window fills the whole work area.
+
+Task 5: CORRECTION (source wins, supersedes Task 4's initial fallback-origin reading above): the fallback origin instead sets the panel's top edge flush under the tab strip, extending downward into the content area (origin_y = tabs_bottom), matching PT:10491-10509's y-down translation (NSTabView is flipped, so its (0,0) is the tab strip's bottom edge, and AppKit's "minus the height" there extends the panel down in flipped coordinates); confirmed by the Task 4 re-review and shipped in commit a637c09 - cost if wrong: the panel would sit over the tab strip instead of flush under it on a full-height window. The fallback also uses the tab strip's real screen position, where iTerm2 itself passes a window-relative y as if it were a screen coordinate (an iTerm2 bug); Tandem's version is not emulated.
+
+Task 5: Ruling: the replay view swap uses only Pane::show_view / Pane::end_view (Task 3's named risk); the frame screen is a fresh Screen::with_look that is never fed bytes (rows are spliced by replay::frame_screen), so no triggers, marks, or shell integration run on it, and live recording keeps reading own(); show_view still refuses while frozen (Make Screenshot), left alone - cost if wrong: none; confirmed clean.
+
+Task 5: Ruling: ir_advance, replay_session, replay_key, close_instant_replay, and replay_seek take an event_loop: &ActiveEventLoop argument beyond the brief's signatures, since opening the panel (an egui window) and closing a read-only recording's pane both need one - cost if wrong: Task 6 calls them with the extra argument.
+
+Task 5: Ruling: ReplayWindow::open takes no placement; it opens hidden and place(at) shows it, because originForAccessoryOfSize: needs the panel's real frame size (title bar included), known only once the window exists - cost if wrong: none visible.
+
+Task 5: Ruling: open takes ticks: Vec<i64> (timestamps) instead of the brief's Vec<f32>, since Panel.ticks_at_open holds timestamps and replay_panel::ticks converts them to x positions at draw time, as iTerm2's events view keeps fractions and converts at draw - cost if wrong: none.
+
+Task 5: Ruling: PanelView carries an extra current_ts: i64 (the decoder's timestamp, -1 live) so the Export button can call Panel::export_button(current); Panel itself lives in ReplayWindow - cost if wrong: none.
+
+Task 5: Ruling: the export band is measured against the first and last of ticks_at_open (fixed when the panel opens), not the recorder's live range, matching iTerm2's _firstTimestamp/_span captured once - cost if wrong: a slightly shifted band after new frames arrive while the panel stays open.
+
+Task 5: Ruling: a modifier key alone is taken silently while the panel shows (iTerm2 sees modifiers as flagsChanged:, not keyDown, so no beep); a key with no Tandem name beeps unless Win is held, in which case it passes to the menus - cost if wrong: a beep more or less.
+
+Task 5: Ruling: Step { dir, count } calls ir_advance(dir) count times, so Shift+Left at the start of the recording beeps up to 15 times, as iTerm2's irPrev:/irNext: called n times does - cost if wrong: repeated beeps.
+
+Task 5: Ruling: OtherPaneActive is sent only when the previously active pane was replaying, and it acts on that pane; tab and pane changes are detected by comparing (tab id, focused pane) per window at redraw and in about_to_wait, since Tandem changes focus in about 40 places - cost if wrong: a change with no redraw is noticed on the next loop pass instead of immediately.
+
+Task 5: Ruling: TabShown { replaying: false } closes the panel and runs the live pane's put-back, so a tab switched away from keeps its own replay and panel, and both return when its tab is shown again - cost if wrong: none.
+
+Task 5: Ruling: PaneClosed fires for any pane closed in a window whose panel is open, and acts on the focused pane; closing the focused pane simply drops the panel with it, closing a background pane also ends the focused pane's replay, matching iTerm2's closeSessionWithoutConfirmation: - cost if wrong: none (matches the source).
+
+Task 5: Ruling: WindowClosed only drops the panel, never closes a read-only pane itself, keeping close_window's pane list valid - cost if wrong: none.
+
+Task 5: Ruling: SplitSelection (Move Session to Split Pane) has no trigger in Tandem, since that command is not implemented; the pure closer rule is tested, but the app path is untestable until it exists - cost if wrong: none today; see the checklist.
+
+Task 5: Ruling: closing the panel's close box runs the equivalent of windowWillClose:: a live replay returns to live, while a loaded (read-only) recording's pane closes its tab, not the whole window (the plan-level "closes that tab" ruling) - cost if wrong: none.
+
+Task 5: Ruling: entering replay ends a Filter or Zoom view first (App::end_view, which also closes the filter), so the filter's refresh never feeds the replay view - cost if wrong: a Filter in effect is lost when replay starts.
+
+Task 5: Ruling: the replay view uses Look::default() and the pane's own palette and cell pixel size (the Filter view's precedent) - cost if wrong: the replay cursor may draw in the default style instead of the profile's.
+
+Task 5: Ruling: after a relayout changes a replaying pane's size, its frame is refit (frame_screen rebuilt at the new size) without leaving Copy Mode - cost if wrong: none.
+
+Task 5: Ruling: "hides when Tandem is not the active app" is read as the foreground window belonging to Tandem's own process, checked once per loop pass in about_to_wait for every window's panel - cost if wrong: a panel may linger visible until the next loop pass after Tandem loses focus.
+
+Task 5: Ruling: the xib's autoresizing masks are followed on a width resize: the slider and events strip stretch with the width, while the labels and buttons keep their left positions (flexibleMaxX); this corrects the Resume notes, which said the labels keep their right margins - cost if wrong: a widened panel's slider would run under "Now" and the buttons, and a narrowed one would clip the buttons, instead of the buttons and labels staying put while only the slider and tick strip stretch (the visible checklist behavior).
+
+Task 5: Ruling: PanelAct::Export does nothing in this task; the file writer (Session > Log > Export Recording, and the panel's own Export) is built in Task 6.
+
+Task 5: Ruling: the panel's "same day" comparison key is (year, month * 32 + day) of local time, fed to time_label as day_of; today is the local day at draw time.
+
+Task 5: CORRECTION (fix round 1, source wins, supersedes the initial decision above): Esc while the export state is Set Start or Set End now always exits replay (close_instant_replay(true)); iTerm2's panel is never key (IRW:80-86) and PS:12863-12866 treats any Esc in replay the same way, so the earlier "Esc cancels the export step back to Normal" reading is withdrawn - cost if wrong (of the withdrawn behavior): Esc would not be able to leave replay while an export range is being picked; a person would need to click Cancel first.
+
+Task 5: CORRECTION (fix round 1, source wins, supersedes the initial decision above): the panel is fully opaque; WS_EX_LAYERED, SetLayeredWindowAttributes, and the hover-alpha handling are removed, because Tandem's flip-model DXGI swap chain does not reliably present into a layered window, withdrawing the initial 0.9-alpha/hover-to-1.0 plan - cost if wrong: none remaining; the only loss is iTerm2's 0.9 alpha and its brighten-on-hover, neither of which is emulated.
+
+Task 5: minor (deferred, carried to the Task 7 checklist): after Clear Instant Replay during a replay, the panel shows "Live View" while the stale frame stays on screen (iTerm2 shows a 1970 date instead).
+
+Task 6: Ruling (source over brief, private key names): PRIVATE_KEYS uses iTerm2's real profile key names from ITAddressBookMgr.h - "Archive On Closure", "Plain Text Logging", "Rewritable", "Is Dynamic Profile", and "Bindings" - not the brief's guessed "Archive", "Logging Style", "Dynamic Profile Rewritable", "Dynamic Profile", and "Key Bindings"; Tandem's own schema already uses "Archive On Closure" and "Plain Text Logging" - cost if wrong: a key literally named "Key Bindings" (none exists in the schema) would be kept in an exported profile instead of redacted.
+
+Task 6: Ruling (source over brief): bytes with no gzip magic reach the JSON parser unchanged and are refused as Unarchive, not Decompress, matching NSData+GZIP.m's gunzippedData (returns the input as is when it lacks gzip's magic bytes) feeding iTerm2's unarchiver - cost if wrong: a plain-JSON .itr file would load, and a non-gzip file would show the decompression-failure text instead of the "could not be recognized" one.
+
+Task 6: CORRECTION (fix round 1, source wins, supersedes the initial reading above): a gzip stream that starts inflating but fails partway (a truncated or corrupted .itr file) also reaches the JSON parser and is refused as Unarchive, because NSData+GZIP.m:103-126's gunzippedData returns whatever inflated before the failure rather than nothing; LoadError::Decompress is kept only for a stream flate2 cannot even begin to inflate, which cannot happen in practice - this is one of the m10a plan's own known corrections (a failed inflate gives the Unarchive warning) - cost if wrong: a truncated or hand-edited .itr file would show a decompression-failure warning instead of the same "could not be recognized" text an unrelated file gets.
+
+Task 6: Ruling (Controller Ruling 1, exporting an empty recorder): iTerm2's DVR.empty is never actually set true, so Export Recording is always enabled; with nothing recorded the save dialog still shows and writes a valid, empty recording; importing it succeeds when the recorder's capacity is not 0 and opens a blank tab with no replay (replaySession: returns immediately since lastTimeStamp == 0); with IRMemory 0 the capacity is 0 and import instead gives Corrupt - cost if wrong: none; an empty file being saveable and importing as a blank tab is intended (see the checklist).
+
+Task 6: Ruling (kept iTerm2 bug): Session > Log > Export Recording from the menu, run during a replay, shows the save dialog and then "Error encoding recording.", because the current session during a replay is the synthetic one whose recorder is nil; the panel's own Export button instead exports from the live pane's recorder and works normally during a replay - cost if wrong: menu Export Recording during a replay would do nothing useful instead of showing that message (see the checklist).
+
+Task 6: Ruling: load and save warnings use a new ConfirmWindow::warning, an OK-only form with no suppress checkbox, since every iTerm2 warning reached here is persistent (no checkbox); the heading is the window title, defaulting to "Warning" when iTerm2 gives none; warnings are queued app-level and opened on the next loop pass, since export_recording/import_recording keep the brief's signatures with no event loop - cost if wrong: none visible.
+
+Task 6: Ruling: an imported recording enters replay on the next loop pass (recording_replay), mirroring iTerm2's dispatch_async for replaySession:; the recording opens as a session-local profile copy with a fresh Guid (so two imports of the same file never share a Guid), missing profile keys read schema defaults, iTerm2's font-well-formedness check is left out since Tandem panes share one font, and the copy is forgotten when its pane closes - cost if wrong: none visible.
+
+Task 6: Ruling: from_json treats a file as corrupt using iTerm2's own checks (inner version 1 to 4, capacity above 0, begin/end outside the store reset to 0) plus checks iTerm2 has no equivalent for, because Tandem stores rows instead of raw bytes - every key from firstKey to nextKey must have an entry, frameType must be 0 or 1, row counts and lengths must match the frame's size, and the first frame must be a key frame (iTerm2 would assert decoding a leading diff); a buffer with no index or a null index loads as an empty read-only recording, with nextKey taken as firstKey - cost if wrong: a hand-edited file iTerm2 might half-load is refused outright by Tandem.
+
+Task 6: Ruling: outer and inner recording versions 1 to 4 are all accepted on import, as iTerm2 accepts them, although Tandem only ever writes version 4; a version written as a float (4.0) is still refused - cost if wrong: none; the float-version gap is deferred.
+
+Task 6: Ruling: a range export restamps every copied frame as a key frame at export time, using the same monotonic max(now_us, last + 1) clock as live recording - cost if wrong: none visible (this is also a kept iTerm2 bug; see the checklist).
+
+Task 6: Ruling: an imported recording's tab is inserted at index 0 of the current window and made active, as iTerm2's insertSession:atIndex:0 with makeKey; it does not check Locked layout or Prevent Opening in a Tab (iTerm2 also skips those with respectTabbingMode:NO) - cost if wrong: a locked window can gain a recording tab.
+
+Task 6: Ruling: loaded rows keep the Tandem row patches as they were recorded (marks, folds, notes, and the like); these are process-local ids that fit_row drops when the frame is shown, so they never actually appear in a replay - cost if wrong: none visible.
+
+Task 6: CORRECTION (fix round 1, closes a gap the Task 6 ledger ruling first named; one of the m10a plan's own known corrections, "a loaded recording's pane is not saved or restored"): snapshot_window now leaves out every pane whose recorder is read-only. A new pure layout::Tree::retain collapses a split that loses one side into its other side, drops a tab that loses every pane, moves the selected tab off a dropped one, and takes the window's profile from the first pane that is kept; a window with no pane left is skipped entirely, and Duplicate Window of a recordings-only window does nothing. This covers session restoration and both Save Window Arrangement forms, since all of them read through snapshot_all - cost if wrong (of the gap this closes): a restored window would silently lose its recording tab, or worse, restore it as an ordinary shell pane with no pty and a vanished session profile.
+
+Task 6: minor (deferred): a recording version written as a float (4.0) is refused, where iTerm2 accepts it.

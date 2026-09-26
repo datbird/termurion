@@ -142,7 +142,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Edit > Fold Selected Lines | Cmd+L | Collapses the selected lines into a single foldable summary line. (milestone 4) | have |
 | Edit > Fold All | Opt+Shift+Cmd+L | Collapses all foldable regions detected in the buffer. (milestone 4) | have |
 | Edit > Clear Buffer | Cmd+K | Clears the visible screen and scrollback. | have |
-| Edit > Clear Instant Replay | Opt+Cmd+K | Clears the Instant Replay history buffer. (milestone 10) | missing |
+| Edit > Clear Instant Replay | Opt+Cmd+K | Clears the Instant Replay history buffer. (milestone 10) | have, milestone 10a: Win+Alt+K; during a replay it clears nothing (kept iTerm2 bug) |
 | Edit > Clear Scrollback Buffer | Cmd+K | Clears the scrollback history, keeping the visible screen. | have |
 | Edit > Clear to Start of Selection | Cmd+L | Clears the buffer from the top down to the start of the current selection. (milestone 4) | have |
 | Edit > Clear to Last Mark | Opt+Cmd+L | Clears the buffer up to the most recent mark. (milestone 4) | have |
@@ -175,7 +175,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Restore Text and Session Size | Opt+Cmd+0 | Resets both font size and window dimensions to profile defaults. | have |
 | View > Make Text Smaller | Cmd+- | Decreases the session font size. Tandem: Changes every pane, since all panes share one font until per-pane fonts arrive. | partial |
 | View > Size Changes Update Profile | no shortcut | Toggles whether font size changes are saved back to the profile. (milestone 7) | missing |
-| View > Start Instant Replay | Opt+Cmd+B | Opens Instant Replay, a scrubber for rewinding the screen's visual history. (milestone 10) | missing |
+| View > Start Instant Replay | Opt+Cmd+B | Opens Instant Replay, a scrubber for rewinding the screen's visual history. (milestone 10) | have, milestone 10a: Win+Alt+B, key action 15; the floating panel, slider, ticks, and Left/Right/Shift stepping |
 
 ### Session menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
@@ -201,8 +201,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Move Session > Move Session to Tab | no shortcut | Moves the current session/pane out into a new tab. (milestone 7) | have, milestone 8h |
 | Session > Move Session > Move Session to Split Pane | no shortcut | Moves the current session into a split position picked interactively. (milestone 7) | missing |
 | Session > Log > Log to File | no shortcut | Starts or stops logging session output to a file. (milestone 6) | missing |
-| Session > Log > Import Recording | no shortcut | Loads a previously exported session recording for playback. (milestone 10) | missing |
-| Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. (milestone 10) | missing |
+| Session > Log > Import Recording | no shortcut | Loads a previously exported session recording for playback. (milestone 10) | have, milestone 10a: opens a read-only tab at index 0, not restored across a restart or a saved arrangement |
+| Session > Log > Export Recording | no shortcut | Exports the session's recorded history to a file. (milestone 10) | have, milestone 10a: during a replay this menu command shows "Error encoding recording." (kept iTerm2 bug); the panel's own Export button works during a replay |
 | Session > Make Screenshot... | no shortcut | Captures a screenshot of the session content. | have, milestone 5e: a frozen copy with a camera sign, the panel with minimap and line range, Redact and Highlight, blur or solid, Copy, Save, Save As, 30000 px parts |
 | Session > Terminal State > Alternate Screen | no shortcut | Manually toggles the alternate screen buffer mode. | have |
 | Session > Terminal State > Focus Reporting | no shortcut | Manually toggles DECSET focus in/out event reporting. | have |
@@ -712,12 +712,12 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### Instant Replay
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Instant Replay | Time-travel scrollback (DVR) | Records a rolling video-like buffer of every pane's screen state so you can scrub backward in time, independent of normal scrollback. | missing | |
-| Instant Replay | Step backward/forward | Steps one frame back or forward through recorded frames. | missing | |
-| Instant Replay | Scrub bar / seek | Drag a slider to jump to any point in the recorded timeline. | missing | |
-| Instant Replay | Export replay range | Exports a saved range of frames from the DVR buffer. | missing | |
-| Instant Replay | Clear Instant Replay buffer | Wipes the DVR recording. | missing | |
-| Instant Replay | Per-pane independent buffers | Each session has its own DVR instance tied to its grid, not a global recording. | missing | |
+| Instant Replay | Time-travel scrollback (DVR) | Records a rolling video-like buffer of every pane's screen state so you can scrub backward in time, independent of normal scrollback. | have | Milestone 10a: a per-pane byte-ring recorder (key and diff frames) sized by IRMemory, cadence matching iTerm2's (idle/background 1 s, alternate screen 16 ms, else fast/slow by throughput, slow = 30 fps on Tandem's Metal-equivalent GPU path). |
+| Instant Replay | Step backward/forward | Steps one frame back or forward through recorded frames. | have | Milestone 10a: Left/Right, Shift+Left/Shift+Right (15 frames), beeping at the ends. Corrections to the research: the first replay frame is the second newest, not the newest, and frames are recorded at display refresh from dirty lines, not per byte of output. |
+| Instant Replay | Scrub bar / seek | Drag a slider to jump to any point in the recorded timeline. | have | Milestone 10a: the floating panel's slider and tick marks; the ticks are computed once when the panel opens and do not update while it stays open (kept iTerm2 bug). |
+| Instant Replay | Export replay range | Exports a saved range of frames from the DVR buffer. | have | Milestone 10a: Export..., Set Start, Set End in the panel, and Session > Log > Export Recording. A range export stores every frame as a key frame stamped with the export time (kept iTerm2 bug); an empty recorder still exports a valid, empty file. |
+| Instant Replay | Clear Instant Replay buffer | Wipes the DVR recording. | have | Milestone 10a: Edit > Clear Instant Replay, Win+Alt+K. During a replay it clears nothing and strands the replay (kept iTerm2 bug). |
+| Instant Replay | Per-pane independent buffers | Each session has its own DVR instance tied to its grid, not a global recording. | have | Milestone 10a: IRMemory is read when a pane is installed; a change applies only to panes started afterward. tmux panes record and replay like any other pane. |
 
 ### password manager
 | Subsystem | Feature | What it does | Tandem status | Windows note |

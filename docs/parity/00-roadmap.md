@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 169 | 124 | 21 |
-| `02-global-settings.md` | 820 | 248 | 72 | 500 |
-| `03-features-and-menus.md` | 643 | 437 | 39 | 167 |
-| Total | 1,777 | 854 | 235 | 688 |
+| `02-global-settings.md` | 820 | 250 | 72 | 498 |
+| `03-features-and-menus.md` | 643 | 447 | 39 | 157 |
+| Total | 1,777 | 866 | 235 | 676 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -128,8 +128,14 @@ the pane), reachable from View > Show Composer (a floating dropdown), View > Aut
 replaces the shell prompt itself once shell integration reports one), the status bar Composer
 component (a live field with a chevron history menu and an expand button, coexisting with the
 dropdown), and key action 64 (Open Composer); autocomplete stays partial, since AI-sourced
-suggestions wait for milestone 12. Milestone 9 is now complete. Milestone 10 (Instant Replay and
-the password manager) is next.
+suggestions wait for milestone 12. Milestone 9 is now complete. Milestone 10a closed Instant
+Replay (03): a per-pane, memory-capped DVR recorder (key and diff frames, iTerm2's cadence and
+byte-ring rules), Edit > Clear Instant Replay and View > Start Instant Replay (Win+Alt+K,
+Win+Alt+B, key action 15), the floating scrub panel (slider, ticks, Left/Right/Shift stepping,
+Export/Set Start/Set End), and Session > Log > Import Recording and Export Recording, each
+keeping iTerm2's own kept bugs (the second-newest first frame, a stranded Clear during replay, a
+restamped range export, tick marks fixed at panel-open time, and more, listed in
+`docs/acceptance/m10a-checklist.md`). Milestone 10b (the password manager) is next.
 
 ## Order
 
