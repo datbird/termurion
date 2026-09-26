@@ -88,7 +88,7 @@ impl Shown {
 /// `App::tool_gen` (bumped when the shell history, the paste history, the profiles, the
 /// snippets or the actions change), for Command History whether it is April 1 (its
 /// failed-command prefix changes at midnight), and a hash of what else the tool reads (the
-/// focused session's named marks, or its profile's Snippets Filter).
+/// focused session's live named marks, or its profile's Snippets Filter).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ShownKey {
     query: String,
@@ -325,11 +325,11 @@ impl App {
         use std::hash::Hasher;
         let mut h = std::collections::hash_map::DefaultHasher::new();
         match tool {
+            // The live rows, not the records: a mark cleared or trimmed from the scrollback
+            // leaves the list at once. The scan runs only while Named Marks shows.
             ToolId::NamedMarks => {
                 if let Some(p) = pane.and_then(|id| self.panes.get(&id)) {
-                    for m in p.screen.marks.records.values().filter(|m| m.name.is_some()) {
-                        (m.id, &m.name).hash(&mut h);
-                    }
+                    p.screen.live_named_marks().hash(&mut h);
                 }
             }
             ToolId::Snippets => self.snippets_filter().hash(&mut h),

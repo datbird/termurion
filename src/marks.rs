@@ -210,6 +210,7 @@ impl Screen {
         let grid = self.term.grid_mut();
         grid[Line(0)] = saved;
         grid.cursor.point = Point::new(Line(0), cursor.column);
+        self.prune_marks();
     }
 
     /// At the shell prompt, typing a command (iTerm2's currentCommand); None without shell
@@ -393,6 +394,19 @@ impl Screen {
             })
             .filter_map(|(row, id)| Some((row, self.marks.records.get(&id)?.clone())).filter(|_| id != 0))
             .collect()
+    }
+
+    /// The named marks still in the buffer, top first: id and name. Reads the rows, not the
+    /// records, so a mark whose row was cleared or trimmed from the scrollback is gone at once
+    /// (the Named Marks tool keys its list on this).
+    pub fn live_named_marks(&self) -> Vec<(u32, Option<String>)> {
+        self.row_marks().into_iter().filter_map(|(_, id)| self.marks.records.get(&id).filter(|m| m.name.is_some()).map(|m| (id, m.name.clone()))).collect()
+    }
+
+    /// Drops the records whose row is gone (after a clear).
+    pub fn prune_marks(&mut self) {
+        let live: std::collections::HashSet<u32> = self.row_marks().into_iter().map(|(_, id)| id).collect();
+        self.marks.records.retain(|id, _| live.contains(id));
     }
 
     /// Every mark still in the buffer, top first. Records whose row is gone are dropped.
@@ -1060,6 +1074,33 @@ mod tests {
         assert!(!s.rename_mark(c, Some("x".into())));
         assert!(!s.remove_mark(999));
         assert!(!s.remove_mark(c));
+    }
+
+    #[test]
+    fn cleared_and_trimmed_named_marks_are_gone() {
+        // Clear Buffer (to the last mark) and Clear Scrollback drop the records too.
+        let mut s = Screen::with_scrollback(20, 3, 5);
+        s.set_manual_mark(0, Some("a".into()));
+        for i in 0..4 {
+            s.feed(format!("line{i}\r\n").as_bytes());
+        }
+        assert_eq!(s.live_named_marks().len(), 1);
+        s.clear(true);
+        assert!(s.live_named_marks().is_empty());
+        assert!(s.marks.records.is_empty());
+        s.feed(b"x\r\ny\r\nz");
+        let b = s.set_manual_mark(1, Some("b".into()));
+        s.clear_from(0);
+        assert!(!s.marks.records.contains_key(&b));
+        assert!(s.live_named_marks().is_empty());
+        // Trimmed from the scrollback: gone from the live list before any prune.
+        let c = s.set_manual_mark(0, Some("c".into()));
+        assert_eq!(s.live_named_marks(), vec![(c, Some("c".into()))]);
+        for i in 0..20 {
+            s.feed(format!("line{i}\r\n").as_bytes());
+        }
+        assert!(s.marks.records.contains_key(&c), "no prune has run yet");
+        assert!(s.live_named_marks().is_empty());
     }
 
     #[test]

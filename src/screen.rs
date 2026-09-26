@@ -1096,6 +1096,7 @@ impl Screen {
         }
         self.term.clear_screen(ClearMode::Saved);
         self.prune_tags();
+        self.prune_marks();
     }
 
     /// iTerm2's Reset (a soft reset, DECSTR): modes, attributes, margins, and charset go back
