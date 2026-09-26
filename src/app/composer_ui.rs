@@ -27,6 +27,7 @@ use crate::composer_worker::{Job, Reply};
 use crate::composer::{self, Act, Key as CKey, Mods as CMods, Shown};
 use crate::composer_suggest::{self as suggest, Item, ItemKind};
 use crate::palette::Rgb;
+use crate::prompt_state::{self, ClearProbe, Event};
 use crate::text_edit::{self, EditKey, EditOut, VisualLine};
 
 /// A fade's frame interval.
@@ -40,6 +41,10 @@ const TOP_OFFSET: &str = "Composer Top Offset";
 const HEIGHT_KEY: &str = "ComposerHeight";
 /// The accessory row's text against the pane's font.
 const SMALL: f32 = 0.8;
+/// View > Auto Composer's global (`kPreferenceAutoComposer`), menu-only.
+const AUTO_KEY: &str = "AutoComposer";
+/// Shell integration fed the history once (`kCommandHistoryHasEverBeenUsed`).
+const EVER_USED_KEY: &str = "NoSyncCommandHistoryHasEverBeenUsed";
 /// Popup row glyphs (Segoe Fluent Icons: History, Page, Folder, CommandPrompt).
 const HISTORY_GLYPH: char = '\u{E81C}';
 const FILE_GLYPH: char = '\u{E8A5}';
@@ -216,6 +221,46 @@ fn valid_spans(text: &str, spans: &[(Range<usize>, Rgb, bool)]) -> Vec<(Range<us
     spans.iter().filter(|(r, _, _)| r.end <= text.len() && text.is_char_boundary(r.start) && text.is_char_boundary(r.end)).cloned().collect()
 }
 
+/// The Auto Composer's prompt prefix as colored byte ranges of the editor's text: (range,
+/// foreground, bold, background), from the captured rows (`PS:8037-8058`); nothing when the
+/// text does not start with it.
+fn prefix_runs(c: &composer::Composer) -> Vec<(Range<usize>, Rgb, bool, Rgb)> {
+    let Some(p) = &c.prefix else { return Vec::new() };
+    if !c.edit.text.starts_with(&p.text.join("\n")) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut at = 0;
+    for (i, line) in p.text.iter().enumerate() {
+        let end = at + line.len();
+        let mut x = at;
+        for run in p.rows.get(i).map_or(&[][..], |r| &r.runs[..]) {
+            let stop = (x + run.text.len()).min(end);
+            if stop > x && c.edit.text.is_char_boundary(stop) {
+                out.push((x..stop, run.fg, run.bold, run.bg));
+            }
+            x = stop;
+        }
+        at = end + 1;
+    }
+    out
+}
+
+/// Drops what the pane drew into `overlay` from index `from` on (link dashes, annotation and
+/// hover underlines) inside the rows `cover` spans: the rows under an Auto Composer are skipped.
+/// A quad reaching past them (the dimming over the whole pane) stays.
+pub(super) fn skip_covered(overlay: &mut Vec<scene::Quad>, from: usize, cover: Rect) {
+    let mut i = from;
+    while i < overlay.len() {
+        let r = overlay[i].rect;
+        if r.y >= cover.y - 0.5 && r.y + r.h <= cover.y + cover.h + 0.5 {
+            overlay.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// A completion popup: its items, the typed line its rows show in bold, and the selected row.
 struct Popup {
     items: Vec<Item>,
@@ -247,6 +292,9 @@ pub(super) struct View {
     popup: Option<Popup>,
     generation: u64,
     waiting: Option<Fetch>,
+    /// The clear sequence's echo probe (`_composerClearTurdDetector`, `PS:8690-8735`): any
+    /// write to the session drops it.
+    probe: Option<ClearProbe>,
 }
 
 /// A drag that began on the composer: a text selection (Alt: a box of carets from where it
@@ -334,13 +382,272 @@ impl App {
         self.store.get(&guid).or_else(|| self.store.get(&p.profile)).map_or(0.0, |pr| pr.float(TOP_OFFSET) as f32)
     }
 
-    /// The dropdown's parts over pane rectangle `rect` (pixels): `minimal_rect` in points.
+    /// The dropdown's parts over pane rectangle `rect` (pixels): `minimal_rect` in points, or
+    /// the Auto Composer's frame.
     fn composer_layout(&self, pane: PaneId, rect: Rect) -> composer::Layout {
+        if let Some(l) = self.auto_layout(pane, rect) {
+            return l;
+        }
         let s = self.scale();
         let pts = Rect { x: rect.x / s, y: rect.y / s, w: rect.w / s, h: rect.h / s };
         let h = composer::clamp_height(self.composer_height(), pts.h);
         let r = composer::minimal_rect(pts, h, self.composer_top_offset(pane));
         composer::layout(Rect { x: r.x * s, y: r.y * s, w: r.w * s, h: r.h * s }, s)
+    }
+
+    /// The Auto Composer's parts (a composer with `auto` set): `auto_rect` over the pane's grid
+    /// for its laid-out rows, the half row it may not have inside the grid taken from the
+    /// pane's bottom margin; the text starts under the separator (`MCVC:249-270`: 2 points, or
+    /// half a line less 6 when that is more). It has no close, Help, AI or drag handle.
+    fn auto_layout(&self, pane: PaneId, rect: Rect) -> Option<composer::Layout> {
+        let p = self.panes.get(&pane)?;
+        let c = &p.composer;
+        if !c.auto {
+            return None;
+        }
+        let grid = self.inner(rect);
+        let (cw, line_h) = self.cell();
+        let s = self.scale();
+        let lines = composer_wrap(c, &c.edit.text, grid.w, cw);
+        let ends = c.contents().ends_with('\n');
+        let rows = composer::auto_rows(lines.len().saturating_sub(usize::from(ends)), ends);
+        let screen = p.own();
+        let mut panel = composer::auto_rect(grid, line_h, rows, screen.prompt_start_row(), screen.primary_cursor_row());
+        panel.h = panel.h.max(((rows as f32 + 0.5) * line_h).min(rect.y + rect.h - panel.y));
+        let offset = (2.0 * s).max(line_h / 2.0 - 6.0 * s);
+        let text = Rect { x: grid.x, y: panel.y + offset, w: grid.w, h: (panel.h - offset).max(0.0) };
+        let none = Rect { x: panel.x, y: panel.y, w: 0.0, h: 0.0 };
+        Some(composer::Layout { panel, close: none, text, accessory: none, help: none, ai: none, handle: none })
+    }
+
+    /// `haveAutoComposer` (`PS:24264-24266`): the pane's dropdown shows as an Auto Composer.
+    pub(super) fn have_auto_composer(&self, pane: PaneId) -> bool {
+        self.panes.get(&pane).is_some_and(|p| p.composer.auto && p.composer.shown == Shown::Dropdown)
+    }
+
+    /// The rows an Auto Composer covers (its frame), while it is drawn: the pane's terminal
+    /// cursor is hidden and those rows skipped (`PTYTextView.m:2119-2123`).
+    pub(super) fn auto_composer_cover(&self, pane: PaneId, rect: Rect) -> Option<Rect> {
+        let hidden = self.panes.get(&pane).is_none_or(|p| p.composer.hidden);
+        (self.have_auto_composer(pane) && !hidden).then(|| self.composer_layout(pane, rect).panel)
+    }
+
+    /// `shouldShowAutoComposer` (`PS:7981-7987`): Auto Composer is on and the session's
+    /// prompt state allows it.
+    pub(super) fn should_show_auto_composer(&self, pane: PaneId) -> bool {
+        self.globals.bool(AUTO_KEY) && self.panes.get(&pane).is_some_and(|p| p.own().prompt_state.eligible)
+    }
+
+    /// `commandHistoryHasEverBeenUsed` (`iTermShellHistoryController.m:528-531`).
+    /// Remembered once true, as the About Shell Integration check does, so the check mark can
+    /// read it without loading the history.
+    fn command_history_ever_used(&mut self) -> bool {
+        let used = self.shell_history_pub().ever_used() || self.globals.bool(EVER_USED_KEY);
+        if used && !self.globals.bool(EVER_USED_KEY) {
+            self.globals.set(EVER_USED_KEY, toml::Value::Boolean(true));
+        }
+        used
+    }
+
+    /// View > Auto Composer's check mark (`PT:13982-13993`): off until shell history was used.
+    pub(super) fn auto_composer_checked(&self) -> bool {
+        self.globals.bool(AUTO_KEY) && (self.globals.bool(EVER_USED_KEY) || self.shell_history.as_ref().is_some_and(|h| h.ever_used()))
+    }
+
+    /// `textViewOrComposerIsFirstResponder` (`PS:21021-21026`): the pane is the focused one of
+    /// an active window and its terminal or its composer has the keyboard (no tool, find
+    /// typing, Copy Mode or completion list does).
+    fn terminal_has_keys(&self, pane: PaneId) -> bool {
+        if !self.focused || self.focused_id() != Some(pane) {
+            return false;
+        }
+        if self.panes.get(&pane).is_some_and(|p| p.composer.focused) {
+            return true;
+        }
+        self.belt.focus.is_none() && self.typing_in_find().is_none() && !self.copy_modes.contains_key(&pane) && self.completion.is_none()
+    }
+
+    /// The prompt state machine's events for `pane` (`MS:8409-8445` to the session,
+    /// `PS:15647-15682`). Reveal: unless an Auto Composer already shows, the composer is reset,
+    /// becomes the Auto Composer with the prompt as its prefix, and takes the keyboard only if
+    /// the terminal or composer had it in an active window. Dismiss: the session is no longer
+    /// eligible and whatever dropdown shows goes away at once. Append: text the shell echoed
+    /// goes into a shown Auto Composer, which then clears the line with ^U before its send.
+    pub(super) fn composer_events(&mut self, pane: PaneId, events: Vec<Event>) {
+        for ev in events {
+            match ev {
+                Event::Reveal { rows, text } => {
+                    if !self.globals.bool(AUTO_KEY) || self.have_auto_composer(pane) {
+                        continue;
+                    }
+                    let had_keys = self.terminal_has_keys(pane);
+                    let copy = self.copy_modes.contains_key(&pane);
+                    let Some(p) = self.panes.get_mut(&pane) else { continue };
+                    let (fg, bg) = (p.screen.palette.fg, p.screen.palette.bg);
+                    let c = &mut p.composer;
+                    // `reset` (`CM:559-565`), then `isAutoComposer`, the reveal and `setPrefix:`.
+                    c.set_prefix(None);
+                    c.set_string("", true);
+                    c.saved = None;
+                    c.auto = true;
+                    c.shown = Shown::Dropdown;
+                    c.hidden = copy;
+                    c.set_prefix(Some(composer::auto_prefix(rows, text, fg, bg)));
+                    c.shell_provided = false;
+                    self.composer_opened(pane);
+                    if had_keys && !copy {
+                        self.composer_take_keys(pane);
+                    }
+                }
+                Event::Dismiss => {
+                    let Some(p) = self.panes.get_mut(&pane) else { continue };
+                    p.own_mut().prompt_state.eligible = false;
+                    if p.composer.dismiss() {
+                        self.composer_gone(pane);
+                    }
+                }
+                Event::Append(text) => {
+                    if !self.have_auto_composer(pane) {
+                        continue;
+                    }
+                    self.composer_insert(pane, &text);
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.composer.shell_provided = true;
+                    }
+                }
+            }
+        }
+        self.redraw();
+    }
+
+    /// Every pane's prompt state events since the last read.
+    pub(super) fn check_composer_events(&mut self) {
+        let batches: Vec<(PaneId, Vec<Event>)> = self
+            .panes
+            .iter_mut()
+            .filter_map(|(id, p)| {
+                let events = p.own_mut().take_composer_events();
+                (!events.is_empty()).then_some((*id, events))
+            })
+            .collect();
+        for (id, events) in batches {
+            self.composer_events(id, events);
+        }
+    }
+
+    /// View > Auto Composer (`PT:14215-14219`): nothing until shell history was ever used
+    /// (the item is disabled then); flips the global and every session's machine. Turning it
+    /// off leaves a shown Auto Composer up (kept). Turning it on reveals one in each session
+    /// that is entering a command (`again`); its dismissals are not applied, so a dropdown
+    /// the user opened stays. Decision: iTerm2 calls `revealOrDismissComposerAgain` only when
+    /// the composer's rows change, so turning it on shows nothing before the next prompt;
+    /// Tandem reveals at once (the Task 3 contract) - cost if wrong: an Auto Composer appears
+    /// one prompt early.
+    pub(super) fn toggle_auto_composer(&mut self) {
+        if !self.command_history_ever_used() {
+            return;
+        }
+        let on = !self.globals.bool(AUTO_KEY);
+        self.globals.set(AUTO_KEY, toml::Value::Boolean(on));
+        self.save_globals();
+        let mut reveals = Vec::new();
+        for (id, p) in self.panes.iter_mut() {
+            let s = p.own_mut();
+            s.prompt_state.enabled = on;
+            let events: Vec<Event> = s.prompt_state.again().into_iter().filter(|e| matches!(e, Event::Reveal { .. })).collect();
+            if !events.is_empty() {
+                reveals.push((*id, events));
+            }
+        }
+        for (id, events) in reveals {
+            self.composer_events(id, events);
+        }
+        self.menus_dirty = true;
+        self.sync_checks();
+        self.redraw();
+    }
+
+    /// `setComposerString:forceLarge:` (`PS:8690-8727`): the clear sequence
+    /// (`composerClearSequence`, "0x15 0x0b") goes to the shell as sent text, a probe then
+    /// waits 0.1 s for its control characters to echo back, and `s` is placed in the composer.
+    pub(super) fn set_composer_string(&mut self, pane: PaneId, s: &str, force_large: bool) {
+        let seq = self.globals.get(prompt_state::CLEAR_KEY).and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| prompt_state::DEFAULT_CLEAR.to_string());
+        let bytes = crate::keyaction::hex_bytes(&seq);
+        if !bytes.is_empty() {
+            self.user_write(pane, &bytes, Write::SendText);
+        }
+        // Assigned only after the write, which would cancel it (`PS:8716-8720`).
+        self.composers.entry(pane).or_default().probe = ClearProbe::start(&bytes, Instant::now());
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.composer.place(s, false, force_large);
+        }
+    }
+
+    /// Any write to `pane` cancels its clear probe (`PS:4154-4158`).
+    pub(super) fn composer_wrote(&mut self, pane: PaneId) {
+        if let Some(v) = self.composers.get_mut(&pane) {
+            v.probe = None;
+        }
+    }
+
+    /// Output arrived in `panes`: a clear probe still waiting writes the profile's Backspace
+    /// once per control character of the sequence, without broadcasting (`PS:8729-8735`).
+    pub(super) fn composer_output(&mut self, panes: &[PaneId]) {
+        let now = Instant::now();
+        for &pane in panes {
+            let Some(v) = self.composers.get_mut(&pane) else { continue };
+            let Some(probe) = v.probe.as_mut() else { continue };
+            let owed = probe.output(now);
+            if probe.expired(now) {
+                v.probe = None;
+            }
+            let Some(n) = owed.filter(|n| *n > 0) else { continue };
+            let bs = self.backspace_data(pane);
+            if bs.is_empty() {
+                continue;
+            }
+            for _ in 0..n {
+                self.user_write(pane, &bs, Write::SendTextLocal);
+            }
+        }
+    }
+
+    /// `backspaceData` (`PS:12893-12922`): what the profile's Backspace mapping sends.
+    fn backspace_data(&self, pane: PaneId) -> Vec<u8> {
+        // `iTermKeystroke.backspace`: kVK_Delete, no modifiers, 0x7f.
+        let stroke = keystroke::Keystroke::new(0x7f, 0, Some(0x33), 0x7f);
+        let map = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).and_then(|p| p.get("Keyboard Map")).and_then(|v| v.as_table().cloned());
+        let agnostic = self.globals.bool("LanguageAgnosticKeyBindings");
+        let binding = map.as_ref().and_then(|m| stroke.find(m, agnostic).and_then(|k| m.get(k))).and_then(crate::keyaction::Binding::from_value);
+        prompt_state::backspace_bytes(binding.as_ref())
+    }
+
+    /// Copy Mode in `pane` hides its composer and takes its keyboard; leaving gives an Auto
+    /// Composer the keyboard back (`PS:23381-23398`, `setTemporarilyHidden:`).
+    pub(super) fn composer_follow_copy_mode(&mut self, pane: PaneId) {
+        let on = self.copy_modes.contains_key(&pane);
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        if p.composer.hidden == on {
+            return;
+        }
+        p.composer.hidden = on;
+        if on {
+            if std::mem::take(&mut p.composer.focused) {
+                self.refresh_route();
+            }
+        } else if self.have_auto_composer(pane) && self.focused_id() == Some(pane) {
+            self.composer_take_keys(pane);
+        }
+        self.redraw();
+    }
+
+    /// The pane's dropdown went away at once (`dismissAnimated:NO`): no fade.
+    fn composer_gone(&mut self, pane: PaneId) {
+        self.composer_closed(pane);
+        if let Some(v) = self.composers.get_mut(&pane) {
+            v.opened = None;
+            v.closed = None;
+        }
     }
 
     /// The pane's dropdown layout and its text's visual lines (no ghost), when it shows.
@@ -353,10 +660,19 @@ impl App {
         Some((l, lines))
     }
 
-    /// View > Show Composer for `pane` (`CM:146-158`, `PS:8655-8661`): the dropdown toggles,
-    /// taking the keyboard when it opens. (The status bar route, the Auto Composer and the
-    /// current command's clear sequence come with Tasks 7 and 8.)
+    /// View > Show Composer for `pane` (`PS:8655-8661`, `CM:146-158`): the composer becomes an
+    /// Auto Composer when the session wants one; a command already typed at the prompt is
+    /// cleared from the shell and carried into it (`set_composer_string`); then the dropdown
+    /// toggles, taking the keyboard when it opens. (The status bar route is Task 8's.)
     pub(super) fn compose(&mut self, pane: PaneId) {
+        let auto = self.should_show_auto_composer(pane);
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        p.composer.auto = auto;
+        let auto_shown = p.composer.auto && p.composer.shown == Shown::Dropdown;
+        let current = composer::current_command(auto_shown, &p.composer.contents(), p.own().typed_command());
+        if let Some(command) = current.filter(|c| !c.is_empty()) {
+            self.set_composer_string(pane, &command, false);
+        }
         let Some(p) = self.panes.get_mut(&pane) else { return };
         let before = p.composer.shown;
         let after = p.composer.toggle(false);
@@ -761,8 +1077,12 @@ impl App {
                 Act::Control(bytes) => self.user_write(pane, &bytes, Write::SendText),
                 Act::SendRaw(s) => self.user_write(pane, &line_ends(&s), Write::SendText),
                 Act::OpenHistory { prefix, search } => self.composer_windows.history = Some((pane, prefix, !search)),
-                // The Auto Composer's Ctrl+L (Task 7).
-                Act::ClearScreen => {}
+                // The Auto Composer's Ctrl+L (`composerManagerClear:`, `PS:24352-24356`).
+                Act::ClearScreen => {
+                    if let Some(p) = self.panes.get_mut(&pane) {
+                        p.clear_for_composer();
+                    }
+                }
                 Act::AdvancedPaste(text) => {
                     // `CM:370-376`: dismissed with nothing saved, then Advanced Paste of the
                     // text, which replaces the clipboard first (`PS:15193-15200`).
@@ -834,11 +1154,7 @@ impl App {
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.composer.dismiss();
             }
-            self.composer_closed(pane);
-            if let Some(v) = self.composers.get_mut(&pane) {
-                v.opened = None;
-                v.closed = None;
-            }
+            self.composer_gone(pane);
         }
         self.redraw();
     }
@@ -888,9 +1204,12 @@ impl App {
         }
     }
 
-    /// Paste in a focused composer. True when a composer had the keyboard.
+    /// Paste in a focused composer, or into the focused pane's Auto Composer, which takes the
+    /// keyboard unless Copy Mode hides it (`PS:13053-13057`). True when a composer took it.
     pub(super) fn composer_paste_menu(&mut self) -> bool {
-        let Some(pane) = self.focused_composer() else { return false };
+        let auto = self.focused_id().filter(|id| self.have_auto_composer(*id) && self.panes.get(id).is_some_and(|p| !p.composer.hidden));
+        let Some(pane) = self.focused_composer().or(auto) else { return false };
+        self.composer_take_keys(pane);
         self.composer_paste(pane);
         true
     }
@@ -1010,7 +1329,7 @@ impl App {
                 self.drag = Drag::Composer { pane, kind: ComposerDrag::Resize { start_y: y, start_h: l.panel.h / scale } };
             } else if l.text.contains(x, y) {
                 self.composer_text_press(pane, x, y);
-            } else {
+            } else if !self.have_auto_composer(pane) {
                 let offset = (l.panel.y - rect.y) / scale;
                 self.drag = Drag::Composer { pane, kind: ComposerDrag::Move { start_y: y, start_offset: offset } };
             }
@@ -1071,6 +1390,15 @@ impl App {
         if any {
             self.refresh_route();
             self.redraw();
+        }
+        // `notifyActive` (`PS:13557-13570`): a session that becomes the active one gives its
+        // Auto Composer the keyboard, unless Copy Mode is on.
+        if let Some(id) = focused.filter(|id| self.have_auto_composer(*id)) {
+            let free = self.panes.get(&id).is_some_and(|p| !p.composer.focused && !p.composer.hidden) && self.belt.focus.is_none() && !self.copy_modes.contains_key(&id);
+            if free {
+                self.composer_take_keys(id);
+                self.redraw();
+            }
         }
     }
 
@@ -1285,6 +1613,10 @@ impl App {
         if g > 0 {
             segs.push((caret..caret + g, scene::blend(pal.bg, pal.fg, 0.5), false));
         }
+        // The Auto Composer's prompt in its own colors (it sits before the caret, so the ghost
+        // never shifts it), the default background left out (`PS:8005-8015`).
+        let prompt = if c.auto { prefix_runs(c) } else { Vec::new() };
+        segs.extend(prompt.iter().map(|(r, fg, bold, _)| (r.clone(), *fg, *bold)));
         segs.sort_by_key(|(r, _, _)| r.start);
         let content = lines.len() as f32 * line_h;
         let scroll = v.map_or(0.0, |v| v.scroll).clamp(0.0, (content - l.text.h).max(0.0));
@@ -1295,8 +1627,19 @@ impl App {
             .filter(|(i, _)| y_of(*i) + line_h > l.text.y && y_of(*i) < l.text.y + l.text.h)
             .map(|(i, vl)| (l.text.x, y_of(i), runs(&display, vl, &segs, pal.fg)))
             .collect();
-        let mut selection = Vec::new();
         let space = width(" ");
+        let mut backs: Vec<(Rect, Rgb)> = Vec::new();
+        for (r, _, _, bg) in prompt.iter().filter(|(_, _, _, bg)| *bg != pal.bg) {
+            for (i, vl) in lines.iter().enumerate() {
+                let (a, b) = (r.start.max(vl.start), r.end.min(vl.end));
+                if a < b {
+                    let x0 = width(&display[vl.start..a]);
+                    let x1 = width(&display[vl.start..b]);
+                    backs.push((Rect { x: l.text.x + x0, y: y_of(i), w: x1 - x0, h: line_h }, *bg));
+                }
+            }
+        }
+        let mut selection = Vec::new();
         for r in c.edit.carets().into_iter().filter(|r| !r.is_empty()) {
             let r = at(r.start)..at(r.end);
             for (i, vl) in lines.iter().enumerate() {
@@ -1318,7 +1661,8 @@ impl App {
         });
         let ai = self.globals.bool("GenerativeAIAllowed");
         let tip_w = composer::SEND_TIP.chars().count() as f32 * cw * SMALL;
-        let tip = composer::send_tip_shows(l.accessory.w / scale, false).then(|| (l.accessory.x + l.accessory.w - tip_w, l.accessory.y + l.accessory.h - 6.0 * scale - 14.0 * scale + ((14.0 * scale - line_h * SMALL) / 2.0), composer::SEND_TIP));
+        let auto = c.auto;
+        let tip = (!auto && composer::send_tip_shows(l.accessory.w / scale, false)).then(|| (l.accessory.x + l.accessory.w - tip_w, l.accessory.y + l.accessory.h - 6.0 * scale - 14.0 * scale + ((14.0 * scale - line_h * SMALL) / 2.0), composer::SEND_TIP));
         let d = scene::ComposerDraw {
             panel: l.panel,
             radius: composer::RADIUS * scale,
@@ -1332,11 +1676,15 @@ impl App {
             caret: caret_rect,
             close: l.close,
             help: l.help,
-            ai: ai.then_some(l.ai),
+            ai: (ai && !auto).then_some(l.ai),
             tip,
-            tooltip: (self.composer_hover == Some(pane) && open).then_some(composer::HELP_TIP),
+            tooltip: (self.composer_hover == Some(pane) && open && !auto).then_some(composer::HELP_TIP),
             small: SMALL,
             line_h,
+            // The Auto Composer's 1 point line above it in the success mark color
+            // (`PS:24640-24650`, `MCVC:221-246`).
+            separator: auto.then(|| (scene::mark_rgba(crate::marks::MarkColor::Success), scale.max(1.0))),
+            backs: &backs,
         };
         scene::composer(frame, &d, cell);
         // Extra carets.
@@ -1619,6 +1967,29 @@ mod tests {
         assert!(composer_takes(m(false, true, true, false), &CKey::Edit(EditKey::Enter), false));
         // AltGr typing is typing.
         assert!(composer_takes(m(true, true, false, false), &text("@"), false));
+    }
+
+    #[test]
+    fn auto_composer_covers_its_rows() {
+        // Underlines inside the covered rows go; the dimming over the whole pane and anything
+        // outside the rows stay; nothing drawn before `from` is touched.
+        let q = |y: f32, h: f32| scene::Quad { rect: Rect { x: 0.0, y, w: 10.0, h }, color: [1.0; 4] };
+        let mut overlay = vec![q(45.0, 1.0), q(45.0, 1.0), q(0.0, 200.0), q(10.0, 1.0), q(69.0, 1.0)];
+        skip_covered(&mut overlay, 1, Rect { x: 0.0, y: 40.0, w: 100.0, h: 30.0 });
+        let ys: Vec<(f32, f32)> = overlay.iter().map(|o| (o.rect.y, o.rect.h)).collect();
+        assert_eq!(ys, vec![(45.0, 1.0), (0.0, 200.0), (10.0, 1.0)]);
+
+        // The prompt prefix's colors map onto the editor's text, line by line.
+        use crate::palette::rgb;
+        let (fg, bg, red) = (rgb(1, 1, 1), rgb(0, 0, 0), rgb(9, 0, 0));
+        let run = |t: &str, c: Rgb| crate::styled_copy::Run { text: t.into(), fg: c, bg, bold: false, italic: false, underline: false, link: None };
+        let rows = vec![crate::styled_copy::Row { runs: vec![run("ab", red)], hard_end: true }, crate::styled_copy::Row { runs: vec![run("$", fg)], hard_end: true }];
+        let mut c = composer::Composer::default();
+        c.set_prefix(Some(composer::auto_prefix(rows, vec!["ab".into(), "$".into()], fg, bg)));
+        c.set_string("ls", true);
+        let runs: Vec<(Range<usize>, Rgb)> = prefix_runs(&c).into_iter().map(|(r, f, _, _)| (r, f)).collect();
+        assert_eq!(c.text(), "ab\n$ ls");
+        assert_eq!(runs, vec![(0..2, red), (3..4, fg), (4..5, fg)]);
     }
 
     #[test]

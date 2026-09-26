@@ -254,7 +254,7 @@ impl App {
     }
 
     /// The focused pane's find bar, when it is open and has the keyboard.
-    fn typing_in_find(&self) -> Option<PaneId> {
+    pub(super) fn typing_in_find(&self) -> Option<PaneId> {
         let id = self.focused_id()?;
         self.finds.get(&id).filter(|f| f.open && f.typing).map(|_| id)
     }

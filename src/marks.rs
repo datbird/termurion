@@ -409,6 +409,23 @@ impl Screen {
         (g.scrolled_off() as i64 + g.cursor.point.line.0 as i64, g.cursor.point.column.0)
     }
 
+    /// The captured prompt's first row on the main screen (`lastPromptMark.promptRange.start.y`
+    /// less the scrollback, `PS:24212-24217`), 0 once it scrolled into history; None with no
+    /// prompt range (none yet, or zeroed at D).
+    pub fn prompt_start_row(&self) -> Option<usize> {
+        if self.marks.prompt_range == Default::default() {
+            return None;
+        }
+        let g = self.term.primary_grid();
+        let row = self.marks.prompt_range.0 .0 - g.scrolled_off() as i64;
+        Some(row.clamp(0, (g.screen_lines() as i64 - 1).max(0)) as usize)
+    }
+
+    /// The main screen's cursor row.
+    pub fn primary_cursor_row(&self) -> usize {
+        self.term.primary_grid().cursor.point.line.0.max(0) as usize
+    }
+
     /// The captured prompt (`MS:4768-4770`): styled rows from the prompt start to the command
     /// start, the rows blank after trimming dropped, and their text. Rows no longer in the
     /// buffer are left out.

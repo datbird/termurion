@@ -544,6 +544,28 @@ impl Pane {
         }
     }
 
+    /// The Auto Composer's Ctrl+L (`clearForComposer`, `MS:2371-2417`): while a command is
+    /// being entered on the main screen, the rows above the prompt move into history and
+    /// ConPTY clears too (keeping the cursor row), as Clear to Last Mark does. Nothing when the
+    /// prompt already begins at the top or above the screen. Decision: `Screen::clear_from` at
+    /// the prompt line stands in for iTerm2's scroll-and-move - cost if wrong: the upper lines
+    /// of a multi-line prompt go with the rows above it.
+    pub fn clear_for_composer(&mut self) {
+        let s = self.own();
+        if !s.prompt_state.entering() || s.alt_screen() {
+            return;
+        }
+        let Some(line) = s.current_prompt_line().filter(|l| *l > 0) else { return };
+        self.end_view();
+        self.screen.clear_from(line);
+        self.screen.term_mut().selection = None;
+        if let Some(pty) = &self.pty {
+            if let Err(e) = pty.clear() {
+                self.error = Some(e);
+            }
+        }
+    }
+
     /// iTerm2's Clear Buffer: the screen and ConPTY both clear, keeping the cursor line.
     pub fn clear(&mut self) {
         self.end_view();

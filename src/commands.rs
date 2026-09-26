@@ -44,7 +44,7 @@ pub const DONE: &[&str] = &[
     "undo:", "redo:", "cut:", "print:", "runPageLayout:", "makeScreenshot:", "renderSelection:", "addTrigger:", "editTriggers:",
     "toggleEnableTriggersInInteractiveApps:", "enableAllTriggers:", "disableAllTriggers:", "toggleNotifyOnStatusChange:", "runCoprocess:", "stopCoprocess:", "newWindow:", "newWindowWithSameProfile:",
     "moveTabToNewWindow:", "moveSessionToWindow:", "moveSessionToTab:", "paste:|Paste Slowly", "pasteFaster:", "pasteSlower:",
-    "pasteSlowlyFaster:", "pasteSlowlySlower:", "pasteBase64Encoded:", "pasteOptions:", "openPasteHistory:", "openCommandHistory:", "openDirectories:", "openAutocomplete:", "toggleAutoCommandHistory:", "toggleShowClippings:", "toggleMultiLinePasteWarning:|Warn Before Multi-Line Paste",
+    "pasteSlowlyFaster:", "pasteSlowlySlower:", "pasteBase64Encoded:", "pasteOptions:", "openPasteHistory:", "openCommandHistory:", "openDirectories:", "openAutocomplete:", "toggleAutoCommandHistory:", "compose:", "toggleAutoComposer:", "toggleShowClippings:", "toggleMultiLinePasteWarning:|Warn Before Multi-Line Paste",
     "toggleMultiLinePasteWarning:|Limit Multi-Line Paste Warning to Shell Prompt",
     "toggleMultiLinePasteWarning:|Warn Before Pasting One Line Ending in a Newline at Shell Prompt", "promptToConvertTabsToSpacesWhenPasting:", "mergeAllWindows:", "duplicateWindow:", "togglePinHotkeyWindow:",
     "disableBroadcasting:", "enableSendInputToAllTabs:", "enableSendInputToAllPanes:", "toggleBroadcastingToCurrentSession:",
@@ -259,5 +259,7 @@ mod tests {
         assert_eq!(status(find("toggleToolbeltVisibility:", "Show Toolbelt")), Status::Done, "9j");
         assert_eq!(status(find("setDefaultToolbeltWidth:", "Set Default Width")), Status::Done, "9j");
         assert_eq!(status(find("openQuickly:", "Open Quickly")), Status::Done, "9k");
+        assert_eq!(status(find("compose:", "Show Composer")), Status::Done, "9l");
+        assert_eq!(status(find("toggleAutoComposer:", "Auto Composer")), Status::Done, "9l");
     }
 }

@@ -543,12 +543,14 @@ impl App {
             }
             "openPasteHistory:" => self.open_paste_history(event_loop),
             "openCommandHistory:" => self.open_command_history(event_loop),
-            // View > Show Composer (enabled once `commands::DONE` lists it, milestone 9l Task 7).
+            // View > Show Composer: disabled (does nothing) while the session wants an Auto
+            // Composer (`PT:14153`).
             "compose:" => {
-                if let Some(id) = self.focused_id() {
+                if let Some(id) = self.focused_id().filter(|id| !self.should_show_auto_composer(*id)) {
                     self.compose(id);
                 }
             }
+            "toggleAutoComposer:" => self.toggle_auto_composer(),
             "openDirectories:" => self.open_recent_dirs(event_loop),
             "openAutocomplete:" => self.open_autocomplete(),
             "toggleShowClippings:" => self.toggle_clippings(),

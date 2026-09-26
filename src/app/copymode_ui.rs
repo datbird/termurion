@@ -42,6 +42,7 @@ impl App {
         if self.copy_modes.remove(&id).is_none() {
             self.enter_copy_mode(id);
         }
+        self.composer_follow_copy_mode(id);
         self.sync_checks();
         self.redraw();
         true
@@ -57,6 +58,7 @@ impl App {
         };
         self.copy_modes.insert(id, State::new(at));
         self.belt_yield_keys();
+        self.composer_follow_copy_mode(id);
     }
 
     /// A key while Copy Mode is on in the focused pane, or a Shift+arrow that starts it.
@@ -78,6 +80,7 @@ impl App {
             state.anchor = Some(if backward { b } else { a });
             self.copy_modes.insert(id, state);
             self.belt_yield_keys();
+            self.composer_follow_copy_mode(id);
             self.sync_checks();
         }
         if let Some(n) = name {
@@ -107,6 +110,7 @@ impl App {
         if !was_on {
             self.copy_modes.remove(&id);
         }
+        self.composer_follow_copy_mode(id);
         self.redraw();
     }
 
@@ -162,6 +166,8 @@ impl App {
             }
             self.copy_modes.insert(id, state);
         }
+        // Copy Mode may have ended (y, Esc, q): the composer comes back.
+        self.composer_follow_copy_mode(id);
         self.redraw();
     }
 

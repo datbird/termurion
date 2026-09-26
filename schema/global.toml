@@ -1210,6 +1210,15 @@ default = true
 help = "Requres tmux version 2.9 or later."
 
 [[setting]]
+key = "smartLoggingWithAutoComposer"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Enable more compact logging when using auto composer?"
+type = "bool"
+default = false
+help = "This will avoid logging raw data in your prompt and your interactions with it. Instead, the prompt is logged once in plain text and the command is logged when sent."
+
+[[setting]]
 key = "disableTmuxWindowResizing"
 tab = "Advanced"
 section = "Tmux Integration"

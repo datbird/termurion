@@ -329,6 +329,14 @@ impl Composer {
         self.edit.load(&full);
     }
 
+    /// `setPrefix:` (`CM:553-557`, `CTV:475-505`): the prefix changes and the command after it
+    /// is kept (the one way to change `prefix` without putting the text out of step).
+    pub fn set_prefix(&mut self, prefix: Option<Prompt>) {
+        let command = self.contents();
+        self.prefix = prefix;
+        self.set_string(&command, true);
+    }
+
     /// `toggle` (`CM:146-158`): a shown dropdown saves its text and hides regardless of
     /// `status_bar` (the caller's `using_status_bar`); otherwise it opens, in the status bar
     /// when `status_bar`, else the dropdown. Idempotent (a refocus, no reload) when already
@@ -767,6 +775,71 @@ pub fn minimal_rect(pane: Rect, height: f32, top_offset: f32) -> Rect {
 /// (`MCVC:319-329`, `CM:390-392`: `max(min, superview height - 8)`).
 pub fn clamp_height(h: f32, pane_h: f32) -> f32 {
     h.min(MIN_HEIGHT.max(pane_h - 8.0)).max(MIN_HEIGHT)
+}
+
+// ---------------------------------------------------------------------------------------
+// The Auto Composer (milestone 9l Task 7)
+// ---------------------------------------------------------------------------------------
+
+/// The Auto Composer's rows for `text_lines` laid-out lines (the prefix's included, not the
+/// empty line after a final newline) and whether the command ends in a newline
+/// (`MCVC:331-364`: `max(1, lines)`, the newline adding one first).
+pub fn auto_rows(text_lines: usize, ends_newline: bool) -> usize {
+    (text_lines + usize::from(ends_newline)).max(1)
+}
+
+/// The Auto Composer's frame over the pane's `grid` (pixels, rows `cell_h` high): from the
+/// prompt's first row (with no prompt, the row after the cursor's, `PS:24212-24217`) down,
+/// `rows + 0.5` rows high and the grid's full width (`PS:24218-24228`). Decision: the grid
+/// never scrolls under it (ConPTY owns the rows), so when the rows below the prompt run out it
+/// grows upward over earlier output, never above row 0, and ends at the grid's bottom (its
+/// half row dropped) - cost if wrong: a tall command covers output instead of pushing it up.
+pub fn auto_rect(grid: Rect, cell_h: f32, rows: usize, prompt_row: Option<usize>, cursor_row: usize) -> Rect {
+    let screen = ((grid.h / cell_h.max(1.0)).floor() as usize).max(1);
+    let start = prompt_row.unwrap_or(cursor_row + 1).min(screen - 1);
+    let top = start.min(screen.saturating_sub(rows.max(1)));
+    let y = grid.y + top as f32 * cell_h;
+    let h = ((rows.max(1) as f32 + 0.5) * cell_h).min(grid.y + grid.h - y);
+    Rect { x: grid.x, y, w: grid.w, h }
+}
+
+/// The captured prompt as the Auto Composer's prefix (`PS:8037-8058`,
+/// `attributedStringForScreenChars:`): its rows joined, trailing whitespace trimmed, then one
+/// space in the default colors `fg` on `bg`.
+pub fn auto_prefix(rows: Vec<styled_copy::Row>, text: Vec<String>, fg: crate::palette::Rgb, bg: crate::palette::Rgb) -> Prompt {
+    let mut rows = rows;
+    let mut text = text;
+    // Whole lines of whitespace at the end go first (`trimTrailingWhitespace` on the joined
+    // string reaches through the newlines).
+    while text.len() > 1 && text.last().is_some_and(|t| t.trim_end().is_empty()) {
+        text.pop();
+        rows.pop();
+    }
+    rows.truncate(text.len());
+    if let Some(last) = text.last_mut() {
+        let keep = last.trim_end().len();
+        last.truncate(keep);
+        last.push(' ');
+        if let Some(row) = rows.last_mut() {
+            let mut left = keep;
+            row.runs.retain_mut(|r| {
+                if left == 0 {
+                    return false;
+                }
+                if r.text.len() > left {
+                    let mut cut = left;
+                    while !r.text.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    r.text.truncate(cut);
+                }
+                left -= r.text.len().min(left);
+                !r.text.is_empty()
+            });
+            row.runs.push(styled_copy::Run { text: " ".into(), fg, bg, bold: false, italic: false, underline: false, link: None });
+        }
+    }
+    Prompt { rows, text, by_trigger: false }
 }
 
 /// The help popover's lines, key then description (`LCVC:361-377`), with Windows key words in
@@ -1475,5 +1548,46 @@ mod tests {
         assert_eq!(chord(None, true, false, false, true, false), Some(Chord::Mark { down: false }));
         assert_eq!(chord(Some(';'), false, false, false, true, false), Some(Chord::History));
         assert_eq!(chord(Some('c'), false, false, false, false, false), None);
+    }
+
+    #[test]
+    fn auto_geometry_follows_iterm2() {
+        // `MCVC:331-364`: one row at least, one more when the text ends in a newline.
+        assert_eq!(auto_rows(1, true), 2);
+        assert_eq!(auto_rows(0, false), 1);
+        assert_eq!(auto_rows(0, true), 1);
+        assert_eq!(auto_rows(3, false), 3);
+        let grid = Rect { x: 4.0, y: 30.0, w: 800.0, h: 24.0 * 20.0 };
+        let row = |r: f32| grid.y + r * 20.0;
+        // The prompt on row 20 of 24, 2 rows wanted: rows 20 and 21 plus half a row, full width.
+        assert_eq!(auto_rect(grid, 20.0, 2, Some(20), 23), Rect { x: 4.0, y: row(20.0), w: 800.0, h: 50.0 });
+        // 6 wanted with 4 rows below the prompt: grows upward to rows 18 to 23.
+        assert_eq!(auto_rect(grid, 20.0, 6, Some(20), 23), Rect { x: 4.0, y: row(18.0), w: 800.0, h: 120.0 });
+        // Never above row 0.
+        assert_eq!(auto_rect(grid, 20.0, 30, Some(20), 23), Rect { x: 4.0, y: row(0.0), w: 800.0, h: 480.0 });
+        // No prompt row: the row after the cursor's (`PS:24212-24217`), kept on the screen.
+        assert_eq!(auto_rect(grid, 20.0, 1, None, 10), Rect { x: 4.0, y: row(11.0), w: 800.0, h: 30.0 });
+        assert_eq!(auto_rect(grid, 20.0, 1, None, 23).y, row(23.0));
+    }
+
+    #[test]
+    fn auto_prefix_trims_and_ends_in_a_space() {
+        use crate::palette::{rgb, Rgb};
+        let (fg, bg, red) = (rgb(1, 1, 1), rgb(0, 0, 0), rgb(9, 0, 0));
+        let run = |t: &str, c: Rgb| styled_copy::Run { text: t.into(), fg: c, bg, bold: false, italic: false, underline: false, link: None };
+        let rows = vec![styled_copy::Row { runs: vec![run("info", fg)], hard_end: true }, styled_copy::Row { runs: vec![run("PS", red), run(">  ", fg)], hard_end: true }];
+        let p = auto_prefix(rows, vec!["info".into(), "PS>  ".into()], fg, bg);
+        // `PS:8037-8058`: trailing whitespace trimmed, then one space in the default colors.
+        assert_eq!(p.text, vec!["info".to_string(), "PS> ".to_string()]);
+        let last: Vec<&str> = p.rows[1].runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(last, vec!["PS", ">", " "]);
+        assert_eq!(p.rows[1].runs[0].fg, red);
+        assert!(!p.by_trigger);
+        // A prefix set through `set_prefix` keeps the command after it.
+        let mut c = Composer::default();
+        c.set_string("ls", true);
+        c.set_prefix(Some(p));
+        assert_eq!(c.text(), "info\nPS> ls");
+        assert_eq!(c.contents(), "ls");
     }
 }

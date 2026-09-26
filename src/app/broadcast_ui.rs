@@ -43,6 +43,8 @@ impl App {
         let gateways = self.tmux_gateways();
         let targets = broadcast::without_gateways(targets, sender, &gateways);
         for t in targets {
+            // Any write cancels the composer's clear probe (`PS:4154-4158`).
+            self.composer_wrote(t);
             // A tmux gateway reads typing as its Command Menu's keys; reports and other
             // bytes would land in tmux's command stream, so they are dropped there.
             if self.is_tmux_gateway(t) {

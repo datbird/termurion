@@ -541,7 +541,7 @@ pub fn pane_with(
 
 /// Draws the tab bar across `area`. Returns each tab's rectangle, for clicks.
 /// iTerm2's mark colors (iTermTextDrawingHelper), in sRGB.
-fn mark_rgba(c: crate::marks::MarkColor) -> [f32; 4] {
+pub fn mark_rgba(c: crate::marks::MarkColor) -> [f32; 4] {
     use crate::marks::MarkColor::*;
     let (r, g, b) = match c {
         Success => (0.538, 0.757, 1.0),
@@ -1608,6 +1608,11 @@ pub struct ComposerDraw<'a> {
     /// The accessory row's text size against the pane's font.
     pub small: f32,
     pub line_h: f32,
+    /// The Auto Composer: a plain box with this line (color, height) along its top, and none of
+    /// the dropdown's border, buttons or tip.
+    pub separator: Option<([f32; 4], f32)>,
+    /// Backgrounds behind parts of the text (the Auto Composer's prompt).
+    pub backs: &'a [(Rect, Rgb)],
 }
 
 /// The composer's gray border (`MCVC:154-156`, `NSColor.grayColor`).
@@ -1630,9 +1635,23 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
         return;
     }
     cut_out(frame, d.panel, d.line_h);
-    rounded_box(&mut frame.popups, d.panel, d.radius, rgba(COMPOSER_BORDER, a));
     let inner = Rect { x: d.panel.x + 1.0, y: d.panel.y + 1.0, w: d.panel.w - 2.0, h: d.panel.h - 2.0 };
-    rounded_box(&mut frame.popups, inner, (d.radius - 1.0).max(0.0), rgba(d.bg, a));
+    match d.separator {
+        Some((color, h)) => {
+            frame.popups.push(Quad { rect: d.panel, color: rgba(d.bg, a) });
+            frame.popups.push(Quad { rect: Rect { h, ..d.panel }, color: [color[0], color[1], color[2], color[3] * a] });
+        }
+        None => {
+            rounded_box(&mut frame.popups, d.panel, d.radius, rgba(COMPOSER_BORDER, a));
+            rounded_box(&mut frame.popups, inner, (d.radius - 1.0).max(0.0), rgba(d.bg, a));
+        }
+    }
+    for (r, color) in d.backs {
+        let r = clip_rect(*r, d.clip);
+        if r.w > 0.0 && r.h > 0.0 {
+            frame.popups.push(Quad { rect: r, color: rgba(*color, a) });
+        }
+    }
     for r in d.selection {
         let r = clip_rect(*r, d.clip);
         if r.w > 0.0 && r.h > 0.0 {
@@ -1651,6 +1670,9 @@ pub fn composer(frame: &mut Frame, d: &ComposerDraw, cell: (f32, f32)) {
         if !spans.is_empty() {
             frame.rows.push(TextRow { x: *x, y: *y, spans, clip: d.clip, scale: 1.0 });
         }
+    }
+    if d.separator.is_some() {
+        return;
     }
     let icon = |frame: &mut Frame, r: Rect, glyph: char| {
         let (w, h) = (cell.0, cell.1);

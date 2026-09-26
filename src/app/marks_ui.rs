@@ -241,8 +241,10 @@ impl App {
 
     /// After new output: a new mark resets mark navigation, and alerts when asked to.
     pub(super) fn check_marks(&mut self) {
-        // The composer's queue: one command per new mark (`PS:16613-16617`).
+        // The composer's queue: one command per new mark (`PS:16613-16617`), then what the
+        // prompt state machine asks of the Auto Composer.
         self.drain_composer_queues();
+        self.check_composer_events();
         let active: Vec<PaneId> = self.tabs.get(self.active).map(|t| t.layout.panes()).unwrap_or_default();
         let offscreen = self.globals.bool("Alert On Marks in Offscreen Sessions");
         let mut alerts = Vec::new();

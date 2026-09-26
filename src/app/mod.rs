@@ -2002,7 +2002,13 @@ impl App {
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
                     let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: (!self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(&bview, tab.focused, Some(tab.focused))) };
-                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on, Some(&hl));
+                    // An Auto Composer hides the terminal cursor and the rows it covers.
+                    let cover = self.auto_composer_cover(id, rect);
+                    let overlay_from = frame.overlay.len();
+                    scene::pane_with(&mut frame, &p.screen, self.inner(rect), cell, self.focused && id == tab.focused, self.blink_on && cover.is_none(), Some(&hl));
+                    if let Some(c) = cover {
+                        composer_ui::skip_covered(&mut frame.overlay, overlay_from, c);
+                    }
                     // Broadcast stripes: over the cell backgrounds, under the text.
                     if let (Some((n, px)), true) = (&stripes, receives) {
                         let r = self.inner(rect);
@@ -2416,11 +2422,17 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let mut changed = false;
         let mut exited = Vec::new();
+        let mut outputs = Vec::new();
         let now = Instant::now();
         self.sync_output_policy();
+        // The prompt state machine follows View > Auto Composer before it reads output (the
+        // Task 3 contract: every pane, new ones included).
+        let auto_composer = self.globals.bool("AutoComposer");
         for (id, p) in self.panes.iter_mut() {
+            p.own_mut().prompt_state.enabled = auto_composer;
             let got = p.pump();
             if got {
+                outputs.push(*id);
                 if let Some(f) = self.finds.get_mut(id) {
                     f.output_changed(now);
                 }
@@ -2452,6 +2464,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.run_automatic_profile_switching();
             self.take_downloads();
             self.take_requests();
+            self.composer_output(&outputs);
             self.check_marks();
             self.sync_checks();
             self.redraw();
