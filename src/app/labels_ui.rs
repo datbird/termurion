@@ -119,6 +119,7 @@ impl App {
         let names = labels(items.len());
         let items = names.into_iter().zip(items).map(|(l, (m, t))| (l, m, t)).collect();
         self.shortcuts = Some(Shortcuts { pane: id, items, typed: String::new() });
+        self.belt_yield_keys();
         self.redraw();
     }
 

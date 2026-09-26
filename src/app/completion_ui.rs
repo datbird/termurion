@@ -36,6 +36,7 @@ impl App {
         let Some((lines, row, col)) = self.panes.get(&pane).map(|p| p.own().char_rows(ROWS)) else { return };
         let q = autocomplete::query_at(&lines, row, col, &word);
         self.completion = Some((pane, List::new(Kind::Autocomplete, q, Vec::new())));
+        self.belt_yield_keys();
         self.autocomplete_search(true);
     }
 

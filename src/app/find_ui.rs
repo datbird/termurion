@@ -482,6 +482,7 @@ impl App {
                 if self.finds.get(&id).is_some_and(|f| f.filter) {
                     self.end_view(id);
                 }
+                self.belt_yield_keys();
                 let f = self.finds.entry(id).or_default();
                 f.open();
                 f.typing = true;
@@ -503,6 +504,7 @@ impl App {
                 f.results = Results::default();
             }
             ("filter:", _) => {
+                self.belt_yield_keys();
                 let f = self.finds.entry(id).or_default();
                 f.results = Results::default();
                 f.open();
@@ -672,7 +674,10 @@ impl App {
         use crate::statusbar_components::Kind;
         let filter = kind == Kind::FilterTool;
         match self.finds.get_mut(&pane) {
-            Some(f) if f.open && f.filter == filter => f.typing = true,
+            Some(f) if f.open && f.filter == filter => {
+                f.typing = true;
+                self.belt_yield_keys();
+            }
             _ if filter => {
                 self.run_find_command("filter:", "");
             }

@@ -56,6 +56,7 @@ impl App {
             None => to_pos(&p.screen, term.grid().cursor.point),
         };
         self.copy_modes.insert(id, State::new(at));
+        self.belt_yield_keys();
     }
 
     /// A key while Copy Mode is on in the focused pane, or a Shift+arrow that starts it.
@@ -76,6 +77,7 @@ impl App {
             let mut state = State::new(if backward { a } else { b });
             state.anchor = Some(if backward { b } else { a });
             self.copy_modes.insert(id, state);
+            self.belt_yield_keys();
             self.sync_checks();
         }
         if let Some(n) = name {

@@ -44,6 +44,14 @@ pub struct Split {
     pub collapsed: Vec<bool>,
 }
 
+impl Split {
+    /// Whether `tool` is in the split and its wrapper is not collapsed: only then can it have
+    /// the keyboard (a collapsed wrapper shows no field and no list).
+    pub fn expanded(&self, tool: ToolId) -> bool {
+        self.tools.iter().position(|&t| t == tool).is_some_and(|i| !self.collapsed.get(i).copied().unwrap_or(false))
+    }
+}
+
 fn mins(tools: &[ToolId]) -> Vec<f32> {
     tools.iter().map(|&t| wrapper_minimum(t)).collect()
 }
@@ -477,6 +485,14 @@ pub fn hit(l: &BeltLayout, x: f32, y: f32) -> BeltHit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_expanded_tool_can_have_the_keyboard() {
+        let split = Split { tools: vec![ToolId::Snippets, ToolId::Profiles], heights: vec![COLLAPSED_H, 200.0], collapsed: vec![true, false] };
+        assert!(!split.expanded(ToolId::Snippets), "collapsed");
+        assert!(split.expanded(ToolId::Profiles));
+        assert!(!split.expanded(ToolId::Actions), "not in the split");
+    }
     use crate::toolbelt::ToolId::{Actions, Profiles, Snippets};
 
     fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {

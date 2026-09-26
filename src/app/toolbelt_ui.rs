@@ -150,6 +150,14 @@ impl App {
         }
         // After proportions too: a saved prefix leaves the heights short of the total.
         self.belt.split = tbl::resize(&split, before, total);
+        self.belt_drop_hidden_focus();
+    }
+
+    /// A tool that left the split, or whose wrapper collapsed, gives the keyboard back.
+    fn belt_drop_hidden_focus(&mut self) {
+        if self.belt.focus.is_some_and(|(t, _)| !self.belt.split.expanded(t)) {
+            self.belt.focus = None;
+        }
     }
 
     pub(super) fn belt_layout(&self) -> Option<tbl::BeltLayout> {
@@ -450,7 +458,8 @@ impl App {
         let Drag::Belt(d) = self.drag else { return };
         let scale = self.scale();
         match d {
-            // Dragging left widens it (`TBV:965-970`); the panes follow on release.
+            // Dragging left widens it (`TBV:965-970`); the panes follow live, the redraw laying
+            // out the changed room (`growToolbeltBy:`).
             BeltDrag::Width { start_x, start_w } => {
                 self.belt.width = toolbelt::clamp_width(start_w + (start_x - x) / scale, self.window_room().w / scale);
             }
@@ -458,6 +467,7 @@ impl App {
                 let Some(panel) = self.toolbelt_panel() else { return };
                 if i + 1 < self.belt.split.tools.len() {
                     self.belt.split = tbl::drag_divider(&self.belt.split, i, (y - panel.y) / scale);
+                    self.belt_drop_hidden_focus();
                 }
             }
             // The drop line follows the pointer.
@@ -468,7 +478,8 @@ impl App {
 
     pub(super) fn toolbelt_release(&mut self, d: BeltDrag) {
         match d {
-            BeltDrag::Width { .. } => return self.relayout(),
+            // The last move's redraw lays the panes out.
+            BeltDrag::Width { .. } => {}
             // The heights become every new window's (`TBV:949-955`).
             BeltDrag::Divider(_) => {
                 self.globals.set(toolbelt::PROPORTIONS_KEY, tbl::proportions_value(&self.belt.split));

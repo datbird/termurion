@@ -303,18 +303,7 @@ impl App {
         let expanded = self.belt.tools.get(&ToolId::Snippets).map(|t| t.expanded.clone()).unwrap_or_default();
         let rows = tt::snippet_rows(list, &tree, &expanded, searching);
         // A folder row's path: the folders above it at each shallower depth, then its name.
-        let mut stack: Vec<String> = Vec::new();
-        let paths = rows
-            .iter()
-            .map(|r| match &r.kind {
-                SnippetRowKind::Folder(name) => {
-                    stack.truncate(r.depth);
-                    stack.push(name.clone());
-                    Some(stack.join("/"))
-                }
-                SnippetRowKind::Snippet(_) => None,
-            })
-            .collect();
+        let paths = tt::snippet_row_keys(&rows).into_iter().map(|(path, snippet)| snippet.is_none().then_some(path)).collect();
         Shown::Snippets { rows, paths, filtered }
     }
 
@@ -552,7 +541,13 @@ impl App {
     }
 
     /// Opens (`open` Some(true)), closes or toggles one of Snippets' folders in this window.
+    /// The selection follows its items to their new rows.
     fn toggle_folder(&mut self, path: &str, open: Option<bool>) {
+        let keys = |shown: &Shown| match shown {
+            Shown::Snippets { rows, .. } => tt::snippet_row_keys(rows),
+            _ => Vec::new(),
+        };
+        let before = keys(&self.tool_shown(ToolId::Snippets));
         let expanded = &mut self.tool_state(ToolId::Snippets).expanded;
         let now = expanded.contains(path);
         if open.unwrap_or(!now) {
@@ -562,6 +557,8 @@ impl App {
         }
         // The rows are built with the open folders.
         self.belt.shown.remove(&ToolId::Snippets);
+        let after = keys(&self.tool_shown(ToolId::Snippets));
+        self.tool_state(ToolId::Snippets).selection.remap(&before, &after);
     }
 
     /// A click on part of a tool. A left click in the field or the list takes the keyboard;
@@ -577,9 +574,12 @@ impl App {
                 // Multiple selection (`ToolProfiles.m`, `TS:147`, `iTermToolActions.m:83`,
                 // `ToolNamedMarks.swift:49`); the history lists pick one.
                 let multi = matches!(tool, ToolId::Profiles | ToolId::Snippets | ToolId::Actions | ToolId::NamedMarks);
+                // Snippets' and Actions' rows drag (`tool_press`): a press on a selected row
+                // keeps the others until the release (`tool_drop`).
+                let draggable = matches!(tool, ToolId::Snippets | ToolId::Actions);
                 let double_ms = super::clippings_ui::double_click_ms();
                 let sel = &mut self.tool_state(tool).selection;
-                let double = sel.click(i, ctrl, shift, multi, now_ms(), double_ms);
+                let double = sel.press(i, ctrl, shift, multi, draggable, now_ms(), double_ms);
                 // Ctrl+double-click toggled the row out again; it still opens it (a split).
                 if double && !sel.rows.contains(&i) {
                     sel.rows.push(i);
@@ -840,6 +840,13 @@ impl App {
         true
     }
 
+    /// Another key consumer in the window takes the keyboard (find typing, Copy Mode, the
+    /// autocomplete list, the shortcut labels): no tool keeps it, or its keys would still go to
+    /// the tool, which `key` asks first.
+    pub(super) fn belt_yield_keys(&mut self) {
+        self.belt.focus = None;
+    }
+
     /// Keys while a tool's field or list has the keyboard (`tool_list::takes_key`): nothing
     /// taken reaches the session, releases and modifier keys alone included. Chords with Ctrl,
     /// Alt or Win go on as usual, except Ctrl+V into a field, Return with its modifiers, and
@@ -852,7 +859,8 @@ impl App {
             self.belt_keys.press(ev.physical_key, false);
             return false;
         };
-        if !self.belt.visible || !self.belt.split.tools.contains(&tool) {
+        // A tool removed, or whose wrapper collapsed, has let the keyboard go.
+        if !self.belt.visible || !self.belt.split.expanded(tool) {
             self.belt.focus = None;
             self.belt_keys.press(ev.physical_key, false);
             return false;
@@ -935,8 +943,9 @@ impl App {
             // without a question (`TS:421-428`, `iTermToolActions.m:177-183`,
             // `ToolNamedMarks.swift:140-146`).
             ListKey::Delete | ListKey::Backspace if matches!(tool, ToolId::Snippets | ToolId::Actions | ToolId::NamedMarks) => self.tool_remove(tool),
-            // A named mark's cell is edited with Return (the prompt, here).
-            ListKey::Enter if tool == ToolId::NamedMarks => self.tool_edit(tool, true, event_loop),
+            // A named mark's cell is edited with Return (the prompt, here); as the Edit button,
+            // only with exactly one mark selected.
+            ListKey::Enter if tool == ToolId::NamedMarks => self.tool_button(tool, ToolButton::Edit, event_loop),
             // Right opens the selected folder and Left closes it (NSOutlineView).
             ListKey::Right | ListKey::Left if tool == ToolId::Snippets => {
                 let row = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied());
@@ -1181,7 +1190,10 @@ impl App {
     /// undo. A press that did not move is a click.
     pub(super) fn tool_drop(&mut self, tool: ToolId, start_y: f32) {
         let (_, y) = self.cursor;
-        if (y - start_y).abs() < DRAG_SLOP * self.scale() {
+        let dragged = (y - start_y).abs() >= DRAG_SLOP * self.scale();
+        // A press that kept a selection of several and did not drag leaves its row alone.
+        self.tool_state(tool).selection.release(dragged);
+        if !dragged {
             return;
         }
         let Some(area) = self.tool_area(tool) else { return };

@@ -97,6 +97,9 @@ pub struct Selection {
     anchor: Option<usize>,
     /// The last click of any kind, for double-click detection.
     last: Option<(usize, u128)>,
+    /// A plain press on a row of a multi-row selection that may start a drag: the selection
+    /// stays until the release, which reduces it to this row if no drag happened (NSTableView).
+    held: Option<usize>,
 }
 
 impl Selection {
@@ -106,8 +109,17 @@ impl Selection {
     /// Shift, always taking the plain-click path. Returns true when this click lands on the
     /// same row as the previous click within `double_ms` (the Windows double-click time).
     pub fn click(&mut self, row: usize, ctrl: bool, shift: bool, multi: bool, now_ms: u128, double_ms: u128) -> bool {
+        self.press(row, ctrl, shift, multi, false, now_ms, double_ms)
+    }
+
+    /// `click` for a list whose rows can be dragged (`draggable`): a plain press on a row
+    /// already in a selection of several keeps them all, so the drag moves them all, and
+    /// `release` reduces the selection to that row if no drag happened.
+    #[allow(clippy::too_many_arguments)]
+    pub fn press(&mut self, row: usize, ctrl: bool, shift: bool, multi: bool, draggable: bool, now_ms: u128, double_ms: u128) -> bool {
         let double = self.last.is_some_and(|(r, t)| r == row && now_ms.saturating_sub(t) <= double_ms);
         self.last = Some((row, now_ms));
+        self.held = None;
 
         if shift && multi {
             let anchor = self.anchor.unwrap_or(row);
@@ -120,11 +132,38 @@ impl Selection {
                 self.rows.push(row);
                 self.rows.sort_unstable();
             }
+        } else if multi && draggable && self.rows.len() > 1 && self.rows.contains(&row) {
+            self.anchor = Some(row);
+            self.held = Some(row);
         } else {
             self.rows = vec![row];
             self.anchor = Some(row);
         }
         double
+    }
+
+    /// The button went up after `press`: a held selection becomes the pressed row alone,
+    /// unless a drag happened.
+    pub fn release(&mut self, dragged: bool) {
+        if let Some(row) = self.held.take() {
+            if !dragged {
+                self.rows = vec![row];
+            }
+        }
+    }
+
+    /// The list was rebuilt (a folder opened or closed): each selected row follows its item,
+    /// `old` and `new` being every row's identity before and after. Rows whose item is gone
+    /// (hidden in a closed folder) drop out.
+    pub fn remap<K: PartialEq>(&mut self, old: &[K], new: &[K]) {
+        let find = |r: usize| old.get(r).and_then(|k| new.iter().position(|n| n == k));
+        let mut rows: Vec<usize> = self.rows.iter().filter_map(|&r| find(r)).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        self.rows = rows;
+        self.anchor = self.anchor.and_then(find);
+        self.last = self.last.and_then(|(r, t)| find(r).map(|n| (n, t)));
+        self.held = self.held.and_then(find);
     }
 
     /// Up (`down` false) or Down moves a single-row selection by one, clamped to `[0, n - 1]`.
@@ -153,6 +192,7 @@ impl Selection {
         };
         self.rows = vec![next];
         self.anchor = Some(next);
+        self.held = None;
     }
 
     /// Drops rows that no longer exist, for a list that shrank to `n` rows.
@@ -163,6 +203,9 @@ impl Selection {
         }
         if self.last.is_some_and(|(r, _)| r >= n) {
             self.last = None;
+        }
+        if self.held.is_some_and(|r| r >= n) {
+            self.held = None;
         }
     }
 
@@ -446,6 +489,58 @@ pub fn takes_key(focus: Option<Focus>, key: &ListKey, ctrl: bool, alt: bool, win
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plain press on a row of a multi-row selection keeps it for a drag; the release
+    /// reduces it to that row only when no drag happened (NSTableView).
+    #[test]
+    fn a_press_on_a_selected_row_waits_for_the_release() {
+        let mut s = Selection::default();
+        s.press(1, false, false, true, true, 0, 500);
+        s.press(3, false, true, true, true, 1000, 500);
+        assert_eq!(s.rows, vec![1, 2, 3]);
+        // Pressed and let go without a drag: that row alone.
+        s.press(2, false, false, true, true, 2000, 500);
+        assert_eq!(s.rows, vec![1, 2, 3]);
+        s.release(false);
+        assert_eq!(s.rows, vec![2]);
+        // Pressed and dragged: all of them stay.
+        s.press(4, false, true, true, true, 3000, 500);
+        assert_eq!(s.rows, vec![2, 3, 4]);
+        s.press(3, false, false, true, true, 4000, 500);
+        s.release(true);
+        assert_eq!(s.rows, vec![2, 3, 4]);
+        // A later release without a held press changes nothing.
+        s.release(false);
+        assert_eq!(s.rows, vec![2, 3, 4]);
+        // A press outside the selection, or on a list that cannot drag, selects at once.
+        s.press(0, false, false, true, true, 5000, 500);
+        assert_eq!(s.rows, vec![0]);
+        s.press(2, false, true, true, true, 6000, 500);
+        s.click(1, false, false, true, 7000, 500);
+        assert_eq!(s.rows, vec![1]);
+        // A lone selected row is not held.
+        s.press(1, false, false, true, true, 8000, 500);
+        s.release(true);
+        assert_eq!(s.rows, vec![1]);
+    }
+
+    /// A rebuilt list keeps the same items selected, wherever their rows moved; items hidden
+    /// by the rebuild drop out.
+    #[test]
+    fn remap_follows_the_items() {
+        let mut s = Selection::default();
+        s.click(1, false, false, true, 0, 500);
+        s.click(3, true, false, true, 100, 500);
+        // "b" and "d" selected; a folder opens above "b", adding two rows.
+        s.remap(&["a", "b", "c", "d"], &["a", "x", "y", "b", "c", "d"]);
+        assert_eq!(s.rows, vec![3, 5]);
+        // Closing hides "d" (its row is gone) and moves "b" back.
+        s.remap(&["a", "x", "y", "b", "c", "d"], &["a", "b", "c"]);
+        assert_eq!(s.rows, vec![1]);
+        // Shift extends from the remapped anchor ("b", row 1).
+        s.click(2, false, true, true, 200, 500);
+        assert_eq!(s.rows, vec![1, 2]);
+    }
 
     #[test]
     fn keys_go_to_a_focused_tool_only() {

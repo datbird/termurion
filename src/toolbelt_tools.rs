@@ -367,6 +367,25 @@ pub fn snippet_rows(snippets: &[Snippet], tree: &[SnippetNode], expanded: &BTree
     out
 }
 
+/// Each row's identity across a rebuild, so a selection follows its items when a folder opens
+/// or closes: the folder path it sits in (a folder row's own path) and the snippet's index
+/// (None for a folder). A snippet shown under two tags is two items.
+pub fn snippet_row_keys(rows: &[SnippetRow]) -> Vec<(String, Option<usize>)> {
+    let mut stack: Vec<String> = Vec::new();
+    rows.iter()
+        .map(|r| {
+            stack.truncate(r.depth);
+            match &r.kind {
+                SnippetRowKind::Folder(name) => {
+                    stack.push(name.clone());
+                    (stack.join("/"), None)
+                }
+                SnippetRowKind::Snippet(k) => (stack.join("/"), Some(*k)),
+            }
+        })
+        .collect()
+}
+
 /// Moves the snippets named by `guids` to `child_index` (`TS:876-899`,
 /// `-moveSnippetsWithGUIDs:toIndex:`). `bound` is the outline's own child-count check
 /// (`_filteredSnippets.count`); `child_index` is then used as if it were an index into the
@@ -674,6 +693,31 @@ mod tests {
     use crate::shell_history::{Dir, Use};
     use crate::snippets::Snippet;
     use crate::user_actions::UserAction;
+
+    /// A row's identity is its folder path and snippet index, so the same snippet under two
+    /// tags is two items, and a selection maps across a folder opening.
+    #[test]
+    fn snippet_row_keys_name_each_item() {
+        let row = |depth: usize, kind: SnippetRowKind| SnippetRow { depth, kind, text: String::new(), tags: Vec::new() };
+        let closed = vec![row(0, SnippetRowKind::Folder("apple".into())), row(0, SnippetRowKind::Folder("banana".into())), row(0, SnippetRowKind::Snippet(0))];
+        let open = vec![
+            row(0, SnippetRowKind::Folder("apple".into())),
+            row(1, SnippetRowKind::Snippet(5)),
+            row(1, SnippetRowKind::Folder("sub".into())),
+            row(2, SnippetRowKind::Snippet(3)),
+            row(0, SnippetRowKind::Folder("banana".into())),
+            row(1, SnippetRowKind::Snippet(5)),
+            row(0, SnippetRowKind::Snippet(0)),
+        ];
+        let k = |p: &str, i: Option<usize>| (p.to_string(), i);
+        assert_eq!(snippet_row_keys(&open), vec![k("apple", None), k("apple", Some(5)), k("apple/sub", None), k("apple/sub", Some(3)), k("banana", None), k("banana", Some(5)), k("", Some(0))]);
+        // "banana" and the top-level snippet selected; "apple" opens above them.
+        let mut sel = crate::tool_list::Selection::default();
+        sel.click(1, false, false, true, 0, 500);
+        sel.click(2, true, false, true, 100, 500);
+        sel.remap(&snippet_row_keys(&closed), &snippet_row_keys(&open));
+        assert_eq!(sel.rows, vec![4, 6]);
+    }
 
     fn snip(title: &str, value: &str, tags: &[&str]) -> Snippet {
         Snippet { title: title.into(), value: value.into(), guid: format!("g-{title}-{value}"), tags: tags.iter().map(|s| s.to_string()).collect(), escaping: Escaping::Common, version: 2 }
