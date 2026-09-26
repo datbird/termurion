@@ -144,7 +144,7 @@ const STAMP_BG: Rgb = rgb(0x20, 0x20, 0x20);
 const NOTE_BG: Rgb = rgb(0xff, 0xf8, 0xc4);
 const BAR_BUTTON: Rgb = rgb(0xff, 0xff, 0xff);
 const LABEL_TEXT: Rgb = rgb(0x00, 0x00, 0x00);
-const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
+pub const FIND_ERROR: Rgb = rgb(0xff, 0x6b, 0x6b);
 /// How much an unfocused pane fades toward the background, as iTerm2 dims inactive splits.
 const DIM_ALPHA: f32 = 0.4;
 
@@ -970,6 +970,9 @@ pub struct StatusBarDraw<'a> {
     /// Separator lines' x; drawn only with a color.
     pub separators: &'a [f32],
     pub separator_color: Option<(Rgb, f32)>,
+    /// Plain boxes over the bands (a field's border, the progress track): rect, color,
+    /// alpha.
+    pub boxes: &'a [(Rect, Rgb, f32)],
     /// Button faces (Call Script Function): rounded boxes, with the corner radius.
     pub buttons: &'a [(Rect, Rgb, f32, f32)],
     pub texts: &'a [BarText],
@@ -999,9 +1002,9 @@ pub fn rounded_box(quads: &mut Vec<Quad>, r: Rect, radius: f32, color: [f32; 4])
     }
 }
 
-/// A status bar (`SV:151-162`): the background, the component bands, the separators (one
-/// point wide, three points in from the top and bottom), button faces, the text, and the
-/// edge line.
+/// A status bar (`SV:151-162`): the background, the component bands, the boxes, the
+/// separators (one point wide, three points in from the top and bottom), button faces, the
+/// text, and the edge line.
 pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
     let r = d.rect;
     frame.quads.push(Quad { rect: r, color: rgba(d.background.0, d.background.1) });
@@ -1009,6 +1012,9 @@ pub fn status_bar(frame: &mut Frame, d: &StatusBarDraw, cell: (f32, f32)) {
         if x1 > x0 {
             frame.quads.push(Quad { rect: Rect { x: x0, y: r.y, w: x1 - x0, h: r.h }, color: rgba(c, a) });
         }
+    }
+    for &(b, c, a) in d.boxes {
+        frame.quads.push(Quad { rect: b, color: rgba(c, a) });
     }
     if let Some((c, a)) = d.separator_color {
         let inset = (3.0 * d.scale).round();

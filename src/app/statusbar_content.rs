@@ -3,7 +3,9 @@
 //! `statusbar_ui` measures, lays out and draws. Text components here: Clock, Host Name,
 //! User Name, Job Name, Current Directory (and its click menu), Interpolated String; the
 //! menu and button components: Custom Action, Actions Menu, Snippets Menu, Triggers Menu
-//! (and their menus), Call Script Function.
+//! (and their menus), Call Script Function; the field components: Search Tool, Filter
+//! Tool (both bound to the pane's find bar), the Composer stub, and the paste Progress
+//! Indicator.
 //!
 //! Citations use `.superpowers/research/m9-facts.md` section 2's abbreviations (`TXT` =
 //! `iTermStatusBarTextComponent.m`, `VAR` = `iTermStatusBarVariableBaseComponent.m`, `JOB`
@@ -34,6 +36,93 @@ pub(super) const BUTTON_PAD_PT: f32 = 12.0;
 pub(super) const BUTTON_DY_PT: f32 = 0.5;
 /// `SWS:130`: what an Interpolated String shows when its expression fails.
 pub(super) const LADYBUG: &str = "\u{1F41E}";
+/// The fields' placeholders (the xibs' `placeholderString`, and the Composer's).
+const SEARCH_PLACEHOLDER: &str = "Search";
+const FILTER_PLACEHOLDER: &str = "Filter";
+const COMPOSER_PLACEHOLDER: &str = "Command";
+/// The Search and Filter Tools' and the Progress Indicator's (minimum, preferred) points.
+const FIELD_SIZE: (f32, f32) = (125.0, 200.0);
+/// The Composer's click until its milestone.
+pub(super) const COMPOSER_REFUSAL: &str = "The Composer arrives with its own milestone.";
+/// A glyph's column in a field (the magnifier, a chevron, the close glyph), in points.
+pub(super) const GLYPH_PT: f32 = 17.0;
+/// The room between a field's text, its label and its edges, in points.
+const FIELD_PAD_PT: f32 = 4.0;
+/// Segoe Fluent Icons: Search, ChevronLeft, ChevronRight, Cancel.
+pub(super) const MAGNIFIER: char = '\u{E721}';
+pub(super) const CHEVRON_LEFT: char = '\u{E76B}';
+pub(super) const CHEVRON_RIGHT: char = '\u{E76C}';
+pub(super) const CLOSE_GLYPH: char = '\u{E711}';
+
+/// What a field component draws in its room, instead of text.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Widget {
+    /// A bordered field: the query (or the placeholder at half alpha), the results label,
+    /// and the glyphs it has.
+    /// `focused`: it has the keyboard.
+    Field { text: String, placeholder: &'static str, label: String, error: bool, focused: bool, magnifier: bool, chevrons: bool, close: bool },
+    /// The paste's track, filled to the fraction, and a cancel glyph.
+    Progress(f32),
+}
+
+/// A field's parts, in points from its left edge: (from, to) each.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FieldParts {
+    pub(super) mode: Option<(f32, f32)>,
+    pub(super) text: (f32, f32),
+    pub(super) label: (f32, f32),
+    pub(super) prev: Option<(f32, f32)>,
+    pub(super) next: Option<(f32, f32)>,
+    pub(super) close: Option<(f32, f32)>,
+}
+
+/// Where a click on a field lands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FieldPart {
+    Mode,
+    Text,
+    Prev,
+    Next,
+    Close,
+}
+
+/// A field `w` points wide (`iTermMiniSearchFieldViewController.xib`, `MiniFilterViewController
+/// .xib`): the magnifier's column at the left; at the right the close glyph, before it the
+/// two chevrons, before them the results label `label_w` wide; the text in what is left.
+pub(super) fn field_parts(w: f32, magnifier: bool, chevrons: bool, close: bool, label_w: f32) -> FieldParts {
+    let mut right = w;
+    let mut take = |on: bool| {
+        on.then(|| {
+            let part = ((right - GLYPH_PT).max(0.0), right);
+            right = part.0;
+            part
+        })
+    };
+    let close = take(close);
+    let next = take(chevrons);
+    let prev = take(chevrons);
+    let label_right = if label_w > 0.0 { (right - FIELD_PAD_PT).max(0.0) } else { right };
+    let label = ((label_right - label_w).max(0.0), label_right);
+    let text_right = if label_w > 0.0 { label.0 } else { right };
+    let left = if magnifier { GLYPH_PT.min(w) } else { FIELD_PAD_PT.min(w) };
+    FieldParts { mode: magnifier.then_some((0.0, left)), text: (left, (text_right - FIELD_PAD_PT).max(left)), label, prev, next, close }
+}
+
+/// The part of a field under `x` (points from its left); the text and label focus it.
+pub(super) fn part_at(parts: &FieldParts, x: f32) -> FieldPart {
+    let within = |p: Option<(f32, f32)>| p.is_some_and(|(a, b)| x >= a && x < b);
+    if within(parts.mode) {
+        FieldPart::Mode
+    } else if within(parts.close) {
+        FieldPart::Close
+    } else if within(parts.next) {
+        FieldPart::Next
+    } else if within(parts.prev) {
+        FieldPart::Prev
+    } else {
+        FieldPart::Text
+    }
+}
 
 /// What one content component shows and does now.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +150,8 @@ pub(super) struct Content {
     /// `statusBarComponentCopyableString` is nil: no Copy in the right-click menu.
     pub(super) uncopyable: bool,
     pub(super) click: Click,
+    /// A field component's drawing, in place of text.
+    pub(super) widget: Option<Widget>,
 }
 
 impl Content {
@@ -69,7 +160,7 @@ impl Content {
     pub(super) fn text(variants: Vec<String>) -> Content {
         let variants = if variants.is_empty() { vec![String::new()] } else { variants };
         let empty = variants.iter().all(|v| v.is_empty());
-        Content { variants, min_text: None, copy: None, empty, icon: None, right_align: false, fixed: None, button: false, uncopyable: false, click: Click::None }
+        Content { variants, min_text: None, copy: None, empty, icon: None, right_align: false, fixed: None, button: false, uncopyable: false, click: Click::None, widget: None }
     }
 }
 
@@ -325,8 +416,42 @@ impl App {
                 let label = c.knobs.get(LABEL_KEY).and_then(toml::Value::as_str).unwrap_or_default().to_string();
                 Content { empty: false, button: true, uncopyable: true, click: Click::Refuse(SCRIPT_REFUSAL), ..Content::text(vec![label]) }
             }
-            // Task 5 fills these in; `Piece::of` does not place them yet.
-            Kind::SearchTool | Kind::FilterTool | Kind::Composer | Kind::TmuxLeft | Kind::TmuxRight | Kind::Progress => Content::text(Vec::new()),
+            // `SRCH`, `FILT`: minimum 125, preferred 200; the pane's query, bound to its
+            // find bar. The Search Tool shows the query Find keeps between opens, its match
+            // count while find is open, and the chevrons; a temporary one closes. The
+            // Filter Tool shows the filter's query while Filter is on and always closes.
+            Kind::SearchTool | Kind::FilterTool => {
+                let f = self.finds.get(&pane);
+                let filtering = f.is_some_and(|f| f.open && f.filter);
+                // `MiniFilterViewController.xib` has no chevrons.
+                let active = if kind == Kind::SearchTool { f.is_some_and(|f| f.open && !f.filter) } else { filtering };
+                let (text, label, chevrons, close, placeholder) = if kind == Kind::SearchTool {
+                    let text = f.filter(|f| !f.filter).map(|f| f.query.clone()).unwrap_or_default();
+                    let label = f.filter(|f| active && !f.query.is_empty()).map(|f| f.results.label()).unwrap_or_default();
+                    (text, label, true, sbc::is_temporary(c), SEARCH_PLACEHOLDER)
+                } else {
+                    let text = f.filter(|_| filtering).map(|f| f.query.clone()).unwrap_or_default();
+                    (text, String::new(), false, true, FILTER_PLACEHOLDER)
+                };
+                let error = active && f.is_some_and(|f| f.error.is_some());
+                let focused = active && f.is_some_and(|f| f.typing);
+                let widget = Widget::Field { text, placeholder, label, error, focused, magnifier: true, chevrons, close };
+                Content { empty: false, uncopyable: true, fixed: Some(FIELD_SIZE), click: Click::Field, widget: Some(widget), ..Content::text(Vec::new()) }
+            }
+            // `COMP:54-66`: minimum 200, preferred infinity, not stretchable; a stub until
+            // its milestone: an inert field, and a click that says so.
+            Kind::Composer => {
+                let widget = Widget::Field { text: String::new(), placeholder: COMPOSER_PLACEHOLDER, label: String::new(), error: false, focused: false, magnifier: false, chevrons: false, close: false };
+                Content { empty: false, uncopyable: true, fixed: Some((200.0, f32::INFINITY)), click: Click::Refuse(COMPOSER_REFUSAL), widget: Some(widget), ..Content::text(Vec::new()) }
+            }
+            // `iTermStatusBarProgressComponent.m`: minimum 125, preferred 200; the paste's
+            // fraction sent, and a cancel glyph.
+            Kind::Progress => {
+                let fraction = self.pastes.get(&pane).and_then(|(q, _, _)| q.progress()).map_or(0.0, |(sent, total)| sent as f32 / total.max(1) as f32);
+                Content { empty: false, uncopyable: true, fixed: Some(FIELD_SIZE), click: Click::Cancel, widget: Some(Widget::Progress(fraction.clamp(0.0, 1.0))), ..Content::text(Vec::new()) }
+            }
+            // Task 6.
+            Kind::TmuxLeft | Kind::TmuxRight => Content::text(Vec::new()),
         };
         content.icon = sbc::icon(kind);
         content
@@ -692,6 +817,47 @@ mod tests {
         assert_eq!(shown_path("/C:/Users/rob"), r"C:\Users\rob");
         assert_eq!(shown_path("/home/rob"), "/home/rob");
         assert_eq!(evaluation_error("\\(x", "bad"), "Error while evaluating \u{201C}\\(x\u{201D}:\nbad");
+    }
+
+    /// A field's parts (`iTermMiniSearchFieldViewController.xib`): the magnifier at the
+    /// left, the chevrons and the close glyph at the right, the results label before the
+    /// chevrons, the text between; a click lands on one of them.
+    #[test]
+    fn field_parts_follow_iterm2() {
+        let search = field_parts(200.0, true, true, true, 30.0);
+        assert_eq!(search.mode, Some((0.0, 17.0)));
+        assert_eq!(search.close, Some((183.0, 200.0)));
+        assert_eq!(search.next, Some((166.0, 183.0)));
+        assert_eq!(search.prev, Some((149.0, 166.0)));
+        assert_eq!(search.label, (115.0, 145.0));
+        assert_eq!(search.text, (17.0, 111.0));
+        assert_eq!(part_at(&search, 5.0), FieldPart::Mode);
+        assert_eq!(part_at(&search, 150.0), FieldPart::Prev);
+        assert_eq!(part_at(&search, 170.0), FieldPart::Next);
+        assert_eq!(part_at(&search, 199.0), FieldPart::Close);
+        assert_eq!(part_at(&search, 60.0), FieldPart::Text);
+        assert_eq!(part_at(&search, 120.0), FieldPart::Text, "the label focuses the field");
+
+        // A layout's own Search Tool: no close glyph; the chevrons move right.
+        let permanent = field_parts(200.0, true, true, false, 0.0);
+        assert_eq!((permanent.close, permanent.next), (None, Some((183.0, 200.0))));
+        assert_eq!(permanent.text, (17.0, 162.0));
+
+        // The Filter Tool: a close glyph, no chevrons, no label.
+        let filter = field_parts(125.0, true, false, true, 0.0);
+        assert_eq!((filter.prev, filter.next, filter.close), (None, None, Some((108.0, 125.0))));
+        assert_eq!(filter.text, (17.0, 104.0));
+
+        // The Composer's inert field: text only.
+        let composer = field_parts(200.0, false, false, false, 0.0);
+        assert_eq!((composer.mode, composer.text), (None, (4.0, 196.0)));
+        assert_eq!(part_at(&composer, 2.0), FieldPart::Text);
+
+        // Too narrow: the text's room never goes negative.
+        let tiny = field_parts(40.0, true, true, true, 30.0);
+        assert!(tiny.text.1 >= tiny.text.0);
+
+        assert_eq!(COMPOSER_REFUSAL, "The Composer arrives with its own milestone.");
     }
 
     #[test]

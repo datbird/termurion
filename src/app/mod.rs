@@ -1857,7 +1857,8 @@ impl App {
             }
             self.find_bar_rect = None;
             self.find_mode_rect = None;
-            let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused);
+            // A pane whose status bar shows its find (a Search or Filter Tool) has no find bar.
+            let bar_pane = self.visible(tab).into_iter().find(|(id, _)| *id == tab.focused).filter(|_| self.bar_find_host(tab.focused).is_none());
             if let (Some((_, rect)), Some(f)) = (bar_pane, self.finds.get(&tab.focused).filter(|f| f.open)) {
                 let count = if f.filter { "Filter".to_string() } else { f.results.label() };
                 let mode = self.find_mode();

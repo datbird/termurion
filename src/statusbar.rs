@@ -31,7 +31,7 @@ pub(crate) const MAX_WIDTH_KEY: &str = "maxwidth";
 pub(crate) const SHARED_TEXT_COLOR_KEY: &str = "shared text color";
 pub(crate) const SHARED_BACKGROUND_COLOR_KEY: &str = "shared background color";
 pub(crate) const SHARED_FONT_KEY: &str = "shared font";
-const SPRING_CONSTANT_KEY: &str = "iTermStatusBarSpringComponentSpringConstantKey";
+pub(crate) const SPRING_CONSTANT_KEY: &str = "iTermStatusBarSpringComponentSpringConstantKey";
 const SIZE_MULTIPLE_KEY: &str = "iTermStatusBarSpringComponentSizeMultipleKey";
 /// `iTermStatusBarFixedSpacerComponentWidthKnob`. `pub(crate)` so the app side's own tests
 /// can build a spacer `Component` with it, rather than duplicating the string.

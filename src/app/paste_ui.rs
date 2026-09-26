@@ -1,5 +1,6 @@
 //! Pasting (iTerm2's iTermPasteHelper): each paste is transformed, may ask a question
-//! first, and is written in chunks on the event loop's tick with a progress bar.
+//! first, and is written in chunks on the event loop's tick with a progress bar (on the
+//! pane's status bar when one is shown).
 
 use super::*;
 use crate::broadcast::Write;
@@ -146,26 +147,45 @@ impl App {
         for (id, chunk, what) in writes {
             self.user_write(id, chunk.as_bytes(), what);
         }
+        // With a status bar shown for the pane, the progress is its temporary right
+        // component (`iTermPasteViewManager.m:70-89`); without one, the info bar.
         for (id, pct) in bars {
+            let on_bar = self.bar_shown_for(id);
             match pct {
-                Some(pct) => {
+                Some(pct) if !on_bar => {
                     self.ask(id, PASTE_BAR, &format!("Pasting... {pct}%"), &["Cancel"], true);
                 }
-                None => self.drop_bar(id, PASTE_BAR),
+                _ => {
+                    self.drop_bar(id, PASTE_BAR);
+                    if on_bar {
+                        self.redraw();
+                        self.redraw_all();
+                    }
+                }
             }
         }
         due.map(|t| self.started + std::time::Duration::from_secs_f64(t.max(now)))
+    }
+
+    /// The pane's paste shows its progress (a slow one, still sending).
+    pub(super) fn paste_shows_progress(&self, pane: PaneId) -> bool {
+        self.pastes.get(&pane).is_some_and(|(q, _, bar)| *bar && q.progress().is_some())
+    }
+
+    /// Cancels the pane's paste (the progress's Cancel).
+    pub(super) fn cancel_paste(&mut self, pane: PaneId) {
+        if let Some((q, _, _)) = self.pastes.get_mut(&pane) {
+            q.cancel();
+        }
+        self.drop_bar(pane, PASTE_BAR);
+        self.paste_tick();
     }
 
     /// The paste questions' and the progress bar's answers. True when the bar was one of these.
     pub(super) fn paste_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>) -> bool {
         if id == PASTE_BAR {
             if button == Some("Cancel") {
-                if let Some((q, _, _)) = self.pastes.get_mut(&pane) {
-                    q.cancel();
-                }
-                self.drop_bar(pane, PASTE_BAR);
-                self.paste_tick();
+                self.cancel_paste(pane);
             }
             return true;
         }

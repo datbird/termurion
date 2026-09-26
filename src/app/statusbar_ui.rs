@@ -14,9 +14,9 @@ use crate::palette::Rgb;
 use crate::statusbar::{self, Algorithm, Component, KnobKind, Layout, Rainbow, PLACEHOLDER_CLASS, SPACER_CLASS, SPRING_CLASS};
 use crate::statusbar_setup_ui::SetupEvent;
 use crate::statusbar_layout::{self as sbl, Item, ItemKind, Placed, Position};
-use crate::statusbar_components::Kind;
+use crate::statusbar_components::{self as sbc, Kind};
 use crate::statusbar_text as sbt;
-use super::statusbar_content::{Content, MenuAt, BUTTON_DY_PT, BUTTON_PAD_PT};
+use super::statusbar_content::{self as sbx, Content, FieldPart, MenuAt, Widget, BUTTON_DY_PT, BUTTON_PAD_PT, GLYPH_PT};
 
 /// `iTermStatusBarPlaceholderComponent`'s text.
 pub(super) const PLACEHOLDER_TEXT: &str = "Click here to configure status bar";
@@ -62,12 +62,10 @@ pub(super) enum Click {
     Error(String),
     /// Performs the component's action (Custom Action).
     Run,
-    /// Focuses the component's field. This and the one below are made by the field and
-    /// temporary components (Task 5).
-    #[allow(dead_code)]
+    /// A Search or Filter Tool: the part under the click (the mode menu, a chevron, the
+    /// close glyph) acts, else the field takes the keyboard.
     Field,
-    /// Closes a temporary component.
-    #[allow(dead_code)]
+    /// The Progress Indicator: its cancel glyph cancels the paste.
     Cancel,
     /// Says why the click does nothing yet, in an info bar with OK.
     Refuse(&'static str),
@@ -97,7 +95,11 @@ impl Piece {
                 | Kind::ActionsMenu
                 | Kind::SnippetsMenu
                 | Kind::TriggersMenu
-                | Kind::CallScriptFunction) => Some(Piece::Content(k)),
+                | Kind::CallScriptFunction
+                | Kind::SearchTool
+                | Kind::FilterTool
+                | Kind::Composer
+                | Kind::Progress) => Some(Piece::Content(k)),
                 _ => None,
             },
         }
@@ -173,9 +175,11 @@ pub(super) struct Bar {
 
 /// One component a bar shows: where it is in the layout (None for the placeholder), what
 /// it is, what it shows now (None for a spring or spacer), its variants measured in
-/// points, and its text size as a scale of the terminal font.
+/// points, and its text size as a scale of the terminal font. A temporary component (and
+/// the spring before a right one) has no place in the layout.
 struct Shown {
     index: Option<usize>,
+    temporary: bool,
     piece: Piece,
     component: Component,
     content: Option<Content>,
@@ -338,25 +342,55 @@ impl App {
         pt * self.scale() / term_px
     }
 
-    /// Lays out one bar (`VC:156-198`): the layout's components Tandem knows, or the
-    /// placeholder when there are none (`VC:248-293`), by the layout's algorithm.
+    /// Lays out one bar (`VC:156-198`): the layout's components Tandem knows, with the
+    /// temporary ones (`VC:248-293`), or the placeholder when there are none, by the
+    /// layout's algorithm. Find with no Search Tool in the layout puts a temporary one
+    /// first; with one, it becomes mandatory (`SessionView.m:778-800`). A slow paste's
+    /// progress is the temporary right component (`iTermPasteViewManager.m:77-89`), else
+    /// Filter's when the layout's Filter Tool is not on the bar (`SessionView.m:762-776`).
     fn place_bar(&mut self, bar: &Bar) -> Placement {
         let layout = self.status_layout(bar.pane);
+        let find = self.finds.get(&bar.pane).filter(|f| f.open).map(|f| f.filter);
+        let has = |kind: Kind| layout.components.iter().any(|c| c.class == kind.class());
+        let search = find == Some(false);
+        let left = (search && !has(Kind::SearchTool)).then(|| sbc::temporary(Kind::SearchTool));
+        let progress = self.paste_shows_progress(bar.pane);
+        let right = if progress {
+            Some(sbc::temporary(Kind::Progress))
+        } else if find == Some(true) && !has(Kind::FilterTool) {
+            Some(sbc::temporary(Kind::FilterTool))
+        } else {
+            None
+        };
+        let p = self.place_components(bar, layout.clone(), left.clone(), right, search);
+        let filter_shown = p.placed.iter().any(|pl| p.shown[pl.index].piece == Piece::Content(Kind::FilterTool));
+        if find == Some(true) && !progress && !filter_shown && has(Kind::FilterTool) {
+            return self.place_components(bar, layout, left, Some(sbc::temporary(Kind::FilterTool)), search);
+        }
+        p
+    }
+
+    /// Lays out the layout's components with the temporaries (`sbc::with_temporaries`).
+    /// With `search`, the layout's first Search Tool is the mandatory view (`VC:84-91`).
+    fn place_components(&mut self, bar: &Bar, layout: Layout, left: Option<Component>, right: Option<Component>, search: bool) -> Placement {
         let algorithm = layout.advanced.algorithm;
+        let n_left = usize::from(left.is_some());
+        let all = sbc::with_temporaries(&layout.components, left, right);
         let mut shown: Vec<Shown> = Vec::new();
-        for (i, c) in layout.components.iter().enumerate() {
+        for (j, c) in all.iter().enumerate() {
+            let index = j.checked_sub(n_left).filter(|&i| i < layout.components.len());
             if let Some(piece) = Piece::of(&c.class) {
                 let content = match piece {
                     Piece::Content(kind) => Some(self.content(bar.pane, kind, c)),
                     _ => None,
                 };
-                shown.push(Shown { index: Some(i), piece, component: c.clone(), content, widths: Vec::new(), min_text_pt: None, text_scale: self.status_text_scale(&layout, c) });
+                shown.push(Shown { index, temporary: index.is_none(), piece, component: c.clone(), content, widths: Vec::new(), min_text_pt: None, text_scale: self.status_text_scale(&layout, c) });
             }
         }
         if shown.is_empty() {
             let c = Component { class: PLACEHOLDER_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
             let text_scale = self.status_text_scale(&layout, &c);
-            shown.push(Shown { index: None, piece: Piece::Placeholder, component: c, content: Some(placeholder_content()), widths: Vec::new(), min_text_pt: None, text_scale });
+            shown.push(Shown { index: None, temporary: false, piece: Piece::Placeholder, component: c, content: Some(placeholder_content()), widths: Vec::new(), min_text_pt: None, text_scale });
         }
         let scale = self.scale();
         let cell_w = self.cell().0;
@@ -371,14 +405,24 @@ impl App {
         };
         let mut items = Vec::with_capacity(shown.len());
         for s in &mut shown {
-            if let Some(content) = &s.content {
-                if content.fixed.is_none() {
+            match s.content.as_ref() {
+                // A field's label and text, measured for drawing: the label first.
+                Some(Content { widget: Some(Widget::Field { text, label, .. }), .. }) => {
+                    s.widths = [label, text].into_iter().map(|t| (t.clone(), if t.is_empty() { 0.0 } else { measure(t, s.text_scale) })).collect();
+                }
+                Some(content) if content.fixed.is_none() => {
                     s.widths = content.variants.iter().map(|v| (v.clone(), measure(v, s.text_scale))).collect();
                     s.min_text_pt = content.min_text.as_deref().map(|m| measure(m, s.text_scale));
                 }
+                _ => {}
             }
             let empty = Content::text(Vec::new());
             items.push(s.piece.item(&s.component, algorithm, s.content.as_ref().unwrap_or(&empty), &s.widths, s.min_text_pt));
+        }
+        if search {
+            if let Some(k) = shown.iter().position(|s| !s.temporary && s.piece == Piece::Content(Kind::SearchTool)) {
+                items[k].mandatory = true;
+            }
         }
         let width_pt = bar.rect.w / scale;
         let placed = sbl::layout(&items, width_pt, algorithm, layout.advanced.remove_empty);
@@ -410,6 +454,7 @@ impl App {
                 .filter_map(|(a, b, i)| p.shown[i].component.background_color().as_ref().and_then(color_of).map(|(c, al)| (px(a), px(b), c, al)))
                 .collect();
             let mut buttons = Vec::new();
+            let mut boxes = Vec::new();
             let separators: Vec<f32> = sbl::separators(&p.placed, &p.items).into_iter().map(px).collect();
             // `PS:22983-23010`: the layout's separator color, else the default text color at
             // a quarter alpha.
@@ -440,6 +485,13 @@ impl App {
                     let icon_clip = Rect { w: (ICON_PT * scale).round().min(clip.w), ..clip };
                     texts.push(scene::BarText { x, text: glyph.to_string(), color, scale: s.text_scale, clip: icon_clip, icon: true, dy: 0.0 });
                 }
+                // A field or the progress track, in the room beside the icon.
+                if let Some(widget) = &content.widget {
+                    let room = Rect { x: px(pl.x + icon_pt), w: ((pl.width - icon_pt).max(0.0) * scale).round(), ..clip };
+                    let look = WidgetLook { color, dim: mix(color, background.0), text_scale: s.text_scale, scale };
+                    draw_widget(widget, room, &s.widths, &look, &mut boxes, &mut texts);
+                    continue;
+                }
                 // The widest variant that fits beside the icon (`TXT:178-229`); User Name
                 // always draws its full name (`VAR:249-251`).
                 let room = (pl.width - icon_pt - 2.0 * pad_pt).max(0.0);
@@ -461,7 +513,7 @@ impl App {
                 };
                 Rect { y, h, ..bar.rect }
             });
-            let d = scene::StatusBarDraw { rect: bar.rect, background, bands: &bands, separators: &separators, separator_color, buttons: &buttons, texts: &texts, edge, scale };
+            let d = scene::StatusBarDraw { rect: bar.rect, background, bands: &bands, separators: &separators, separator_color, boxes: &boxes, buttons: &buttons, texts: &texts, edge, scale };
             scene::status_bar(frame, &d, cell);
         }
     }
@@ -477,10 +529,18 @@ impl App {
         }
         self.refresh_route();
         let p = self.place_bar(&bar);
-        let hit = p.hit((x - bar.rect.x) / self.scale());
+        let x_pt = (x - bar.rect.x) / self.scale();
+        let hit = p.hit(x_pt);
         match button {
             MouseButton::Left => {
                 let click = hit.and_then(|i| p.shown[i].content.as_ref()).map_or(Click::None, |c| c.click.clone());
+                // A click on the bar anywhere but a field gives the keyboard back to the
+                // terminal, as a click in the terminal does.
+                if click != Click::Field {
+                    if let Some(f) = self.finds.get_mut(&bar.pane) {
+                        f.typing = false;
+                    }
+                }
                 match click {
                     Click::Configure => self.configure_status_bar(bar.pane, event_loop),
                     Click::Menu(kind) => {
@@ -488,10 +548,7 @@ impl App {
                         // At the component's left, below a bar at the top and above one at
                         // the bottom.
                         let left = p.placed.iter().find(|pl| pl.index == i).map_or(0.0, |pl| pl.x);
-                        let at = match self.status_bar_position() {
-                            Position::Top => MenuAt { x: bar.rect.x + left * self.scale(), y: bar.rect.y + bar.rect.h, above: false },
-                            Position::Bottom => MenuAt { x: bar.rect.x + left * self.scale(), y: bar.rect.y, above: true },
-                        };
+                        let at = self.menu_at(&bar, left);
                         match kind {
                             Kind::CurrentDirectory => {
                                 let path = p.shown[i].content.as_ref().and_then(|c| c.copy.clone());
@@ -512,8 +569,31 @@ impl App {
                     Click::Refuse(why) => {
                         self.ask(bar.pane, STATUS_REFUSE_BAR, why, &["OK"], false);
                     }
-                    // Task 5: fields and temporary components.
-                    Click::None | Click::Field | Click::Cancel => {}
+                    Click::Field => {
+                        let Some((i, pl)) = hit.and_then(|i| p.placed.iter().find(|pl| pl.index == i).map(|pl| (i, *pl))) else { return true };
+                        let Piece::Content(kind) = p.shown[i].piece else { return true };
+                        let Some((parts, offset)) = field_parts_of(&p.shown[i], pl.width) else { return true };
+                        match sbx::part_at(&parts, x_pt - pl.x - offset) {
+                            FieldPart::Mode => {
+                                let at = self.menu_at(&bar, pl.x);
+                                self.show_bar_mode_menu(kind == Kind::SearchTool, at);
+                            }
+                            // `searchNextPrev:`: the left chevron is Find Previous, the right
+                            // one Find Next (which goes up).
+                            FieldPart::Prev => self.find_step(bar.pane, false),
+                            FieldPart::Next => self.find_step(bar.pane, true),
+                            FieldPart::Close => self.bar_field_close(bar.pane, kind),
+                            FieldPart::Text => self.bar_field_focus(bar.pane, kind),
+                        }
+                    }
+                    // The cancel glyph at the Progress Indicator's right end.
+                    Click::Cancel => {
+                        let on_glyph = hit.and_then(|i| p.placed.iter().find(|pl| pl.index == i)).is_some_and(|pl| x_pt >= pl.x + pl.width - GLYPH_PT);
+                        if on_glyph {
+                            self.cancel_paste(bar.pane);
+                        }
+                    }
+                    Click::None => {}
                 }
             }
             MouseButton::Right => self.show_status_menu(bar.pane, &p, hit),
@@ -521,6 +601,31 @@ impl App {
         }
         self.redraw();
         true
+    }
+
+    /// Where a component's menu opens for a component `left_pt` points into `bar`: below a
+    /// bar at the top, above one at the bottom.
+    fn menu_at(&self, bar: &Bar, left_pt: f32) -> MenuAt {
+        let x = bar.rect.x + left_pt * self.scale();
+        match self.status_bar_position() {
+            Position::Top => MenuAt { x, y: bar.rect.y + bar.rect.h, above: false },
+            Position::Bottom => MenuAt { x, y: bar.rect.y, above: true },
+        }
+    }
+
+    /// The field on the pane's bar that shows its find, while find is open: the Search Tool,
+    /// or the Filter Tool while Filter is on (a layout's own or the temporary one). Then the
+    /// in-pane find bar is not drawn.
+    pub(super) fn bar_find_host(&self, pane: PaneId) -> Option<Kind> {
+        let f = self.finds.get(&pane).filter(|f| f.open)?;
+        let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&pane))?;
+        self.status_bars(tab).iter().any(|b| b.pane == pane).then_some(if f.filter { Kind::FilterTool } else { Kind::SearchTool })
+    }
+
+    /// A bar shows for the pane, in any window (the tab it is in shows its bar).
+    pub(super) fn bar_shown_for(&self, pane: PaneId) -> bool {
+        let has = |tab: &Tab| tab.layout.panes().contains(&pane) && self.status_bars(tab).iter().any(|b| b.pane == pane);
+        self.tabs.iter().any(has) || self.windows.parked().any(|(_, s)| s.tabs.iter().any(has))
     }
 
     /// The component menu (`CV:310-388`).
@@ -539,7 +644,8 @@ impl App {
         }
         let mut checkboxes = Vec::new();
         if let Some(s) = shown {
-            if let Some(info) = statusbar::info_for(&s.component.class, algorithm).filter(|i| !i.internal) {
+            // A temporary component is not the layout's: nothing to configure or hide.
+            if let Some(info) = statusbar::info_for(&s.component.class, algorithm).filter(|i| !i.internal && !s.temporary) {
                 // The spring's Stable name is "Empty Space" (`SPR:42-49`).
                 let short = info.short;
                 let knobs = statusbar::knobs(&s.component.class, algorithm);
@@ -753,6 +859,89 @@ impl App {
     }
 }
 
+/// Half of `a` over `b`: text at half alpha (a placeholder, the results label).
+fn mix(a: Rgb, b: Rgb) -> Rgb {
+    let m = |x: u8, y: u8| ((u16::from(x) + u16::from(y)) / 2) as u8;
+    crate::palette::rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
+}
+
+/// How a widget draws: the text color, it at half alpha, the text size, and the scale.
+struct WidgetLook {
+    color: Rgb,
+    dim: Rgb,
+    text_scale: f32,
+    scale: f32,
+}
+
+/// A glyph sits this far into its column, in points.
+const GLYPH_INSET_PT: f32 = 2.5;
+/// The progress track's height, in points.
+const TRACK_PT: f32 = 6.0;
+
+/// A Search, Filter or Composer field's parts, from what `place_components` measured, for
+/// a component `width_pt` wide; the parts are in points from the field's left, which is
+/// the returned offset (its icon's column) into the component.
+fn field_parts_of(s: &Shown, width_pt: f32) -> Option<(sbx::FieldParts, f32)> {
+    let Some(Widget::Field { magnifier, chevrons, close, .. }) = s.content.as_ref()?.widget.as_ref() else { return None };
+    let icon = if s.content.as_ref()?.icon.is_some() { ICON_PT } else { 0.0 };
+    let label_w = s.widths.first().map_or(0.0, |(_, w)| *w);
+    Some((sbx::field_parts((width_pt - icon).max(0.0), *magnifier, *chevrons, *close, label_w), icon))
+}
+
+/// Draws a field (a one point border in the text color at half alpha, full alpha while it
+/// has the keyboard; its glyphs, text or placeholder, and label) or the progress track
+/// into `room` (window pixels, the bar's height). `widths`: the field's measured label and
+/// text.
+fn draw_widget(widget: &Widget, room: Rect, widths: &[(String, f32)], look: &WidgetLook, boxes: &mut Vec<(Rect, Rgb, f32)>, texts: &mut Vec<scene::BarText>) {
+    let scale = look.scale;
+    let at = |a: f32, b: f32| Rect { x: room.x + (a * scale).round(), w: ((b - a).max(0.0) * scale).round(), ..room };
+    let glyph = |texts: &mut Vec<scene::BarText>, part: (f32, f32), c: char| {
+        let r = at(part.0, part.1);
+        texts.push(scene::BarText { x: r.x + (GLYPH_INSET_PT * scale).round(), text: c.to_string(), color: look.color, scale: look.text_scale, clip: r, icon: true, dy: 0.0 });
+    };
+    let w_pt = room.w / scale;
+    match widget {
+        Widget::Field { text, placeholder, label, error, focused, magnifier, chevrons, close } => {
+            let inset = (BUTTON_INSET_PT * scale).round();
+            let b = Rect { y: room.y + inset, h: (room.h - 2.0 * inset).max(0.0), ..room };
+            let t = scale.round().max(1.0);
+            let alpha = if *focused { 1.0 } else { 0.5 };
+            for edge in [Rect { h: t, ..b }, Rect { y: b.y + b.h - t, h: t, ..b }, Rect { w: t, ..b }, Rect { x: b.x + b.w - t, w: t, ..b }] {
+                boxes.push((edge, look.color, alpha));
+            }
+            let label_w = widths.first().map_or(0.0, |(_, w)| *w);
+            let text_w = widths.get(1).map_or(0.0, |(_, w)| *w);
+            let parts = sbx::field_parts(w_pt, *magnifier, *chevrons, *close, label_w);
+            if let Some(m) = parts.mode {
+                glyph(texts, m, sbx::MAGNIFIER);
+            }
+            for (part, c) in [(parts.prev, sbx::CHEVRON_LEFT), (parts.next, sbx::CHEVRON_RIGHT), (parts.close, sbx::CLOSE_GLYPH)] {
+                if let Some(part) = part {
+                    glyph(texts, part, c);
+                }
+            }
+            let clip = at(parts.text.0, parts.text.1);
+            let (shown, color) = if text.is_empty() { (placeholder.to_string(), look.dim) } else { (text.clone(), if *error { scene::FIND_ERROR } else { look.color }) };
+            // The end of a long query stays in view.
+            let room_pt = parts.text.1 - parts.text.0;
+            let left = if !text.is_empty() && text_w > room_pt { parts.text.1 - text_w } else { parts.text.0 };
+            texts.push(scene::BarText { x: room.x + (left * scale).round(), text: shown, color, scale: look.text_scale, clip, icon: false, dy: 0.0 });
+            if !label.is_empty() {
+                let r = at(parts.label.0, parts.label.1);
+                texts.push(scene::BarText { x: r.x, text: label.clone(), color: look.dim, scale: look.text_scale, clip: r, icon: false, dy: 0.0 });
+            }
+        }
+        Widget::Progress(fraction) => {
+            let track_w = (w_pt - GLYPH_PT).max(0.0);
+            let h = (TRACK_PT * scale).round();
+            let track = Rect { y: room.y + ((room.h - h) / 2.0).round(), h, ..at(0.0, track_w) };
+            boxes.push((track, look.color, 0.25));
+            boxes.push((Rect { w: (track.w * fraction).round(), ..track }, look.color, 1.0));
+            glyph(texts, (track_w, w_pt), sbx::CLOSE_GLYPH);
+        }
+    }
+}
+
 /// The setup window's title: the profile it edits, and whether that is a session's own
 /// copy (whose edits reach only that session).
 fn setup_title(profile: &str, session_copy: bool) -> String {
@@ -864,7 +1053,7 @@ mod tests {
         let menu = Content { uncopyable: true, click: Click::Menu(Kind::ActionsMenu), ..Content::text(vec!["Perform Action\u{2026}".into()]) };
         let menu_item = Piece::Content(Kind::ActionsMenu).item(&component(ACTIONS_MENU_CLASS, &[]), Algorithm::Stable, &menu, &widths(&[("Perform Action\u{2026}", 90.0)]), None);
         assert_eq!((menu_item.min, menu_item.preferred, menu_item.stretch), (90.0, 90.0, true));
-        let shown = Shown { index: Some(0), piece: Piece::Content(Kind::ActionsMenu), component: component(ACTIONS_MENU_CLASS, &[]), content: Some(menu), widths: widths(&[("Perform Action\u{2026}", 90.0)]), min_text_pt: None, text_scale: 1.0 };
+        let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::ActionsMenu), component: component(ACTIONS_MENU_CLASS, &[]), content: Some(menu), widths: widths(&[("Perform Action\u{2026}", 90.0)]), min_text_pt: None, text_scale: 1.0 };
         assert_eq!(shown.copyable(), None, "no Copy for a menu");
     }
 

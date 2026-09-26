@@ -209,6 +209,8 @@ fn beep() {
 
 /// Menu item ids of the find bar's mode menu.
 const MODE_ID: &str = "tandem.findmode.";
+/// The status bar Search Tool's "Erase Search History" item.
+const ERASE_ID: &str = "tandem.finderase";
 
 pub(super) fn to_point(screen: &crate::screen::Screen, p: Pos) -> Point {
     let history = screen.term().grid().history_size() as i32;
@@ -575,17 +577,36 @@ impl App {
         self.redraw();
     }
 
+    /// The mode menu's items, with `title` for each mode; the status bar Search Tool's adds
+    /// a separator and "Erase Search History" (`iTermMiniSearchFieldViewController.xib`).
+    fn find_mode_menu(&mut self, title: fn(find::Mode) -> &'static str, erase: bool) -> muda::Menu {
+        let current = self.find_mode();
+        let menu = muda::Menu::new();
+        let mut results = Vec::new();
+        for m in find::Mode::ALL {
+            results.push(menu.append(&muda::CheckMenuItem::with_id(format!("{MODE_ID}{}", m as i64), title(m), true, m == current, None)));
+        }
+        if erase {
+            results.push(menu.append(&muda::PredefinedMenuItem::separator()));
+            results.push(menu.append(&muda::MenuItem::with_id(ERASE_ID, "Erase Search History", true, None)));
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Find mode menu: {e}"));
+        }
+        menu
+    }
+
+    /// A status bar field's magnifier: the mode menu at the field, with "Erase Search
+    /// History" for the Search Tool (`search`) and not the Filter Tool.
+    pub(super) fn show_bar_mode_menu(&mut self, search: bool, at: super::statusbar_content::MenuAt) {
+        let menu = self.find_mode_menu(find::Mode::menu_title, search);
+        self.show_menu_at(menu, at);
+    }
+
     /// Opens the find bar's mode menu under the mode label.
     pub(super) fn show_find_mode_menu(&mut self) {
         let Some(hwnd) = self.hwnd() else { return };
-        let current = self.find_mode();
-        let menu = muda::Menu::new();
-        for m in find::Mode::ALL {
-            let item = muda::CheckMenuItem::with_id(format!("{MODE_ID}{}", m as i64), m.label(), true, m == current, None);
-            if let Err(e) = menu.append(&item) {
-                self.banners.set("menu", format!("Find mode menu: {e}"));
-            }
-        }
+        let menu = self.find_mode_menu(find::Mode::label, false);
         let at = self.find_mode_rect.map(|r| muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(r.x as i32, (r.y + r.h) as i32)));
         use muda::ContextMenu;
         unsafe { menu.show_context_menu_for_hwnd(hwnd, at) };
@@ -595,6 +616,15 @@ impl App {
 
     /// A pick from the mode menu. Returns false for other menu ids.
     pub(super) fn find_mode_picked(&mut self, id: &str) -> bool {
+        // `eraseSearchHistory`: the pane's query goes (Tandem keeps one per pane).
+        if id == ERASE_ID {
+            if let Some(f) = self.focused_id().and_then(|id| self.finds.get_mut(&id)) {
+                f.set_query("", Instant::now());
+                f.results = Results::default();
+            }
+            self.redraw();
+            return true;
+        }
         let Some(n) = id.strip_prefix(MODE_ID).and_then(|n| n.parse::<i64>().ok()) else { return false };
         self.globals.set("findMode_iTerm", toml::Value::Integer(n));
         self.save_globals();
@@ -629,6 +659,39 @@ impl App {
 }
 
 impl App {
+    /// A click in a status bar field's text (the bar's pane is already the focused one):
+    /// it takes the keyboard. A Search Tool opens find as Find does when find is closed or
+    /// Filter has the bar; a Filter Tool turns Filter on when it is off.
+    pub(super) fn bar_field_focus(&mut self, pane: PaneId, kind: crate::statusbar_components::Kind) {
+        use crate::statusbar_components::Kind;
+        let filter = kind == Kind::FilterTool;
+        match self.finds.get_mut(&pane) {
+            Some(f) if f.open && f.filter == filter => f.typing = true,
+            _ if filter => {
+                self.run_find_command("filter:", "");
+            }
+            _ => {
+                self.run_find_command("performFindPanelAction:", "Find...");
+            }
+        }
+        self.redraw();
+    }
+
+    /// A status bar field's close glyph: a temporary Search Tool closes find, as Esc does;
+    /// the Filter Tool turns Filter off (`closeFilterComponent`).
+    pub(super) fn bar_field_close(&mut self, pane: PaneId, kind: crate::statusbar_components::Kind) {
+        use crate::statusbar_components::Kind;
+        match kind {
+            Kind::FilterTool => self.end_view(pane),
+            _ => {
+                if let Some(f) = self.finds.get_mut(&pane).filter(|f| !f.filter) {
+                    f.close();
+                }
+            }
+        }
+        self.redraw();
+    }
+
     /// Find Globally: the window, or its focus when it is open.
     pub(super) fn open_global_find(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(w) = &self.global_find {

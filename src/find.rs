@@ -30,6 +30,17 @@ impl Mode {
             Mode::RegexInsensitive => "Case-Insensitive Regex",
         }
     }
+
+    /// The status bar Search and Filter Tools' mode menu items (`iTermMiniSearchField`).
+    pub fn menu_title(self) -> &'static str {
+        match self {
+            Mode::SmartCase => "Smart Case Substring",
+            Mode::CaseSensitive => "Case-Sensitive Substring",
+            Mode::CaseInsensitive => "Case-Insensitive Substring",
+            Mode::RegexSensitive => "Case-Sensitive Regex",
+            Mode::RegexInsensitive => "Case-Insensitive Regex",
+        }
+    }
 }
 
 /// A place in the buffer: `row` counts from the oldest line of scrollback.
@@ -338,6 +349,12 @@ impl Results {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bar_mode_titles_follow_iterm2() {
+        let titles: Vec<&str> = Mode::ALL.iter().map(|m| m.menu_title()).collect();
+        assert_eq!(titles, ["Smart Case Substring", "Case-Sensitive Substring", "Case-Insensitive Substring", "Case-Sensitive Regex", "Case-Insensitive Regex"]);
+    }
 
     fn screen(text: &str) -> Screen {
         let mut s = Screen::with_scrollback(20, 4, 1000);

@@ -350,12 +350,104 @@ pub fn exemplar(class: &str, knobs: &toml::Table, clock_text: &str, user: &str, 
     })
 }
 
+/// `iTermStatusBarSearchComponentIsTemporaryKey`: the Search Tool Find puts on a bar
+/// whose layout has none (`iTermStatusBarSearchFieldComponent.m:21`).
+pub const SEARCH_TEMPORARY_KEY: &str = "search: temporary";
+/// `StatusBarFilterComponent.isTemporaryKey` (`StatusBarFilterComponent.swift:12`).
+pub const FILTER_TEMPORARY_KEY: &str = "filter: temporary";
+
+/// A temporary component (`SessionView.m:713-760`, `iTermPasteViewManager.m:77-89`):
+/// priority infinity, so the layout drops everything else first, and, for the Search and
+/// Filter Tools, the key that marks it temporary (it shows a close glyph).
+pub fn temporary(kind: Kind) -> statusbar::Component {
+    let mut knobs = toml::Table::new();
+    knobs.insert(statusbar::BASE_PRIORITY_KEY.into(), Value::Float(f64::INFINITY));
+    match kind {
+        Kind::SearchTool => {
+            knobs.insert(SEARCH_TEMPORARY_KEY.into(), Value::Boolean(true));
+        }
+        Kind::FilterTool => {
+            knobs.insert(FILTER_TEMPORARY_KEY.into(), Value::Boolean(true));
+        }
+        _ => {}
+    }
+    statusbar::Component { class: kind.class().into(), knobs, config: toml::Table::new() }
+}
+
+/// The component was made by `temporary` for a field (its knob says so).
+pub fn is_temporary(c: &statusbar::Component) -> bool {
+    [SEARCH_TEMPORARY_KEY, FILTER_TEMPORARY_KEY].iter().any(|k| c.knobs.get(*k).and_then(Value::as_bool) == Some(true))
+}
+
+/// `updateViews` (`iTermStatusBarViewController.m:248-293`): the temporary left component
+/// first, then the layout's, then, for a temporary right one, a Spring whose spring
+/// constant is 1 (`springComponentWithCompressionResistance:1`, which sets the Spring's
+/// own constant key) and the component.
+pub fn with_temporaries(components: &[statusbar::Component], left: Option<statusbar::Component>, right: Option<statusbar::Component>) -> Vec<statusbar::Component> {
+    let mut out: Vec<statusbar::Component> = left.into_iter().collect();
+    out.extend(components.iter().cloned());
+    if let Some(right) = right {
+        let mut knobs = toml::Table::new();
+        knobs.insert(statusbar::SPRING_CONSTANT_KEY.into(), Value::Float(1.0));
+        out.push(statusbar::Component { class: statusbar::SPRING_CLASS.into(), knobs, config: toml::Table::new() });
+        out.push(right);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn table(pairs: &[(&str, Value)]) -> toml::Table {
         pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+    }
+
+    /// `iTermStatusBarViewController.m:248-293`: the temporary left component goes first,
+    /// the temporary right one last with a Spring (spring constant 1) before it;
+    /// `SessionView.m:713-760`: each temporary has priority infinity and its own key;
+    /// `iTermPasteViewManager.m:77-89`: the progress one only the priority.
+    #[test]
+    fn temporaries_follow_iterm2() {
+        let search = temporary(Kind::SearchTool);
+        assert_eq!(search.class, SEARCH_TOOL_CLASS);
+        assert_eq!(search.knobs.get("base: priority"), Some(&Value::Float(f64::INFINITY)));
+        assert_eq!(search.knobs.get("search: temporary"), Some(&Value::Boolean(true)));
+        assert!(search.priority().is_infinite());
+        let filter = temporary(Kind::FilterTool);
+        assert_eq!(filter.knobs.get("filter: temporary"), Some(&Value::Boolean(true)));
+        assert!(filter.knobs.get("search: temporary").is_none());
+        let progress = temporary(Kind::Progress);
+        assert_eq!(progress.knobs.len(), 1);
+        assert!(is_temporary(&search) && is_temporary(&filter));
+
+        let clock = statusbar::Component { class: CLOCK_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
+        let classes = |v: &[statusbar::Component]| v.iter().map(|c| c.class.clone()).collect::<Vec<_>>();
+        assert_eq!(classes(&with_temporaries(std::slice::from_ref(&clock), None, None)), vec![CLOCK_CLASS]);
+        let both = with_temporaries(std::slice::from_ref(&clock), Some(search.clone()), Some(filter.clone()));
+        assert_eq!(classes(&both), vec![SEARCH_TOOL_CLASS, CLOCK_CLASS, statusbar::SPRING_CLASS, FILTER_TOOL_CLASS]);
+        let spring = &both[2];
+        assert_eq!(spring.knobs.get("iTermStatusBarSpringComponentSpringConstantKey"), Some(&Value::Float(1.0)));
+        assert_eq!(spring.spring_constant(Algorithm::TightlyPacked), 1.0);
+        assert_eq!(spring.spring_constant(Algorithm::Stable), 1.0);
+        assert!(!is_temporary(spring), "the spring is not a field");
+        assert_eq!(classes(&with_temporaries(&[], Some(search), None)), vec![SEARCH_TOOL_CLASS]);
+        assert_eq!(classes(&with_temporaries(&[], None, Some(progress))), vec![statusbar::SPRING_CLASS, PROGRESS_CLASS]);
+    }
+
+    /// Review focus 2: the priority-infinity temporary outlives three priority-5 components
+    /// on a bar too narrow for all of them, under both algorithms (`BLA:146-168` sorts it
+    /// last, `SLA:100-139` removes the lowest priority first).
+    #[test]
+    fn temporary_search_stays_on_a_narrow_bar() {
+        use crate::statusbar_layout::{layout, Item, ItemKind};
+        let item = |min: f32, preferred: f32, priority: f32| Item { min, max: f32::INFINITY, preferred, stretch: true, spring: 1.0, margins: true, priority, kind: ItemKind::Normal, icon: false, empty: false, mandatory: false };
+        let items = [item(100.0, 200.0, f32::INFINITY), item(40.0, 60.0, 5.0), item(40.0, 60.0, 5.0), item(40.0, 60.0, 5.0)];
+        for algorithm in [Algorithm::TightlyPacked, Algorithm::Stable] {
+            let placed = layout(&items, 150.0, algorithm, false);
+            assert_eq!(placed.iter().map(|p| p.index).collect::<Vec<_>>(), vec![0], "{algorithm:?}");
+            assert!(placed[0].width >= 100.0, "{algorithm:?}");
+        }
     }
 
     #[test]
