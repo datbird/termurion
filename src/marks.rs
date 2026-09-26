@@ -404,7 +404,8 @@ impl Screen {
     /// The cursor as `(absolute line, column)`: absolute lines count every row that
     /// scrolled off the top (`promptStateMachineCursorAbsCoord`, `MS:8404-8407`).
     fn abs_cursor(&self) -> (i64, usize) {
-        let g = self.term.grid();
+        // The main screen's, also while a full-screen app has the alternate one.
+        let g = self.term.primary_grid();
         (g.scrolled_off() as i64 + g.cursor.point.line.0 as i64, g.cursor.point.column.0)
     }
 
@@ -412,7 +413,11 @@ impl Screen {
     /// start, the rows blank after trimming dropped, and their text. Rows no longer in the
     /// buffer are left out.
     pub fn prompt_rows(&self) -> (Vec<crate::styled_copy::Row>, Vec<String>) {
-        let g = self.term.grid();
+        // The rows are the main screen's; the styled copy reads the screen shown.
+        if self.alt_screen() {
+            return (Vec::new(), Vec::new());
+        }
+        let g = self.term.primary_grid();
         let off = g.scrolled_off() as i64;
         let (top, bottom) = (-(g.history_size() as i64), g.screen_lines() as i64 - 1);
         let ((sl, sc), (el, ec)) = self.marks.prompt_range;
@@ -439,7 +444,7 @@ impl Screen {
     /// anyway. Also returns the cells read.
     fn echo_between(&self, from: (i64, usize), to: (i64, usize)) -> (Option<String>, u64) {
         use crate::prompt_state::MAX_ACCRUED;
-        let g = self.term.grid();
+        let g = self.term.primary_grid();
         let (off, cols) = (g.scrolled_off() as i64, g.columns());
         let top = -(g.history_size() as i64);
         // A start that left the buffer begins at its first line.
@@ -483,7 +488,7 @@ impl Screen {
         if self.composer_from.is_some() {
             self.composer_from = Some(self.abs_cursor());
         }
-        let off = self.term.grid().scrolled_off() as i64;
+        let off = self.term.primary_grid().scrolled_off() as i64;
         let abs = |p: Point| (off + p.line.0 as i64, p.column.0);
         let (a, b) = self.marks.prompt_anchors;
         let start = a.and_then(|a| self.resolve(a)).map(abs);
@@ -502,7 +507,8 @@ impl Screen {
     /// `MAX_ACCRUED` (no part can fit). Runs before each shell-integration event and after
     /// each read.
     pub(crate) fn composer_accrue(&mut self) {
-        if !self.prompt_state.enabled || !self.prompt_state.entering() || !self.marks.in_command {
+        // iTerm2 disallows the composer on the alternate screen: its drawing is never echo.
+        if !self.prompt_state.enabled || !self.prompt_state.entering() || !self.marks.in_command || self.alt_screen() {
             return;
         }
         if let crate::prompt_state::State::Accruing { so_far, .. } = &self.prompt_state.state {
@@ -1485,5 +1491,48 @@ mod tests {
             s.feed(b"\x08\x08\x08\x1b]133;B\x07");
             assert!(!s.take_composer_events().iter().any(|e| matches!(e, Event::Reveal { .. })), "{cols}x{rows}");
         }
+    }
+    #[test]
+    fn the_alternate_screen_never_feeds_the_composer() {
+        use crate::prompt_state::{Event, State};
+        let mut s = Screen::with_scrollback(40, 10, 1000);
+        s.prompt_state.enabled = true;
+        for i in 0..30 {
+            s.feed(format!("old output line {i:02}\r\n").as_bytes());
+        }
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
+        s.take_composer_events();
+        let accruing = s.prompt_state.state.clone();
+        // A full-screen program started while typing (Ctrl+X Ctrl+E, fzf): Dismiss only, and
+        // its drawing is never accrued.
+        s.feed(b"\x1b[?1049h\x1b[H\x1b[2Jhello fullscreen\r\n~\r\n~");
+        assert_eq!(s.take_composer_events(), vec![Event::Dismiss]);
+        // Even with the machine put back in Accruing (the guard, not the state, stops it).
+        s.prompt_state.state = accruing.clone();
+        s.feed(b"more drawing");
+        assert!(s.take_composer_events().is_empty());
+        s.feed(b"\x1b[?1049l");
+        // Leaving goes to Ground (PSM setAllowed); the next B would start a fresh checkpoint.
+        assert_eq!(s.prompt_state.state, State::Ground);
+        assert!(s.take_composer_events().is_empty());
+        // The checkpoint is on the main screen's cursor: back in Accruing, one char is
+        // exactly one Append, with no full-screen text and nothing from the buffer top.
+        s.prompt_state.state = accruing;
+        s.feed(b"y");
+        assert_eq!(s.take_composer_events(), vec![Event::Append("y".into())]);
+    }
+
+    #[test]
+    fn a_resize_on_the_alternate_screen_keeps_the_prompt() {
+        let mut s = Screen::with_scrollback(40, 10, 1000);
+        s.prompt_state.enabled = true;
+        for i in 0..30 {
+            s.feed(format!("old output line {i:02} that is long enough to wrap\r\n").as_bytes());
+        }
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
+        s.feed(b"\x1b[?1049h\x1b[H\x1b[2Jfull screen");
+        s.resize(30, 14);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(s.prompt_rows().1, vec!["$ ".to_string()]);
     }
 }

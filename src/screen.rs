@@ -1003,7 +1003,7 @@ impl Screen {
         self.prune_images();
     }
 
-    fn alt_screen(&self) -> bool {
+    pub(crate) fn alt_screen(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
     }
 
@@ -1030,6 +1030,11 @@ impl Screen {
             self.composer_alt = alt;
             let events = self.prompt_state.set_allowed(!alt);
             self.composer_events.extend(events);
+            // Back on the main screen: rows may have moved meanwhile (a resize), and the
+            // checkpoint goes to the main screen's cursor.
+            if !alt {
+                self.composer_rows_moved();
+            }
         }
         // Now and then, forget folds and notes whose rows scrolled out of the buffer.
         self.feeds = self.feeds.wrapping_add(1);
