@@ -582,7 +582,7 @@ impl App {
 
     /// Window > Move Tab to New Window (not the window's only tab).
     pub(super) fn move_tab_to_new_window(&mut self) {
-        if self.tabs.len() < 2 {
+        if self.tabs.len() < 2 || self.tabs.get(self.active).is_some_and(|t| self.holds_recording(t)) {
             return;
         }
         if let Some(panes) = self.tabs.get(self.active).map(|t| t.layout.panes()) {
@@ -600,7 +600,8 @@ impl App {
     /// for a new window (a one-pane tab moves whole).
     pub(super) fn move_session_to_window(&mut self) {
         let Some(pane) = self.tabs.get(self.active).map(|t| t.focused) else { return };
-        if self.tmux_break(pane, false) {
+        // A loaded recording is not moved.
+        if self.panes.get(&pane).is_some_and(|p| p.dvr.read_only) || self.tmux_break(pane, false) {
             return;
         }
         let Some(t) = self.tabs.get_mut(self.active) else { return };
@@ -641,21 +642,44 @@ impl App {
         self.redraw();
     }
 
+    /// The tab holds a loaded recording's pane, which is never moved to another window.
+    pub(super) fn holds_recording(&self, t: &Tab) -> bool {
+        t.layout.panes().iter().any(|id| self.panes.get(id).is_some_and(|p| p.dvr.read_only))
+    }
+
     /// Window > Arrange Windows > Merge All Windows: every other window's tabs come here,
-    /// in window-number order, and those windows close.
+    /// in window-number order, and those windows close. A tab holding a loaded recording
+    /// stays where it is, and so does its window.
     pub(super) fn merge_all_windows(&mut self) {
         let Some(k) = self.windows.current() else { return };
         for other in self.registry.merge_order(k) {
             let Some(mut slot) = self.windows.remove(other) else { continue };
-            // Its panel goes with its slot; its replays end.
-            let panes: Vec<PaneId> = slot.tabs.iter().flat_map(|t| t.layout.panes()).collect();
+            let tabs = std::mem::take(&mut slot.tabs);
+            let (mut moved, kept, active) = split_for_merge(tabs, slot.active, |t| self.holds_recording(t));
+            // The replays of the panes that move end; a panel stays only with its tab.
+            let panes: Vec<PaneId> = moved.iter().flat_map(|t| t.layout.panes()).collect();
             for id in panes {
                 if let Some(p) = self.panes.get_mut(&id).filter(|p| p.replay.is_some()) {
                     p.replay = None;
                     p.end_view();
                 }
             }
-            self.tabs.append(&mut slot.tabs);
+            self.tabs.append(&mut moved);
+            if !kept.is_empty() {
+                // Its active tab moved: its panel goes, and `replay_seen` still names the
+                // moved tab, so a replaying recording now in front opens its panel when
+                // the window is next looked at (`replay_follow_focus`).
+                if active.is_none() {
+                    slot.replay_window = None;
+                }
+                slot.active = active.unwrap_or(0);
+                slot.tabs = kept;
+                if let Some(g) = &slot.gpu {
+                    g.window.request_redraw();
+                }
+                self.windows.park(other, slot);
+                continue;
+            }
             if let Some((guid, n)) = slot.win_slot.take() {
                 self.slots.give(&guid, n);
             }
@@ -1009,4 +1033,43 @@ pub(super) fn monitor_rects_of(hwnd: isize) -> Option<(Rect, Rect)> {
     }
     let r = |r: windows_sys::Win32::Foundation::RECT| Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 };
     Some((r(info.rcWork), r(info.rcMonitor)))
+}
+
+/// A merge's split of a window's tabs: the ones that move, the ones `stays` keeps, and the
+/// index among the kept ones of the window's active tab (None when it moved).
+fn split_for_merge(tabs: Vec<Tab>, active: usize, stays: impl Fn(&Tab) -> bool) -> (Vec<Tab>, Vec<Tab>, Option<usize>) {
+    let (mut moved, mut kept, mut now) = (Vec::new(), Vec::new(), None);
+    for (i, t) in tabs.into_iter().enumerate() {
+        if stays(&t) {
+            if i == active {
+                now = Some(kept.len());
+            }
+            kept.push(t);
+        } else {
+            moved.push(t);
+        }
+    }
+    (moved, kept, now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(id: u64, pane: PaneId) -> Tab {
+        Tab { id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None }
+    }
+
+    #[test]
+    fn a_merge_leaves_loaded_recordings_behind() {
+        // Tabs 1 and 3 hold loaded recordings (panes 10 and 30) and stay; the active tab 2
+        // moves, so the window's active tab becomes its first kept one.
+        let stays = |t: &Tab| t.layout.panes().iter().any(|p| *p == 10 || *p == 30);
+        let (moved, kept, active) = split_for_merge(vec![tab(1, 10), tab(2, 20), tab(3, 30)], 1, stays);
+        assert_eq!(moved.iter().map(|t| t.id).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(kept.iter().map(|t| t.id).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(active, None, "the active tab moved");
+        let (_, kept, active) = split_for_merge(vec![tab(1, 10), tab(2, 20), tab(3, 30)], 2, stays);
+        assert_eq!((kept.len(), active), (2, Some(1)), "tab 3 stays active, now at index 1");
+    }
 }

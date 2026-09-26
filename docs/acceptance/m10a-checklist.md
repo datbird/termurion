@@ -35,6 +35,7 @@ may be in use). Mark each line pass or fail.
 | 18b | With two tabs open, start a replay in one, then choose Window > Move Tab to New Window: the panel closes and the moved pane shows its live screen in the new window; Win+Alt+B there starts a replay again. Repeat in a tab with two panes, using Session > Move Session > Move Session to Window on the replaying pane: the same. | |
 | 18c | Start a replay and choose Session > Restart Session: the panel closes and the pane starts its new shell live. Start a replay and choose Session > Bury Session: nothing happens (refused while the tab holds a replaying pane). | |
 | 18d | Import a recording, then close its tab (Win+W) and choose Shell > Undo Close: the recording's tab does not come back (a loaded recording is never undoable). | |
+| 18e | Import a recording (its tab opens replaying). With another tab in the window, choose Window > Move Tab to New Window on the recording's tab, and Session > Move Session > Move Session to Window on its pane: nothing happens, and the recording keeps replaying. Open a second window with an ordinary tab, import a recording into it, then from the first window choose Window > Arrange Windows > Merge All Windows: the ordinary tab moves over, while the recording's tab and its window stay where they are. | |
 
 ## Kept bugs and rulings a person can see
 
