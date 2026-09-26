@@ -84,9 +84,10 @@ pub fn label_x(frac: f32, slider_x: f32, slider_w: f32, label_w: f32) -> f32 {
 }
 
 /// `originForAccessoryOfSize:` (`PT:10491-10509`): centered under the window, above it
-/// when there is no room below, else just above `tabs_bottom` inside the window. Y grows
-/// downward on Windows, the opposite of AppKit, so "below" adds the panel's height past
-/// an edge and "above" subtracts it.
+/// when there is no room below, else inside the window with its top at `tabs_bottom`,
+/// the tab strip's bottom edge (the flipped tab view's top, converted by `(0, 0)`, less
+/// the height in AppKit's upward y). Y grows downward on Windows, the opposite of AppKit,
+/// so "below" adds the panel's height past an edge and "above" subtracts it.
 pub fn origin(size: (f32, f32), window: Rect, work: Rect, tabs_bottom: f32) -> (f32, f32) {
     let (w, h) = size;
     let x = window.x + ((window.w - w) / 2.0).round();
@@ -97,7 +98,7 @@ pub fn origin(size: (f32, f32), window: Rect, work: Rect, tabs_bottom: f32) -> (
     } else if room_above > h {
         window.y - h
     } else {
-        tabs_bottom - h
+        tabs_bottom
     };
     (x, y)
 }
@@ -189,6 +190,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn band_needs_a_span() {
+        let p = Panel { export: Export::SetEnd { start: 7000 }, ticks_at_open: vec![] };
+        assert_eq!(p.band(7000, 7000, 7000), None, "zero span: no band, no division by zero");
+        assert_eq!(p.band(7000, 8000, 7000), None, "negative span: no band");
+        assert_eq!(p.band(7500, 7000, 8000), Some((0.0, 0.5)));
+    }
+
+    #[test]
     fn panel_follows_iterm2() {
         let mut p = Panel { export: Export::Normal, ticks_at_open: vec![] };
         assert_eq!(p.buttons(), (EXPORT, None));
@@ -247,6 +256,6 @@ mod tests {
         assert_eq!(origin(SIZE, window_low, work, 130.0).1, 1050.0 - 43.0, "no room below: above the window");
 
         let window_full = Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1080.0 };
-        assert_eq!(origin(SIZE, window_full, work, 130.0).1, 130.0 - 43.0, "no room either side: just above tabs_bottom");
+        assert_eq!(origin(SIZE, window_full, work, 130.0).1, 130.0, "no room either side: top flush with the tab strip's bottom");
     }
 }
