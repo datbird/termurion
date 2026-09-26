@@ -21,7 +21,7 @@ use crate::git_state::{self as gs, Fetched, GitPoller, GitRun, GitState, Lookup,
 use crate::statusbar::Component;
 use crate::statusbar_components::{self as sbc, Kind};
 use std::collections::{HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -69,10 +69,11 @@ enum Job {
     Branches(PaneId, String),
 }
 
-/// A request waiting for a thread.
+/// A request waiting for a thread. `search` is `gitSearchPath`: the thread resolves the
+/// program (`git_program` looks at the disk, which can block on a dead drive).
 struct Queued {
     job: Job,
-    git: PathBuf,
+    search: String,
     timeout: Duration,
     asked: Instant,
 }
@@ -82,7 +83,7 @@ struct Queued {
 struct Flight {
     id: u64,
     due: Instant,
-    again: Option<(PathBuf, Duration)>,
+    again: Option<(String, Duration)>,
 }
 
 /// A thread's answer.
@@ -94,29 +95,44 @@ struct Done {
     branches: Vec<String>,
 }
 
+/// What threads send: an answer, then (however the thread ends) that it ended.
+enum Msg {
+    Done(Done),
+    Ended(Job, u64),
+}
+
 /// The git worker: iTerm2's poll worker cache on the UI thread, and the threads.
 pub(super) struct GitWorker {
     cache: WorkerCache,
     runner: Arc<dyn GitRun>,
     notify: Notify,
-    tx: mpsc::Sender<Done>,
-    rx: mpsc::Receiver<Done>,
+    tx: mpsc::Sender<Msg>,
+    rx: mpsc::Receiver<Msg>,
     flights: HashMap<Job, Flight>,
+    /// Threads past their deadline that have not ended, by job: the job keeps its one
+    /// thread, and requests for it are answered "timed out" without another.
+    abandoned: HashMap<Job, u64>,
     queue: VecDeque<Queued>,
     live: Arc<AtomicUsize>,
     next_id: u64,
-    /// Answers ready without a thread (the cache's, a thread that could not start).
+    /// Answers ready without a thread (the cache's, a stuck job's, a thread that could not
+    /// start).
     ready: Vec<GitReply>,
 }
 
-/// Counts a thread down and wakes the loop when it ends, however it ends.
+/// Says a thread ended, counts it down and wakes the loop, however it ends.
 struct Alive {
     live: Arc<AtomicUsize>,
     notify: Notify,
+    tx: mpsc::Sender<Msg>,
+    job: Job,
+    id: u64,
 }
 
 impl Drop for Alive {
     fn drop(&mut self) {
+        // The message first: a count of 0 means every end is in the channel.
+        let _ = self.tx.send(Msg::Ended(self.job.clone(), self.id));
         self.live.fetch_sub(1, Ordering::AcqRel);
         (self.notify)();
     }
@@ -125,24 +141,36 @@ impl Drop for Alive {
 impl GitWorker {
     pub(super) fn new(runner: Arc<dyn GitRun>, notify: Notify) -> GitWorker {
         let (tx, rx) = mpsc::channel();
-        GitWorker { cache: WorkerCache::default(), runner, notify, tx, rx, flights: HashMap::new(), queue: VecDeque::new(), live: Arc::new(AtomicUsize::new(0)), next_id: 0, ready: Vec::new() }
+        GitWorker {
+            cache: WorkerCache::default(),
+            runner,
+            notify,
+            tx,
+            rx,
+            flights: HashMap::new(),
+            abandoned: HashMap::new(),
+            queue: VecDeque::new(),
+            live: Arc::new(AtomicUsize::new(0)),
+            next_id: 0,
+            ready: Vec::new(),
+        }
     }
 
-    /// A poll of `path` with `git`, answered from the cache, by joining the run in flight,
-    /// or by a new run.
-    pub(super) fn request(&mut self, path: String, git: PathBuf, timeout: Duration) {
+    /// A poll of `path` with the git `search` (`gitSearchPath`) names, answered from the
+    /// cache, by joining the run in flight, or by a new run.
+    pub(super) fn request(&mut self, path: String, search: String, timeout: Duration) {
         let now = Instant::now();
         match self.cache.lookup(&path, now) {
             Lookup::Cached(state) => self.ready.push(GitReply::State { path, fetched: Fetched { state, timed_out: false } }),
             Lookup::Joined => {}
-            Lookup::Start => self.start(Job::State(path), git, timeout, now),
+            Lookup::Start => self.start(Job::State(path), search, timeout, now),
         }
     }
 
     /// The 8 most recently committed branches in `path`, for `pane`'s menu (Task 6).
     #[allow(dead_code)]
-    pub(super) fn branches(&mut self, pane: PaneId, path: String, git: PathBuf, timeout: Duration) {
-        self.start(Job::Branches(pane, path), git, timeout, Instant::now());
+    pub(super) fn branches(&mut self, pane: PaneId, path: String, search: String, timeout: Duration) {
+        self.start(Job::Branches(pane, path), search, timeout, Instant::now());
     }
 
     /// Forgets `path`'s cached state and waiting requests (`GPW:161-199`).
@@ -150,16 +178,22 @@ impl GitWorker {
         self.cache.invalidate(path);
     }
 
-    fn start(&mut self, job: Job, git: PathBuf, timeout: Duration, now: Instant) {
+    fn start(&mut self, job: Job, search: String, timeout: Duration, now: Instant) {
+        if self.abandoned.contains_key(&job) {
+            // Its thread is still stuck (a dead drive): a timeout, and no second thread.
+            let reply = self.answer(&job, Fetched { state: None, timed_out: true }, Vec::new(), now);
+            self.ready.push(reply);
+            return;
+        }
         if let Some(f) = self.flights.get_mut(&job) {
             // One thread per path: this one reruns when the one in flight ends.
-            f.again = Some((git, timeout));
+            f.again = Some((search, timeout));
             return;
         }
         if self.queue.iter().any(|q| q.job == job) {
             return;
         }
-        self.queue.push_back(Queued { job, git, timeout, asked: now });
+        self.queue.push_back(Queued { job, search, timeout, asked: now });
         self.spawn_queued(now);
     }
 
@@ -177,16 +211,19 @@ impl GitWorker {
         // The deadline counts from the request: time spent queued is time spent waiting.
         let left = q.timeout.saturating_sub(now.saturating_duration_since(q.asked));
         self.live.fetch_add(1, Ordering::AcqRel);
-        let alive = Alive { live: self.live.clone(), notify: self.notify.clone() };
+        let alive = Alive { live: self.live.clone(), notify: self.notify.clone(), tx: self.tx.clone(), job: q.job.clone(), id };
         let (runner, tx, job) = (self.runner.clone(), self.tx.clone(), q.job.clone());
-        let git = q.git;
+        let search = q.search;
         let spawned = std::thread::Builder::new().name("tandem-git".into()).spawn(move || {
             let _alive = alive;
-            let (fetched, branches) = match &job {
-                Job::State(path) => (gs::fetch_state(&*runner, &git, Path::new(path), left), Vec::new()),
-                Job::Branches(_, path) => (Fetched::default(), gs::recent_branches(&*runner, &git, Path::new(path), left)),
+            let git = gs::git_program(&search);
+            let (fetched, branches) = match (&job, git) {
+                (Job::State(path), Some(git)) => (gs::fetch_state(&*runner, &git, Path::new(path), left), Vec::new()),
+                (Job::Branches(_, path), Some(git)) => (Fetched::default(), gs::recent_branches(&*runner, &git, Path::new(path), left)),
+                // No git to run (a network or linked `gitSearchPath`): no state.
+                (_, None) => (Fetched::default(), Vec::new()),
             };
-            let _ = tx.send(Done { id, job, finished: Instant::now(), fetched, branches });
+            let _ = tx.send(Msg::Done(Done { id, job, finished: Instant::now(), fetched, branches }));
         });
         match spawned {
             Ok(_) => {
@@ -213,41 +250,53 @@ impl GitWorker {
     /// timeout, the thread abandoned), and queued requests that waited past theirs.
     pub(super) fn take(&mut self) -> Vec<GitReply> {
         let now = Instant::now();
-        let mut out = std::mem::take(&mut self.ready);
         let mut again = Vec::new();
-        while let Ok(d) = self.rx.try_recv() {
+        let mut out = Vec::new();
+        while let Ok(msg) = self.rx.try_recv() {
+            let d = match msg {
+                Msg::Done(d) => d,
+                Msg::Ended(job, id) => {
+                    if self.abandoned.get(&job) == Some(&id) {
+                        self.abandoned.remove(&job);
+                    }
+                    continue;
+                }
+            };
             // An abandoned thread's late answer is not its job's any more.
             if self.flights.get(&d.job).is_none_or(|f| f.id != d.id) {
                 continue;
             }
             let flight = self.flights.remove(&d.job).expect("checked above");
             out.push(self.answer(&d.job, d.fetched, d.branches, d.finished));
-            again.extend(flight.again.map(|(git, timeout)| (d.job, git, timeout)));
+            again.extend(flight.again.map(|(search, timeout)| (d.job, search, timeout)));
         }
         let late: Vec<Job> = self.flights.iter().filter(|(_, f)| now >= f.due).map(|(j, _)| j.clone()).collect();
         for job in late {
             let flight = self.flights.remove(&job).expect("listed above");
+            self.abandoned.insert(job.clone(), flight.id);
             out.push(self.answer(&job, Fetched { state: None, timed_out: true }, Vec::new(), now));
-            again.extend(flight.again.map(|(git, timeout)| (job, git, timeout)));
+            again.extend(flight.again.map(|(search, timeout)| (job, search, timeout)));
         }
         let (waited, queued): (Vec<Queued>, Vec<Queued>) = self.queue.drain(..).partition(|q| now >= q.asked + q.timeout);
         self.queue = queued.into();
         for q in waited {
             out.push(self.answer(&q.job, Fetched { state: None, timed_out: true }, Vec::new(), now));
         }
-        for (job, git, timeout) in again {
-            self.start(job, git, timeout, now);
+        for (job, search, timeout) in again {
+            self.start(job, search, timeout, now);
         }
         self.spawn_queued(now);
+        out.append(&mut self.ready);
         out
     }
 
-    /// When `take` next has an answer to make up: a flight's or a queued request's
-    /// deadline. Finished threads wake the loop themselves.
+    /// When `take` next has an answer: now with one ready, else a flight's or a queued
+    /// request's deadline. Finished threads wake the loop themselves.
     pub(super) fn next_due(&self) -> Option<Instant> {
+        let ready = (!self.ready.is_empty()).then(Instant::now);
         let flights = self.flights.values().map(|f| f.due);
         let queued = self.queue.iter().map(|q| q.asked + q.timeout);
-        flights.chain(queued).min().or_else(|| (!self.ready.is_empty()).then(Instant::now))
+        ready.into_iter().chain(flights).chain(queued).min()
     }
 }
 
@@ -287,9 +336,10 @@ impl App {
         self.globals.get(TIMEOUT_KEY).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(DEFAULT_TIMEOUT)
     }
 
-    /// The git the status bar runs (`gitSearchPath`); None runs nothing.
-    pub(super) fn git_program(&self) -> Option<PathBuf> {
-        gs::git_program(&self.globals.string(SEARCH_PATH_KEY))
+    /// `gitSearchPath`, which the worker threads resolve (never this thread: the check
+    /// reads the disk).
+    pub(super) fn git_search_path(&self) -> String {
+        self.globals.string(SEARCH_PATH_KEY)
     }
 
     /// A pane's directory as the component uses it: the reported one (or its tmux pane's)
@@ -302,12 +352,11 @@ impl App {
         (!path.trim().is_empty()).then_some(path)
     }
 
-    /// The panes whose bar is on screen: bars of the front tab of the current window
-    /// (unless minimized) and of every other window on screen (`VC`:
-    /// `statusBarComponentIsVisible:` is the bar's view being in a window, not hidden).
-    fn panes_with_bar_on_screen(&self) -> HashSet<PaneId> {
-        let current = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && g.window.is_visible() != Some(false));
-        let fronts = current.then(|| self.tabs.get(self.active)).flatten().into_iter().chain(self.parked_front_tabs());
+    /// The panes whose bar is in a window: bars of each window's front tab, minimized or
+    /// hidden ones too (`VC:355`: `statusBarComponentIsVisible:` is the bar's view being
+    /// in a window and not hidden; a miniaturized window keeps its views).
+    fn panes_with_bar_in_a_window(&self) -> HashSet<PaneId> {
+        let fronts = self.tabs.get(self.active).into_iter().chain(self.parked_front_tabs_all());
         fronts.flat_map(|t| self.status_bars(t)).map(|b| b.pane).collect()
     }
 
@@ -323,8 +372,8 @@ impl App {
             .filter_map(|&id| self.bar_layout(id).0.components.iter().find(|c| c.class == sbc::GIT_CLASS).map(|c| (id, cadence_knob(c))))
             .collect();
         self.git.retain(|id, _| wanted.contains_key(id));
-        let on_screen = self.panes_with_bar_on_screen();
-        let git = self.git_program();
+        let on_screen = self.panes_with_bar_in_a_window();
+        let search = self.git_search_path();
         let timeout = self.git_timeout();
         let mut changed = false;
         for (&id, &cadence) in &wanted {
@@ -367,8 +416,8 @@ impl App {
                 }
                 // A remote session's directory is not on this computer: its state comes
                 // from its variables.
-                if let (Some(path), Some(git), true) = (polls.request, git.as_ref(), local) {
-                    self.git_worker.request(path, git.clone(), timeout);
+                if let (Some(path), true) = (polls.request, local) {
+                    self.git_worker.request(path, search.clone(), timeout);
                 }
             }
         }
@@ -412,16 +461,19 @@ mod tests {
     use crate::git_state::RunResult;
     use std::sync::{Condvar, Mutex};
 
-    /// A git that answers a clean `main` once released, and blocks until then.
+    /// A git that answers a clean `main` once released, and blocks until then; with
+    /// `only`, it blocks only in folders whose name ends so (a dead drive).
     struct Gate {
         open: Mutex<bool>,
         cv: Condvar,
+        only: Option<&'static str>,
     }
 
     impl GitRun for Gate {
-        fn run(&self, _git: &Path, _dir: &Path, args: &[String], _timeout: Duration, _cap: Option<usize>) -> RunResult {
+        fn run(&self, _git: &Path, dir: &Path, args: &[String], _timeout: Duration, _cap: Option<usize>) -> RunResult {
             let mut open = self.open.lock().unwrap();
-            while !*open {
+            let blocks = self.only.is_none_or(|o| dir.to_string_lossy().ends_with(o));
+            while blocks && !*open {
                 open = self.cv.wait(open).unwrap();
             }
             let out: &[u8] = if args.iter().any(|a| a == "status") { b"# branch.oid 0123\0# branch.head main\0" } else { b"" };
@@ -429,8 +481,8 @@ mod tests {
         }
     }
 
-    fn repos(n: usize) -> Vec<String> {
-        let root = std::env::temp_dir().join(format!("tandem-git-worker-{}", std::process::id()));
+    fn repos(name: &str, n: usize) -> Vec<String> {
+        let root = std::env::temp_dir().join(format!("tandem-git-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         (0..n)
             .map(|i| {
@@ -451,10 +503,10 @@ mod tests {
     /// run answers, and a second request within the TTL comes from the cache.
     #[test]
     fn worker_bounds_threads_and_abandons_stuck_ones() {
-        let gate = Arc::new(Gate { open: Mutex::new(false), cv: Condvar::new() });
+        let gate = Arc::new(Gate { open: Mutex::new(false), cv: Condvar::new(), only: None });
         let mut w = GitWorker::new(gate.clone(), Arc::new(|| {}));
-        let paths = repos(MAX_THREADS + 2);
-        let git = PathBuf::from("git");
+        let paths = repos("worker", MAX_THREADS + 2);
+        let git = String::new();
         let timeout = Duration::from_secs(1);
         w.request(paths[0].clone(), git.clone(), timeout);
         w.request(paths[0].clone(), git.clone(), timeout);
@@ -494,5 +546,49 @@ mod tests {
         w.request(paths[0].clone(), git, timeout);
         assert_eq!(w.live.load(Ordering::Acquire), 0, "the cache answers without a thread");
         assert_eq!(states(&w.take()).len(), 1);
+    }
+
+    /// A path whose thread is stuck past its deadline keeps that one thread: requests for
+    /// it answer "timed out" at once without another, healthy paths still get threads, and
+    /// once the stuck thread ends the path runs again.
+    #[test]
+    fn a_stuck_path_never_takes_a_second_thread() {
+        let gate = Arc::new(Gate { open: Mutex::new(false), cv: Condvar::new(), only: Some("r0") });
+        let mut w = GitWorker::new(gate.clone(), Arc::new(|| {}));
+        let paths = repos("stuck", 2);
+        let timeout = Duration::from_secs(1);
+        w.request(paths[0].clone(), String::new(), timeout);
+        std::thread::sleep(timeout + GRACE + Duration::from_millis(100));
+        assert_eq!(states(&w.take()).iter().map(|(_, f)| f.timed_out).collect::<Vec<_>>(), vec![true]);
+        for _ in 0..3 {
+            w.invalidate(&paths[0]);
+            w.request(paths[0].clone(), String::new(), timeout);
+            let got = states(&w.take());
+            assert_eq!(got.len(), 1);
+            assert!(got[0].1.timed_out, "{got:?}");
+        }
+        assert_eq!(w.live.load(Ordering::Acquire), 1, "one thread for the stuck path");
+
+        w.request(paths[1].clone(), String::new(), timeout);
+        assert_eq!(w.live.load(Ordering::Acquire), 2, "a healthy path gets its own thread");
+        let end = Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        while got.is_empty() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+            got = states(&w.take());
+        }
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].0.as_str(), got[0].1.state.as_ref().map(|s| s.branch.as_str())), (paths[1].as_str(), Some("main")));
+
+        *gate.open.lock().unwrap() = true;
+        gate.cv.notify_all();
+        let end = Instant::now() + Duration::from_secs(5);
+        while w.live.load(Ordering::Acquire) > 0 && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(w.take().is_empty(), "the stuck thread's late answer is dropped");
+        w.invalidate(&paths[0]);
+        w.request(paths[0].clone(), String::new(), timeout);
+        assert_eq!(w.live.load(Ordering::Acquire), 1, "once it ended, the path runs again");
     }
 }

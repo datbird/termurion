@@ -6,18 +6,19 @@
 
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0};
-use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadFile};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject,
 };
+use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
@@ -31,6 +32,8 @@ use crate::prompted::local_path_ok;
 /// How often the runner looks at git between waits.
 const POLL: Duration = Duration::from_millis(10);
 const READ_SIZE: usize = 64 * 1024;
+/// The least time the output gets to arrive after git exited.
+const DRAIN: Duration = Duration::from_millis(100);
 
 /// The Job Object runner.
 pub struct WinGitRun;
@@ -125,10 +128,11 @@ fn wide(s: &OsStr) -> Vec<u16> {
 type Output = (Vec<u8>, bool);
 
 /// Reads the pipe on its own thread until it closes or passes `cap`, then sends it all.
-fn read_stdout(h: HANDLE, cap: Option<usize>) -> mpsc::Receiver<Output> {
+/// Returns the thread too, so a read that never ends can be cancelled.
+fn read_stdout(h: HANDLE, cap: Option<usize>) -> (mpsc::Receiver<Output>, std::thread::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel();
     let raw = h as usize;
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         let h = raw as HANDLE;
         let mut buf = vec![0u8; READ_SIZE];
         let mut got = Vec::new();
@@ -149,21 +153,68 @@ fn read_stdout(h: HANDLE, cap: Option<usize>) -> mpsc::Receiver<Output> {
         unsafe { CloseHandle(h) };
         let _ = tx.send((got, capped));
     });
-    rx
+    (rx, reader)
+}
+
+/// How the wait for git ended.
+#[derive(Debug, PartialEq)]
+enum Waited {
+    /// It exited; the output when the reader had already finished.
+    Exited(Option<Output>),
+    /// The reader passed the cap first.
+    Capped(Vec<u8>),
+    TimedOut,
+}
+
+/// Waits for git (`exited` waits up to the given time and says whether it ended) until
+/// `deadline`, keeping whatever the reader sends meanwhile: it can see the end of file
+/// before the process is signaled.
+fn wait_for(exited: &mut dyn FnMut(Duration) -> bool, output: &mpsc::Receiver<Output>, deadline: Instant) -> Waited {
+    let mut early = None;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Waited::TimedOut;
+        }
+        if exited(left.min(POLL)) {
+            return Waited::Exited(early);
+        }
+        if early.is_none() {
+            match output.try_recv() {
+                // Past the cap: stop git now, with what was kept.
+                Ok((stdout, true)) => return Waited::Capped(stdout),
+                Ok(out) => early = Some(out),
+                Err(_) => {}
+            }
+        }
+    }
+}
+
+/// The output once git exited: at least `DRAIN` to arrive however near the deadline; then
+/// a read held open by a handle outside the job is cancelled (`cancel`) and what it got is
+/// kept (git has exited, so its writes are all in the pipe).
+fn drain(early: Option<Output>, output: &mpsc::Receiver<Output>, deadline: Instant, cancel: &mut dyn FnMut()) -> Option<Output> {
+    if early.is_some() {
+        return early;
+    }
+    if let Ok(out) = output.recv_timeout(deadline.saturating_duration_since(Instant::now()).max(DRAIN)) {
+        return Some(out);
+    }
+    cancel();
+    output.recv_timeout(DRAIN).ok()
 }
 
 /// Starts the program suspended, puts it in a kill-on-close job before it runs a single
 /// instruction (so nothing it starts escapes), and waits for it until `deadline`.
 unsafe fn run_in_job(exe: &Path, dir: &Path, line: &str, env: &[u16], deadline: Instant, cap: Option<usize>, started: &mut dyn FnMut(u32)) -> RunResult {
     unsafe {
-        let sa = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: null_mut(), bInheritHandle: 1 };
+        // Not inheritable: `start` lets only this child inherit them, only while it starts.
         let (mut out_r, mut out_w): (HANDLE, HANDLE) = (null_mut(), null_mut());
-        if CreatePipe(&mut out_r, &mut out_w, &sa, 0) == 0 {
+        if CreatePipe(&mut out_r, &mut out_w, null(), 0) == 0 {
             return RunResult::Failed(os_err("CreatePipe"));
         }
-        SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
         let nul_name = wide(OsStr::new("NUL"));
-        let nul = CreateFileW(nul_name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, null_mut());
+        let nul = CreateFileW(nul_name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, 0, null_mut());
         if nul == INVALID_HANDLE_VALUE {
             let e = os_err("CreateFileW (NUL)");
             CloseHandle(out_r);
@@ -182,40 +233,35 @@ unsafe fn run_in_job(exe: &Path, dir: &Path, line: &str, env: &[u16], deadline: 
             }
         };
         started(pid);
-        let output = read_stdout(out_r, cap);
+        let (output, reader) = read_stdout(out_r, cap);
         let end = |result: RunResult| {
             TerminateJobObject(job, 1);
             CloseHandle(job);
             CloseHandle(process);
             result
         };
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return end(RunResult::TimedOut);
-            }
-            let exited = WaitForSingleObject(process, left.min(POLL).as_millis() as u32) == WAIT_OBJECT_0;
-            if exited {
-                break;
-            }
-            // Past the cap: stop git now, with what was kept.
-            if let Ok((stdout, true)) = output.try_recv() {
-                return end(RunResult::Exit { code: -1, stdout, capped: true });
-            }
-        }
+        let early = match wait_for(&mut |d| WaitForSingleObject(process, d.as_millis() as u32) == WAIT_OBJECT_0, &output, deadline) {
+            Waited::TimedOut => return end(RunResult::TimedOut),
+            Waited::Capped(stdout) => return end(RunResult::Exit { code: -1, stdout, capped: true }),
+            Waited::Exited(early) => early,
+        };
         let mut code = 0u32;
         GetExitCodeProcess(process, &mut code);
         // Anything git left running goes with the job, closing its copies of the pipe.
         TerminateJobObject(job, 1);
-        match output.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok((stdout, capped)) => end(RunResult::Exit { code: code as i32, stdout, capped }),
-            Err(_) => end(RunResult::TimedOut),
+        let mut cancel = || {
+            CancelSynchronousIo(reader.as_raw_handle() as HANDLE);
+        };
+        match drain(early, &output, deadline, &mut cancel) {
+            Some((stdout, capped)) => end(RunResult::Exit { code: code as i32, stdout, capped }),
+            None => end(RunResult::TimedOut),
         }
     }
 }
 
 /// Creates the job and the suspended process, puts it in the job and lets it run. Only
-/// `handles` are inherited (stdin and stderr, then stdout), never another pane's. Returns
+/// `handles` are inherited (stdin and stderr, then stdout), never another pane's; they are
+/// inheritable only during `CreateProcessW`. Returns
 /// (job, process, pid).
 unsafe fn start(exe: &Path, dir: &Path, line: &str, env: &[u16], handles: [HANDLE; 2]) -> Result<(HANDLE, HANDLE, u32), String> {
     unsafe {
@@ -255,7 +301,15 @@ unsafe fn start(exe: &Path, dir: &Path, line: &str, env: &[u16], handles: [HANDL
         let mut cmd = wide(OsStr::new(line));
         let cwd = wide(dir.as_os_str());
         let flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
+        // Inheritable only for this call: the handle list needs it, and no other spawn can
+        // take them outside it (std's `Command` inherits every inheritable handle).
+        for h in handles {
+            SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        }
         let ok = CreateProcessW(app.as_ptr(), cmd.as_mut_ptr(), null(), null(), 1, flags, env.as_ptr().cast(), cwd.as_ptr(), &si.StartupInfo, &mut pi);
+        for h in handles {
+            SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+        }
         DeleteProcThreadAttributeList(attrs);
         if ok == 0 {
             return fail(os_err("CreateProcessW (git)"));
@@ -267,7 +321,13 @@ unsafe fn start(exe: &Path, dir: &Path, line: &str, env: &[u16], handles: [HANDL
             CloseHandle(pi.hProcess);
             return fail(e);
         }
-        ResumeThread(pi.hThread);
+        if ResumeThread(pi.hThread) == u32::MAX {
+            let e = os_err("ResumeThread");
+            TerminateJobObject(job, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            return fail(e);
+        }
         CloseHandle(pi.hThread);
         Ok((job, pi.hProcess, pi.dwProcessId))
     }
@@ -356,6 +416,46 @@ mod tests {
             RunResult::Exit { stdout, capped: true, .. } => assert_eq!(stdout, b"git "),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The reader can finish before the process is signaled (git closes stdout, then
+    /// exits): its output is kept, never read as a timeout; the cap still stops git early.
+    #[test]
+    fn output_before_the_exit_signal_is_kept() {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let (tx, rx) = mpsc::channel();
+        tx.send((b"ok".to_vec(), false)).unwrap();
+        drop(tx);
+        let mut calls = 0;
+        let got = wait_for(&mut |_| { calls += 1; calls > 2 }, &rx, deadline);
+        assert_eq!(got, Waited::Exited(Some((b"ok".to_vec(), false))));
+        assert_eq!(drain(Some((b"ok".to_vec(), false)), &rx, deadline, &mut || {}), Some((b"ok".to_vec(), false)));
+
+        let (tx, rx) = mpsc::channel();
+        tx.send((b"ab".to_vec(), true)).unwrap();
+        assert_eq!(wait_for(&mut |_| false, &rx, deadline), Waited::Capped(b"ab".to_vec()));
+        let (_tx, rx) = mpsc::channel::<Output>();
+        assert_eq!(wait_for(&mut |_| false, &rx, Instant::now() + Duration::from_millis(50)), Waited::TimedOut);
+    }
+
+    /// After the exit the output gets at least `DRAIN` even at the deadline; a read held
+    /// open elsewhere is cancelled and its output kept.
+    #[test]
+    fn output_drains_after_the_exit() {
+        let (tx, rx) = mpsc::channel();
+        let late = tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            let _ = late.send((b"late".to_vec(), false));
+        });
+        assert_eq!(drain(None, &rx, Instant::now(), &mut || {}), Some((b"late".to_vec(), false)), "a deadline already passed still waits DRAIN");
+        let mut cancelled = false;
+        let got = drain(None, &rx, Instant::now(), &mut || {
+            cancelled = true;
+            tx.send((b"held".to_vec(), false)).unwrap();
+        });
+        assert!(cancelled);
+        assert_eq!(got, Some((b"held".to_vec(), false)));
     }
 
     /// Windows' argument quoting, as git's C runtime reads it back.

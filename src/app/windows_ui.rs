@@ -157,6 +157,12 @@ impl App {
         self.windows.parked().filter_map(|(_, s)| s.gpu.as_ref().filter(|g| on_screen(&g.window)).and_then(|g| s.tabs.get(s.active).map(|t| (&*g.window, t)))).collect()
     }
 
+    /// The tab each window other than the current one has in front, minimized and hidden
+    /// windows too.
+    pub(super) fn parked_front_tabs_all(&self) -> Vec<&Tab> {
+        self.windows.parked().filter_map(|(_, s)| s.tabs.get(s.active)).collect()
+    }
+
     /// Asks every window to draw.
     pub(super) fn redraw_all(&self) {
         for (_, s) in self.windows.parked() {
