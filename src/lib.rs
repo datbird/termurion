@@ -188,6 +188,7 @@ pub mod toolbelt_tools;
 pub mod text_edit;
 pub mod composer;
 pub mod prompt_state;
+pub mod command_syntax;
 pub mod notes;
 pub mod open_quickly;
 
