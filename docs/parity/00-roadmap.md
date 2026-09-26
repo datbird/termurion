@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 169 | 124 | 21 |
-| `02-global-settings.md` | 820 | 240 | 71 | 509 |
-| `03-features-and-menus.md` | 643 | 408 | 35 | 200 |
-| Total | 1,777 | 817 | 230 | 730 |
+| `02-global-settings.md` | 820 | 243 | 71 | 506 |
+| `03-features-and-menus.md` | 643 | 427 | 39 | 177 |
+| Total | 1,777 | 839 | 234 | 704 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -109,8 +109,16 @@ setting; and the seven tools iTerm2 ships (Actions, Command History, Named Marks
 Profiles, Recent Directories, Snippets) with their rows, search fields, buttons, click and
 double-click rules, modifiers, context menus, alerts, and undo, each keeping iTerm2's own small bugs
 (the Snippets reorder index, Command History's unescaped Option-cd, the proportions prefix match, the
-close glyph hiding the toolbelt everywhere). Captured Output, Session Status, Jobs, Notes, Codecierge
-and the dynamic web tools stay missing for milestone 9k.
+close glyph hiding the toolbelt everywhere). Milestone 9k: the last five built-in tools (Captured
+Output, Session Status, Jobs, Notes, Codecierge) with iTerm2's rows, buttons, menus, alerts and
+minimum heights; the Capture Output trigger feeding Captured Output; and View > Open Quickly
+(Shift+Win+O and an optional global hotkey) as iTerm2's palette over sessions, windows, profiles,
+arrangements, actions, snippets, named marks and menu items, with its minimum-subsequence scoring,
+commands, preview and activation, keeping iTerm2's own bugs (Jobs' plural "processes" for one, Open
+Quickly's x button closing instead of clearing, tips scoring below matches, the reversed
+color-preset quotes, the double modifier symbol for a double-tap hotkey). Codecierge shows only its
+onboarding panel (EnableAI stays off until milestone 12); dynamic web tools, color presets, scripts,
+function invocations and browser bookmarks stay missing (milestones 11, 12 and 13).
 
 ## Order
 

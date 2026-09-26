@@ -168,7 +168,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | View > Show Timestamps | Cmd+E | Shows a timestamp gutter next to each line of output. (milestone 4) | partial |
 | View > Auto Command Completion | Shift+Opt+Cmd+Y | Toggles automatic command-history-based autocomplete suggestions. (milestone 9) | have, milestone 9d |
 | View > Auto Composer | Opt+Shift+Cmd+. | Toggles automatically opening the Composer for multi-line input. (milestone 9) | missing |
-| View > Open Quickly | Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. (milestone 9) | missing |
+| View > Open Quickly | Shift+Cmd+O | Opens a fuzzy search palette to jump to any window, tab, session, profile, or command. (milestone 9k) | have |
 | View > Maximize Active Pane | no shortcut | Temporarily expands the focused pane to fill the tab, hiding siblings. | have |
 | View > Make Text Bigger | Cmd++ | Increases the session font size. Tandem: Changes every pane, since all panes share one font until per-pane fonts arrive. | partial |
 | View > Make Text Normal Size | Cmd+0 | Resets the font size to the profile default. | have |
@@ -500,25 +500,25 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 |---|---|---|---|---|
 | Toolbelt | Toolbelt panel | A dockable sidebar panel hosting a stack of tool widgets, shown/hidden per window. | have | Milestone 9j: drawn natively (quads and text, no egui) at the right of the window, full height below the tab bar, its room subtracted from window_area before panes and the tmux size report; width clamp max(min(w, view*0.5), min(100, view*0.05)), Default Toolbelt Width read on first show; showing grows the window by the width, or shrinks the toolbelt at the screen edge past the 100 point floor and leaves the window otherwise; hiding shrinks only a window that grew; split view with bottom-up collapse, top-down expand, divider drag, and saved per-window proportions (a saved list that is a prefix of the tools still applies, kept iTerm2 quirk); hamburger tool picker; persisted in window arrangements. Kept iTerm2 bug: the only tool's close glyph hides the toolbelt in every window, not just its own. |
 | Toolbelt | Actions tool | Lists user-defined quick actions, same actions as the status bar Action Menu, for one-click invocation. | have | Milestone 9j: titles ("Untitled" when empty), Apply (play) on the left, Edit (pencil)/Remove/Add on the right; Apply needs one or more rows selected, Edit exactly one; Apply or double-click runs each selected action through its own apply mode; Remove, Delete/Backspace, Add, Edit, and reorder (drop above a row only) each push an undo that Win+Z pops while the tool has the keyboard. |
-| Toolbelt | Captured Output tool | Lists text captured by Capture Output triggers, with click-to-jump to the source line. | missing | milestone 9k |
+| Toolbelt | Captured Output tool | Lists text captured by Capture Output triggers, with click-to-jump to the source line. | have | Milestone 9k: checkmark/dash label with no space, case-insensitive filter, Clear remembers the last entry's line, an OSC 1337 clear is transient until the next capture, the not-visible and no-shell-integration warnings with their Suppress keys, double-click runs the command as a coprocess titled "Captured Output trigger". |
 | Toolbelt | Command History tool | Lists commands run in the session, from shell integration prompt marks, searchable, grouped by host. | have | Milestone 9j: every use for the session's host, oldest first, case-sensitive filter; double-click inserts the command, Option "cd " + dir (kept iTerm2 bug: not shell-escaped), Shift appends a newline; a selection scrolls to the mark; Clear asks "Erase Command History". Source departure, kept: Help and Clear sit to the right of the field instead of their own row. Kept iTerm2 bug: a nonzero exit gets a text prefix, swapped for an April Fools variant on April 1. |
 | Toolbelt | Named Marks tool | Lists user-named marks (bookmarked lines) for quick navigation. | have | Milestone 9j: one row per named mark in buffer order, "(Unnamed)" for no name; a selection jumps to the mark, no double-click; Edit (exactly one) and Enter open the Set Named Mark prompt prefilled with the current name (no in-place editing); Add runs Add Named Mark; Remove and Delete remove the mark itself. Ruling: the key scans every row each frame while the tool shows, since Tandem's grid keeps no eviction counter for scrollback trimming. |
-| Toolbelt | Session Status tool | Shows live status/state info about the current session. | missing | milestone 9k |
+| Toolbelt | Session Status tool | Shows live status/state info about the current session. | have | Milestone 9k: rows sorted un-snoozed first, then priority, then oldest change first, snoozed rows dimmed below a separator; Bell, Snooze, Settings and Help; the priority-pattern popover; the tab subtitle follows the same user patterns. Ruling: no peers or workgroups, so no peer label or shortcut, and Merge workgroup statuses is stored but changes nothing. |
 | Toolbelt | Recent Directories tool | Lists recently visited, and optionally starred/pinned, working directories, click to cd or open. | have | Milestone 9j: host directories best-first then reversed, case-insensitive filter, star/plain prefix with per-letter abbreviation kept unambiguous across every host's directory tree; double-click inserts the escaped path, Option "cd " first, Shift a newline; menu Toggle Star; Clear asks "Erase Saved Directories?" with no further text. |
-| Toolbelt | Jobs tool | Lists running child processes/jobs in the current session, with the ability to signal/kill them. | missing | milestone 9k |
-| Toolbelt | Notes tool | A free-form notes pane, either global or scoped per session. | missing | milestone 9k |
+| Toolbelt | Jobs tool | Lists running child processes/jobs in the current session, with the ability to signal/kill them. | have | Milestone 9k: the whole tree under the shell in pid order, collapsible, command line cut to 256 characters; HUP/INT/QUIT/ABRT/KILL/TERM, where INT is CTRL_C_EVENT and QUIT is CTRL_BREAK_EVENT to the process's whole console and the rest are TerminateProcess with exit codes 128+n; the confirmation question and its permanent suppress key; Inspect (pid and command line only); Notify on Termination. Kept iTerm2 bug: the confirmation always says "processes", even for one. |
+| Toolbelt | Notes tool | A free-form notes pane, either global or scoped per session. | have | Milestone 9k: Global/Session segmented control, a native multi-line editor (typing, selection, Windows edit-control keys) in the toolbelt font; the global note is a plain UTF-8 notes.txt (not RTFD), saved at once under 100 KiB or on a 2 s trailing debounce, with iTerm2's never-lose-the-note recovery rules (backup and discarded copies, atomic write). |
 | Toolbelt | Paste History tool | Lists recently pasted text snippets for reuse, disabled automatically when secure keyboard entry is on. | have | Milestone 9j: oldest first, newlines turned to spaces, cut to 256 characters with no ellipsis; no search field, no help button; Clear asks "Erase Paste History"; double-click sets the clipboard and pastes. Ruling: the secure-keyboard warning never shows (Windows has no Secure Keyboard Entry). |
 | Toolbelt | Profiles tool | Lists all saved profiles with buttons to open one in a new tab, window, or split. | have | Milestone 9j: search field with tag:/name:/command: tokens (command: also matches the profile name, per source), multi-select rows with tags on a second line, no shortcut column, no tags pane; New Tab/New Window/New Horizontal Split/New Vertical Split/Open popup, each disabled with nothing selected; double-click opens a split/window/tab per Ctrl/Option/Shift, for every selected profile. Source departure, kept: choosing a popup item opens the selected profiles at once, not only remembers the pick. |
 | Toolbelt | Snippets tool | Lists saved reusable text snippets to insert into the session. | have | Milestone 9j: search field and Help; tree with untagged snippets before folders, folders sorted case-insensitively, folders start collapsed and not saved; Send/Advanced Paste on the left, Edit/Remove/Add on the right, each needing their own selection counts; Option wins over Shift on double-click, Send and Return (Advanced Paste vs Composer, which shows the milestone 9h refusal text until 9l); Remove and Delete push undo, the root-only drag reorder does not. Kept iTerm2 bug: a root reorder passes the outline child index straight into the unfiltered list. |
-| Toolbelt | Codecierge tool | An AI assistant panel that suggests or walks through commands, part of iTerm2's AI features. | missing | milestone 9k |
-| Toolbelt | Dynamic web tools | User-added tools that embed an arbitrary web page inside the toolbelt as a persistent panel. | missing | milestone 9k |
+| Toolbelt | Codecierge tool | An AI assistant panel that suggests or walks through commands, part of iTerm2's AI features. | partial | Milestone 9k: the onboarding panel only ("Get Started" / "Reveal Setting"); GenerativeAIAllowed off shows the admin-disabled text, otherwise EnableAI is always off so it shows "You must enable AI features..." with an info bar saying AI comes in milestone 12. The AI features themselves are milestone 12. |
+| Toolbelt | Dynamic web tools | User-added tools that embed an arbitrary web page inside the toolbelt as a persistent panel. | missing | milestone 11: only the Python API's RegisterTool writes NoSyncDynamicTools, and Tandem has no API or WebView2 host yet. |
 
 ### triggers
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | Triggers | Trigger engine | Per-profile list of regex-matched rules evaluated against incoming terminal text, each firing an action. | have, milestone 6a |  |
 | Triggers | Show Alert trigger | Pops a modal alert dialog with text derived from the match. | have, milestone 6a |  |
-| Triggers | Capture Output trigger | Captures the matching line into the Captured Output toolbelt tool. | missing, milestone 9 (listed in the editor) |  |
+| Triggers | Capture Output trigger | Captures the matching line into the Captured Output toolbelt tool. | have, milestone 9k |  |
 | Triggers | Run Coprocess trigger | Launches an external command as a coprocess piped to/from the session on match. | have, milestone 6c |  |
 | Triggers | Annotate trigger | Attaches an annotation to the matching text automatically. | have, milestone 6a |  |
 | Triggers | Set Mark trigger | Drops a mark at the matching line for later navigation. | have, milestone 6a |  |
@@ -550,8 +550,8 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### captured output, annotations, marks and navigation
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Captured output | Capture Output pipeline | Text matched by a Capture Output trigger is stored as a record tied to the originating command mark. | missing | |
-| Captured output | Captured Output toolbelt list | Displays all captured snippets in one list, click-to-jump to the source line in the buffer. | missing | |
+| Captured output | Capture Output pipeline | Text matched by a Capture Output trigger is stored as a record tied to the originating command mark. | have | Milestone 9k: stores the whole line, the regex's numbered groups and the substituted parameter on the last command mark; a same-row growing line merges; nothing is stored with no command mark. |
+| Captured output | Captured Output toolbelt list | Displays all captured snippets in one list, click-to-jump to the source line in the buffer. | have | Milestone 9k: see the Toolbelt Captured Output tool row above. |
 | Annotations | Inline annotation | A user- or trigger-attached note bound to a range of terminal text, shown inline and editable, independent of triggers. | have | A row holds one annotation. |
 | Annotations | Annotation from Named Mark | Auto-generates annotation text describing a named mark. | missing | |
 | Marks and navigation | Command mark (prompt-based) | A mark automatically placed at each shell prompt via shell integration, carrying the command text, start/end time, and exit code. | have |  |
@@ -609,21 +609,21 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### open quickly
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Open Quickly | Command palette launcher | Opens a fuzzy-search overlay across many item kinds at once. | missing | |
-| Open Quickly | Search sessions | Jumps to any currently open session by title/content. | missing | |
-| Open Quickly | Search windows | Jumps to any open window. | missing | |
-| Open Quickly | Search profiles | Opens a new session/tab from a matching profile. | missing | |
-| Open Quickly | Change profile in place | Re-applies a different profile's settings to the current session. | missing | |
-| Open Quickly | Search saved arrangements | Restores a saved window arrangement by name. | missing | |
-| Open Quickly | Search help topics | Jumps to a help/documentation entry. | missing | |
-| Open Quickly | Search scripts | Runs an installed Python/AppleScript automation script. | missing | |
-| Open Quickly | Search color presets | Applies a color preset to the current session. | missing | |
-| Open Quickly | Search actions | Runs a user-defined Action, a saved key-action. | missing | |
-| Open Quickly | Search snippets | Inserts a saved text snippet. | missing | |
-| Open Quickly | Search script invocations | Runs a saved script function invocation. | missing | |
-| Open Quickly | Search named marks | Jumps to a scrollback location the user bookmarked with a name. | missing | |
-| Open Quickly | Search menu items | Finds and triggers any application menu command by name. | missing | |
-| Open Quickly | Search bookmarks/URLs | Opens a saved URL bookmark. | missing | |
+| Open Quickly | Command palette launcher | Opens a fuzzy-search overlay across many item kinds at once. | have | Milestone 9k: Shift+Win+O and an optional global hotkey open a borderless 488-wide palette; minimum-subsequence matching and scoring, a session preview panel, the query kept across a re-open, and a close on focus loss or after 1 s with no focus. |
+| Open Quickly | Search sessions | Jumps to any currently open session by title/content. | have | Milestone 9k: scored over badge, session name, git branch, host, profile, user variable, directory, command, user, tty and pid; the current session is never listed. |
+| Open Quickly | Search windows | Jumps to any open window. | have | Milestone 9k: window title and joined features; no "On other Space" (virtual desktops are not tracked). |
+| Open Quickly | Search profiles | Opens a new session/tab from a matching profile. | have | Milestone 9k: opens a new tab, or the profile's hotkey window when it has one and none is open. |
+| Open Quickly | Change profile in place | Re-applies a different profile's settings to the current session. | have | Milestone 9k: preserves the row's own name only for a program-set title, since Tandem's session name otherwise follows the profile's Title Components. |
+| Open Quickly | Search saved arrangements | Restores a saved window arrangement by name. | have | Milestone 9k: restores in tabs into the current window. |
+| Open Quickly | Search help topics | Jumps to a help/documentation entry. | have | Milestone 9k: the "." tip line shows and fills the field; Tandem has no navigable help system to search, so the tip is the whole of this command. |
+| Open Quickly | Search scripts | Runs an installed Python/AppleScript automation script. | partial | Milestone 9k: the "s" tip shows; running a script needs milestone 11's scripting API. |
+| Open Quickly | Search color presets | Applies a color preset to the current session. | partial | Milestone 9k: the "c" tip shows; color presets themselves are milestone 13. |
+| Open Quickly | Search actions | Runs a user-defined Action, a saved key-action. | have | Milestone 9k: runs the action's key binding on the snapshot taken when the palette opened. |
+| Open Quickly | Search snippets | Inserts a saved text snippet. | have | Milestone 9k: sends the snippet; Alt+Enter opens it in Advanced Paste. |
+| Open Quickly | Search script invocations | Runs a saved script function invocation. | partial | Milestone 9k: no source for it yet; function invocation is milestone 11, same as scripts. |
+| Open Quickly | Search named marks | Jumps to a scrollback location the user bookmarked with a name. | have | Milestone 9k: every session's non-empty-named marks; reveals and scrolls to the mark. |
+| Open Quickly | Search menu items | Finds and triggers any application menu command by name. | have | Milestone 9k: every Done, non-separator, non-submenu schema menu item; a pick posts the menu command for the next loop turn. |
+| Open Quickly | Search bookmarks/URLs | Opens a saved URL bookmark. | missing | Milestone 9k: the "b" tip shows; Tandem has no browser profiles, so nothing exists yet to open. |
 
 ### profiles window (launcher)
 | Subsystem | Feature | What it does | Tandem status | Windows note |

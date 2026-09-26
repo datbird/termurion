@@ -134,3 +134,7 @@ Task 7: minor (deferred): Enter on Named Marks renames with several rows selecte
 Task 7: minor (deferred): Snippets Advanced Paste with no clipboard opens on old clipboard text (same as Edit > Snippets).
 Task 7: minor (deferred): Settings snippet edit tied to row index, not guid.
 Task 7: minor (deferred): live_named_marks, prune_marks, marks_in_order each re-derive the live set.
+
+Final: Ruling: toolbelt width drag relayouts panes live on every move (iTerm2 growToolbeltBy: repositions live, PT:5108-5114) - cost if wrong: ConPTY/tmux resized per column while dragging.
+Final: Ruling: info bars take no keyboard focus in Tandem, so showing one does not take the keyboard from a tool - cost if wrong: one line in ask.
+Final: minor (deferred): a double-click on a held row leaves held set until the next press.
