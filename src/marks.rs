@@ -453,7 +453,7 @@ impl Screen {
             return;
         }
         // A new prompt ends whatever the last program said it was doing (OSC 21337).
-        self.tab_status = crate::tabstatus::Status::default();
+        self.clear_tab_status();
         if fresh_line && self.place_prompt_first_column && !self.pty_backed && self.cursor_point().column.0 > 0 {
             self.feed_raw(b"\r\n");
         }
@@ -511,7 +511,7 @@ impl Screen {
             Osc::Sync(_) => {}
             Osc::TabStatus(payload) => {
                 let pairs = crate::tabstatus::parse(&payload);
-                self.tab_status.apply(&pairs);
+                self.apply_tab_status(&pairs);
             }
             Osc::Clipboard(payload) => match crate::clipboard_osc::osc52(&payload) {
                 Some(crate::clipboard_osc::Osc52::Write(t)) => self.requests.push(crate::screen::Request::ClipboardWrite(t)),
@@ -670,13 +670,15 @@ impl Screen {
                     let line = self.cursor_point().line.0;
                     self.new_mark(line, Kind::Manual);
                 }
+                // Only a command with captures counts a clear (`terminalClearCapturedOutput`);
+                // the tool refreshes either way, with no warning (`screenClearCapturedOutput`).
                 "ClearCapturedOutput" => {
                     if let Some(id) = self.marks.last_command {
-                        if let Some(m) = self.marks.records.get_mut(&id) {
+                        if let Some(m) = self.marks.records.get_mut(&id).filter(|m| !m.captured.is_empty()) {
                             m.clear_count += 1;
                         }
                     }
-                    self.requests.push(crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::Captured { needs_shell_integration: false }));
+                    self.requests.push(crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::CapturedCleared));
                 }
                 "File" | "MultipartFile" | "FilePart" | "FileEnd" => self.file_osc(&key, &value),
                 // The clipboard keys need trust (Disable Potentially Insecure Escape Sequences off).
@@ -952,14 +954,21 @@ mod tests {
         prompt(&mut s, "cmd", 0);
         let id = s.last_command_mark().unwrap().id;
         assert_eq!(s.marks.records[&id].clear_count, 0);
+        // Nothing captured yet: no count (`terminalClearCapturedOutput`), but a refresh.
+        s.feed(b"\x1b]1337;ClearCapturedOutput\x07");
+        assert_eq!(s.marks.records[&id].clear_count, 0);
+        let refresh = |r: &crate::screen::Request| matches!(r, crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::CapturedCleared));
+        assert!(s.take_requests().iter().any(refresh));
+        let c = crate::captured::Captured { line: "x".into(), values: vec![], command: None, state: false, abs_line: 0, mark: id };
+        s.marks.records.get_mut(&id).unwrap().captured.push(c);
         s.feed(b"\x1b]1337;ClearCapturedOutput\x07");
         assert_eq!(s.marks.records[&id].clear_count, 1);
         let reqs = s.take_requests();
-        assert!(reqs.iter().any(|r| matches!(r, crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::Captured { needs_shell_integration: false }))), "{reqs:?}");
+        assert!(reqs.iter().any(refresh), "{reqs:?}");
         // No command mark: nothing to bump, but the tool still gets asked to refresh.
         let mut t = Screen::new(40, 10);
         t.feed(b"\x1b]1337;ClearCapturedOutput\x07");
-        assert!(t.take_requests().iter().any(|r| matches!(r, crate::screen::Request::Trigger(crate::trigger_eval::TriggerRequest::Captured { needs_shell_integration: false }))));
+        assert!(t.take_requests().iter().any(refresh));
     }
 
     #[test]

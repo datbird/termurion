@@ -31,7 +31,7 @@ pub(super) fn tool_from_menu_id(id: &str) -> Option<ToolId> {
 
 /// `text` broken at spaces into lines no wider than `max_w` (a word wider than that gets a
 /// line of its own).
-fn wrap_words(text: &str, max_w: f32, width: &dyn Fn(&str) -> f32) -> Vec<String> {
+pub(super) fn wrap_words(text: &str, max_w: f32, width: &dyn Fn(&str) -> f32) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in text.split(' ').filter(|w| !w.is_empty()) {
@@ -64,6 +64,10 @@ pub(super) struct ToolState {
     /// The row count last laid out: a list that changed scrolls to its end unless it has the
     /// keyboard.
     pub(super) seen: usize,
+    /// Captured Output's Clear (or an OSC 1337 ClearCapturedOutput it saw), and the session
+    /// it was for (mark ids are per session).
+    pub(super) cleared: crate::captured::Cleared,
+    pub(super) cleared_pane: Option<PaneId>,
 }
 
 /// One window's toolbelt. The tool list, the saved proportions and the default width are
@@ -85,6 +89,9 @@ pub(super) struct Belt {
     pub(super) shown: HashMap<ToolId, (ShownKey, std::rc::Rc<Shown>)>,
     /// The arrangement's "Toolbelt" dictionary, kept as read and written back.
     pub(super) states: Option<toml::Table>,
+    /// Session Status' snoozed sessions, each with its `tab_status_gen` when snoozed: a
+    /// snooze holds until that session's status changes (`TS`, `snoozedSessionIDs`).
+    pub(super) snoozed: std::collections::BTreeMap<u64, u64>,
     /// The saved proportions were offered to this window's split (its first layout, or an
     /// arrangement's own).
     proportions_tried: bool,
@@ -130,7 +137,7 @@ impl App {
         toolbelt::stored_names(self.globals.get(toolbelt::TOOLS_KEY).as_ref())
     }
 
-    fn toolbelt_tools(&self) -> Vec<ToolId> {
+    pub(super) fn toolbelt_tools(&self) -> Vec<ToolId> {
         toolbelt::shown_tools(&self.toolbelt_names())
     }
 

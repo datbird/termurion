@@ -1,0 +1,284 @@
+//! Session Status' settings popover (`StatusPrioritySettings.swift`, `SPS:197-365`): the
+//! priority patterns with their Notify boxes, reordered by dragging and edited in place, + and
+//! -, and the two checkboxes; and `InfoPopover`, a plain two-column popover (Jobs' Inspect).
+//! Both are small frameless egui windows that close when they lose focus (a transient
+//! popover) or on Esc, as the git Log popover does.
+
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{Window, WindowId};
+
+use crate::egui_host::EguiHost;
+use crate::status_tool::{self, Pattern};
+
+/// The settings popover's size, points (`SPS`, `contentSize`).
+const SETTINGS_W: f64 = 280.0;
+const SETTINGS_H: f64 = 322.0;
+/// Its margin, and the Notify column's width, points (`SPS:273-279`, `notifyColumnWidth`).
+const MARGIN: f32 = 10.0;
+const NOTIFY_W: f32 = 44.0;
+/// The information popover's width, and a line's height, points.
+const INFO_W: f64 = 320.0;
+const INFO_LINE: f64 = 20.0;
+
+/// What the settings popover asks of the app after a frame.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PopoverEvent {
+    None,
+    /// The patterns as edited (a pattern's text, a Notify box, a drag, or -).
+    Patterns(Vec<Pattern>),
+    Merge(bool),
+    Subtitle(bool),
+    /// + was pressed: the app asks for the new pattern (`NEW_PATTERN`).
+    AddPattern,
+    Close,
+}
+
+/// A frameless, taskbar-less window of `w` by `h` points, its bottom centered on `at` (screen
+/// pixels) as a popover above its button (`preferredEdge: .maxY`), kept on the screen.
+#[allow(clippy::too_many_arguments)]
+fn popover_window(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, w: f64, h: f64, at: (f64, f64)) -> Result<EguiHost, String> {
+    use winit::platform::windows::WindowAttributesExtWindows;
+    let attrs = Window::default_attributes()
+        .with_title(title)
+        .with_decorations(false)
+        .with_skip_taskbar(true)
+        .with_visible(false)
+        .with_inner_size(winit::dpi::LogicalSize::new(w, h));
+    let host = EguiHost::open_with(event_loop, instance, adapter, device, queue, attrs)?;
+    let scale = host.window.scale_factor();
+    let (pw, ph) = (w * scale, h * scale);
+    let (x, y) = (at.0 - pw / 2.0, at.1 - ph);
+    host.window.set_outer_position(winit::dpi::PhysicalPosition::new(x.max(0.0), y.max(0.0)));
+    host.window.set_visible(true);
+    host.focus();
+    Ok(host)
+}
+
+/// Whether a popover event closes it: its own close, or a focus loss after it had focus (the
+/// first loss can be the window being made).
+fn closes(event: &WindowEvent, focused: &mut bool, hold: bool) -> Option<bool> {
+    match event {
+        WindowEvent::CloseRequested => Some(true),
+        WindowEvent::Focused(true) => {
+            *focused = true;
+            Some(false)
+        }
+        WindowEvent::Focused(false) => Some(*focused && !hold),
+        _ => None,
+    }
+}
+
+pub struct StatusPopover {
+    host: EguiHost,
+    patterns: Vec<Pattern>,
+    merge: bool,
+    subtitle: bool,
+    /// The row last clicked or edited: what - removes.
+    selected: Option<usize>,
+    /// A pattern's text changed and is not yet sent (sent when its field lets go).
+    dirty: bool,
+    focused: bool,
+    /// Kept open through a focus loss: the new-pattern prompt has the focus.
+    pub hold: bool,
+}
+
+impl StatusPopover {
+    #[allow(clippy::too_many_arguments)]
+    pub fn open(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        patterns: Vec<Pattern>,
+        merge: bool,
+        subtitle: bool,
+        at: (f64, f64),
+        dark: bool,
+    ) -> Result<StatusPopover, String> {
+        let host = popover_window(event_loop, instance, adapter, device, queue, "Session Status", SETTINGS_W, SETTINGS_H, at)?;
+        host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+        Ok(StatusPopover { host, patterns, merge, subtitle, selected: None, dirty: false, focused: false, hold: false })
+    }
+
+    pub fn id(&self) -> WindowId {
+        self.host.id()
+    }
+
+    pub fn focus(&self) {
+        self.host.focus();
+        self.host.request_redraw();
+    }
+
+    /// The patterns changed elsewhere (a pattern the prompt added): shown as they are now.
+    pub fn set_patterns(&mut self, patterns: Vec<Pattern>) {
+        self.patterns = patterns;
+        self.selected = None;
+        self.dirty = false;
+        self.host.request_redraw();
+    }
+
+    /// Handles one of its window's events.
+    pub fn event(&mut self, event: &WindowEvent) -> PopoverEvent {
+        if let Some(close) = closes(event, &mut self.focused, self.hold) {
+            return if close { PopoverEvent::Close } else { PopoverEvent::None };
+        }
+        if matches!(event, WindowEvent::RedrawRequested) {
+            return self.redraw();
+        }
+        self.host.event(event);
+        PopoverEvent::None
+    }
+
+    /// Draws a frame: the label, the table, + and -, the checkboxes (bottom up, `SPS:230-310`).
+    pub fn redraw(&mut self) -> PopoverEvent {
+        let mut out = PopoverEvent::None;
+        let (patterns, merge, subtitle, selected, dirty) = (&mut self.patterns, &mut self.merge, &mut self.subtitle, &mut self.selected, &mut self.dirty);
+        self.host.paint(|ui| {
+            egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(MARGIN)).show(ui, |ui| {
+                ui.label(egui::RichText::new(status_tool::SETTINGS_TEXT).small().weak());
+                ui.add_space(4.0);
+                // The table takes what the controls below leave.
+                let controls = 24.0 + 3.0 * 8.0 + 2.0 * 18.0;
+                let table_h = (ui.available_height() - controls).max(40.0);
+                let text_w = (ui.available_width() - NOTIFY_W - 24.0).max(20.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.add_sized([text_w, 16.0], egui::Label::new(egui::RichText::new("Pattern").strong()));
+                    ui.add_sized([NOTIFY_W, 16.0], egui::Label::new(egui::RichText::new("Notify").strong()));
+                });
+                let mut moved: Option<(usize, usize)> = None;
+                let mut changed = false;
+                egui::ScrollArea::vertical().max_height(table_h).auto_shrink([false, false]).show(ui, |ui| {
+                    for (i, p) in patterns.iter_mut().enumerate() {
+                        let row = ui.horizontal(|ui| {
+                            // The grip drags the row to a new place (`supportsReorder`).
+                            ui.dnd_drag_source(egui::Id::new(("status-pattern", i)), i, |ui| {
+                                ui.label("::");
+                            });
+                            let r = ui.add(egui::TextEdit::singleline(&mut p.pattern).desired_width(text_w));
+                            if r.gained_focus() || r.clicked() {
+                                *selected = Some(i);
+                            }
+                            if r.changed() {
+                                *dirty = true;
+                            }
+                            // Click to edit: the edit lands when the field lets go.
+                            if r.lost_focus() && *dirty {
+                                *dirty = false;
+                                changed = true;
+                            }
+                            ui.add_space(((NOTIFY_W - 18.0) / 2.0).max(0.0));
+                            if ui.checkbox(&mut p.notify, "").changed() {
+                                *selected = Some(i);
+                                changed = true;
+                            }
+                        });
+                        if let Some(from) = row.response.dnd_release_payload::<usize>() {
+                            moved = Some((*from, i));
+                        }
+                    }
+                });
+                if let Some((from, to)) = moved.filter(|(a, b)| a != b) {
+                    let item = patterns.remove(from);
+                    patterns.insert(to, item);
+                    *selected = Some(to);
+                    changed = true;
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("+").clicked() {
+                        out = PopoverEvent::AddPattern;
+                    }
+                    let can_remove = selected.is_some_and(|i| i < patterns.len());
+                    if ui.add_enabled(can_remove, egui::Button::new("\u{2212}")).clicked() {
+                        if let Some(i) = selected.take() {
+                            patterns.remove(i);
+                            *dirty = false;
+                            changed = true;
+                        }
+                    }
+                });
+                if changed {
+                    out = PopoverEvent::Patterns(patterns.clone());
+                }
+                ui.add_space(8.0);
+                if ui.checkbox(merge, status_tool::MERGE_LABEL.0).on_hover_text(status_tool::MERGE_LABEL.1).changed() {
+                    out = PopoverEvent::Merge(*merge);
+                }
+                ui.add_space(8.0);
+                if ui.checkbox(subtitle, status_tool::SUBTITLE_LABEL).changed() {
+                    out = PopoverEvent::Subtitle(*subtitle);
+                }
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                out = PopoverEvent::Close;
+            }
+        });
+        out
+    }
+}
+
+/// A plain popover of label and value lines (Jobs' Inspect).
+pub struct InfoPopover {
+    host: EguiHost,
+    lines: Vec<(String, String)>,
+    focused: bool,
+}
+
+impl InfoPopover {
+    #[allow(clippy::too_many_arguments)]
+    pub fn open(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        lines: Vec<(String, String)>,
+        at: (f64, f64),
+        dark: bool,
+    ) -> Result<InfoPopover, String> {
+        let h = lines.len().max(1) as f64 * INFO_LINE + 2.0 * f64::from(MARGIN);
+        let host = popover_window(event_loop, instance, adapter, device, queue, "Info", INFO_W, h, at)?;
+        host.ctx().set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+        Ok(InfoPopover { host, lines, focused: false })
+    }
+
+    pub fn id(&self) -> WindowId {
+        self.host.id()
+    }
+
+    /// Handles one of its window's events. False when it should close.
+    pub fn event(&mut self, event: &WindowEvent) -> bool {
+        if let Some(close) = closes(event, &mut self.focused, false) {
+            return !close;
+        }
+        if matches!(event, WindowEvent::RedrawRequested) {
+            return self.redraw();
+        }
+        self.host.event(event);
+        true
+    }
+
+    fn redraw(&mut self) -> bool {
+        let mut open = true;
+        let lines = &self.lines;
+        self.host.paint(|ui| {
+            egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(MARGIN)).show(ui, |ui| {
+                egui::Grid::new("info-popover").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                    for (label, value) in lines {
+                        ui.label(egui::RichText::new(label.as_str()).weak());
+                        // Selectable, so a value can be copied.
+                        ui.add(egui::Label::new(value.as_str()).selectable(true));
+                        ui.end_row();
+                    }
+                });
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
+        });
+        open
+    }
+}

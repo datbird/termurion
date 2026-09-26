@@ -1273,6 +1273,24 @@ default = true
 help = "Shows how many seconds are left before tmux pauses a pane that buffers too much."
 
 [[setting]]
+key = "NoSyncSuppressCaptureOutputToolNotVisibleWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning that a Capture Output trigger fired while the Captured Output tool is not visible."
+type = "bool"
+default = false
+help = "Suppress warning that a Capture Output trigger fired while the Captured Output tool is not visible.\nSet by the warning's Silence Warning button."
+
+[[setting]]
+key = "NoSyncSuppressCaptureOutputRequiresShellIntegrationWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning that a Capture Output trigger fired without Shell Integration."
+type = "bool"
+default = false
+help = "Suppress warning that a Capture Output trigger fired without Shell Integration.\nSet by the warning's Silence Warning button."
+
+[[setting]]
 key = "noSyncDontWarnAboutTmuxPause"
 tab = "Advanced"
 section = "Warnings"

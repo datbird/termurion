@@ -38,6 +38,8 @@ pub enum TriggerRequest {
     /// A Capture Output trigger fired; the tool should refresh (or warn: no shell integration
     /// means no command mark to store it on).
     Captured { needs_shell_integration: bool },
+    /// OSC 1337 ClearCapturedOutput: the Captured Output tool refreshes, with no warning.
+    CapturedCleared,
     Unavailable { trigger: usize, title: String, milestone: u8 },
     /// An interpolated parameter that cannot be evaluated (shown once).
     ParameterError { trigger: usize, text: String },

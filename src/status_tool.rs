@@ -68,15 +68,16 @@ pub fn patterns_value(patterns: &[Pattern]) -> Value {
 }
 
 /// A status text's priority: the index of the first pattern it contains, case-insensitively;
-/// `patterns.len()` when it matches none; `patterns.len() + 1` when there is no text at all
-/// (`SPS:86-97`, `unmatchedPriority`).
+/// `patterns.len()` when it matches none; `patterns.len() + 1` when there is no text at all,
+/// or no pattern at all (`SPS:86-97`, `unmatchedPriority`: an empty list ranks every status
+/// the same).
 pub fn priority(text: Option<&str>, patterns: &[Pattern]) -> usize {
     match text {
-        Some(t) => {
+        Some(t) if !patterns.is_empty() => {
             let low = t.to_lowercase();
             patterns.iter().position(|p| low.contains(&p.pattern.to_lowercase())).unwrap_or(patterns.len())
         }
-        None => patterns.len() + 1,
+        _ => patterns.len() + 1,
     }
 }
 
@@ -220,6 +221,9 @@ mod tests {
         assert_eq!(priority(Some("WORKING"), &patterns), 1);
         assert_eq!(priority(Some("done"), &patterns), 3, "unmatched ranks as count");
         assert_eq!(priority(None, &patterns), 4, "no text ranks below every pattern");
+        // An empty list ranks everything count + 1, text or not (`SPS:87-89`).
+        assert_eq!(priority(Some("waiting"), &[]), 1);
+        assert_eq!(priority(None, &[]), 1);
 
         // A snoozed wait row (priority 0) still sinks after an un-snoozed idle row (priority 4).
         let mut rows = vec![

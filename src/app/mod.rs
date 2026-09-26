@@ -103,6 +103,7 @@ mod metrics_ui;
 mod git_ui;
 mod toolbelt_ui;
 mod toolbelt_tools_ui;
+mod toolbelt_more_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -405,6 +406,15 @@ pub struct App {
     alert_limits: crate::triggers::RateLimit<PaneId>,
     notify_status_armed: bool,
     last_status: HashMap<PaneId, Option<String>>,
+    /// Session Status' bell on one session: it and its status when armed; the next change
+    /// from that shows the alert, then it disarms (`NotifyOnStatusChangeController`).
+    status_watch: Option<(PaneId, Option<String>)>,
+    /// Session Status' settings popover (one at a time: it closes when it loses focus), when
+    /// it last closed (a press on its gear that took the focus away closes it, not reopens
+    /// it), and its + prompt.
+    status_popover: Option<crate::status_popover_ui::StatusPopover>,
+    status_popover_closed: Option<Instant>,
+    status_prompt: Option<crate::prompt_ui::PromptWindow>,
     idle_sent: HashMap<PaneId, Instant>,
     started: Instant,
     /// An open Make Screenshot panel.
@@ -695,6 +705,10 @@ pub fn run() {
         alert_limits: crate::triggers::RateLimit::default(),
         notify_status_armed: false,
         last_status: HashMap::new(),
+        status_watch: None,
+        status_popover: None,
+        status_popover_closed: None,
+        status_prompt: None,
         idle_sent: HashMap::new(),
         started: Instant::now(),
         uploads: HashMap::new(),
@@ -2364,7 +2378,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) {
             return;
         }
         for profiles in [false, true] {

@@ -16,14 +16,23 @@ fn string_list(v: Option<toml::Value>) -> Vec<String> {
 impl App {
     /// Starts a coprocess in a pane, or says why not.
     pub(super) fn start_coprocess(&mut self, pane: PaneId, command: &str, mute: bool, entry: Entry) {
+        self.start_coprocess_titled(pane, command, mute, entry, None);
+    }
+
+    /// `start_coprocess`, with the refusal's title for a start that is not a Run Coprocess
+    /// trigger (Captured Output's "Captured Output trigger", `PS:25097`).
+    pub(super) fn start_coprocess_titled(&mut self, pane: PaneId, command: &str, mute: bool, entry: Entry, title: Option<&str>) {
         let running = self.panes.get(&pane).is_some_and(|p| p.coprocess_command().is_some());
         match coprocess::start_policy(running, entry) {
             Ok(()) => {}
             Err(Refusal::Quiet) => return,
             Err(Refusal::TriggerWarning) => {
                 if !self.globals.bool(coprocess::SUPPRESS_TRIGGER_WARNING_KEY) && self.trigger_told.insert((pane, TRIGGER_BAR.to_string())) {
-                    let title = if mute { "Run Silent Coprocess\u{2026}" } else { "Run Coprocess\u{2026}" };
-                    self.ask(pane, TRIGGER_BAR, &coprocess::trigger_warning(title), &["Silence Warning"], false);
+                    let text = match title {
+                        Some(t) => format!("{t}: Can't run two coprocesses at once."),
+                        None => coprocess::trigger_warning(if mute { "Run Silent Coprocess\u{2026}" } else { "Run Coprocess\u{2026}" }),
+                    };
+                    self.ask(pane, TRIGGER_BAR, &text, &["Silence Warning"], false);
                 }
                 return;
             }

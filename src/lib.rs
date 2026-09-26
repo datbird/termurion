@@ -136,6 +136,8 @@ pub mod note_ui;
 #[cfg(windows)]
 pub mod git_log_ui;
 #[cfg(windows)]
+pub mod status_popover_ui;
+#[cfg(windows)]
 pub mod shot_ui;
 #[cfg(windows)]
 pub mod global_find_ui;

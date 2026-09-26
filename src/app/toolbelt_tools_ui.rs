@@ -9,6 +9,7 @@ use std::rc::Rc;
 
 use super::close_ui::confirm;
 use super::statusbar_content::MenuAt;
+use super::toolbelt_more_ui::{self as more, CapturedShown, StatusShown};
 use super::toolbelt_ui::{BeltDrag, ToolState};
 use super::*;
 use crate::broadcast::Write;
@@ -68,8 +69,10 @@ pub(super) enum Shown {
     Actions(Vec<String>),
     /// The focused session's named marks, top first: id and name.
     Marks(Vec<(u32, String)>),
-    /// A tool not yet built (9k's Captured Output, Session Status, Jobs, Notes and Codecierge):
-    /// drawn as an empty list until its own task wires it up.
+    Captured(CapturedShown),
+    Status(StatusShown),
+    /// A tool not yet built (9k's Jobs, Notes and Codecierge): drawn as an empty list until
+    /// its own task wires it up.
     Pending,
 }
 
@@ -83,6 +86,8 @@ impl Shown {
             Shown::Snippets { rows, .. } => rows.len(),
             Shown::Actions(v) => v.len(),
             Shown::Marks(v) => v.len(),
+            Shown::Captured(c) => c.entries.len(),
+            Shown::Status(st) => st.items.len(),
             Shown::Pending => 0,
         }
     }
@@ -144,6 +149,8 @@ struct ListMetrics {
     text_scale: f32,
     /// A row: the font's line plus a 2 point inset above and below (`NSTableView+iTerm.m:36-89`).
     row_h: f32,
+    /// The font's line (each further line of a wrapped row).
+    line: f32,
     /// Profiles' tag line.
     second_h: f32,
     second_scale: f32,
@@ -165,7 +172,7 @@ fn now_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())
 }
 
-fn unix(t: std::time::SystemTime) -> f64 {
+pub(super) fn unix(t: std::time::SystemTime) -> f64 {
     t.duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
@@ -212,7 +219,7 @@ pub(super) fn list_key(key: &WKey, text: Option<&str>, mods: Mods) -> Option<Lis
 }
 
 impl App {
-    fn tool_state(&mut self, tool: ToolId) -> &mut ToolState {
+    pub(super) fn tool_state(&mut self, tool: ToolId) -> &mut ToolState {
         self.belt.tools.entry(tool).or_default()
     }
 
@@ -236,8 +243,12 @@ impl App {
             ToolId::Actions => ListSpec { left: vec![ToolButton::Apply], right: vec![ToolButton::Add, ToolButton::Remove, ToolButton::Edit], ..ListSpec::default() },
             // Edit, Remove, Add at the right (`ToolNamedMarks.swift:104-112`).
             ToolId::NamedMarks => ListSpec { right: vec![ToolButton::Add, ToolButton::Remove, ToolButton::Edit], ..ListSpec::default() },
-            // Not yet built (9k tasks 2 through 4): an empty list, nothing drawn.
-            ToolId::CapturedOutput | ToolId::SessionStatus | ToolId::Jobs | ToolId::Notes | ToolId::Codecierge => ListSpec::default(),
+            // The field, Clear, then Help (`CO:170-230`).
+            ToolId::CapturedOutput => ListSpec { field: true, top: vec![ToolButton::Trash, ToolButton::Help], ..ListSpec::default() },
+            // Bell and Snooze at the left; Help at the right, Settings left of it (`TS:246-275`).
+            ToolId::SessionStatus => ListSpec { left: vec![ToolButton::Bell, ToolButton::Snooze], right: vec![ToolButton::Help, ToolButton::Settings], ..ListSpec::default() },
+            // Not yet built (9k tasks 7 and 8): an empty list, nothing drawn.
+            ToolId::Jobs | ToolId::Notes | ToolId::Codecierge => ListSpec::default(),
         }
     }
 
@@ -250,7 +261,7 @@ impl App {
         // The tag font is 2 points smaller, 3 above the small system size (`PLV:574-582`).
         let pt = px * 3.0 / 4.0 / scale;
         let second_scale = ((pt - if pt <= 11.0 { 2.0 } else { 3.0 }) / pt).max(0.1);
-        ListMetrics { text_scale, row_h: line + 2.0 * tool_list_inset(scale), second_h: line * second_scale, second_scale }
+        ListMetrics { text_scale, row_h: line + 2.0 * tool_list_inset(scale), line, second_h: line * second_scale, second_scale }
     }
 
     /// The Profiles tool's rows: every saved profile, the command only when it is not the login
@@ -328,6 +339,8 @@ impl App {
                 }
             }
             ToolId::Snippets => self.snippets_filter().hash(&mut h),
+            ToolId::CapturedOutput => self.captured_extra(&mut h),
+            ToolId::SessionStatus => self.status_extra(&mut h),
             _ => {}
         }
         h.finish()
@@ -340,7 +353,12 @@ impl App {
     }
 
     /// What `tool` shows, rebuilt only when its `ShownKey` changed.
-    fn tool_shown(&mut self, tool: ToolId) -> Rc<Shown> {
+    pub(super) fn tool_shown(&mut self, tool: ToolId) -> Rc<Shown> {
+        match tool {
+            ToolId::CapturedOutput => self.captured_catch_up(),
+            ToolId::SessionStatus => self.prune_snoozes(),
+            _ => {}
+        }
         let query = self.tool_field_text(tool);
         let pane = self.focused_id();
         let per_host = matches!(tool, ToolId::CommandHistory | ToolId::RecentDirectories);
@@ -375,8 +393,10 @@ impl App {
             ToolId::Snippets => self.snippet_shown(&query),
             ToolId::Actions => Shown::Actions(tt::action_rows(&user_actions::load(self.globals.get("Actions").as_ref()))),
             ToolId::NamedMarks => Shown::Marks(self.mark_shown()),
-            // Not yet built (9k tasks 2 through 4).
-            ToolId::CapturedOutput | ToolId::SessionStatus | ToolId::Jobs | ToolId::Notes | ToolId::Codecierge => Shown::Pending,
+            ToolId::CapturedOutput => self.captured_shown(&query),
+            ToolId::SessionStatus => self.status_shown(),
+            // Not yet built (9k tasks 7 and 8).
+            ToolId::Jobs | ToolId::Notes | ToolId::Codecierge => Shown::Pending,
         });
         self.belt.shown.insert(tool, (key, shown.clone()));
         shown
@@ -386,6 +406,10 @@ impl App {
         match shown {
             Shown::Profiles(rows) => rows.iter().map(|r| if r.tags.is_empty() { m.row_h } else { m.row_h + m.second_h }).collect(),
             Shown::Snippets { rows, .. } => rows.iter().map(|r| if matches!(r.kind, SnippetRowKind::Snippet(_)) && !r.tags.is_empty() { m.row_h * TAGGED_ROW } else { m.row_h }).collect(),
+            // Variable heights (`CO:267-314`, `ToolStatusCellView.fittingSize`): a line more for
+            // each wrapped line, and for Session Status' status line when there is one.
+            Shown::Captured(c) => c.wraps.borrow().lines.iter().map(|l| m.row_h + l.len().saturating_sub(1) as f32 * m.line).collect(),
+            Shown::Status(st) => st.wraps.borrow().lines.iter().map(|l| m.row_h + l.iter().enumerate().filter(|(k, t)| *k > 0 || !t.is_empty()).count() as f32 * m.line).collect(),
             other => vec![m.row_h; other.len()],
         }
     }
@@ -395,6 +419,7 @@ impl App {
     /// returned row is row `visible.start` (`ListDraw::first`).
     fn tool_rows(&mut self, shown: &Shown, width: f32, visible: Range<usize>) -> Vec<scene::ListRow> {
         let scale = self.scale();
+        let dark = self.dark();
         let m = self.list_metrics();
         let avail = (width - 2.0 * tool_list_inset(scale)).max(0.0);
         let range = visible.start.min(shown.len())..visible.end.min(shown.len());
@@ -429,28 +454,40 @@ impl App {
                 }
                 Shown::Actions(v) => plain(v[i].clone(), false),
                 Shown::Marks(v) => plain(v[i].1.clone(), false),
+                Shown::Captured(c) => more::captured_list_row(c.wraps.borrow().lines.get(i).map_or(&[][..], Vec::as_slice)),
+                Shown::Status(st) => more::status_list_row(&st.items[i], st.wraps.borrow().lines.get(i).map_or(&[][..], Vec::as_slice), st.separator == Some(i), avail, scale, dark, &width),
                 Shown::Pending => unreachable!("Shown::Pending is always empty"),
             })
             .collect()
     }
 
     /// The content rectangle of `tool`'s wrapper, while it shows and is not collapsed.
-    fn tool_area(&self, tool: ToolId) -> Option<Rect> {
+    pub(super) fn tool_area(&self, tool: ToolId) -> Option<Rect> {
         let l = self.belt_layout()?;
         l.wrappers.iter().zip(&self.belt.split.tools).find(|(_, t)| **t == tool).and_then(|(w, _)| w.content)
     }
 
     /// The tool's list laid out in `area`, its scroll kept in range (and at the end for a list
     /// that changed without the keyboard), and its rows fitted where they show.
-    fn tool_layout(&mut self, tool: ToolId, area: Rect) -> (ListLayout, Vec<scene::ListRow>, usize, Rc<Shown>) {
+    pub(super) fn tool_layout(&mut self, tool: ToolId, area: Rect) -> (ListLayout, Vec<scene::ListRow>, usize, Rc<Shown>) {
         let scale = self.scale();
         let m = self.list_metrics();
         let spec = self.tool_spec(tool);
         let shown = self.tool_shown(tool);
+        self.wrap_rows(&shown, area.w);
         let heights = Self::row_heights(&shown, m);
         let n = shown.len();
         let focused_list = self.belt.focus == Some((tool, Focus::List));
+        // Session Status' selection follows the focused session, without the keyboard
+        // (`updateSelectionWithoutChangingFirstResponder`).
+        let status_row = match &*shown {
+            Shown::Status(st) => Some(self.focused_id().and_then(|f| st.items.iter().position(|i| i.row.pane == f))),
+            _ => None,
+        };
         let st = self.tool_state(tool);
+        if let Some(row) = status_row {
+            st.selection.rows = row.into_iter().collect();
+        }
         st.selection.retain(n);
         if sticks_to_end(tool) && st.seen != n && !focused_list {
             st.scroll = f32::MAX;
@@ -493,7 +530,25 @@ impl App {
             };
             let none = st.selection.rows.is_empty();
             let count = selected_count(&shown, &st.selection.rows);
-            let disabled: Vec<ToolButton> = [ToolButton::Open, ToolButton::Send, ToolButton::AdvancedPaste, ToolButton::Apply, ToolButton::Remove, ToolButton::Edit].into_iter().filter(|b| !button_enabled(*b, count)).collect();
+            let mut disabled: Vec<ToolButton> = [ToolButton::Open, ToolButton::Send, ToolButton::AdvancedPaste, ToolButton::Apply, ToolButton::Remove, ToolButton::Edit].into_iter().filter(|b| !button_enabled(*b, count)).collect();
+            let mut lit = Vec::new();
+            match &*shown {
+                // Clear with nothing showing (`CO:268`).
+                Shown::Captured(c) if c.entries.is_empty() => disabled.push(ToolButton::Trash),
+                // Snooze needs a row; it and the bell light when on (`TS:595-625,1239-1255`).
+                Shown::Status(_) => {
+                    let selected = self.status_selected();
+                    match selected {
+                        Some(p) if self.belt.snoozed.contains_key(&p) => lit.push(ToolButton::Snooze),
+                        Some(_) => {}
+                        None => disabled.push(ToolButton::Snooze),
+                    }
+                    if self.status_bell_lit() {
+                        lit.push(ToolButton::Bell);
+                    }
+                }
+                _ => {}
+            }
             let drop_y = match self.drag {
                 Drag::Belt(BeltDrag::Row { tool: t, start_y }) if t == tool && (self.cursor.1 - start_y).abs() >= DRAG_SLOP * scale => drop_slot(&shown, &l.rows, self.cursor.1).map(|slot| l.rows.get(slot).map_or_else(|| l.rows.last().map_or(l.list.y, |r| r.y + r.h), |r| r.y)),
                 _ => None,
@@ -511,6 +566,7 @@ impl App {
                 popup,
                 second_scale: m.second_scale,
                 drop_y,
+                lit: &lit,
             };
             scene::tool_list(frame, &d, cell, m.text_scale, scale);
         }
@@ -601,6 +657,10 @@ impl App {
             (ListHit::Popup, MouseButton::Left) => self.tool_popup_menu(tool),
             _ => {}
         }
+        // Session Status never takes the keyboard (`keyboardNavigable: false`).
+        if tool == ToolId::SessionStatus {
+            self.belt.focus = None;
+        }
         self.redraw();
         activated
     }
@@ -609,6 +669,25 @@ impl App {
     /// (`ToolCommandHistoryView.m:247-257`), and Named Marks to the mark
     /// (`ToolNamedMarks.swift:183-190`, `toolbeltDidSelectNamedMark:`).
     fn tool_selected(&mut self, tool: ToolId) {
+        let first = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied());
+        match (tool, first) {
+            // The entry's line shows and the session takes the keyboard (`CO:330-349`).
+            (ToolId::CapturedOutput, Some(row)) => return self.reveal_captured(row),
+            // The session comes forward (`TS`, `tableViewSelectionDidChange`).
+            (ToolId::SessionStatus, Some(row)) => {
+                let shown = self.tool_shown(tool);
+                let pane = match &*shown {
+                    Shown::Status(st) => st.items.get(row).map(|i| i.row.pane),
+                    _ => None,
+                };
+                if let Some(pane) = pane {
+                    self.reveal_pane(pane);
+                }
+                self.belt.focus = None;
+                return;
+            }
+            _ => {}
+        }
         if tool == ToolId::NamedMarks {
             let Some(row) = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied()) else { return };
             let shown = self.tool_shown(tool);
@@ -668,7 +747,8 @@ impl App {
             // Option wins over Shift (`TS:372-396`).
             Shown::Snippets { .. } => return self.apply_snippets(tt::snippet_pick(alt, shift), false, event_loop),
             Shown::Actions(_) => return self.apply_actions(event_loop),
-            Shown::Marks(_) | Shown::Pending => return,
+            Shown::Captured(_) => return self.run_captured(first),
+            Shown::Marks(_) | Shown::Status(_) | Shown::Pending => return,
         }
         self.belt.focus = None;
         self.redraw();
@@ -749,6 +829,23 @@ impl App {
                     self.tool_state(tool).selection.rows.clear();
                 }
             }
+            (ToolId::CapturedOutput, ToolButton::Trash) => self.clear_captured(),
+            (ToolId::CapturedOutput, ToolButton::Help) => {
+                if let Some(pane) = self.focused_id() {
+                    self.open_url(pane, crate::captured::HELP_URL);
+                }
+            }
+            (ToolId::SessionStatus, ToolButton::Bell) => {
+                let target = self.status_selected();
+                self.arm_status_watch(target);
+            }
+            (ToolId::SessionStatus, ToolButton::Snooze) => {
+                if let Some(pane) = self.status_selected() {
+                    self.toggle_snooze(pane);
+                }
+            }
+            (ToolId::SessionStatus, ToolButton::Help) => self.status_help(),
+            (ToolId::SessionStatus, ToolButton::Settings) => self.open_status_popover(event_loop),
             (ToolId::CommandHistory | ToolId::RecentDirectories, ToolButton::Help) => {
                 let url = if tool == ToolId::CommandHistory { COMMAND_HELP } else { DIRS_HELP };
                 if let Some(pane) = self.focused_id() {
@@ -781,12 +878,24 @@ impl App {
     /// A row's menu: Paste History's Copy and Open in Advanced Paste
     /// (`ToolPasteHistory.m:96-144`), Recent Directories' Toggle Star, on the clicked row.
     fn tool_row_menu(&mut self, tool: ToolId, row: usize) {
-        let items: Vec<(String, &str)> = match &*self.tool_shown(tool) {
+        let shown = self.tool_shown(tool);
+        // Session Status' Snooze, checked while snoozed (`TS:1187-1218`).
+        if let Shown::Status(st) = &*shown {
+            let Some(item) = st.items.get(row) else { return };
+            let menu = muda::Menu::new();
+            if let Err(e) = menu.append(&muda::CheckMenuItem::with_id(format!("{CTX_ID}snooze:{}", item.row.pane), "Snooze", true, item.row.snoozed, None)) {
+                self.banners.set("menu", format!("Toolbelt menu: {e}"));
+            }
+            let (x, y) = self.cursor;
+            return self.show_menu_at(menu, MenuAt { x, y, above: false });
+        }
+        let items: Vec<(String, &str)> = match &*shown {
             Shown::Paste(v) if row < v.len() => vec![(format!("{CTX_ID}paste-copy:{row}"), "Copy"), (format!("{CTX_ID}paste-advanced:{row}"), "Open in Advanced Paste")],
             Shown::Dirs(v, _) => match v.get(row) {
                 Some(d) => vec![(format!("{CTX_ID}star:{}", d.path), "Toggle Star")],
                 None => return,
             },
+            Shown::Captured(c) if row < c.entries.len() => vec![(format!("{CTX_ID}captured-check:{row}"), "Toggle Checkmark")],
             _ => return,
         };
         let menu = muda::Menu::new();
@@ -824,6 +933,16 @@ impl App {
                     self.remember_paste(&v);
                 } else if let Some(pane) = self.focused_id() {
                     self.open_advanced_paste(event_loop, pane, None);
+                }
+            }
+            "captured-check" => {
+                if let Ok(row) = arg.parse::<usize>() {
+                    self.toggle_captured_check(row);
+                }
+            }
+            "snooze" => {
+                if let Ok(pane) = arg.parse::<PaneId>() {
+                    self.toggle_snooze(pane);
                 }
             }
             "star" => {

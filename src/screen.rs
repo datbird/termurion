@@ -195,6 +195,10 @@ pub struct Screen {
     pub porthole_wide_default: bool,
     /// OSC 21337: what the pane's program says it is doing.
     pub tab_status: crate::tabstatus::Status,
+    /// When `tab_status` last changed: a tick shared by every screen, so it also orders
+    /// changes across panes (Session Status' "older first", its snooze, and the tool's
+    /// refresh). 0 until the first change.
+    pub tab_status_gen: u64,
     /// The program's `Env=report=all` environment, kept for the SSH integration.
     pub env: Option<String>,
     /// ExecFailed: the command could not start.
@@ -278,7 +282,32 @@ impl KeyState {
     }
 }
 
+/// The tick behind `Screen::tab_status_gen`.
+static TAB_STATUS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Screen {
+    /// Applies OSC 21337 or Set Tab Status fields (`tabstatus::Status::apply`); a change moves
+    /// `tab_status_gen`. True when something changed.
+    pub fn apply_tab_status(&mut self, pairs: &[(String, String)]) -> bool {
+        let changed = self.tab_status.apply(pairs);
+        if changed {
+            self.tab_status_changed();
+        }
+        changed
+    }
+
+    /// Clears the status (a new prompt); nothing moves when there was none.
+    pub(crate) fn clear_tab_status(&mut self) {
+        if !self.tab_status.is_empty() {
+            self.tab_status = crate::tabstatus::Status::default();
+            self.tab_status_changed();
+        }
+    }
+
+    fn tab_status_changed(&mut self) {
+        self.tab_status_gen = TAB_STATUS_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    }
+
     pub fn new(cols: usize, rows: usize) -> Self {
         Screen::with_look(cols, rows, Palette::default(), Look::default())
     }
@@ -312,6 +341,7 @@ impl Screen {
             keys: KeyState::new(look.csi_u),
             trusted: true,
             tab_status: crate::tabstatus::Status::default(),
+            tab_status_gen: 0,
             blocks: crate::blocks::Blocks::default(),
             buttons: crate::blocks::Buttons::default(),
             portholes: std::collections::HashMap::new(),

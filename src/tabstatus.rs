@@ -175,6 +175,27 @@ mod tests {
         sc.feed(b"\x1b]133;A\x07");
         assert!(sc.tab_status.is_empty());
     }
+    /// Each change moves the status's generation, past every other screen's; no change, or
+    /// a prompt with nothing to clear, leaves it.
+    #[test]
+    fn status_changes_move_the_generation() {
+        let mut sc = Screen::new(20, 4);
+        let mut other = Screen::new(20, 4);
+        assert_eq!(sc.tab_status_gen, 0);
+        sc.feed(b"\x1b]21337;status=busy\x07");
+        let first = sc.tab_status_gen;
+        assert!(first > 0);
+        sc.feed(b"\x1b]21337;status=busy\x07");
+        assert_eq!(sc.tab_status_gen, first, "the same status again is no change");
+        other.feed(b"\x1b]21337;detail=x\x07");
+        assert!(other.tab_status_gen > first, "a later change on another screen ranks newer");
+        sc.feed(b"\x1b]133;A\x07");
+        let cleared = sc.tab_status_gen;
+        assert!(cleared > other.tab_status_gen);
+        sc.feed(b"\x1b]133;A\x07");
+        assert_eq!(sc.tab_status_gen, cleared, "nothing to clear");
+    }
+
     #[test]
     fn secondary_prompts_keep_the_status() {
         let mut sc = Screen::new(20, 4);

@@ -1284,6 +1284,47 @@ pub struct ListRow {
     pub disclosure: Option<char>,
     /// Tag chips on a second line (Snippets): each text and its width at `CHIP_SCALE`.
     pub chips: Vec<(String, f32)>,
+    /// Text right-aligned on the first line in the tertiary color, and its width (Session
+    /// Status' shortcut).
+    pub right: Option<(String, f32)>,
+    /// Lines under the first, each one line tall. With `status_color`, the first of them is a
+    /// status line in that color at the text's x (no room when it is empty) and the rest are
+    /// in the secondary color `lines_indent` further in; without, all are in the text color
+    /// at `lines_indent` (Captured Output's wrapped label).
+    pub lines: Vec<String>,
+    /// Points.
+    pub lines_indent: f32,
+    /// The text drawn at half strength (a snoozed row); the lead glyphs keep theirs.
+    pub dim: bool,
+    /// A 1 pixel rule along the row's top (above the first snoozed row).
+    pub rule_above: bool,
+    pub status_color: Option<Rgb>,
+    /// Glyphs (icon font) before the text in their colors, each in its own slot
+    /// (`lead_width`): Session Status' snooze, bell and indicator dot.
+    pub lead: Vec<(char, Rgb)>,
+}
+
+/// Session Status' indicator dot (Segoe Fluent Icons CircleFill), drawn 6 points across in a
+/// 10 point slot; every other lead glyph gets a 12 point slot. Each slot has its spacing after
+/// it: 4 points after the dot, 3 after the others (`ToolStatusCellView.swift:42-54`).
+pub const STATUS_DOT: char = '\u{EA3B}';
+const DOT_SLOT: f32 = 10.0;
+const DOT_GAP: f32 = 4.0;
+const DOT_PT: f32 = 6.0;
+const LEAD_SLOT: f32 = 12.0;
+const LEAD_GAP: f32 = 3.0;
+/// The snooze and bell symbols' size (`SymbolConfiguration(pointSize: 10)`).
+const LEAD_PT: f32 = 10.0;
+
+/// The room a row's lead glyphs take before its text, pixels.
+pub fn lead_width(lead: &[(char, Rgb)], scale: f32) -> f32 {
+    lead.iter().map(|(c, _)| if *c == STATUS_DOT { DOT_SLOT + DOT_GAP } else { LEAD_SLOT + LEAD_GAP }).sum::<f32>() * scale
+}
+
+/// The lists' secondary text color (Session Status' detail, and a status without a color of
+/// its own).
+pub fn list_secondary(dark: bool) -> Rgb {
+    if dark { TAB_TEXT_DIM } else { BELT_ICON_LIGHT }
 }
 
 /// What a toolbelt tool's list widget shows. The app measures the text (the scene cannot).
@@ -1307,6 +1348,9 @@ pub struct ListDraw<'a> {
     pub second_scale: f32,
     /// A row drag's drop line, at this y.
     pub drop_y: Option<f32>,
+    /// Toggle buttons that are on (Session Status' armed bell and snoozed row), drawn in the
+    /// selection color.
+    pub lit: &'a [crate::tool_list::ToolButton],
 }
 
 /// Snippets' tag chips: white on orange, at 0.8 of the toolbelt font (`TS:677-681`).
@@ -1380,8 +1424,30 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
             frame.quads.push(Quad { rect: clip, color: rgba(LIST_SELECTED, 1.0) });
         }
         let (fg, fg2) = if selected { (rgb(0xff, 0xff, 0xff), rgb(0xe6, 0xe6, 0xe6)) } else { (text, dim) };
+        let bg = if selected { LIST_SELECTED } else if d.dark { BELT_BG_DARK } else { BELT_BG_LIGHT };
+        // Half strength over the row's background (a snoozed row, `setTextAlpha(0.5)`).
+        let soft = |c: Rgb| if row.dim { blend(c, bg, 0.5) } else { c };
+        let (fg, fg2) = (soft(fg), soft(fg2));
+        if row.rule_above {
+            frame.quads.push(Quad { rect: Rect { x: r.x, y: r.y, w: r.w, h: 1.0 }, color: rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 }) });
+        }
         let mut x = r.x + inset + row.depth as f32 * LIST_INDENT * scale;
         let y = r.y + inset;
+        for &(c, color) in &row.lead {
+            let color = if selected { rgb(0xff, 0xff, 0xff) } else { color };
+            // Each glyph drawn `size` across, centered in its slot on the first line (a line at
+            // scale `s` is `cell.1 * s` tall, a glyph `1 / 1.2` of that).
+            let (slot, gap, size) = if c == STATUS_DOT { (DOT_SLOT, DOT_GAP, DOT_PT) } else { (LEAD_SLOT, LEAD_GAP, LEAD_PT) };
+            let s = size * scale * 1.2 / cell.1.max(1.0);
+            let gh = cell.1 * s;
+            frame.rows.push(TextRow { x: x + (slot * scale - gh / 1.2) / 2.0, y: y + (line_h - gh) / 2.0, spans: vec![list_span(c.to_string(), color, false, 2)], clip, scale: s });
+            x += (slot + gap) * scale;
+        }
+        if let Some((right, w)) = &row.right {
+            // The tertiary color; on the selection, white at 0.7 (`updateShortcutColor`).
+            let color = if selected { blend(rgb(0xff, 0xff, 0xff), LIST_SELECTED, 0.3) } else { soft(blend(dim, bg, 0.35)) };
+            frame.rows.push(TextRow { x: (r.x + r.w - inset - w).max(x), y, spans: vec![list_span(right.clone(), color, false, 0)], clip, scale: text_scale });
+        }
         if let Some(c) = row.disclosure {
             frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), fg2, false, 2)], clip, scale: text_scale });
             x += glyph_w + 2.0 * scale;
@@ -1393,6 +1459,21 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         frame.rows.push(TextRow { x, y, spans: vec![list_span(row.text.clone(), fg, row.bold, 0)], clip, scale: text_scale });
         if let Some(second) = &row.second {
             frame.rows.push(TextRow { x, y: y + line_h, spans: vec![list_span(second.clone(), fg2, false, 1)], clip, scale: text_scale * d.second_scale });
+        }
+        let mut ly = y + line_h;
+        for (k, line) in row.lines.iter().enumerate() {
+            let (lx, color) = match row.status_color {
+                Some(c) if k == 0 => {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    (x, if selected { fg } else { soft(c) })
+                }
+                Some(_) => (x + row.lines_indent * scale, fg2),
+                None => (x + row.lines_indent * scale, fg),
+            };
+            frame.rows.push(TextRow { x: lx, y: ly, spans: vec![list_span(line.clone(), color, false, 0)], clip, scale: text_scale });
+            ly += line_h;
         }
         let mut cx = x;
         for (tag, w) in &row.chips {
@@ -1410,7 +1491,13 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
     }
 
     for (b, r) in l.top.iter().chain(&l.buttons) {
-        let color = if d.disabled.contains(b) { disabled } else { dim };
+        let color = if d.disabled.contains(b) {
+            disabled
+        } else if d.lit.contains(b) {
+            LIST_SELECTED
+        } else {
+            dim
+        };
         frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![list_span(b.glyph().to_string(), color, false, 2)], clip: *r, scale: text_scale });
     }
 
@@ -1573,7 +1660,7 @@ mod tests {
             ListRow { text: "Work".into(), second: Some("ssh, prod".into()), ..ListRow::default() },
         ];
         let mut f = Frame::default();
-        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[1], dark: true, field: Some(("ab", 16.0)), focus: Some(Focus::Field), disabled: &[ToolButton::Open], popup: Some(("New Tab", false)), second_scale: 0.8, drop_y: None };
+        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[1], dark: true, field: Some(("ab", 16.0)), focus: Some(Focus::Field), disabled: &[ToolButton::Open], popup: Some(("New Tab", false)), second_scale: 0.8, drop_y: None, lit: &[] };
         tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
         let texts: Vec<&str> = f.rows.iter().map(|r| r.spans[0].text.as_str()).collect();
         assert_eq!(texts, vec!["ab", "\u{2605} Default", "Work", "ssh, prod", "\u{E768}", "New Tab", "\u{E70D}"]);
@@ -1590,7 +1677,7 @@ mod tests {
 
         // Only the rows from `first` on are given; each lands on its own row rectangle.
         let mut f = Frame::default();
-        let d = ListDraw { layout: &l, rows: &rows[1..], first: 1, selected: &[1], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8, drop_y: None };
+        let d = ListDraw { layout: &l, rows: &rows[1..], first: 1, selected: &[1], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8, drop_y: None, lit: &[] };
         tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
         let work = f.rows.iter().find(|r| r.spans[0].text == "Work").unwrap();
         assert_eq!(work.y, l.rows[1].y + LIST_INSET);
@@ -1610,7 +1697,7 @@ mod tests {
             ListRow { text: "s".into(), icon: Some(('\u{E8BD}', rgb(94, 159, 208))), depth: 1, chips: vec![(" t ".into(), 12.0), (" u ".into(), 10.0)], ..ListRow::default() },
         ];
         let mut f = Frame::default();
-        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8, drop_y: Some(20.0) };
+        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8, drop_y: Some(20.0), lit: &[] };
         tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
         let texts: Vec<&str> = f.rows.iter().map(|r| r.spans[0].text.as_str()).collect();
         assert_eq!(texts, vec!["\u{E76C}", "\u{E8B7}", "f", "\u{E8BD}", "s", " t ", " u "]);
@@ -1625,6 +1712,54 @@ mod tests {
         assert_eq!((f.rows[5].scale, f.rows[5].spans[0].color), (CHIP_SCALE, rgb(0xff, 0xff, 0xff)));
         // The drop line at the second row's top.
         assert!(f.quads.iter().any(|q| q.color == rgba(LIST_SELECTED, 1.0) && q.rect.y == 19.0 && q.rect.w == 200.0));
+    }
+
+    /// Session Status' and Captured Output's rows: lead glyphs in their slots, the shortcut
+    /// at the right, the status line in its color then the detail indented in the secondary
+    /// color, a snoozed row dimmed with a rule above it, and wrapped lines in the text color.
+    #[test]
+    fn tool_list_draws_status_and_wrapped_rows() {
+        use super::*;
+        use crate::tool_list::{ListSpec, ToolButton, layout};
+        let area = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let spec = ListSpec { left: vec![ToolButton::Bell], ..ListSpec::default() };
+        let l = layout(area, &spec, &[52.0, 36.0], 0.0, 1.0);
+        let orange = rgb(0xff, 0xa5, 0x00);
+        let lead = vec![(ToolButton::Snooze.glyph(), TAB_TEXT_DIM), (STATUS_DOT, orange)];
+        assert_eq!(lead_width(&lead, 2.0), (12.0 + 3.0 + 10.0 + 4.0) * 2.0);
+        let rows = vec![
+            ListRow { text: "zsh".into(), right: Some(("Win+2".into(), 30.0)), lines: vec!["Working".into(), "detail".into()], lines_indent: 14.0, dim: true, rule_above: true, status_color: Some(orange), lead: lead.clone(), ..ListRow::default() },
+            ListRow { text: "-abc".into(), lines: vec!["def".into()], ..ListRow::default() },
+        ];
+        let mut f = Frame::default();
+        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8, drop_y: None, lit: &[ToolButton::Bell] };
+        tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
+        let texts: Vec<&str> = f.rows.iter().map(|r| r.spans[0].text.as_str()).collect();
+        assert_eq!(texts, vec!["\u{E708}", "\u{EA3B}", "Win+2", "zsh", "Working", "detail", "-abc", "def", "\u{E7ED}"]);
+        let name = &f.rows[3];
+        assert_eq!(name.x, LIST_INSET + 29.0);
+        // Dimmed: the text at half strength over the panel; the lead keeps its color.
+        assert_eq!(name.spans[0].color, blend(TAB_TEXT, BELT_BG_DARK, 0.5));
+        assert_eq!(f.rows[1].spans[0].color, orange);
+        // The shortcut ends at the row's right inset.
+        assert_eq!(f.rows[2].x, 200.0 - LIST_INSET - 30.0);
+        // The status line under the name at its x, the detail 14 further in, one line apart.
+        assert_eq!((f.rows[4].x, f.rows[4].y), (name.x, name.y + 16.0));
+        assert_eq!(f.rows[4].spans[0].color, blend(orange, BELT_BG_DARK, 0.5));
+        assert_eq!((f.rows[5].x, f.rows[5].y), (name.x + 14.0, name.y + 32.0));
+        // The rule along the snoozed row's top.
+        assert!(f.quads.iter().any(|q| q.rect.y == l.rows[0].y && q.rect.h == 1.0 && q.rect.w == 200.0));
+        // A wrapped label's next line in the text color, right under it.
+        assert_eq!((f.rows[7].x, f.rows[7].y, f.rows[7].spans[0].color), (f.rows[6].x, f.rows[6].y + 16.0, TAB_TEXT));
+        // A lit button is drawn in the selection color.
+        assert_eq!(f.rows[8].spans[0].color, LIST_SELECTED);
+        // An empty status line takes no room: the detail moves up.
+        let rows = vec![ListRow { text: "a".into(), lines: vec![String::new(), "d".into()], lines_indent: 14.0, status_color: Some(orange), ..ListRow::default() }];
+        let mut f = Frame::default();
+        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8, drop_y: None, lit: &[] };
+        tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
+        let d_row = f.rows.iter().find(|r| r.spans[0].text == "d").unwrap();
+        assert_eq!(d_row.y, LIST_INSET + 16.0);
     }
 
     /// A button face: the corner rows are inset, the middle is full width, and the box

@@ -8,7 +8,7 @@ use crate::alerts::{self, AlertKind, AlertPrefs};
 
 /// Escape-sequence alerts: at most one a second per session.
 const TERMINAL_EVERY: Duration = Duration::from_secs(1);
-const STATUS_BAR: &str = "status-change";
+pub(super) const STATUS_BAR: &str = "status-change";
 
 impl App {
     fn alert_prefs(&self, pane: PaneId) -> AlertPrefs {
@@ -80,25 +80,22 @@ impl App {
         self.post_alert(pane, AlertKind::SessionEnded);
     }
 
-    /// Window > Notify on Status Change: armed, the next change of a session's status shows
-    /// a bar, then it disarms.
+    /// Status changes, seen once per pass: the pattern notifications, the Session Status
+    /// bell's watch, and Window > Notify on Status Change (armed, the next change of a
+    /// session's status shows a bar, then it disarms) (`status_changes`).
     pub(super) fn tick_status_change(&mut self) {
         let now: Vec<(PaneId, Option<String>)> = self.panes.iter().map(|(id, p)| (*id, p.own().tab_status.status.clone())).collect();
-        let mut changed = None;
+        let mut changes = Vec::new();
         for (id, status) in &now {
-            if let Some(before) = self.last_status.get(id) {
-                if before != status && changed.is_none() {
-                    changed = Some((*id, before.clone(), status.clone()));
-                }
+            // A pane seen for the first time had no status before.
+            let before = self.last_status.get(id).cloned().unwrap_or(None);
+            if before != *status {
+                changes.push((*id, before, status.clone()));
             }
         }
         self.last_status = now.into_iter().collect();
-        if let (true, Some((pane, from, to))) = (self.notify_status_armed, changed) {
-            self.notify_status_armed = false;
-            let (name, _) = self.session_label(pane);
-            let text = format!("Session status changed. {name} changed from \u{201c}{}\u{201d} to \u{201c}{}\u{201d}.", from.unwrap_or_else(|| "none".into()), to.unwrap_or_else(|| "none".into()));
-            self.ask(pane, STATUS_BAR, &text, &["OK", "Reveal"], true);
-            self.sync_checks();
+        if !changes.is_empty() || self.status_watch.is_some() {
+            self.status_changes(&changes);
         }
     }
 

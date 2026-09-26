@@ -166,12 +166,17 @@ impl App {
         use crate::tabstatus::{self, xterm_color};
         let title = self.tmux_tab_label(t.focused).or_else(|| t.title.clone()).unwrap_or_else(|| self.session_title(t.focused));
         let panes = t.layout.panes();
-        let focused = self.panes.get(&t.focused).map(|p| &p.own().tab_status);
-        let others: Vec<&tabstatus::Status> = panes.iter().filter(|id| **id != t.focused).filter_map(|id| self.panes.get(id)).map(|p| &p.own().tab_status).collect();
-        let st = tabstatus::aggregate(focused, &others, &tabstatus::PRIORITIES);
-        let show_text = self.globals.bool("ShowSessionStatusInTabSubtitle");
+        // The focused pane's status when it has one, else the best by the user's priority
+        // patterns, the first on a tie (`PTYTab.m:7747-7801`).
+        let status_of = |id: &PaneId| self.panes.get(id).map(|p| &p.own().tab_status).filter(|s| !s.is_empty());
+        let st: Option<&tabstatus::Status> = status_of(&t.focused).or_else(|| {
+            let patterns = self.status_patterns();
+            panes.iter().filter_map(status_of).enumerate().min_by_key(|(i, s)| (crate::status_tool::priority(s.status.as_deref(), &patterns), *i)).map(|(_, s)| s)
+        });
+        let show_text = self.globals.bool(crate::status_tool::SUBTITLE_KEY);
+        // Shown in its display form (`localizedStatusForDisplay`).
         let status = st.filter(|_| show_text).and_then(|s| {
-            let text = s.status.clone()?;
+            let text = crate::status_tool::display_status(s.status.as_deref().filter(|t| !t.is_empty())?);
             let color = s.status_color.as_deref().and_then(xterm_color).unwrap_or(rgb_of(0xc7, 0xc7, 0xc7));
             Some((text, color))
         });
