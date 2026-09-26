@@ -9,6 +9,11 @@
 //!
 //! Every function taking `lines` expects `wrap` of the editor's current text (at the width it
 //! is drawn at); stale lines give wrong moves and positions.
+//!
+//! The composer (milestone 9l) adds iTerm2's multiple carets (`MultiCursor/MultiCursorTextView
+//! .swift`, `MCTV`): Ctrl+Shift+Up and Down, Ctrl+Shift+click and Alt+drag add carets, every
+//! typed key and delete acts at each caret as one undo step, and a multi-caret copy pastes back
+//! one group per caret. With one caret the editor behaves as before (the Notes tool).
 
 use std::ops::Range;
 
@@ -68,14 +73,46 @@ pub struct VisualLine {
     pub end: usize,
 }
 
-/// One undo step: at `at`, `removed` was replaced by `inserted`; the caret and anchor before.
+/// A caret other than the primary: its byte index and its selection's other end (`None` or
+/// equal to `at` when nothing is selected).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Caret {
+    pub at: usize,
+    pub anchor: Option<usize>,
+}
+
+impl Caret {
+    /// The caret's selected byte range (empty for a plain caret).
+    fn range(&self) -> Range<usize> {
+        let a = self.anchor.unwrap_or(self.at);
+        a.min(self.at)..a.max(self.at)
+    }
+}
+
+/// One replacement in an undo step: at `at` (an index in the text before the step), `removed`
+/// was replaced by `inserted`.
 #[derive(Clone, Debug)]
-struct Step {
+struct Part {
     at: usize,
     removed: String,
     inserted: String,
+}
+
+/// Every caret at one moment: the primary and the others.
+#[derive(Clone, Debug)]
+struct Carets {
     caret: usize,
     anchor: Option<usize>,
+    extra: Vec<Caret>,
+}
+
+/// One undo step: its replacements in text order (one per caret that changed the text) and
+/// the carets before and after.
+#[derive(Clone, Debug)]
+struct Step {
+    parts: Vec<Part>,
+    before: Carets,
+    after: Carets,
 }
 
 /// The editor: `text`, the `caret`, and the selection's other end (`anchor`, `None` or equal
@@ -85,6 +122,10 @@ pub struct TextEdit {
     pub text: String,
     pub caret: usize,
     pub anchor: Option<usize>,
+    /// The other carets, in text order; `caret` and `anchor` are the primary, the one added
+    /// last (`MCTV` adds a caret from the last range, `handleSpecialKeyDown`). Empty with one
+    /// caret. Only the primary has an affinity.
+    pub extra: Vec<Caret>,
     /// Caret affinity: where a soft wrap breaks, the caret index is both the end of one
     /// visual line and the start of the next; true draws it at the end of the earlier line
     /// (set by End, a click or drag past a line's end, and Up, Down, Page Up and Page Down
@@ -117,6 +158,7 @@ impl TextEdit {
         self.text = plain_line_ends(t);
         self.caret = self.text.len();
         self.anchor = None;
+        self.extra.clear();
         self.at_line_end = false;
         self.goal_x = None;
         self.undo.clear();
@@ -139,7 +181,20 @@ impl TextEdit {
     /// One key. `lines` must be `wrap` of the current text at the editor's width and `width`
     /// the same measure, for the moves that follow visual lines (Up, Down, Home, End, Page Up,
     /// Page Down). `shift` extends the selection on a move.
+    /// With other carets, typing and deleting act at each caret as one undo step, moves move
+    /// each (Up and Down as `MCTV` does, dropping a caret with no line to go to), Copy and Cut
+    /// take every caret's piece joined by line ends, and Select All leaves one selection.
     pub fn key(&mut self, k: EditKey, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
+        if !self.extra.is_empty() {
+            if let Some(out) = self.key_multi(&k, shift, lines, width) {
+                return out;
+            }
+        }
+        self.key_one(k, shift, lines, width)
+    }
+
+    /// `key` for the primary caret alone.
+    fn key_one(&mut self, k: EditKey, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
         if !matches!(k, EditKey::Up | EditKey::Down | EditKey::PageUp | EditKey::PageDown) {
             self.goal_x = None;
         }
@@ -193,6 +248,7 @@ impl TextEdit {
                 out
             }
             EditKey::SelectAll => {
+                self.extra.clear();
                 self.anchor = Some(0);
                 self.caret = self.text.len();
                 self.at_line_end = false;
@@ -212,11 +268,21 @@ impl TextEdit {
             },
             EditKey::Undo => match self.undo.pop() {
                 Some(step) => {
-                    let (at, len) = (step.at, step.inserted.len());
-                    self.text.replace_range(at..at + len, &step.removed);
-                    self.caret = step.caret;
-                    self.anchor = step.anchor;
-                    self.at_line_end = false;
+                    // Each part's place in the text after the step, undone from the last back.
+                    let mut shift = 0isize;
+                    let now: Vec<usize> = step
+                        .parts
+                        .iter()
+                        .map(|p| {
+                            let at = (p.at as isize + shift) as usize;
+                            shift += p.inserted.len() as isize - p.removed.len() as isize;
+                            at
+                        })
+                        .collect();
+                    for (p, &at) in step.parts.iter().zip(&now).rev() {
+                        self.text.replace_range(at..at + p.inserted.len(), &p.removed);
+                    }
+                    self.restore(&step.before);
                     self.redo.push(step);
                     EditOut::Changed
                 }
@@ -224,11 +290,10 @@ impl TextEdit {
             },
             EditKey::Redo => match self.redo.pop() {
                 Some(step) => {
-                    let (at, len) = (step.at, step.removed.len());
-                    self.text.replace_range(at..at + len, &step.inserted);
-                    self.caret = at + step.inserted.len();
-                    self.anchor = None;
-                    self.at_line_end = false;
+                    for p in step.parts.iter().rev() {
+                        self.text.replace_range(p.at..p.at + p.removed.len(), &p.inserted);
+                    }
+                    self.restore(&step.after);
                     self.undo.push(step);
                     EditOut::Changed
                 }
@@ -244,6 +309,7 @@ impl TextEdit {
     pub fn click(&mut self, at: usize, at_line_end: bool, shift: bool, now_ms: u128, double_ms: u128) {
         let at = floor_boundary(&self.text, at);
         self.goal_x = None;
+        self.extra.clear();
         if shift {
             self.anchor = Some(self.anchor.unwrap_or(self.caret));
             self.caret = at;
@@ -316,19 +382,367 @@ impl TextEdit {
     /// Replaces `text[r]` with `s` as one undo step (`TN:585` breaks undo coalescing after
     /// every change, so each edit undoes on its own); the caret lands after `s`.
     fn edit(&mut self, r: Range<usize>, s: &str) -> EditOut {
-        self.undo.push(Step {
-            at: r.start,
-            removed: self.text[r.clone()].to_string(),
-            inserted: s.to_string(),
-            caret: self.caret,
-            anchor: self.anchor,
-        });
-        self.redo.clear();
-        self.text.replace_range(r.clone(), s);
-        self.caret = r.start + s.len();
-        self.anchor = None;
+        self.edit_all(vec![(r, s.to_string())], 0)
+    }
+
+    /// Replaces each range with its string as one undo step. The ranges are in text order and
+    /// do not overlap (two may start at one index; the earlier's string goes first). Every
+    /// part leaves a plain caret after its string; part `primary` is the primary. Nothing to
+    /// replace changes nothing.
+    fn edit_all(&mut self, parts: Vec<(Range<usize>, String)>, primary: usize) -> EditOut {
+        if parts.iter().all(|(r, s)| r.is_empty() && s.is_empty()) {
+            return EditOut::Kept;
+        }
+        let before = self.snapshot();
+        let mut done = Vec::new();
+        let mut carets = Vec::new();
+        let mut shift = 0isize;
+        for (i, (r, s)) in parts.iter().enumerate() {
+            let at = (r.start as isize + shift) as usize + s.len();
+            carets.push((Caret { at, anchor: None }, i == primary));
+            shift += s.len() as isize - r.len() as isize;
+            if !(r.is_empty() && s.is_empty()) {
+                done.push(Part { at: r.start, removed: self.text[r.clone()].to_string(), inserted: s.clone() });
+            }
+        }
+        // From the last back, so the earlier indexes stay valid.
+        for (r, s) in parts.iter().rev() {
+            self.text.replace_range(r.clone(), s);
+        }
+        self.set_all(carets);
         self.at_line_end = false;
+        let after = self.snapshot();
+        self.undo.push(Step { parts: done, before, after });
+        self.redo.clear();
         EditOut::Changed
+    }
+
+    fn snapshot(&self) -> Carets {
+        Carets { caret: self.caret, anchor: self.anchor, extra: self.extra.clone() }
+    }
+
+    fn restore(&mut self, c: &Carets) {
+        self.caret = c.caret;
+        self.anchor = c.anchor;
+        self.extra = c.extra.clone();
+        self.at_line_end = false;
+    }
+
+    /// Every caret with whether it is the primary, in text order.
+    fn all(&self) -> Vec<(Caret, bool)> {
+        let mut v: Vec<(Caret, bool)> = self.extra.iter().map(|&c| (c, false)).collect();
+        v.push((Caret { at: self.caret, anchor: self.anchor }, true));
+        v.sort_by_key(|(c, _)| {
+            let r = c.range();
+            (r.start, r.end)
+        });
+        v
+    }
+
+    /// Sets every caret from `v` (any order): carets that overlap or start at one index merge
+    /// into one spanning both (keeping the primary's direction, else the longer one's); the
+    /// one marked primary is the primary, or the last in text order when none is. An empty
+    /// `v` leaves only the primary.
+    fn set_all(&mut self, mut v: Vec<(Caret, bool)>) {
+        if v.is_empty() {
+            self.extra.clear();
+            return;
+        }
+        v.sort_by_key(|(c, _)| {
+            let r = c.range();
+            (r.start, r.end)
+        });
+        let mut out: Vec<(Caret, bool)> = Vec::new();
+        for (c, p) in v {
+            if let Some((l, lp)) = out.last_mut() {
+                let (lr, r) = (l.range(), c.range());
+                if r.start < lr.end || r.start == lr.start {
+                    let keep = if *lp {
+                        *l
+                    } else if p || r.len() > lr.len() {
+                        c
+                    } else {
+                        *l
+                    };
+                    let u = lr.start.min(r.start)..lr.end.max(r.end);
+                    *l = if u.is_empty() {
+                        keep
+                    } else if keep.anchor.is_some_and(|a| a > keep.at) {
+                        Caret { at: u.start, anchor: Some(u.end) }
+                    } else {
+                        Caret { at: u.end, anchor: Some(u.start) }
+                    };
+                    *lp |= p;
+                    continue;
+                }
+            }
+            out.push((c, p));
+        }
+        let i = out.iter().rposition(|(_, p)| *p).unwrap_or(out.len() - 1);
+        let (primary, _) = out.remove(i);
+        self.caret = primary.at;
+        self.anchor = primary.anchor;
+        self.extra = out.into_iter().map(|(c, _)| c).collect();
+    }
+
+    /// `key` with other carets; `None` for the keys that act as with one caret (Undo, Redo,
+    /// Select All).
+    fn key_multi(&mut self, k: &EditKey, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> Option<EditOut> {
+        self.goal_x = None;
+        // The piece a delete takes at caret `c`: its selection, else from it to `to`.
+        fn del(c: &Caret, to: usize) -> (Range<usize>, String) {
+            let r = c.range();
+            (if r.is_empty() { c.at.min(to)..c.at.max(to) } else { r }, String::new())
+        }
+        Some(match k {
+            EditKey::Text(s) | EditKey::Paste(s) if s.is_empty() => EditOut::Kept,
+            EditKey::Text(s) | EditKey::Paste(s) => {
+                let s = plain_line_ends(s);
+                self.edit_each(|_, c| (c.range(), s.clone()))
+            }
+            EditKey::Enter => self.edit_each(|_, c| (c.range(), "\n".to_string())),
+            EditKey::Tab => self.edit_each(|_, c| (c.range(), "\t".to_string())),
+            EditKey::Backspace => self.edit_each(|t, c| del(c, prev_boundary(t, c.at))),
+            EditKey::Delete => self.edit_each(|t, c| del(c, next_boundary(t, c.at))),
+            EditKey::DeleteWordBack => self.edit_each(|t, c| del(c, word_left(t, c.at))),
+            EditKey::DeleteWordForward => self.edit_each(|t, c| del(c, word_right(t, c.at))),
+            // `MCTV:1901-1931`: every caret's piece, even an empty one.
+            EditKey::Copy => EditOut::Copied(self.pieces().join("\n")),
+            EditKey::Cut => {
+                let cut = self.pieces().join("\n");
+                self.edit_each(|_, c| (c.range(), String::new()));
+                EditOut::Copied(cut)
+            }
+            EditKey::Up | EditKey::Down => self.vertical_each(matches!(k, EditKey::Down), shift, lines, width),
+            EditKey::Undo | EditKey::Redo | EditKey::SelectAll => return None,
+            _ => {
+                // Every other move: the one-caret move at each caret.
+                let end = self.at_line_end;
+                let mut moved = Vec::new();
+                let mut primary_end = false;
+                for (c, p) in self.all() {
+                    self.caret = c.at;
+                    self.anchor = c.anchor;
+                    self.at_line_end = p && end;
+                    self.goal_x = None;
+                    self.key_one(k.clone(), shift, lines, width);
+                    if p {
+                        primary_end = self.at_line_end;
+                    }
+                    moved.push((Caret { at: self.caret, anchor: self.anchor }, p));
+                }
+                self.set_all(moved);
+                self.at_line_end = primary_end;
+                self.goal_x = None;
+                EditOut::Moved
+            }
+        })
+    }
+
+    /// Each caret's piece of text (empty for a plain caret), in text order.
+    fn pieces(&self) -> Vec<String> {
+        self.all().iter().map(|(c, _)| self.text[c.range()].to_string()).collect()
+    }
+
+    /// One edit at every caret, from `f` (the text and the caret give the range to replace and
+    /// its replacement), as one undo step. Delete ranges that overlap merge (`MCTV`
+    /// `deleteRanges` clips them), and so do their carets.
+    fn edit_each(&mut self, f: impl Fn(&str, &Caret) -> (Range<usize>, String)) -> EditOut {
+        let mut parts: Vec<(Range<usize>, String, bool)> = Vec::new();
+        for (c, p) in self.all() {
+            let (mut r, s) = f(&self.text, &c);
+            let mut p = p;
+            while let Some(last) = parts.last() {
+                if r.start >= last.0.end {
+                    break;
+                }
+                let (lr, _, lp) = parts.pop().expect("last");
+                r = lr.start.min(r.start)..lr.end.max(r.end);
+                p |= lp;
+            }
+            parts.push((r, s, p));
+        }
+        let primary = parts.iter().position(|(_, _, p)| *p).unwrap_or(parts.len() - 1);
+        self.edit_all(parts.into_iter().map(|(r, s, _)| (r, s)).collect(), primary)
+    }
+
+    /// Up or Down with other carets (`MCTV:1123-1131,1192-1216,1256-1296`): each caret to the
+    /// visual line above or below at its own x (no goal x), Shift extending its selection; a
+    /// caret with no line there is dropped. When every caret is dropped the primary stays,
+    /// alone.
+    fn vertical_each(&mut self, down: bool, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
+        let mut moved = Vec::new();
+        for (c, p) in self.all() {
+            let (line, x) = caret_pos(&self.text, lines, c.at, p && self.at_line_end, width);
+            let target = if down { Some(line + 1).filter(|&t| t < lines.len()) } else { line.checked_sub(1) };
+            let Some(target) = target else { continue };
+            let at = index_at(&self.text, lines, target, x, width);
+            let anchor = if shift { Some(c.anchor.unwrap_or(c.at)) } else { None };
+            moved.push((Caret { at, anchor }, p));
+        }
+        if moved.is_empty() {
+            self.extra.clear();
+        } else {
+            self.set_all(moved);
+        }
+        self.at_line_end = false;
+        EditOut::Moved
+    }
+
+    /// Every caret or selection in text order, an empty range for a plain caret.
+    pub fn carets(&self) -> Vec<Range<usize>> {
+        self.all().iter().map(|(c, _)| c.range()).collect()
+    }
+
+    /// Whether there is more than one caret.
+    pub fn has_extra(&self) -> bool {
+        !self.extra.is_empty()
+    }
+
+    /// Ctrl+Shift+Down (`below`) or Ctrl+Shift+Up (`MCTV:1163-1183`): a caret on the visual line
+    /// below or above the primary's start, at its x, which becomes the primary. False (and
+    /// nothing added) when there is no such line.
+    pub fn add_caret(&mut self, below: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> bool {
+        let start = self.anchor.map_or(self.caret, |a| a.min(self.caret));
+        let (line, x) = caret_pos(&self.text, lines, start, self.at_line_end && start == self.caret, width);
+        let target = if below { Some(line + 1).filter(|&t| t < lines.len()) } else { line.checked_sub(1) };
+        let Some(target) = target else { return false };
+        let at = index_at(&self.text, lines, target, x, width);
+        let mut all: Vec<(Caret, bool)> = self.all().into_iter().map(|(c, _)| (c, false)).collect();
+        all.push((Caret { at, anchor: None }, true));
+        self.set_all(all);
+        self.at_line_end = self.caret == at && ends_line(lines, target, at);
+        self.goal_x = None;
+        true
+    }
+
+    /// Ctrl+Shift+click at byte index `at` (`MCTV:352-368`): adds a plain caret there, the
+    /// others staying; the last caret in text order is then the primary (`MCTV` sorts them).
+    pub fn click_add(&mut self, at: usize) {
+        let at = floor_boundary(&self.text, at);
+        let mut all: Vec<(Caret, bool)> = self.all().into_iter().map(|(c, _)| (c, false)).collect();
+        all.push((Caret { at, anchor: None }, false));
+        self.set_all(all);
+        self.at_line_end = false;
+        self.goal_x = None;
+        self.last_click = None;
+    }
+
+    /// Alt+drag from `from` to `to`, each a (visual line, x) (`MCTV:316-335`): replaces every
+    /// caret with one range per visual line between the two, from `index_at` of the start x to
+    /// `index_at` of the end x (a caret where they meet); the last line's is the primary.
+    pub fn box_select(&mut self, from: (usize, f32), to: (usize, f32), lines: &[VisualLine], text_width: &dyn Fn(&str) -> f32) {
+        let Some(last) = lines.len().checked_sub(1) else { return };
+        let (top, bottom) = (from.0.min(to.0).min(last), from.0.max(to.0).min(last));
+        let v = (top..=bottom)
+            .map(|line| {
+                let a = index_at(&self.text, lines, line, from.1, text_width);
+                let b = index_at(&self.text, lines, line, to.1, text_width);
+                (Caret { at: b, anchor: (a != b).then_some(a) }, false)
+            })
+            .collect();
+        self.set_all(v);
+        self.at_line_end = false;
+        self.goal_x = None;
+        self.last_click = None;
+    }
+
+    /// Only the primary caret stays (Esc, `MCTV:1933-1940` keeps the last).
+    pub fn collapse_extra(&mut self) {
+        self.extra.clear();
+    }
+
+    /// Sets every caret (any order, clamped to the text); the last given is the primary. An
+    /// empty slice changes nothing.
+    pub fn set_carets(&mut self, carets: &[Caret]) {
+        if carets.is_empty() {
+            return;
+        }
+        let n = carets.len();
+        let v = carets
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let at = floor_boundary(&self.text, c.at);
+                let anchor = c.anchor.map(|a| floor_boundary(&self.text, a));
+                (Caret { at, anchor }, i + 1 == n)
+            })
+            .collect();
+        self.set_all(v);
+        self.at_line_end = false;
+        self.goal_x = None;
+    }
+
+    /// A multi-caret copy (`MCTV:1901-1919`): every caret's piece joined with "\n", and each
+    /// piece's line count, for `paste_groups`. `None` with one caret.
+    pub fn copy_groups(&self) -> Option<(String, Vec<usize>)> {
+        if self.extra.is_empty() {
+            return None;
+        }
+        let pieces = self.pieces();
+        let counts = pieces.iter().map(|p| p.split('\n').count()).collect();
+        Some((pieces.join("\n"), counts))
+    }
+
+    /// Pastes a multi-caret copy (`MCTV:1832-1899`) as one undo step: `text`'s lines, taken
+    /// `groups[i]` at a time, replace caret `i`'s selection in text order; carets past the
+    /// groups keep their text and collapse to their ends; groups past the carets go in at the
+    /// visual line below the last caret's start at its x, each further one on the line below
+    /// that at the x it landed at, and on a line appended to the text when no line is left.
+    /// Every caret lands after its group; with groups added the last is the primary. Groups
+    /// that do not add up to `text`'s lines paste `text` at each caret as plain text.
+    pub fn paste_groups(&mut self, text: &str, groups: &[usize], lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
+        let text = plain_line_ends(text);
+        let all_lines: Vec<&str> = text.split('\n').collect();
+        if groups.is_empty() || groups.contains(&0) || groups.iter().sum::<usize>() != all_lines.len() {
+            return self.key(EditKey::Paste(text), false, lines, width);
+        }
+        let mut values = Vec::new();
+        let mut i = 0;
+        for &n in groups {
+            values.push(all_lines[i..i + n].join("\n"));
+            i += n;
+        }
+        self.goal_x = None;
+        let all = self.all();
+        let mut primary = all.iter().position(|(_, p)| *p).unwrap_or(0);
+        let mut parts: Vec<(Range<usize>, String)> = all
+            .iter()
+            .enumerate()
+            .map(|(i, (c, _))| match values.get(i) {
+                Some(v) => (c.range(), v.clone()),
+                None => (c.range().end..c.range().end, String::new()),
+            })
+            .collect();
+        if values.len() > all.len() {
+            let last = all[all.len() - 1].0.range();
+            let (mut line, mut x) = caret_pos(&self.text, lines, last.start, false, width);
+            let mut floor = last.end;
+            for v in &values[all.len()..] {
+                let mut placed = None;
+                while line + 1 < lines.len() {
+                    line += 1;
+                    let at = index_at(&self.text, lines, line, x, width);
+                    if at >= floor {
+                        placed = Some(at);
+                        break;
+                    }
+                }
+                match placed {
+                    Some(at) => {
+                        x = width(&self.text[lines[line].start..at]);
+                        floor = at;
+                        parts.push((at..at, v.clone()));
+                    }
+                    None => {
+                        let end = self.text.len();
+                        parts.push((end..end, format!("\n{v}")));
+                    }
+                }
+            }
+            primary = parts.len() - 1;
+        }
+        self.edit_all(parts, primary)
     }
 
     /// Moves the caret, extending the selection when `extend`, else dropping it.
@@ -349,20 +763,30 @@ impl TextEdit {
 /// the word alone is too wide (as the toolbelt's `wrap_words` breaks a label). Every line
 /// holds at least one character, and empty text is one empty line.
 pub fn wrap(text: &str, max_w: f32, width: &dyn Fn(&str) -> f32) -> Vec<VisualLine> {
+    wrap_indented(text, max_w, 0.0, width)
+}
+
+/// `wrap` with the first visual line starting `first_indent` in (the composer's prompt
+/// prefix), so it has `max_w - first_indent` of room; every later line has `max_w`. The
+/// caller adds the indent to line 0's x when it draws or hit-tests (`caret_pos` and
+/// `index_at` measure from each line's start).
+pub fn wrap_indented(text: &str, max_w: f32, first_indent: f32, width: &dyn Fn(&str) -> f32) -> Vec<VisualLine> {
     let mut lines = Vec::new();
     let mut hard = 0;
-    for part in text.split('\n') {
-        wrap_hard(text, hard, hard + part.len(), max_w, width, &mut lines);
+    for (i, part) in text.split('\n').enumerate() {
+        let indent = if i == 0 { first_indent } else { 0.0 };
+        wrap_hard(text, hard, hard + part.len(), max_w, indent, width, &mut lines);
         hard += part.len() + 1;
     }
     lines
 }
 
-/// One hard line `text[start..end]` into `lines`.
-fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
+/// One hard line `text[start..end]` into `lines`, its first visual line `indent` in.
+fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
     let mut line = start;
+    let mut room = max_w - indent;
     loop {
-        if width(text[line..end].trim_end_matches(' ')) <= max_w {
+        if width(text[line..end].trim_end_matches(' ')) <= room {
             lines.push(VisualLine { start: line, end });
             return;
         }
@@ -378,7 +802,7 @@ fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, width: &dyn Fn(&s
                 if after >= end {
                     break;
                 }
-            } else if width(&text[line..space]) <= max_w {
+            } else if width(&text[line..space]) <= room {
                 cut = Some(after);
                 i = after;
                 if after >= end {
@@ -393,7 +817,7 @@ fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, width: &dyn Fn(&s
             let mut c = next_boundary(text, line);
             while c < end {
                 let n = next_boundary(text, c);
-                if width(&text[line..n]) > max_w {
+                if width(&text[line..n]) > room {
                     break;
                 }
                 c = n;
@@ -406,6 +830,7 @@ fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, width: &dyn Fn(&s
             return;
         }
         line = cut;
+        room = max_w;
     }
 }
 
@@ -1015,5 +1440,178 @@ mod tests {
         assert_eq!(ctrl_nav(&EditKey::End), Some(EditKey::TextEnd));
         assert_eq!(ctrl_nav(&EditKey::PageDown), Some(EditKey::PageDown));
         assert_eq!(ctrl_nav(&EditKey::Up), None);
+    }
+
+    #[test]
+    fn carets_follow_iterm2() {
+        // Ctrl+Shift+Down twice from the caret after "a": one caret per line at its x
+        // (`MCTV:1163-1183`); none past the last line.
+        let mut e = TextEdit::default();
+        e.load("ab\ncd\nef");
+        e.click(1, false, false, 0, 500);
+        let lines = wrap(&e.text, 1000.0, &w);
+        assert!(!e.has_extra());
+        assert!(e.add_caret(true, &lines, &w));
+        assert!(e.add_caret(true, &lines, &w));
+        assert_eq!(e.carets(), vec![1..1, 4..4, 7..7]);
+        assert!(e.has_extra());
+        assert_eq!(e.extra, vec![Caret { at: 1, anchor: None }, Caret { at: 4, anchor: None }]);
+        // The primary is the last added.
+        assert_eq!((e.caret, e.anchor), (7, None));
+        assert!(!e.add_caret(true, &lines, &w));
+        assert_eq!(e.carets().len(), 3);
+
+        // Typing, Backspace, Left and Shift+Right act at every caret.
+        assert_eq!(press(&mut e, EditKey::Text("X".into()), false, 1000.0), EditOut::Changed);
+        assert_eq!(e.text, "aXb\ncXd\neXf");
+        assert_eq!(e.carets(), vec![2..2, 6..6, 10..10]);
+        assert_eq!(press(&mut e, EditKey::Backspace, false, 1000.0), EditOut::Changed);
+        assert_eq!(e.text, "ab\ncd\nef");
+        assert_eq!(e.carets(), vec![1..1, 4..4, 7..7]);
+        assert_eq!(press(&mut e, EditKey::Left, false, 1000.0), EditOut::Moved);
+        assert_eq!(e.carets(), vec![0..0, 3..3, 6..6]);
+        press(&mut e, EditKey::Right, true, 1000.0);
+        assert_eq!(e.carets(), vec![0..1, 3..4, 6..7]);
+        assert_eq!(press(&mut e, EditKey::Copy, false, 1000.0), EditOut::Copied("a\nc\ne".into()));
+        // A plain Right collapses each selection to its end (Windows rules, per caret).
+        press(&mut e, EditKey::Right, false, 1000.0);
+        assert_eq!(e.carets(), vec![1..1, 4..4, 7..7]);
+        // Carets meeting merge: Backspace twice from 1 and 2 leaves one caret at 0.
+        e.set_carets(&[Caret { at: 1, anchor: None }, Caret { at: 2, anchor: None }]);
+        press(&mut e, EditKey::Backspace, false, 1000.0);
+        assert_eq!((e.text.as_str(), e.carets()), ("\ncd\nef", vec![0..0]));
+        assert!(!e.has_extra());
+        press(&mut e, EditKey::Undo, false, 1000.0);
+        assert_eq!((e.text.as_str(), e.carets()), ("ab\ncd\nef", vec![1..1, 2..2]));
+
+        // A plain Up or Down with extras moves each by a visual line at its own x; a caret with
+        // no line to go to is dropped (`MCTV:1123-1131,1192-1216`, `modifyRanges` compactMap).
+        let lines = wrap(&e.text, 1000.0, &w);
+        e.set_carets(&[Caret { at: 1, anchor: None }, Caret { at: 4, anchor: None }]);
+        assert_eq!(press(&mut e, EditKey::Down, false, 1000.0), EditOut::Moved);
+        assert_eq!(e.carets(), vec![4..4, 7..7]);
+        press(&mut e, EditKey::Up, false, 1000.0);
+        assert_eq!(e.carets(), vec![1..1, 4..4]);
+        press(&mut e, EditKey::Down, false, 1000.0);
+        press(&mut e, EditKey::Down, false, 1000.0);
+        assert_eq!((e.carets(), e.has_extra()), (vec![7..7], false));
+
+        // Ctrl+Shift+Up on the first line adds nothing; a plain click collapses to one caret.
+        e.click(1, false, false, 1_000, 500);
+        assert!(!e.add_caret(false, &lines, &w));
+        assert!(e.add_caret(true, &lines, &w));
+        assert!(e.add_caret(false, &lines, &w));
+        assert_eq!(e.carets(), vec![1..1, 4..4]);
+        assert_eq!(e.caret, 1);
+        e.click(5, false, false, 2_000, 500);
+        assert_eq!((e.carets(), e.has_extra()), (vec![5..5], false));
+
+        // Ctrl+Shift+click adds a caret without moving the others; the last in text order
+        // is the primary (`MCTV:352-368` sorts).
+        e.click(1, false, false, 3_000, 500);
+        e.click_add(7);
+        assert_eq!(e.carets(), vec![1..1, 7..7]);
+        e.click_add(4);
+        assert_eq!(e.carets(), vec![1..1, 4..4, 7..7]);
+        assert_eq!(e.caret, 7);
+        e.click_add(4);
+        assert_eq!(e.carets().len(), 3);
+
+        // Enter and Tab insert at each caret; one Undo takes back a whole multi-caret edit.
+        press(&mut e, EditKey::Enter, false, 1000.0);
+        assert_eq!(e.text, "a\nb\nc\nd\ne\nf");
+        assert_eq!(e.carets(), vec![2..2, 6..6, 10..10]);
+        press(&mut e, EditKey::Tab, false, 1000.0);
+        assert_eq!(e.text, "a\n\tb\nc\n\td\ne\n\tf");
+        assert_eq!(e.carets(), vec![3..3, 8..8, 13..13]);
+        assert_eq!(press(&mut e, EditKey::Undo, false, 1000.0), EditOut::Changed);
+        assert_eq!((e.text.as_str(), e.carets()), ("a\nb\nc\nd\ne\nf", vec![2..2, 6..6, 10..10]));
+        press(&mut e, EditKey::Undo, false, 1000.0);
+        assert_eq!((e.text.as_str(), e.carets()), ("ab\ncd\nef", vec![1..1, 4..4, 7..7]));
+        assert_eq!(press(&mut e, EditKey::Redo, false, 1000.0), EditOut::Changed);
+        assert_eq!((e.text.as_str(), e.carets()), ("a\nb\nc\nd\ne\nf", vec![2..2, 6..6, 10..10]));
+
+        // Cut takes every selection, joined by line ends; Esc's collapse keeps the primary.
+        e.load("ab\ncd");
+        e.set_carets(&[Caret { at: 1, anchor: Some(0) }, Caret { at: 4, anchor: Some(3) }]);
+        assert_eq!(press(&mut e, EditKey::Cut, false, 1000.0), EditOut::Copied("a\nc".into()));
+        assert_eq!((e.text.as_str(), e.carets()), ("b\nd", vec![0..0, 2..2]));
+        e.collapse_extra();
+        assert_eq!((e.carets(), e.caret), (vec![2..2], 2));
+        // Select All leaves one selection.
+        e.set_carets(&[Caret { at: 0, anchor: None }, Caret { at: 2, anchor: None }]);
+        press(&mut e, EditKey::SelectAll, false, 1000.0);
+        assert_eq!((e.carets(), e.has_extra()), (vec![0..3], false));
+    }
+
+    #[test]
+    fn box_select_and_groups_follow_iterm2() {
+        // Alt+drag from line 0 at one cell to line 2 at two cells: one range per visual line
+        // between the two x (`MCTV:316-335`, `split`).
+        let mut e = TextEdit::default();
+        e.load("ab\ncd\nef");
+        let lines = wrap(&e.text, 1000.0, &w);
+        e.box_select((0, 10.0), (2, 20.0), &lines, &w);
+        assert_eq!(e.carets(), vec![1..2, 4..5, 7..8]);
+        // A multi-caret copy: the pieces joined with "\n" and each piece's line count
+        // (`MCTV:1901-1919`); one caret has no groups.
+        assert_eq!(e.copy_groups(), Some(("b\nd\nf".to_string(), vec![1, 1, 1])));
+        assert_eq!(press(&mut e, EditKey::Copy, false, 1000.0), EditOut::Copied("b\nd\nf".into()));
+        // Pasting them back replaces each selection in order, one undo step.
+        assert_eq!(e.paste_groups("1\n2\n3", &[1, 1, 1], &lines, &w), EditOut::Changed);
+        assert_eq!((e.text.as_str(), e.carets()), ("a1\nc2\ne3", vec![2..2, 5..5, 8..8]));
+        press(&mut e, EditKey::Undo, false, 1000.0);
+        assert_eq!((e.text.as_str(), e.carets()), ("ab\ncd\nef", vec![1..2, 4..5, 7..8]));
+        e.click(0, false, false, 0, 500);
+        assert_eq!(e.copy_groups(), None);
+        // Dragging from right to left and bottom to top selects the same box.
+        e.box_select((2, 20.0), (0, 10.0), &lines, &w);
+        assert_eq!(e.carets(), vec![1..2, 4..5, 7..8]);
+        // A zero-width box is a column of carets.
+        e.box_select((0, 10.0), (1, 10.0), &lines, &w);
+        assert_eq!(e.carets(), vec![1..1, 4..4]);
+
+        // More groups than carets: the rest go on the lines below the last caret at its x,
+        // then on lines appended at the end (`MCTV:1866-1896`).
+        e.load("ab\ncd\nef");
+        e.box_select((0, 10.0), (1, 20.0), &lines, &w);
+        e.paste_groups("1\n2\n3\n4", &[1, 1, 1, 1], &lines, &w);
+        assert_eq!(e.text, "a1\nc2\ne3f\n4");
+        assert_eq!(e.carets(), vec![2..2, 5..5, 8..8, 11..11]);
+        assert_eq!(e.caret, 11);
+        press(&mut e, EditKey::Undo, false, 1000.0);
+        assert_eq!((e.text.as_str(), e.carets()), ("ab\ncd\nef", vec![1..2, 4..5]));
+        // Fewer groups: the other carets keep their text and collapse to their ends.
+        e.box_select((0, 10.0), (2, 20.0), &lines, &w);
+        e.paste_groups("1\n2", &[1, 1], &lines, &w);
+        assert_eq!((e.text.as_str(), e.carets()), ("a1\nc2\nef", vec![2..2, 5..5, 8..8]));
+        // A group of two lines goes to one caret.
+        e.load("ab\ncd");
+        let lines = wrap(&e.text, 1000.0, &w);
+        e.box_select((0, 10.0), (1, 20.0), &lines, &w);
+        assert_eq!(e.copy_groups(), Some(("b\nd".to_string(), vec![1, 1])));
+        e.paste_groups("x\ny\nz", &[2, 1], &lines, &w);
+        assert_eq!(e.text, "ax\ny\ncz");
+        e.set_carets(&[Caret { at: 0, anchor: Some(4) }, Caret { at: 6, anchor: Some(7) }]);
+        assert_eq!(e.copy_groups(), Some(("ax\ny\nz".to_string(), vec![2, 1])));
+        // Groups that do not add up to the text's lines paste it as plain text at each caret.
+        e.load("ab\ncd");
+        e.box_select((0, 10.0), (1, 10.0), &lines, &w);
+        e.paste_groups("q", &[1, 1], &lines, &w);
+        assert_eq!(e.text, "aqb\ncqd");
+    }
+
+    #[test]
+    fn indented_wrap_follows_notes_rules() {
+        // The first line starts two characters in, leaving room for two.
+        assert_eq!(wrap_indented("aaaa bbbb", 40.0, 20.0, &w), vec![vl(0, 2), vl(2, 5), vl(5, 9)]);
+        assert_eq!(wrap_indented("ab cd", 40.0, 10.0, &w), vec![vl(0, 3), vl(3, 5)]);
+        // Only the first line is indented, not the first line of each paragraph.
+        assert_eq!(wrap_indented("aaaa\nbbbb", 40.0, 20.0, &w), vec![vl(0, 2), vl(2, 4), vl(5, 9)]);
+        // No room at all still holds one character.
+        assert_eq!(wrap_indented("ab", 40.0, 50.0, &w), vec![vl(0, 1), vl(1, 2)]);
+        for t in ["aaaa bbbb", "abcdefghij", "", "a\n", "ab cd ef", "aaaa bbbb\nc\ndddd"] {
+            assert_eq!(wrap_indented(t, 40.0, 0.0, &w), wrap(t, 40.0, &w), "{t:?}");
+        }
     }
 }
