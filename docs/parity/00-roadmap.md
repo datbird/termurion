@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 168 | 125 | 21 |
-| `02-global-settings.md` | 820 | 233 | 72 | 515 |
-| `03-features-and-menus.md` | 643 | 391 | 34 | 218 |
-| Total | 1,777 | 792 | 231 | 754 |
+| `02-global-settings.md` | 820 | 237 | 71 | 512 |
+| `03-features-and-menus.md` | 643 | 396 | 35 | 212 |
+| Total | 1,777 | 801 | 231 | 745 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -90,7 +90,16 @@ Call Script Function and the Composer as stubs until milestone 11 and the Compos
 text component shorter by iTerm2's width variants as the bar narrows, the temporary search, filter
 and progress components, the tmux status bar (status-left and status-right on the 8f option
 monitors), and Save lines to scrollback with status bar present (alacritty_terminal patch 14).
-Battery, CPU, Memory, Network and git state are milestone 9i.
+Milestone 9i: the four graph components (Battery Level, CPU Utilization, Memory
+Utilization, Network Throughput) with Windows samplers (GetSystemPowerStatus, GetSystemTimes,
+GlobalMemoryStatusEx, GetIfTable2) behind iTerm2's math, a 60-sample sparkline drawn as pixel-column
+quads with the animation knob, and iTerm2's kept quirks (Battery's charging-icon reserve, CPU's
+since-boot first sample, Network's unclamped rates); and the git state component, polled off the
+UI thread with the git CLI standing in for libgit2 (porcelain v2 status, rev-parse for the
+repo-operation files), hardened against hostile repo config and UNC paths anywhere on the way, with
+the timeout warning, iTerm2's click menu (Commit, Add & Commit, Stash, Log, Push, Pull, Check out,
+Show Debug Info) run through single-use windows and a small tandem-git.exe wrapper, a Log popover,
+and the user.git* session variables for a remote host.
 
 ## Order
 

@@ -1,0 +1,34 @@
+Ruling: 9i parity rows are matched by title, not the 9h plan's line numbers (9g and 9h added rows) - cost if wrong: none.
+Task 1: minor (deferred): TDD RED not captured for the three registry tests (data-table change).
+Task 2: minor (deferred): NetMeter::sample divides by an unguarded elapsed time (unreachable via Meters scheduling).
+Task 2: minor (deferred): push-then-cap VecDeque pattern repeated three times.
+Task 3: Ruling: the CPU graph pads the whole history to 60 then drops one (iTerm2 CPU:78-91, SPK:196-200) - cost if wrong: none, review confirmed.
+Task 3: minor (deferred): wanted_meters rebuilds each pane's bar layout every event loop turn.
+Task 3: minor (deferred): no test of graph contents (CPU padding, Memory reserve, Network colors and ceiling, Battery charging reserve).
+Task 3: minor (deferred): tick_meters can call redraw_graph_windows twice in one tick.
+Task 4: Ruling: repo-config filter drivers are switched off with per-name -c overrides (vet_repo); global-config drivers stay trusted like plain git; mapped drive letters pass (the user already mapped and authenticated them) - cost if wrong: a global filter runs during polls; a mapped drive to a hostile server is polled.
+Task 4: Ruling: Task 5's runner must use GIT_ENV/GIT_ENV_REMOVED and find_git, and report a timeout at the deadline even if the worker thread is stuck (carried into Task 5 dispatch) - cost if wrong: none.
+Task 4: Ruling: a repository whose own config defines lfs.extension.* is treated as "not a repository" for the poll (the trusted global lfs filter would run its commands) - cost if wrong: such repos show no git state.
+Task 4: Ruling: on git older than 2.44 a repository with extensions.partialClone or remote.*.promisor is treated as "not a repository" (no GIT_NO_LAZY_FETCH there) - cost if wrong: partial clones show no git state on old git.
+Task 4: Ruling: branch names starting with "-" are never passed as git arguments (menu refuses them; also end options with --) - cost if wrong: such branches cannot be pulled or pushed from the menu.
+Task 4: minor (deferred): an empty remote branch renders "" where iTerm2 shows decorations.
+Task 4: minor (deferred): git_state.rs is 1797 lines; the config check could be its own module.
+Task 4: minor (deferred): loose objects and nested refs are not scanned for links each poll.
+Task 4: minor (deferred): recent_branches passes the full timeout, not the time left, to lazy_fetch_safe.
+Task 4: minor (deferred): an MSYS-style repo-config path key (/c/Users/...) refuses the whole repo.
+Task 4: minor (deferred, FINAL REVIEW LOOK): git_state.rs:366 is_file() on HEAD/config follows links before any link check (a working-tree HEAD linked to UNC is opened).
+Task 5: Ruling: CreateProcessW runner (suspended start, handle list) instead of std::process::Command; poll visibility follows iTerm2 VC:355 (bar view visible) - cost if wrong: none, review accepted both.
+Task 5: Ruling: the UI reports a git timeout 200 ms after the deadline (grace for the runner's own kill to land) - cost if wrong: timeouts show 0.2 s late.
+Task 5: Ruling: a path whose stuck thread is still alive keeps its flight slot (no second thread for that path) until the thread ends; new requests for it answer "timed out" at once - cost if wrong: a repo on a recovered drive waits for the old thread to end.
+Task 5: minor (deferred): bar_layout runs for every pane each loop turn and any change redraws every window.
+Task 5: minor (deferred): a cancel landing between two reads (stray handle, output over 64K) blocks the reader until the other process closes its copy.
+Task 5: minor (deferred): drain can run up to 2 x DRAIN past the deadline while the UI grace is also 200 ms, so a clean exit at the deadline can read as timed out.
+Task 5: minor (deferred): a vetoed gitSearchPath now runs a thread and stores Fetched::default (poller reads as fetched with no state).
+Task 6: Ruling: user-clicked menu commands run in a visible single-use window like iTerm2's, so they do NOT set GIT_TERMINAL_PROMPT=0 or GIT_NO_LAZY_FETCH (a push may ask for a password; a checkout in a partial clone may fetch); they keep ref safety, GIT_ENV_REMOVED and the UNC refusal. My dispatch over-applied the background poll's rules - cost if wrong: a click can prompt or fetch, as in iTerm2.
+Task 6: minor (deferred): the Log popover opens only when git log finishes (iTerm2 streams); the cap counts bytes.
+Task 6: minor (deferred): the wrapper does not re-check the repository (time-of-check gap only).
+Task 6: minor (deferred): no tests for single_use_ended, short_lived, the skipped session-ended alert, the wrapper's refusals.
+Task 6: minor (deferred): the coprocess test is timing-sensitive and failed once in a full run (passes alone and on rerun).
+Task 7: Ruling: 03:450 (it2git status variables) is set to partial, not have; the git state component reads user.git* directly, but the shell hook script that other consumers would use to publish them is still shell integration's to write - cost if wrong: none, matches the brief's own wording.
+Task 7: Ruling: the checklist's icon-glyph, graph-look, and animation checks are left as open boxes for the controller; no task ran the GUI on EXTREME to verify them (Task 1 and Task 3 both deferred this explicitly) - cost if wrong: none, the checklist says so.
+Task 7: Ruling: Task 4's FINAL REVIEW LOOK minor (git_state.rs's bare-repository check calls is_file() on HEAD and config before any link check, so a working-tree HEAD symlinked to a UNC path is opened) is reported here as a live gap rather than fixed, since this task is docs-only - cost if wrong: none for docs; the gap itself is unchanged and still open.

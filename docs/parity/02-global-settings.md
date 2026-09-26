@@ -741,10 +741,10 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | dynamicProfilesPath | dynamicProfilesPath (string, default @"") | Path to folder with dynamic profiles. | missing |  |
 | dynamicProfilesNotificationLatency | dynamicProfilesNotificationLatency (float, default 0.1) | Delay between detecting a change to dynamic profiles and acting on it. | missing |  |
 | addDynamicTagToDynamicProfiles | addDynamicTagToDynamicProfiles (bool, default NO) | Add a 'Dynamic' tag to dynamic profiles. | missing |  |
-| gitSearchPath | gitSearchPath (string, default @"") | $PATH used when running git for the status bar component. | missing | Milestone 9i (the git status bar component). |
+| gitSearchPath | gitSearchPath (string, default @"") | $PATH used when running git for the status bar component. | have | Milestone 9i: `;`-separated, with `git.exe` appended to the first entry (a UNC entry is refused); empty means git from PATH. |
 | screenshotMaxPixelHeight | screenshotMaxPixelHeight (int, default 30000) | Maximum pixel height for a single screenshot file. | missing |  |
 | screenshotSaveLocation | screenshotSaveLocation (string, default @"") | Folder where the “Save” button in the screenshot window writes files. | have | Milestone 5e, Advanced > General. |
-| gitTimeout | gitTimeout (float, default 4) | Timeout in seconds when running git for the status bar component. | missing | Milestone 9i (the git status bar component). |
+| gitTimeout | gitTimeout (float, default 4) | Timeout in seconds when running git for the status bar component. | have | Milestone 9i: truncated to whole seconds with a floor of 1 (iTerm2's helper takes it as an int); used for git status, the repo-operation check, and recent branches. |
 | preferredBaseDir | preferredBaseDir (string, default @"") | Folder for config files. | missing |  |
 | maximumNumberOfTriggerCommands | maximumNumberOfTriggerCommands (int, default 16) | Maximum number of trigger-launched commands that can run at once. | missing |  |
 | smartSelectionRadius | smartSelectionRadius (int, default 2) | Maximum number of lines before and after the click location to include in smart selection. | partial | Tandem uses iTerm2's default; the Advanced pane that sets it comes in milestone 13. |
@@ -758,7 +758,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | performSQLiteIntegrityCheck | performSQLiteIntegrityCheck (bool, default YES) | Perform restorable state integrity checks? | missing |  |
 | lastpassGroups | lastpassGroups (string, default @"") | Comma-separated list of LastPass groups for the password manager to look in for passwords. | missing |  |
 | onePasswordAccount | onePasswordAccount (string, default @"") | 1Password account name. | missing |  |
-| excludeUtunFromNetworkUtilization | excludeUtunFromNetworkUtilization (bool, default YES) | Exclude utun interfaces from network utilization? This is useful if you use a VPN and only want to see the traffic that goes over Wi-Fi or Ethernet. | missing | Milestone 9i (the Network Throughput component). |
+| excludeUtunFromNetworkUtilization | excludeUtunFromNetworkUtilization (bool, default YES) | Exclude utun interfaces from network utilization? This is useful if you use a VPN and only want to see the traffic that goes over Wi-Fi or Ethernet. | have | Milestone 9i: excludes Windows tunnel interfaces (IF_TYPE_TUNNEL or a nonzero TunnelType) from the Network Throughput component; on by default. |
 | noSyncDownloadPrefsTimeout | noSyncDownloadPrefsTimeout (float, default 5.0) | Timeout for downloading settings. | missing |  |
 | showButtonsForSelectedCommand | showButtonsForSelectedCommand (bool, default YES) | Show buttons at the top of a selected command? When you select a command by single clicking the command line or its output, buttons are shown on the top right with options like Copy and Share. | missing |  |
 | enableZoomMenu | enableZoomMenu (bool, default YES) | Allow the standard system menu on window Zoom buttons to open? macOS has a bug that makes the app hang. | missing |  |
@@ -803,7 +803,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | showMetalFPSmeter | showMetalFPSmeter (bool, default NO) | Show FPS meter Requires Metal renderer. | partial |  |
 | allowHDR | allowHDR (bool, default NO) | Allow HDR effects When enabled, iTerm2 may render some UI effects, such as the selected tab's outline, brighter than white on an HDR-capable display. | missing |  |
 | metalRedrawPeriod | metalRedrawPeriod (float, default 0.5) | GPU renderer redraws at least this often, in seconds. | partial |  |
-| animateGraphStatusBarComponents | animateGraphStatusBarComponents (bool, default YES) | Animate graph-based status bar components? Turn this off to reduce CPU/GPU usage in WindowServer. | partial | Milestone 9i draws the graph components that read it. |
+| animateGraphStatusBarComponents | animateGraphStatusBarComponents (bool, default YES) | Animate graph-based status bar components? Turn this off to reduce CPU/GPU usage in WindowServer. | have | Milestone 9i: the four graph components slide left one sample over 1 s at 5 frames a second when on; off, a new sample replaces the sparkline at once. |
 | disableTopRightIndicators | disableTopRightIndicators (bool, default NO) | Disable indicator icons that appear in the top right of a session? This includes the following indicators: maximized pane, broadcast input, coprocess running, alert on next mark, output suppression, zoom, copy mode, and debug logging. | have | Milestone 7f: hides the broadcast, receive-only, and coprocess indicators. |
 | nativeRenderingCSSLight | nativeRenderingCSSLight (string, default @"") | Path to CSS file to customize native drawing (for light background colors). | have | Milestone 5f, Advanced > General; color, weight, and style rules. |
 | nativeRenderingCSSDark | nativeRenderingCSSDark (string, default @"") | Path to CSS file to customize native drawing (for dark background colors). | have | Milestone 5f, Advanced > General; color, weight, and style rules. |
