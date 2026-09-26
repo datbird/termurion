@@ -578,6 +578,17 @@ default = false
 help = "The existence of hotkey windows disables opening a window at startup. This opens one anyway."
 
 [[setting]]
+key = "IRMemory"
+tab = "General"
+section = "Instant Replay"
+label = "Memory usage per session (in MB)"
+type = "int"
+default = 4
+min = 0
+max = 1000
+help = "Megabytes of memory each session keeps for Instant Replay. A change applies to sessions started after it."
+
+[[setting]]
 key = "openNewWindowAtStartup"
 tab = "Advanced"
 section = "General"

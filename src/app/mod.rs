@@ -950,10 +950,29 @@ impl App {
         pane.screen.set_triggers(list, prefs);
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
+        // `IRMemory` is read once per session (`S:121-122`).
+        pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
         }
         self.panes.insert(id, pane);
+    }
+
+    /// Instant Replay: every pane, background tabs and tmux panes included, records a frame
+    /// of its own screen when it changed (iTerm2 records at each refresh of every session).
+    pub(super) fn record_replay_frames(&mut self) {
+        let now = Instant::now();
+        let now_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64);
+        for p in self.panes.values_mut() {
+            p.record_frame(now, now_us);
+        }
+    }
+
+    /// When a pane that captured a frame less than `FRAME_GAP` ago may record again, so
+    /// output that arrived in the gap is not left out of the recording until the next event.
+    fn replay_frame_due(&self) -> Option<Instant> {
+        let now = Instant::now();
+        self.panes.values().filter(|p| !p.gateway).filter_map(|p| p.replay_at.map(|t| t + crate::pane::FRAME_GAP)).filter(|t| *t > now).min()
     }
 
     /// The focused session's directory, from shell integration, when it is on this machine
@@ -2367,6 +2386,8 @@ impl ApplicationHandler<UserEvent> for App {
         let jobs_due = self.tick_jobs_tool();
         let quickly_due = self.tick_quickly();
         let composer_due = self.tick_composer();
+        self.record_replay_frames();
+        let replay_due = self.replay_frame_due();
         self.open_composer_windows(event_loop);
         self.open_jobs_confirm(event_loop);
         self.open_git_log(event_loop);
@@ -2387,7 +2408,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -2462,6 +2483,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         changed |= self.tmux_pump(event_loop);
+        self.record_replay_frames();
         for id in exited {
             // A git command's short-lived window ends without an alert.
             let short_lived = self.short_lived(id);

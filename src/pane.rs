@@ -3,8 +3,11 @@
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::TermMode;
 
+use std::time::{Duration, Instant};
+
 use crate::composer;
 use crate::conpty::Api;
+use crate::dvr;
 use crate::layout::PaneId;
 use crate::pty::{self, Notify, Pty, Read};
 use crate::screen::Screen;
@@ -19,6 +22,16 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
         return text.into_bytes();
     }
     format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', "")).into_bytes()
+}
+
+/// Instant Replay records at most one frame per pane in this time (a display refresh);
+/// damage in between waits for the next frame.
+pub const FRAME_GAP: Duration = Duration::from_millis(16);
+
+/// The recorder's capacity for `IRMemory` megabytes (`S:121-122`), within the setting's
+/// 0 to 1000.
+pub fn capacity_for(megabytes: i64) -> u64 {
+    megabytes.clamp(0, 1000) as u64 * 1024 * 1024
 }
 
 /// Shell > Toggle Buffer Input: while on, what the user sends waits here.
@@ -213,6 +226,11 @@ pub struct Pane {
     pub last_newline: Option<std::time::Instant>,
     /// The Composer (milestone 9l): a native multi-line command editor for this session.
     pub composer: composer::Composer,
+    /// Instant Replay's recording of the pane's own screen, sized from `IRMemory` when the
+    /// pane is installed.
+    pub dvr: dvr::Dvr,
+    /// When the last frame was captured.
+    pub replay_at: Option<Instant>,
 }
 
 impl Pane {
@@ -295,7 +313,7 @@ impl Pane {
     fn with_io(id: PaneId, io: Io, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = true;
-        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default() }
+        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -379,6 +397,18 @@ impl Pane {
             self.stop_coprocess();
         }
         changed
+    }
+
+    /// Records a frame of the pane's own screen, never a view (`PS:1470-1480`), when it
+    /// changed and `FRAME_GAP` has passed since the last capture. True when one was stored
+    /// (a recorder too small for the frame stores nothing). A tmux gateway has no screen.
+    pub fn record_frame(&mut self, now: Instant, now_us: i64) -> bool {
+        if self.gateway || self.replay_at.is_some_and(|t| now.saturating_duration_since(t) < FRAME_GAP) {
+            return false;
+        }
+        let Some(c) = self.own_mut().replay_capture() else { return false };
+        self.replay_at = Some(now);
+        matches!(self.dvr.append(&c.rows, &c.clean, c.cursor, now_us), dvr::Appended::Key | dvr::Appended::Diff)
     }
 
     /// What the tmux hook found since the last call.
@@ -754,6 +784,65 @@ mod tests {
         assert_eq!(p.exited, Some(0));
     }
 
+    /// `S:121-122`: the capacity is `IRMemory` megabytes; `TV:2880-2917`: a frame per
+    /// refresh with damage, from the session's own screen (`PS:1470-1480`: a replay view
+    /// records nothing while the live screen keeps recording).
+    #[test]
+    fn recording_follows_iterm2() {
+        use crate::dvr::{Decoder, Dvr};
+        assert_eq!(capacity_for(4), 4194304);
+        assert_eq!(capacity_for(-1), 0);
+        assert_eq!(capacity_for(5000), 1048576000);
+        let newest = |p: &Pane| {
+            let mut d = Decoder::default();
+            assert!(d.seek(&p.dvr, p.dvr.last_timestamp()));
+            d.rows.iter().map(|r| (0..r.len()).map(|c| r[alacritty_terminal::index::Column(c)].c).collect::<String>().trim_end().to_string()).collect::<Vec<_>>()
+        };
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.dvr = Dvr::new(capacity_for(4));
+        let t0 = Instant::now();
+        p.tmux_io().unwrap().push_output(b"hi");
+        p.pump();
+        assert!(p.record_frame(t0, 1_000));
+        assert_eq!(p.dvr.timestamps(), vec![1_000]);
+        p.tmux_io().unwrap().push_output(b" more");
+        p.pump();
+        assert!(!p.record_frame(t0 + Duration::from_millis(10), 2_000), "within 16 ms of the last frame");
+        assert_eq!(p.dvr.timestamps(), vec![1_000]);
+        assert!(p.record_frame(t0 + FRAME_GAP, 3_000), "the damage waited");
+        assert_eq!(p.dvr.timestamps(), vec![1_000, 3_000]);
+        assert_eq!(newest(&p)[0], "hi more");
+        assert!(!p.record_frame(t0 + FRAME_GAP * 2, 3_500), "nothing new");
+        assert_eq!(p.dvr.timestamps(), vec![1_000, 3_000]);
+        // A view in front: the own screen records, the view never does.
+        let mut view = Screen::new(20, 4);
+        view.feed(b"VIEW");
+        p.show_view(view);
+        let t1 = t0 + FRAME_GAP * 4;
+        assert!(!p.record_frame(t1, 4_000), "showing a view is not output");
+        p.tmux_io().unwrap().push_output(b"\r\nlive");
+        p.pump();
+        assert!(p.record_frame(t1 + FRAME_GAP, 5_000));
+        let rows = newest(&p);
+        assert_eq!(&rows[..2], &["hi more".to_string(), "live".to_string()]);
+        assert!(rows.iter().all(|r| !r.contains("VIEW")));
+        assert!(p.screen.replay_capture().is_some(), "the view's own damage was never read");
+        // No memory, no frames.
+        let mut q = Pane::tmux(6, 1, 4, 20, 4);
+        q.dvr = Dvr::new(capacity_for(0));
+        q.tmux_io().unwrap().push_output(b"hi");
+        q.pump();
+        assert!(!q.record_frame(t0, 1_000));
+        assert!(q.dvr.is_empty());
+        // A tmux gateway shows no screen of its own.
+        let mut g = Pane::tmux(7, 1, 5, 20, 4);
+        g.gateway = true;
+        g.tmux_io().unwrap().push_output(b"hi");
+        g.pump();
+        assert!(!g.record_frame(t0, 1_000));
+        assert!(g.dvr.is_empty());
+    }
+
     #[test]
     fn tmux_panes_do_not_answer_queries() {
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
@@ -765,7 +854,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default() };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -777,7 +866,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default() };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

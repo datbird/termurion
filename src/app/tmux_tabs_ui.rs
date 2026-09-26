@@ -724,6 +724,7 @@ impl App {
         pane.screen.set_triggers(list, prefs);
         pane.screen.set_scrollback_with_status_bar(profile.bool("Scrollback With Status Bar"));
         pane.profile = profile.guid();
+        pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
         // TERM is tmux's default-terminal, else "screen" (iTerm2's termType for tmux panes).
         let term = self.tmux.get(&gw).and_then(|t| t.hs.default_terminal.clone()).unwrap_or_else(|| "screen".into());
         if self.globals.bool("translateScreenToXterm") && crate::screenterm::screen_like(&term, self.globals.bool("convertItalicsToReverseVideoForTmuxBugwardsCompatible")) {

@@ -7,7 +7,7 @@ use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Row};
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::{Config, TermMode};
+use alacritty_terminal::term::{Config, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, CursorShape, CursorStyle, Handler, Processor};
 
 use crate::mouse::{Modes, Tracking};
@@ -224,6 +224,20 @@ pub struct Screen {
     pub(crate) composer_scanned: u64,
     /// The alternate screen was showing at the last check.
     composer_alt: bool,
+    /// Instant Replay: the rows and cursor of the last capture, so a line Tandem edited
+    /// outside alacritty's damage (image tiles, trigger highlights, folds) is still dirty,
+    /// and the cursor line alacritty always damages is dirty only when it changed.
+    replay_rows: Vec<Row<Cell>>,
+    replay_cursor: Option<(usize, usize)>,
+}
+
+/// One Instant Replay frame from the screen: the visible rows of the active grid, which
+/// of them are unchanged since the last capture, and the cursor (column, line).
+#[derive(Clone, Debug)]
+pub struct Capture {
+    pub rows: Vec<Row<Cell>>,
+    pub clean: Vec<bool>,
+    pub cursor: (usize, usize),
 }
 
 /// Something output asked for that the window must do.
@@ -381,6 +395,8 @@ impl Screen {
             composer_from: None,
             composer_scanned: 0,
             composer_alt: false,
+            replay_rows: Vec::new(),
+            replay_cursor: None,
         }
     }
 
@@ -421,6 +437,51 @@ impl Screen {
 
     pub fn term_mut(&mut self) -> &mut Term<Listener> {
         &mut self.term
+    }
+
+    /// Instant Replay's frame (`TV:2876-2917`, `S:683-699`): None when nothing changed since
+    /// the last capture. Dirty lines are alacritty's damage, which only this reads and resets
+    /// (reset either way). Full damage, or a view scrolled back, leaves no line clean
+    /// (iTerm2's scrolled case). The cursor's old and new lines are dirty when it moved.
+    pub fn replay_capture(&mut self) -> Option<Capture> {
+        let (lines, cols) = (self.term.screen_lines(), self.term.columns());
+        let point = self.term.grid().cursor.point;
+        let cursor = (point.column.0, (point.line.0.max(0) as usize).min(lines.saturating_sub(1)));
+        let scrolled = self.term.grid().display_offset() > 0;
+        let damaged = match self.term.damage() {
+            TermDamage::Full => None,
+            TermDamage::Partial(it) => {
+                let mut d = vec![false; lines];
+                for l in it {
+                    if let Some(x) = d.get_mut(l.line) {
+                        *x = true;
+                    }
+                }
+                Some(d)
+            }
+        };
+        self.term.reset_damage();
+        let same_size = self.replay_rows.len() == lines && self.replay_rows.first().is_some_and(|r| r.len() == cols);
+        let moved = self.replay_cursor != Some(cursor);
+        let grid = self.term.grid();
+        let clean = match damaged {
+            Some(mut d) if !scrolled && same_size => {
+                // alacritty damages the cursor's cell on every read; iTerm2 marks the cursor
+                // line only when the cursor moved, else when the line itself changed.
+                if !moved {
+                    d[cursor.1] = false;
+                    if !d.iter().any(|x| *x) && grid[Line(cursor.1 as i32)] == self.replay_rows[cursor.1] {
+                        return None;
+                    }
+                }
+                (0..lines).map(|y| !d[y] && grid[Line(y as i32)] == self.replay_rows[y]).collect()
+            }
+            _ => vec![false; lines],
+        };
+        let rows: Vec<Row<Cell>> = (0..lines).map(|y| grid[Line(y as i32)].clone()).collect();
+        self.replay_rows.clone_from(&rows);
+        self.replay_cursor = Some(cursor);
+        Some(Capture { rows, clean, cursor })
     }
 
     pub fn set_cell_px(&mut self, w: u16, h: u16) {
@@ -1710,6 +1771,42 @@ mod tests {
         s.soft_reset();
         assert!(!s.term.mode().contains(TermMode::APP_CURSOR));
         assert_eq!(row_text(&s, 0), "", "no carets from the reset itself");
+    }
+
+    /// `TV:2876-2917` with `S:683-699`: a frame when a line is dirty, the cursor's old and
+    /// new lines dirty when it moved, no clean line after a scroll, the current grid's rows
+    /// and cursor.
+    #[test]
+    fn capture_follows_iterm2() {
+        let text = |r: &Row<Cell>| (0..r.len()).map(|c| r[Column(c)].c).collect::<String>().trim_end().to_string();
+        let mut s = Screen::new(10, 4);
+        let c = s.replay_capture().expect("a new screen is all dirty");
+        assert_eq!((c.rows.len(), c.clean), (4, vec![false; 4]));
+        assert_eq!(c.cursor, (0, 0));
+        assert!(s.replay_capture().is_none(), "no output, no frame");
+        s.feed(b"\x1b[3;1Hx");
+        let c = s.replay_capture().expect("row 2 was written");
+        assert_eq!(c.clean, vec![false, true, false, true], "row 2 and the cursor's old row");
+        assert_eq!(text(&c.rows[2]), "x");
+        assert_eq!(c.cursor, (1, 2));
+        assert!(s.replay_capture().is_none(), "the cursor did not move");
+        s.feed(b"y\x08");
+        let c = s.replay_capture().expect("the cursor's row changed under a cursor that ended where it was");
+        assert_eq!(c.clean, vec![true, true, false, true]);
+        assert_eq!(text(&c.rows[2]), "xy");
+        s.feed(b"\r\n\n\nz");
+        let c = s.replay_capture().expect("output scrolled");
+        assert_eq!(c.clean, vec![false; 4], "a scroll leaves no clean line");
+        assert_eq!(text(&c.rows[3]), "z");
+        s.feed(b"\x1b[?1049h\x1b[Halt");
+        let c = s.replay_capture().expect("the alternate screen");
+        assert_eq!(text(&c.rows[0]), "alt");
+        assert_eq!(c.cursor, (3, 0), "the alternate grid's cursor");
+        assert!(c.rows[1..].iter().all(|r| text(r).is_empty()));
+        s.feed(b"\x1b[?1049l");
+        let c = s.replay_capture().expect("back to the main screen");
+        assert_eq!(text(&c.rows[3]), "z");
+        assert_eq!(c.cursor, (1, 3), "the main grid's cursor");
     }
 
     #[test]
