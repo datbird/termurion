@@ -141,6 +141,8 @@ pub mod status_popover_ui;
 pub mod shot_ui;
 #[cfg(windows)]
 pub mod global_find_ui;
+#[cfg(windows)]
+pub mod open_quickly_ui;
 
 pub mod settings_keys;
 pub mod settings_advanced;

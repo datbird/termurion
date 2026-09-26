@@ -287,7 +287,14 @@ pub fn smells_accidental(s: &Shortcut) -> bool {
 
 /// The question for such a shortcut: (heading, text).
 pub fn confirm_text(label: &str) -> (&'static str, String) {
-    ("Confirm Shortcut", format!("Are you sure you want to use \u{201c}{label}\u{201d} as a hotkey? This looks like a commonly used keystroke."))
+    confirm_text_for(label, false)
+}
+
+/// The question for such a shortcut, worded for the Open Quickly hotkey when `open_quickly`
+/// (`iTermShortcutInputView.m:236-250`, one sentence per purpose).
+pub fn confirm_text_for(label: &str, open_quickly: bool) -> (&'static str, String) {
+    let what = if open_quickly { "the Open Quickly hotkey" } else { "a hotkey" };
+    ("Confirm Shortcut", format!("Are you sure you want to use \u{201c}{label}\u{201d} as {what}? This looks like a commonly used keystroke."))
 }
 
 /// What the app hotkey (Show/hide all windows) does.
@@ -477,6 +484,9 @@ mod tests {
         let (heading, text) = confirm_text("Alt+Space");
         assert_eq!(heading, "Confirm Shortcut");
         assert_eq!(text, "Are you sure you want to use \u{201c}Alt+Space\u{201d} as a hotkey? This looks like a commonly used keystroke.");
+        let (heading, text) = confirm_text_for("Alt+O", true);
+        assert_eq!(heading, "Confirm Shortcut");
+        assert_eq!(text, "Are you sure you want to use \u{201c}Alt+O\u{201d} as the Open Quickly hotkey? This looks like a commonly used keystroke.");
     }
 
     #[test]

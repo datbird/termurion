@@ -8,7 +8,7 @@ use crate::badge::{self, BadgeLayout, BadgePrefs};
 
 impl App {
     /// The badge's text for a pane: its profile's Badge Text over the session's variables.
-    fn badge_text(&self, pane: PaneId) -> String {
+    pub(super) fn badge_text(&self, pane: PaneId) -> String {
         let Some(p) = self.panes.get(&pane) else { return String::new() };
         let template = self.store.get(&p.profile).map(|pr| pr.string("Badge Text")).unwrap_or_default();
         let s = p.own();

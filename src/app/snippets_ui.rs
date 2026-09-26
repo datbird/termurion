@@ -111,26 +111,31 @@ impl App {
         }
     }
 
+    /// Sends the snippet `guid` to the focused session, or with `option` (Alt held) opens
+    /// Advanced Paste on it (`sendSnippet:`; the menus and Open Quickly share it).
+    pub(super) fn send_snippet(&mut self, guid: &str, option: bool, event_loop: &ActiveEventLoop) {
+        let Some(s) = self.snippets.snippets.iter().find(|s| s.guid == guid).cloned() else { return };
+        let text = keyaction::expand(&s.value, s.escaping);
+        match self.focused_id() {
+            // iTerm2 puts the escaped text on the pasteboard and opens Advanced Paste on it.
+            Some(pane) if option => {
+                if let Some(cb) = self.clipboard.as_mut() {
+                    if let Err(e) = cb.set_text(text) {
+                        return self.banners.set("clipboard", format!("Could not copy: {e}"));
+                    }
+                }
+                self.open_advanced_paste(event_loop, pane, None);
+            }
+            Some(_) => self.send_to_focused(text.as_bytes()),
+            None => {}
+        }
+    }
+
     /// A pick from Edit > Snippets or Edit > Actions. False for other menu ids.
     pub(super) fn snippet_or_action_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         if let Some(guid) = id.strip_prefix(SNIPPET_ID) {
-            let Some(s) = self.snippets.snippets.iter().find(|s| s.guid == guid).cloned() else { return true };
-            let text = keyaction::expand(&s.value, s.escaping);
             let option = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
-            match self.focused_id() {
-                // iTerm2 puts the escaped text on the pasteboard and opens Advanced Paste on it.
-                Some(pane) if option => {
-                    if let Some(cb) = self.clipboard.as_mut() {
-                        if let Err(e) = cb.set_text(text) {
-                            self.banners.set("clipboard", format!("Could not copy: {e}"));
-                            return true;
-                        }
-                    }
-                    self.open_advanced_paste(event_loop, pane, None);
-                }
-                Some(_) => self.send_to_focused(text.as_bytes()),
-                None => {}
-            }
+            self.send_snippet(guid, option, event_loop);
             return true;
         }
         if let Some(n) = id.strip_prefix(ACTION_ID).and_then(|n| n.parse::<usize>().ok()) {

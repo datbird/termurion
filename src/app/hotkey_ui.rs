@@ -39,6 +39,8 @@ impl HotkeyWin {
 
 /// The id of the app hotkey (Show/hide all windows); profile hotkeys count from 1.
 pub(super) const APP_HOTKEY: u32 = 0;
+/// The id of the Open Quickly hotkey (Settings > Keys > Hotkey).
+pub(super) const OPEN_QUICKLY_HOTKEY: u32 = u32::MAX;
 
 fn cloak(hwnd: isize, on: bool) {
     use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
@@ -51,7 +53,7 @@ pub(super) fn tandem_in_front() -> bool {
     ours(foreground())
 }
 
-fn foreground() -> isize {
+pub(super) fn foreground() -> isize {
     unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() as isize }
 }
 
@@ -80,6 +82,10 @@ impl App {
                 chords.push((APP_HOTKEY, c));
             }
         }
+        // Registered whenever it is set (`iTermOpenQuicklyHotKeyProvider`: no leader, no switch).
+        if let Some(c) = crate::settings_hotkey::quickly_hotkey(&self.globals).as_ref().and_then(hotkey::chord) {
+            chords.push((OPEN_QUICKLY_HOTKEY, c));
+        }
         for (guid, prefs) in self.hotkey_prefs() {
             if !prefs.active() {
                 continue;
@@ -98,7 +104,11 @@ impl App {
             Ok(results) => {
                 for (id, r) in results {
                     if let Err(e) = r {
-                        let owner = if id == APP_HOTKEY { "App Hotkey".to_string() } else { self.hotkey_ids.get(id as usize - 1).cloned().unwrap_or_default() };
+                        let owner = match id {
+                            APP_HOTKEY => "App Hotkey".to_string(),
+                            OPEN_QUICKLY_HOTKEY => "Open Quickly Hotkey".to_string(),
+                            _ => self.hotkey_ids.get(id as usize - 1).cloned().unwrap_or_default(),
+                        };
                         self.hotkey_errors.insert(owner, e);
                     }
                 }
@@ -145,7 +155,7 @@ impl App {
     }
 
     /// The hotkey window of a profile, if one was made.
-    fn hotkey_window_of(&self, guid: &str) -> Option<WindowId> {
+    pub(super) fn hotkey_window_of(&self, guid: &str) -> Option<WindowId> {
         if self.hotkey.as_ref().is_some_and(|h| h.guid == guid) {
             return self.current_window();
         }
@@ -163,11 +173,15 @@ impl App {
 
     /// A registered hotkey was pressed.
     /// A press, with every hotkey it matched (siblings share a chord or a double tap).
-    pub(super) fn hotkey_pressed(&mut self, ids: &[u32]) {
+    pub(super) fn hotkey_pressed(&mut self, ids: &[u32], event_loop: &ActiveEventLoop) {
         if ids.contains(&APP_HOTKEY) {
             self.app_hotkey_pressed();
         }
-        let pressed: Vec<String> = ids.iter().filter(|id| **id != APP_HOTKEY).filter_map(|id| self.hotkey_ids.get(*id as usize - 1).cloned()).collect();
+        // The palette alone comes forward; Tandem follows only when a row is committed.
+        if ids.contains(&OPEN_QUICKLY_HOTKEY) {
+            self.open_quickly(event_loop);
+        }
+        let pressed: Vec<String> = ids.iter().filter(|id| **id != APP_HOTKEY && **id != OPEN_QUICKLY_HOTKEY).filter_map(|id| self.hotkey_ids.get(*id as usize - 1).cloned()).collect();
         let all = self.hotkey_prefs();
         let back = self.current_window();
         for group in hotkey::groups_for(&pressed, &all) {
@@ -221,7 +235,7 @@ impl App {
         }
     }
 
-    fn show_hotkey_window(&mut self, guid: &str, fg: isize) {
+    pub(super) fn show_hotkey_window(&mut self, guid: &str, fg: isize) {
         let previous = (!ours(fg)).then_some(fg);
         match self.hotkey_window_of(guid) {
             Some(w) => {

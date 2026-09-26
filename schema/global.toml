@@ -722,6 +722,42 @@ default = 0.25
 help = "Duration in seconds of the hotkey window animation. Warning: reducing this value may cause problems if you have multiple displays."
 
 [[setting]]
+key = "OpenQuicklyHotkeyCode"
+tab = "Keys"
+section = "Hotkey"
+label = "Open Quickly hotkey key code"
+type = "int"
+default = 0
+help = "The Open Quickly hotkey's key (macOS key code, as iTerm2 stores it); 0 with no character is unbound."
+
+[[setting]]
+key = "OpenQuicklyHotkeyChar"
+tab = "Keys"
+section = "Hotkey"
+label = "Open Quickly hotkey character"
+type = "int"
+default = 0
+help = "The Open Quickly hotkey's character."
+
+[[setting]]
+key = "OpenQuicklyHotkeyModifiers"
+tab = "Keys"
+section = "Hotkey"
+label = "Open Quickly hotkey modifiers"
+type = "int"
+default = 0
+help = "The Open Quickly hotkey's modifiers (iTerm2's flags; Command is Win, Option is Alt)."
+
+[[setting]]
+key = "openQuicklyAnimationDuration"
+tab = "Advanced"
+section = "Hotkey"
+label = "Open Quickly animation duration"
+type = "float"
+default = 0.12
+help = "Duration in seconds of the Open Quickly window height animation.\nSet to 0 to disable the animation."
+
+[[setting]]
 key = "hotKeyDoubleTapMaxDelay"
 tab = "Advanced"
 section = "Hotkey"

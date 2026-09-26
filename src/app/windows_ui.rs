@@ -42,6 +42,11 @@ pub(super) struct WinSlot {
 }
 
 impl WinSlot {
+    /// The tab it has in front.
+    pub(super) fn active_tab(&self) -> Option<&Tab> {
+        self.tabs.get(self.active)
+    }
+
     pub(super) fn new(gpu: Gpu) -> WinSlot {
         WinSlot {
             gpu: Some(gpu),
@@ -637,16 +642,7 @@ impl App {
 impl App {
     /// The current window's monitor: its work area and whole area.
     pub(super) fn monitor_rects(&self) -> Option<(Rect, Rect)> {
-        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
-        let hwnd = self.hwnd()?;
-        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        let m = unsafe { MonitorFromWindow(hwnd as _, MONITOR_DEFAULTTONEAREST) };
-        if unsafe { GetMonitorInfoW(m, &mut info) } == 0 {
-            return None;
-        }
-        let r = |r: windows_sys::Win32::Foundation::RECT| Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 };
-        Some((r(info.rcWork), r(info.rcMonitor)))
+        monitor_rects_of(self.hwnd()?)
     }
 
     /// Applies an iTerm2 window style to the current window. The Window Style menu makes
@@ -955,4 +951,17 @@ impl App {
         }
         out
     }
+}
+
+/// The work area and the whole of the monitor a window is on (the nearest one), in pixels.
+pub(super) fn monitor_rects_of(hwnd: isize) -> Option<(Rect, Rect)> {
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+    let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+    let m = unsafe { MonitorFromWindow(hwnd as _, MONITOR_DEFAULTTONEAREST) };
+    if unsafe { GetMonitorInfoW(m, &mut info) } == 0 {
+        return None;
+    }
+    let r = |r: windows_sys::Win32::Foundation::RECT| Rect { x: r.left as f32, y: r.top as f32, w: (r.right - r.left) as f32, h: (r.bottom - r.top) as f32 };
+    Some((r(info.rcWork), r(info.rcMonitor)))
 }

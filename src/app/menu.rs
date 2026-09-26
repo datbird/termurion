@@ -367,6 +367,7 @@ impl App {
             "makeScreenshot:" => self.make_screenshot(event_loop),
             "renderSelection:" => self.render_selection(),
             "findGlobally:" => self.open_global_find(event_loop),
+            "openQuickly:" => self.open_quickly(event_loop),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
                 let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));

@@ -61,7 +61,7 @@ pub const DONE: &[&str] = &[
     "movePaneDividerRight:", "arrangeSplitPanesEvenly:", "restartSession:", "duplicateSession:", "showHelp:",
     "arrangeInFront:", "performFindPanelAction:|Find...", "performFindPanelAction:|Use Selection for Find",
     "findNext:", "findPrevious:", "clearFindString:", "jumpToSelection:", "zoomOut:", "findUrls:",
-    "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openSelection:",
+    "smartSelectAllVisible:", "revealContentNavigationShortcuts:", "findGlobally:", "openQuickly:", "openSelection:",
     "replaceSelectionWithPrettyPrintedJSON:", "replaceSelectionWithBase64Encoded:", "replaceSelectionWithBase64Decoded:",
     "clearToStartOfSelection:", "toggleCopyMode:", "foldSelection:", "foldAll:", "addNoteAtCursor:", "annotateSelection:", "nextAnnotation:",
     "previousAnnotation:", "showHideNotes:", "toggleCursorGuide:", "findCursor:", "editSessionNote:", "setWindowStyle:|Normal", "setWindowStyle:|Full Screen", "setWindowStyle:|Maximized",
@@ -258,5 +258,6 @@ mod tests {
         assert_eq!(status(find("setWindowStyle:", "Full-Width Top of Screen")), Status::Done, "every style arrives in 7a");
         assert_eq!(status(find("toggleToolbeltVisibility:", "Show Toolbelt")), Status::Done, "9j");
         assert_eq!(status(find("setDefaultToolbeltWidth:", "Set Default Width")), Status::Done, "9j");
+        assert_eq!(status(find("openQuickly:", "Open Quickly")), Status::Done, "9k");
     }
 }

@@ -104,6 +104,7 @@ mod git_ui;
 mod toolbelt_ui;
 mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
+mod open_quickly_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -414,6 +415,13 @@ pub struct App {
     /// it), and its + prompt.
     status_popover: Option<crate::status_popover_ui::StatusPopover>,
     status_popover_closed: Option<Instant>,
+    /// View > Open Quickly: the palette and its preview while open, the query kept for the
+    /// next open, and each pane's focus ordinal (bumped when it becomes the focused pane, the
+    /// palette's recency tiebreaker; `lastActivityOrdinal`, kept for this run only).
+    open_quickly: Option<open_quickly_app::Quickly>,
+    quickly_query: String,
+    focus_order: HashMap<PaneId, u64>,
+    focus_seq: u64,
     status_prompt: Option<crate::prompt_ui::PromptWindow>,
     /// The Notes tool's global note (one for every window) and its file.
     global_note: crate::notes::GlobalNote,
@@ -723,6 +731,10 @@ pub fn run() {
         status_watch: None,
         status_popover: None,
         status_popover_closed: None,
+        open_quickly: None,
+        quickly_query: String::new(),
+        focus_order: HashMap::new(),
+        focus_seq: 0,
         status_prompt: None,
         global_note: crate::notes::GlobalNote::new(toolbelt_more_ui::notes_path(&std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))),
         job_watches: Vec::new(),
@@ -1240,6 +1252,7 @@ impl App {
         if let Some(t) = self.tabs.get(self.active) {
             self.mru.touch(t.id);
         }
+        self.stamp_focus();
         self.refresh_route();
         let area = self.content_area();
         let (cw, ch) = self.cell();
@@ -2341,7 +2354,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Hotkey(ids) => self.hotkey_pressed(&ids),
+            UserEvent::Hotkey(ids) => self.hotkey_pressed(&ids, event_loop),
             UserEvent::Chord(c) => {
                 if let Some(w) = self.last_window {
                     self.enter(w);
@@ -2406,7 +2419,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -2481,6 +2494,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 if f {
                     self.last_window = Some(id);
+                    self.stamp_focus();
                 }
                 self.jobs.set_fast(f);
                 // Keys held while the window loses focus send no release to Tandem.

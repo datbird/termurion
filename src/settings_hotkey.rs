@@ -120,6 +120,29 @@ pub struct HotkeyUi {
     create_warning: Option<Vec<(String, String)>>,
     /// The name of the profile just made, for the success message.
     created: Option<String>,
+    /// An Open Quickly hotkey that smells accidental, waiting for OK.
+    quickly_confirm: Option<Shortcut>,
+}
+
+/// The Open Quickly hotkey's help (`PreferencePanel.xib:9797`).
+pub const OPEN_QUICKLY_HELP: &str = "When set, the Open Quickly window can be opened even when another app is active.";
+
+/// Stores the Open Quickly hotkey, or zeros for none (clearing unregisters it,
+/// `KeysPreferencesViewController.m:675-683`).
+fn set_quickly_hotkey(g: &mut Globals, s: Option<&Shortcut>) {
+    g.set("OpenQuicklyHotkeyCode", Value::Integer(s.map_or(0, |s| s.keycode as i64)));
+    g.set("OpenQuicklyHotkeyModifiers", Value::Integer(s.map_or(0, |s| s.flags as i64)));
+    g.set("OpenQuicklyHotkeyChar", Value::Integer(s.and_then(|s| s.chars_ignoring.chars().next()).map_or(0, |c| c as i64)));
+}
+
+/// The Open Quickly hotkey as stored, when one is set (a key code or a character).
+pub fn quickly_hotkey(g: &Globals) -> Option<Shortcut> {
+    let (code, ch) = (g.int("OpenQuicklyHotkeyCode"), g.int("OpenQuicklyHotkeyChar"));
+    if code == 0 && ch == 0 {
+        return None;
+    }
+    let text = char::from_u32(ch as u32).filter(|_| ch > 0).map(String::from).unwrap_or_default();
+    Some(Shortcut { keycode: code.clamp(0, u16::MAX as i64) as u16, flags: g.int("OpenQuicklyHotkeyModifiers").max(0) as u64, chars: text.clone(), chars_ignoring: text })
 }
 
 enum Outcome {
@@ -160,7 +183,7 @@ fn assign(model: &mut Model, slot: HotkeySlot, s: Option<Shortcut>) {
                 *a = s;
             }
         }
-        HotkeySlot::App => {}
+        HotkeySlot::App | HotkeySlot::OpenQuickly => {}
     }
 }
 
@@ -420,6 +443,51 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
             ui.colored_label(WARN, format!("Warning: {e}"));
         }
     }
+    // Open Quickly Hotkey: no leader, and a shortcut that smells accidental asks first.
+    if let Some((HotkeySlot::OpenQuickly, k)) = keys.hotkey_recorded.clone() {
+        keys.hotkey_recorded = None;
+        if let Some(s) = shortcut_of(&k) {
+            if hotkey::smells_accidental(&s) {
+                st.quickly_confirm = Some(s);
+            } else {
+                set_quickly_hotkey(g, Some(&s));
+                edit = KeysEdit::Globals;
+            }
+        }
+    }
+    let quickly = quickly_hotkey(g);
+    ui.horizontal(|ui| {
+        ui.label("Open Quickly Hotkey:");
+        if recorder(ui, keys, HotkeySlot::OpenQuickly, quickly.as_ref(), true) {
+            set_quickly_hotkey(g, None);
+            edit = KeysEdit::Globals;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.add_space(96.0);
+        ui.weak(OPEN_QUICKLY_HELP);
+    });
+    if quickly.is_some() {
+        if let Some(e) = st.errors.get("Open Quickly Hotkey") {
+            ui.colored_label(WARN, format!("Warning: {e}"));
+        }
+    }
+    if let Some(s) = st.quickly_confirm.clone() {
+        let (heading, text) = hotkey::confirm_text_for(&label(&s), true);
+        egui::Window::new(heading).id(egui::Id::new("open-quickly-confirm")).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
+            ui.label(text);
+            ui.horizontal(|ui| {
+                if ui.button("OK").clicked() {
+                    set_quickly_hotkey(g, Some(&s));
+                    st.quickly_confirm = None;
+                    edit = KeysEdit::Globals;
+                }
+                if ui.button("Cancel").clicked() {
+                    st.quickly_confirm = None;
+                }
+            });
+        });
+    }
     // The question before another hotkey profile.
     if let Some(existing) = st.create_warning.clone() {
         let names: Vec<String> = existing.iter().map(|(_, n)| n.clone()).collect();
@@ -493,4 +561,23 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
         });
     }
     edit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_quickly_hotkey_stores_like_iterm2() {
+        let mut g = Globals::empty(std::path::Path::new("globals-test.toml"));
+        assert_eq!(quickly_hotkey(&g), None, "all zeros is unbound");
+        let s = Shortcut { keycode: 0x1F, flags: keystroke::OPTION, chars: "o".into(), chars_ignoring: "o".into() };
+        set_quickly_hotkey(&mut g, Some(&s));
+        assert_eq!((g.int("OpenQuicklyHotkeyCode"), g.int("OpenQuicklyHotkeyChar"), g.int("OpenQuicklyHotkeyModifiers")), (0x1F, 'o' as i64, keystroke::OPTION as i64));
+        assert_eq!(quickly_hotkey(&g), Some(s));
+        // Clearing stores zeros, which unregisters it.
+        set_quickly_hotkey(&mut g, None);
+        assert_eq!((g.int("OpenQuicklyHotkeyCode"), g.int("OpenQuicklyHotkeyChar"), g.int("OpenQuicklyHotkeyModifiers")), (0, 0, 0));
+        assert_eq!(quickly_hotkey(&g), None);
+    }
 }

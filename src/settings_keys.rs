@@ -150,6 +150,8 @@ pub enum HotkeySlot {
     Primary,
     Alternate(usize),
     App,
+    /// Settings > Keys > Hotkey's Open Quickly Hotkey.
+    OpenQuickly,
 }
 
 /// The binding editors' state, kept by the settings window.

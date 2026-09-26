@@ -376,7 +376,8 @@ pub struct Sources {
 /// The most results kept, highest score first (`kMaxItems`).
 pub const MAX_ITEMS: usize = 100;
 
-pub const PLACEHOLDER: &str = "";
+/// The search field's placeholder (the xib).
+pub const PLACEHOLDER: &str = "Search for sessions, profiles, or arrangements";
 pub const NEW_TAB_DETAIL: &str = "Create a new tab with this profile";
 pub const NEW_WINDOW_DETAIL: &str = "Create a new window with this profile";
 pub const CHANGE_PROFILE_DETAIL: &str = "Change current session\u{2019}s profile";
