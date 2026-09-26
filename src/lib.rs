@@ -89,6 +89,8 @@ pub mod statusbar_metrics;
 pub mod statusbar_setup_ui;
 pub mod statusbar_sparkline;
 pub mod statusbar_text;
+pub mod git_state;
+pub mod git_wrapper;
 
 #[cfg(windows)]
 pub mod conpty;

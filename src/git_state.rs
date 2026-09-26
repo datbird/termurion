@@ -1,0 +1,1797 @@
+//! git as data (milestone 9i, Task 4): the porcelain parser, the repository operation read
+//! from the git directory, the local-path and repository-config guards, `fetch_state` over
+//! a `GitRun` trait with one deadline, iTerm2's worker cache and poller state machine, the
+//! rendered string, the click menu model, and the remote state from `user.git*` variables.
+//! Pure code: `git_run_win.rs` (Task 5) implements `GitRun` with a hidden process in a Job
+//! Object; `src/app/git_ui.rs` owns a `GitPoller` per pane.
+//!
+//! The git CLI stands in for iTerm2's libgit2 helper. Citations use the milestone 9i
+//! brief's abbreviations, paths under `~/gitrepos/iterm2-ref/sources/`: `GIT` =
+//! `StatusBar/Components/iTermStatusBarGitComponent.m`, `GSM` = `iTermGitStringMaker.m`,
+//! `GP` = `StatusBar/iTermGitPoller.m`, `GPW` = `StatusBar/Components/iTermGitPollWorker.m`,
+//! `GS`/`GSMA` = `StatusBar/Components/iTermGitState.m`/`iTermGitState+MainApp.m`, `GCL` =
+//! `../pidinfo/iTermGitClient.m`.
+//!
+//! Security. Opening a network path (`\\host\share`) sends the user's Windows credentials to
+//! that host, so nothing here opens, or lets git open, a path that fails
+//! `prompted::local_path_ok`: the session directory, symbolic links on the way to it, every
+//! `.git` git could find above it, a `.git` file's `gitdir:`, a worktree's `commondir`,
+//! `objects/info/alternates`, every path-like value in the repository's own config and the
+//! files it includes, and the git directory `rev-parse` reports. A repository's own config
+//! also must not run programs through the poll. `git status` runs three kinds: the
+//! fsmonitor hook (`core.fsmonitor`, switched off with `-c`), the `post-index-change` hook
+//! (only when status rewrites the index, which `--no-optional-locks` stops), and the clean
+//! filters of `.gitattributes` drivers (`filter.<name>.clean`/`.process`, run when a file's
+//! stat data changed and git hashes it). `-c` has no wildcard, so every filter driver the
+//! repository's config defines is switched off by name. A lazy fetch of a partial clone is
+//! stopped with `GIT_NO_LAZY_FETCH`. Hooks, pagers, diff drivers and credential helpers are
+//! not reached by `status --porcelain`, `rev-parse` or `for-each-ref`.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use crate::prompted::local_path_ok;
+
+/// The repository operation in progress (libgit2's `git_repository_state`, folded as
+/// `GCL:660-689` folds it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RepoState {
+    #[default]
+    None,
+    Merge,
+    Revert,
+    Cherrypick,
+    Bisect,
+    Rebase,
+    Apply,
+}
+
+impl RepoState {
+    /// The word the component shows instead of the branch (`GSM:52-66`).
+    pub fn text(self) -> Option<&'static str> {
+        match self {
+            RepoState::None => None,
+            RepoState::Merge => Some("Merging"),
+            RepoState::Revert => Some("Reverting"),
+            RepoState::Cherrypick => Some("Cherrypicking"),
+            RepoState::Bisect => Some("Bisecting"),
+            RepoState::Rebase => Some("Rebasing"),
+            RepoState::Apply => Some("Applying"),
+        }
+    }
+}
+
+/// iTerm2's `iTermGitState`. `ahead` and `behind` are strings, `""` without a live
+/// upstream; the rich stats come only from a remote host's variables.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct GitState {
+    pub branch: String,
+    pub ahead: String,
+    pub behind: String,
+    pub dirty: bool,
+    pub adds: i64,
+    pub deletes: i64,
+    pub lines_inserted: i64,
+    pub lines_deleted: i64,
+    pub files_added: i64,
+    pub files_modified: i64,
+    pub files_deleted: i64,
+    pub repo_state: RepoState,
+}
+
+impl GitState {
+    /// `prettyDescription` (`GS:153-159`). The directory and xcode fields are never set on
+    /// Windows, so they print as `(null)`.
+    pub fn pretty(&self) -> String {
+        format!(
+            "dir=(null) xcode=(null) ahead={} behind={} branch={} dirty={} adds={} deletes={} lines=+{}/-{} files=+{}/~{}/-{}",
+            self.ahead,
+            self.behind,
+            self.branch,
+            self.dirty as u8,
+            self.adds,
+            self.deletes,
+            self.lines_inserted,
+            self.lines_deleted,
+            self.files_added,
+            self.files_modified,
+            self.files_deleted
+        )
+    }
+}
+
+/// `git status --porcelain=v2 --branch -z` as libgit2's state (`GCL:281-314,590-630`): an
+/// unborn branch (`(initial)`) has no state; a detached HEAD's branch is the full commit id;
+/// no `branch.ab` means no upstream (ahead and behind `""`); dirty is any entry; adds count
+/// untracked files; deletes count worktree deletions.
+pub fn parse_porcelain(z: &[u8]) -> Option<GitState> {
+    let mut st = GitState::default();
+    let (mut oid, mut head, mut ab) = (None, None, None);
+    let mut records = z.split(|&b| b == 0);
+    while let Some(rec) = records.next() {
+        if let Some(h) = rec.strip_prefix(b"# ") {
+            let h = String::from_utf8_lossy(h);
+            if let Some(v) = h.strip_prefix("branch.oid ") {
+                oid = Some(v.to_string());
+            } else if let Some(v) = h.strip_prefix("branch.head ") {
+                head = Some(v.to_string());
+            } else if let Some(v) = h.strip_prefix("branch.ab ") {
+                ab = Some(v.to_string());
+            }
+            continue;
+        }
+        match rec.first() {
+            Some(b'1') | Some(b'2') => {
+                st.dirty = true;
+                if rec.get(3) == Some(&b'D') {
+                    st.deletes += 1;
+                }
+                if rec[0] == b'2' {
+                    // A rename or copy's original path is the next record.
+                    records.next();
+                }
+            }
+            Some(b'u') => st.dirty = true,
+            Some(b'?') => {
+                st.dirty = true;
+                st.adds += 1;
+            }
+            _ => {}
+        }
+    }
+    let oid = oid?;
+    if oid == "(initial)" {
+        return None;
+    }
+    let head = head?;
+    st.branch = if head == "(detached)" { oid } else { head };
+    if let Some(ab) = ab {
+        let mut parts = ab.split_whitespace();
+        st.ahead = parts.next().map(|a| a.trim_start_matches('+').to_string()).unwrap_or_default();
+        st.behind = parts.next().map(|b| b.trim_start_matches('-').to_string()).unwrap_or_default();
+    }
+    Some(st)
+}
+
+/// The operation in progress, from files in the git directory in libgit2's
+/// `git_repository_state` order. The caller has checked `git_dir` with `local_path_ok`.
+pub fn repo_state(git_dir: &Path) -> RepoState {
+    let file = |p: &str| git_dir.join(p).is_file();
+    let dir = |p: &str| git_dir.join(p).is_dir();
+    if file("rebase-merge/interactive") || dir("rebase-merge") || file("rebase-apply/rebasing") {
+        RepoState::Rebase
+    } else if file("rebase-apply/applying") || dir("rebase-apply") {
+        RepoState::Apply
+    } else if file("MERGE_HEAD") {
+        RepoState::Merge
+    } else if file("REVERT_HEAD") {
+        RepoState::Revert
+    } else if file("CHERRY_PICK_HEAD") {
+        RepoState::Cherrypick
+    } else if file("BISECT_LOG") {
+        RepoState::Bisect
+    } else {
+        RepoState::None
+    }
+}
+
+/// `for-each-ref`'s output: one branch per line, newest first.
+pub fn parse_branches(stdout: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stdout).lines().map(|l| l.trim_end_matches('\r')).filter(|l| !l.is_empty()).map(str::to_string).collect()
+}
+
+/// How one git run ended.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RunResult {
+    /// It exited; `capped` when stdout was cut at the cap.
+    Exit { code: i32, stdout: Vec<u8>, capped: bool },
+    /// Killed, with its children, at the deadline.
+    TimedOut,
+    /// It could not start.
+    Failed(String),
+}
+
+/// Runs git hidden in `dir` with `GIT_ENV` set and `GIT_ENV_REMOVED` removed, stdin null,
+/// and kills it with its process tree at `timeout`. `cap` limits the stdout kept.
+pub trait GitRun: Send + Sync {
+    fn run(&self, git: &Path, dir: &Path, args: &[String], timeout: Duration, cap: Option<usize>) -> RunResult;
+}
+
+/// The branch, counts and entries (`GCL:590-630` with the CLI). Every git line starts
+/// with `--no-optional-locks` and the same `-c` hardening: no fsmonitor hook, no implicit
+/// bare repository (a folder of repository files git would find on its own), and paths
+/// printed raw.
+pub const STATUS_ARGS: &[&str] = &[
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.useBuiltinFSMonitor=false",
+    "-c",
+    "safe.bareRepository=explicit",
+    "-c",
+    "core.quotepath=false",
+    "status",
+    "--porcelain=v2",
+    "--branch",
+    "--untracked-files=all",
+    "--ignore-submodules=all",
+    "--no-renames",
+    "-z",
+];
+/// The git directory, for the operation in progress.
+pub const GIT_DIR_ARGS: &[&str] = &[
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.useBuiltinFSMonitor=false",
+    "-c",
+    "safe.bareRepository=explicit",
+    "-c",
+    "core.quotepath=false",
+    "rev-parse",
+    "--absolute-git-dir",
+];
+/// The 8 most recently committed branches (`pidinfo.m:936-975`).
+pub const BRANCHES_ARGS: &[&str] = &[
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.useBuiltinFSMonitor=false",
+    "-c",
+    "safe.bareRepository=explicit",
+    "-c",
+    "core.quotepath=false",
+    "for-each-ref",
+    "--count=8",
+    "--sort=-committerdate",
+    "--format=%(refname:short)",
+    "refs/heads/",
+];
+/// Set for every status bar git run: no prompts, no optional locks, no lazy fetch.
+pub const GIT_ENV: &[(&str, &str)] = &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0"), ("GIT_NO_LAZY_FETCH", "1")];
+/// Removed from Tandem's environment for every status bar git run: they pick another
+/// repository than the one the checks looked at.
+pub const GIT_ENV_REMOVED: &[&str] =
+    &["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"];
+/// Stdout kept from `rev-parse` and `for-each-ref`.
+const SMALL_CAP: usize = 64 * 1024;
+/// The recent branches the menu offers (`GIT:361`).
+pub const MENU_BRANCHES: usize = 7;
+
+/// The git the status bar runs, from `gitSearchPath`: empty is `git` from PATH (see
+/// `find_git`), else the first `;`-separated folder's `git.exe`; a folder that fails
+/// `local_path_ok` is no git.
+pub fn git_program(search_path: &str) -> Option<PathBuf> {
+    let first = unquote(search_path.split(';').next().unwrap_or(""));
+    if first.is_empty() {
+        return Some(PathBuf::from("git"));
+    }
+    local_path_ok(first).then(|| exe_in(first))
+}
+
+/// `git.exe` in the first local PATH folder that has it. Network and relative folders are
+/// skipped without being looked at (a UNC entry probed on every poll would leak).
+pub fn find_git(path_var: &str, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    path_var.split(';').map(unquote).filter(|d| local_path_ok(d)).map(exe_in).find(|p| is_file(p))
+}
+
+fn unquote(s: &str) -> &str {
+    let s = s.trim();
+    s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s)
+}
+
+fn exe_in(dir: &str) -> PathBuf {
+    let sep = if dir.ends_with(['\\', '/']) { "" } else { "\\" };
+    PathBuf::from(format!("{dir}{sep}git.exe"))
+}
+
+/// Whether git may run in `dir` at all (see `vet_repo`).
+pub fn repo_path_ok(dir: &Path) -> bool {
+    vet_repo(dir).is_some()
+}
+
+/// `gitTimeout` as iTerm2's helper takes it: whole seconds (`pidinfo.m:842-900`), never
+/// under 1.
+pub fn timeout_of(setting: f64) -> Duration {
+    // `max` first: it turns NaN into 1, where `clamp` would keep it.
+    Duration::from_secs(setting.trunc().max(1.0).min(i32::MAX as f64) as u64)
+}
+
+/// git's `MAX_INCLUDE_DEPTH`, also the limit on links followed.
+const MAX_DEPTH: usize = 10;
+
+/// The checks before any git run, in `dir` and every repository git could find above it
+/// (see the module comment). `None` refuses: git does not run and the component is empty,
+/// as for a folder outside any repository. `Some` holds the `-c` arguments that switch off
+/// the filter drivers the repositories' own config defines.
+pub fn vet_repo(dir: &Path) -> Option<Vec<String>> {
+    if !local_path_ok(dir.to_str()?) || !links_local(dir, 0) {
+        return None;
+    }
+    let mut filters = BTreeSet::new();
+    for a in dir.ancestors() {
+        let dotgit = a.join(".git");
+        if std::fs::symlink_metadata(&dotgit).is_ok() {
+            if !link_ok(&dotgit, 0) {
+                return None;
+            }
+            if dotgit.is_dir() {
+                vet_git_dir(&dotgit, &mut filters)?;
+            } else if dotgit.is_file() {
+                vet_git_dir(&gitdir_target(&dotgit)?, &mut filters)?;
+            }
+        }
+        // A bare repository here: `safe.bareRepository=explicit` refuses it, but git reads
+        // its config first.
+        if a.join("HEAD").is_file() && a.join("config").is_file() {
+            vet_git_dir(a, &mut filters)?;
+        }
+    }
+    Some(filter_args(&filters))
+}
+
+/// A `.git` file's `gitdir:` (a worktree or submodule), when it is relative or local.
+fn gitdir_target(dotgit: &Path) -> Option<PathBuf> {
+    let text = read_small(dotgit)?;
+    let p = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+    local_target(dotgit.parent()?, p)
+}
+
+/// `p` resolved against `base` when relative; an absolute `p` must be local. Either way no
+/// link on the way leaves this computer.
+fn local_target(base: &Path, p: &str) -> Option<PathBuf> {
+    if p.is_empty() {
+        return None;
+    }
+    let path = if is_relative(p) {
+        base.join(p)
+    } else if local_path_ok(p) {
+        PathBuf::from(p)
+    } else {
+        return None;
+    };
+    links_local(&path, 0).then_some(path)
+}
+
+/// Relative on Windows: not rooted (`\x`, `/x`, `\\host`) and no drive (`C:x`).
+fn is_relative(p: &str) -> bool {
+    !p.starts_with(['\\', '/']) && p.as_bytes().get(1) != Some(&b':')
+}
+
+/// A git directory's own files: its config (and a worktree's), its common directory's
+/// config, and the object alternates.
+fn vet_git_dir(git_dir: &Path, filters: &mut BTreeSet<String>) -> Option<()> {
+    let mut dirs = vec![git_dir.to_path_buf()];
+    if let Some(text) = read_optional(&git_dir.join("commondir"))? {
+        dirs.push(local_target(git_dir, text.trim())?);
+    }
+    for d in &dirs {
+        vet_config(&d.join("config"), filters, 0)?;
+        vet_config(&d.join("config.worktree"), filters, 0)?;
+        let objects = d.join("objects");
+        if let Some(text) = read_optional(&objects.join("info").join("alternates"))? {
+            for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+                local_target(&objects, line.trim_matches('"'))?;
+            }
+        }
+    }
+    Some(())
+}
+
+/// One config file: no value that names a network path, filter driver names `-c` can
+/// carry, and each included file checked the same way.
+fn vet_config(file: &Path, filters: &mut BTreeSet<String>, depth: usize) -> Option<()> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let Some(text) = read_optional(file)? else { return Some(()) };
+    for e in config_entries(&text)? {
+        let v = e.value.trim();
+        if v.starts_with("\\\\") || v.starts_with("//") {
+            return None;
+        }
+        if e.section == "filter" {
+            let name = e.sub.as_deref().unwrap_or("");
+            if name.is_empty() || name.contains(['=', '\n', '\r', '\0']) {
+                return None;
+            }
+            filters.insert(name.to_string());
+        }
+        if (e.section == "include" || e.section == "includeif") && e.key == "path" {
+            let target = if let Some(rest) = v.strip_prefix("~/").or_else(|| v.strip_prefix("~\\")) {
+                let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok()?;
+                local_target(Path::new(&home), rest)?
+            } else if v.starts_with('~') || v.starts_with("%(") {
+                return None;
+            } else {
+                local_target(file.parent()?, v)?
+            };
+            vet_config(&target, filters, depth + 1)?;
+        }
+    }
+    Some(())
+}
+
+/// `-c` overrides that switch off the named filter drivers (an empty command runs nothing;
+/// verified with git 2.43).
+fn filter_args(names: &BTreeSet<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for n in names {
+        for key in ["clean=", "smudge=", "process=", "required=false"] {
+            out.push("-c".to_string());
+            out.push(format!("filter.{n}.{key}"));
+        }
+    }
+    out
+}
+
+/// A small text file's contents; `None` when it cannot be read.
+fn read_small(p: &Path) -> Option<String> {
+    let bytes = std::fs::read(p).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `Some(None)` when the file is not there, `None` when it is there but unreadable.
+fn read_optional(p: &Path) -> Option<Option<String>> {
+    match std::fs::read(p) {
+        Ok(bytes) => Some(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
+    }
+}
+
+/// Every symbolic link or junction on the way to `path` points at a local path.
+fn links_local(path: &Path, depth: usize) -> bool {
+    let mut prefixes: Vec<&Path> = path.ancestors().collect();
+    prefixes.reverse();
+    prefixes.into_iter().all(|p| link_ok(p, depth))
+}
+
+/// `p` itself is not a link, or is one to a local path (followed, up to `MAX_DEPTH`).
+fn link_ok(p: &Path, depth: usize) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(p) else { return true };
+    if !meta.file_type().is_symlink() {
+        return true;
+    }
+    if depth >= MAX_DEPTH {
+        return false;
+    }
+    let Ok(target) = std::fs::read_link(p) else { return false };
+    let Some(t) = target.to_str() else { return false };
+    // `read_link` gives `\\?\C:\x` for an absolute target.
+    let t = t.strip_prefix(r"\\?\").or_else(|| t.strip_prefix(r"\??\")).filter(|r| local_path_ok(r)).unwrap_or(t);
+    if is_relative(t) {
+        p.parent().is_some_and(|base| links_local(&base.join(t), depth + 1))
+    } else {
+        local_path_ok(t) && links_local(Path::new(t), depth + 1)
+    }
+}
+
+/// One `key = value` from a git config file, section and key lowercased.
+struct ConfigEntry {
+    section: String,
+    sub: Option<String>,
+    key: String,
+    value: String,
+}
+
+/// git's config file syntax, enough to see every value: `[section]`, `[section "sub"]`,
+/// `[section.sub]`, comments, quotes, escapes, and continued lines. `None` for a file git
+/// would refuse to read.
+fn config_entries(text: &str) -> Option<Vec<ConfigEntry>> {
+    let c: Vec<char> = text.trim_start_matches('\u{FEFF}').chars().collect();
+    let mut i = 0;
+    let mut out = Vec::new();
+    let (mut section, mut sub) = (String::new(), None);
+    let to_eol = |i: &mut usize| {
+        while *i < c.len() && c[*i] != '\n' {
+            *i += 1;
+        }
+    };
+    while i < c.len() {
+        match c[i] {
+            ch if ch.is_whitespace() => i += 1,
+            '#' | ';' => to_eol(&mut i),
+            '[' => {
+                i += 1;
+                let start = i;
+                while i < c.len() && !matches!(c[i], ']' | '"' | ' ' | '\t' | '\n') {
+                    i += 1;
+                }
+                let name: String = c[start..i].iter().collect();
+                while i < c.len() && matches!(c[i], ' ' | '\t') {
+                    i += 1;
+                }
+                if c.get(i) == Some(&'"') {
+                    i += 1;
+                    let mut s = String::new();
+                    loop {
+                        match c.get(i)? {
+                            '"' => break,
+                            '\n' => return None,
+                            '\\' => {
+                                i += 1;
+                                s.push(*c.get(i)?);
+                            }
+                            ch => s.push(*ch),
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                    section = name.to_ascii_lowercase();
+                    sub = Some(s);
+                } else if let Some((s, rest)) = name.split_once('.') {
+                    section = s.to_ascii_lowercase();
+                    sub = Some(rest.to_ascii_lowercase());
+                } else {
+                    section = name.to_ascii_lowercase();
+                    sub = None;
+                }
+                if c.get(i) != Some(&']') {
+                    return None;
+                }
+                i += 1;
+            }
+            ch if ch.is_ascii_alphabetic() => {
+                let start = i;
+                while i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == '-') {
+                    i += 1;
+                }
+                let key = c[start..i].iter().collect::<String>().to_ascii_lowercase();
+                while i < c.len() && matches!(c[i], ' ' | '\t') {
+                    i += 1;
+                }
+                let mut value = String::new();
+                if c.get(i) == Some(&'=') {
+                    i += 1;
+                    let mut quoted = false;
+                    while i < c.len() {
+                        match c[i] {
+                            '\n' if !quoted => break,
+                            '\n' => return None,
+                            '"' => quoted = !quoted,
+                            '#' | ';' if !quoted => {
+                                to_eol(&mut i);
+                                break;
+                            }
+                            '\\' => {
+                                i += 1;
+                                match c.get(i)? {
+                                    '\n' => {}
+                                    '\r' if c.get(i + 1) == Some(&'\n') => i += 1,
+                                    'n' => value.push('\n'),
+                                    't' => value.push('\t'),
+                                    'b' => value.push('\u{8}'),
+                                    ch @ ('\\' | '"') => value.push(*ch),
+                                    _ => return None,
+                                }
+                            }
+                            ch => value.push(ch),
+                        }
+                        i += 1;
+                    }
+                    if quoted {
+                        return None;
+                    }
+                } else if !matches!(c.get(i), None | Some('\n' | '\r' | '#' | ';')) {
+                    return None;
+                }
+                out.push(ConfigEntry { section: section.clone(), sub: sub.clone(), key, value });
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// `base` with `extra` inserted after its first argument (before the subcommand).
+fn with_extra(base: &[&str], extra: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+    v.splice(1..1, extra.iter().cloned());
+    v
+}
+
+/// One poll's answer: `state` is `None` outside a repository, on an unborn branch, or on a
+/// timeout, which `timed_out` tells apart.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Fetched {
+    pub state: Option<GitState>,
+    pub timed_out: bool,
+}
+
+/// The state of the repository around `dir`: the checks, `status`, then `rev-parse` for the
+/// git directory, all inside `timeout` (iTerm2's helper kills itself at `gitTimeout`).
+/// Exit 128 (not a repository, or `safe.directory` refused it) is no state, not a timeout.
+pub fn fetch_state(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) -> Fetched {
+    let start = Instant::now();
+    let none = Fetched::default();
+    let timed_out = Fetched { state: None, timed_out: true };
+    let Some(extra) = vet_repo(dir) else { return none };
+    let mut state = match run.run(git, dir, &with_extra(STATUS_ARGS, &extra), timeout, None) {
+        RunResult::Exit { code: 0, stdout, .. } => match parse_porcelain(&stdout) {
+            Some(s) => s,
+            None => return none,
+        },
+        RunResult::TimedOut => return timed_out,
+        _ => return none,
+    };
+    let left = timeout.saturating_sub(start.elapsed());
+    if left.is_zero() {
+        return timed_out;
+    }
+    match run.run(git, dir, &with_extra(GIT_DIR_ARGS, &extra), left, Some(SMALL_CAP)) {
+        RunResult::Exit { code: 0, stdout, capped: false } => {
+            let d = String::from_utf8_lossy(&stdout).trim().to_string();
+            if local_path_ok(&d) && links_local(Path::new(&d), 0) {
+                state.repo_state = repo_state(Path::new(&d));
+            }
+        }
+        RunResult::TimedOut => return timed_out,
+        _ => {}
+    }
+    Fetched { state: Some(state), timed_out: false }
+}
+
+/// The 8 most recently committed branches, newest first; none when git may not run or
+/// fails.
+pub fn recent_branches(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) -> Vec<String> {
+    let Some(extra) = vet_repo(dir) else { return Vec::new() };
+    match run.run(git, dir, &with_extra(BRANCHES_ARGS, &extra), timeout, Some(SMALL_CAP)) {
+        RunResult::Exit { code: 0, stdout, .. } => parse_branches(&stdout),
+        _ => Vec::new(),
+    }
+}
+
+/// `GPW`'s cache TTL.
+pub const CACHE_TTL: Duration = Duration::from_secs(1);
+
+/// iTerm2's poll worker (`GPW:94-201`), basic key only: a state per path for 1 s, and the
+/// requests waiting on the one git run in flight per path.
+#[derive(Debug, Default)]
+pub struct WorkerCache {
+    /// The state and when it was made.
+    cache: HashMap<String, (GitState, Instant)>,
+    /// Requests waiting on the run in flight.
+    pending: HashMap<String, usize>,
+}
+
+/// What a request for a path does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Lookup {
+    /// Answered from the cache at once.
+    Cached(Option<GitState>),
+    /// A run for this path is in flight; its answer serves this request too.
+    Joined,
+    /// Start a run, then `finish`.
+    Start,
+}
+
+impl WorkerCache {
+    pub fn lookup(&mut self, path: &str, now: Instant) -> Lookup {
+        if let Some((s, made)) = self.cache.get(path) {
+            if now.saturating_duration_since(*made) < CACHE_TTL {
+                return Lookup::Cached(Some(s.clone()));
+            }
+        }
+        match self.pending.get_mut(path) {
+            Some(n) if *n > 0 => {
+                *n += 1;
+                Lookup::Joined
+            }
+            _ => {
+                self.pending.insert(path.to_string(), 1);
+                Lookup::Start
+            }
+        }
+    }
+
+    /// A run's answer, made at `now` (the worker records when its git finished). A cached
+    /// state newer than the answer wins but keeps the answer's timeout; an answer with no
+    /// state counts as oldest, as a nil state's creation time is 0 in iTerm2 (so a folder
+    /// that stops being a repository shows its last state until `invalidate`, kept).
+    pub fn finish(&mut self, path: &str, fetched: Fetched, now: Instant) -> Fetched {
+        self.pending.remove(path);
+        if let Some((cached, made)) = self.cache.get(path) {
+            if fetched.state.is_none() || *made > now {
+                return Fetched { state: Some(cached.clone()), timed_out: fetched.timed_out };
+            }
+        }
+        if let Some(s) = &fetched.state {
+            self.cache.insert(path.to_string(), (s.clone(), now));
+        }
+        fetched
+    }
+
+    /// Forgets the path's cached state and waiting requests (`GPW:161-199`).
+    pub fn invalidate(&mut self, path: &str) {
+        self.cache.remove(path);
+        self.pending.remove(path);
+    }
+
+    /// `debugInfoForDirectory:` (`GPW:74-85`); Tandem has no rich cache.
+    pub fn debug_info(&self, path: &str, now: Instant) -> String {
+        let basic = self.cache.get(path).map_or_else(|| "none".to_string(), |(_, made)| format!("age {}", now.saturating_duration_since(*made).as_secs_f64()));
+        format!("Basic cache: {basic}\nRich cache: none\nPending calls: {}\n", self.pending.get(path).copied().unwrap_or(0))
+    }
+}
+
+/// What `gitPollerShouldPoll:after:` reads from the session (`GIT:636-667`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PollGate {
+    /// The component is on screen.
+    pub visible: bool,
+    /// When a newline was last sent to the session.
+    pub last_newline: Option<Instant>,
+    /// When the session last printed.
+    pub last_activity: Option<Instant>,
+}
+
+/// The newline grace: git takes a moment to update after Enter (`GIT:651-653`).
+const NEWLINE_GRACE: Duration = Duration::from_secs(3);
+/// `pollIntervalWhenInactive` (`GIT:659`).
+const INACTIVE_POLL: Duration = Duration::from_secs(60);
+/// The directory-change cache invalidation's rate limit (`GP:26-27`).
+const INVALIDATE_EVERY: Duration = Duration::from_millis(500);
+
+/// `gitPollerShouldPoll:after:` (`GIT:636-667`): never off screen; always the first time;
+/// then when a newline went out after `last_poll - 3 s`, or when over 60 s passed and the
+/// session printed since.
+pub fn should_poll(last_poll: Option<Instant>, gate: &PollGate, now: Instant) -> bool {
+    if !gate.visible {
+        return false;
+    }
+    let Some(last) = last_poll else { return true };
+    if gate.last_newline.is_some_and(|nl| nl + NEWLINE_GRACE > last) {
+        return true;
+    }
+    now.saturating_duration_since(last) > INACTIVE_POLL && gate.last_activity.is_some_and(|a| a > last)
+}
+
+/// iTerm2's `iTermGitPoller` (`GP`) as a state machine: the caller sends `Polls.request`
+/// to the worker, invalidates `Polls.invalidate` in its `WorkerCache`, hands each answer to
+/// `did_poll`, and calls `tick` at `next_due`.
+#[derive(Clone, Debug)]
+pub struct GitPoller {
+    pub enabled: bool,
+    pub directory: Option<String>,
+    pub state: Option<GitState>,
+    pub last_poll: Option<Instant>,
+    /// This directory has answered without a timeout (`hasSuccessfullyFetched`).
+    pub has_fetched: bool,
+    /// The last poll timed out (`lastPollTimedOut`).
+    pub timed_out: bool,
+    /// The Polling Interval knob, in seconds.
+    pub cadence: f64,
+    /// The running timer's interval: `cadence` when it was last started.
+    interval: Duration,
+    next_fire: Instant,
+    /// The rate limiter's window end, and the invalidation waiting for it.
+    limiter_until: Option<Instant>,
+    limiter_block: Option<String>,
+}
+
+/// What the poller asks for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Polls {
+    /// Poll this path.
+    pub request: Option<String>,
+    /// Invalidate the worker cache for this path.
+    pub invalidate: Option<String>,
+}
+
+/// The knob as a cadence: 0 reads as 1 (`GIT:245-247`); so do a negative or non-number
+/// value, which would make the timer spin.
+fn cadence_of(knob: f64) -> f64 {
+    if knob.is_finite() && knob > 0.0 { knob.min(1e9) } else { 1.0 }
+}
+
+impl GitPoller {
+    /// Disabled until `set_enabled`, the timer started at `cadence` (`GP:24-34`).
+    pub fn new(cadence: f64, now: Instant) -> Self {
+        let cadence = cadence_of(cadence);
+        let interval = Duration::from_secs_f64(cadence);
+        GitPoller {
+            enabled: false,
+            directory: None,
+            state: None,
+            last_poll: None,
+            has_fetched: false,
+            timed_out: false,
+            cadence,
+            interval,
+            next_fire: now + interval,
+            limiter_until: None,
+            limiter_block: None,
+        }
+    }
+
+    /// The knob changed: only the cadence; the running timer keeps its interval until the
+    /// next `bump` (iTerm2's, kept).
+    pub fn set_cadence(&mut self, knob: f64) {
+        self.cadence = cadence_of(knob);
+    }
+
+    /// True when the component must redraw: disabling clears the display (`GP:47-56`).
+    pub fn set_enabled(&mut self, on: bool) -> bool {
+        if on == self.enabled {
+            return false;
+        }
+        self.enabled = on;
+        !on
+    }
+
+    /// The session's directory changed (`GP:170-194`): the per-directory flags reset, the
+    /// cache for the new path is invalidated through a 0.5 s rate limiter, and it polls
+    /// without restarting the timer.
+    pub fn set_directory(&mut self, dir: Option<String>, gate: &PollGate, now: Instant) -> Polls {
+        if dir == self.directory {
+            return Polls::default();
+        }
+        let mut invalidate = self.fire_limiter(now);
+        if let Some(d) = &dir {
+            if self.limiter_until.is_none() {
+                invalidate = Some(d.clone());
+                self.limiter_until = Some(now + INVALIDATE_EVERY);
+            } else {
+                self.limiter_block = Some(d.clone());
+            }
+        }
+        self.directory = dir;
+        self.has_fetched = false;
+        self.timed_out = false;
+        Polls { request: self.poll(gate, now), invalidate }
+    }
+
+    /// Poll now, then restart the timer at the current cadence (`GP:67-74`).
+    pub fn bump(&mut self, gate: &PollGate, now: Instant) -> Polls {
+        let request = self.poll(gate, now);
+        self.interval = Duration::from_secs_f64(self.cadence);
+        self.next_fire = now + self.interval;
+        Polls { request, invalidate: None }
+    }
+
+    /// The timer and the rate limiter, when due.
+    pub fn tick(&mut self, gate: &PollGate, now: Instant) -> Polls {
+        let invalidate = self.fire_limiter(now);
+        let mut request = None;
+        if now >= self.next_fire {
+            while self.next_fire <= now {
+                self.next_fire += self.interval;
+            }
+            request = self.poll(gate, now);
+        }
+        Polls { request, invalidate }
+    }
+
+    /// An answer for `path` (`GP:112-139`). One for another directory than the current one
+    /// is dropped (false); otherwise true, and the component redraws.
+    pub fn did_poll(&mut self, path: &str, fetched: Fetched) -> bool {
+        if self.directory.as_deref() != Some(path) {
+            return false;
+        }
+        if !fetched.timed_out {
+            self.has_fetched = true;
+        }
+        self.timed_out = fetched.timed_out;
+        self.state = fetched.state;
+        true
+    }
+
+    /// After the timeout was raised (`GP:77-84`): the warning goes, and it bumps.
+    pub fn clear_timeout_and_retry(&mut self, gate: &PollGate, now: Instant) -> Polls {
+        self.timed_out = false;
+        self.bump(gate, now)
+    }
+
+    /// When `tick` next has work: the timer while polling can happen, and a waiting
+    /// invalidation.
+    pub fn next_due(&self) -> Option<Instant> {
+        let timer = (self.enabled && self.directory.as_deref().is_some_and(|d| !d.is_empty())).then_some(self.next_fire);
+        let limiter = self.limiter_block.as_ref().and(self.limiter_until);
+        match (timer, limiter) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// `poll` (`GP:86-110`).
+    fn poll(&mut self, gate: &PollGate, now: Instant) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        let dir = self.directory.clone().filter(|d| !d.is_empty())?;
+        if !should_poll(self.last_poll, gate, now) {
+            return None;
+        }
+        self.last_poll = Some(now);
+        Some(dir)
+    }
+
+    /// iTerm2's rate limiter timer: at the window's end, the waiting block runs and opens a
+    /// new window; with none waiting the window just closes.
+    fn fire_limiter(&mut self, now: Instant) -> Option<String> {
+        let until = self.limiter_until?;
+        if now < until {
+            return None;
+        }
+        self.limiter_until = None;
+        let block = self.limiter_block.take()?;
+        self.limiter_until = Some(now + INVALIDATE_EVERY);
+        Some(block)
+    }
+}
+
+/// NSString's `integerValue`: leading whitespace, a sign, then digits; 0 without digits.
+fn ns_integer(s: &str) -> i64 {
+    let s = s.trim_start();
+    let (neg, digits) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let mut n: i64 = 0;
+    for b in digits.bytes().take_while(u8::is_ascii_digit) {
+        n = n.saturating_mul(10).saturating_add((b - b'0') as i64);
+    }
+    if neg { -n } else { n }
+}
+
+/// NSString's `boolValue`: after whitespace, signs and zeros, `Y`, `y`, `T`, `t` or 1-9.
+fn ns_bool(s: &str) -> bool {
+    let rest = s.trim_start().trim_start_matches(['+', '-']).trim_start_matches('0');
+    rest.chars().next().is_some_and(|c| matches!(c, 'Y' | 'y' | 'T' | 't' | '1'..='9'))
+}
+
+/// A remote host's state from its `user.git*` variables (`GSMA:34-59`), keys without the
+/// `user.` prefix: all six required ones must be set.
+pub fn remote_state(user: &BTreeMap<String, String>) -> Option<GitState> {
+    let get = |k: &str| user.get(k).map(String::as_str);
+    let opt = |k: &str| get(k).map_or(0, ns_integer);
+    let dirty = get("gitDirty")?;
+    Some(GitState {
+        branch: get("gitBranch")?.to_string(),
+        ahead: get("gitPushCount")?.to_string(),
+        behind: get("gitPullCount")?.to_string(),
+        dirty: match dirty {
+            "dirty" => true,
+            "clean" => false,
+            d => ns_bool(d),
+        },
+        adds: ns_integer(get("gitAdds")?),
+        deletes: ns_integer(get("gitDeletes")?),
+        lines_inserted: opt("gitLinesInserted"),
+        lines_deleted: opt("gitLinesDeleted"),
+        files_added: opt("gitFilesAdded"),
+        files_modified: opt("gitFilesModified"),
+        files_deleted: opt("gitFilesDeleted"),
+        repo_state: RepoState::None,
+    })
+}
+
+/// `bumpIfLastCommandWasGit` (`GIT:267-282`): the first word (a space must follow it) is
+/// `git` after the last `/`. Tandem also splits on `\` and drops `.exe`, ignoring case.
+pub fn looks_like_git(command: &str) -> bool {
+    let Some((first, _)) = command.split_once(' ') else { return false };
+    let base = first.rsplit(['/', '\\']).next().unwrap_or(first).to_ascii_lowercase();
+    base.strip_suffix(".exe").unwrap_or(&base) == "git"
+}
+
+/// The timeout warning's variants (`GIT:153-160`), the long one first; U+26A0 without the
+/// emoji selector.
+pub const TIMED_OUT_SHORT: &str = "\u{26A0} timed out";
+pub const TIMED_OUT_ICON: &str = "\u{26A0}";
+
+/// `attributedStringValueForBranch:` (`GSM:48-178`). `ready` is iTerm2's `pollerReady`
+/// (a state and the poller enabled); `branch` is the variant being rendered.
+pub fn git_text(state: Option<&GitState>, status: Option<&str>, ready: bool, branch: &str) -> Option<String> {
+    if let Some(s) = status {
+        return Some(s.to_string());
+    }
+    let st = state.filter(|_| ready)?;
+    if let Some(word) = st.repo_state.text() {
+        return Some(word.to_string());
+    }
+    if branch.is_empty() {
+        return None;
+    }
+    let rich = st.files_added != 0 || st.files_modified != 0 || st.files_deleted != 0 || st.lines_inserted != 0 || st.lines_deleted != 0;
+    if rich {
+        let pair = |add: i64, del: i64, what: &str| match (add > 0, del > 0) {
+            (false, false) => None,
+            (false, true) => Some(format!("-{del} {what}")),
+            (true, false) => Some(format!("+{add} {what}")),
+            (true, true) => Some(format!("+{add}/-{del} {what}")),
+        };
+        let parts: Vec<String> = [pair(st.files_added, st.files_deleted, "files"), pair(st.lines_inserted, st.lines_deleted, "lines")].into_iter().flatten().collect();
+        return Some(parts.join(" "));
+    }
+    let mut out = branch.to_string();
+    if st.adds != 0 && st.deletes != 0 {
+        out.push_str("\u{2009}\u{00B1}");
+    } else {
+        if st.adds != 0 {
+            out.push_str("\u{2009}+");
+        }
+        if st.deletes != 0 {
+            out.push_str("\u{2009}-");
+        }
+    }
+    if st.dirty {
+        out.push_str("\u{2009}\u{25CF}");
+    }
+    if ns_integer(&st.ahead) > 0 {
+        out.push_str("\u{2002}\u{2191}");
+        out.push_str(&st.ahead);
+    }
+    if ns_integer(&st.behind) > 0 {
+        out.push_str("\u{2002}\u{2193}");
+        out.push_str(&st.behind);
+    }
+    Some(out)
+}
+
+/// `attributedStringVariants` (`GSM:292-302`): the one branch's string, or `[""]`.
+pub fn git_variants(state: Option<&GitState>, status: Option<&str>, ready: bool) -> Vec<String> {
+    let text = state.filter(|s| !s.branch.is_empty()).and_then(|s| git_text(Some(s), status, ready, &s.branch));
+    vec![text.unwrap_or_default()]
+}
+
+/// `shouldShowTimeoutError` (`GIT:178-190`).
+pub fn show_timeout(local: bool, enabled: bool, has_fetched: bool, timed_out: bool) -> bool {
+    local && enabled && !has_fetched && timed_out
+}
+
+/// The timeout the warning offers (`GIT:194`).
+pub fn proposed_timeout(t: f64) -> f64 {
+    (t * 2.0).max(t + 2.0)
+}
+
+/// `formatTimeoutSeconds:` (`GIT:214-219`).
+pub fn format_timeout(s: f64) -> String {
+    if (s - s.round()).abs() < 0.01 { format!("{}", s.round() as i64) } else { format!("{s:.1}") }
+}
+
+/// The warning's accept button (`GIT:202`).
+pub fn increase_button(proposed: f64) -> String {
+    format!("Increase to {}s", format_timeout(proposed))
+}
+
+/// The timeout warning's text (`GIT:195-201`).
+pub fn timeout_message(dir: Option<&str>, current: f64, proposed: f64) -> String {
+    format!(
+        "Running git in {} didn\u{2019}t finish within {} seconds, so the status bar component can\u{2019}t show the branch. \
+This often happens in very large repositories or when the working tree is on a slow filesystem.\n\n\
+Would you like to increase the timeout to {} seconds?",
+        dir.unwrap_or("the current directory"),
+        format_timeout(current),
+        format_timeout(proposed)
+    )
+}
+
+/// The Debug Info text (`GIT:513-536`). Never polled prints 0 seconds (iTerm2 prints `-0`
+/// from a nil date).
+pub fn debug_text(dir: Option<&str>, cadence: f64, enabled: bool, since_poll: Option<f64>, state: Option<&GitState>, cache_info: &str) -> String {
+    format!(
+        "Directory: {}\nPolling cadence: {} sec\nPolling enabled: {}\nLast polled {} seconds ago\nRepo state: {}\n{}",
+        dir.unwrap_or("(null)"),
+        cadence,
+        if enabled { "Yes" } else { "No" },
+        since_poll.unwrap_or(0.0),
+        state.map_or_else(|| "(null)".to_string(), GitState::pretty),
+        cache_info
+    )
+}
+
+/// A click menu command (`GIT:507-626`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GitCommand {
+    Commit,
+    AddCommit,
+    Stash,
+    Log,
+    Push(String),
+    Pull(String),
+    Checkout(String),
+    Debug,
+}
+
+impl GitCommand {
+    /// git's arguments (none for Debug Info).
+    pub fn args(&self) -> Vec<String> {
+        let v: &[&str] = match self {
+            GitCommand::Commit => &["commit"],
+            GitCommand::AddCommit => &["commit", "-a"],
+            GitCommand::Stash => &["stash"],
+            GitCommand::Log => &["log"],
+            GitCommand::Push(b) => return vec!["push".into(), "origin".into(), b.clone()],
+            GitCommand::Pull(b) => return vec!["pull".into(), "origin".into(), b.clone()],
+            GitCommand::Checkout(b) => return vec!["checkout".into(), b.clone()],
+            GitCommand::Debug => &[],
+        };
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The component's text while the command's window runs.
+    pub fn status(&self) -> Option<&'static str> {
+        match self {
+            GitCommand::Commit | GitCommand::AddCommit => Some("Committing\u{2026}"),
+            GitCommand::Stash => Some("Stashing\u{2026}"),
+            GitCommand::Push(_) => Some("Pushing\u{2026}"),
+            GitCommand::Pull(_) => Some("Pulling\u{2026}"),
+            GitCommand::Checkout(_) => Some("Checking out\u{2026}"),
+            GitCommand::Log | GitCommand::Debug => None,
+        }
+    }
+
+    /// The single-use window starts buried (`InitiallyBuried`).
+    pub fn buried(&self) -> bool {
+        matches!(self, GitCommand::Stash | GitCommand::Push(_) | GitCommand::Pull(_) | GitCommand::Checkout(_))
+    }
+}
+
+/// A menu row; a disabled one shows but does nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GitItem {
+    pub title: String,
+    pub enabled: bool,
+    pub command: GitCommand,
+}
+
+/// The menu for a state with a branch (`GIT:343-404`); `None` is a separator. The branch
+/// list is cut to 7 before the current branch is skipped (iTerm2's, kept).
+pub fn git_menu(state: &GitState, branches: &[String]) -> Vec<Option<GitItem>> {
+    let item = |title: &str, enabled: bool, command: GitCommand| Some(GitItem { title: title.to_string(), enabled, command });
+    let b = &state.branch;
+    let mut m = vec![
+        item("Commit", state.dirty, GitCommand::Commit),
+        item("Add & Commit", state.dirty, GitCommand::AddCommit),
+        item("Stash", state.dirty, GitCommand::Stash),
+        item("Log", true, GitCommand::Log),
+        item(&format!("Push origin {b}"), ns_integer(&state.ahead) > 0 || state.ahead == "error", GitCommand::Push(b.clone())),
+        item(&format!("Pull origin {b}"), !state.dirty, GitCommand::Pull(b.clone())),
+        None,
+    ];
+    for other in branches.iter().take(MENU_BRANCHES).filter(|o| !o.is_empty() && *o != b) {
+        m.push(item(&format!("Check out {other}"), true, GitCommand::Checkout(other.clone())));
+    }
+    m.push(None);
+    m.push(item("Show Debug Info", true, GitCommand::Debug));
+    m
+}
+
+/// The running command's cancel row (`GIT:318`).
+pub fn cancel_title(status: &str) -> String {
+    format!("Cancel {}", status.replace('\u{2026}', ""))
+}
+
+/// The command sent to a remote host's shell (`GIT:577-594`): each argument with iTerm2's
+/// backslash escaping, newlines included.
+pub fn remote_command(args: &[String]) -> String {
+    let esc = |a: &String| {
+        let job = crate::paste::Job::new(a, crate::paste::ESCAPE);
+        crate::paste::sanitize(&job, &crate::paste::Prefs::default()).replace('\r', "\\\r").replace('\n', "\\\n")
+    };
+    let mut out = "git".to_string();
+    for a in args {
+        out.push(' ');
+        out.push_str(&esc(a));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::Mutex;
+
+    type Reply = Box<dyn Fn(&str) -> RunResult + Send + Sync>;
+
+    /// A `GitRun` that records every call and answers by subcommand.
+    struct Fake {
+        calls: Mutex<Vec<(Vec<String>, Duration)>>,
+        delay: Duration,
+        reply: Reply,
+    }
+
+    impl Fake {
+        fn new(reply: impl Fn(&str) -> RunResult + Send + Sync + 'static) -> Fake {
+            Fake { calls: Mutex::new(Vec::new()), delay: Duration::ZERO, reply: Box::new(reply) }
+        }
+        fn calls(&self) -> Vec<(Vec<String>, Duration)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl GitRun for Fake {
+        fn run(&self, _git: &Path, _dir: &Path, args: &[String], timeout: Duration, _cap: Option<usize>) -> RunResult {
+            self.calls.lock().unwrap().push((args.to_vec(), timeout));
+            std::thread::sleep(self.delay);
+            (self.reply)(&sub(args))
+        }
+    }
+
+    fn sub(args: &[String]) -> String {
+        args.iter().find(|a| matches!(a.as_str(), "status" | "rev-parse" | "for-each-ref")).cloned().unwrap_or_default()
+    }
+
+    fn exit(out: &[u8]) -> RunResult {
+        RunResult::Exit { code: 0, stdout: out.to_vec(), capped: false }
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tandem-git-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A temp folder with an empty `.git` folder.
+    fn temp_repo(name: &str) -> PathBuf {
+        let d = temp(name);
+        fs::create_dir(d.join(".git")).unwrap();
+        d
+    }
+
+    const PORC: &[u8] = b"# branch.oid 1234567890abcdef1234567890abcdef12345678\0# branch.head main\0";
+    const SEC: Duration = Duration::from_secs(1);
+    const GIT: &str = "git";
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    fn fetched(state: Option<GitState>, timed_out: bool) -> Fetched {
+        Fetched { state, timed_out }
+    }
+
+    fn main_state() -> GitState {
+        GitState { branch: "main".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn porcelain_parses_like_libgit2() {
+        let z = b"# branch.oid 1234567890abcdef1234567890abcdef12345678\0# branch.head main\0\
+# branch.upstream origin/main\0# branch.ab +2 -1\0\
+1 .M N... 100644 100644 100644 aaa bbb src/a.rs\0\
+1 .D N... 100644 100644 000000 aaa aaa gone.rs\0? new1.txt\0? dir/new2.txt\0";
+        let s = parse_porcelain(z).unwrap();
+        assert_eq!((s.branch.as_str(), s.ahead.as_str(), s.behind.as_str()), ("main", "2", "1"));
+        assert!(s.dirty);
+        assert_eq!((s.adds, s.deletes), (2, 1));
+        assert_eq!(s.repo_state, RepoState::None);
+
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        let z = format!("# branch.oid {oid}\0# branch.head (detached)\0");
+        let s = parse_porcelain(z.as_bytes()).unwrap();
+        assert_eq!(s.branch, oid, "detached: the full commit id");
+        assert_eq!((s.ahead.as_str(), s.behind.as_str()), ("", ""), "no upstream: no counts");
+        assert!(!s.dirty, "no entries is clean");
+        assert_eq!((s.adds, s.deletes), (0, 0));
+
+        assert_eq!(parse_porcelain(b"# branch.oid (initial)\0# branch.head main\0? a\0"), None, "unborn branch");
+        assert_eq!(parse_porcelain(b""), None, "no headers");
+
+        // A rename entry's second field is the original path, never an entry of its own.
+        let z = [PORC, b"2 R. N... 100644 100644 100644 aaa bbb R100 new.rs\0?weird\0"].concat();
+        let s = parse_porcelain(&z).unwrap();
+        assert!(s.dirty);
+        assert_eq!((s.adds, s.deletes), (0, 0));
+
+        let z = [PORC, b"u UD N... 100644 100644 100644 100644 a b c conflict.rs\0"].concat();
+        let s = parse_porcelain(&z).unwrap();
+        assert!(s.dirty, "an unmerged entry is dirty");
+        assert_eq!((s.adds, s.deletes), (0, 0), "and counts nothing else");
+
+        let z = [PORC, b"1 D. N... 100644 000000 000000 aaa 000 staged-rm.rs\0"].concat();
+        assert_eq!(parse_porcelain(&z).unwrap().deletes, 0, "an index deletion is not a worktree deletion");
+    }
+
+    #[test]
+    fn repo_state_follows_libgit2() {
+        let case = |name: &str, make: &dyn Fn(&Path)| {
+            let g = temp(&format!("state-{name}"));
+            make(&g);
+            let got = repo_state(&g);
+            fs::remove_dir_all(&g).unwrap();
+            got
+        };
+        let file = |g: &Path, p: &str| {
+            let p = g.join(p);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "x").unwrap();
+        };
+        let dir = |g: &Path, p: &str| fs::create_dir_all(g.join(p)).unwrap();
+        assert_eq!(case("none", &|_| {}), RepoState::None);
+        assert_eq!(case("rmi", &|g| file(g, "rebase-merge/interactive")), RepoState::Rebase);
+        assert_eq!(case("rm", &|g| dir(g, "rebase-merge")), RepoState::Rebase);
+        assert_eq!(case("rar", &|g| file(g, "rebase-apply/rebasing")), RepoState::Rebase);
+        assert_eq!(case("raa", &|g| file(g, "rebase-apply/applying")), RepoState::Apply);
+        assert_eq!(case("ra", &|g| dir(g, "rebase-apply")), RepoState::Apply);
+        assert_eq!(case("merge", &|g| file(g, "MERGE_HEAD")), RepoState::Merge);
+        assert_eq!(case("revert", &|g| file(g, "REVERT_HEAD")), RepoState::Revert);
+        assert_eq!(case("pick", &|g| file(g, "CHERRY_PICK_HEAD")), RepoState::Cherrypick);
+        assert_eq!(case("bisect", &|g| file(g, "BISECT_LOG")), RepoState::Bisect);
+        assert_eq!(case("both", &|g| { dir(g, "rebase-merge"); file(g, "MERGE_HEAD") }), RepoState::Rebase, "rebase wins");
+        assert_eq!(case("mdir", &|g| dir(g, "MERGE_HEAD")), RepoState::None, "MERGE_HEAD must be a file");
+    }
+
+    #[test]
+    fn git_never_runs_off_local_paths() {
+        let fake = Fake::new(|_| exit(PORC));
+        for d in [r"\\server\share\repo", "//server/share/repo", r"\\?\C:\x", r"\\?\UNC\server\share"] {
+            assert_eq!(fetch_state(&fake, Path::new(GIT), Path::new(d), 4 * SEC), fetched(None, false), "{d}");
+            assert!(!repo_path_ok(Path::new(d)), "{d}");
+            assert!(recent_branches(&fake, Path::new(GIT), Path::new(d), 4 * SEC).is_empty(), "{d}");
+        }
+        let d = temp("unc-gitdir");
+        fs::write(d.join(".git"), "gitdir: \\\\server\\x\n").unwrap();
+        assert!(!repo_path_ok(&d));
+        assert_eq!(fetch_state(&fake, Path::new(GIT), &d, 4 * SEC), fetched(None, false));
+        fs::write(d.join(".git"), "gitdir: //server/x\n").unwrap();
+        assert!(!repo_path_ok(&d));
+        assert!(fake.calls().is_empty(), "git never started: {:?}", fake.calls());
+
+        // A worktree's relative `gitdir:` is fine.
+        let d2 = temp("rel-gitdir");
+        fs::create_dir(d2.join("real.git")).unwrap();
+        fs::write(d2.join(".git"), "gitdir: real.git\n").unwrap();
+        assert!(repo_path_ok(&d2));
+        assert_eq!(fetch_state(&fake, Path::new(GIT), &d2, 4 * SEC), fetched(Some(main_state()), false));
+        assert_eq!(fake.calls().len(), 2);
+
+        // The git directory rev-parse names is read only when it is local.
+        let merging = temp("merging");
+        fs::write(merging.join("MERGE_HEAD"), "x").unwrap();
+        let local = format!("{}\n", merging.display());
+        let unc = Fake::new(|s| if s == "status" { exit(PORC) } else { exit(b"//server/x/.git\n") });
+        let got = fetch_state(&unc, Path::new(GIT), &d2, 4 * SEC).state.unwrap();
+        assert_eq!(got.repo_state, RepoState::None);
+        let near = Fake::new(move |s| if s == "status" { exit(PORC) } else { exit(local.as_bytes()) });
+        assert_eq!(fetch_state(&near, Path::new(GIT), &d2, 4 * SEC).state.unwrap().repo_state, RepoState::Merge);
+
+        assert_eq!(git_program("\\\\server\\tools"), None);
+        assert_eq!(git_program("//server/tools;C:\\Git\\cmd"), None, "only the first entry is used");
+        assert_eq!(git_program(""), Some(PathBuf::from("git")));
+        assert_eq!(git_program("C:\\Git\\cmd;D:\\x"), Some(PathBuf::from("C:\\Git\\cmd\\git.exe")));
+        assert_eq!(git_program("\"C:\\Program Files\\Git\\cmd\\\""), Some(PathBuf::from("C:\\Program Files\\Git\\cmd\\git.exe")));
+
+        // Finding git on PATH never looks in a network folder.
+        let looked = Mutex::new(Vec::new());
+        let is_file = |p: &Path| {
+            looked.lock().unwrap().push(p.to_path_buf());
+            p == Path::new("D:\\Git\\cmd\\git.exe")
+        };
+        assert_eq!(find_git("\\\\server\\bin;relative;C:\\none;\"D:\\Git\\cmd\"", &is_file), Some(PathBuf::from("D:\\Git\\cmd\\git.exe")));
+        assert_eq!(*looked.lock().unwrap(), vec![PathBuf::from("C:\\none\\git.exe"), PathBuf::from("D:\\Git\\cmd\\git.exe")]);
+        assert_eq!(find_git("\\\\server\\bin", &is_file), None);
+        for p in [d, d2, merging] {
+            fs::remove_dir_all(p).unwrap();
+        }
+    }
+
+    #[test]
+    fn repo_config_cannot_run_programs_or_reach_shares() {
+        let fake = Fake::new(|_| exit(PORC));
+        let d = temp_repo("filters");
+        fs::write(d.join(".git").join("config"), "[core]\n\tbare = false\n[filter \"Ev.il\"]\n\tprocess = calc.exe\n[filter.LEGACY]\n\tclean = x\n[include]\n\tpath = \"more.cfg\" ; a comment\n").unwrap();
+        fs::write(d.join(".git").join("more.cfg"), "[filter \"third\"]\nsmudge = y\n").unwrap();
+        fetch_state(&fake, Path::new(GIT), &d, 4 * SEC);
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2);
+        for (args, _) in &calls {
+            assert_eq!(args[0], "--no-optional-locks");
+            let has = |a: &str| args.iter().any(|x| x == a);
+            assert!(has("core.fsmonitor=false"), "{args:?}");
+            for name in ["Ev.il", "legacy", "third"] {
+                for key in ["clean=", "smudge=", "process=", "required=false"] {
+                    assert!(has(&format!("filter.{name}.{key}")), "{name}.{key} in {args:?}");
+                }
+            }
+            let at = args.iter().position(|a| a == "status" || a == "rev-parse").unwrap();
+            assert!(args[..at].iter().any(|a| a.starts_with("filter.")), "the overrides go before the subcommand");
+        }
+        let refused = |name: &str, file: &str, text: &str| {
+            let d = temp_repo(name);
+            let p = d.join(".git").join(file);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, text).unwrap();
+            let ok = repo_path_ok(&d);
+            fs::remove_dir_all(&d).unwrap();
+            !ok
+        };
+        assert!(refused("inc-unc", "config", "[include]\n\tpath = \\\\\\\\server\\\\share\\\\x\n"), "an include on a share");
+        assert!(refused("inc-quoted", "config", "[includeIf \"gitdir:C:/\"]\n\tpath = \"//server/share/x\"\n"));
+        assert!(refused("excludes", "config", "[core]\n\texcludesFile = //server/share/ignore\n"));
+        assert!(refused("worktree", "config.worktree", "[core]\n\tworktree = \\\\\\\\server\\\\w\n"));
+        assert!(refused("commondir", "commondir", "\\\\server\\common\n"));
+        assert!(refused("alternates", "objects/info/alternates", "//server/objects\n"));
+        assert!(refused("bad-name", "config", "[filter \"a=b\"]\n\tclean = x\n"), "a name -c cannot carry");
+        assert!(refused("deep", "config", "[include]\n\tpath = config\n"), "an include loop");
+        assert!(!refused("plain", "config", "[remote \"origin\"]\n\turl = https://example.com/r.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n"));
+        assert!(!refused("local-alt", "objects/info/alternates", "# comment\nC:/objects\n../../other/objects\n"));
+
+        // A bare repository git would find above the directory is checked too.
+        let bare = temp("bare");
+        fs::write(bare.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(bare.join("config"), "[core]\n\texcludesFile = //server/x\n").unwrap();
+        fs::create_dir(bare.join("sub")).unwrap();
+        assert!(!repo_path_ok(&bare.join("sub")));
+        for p in [d, bare] {
+            fs::remove_dir_all(p).unwrap();
+        }
+    }
+
+    #[test]
+    fn fetch_state_shares_one_deadline() {
+        let d = temp_repo("deadline");
+        let mut fake = Fake::new(|s| if s == "status" { exit(PORC) } else { exit(b"") });
+        fake.delay = ms(50);
+        assert_eq!(fetch_state(&fake, Path::new(GIT), &d, 4 * SEC), fetched(Some(main_state()), false));
+        let calls = fake.calls();
+        assert_eq!((sub(&calls[0].0).as_str(), calls[0].1), ("status", 4 * SEC));
+        assert_eq!(sub(&calls[1].0), "rev-parse");
+        assert!(calls[1].1 <= 4 * SEC - ms(50) && calls[1].1 > 3 * SEC, "{:?}", calls[1].1);
+
+        let not_repo = Fake::new(|_| RunResult::Exit { code: 128, stdout: Vec::new(), capped: false });
+        assert_eq!(fetch_state(&not_repo, Path::new(GIT), &d, 4 * SEC), fetched(None, false));
+        assert_eq!(not_repo.calls().len(), 1);
+        let failed = Fake::new(|_| RunResult::Failed("no git".into()));
+        assert_eq!(fetch_state(&failed, Path::new(GIT), &d, 4 * SEC), fetched(None, false));
+        let slow = Fake::new(|_| RunResult::TimedOut);
+        assert_eq!(fetch_state(&slow, Path::new(GIT), &d, 4 * SEC), fetched(None, true));
+        let slow_dir = Fake::new(|s| if s == "status" { exit(PORC) } else { RunResult::TimedOut });
+        assert_eq!(fetch_state(&slow_dir, Path::new(GIT), &d, 4 * SEC), fetched(None, true));
+
+        let branches = Fake::new(|_| exit(b"main\r\nfeature/x\n\nold\n"));
+        assert_eq!(recent_branches(&branches, Path::new(GIT), &d, 4 * SEC), ["main", "feature/x", "old"]);
+        assert_eq!(sub(&branches.calls()[0].0), "for-each-ref");
+        assert!(branches.calls()[0].0.iter().any(|a| a == "--count=8"));
+        assert_eq!(parse_branches(b"a\nb"), ["a", "b"]);
+
+        assert_eq!(timeout_of(4.0), 4 * SEC);
+        assert_eq!(timeout_of(4.9), 4 * SEC);
+        assert_eq!(timeout_of(0.2), SEC);
+        assert_eq!(timeout_of(-3.0), SEC);
+        assert_eq!(timeout_of(f64::NAN), SEC);
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn worker_cache_follows_iterm2() {
+        let t0 = Instant::now() + 10 * SEC;
+        let p = "C:\\r";
+        let mut c = WorkerCache::default();
+        assert!(matches!(c.lookup(p, t0), Lookup::Start));
+        assert!(matches!(c.lookup(p, t0), Lookup::Joined));
+        assert_eq!(c.debug_info(p, t0), "Basic cache: none\nRich cache: none\nPending calls: 2\n");
+        let s = main_state();
+        assert_eq!(c.finish(p, fetched(Some(s.clone()), false), t0), fetched(Some(s.clone()), false));
+        assert_eq!(c.debug_info(p, t0 + ms(500)), "Basic cache: age 0.5\nRich cache: none\nPending calls: 0\n");
+        match c.lookup(p, t0 + ms(500)) {
+            Lookup::Cached(Some(x)) => assert_eq!(x, s),
+            _ => panic!("under 1 s is cached"),
+        }
+        assert!(matches!(c.lookup("C:\\other", t0), Lookup::Start), "keyed by path");
+        assert!(matches!(c.lookup(p, t0 + SEC), Lookup::Start), "1 s old is stale");
+
+        let old = GitState { branch: "old".into(), ..Default::default() };
+        assert_eq!(c.finish(p, fetched(Some(old), false), t0 - SEC), fetched(Some(s.clone()), false), "an older reply loses");
+        assert_eq!(c.finish(p, fetched(None, true), t0 + 2 * SEC), fetched(Some(s.clone()), true), "the timeout passes through");
+        assert_eq!(c.finish(p, fetched(None, false), t0 + 2 * SEC), fetched(Some(s.clone()), false), "a stateless reply is oldest");
+        let new = GitState { branch: "new".into(), ..Default::default() };
+        assert_eq!(c.finish(p, fetched(Some(new.clone()), false), t0 + 3 * SEC), fetched(Some(new), false));
+        assert_eq!(c.debug_info(p, t0 + 3 * SEC), "Basic cache: age 0\nRich cache: none\nPending calls: 0\n");
+
+        assert!(matches!(c.lookup(p, t0 + 5 * SEC), Lookup::Start));
+        c.invalidate(p);
+        assert_eq!(c.debug_info(p, t0 + 5 * SEC), "Basic cache: none\nRich cache: none\nPending calls: 0\n");
+        assert!(matches!(c.lookup(p, t0 + 5 * SEC), Lookup::Start), "no pending call to join");
+        assert_eq!(c.finish(p, fetched(None, false), t0 + 5 * SEC), fetched(None, false), "nothing cached, nothing kept");
+        assert_eq!(c.debug_info(p, t0 + 5 * SEC), "Basic cache: none\nRich cache: none\nPending calls: 0\n");
+    }
+
+    fn visible() -> PollGate {
+        PollGate { visible: true, last_newline: None, last_activity: None }
+    }
+
+    #[test]
+    fn stale_poll_results_are_dropped() {
+        let t0 = Instant::now();
+        let mut p = GitPoller::new(2.0, t0);
+        p.set_enabled(true);
+        assert_eq!(p.set_directory(Some("C:\\a".into()), &visible(), t0).request.as_deref(), Some("C:\\a"));
+        p.set_directory(Some("C:\\b".into()), &visible(), t0 + SEC);
+        assert!(!p.did_poll("C:\\a", fetched(Some(main_state()), true)));
+        assert_eq!(p.state, None);
+        assert!(!p.timed_out && !p.has_fetched);
+        assert!(p.did_poll("C:\\b", fetched(Some(main_state()), false)));
+        assert_eq!(p.state, Some(main_state()));
+        assert!(p.has_fetched);
+    }
+
+    #[test]
+    fn timeouts_are_remembered_per_directory() {
+        let t0 = Instant::now();
+        let mut p = GitPoller::new(2.0, t0);
+        p.set_enabled(true);
+        p.set_directory(Some("C:\\big".into()), &visible(), t0);
+        assert!(p.did_poll("C:\\big", fetched(None, true)));
+        assert!(p.timed_out && !p.has_fetched);
+        assert!(show_timeout(true, p.enabled, p.has_fetched, p.timed_out));
+        assert!(!show_timeout(false, true, false, true), "not on a remote host");
+        assert!(!show_timeout(true, false, false, true), "not when disabled");
+        assert!(!show_timeout(true, true, true, true), "not once this directory answered");
+        assert!(!show_timeout(true, true, false, false));
+
+        p.did_poll("C:\\big", fetched(None, false));
+        assert!(!p.timed_out && p.has_fetched, "a clean reply clears it, even with no state");
+        p.did_poll("C:\\big", fetched(None, true));
+        assert!(p.timed_out && p.has_fetched, "a later timeout after an answer does not warn");
+        assert!(!show_timeout(true, true, p.has_fetched, p.timed_out));
+
+        p.set_directory(Some("C:\\other".into()), &visible(), t0 + SEC);
+        assert!(!p.timed_out && !p.has_fetched, "per directory");
+        p.did_poll("C:\\other", fetched(None, true));
+        let typed = PollGate { last_newline: Some(t0 + 2 * SEC), ..visible() };
+        let polls = p.clear_timeout_and_retry(&typed, t0 + 2 * SEC);
+        assert!(!p.timed_out);
+        assert_eq!(polls.request.as_deref(), Some("C:\\other"));
+    }
+
+    #[test]
+    fn git_polling_follows_iterm2() {
+        let t0 = Instant::now();
+        let last = t0 + 10 * SEC;
+        let hidden = PollGate { visible: false, ..visible() };
+        assert!(should_poll(None, &visible(), t0), "the first poll always runs");
+        assert!(!should_poll(None, &hidden, t0));
+        let nl = |t| PollGate { last_newline: Some(t), ..visible() };
+        assert!(should_poll(Some(last), &nl(last - 2 * SEC), last + SEC), "a newline after last_poll - 3 s");
+        assert!(!should_poll(Some(last), &nl(last - 3 * SEC), last + SEC), "strictly after");
+        assert!(!should_poll(Some(last), &nl(last - 4 * SEC), last + SEC));
+        assert!(!should_poll(Some(last), &PollGate { visible: false, ..nl(last) }, last + SEC));
+        let out = |t| PollGate { last_activity: Some(t), ..visible() };
+        assert!(should_poll(Some(last), &out(last + SEC), last + 61 * SEC), "output and over 60 s");
+        assert!(!should_poll(Some(last), &out(last + SEC), last + 59 * SEC));
+        assert!(!should_poll(Some(last), &out(last - SEC), last + 61 * SEC), "output before the last poll");
+        assert!(!should_poll(Some(last), &visible(), last + 61 * SEC));
+
+        // Disabled, or no directory: nothing polls.
+        let mut p = GitPoller::new(2.0, t0);
+        assert_eq!(p.set_directory(Some("C:\\r".into()), &visible(), t0).request, None, "disabled");
+        assert!(!p.set_enabled(true), "enabling does not redraw");
+        assert!(!p.set_enabled(true), "no change");
+        assert!(p.set_enabled(false), "disabling redraws to clear");
+        assert_eq!(p.bump(&visible(), t0).request, None);
+        p.set_enabled(true);
+        let mut q = GitPoller::new(2.0, t0);
+        q.set_enabled(true);
+        assert_eq!(q.bump(&visible(), t0).request, None, "no directory");
+        assert_eq!(q.set_directory(Some(String::new()), &visible(), t0).request, None, "an empty directory");
+        let mut h = GitPoller::new(2.0, t0);
+        h.set_enabled(true);
+        assert_eq!(h.set_directory(Some("C:\\r".into()), &hidden, t0).request, None, "not visible");
+
+        // The timer: first poll, then only with activity.
+        let mut p = GitPoller::new(2.0, t0);
+        p.set_enabled(true);
+        assert_eq!(p.next_due(), None, "no directory: nothing to poll");
+        let first = p.set_directory(Some("C:\\r".into()), &visible(), t0 + SEC);
+        assert_eq!(first.request.as_deref(), Some("C:\\r"));
+        assert_eq!(first.invalidate.as_deref(), Some("C:\\r"));
+        assert_eq!(p.last_poll, Some(t0 + SEC));
+        assert_eq!(p.next_due(), Some(t0 + 2 * SEC), "a directory change does not restart the timer");
+        assert_eq!(p.tick(&visible(), t0 + ms(1500)).request, None, "not due");
+        assert_eq!(p.tick(&visible(), t0 + 2 * SEC).request, None, "due, but nothing happened");
+        assert_eq!(p.next_due(), Some(t0 + 4 * SEC));
+        assert_eq!(p.tick(&nl(t0 + 3 * SEC), t0 + 4 * SEC).request.as_deref(), Some("C:\\r"));
+        assert_eq!(p.last_poll, Some(t0 + 4 * SEC));
+
+        // bump polls and restarts the timer; the knob alone waits for the next bump.
+        assert_eq!(p.bump(&nl(t0 + 5 * SEC), t0 + 5 * SEC).request.as_deref(), Some("C:\\r"));
+        assert_eq!(p.next_due(), Some(t0 + 7 * SEC));
+        p.set_cadence(5.0);
+        assert_eq!(p.cadence, 5.0);
+        assert_eq!(p.next_due(), Some(t0 + 7 * SEC), "iTerm2 keeps the running timer");
+        p.tick(&visible(), t0 + 7 * SEC);
+        assert_eq!(p.next_due(), Some(t0 + 9 * SEC), "still the old interval");
+        p.bump(&visible(), t0 + 8 * SEC);
+        assert_eq!(p.next_due(), Some(t0 + 13 * SEC), "the bump takes the new cadence");
+        p.set_cadence(0.0);
+        assert_eq!(p.cadence, 1.0, "an interval of 0 is 1");
+        assert_eq!(GitPoller::new(0.0, t0).cadence, 1.0);
+
+        // Cache invalidation on a directory change, at most every 0.5 s.
+        let t = t0 + 20 * SEC;
+        let mut p = GitPoller::new(2.0, t);
+        p.set_enabled(true);
+        assert_eq!(p.set_directory(Some("C:\\a".into()), &visible(), t).invalidate.as_deref(), Some("C:\\a"));
+        let second = p.set_directory(Some("C:\\b".into()), &nl(t + ms(200)), t + ms(200));
+        assert_eq!(second.invalidate, None);
+        assert_eq!(second.request.as_deref(), Some("C:\\b"));
+        assert_eq!(p.next_due(), Some(t + ms(500)));
+        assert_eq!(p.tick(&visible(), t + ms(499)).invalidate, None);
+        assert_eq!(p.tick(&visible(), t + ms(500)).invalidate.as_deref(), Some("C:\\b"));
+        assert_eq!(p.set_directory(Some("C:\\c".into()), &visible(), t + ms(600)).invalidate, None);
+        assert_eq!(p.tick(&visible(), t + SEC).invalidate.as_deref(), Some("C:\\c"));
+        assert_eq!(p.tick(&visible(), t + ms(1600)).invalidate, None, "nothing waiting");
+        assert_eq!(p.set_directory(Some("C:\\d".into()), &visible(), t + 3 * SEC).invalidate.as_deref(), Some("C:\\d"), "quiet again");
+        assert_eq!(p.set_directory(Some("C:\\d".into()), &visible(), t + 4 * SEC).request, None, "the same directory changes nothing");
+        assert_eq!(p.set_directory(None, &visible(), t + 5 * SEC).invalidate, None, "no directory, nothing to invalidate");
+    }
+
+    #[test]
+    fn git_text_follows_iterm2() {
+        let s = main_state();
+        let text = |st: &GitState| git_text(Some(st), None, true, "main");
+        assert_eq!(git_text(Some(&s), Some("Committing\u{2026}"), true, "main").as_deref(), Some("Committing\u{2026}"));
+        assert_eq!(git_text(None, Some("Stashing\u{2026}"), false, "main").as_deref(), Some("Stashing\u{2026}"), "a status wins");
+        assert_eq!(git_text(Some(&s), None, false, "main"), None, "not ready");
+        assert_eq!(git_text(None, None, true, "main"), None);
+        for (rs, word) in [
+            (RepoState::Merge, "Merging"),
+            (RepoState::Revert, "Reverting"),
+            (RepoState::Cherrypick, "Cherrypicking"),
+            (RepoState::Bisect, "Bisecting"),
+            (RepoState::Rebase, "Rebasing"),
+            (RepoState::Apply, "Applying"),
+        ] {
+            assert_eq!(rs.text(), Some(word));
+            assert_eq!(text(&GitState { repo_state: rs, ..s.clone() }).as_deref(), Some(word));
+        }
+        assert_eq!(RepoState::None.text(), None);
+        assert_eq!(git_text(Some(&s), None, true, ""), None, "no branch");
+        assert_eq!(text(&s).as_deref(), Some("main"));
+        assert_eq!(text(&GitState { adds: 1, deletes: 2, ..s.clone() }).as_deref(), Some("main\u{2009}\u{00B1}"));
+        assert_eq!(text(&GitState { adds: 1, ..s.clone() }).as_deref(), Some("main\u{2009}+"));
+        assert_eq!(text(&GitState { deletes: 1, ..s.clone() }).as_deref(), Some("main\u{2009}-"));
+        assert_eq!(text(&GitState { dirty: true, ..s.clone() }).as_deref(), Some("main\u{2009}\u{25CF}"));
+        assert_eq!(text(&GitState { ahead: "2".into(), ..s.clone() }).as_deref(), Some("main\u{2002}\u{2191}2"));
+        assert_eq!(text(&GitState { behind: "3".into(), ..s.clone() }).as_deref(), Some("main\u{2002}\u{2193}3"));
+        assert_eq!(text(&GitState { ahead: "0".into(), behind: "error".into(), ..s.clone() }).as_deref(), Some("main"));
+        let all = GitState { adds: 1, dirty: true, ahead: "1".into(), behind: "2".into(), ..s.clone() };
+        assert_eq!(text(&all).as_deref(), Some("main\u{2009}+\u{2009}\u{25CF}\u{2002}\u{2191}1\u{2002}\u{2193}2"));
+        let rich = GitState { files_added: 2, lines_inserted: 10, lines_deleted: 3, ..s.clone() };
+        assert_eq!(text(&rich).as_deref(), Some("+2 files +10/-3 lines"));
+        assert_eq!(text(&GitState { files_deleted: 1, lines_deleted: 4, ..s.clone() }).as_deref(), Some("-1 files -4 lines"));
+        assert_eq!(text(&GitState { files_added: 1, files_deleted: 2, lines_inserted: 5, ..s.clone() }).as_deref(), Some("+1/-2 files +5 lines"));
+        assert_eq!(text(&GitState { files_modified: 3, ..s.clone() }).as_deref(), Some(""), "modified files alone add no part");
+        assert_eq!(git_text(Some(&s), None, true, "M").as_deref(), Some("M"), "the minimum width's branch");
+
+        assert_eq!(git_variants(Some(&s), None, true), ["main"]);
+        assert_eq!(git_variants(Some(&GitState { branch: String::new(), ..s.clone() }), None, true), [""]);
+        assert_eq!(git_variants(None, Some("Committing\u{2026}"), true), [""], "no branch, no status either");
+        assert_eq!(git_variants(Some(&s), None, false), [""]);
+        assert_eq!((TIMED_OUT_SHORT, TIMED_OUT_ICON), ("\u{26A0} timed out", "\u{26A0}"));
+    }
+
+    #[test]
+    fn timeout_and_debug_texts_follow_iterm2() {
+        assert_eq!(proposed_timeout(4.0), 8.0);
+        assert_eq!(proposed_timeout(1.0), 3.0);
+        assert_eq!(format_timeout(8.0), "8");
+        assert_eq!(format_timeout(3.004), "3");
+        assert_eq!(format_timeout(2.5), "2.5");
+        assert_eq!(increase_button(8.0), "Increase to 8s");
+        assert_eq!(
+            timeout_message(None, 4.0, 8.0),
+            "Running git in the current directory didn\u{2019}t finish within 4 seconds, so the status bar component can\u{2019}t show the branch. \
+This often happens in very large repositories or when the working tree is on a slow filesystem.\n\nWould you like to increase the timeout to 8 seconds?"
+        );
+        assert!(timeout_message(Some("C:\\big"), 4.5, 8.5).starts_with("Running git in C:\\big didn\u{2019}t finish within 4.5 seconds"));
+        let s = GitState { branch: "main".into(), ahead: "1".into(), dirty: true, adds: 2, lines_inserted: 3, files_modified: 4, ..Default::default() };
+        assert_eq!(s.pretty(), "dir=(null) xcode=(null) ahead=1 behind= branch=main dirty=1 adds=2 deletes=0 lines=+3/-0 files=+0/~4/-0");
+        assert_eq!(
+            debug_text(Some("C:\\r"), 2.0, true, Some(1.5), Some(&s), "Basic cache: none\nRich cache: none\nPending calls: 0\n"),
+            format!("Directory: C:\\r\nPolling cadence: 2 sec\nPolling enabled: Yes\nLast polled 1.5 seconds ago\nRepo state: {}\nBasic cache: none\nRich cache: none\nPending calls: 0\n", s.pretty())
+        );
+        assert_eq!(debug_text(None, 0.5, false, None, None, ""), "Directory: (null)\nPolling cadence: 0.5 sec\nPolling enabled: No\nLast polled 0 seconds ago\nRepo state: (null)\n");
+    }
+
+    #[test]
+    fn git_menu_follows_iterm2() {
+        let titles = |m: &[Option<GitItem>]| m.iter().map(|i| i.as_ref().map(|i| (i.title.clone(), i.enabled))).collect::<Vec<_>>();
+        let t = |s: &str, on: bool| Some((s.to_string(), on));
+        let dirty = GitState { branch: "main".into(), dirty: true, ahead: "1".into(), ..Default::default() };
+        assert_eq!(
+            titles(&git_menu(&dirty, &[])),
+            [t("Commit", true), t("Add & Commit", true), t("Stash", true), t("Log", true), t("Push origin main", true), t("Pull origin main", false), None, None, t("Show Debug Info", true)]
+        );
+        let clean = GitState { branch: "main".into(), ahead: "error".into(), ..Default::default() };
+        let m = titles(&git_menu(&clean, &[]));
+        assert_eq!(&m[..6], [t("Commit", false), t("Add & Commit", false), t("Stash", false), t("Log", true), t("Push origin main", true), t("Pull origin main", true)]);
+        let even = GitState { ahead: "0".into(), ..clean.clone() };
+        assert_eq!(titles(&git_menu(&even, &[]))[4], t("Push origin main", false));
+
+        let branches: Vec<String> = ["main", "a", "b", "c", "d", "e", "f", "g"].iter().map(|s| s.to_string()).collect();
+        let m = git_menu(&clean, &branches);
+        let rest = titles(&m[6..]);
+        assert_eq!(
+            rest,
+            [None, t("Check out a", true), t("Check out b", true), t("Check out c", true), t("Check out d", true), t("Check out e", true), t("Check out f", true), None, t("Show Debug Info", true)],
+            "cut to 7, then the current branch skipped"
+        );
+        let with_empty: Vec<String> = ["", "x"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(titles(&git_menu(&clean, &with_empty)[6..9]), [None, t("Check out x", true), None]);
+
+        let cmd = |m: &[Option<GitItem>], i: usize| m[i].as_ref().unwrap().command.clone();
+        let m = git_menu(&clean, &branches);
+        assert_eq!(cmd(&m, 0), GitCommand::Commit);
+        assert_eq!(cmd(&m, 1), GitCommand::AddCommit);
+        assert_eq!(cmd(&m, 4), GitCommand::Push("main".into()));
+        assert_eq!(cmd(&m, 5), GitCommand::Pull("main".into()));
+        assert_eq!(cmd(&m, 7), GitCommand::Checkout("a".into()));
+        assert_eq!(cmd(&m, 14), GitCommand::Debug);
+
+        let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(GitCommand::Commit.args(), s(&["commit"]));
+        assert_eq!(GitCommand::AddCommit.args(), s(&["commit", "-a"]));
+        assert_eq!(GitCommand::Stash.args(), s(&["stash"]));
+        assert_eq!(GitCommand::Log.args(), s(&["log"]));
+        assert_eq!(GitCommand::Push("m".into()).args(), s(&["push", "origin", "m"]));
+        assert_eq!(GitCommand::Pull("m".into()).args(), s(&["pull", "origin", "m"]));
+        assert_eq!(GitCommand::Checkout("b".into()).args(), s(&["checkout", "b"]));
+        assert_eq!(GitCommand::Commit.status(), Some("Committing\u{2026}"));
+        assert_eq!(GitCommand::AddCommit.status(), Some("Committing\u{2026}"));
+        assert_eq!(GitCommand::Stash.status(), Some("Stashing\u{2026}"));
+        assert_eq!(GitCommand::Push(String::new()).status(), Some("Pushing\u{2026}"));
+        assert_eq!(GitCommand::Pull(String::new()).status(), Some("Pulling\u{2026}"));
+        assert_eq!(GitCommand::Checkout(String::new()).status(), Some("Checking out\u{2026}"));
+        assert_eq!((GitCommand::Log.status(), GitCommand::Debug.status()), (None, None));
+        let buried: Vec<bool> = [GitCommand::Commit, GitCommand::AddCommit, GitCommand::Stash, GitCommand::Log, GitCommand::Push(String::new()), GitCommand::Pull(String::new()), GitCommand::Checkout(String::new()), GitCommand::Debug]
+            .iter()
+            .map(GitCommand::buried)
+            .collect();
+        assert_eq!(buried, [false, false, true, false, true, true, true, false]);
+
+        assert_eq!(cancel_title("Committing\u{2026}"), "Cancel Committing");
+        assert_eq!(remote_command(&s(&["checkout", "my branch"])), "git checkout my\\ branch");
+        assert_eq!(remote_command(&s(&["checkout", "a$b\nc"])), "git checkout a\\$b\\\nc");
+    }
+
+    #[test]
+    fn remote_git_state_follows_iterm2() {
+        let mut v: BTreeMap<String, String> = [("gitBranch", "main"), ("gitPushCount", "2"), ("gitPullCount", "0"), ("gitDirty", "dirty"), ("gitAdds", "3"), ("gitDeletes", "1")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let s = remote_state(&v).unwrap();
+        assert_eq!(
+            s,
+            GitState { branch: "main".into(), ahead: "2".into(), behind: "0".into(), dirty: true, adds: 3, deletes: 1, ..Default::default() }
+        );
+        for (d, want) in [("clean", false), ("dirty", true), ("true", true), ("YES", true), ("1", true), ("no", false), ("0", false), ("", false), ("  t", true)] {
+            v.insert("gitDirty".into(), d.into());
+            assert_eq!(remote_state(&v).unwrap().dirty, want, "{d:?}");
+        }
+        for k in ["gitBranch", "gitPushCount", "gitPullCount", "gitDirty", "gitAdds", "gitDeletes"] {
+            let mut w = v.clone();
+            w.remove(k);
+            assert_eq!(remote_state(&w), None, "{k} is required");
+        }
+        for (k, n) in [("gitLinesInserted", "10"), ("gitLinesDeleted", "4"), ("gitFilesAdded", "1"), ("gitFilesModified", " 2x"), ("gitFilesDeleted", "-3")] {
+            v.insert(k.into(), n.into());
+        }
+        let s = remote_state(&v).unwrap();
+        assert_eq!((s.lines_inserted, s.lines_deleted, s.files_added, s.files_modified, s.files_deleted), (10, 4, 1, 2, -3));
+        v.insert("gitAdds".into(), "many".into());
+        assert_eq!(remote_state(&v).unwrap().adds, 0, "integerValue of text is 0");
+    }
+
+    #[test]
+    fn looks_like_git_follows_iterm2() {
+        assert!(looks_like_git("git status"));
+        assert!(looks_like_git("/usr/bin/git log"));
+        assert!(looks_like_git("C:\\Git\\cmd\\git.exe pull"));
+        assert!(looks_like_git("GIT.EXE pull"));
+        assert!(!looks_like_git("git"), "needs a space");
+        assert!(!looks_like_git("gitk x"));
+        assert!(!looks_like_git("echo git"));
+        assert!(!looks_like_git(""));
+    }
+}
