@@ -200,14 +200,24 @@ pub fn reconcile(split: &Split, tools: &[ToolId], total: f32) -> Split {
     Split { tools: new_tools, heights, collapsed: new_collapsed }
 }
 
+/// Every wrapper's own minimum right now, `COLLAPSED_H` where collapsed (`wrapper.minimumHeight`,
+/// `TW:115-120`), else its expanded minimum. Distinct from `min_total`, which sums these.
+fn effective_mins(split: &Split) -> Vec<f32> {
+    split.tools.iter().zip(&split.collapsed).map(|(&t, &c)| if c { COLLAPSED_H } else { wrapper_minimum(t) }).collect()
+}
+
 /// The divider bounds NSSplitView enforces while dragging (`TBV:743-770`,
 /// `constrainMinCoordinate`/`constrainMaxCoordinate`): the divider's position (from the top of
 /// the stack, dividers included) may not put the wrapper above it under its minimum, nor the one
-/// below over what its own room allows. iTerm2 counts an extra divider thickness on the far side
-/// even for the last wrapper (kept, `TBV:787`); a divider limit can therefore sit up to `DIVIDER`
-/// short of truly protecting its lower neighbor's minimum, matching the source.
+/// below over what its own room allows. Both wrappers' minimums are collapse-aware, `COLLAPSED_H`
+/// while collapsed (`TW:115-120`), matching `wrapper.minimumHeight`. iTerm2 counts an extra
+/// divider thickness on the far side even for the last wrapper (kept, `TBV:787`); a divider limit
+/// can therefore sit up to `DIVIDER` short of truly protecting its lower neighbor's minimum,
+/// matching the source. When a wrapper already sits under its own minimum (only the split's last
+/// wrapper can, from `respect_minimums`'s "last takes the remainder" rule), the two bounds can
+/// invert; `drag_divider` never lets that produce a negative height.
 pub fn divider_limits(split: &Split, index: usize) -> (f32, f32) {
-    let m = mins(&split.tools);
+    let m = effective_mins(split);
     let h = &split.heights;
     let mut min_y = 0.0_f32;
     for i in 0..=index {
@@ -228,14 +238,18 @@ pub fn divider_limits(split: &Split, index: usize) -> (f32, f32) {
     (min_y, max_y)
 }
 
-/// Dragging divider `index` to position `y` (clamped to `divider_limits`): the two adjacent
-/// wrappers split their combined height at the new position; every other wrapper is untouched.
+/// Dragging divider `index` to position `y` (clamped to `divider_limits`, the two bounds taken in
+/// whichever order they come, since they can invert): the two adjacent wrappers split their
+/// combined height at the new position, each clamped to `[0, combined]` so an inverted or
+/// otherwise degenerate limit can never leave either wrapper negative; every other wrapper is
+/// untouched.
 pub fn drag_divider(split: &Split, index: usize, y: f32) -> Split {
-    let (min_y, max_y) = divider_limits(split, index);
-    let y = y.clamp(min_y, max_y.max(min_y));
+    let (a, b) = divider_limits(split, index);
+    let (lo, hi) = (a.min(b), a.max(b));
+    let y = y.clamp(lo, hi);
     let prefix: f32 = split.heights[..index].iter().sum::<f32>() + (index as f32) * DIVIDER;
-    let new_h0 = y - prefix;
     let combined = split.heights[index] + split.heights[index + 1];
+    let new_h0 = (y - prefix).clamp(0.0, combined);
     let new_h1 = combined - new_h0;
     let mut heights = split.heights.clone();
     heights[index] = new_h0;
@@ -372,9 +386,11 @@ fn wrapper_layout(frame: Rect, collapsed: bool, top: f32, close: f32, close_x: f
     WrapperLayout { frame, close: close_r, title, content }
 }
 
-/// The panel's layout at `scale` (`TBV:311-429`, `TW:15-124`). `panel` and `split.heights` are
-/// already in the same units (pixels once the app has scaled them); this module's own constants
-/// are points and are scaled here.
+/// The panel's layout at `scale` (`TBV:311-429`, `TW:15-124`). `split.heights` are points, like
+/// this module's own constants (`TITLE_H` and the rest); both are multiplied by `scale` here to
+/// get pixels. `panel` is trusted to already be in pixels (the app's own room for it, already
+/// scaled), matching how `clippings::layout` takes an already-pixel `panel` alongside its own
+/// scaled constants.
 pub fn layout(panel: Rect, split: &Split, scale: f32) -> BeltLayout {
     let title_h = TITLE_H * scale;
     let title_gap = TITLE_GAP * scale;
@@ -602,6 +618,19 @@ mod tests {
         assert_eq!(w.title, rect(769.0, 3.0, 250.0 - 17.0 - 4.0 - 19.0, 16.0));
         assert_eq!(w.content, Some(rect(754.0, 23.0, 242.0, 600.0 - 31.0)));
 
+        // Heights are points, like the module's own constants; both are scaled together. A
+        // point Split laid into a (pixel) panel double the point size, at scale 2, lands exactly
+        // where it would if the whole thing (panel included) had been drawn at scale 1 and then
+        // doubled.
+        let panel2 = rect(1500.0, 0.0, 500.0, 1200.0);
+        let one_pt = Split { tools: vec![Profiles], heights: vec![600.0], collapsed: vec![false] };
+        let l2s = layout(panel2, &one_pt, 2.0);
+        assert_eq!(l2s.handle, rect(1500.0, 0.0, 6.0, 1200.0));
+        let w2 = &l2s.wrappers[0];
+        assert_eq!(w2.close, rect(1504.0, 6.0, 34.0, 34.0));
+        assert_eq!(w2.title, rect(1538.0, 6.0, 2.0 * (250.0 - 17.0 - 4.0 - 19.0), 32.0));
+        assert_eq!(w2.content, Some(rect(1508.0, 46.0, 484.0, 1200.0 - 62.0)));
+
         let collapsed_split = Split { tools: vec![Profiles], heights: vec![22.0], collapsed: vec![true] };
         let lc = layout(panel, &collapsed_split, 1.0);
         assert_eq!(lc.wrappers[0].content, None);
@@ -628,5 +657,37 @@ mod tests {
         assert_eq!(hit(&l2, 753.0, 4.0), BeltHit::Close(0));
         assert_eq!(hit(&l2, 800.0, 300.0), BeltHit::Divider(0));
         assert_eq!(hit(&l2, 800.0, 400.0), BeltHit::Content(1));
+    }
+
+    #[test]
+    fn divider_limits_are_collapse_aware_and_drag_never_goes_negative() {
+        // The state `resize(.., 450, 250)` leaves behind: Snippets and Actions collapsed at 22,
+        // Profiles holding the rest. Dragging the divider between the two collapsed wrappers
+        // must use their COLLAPSED_H, not their expanded minimums (TW:115-120), or the limits
+        // invert and dragging can drive a height negative.
+        let split = Split { tools: vec![Profiles, Snippets, Actions], heights: vec![206.0, 22.0, 22.0], collapsed: vec![false, true, true] };
+        assert_eq!(divider_limits(&split, 1), (229.0, 231.0));
+
+        let low = drag_divider(&split, 1, -1_000.0);
+        assert_eq!(low.heights[1], 22.0);
+        assert_eq!(low.heights[2], 22.0);
+
+        let high = drag_divider(&split, 1, 1_000.0);
+        assert_eq!(high.heights[1], 24.0);
+        assert_eq!(high.heights[2], 20.0);
+        assert!(high.heights.iter().all(|&h| h >= 0.0));
+
+        // A directly-constructed (not `resize`-derived) Split where the upper wrapper of the
+        // pair is itself under its own minimum inverts `divider_limits` (its minimum alone
+        // exceeds the two wrappers' combined height). `drag_divider` must still never produce a
+        // negative height.
+        let inverted = Split { tools: vec![Profiles, Snippets], heights: vec![50.0, 10.0], collapsed: vec![false, false] };
+        let (lo, hi) = divider_limits(&inverted, 0);
+        assert!(lo > hi, "expected inverted limits, got ({lo}, {hi})");
+
+        let dragged = drag_divider(&inverted, 0, 1_000.0);
+        assert_eq!(dragged.heights[0], 60.0);
+        assert_eq!(dragged.heights[1], 0.0);
+        assert!(dragged.heights.iter().all(|&h| h >= 0.0));
     }
 }
