@@ -16,13 +16,13 @@ Task 4: minor (deferred): git_state.rs is 1797 lines; the config check could be 
 Task 4: minor (deferred): loose objects and nested refs are not scanned for links each poll.
 Task 4: minor (deferred): recent_branches passes the full timeout, not the time left, to lazy_fetch_safe.
 Task 4: minor (deferred): an MSYS-style repo-config path key (/c/Users/...) refuses the whole repo.
-Task 4: minor (deferred, FINAL REVIEW LOOK): git_state.rs:366 is_file() on HEAD/config follows links before any link check (a working-tree HEAD linked to UNC is opened).
+Task 4: minor (FIXED in the final review round: link_ok on HEAD and config before any is_file): git_state.rs:366 is_file() on HEAD/config follows links before any link check (a working-tree HEAD linked to UNC is opened).
 Task 5: Ruling: CreateProcessW runner (suspended start, handle list) instead of std::process::Command; poll visibility follows iTerm2 VC:355 (bar view visible) - cost if wrong: none, review accepted both.
-Task 5: Ruling: the UI reports a git timeout 200 ms after the deadline (grace for the runner's own kill to land) - cost if wrong: timeouts show 0.2 s late.
+Task 5: Ruling: the UI reports a git timeout 300 ms after the deadline (grace for the runner's own kill and drain to land; was 200 ms, raised in the final review round) - cost if wrong: timeouts show 0.3 s late.
 Task 5: Ruling: a path whose stuck thread is still alive keeps its flight slot (no second thread for that path) until the thread ends; new requests for it answer "timed out" at once - cost if wrong: a repo on a recovered drive waits for the old thread to end.
 Task 5: minor (deferred): bar_layout runs for every pane each loop turn and any change redraws every window.
 Task 5: minor (deferred): a cancel landing between two reads (stray handle, output over 64K) blocks the reader until the other process closes its copy.
-Task 5: minor (deferred): drain can run up to 2 x DRAIN past the deadline while the UI grace is also 200 ms, so a clean exit at the deadline can read as timed out.
+Task 5: minor (FIXED in the final review round: GRACE is now 300 ms): drain can run up to 2 x DRAIN past the deadline while the UI grace is also 200 ms, so a clean exit at the deadline can read as timed out.
 Task 5: minor (deferred): a vetoed gitSearchPath now runs a thread and stores Fetched::default (poller reads as fetched with no state).
 Task 6: Ruling: user-clicked menu commands run in a visible single-use window like iTerm2's, so they do NOT set GIT_TERMINAL_PROMPT=0 or GIT_NO_LAZY_FETCH (a push may ask for a password; a checkout in a partial clone may fetch); they keep ref safety, GIT_ENV_REMOVED and the UNC refusal. My dispatch over-applied the background poll's rules - cost if wrong: a click can prompt or fetch, as in iTerm2.
 Task 6: minor (deferred): the Log popover opens only when git log finishes (iTerm2 streams); the cap counts bytes.
@@ -32,3 +32,9 @@ Task 6: minor (deferred): the coprocess test is timing-sensitive and failed once
 Task 7: Ruling: 03:450 (it2git status variables) is set to partial, not have; the git state component reads user.git* directly, but the shell hook script that other consumers would use to publish them is still shell integration's to write - cost if wrong: none, matches the brief's own wording.
 Task 7: Ruling: the checklist's icon-glyph, graph-look, and animation checks are left as open boxes for the controller; no task ran the GUI on EXTREME to verify them (Task 1 and Task 3 both deferred this explicitly) - cost if wrong: none, the checklist says so.
 Task 7: Ruling: Task 4's FINAL REVIEW LOOK minor (git_state.rs's bare-repository check calls is_file() on HEAD and config before any link check, so a working-tree HEAD symlinked to a UNC path is opened) is reported here as a live gap rather than fixed, since this task is docs-only - cost if wrong: none for docs; the gap itself is unchanged and still open.
+Final: Ruling: the bare-repository check refuses the whole repository (the component stays empty) when HEAD or config in the session folder or any parent is a link off this computer, rather than skipping only that folder's bare check - cost if wrong: a stray share link named HEAD or config above a real repository hides its git state.
+Final: Ruling: a HEAD or config that is a link to a local path passes link_ok and is then probed with is_file (following it), like the .git entry - cost if wrong: none; a local link cannot reach a share.
+Final: Ruling: GRACE is 300 ms (2 x the runner's 100 ms DRAIN plus 100 ms for the thread to send) - cost if wrong: a real timeout shows 0.1 s later than before.
+Final: Ruling: checklist row 29 leaves mapped drive letters out (treated as local by ruling) and reaches a UNC folder with PowerShell Set-Location plus shell integration - cost if wrong: none, the row now matches the code.
+Final: Ruling: checklist row 13 follows parse_porcelain and iTerm2 (adds = untracked files, deletes = working-tree deletions) - cost if wrong: none, the row now matches the code.
+Final: Ruling: only the review's named checklist rows were rewritten; the heading wording in rows 19, 26 and 28 (headings the info bars drop) is left for the human pass - cost if wrong: a tester may look for a heading line that is not drawn.

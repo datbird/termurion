@@ -398,8 +398,12 @@ pub fn vet_repo(dir: &Path) -> Option<Vetted> {
             }
         }
         // A bare repository here: `safe.bareRepository=explicit` refuses it, but git reads
-        // its config first.
-        if a.join("HEAD").is_file() && a.join("config").is_file() {
+        // its config first. `is_file` follows links, so each name's link is checked first.
+        let (head, config) = (a.join("HEAD"), a.join("config"));
+        if !link_ok(&head, 0) || !link_ok(&config, 0) {
+            return None;
+        }
+        if head.is_file() && config.is_file() {
             vet_git_dir(a, a, &mut v)?;
         }
     }
@@ -2142,6 +2146,26 @@ This often happens in very large repositories or when the working tree is on a s
         }
         let _ = fs::remove_dir_all(&d);
         fs::remove_dir_all(&local).unwrap();
+    }
+
+    /// A `HEAD` or `config` in the session folder (or a parent) that links to a share is
+    /// refused before the bare-repository check opens it.
+    #[cfg(windows)]
+    #[test]
+    fn bare_repo_names_linked_to_a_share_are_refused() {
+        let d = temp("bare-links");
+        fs::write(d.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert!(repo_path_ok(&d), "a plain HEAD without config is no repository");
+        let sub = d.join("sub");
+        fs::create_dir(&sub).unwrap();
+        for name in ["HEAD", "config"] {
+            let _ = fs::remove_file(d.join(name));
+            if std::os::windows::fs::symlink_file("\\\\server\\share\\x", d.join(name)).is_ok() {
+                assert!(!repo_path_ok(&d), "{name} linked to a share");
+                assert!(!repo_path_ok(&sub), "{name} linked to a share in a parent");
+            }
+        }
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

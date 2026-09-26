@@ -31,7 +31,7 @@ use std::time::Duration;
 const MAX_THREADS: usize = 8;
 /// How long past its deadline a thread may answer before the UI reports the timeout (the
 /// runner kills git at the deadline; this is the time to hand the answer over).
-const GRACE: Duration = Duration::from_millis(200);
+const GRACE: Duration = Duration::from_millis(300);
 const TIMEOUT_KEY: &str = "gitTimeout";
 const SEARCH_PATH_KEY: &str = "gitSearchPath";
 /// `gitTimeout`'s default (`ADV:534`).
