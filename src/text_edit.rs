@@ -17,6 +17,9 @@
 
 use std::ops::Range;
 
+/// Spaces a multi-caret Tab inserts (`MCTV:88` `tabStop`).
+const TAB_STOP: usize = 4;
+
 /// A key the focused editor acts on, already decoded from the raw key event (`ctrl_key` reads
 /// the Ctrl+letter chords and `ctrl_nav` the Ctrl+arrow family; the app fills `Paste` with the
 /// clipboard text).
@@ -501,7 +504,12 @@ impl TextEdit {
                 self.edit_each(|_, c| (c.range(), s.clone()))
             }
             EditKey::Enter => self.edit_each(|_, c| (c.range(), "\n".to_string())),
-            EditKey::Tab => self.edit_each(|_, c| (c.range(), "\t".to_string())),
+            // `MCTV:1655-1657` `insertTab`: `tabStop` (4, `MCTV:88`) spaces at each caret.
+            EditKey::Tab => self.edit_each(|_, c| (c.range(), " ".repeat(TAB_STOP))),
+            // `MCTV:942-963`: each caret one character left or right of its range's start,
+            // selected or not (the one-caret Windows collapse does not apply).
+            EditKey::Left if !shift => self.move_each(|t, c| prev_boundary(t, c.range().start)),
+            EditKey::Right if !shift => self.move_each(|t, c| next_boundary(t, c.range().start)),
             EditKey::Backspace => self.edit_each(|t, c| del(c, prev_boundary(t, c.at))),
             EditKey::Delete => self.edit_each(|t, c| del(c, next_boundary(t, c.at))),
             EditKey::DeleteWordBack => self.edit_each(|t, c| del(c, word_left(t, c.at))),
@@ -566,26 +574,39 @@ impl TextEdit {
         self.edit_all(parts.into_iter().map(|(r, s, _)| (r, s)).collect(), primary)
     }
 
+    /// Every caret to the plain caret `f` gives for it (`MCTV:942-963`).
+    fn move_each(&mut self, f: impl Fn(&str, &Caret) -> usize) -> EditOut {
+        let moved = self.all().iter().map(|(c, p)| (Caret { at: f(&self.text, c), anchor: None }, *p)).collect();
+        self.set_all(moved);
+        self.at_line_end = false;
+        EditOut::Moved
+    }
+
     /// Up or Down with other carets (`MCTV:1123-1131,1192-1216,1256-1296`): each caret to the
     /// visual line above or below at its own x (no goal x), Shift extending its selection; a
     /// caret with no line there is dropped. When every caret is dropped the primary stays,
-    /// alone.
+    /// alone. The primary keeps its affinity as the one-caret move does.
     fn vertical_each(&mut self, down: bool, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
         let mut moved = Vec::new();
+        let mut primary_end = None;
         for (c, p) in self.all() {
             let (line, x) = caret_pos(&self.text, lines, c.at, p && self.at_line_end, width);
             let target = if down { Some(line + 1).filter(|&t| t < lines.len()) } else { line.checked_sub(1) };
             let Some(target) = target else { continue };
             let at = index_at(&self.text, lines, target, x, width);
             let anchor = if shift { Some(c.anchor.unwrap_or(c.at)) } else { None };
+            if p {
+                primary_end = Some((at, ends_line(lines, target, at)));
+            }
             moved.push((Caret { at, anchor }, p));
         }
         if moved.is_empty() {
             self.extra.clear();
-        } else {
-            self.set_all(moved);
+            return EditOut::Moved;
         }
-        self.at_line_end = false;
+        self.set_all(moved);
+        // A merge can move the primary off its target; then it has no affinity.
+        self.at_line_end = matches!(primary_end, Some((at, end)) if end && at == self.caret);
         EditOut::Moved
     }
 
@@ -763,26 +784,33 @@ impl TextEdit {
 /// the word alone is too wide (as the toolbelt's `wrap_words` breaks a label). Every line
 /// holds at least one character, and empty text is one empty line.
 pub fn wrap(text: &str, max_w: f32, width: &dyn Fn(&str) -> f32) -> Vec<VisualLine> {
-    wrap_indented(text, max_w, 0.0, width)
+    wrap_indented(text, max_w, 0.0, false, width)
 }
 
 /// `wrap` with the first visual line starting `first_indent` in (the composer's prompt
 /// prefix), so it has `max_w - first_indent` of room; every later line has `max_w`. The
 /// caller adds the indent to line 0's x when it draws or hit-tests (`caret_pos` and
 /// `index_at` measure from each line's start).
-pub fn wrap_indented(text: &str, max_w: f32, first_indent: f32, width: &dyn Fn(&str) -> f32) -> Vec<VisualLine> {
+///
+/// iTerm2 keeps the prompt prefix as text in the same storage (`CTV:475-505`), so the prefix
+/// and the first word wrap together: when the prefix ends in a break opportunity (whitespace,
+/// `prefix_breaks`) and no word of the first line fits the indented room, the first visual
+/// line is empty (`start == end == 0`, the prefix alone) and the text starts on line 1; without
+/// one, the first word breaks mid-word at the room, as a too-wide word does.
+pub fn wrap_indented(text: &str, max_w: f32, first_indent: f32, prefix_breaks: bool, width: &dyn Fn(&str) -> f32) -> Vec<VisualLine> {
     let mut lines = Vec::new();
     let mut hard = 0;
     for (i, part) in text.split('\n').enumerate() {
         let indent = if i == 0 { first_indent } else { 0.0 };
-        wrap_hard(text, hard, hard + part.len(), max_w, indent, width, &mut lines);
+        wrap_hard(text, hard, hard + part.len(), max_w, indent, prefix_breaks && i == 0, width, &mut lines);
         hard += part.len() + 1;
     }
     lines
 }
 
-/// One hard line `text[start..end]` into `lines`, its first visual line `indent` in.
-fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
+/// One hard line `text[start..end]` into `lines`, its first visual line `indent` in; with
+/// `break_before`, that line may be empty when no word fits it (`wrap_indented`).
+fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, break_before: bool, width: &dyn Fn(&str) -> f32, lines: &mut Vec<VisualLine>) {
     let mut line = start;
     let mut room = max_w - indent;
     loop {
@@ -811,6 +839,12 @@ fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, indent: f32, widt
             } else {
                 break;
             }
+        }
+        if cut.is_none() && break_before && line == start && room < max_w && line < end {
+            // The prefix's own break: the first word moves down whole.
+            lines.push(VisualLine { start: line, end: line });
+            room = max_w;
+            continue;
         }
         let cut = cut.unwrap_or_else(|| {
             // One word too wide: the longest char prefix that fits, at least one character.
@@ -1473,9 +1507,17 @@ mod tests {
         press(&mut e, EditKey::Right, true, 1000.0);
         assert_eq!(e.carets(), vec![0..1, 3..4, 6..7]);
         assert_eq!(press(&mut e, EditKey::Copy, false, 1000.0), EditOut::Copied("a\nc\ne".into()));
-        // A plain Right collapses each selection to its end (Windows rules, per caret).
+        // A plain Left or Right moves each caret one character from its range's start,
+        // selected or not (`MCTV:942-963`).
         press(&mut e, EditKey::Right, false, 1000.0);
         assert_eq!(e.carets(), vec![1..1, 4..4, 7..7]);
+        e.set_carets(&[Caret { at: 0, anchor: Some(2) }, Caret { at: 5, anchor: Some(3) }]);
+        press(&mut e, EditKey::Right, false, 1000.0);
+        assert_eq!(e.carets(), vec![1..1, 4..4]);
+        e.set_carets(&[Caret { at: 0, anchor: Some(1) }, Caret { at: 5, anchor: Some(3) }]);
+        press(&mut e, EditKey::Left, false, 1000.0);
+        assert_eq!(e.carets(), vec![0..0, 2..2]);
+        e.set_carets(&[Caret { at: 1, anchor: None }, Caret { at: 4, anchor: None }, Caret { at: 7, anchor: None }]);
         // Carets meeting merge: Backspace twice from 1 and 2 leaves one caret at 0.
         e.set_carets(&[Caret { at: 1, anchor: None }, Caret { at: 2, anchor: None }]);
         press(&mut e, EditKey::Backspace, false, 1000.0);
@@ -1495,6 +1537,20 @@ mod tests {
         press(&mut e, EditKey::Down, false, 1000.0);
         press(&mut e, EditKey::Down, false, 1000.0);
         assert_eq!((e.carets(), e.has_extra()), (vec![7..7], false));
+        // The primary keeps its affinity on Up and Down, as with one caret: past a soft-wrapped
+        // line's end it stays drawn on that line.
+        let text = "abcdefghij\nxy";
+        e.load(text);
+        let wl = wrap(text, 40.0, &w);
+        assert_eq!(wl, vec![vl(0, 4), vl(4, 8), vl(8, 10), vl(11, 13)]);
+        e.set_carets(&[Caret { at: 12, anchor: None }, Caret { at: 4, anchor: None }]);
+        e.at_line_end = true;
+        assert_eq!(e.caret_line(&wl, &w), (0, 40.0));
+        press(&mut e, EditKey::Down, false, 40.0);
+        assert_eq!((e.caret, e.at_line_end), (8, true));
+        assert_eq!(e.caret_line(&wl, &w), (1, 40.0));
+        assert_eq!(e.carets(), vec![8..8]);
+        e.load("ab\ncd\nef");
 
         // Ctrl+Shift+Up on the first line adds nothing; a plain click collapses to one caret.
         e.click(1, false, false, 1_000, 500);
@@ -1521,9 +1577,10 @@ mod tests {
         press(&mut e, EditKey::Enter, false, 1000.0);
         assert_eq!(e.text, "a\nb\nc\nd\ne\nf");
         assert_eq!(e.carets(), vec![2..2, 6..6, 10..10]);
+        // Tab puts `tabStop` (4) spaces at each caret (`MCTV:1655-1657`).
         press(&mut e, EditKey::Tab, false, 1000.0);
-        assert_eq!(e.text, "a\n\tb\nc\n\td\ne\n\tf");
-        assert_eq!(e.carets(), vec![3..3, 8..8, 13..13]);
+        assert_eq!(e.text, "a\n    b\nc\n    d\ne\n    f");
+        assert_eq!(e.carets(), vec![6..6, 14..14, 22..22]);
         assert_eq!(press(&mut e, EditKey::Undo, false, 1000.0), EditOut::Changed);
         assert_eq!((e.text.as_str(), e.carets()), ("a\nb\nc\nd\ne\nf", vec![2..2, 6..6, 10..10]));
         press(&mut e, EditKey::Undo, false, 1000.0);
@@ -1603,15 +1660,29 @@ mod tests {
 
     #[test]
     fn indented_wrap_follows_notes_rules() {
-        // The first line starts two characters in, leaving room for two.
-        assert_eq!(wrap_indented("aaaa bbbb", 40.0, 20.0, &w), vec![vl(0, 2), vl(2, 5), vl(5, 9)]);
-        assert_eq!(wrap_indented("ab cd", 40.0, 10.0, &w), vec![vl(0, 3), vl(3, 5)]);
+        // The first line starts two characters in, leaving room for two. A prefix ending in a
+        // break opportunity wraps with the text (`CTV:475-505`): the first word does not fit,
+        // so it moves down whole and the first line is the prefix alone.
+        assert_eq!(wrap_indented("aaaa bbbb", 40.0, 20.0, true, &w), vec![vl(0, 0), vl(0, 5), vl(5, 9)]);
+        // Without a break opportunity the first word breaks after two characters' room.
+        assert_eq!(wrap_indented("aaaa bbbb", 40.0, 20.0, false, &w), vec![vl(0, 2), vl(2, 5), vl(5, 9)]);
+        // A first word that fits stays on the first line either way.
+        assert_eq!(wrap_indented("ab cd", 40.0, 10.0, true, &w), vec![vl(0, 3), vl(3, 5)]);
+        assert_eq!(wrap_indented("ab cd", 40.0, 10.0, false, &w), vec![vl(0, 3), vl(3, 5)]);
         // Only the first line is indented, not the first line of each paragraph.
-        assert_eq!(wrap_indented("aaaa\nbbbb", 40.0, 20.0, &w), vec![vl(0, 2), vl(2, 4), vl(5, 9)]);
-        // No room at all still holds one character.
-        assert_eq!(wrap_indented("ab", 40.0, 50.0, &w), vec![vl(0, 1), vl(1, 2)]);
+        assert_eq!(wrap_indented("aaaa\nbbbb", 40.0, 20.0, false, &w), vec![vl(0, 2), vl(2, 4), vl(5, 9)]);
+        assert_eq!(wrap_indented("aaaa\nbbbb", 40.0, 20.0, true, &w), vec![vl(0, 0), vl(0, 4), vl(5, 9)]);
+        // No room at all: one character, or the whole word moved down.
+        assert_eq!(wrap_indented("ab", 40.0, 50.0, false, &w), vec![vl(0, 1), vl(1, 2)]);
+        assert_eq!(wrap_indented("ab", 40.0, 50.0, true, &w), vec![vl(0, 0), vl(0, 2)]);
+        // Empty text is one empty line.
+        assert_eq!(wrap_indented("", 40.0, 50.0, true, &w), vec![vl(0, 0)]);
+        // The caret at the start draws on the line the text starts on.
+        let lines = wrap_indented("aaaa bbbb", 40.0, 20.0, true, &w);
+        assert_eq!(caret_pos("aaaa bbbb", &lines, 0, false, &w), (1, 0.0));
         for t in ["aaaa bbbb", "abcdefghij", "", "a\n", "ab cd ef", "aaaa bbbb\nc\ndddd"] {
-            assert_eq!(wrap_indented(t, 40.0, 0.0, &w), wrap(t, 40.0, &w), "{t:?}");
+            assert_eq!(wrap_indented(t, 40.0, 0.0, false, &w), wrap(t, 40.0, &w), "{t:?}");
+            assert_eq!(wrap_indented(t, 40.0, 0.0, true, &w), wrap(t, 40.0, &w), "{t:?}");
         }
     }
 }
