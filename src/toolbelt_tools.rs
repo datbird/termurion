@@ -108,7 +108,8 @@ pub fn dir_filter(dirs: &[Dir], query: &str) -> Vec<usize> {
 }
 
 /// A path's components, splitting on both `/` and `\` (a Windows drive path's own form is
-/// still split the same way; only `dir_text`'s prefix differs for it, a ruling).
+/// still split the same way; only `dir_text`'s prefix and separator differ for it, a ruling:
+/// it joins with `\` and has no leading `/`).
 fn dir_components(path: &str) -> Vec<&str> {
     path.split(['/', '\\']).filter(|s| !s.is_empty()).collect()
 }
@@ -173,7 +174,10 @@ fn is_drive_component(s: &str) -> bool {
 /// `attributedStringForTableColumn:basedOnAttributedString:...`): a starred path starts
 /// `"\u{2605} /"`, else `"/"`; components join with `/`; a safe component abbreviates to its
 /// first character, tried left to right while the text is still too wide; the last component
-/// never shortens.
+/// never shortens. A Windows drive path (Tandem stores these as `/C:/...`, `shell_history
+/// ::insertable_dir`) keeps its own form: joined with `\`, no leading `/`, and the drive
+/// component itself ("C:") is never abbreviated even when the tree marks it safe (it is
+/// usually the only child at the root, so it would otherwise always qualify).
 pub fn dir_text(path: &str, starred: bool, safe: &[bool], max_w: f32, width: &dyn Fn(&str) -> f32) -> String {
     let raw = dir_components(path);
     let drive = raw.first().is_some_and(|c| is_drive_component(c));
@@ -183,7 +187,8 @@ pub fn dir_text(path: &str, starred: bool, safe: &[bool], max_w: f32, width: &dy
     let mut parts: Vec<String> = raw.iter().map(|s| s.to_string()).collect();
     let build = |parts: &[String]| format!("{star}{lead}{}", parts.join(sep));
     let mut text = build(&parts);
-    for i in 0..parts.len().saturating_sub(1) {
+    let start = if drive { 1 } else { 0 };
+    for i in start..parts.len().saturating_sub(1) {
         if width(&text) <= max_w {
             break;
         }
@@ -556,6 +561,16 @@ mod tests {
         // The last component never shortens, no matter how tight the width.
         assert_eq!(dir_text("/usr/local/bin", false, &[true, true, true], 0.0, &w), "/u/l/bin");
         assert!(dir_text("/tmp", true, &[true], 1000.0, &w).starts_with("\u{2605} /"));
+
+        // A Windows drive path keeps its own form: `\`-joined, no leading `/`, and the drive
+        // component itself is never abbreviated even when the tree marks it safe (the usual
+        // case, since it is typically the only child at the root).
+        let mut drive_tree = DirTree::default();
+        drive_tree.add("/C:/Users/rob");
+        let drive_safe = drive_tree.safe("/C:/Users/rob");
+        assert_eq!(drive_safe, vec![true, true, true]);
+        assert_eq!(dir_text("/C:/Users/rob", false, &drive_safe, 1000.0, &w), "C:\\Users\\rob");
+        assert_eq!(dir_text("/C:/Users/rob", false, &drive_safe, 0.0, &w), "C:\\U\\rob", "the drive component never shortens; the last component never shortens either");
 
         assert_eq!(dir_insert("/home/me/My Docs", Some("bash"), true, false), "cd /home/me/My\\ Docs");
     }
