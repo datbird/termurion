@@ -402,6 +402,9 @@ impl Pane {
         if self.gateway {
             return;
         }
+        // Any write cancels the composer's clear probe (`PS:4154-4158`), held by Buffer
+        // Input or not.
+        self.composer.probe = None;
         self.suppress_output = false;
         // `PTYSession.m:4217-4227`: git state polls again after a newline goes out.
         if bytes.iter().any(|&b| b == b'\r' || b == b'\n') {
@@ -494,6 +497,7 @@ impl Pane {
 
     /// What the terminal answers the program (reports): never held by Buffer Input.
     pub fn reply(&mut self, bytes: &[u8]) {
+        self.composer.probe = None;
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
                 self.error = Some(e);
@@ -546,16 +550,22 @@ impl Pane {
 
     /// The Auto Composer's Ctrl+L (`clearForComposer`, `MS:2371-2417`): while a command is
     /// being entered on the main screen, the rows above the prompt move into history and
-    /// ConPTY clears too (keeping the cursor row), as Clear to Last Mark does. Nothing when the
-    /// prompt already begins at the top or above the screen. Decision: `Screen::clear_from` at
-    /// the prompt line stands in for iTerm2's scroll-and-move - cost if wrong: the upper lines
-    /// of a multi-line prompt go with the rows above it.
+    /// ConPTY clears too (keeping the cursor row), as Clear to Last Mark does. Keyed on the
+    /// prompt mark's one-line interval, whose end is the line after the mark: nothing only when
+    /// that end is at or above the screen's top (`MS:2391-2396`), so a prompt on row 0 still
+    /// clears. Decision: `Screen::clear_from` at the prompt line stands in for iTerm2's
+    /// scroll-and-move - cost if wrong: the upper lines of a multi-line prompt go with the rows
+    /// above it.
     pub fn clear_for_composer(&mut self) {
         let s = self.own();
         if !s.prompt_state.entering() || s.alt_screen() {
             return;
         }
-        let Some(line) = s.current_prompt_line().filter(|l| *l > 0) else { return };
+        let Some(end) = s.current_prompt_line().map(|l| l + 1) else { return };
+        if end <= 0 {
+            return;
+        }
+        let line = end - 1;
         self.end_view();
         self.screen.clear_from(line);
         self.screen.term_mut().selection = None;

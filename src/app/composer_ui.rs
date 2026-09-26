@@ -298,9 +298,6 @@ pub(super) struct View {
     popup: Option<Popup>,
     generation: u64,
     waiting: Option<Fetch>,
-    /// The clear sequence's echo probe (`_composerClearTurdDetector`, `PS:8690-8735`): any
-    /// write to the session drops it.
-    probe: Option<ClearProbe>,
 }
 
 /// A drag that began on the composer: a text selection (Alt: a box of carets from where it
@@ -542,13 +539,11 @@ impl App {
     }
 
     /// View > Auto Composer (`PT:14215-14219`): nothing until shell history was ever used
-    /// (the item is disabled then); flips the global and every session's machine. Turning it
-    /// off leaves a shown Auto Composer up (kept). Turning it on reveals one in each session
-    /// that is entering a command (`again`); its dismissals are not applied, so a dropdown
-    /// the user opened stays. Decision: iTerm2 calls `revealOrDismissComposerAgain` only when
-    /// the composer's rows change, so turning it on shows nothing before the next prompt;
-    /// Tandem reveals at once (the Task 3 contract) - cost if wrong: an Auto Composer appears
-    /// one prompt early.
+    /// (the item is disabled then); flips the global and every session's machine
+    /// (`PS:18940-18943`, `MS:599-602`). Turning it off leaves a shown Auto Composer up
+    /// (kept). Turning it on reveals or dismisses again at once in each session: one entering
+    /// a command gets an Auto Composer, any other has its dropdown dismissed and stops being
+    /// eligible (`PS:15663-15667`), so Show Composer works there again.
     pub(super) fn toggle_auto_composer(&mut self) {
         if !self.command_history_ever_used() {
             return;
@@ -556,16 +551,14 @@ impl App {
         let on = !self.globals.bool(AUTO_KEY);
         self.globals.set(AUTO_KEY, toml::Value::Boolean(on));
         self.save_globals();
-        let mut reveals = Vec::new();
+        let mut batches = Vec::new();
         for (id, p) in self.panes.iter_mut() {
-            let s = p.own_mut();
-            s.prompt_state.enabled = on;
-            let events: Vec<Event> = s.prompt_state.again().into_iter().filter(|e| matches!(e, Event::Reveal { .. })).collect();
+            let events = p.own_mut().prompt_state.set_enabled(on);
             if !events.is_empty() {
-                reveals.push((*id, events));
+                batches.push((*id, events));
             }
         }
-        for (id, events) in reveals {
+        for (id, events) in batches {
             self.composer_events(id, events);
         }
         self.menus_dirty = true;
@@ -577,23 +570,25 @@ impl App {
     /// (`composerClearSequence`, "0x15 0x0b") goes to the shell as sent text, a probe then
     /// waits 0.1 s for its control characters to echo back, and `s` is placed in the composer.
     pub(super) fn set_composer_string(&mut self, pane: PaneId, s: &str, force_large: bool) {
+        if !self.composer_allowed(pane) {
+            return;
+        }
         let seq = self.globals.get(prompt_state::CLEAR_KEY).and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| prompt_state::DEFAULT_CLEAR.to_string());
         let bytes = crate::keyaction::hex_bytes(&seq);
         if !bytes.is_empty() {
             self.user_write(pane, &bytes, Write::SendText);
         }
         // Assigned only after the write, which would cancel it (`PS:8716-8720`).
-        self.composers.entry(pane).or_default().probe = ClearProbe::start(&bytes, Instant::now());
         if let Some(p) = self.panes.get_mut(&pane) {
+            p.composer.probe = ClearProbe::start(&bytes, Instant::now());
             p.composer.place(s, false, force_large);
         }
     }
 
-    /// Any write to `pane` cancels its clear probe (`PS:4154-4158`).
-    pub(super) fn composer_wrote(&mut self, pane: PaneId) {
-        if let Some(v) = self.composers.get_mut(&pane) {
-            v.probe = None;
-        }
+    /// A composer can open on `pane`: not a tmux gateway (its pty carries tmux commands) nor
+    /// an ended session (`PS:11996-12003`).
+    fn composer_allowed(&self, pane: PaneId) -> bool {
+        !self.is_tmux_gateway(pane) && self.panes.get(&pane).is_some_and(|p| p.exited.is_none() && !p.gateway)
     }
 
     /// Output arrived in `panes`: a clear probe still waiting writes the profile's Backspace
@@ -601,11 +596,11 @@ impl App {
     pub(super) fn composer_output(&mut self, panes: &[PaneId]) {
         let now = Instant::now();
         for &pane in panes {
-            let Some(v) = self.composers.get_mut(&pane) else { continue };
-            let Some(probe) = v.probe.as_mut() else { continue };
+            let Some(p) = self.panes.get_mut(&pane) else { continue };
+            let Some(probe) = p.composer.probe.as_mut() else { continue };
             let owed = probe.output(now);
             if probe.expired(now) {
-                v.probe = None;
+                p.composer.probe = None;
             }
             let Some(n) = owed.filter(|n| *n > 0) else { continue };
             let bs = self.backspace_data(pane);
@@ -671,6 +666,9 @@ impl App {
     /// cleared from the shell and carried into it (`set_composer_string`); then the dropdown
     /// toggles, taking the keyboard when it opens. (The status bar route is Task 8's.)
     pub(super) fn compose(&mut self, pane: PaneId) {
+        if !self.composer_allowed(pane) {
+            return;
+        }
         let auto = self.should_show_auto_composer(pane);
         let Some(p) = self.panes.get_mut(&pane) else { return };
         p.composer.auto = auto;

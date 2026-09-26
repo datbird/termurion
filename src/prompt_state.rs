@@ -200,6 +200,18 @@ impl PromptState {
         }
     }
 
+    /// The Auto Composer setting changed (`PS:18940-18943` then `MS:599-602`): the machine
+    /// follows it and, turned on, reveals or dismisses again at once. A delivered dismiss
+    /// clears the eligibility (`screenDismissComposer`, `PS:15663`).
+    pub fn set_enabled(&mut self, on: bool) -> Vec<Event> {
+        self.enabled = on;
+        let events = self.again();
+        if events.contains(&Event::Dismiss) {
+            self.eligible = false;
+        }
+        events
+    }
+
     /// `isEnteringCommand`.
     pub fn entering(&self) -> bool {
         matches!(self.state, State::Entering { .. } | State::Accruing { .. })
@@ -494,5 +506,32 @@ mod tests {
         for other in [0, 5, 13, 25, 63, 64] {
             assert!(backspace_bytes(Some(&Binding::new(other, "x"))).is_empty(), "action {other}");
         }
+    }
+
+    #[test]
+    fn turning_auto_composer_on_follows_iterm2() {
+        // Off, a prompt only makes the session eligible; the command then runs (C) without a
+        // dismiss being delivered, so `eligible` is still set.
+        let mut p = PromptState::default();
+        entering(&mut p);
+        assert!(p.eligible);
+        p.will_send();
+        assert!(p.c().is_empty());
+        assert_eq!(p.state, State::Executing);
+        assert!(p.eligible);
+        // Turned on mid-command: `revealOrDismissComposerAgain` dismisses at once
+        // (`MS:600-602`), which clears the eligibility (`PS:15663`), so Show Composer is no
+        // longer refused.
+        assert_eq!(p.set_enabled(true), vec![Event::Dismiss]);
+        assert!(p.enabled);
+        assert!(!p.eligible);
+        // Turned on while entering: reveals with the captured prompt.
+        let mut q = PromptState::default();
+        entering(&mut q);
+        assert_eq!(q.set_enabled(true), vec![Event::Reveal { rows: Vec::new(), text: vec!["$ ".into()] }]);
+        assert!(q.eligible);
+        // Turned off: nothing is delivered (a shown Auto Composer stays up, kept).
+        assert!(q.set_enabled(false).is_empty());
+        assert!(q.eligible);
     }
 }

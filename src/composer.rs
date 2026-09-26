@@ -66,6 +66,9 @@ pub struct Composer {
     /// Enqueued commands waiting for a mark (`_commandQueue`, `PS:16613-16617`); drained one
     /// per mark by `drain`.
     pub queue: VecDeque<String>,
+    /// The clear sequence's echo probe (`_composerClearTurdDetector`, `PS:8690-8735`): any
+    /// write to the session drops it (`Pane::input` and `Pane::reply`, `PS:4154-4158`).
+    pub probe: Option<crate::prompt_state::ClearProbe>,
 }
 
 /// What applying an `Action` asks the caller to do: write text or a control byte, open a
@@ -575,6 +578,7 @@ impl Composer {
         self.hidden = false;
         self.shell_provided = false;
         self.queue.clear();
+        self.probe = None;
     }
 
     /// One decoded `Action`. `Send`/`SendEach`/`EnqueueEach` route through `send`/`enqueue`
