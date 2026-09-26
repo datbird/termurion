@@ -722,6 +722,7 @@ impl App {
         pane.restyle(Palette::from_profile(&profile, self.dark()), Look::from_profile(&profile));
         let (list, prefs) = triggers_ui::triggers_of(&profile);
         pane.screen.set_triggers(list, prefs);
+        pane.screen.set_scrollback_with_status_bar(profile.bool("Scrollback With Status Bar"));
         pane.profile = profile.guid();
         // TERM is tmux's default-terminal, else "screen" (iTerm2's termType for tmux panes).
         let term = self.tmux.get(&gw).and_then(|t| t.hs.default_terminal.clone()).unwrap_or_else(|| "screen".into());

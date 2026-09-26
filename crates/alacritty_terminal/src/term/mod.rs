@@ -335,6 +335,10 @@ pub struct Term<T> {
     /// Tandem: whether DA1 claims clipboard access (`52`), as iTerm2's policy decides.
     pub da1_clipboard: bool,
 
+    /// Tandem: whether a scroll region that starts at the top but stops above the bottom row
+    /// saves the lines leaving it to scrollback (iTerm2's Scrollback With Status Bar).
+    scrollback_with_region: bool,
+
     /// Currently inactive keyboard mode stack.
     inactive_keyboard_mode_stack: Vec<KeyboardModes>,
 
@@ -453,6 +457,7 @@ impl<T> Term<T> {
             modify_other_keys: 0,
             emulation_level: 500,
             da1_clipboard: true,
+            scrollback_with_region: true,
             active_charset: Default::default(),
             vi_mode_cursor: Default::default(),
             cursor_style: Default::default(),
@@ -670,6 +675,11 @@ impl<T> Term<T> {
         &self.scroll_region
     }
 
+    /// Tandem: sets whether a top scroll region above the bottom row saves to scrollback.
+    pub fn set_scrollback_with_region(&mut self, on: bool) {
+        self.scrollback_with_region = on;
+    }
+
     /// Tandem: drops every program key reporting request (kitty flags on both screens,
     /// modifyOtherKeys).
     pub fn clear_keyboard_modes(&mut self) {
@@ -824,11 +834,20 @@ impl<T> Term<T> {
         // Scroll selection.
         self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
 
-        self.grid.scroll_up(&region, lines);
+        // Tandem patch: with Scrollback With Status Bar off, a region that starts at the top
+        // but stops above the bottom row (an app's status line) scrolls like one below the top.
+        let keep = !self.scrollback_with_region
+            && region.start == 0
+            && region.end < self.grid.screen_lines() as i32;
+        if keep {
+            self.grid.scroll_up_in_place(&region, lines);
+        } else {
+            self.grid.scroll_up(&region, lines);
+        }
 
         // Scroll vi mode cursor.
         let viewport_top = Line(-(self.grid.display_offset() as i32));
-        let top = if region.start == 0 { viewport_top } else { region.start };
+        let top = if region.start == 0 && !keep { viewport_top } else { region.start };
         let line = &mut self.vi_mode_cursor.point.line;
         if (top <= *line) && region.end > *line {
             *line = cmp::max(*line - lines, top);

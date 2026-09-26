@@ -810,6 +810,7 @@ impl App {
     fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
         pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+        pane.screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
         let (list, prefs) = triggers_ui::triggers_of(p);
         pane.screen.set_triggers(list, prefs);
         pane.profile = p.guid();
@@ -929,6 +930,7 @@ impl App {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
             pane.own_mut().place_prompt_first_column = p.bool("Place Prompt at First Column");
+            pane.own_mut().set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
             let (list, prefs) = triggers_ui::triggers_of(p);
             pane.own_mut().set_triggers(list, prefs);
         }

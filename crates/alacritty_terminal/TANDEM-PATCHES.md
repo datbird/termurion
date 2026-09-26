@@ -62,4 +62,11 @@ test data) is left out. Changes:
     (`Grid::scroll_up` with the region starting at the top, which clearing the screen also uses);
     `Grid::scrolled_off()` reads it, so triggers can number rows.
 
+14. `term/mod.rs`: `Term::set_scrollback_with_region(bool)` (default true). When it is off, a scroll
+    region that starts at the top but stops above the bottom row (an app's status line) scrolls in
+    place through `Grid::scroll_up_in_place` (`grid/mod.rs`), like a region below the top, so no
+    line reaches history (iTerm2's Scrollback With Status Bar). `grid/storage.rs`: `Storage::swap`
+    swaps whole rows with `slice::swap`; upstream copied four qwords, the size of an unpatched
+    `Row`, so the Tandem row slots stayed behind and debug builds panicked on region scrolls.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

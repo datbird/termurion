@@ -752,6 +752,13 @@ impl Screen {
         self.term.da1_clipboard = on;
     }
 
+    /// Whether lines leaving the top of a scroll region that starts at the top but stops above
+    /// the bottom row (an app's status line, like tmux's) go to scrollback (iTerm2's "Save lines
+    /// to scrollback when an app status bar is present").
+    pub fn set_scrollback_with_status_bar(&mut self, on: bool) {
+        self.term.set_scrollback_with_region(on);
+    }
+
     pub(crate) fn capture_hold_clear(&mut self) {
         self.capture_hold.clear();
     }
@@ -1185,6 +1192,39 @@ mod tests {
         p.set("Cursor Type", toml::Value::Integer(0));
         let s = Screen::with_look(80, 24, Palette::default(), Look::from_profile(&p));
         assert_eq!(s.term().renderable_content().cursor.shape, CursorShape::Underline);
+    }
+
+    #[test]
+    fn scroll_regions_follow_scrollback_with_status_bar() {
+        use alacritty_terminal::grid::Dimensions;
+        // Six lines through rows 1 to 4 of a 10 by 5 screen whose fifth row holds a status line.
+        let run = |on: bool, region: &[u8]| {
+            let mut s = Screen::new(10, 5);
+            s.set_scrollback_with_status_bar(on);
+            s.feed(b"\x1b[5;1Hstatus");
+            s.feed(region);
+            for i in 0..6 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            (s.term().grid().history_size(), s.line_text(4))
+        };
+        let (on, off) = (run(true, b"\x1b[1;4r"), run(false, b"\x1b[1;4r"));
+        assert!(on.0 > 0, "{on:?}");
+        assert_eq!(on.1.trim_end(), "status");
+        assert_eq!(off.0, 0, "{off:?}");
+        assert_eq!(off.1.trim_end(), "status");
+        // With no region, a full-screen scroll saves either way.
+        for flag in [true, false] {
+            let mut s = Screen::new(10, 5);
+            s.set_scrollback_with_status_bar(flag);
+            for i in 0..8 {
+                s.feed(format!("line{i}\r\n").as_bytes());
+            }
+            assert!(s.term().grid().history_size() > 0, "flag {flag}");
+        }
+        // A region below the top never saves.
+        assert_eq!(run(true, b"\x1b[2;4r").0, 0);
+        assert_eq!(run(false, b"\x1b[2;4r").0, 0);
     }
 
     #[test]
