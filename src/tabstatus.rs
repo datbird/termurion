@@ -96,6 +96,12 @@ impl Status {
     pub fn is_empty(&self) -> bool {
         *self == Status::default()
     }
+
+    /// Text or an indicator is set: a color or a detail alone is no status
+    /// (`iTermSessionTabStatus.hasActiveStatus`).
+    pub fn is_active(&self) -> bool {
+        self.indicator.is_some() || self.status.as_deref().is_some_and(|t| !t.is_empty())
+    }
 }
 
 /// iTerm2's default priority patterns, highest first.
@@ -165,6 +171,20 @@ mod tests {
         assert_eq!(aggregate(None, &[&other, &idle], &PRIORITIES), Some(&idle), "a match beats no match");
         assert_eq!(aggregate(None, &[&other], &PRIORITIES), Some(&other));
         assert_eq!(aggregate(None, &[&empty], &PRIORITIES), None);
+    }
+
+    #[test]
+    fn a_status_needs_text_or_an_indicator() {
+        let s = |k: &str, v: &str| {
+            let mut st = Status::default();
+            st.apply(&[kv(k, v)]);
+            st
+        };
+        assert!(s("status", "busy").is_active());
+        assert!(s("indicator", "#ff0000").is_active());
+        assert!(!s("detail", "x").is_active());
+        assert!(!s("status-color", "#ff0000").is_active());
+        assert!(!Status::default().is_active());
     }
 
     #[test]

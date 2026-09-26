@@ -225,7 +225,7 @@ impl App {
         self.belt.tools.entry(tool).or_default()
     }
 
-    fn tool_field_text(&self, tool: ToolId) -> String {
+    pub(super) fn tool_field_text(&self, tool: ToolId) -> String {
         self.belt.tools.get(&tool).map(|t| t.field.text.clone()).unwrap_or_default()
     }
 

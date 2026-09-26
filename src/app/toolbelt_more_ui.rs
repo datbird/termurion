@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use super::toolbelt_tools_ui::{Shown, is_modifier, now_ms, unix};
-use super::toolbelt_ui::{BeltDrag, wrap_words};
+use super::toolbelt_ui::{BeltDrag, ToolState, wrap_words};
 use super::*;
 use crate::captured::{self, Captured, Cleared};
 use crate::mouse::Mods;
@@ -74,6 +74,34 @@ pub(super) struct StatusShown {
     pub(super) items: Vec<StatusItem>,
     pub(super) separator: Option<usize>,
     pub(super) wraps: RefCell<Wraps>,
+}
+
+/// What an OSC clear's empty view is keyed to: the mark's capture count and its last entry
+/// (a capture appends or grows the last one; nothing else changes the list while it is empty).
+fn captured_fingerprint(list: &[Captured]) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    list.len().hash(&mut h);
+    if let Some(c) = list.last() {
+        (&c.line, c.state, c.abs_line).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// One step of Captured Output's view (`captured_catch_up`) for the mark it follows now, that
+/// mark's clear count, its captures' fingerprint and the search.
+fn view_follows(st: &mut ToolState, pane: PaneId, mark: u32, count: u32, print: u64, query: String) {
+    if st.cleared_pane != Some(pane) || st.cleared.mark != Some(mark) {
+        st.cleared_pane = Some(pane);
+        st.cleared = Cleared { mark: Some(mark), abs_line: i64::MIN, clear_count: count };
+        st.blanked = None;
+        st.selection.rows.clear();
+    } else if count > st.cleared.clear_count {
+        st.cleared.clear_count = count;
+        st.blanked = Some((print, query));
+        st.selection.rows.clear();
+    } else if st.blanked.as_ref().is_some_and(|b| *b != (print, query)) {
+        st.blanked = None;
+    }
 }
 
 /// The panes the Session Status tool lists: each `(pane, in this window, buried, status text,
@@ -595,22 +623,14 @@ impl App {
     }
 
     /// Captured Output's view follows its mark: a new mark shows everything and clears the
-    /// selection; an OSC 1337 ClearCapturedOutput seen for this mark hides what it had
-    /// captured so far, as Clear does (`CO:137-164`).
+    /// selection. An OSC 1337 ClearCapturedOutput seen for this mark empties the list for
+    /// that one update only: it stays empty until the mark's captures or the search change,
+    /// then every entry shows again (`CO:137-164`, kept); Clear's cut-off line is untouched.
     pub(super) fn captured_catch_up(&mut self) {
         let Some((pane, mark)) = self.captured_mark() else { return };
-        let Some(count) = self.panes.get(&pane).and_then(|p| p.screen.marks.records.get(&mark)).map(|m| m.clear_count) else { return };
-        let st = self.belt.tools.entry(ToolId::CapturedOutput).or_default();
-        if st.cleared_pane != Some(pane) || st.cleared.mark != Some(mark) {
-            st.cleared_pane = Some(pane);
-            st.cleared = Cleared { mark: Some(mark), abs_line: i64::MIN, clear_count: count };
-            st.selection.rows.clear();
-        } else if count > st.cleared.clear_count {
-            let list = self.panes.get(&pane).and_then(|p| p.screen.marks.records.get(&mark)).map(|m| m.captured.clone()).unwrap_or_default();
-            if let Some(st) = self.belt.tools.get_mut(&ToolId::CapturedOutput) {
-                st.cleared = captured::clear(&list, mark, count);
-            }
-        }
+        let Some((count, print)) = self.panes.get(&pane).and_then(|p| p.screen.marks.records.get(&mark)).map(|m| (m.clear_count, captured_fingerprint(&m.captured))) else { return };
+        let query = self.tool_field_text(ToolId::CapturedOutput);
+        view_follows(self.belt.tools.entry(ToolId::CapturedOutput).or_default(), pane, mark, count, print, query);
     }
 
     /// What Captured Output shows for `query`.
@@ -618,6 +638,9 @@ impl App {
         let Some((pane, mark)) = self.captured_mark() else { return Shown::Captured(CapturedShown::default()) };
         let Some(m) = self.panes.get(&pane).and_then(|p| p.screen.marks.records.get(&mark)) else { return Shown::Captured(CapturedShown::default()) };
         let cleared = self.belt.tools.get(&ToolId::CapturedOutput).map(|t| t.cleared).unwrap_or_default();
+        if self.belt.tools.get(&ToolId::CapturedOutput).is_some_and(|t| t.blanked.is_some()) {
+            return Shown::Captured(CapturedShown { pane: Some(pane), mark, ..CapturedShown::default() });
+        }
         let matching = captured::filter(&m.captured, query);
         let index: Vec<usize> = captured::visible(&m.captured, mark, m.clear_count, &cleared).into_iter().filter(|i| matching.contains(i)).collect();
         let entries = index.iter().map(|&i| m.captured[i].clone()).collect();
@@ -636,7 +659,7 @@ impl App {
             }
         }
         if let Some(t) = self.belt.tools.get(&ToolId::CapturedOutput) {
-            (t.cleared.mark, t.cleared.abs_line, t.cleared.clear_count, t.cleared_pane).hash(h);
+            (t.cleared.mark, t.cleared.abs_line, t.cleared.clear_count, t.cleared_pane, &t.blanked).hash(h);
         }
     }
 
@@ -698,6 +721,7 @@ impl App {
         let st = self.tool_state(ToolId::CapturedOutput);
         st.cleared_pane = Some(pane);
         st.cleared = captured::clear(&list, mark, count);
+        st.blanked = None;
         st.selection.rows.clear();
         self.tools_changed();
     }
@@ -962,6 +986,10 @@ impl App {
             };
             if let Some(text) = answer {
                 self.status_prompt = None;
+                // An edit still in the popover's field lands first.
+                if let Some(v) = self.status_popover.as_mut().and_then(|p| p.pending_patterns()) {
+                    self.set_status_patterns(&v);
+                }
                 // An empty pattern adds nothing (`makeNew`); the new one goes at the end.
                 let mut patterns = self.status_patterns();
                 if let Some(t) = text.filter(|t| !t.is_empty()) {
@@ -1009,6 +1037,10 @@ impl App {
                 }
             }
             PopoverEvent::Close => {
+                // A focus loss closes before the field lets go: its edit lands now.
+                if let Some(v) = self.status_popover.as_mut().and_then(|p| p.pending_patterns()) {
+                    self.set_status_patterns(&v);
+                }
                 self.status_popover = None;
                 self.status_prompt = None;
                 self.status_popover_closed = Some(Instant::now());
@@ -1729,6 +1761,43 @@ mod tests {
             (6, true, false, Some(String::new()), false),
         ];
         assert_eq!(rows_for(&panes), vec![1, 5]);
+    }
+
+    /// An OSC 1337 ClearCapturedOutput empties the list only until the next capture, which
+    /// brings every entry back (`CO:157-163`); a Clear's cut-off line is kept throughout.
+    #[test]
+    fn an_osc_clear_empties_the_list_until_the_next_capture() {
+        let c = |line: &str, abs_line: i64| Captured { line: line.into(), values: vec![], command: None, state: false, abs_line, mark: 1 };
+        let mut list = vec![c("a", 1), c("b", 2)];
+        let mut st = ToolState::default();
+        view_follows(&mut st, 7, 1, 0, captured_fingerprint(&list), String::new());
+        assert!(st.blanked.is_none());
+        // The Clear button hid "a".
+        st.cleared = captured::clear(&list[..1], 1, 0);
+        list.push(c("c", 3));
+        view_follows(&mut st, 7, 1, 0, captured_fingerprint(&list), String::new());
+        assert_eq!(captured::visible(&list, 1, 0, &st.cleared), vec![1, 2]);
+        // The OSC clear: nothing shows, and stays so while nothing changes.
+        view_follows(&mut st, 7, 1, 1, captured_fingerprint(&list), String::new());
+        assert!(st.blanked.is_some());
+        view_follows(&mut st, 7, 1, 1, captured_fingerprint(&list), String::new());
+        assert!(st.blanked.is_some(), "no change, still empty");
+        // A search change is an update too.
+        view_follows(&mut st, 7, 1, 1, captured_fingerprint(&list), "x".into());
+        assert!(st.blanked.is_none());
+        view_follows(&mut st, 7, 1, 2, captured_fingerprint(&list), String::new());
+        assert!(st.blanked.is_some());
+        // The next capture: every entry since the Clear's cut shows again, old ones included.
+        list.push(c("d", 4));
+        view_follows(&mut st, 7, 1, 2, captured_fingerprint(&list), String::new());
+        assert!(st.blanked.is_none());
+        assert_eq!(st.cleared.abs_line, 1, "the Clear's line is kept");
+        assert_eq!(captured::visible(&list, 1, 2, &st.cleared), vec![1, 2, 3]);
+        // A line grown in place counts as a change as well.
+        view_follows(&mut st, 7, 1, 3, captured_fingerprint(&list), String::new());
+        list[3].line.push('!');
+        view_follows(&mut st, 7, 1, 3, captured_fingerprint(&list), String::new());
+        assert!(st.blanked.is_none());
     }
 
     #[test]

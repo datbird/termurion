@@ -68,6 +68,10 @@ pub(super) struct ToolState {
     /// it was for (mark ids are per session).
     pub(super) cleared: crate::captured::Cleared,
     pub(super) cleared_pane: Option<PaneId>,
+    /// An OSC 1337 ClearCapturedOutput the view just saw: the list shows nothing while the
+    /// mark's captures and the search stay as they were then (`captured_fingerprint`, and the
+    /// query), and everything again after the next change (`CO:157-163`).
+    pub(super) blanked: Option<(u64, String)>,
     /// Jobs' collapsed processes (every parent starts expanded, `JT:484-569`).
     pub(super) collapsed: BTreeSet<u32>,
     /// Jobs' signal: an index into `toolbelt_tools::SIGNALS`, KILL at first (`JT:52-60`).
@@ -86,6 +90,7 @@ impl Default for ToolState {
             seen: 0,
             cleared: Default::default(),
             cleared_pane: None,
+            blanked: None,
             collapsed: BTreeSet::new(),
             signal: crate::toolbelt_tools::SIGNALS.iter().position(|s| *s == crate::toolbelt_tools::DEFAULT_SIGNAL).unwrap_or(0),
         }

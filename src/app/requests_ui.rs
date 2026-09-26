@@ -168,7 +168,9 @@ impl App {
         let panes = t.layout.panes();
         // The focused pane's status when it has one, else the best by the user's priority
         // patterns, the first on a tie (`PTYTab.m:7747-7801`).
-        let status_of = |id: &PaneId| self.panes.get(id).map(|p| &p.own().tab_status).filter(|s| !s.is_empty());
+        // A pane has a status when it has text or an indicator (`hasActiveStatus`,
+        // `iTermSessionTabStatus.swift:178`), not a color or detail alone.
+        let status_of = |id: &PaneId| self.panes.get(id).map(|p| &p.own().tab_status).filter(|s| s.is_active());
         let st: Option<&tabstatus::Status> = status_of(&t.focused).or_else(|| {
             let patterns = self.status_patterns();
             panes.iter().filter_map(status_of).enumerate().min_by_key(|(i, s)| (crate::status_tool::priority(s.status.as_deref(), &patterns), *i)).map(|(_, s)| s)

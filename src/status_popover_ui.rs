@@ -119,6 +119,13 @@ impl StatusPopover {
         self.host.request_redraw();
     }
 
+    /// A pattern edit not yet sent (its field still has the focus): the patterns with it, once.
+    /// The app reads this before the popover closes or its patterns are replaced, so a focus
+    /// loss or a + answer does not drop the edit.
+    pub fn pending_patterns(&mut self) -> Option<Vec<Pattern>> {
+        std::mem::take(&mut self.dirty).then(|| self.patterns.clone())
+    }
+
     /// Handles one of its window's events.
     pub fn event(&mut self, event: &WindowEvent) -> PopoverEvent {
         if let Some(close) = closes(event, &mut self.focused, self.hold) {
