@@ -8,6 +8,7 @@ pub mod pointer;
 pub mod remap;
 pub mod keyroute;
 pub mod mru;
+pub mod dvr;
 pub mod osc;
 pub mod osc1337;
 pub mod marks;
