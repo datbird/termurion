@@ -1177,6 +1177,7 @@ impl App {
         if self.globals.bool("TmuxUsesDedicatedProfile") {
             let (guid, made) = self.store.tmux_profile();
             if made {
+                self.tools_changed();
                 if let Err(e) = self.store.save() {
                     self.banners.set("profiles", format!("Could not save profiles: {e}"));
                 }

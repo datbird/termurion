@@ -62,14 +62,17 @@ impl Shown {
     }
 }
 
-/// What a tool's `Shown` was built from: its query, the focused session and its host, and
-/// `App::tool_gen` (bumped when the shell history, the paste history or the profiles change).
+/// What a tool's `Shown` was built from: its query, the focused session and its host,
+/// `App::tool_gen` (bumped when the shell history, the paste history or the profiles change),
+/// and, for Command History, whether it is April 1 (its failed-command prefix changes at
+/// midnight).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ShownKey {
     query: String,
     pane: Option<PaneId>,
     host: String,
     generation: u64,
+    april_first: bool,
 }
 
 /// The keys whose press a focused tool took. A release is the tool's exactly when its press
@@ -231,13 +234,12 @@ impl App {
     }
 
     /// Command History's rows for the focused session's host, filtered.
-    fn command_shown(&mut self, query: &str) -> Vec<tt::CommandRow> {
+    fn command_shown(&mut self, query: &str, april_first: bool) -> Vec<tt::CommandRow> {
         let Some(pane) = self.focused_id() else { return Vec::new() };
         let host = self.history_host_pub(pane);
         let mine: HashSet<(String, u64)> = self.panes.get(&pane).map(|p| p.own().shell.history.iter().map(|r| (r.command.trim().to_string(), unix(r.start).to_bits())).collect()).unwrap_or_default();
         let uses = self.shell_history_pub().uses(&host);
-        let (_, month, day, ..) = crate::prompt_ui::local_time();
-        let rows = tt::command_rows(&uses, &|c: &str, t: f64| mine.contains(&(c.to_string(), t.to_bits())), month == 4 && day == 1);
+        let rows = tt::command_rows(&uses, &|c: &str, t: f64| mine.contains(&(c.to_string(), t.to_bits())), april_first);
         let keep = tt::command_filter(&rows, query);
         keep.into_iter().map(|i| rows[i].clone()).collect()
     }
@@ -265,7 +267,11 @@ impl App {
             Some(p) if per_host => self.history_host_pub(p),
             _ => String::new(),
         };
-        let key = ShownKey { query, pane, host, generation: self.tool_gen };
+        let april_first = tool == ToolId::CommandHistory && {
+            let (_, month, day, ..) = crate::prompt_ui::local_time();
+            month == 4 && day == 1
+        };
+        let key = ShownKey { query, pane, host, generation: self.tool_gen, april_first };
         if let Some((k, shown)) = self.belt.shown.get(&tool) {
             if *k == key {
                 return shown.clone();
@@ -275,7 +281,7 @@ impl App {
         let shown = Rc::new(match tool {
             ToolId::Profiles => Shown::Profiles(self.profile_shown(&query)),
             ToolId::PasteHistory => Shown::Paste(self.history().entries.iter().map(|e| e.value.clone()).collect()),
-            ToolId::CommandHistory => Shown::Commands(self.command_shown(&query)),
+            ToolId::CommandHistory => Shown::Commands(self.command_shown(&query, april_first)),
             ToolId::RecentDirectories => {
                 let dirs = self.dir_shown(&query);
                 let mut tree = tt::DirTree::default();
