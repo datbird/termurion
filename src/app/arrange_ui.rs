@@ -72,17 +72,29 @@ impl App {
         v
     }
 
-    /// The current window as an arrangement window table.
-    pub(super) fn snapshot_window(&self, contents: Contents) -> Value {
+    /// The current window as an arrangement window table. A loaded Instant Replay
+    /// recording's pane is left out (iTerm2 never restores one); a tab or window with
+    /// nothing else is left out whole (None).
+    pub(super) fn snapshot_window(&self, contents: Contents) -> Option<Value> {
         let area = self.content_area();
-        let tabs: Vec<Value> = self
+        let kept: Vec<(usize, &Tab, crate::layout::Tree<PaneId>)> = self
             .tabs
             .iter()
             .enumerate()
-            .map(|(i, t)| {
-                let tree = t.layout.tree().map(&mut |id| self.session_value(id, contents));
-                let active = t.layout.panes().iter().position(|p| *p == t.focused);
-                arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), i == self.active, t.title.as_deref())
+            .filter_map(|(i, t)| t.layout.tree().retain(&mut |id| !self.panes.get(id).is_some_and(|p| p.dvr.read_only)).map(|tree| (i, t, tree)))
+            .collect();
+        if kept.is_empty() {
+            return None;
+        }
+        // The selected tab, or the first kept one when it was a recording's.
+        let selected = kept.iter().position(|(i, _, _)| *i == self.active).unwrap_or(0);
+        let tabs: Vec<Value> = kept
+            .iter()
+            .enumerate()
+            .map(|(n, (_, t, tree))| {
+                let active = tree.leaves().iter().position(|p| **p == t.focused);
+                let tree = tree.clone().map(&mut |id| self.session_value(id, contents));
+                arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), n == selected, t.title.as_deref())
             })
             .collect();
         let (x, y, w, h) = self.gpu.as_ref().map_or((0.0, 0.0, 0.0, 0.0), |g| {
@@ -90,14 +102,15 @@ impl App {
             let s = g.window.outer_size();
             arrangement::saved_frame((p.x, p.y), (s.width, s.height), g.window.is_minimized().unwrap_or(false))
         });
-        let profile = self.tabs.first().and_then(|t| self.panes.get(&t.focused)).and_then(|p| self.store.get(&p.profile)).unwrap_or_else(|| self.store.default_profile());
+        let first = kept[0].2.leaves().first().map(|p| **p);
+        let profile = first.and_then(|id| self.panes.get(&id)).and_then(|p| self.store.get(&p.profile)).unwrap_or_else(|| self.store.default_profile());
         let facts = WindowFacts {
             x,
             y,
             w,
             h,
             style: self.win_style,
-            selected_tab: self.active,
+            selected_tab: selected,
             title: self.win_title.clone(),
             size_locked: self.win_locks.size,
             layout_locked: self.win_locks.layout,
@@ -112,7 +125,7 @@ impl App {
             t.insert(arrangement::HOTKEY_WINDOW_KEY.into(), Value::Boolean(true));
             t.insert(arrangement::HOTKEY_GUID_KEY.into(), Value::String(h.guid.clone()));
         }
-        w
+        Some(w)
     }
 
     /// Every window, by number.
@@ -122,7 +135,7 @@ impl App {
         let mut out = Vec::new();
         for id in ids {
             if self.enter(id) {
-                out.push(self.snapshot_window(contents));
+                out.extend(self.snapshot_window(contents));
             }
         }
         if let Some(b) = back {
@@ -186,7 +199,7 @@ impl App {
         if store.get(name).is_some() && !yes_no(self.hwnd(), "Replace Existing Saved Window Arrangement?", "There is an existing saved window arrangement with this name. Would you like to replace it with the current arrangement?") {
             return;
         }
-        let windows = if all { self.snapshot_all(Contents::None) } else { vec![self.snapshot_window(Contents::None)] };
+        let windows = if all { self.snapshot_all(Contents::None) } else { self.snapshot_window(Contents::None).into_iter().collect() };
         store.save(name, windows);
         self.put_arrangements(&store);
     }
@@ -195,7 +208,7 @@ impl App {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
-        let windows = if all { self.snapshot_all(Contents::Plain) } else { vec![self.snapshot_window(Contents::Plain)] };
+        let windows = if all { self.snapshot_all(Contents::Plain) } else { self.snapshot_window(Contents::Plain).into_iter().collect() };
         let Some(path) = rfd::FileDialog::new().set_title("Save Arrangement with Contents").set_file_name(format!("{name}.itermarrangement")).add_filter("Arrangement", &["itermarrangement", "iterm2arrangement"]).save_file() else { return };
         match arrangement::to_plist(&windows).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
             Ok(()) => self.banners.clear("arrangement"),

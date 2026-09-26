@@ -68,7 +68,10 @@ pub const WARNING: &str = "Warning";
 pub enum LoadError {
     /// The file could not be read; the error text.
     Read(String),
-    /// A gzip stream that does not inflate.
+    /// iTerm2's `inflateInit2` failure (`RC:48-56`), out of memory only. Unreachable with
+    /// flate2: a stream that does not inflate goes on to the parse, as iTerm2's
+    /// `gunzippedData` returns its buffer whatever `inflate` returned
+    /// (`NSData+GZIP.m:103-126`), and fails there as `Unarchive`.
     Decompress,
     /// Not a JSON dictionary.
     Unarchive,
@@ -104,20 +107,23 @@ pub fn encode(dvr: Value, profile: Map<String, Value>) -> Vec<u8> {
     gz.finish().unwrap_or_default()
 }
 
-/// `gunzippedData` (`NSData+GZIP.m:88-93`): bytes that do not start with gzip's magic
-/// are taken as they are; a gzip stream that does not inflate is None.
-fn gunzip(bytes: &[u8]) -> Option<Vec<u8>> {
+/// `gunzippedData` (`NSData+GZIP.m:88-126`): bytes that do not start with gzip's magic
+/// are taken as they are; a stream that does not inflate gives what inflated before
+/// the error (iTerm2 returns its buffer whatever `inflate` returned), which the parse
+/// then refuses.
+fn gunzip(bytes: &[u8]) -> Vec<u8> {
     if bytes.len() < 2 || bytes[0] != 0x1f || bytes[1] != 0x8b {
-        return Some(bytes.to_vec());
+        return bytes.to_vec();
     }
     let mut out = Vec::new();
-    flate2::read::GzDecoder::new(bytes).read_to_end(&mut out).ok()?;
-    Some(out)
+    // On an error `out` keeps what was read so far.
+    let _ = flate2::read::GzDecoder::new(bytes).read_to_end(&mut out);
+    out
 }
 
 /// Every check of `RC:47-100` but the recorder's own load.
 fn parts(bytes: &[u8]) -> Result<(Value, Map<String, Value>), LoadError> {
-    let data = gunzip(bytes).ok_or(LoadError::Decompress)?;
+    let data = gunzip(bytes);
     let Ok(Value::Object(mut dict)) = serde_json::from_slice::<Value>(&data) else { return Err(LoadError::Unarchive) };
     if !dict.get("version").and_then(Value::as_i64).is_some_and(|v| (1..=VERSION).contains(&v)) {
         return Err(LoadError::Version);
@@ -262,6 +268,7 @@ mod tests {
         };
         let part = Dvr::from_json(&d.to_json(200, 300, &mut now)).unwrap();
         assert_eq!(part.timestamps(), vec![1000, 1001]);
+        assert!(frames(&part).iter().all(|(_, i)| i.kind == crate::dvr::Kind::Key), "every copied frame is a key frame");
         assert_eq!(frames(&part).last().unwrap().0, b);
 
         // An empty recorder writes a valid, empty recording (iTerm2's DVR is never
@@ -274,7 +281,8 @@ mod tests {
         // Load failures, in iTerm2's order.
         let file = |v: Value| gz(&serde_json::to_vec(&v).unwrap());
         let good = decode(&bytes).unwrap().0;
-        assert_eq!(decode(&[0x1f, 0x8b, 1, 2, 3]), Err(LoadError::Decompress), "a broken gzip stream");
+        assert_eq!(decode(&[0x1f, 0x8b, 1, 2, 3]), Err(LoadError::Unarchive), "a broken gzip stream is parsed as far as it inflated");
+        assert_eq!(decode(&bytes[..bytes.len() / 2]), Err(LoadError::Unarchive), "a truncated recording");
         assert_eq!(decode(b"x"), Err(LoadError::Unarchive), "bytes that are not gzip are read as they are");
         assert_eq!(decode(&gz(b"x")), Err(LoadError::Unarchive));
         assert_eq!(decode(&gz(b"[1]")), Err(LoadError::Unarchive), "not a dictionary");
@@ -282,6 +290,10 @@ mod tests {
         assert_eq!(decode(&file(json!({"dvr": good.clone(), "profile": {}}))), Err(LoadError::Version));
         assert_eq!(decode(&file(json!({"version": 4, "profile": {}}))), Err(LoadError::Missing));
         assert_eq!(decode(&file(json!({"version": 4, "dvr": good.clone()}))), Err(LoadError::Missing));
+        let mut no_index = good.clone();
+        no_index["buffer"].as_object_mut().unwrap().remove("index");
+        let e = Dvr::from_json(&no_index).expect("no index loads as an empty recording");
+        assert!(e.is_empty() && e.read_only);
         let mut bad = good.clone();
         bad["capacity"] = json!(0);
         assert_eq!(decode(&file(json!({"version": 4, "dvr": bad, "profile": {}}))), Err(LoadError::Corrupt));

@@ -343,7 +343,8 @@ impl Dvr {
     }
 
     /// `loadDictionary:` (`D:176-213`, `B:110-143`): a read-only recorder, or None when the
-    /// inner version is not 1 to 4, the capacity is 0, the buffer is missing, or (Tandem,
+    /// inner version is not 1 to 4, the capacity is 0, the buffer is missing (a missing
+    /// index is an empty recording), or (Tandem,
     /// which keeps rows instead of a byte store) an entry is missing or malformed: every
     /// key from `firstKey` up to `nextKey` needs an entry whose rows match its size, and
     /// the first must be a key frame. `begin` and `end` outside the store become 0, as
@@ -361,7 +362,12 @@ impl Dvr {
             return None;
         }
         let inside = |x: Option<u64>| x.filter(|x| *x < capacity).unwrap_or(0);
-        let index = buffer.get("index")?.as_object()?;
+        // No index loads as an empty buffer (`B:122-130` walks a nil dictionary).
+        let empty = serde_json::Map::new();
+        let (index, next) = match buffer.get("index") {
+            None | Some(serde_json::Value::Null) => (&empty, first),
+            Some(v) => (v.as_object()?, next),
+        };
         let mut d = Dvr::new(capacity);
         d.ring.first = first;
         d.ring.next = next;

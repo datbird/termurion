@@ -81,6 +81,18 @@ impl<T> Tree<T> {
         }
     }
 
+    /// The same shape without the leaves `keep` refuses; a split that loses one side
+    /// becomes its other side. None when no leaf is kept.
+    pub fn retain(self, keep: &mut impl FnMut(&T) -> bool) -> Option<Tree<T>> {
+        match self {
+            Tree::Leaf(t) => keep(&t).then_some(Tree::Leaf(t)),
+            Tree::Split { axis, ratio, a, b } => match (a.retain(keep), b.retain(keep)) {
+                (Some(a), Some(b)) => Some(Tree::Split { axis, ratio, a: Box::new(a), b: Box::new(b) }),
+                (one, other) => one.or(other),
+            },
+        }
+    }
+
     /// The leaves in order.
     pub fn leaves(&self) -> Vec<&T> {
         match self {
@@ -539,6 +551,16 @@ mod tests {
         assert!(r(0.0, 0.0, 10.0, 10.0).contains(9.9, 0.0));
         assert!(!r(0.0, 0.0, 10.0, 10.0).contains(10.0, 0.0));
         assert_eq!(r(0.0, 0.0, 10.0, 10.0).inset(2.0), r(2.0, 2.0, 6.0, 6.0));
+    }
+
+    #[test]
+    fn retain_drops_leaves_and_their_splits() {
+        let leaf = |p: PaneId| Box::new(Tree::Leaf(p));
+        let t = Tree::Split { axis: Axis::Row, ratio: 0.3, a: leaf(1), b: Box::new(Tree::Split { axis: Axis::Column, ratio: 0.6, a: leaf(2), b: leaf(3) }) };
+        assert_eq!(t.clone().retain(&mut |p| *p != 2), Some(Tree::Split { axis: Axis::Row, ratio: 0.3, a: leaf(1), b: leaf(3) }), "the sibling takes the space");
+        assert_eq!(t.clone().retain(&mut |p| *p == 3), Some(Tree::Leaf(3)));
+        assert_eq!(t.clone().retain(&mut |_| true), Some(t.clone()));
+        assert_eq!(t.retain(&mut |_| false), None, "nothing kept");
     }
 
     #[test]

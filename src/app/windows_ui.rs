@@ -664,7 +664,8 @@ impl App {
         if self.tabs.is_empty() {
             return;
         }
-        let snap = self.snapshot_window(super::arrange_ui::Contents::None);
+        // A window of loaded recordings only has nothing to duplicate.
+        let Some(snap) = self.snapshot_window(super::arrange_ui::Contents::None) else { return };
         self.pending_windows.push(NewWindow::Arrangement(snap));
         self.redraw();
     }
