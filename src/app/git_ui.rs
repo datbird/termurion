@@ -40,6 +40,8 @@ const DEFAULT_TIMEOUT: f64 = 4.0;
 pub(super) const TIMEOUT_BAR: &str = "statusbar:git-timeout";
 pub(super) const SEND_BAR: &str = "statusbar:git-send";
 pub(super) const DEBUG_BAR: &str = "statusbar:git-debug";
+/// A menu command refused because its folder is gone (Tandem's own; OK only).
+pub(super) const GONE_BAR: &str = "statusbar:git-gone";
 /// The git menu's item ids after `statusbar:`.
 const MENU_ID: &str = "git:";
 /// The wrapper a single-use window runs, beside `tandem.exe`.
@@ -120,6 +122,8 @@ pub(super) struct GitPane {
     pub(super) send: Option<String>,
     /// The Debug Info text Copy puts on the clipboard.
     pub(super) debug: Option<String>,
+    /// A Log run is on its way: another Log meanwhile is ignored, so one popover opens.
+    pub(super) log_pending: bool,
 }
 
 /// An answer from the worker.
@@ -496,6 +500,7 @@ impl App {
                 picks: Vec::new(),
                 send: None,
                 debug: None,
+                log_pending: false,
             });
             gp.poller.set_cadence(cadence);
             changed |= gp.poller.set_enabled(enabled);
@@ -536,7 +541,12 @@ impl App {
                         menus.push((pane, branches));
                     }
                 }
-                GitReply::Log { pane, text } => self.git_log_ready = Some((pane, text)),
+                GitReply::Log { pane, text } => {
+                    if let Some(gp) = self.git.get_mut(&pane).filter(|g| g.log_pending) {
+                        gp.log_pending = false;
+                        self.git_log_ready = Some((pane, text));
+                    }
+                }
             }
         }
         for (pane, branches) in menus {
@@ -750,11 +760,20 @@ impl App {
         if !self.git_local(pane) {
             return self.git_send_prompt(pane, &GitCommand::Log.args());
         }
-        // A popover already open goes (iTerm2 stops the log running before).
+        let Some(gp) = self.git.get(&pane) else { return };
+        // One Log per pane: while one runs, another is ignored (iTerm2 stops the older run
+        // and starts again; either way one popover shows the log).
+        if gp.log_pending {
+            return;
+        }
+        // A popover already open goes.
         self.git_log = None;
-        let dir = self.git.get(&pane).and_then(|g| g.menu_dir.clone()).or_else(|| self.git_directory(pane));
+        let dir = gp.menu_dir.clone().or_else(|| self.git_directory(pane));
         if let Some(dir) = dir {
             let search = self.git_search_path();
+            if let Some(gp) = self.git.get_mut(&pane) {
+                gp.log_pending = true;
+            }
             self.git_worker.log(pane, dir, search);
         }
     }
@@ -778,7 +797,15 @@ impl App {
             self.banners.set("git", "git runs only in folders on this computer.");
             return self.redraw();
         };
-        let Some(git) = gs::git_program(&self.git_search_path()) else {
+        // A folder gone since the menu opened: the window would start somewhere else, maybe
+        // in another repository.
+        if !Path::new(&dir).is_dir() {
+            self.ask(pane, GONE_BAR, &format!("The folder {dir} no longer exists, so git did not run."), &["OK"], false);
+            return;
+        }
+        // The text check only: the wrapper checks the disk (links, the file) itself, so a
+        // dead drive cannot stall this thread.
+        let Some(git) = gs::git_program_named(&self.git_search_path()) else {
             self.banners.set("git", "The folder searched for git is not on this computer.");
             return self.redraw();
         };
@@ -827,7 +854,7 @@ impl App {
 
     /// The git info bars' answers. False for other bars.
     pub(super) fn git_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>) -> bool {
-        if ![TIMEOUT_BAR, SEND_BAR, DEBUG_BAR].contains(&id) {
+        if ![TIMEOUT_BAR, SEND_BAR, DEBUG_BAR, GONE_BAR].contains(&id) {
             return false;
         }
         let answer = button.map_or(GitBarAnswer::Nothing, |b| git_bar_answer(id, b));

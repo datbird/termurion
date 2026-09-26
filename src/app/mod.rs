@@ -807,6 +807,11 @@ impl App {
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
             Some(crate::arrangement::Folder::Forced(d)) if std::path::Path::new(d).is_dir() => (PathBuf::from(d), None),
+            // A git command's window runs only in its folder, never the profile's.
+            Some(crate::arrangement::Folder::Forced(d)) if self.start_command_override.is_some() => {
+                self.banners.set("start", format!("The folder {d} no longer exists, so git did not run."));
+                return false;
+            }
             Some(crate::arrangement::Folder::Forced(d)) => {
                 let (c, _) = profile::start_dir_with(&p, None);
                 (c, Some(format!("The folder {d} from the arrangement does not exist; the profile's folder is used.")))

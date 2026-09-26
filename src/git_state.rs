@@ -313,11 +313,23 @@ pub const MENU_BRANCHES: usize = 7;
 /// `find_git`), else the first `;`-separated folder's `git.exe`; a folder that fails
 /// `local_path_ok`, or with a link on the way to a network path, is no git.
 pub fn git_program(search_path: &str) -> Option<PathBuf> {
+    git_program_named(search_path).filter(|p| p == Path::new("git") || program_links_local(p))
+}
+
+/// `git_program` from the text alone, without looking at the disk: `git`, or the first
+/// folder's `git.exe` when that folder passes `local_path_ok`. Whoever runs it checks the
+/// links (`program_links_local`).
+pub fn git_program_named(search_path: &str) -> Option<PathBuf> {
     let first = unquote(search_path.split(';').next().unwrap_or(""));
     if first.is_empty() {
         return Some(PathBuf::from("git"));
     }
-    (local_path_ok(first) && links_local(&exe_in(first), 0)).then(|| exe_in(first))
+    local_path_ok(first).then(|| exe_in(first))
+}
+
+/// No symbolic link or junction on the way to `program` leads to a network path.
+pub fn program_links_local(program: &Path) -> bool {
+    links_local(program, 0)
 }
 
 /// `git.exe` in the first local PATH folder that has it. Network and relative folders, and
@@ -1569,6 +1581,10 @@ mod tests {
         assert_eq!(git_program(""), Some(PathBuf::from("git")));
         assert_eq!(git_program("C:\\Git\\cmd;D:\\x"), Some(PathBuf::from("C:\\Git\\cmd\\git.exe")));
         assert_eq!(git_program("\"C:\\Program Files\\Git\\cmd\\\""), Some(PathBuf::from("C:\\Program Files\\Git\\cmd\\git.exe")));
+        assert_eq!(git_program_named("\\\\server\\tools"), None, "the text check alone refuses a share");
+        assert_eq!(git_program_named("//server/tools"), None);
+        assert_eq!(git_program_named(""), Some(PathBuf::from("git")));
+        assert_eq!(git_program_named("C:\\Git\\cmd;D:\\x"), Some(PathBuf::from("C:\\Git\\cmd\\git.exe")));
 
         // Finding git on PATH never looks in a network folder.
         let looked = Mutex::new(Vec::new());

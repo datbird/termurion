@@ -28,9 +28,11 @@ fn main() {
     wait_forever();
 }
 
-/// Runs git on this console with the status bar's environment rules. Never in, or from, a
-/// network path: `git` is found on PATH without looking in network folders, and any other
-/// program must be on a local drive (Tandem vetted its `gitSearchPath` folder).
+/// Runs git on this console, in the environment the window has (iTerm2's single-use window
+/// passes none of its own: git may prompt and fetch as when typed), less the variables that
+/// would point git at another repository. Never in, or from, a network path: `git` is found
+/// on PATH without looking in network folders, and any other program (the `gitSearchPath`
+/// folder's `git.exe`) must be on a local drive with no link on the way to a share.
 fn run(program: &Path, cwd: &Path, args: &[OsString]) -> bool {
     if !tandem::prompted::local_path_ok(&cwd.to_string_lossy()) {
         eprintln!("git does not run in a network folder.\r");
@@ -39,7 +41,8 @@ fn run(program: &Path, cwd: &Path, args: &[OsString]) -> bool {
     let git = if program == Path::new("git") {
         gs::find_git(&std::env::var("PATH").unwrap_or_default(), &|p: &Path| p.is_file())
     } else {
-        tandem::prompted::local_path_ok(&program.to_string_lossy()).then(|| program.to_path_buf())
+        let local = tandem::prompted::local_path_ok(&program.to_string_lossy()) && gs::program_links_local(program);
+        (local && program.is_file()).then(|| program.to_path_buf())
     };
     let Some(git) = git else {
         eprintln!("git.exe was not found in a folder on this computer.\r");
@@ -49,9 +52,6 @@ fn run(program: &Path, cwd: &Path, args: &[OsString]) -> bool {
     cmd.args(args).current_dir(cwd);
     for k in gs::GIT_ENV_REMOVED {
         cmd.env_remove(k);
-    }
-    for (k, v) in gs::GIT_ENV {
-        cmd.env(k, v);
     }
     match cmd.status() {
         Ok(s) => s.success(),
