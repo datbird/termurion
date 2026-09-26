@@ -31,6 +31,18 @@ impl EguiHost {
         h: f64,
     ) -> Result<EguiHost, String> {
         let attrs = Window::default_attributes().with_title(title).with_inner_size(winit::dpi::LogicalSize::new(w, h));
+        Self::open_with(event_loop, instance, adapter, device, queue, attrs)
+    }
+
+    /// A window made from `attrs` (a popover's: no frame, placed, no taskbar button).
+    pub fn open_with(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        attrs: winit::window::WindowAttributes,
+    ) -> Result<EguiHost, String> {
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let surface = instance.create_surface(window.clone()).map_err(|e| e.to_string())?;
         let caps = surface.get_capabilities(adapter);

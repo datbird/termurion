@@ -270,6 +270,11 @@ pub struct App {
     menus_dirty: bool,
     /// The folder the next pane starts in, for a restored arrangement's session.
     start_dir_override: Option<crate::arrangement::Folder>,
+    /// The command the next pane runs instead of its profile's (a git menu command's
+    /// single-use window).
+    start_command_override: Option<String>,
+    /// Sessions opened for a git menu command, by pane (app-wide).
+    single_use: HashMap<PaneId, git_ui::SingleUse>,
     /// Undo Close: closed things waiting, and the close being collected now.
     undo: crate::undo_close::Stack<undo_ui::Undone>,
     undo_capture: Option<undo_ui::Capture>,
@@ -363,6 +368,9 @@ pub struct App {
     git: HashMap<PaneId, git_ui::GitPane>,
     git_worker: git_ui::GitWorker,
     git_placed: std::collections::HashSet<PaneId>,
+    /// The git Log popover, and a log that arrived for one (the pane it is for).
+    git_log: Option<crate::git_log_ui::GitLogWindow>,
+    git_log_ready: Option<(PaneId, String)>,
     /// Triggers: the Show Alert limit, messages already shown, the Alert bar's trigger, and
     /// Run Command's pool and processes.
     trigger_limits: crate::triggers::RateLimit<(PaneId, usize)>,
@@ -614,6 +622,8 @@ pub fn run() {
         arrange_prompt: None,
         menus_dirty: false,
         start_dir_override: None,
+        start_command_override: None,
+        single_use: HashMap::new(),
         undo: Default::default(),
         undo_capture: None,
         pending_windows: Vec::new(),
@@ -652,6 +662,8 @@ pub fn run() {
         git: HashMap::new(),
         git_worker,
         git_placed: std::collections::HashSet::new(),
+        git_log: None,
+        git_log_ready: None,
         trigger_limits: crate::triggers::RateLimit::default(),
         trigger_told: std::collections::HashSet::new(),
         trigger_alerts: HashMap::new(),
@@ -791,7 +803,7 @@ impl App {
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
         let (cols, rows) = self.grid_size(rect);
         let p = self.profile(guid);
-        let cmd = profile::command_line(&p, &self.shell);
+        let cmd = self.start_command_override.clone().unwrap_or_else(|| profile::command_line(&p, &self.shell));
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
             Some(crate::arrangement::Folder::Forced(d)) if std::path::Path::new(d).is_dir() => (PathBuf::from(d), None),
@@ -1061,6 +1073,8 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        // A git command's window closed any way ends its command.
+        self.single_use_ended(id);
         // A buried session that ends leaves the Buried Sessions menu.
         if self.buried.take(id).is_some() {
             self.menus_dirty = true;
@@ -2183,6 +2197,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.tick_status_change();
         let idle_codes = self.tick_idle_codes();
         let status_bars = self.tick_status_bars();
+        self.open_git_log(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
@@ -2270,7 +2285,12 @@ impl ApplicationHandler<UserEvent> for App {
         }
         changed |= self.tmux_pump(event_loop);
         for id in exited {
-            self.session_ended(id);
+            // A git command's short-lived window ends without an alert.
+            let short_lived = self.short_lived(id);
+            self.single_use_ended(id);
+            if !short_lived {
+                self.session_ended(id);
+            }
             if let Some(p) = self.panes.get_mut(&id) {
                 p.own_mut().fire_event(crate::trigger_events::EventKind::SessionEnded, &Default::default(), &[]);
             }
@@ -2289,7 +2309,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

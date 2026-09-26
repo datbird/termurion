@@ -631,6 +631,7 @@ impl App {
                                 let path = p.shown[i].content.as_ref().and_then(|c| c.copy.clone());
                                 self.show_dir_menu(bar.pane, path, at);
                             }
+                            Kind::Git => self.show_git_menu(bar.pane, at),
                             _ => self.show_component_menu(bar.pane, kind, at),
                         }
                     }
@@ -754,7 +755,7 @@ impl App {
     pub(super) fn status_bar_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
         let Some(what) = id.strip_prefix("statusbar:") else { return false };
         let Some(m) = self.status_menu.take() else { return true };
-        if self.dir_menu_picked(what, m.pane, &m.choices, m.path.as_deref(), event_loop) || self.component_menu_picked(what, m.pane, event_loop) {
+        if self.dir_menu_picked(what, m.pane, &m.choices, m.path.as_deref(), event_loop) || self.git_menu_picked(what, m.pane, event_loop) || self.component_menu_picked(what, m.pane, event_loop) {
             return true;
         }
         match what {

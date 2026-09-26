@@ -28,6 +28,8 @@ impl App {
     /// Starts collecting what a person's close takes (nothing when the profile's timeout is 0).
     pub(super) fn begin_undo(&mut self, kind: Kind, panes: &[PaneId]) {
         let secs = panes.first().and_then(|id| self.panes.get(id)).and_then(|p| self.store.get(&p.profile)).map_or(5.0, |p| p.float("Session Close Undo Timeout"));
+        // A git command's short-lived window has an undo timeout of 0 (`openSingleUseWindow`).
+        let secs = if panes.first().is_some_and(|id| self.short_lived(*id)) { 0.0 } else { secs };
         let Some(timeout) = undo_close::timeout(secs) else {
             self.undo_capture = None;
             return;

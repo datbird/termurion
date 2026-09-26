@@ -15,9 +15,10 @@
 //! `GSM` = `iTermGitStringMaker.m`).
 
 use super::statusbar_content::{Content, MenuAt, is_localhost, shown_path};
-use super::statusbar_ui::Click;
+use super::statusbar_ui::{Click, StatusMenu};
 use super::*;
-use crate::git_state::{self as gs, Fetched, GitPoller, GitRun, GitState, Lookup, PollGate, WorkerCache};
+use crate::broadcast::Write;
+use crate::git_state::{self as gs, Fetched, GitCommand, GitPoller, GitRun, GitState, Lookup, PollGate, Polls, WorkerCache};
 use crate::statusbar::Component;
 use crate::statusbar_components::{self as sbc, Kind};
 use std::collections::{HashSet, VecDeque};
@@ -35,22 +36,90 @@ const TIMEOUT_KEY: &str = "gitTimeout";
 const SEARCH_PATH_KEY: &str = "gitSearchPath";
 /// `gitTimeout`'s default (`ADV:534`).
 const DEFAULT_TIMEOUT: f64 = 4.0;
+/// The info bars standing in for iTerm2's git warnings and alert (headings dropped).
+pub(super) const TIMEOUT_BAR: &str = "statusbar:git-timeout";
+pub(super) const SEND_BAR: &str = "statusbar:git-send";
+pub(super) const DEBUG_BAR: &str = "statusbar:git-debug";
+/// The git menu's item ids after `statusbar:`.
+const MENU_ID: &str = "git:";
+/// The wrapper a single-use window runs, beside `tandem.exe`.
+const WRAPPER: &str = "tandem-git.exe";
+
+/// A session opened for a git menu command (`openSingleUseWindowWithCommand:`): the pane
+/// whose component ran it, and whether it is short-lived (no Session Ended alert, no Undo
+/// Close).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct SingleUse {
+    pub(super) owner: PaneId,
+    pub(super) short_lived: bool,
+}
+
+/// What a git info bar's button does.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum GitBarAnswer {
+    /// Store this `gitTimeout` and retry (`GP:77-84`).
+    IncreaseTimeout(f64),
+    /// Type the remote command.
+    Send,
+    /// Put the Debug Info on the clipboard.
+    Copy,
+    Nothing,
+}
+
+/// The answer a git info bar's button gives: the timeout warning's "Increase to Ns" (the
+/// number it names), Send Command's OK, Debug Info's Copy; anything else does nothing.
+pub(super) fn git_bar_answer(id: &str, button: &str) -> GitBarAnswer {
+    match (id, button) {
+        (TIMEOUT_BAR, b) => b.strip_prefix("Increase to ").and_then(|b| b.strip_suffix('s')).and_then(|n| n.parse::<f64>().ok()).map_or(GitBarAnswer::Nothing, GitBarAnswer::IncreaseTimeout),
+        (SEND_BAR, "OK") => GitBarAnswer::Send,
+        (DEBUG_BAR, "Copy") => GitBarAnswer::Copy,
+        _ => GitBarAnswer::Nothing,
+    }
+}
+
+/// A single-use window's command: `tandem-git.exe` in `exe_dir`, the git it runs, and the
+/// command's arguments (a branch never read as an option).
+pub(super) fn single_use_command(exe_dir: &Path, git: &Path, command: &GitCommand) -> String {
+    crate::git_wrapper::command_line(&exe_dir.join(WRAPPER), git, &command.args())
+}
+
+/// The Debug Info text for a poller (`GIT:513-536`): its directory, cadence, enabled flag,
+/// seconds since it last polled, its state, and the worker's `cache` line.
+pub(super) fn git_debug_text(poller: &GitPoller, cache: &str, now: Instant) -> String {
+    let since = poller.last_poll.map(|t| now.saturating_duration_since(t).as_secs_f64());
+    gs::debug_text(poller.directory.as_deref(), poller.cadence, poller.enabled, since, poller.state.as_ref(), cache)
+}
+
+/// A text as an info bar shows it: one line, newlines as spaces.
+pub(super) fn bar_text(text: &str) -> String {
+    text.replace('\n', " ")
+}
 
 /// One pane's git component state (the first git component of its bar).
 pub(super) struct GitPane {
     pub(super) poller: GitPoller,
     /// A menu command's running text (`"Pushing\u{2026}"`), while its window runs.
     pub(super) status: Option<&'static str>,
-    /// The single-use window's pane running that command (Task 6).
-    #[allow(dead_code)]
+    /// The single-use window's pane running that command.
     pub(super) command_pane: Option<PaneId>,
     /// `lastCommand` when last looked at.
     pub(super) last_command: Option<String>,
     /// The component was placed on a bar on screen when last looked at.
     pub(super) was_visible: bool,
-    /// Where the menu opens once the recent branches arrive (Task 6).
-    #[allow(dead_code)]
+    /// Where the component was last clicked: the menu opens there once the recent
+    /// branches arrive, and so does the Log popover.
     pub(super) menu_at: Option<MenuAt>,
+    /// Waiting for the recent branches (a second click meanwhile is ignored).
+    pub(super) waiting: bool,
+    /// The state and directory when the menu was asked for (`iTermGitMenuItemContext`).
+    pub(super) menu_state: Option<GitState>,
+    pub(super) menu_dir: Option<String>,
+    /// The open menu's commands, by item number.
+    pub(super) picks: Vec<GitCommand>,
+    /// The remote command Send Command's OK types.
+    pub(super) send: Option<String>,
+    /// The Debug Info text Copy puts on the clipboard.
+    pub(super) debug: Option<String>,
 }
 
 /// An answer from the worker.
@@ -60,6 +129,8 @@ pub(super) enum GitReply {
     State { path: String, fetched: Fetched },
     /// The recent branches a pane's menu asked for.
     Branches { pane: PaneId, path: String, branches: Vec<String> },
+    /// The Log command's output for a pane.
+    Log { pane: PaneId, text: String },
 }
 
 /// What a thread runs; also the key that joins requests.
@@ -67,6 +138,26 @@ pub(super) enum GitReply {
 enum Job {
     State(String),
     Branches(PaneId, String),
+    Log(PaneId, String),
+}
+
+/// What a thread got for its job.
+enum Output {
+    State(Fetched),
+    Branches(Vec<String>),
+    Log(String),
+}
+
+impl Job {
+    /// The answer for a job that timed out or never ran: a timeout for a poll, nothing for
+    /// the others.
+    fn nothing(&self, timed_out: bool) -> Output {
+        match self {
+            Job::State(_) => Output::State(Fetched { state: None, timed_out }),
+            Job::Branches(..) => Output::Branches(Vec::new()),
+            Job::Log(..) => Output::Log(String::new()),
+        }
+    }
 }
 
 /// A request waiting for a thread. `search` is `gitSearchPath`: the thread resolves the
@@ -91,8 +182,7 @@ struct Done {
     id: u64,
     job: Job,
     finished: Instant,
-    fetched: Fetched,
-    branches: Vec<String>,
+    output: Output,
 }
 
 /// What threads send: an answer, then (however the thread ends) that it ended.
@@ -167,10 +257,14 @@ impl GitWorker {
         }
     }
 
-    /// The 8 most recently committed branches in `path`, for `pane`'s menu (Task 6).
-    #[allow(dead_code)]
+    /// The 8 most recently committed branches in `path`, for `pane`'s menu.
     pub(super) fn branches(&mut self, pane: PaneId, path: String, search: String, timeout: Duration) {
         self.start(Job::Branches(pane, path), search, timeout, Instant::now());
+    }
+
+    /// `git log` in `path`, for `pane`'s Log popover (5 s, `GIT:504`).
+    pub(super) fn log(&mut self, pane: PaneId, path: String, search: String) {
+        self.start(Job::Log(pane, path), search, gs::LOG_TIMEOUT, Instant::now());
     }
 
     /// Forgets `path`'s cached state and waiting requests (`GPW:161-199`).
@@ -181,7 +275,7 @@ impl GitWorker {
     fn start(&mut self, job: Job, search: String, timeout: Duration, now: Instant) {
         if self.abandoned.contains_key(&job) {
             // Its thread is still stuck (a dead drive): a timeout, and no second thread.
-            let reply = self.answer(&job, Fetched { state: None, timed_out: true }, Vec::new(), now);
+            let reply = self.answer(&job, job.nothing(true), now);
             self.ready.push(reply);
             return;
         }
@@ -217,13 +311,14 @@ impl GitWorker {
         let spawned = std::thread::Builder::new().name("tandem-git".into()).spawn(move || {
             let _alive = alive;
             let git = gs::git_program(&search);
-            let (fetched, branches) = match (&job, git) {
-                (Job::State(path), Some(git)) => (gs::fetch_state(&*runner, &git, Path::new(path), left), Vec::new()),
-                (Job::Branches(_, path), Some(git)) => (Fetched::default(), gs::recent_branches(&*runner, &git, Path::new(path), left)),
+            let output = match (&job, git) {
+                (Job::State(path), Some(git)) => Output::State(gs::fetch_state(&*runner, &git, Path::new(path), left)),
+                (Job::Branches(_, path), Some(git)) => Output::Branches(gs::recent_branches(&*runner, &git, Path::new(path), left)),
+                (Job::Log(_, path), Some(git)) => Output::Log(gs::git_log(&*runner, &git, Path::new(path), left)),
                 // No git to run (a network or linked `gitSearchPath`): no state.
-                (_, None) => (Fetched::default(), Vec::new()),
+                (job, None) => job.nothing(false),
             };
-            let _ = tx.send(Msg::Done(Done { id, job, finished: Instant::now(), fetched, branches }));
+            let _ = tx.send(Msg::Done(Done { id, job, finished: Instant::now(), output }));
         });
         match spawned {
             Ok(_) => {
@@ -232,17 +327,20 @@ impl GitWorker {
             // The closure (and its `Alive`) is dropped: the count is back. No thread means
             // no state, as for a folder git may not run in.
             Err(_) => {
-                let reply = self.answer(&q.job, Fetched::default(), Vec::new(), now);
+                let reply = self.answer(&q.job, q.job.nothing(false), now);
                 self.ready.push(reply);
             }
         }
     }
 
     /// The reply for a finished (or abandoned) job, through the cache for a poll.
-    fn answer(&mut self, job: &Job, fetched: Fetched, branches: Vec<String>, finished: Instant) -> GitReply {
-        match job {
-            Job::State(path) => GitReply::State { path: path.clone(), fetched: self.cache.finish(path, fetched, finished) },
-            Job::Branches(pane, path) => GitReply::Branches { pane: *pane, path: path.clone(), branches },
+    fn answer(&mut self, job: &Job, output: Output, finished: Instant) -> GitReply {
+        match (job, output) {
+            (Job::State(path), Output::State(fetched)) => GitReply::State { path: path.clone(), fetched: self.cache.finish(path, fetched, finished) },
+            (Job::Branches(pane, path), Output::Branches(branches)) => GitReply::Branches { pane: *pane, path: path.clone(), branches },
+            (Job::Log(pane, _), Output::Log(text)) => GitReply::Log { pane: *pane, text },
+            // A thread answers its own job's kind.
+            (job, _) => self.answer(job, job.nothing(false), finished),
         }
     }
 
@@ -267,20 +365,20 @@ impl GitWorker {
                 continue;
             }
             let flight = self.flights.remove(&d.job).expect("checked above");
-            out.push(self.answer(&d.job, d.fetched, d.branches, d.finished));
+            out.push(self.answer(&d.job, d.output, d.finished));
             again.extend(flight.again.map(|(search, timeout)| (d.job, search, timeout)));
         }
         let late: Vec<Job> = self.flights.iter().filter(|(_, f)| now >= f.due).map(|(j, _)| j.clone()).collect();
         for job in late {
             let flight = self.flights.remove(&job).expect("listed above");
             self.abandoned.insert(job.clone(), flight.id);
-            out.push(self.answer(&job, Fetched { state: None, timed_out: true }, Vec::new(), now));
+            out.push(self.answer(&job, job.nothing(true), now));
             again.extend(flight.again.map(|(search, timeout)| (job, search, timeout)));
         }
         let (waited, queued): (Vec<Queued>, Vec<Queued>) = self.queue.drain(..).partition(|q| now >= q.asked + q.timeout);
         self.queue = queued.into();
         for q in waited {
-            out.push(self.answer(&q.job, Fetched { state: None, timed_out: true }, Vec::new(), now));
+            out.push(self.answer(&q.job, q.job.nothing(true), now));
         }
         for (job, search, timeout) in again {
             self.start(job, search, timeout, now);
@@ -392,6 +490,12 @@ impl App {
                 last_command: last_command.clone(),
                 was_visible: false,
                 menu_at: None,
+                waiting: false,
+                menu_state: None,
+                menu_dir: None,
+                picks: Vec::new(),
+                send: None,
+                debug: None,
             });
             gp.poller.set_cadence(cadence);
             changed |= gp.poller.set_enabled(enabled);
@@ -411,16 +515,10 @@ impl App {
             }
             polls.push(gp.poller.tick(&gate, now));
             for polls in polls {
-                if let Some(path) = polls.invalidate {
-                    self.git_worker.invalidate(&path);
-                }
-                // A remote session's directory is not on this computer: its state comes
-                // from its variables.
-                if let (Some(path), true) = (polls.request, local) {
-                    self.git_worker.request(path, search.clone(), timeout);
-                }
+                self.git_worker_polls(polls, local, &search, timeout);
             }
         }
+        let mut menus = Vec::new();
         for reply in self.git_worker.take() {
             match reply {
                 GitReply::State { path, fetched } => {
@@ -431,9 +529,18 @@ impl App {
                         }
                     }
                 }
-                // The menu (Task 6) opens with these.
-                GitReply::Branches { .. } => {}
+                // The menu waiting for them opens now.
+                GitReply::Branches { pane, branches, .. } => {
+                    if let Some(gp) = self.git.get_mut(&pane).filter(|g| g.waiting) {
+                        gp.waiting = false;
+                        menus.push((pane, branches));
+                    }
+                }
+                GitReply::Log { pane, text } => self.git_log_ready = Some((pane, text)),
             }
+        }
+        for (pane, branches) in menus {
+            self.open_git_menu(pane, branches);
         }
         if changed {
             self.redraw();
@@ -452,6 +559,333 @@ impl App {
         let state = if local { gp.and_then(|g| g.poller.state.clone()) } else { shell.and_then(|s| gs::remote_state(&s.vars)) };
         let show_timeout = gp.is_some_and(|g| gs::show_timeout(local, g.poller.enabled, g.poller.has_fetched, g.poller.timed_out));
         git_content_of(state.as_ref(), gp.and_then(|g| g.status), enabled, show_timeout)
+    }
+}
+
+/// The click menu and its commands (`GIT:299-626`).
+impl App {
+    /// A poller's asks: the cache to invalidate, and (on this computer) the path to poll.
+    fn git_worker_polls(&mut self, polls: Polls, local: bool, search: &str, timeout: Duration) {
+        if let Some(path) = polls.invalidate {
+            self.git_worker.invalidate(&path);
+        }
+        // A remote session's directory is not on this computer: its state comes from its
+        // variables.
+        if let (Some(path), true) = (polls.request, local) {
+            self.git_worker.request(path, search.to_string(), timeout);
+        }
+    }
+
+    /// The pane's session is on this computer.
+    fn git_local(&self, pane: PaneId) -> bool {
+        is_localhost(self.panes.get(&pane).and_then(|p| p.own().shell.host.as_deref()))
+    }
+
+    /// What the component shows the state of: the poller's here, the variables' remotely.
+    fn git_state_of(&self, pane: PaneId) -> Option<GitState> {
+        if self.git_local(pane) {
+            self.git.get(&pane).and_then(|g| g.poller.state.clone())
+        } else {
+            self.panes.get(&pane).and_then(|p| gs::remote_state(&p.own().shell.vars))
+        }
+    }
+
+    /// Polls a pane's git state now (`bump`), or after the timeout was raised clears the
+    /// warning and polls (`clearTimeoutAndRetry`, `retry`).
+    fn git_bump(&mut self, pane: PaneId, retry: bool) {
+        let now = Instant::now();
+        let local = self.git_local(pane);
+        let Some(p) = self.panes.get(&pane) else { return };
+        let visible = self.panes_with_bar_in_a_window().contains(&pane);
+        let gate = PollGate { visible, last_newline: p.last_newline, last_activity: self.activity.get(&pane).and_then(|a| a.last_output()) };
+        let Some(gp) = self.git.get_mut(&pane) else { return };
+        let polls = if retry { gp.poller.clear_timeout_and_retry(&gate, now) } else { gp.poller.bump(&gate, now) };
+        let (search, timeout) = (self.git_search_path(), self.git_timeout());
+        self.git_worker_polls(polls, local, &search, timeout);
+        self.redraw_all();
+    }
+
+    /// The git component's click (`GIT:307-405`): a running command's Cancel and Reveal;
+    /// the timeout warning; Show Debug Info alone without a branch; else the menu, once the
+    /// recent branches arrive (none for a remote host). A click while they are on their way
+    /// is ignored.
+    pub(super) fn show_git_menu(&mut self, pane: PaneId, at: MenuAt) {
+        let local = self.git_local(pane);
+        let state = self.git_state_of(pane);
+        let dir = self.git_directory(pane);
+        let panes = &self.panes;
+        let Some(gp) = self.git.get_mut(&pane) else { return };
+        if gp.waiting {
+            return;
+        }
+        gp.menu_at = Some(at);
+        if gp.command_pane.is_some_and(|c| panes.contains_key(&c)) {
+            let action = gs::cancel_title(gp.status.unwrap_or_default());
+            let items = [(format!("{MENU_ID}cancel"), action), (format!("{MENU_ID}reveal"), "Reveal".to_string())];
+            self.show_git_items(pane, at, items.into_iter().map(|(id, title)| Some((id, title, true))).collect());
+            return;
+        }
+        if gs::show_timeout(local, gp.poller.enabled, gp.poller.has_fetched, gp.poller.timed_out) {
+            let current = self.git_timeout_setting();
+            let proposed = gs::proposed_timeout(current);
+            let text = bar_text(&gs::timeout_message(dir.as_deref(), current, proposed));
+            self.ask(pane, TIMEOUT_BAR, &text, &[&gs::increase_button(proposed), "Cancel"], false);
+            return;
+        }
+        let Some(state) = state.filter(|s| !s.branch.is_empty()) else {
+            self.show_git_items(pane, at, vec![Some((format!("{MENU_ID}debug"), "Show Debug Info".to_string(), true))]);
+            return;
+        };
+        gp.menu_state = Some(state);
+        gp.menu_dir = gp.poller.directory.clone().or(dir);
+        gp.waiting = true;
+        match gp.menu_dir.clone().filter(|_| local) {
+            Some(path) => {
+                let (search, timeout) = (self.git_search_path(), self.git_timeout());
+                self.git_worker.branches(pane, path, search, timeout);
+            }
+            None => {
+                gp.waiting = false;
+                self.open_git_menu(pane, Vec::new());
+            }
+        }
+    }
+
+    /// The menu for the state asked about, with the recent `branches` (`GIT:343-404`).
+    fn open_git_menu(&mut self, pane: PaneId, branches: Vec<String>) {
+        let Some(gp) = self.git.get_mut(&pane) else { return };
+        let (Some(state), Some(at)) = (gp.menu_state.clone(), gp.menu_at) else { return };
+        let items = gs::git_menu(&state, &branches);
+        gp.picks = items.iter().flatten().map(|i| i.command.clone()).collect();
+        let mut n = 0;
+        let rows = items
+            .into_iter()
+            .map(|i| {
+                i.map(|i| {
+                    n += 1;
+                    (format!("{MENU_ID}{}", n - 1), i.title, i.enabled)
+                })
+            })
+            .collect();
+        // The branches can arrive while another window is in front.
+        if self.enter_pane_window(pane) {
+            self.show_git_items(pane, at, rows);
+        }
+    }
+
+    /// Shows a git menu: (id after `statusbar:`, title, enabled) rows, `None` a separator.
+    /// A disabled row shows but cannot be picked.
+    fn show_git_items(&mut self, pane: PaneId, at: MenuAt, rows: Vec<Option<(String, String, bool)>>) {
+        use muda::{Menu, MenuItem, PredefinedMenuItem};
+        let menu = Menu::new();
+        let results: Vec<_> = rows
+            .into_iter()
+            .map(|r| match r {
+                Some((id, title, enabled)) => menu.append(&MenuItem::with_id(format!("statusbar:{id}"), title.replace('&', "&&"), enabled, None)),
+                None => menu.append(&PredefinedMenuItem::separator()),
+            })
+            .collect();
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Status bar menu: {e}"));
+        }
+        self.status_menu = Some(StatusMenu::for_component(pane, sbc::GIT_CLASS, Vec::new(), None));
+        self.show_menu_at(menu, at);
+    }
+
+    /// A pick from a git menu. True when `what` was one.
+    pub(super) fn git_menu_picked(&mut self, what: &str, pane: PaneId, event_loop: &ActiveEventLoop) -> bool {
+        let Some(what) = what.strip_prefix(MENU_ID) else { return false };
+        let running = self.git.get(&pane).and_then(|g| g.command_pane).filter(|c| self.panes.contains_key(c));
+        match what {
+            // `killSession:`: closed without confirmation.
+            "cancel" => {
+                if let Some(c) = running {
+                    self.close_pane(c, event_loop);
+                }
+            }
+            // `[session reveal]` brings a buried session back first.
+            "reveal" => match running {
+                Some(c) if self.buried.contains(c) => self.disinter(c),
+                Some(c) => self.reveal_pane(c),
+                None => {}
+            },
+            "debug" => self.show_git_debug(pane),
+            n => {
+                let Some(command) = n.parse::<usize>().ok().and_then(|n| self.git.get(&pane)?.picks.get(n).cloned()) else { return true };
+                match command {
+                    GitCommand::Debug => self.show_git_debug(pane),
+                    GitCommand::Log => self.git_log_command(pane),
+                    _ => self.run_git_in_window(pane, &command, event_loop),
+                }
+            }
+        }
+        true
+    }
+
+    /// Show Debug Info (`GIT:513-536`) as an info bar with OK and Copy.
+    fn show_git_debug(&mut self, pane: PaneId) {
+        let now = Instant::now();
+        let Some(gp) = self.git.get(&pane) else { return };
+        let cache = self.git_worker.cache.debug_info(gp.poller.directory.as_deref().unwrap_or_default(), now);
+        let text = git_debug_text(&gp.poller, &cache, now);
+        if let Some(gp) = self.git.get_mut(&pane) {
+            gp.debug = Some(text.clone());
+        }
+        self.ask(pane, DEBUG_BAR, &bar_text(&text), &["OK", "Copy"], false);
+    }
+
+    /// Send Command? (`GIT:577-594`): a remote host gets the command typed, after asking.
+    fn git_send_prompt(&mut self, pane: PaneId, args: &[String]) {
+        let command = gs::remote_command(args);
+        let text = format!("Looks like you're sshed somewhere. OK to send the command \u{201C}{command}\u{201D}?");
+        if let Some(gp) = self.git.get_mut(&pane) {
+            gp.send = Some(command);
+        }
+        self.ask(pane, SEND_BAR, &bar_text(&text), &["OK", "Cancel"], false);
+    }
+
+    /// Log (`GIT:472-505`): here, `git log` through the worker into the popover; on a
+    /// remote host, the send prompt.
+    fn git_log_command(&mut self, pane: PaneId) {
+        if !self.git_local(pane) {
+            return self.git_send_prompt(pane, &GitCommand::Log.args());
+        }
+        // A popover already open goes (iTerm2 stops the log running before).
+        self.git_log = None;
+        let dir = self.git.get(&pane).and_then(|g| g.menu_dir.clone()).or_else(|| self.git_directory(pane));
+        if let Some(dir) = dir {
+            let search = self.git_search_path();
+            self.git_worker.log(pane, dir, search);
+        }
+    }
+
+    /// A menu command in a single-use window (`runGitInWindowWithArguments:`, `GIT:596-626`):
+    /// nothing while a command runs; the send prompt on a remote host; else the status
+    /// shows, and a new window of the default profile runs `tandem-git.exe` in the folder
+    /// the menu was opened for, buried at once for Stash, Push, Pull and Check out.
+    pub(super) fn run_git_in_window(&mut self, pane: PaneId, command: &GitCommand, event_loop: &ActiveEventLoop) {
+        let Some(gp) = self.git.get(&pane) else { return };
+        if gp.status.is_some() {
+            return;
+        }
+        if !self.git_local(pane) {
+            return self.git_send_prompt(pane, &command.args());
+        }
+        let Some(status) = command.status() else { return };
+        // Never in a network folder, nor with a network git.
+        let dir = gp.menu_dir.clone().or_else(|| self.git_directory(pane)).filter(|d| crate::prompted::local_path_ok(d));
+        let Some(dir) = dir else {
+            self.banners.set("git", "git runs only in folders on this computer.");
+            return self.redraw();
+        };
+        let Some(git) = gs::git_program(&self.git_search_path()) else {
+            self.banners.set("git", "The folder searched for git is not on this computer.");
+            return self.redraw();
+        };
+        let Some(exe_dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) else { return };
+        if let Some(gp) = self.git.get_mut(&pane) {
+            gp.status = Some(status);
+        }
+        self.redraw_all();
+        self.start_command_override = Some(single_use_command(&exe_dir, &git, command));
+        self.start_dir_override = Some(crate::arrangement::Folder::Forced(dir));
+        let made = self.open_window(event_loop, None);
+        self.start_command_override = None;
+        self.start_dir_override = None;
+        let new = made.ok().and_then(|_| self.tabs.get(self.active).map(|t| t.focused));
+        let Some(new) = new else {
+            if let Some(gp) = self.git.get_mut(&pane) {
+                gp.status = None;
+            }
+            return self.redraw_all();
+        };
+        self.single_use.insert(new, SingleUse { owner: pane, short_lived: true });
+        if let Some(gp) = self.git.get_mut(&pane) {
+            gp.command_pane = Some(new);
+        }
+        if command.buried() {
+            self.bury_pane(new);
+        }
+        self.redraw_all();
+    }
+
+    /// A single-use session ended or closed (its completion, `GIT:628-631`): its owner's
+    /// status clears and the owner polls. Once per session.
+    pub(super) fn single_use_ended(&mut self, id: PaneId) {
+        let Some(su) = self.single_use.remove(&id) else { return };
+        if let Some(gp) = self.git.get_mut(&su.owner).filter(|g| g.command_pane == Some(id)) {
+            gp.status = None;
+            gp.command_pane = None;
+        }
+        self.git_bump(su.owner, false);
+    }
+
+    /// A single-use session that must not leave an alert or an Undo Close.
+    pub(super) fn short_lived(&self, id: PaneId) -> bool {
+        self.single_use.get(&id).is_some_and(|s| s.short_lived)
+    }
+
+    /// The git info bars' answers. False for other bars.
+    pub(super) fn git_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>) -> bool {
+        if ![TIMEOUT_BAR, SEND_BAR, DEBUG_BAR].contains(&id) {
+            return false;
+        }
+        let answer = button.map_or(GitBarAnswer::Nothing, |b| git_bar_answer(id, b));
+        // The bar's own pending text only: another git bar may still be waiting.
+        let gp = self.git.get_mut(&pane);
+        let (send, debug) = match (gp, id) {
+            (Some(g), SEND_BAR) => (g.send.take(), None),
+            (Some(g), DEBUG_BAR) => (None, g.debug.take()),
+            _ => (None, None),
+        };
+        match answer {
+            GitBarAnswer::IncreaseTimeout(t) => {
+                self.globals.set(TIMEOUT_KEY, toml::Value::Float(t));
+                self.save_globals();
+                self.git_bump(pane, true);
+            }
+            // `writeTask:` with iTerm2's newline.
+            GitBarAnswer::Send => {
+                if let Some(command) = send {
+                    self.user_write(pane, format!("{command}\n").as_bytes(), Write::SendText);
+                }
+            }
+            GitBarAnswer::Copy => {
+                if let Some(text) = debug {
+                    self.copy_status_text(text);
+                }
+            }
+            GitBarAnswer::Nothing => {}
+        }
+        true
+    }
+
+    /// Opens the Log popover whose text arrived, at the component it was asked from.
+    pub(super) fn open_git_log(&mut self, event_loop: &ActiveEventLoop) {
+        use crate::git_log_ui::{GitLogWindow, LogAt, LogFont};
+        let Some((pane, text)) = self.git_log_ready.take() else { return };
+        let Some(at) = self.git.get(&pane).and_then(|g| g.menu_at) else { return };
+        if !self.enter_pane_window(pane) {
+            return;
+        }
+        let dark = self.panes.get(&pane).is_some_and(|p| p.screen.is_dark());
+        let Some(g) = self.gpu.as_ref() else { return };
+        let origin = g.window.inner_position().unwrap_or_default();
+        let place = LogAt { x: origin.x as f64 + at.x as f64, y: origin.y as f64 + at.y as f64, above: at.above };
+        let font = LogFont { cell_w: g.renderer.cell.0 as f64, px: g.renderer.font_px(), scale: g.window.scale_factor(), dark };
+        match GitLogWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, text, place, font) {
+            Ok(w) => self.git_log = Some(w),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+    }
+
+    /// Handles an event for the Log popover. False when `window` is not it.
+    pub(super) fn git_log_event(&mut self, window: winit::window::WindowId, event: &WindowEvent) -> bool {
+        let Some(w) = self.git_log.as_mut().filter(|w| w.id() == window) else { return false };
+        if !w.event(event) {
+            self.git_log = None;
+        }
+        true
     }
 }
 
@@ -491,6 +925,47 @@ mod tests {
                 d.to_string_lossy().into_owned()
             })
             .collect()
+    }
+
+    /// The single-use window runs the wrapper beside Tandem with the git and its arguments
+    /// (a `-` branch as its ref); the info bars' buttons read as iTerm2's; Debug Info reads
+    /// as `GIT:513-536`.
+    #[test]
+    fn single_use_windows_follow_iterm2() {
+        let push = GitCommand::Push("main".into());
+        assert_eq!(single_use_command(Path::new("C:\\Program Files\\Tandem"), Path::new("git"), &push), "\"C:\\Program Files\\Tandem\\tandem-git.exe\" git push origin main");
+        assert_eq!(
+            single_use_command(Path::new("C:\\T"), Path::new("C:\\Git\\cmd\\git.exe"), &GitCommand::Checkout("-x".into())),
+            "C:\\T\\tandem-git.exe C:\\Git\\cmd\\git.exe checkout refs/heads/-x"
+        );
+        assert_eq!(single_use_command(Path::new("C:\\T"), Path::new("git"), &GitCommand::AddCommit), "C:\\T\\tandem-git.exe git commit -a");
+
+        assert_eq!(git_bar_answer(TIMEOUT_BAR, "Increase to 8s"), GitBarAnswer::IncreaseTimeout(8.0));
+        assert_eq!(git_bar_answer(TIMEOUT_BAR, &gs::increase_button(gs::proposed_timeout(1.3))), GitBarAnswer::IncreaseTimeout(3.3));
+        assert_eq!(git_bar_answer(TIMEOUT_BAR, "Cancel"), GitBarAnswer::Nothing);
+        assert_eq!(git_bar_answer(SEND_BAR, "OK"), GitBarAnswer::Send);
+        assert_eq!(git_bar_answer(SEND_BAR, "Cancel"), GitBarAnswer::Nothing);
+        assert_eq!(git_bar_answer(DEBUG_BAR, "Copy"), GitBarAnswer::Copy);
+        assert_eq!(git_bar_answer(DEBUG_BAR, "OK"), GitBarAnswer::Nothing);
+        assert_eq!(git_bar_answer("statusbar:error", "OK"), GitBarAnswer::Nothing);
+        assert_eq!((TIMEOUT_BAR, SEND_BAR, DEBUG_BAR), ("statusbar:git-timeout", "statusbar:git-send", "statusbar:git-debug"));
+
+        let now = Instant::now();
+        let mut poller = GitPoller::new(2.0, now);
+        poller.set_enabled(true);
+        poller.directory = Some("C:\\r".into());
+        poller.last_poll = Some(now - Duration::from_millis(1500));
+        poller.state = Some(GitState { branch: "main".into(), ahead: "1".into(), dirty: true, adds: 2, ..Default::default() });
+        let cache = WorkerCache::default();
+        let text = git_debug_text(&poller, &cache.debug_info("C:\\r", now), now);
+        assert_eq!(
+            text,
+            "Directory: C:\\r\nPolling cadence: 2 sec\nPolling enabled: Yes\nLast polled 1.5 seconds ago\n\
+Repo state: dir=(null) xcode=(null) ahead=1 behind= branch=main dirty=1 adds=2 deletes=0 lines=+0/-0 files=+0/~0/-0\n\
+Basic cache: none\nRich cache: none\nPending calls: 0\n"
+        );
+        assert_eq!(bar_text("a\nb\n"), "a b ", "an info bar shows newlines as spaces");
+        assert_eq!(git_debug_text(&GitPoller::new(0.0, now), "", now), "Directory: (null)\nPolling cadence: 1 sec\nPolling enabled: No\nLast polled 0 seconds ago\nRepo state: (null)\n");
     }
 
     fn states(replies: &[GitReply]) -> Vec<(String, Fetched)> {

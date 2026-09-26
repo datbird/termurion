@@ -225,6 +225,9 @@ impl App {
         self.apply_fonts();
         self.size_window(first_guid.as_deref());
         let style = first_guid.as_deref().and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).int("Window Type");
+        // A git command's single-use window is never full screen (`iTermController.m`
+        // `openSingleUseWindowWithCommand:` uses the default window type instead).
+        let style = if self.start_command_override.is_some() && style == crate::frames::FULL_SCREEN { crate::frames::NORMAL } else { style };
         let arranged = matches!(first, NewWindow::Arrangement(_) | NewWindow::HotkeyRestored(..));
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),

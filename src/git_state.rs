@@ -270,6 +270,30 @@ pub const BRANCHES_ARGS: &[&str] = &[
     "--format=%(refname:short)",
     "refs/heads/",
 ];
+/// The Log command (`GIT:472-505`). A repository's config cannot make it verify
+/// signatures (`log.showSignature` runs its `gpg.program`).
+pub const LOG_ARGS: &[&str] = &[
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.useBuiltinFSMonitor=false",
+    "-c",
+    "safe.bareRepository=explicit",
+    "-c",
+    "core.quotepath=false",
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "core.virtualFilesystem=",
+    "-c",
+    "log.showSignature=false",
+    "log",
+];
+/// Log's timeout (`GIT:504`) and the characters it shows before `TRUNCATED` (`GIT:494`).
+pub const LOG_TIMEOUT: Duration = Duration::from_secs(5);
+pub const LOG_CAP: usize = 100_000;
+pub const TRUNCATED: &str = "\n[Truncated]\n";
 /// Set for every status bar git run: no prompts, no optional locks, no lazy fetch.
 pub const GIT_ENV: &[(&str, &str)] = &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_OPTIONAL_LOCKS", "0"), ("GIT_NO_LAZY_FETCH", "1")];
 /// Removed from Tandem's environment for every status bar git run: they pick another
@@ -748,6 +772,28 @@ pub fn recent_branches(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Durati
     match run.run(git, dir, &with_extra(BRANCHES_ARGS, &vet.args), left, Some(SMALL_CAP)) {
         RunResult::Exit { code: 0, stdout, .. } => parse_branches(&stdout),
         _ => Vec::new(),
+    }
+}
+
+/// The Log command's output (`GIT:472-505`): `git log` in `dir` with the same checks and
+/// hardening as a poll; past `LOG_CAP` git is stopped and `TRUNCATED` appended. Empty when
+/// git may not run, cannot start, or times out.
+pub fn git_log(run: &dyn GitRun, git: &Path, dir: &Path, timeout: Duration) -> String {
+    let start = Instant::now();
+    let Some(vet) = vet_repo(dir) else { return String::new() };
+    if lazy_fetch_safe(run, git, dir, &vet, timeout) != Some(true) {
+        return String::new();
+    }
+    let left = timeout.saturating_sub(start.elapsed());
+    match run.run(git, dir, &with_extra(LOG_ARGS, &vet.args), left, Some(LOG_CAP)) {
+        RunResult::Exit { stdout, capped, .. } => {
+            let mut text = String::from_utf8_lossy(&stdout).into_owned();
+            if capped {
+                text.push_str(TRUNCATED);
+            }
+            text
+        }
+        _ => String::new(),
     }
 }
 
@@ -1853,6 +1899,26 @@ mod tests {
         assert_eq!(git_variants(None, Some("Committing\u{2026}"), true), [""], "no branch, no status either");
         assert_eq!(git_variants(Some(&s), None, false), [""]);
         assert_eq!((TIMED_OUT_SHORT, TIMED_OUT_ICON), ("\u{26A0} timed out", "\u{26A0}"));
+    }
+
+    /// Log runs the hardened `git log` in a vetted repository, shows a capped answer with
+    /// the marker, and shows nothing on a timeout or off a local path (git never starts).
+    #[test]
+    fn log_is_hardened_and_truncated_like_iterm2() {
+        let d = temp_repo("log");
+        let capped = Fake::new(|_| RunResult::Exit { code: 0, stdout: b"commit abc\n".to_vec(), capped: true });
+        assert_eq!(git_log(&capped, Path::new(GIT), &d, LOG_TIMEOUT), "commit abc\n\n[Truncated]\n");
+        let calls = capped.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0.first().map(String::as_str), Some("--no-optional-locks"));
+        assert_eq!(calls[0].0.last().map(String::as_str), Some("log"));
+        assert!(calls[0].0.windows(2).any(|w| w[0] == "-c" && w[1] == "log.showSignature=false"));
+        assert!(calls[0].1 <= LOG_TIMEOUT);
+        assert_eq!(git_log(&Fake::new(|_| exit(b"x")), Path::new(GIT), &d, LOG_TIMEOUT), "x");
+        assert_eq!(git_log(&Fake::new(|_| RunResult::TimedOut), Path::new(GIT), &d, LOG_TIMEOUT), "");
+        let unc = Fake::new(|_| exit(b"x"));
+        assert_eq!(git_log(&unc, Path::new(GIT), Path::new("\\\\server\\share\\r"), LOG_TIMEOUT), "");
+        assert!(unc.calls().is_empty());
     }
 
     #[test]
