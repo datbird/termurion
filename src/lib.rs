@@ -175,6 +175,7 @@ pub mod tmux_prefix;
 pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;
+pub mod toolbelt;
 
 #[cfg(windows)]
 pub mod winclip;
