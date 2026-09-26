@@ -69,17 +69,18 @@ pub(super) enum Widget {
 }
 
 /// What a graph draws (`SPK:447-543`): a left and a right text, each series' drawn values
-/// and color, over a baseline. `None` colors are the component's text color. A reserve is
-/// a text `place_components` measures plus extra points; the graph sits between them.
+/// and color, over a baseline. `None` colors are the component's text color; a knob's
+/// color keeps its alpha. A reserve is a text `place_components` measures plus extra
+/// points; the graph sits between them.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Graph {
     pub(super) left: String,
     pub(super) right: String,
     pub(super) left_reserve: (String, f32),
     pub(super) right_reserve: (String, f32),
-    pub(super) left_color: Option<Rgb>,
-    pub(super) right_color: Option<Rgb>,
-    pub(super) series: Vec<(Vec<f64>, Option<Rgb>)>,
+    pub(super) left_color: Option<(Rgb, f32)>,
+    pub(super) right_color: Option<(Rgb, f32)>,
+    pub(super) series: Vec<(Vec<f64>, Option<(Rgb, f32)>)>,
     pub(super) ceiling: f64,
     /// Battery: the charging glyph at the right.
     pub(super) charging: bool,

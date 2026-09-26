@@ -354,9 +354,12 @@ impl App {
     }
 
     /// The text size for a component: its "Custom Font" knob, else the layout's font,
-    /// else 12 points; the family stays the prose font. A scale of the terminal font.
+    /// else 12 points; the family stays the prose font. A scale of the terminal font. The
+    /// graphs have no Custom Font knob, so a stray one is ignored (`SPK:436-437`).
     fn status_text_scale(&self, layout: &Layout, c: &Component) -> f32 {
-        let font = c.font().filter(|f| !f.trim().is_empty()).or_else(|| layout.advanced.font.clone());
+        let graph = matches!(Kind::of(&c.class), Some(Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network));
+        let own = if graph { None } else { c.font() };
+        let font = own.filter(|f| !f.trim().is_empty()).or_else(|| layout.advanced.font.clone());
         let pt = font.map_or(DEFAULT_FONT_PT, |f| crate::profile::parse_font(&f).size_pt.clamp(4.0, 128.0));
         let term_px = self.gpu.as_ref().map_or(16.0, |g| g.renderer.font_px()).max(1.0);
         pt * self.scale() / term_px
@@ -530,7 +533,7 @@ impl App {
                 // A field or the progress track, in the room beside the icon.
                 if let Some(widget) = &content.widget {
                     let room = Rect { x: px(pl.x + icon_pt), w: ((pl.width - icon_pt).max(0.0) * scale).round(), ..clip };
-                    let look = WidgetLook { color, dim: mix(color, background.0), text_scale: s.text_scale, scale };
+                    let look = WidgetLook { color, dim: mix(color, background.0), background: background.0, text_scale: s.text_scale, scale };
                     draw_widget(widget, room, &s.widths, &look, &mut boxes, &mut texts);
                     continue;
                 }
@@ -909,10 +912,18 @@ fn mix(a: Rgb, b: Rgb) -> Rgb {
     crate::palette::rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
 }
 
+/// `a` at alpha `alpha` over `b` (text has no alpha of its own).
+fn blend(a: Rgb, b: Rgb, alpha: f32) -> Rgb {
+    let m = |x: u8, y: u8| (f32::from(x) * alpha + f32::from(y) * (1.0 - alpha)).round().clamp(0.0, 255.0) as u8;
+    crate::palette::rgb(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
+}
+
 /// How a widget draws: the text color, it at half alpha, the text size, and the scale.
 struct WidgetLook {
     color: Rgb,
     dim: Rgb,
+    /// The bar's background, which a translucent graph text color is blended over.
+    background: Rgb,
     text_scale: f32,
     scale: f32,
 }
@@ -1000,17 +1011,18 @@ fn draw_widget(widget: &Widget, room: Rect, widths: &[(String, f32)], look: &Wid
                 for (values, color) in &g.series {
                     let points: Vec<(f32, f32)> = sp::path(values, rect, g.ceiling.max(1.0), shift).into_iter().map(|(x, y)| (room.x + x * scale, room.y + y * scale)).collect();
                     for r in sp::polyline_rects(&points, scale, clip) {
-                        boxes.push((r, color.unwrap_or(look.color), 1.0));
+                        let (c, a) = color.unwrap_or((look.color, 1.0));
+                        boxes.push((r, c, a));
                     }
                 }
             }
             let dy = -scale;
             if !g.left.is_empty() {
-                texts.push(scene::BarText { x: room.x, text: g.left.clone(), color: g.left_color.unwrap_or(look.color), scale: look.text_scale, clip: room, icon: false, dy });
+                texts.push(scene::BarText { x: room.x, text: g.left.clone(), color: g.left_color.map_or(look.color, |(c, a)| blend(c, look.background, a)), scale: look.text_scale, clip: room, icon: false, dy });
             }
             if !g.right.is_empty() {
                 let r = at((w_pt - right_reserve).max(0.0), w_pt);
-                texts.push(scene::BarText { x: r.x, text: g.right.clone(), color: g.right_color.unwrap_or(look.color), scale: look.text_scale, clip: room, icon: false, dy });
+                texts.push(scene::BarText { x: r.x, text: g.right.clone(), color: g.right_color.map_or(look.color, |(c, a)| blend(c, look.background, a)), scale: look.text_scale, clip: room, icon: false, dy });
             }
             if g.charging {
                 let r = at((w_pt - CHARGING_PT - 2.0).max(0.0), (w_pt - 2.0).max(0.0));

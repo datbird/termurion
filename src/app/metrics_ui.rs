@@ -30,14 +30,9 @@ const UPLOAD_DEFAULT: Rgb = crate::palette::rgb(255, 0, 0);
 const ANIMATE_KEY: &str = "animateGraphStatusBarComponents";
 const EXCLUDE_TUNNELS_KEY: &str = "excludeUtunFromNetworkUtilization";
 
-/// A graph class.
-fn is_graph(class: &str) -> bool {
-    matches!(Kind::of(class), Some(Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network))
-}
-
-/// A color knob's color.
-fn knob_color(c: &Component, key: &str) -> Option<Rgb> {
-    c.knobs.get(key).and_then(color_of).map(|(rgb, _)| rgb)
+/// A color knob's color and alpha.
+fn knob_color(c: &Component, key: &str) -> Option<(Rgb, f32)> {
+    c.knobs.get(key).and_then(color_of)
 }
 
 /// A checkbox knob, else its default.
@@ -95,8 +90,8 @@ pub(super) fn graph_of(kind: Kind, c: &Component, m: &Meters, has_battery: bool,
                 right_color: knob_color(c, sbc::UPLOAD_TEXT_COLOR_KEY),
                 ceiling: sp::ceiling(&[&down, &up]),
                 series: vec![
-                    (sp::graph_values(&down), Some(knob_color(c, sbc::DOWNLOAD_COLOR_KEY).unwrap_or(DOWNLOAD_DEFAULT))),
-                    (sp::graph_values(&up), Some(knob_color(c, sbc::UPLOAD_COLOR_KEY).unwrap_or(UPLOAD_DEFAULT))),
+                    (sp::graph_values(&down), Some(knob_color(c, sbc::DOWNLOAD_COLOR_KEY).unwrap_or((DOWNLOAD_DEFAULT, 1.0)))),
+                    (sp::graph_values(&up), Some(knob_color(c, sbc::UPLOAD_COLOR_KEY).unwrap_or((UPLOAD_DEFAULT, 1.0)))),
                 ],
                 ..base
             }
@@ -125,7 +120,14 @@ pub(super) fn graph_of(kind: Kind, c: &Component, m: &Meters, has_battery: bool,
 impl App {
     /// A graph component's content for now.
     pub(super) fn graph_content(&self, kind: Kind, c: &Component) -> Content {
-        let since = self.globals.bool(ANIMATE_KEY).then(|| self.meters.last_sample.map(|t| t.elapsed())).flatten();
+        let s = self.meters.sampled;
+        let own = match kind {
+            Kind::Cpu => s.cpu,
+            Kind::Memory => s.memory,
+            Kind::Network => s.network,
+            _ => s.battery,
+        };
+        let since = self.globals.bool(ANIMATE_KEY).then(|| own.map(|t| t.elapsed())).flatten();
         graph_of(kind, c, &self.meters, crate::metrics_win::has_battery(), since)
     }
 
@@ -150,26 +152,35 @@ impl App {
         w
     }
 
-    /// The tab shows a bar with a graph.
-    fn tab_shows_graph(&self, tab: &Tab) -> bool {
-        self.status_bars(tab).iter().any(|b| self.bar_layout(b.pane).0.components.iter().any(|c| is_graph(&c.class)))
+    /// The graphs the tab's bars show, leaving out an empty one (Battery on a computer
+    /// with no battery draws nothing).
+    fn tab_graphs(&self, tab: &Tab) -> Wanted {
+        let mut w = Wanted::default();
+        for b in self.status_bars(tab) {
+            for c in self.bar_layout(b.pane).0.components {
+                match Kind::of(&c.class) {
+                    Some(Kind::Cpu) => w.cpu = true,
+                    Some(Kind::Memory) => w.memory = true,
+                    Some(Kind::Network) => w.network = true,
+                    Some(Kind::Battery) if crate::metrics_win::has_battery() => w.battery = true,
+                    _ => {}
+                }
+            }
+        }
+        w
     }
 
-    /// The current window, when it is on screen and its front tab shows a graph.
-    fn current_shows_graph(&self) -> bool {
-        let on_screen = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && g.window.is_visible() != Some(false));
-        on_screen && self.tabs.get(self.active).is_some_and(|t| self.tab_shows_graph(t))
-    }
-
-    /// Redraws every window on screen whose front tab shows a graph; true when any does.
-    fn redraw_graph_windows(&self) -> bool {
+    /// Redraws every window on screen whose front tab shows a graph `pick` accepts; true
+    /// when any does.
+    fn redraw_graph_windows(&self, pick: impl Fn(Wanted) -> bool) -> bool {
         let mut any = false;
-        if self.current_shows_graph() {
+        let on_screen = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && g.window.is_visible() != Some(false));
+        if on_screen && self.tabs.get(self.active).is_some_and(|t| pick(self.tab_graphs(t))) {
             self.redraw();
             any = true;
         }
         for (window, tab) in self.parked_fronts() {
-            if self.tab_shows_graph(tab) {
+            if pick(self.tab_graphs(tab)) {
                 window.request_redraw();
                 any = true;
             }
@@ -177,24 +188,39 @@ impl App {
         any
     }
 
-    /// Samples the wanted meters when due; a new sample redraws the windows showing a
-    /// graph. While the graphs animate (`animateGraphStatusBarComponents`) and the last
-    /// sample is under a second old, those windows redraw every `FRAME` (5 a second,
-    /// iTerm2's preferred rate), and only while a graph is on screen. When to come back.
+    /// The meters whose graphs are sliding now: with `animateGraphStatusBarComponents`, a
+    /// meter whose own last sample is under a second old (one frame more, so the last frame
+    /// draws in place).
+    fn sliding(&self, now: Instant) -> Wanted {
+        if !self.globals.bool(ANIMATE_KEY) {
+            return Wanted::default();
+        }
+        let recent = |t: Option<Instant>| t.is_some_and(|t| now.saturating_duration_since(t) < sp::SLIDE + sp::FRAME);
+        let s = self.meters.sampled;
+        Wanted { cpu: recent(s.cpu), memory: recent(s.memory), network: recent(s.network), battery: recent(s.battery) }
+    }
+
+    /// Samples the wanted meters when due; a new sample or an AC change redraws the windows
+    /// showing a graph. Each graph slides from its own meter's last sample: while one on
+    /// screen is sliding, its windows redraw every `FRAME` (5 a second, iTerm2's preferred
+    /// rate). With no sliding graph on screen nothing asks for frames. When to come back.
     pub(super) fn tick_meters(&mut self, now: Instant) -> Option<Instant> {
         let wanted = self.wanted_meters();
         let exclude = self.globals.bool(EXCLUDE_TUNNELS_KEY);
         let changed = self.meters.tick(now, wanted, exclude, &mut self.samplers);
-        // One frame past the slide's end, so its last frame draws in place.
-        let sliding = self.globals.bool(ANIMATE_KEY) && self.meters.last_sample.is_some_and(|t| now.saturating_duration_since(t) < sp::SLIDE + sp::FRAME);
+        let sliding = self.sliding(now);
+        let overlaps = |w: Wanted| (w.cpu && sliding.cpu) || (w.memory && sliding.memory) || (w.network && sliding.network) || (w.battery && sliding.battery);
+        let any_sliding = sliding != Wanted::default();
         let frame_due = self.graph_frame_due.is_none_or(|due| now >= due);
         let mut frame = None;
-        if changed || (sliding && frame_due) {
-            let shown = self.redraw_graph_windows();
-            if shown && sliding {
+        if changed || (any_sliding && frame_due) {
+            if changed {
+                self.redraw_graph_windows(|w| w != Wanted::default());
+            }
+            if any_sliding && self.redraw_graph_windows(overlaps) {
                 frame = Some(now + sp::FRAME);
             }
-        } else if sliding {
+        } else if any_sliding {
             frame = self.graph_frame_due;
         }
         self.graph_frame_due = frame;

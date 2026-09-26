@@ -85,16 +85,18 @@ impl CpuMeter {
     /// beyond the Resume notes: the brief's failed-read test bullet gives a nonzero
     /// formula, but the source (both reassignment order and the zero check target) gives
     /// 0 every time; this file follows the source, per the implementer rules.
-    pub fn sample(&mut self, current: Option<CpuTicks>) {
+    /// True when a value was published.
+    pub fn sample(&mut self, current: Option<CpuTicks>) -> bool {
         let current = current.unwrap_or_default();
         let delta_idle = current.idle - self.last.idle;
         let delta_total = current.total - self.last.total;
         self.last = current;
         let value = if self.last.total == 0.0 { 0.0 } else { 1.0 - delta_idle / delta_total };
         if value.is_nan() {
-            return;
+            return false;
         }
         self.samples.push(value);
+        true
     }
 }
 
@@ -119,9 +121,11 @@ pub fn cpu_estimate(samples: &[f64]) -> i32 {
     (x * 100.0) as i32
 }
 
-/// `CPU:78-152`: the drawn series is the raw samples left-padded with zeros to 60 when
-/// there are fewer (the generic 60-sample window, `statusbar_sparkline::graph_values`, does
-/// not apply here: CPU pads instead of showing fewer bars).
+/// `CPU:78-91`'s padding for fewer than 60 samples: the last (up to) 60 samples,
+/// left-padded with zeros to 60. The app pads only a history shorter than 60 this way and
+/// then, like every graph, drops the oldest value and keeps the last 60
+/// (`statusbar_sparkline::graph_values`, `SPK:196-200`), so 59 values draw until 61 are
+/// stored.
 pub fn cpu_graph(samples: &[f64]) -> Vec<f64> {
     let take = samples.len().min(60);
     let mut out = vec![0.0; 60 - take];
@@ -143,7 +147,8 @@ impl MemoryMeter {
 
     /// `MEMS:64-120`: fraction = used / physical memory; a failed read (`None`) is used 0,
     /// over whatever total was last known (a failed read does not report a total either).
-    pub fn sample(&mut self, used_total: Option<(u64, u64)>) {
+    /// Always publishes (a failed read is used 0); true for symmetry with the others.
+    pub fn sample(&mut self, used_total: Option<(u64, u64)>) -> bool {
         match used_total {
             Some((used, total)) => {
                 self.total = total;
@@ -152,6 +157,7 @@ impl MemoryMeter {
             }
             None => self.samples.push(0.0),
         }
+        true
     }
 }
 
@@ -267,9 +273,10 @@ impl NetMeter {
     /// (or 0,0 with none yet) is republished instead of a real delta, so a VPN connecting
     /// or an adapter appearing never spikes (`NETS:104-114`); either way `current` becomes
     /// the new base. Rates are not clamped: a counter reset gives a negative rate, kept.
-    pub fn sample(&mut self, current: Option<NetCounters>, now: Instant) {
+    /// True when a rate pair was published.
+    pub fn sample(&mut self, current: Option<NetCounters>, now: Instant) -> bool {
         let Some(current) = current else {
-            return;
+            return false;
         };
         let rates = match &self.last {
             None => (0.0, 0.0),
@@ -287,6 +294,7 @@ impl NetMeter {
         while self.samples.len() > HISTORY {
             self.samples.pop_front();
         }
+        true
     }
 }
 
@@ -318,13 +326,14 @@ impl BatteryMeter {
 
     /// An AC change or a wake only redraws; they publish no sample, so `None` here pushes
     /// nothing (`BAT:245-247`, `PWR:96-106,277-279`).
-    pub fn sample(&mut self, state: Option<PowerState>) {
-        if let Some(state) = state {
-            self.states.push_back(state);
-            while self.states.len() > HISTORY {
-                self.states.pop_front();
-            }
+    /// True when a state was published.
+    pub fn sample(&mut self, state: Option<PowerState>) -> bool {
+        let Some(state) = state else { return false };
+        self.states.push_back(state);
+        while self.states.len() > HISTORY {
+            self.states.pop_front();
         }
+        true
     }
 }
 
@@ -433,6 +442,15 @@ pub trait Samplers {
 /// `CADENCE` while Battery is wanted, independent of Battery's own 60 s cadence, and a
 /// change alone is reported without forcing a new Battery sample. An unwanted meter's
 /// schedule goes idle (its stored history is untouched).
+/// The last publish time of each meter.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Sampled {
+    pub cpu: Option<Instant>,
+    pub memory: Option<Instant>,
+    pub network: Option<Instant>,
+    pub battery: Option<Instant>,
+}
+
 #[derive(Debug, Default)]
 pub struct Meters {
     pub cpu: CpuMeter,
@@ -440,7 +458,10 @@ pub struct Meters {
     pub network: NetMeter,
     pub battery: BatteryMeter,
     pub on_ac: bool,
-    pub last_sample: Option<Instant>,
+    /// When each meter last published a sample: each graph's slide animation starts from
+    /// its own (`SPK:158-251`: a component animates when its own series updates). An AC
+    /// line change sets none (`BAT:245-247`: it only redraws).
+    pub sampled: Sampled,
     cpu_next: Option<Instant>,
     memory_next: Option<Instant>,
     network_next: Option<Instant>,
@@ -462,7 +483,9 @@ impl Meters {
         if wanted.memory {
             if self.memory_next.is_none_or(|due| now >= due) {
                 let v = s.memory();
-                self.memory.sample(v);
+                if self.memory.sample(v) {
+                    self.sampled.memory = Some(now);
+                }
                 self.memory_next = Some(now + CADENCE);
                 changed = true;
             }
@@ -473,7 +496,9 @@ impl Meters {
         if wanted.network {
             if self.network_next.is_none_or(|due| now >= due) {
                 let v = s.network(exclude_tunnels);
-                self.network.sample(v, now);
+                if self.network.sample(v, now) {
+                    self.sampled.network = Some(now);
+                }
                 self.network_next = Some(now + CADENCE);
                 changed = true;
             }
@@ -486,7 +511,9 @@ impl Meters {
                 None => self.cpu_next = Some(now + CADENCE),
                 Some(due) if now >= due => {
                     let v = s.cpu();
-                    self.cpu.sample(v);
+                    if self.cpu.sample(v) {
+                        self.sampled.cpu = Some(now);
+                    }
                     self.cpu_next = Some(now + CADENCE);
                     changed = true;
                 }
@@ -499,7 +526,9 @@ impl Meters {
         if wanted.battery {
             if self.battery_next.is_none_or(|due| now >= due) {
                 let v = s.power();
-                self.battery.sample(v);
+                if self.battery.sample(v) {
+                    self.sampled.battery = Some(now);
+                }
                 self.battery_next = Some(now + BATTERY_CADENCE);
                 changed = true;
             }
@@ -520,9 +549,6 @@ impl Meters {
             self.ac_next = None;
         }
 
-        if changed {
-            self.last_sample = Some(now);
-        }
         changed
     }
 
@@ -719,6 +745,30 @@ mod tests {
             self.ac_calls += 1;
             self.ac_value
         }
+    }
+
+    /// Each graph animates from its own meter's last sample (`SPK:158-251`): CPU's first
+    /// sample at 1 s leaves Battery's start at 0 s; an AC change alone moves none, though it
+    /// still asks for a redraw (`BAT:245-247`).
+    #[test]
+    fn each_meter_keeps_its_own_sample_time() {
+        let mut meters = Meters::new();
+        let mut fake = FakeSamplers { cpu_calls: 0, memory_calls: 0, network_calls: 0, power_calls: 0, ac_calls: 0, ac_value: false };
+        let t0 = Instant::now();
+        let wanted = Wanted { cpu: true, memory: false, network: false, battery: true };
+        meters.tick(t0, wanted, false, &mut fake);
+        assert_eq!(meters.sampled, Sampled { cpu: None, memory: None, network: None, battery: Some(t0) });
+
+        let t1 = t0 + Duration::from_secs(1);
+        meters.tick(t1, wanted, false, &mut fake);
+        assert_eq!(meters.sampled.cpu, Some(t1));
+        assert_eq!(meters.sampled.battery, Some(t0), "sampling CPU leaves Battery's start alone");
+
+        let before = meters.sampled;
+        fake.ac_value = true;
+        let t2 = t1 + Duration::from_millis(1500);
+        assert!(meters.tick(t2, Wanted { cpu: false, ..wanted }, false, &mut fake), "an AC change redraws");
+        assert_eq!(meters.sampled, before, "an AC change moves no animation start");
     }
 
     #[test]
