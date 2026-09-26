@@ -287,6 +287,30 @@ pub fn using_status_bar(has_bar: bool, always: bool, component_visible: bool) ->
     has_bar && (always || component_visible)
 }
 
+/// Where a prompt's reveal of the Auto Composer goes (`revealMakingFirstResponder:`,
+/// `CM:160-171`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RevealAt {
+    /// A dropdown already shows: the status bar reveal does not stack on it.
+    Nothing,
+    /// The dropdown, as the Auto Composer.
+    Dropdown,
+    /// The status bar: the layout's visible Composer field (`permanent`), else the temporary
+    /// right one (`showComposerInStatusBar:`, `CM:192-215`).
+    Field { permanent: bool },
+}
+
+/// `revealMakingFirstResponder:` (`CM:160-171`): with a status bar that wants the composer
+/// (`status_bar`, `using_status_bar`) the reveal goes to its field, the visible component
+/// first, and does nothing while a dropdown shows; otherwise the dropdown shows.
+pub fn reveal_at(status_bar: bool, component_visible: bool, shown: Shown) -> RevealAt {
+    match (status_bar, shown) {
+        (true, Shown::Dropdown) => RevealAt::Nothing,
+        (true, _) => RevealAt::Field { permanent: component_visible },
+        (false, _) => RevealAt::Dropdown,
+    }
+}
+
 impl Composer {
     /// The full text, including any prefix (for the modules that align against it:
     /// highlighting, wrap).
@@ -405,6 +429,29 @@ impl Composer {
         let s = self.saved.take().unwrap_or_default();
         self.set_string(&s, true);
         self.shown = if status_bar { Shown::Field } else { Shown::Dropdown };
+    }
+
+    /// A prompt's reveal into the status bar (`screenRevealComposerWithPrompt:`,
+    /// `PS:15650-15663`, then `revealAutoComposerWithPrompt:`, `PS:8017-8035`): `reset`
+    /// (`CM:559-565`) clears the dropdown's text and the saved text, but with no dropdown
+    /// there is only the saved text to lose, so a temporary field that shows keeps what was
+    /// typed in it; `isAutoComposer` becomes true; `setPrefix:` reaches no dropdown and only
+    /// clears `haveShellProvidedText`. Without a visible layout field and with no temporary
+    /// one showing, a new temporary field opens with `_saved ?: @""`, which is empty after the
+    /// reset (`showComposerInStatusBar:`, `CM:192-215`).
+    pub fn reveal_in_status_bar(&mut self, component_visible: bool) {
+        self.saved = None;
+        self.auto = true;
+        self.shell_provided = false;
+        if self.shown == Shown::Field {
+            return;
+        }
+        self.prefix = None;
+        self.set_string("", true);
+        if !component_visible {
+            self.shown = Shown::Field;
+            self.temporary = true;
+        }
     }
 
     /// `showWithCommand:` (key action 64, `CM:123-139`) after `setStringValue:`
@@ -1691,5 +1738,54 @@ mod tests {
         let lines = wrap(&c.edit.text, 1000.0, &w);
         c.apply(Action::Edit(EditKey::Text("y".to_string())), &lines, &w);
         assert_eq!(c.edit.text, "$ ys");
+    }
+
+    #[test]
+    fn a_prompt_reveal_follows_the_status_bar_routing() {
+        // No status bar that wants it: the dropdown, whatever shows.
+        for shown in [Shown::Hidden, Shown::Field, Shown::Dropdown] {
+            assert_eq!(reveal_at(false, false, shown), RevealAt::Dropdown);
+        }
+        // A visible layout field takes it, even over a temporary field.
+        assert_eq!(reveal_at(true, true, Shown::Hidden), RevealAt::Field { permanent: true });
+        assert_eq!(reveal_at(true, true, Shown::Field), RevealAt::Field { permanent: true });
+        // alwaysUseStatusBarComposer with no component: the temporary field.
+        assert_eq!(reveal_at(true, false, Shown::Hidden), RevealAt::Field { permanent: false });
+        assert_eq!(reveal_at(true, false, Shown::Field), RevealAt::Field { permanent: false });
+        // A dropdown that shows is not stacked on.
+        assert_eq!(reveal_at(true, true, Shown::Dropdown), RevealAt::Nothing);
+        assert_eq!(reveal_at(true, false, Shown::Dropdown), RevealAt::Nothing);
+    }
+
+    #[test]
+    fn a_status_bar_reveal_keeps_the_temporary_fields_text() {
+        // The temporary field shows with typed text: it stays, the text kept, the saved text
+        // gone, now the Auto Composer.
+        let mut c = Composer::default();
+        c.shown = Shown::Field;
+        c.temporary = true;
+        c.set_string("typed", true);
+        c.saved = Some("old".to_string());
+        c.shell_provided = true;
+        c.reveal_in_status_bar(false);
+        assert_eq!((c.shown, c.temporary, c.contents().as_str()), (Shown::Field, true, "typed"));
+        assert_eq!(c.saved, None);
+        assert!(c.auto && !c.shell_provided);
+
+        // Nothing shows: a new, empty temporary field (the saved text is reset first).
+        let mut c = Composer::default();
+        c.saved = Some("draft".to_string());
+        c.reveal_in_status_bar(false);
+        assert_eq!((c.shown, c.temporary, c.contents().as_str()), (Shown::Field, true, ""));
+        assert_eq!(c.saved, None);
+
+        // A visible layout field: nothing new shows and its own text is untouched.
+        let mut c = Composer::default();
+        c.field.load("mine");
+        c.saved = Some("draft".to_string());
+        c.reveal_in_status_bar(true);
+        assert_eq!(c.shown, Shown::Hidden);
+        assert_eq!(c.field.text, "mine");
+        assert_eq!(c.saved, None);
     }
 }

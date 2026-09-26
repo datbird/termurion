@@ -1693,6 +1693,11 @@ impl App {
             self.tabs[self.active].focused = id;
             self.refresh_route();
         }
+        // The press makes the terminal first responder (`notifyActive`): the focused pane's
+        // Auto Composer takes the keyboard back; the press still selects in the output.
+        if self.focused_id() == Some(id) {
+            self.composer_take_back(true);
+        }
         let (col, row, side) = self.cell_at(id, rect, x, y);
         let mods = self.mods;
         let modes = self.modes(id);
@@ -2594,7 +2599,13 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => self.key(&event, event_loop),
+            WindowEvent::KeyboardInput { event, .. } => {
+                // A key that ends find typing, a tool's focus, Copy Mode, the completion list
+                // or the labels gives the terminal the keyboard back (`notifyActive`).
+                let elsewhere = self.focused_keys_elsewhere();
+                self.key(&event, event_loop);
+                self.composer_take_back(elsewhere);
+            }
             // The pointer left the window: no Help tooltip stays up.
             WindowEvent::CursorLeft { .. } => {
                 if self.composer_hover.take().is_some() {
@@ -2602,7 +2613,13 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => self.mouse_move(position.x as f32, position.y as f32),
-            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => self.mouse_press(button, event_loop),
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
+                // As for keys: a press that ends another consumer's keyboard (the find bar's
+                // close button, a press away from a tool) gives the terminal it back.
+                let elsewhere = self.focused_keys_elsewhere();
+                self.mouse_press(button, event_loop);
+                self.composer_take_back(elsewhere);
+            }
             WindowEvent::MouseInput { state: ElementState::Released, button, .. } => self.mouse_release(button, event_loop),
             WindowEvent::MouseWheel { delta, .. } => self.wheel(delta),
             WindowEvent::RedrawRequested => {

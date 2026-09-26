@@ -172,6 +172,23 @@ fn composers_to_release(panes: &[(PaneId, bool)], focused: Option<PaneId>) -> Ve
     panes.iter().filter(|(id, holds)| *holds && Some(*id) != focused).map(|(id, _)| *id).collect()
 }
 
+/// `textViewOrComposerIsFirstResponder` (`PS:21021-21026`, `CM:97`) for the focused pane of an
+/// active window: its dropdown has the keyboard (`dropdown`), or nothing else does
+/// (`elsewhere`: a status bar field, a toolbelt tool, find typing, Copy Mode, the completion
+/// list, the shortcut labels or the Clippings panel), so the terminal has it.
+fn terminal_or_dropdown_has_keys(dropdown: bool, elsewhere: bool) -> bool {
+    dropdown || !elsewhere
+}
+
+/// `notifyActive` (`PS:13557-13564`): the focused pane's terminal just got the keyboard back
+/// (`regained`: a press on it, the pane becoming the focused one, or the key consumer that had
+/// it letting go), and a shown Auto Composer there (`have_auto`, not `hidden` by Copy Mode)
+/// takes it, unless it has it already or something else still does (`elsewhere`, as
+/// `terminal_or_dropdown_has_keys`; Copy Mode is one, `makeComposerFirstResponderIfAllowed`).
+fn auto_takes_keys_back(regained: bool, have_auto: bool, hidden: bool, dropdown: bool, elsewhere: bool) -> bool {
+    regained && have_auto && !hidden && !dropdown && !elsewhere
+}
+
 /// A status bar field keeps the keyboard only while its pane's bar shows (`bar_shown`) and
 /// places the field (`placed`); else its edit ends (the review ruling: no key edits a field
 /// nobody sees).
@@ -390,13 +407,17 @@ impl App {
         }
     }
 
-    /// `pane`'s composer takes the keyboard: every other key consumer lets it go.
+    /// `pane`'s composer takes the keyboard: every other key consumer lets it go, and the
+    /// pane's find field stops typing.
     fn composer_take_keys(&mut self, pane: PaneId) {
         self.belt.focus = None;
         self.composer_yield_keys_but(Some(pane));
         if let Some(p) = self.panes.get_mut(&pane) {
             p.composer.focused = true;
             p.composer.field_focused = false;
+        }
+        if let Some(f) = self.finds.get_mut(&pane) {
+            f.typing = false;
         }
         self.refresh_route();
     }
@@ -487,16 +508,47 @@ impl App {
     }
 
     /// `textViewOrComposerIsFirstResponder` (`PS:21021-21026`): the pane is the focused one of
-    /// an active window and its terminal or its composer has the keyboard (no tool, find
-    /// typing, Copy Mode or completion list does).
+    /// an active window and its terminal or its dropdown has the keyboard
+    /// (`terminal_or_dropdown_has_keys`; a status bar field that has it does not count).
     fn terminal_has_keys(&self, pane: PaneId) -> bool {
         if !self.focused || self.focused_id() != Some(pane) {
             return false;
         }
-        if self.panes.get(&pane).is_some_and(|p| p.composer.focused) {
-            return true;
+        let dropdown = self.panes.get(&pane).is_some_and(|p| p.composer.focused && p.composer.shown == Shown::Dropdown);
+        terminal_or_dropdown_has_keys(dropdown, self.keys_elsewhere(pane))
+    }
+
+    /// Something other than `pane`'s terminal and dropdown has the keyboard: one of its status
+    /// bar fields, a toolbelt tool, find typing, Copy Mode, the completion list, the shortcut
+    /// labels or the Clippings panel.
+    fn keys_elsewhere(&self, pane: PaneId) -> bool {
+        let c = self.panes.get(&pane).map(|p| &p.composer);
+        let field = c.is_some_and(|c| c.field_focused || (c.shown == Shown::Field && c.focused));
+        field
+            || self.belt.focus.is_some()
+            || self.typing_in_find().is_some()
+            || self.copy_modes.contains_key(&pane)
+            || self.completion.is_some()
+            || self.shortcuts.is_some()
+            || self.clips.get(&pane).is_some_and(|c| c.keys && c.model.visible)
+    }
+
+    /// Whether something other than the focused pane's terminal and dropdown has the keyboard
+    /// now (read before an input event, for `composer_take_back`).
+    pub(super) fn focused_keys_elsewhere(&self) -> bool {
+        self.focused_id().is_some_and(|id| self.keys_elsewhere(id))
+    }
+
+    /// `notifyActive` (`PS:13557-13564`, `auto_takes_keys_back`): the focused pane's terminal
+    /// got the keyboard back (`regained`), so its Auto Composer takes it.
+    pub(super) fn composer_take_back(&mut self, regained: bool) {
+        let Some(id) = self.focused_id() else { return };
+        let Some(c) = self.panes.get(&id).map(|p| &p.composer) else { return };
+        let (hidden, dropdown) = (c.hidden, c.focused);
+        if auto_takes_keys_back(regained, self.have_auto_composer(id), hidden, dropdown, self.keys_elsewhere(id)) {
+            self.composer_take_keys(id);
+            self.redraw();
         }
-        self.belt.focus.is_none() && self.typing_in_find().is_none() && !self.copy_modes.contains_key(&pane) && self.completion.is_none()
     }
 
     /// The prompt state machine's events for `pane` (`MS:8409-8445` to the session,
@@ -514,7 +566,23 @@ impl App {
                     }
                     let had_keys = self.terminal_has_keys(pane);
                     let copy = self.copy_modes.contains_key(&pane);
+                    let (status_bar, visible) = self.composer_routing(pane);
                     let Some(p) = self.panes.get_mut(&pane) else { continue };
+                    match composer::reveal_at(status_bar, visible, p.composer.shown) {
+                        composer::RevealAt::Nothing => continue,
+                        composer::RevealAt::Field { permanent } => {
+                            // `showComposerInStatusBar:` makes the field first responder;
+                            // here it takes the keyboard when the terminal, dropdown or a
+                            // field had it, as the dropdown does (Copy Mode keeps it).
+                            let field_had = p.composer.field_focused || (p.composer.shown == Shown::Field && p.composer.focused);
+                            p.composer.reveal_in_status_bar(permanent);
+                            if (had_keys || field_had) && !copy {
+                                self.composer_field_take(pane, permanent);
+                            }
+                            continue;
+                        }
+                        composer::RevealAt::Dropdown => {}
+                    }
                     let (fg, bg) = (p.screen.palette.fg, p.screen.palette.bg);
                     let c = &mut p.composer;
                     // `reset` (`CM:559-565`), then `isAutoComposer`, the reveal and `setPrefix:`.
@@ -897,7 +965,10 @@ impl App {
         } else if let Some(v) = self.composers.get_mut(&pane) {
             v.highlight_due = Some(Instant::now());
         }
-        self.composer_take_keys(pane);
+        // Copy Mode hides it; it takes the keyboard only when shown (`composer_show_with`).
+        if !self.panes.get(&pane).is_some_and(|p| p.composer.hidden) {
+            self.composer_take_keys(pane);
+        }
         self.redraw();
     }
 
@@ -1778,14 +1849,8 @@ impl App {
             self.redraw();
         }
         // `notifyActive` (`PS:13557-13570`): a session that becomes the active one gives its
-        // Auto Composer the keyboard, unless Copy Mode is on.
-        if let Some(id) = focused.filter(|id| self.have_auto_composer(*id)) {
-            let free = self.panes.get(&id).is_some_and(|p| !p.composer.focused && !p.composer.hidden) && self.belt.focus.is_none() && !self.copy_modes.contains_key(&id);
-            if free {
-                self.composer_take_keys(id);
-                self.redraw();
-            }
-        }
+        // Auto Composer the keyboard, unless Copy Mode or another key consumer has it.
+        self.composer_take_back(focused.is_some());
     }
 
     /// The pointer over a dropdown's Help button shows its tooltip (the Clippings buttons'
@@ -2423,5 +2488,31 @@ mod tests {
         assert_eq!(decode(&ch("a"), Some("a"), none).map(|(k, _)| k), Some(CKey::Edit(EditKey::Text("a".into()))));
         assert!(decode(&WKey::Named(NamedKey::F5), None, none).is_none());
         assert_eq!(line_ends("a\nb\r\n"), b"a\rb\r".to_vec());
+    }
+
+    #[test]
+    fn an_auto_composer_takes_the_keyboard_back_with_the_terminal() {
+        // A press on the terminal after a drag-select, the pane becoming the focused one, or
+        // find, a tool or the completion list letting go: the Auto Composer takes it.
+        assert!(auto_takes_keys_back(true, true, false, false, false));
+        // Nothing happened to the terminal's keyboard: no change.
+        assert!(!auto_takes_keys_back(false, true, false, false, false));
+        // No Auto Composer, or it is hidden by Copy Mode, or it has the keyboard already.
+        assert!(!auto_takes_keys_back(true, false, false, false, false));
+        assert!(!auto_takes_keys_back(true, true, true, false, false));
+        assert!(!auto_takes_keys_back(true, true, false, true, false));
+        // Another consumer still has it (Copy Mode, a field, find typing, a tool).
+        assert!(!auto_takes_keys_back(true, true, false, false, true));
+    }
+
+    #[test]
+    fn a_status_bar_field_with_the_keyboard_is_not_the_terminal() {
+        // The dropdown has it, or nothing else does: the terminal or composer is first
+        // responder, so a prompt's reveal may take the keyboard.
+        assert!(terminal_or_dropdown_has_keys(true, false));
+        assert!(terminal_or_dropdown_has_keys(false, false));
+        // The layout's field (or a tool, find typing, Copy Mode) has it: not the terminal, so
+        // a reveal leaves the keyboard where it is.
+        assert!(!terminal_or_dropdown_has_keys(false, true));
     }
 }
