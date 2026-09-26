@@ -80,13 +80,32 @@ pub fn runs_of_lines(screen: &Screen, first: i32, last: i32) -> Vec<Row> {
     runs_over(screen, &spans)
 }
 
+/// Styled rows from `start` to `end` (grid lines and columns), the end column excluded and
+/// its row not trimmed (iTerm2's contentInRange, for the Auto Composer's prompt): the blank
+/// cells a prompt ends with stay. Rows before the last run to their line's end.
+pub fn runs_of_range(screen: &Screen, start: (i32, usize), end: (i32, usize)) -> Vec<Row> {
+    let cols = screen.term().columns();
+    let spans: Vec<(i32, usize, usize)> = (start.0..=end.0).map(|l| (l, if l == start.0 { start.1 } else { 0 }, if l == end.0 { end.1 } else { cols })).collect();
+    runs_spans(screen, &spans, true)
+}
+
 fn runs_over(screen: &Screen, spans: &[(i32, usize, usize)]) -> Vec<Row> {
+    runs_spans(screen, spans, false)
+}
+
+/// `exact_last`: the last span's end column is excluded and its row kept as is.
+fn runs_spans(screen: &Screen, spans: &[(i32, usize, usize)], exact_last: bool) -> Vec<Row> {
     let g = screen.term().grid();
     let palette = &screen.palette;
     let mut out = Vec::new();
-    for &(line, from, to) in spans {
+    for (i, &(line, from, to)) in spans.iter().enumerate() {
         let hard_end = !wraps(screen, line);
-        let cells = cells_of(screen, line, from, to, hard_end);
+        let cells = if exact_last && i + 1 == spans.len() {
+            let row = &g[Line(line)];
+            (from..to.min(g.columns())).filter(|c| !row[Column(*c)].flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)).collect()
+        } else {
+            cells_of(screen, line, from, to.min(g.columns() - 1), hard_end)
+        };
         let mut row: Vec<Run> = Vec::new();
         for c in cells {
             let c = &g[Line(line)][Column(c)];

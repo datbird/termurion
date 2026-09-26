@@ -213,6 +213,15 @@ pub struct Screen {
     /// Mode 2031 (color scheme reports) and the scheme last reported.
     color_reports: bool,
     last_dark: bool,
+    /// The Auto Composer's prompt state machine (milestone 9l), fed by OSC 133, the grid's
+    /// echo, and the alternate screen.
+    pub prompt_state: crate::prompt_state::PromptState,
+    /// What the machine asked of the app, taken by it.
+    pub(crate) composer_events: Vec<crate::prompt_state::Event>,
+    /// Characters from the B anchor to the cursor at the last accrue check.
+    pub(crate) composer_seen: usize,
+    /// The alternate screen was showing at the last check.
+    composer_alt: bool,
 }
 
 /// Something output asked for that the window must do.
@@ -365,6 +374,10 @@ impl Screen {
             capture_hold: Vec::new(),
             color_reports: false,
             last_dark: true,
+            prompt_state: Default::default(),
+            composer_events: Vec::new(),
+            composer_seen: 0,
+            composer_alt: false,
         }
     }
 
@@ -491,6 +504,9 @@ impl Screen {
                     if self.sync_deadline().is_some() {
                         reply.extend(self.flush_sync());
                     }
+                    // The echo before the event is accrued first, as iTerm2 sees it token by
+                    // token.
+                    self.composer_accrue();
                     self.apply(osc);
                 }
             }
@@ -507,8 +523,14 @@ impl Screen {
         }
         reply.extend(self.feed_raw(&bytes[at..]));
         reply.extend(self.color_scheme_change());
+        self.composer_accrue();
         self.run_triggers_after_feed();
         reply
+    }
+
+    /// What the prompt state machine asked of the app since the last call.
+    pub fn take_composer_events(&mut self) -> Vec<crate::prompt_state::Event> {
+        std::mem::take(&mut self.composer_events)
     }
 
     /// How keys are reported now: the program's requests and the menu's choices.
@@ -997,6 +1019,13 @@ impl Screen {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32)
         });
         self.parser.advance(&mut self.term, bytes);
+        // The alternate screen turns the prompt state machine off (`MS:839-845`).
+        let alt = self.term.mode().contains(TermMode::ALT_SCREEN);
+        if alt != self.composer_alt {
+            self.composer_alt = alt;
+            let events = self.prompt_state.set_allowed(!alt);
+            self.composer_events.extend(events);
+        }
         // Now and then, forget folds and notes whose rows scrolled out of the buffer.
         self.feeds = self.feeds.wrapping_add(1);
         if self.feeds % 256 == 0 && (!self.folds.is_empty() || !self.notes.by_id.is_empty() || !self.images.by_id.is_empty() || !self.portholes.is_empty()) {

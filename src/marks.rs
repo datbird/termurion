@@ -125,6 +125,12 @@ pub struct Marks {
     pub alert_next: bool,
     /// Prompts seen so far (a paste that waits for prompts counts them).
     prompts: usize,
+    /// Marks made since the app last looked (`screenDidAddMark`: the command queue sends one
+    /// command per mark).
+    marks_added: u32,
+    /// iTerm2's `currentPromptRange` in absolute lines: set to the prompt start at A, to the
+    /// captured range at B, and to zeros at D (`MS:3734,4772,4850`).
+    prompt_range: ((i64, usize), (i64, usize)),
 }
 
 /// Decodes %XX escapes (bytes, then UTF-8; Latin-1 when that fails, as iTerm2 does).
@@ -336,6 +342,7 @@ impl Screen {
         }
         self.marks.records.insert(id, Mark::new(id, kind));
         self.marks.made = true;
+        self.marks.marks_added = self.marks.marks_added.saturating_add(1);
         id
     }
 
@@ -382,6 +389,92 @@ impl Screen {
     /// True once after a prompt mark or a SetMark was made (for mark alerts).
     pub fn take_new_mark(&mut self) -> bool {
         std::mem::take(&mut self.marks.made)
+    }
+
+    /// The marks made since the last call (prompts and SetMark), for the command queue.
+    pub fn take_marks_added(&mut self) -> u32 {
+        std::mem::take(&mut self.marks.marks_added)
+    }
+
+    /// The cursor as `(absolute line, column)`: absolute lines count every row that
+    /// scrolled off the top (`promptStateMachineCursorAbsCoord`, `MS:8404-8407`).
+    fn abs_cursor(&self) -> (i64, usize) {
+        let g = self.term.grid();
+        (g.scrolled_off() as i64 + g.cursor.point.line.0 as i64, g.cursor.point.column.0)
+    }
+
+    /// The captured prompt (`MS:4768-4770`): styled rows from the prompt start to the command
+    /// start, the rows blank after trimming dropped, and their text. Rows no longer in the
+    /// buffer are left out.
+    pub fn prompt_rows(&self) -> (Vec<crate::styled_copy::Row>, Vec<String>) {
+        let g = self.term.grid();
+        let off = g.scrolled_off() as i64;
+        let (top, bottom) = (-(g.history_size() as i64), g.screen_lines() as i64 - 1);
+        let ((sl, sc), (el, ec)) = self.marks.prompt_range;
+        let (sl, el) = (sl - off, el - off);
+        if el < top || sl > bottom || sl > el {
+            return (Vec::new(), Vec::new());
+        }
+        // A start above the buffer begins at the first line kept.
+        let start = if sl < top { (top as i32, 0) } else { (sl as i32, sc) };
+        let end = if el > bottom { (bottom as i32, g.columns()) } else { (el as i32, ec) };
+        let rows = crate::styled_copy::runs_of_range(self, start, end);
+        rows.into_iter()
+            .map(|r| {
+                let text: String = r.runs.iter().map(|run| run.text.as_str()).collect();
+                (r, text)
+            })
+            .filter(|(_, t)| !t.trim_end().is_empty())
+            .unzip()
+    }
+
+    /// What the shell echoed from the B anchor to the cursor: the cells' characters, wide
+    /// spacers skipped, a row that ends in a line break trimmed of its trailing blanks.
+    fn echo_since(&self, start: Point) -> String {
+        let g = self.term.grid();
+        let (cursor, cols) = (g.cursor.point, g.columns());
+        let mut out = String::new();
+        for line in start.line.0..=cursor.line.0 {
+            let from = if line == start.line.0 { start.column.0 } else { 0 };
+            let to = if line == cursor.line.0 { cursor.column.0 } else { cols };
+            let row = &g[Line(line)];
+            let mut text = String::new();
+            for c in from..to.min(cols) {
+                let cell = &row[Column(c)];
+                if cell.flags.intersects(alacritty_terminal::term::cell::Flags::WIDE_CHAR_SPACER | alacritty_terminal::term::cell::Flags::LEADING_WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                text.push(cell.c);
+                if let Some(extra) = cell.zerowidth() {
+                    text.extend(extra);
+                }
+            }
+            if line != cursor.line.0 && !self.wrapped(line) {
+                text.truncate(text.trim_end_matches(' ').len());
+            }
+            out.push_str(&text);
+        }
+        out
+    }
+
+    /// The accrue check (`PSM:386-433` applied to the grid, milestone 9l Decision): while a
+    /// command is entered, the echo since the B anchor that is new since the last check is
+    /// the part, with the cursor after it. Runs before each shell-integration event and after
+    /// each read.
+    pub(crate) fn composer_accrue(&mut self) {
+        if !self.prompt_state.enabled || !self.prompt_state.entering() || !self.marks.in_command {
+            return;
+        }
+        let Some(start) = self.marks.command_start.and_then(|a| self.resolve(a)) else { return };
+        let cursor = self.cursor_point();
+        let text = if cursor > start { self.echo_since(start) } else { String::new() };
+        let n = text.chars().count();
+        if n > self.composer_seen {
+            let part: String = text.chars().skip(self.composer_seen).collect();
+            let events = self.prompt_state.output(&part, self.abs_cursor());
+            self.composer_events.extend(events);
+        }
+        self.composer_seen = n;
     }
 
     /// The code of the command before the newest one, for the alert sound.
@@ -518,12 +611,37 @@ impl Screen {
                 Some(crate::clipboard_osc::Osc52::Read(pc)) => self.requests.push(crate::screen::Request::ClipboardRead(pc)),
                 None => {}
             },
-            Osc::Prompt { kind, aid, fresh_line } => self.prompt_start(kind, aid, fresh_line),
+            Osc::Prompt { kind, aid, fresh_line } => {
+                let counted = matches!(kind, PromptKind::Initial | PromptKind::Unknown);
+                let events = if counted { self.prompt_state.a() } else { Vec::new() };
+                self.composer_events.extend(events);
+                let redraw = self.marks.in_command;
+                self.prompt_start(kind, aid, fresh_line);
+                // A prompt redrawn at its own start while a command is typed keeps the range
+                // (`MS:3719-3727`).
+                let at = self.abs_cursor();
+                if counted && !(redraw && self.marks.prompt_range.0 == at) {
+                    self.marks.prompt_range = (at, at);
+                }
+            }
             Osc::CommandStart => {
+                let events = self.prompt_state.b();
+                self.composer_events.extend(events);
                 self.marks.in_command = true;
                 self.marks.command_start = self.marks.current.and_then(|c| self.anchor_here(c));
+                self.composer_seen = 0;
+                // The prompt is captured unless its range did not change (`MS:4749-4777`).
+                let range = crate::prompt_state::prompt_range(self.marks.prompt_range.0, self.abs_cursor());
+                if range != self.marks.prompt_range {
+                    self.marks.prompt_range = range;
+                    let (rows, text) = self.prompt_rows();
+                    let events = self.prompt_state.captured(rows, text);
+                    self.composer_events.extend(events);
+                }
             }
             Osc::OutputStart => {
+                let events = self.prompt_state.c();
+                self.composer_events.extend(events);
                 if !std::mem::take(&mut self.marks.in_command) {
                     return;
                 }
@@ -550,6 +668,9 @@ impl Screen {
                 self.shell.history.push(CommandRecord { command: text, cwd, host, start: now, end: None, code: None });
             }
             Osc::CommandEnd { code, aid } => {
+                let events = self.prompt_state.d();
+                self.composer_events.extend(events);
+                self.marks.prompt_range = Default::default();
                 if std::mem::take(&mut self.marks.in_command) {
                     // Ended without starting (Ctrl+C at the prompt): the mark goes away.
                     if let Some(cur) = self.marks.current.take() {
@@ -1153,5 +1274,75 @@ mod tests {
         assert_eq!(color(&m(Some(0))), MarkColor::Success);
         assert_eq!(color(&m(Some(130))), MarkColor::Other);
         assert_eq!(color(&m(Some(1))), MarkColor::Error);
+    }
+    #[test]
+    fn composer_events_follow_osc_133() {
+        use crate::prompt_state::{Event, State};
+        let texts = |ev: &[Event]| -> Vec<Vec<String>> { ev.iter().filter_map(|e| if let Event::Reveal { text, .. } = e { Some(text.clone()) } else { None }).collect() };
+        let mut s = Screen::new(40, 10);
+        s.prompt_state.enabled = true;
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        let ev = s.take_composer_events();
+        assert_eq!(texts(&ev), vec![vec!["$ ".to_string()]]);
+        assert_eq!(ev.len(), 1);
+        let Event::Reveal { rows, .. } = &ev[0] else { panic!() };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].runs.iter().map(|r| r.text.as_str()).collect::<String>(), "$ ");
+        assert_eq!(s.prompt_rows().1, vec!["$ ".to_string()]);
+        assert_eq!(s.take_marks_added(), 1);
+        assert_eq!(s.take_marks_added(), 0);
+        // What the shell echoes after B is appended, the first part trimmed.
+        s.feed(b" l");
+        assert_eq!(s.take_composer_events(), vec![Event::Append("l".into())]);
+        s.feed(b"s");
+        assert_eq!(s.take_composer_events(), vec![Event::Append("s".into())]);
+        // A backspace moves the cursor left: nothing new; a retype at or left of the last
+        // accepted column is rejected; past it, appended.
+        s.feed(b"\x08 \x08");
+        assert!(s.take_composer_events().is_empty());
+        s.feed(b"s");
+        assert!(s.take_composer_events().is_empty());
+        s.feed(b" -l");
+        assert_eq!(s.take_composer_events(), vec![Event::Append(" -l".into())]);
+        assert!(matches!(&s.prompt_state.state, State::Accruing { so_far, .. } if so_far == "ls -l"));
+        // C then D: Dismiss once (at C), then Ground.
+        s.feed(b"\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07");
+        assert_eq!(s.take_composer_events(), vec![Event::Dismiss]);
+        assert_eq!(s.prompt_state.state, State::Ground);
+        // Echo in the same read as B, and a send: EchoingBack, C dismisses, Executing.
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        s.take_composer_events();
+        s.prompt_state.will_send();
+        s.feed(b"echo hi\r\n");
+        assert!(s.take_composer_events().is_empty(), "no accrual while echoing back");
+        s.feed(b"\x1b]133;C\x07hi\r\n");
+        assert_eq!(s.take_composer_events(), vec![Event::Dismiss]);
+        assert_eq!(s.prompt_state.state, State::Executing);
+        s.feed(b"\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07ls");
+        assert_eq!(texts(&s.take_composer_events()).len(), 1);
+        assert!(matches!(&s.prompt_state.state, State::Accruing { so_far, .. } if so_far == "ls"));
+        // Each prompt and each SetMark counts.
+        assert_eq!(s.take_marks_added(), 2);
+        s.feed(b"\x1b]1337;SetMark\x07");
+        assert_eq!(s.take_marks_added(), 1);
+        // A two-line prompt keeps both rows, dropping the blank one.
+        s.feed(b"\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07info\r\n\r\n> \x1b]133;B\x07");
+        assert_eq!(texts(&s.take_composer_events()), vec![vec!["info".to_string(), "> ".to_string()]]);
+        // The alternate screen: Disabled with Dismiss; leaving it: Ground.
+        s.feed(b"\x1b[?1049h");
+        assert_eq!(s.take_composer_events(), vec![Event::Dismiss]);
+        assert_eq!(s.prompt_state.state, State::Disabled);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        assert!(s.take_composer_events().is_empty());
+        s.feed(b"\x1b[?1049l");
+        assert!(s.take_composer_events().is_empty());
+        assert_eq!(s.prompt_state.state, State::Ground);
+
+        // With Auto Composer off: no events, the session only becomes eligible.
+        let mut s = Screen::new(40, 10);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
+        assert!(s.take_composer_events().is_empty());
+        assert!(s.prompt_state.eligible);
+        assert!(s.prompt_state.entering());
     }
 }
