@@ -959,20 +959,40 @@ impl App {
     }
 
     /// Instant Replay: every pane, background tabs and tmux panes included, records a frame
-    /// of its own screen when it changed (iTerm2 records at each refresh of every session).
+    /// of its own screen when it changed, at iTerm2's update cadence for it
+    /// (`cadence::frame_gap`; iTerm2 records at each refresh of every session).
     pub(super) fn record_replay_frames(&mut self) {
         let now = Instant::now();
         let now_us = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64);
-        for p in self.panes.values_mut() {
-            p.record_frame(now, now_us);
+        let visible = self.replay_visible_panes();
+        for (id, p) in self.panes.iter_mut() {
+            let gap = p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()));
+            p.record_frame(now, now_us, gap);
         }
     }
 
-    /// When a pane that captured a frame less than `FRAME_GAP` ago may record again, so
-    /// output that arrived in the gap is not left out of the recording until the next event.
-    fn replay_frame_due(&self) -> Option<Instant> {
+    /// The panes of the tab in front of each window on screen (iTerm2's
+    /// `sessionBelongsToVisibleTab` with a visible, not minimized window).
+    fn replay_visible_panes(&self) -> std::collections::HashSet<PaneId> {
+        let on_screen = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && g.window.is_visible() != Some(false));
+        let current = self.tabs.get(self.active).filter(|_| on_screen);
+        current.into_iter().chain(self.parked_front_tabs()).flat_map(|t| t.layout.panes()).collect()
+    }
+
+    /// When a pane that captured a frame less than its gap ago may record again, so output
+    /// that arrived in the gap is not left out of the recording until the next event.
+    fn replay_frame_due(&mut self) -> Option<Instant> {
         let now = Instant::now();
-        self.panes.values().filter(|p| !p.gateway).filter_map(|p| p.replay_at.map(|t| t + crate::pane::FRAME_GAP)).filter(|t| *t > now).min()
+        let visible = self.replay_visible_panes();
+        let mut due = None;
+        for (id, p) in self.panes.iter_mut() {
+            let Some(at) = p.replay_at.filter(|_| !p.gateway) else { continue };
+            let t = at + p.replay_gap(now, visible.contains(id), self.activity.get(id).and_then(|a| a.last_output()));
+            if t > now && due.is_none_or(|d| t < d) {
+                due = Some(t);
+            }
+        }
+        due
     }
 
     /// The focused session's directory, from shell integration, when it is on this machine

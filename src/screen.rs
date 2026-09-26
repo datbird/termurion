@@ -440,9 +440,12 @@ impl Screen {
     }
 
     /// Instant Replay's frame (`TV:2876-2917`, `S:683-699`): None when nothing changed since
-    /// the last capture. Dirty lines are alacritty's damage, which only this reads and resets
-    /// (reset either way). Full damage, or a view scrolled back, leaves no line clean
-    /// (iTerm2's scrolled case). The cursor's old and new lines are dirty when it moved.
+    /// the last capture (`TV:2910-2917` saves only when something is dirty). Dirty lines are
+    /// alacritty's damage, which only this reads and resets (reset either way). Full damage,
+    /// or a view scrolled back, leaves no line clean (iTerm2's scrolled case), but gives no
+    /// frame when the size, the cursor and every row are as last captured (alacritty reports
+    /// full damage on every read in insert mode). The cursor's old and new lines are dirty
+    /// when it moved.
     pub fn replay_capture(&mut self) -> Option<Capture> {
         let (lines, cols) = (self.term.screen_lines(), self.term.columns());
         let point = self.term.grid().cursor.point;
@@ -464,24 +467,44 @@ impl Screen {
         let same_size = self.replay_rows.len() == lines && self.replay_rows.first().is_some_and(|r| r.len() == cols);
         let moved = self.replay_cursor != Some(cursor);
         let grid = self.term.grid();
-        let clean = match damaged {
+        let same = |y: usize| grid[Line(y as i32)] == self.replay_rows[y];
+        let clean: Vec<bool> = match damaged {
             Some(mut d) if !scrolled && same_size => {
                 // alacritty damages the cursor's cell on every read; iTerm2 marks the cursor
                 // line only when the cursor moved, else when the line itself changed.
                 if !moved {
                     d[cursor.1] = false;
-                    if !d.iter().any(|x| *x) && grid[Line(cursor.1 as i32)] == self.replay_rows[cursor.1] {
+                    if !d.iter().any(|x| *x) && same(cursor.1) {
                         return None;
                     }
                 }
-                (0..lines).map(|y| !d[y] && grid[Line(y as i32)] == self.replay_rows[y]).collect()
+                (0..lines).map(|y| !d[y] && same(y)).collect()
             }
-            _ => vec![false; lines],
+            _ => {
+                if same_size && !moved && (0..lines).all(same) {
+                    return None;
+                }
+                vec![false; lines]
+            }
         };
         let rows: Vec<Row<Cell>> = (0..lines).map(|y| grid[Line(y as i32)].clone()).collect();
-        self.replay_rows.clone_from(&rows);
+        if same_size {
+            // Clean lines already equal the copy.
+            for y in (0..lines).filter(|y| !clean[*y]) {
+                self.replay_rows[y].clone_from(&rows[y]);
+            }
+        } else {
+            self.replay_rows.clone_from(&rows);
+        }
         self.replay_cursor = Some(cursor);
         Some(Capture { rows, clean, cursor })
+    }
+
+    /// Instant Replay without room for a frame: the damage is read and dropped, nothing is
+    /// copied or compared.
+    pub fn replay_discard(&mut self) {
+        let _ = self.term.damage();
+        self.term.reset_damage();
     }
 
     pub fn set_cell_px(&mut self, w: u16, h: u16) {
@@ -1807,6 +1830,38 @@ mod tests {
         let c = s.replay_capture().expect("back to the main screen");
         assert_eq!(text(&c.rows[3]), "z");
         assert_eq!(c.cursor, (1, 3), "the main grid's cursor");
+    }
+
+    /// `TV:2910-2917`: a frame is saved only when something is dirty. alacritty reports full
+    /// damage on every read in insert mode, and a view scrolled back reads as full damage;
+    /// an idle screen still gives no frame. A resize gives one frame, then none.
+    #[test]
+    fn idle_full_damage_captures_nothing() {
+        use alacritty_terminal::grid::Scroll;
+        let mut s = Screen::with_scrollback(10, 4, 100);
+        s.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\n6");
+        assert!(s.replay_capture().is_some());
+        s.term_mut().scroll_display(Scroll::Delta(1));
+        assert!(s.term().grid().display_offset() > 0);
+        assert!(s.replay_capture().is_none(), "scrolling the view is not a change of the screen");
+        assert!(s.replay_capture().is_none());
+        s.feed(b"7");
+        let c = s.replay_capture().expect("output while scrolled back");
+        assert_eq!(c.clean, vec![false; 4]);
+        assert!(s.replay_capture().is_none());
+        s.term_mut().scroll_display(Scroll::Bottom);
+        s.feed(b"\x1b[4h");
+        let _ = s.replay_capture();
+        assert!(s.replay_capture().is_none(), "insert mode, nothing written");
+        s.feed(b"x");
+        assert!(s.replay_capture().is_some(), "insert mode, a character written");
+        assert!(s.replay_capture().is_none());
+        s.feed(b"\x1b[4l");
+        let _ = s.replay_capture();
+        s.resize(12, 5);
+        let c = s.replay_capture().expect("a resize");
+        assert_eq!((c.rows.len(), c.rows[0].len(), c.clean), (5, 12, vec![false; 5]));
+        assert!(s.replay_capture().is_none(), "nothing since the resize");
     }
 
     #[test]
