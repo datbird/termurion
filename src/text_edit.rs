@@ -1,15 +1,20 @@
 //! The Notes tool's native multi-line editor, pure model: text, caret and selection as byte
 //! offsets on char boundaries, the Windows edit-control keys (typing, Enter, Tab, Backspace,
-//! Delete, arrows across soft-wrapped lines, Home, End, Shift to select, Ctrl+A/C/X/V/Z/Y and
-//! Ctrl+Shift+Z), clicks and drags, undo, and the soft wrap it draws with, measured by a width
-//! closure (as `tool_list::truncate_tail` is). iTerm2's Notes is an `NSTextView`
-//! (`Toolbelt/ToolNotes.m`, `TN`); the app owns the clipboard, the double-click time and the
-//! drawing (the Notes tool, `src/app/toolbelt_more_ui.rs`).
+//! Delete, arrows across soft-wrapped lines, Home, End, Page Up and Page Down, the Ctrl word
+//! and document moves and word deletes, Shift to select, Ctrl+A/C/X/V/Z/Y and Ctrl+Shift+Z),
+//! clicks and drags, undo, and the soft wrap it draws with, measured by a width closure (as
+//! `tool_list::truncate_tail` is). iTerm2's Notes is an `NSTextView` (`Toolbelt/ToolNotes.m`,
+//! `TN`); the app owns the clipboard, the double-click time and the drawing (the Notes tool,
+//! `src/app/toolbelt_more_ui.rs`).
+//!
+//! Every function taking `lines` expects `wrap` of the editor's current text (at the width it
+//! is drawn at); stale lines give wrong moves and positions.
 
 use std::ops::Range;
 
 /// A key the focused editor acts on, already decoded from the raw key event (`ctrl_key` reads
-/// the Ctrl chords; the app fills `Paste` with the clipboard text).
+/// the Ctrl+letter chords and `ctrl_nav` the Ctrl+arrow family; the app fills `Paste` with the
+/// clipboard text).
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditKey {
     Text(String),
@@ -23,6 +28,19 @@ pub enum EditKey {
     Down,
     Home,
     End,
+    PageUp,
+    PageDown,
+    /// Ctrl+Left and Ctrl+Right: to the start of the previous or next word (`word_left`,
+    /// `word_right`).
+    WordLeft,
+    WordRight,
+    /// Ctrl+Backspace and Ctrl+Delete: delete back to `word_left` or on to `word_right` (or
+    /// the selection).
+    DeleteWordBack,
+    DeleteWordForward,
+    /// Ctrl+Home and Ctrl+End: the start or end of the text.
+    TextStart,
+    TextEnd,
     SelectAll,
     Copy,
     Cut,
@@ -67,7 +85,14 @@ pub struct TextEdit {
     pub text: String,
     pub caret: usize,
     pub anchor: Option<usize>,
-    /// The x that Up and Down keep while they repeat; any other key drops it.
+    /// Caret affinity: where a soft wrap breaks, the caret index is both the end of one
+    /// visual line and the start of the next; true draws it at the end of the earlier line
+    /// (set by End, a click or drag past a line's end, and Up, Down, Page Up and Page Down
+    /// landing there; every other move and every edit clears it).
+    pub at_line_end: bool,
+    /// Visual lines the editor shows at once, for Page Up and Page Down (at least 1 is used).
+    pub page_lines: usize,
+    /// The x that Up, Down, Page Up and Page Down keep while they repeat; any other key drops it.
     goal_x: Option<f32>,
     undo: Vec<Step>,
     redo: Vec<Step>,
@@ -76,19 +101,27 @@ pub struct TextEdit {
 }
 
 impl TextEdit {
-    /// Loads new text (a mode switch or the note changed elsewhere): caret at the end, nothing
-    /// selected, a fresh undo history (`TN` `loadGlobalNote` removes all undo actions). The
-    /// same text changes nothing, so a refresh keeps the caret.
+    /// Shows `t` (Windows line ends made `\n`), keeping the caret, selection and undo when
+    /// it is already the text (a `tools_changed` refresh); otherwise as `load`.
     pub fn set_text(&mut self, t: &str) {
-        if self.text == t {
-            return;
+        let t = plain_line_ends(t);
+        if self.text != t {
+            self.load(&t);
         }
-        self.text = t.to_string();
-        self.caret = t.len();
+    }
+
+    /// Loads `t` (Windows line ends made `\n`) as a new note, even when the text is the same
+    /// (a mode switch between two notes): caret at the end, nothing selected, a fresh undo
+    /// history (`TN` `loadGlobalNote` removes all undo actions).
+    pub fn load(&mut self, t: &str) {
+        self.text = plain_line_ends(t);
+        self.caret = self.text.len();
         self.anchor = None;
+        self.at_line_end = false;
         self.goal_x = None;
         self.undo.clear();
         self.redo.clear();
+        self.last_click = None;
     }
 
     /// The selected byte range, if any.
@@ -97,11 +130,17 @@ impl TextEdit {
         (a != self.caret).then(|| a.min(self.caret)..a.max(self.caret))
     }
 
-    /// One key. `lines` is `wrap` of the current text at the editor's width and `width` the
-    /// same measure, for the moves that follow visual lines (Up, Down, Home, End). `shift`
-    /// extends the selection on a move.
+    /// The caret's visual line and x (`caret_pos` with this editor's affinity). `lines` must be
+    /// `wrap` of the current text.
+    pub fn caret_line(&self, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> (usize, f32) {
+        caret_pos(&self.text, lines, self.caret, self.at_line_end, width)
+    }
+
+    /// One key. `lines` must be `wrap` of the current text at the editor's width and `width`
+    /// the same measure, for the moves that follow visual lines (Up, Down, Home, End, Page Up,
+    /// Page Down). `shift` extends the selection on a move.
     pub fn key(&mut self, k: EditKey, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
-        if !matches!(k, EditKey::Up | EditKey::Down) {
+        if !matches!(k, EditKey::Up | EditKey::Down | EditKey::PageUp | EditKey::PageDown) {
             self.goal_x = None;
         }
         match k {
@@ -110,20 +149,20 @@ impl TextEdit {
             EditKey::Enter => self.replace("\n"),
             EditKey::Tab => self.replace("\t"),
             EditKey::Backspace => {
-                let r = match self.selection() {
-                    Some(r) => r,
-                    None if self.caret == 0 => return EditOut::Kept,
-                    None => prev_boundary(&self.text, self.caret)..self.caret,
-                };
-                self.edit(r, "")
+                let from = prev_boundary(&self.text, self.caret);
+                self.delete_to(from)
             }
             EditKey::Delete => {
-                let r = match self.selection() {
-                    Some(r) => r,
-                    None if self.caret == self.text.len() => return EditOut::Kept,
-                    None => self.caret..next_boundary(&self.text, self.caret),
-                };
-                self.edit(r, "")
+                let to = next_boundary(&self.text, self.caret);
+                self.delete_to(to)
+            }
+            EditKey::DeleteWordBack => {
+                let from = word_left(&self.text, self.caret);
+                self.delete_to(from)
+            }
+            EditKey::DeleteWordForward => {
+                let to = word_right(&self.text, self.caret);
+                self.delete_to(to)
             }
             EditKey::Left => match self.selection() {
                 Some(r) if !shift => self.move_to(r.start, false),
@@ -133,33 +172,30 @@ impl TextEdit {
                 Some(r) if !shift => self.move_to(r.end, false),
                 _ => self.move_to(next_boundary(&self.text, self.caret), shift),
             },
-            EditKey::Up | EditKey::Down => {
-                let (line, x) = caret_pos(&self.text, lines, self.caret, width);
-                let goal = *self.goal_x.get_or_insert(x);
-                let to = if matches!(k, EditKey::Up) {
-                    if line == 0 { 0 } else { index_at(&self.text, lines, line - 1, goal, width) }
-                } else if line + 1 >= lines.len() {
-                    self.text.len()
-                } else {
-                    index_at(&self.text, lines, line + 1, goal, width)
-                };
-                let out = self.move_to(to, shift);
-                self.goal_x = Some(goal);
-                out
-            }
+            EditKey::WordLeft => self.move_to(word_left(&self.text, self.caret), shift),
+            EditKey::WordRight => self.move_to(word_right(&self.text, self.caret), shift),
+            EditKey::TextStart => self.move_to(0, shift),
+            EditKey::TextEnd => self.move_to(self.text.len(), shift),
+            EditKey::Up => self.vertical(-1, shift, lines, width),
+            EditKey::Down => self.vertical(1, shift, lines, width),
+            EditKey::PageUp => self.vertical(-(self.page_lines.max(1) as isize), shift, lines, width),
+            EditKey::PageDown => self.vertical(self.page_lines.max(1) as isize, shift, lines, width),
             EditKey::Home => {
-                let (line, _) = caret_pos(&self.text, lines, self.caret, width);
+                let (line, _) = self.caret_line(lines, width);
                 let to = lines.get(line).map_or(0, |l| l.start);
                 self.move_to(to, shift)
             }
             EditKey::End => {
-                let (line, _) = caret_pos(&self.text, lines, self.caret, width);
-                let to = lines.get(line).map_or(self.text.len(), |_| line_limit(&self.text, lines, line));
-                self.move_to(to, shift)
+                let (line, _) = self.caret_line(lines, width);
+                let to = lines.get(line).map_or(self.text.len(), |l| l.end);
+                let out = self.move_to(to, shift);
+                self.at_line_end = ends_line(lines, line, to);
+                out
             }
             EditKey::SelectAll => {
                 self.anchor = Some(0);
                 self.caret = self.text.len();
+                self.at_line_end = false;
                 EditOut::Moved
             }
             EditKey::Copy => match self.selection() {
@@ -180,6 +216,7 @@ impl TextEdit {
                     self.text.replace_range(at..at + len, &step.removed);
                     self.caret = step.caret;
                     self.anchor = step.anchor;
+                    self.at_line_end = false;
                     self.redo.push(step);
                     EditOut::Changed
                 }
@@ -191,6 +228,7 @@ impl TextEdit {
                     self.text.replace_range(at..at + len, &step.inserted);
                     self.caret = at + step.inserted.len();
                     self.anchor = None;
+                    self.at_line_end = false;
                     self.undo.push(step);
                     EditOut::Changed
                 }
@@ -199,16 +237,17 @@ impl TextEdit {
         }
     }
 
-    /// A press at byte index `at` (from `index_at`). Shift extends the selection; a second
-    /// plain press at the same index within `double_ms` selects the word there (a run of word
-    /// characters, of spaces, or one other character, as the Windows edit control does); a
-    /// third press is a plain press again.
-    pub fn click(&mut self, at: usize, shift: bool, now_ms: u128, double_ms: u128) {
+    /// A press at byte index `at` (from `index_at`, with `at_line_end` from `ends_line` for the
+    /// line pressed on). Shift extends the selection; a second plain press at the same index
+    /// within `double_ms` selects the word there (a run of word characters, of spaces, or one
+    /// other character, as the Windows edit control does); a third press is a plain press again.
+    pub fn click(&mut self, at: usize, at_line_end: bool, shift: bool, now_ms: u128, double_ms: u128) {
         let at = floor_boundary(&self.text, at);
         self.goal_x = None;
         if shift {
             self.anchor = Some(self.anchor.unwrap_or(self.caret));
             self.caret = at;
+            self.at_line_end = at_line_end;
             self.last_click = None;
             return;
         }
@@ -217,19 +256,55 @@ impl TextEdit {
             let r = word_at(&self.text, at);
             self.anchor = Some(r.start);
             self.caret = r.end;
+            self.at_line_end = false;
             self.last_click = None;
         } else {
             self.caret = at;
             self.anchor = None;
+            self.at_line_end = at_line_end;
             self.last_click = Some((at, now_ms));
         }
     }
 
-    /// A drag after a press, to byte index `at`: the selection runs from the press to `at`.
-    pub fn drag_to(&mut self, at: usize) {
+    /// A drag after a press, to byte index `at` (and its affinity, as `click` takes): the
+    /// selection runs from the press to `at`.
+    pub fn drag_to(&mut self, at: usize, at_line_end: bool) {
         let at = floor_boundary(&self.text, at);
         self.anchor = Some(self.anchor.unwrap_or(self.caret));
         self.caret = at;
+        self.at_line_end = at_line_end;
+    }
+
+    /// Up (`by` < 0) or Down by `by` visual lines, keeping the goal x. Past the first line it
+    /// goes to the start of the text, past the last to its end (NSTextView).
+    fn vertical(&mut self, by: isize, shift: bool, lines: &[VisualLine], width: &dyn Fn(&str) -> f32) -> EditOut {
+        let (line, x) = self.caret_line(lines, width);
+        let goal = *self.goal_x.get_or_insert(x);
+        let target = line as isize + by;
+        let (to, end) = if target < 0 || (by < 0 && line == 0) {
+            (0, false)
+        } else if by > 0 && line + 1 >= lines.len() {
+            (self.text.len(), false)
+        } else {
+            let target = (target as usize).min(lines.len().saturating_sub(1));
+            let to = index_at(&self.text, lines, target, goal, width);
+            (to, ends_line(lines, target, to))
+        };
+        let out = self.move_to(to, shift);
+        self.at_line_end = end;
+        self.goal_x = Some(goal);
+        out
+    }
+
+    /// Deletes the selection, or else from the caret to `to` (either side); nothing to delete
+    /// changes nothing.
+    fn delete_to(&mut self, to: usize) -> EditOut {
+        let r = match self.selection() {
+            Some(r) => r,
+            None if to == self.caret => return EditOut::Kept,
+            None => self.caret.min(to)..self.caret.max(to),
+        };
+        self.edit(r, "")
     }
 
     /// Replaces the selection (or inserts at the caret) with `s`.
@@ -252,6 +327,7 @@ impl TextEdit {
         self.text.replace_range(r.clone(), s);
         self.caret = r.start + s.len();
         self.anchor = None;
+        self.at_line_end = false;
         EditOut::Changed
     }
 
@@ -263,6 +339,7 @@ impl TextEdit {
             self.anchor = None;
         }
         self.caret = to;
+        self.at_line_end = false;
         EditOut::Moved
     }
 }
@@ -333,14 +410,14 @@ fn wrap_hard(text: &str, start: usize, end: usize, max_w: f32, width: &dyn Fn(&s
 }
 
 /// The byte index on visual line `line` whose caret sits nearest `x` (an earlier index wins a
-/// tie); past a soft-wrapped line's end it stops before the line's last character so the
-/// caret stays on that line.
+/// tie), from the line's start to its end. `lines` must be `wrap` of `text`. Past a
+/// soft-wrapped line's end this is the line's `end`, which is also the next line's start:
+/// pass `ends_line` for it to `TextEdit::click` so the caret stays on this line.
 pub fn index_at(text: &str, lines: &[VisualLine], line: usize, x: f32, width: &dyn Fn(&str) -> f32) -> usize {
     let Some(l) = lines.get(line) else { return text.len() };
-    let limit = line_limit(text, lines, line);
     let mut best = (l.start, (width("") - x).abs());
     let mut i = l.start;
-    while i < limit {
+    while i < l.end {
         i = next_boundary(text, i);
         let d = (width(&text[l.start..i]) - x).abs();
         if d < best.1 {
@@ -350,17 +427,31 @@ pub fn index_at(text: &str, lines: &[VisualLine], line: usize, x: f32, width: &d
     best.0
 }
 
-/// The visual line holding byte index `at` and the caret's x on it. An index where a soft
-/// wrap breaks belongs to the line it starts.
-pub fn caret_pos(text: &str, lines: &[VisualLine], at: usize, width: &dyn Fn(&str) -> f32) -> (usize, f32) {
-    let line = lines.iter().rposition(|l| l.start <= at).unwrap_or(0);
+/// Whether byte index `at` on visual line `line` is that line's end where a soft wrap breaks
+/// (the next line starts there), so the caret there needs `at_line_end` to draw on `line`.
+pub fn ends_line(lines: &[VisualLine], line: usize, at: usize) -> bool {
+    match (lines.get(line), lines.get(line + 1)) {
+        (Some(l), Some(n)) => at == l.end && n.start == l.end && l.end > l.start,
+        _ => false,
+    }
+}
+
+/// The visual line holding byte index `at` and the caret's x on it. `lines` must be `wrap`
+/// of `text`. An index where a soft wrap breaks belongs to the line it starts, unless
+/// `at_line_end` (the caret's affinity) puts it at the end of the line before.
+pub fn caret_pos(text: &str, lines: &[VisualLine], at: usize, at_line_end: bool, width: &dyn Fn(&str) -> f32) -> (usize, f32) {
+    let mut line = lines.iter().rposition(|l| l.start <= at).unwrap_or(0);
+    if at_line_end && line > 0 && ends_line(lines, line - 1, at) {
+        line -= 1;
+    }
     let Some(l) = lines.get(line) else { return (0, 0.0) };
     let at = floor_boundary(text, at.clamp(l.start, text.len()));
     (line, width(&text[l.start..at]))
 }
 
 /// Whether a focused editor takes a key (Review Focus 6): every plain key; with Ctrl only its
-/// edit chords (Ctrl+A/C/X/V/Z/Y, Ctrl+Shift+Z); never an Alt or Win chord (Win is Cmd).
+/// edit chords (Ctrl+A/C/X/V/Z/Y, Ctrl+Shift+Z) and the Ctrl word, document and page moves
+/// and word deletes; never an Alt or Win chord (Win is Cmd).
 pub fn takes(ctrl: bool, alt: bool, win: bool, key: &EditKey) -> bool {
     if alt || win {
         return false;
@@ -368,7 +459,20 @@ pub fn takes(ctrl: bool, alt: bool, win: bool, key: &EditKey) -> bool {
     if ctrl {
         return matches!(
             key,
-            EditKey::SelectAll | EditKey::Copy | EditKey::Cut | EditKey::Paste(_) | EditKey::Undo | EditKey::Redo
+            EditKey::SelectAll
+                | EditKey::Copy
+                | EditKey::Cut
+                | EditKey::Paste(_)
+                | EditKey::Undo
+                | EditKey::Redo
+                | EditKey::WordLeft
+                | EditKey::WordRight
+                | EditKey::DeleteWordBack
+                | EditKey::DeleteWordForward
+                | EditKey::TextStart
+                | EditKey::TextEnd
+                | EditKey::PageUp
+                | EditKey::PageDown
         );
     }
     true
@@ -388,19 +492,96 @@ pub fn ctrl_key(c: char, shift: bool) -> Option<EditKey> {
     }
 }
 
+/// The edit key a named key means with Ctrl held (the Windows edit control's): Left and Right
+/// move by words, Backspace and Delete delete words, Home and End go to the text's ends, Page
+/// Up and Page Down page as without Ctrl. Any other key has no Ctrl meaning.
+pub fn ctrl_nav(key: &EditKey) -> Option<EditKey> {
+    match key {
+        EditKey::Left => Some(EditKey::WordLeft),
+        EditKey::Right => Some(EditKey::WordRight),
+        EditKey::Backspace => Some(EditKey::DeleteWordBack),
+        EditKey::Delete => Some(EditKey::DeleteWordForward),
+        EditKey::Home => Some(EditKey::TextStart),
+        EditKey::End => Some(EditKey::TextEnd),
+        EditKey::PageUp => Some(EditKey::PageUp),
+        EditKey::PageDown => Some(EditKey::PageDown),
+        _ => None,
+    }
+}
+
+/// A character's class for word moves and double-clicks: 1 a word character (alphanumerics
+/// and `_`), 2 a space or tab, 3 a line end, 0 anything else (punctuation).
+fn class(c: char) -> u8 {
+    if c.is_alphanumeric() || c == '_' {
+        1
+    } else if c == ' ' || c == '\t' {
+        2
+    } else if c == '\n' {
+        3
+    } else {
+        0
+    }
+}
+
+/// Ctrl+Right's stop from `at` (Windows edit rules): past the run of word characters or of
+/// punctuation there, then past the spaces and tabs after it; a line end is a stop of its own
+/// (at one, the move goes just past it).
+pub fn word_right(text: &str, at: usize) -> usize {
+    let mut chars = text[at..].char_indices().map(|(j, c)| (at + j, c)).peekable();
+    let Some(&(_, first)) = chars.peek() else { return at };
+    if class(first) == 3 {
+        return at + 1;
+    }
+    let mut i = at;
+    if class(first) != 2 {
+        while let Some(&(j, c)) = chars.peek() {
+            if class(c) != class(first) {
+                break;
+            }
+            i = j + c.len_utf8();
+            chars.next();
+        }
+    }
+    while let Some(&(j, c)) = chars.peek() {
+        if class(c) != 2 {
+            break;
+        }
+        i = j + c.len_utf8();
+        chars.next();
+    }
+    i
+}
+
+/// Ctrl+Left's stop from `at` (Windows edit rules): back past spaces and tabs, then back to
+/// the start of the run of word characters or of punctuation before; a line end is a stop of
+/// its own (just before it).
+pub fn word_left(text: &str, at: usize) -> usize {
+    let mut chars = text[..at].char_indices().rev().peekable();
+    let mut i = at;
+    while let Some(&(j, c)) = chars.peek() {
+        if class(c) != 2 {
+            break;
+        }
+        i = j;
+        chars.next();
+    }
+    let Some(&(j, first)) = chars.peek() else { return i };
+    if class(first) == 3 {
+        return if i == at { j } else { i };
+    }
+    while let Some(&(j, c)) = chars.peek() {
+        if class(c) != class(first) {
+            break;
+        }
+        i = j;
+        chars.next();
+    }
+    i
+}
+
 /// Windows line ends (`\r\n`, a lone `\r`) as `\n`, the editor's only line end.
 fn plain_line_ends(s: &str) -> String {
     if s.contains('\r') { s.replace("\r\n", "\n").replace('\r', "\n") } else { s.to_string() }
-}
-
-/// The furthest index the caret may take on visual line `line`: its end, or before its last
-/// character when a soft wrap follows (the next line starts where this one ends).
-fn line_limit(text: &str, lines: &[VisualLine], line: usize) -> usize {
-    let l = &lines[line];
-    match lines.get(line + 1) {
-        Some(n) if n.start == l.end && l.end > l.start => prev_boundary(text, l.end),
-        _ => l.end,
-    }
 }
 
 fn prev_boundary(text: &str, i: usize) -> usize {
@@ -424,15 +605,6 @@ fn floor_boundary(text: &str, i: usize) -> usize {
 /// (word characters: alphanumerics and `_`; spaces and tabs; anything else is one character
 /// alone). At a line end or the text end it is the character before.
 fn word_at(text: &str, at: usize) -> Range<usize> {
-    let class = |c: char| {
-        if c.is_alphanumeric() || c == '_' {
-            1
-        } else if c == ' ' || c == '\t' {
-            2
-        } else {
-            0
-        }
-    };
     let here = text[at..].chars().next().filter(|&c| c != '\n');
     let (start, c) = match here {
         Some(c) => (at, c),
@@ -512,14 +684,14 @@ mod tests {
         press(&mut e, EditKey::Right, false, 1000.0);
         assert_eq!(press(&mut e, EditKey::Delete, false, 1000.0), EditOut::Kept);
         e.set_text("abcdef");
-        e.click(1, false, 0, 500);
+        e.click(1, false, false, 0, 500);
         assert_eq!(press(&mut e, EditKey::Right, true, 1000.0), EditOut::Moved);
         press(&mut e, EditKey::Right, true, 1000.0);
         assert_eq!(e.selection(), Some(1..3));
         assert_eq!(press(&mut e, EditKey::Backspace, false, 1000.0), EditOut::Changed);
         assert_eq!((e.text.as_str(), e.caret, e.selection()), ("adef", 1, None));
-        e.click(1, false, 10_000, 500);
-        e.drag_to(3);
+        e.click(1, false, false, 10_000, 500);
+        e.drag_to(3, false);
         assert_eq!(e.selection(), Some(1..3));
         press(&mut e, EditKey::Delete, false, 1000.0);
         assert_eq!(e.text, "af");
@@ -531,7 +703,7 @@ mod tests {
 
         // Left at a selection collapses to its start, Right to its end.
         e.set_text("abcdef");
-        e.click(4, false, 20_000, 500);
+        e.click(4, false, false, 20_000, 500);
         press(&mut e, EditKey::Left, true, 1000.0);
         press(&mut e, EditKey::Left, true, 1000.0);
         assert_eq!(e.selection(), Some(2..4));
@@ -546,7 +718,7 @@ mod tests {
         let text = "aaaa bbbb\nc\ndddd";
         assert_eq!(wrap(text, 40.0, &w), vec![vl(0, 5), vl(5, 9), vl(10, 11), vl(12, 16)]);
         e.set_text(text);
-        e.click(3, false, 30_000, 500);
+        e.click(3, false, false, 30_000, 500);
         press(&mut e, EditKey::Down, false, 40.0);
         assert_eq!(e.caret, 8);
         press(&mut e, EditKey::Down, false, 40.0);
@@ -562,26 +734,147 @@ mod tests {
         // Up on the first line goes to the start, Down on the last to the end.
         press(&mut e, EditKey::Up, false, 40.0);
         assert_eq!(e.caret, 0);
-        e.click(13, false, 40_000, 500);
+        e.click(13, false, false, 40_000, 500);
         press(&mut e, EditKey::Down, false, 40.0);
         assert_eq!(e.caret, 16);
         // Shift+Down selects.
-        e.click(2, false, 50_000, 500);
+        e.click(2, false, false, 50_000, 500);
         press(&mut e, EditKey::Down, true, 40.0);
         assert_eq!(e.selection(), Some(2..7));
 
-        // Home and End go to the visual line's ends; End on a soft-wrapped line stops before
-        // its hanging space so the caret stays on that line.
-        e.click(7, false, 60_000, 500);
+        // Home and End go to the visual line's ends. End on a soft-wrapped line goes past its
+        // hanging space and keeps the caret drawn on that line (affinity); Home from there
+        // stays on it too.
+        e.click(7, false, false, 60_000, 500);
         press(&mut e, EditKey::Home, false, 40.0);
         assert_eq!(e.caret, 5);
         press(&mut e, EditKey::End, false, 40.0);
-        assert_eq!(e.caret, 9);
-        e.click(2, false, 70_000, 500);
+        assert_eq!((e.caret, e.at_line_end), (9, false));
+        e.click(2, false, false, 70_000, 500);
         press(&mut e, EditKey::End, false, 40.0);
-        assert_eq!(e.caret, 4);
+        assert_eq!((e.caret, e.at_line_end), (5, true));
+        assert_eq!(e.caret_line(&wrap(text, 40.0, &w), &w), (0, 50.0));
         press(&mut e, EditKey::Home, true, 40.0);
+        assert_eq!((e.selection(), e.at_line_end), (Some(0..5), false));
+
+        // A line broken mid-word: End reaches the line's true end (after its last character),
+        // typing there inserts after it, Shift+End selects it, and a click past the end lands
+        // there drawn on that line.
+        let text = "abcdefghij";
+        let lines = wrap(text, 40.0, &w);
+        assert_eq!(lines, vec![vl(0, 4), vl(4, 8), vl(8, 10)]);
+        e.load(text);
+        e.click(1, false, false, 75_000, 500);
+        press(&mut e, EditKey::End, false, 40.0);
+        assert_eq!((e.caret, e.at_line_end), (4, true));
+        assert_eq!(e.caret_line(&lines, &w), (0, 40.0));
+        // End again stays put (still on line 0), and Home goes back to line 0's start.
+        press(&mut e, EditKey::End, false, 40.0);
+        assert_eq!((e.caret, e.at_line_end), (4, true));
+        press(&mut e, EditKey::Home, false, 40.0);
+        assert_eq!(e.caret, 0);
+        press(&mut e, EditKey::End, true, 40.0);
         assert_eq!(e.selection(), Some(0..4));
+        press(&mut e, EditKey::Right, false, 40.0);
+        assert_eq!((e.caret, e.at_line_end), (4, false));
+        assert_eq!(e.caret_line(&lines, &w), (1, 0.0));
+        e.click(0, false, false, 76_000, 500);
+        press(&mut e, EditKey::End, false, 40.0);
+        press(&mut e, EditKey::Text("X".into()), false, 40.0);
+        assert_eq!((e.text.as_str(), e.caret, e.at_line_end), ("abcdXefghij", 5, false));
+        e.load(text);
+        let at = index_at(text, &lines, 0, 999.0, &w);
+        assert_eq!((at, ends_line(&lines, 0, at)), (4, true));
+        assert!(!ends_line(&lines, 1, 4));
+        assert!(!ends_line(&lines, 2, 10));
+        e.click(at, ends_line(&lines, 0, at), false, 77_000, 500);
+        assert_eq!(e.caret_line(&lines, &w), (0, 40.0));
+        // Down from there keeps x 40: the end of line 1, drawn on line 1.
+        press(&mut e, EditKey::Down, false, 40.0);
+        assert_eq!((e.caret, e.at_line_end), (8, true));
+        assert_eq!(e.caret_line(&lines, &w), (1, 40.0));
+        // A drag past line 1's end selects through its last character.
+        e.click(5, false, false, 78_000, 500);
+        e.drag_to(8, true);
+        assert_eq!((e.selection(), e.caret_line(&lines, &w)), (Some(5..8), (1, 40.0)));
+
+        // Ctrl word moves (Windows rules: past the word or punctuation run, then its spaces;
+        // a line end is a stop of its own), each extending with Shift.
+        let text = "foo  bar.baz\nqux";
+        e.load(text);
+        e.click(0, false, false, 79_000, 500);
+        let mut stops = Vec::new();
+        for _ in 0..7 {
+            press(&mut e, EditKey::WordRight, false, 1000.0);
+            stops.push(e.caret);
+        }
+        assert_eq!(stops, vec![5, 8, 9, 12, 13, 16, 16]);
+        let mut stops = Vec::new();
+        for _ in 0..7 {
+            press(&mut e, EditKey::WordLeft, false, 1000.0);
+            stops.push(e.caret);
+        }
+        assert_eq!(stops, vec![13, 12, 9, 8, 5, 0, 0]);
+        press(&mut e, EditKey::WordRight, true, 1000.0);
+        press(&mut e, EditKey::WordRight, true, 1000.0);
+        assert_eq!(e.selection(), Some(0..8));
+        e.click(8, false, false, 80_000, 500);
+        press(&mut e, EditKey::WordLeft, true, 1000.0);
+        assert_eq!(e.selection(), Some(5..8));
+
+        // Ctrl+Backspace and Ctrl+Delete delete a word (or the selection).
+        e.load("one two three");
+        e.click(8, false, false, 81_000, 500);
+        assert_eq!(press(&mut e, EditKey::DeleteWordBack, false, 1000.0), EditOut::Changed);
+        assert_eq!((e.text.as_str(), e.caret), ("one three", 4));
+        assert_eq!(press(&mut e, EditKey::DeleteWordForward, false, 1000.0), EditOut::Changed);
+        assert_eq!((e.text.as_str(), e.caret), ("one ", 4));
+        assert_eq!(press(&mut e, EditKey::DeleteWordForward, false, 1000.0), EditOut::Kept);
+        e.click(1, false, false, 82_000, 500);
+        e.drag_to(2, false);
+        press(&mut e, EditKey::DeleteWordBack, false, 1000.0);
+        assert_eq!(e.text, "oe ");
+        e.click(0, false, false, 83_000, 500);
+        assert_eq!(press(&mut e, EditKey::DeleteWordBack, false, 1000.0), EditOut::Kept);
+
+        // Ctrl+Home and Ctrl+End go to the text's ends; Shift selects.
+        e.load("ab\ncd\nef");
+        e.click(4, false, false, 84_000, 500);
+        press(&mut e, EditKey::TextStart, false, 1000.0);
+        assert_eq!(e.caret, 0);
+        press(&mut e, EditKey::TextEnd, true, 1000.0);
+        assert_eq!(e.selection(), Some(0..8));
+        e.click(4, false, false, 85_000, 500);
+        press(&mut e, EditKey::TextStart, true, 1000.0);
+        assert_eq!(e.selection(), Some(0..4));
+
+        // Page Up and Page Down move by the visible line count keeping x; past either end they
+        // go to the text's ends; Shift selects.
+        let text = "l0\nl1\nl2\nl3\nl4\nl5";
+        e.load(text);
+        e.page_lines = 2;
+        e.click(1, false, false, 86_000, 500);
+        press(&mut e, EditKey::PageDown, false, 1000.0);
+        assert_eq!(e.caret, 7);
+        press(&mut e, EditKey::PageDown, true, 1000.0);
+        assert_eq!(e.selection(), Some(7..13));
+        press(&mut e, EditKey::PageDown, false, 1000.0);
+        assert_eq!(e.caret, 16);
+        press(&mut e, EditKey::PageDown, false, 1000.0);
+        assert_eq!(e.caret, 17);
+        press(&mut e, EditKey::PageUp, false, 1000.0);
+        assert_eq!(e.caret, 10);
+        press(&mut e, EditKey::PageUp, false, 1000.0);
+        assert_eq!(e.caret, 4);
+        press(&mut e, EditKey::PageUp, false, 1000.0);
+        assert_eq!(e.caret, 0);
+        // No page size set: one line.
+        e.page_lines = 0;
+        e.click(1, false, false, 87_000, 500);
+        press(&mut e, EditKey::PageDown, false, 1000.0);
+        assert_eq!(e.caret, 4);
+        press(&mut e, EditKey::PageUp, true, 1000.0);
+        assert_eq!(e.selection(), Some(1..4));
 
         // SelectAll then Cut copies everything and empties; Copy without a selection keeps.
         let mut e = TextEdit::default();
@@ -595,7 +888,7 @@ mod tests {
 
         // Paste replaces the selection, with Windows line ends made plain.
         e.set_text("one two");
-        e.click(4, false, 80_000, 500);
+        e.click(4, false, false, 80_000, 500);
         press(&mut e, EditKey::End, true, 1000.0);
         assert_eq!(press(&mut e, EditKey::Paste("2\r\n3".into()), false, 1000.0), EditOut::Changed);
         assert_eq!((e.text.as_str(), e.caret), ("one 2\n3", 7));
@@ -622,12 +915,21 @@ mod tests {
         assert_eq!((e.text.as_str(), e.selection()), ("az", Some(0..2)));
         press(&mut e, EditKey::Redo, false, 1000.0);
         assert_eq!(e.text, "");
-        // Loading new text starts a fresh undo history; the same text changes nothing.
+        // Loading new text starts a fresh undo history; setting the same text changes
+        // nothing, and Windows line ends read as the same text; `load` resets even then.
         e.set_text("loaded");
         assert_eq!(press(&mut e, EditKey::Undo, false, 1000.0), EditOut::Kept);
-        e.click(2, false, 90_000, 500);
+        e.click(2, false, false, 90_000, 500);
         e.set_text("loaded");
         assert_eq!(e.caret, 2);
+        e.set_text("a\r\nb\rc");
+        assert_eq!((e.text.as_str(), e.caret), ("a\nb\nc", 5));
+        typed(&mut e, "d");
+        e.set_text("a\nb\ncd");
+        assert_eq!(press(&mut e, EditKey::Undo, false, 1000.0), EditOut::Changed);
+        typed(&mut e, "d");
+        e.load("a\nb\ncd");
+        assert_eq!((e.caret, press(&mut e, EditKey::Undo, false, 1000.0)), (6, EditOut::Kept));
 
         // A click places the caret by index_at (nearest boundary); a double-click selects a
         // word; Shift+click extends.
@@ -636,29 +938,32 @@ mod tests {
         assert_eq!(index_at(text, &lines, 1, 24.0, &w), 7);
         assert_eq!(index_at(text, &lines, 1, 26.0, &w), 8);
         assert_eq!(index_at(text, &lines, 1, 999.0, &w), 9);
-        // Past a soft-wrapped line's end: before its hanging space.
-        assert_eq!(index_at(text, &lines, 0, 999.0, &w), 4);
-        assert_eq!(caret_pos(text, &lines, 5, &w), (1, 0.0));
-        assert_eq!(caret_pos(text, &lines, 4, &w), (0, 40.0));
-        assert_eq!(caret_pos(text, &lines, 9, &w), (1, 40.0));
+        // Past a soft-wrapped line's end: past its hanging space, the next line's start,
+        // drawn on this line only with the affinity.
+        assert_eq!(index_at(text, &lines, 0, 999.0, &w), 5);
+        assert_eq!(caret_pos(text, &lines, 5, false, &w), (1, 0.0));
+        assert_eq!(caret_pos(text, &lines, 5, true, &w), (0, 50.0));
+        assert_eq!(caret_pos(text, &lines, 4, false, &w), (0, 40.0));
+        assert_eq!(caret_pos(text, &lines, 4, true, &w), (0, 40.0));
+        assert_eq!(caret_pos(text, &lines, 9, false, &w), (1, 40.0));
         let mut e = TextEdit::default();
         e.set_text(text);
-        e.click(index_at(text, &lines, 1, 24.0, &w), false, 100_000, 500);
+        e.click(index_at(text, &lines, 1, 24.0, &w), false, false, 100_000, 500);
         assert_eq!((e.caret, e.selection()), (7, None));
-        e.click(7, false, 100_300, 500);
+        e.click(7, false, false, 100_300, 500);
         assert_eq!(e.selection(), Some(5..9));
         // A third quick click is a plain click again.
-        e.click(7, false, 100_400, 500);
+        e.click(7, false, false, 100_400, 500);
         assert_eq!((e.caret, e.selection()), (7, None));
         // Too slow for a double-click.
-        e.click(7, false, 101_000, 500);
+        e.click(7, false, false, 101_000, 500);
         assert_eq!(e.selection(), None);
-        e.click(2, true, 102_000, 500);
+        e.click(2, false, true, 102_000, 500);
         assert_eq!(e.selection(), Some(2..7));
         // A double-click on a space selects the run of spaces.
         e.set_text("ab   cd");
-        e.click(3, false, 200_000, 500);
-        e.click(3, false, 200_100, 500);
+        e.click(3, false, false, 200_000, 500);
+        e.click(3, false, false, 200_100, 500);
         assert_eq!(e.selection(), Some(2..5));
 
         // Keys a focused editor takes: every plain key, its Ctrl edit chords; never another
@@ -668,6 +973,21 @@ mod tests {
         assert!(takes(false, false, false, &EditKey::Tab));
         for k in [EditKey::SelectAll, EditKey::Copy, EditKey::Cut, EditKey::Paste("p".into()), EditKey::Undo, EditKey::Redo] {
             assert!(takes(true, false, false, &k), "{k:?}");
+        }
+        for k in [
+            EditKey::WordLeft,
+            EditKey::WordRight,
+            EditKey::DeleteWordBack,
+            EditKey::DeleteWordForward,
+            EditKey::TextStart,
+            EditKey::TextEnd,
+            EditKey::PageUp,
+            EditKey::PageDown,
+        ] {
+            assert!(takes(true, false, false, &k), "Ctrl {k:?}");
+            assert!(takes(false, false, false, &k), "{k:?}");
+            assert!(!takes(false, true, false, &k), "Alt {k:?}");
+            assert!(!takes(false, false, true, &k), "Win {k:?}");
         }
         assert!(takes(true, false, false, &EditKey::Copy));
         assert!(!takes(true, false, false, &EditKey::Text("x".into())));
@@ -687,5 +1007,13 @@ mod tests {
         assert_eq!(ctrl_key('y', false), Some(EditKey::Redo));
         assert_eq!(ctrl_key('b', false), None);
         assert_eq!(ctrl_key('a', true), None);
+        assert_eq!(ctrl_nav(&EditKey::Left), Some(EditKey::WordLeft));
+        assert_eq!(ctrl_nav(&EditKey::Right), Some(EditKey::WordRight));
+        assert_eq!(ctrl_nav(&EditKey::Backspace), Some(EditKey::DeleteWordBack));
+        assert_eq!(ctrl_nav(&EditKey::Delete), Some(EditKey::DeleteWordForward));
+        assert_eq!(ctrl_nav(&EditKey::Home), Some(EditKey::TextStart));
+        assert_eq!(ctrl_nav(&EditKey::End), Some(EditKey::TextEnd));
+        assert_eq!(ctrl_nav(&EditKey::PageDown), Some(EditKey::PageDown));
+        assert_eq!(ctrl_nav(&EditKey::Up), None);
     }
 }
