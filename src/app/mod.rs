@@ -229,7 +229,8 @@ pub struct App {
     /// The Find Globally window.
     global_find: Option<crate::global_find_ui::GlobalFindWindow>,
     /// The Set Named Mark window, and the pane it names a mark in.
-    prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
+    /// The Set Named Mark prompt, its pane, and the mark it renames (the toolbelt's Edit).
+    prompt: Option<(crate::prompt_ui::PromptWindow, PaneId, Option<u32>)>,
     /// Session > Run Coprocess's window.
     co_prompt: Option<(crate::prompt_ui::PromptWindow, PaneId)>,
     /// A tmux close question's answer, waiting for the event loop: gateway, actions, and
@@ -271,6 +272,9 @@ pub struct App {
     tool_gen: u64,
     /// The keys whose press a focused toolbelt tool took: their releases are its too.
     belt_keys: toolbelt_tools_ui::TakenKeys<PhysicalKey>,
+    /// The Actions as they were when the toolbelt opened the Edit Action sheet, and its window:
+    /// the sheet's OK pushes them on that window's Actions undo (`iTermToolActions.m:267-276`).
+    action_edit_undo: Option<(WindowId, toml::Value)>,
     /// What the current window's terminals were laid out for: the content area and every
     /// pane's terminal rectangle, per-pane bars included.
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -630,6 +634,7 @@ pub fn run() {
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
+        action_edit_undo: None,
         laid_out: None,
         title_prompt: None,
         arrange_prompt: None,
@@ -951,6 +956,9 @@ impl App {
             Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => {
                 self.save_globals();
+                // The Actions tool shows the actions.
+                self.tools_changed();
+                self.settle_action_undo();
                 self.menus_dirty = true;
                 self.sync_checks();
                 self.register_hotkeys();

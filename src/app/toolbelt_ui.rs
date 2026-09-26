@@ -55,13 +55,11 @@ pub(super) struct ToolState {
     pub(super) field: tool_list::Field,
     pub(super) selection: tool_list::Selection,
     pub(super) scroll: f32,
-    /// Snippets' open folders, by tag path (the next 9j task).
-    #[allow(dead_code)]
+    /// Snippets' open folders, by tag path.
     pub(super) expanded: BTreeSet<String>,
     /// Profiles' bottom popup: the index into `toolbelt_tools::PROFILE_OPENS` last picked.
     pub(super) popup: usize,
-    /// Snippets' and Actions' undo (the next 9j task).
-    #[allow(dead_code)]
+    /// Snippets' and Actions' undo.
     pub(super) undo: Vec<ToolUndo>,
     /// The row count last laid out: a list that changed scrolls to its end unless it has the
     /// keyboard.
@@ -99,9 +97,9 @@ pub(super) enum BeltDrag {
     Width { start_x: f32, start_w: f32 },
     /// The divider below wrapper `n`.
     Divider(usize),
-    /// A tool's row being reordered (started by the tools, `toolbelt_tools_ui`).
-    #[allow(dead_code)]
-    Row { tool: ToolId, from: usize },
+    /// A row of Snippets or Actions being reordered (started by `tool_press`): the pointer's
+    /// y when it was pressed.
+    Row { tool: ToolId, start_y: f32 },
 }
 
 fn float_of(v: Option<toml::Value>) -> Option<f32> {
@@ -462,6 +460,7 @@ impl App {
                     self.belt.split = tbl::drag_divider(&self.belt.split, i, (y - panel.y) / scale);
                 }
             }
+            // The drop line follows the pointer.
             BeltDrag::Row { .. } => {}
         }
         self.redraw();
@@ -475,7 +474,7 @@ impl App {
                 self.globals.set(toolbelt::PROPORTIONS_KEY, tbl::proportions_value(&self.belt.split));
                 self.save_globals();
             }
-            BeltDrag::Row { .. } => {}
+            BeltDrag::Row { tool, start_y } => self.tool_drop(tool, start_y),
         }
         self.redraw();
     }

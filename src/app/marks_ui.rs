@@ -173,24 +173,37 @@ impl App {
         true
     }
 
-    fn open_named_mark_prompt(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
-        if let Some((w, _)) = &self.prompt {
+    /// Add Named Mark's prompt, named with the time.
+    pub(super) fn open_named_mark_prompt(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
+        self.open_mark_prompt(id, None, event_loop);
+    }
+
+    /// The same prompt renaming mark `mark`, its name filled in (the toolbelt's Edit,
+    /// `PT:15741-15752`).
+    pub(super) fn open_rename_mark_prompt(&mut self, id: PaneId, mark: u32, name: &str, event_loop: &ActiveEventLoop) {
+        self.open_mark_prompt(id, Some((mark, name)), event_loop);
+    }
+
+    fn open_mark_prompt(&mut self, id: PaneId, rename: Option<(u32, &str)>, event_loop: &ActiveEventLoop) {
+        if let Some((w, ..)) = &self.prompt {
             return w.focus();
         }
         let Some(g) = self.gpu.as_ref() else { return };
-        match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Set Named Mark", "Enter Mark Name", &crate::prompt_ui::local_stamp()) {
-            Ok(w) => self.prompt = Some((w, id)),
+        let stamp = crate::prompt_ui::local_stamp();
+        let text = rename.map_or(stamp.as_str(), |(_, name)| name);
+        match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Set Named Mark", "Enter Mark Name", text) {
+            Ok(w) => self.prompt = Some((w, id, rename.map(|(m, _)| m))),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
     }
 
     /// Handles an event for the Set Named Mark window. False when `window` is not it.
     pub(super) fn prompt_event(&mut self, window: winit::window::WindowId, event: &WindowEvent) -> bool {
-        let Some((w, pane)) = self.prompt.as_mut() else { return false };
+        let Some((w, pane, rename)) = self.prompt.as_mut() else { return false };
         if w.id() != window {
             return false;
         }
-        let pane = *pane;
+        let (pane, rename) = (*pane, *rename);
         match event {
             WindowEvent::CloseRequested => self.prompt = None,
             WindowEvent::RedrawRequested => match w.redraw() {
@@ -198,12 +211,22 @@ impl App {
                 PromptResult::Cancel => self.prompt = None,
                 PromptResult::Ok(name) => {
                     self.prompt = None;
-                    // An empty name cancels, as in iTerm2.
+                    // An empty name cancels, as in iTerm2 (`BookmarkDialogViewController.swift:33-37`).
                     if !name.trim().is_empty() {
-                        let line = self.top_visible_line(pane);
-                        if let Some(p) = self.panes.get_mut(&pane) {
-                            let m = p.screen.set_manual_mark(line, Some(name));
-                            self.mark_pos.insert(pane, m);
+                        match rename {
+                            // Renaming adds no annotation (Set Named Mark adds none here).
+                            Some(mark) => {
+                                if let Some(p) = self.panes.get_mut(&pane) {
+                                    p.screen.rename_mark(mark, Some(name));
+                                }
+                            }
+                            None => {
+                                let line = self.top_visible_line(pane);
+                                if let Some(p) = self.panes.get_mut(&pane) {
+                                    let m = p.screen.set_manual_mark(line, Some(name));
+                                    self.mark_pos.insert(pane, m);
+                                }
+                            }
                         }
                         self.redraw();
                     }

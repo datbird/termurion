@@ -335,6 +335,39 @@ impl Screen {
         id
     }
 
+    /// Renames mark `id` (`PTYSession.m:16793-16821`, `renameMark:to:`): None on a mark that is
+    /// not a prompt's removes it, as a named mark without its name has no reason to stay; a
+    /// prompt mark only loses its name. False for a mark that is gone.
+    pub fn rename_mark(&mut self, id: u32, name: Option<String>) -> bool {
+        // A mark whose row is gone has already been removed.
+        let Some(kind) = self.marks.records.get(&id).map(|m| m.kind).filter(|_| self.mark_line(id).is_some()) else { return false };
+        if name.is_none() && kind != Kind::Prompt {
+            return self.remove_mark(id);
+        }
+        if let Some(m) = self.marks.records.get_mut(&id) {
+            m.name = name;
+        }
+        true
+    }
+
+    /// Removes mark `id`, its record and its row's slot (`VT100ScreenMutableState.m:3517-3529`,
+    /// `removeNamedMark:`, whatever the mark's kind). False for an unknown id.
+    pub fn remove_mark(&mut self, id: u32) -> bool {
+        if self.marks.records.remove(&id).is_none() {
+            return false;
+        }
+        if let Some(line) = self.mark_line(id) {
+            let row = &mut self.term.primary_grid_mut()[Line(line)];
+            if row.mark() == id {
+                row.set_mark(0);
+            }
+            if row.manual() == id {
+                row.set_manual(0);
+            }
+        }
+        true
+    }
+
     /// True once after a prompt mark or a SetMark was made (for mark alerts).
     pub fn take_new_mark(&mut self) -> bool {
         std::mem::take(&mut self.marks.made)
@@ -992,6 +1025,41 @@ mod tests {
         assert_eq!((*line, m.command.as_str()), (0, ""));
         s.feed(b"\r\n\x1b]133;C\x07");
         assert_eq!(s.marks_in_order().last().unwrap().1.command, "ty");
+    }
+
+    #[test]
+    fn named_marks_rename_and_remove_like_iterm2() {
+        let mut s = Screen::new(40, 10);
+        prompt(&mut s, "ls", 0);
+        let (pline, pid) = s.marks_in_order().first().map(|(l, m)| (*l, m.id)).unwrap();
+        let a = s.set_manual_mark(pline + 2, Some("a".into()));
+        let c = s.set_manual_mark(pline + 3, Some("c".into()));
+        // Renamed: the same row and the same id.
+        assert!(s.rename_mark(a, Some("b".into())));
+        let marks = s.marks_in_order();
+        assert_eq!(marks.len(), 3);
+        assert!(marks.iter().any(|(l, m)| *l == pline + 2 && m.id == a && m.name.as_deref() == Some("b")));
+        // No name on a manual mark removes it.
+        assert!(s.rename_mark(a, None));
+        assert!(!s.marks.records.contains_key(&a));
+        assert!(!s.row_marks().iter().any(|(_, id)| *id == a));
+        // A prompt mark only loses its name.
+        assert!(s.rename_mark(pid, Some("p".into())));
+        assert_eq!(s.marks.records[&pid].name.as_deref(), Some("p"));
+        assert!(s.rename_mark(pid, None));
+        assert_eq!(s.marks.records[&pid].name, None);
+        assert!(s.marks_in_order().iter().any(|(_, m)| m.id == pid));
+        // Remove drops the record and the row's slot, whatever the kind.
+        assert!(s.remove_mark(c));
+        assert!(!s.marks.records.contains_key(&c));
+        assert!(!s.row_marks().iter().any(|(_, id)| *id == c));
+        assert!(s.remove_mark(pid));
+        assert!(s.marks_in_order().is_empty());
+        // Unknown ids.
+        assert!(!s.rename_mark(999, Some("x".into())));
+        assert!(!s.rename_mark(c, Some("x".into())));
+        assert!(!s.remove_mark(999));
+        assert!(!s.remove_mark(c));
     }
 
     #[test]

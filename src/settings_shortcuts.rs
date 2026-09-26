@@ -28,6 +28,8 @@ struct SnippetEditor {
     snippet: Snippet,
     tags: String,
     help: bool,
+    /// Opened from outside the page on a row: the snippet is read from the file first.
+    fill: bool,
 }
 
 struct ActionEditor {
@@ -56,6 +58,48 @@ impl State {
     pub fn show_tab(&mut self, tab: Tab) {
         self.tab = tab;
     }
+
+    /// Opens the Edit Snippet sheet on the Snippets tab (the toolbelt's Add and Edit): a new
+    /// snippet from `clipboard`, added at the end (`iTermSnippetsModel addSnippet:`), or the
+    /// snippet at `index` in the snippets file, filled in when the page next shows.
+    pub fn edit_snippet(&mut self, index: Option<usize>, clipboard: Option<&str>) {
+        self.tab = Tab::Snippets;
+        self.action_editor = None;
+        self.snippet_editor = Some(match index {
+            // The row's snippet comes from the file in `fill_snippet_editor`.
+            Some(i) => SnippetEditor { index: Some(i), insert_at: i, snippet: snippets::new_snippet(None), tags: String::new(), help: false, fill: true },
+            None => SnippetEditor { index: None, insert_at: usize::MAX, snippet: snippets::new_snippet(clipboard), tags: String::new(), help: false, fill: false },
+        });
+    }
+
+    /// Opens the Edit Action sheet on the Actions tab: a new action, or `actions[index]`.
+    pub fn edit_action(&mut self, index: Option<usize>, actions: &[UserAction]) {
+        self.tab = Tab::Actions;
+        self.snippet_editor = None;
+        self.action_editor = match index {
+            Some(i) => actions.get(i).map(|a| ActionEditor { index: Some(i), binding: a.binding(), title: a.title.clone() }),
+            None => Some(new_action_editor()),
+        };
+    }
+
+    /// The Edit Action sheet is open.
+    pub fn editing_action(&self) -> bool {
+        self.action_editor.is_some()
+    }
+
+    /// Fills a sheet `edit_snippet` opened on a row from the snippets as they are now; a row
+    /// that is gone closes it.
+    pub fn fill_snippet_editor(&mut self, snippets: &[Snippet]) {
+        let Some(e) = self.snippet_editor.as_mut().filter(|e| e.fill) else { return };
+        match e.index.and_then(|i| snippets.get(i)) {
+            Some(s) => {
+                e.tags = s.tags.join(", ");
+                e.snippet = s.clone();
+                e.fill = false;
+            }
+            None => self.snippet_editor = None,
+        }
+    }
 }
 
 /// The snippet editor's escaping choices, with iTerm2's names.
@@ -63,9 +107,15 @@ const SNIPPET_ESCAPINGS: [(Escaping, &str); 3] = [(Escaping::None, "Unescaped Li
 
 const ESCAPING_HELP: &str = "C-Style Backslash Escaping supports: \\a (bell), \\b (backspace), \\e (escape), \\n (newline), \\r (carriage return), \\t (tab), \\\\ (backslash), and \\x followed by two hex digits giving a single byte of UTF-8.\n\nUnescaped Literal Text does not have any special characters.\n\nBackward Compatibility Escaping, which is not recommended for new snippets, supports: \\n (newline), \\e (escape), \\a (bell), and \\t (tab).";
 
-const SEARCH_HELP: &str = "Terms in the search query are used to prefix search snippet titles, content, and tags.\n\nYou can use the following operators to restrict what attributes of snippets a term searches:\n * tag: to search only tags.\n * title: to search only snippet titles.\n * text: to search only the text of a snippet.\nFor example, tag:linux.\n\nTo search only for snippets that do not match a term, use the - operator. For example, -linux or -tag:linux.\n\nYou can use | as logical OR. For example, linux|bsd or tag:linux|tag:bsd.";
+pub const SEARCH_HELP: &str = "Terms in the search query are used to prefix search snippet titles, content, and tags.\n\nYou can use the following operators to restrict what attributes of snippets a term searches:\n * tag: to search only tags.\n * title: to search only snippet titles.\n * text: to search only the text of a snippet.\nFor example, tag:linux.\n\nTo search only for snippets that do not match a term, use the - operator. For example, -linux or -tag:linux.\n\nYou can use | as logical OR. For example, linux|bsd or tag:linux|tag:bsd.";
 
-fn clipboard_text() -> Option<String> {
+/// A new action's sheet: Send Text, C-style escaping, "Untitled Action".
+fn new_action_editor() -> ActionEditor {
+    let b = Binding { action: 12, text: String::new(), label: String::new(), version: user_actions::VERSION, escaping: Some(Escaping::Common.code()), apply_mode: 0 };
+    ActionEditor { index: None, binding: b, title: "Untitled Action".into() }
+}
+
+pub fn clipboard_text() -> Option<String> {
     arboard::Clipboard::new().and_then(|mut c| c.get_text()).ok()
 }
 
@@ -96,6 +146,7 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &mut Stat
     });
     ui.separator();
     // The table waits while a sheet is open, so the sheet's row stays the row it edits.
+    st.fill_snippet_editor(&store.snippets);
     let sheet_open = st.snippet_editor.is_some() || st.action_editor.is_some();
     let mut changed = Changed::None;
     ui.add_enabled_ui(!sheet_open, |ui| {
@@ -300,7 +351,7 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
     }
     if let Some(i) = edit_row {
         let s = store.snippets[i].clone();
-        st.snippet_editor = Some(SnippetEditor { index: Some(i), insert_at: i, tags: s.tags.join(", "), snippet: s, help: false });
+        st.snippet_editor = Some(SnippetEditor { index: Some(i), insert_at: i, tags: s.tags.join(", "), snippet: s, help: false, fill: false });
     }
     match menu {
         Some(("Duplicate", row)) => {
@@ -333,11 +384,11 @@ fn snippets_tab(ui: &mut egui::Ui, store: &mut Store, st: &mut State) -> Changed
                 "Add Below" => row + 1,
                 _ => store.snippets.len(),
             };
-            st.snippet_editor = Some(SnippetEditor { index: None, insert_at, snippet: snippets::new_snippet(clipboard_text().as_deref()), tags: String::new(), help: false });
+            st.snippet_editor = Some(SnippetEditor { index: None, insert_at, snippet: snippets::new_snippet(clipboard_text().as_deref()), tags: String::new(), help: false, fill: false });
         }
         Some(("Edit", row)) => {
             let s = store.snippets[row].clone();
-            st.snippet_editor = Some(SnippetEditor { index: Some(row), insert_at: row, tags: s.tags.join(", "), snippet: s, help: false });
+            st.snippet_editor = Some(SnippetEditor { index: Some(row), insert_at: row, tags: s.tags.join(", "), snippet: s, help: false, fill: false });
         }
         _ => {}
     }
@@ -428,8 +479,7 @@ fn actions_tab(ui: &mut egui::Ui, g: &mut Globals, st: &mut State, _profiles: &[
     ui.horizontal(|ui| {
         remove = ui.add_enabled(!st.actions_selected.is_empty(), egui::Button::new("\u{2212}")).on_hover_text("Remove").clicked();
         if ui.button("+").on_hover_text("Add").clicked() {
-            let b = Binding { action: 12, text: String::new(), label: String::new(), version: user_actions::VERSION, escaping: Some(Escaping::Common.code()), apply_mode: 0 };
-            st.action_editor = Some(ActionEditor { index: None, binding: b, title: "Untitled Action".into() });
+            st.action_editor = Some(new_action_editor());
         }
         if ui.add_enabled(one.is_some(), egui::Button::new("Edit")).clicked() {
             edit_row = one;
@@ -510,4 +560,52 @@ fn action_sheet(ctx: &egui::Context, e: &mut ActionEditor, profiles: &[(String, 
         });
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snip(title: &str) -> Snippet {
+        Snippet { title: title.into(), value: format!("{title} value"), guid: format!("g-{title}"), tags: vec!["t".into()], escaping: Escaping::None, version: snippets::VERSION }
+    }
+
+    #[test]
+    fn editors_open_from_the_toolbelt() {
+        let list = vec![snip("a"), snip("b"), snip("c")];
+
+        // Add: a new snippet from the clipboard, added at the end.
+        let mut st = State::default();
+        st.edit_snippet(None, Some("x"));
+        st.fill_snippet_editor(&list);
+        assert!(st.tab == Tab::Snippets);
+        let e = st.snippet_editor.as_ref().expect("the sheet is open");
+        assert_eq!((e.index, e.snippet.value.as_str(), e.snippet.title.as_str()), (None, "x", "x"));
+        assert!(e.insert_at >= list.len());
+
+        // Edit: row 1, with its tags.
+        let mut st = State::default();
+        st.edit_snippet(Some(1), None);
+        st.fill_snippet_editor(&list);
+        assert!(st.tab == Tab::Snippets);
+        let e = st.snippet_editor.as_ref().expect("the sheet is open");
+        assert_eq!((e.index, e.snippet.guid.as_str(), e.tags.as_str()), (Some(1), "g-b", "t"));
+        // A row that is gone closes the sheet.
+        let mut st = State::default();
+        st.edit_snippet(Some(7), None);
+        st.fill_snippet_editor(&list);
+        assert!(st.snippet_editor.is_none());
+
+        // Actions: row 0, or a new one.
+        let actions = vec![UserAction { action: 12, title: "Say hi".into(), parameter: "hi".into(), escaping: Escaping::None, apply_mode: 2, version: user_actions::VERSION }];
+        let mut st = State::default();
+        st.edit_action(Some(0), &actions);
+        assert!(st.tab == Tab::Actions);
+        let e = st.action_editor.as_ref().expect("the sheet is open");
+        assert_eq!((e.index, e.title.as_str(), e.binding.text.as_str(), e.binding.apply_mode), (Some(0), "Say hi", "hi", 2));
+        let mut st = State::default();
+        st.edit_action(None, &actions);
+        let e = st.action_editor.as_ref().expect("the sheet is open");
+        assert_eq!((e.index, e.title.as_str(), e.binding.action), (None, "Untitled Action", 12));
+    }
 }

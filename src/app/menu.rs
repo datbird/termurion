@@ -294,6 +294,10 @@ impl App {
 
     /// A Win chord the hook took: key routing first (a mapping beats a menu command).
     pub(super) fn run_chord(&mut self, chord: &Chord, event_loop: &ActiveEventLoop) {
+        // Win+Z undoes in the Snippets or Actions tool while it has the keyboard.
+        if self.toolbelt_chord(chord) {
+            return;
+        }
         self.banners.clear("action");
         self.dispatch(crate::keyroute::press_from_chord(chord), None, None, Some(chord), event_loop);
     }

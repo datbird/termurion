@@ -70,7 +70,7 @@ fn fill_snippets(parent: &dyn Parent, entries: &[MenuEntry], errors: &mut Vec<St
 
 impl App {
     /// The focused session's profile "Snippets Filter".
-    fn snippets_filter(&self) -> Vec<String> {
+    pub(super) fn snippets_filter(&self) -> Vec<String> {
         let Some(p) = self.focused_id().and_then(|id| self.panes.get(&id)).and_then(|p| self.store.get(&p.profile)) else { return Vec::new() };
         p.get("Snippets Filter").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())).unwrap_or_default()
     }
@@ -213,5 +213,7 @@ impl App {
             Err(e) => self.banners.set("snippets", format!("Problem Saving Snippets: There was a problem saving snippets to \u{201c}{}\u{201d}. The error was: {e}", path.display())),
         }
         self.refresh_snippet_menus();
+        // The Snippets tool shows them.
+        self.tools_changed();
     }
 }

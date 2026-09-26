@@ -1271,7 +1271,7 @@ pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
 
 /// One row of a toolbelt tool's list, as the app measured it: `text` and `second` (a smaller
 /// second line, Profiles' tags) are already tail truncated to the row.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ListRow {
     pub text: String,
     pub second: Option<String>,
@@ -1280,6 +1280,10 @@ pub struct ListRow {
     pub icon: Option<(char, Rgb)>,
     /// Outline depth (Snippets' folders).
     pub depth: usize,
+    /// A folder's disclosure glyph, before the icon.
+    pub disclosure: Option<char>,
+    /// Tag chips on a second line (Snippets): each text and its width at `CHIP_SCALE`.
+    pub chips: Vec<(String, f32)>,
 }
 
 /// What a toolbelt tool's list widget shows. The app measures the text (the scene cannot).
@@ -1301,7 +1305,15 @@ pub struct ListDraw<'a> {
     pub popup: Option<(&'a str, bool)>,
     /// The second line's text size against the rows'.
     pub second_scale: f32,
+    /// A row drag's drop line, at this y.
+    pub drop_y: Option<f32>,
 }
+
+/// Snippets' tag chips: white on orange, at 0.8 of the toolbelt font (`TS:677-681`).
+pub const CHIP_SCALE: f32 = 0.8;
+pub const CHIP_BG: Rgb = rgb(247, 120, 26);
+/// The room between two chips, points.
+pub const CHIP_GAP: f32 = 4.0;
 
 /// A selected row (17, 108, 214, the brief's selection color).
 pub const LIST_SELECTED: Rgb = rgb(17, 108, 214);
@@ -1370,6 +1382,10 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         let (fg, fg2) = if selected { (rgb(0xff, 0xff, 0xff), rgb(0xe6, 0xe6, 0xe6)) } else { (text, dim) };
         let mut x = r.x + inset + row.depth as f32 * LIST_INDENT * scale;
         let y = r.y + inset;
+        if let Some(c) = row.disclosure {
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), fg2, false, 2)], clip, scale: text_scale });
+            x += glyph_w + 2.0 * scale;
+        }
         if let Some((c, color)) = row.icon {
             frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), if selected { fg } else { color }, false, 2)], clip, scale: text_scale });
             x += glyph_w + 4.0 * scale;
@@ -1378,6 +1394,19 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
         if let Some(second) = &row.second {
             frame.rows.push(TextRow { x, y: y + line_h, spans: vec![list_span(second.clone(), fg2, false, 1)], clip, scale: text_scale * d.second_scale });
         }
+        let mut cx = x;
+        for (tag, w) in &row.chips {
+            let chip = Rect { x: cx, y: y + line_h, w: *w, h: line_h * CHIP_SCALE };
+            let shown = Rect { w: chip.w.min((clip.x + clip.w - cx).max(0.0)), ..chip };
+            frame.quads.push(Quad { rect: shown, color: rgba(CHIP_BG, 1.0) });
+            frame.rows.push(TextRow { x: cx, y: chip.y, spans: vec![list_span(tag.clone(), rgb(0xff, 0xff, 0xff), false, 0)], clip, scale: text_scale * CHIP_SCALE });
+            cx += w + CHIP_GAP * scale;
+        }
+    }
+
+    if let Some(y) = d.drop_y.filter(|y| *y >= list.y - 1.0 && *y <= list.y + list.h + 1.0) {
+        let h = (2.0 * scale).max(1.0);
+        frame.quads.push(Quad { rect: Rect { x: list.x, y: (y - h / 2.0).clamp(list.y, (list.y + list.h - h).max(list.y)), w: list.w, h }, color: rgba(LIST_SELECTED, 1.0) });
     }
 
     for (b, r) in l.top.iter().chain(&l.buttons) {
@@ -1540,11 +1569,11 @@ mod tests {
         let spec = ListSpec { field: true, right: vec![ToolButton::Open], popup_w: 10_000.0, ..ListSpec::default() };
         let l = layout(area, &spec, &[20.0, 34.0], 0.0, 1.0);
         let rows = vec![
-            ListRow { text: "\u{2605} Default".into(), second: None, bold: false, icon: None, depth: 0 },
-            ListRow { text: "Work".into(), second: Some("ssh, prod".into()), bold: false, icon: None, depth: 0 },
+            ListRow { text: "\u{2605} Default".into(), ..ListRow::default() },
+            ListRow { text: "Work".into(), second: Some("ssh, prod".into()), ..ListRow::default() },
         ];
         let mut f = Frame::default();
-        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[1], dark: true, field: Some(("ab", 16.0)), focus: Some(Focus::Field), disabled: &[ToolButton::Open], popup: Some(("New Tab", false)), second_scale: 0.8 };
+        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[1], dark: true, field: Some(("ab", 16.0)), focus: Some(Focus::Field), disabled: &[ToolButton::Open], popup: Some(("New Tab", false)), second_scale: 0.8, drop_y: None };
         tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
         let texts: Vec<&str> = f.rows.iter().map(|r| r.spans[0].text.as_str()).collect();
         assert_eq!(texts, vec!["ab", "\u{2605} Default", "Work", "ssh, prod", "\u{E768}", "New Tab", "\u{E70D}"]);
@@ -1561,11 +1590,41 @@ mod tests {
 
         // Only the rows from `first` on are given; each lands on its own row rectangle.
         let mut f = Frame::default();
-        let d = ListDraw { layout: &l, rows: &rows[1..], first: 1, selected: &[1], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8 };
+        let d = ListDraw { layout: &l, rows: &rows[1..], first: 1, selected: &[1], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8, drop_y: None };
         tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
         let work = f.rows.iter().find(|r| r.spans[0].text == "Work").unwrap();
         assert_eq!(work.y, l.rows[1].y + LIST_INSET);
         assert_eq!(work.spans[0].color, rgb(0xff, 0xff, 0xff));
+    }
+
+    /// Snippets' rows: a folder's disclosure before its icon, tag chips on the second line in
+    /// orange at 0.8 size, and a drag's drop line.
+    #[test]
+    fn tool_list_draws_folders_chips_and_the_drop_line() {
+        use super::*;
+        use crate::tool_list::{ListSpec, layout};
+        let area = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let l = layout(area, &ListSpec::default(), &[20.0, 36.0], 0.0, 1.0);
+        let rows = vec![
+            ListRow { text: "f".into(), icon: Some(('\u{E8B7}', CHIP_BG)), disclosure: Some('\u{E76C}'), ..ListRow::default() },
+            ListRow { text: "s".into(), icon: Some(('\u{E8BD}', rgb(94, 159, 208))), depth: 1, chips: vec![(" t ".into(), 12.0), (" u ".into(), 10.0)], ..ListRow::default() },
+        ];
+        let mut f = Frame::default();
+        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8, drop_y: Some(20.0) };
+        tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
+        let texts: Vec<&str> = f.rows.iter().map(|r| r.spans[0].text.as_str()).collect();
+        assert_eq!(texts, vec!["\u{E76C}", "\u{E8B7}", "f", "\u{E8BD}", "s", " t ", " u "]);
+        // The folder's text comes after both glyphs; the child is indented.
+        assert!(f.rows[2].x > f.rows[1].x && f.rows[1].x > f.rows[0].x);
+        assert_eq!(f.rows[3].x, LIST_INSET + LIST_INDENT);
+        // Chips: orange boxes under the text, white text at 0.8, a gap between them.
+        let chips: Vec<Rect> = f.quads.iter().filter(|q| q.color == rgba(CHIP_BG, 1.0)).map(|q| q.rect).collect();
+        assert_eq!(chips.len(), 2);
+        assert_eq!(chips[0].y, l.rows[1].y + LIST_INSET + 16.0);
+        assert_eq!(chips[1].x, chips[0].x + 12.0 + CHIP_GAP);
+        assert_eq!((f.rows[5].scale, f.rows[5].spans[0].color), (CHIP_SCALE, rgb(0xff, 0xff, 0xff)));
+        // The drop line at the second row's top.
+        assert!(f.quads.iter().any(|q| q.color == rgba(LIST_SELECTED, 1.0) && q.rect.y == 19.0 && q.rect.w == 200.0));
     }
 
     /// A button face: the corner rows are inset, the middle is full width, and the box

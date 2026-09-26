@@ -101,6 +101,8 @@ pub struct SettingsWindow {
     /// The window was opened from a tmux session (iTerm2's `_tmuxSession`, set by how the
     /// panel opened, `PreferencePanel.m:725-766`): its status bar controls are disabled.
     tmux_session: bool,
+    /// `show_shortcuts_editor`'s sheet, opened on the next frame.
+    open_editor: Option<(crate::settings_shortcuts::Tab, Option<usize>)>,
 }
 
 impl SettingsWindow {
@@ -129,6 +131,22 @@ impl SettingsWindow {
         self.focus();
     }
 
+    /// Shows Settings > Shortcuts with a tab's editor open (the toolbelt's Add and Edit): a new
+    /// snippet or action (`index` None), or the one at `index`. The sheet is filled from the
+    /// snippets and the actions on the next frame, which has them.
+    pub fn show_shortcuts_editor(&mut self, tab: crate::settings_shortcuts::Tab, index: Option<usize>) {
+        self.page = Page::Shortcuts;
+        self.shortcuts.show_tab(tab);
+        self.open_editor = Some((tab, index));
+        self.host.window.request_redraw();
+        self.focus();
+    }
+
+    /// The Edit Action sheet is open.
+    pub fn editing_action(&self) -> bool {
+        self.open_editor.is_some_and(|(t, _)| t == crate::settings_shortcuts::Tab::Actions) || self.shortcuts.editing_action()
+    }
+
     pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, mode: Mode) -> Result<Self, String> {
         let (title, w, h) = match mode {
             Mode::Settings => ("Tandem Settings", 980.0, 720.0),
@@ -154,6 +172,7 @@ impl SettingsWindow {
             hotkeys: Default::default(),
             configure_status_bar: None,
             tmux_session: false,
+            open_editor: None,
         })
     }
 
@@ -223,6 +242,11 @@ impl SettingsWindow {
         keys.leader = crate::keystroke::parse(&globals.string("Leader"));
         let profiles: Vec<(String, String)> = store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let profile_tables: Vec<(String, String, toml::Table)> = store.profiles.iter().map(|p| (p.guid(), p.name(), p.values.clone().into_iter().collect())).collect();
+        match self.open_editor.take() {
+            Some((crate::settings_shortcuts::Tab::Snippets, index)) => self.shortcuts.edit_snippet(index, crate::settings_shortcuts::clipboard_text().as_deref()),
+            Some((crate::settings_shortcuts::Tab::Actions, index)) => self.shortcuts.edit_action(index, &crate::user_actions::load(globals.get("Actions").as_ref())),
+            None => {}
+        }
         let arr = &mut self.arr;
         let shortcuts = &mut self.shortcuts;
         settings_keys::set_snippets(&snippets.snippets);
