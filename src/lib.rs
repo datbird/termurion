@@ -201,6 +201,7 @@ pub mod composer_worker;
 pub mod notes;
 pub mod open_quickly;
 pub mod pwm;
+pub mod echo_probe;
 
 #[cfg(windows)]
 pub mod winclip;
