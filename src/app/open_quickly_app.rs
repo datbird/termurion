@@ -131,6 +131,17 @@ impl App {
         true
     }
 
+    /// Closes a palette that never got the focus in time (so Esc could never reach it), and
+    /// says when to look again.
+    pub(super) fn tick_quickly(&mut self) -> Option<Instant> {
+        let due = self.open_quickly.as_ref()?.window.no_focus_deadline()?;
+        if Instant::now() >= due {
+            self.close_quickly();
+            return None;
+        }
+        Some(due)
+    }
+
     /// Closes the palette and its preview (`close:`, `windowDidResignKey:`).
     fn close_quickly(&mut self) {
         if let Some(q) = self.open_quickly.take() {

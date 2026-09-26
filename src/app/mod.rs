@@ -1171,6 +1171,7 @@ impl App {
         self.enter_pane_window(id);
         self.tmux_pane_closed(id);
         self.aps.remove(&id);
+        self.focus_order.remove(&id);
         if let Some(p) = self.panes.remove(&id) {
             if let Some(pid) = p.shell_pid() {
                 self.jobs.forget(pid);
@@ -2306,6 +2307,7 @@ impl ApplicationHandler<UserEvent> for App {
         let status_bars = self.tick_status_bars();
         let notes_due = self.tick_notes();
         let jobs_due = self.tick_jobs_tool();
+        let quickly_due = self.tick_quickly();
         self.open_jobs_confirm(event_loop);
         self.open_git_log(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
@@ -2325,7 +2327,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

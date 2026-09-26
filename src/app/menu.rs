@@ -718,6 +718,7 @@ impl App {
         }
         self.leave_host(keep);
         self.panes.clear();
+        self.focus_order.clear();
         event_loop.exit();
     }
 

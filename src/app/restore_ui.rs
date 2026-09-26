@@ -66,6 +66,7 @@ impl App {
             host.kill_all();
         }
         self.panes.clear();
+        self.focus_order.clear();
         host.close();
     }
 

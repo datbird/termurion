@@ -15,10 +15,9 @@ const FIELD_H: f32 = 26.0;
 const BELOW_FIELD: f32 = 9.0;
 /// Everything but the table (`nonTableSpace`).
 const NON_TABLE: f32 = ABOVE_FIELD + FIELD_H + BELOW_FIELD;
-/// A row: 44 high plus the table's intercell spacing of 2 (the xib).
+/// A row: 44 high, with no intercell spacing (the xib's 2 is set to zero at run time,
+/// `WC:91`: "Using intercell spacing clips the selection rect").
 pub const ROW_H: f32 = 44.0;
-const SPACING: f32 = 2.0;
-const ROW_PITCH: f32 = ROW_H + SPACING;
 /// Below the last row, and the room the palette leaves above and below it on the screen.
 const BELOW_ROWS: f32 = 10.0;
 pub const ABOVE_WINDOW: f32 = 170.0;
@@ -77,16 +76,15 @@ pub fn wrap_step(selected: Option<usize>, n: usize, down: bool) -> Option<usize>
 
 /// The palette's height in points for `rows` results on a screen `screen_h` points tall
 /// (`WC`, `frame`): the field's space, then as many rows as fit in the screen less 170 above
-/// and below, to the bottom of the last visible cell (inset half the spacing in its row), and
-/// 10 more.
+/// and below, to the bottom of the last visible row, and 10 more.
 pub fn window_height(rows: usize, screen_h: f32) -> f32 {
     let max_h = screen_h - ABOVE_WINDOW * 2.0;
-    let fit = ((max_h - NON_TABLE) / ROW_PITCH).floor().max(0.0) as usize;
+    let fit = ((max_h - NON_TABLE) / ROW_H).floor().max(0.0) as usize;
     let n = rows.min(fit);
     if n == 0 {
         return NON_TABLE;
     }
-    NON_TABLE + n as f32 * ROW_PITCH - SPACING / 2.0 + BELOW_ROWS
+    NON_TABLE + n as f32 * ROW_H + BELOW_ROWS
 }
 
 /// Where the preview goes, in points, for the palette at `parent` on a screen whose work area
@@ -210,6 +208,9 @@ pub enum PaletteEvent {
     Close,
 }
 
+/// How long the palette waits for the focus before closing.
+const NO_FOCUS_LIMIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Segoe Fluent Icons' Search and Cancel: the magnifier and the x.
 const LOUPE: char = '\u{E721}';
 const CLOSE_GLYPH: char = '\u{E711}';
@@ -318,8 +319,10 @@ pub struct OpenQuicklyWindow {
     /// is selected on a re-open, `selectText:`), or with the caret at its end (a tip).
     select_all: bool,
     caret_to_end: bool,
-    /// It has had focus (a focus loss before that is the window being made).
+    /// It has had focus (a focus loss before that is the window being made), and when it was
+    /// shown: one that never gets the focus closes after `NO_FOCUS_LIMIT`.
     focused: bool,
+    opened: Instant,
     /// The screen's height in points, and the palette's top left in pixels.
     screen_h: f32,
     origin: (f64, f64),
@@ -379,6 +382,7 @@ impl OpenQuicklyWindow {
             select_all: true,
             caret_to_end: false,
             focused: false,
+            opened: Instant::now(),
             screen_h,
             origin: (x, y),
             anim,
@@ -395,6 +399,12 @@ impl OpenQuicklyWindow {
     pub fn focus(&self) {
         self.host.window.set_minimized(false);
         self.host.focus();
+    }
+
+    /// While it has never had the focus: when it gives up and closes (Windows may refuse to
+    /// bring it forward, or a click elsewhere may come first, and then Esc cannot reach it).
+    pub fn no_focus_deadline(&self) -> Option<Instant> {
+        (!self.focused).then(|| self.opened + NO_FOCUS_LIMIT)
     }
 
     pub fn query(&self) -> &str {
@@ -561,9 +571,9 @@ impl OpenQuicklyWindow {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(&mut child, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                     for (i, row) in rows.iter().enumerate() {
-                        let (r, resp) = ui.allocate_exact_size(egui::vec2(WIDTH, ROW_PITCH), egui::Sense::click());
-                        // The cell view: 10 in from each side, the spacing split above and below.
-                        let cell = egui::Rect::from_min_size(egui::pos2(r.min.x + 10.0, r.min.y + SPACING / 2.0), egui::vec2(WIDTH - 20.0, ROW_H));
+                        let (r, resp) = ui.allocate_exact_size(egui::vec2(WIDTH, ROW_H), egui::Sense::click());
+                        // The cell view: 10 in from each side.
+                        let cell = egui::Rect::from_min_size(egui::pos2(r.min.x + 10.0, r.min.y), egui::vec2(WIDTH - 20.0, ROW_H));
                         let chosen = *selected == Some(i);
                         let (title_color, detail_color) = if chosen { (egui::Color32::WHITE, egui::Color32::from_white_alpha(200)) } else { (text, weak) };
                         if chosen {
@@ -771,12 +781,11 @@ mod tests {
 
     #[test]
     fn palette_height_follows_iterm2() {
-        // Field margins 12 + 26 + 9 = 47; a row is 44 plus the table's 2 of intercell spacing,
-        // the last cell's bottom sits 1 above its row's (half the spacing), and 10 below it.
+        // Field margins 12 + 26 + 9 = 47; rows 44 with no spacing (WC:91); 10 below the last.
         assert_eq!(window_height(0, 1080.0), 47.0);
-        assert_eq!(window_height(3, 1080.0), 47.0 + 3.0 * 46.0 - 1.0 + 10.0);
-        let cap = ((1080.0 - 340.0 - 47.0) / 46.0f32).floor();
-        assert_eq!(window_height(1000, 1080.0), 47.0 + cap * 46.0 - 1.0 + 10.0);
+        assert_eq!(window_height(3, 1080.0), 47.0 + 3.0 * 44.0 + 10.0);
+        let cap = ((1080.0 - 340.0 - 47.0) / 44.0f32).floor();
+        assert_eq!(window_height(1000, 1080.0), 47.0 + cap * 44.0 + 10.0);
         assert_eq!(window_height(cap as usize, 1080.0), window_height(1000, 1080.0));
         // A screen too short for one row shows the field alone.
         assert_eq!(window_height(5, 380.0), 47.0);
