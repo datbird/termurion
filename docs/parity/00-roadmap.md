@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 169 | 124 | 21 |
-| `02-global-settings.md` | 820 | 243 | 71 | 506 |
-| `03-features-and-menus.md` | 643 | 427 | 39 | 177 |
-| Total | 1,777 | 839 | 234 | 704 |
+| `02-global-settings.md` | 820 | 248 | 72 | 500 |
+| `03-features-and-menus.md` | 643 | 437 | 39 | 167 |
+| Total | 1,777 | 854 | 235 | 688 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -119,7 +119,17 @@ Quickly's x button closing instead of clearing, tips scoring below matches, the 
 color-preset quotes, the double modifier symbol for a double-tap hotkey). Codecierge shows only its
 onboarding panel (EnableAI stays off until milestone 12). Dynamic web tools, scripts and function
 invocations wait for milestone 11 and color presets for milestone 13. Browser bookmarks stay
-missing with no target milestone: Tandem has no browser profiles to read them from.
+missing with no target milestone: Tandem has no browser profiles to read them from. Milestone 9l
+closed milestone 9 (9a through 9l): the Composer, a native multi-line command editor drawn in the
+pane like the find bar and the Notes editor (multiple carets, iTerm2's syntax highlighting and
+colors, command history search, Tab completion of files and PATH commands, send, send each,
+enqueue, Send to Advanced Paste, Copy with Styles and Copy with Control Sequences forwarding to
+the pane), reachable from View > Show Composer (a floating dropdown), View > Auto Composer (which
+replaces the shell prompt itself once shell integration reports one), the status bar Composer
+component (a live field with a chevron history menu and an expand button, coexisting with the
+dropdown), and key action 64 (Open Composer); autocomplete stays partial, since AI-sourced
+suggestions wait for milestone 12. Milestone 9 is now complete. Milestone 10 (Instant Replay and
+the password manager) is next.
 
 ## Order
 

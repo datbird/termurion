@@ -33,8 +33,8 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Composer leader key | n/a (iTermShortcutInputView, not a plain pref key) | Assigns a prefix keystroke that starts the Composer / command-input overlay. | missing |  |
-| Auto Composer | kPreferenceAutoComposer | Automatically opens the Composer overlay for multi-line command editing as you type. | missing |  |
+| Composer leader key | n/a (iTermShortcutInputView, not a plain pref key) | Assigns a prefix keystroke that starts the Composer / command-input overlay. | have | Milestone 9l: not a distinct iTerm2 setting (research m9-facts.md section 0); the general key-binding Leader (row `02:287`, have) already lets any action, including Open Composer (KEY_ACTION_COMPOSE), be bound behind a Leader chord like a tmux prefix. |
+| Auto Composer | kPreferenceAutoComposer | Automatically opens the Composer overlay for multi-line command editing as you type. | have | Milestone 9l: View > Auto Composer (Opt+Shift+Win+.) toggles the global AutoComposer setting; does nothing the first time until command history has ever been used, and turning it off leaves a shown composer up until the next prompt (both kept iTerm2 bugs). |
 | Auto Command History | kPreferenceAutoCommandHistory | Automatically opens the command-history search overlay as you type at the prompt. | have | Milestone 9d: the list at the cursor while typing at the prompt; Shift+Enter inserts the rest, Alt+Enter runs it. |
 
 
@@ -58,7 +58,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Custom AI headers enabled / Custom AI headers | AICustomHeadersEnabled / AICustomHeaders | Adds user-defined HTTP headers (name/value pairs) to every AI API request. | missing |  |
 | Automatically update available AI models from live online database | AIModelUpdatesEnabled | Periodically downloads an updated AI model catalog from iterm2.com. | missing |  |
 | Use AI to check safety of commands before running them | AISafetyCheck | Runs an AI judgement pass on commands before executing them, to flag risky ones. | missing |  |
-| Offer AI command suggestion in Composer & Auto Composer | AICompletion | Shows AI-generated command completions while typing in the Composer. | missing |  |
+| Offer AI command suggestion in Composer & Auto Composer | AICompletion | Shows AI-generated command completions while typing in the Composer. | missing | Milestone 9l: not stored yet; the composer's Win+Y, its AI button, and any AI-sourced suggestion path all answer "AI features come in milestone 12." regardless of this setting. |
 | AI permission: check terminal state | AIPermissionCheckTerminalState | Ask/Allow/Never policy for whether the AI agent may read the current terminal screen contents. | missing |  |
 | AI permission: run commands | AIPermissionRunCommands | Ask/Allow/Never policy for whether the AI agent may run shell commands on your behalf. | missing |  |
 | AI permission: view history | AIPermissionViewHistory | Ask/Allow/Never policy for whether the AI agent may read scrollback history. | missing |  |
@@ -421,7 +421,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Duplicate Tab | KEY_ACTION_DUPLICATE_TAB | Opens a new tab that is a copy of the current one (same profile/directory). | have |  |
 | Move to Split Pane | KEY_ACTION_MOVE_TO_SPLIT_PANE | Moves the current session into an adjacent split pane. | missing | Comes in milestone 7. |
 | Send Snippet... | KEY_ACTION_SEND_SNIPPET | Sends a saved Snippet's text. | have | Milestone 9e: a snippet picker; the snippet's own escaping; a deleted snippet does nothing. |
-| Open Composer | KEY_ACTION_COMPOSE | Opens the Composer overlay for multi-line command editing. | missing | Comes in milestone 9. |
+| Open Composer | KEY_ACTION_COMPOSE | Opens the Composer overlay for multi-line command editing. | have | Milestone 9l: opens the panel (or a status bar field, when the profile routes there) with the given text, appended with a newline to any text already shown; a Compose-bound key inside a focused composer counts as sending text, so it is not run by the profile key map there (matching iTerm2). |
 | Send tmux Command... | KEY_ACTION_SEND_TMUX_COMMAND | Sends a literal tmux control-mode command to the attached tmux server. | have | Milestone 8e: sends its text as a tmux command through the focused session's gateway; tmux prefix bindings become Leader bindings that run it. |
 | Run Sequence of Actions | KEY_ACTION_SEQUENCE | Runs an ordered list of other key-binding actions as one binding. | have |  |
 | Swap with Next Pane | KEY_ACTION_SWAP_WITH_NEXT_PANE | Swaps the current pane's contents with the next pane in order. | have |  |
@@ -876,8 +876,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | aiGeneratedTabTitles | aiGeneratedTabTitles (bool, default NO) | Name tabs after the work on screen, using on-device AI? When enabled, the session variable “aiTitle” holds a short name for the task visible in the session, which you can show by adding the “AI-generated name” title component or using \\(session.aiTitle) in a custom title format. | missing |  |
 | timeoutForDaemonAttachment | timeoutForDaemonAttachment (float, default 10) | How long to wait when trying to attach to an iTerm daemon at startup when restoring windows (in seconds)? | have | Milestone 7d: how long Tandem waits for tandem-host at launch. |
 | logTimestampsWithPlainText | logTimestampsWithPlainText (bool, default YES) | When logging plain text, include timestamps for each line? | missing |  |
-| composerClearSequence | composerClearSequence (string, default @"0x15 0x0b") | Hex codes to send to clear the command line when entering the composer. | missing |  |
-| alwaysUseStatusBarComposer | alwaysUseStatusBarComposer (bool, default NO) | Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present. | missing |  |
+| composerClearSequence | composerClearSequence (string, default @"0x15 0x0b") | Hex codes to send to clear the command line when entering the composer. | have | Milestone 9l: hex codes sent before revealing the captured prompt text; each byte becomes an optional caret-notation group in the probe regex, matched only within 100 ms of the write, and any write to the pane cancels the probe. |
+| alwaysUseStatusBarComposer | alwaysUseStatusBarComposer (bool, default NO) | Temporarily add a composer to the status bar instead of opening the large composer view when a status bar is present. | have | Milestone 9l: routes Show Composer and Open Composer to a temporary status bar field instead of the dropdown whenever a status bar is present, whether or not a Composer component is placed on it. |
 | successSound | successSound (string, default @"") | When Alert on Next Mark is configured to play a sound, use a file with this name for successful completion of the previous command. | missing |  |
 | errorSound | errorSound (string, default @"") | When Alert on Next Mark is configured to play a sound, use a file with this name for erroneous completion of the previous command. | missing |  |
 | sessionEndMessageText | sessionEndMessageText (string, default @"") | Text displayed when a session ends. | missing |  |
@@ -1102,7 +1102,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | ollamaKeepAlive | ollamaKeepAlive (string, default @"30m") | Ollama keep_alive for native /api/chat requests. | missing |  |
 | addUtilitiesToPATH | addUtilitiesToPATH (bool, default YES) | Add path to iTerm2 utilities to $PATH for new sessions? | missing |  |
 | autoSearch | autoSearch (bool, default NO) | Automatically search for selected text after making a selection? | missing |  |
-| smartLoggingWithAutoComposer | smartLoggingWithAutoComposer (bool, default NO) | Enable more compact logging when using auto composer? This will avoid logging raw data in your prompt and your interactions with it. | missing |  |
+| smartLoggingWithAutoComposer | smartLoggingWithAutoComposer (bool, default NO) | Enable more compact logging when using auto composer? This will avoid logging raw data in your prompt and your interactions with it. | partial | Milestone 9l: the setting is stored with its own help text and toggleable in Advanced settings, but has no effect: Tandem has no session logging yet for it to change. |
 | disclaimChildren | disclaimChildren (bool, default NO) | Disclaim ownership of children. | missing |  |
 | usePosixSpawn | usePosixSpawn (bool, default YES_IF_BETA_ELSE_NO) | Use posix_spawn instead of fork and exec to launch sessions? This is a newer launch mechanism that avoids a slow file-descriptor-closing step. | missing |  |
 | restoreKeyModeAutomaticallyOnHostChange | restoreKeyModeAutomaticallyOnHostChange (bool, default YES) | Automatically restore keyboard mode when an ssh session ends? | missing |  |
