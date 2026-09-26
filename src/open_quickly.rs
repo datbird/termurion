@@ -16,11 +16,14 @@ use std::ops::Range;
 /// does not occur in `doc` at all. An empty query has no defined span, so it is `None`; callers
 /// score an empty query separately (`score_feature`) and never call this for one.
 pub fn matched(query: &str, doc: &str) -> Option<Vec<usize>> {
-    let q: Vec<char> = query.to_lowercase().chars().collect();
+    // Folded one char at a time (not `str::to_lowercase`, which can turn one char into several,
+    // e.g. '\u{130}' into two): this keeps `q` and `d` the same length as the originals, so their
+    // indexes still point into `query` and `doc`.
+    let q: Vec<char> = query.chars().map(fold_char).collect();
     if q.is_empty() {
         return None;
     }
-    let d: Vec<char> = doc.to_lowercase().chars().collect();
+    let d: Vec<char> = doc.chars().map(fold_char).collect();
 
     let mut posting: HashMap<char, Vec<usize>> = HashMap::new();
     for &c in &q {
@@ -64,12 +67,25 @@ pub fn matched(query: &str, doc: &str) -> Option<Vec<usize>> {
             best_len = Some(len);
             best_idxs = idxs.clone();
         }
+        if len == q.len() {
+            // `bestIndexes` (`M`): stops as soon as this candidate's range length equals the
+            // query length. That is one more than a truly compact span (which has length
+            // `q.len() - 1`), so this can and does stop before finding the smallest possible
+            // span; kept verbatim.
+            break;
+        }
         if !advance(&q, &posting, &mut idxs) {
             break;
         }
     }
 
     Some(best_idxs.iter().enumerate().map(|(qi, &li)| posting[&q[qi]][li]).collect())
+}
+
+/// Case-folds one char to one char, so a folded string is always the same length as the
+/// original (`'\u{130}'.to_lowercase()` yields two chars; only the first is kept).
+fn fold_char(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
 }
 
 /// Advances the match to the next candidate: forces the first query char's index forward, then
@@ -137,16 +153,27 @@ pub fn quality(indexes: &[usize], doc_len: usize) -> f64 {
 /// `multiplier` and clamped to `limit`. Returns the score, and, when some document matched, its
 /// index into `docs` and its matched char indexes (for building the display title or detail).
 pub fn score_feature(query: &str, docs: &[String], multiplier: f64, limit: f64) -> (f64, Option<(usize, Vec<usize>)>) {
+    let (_raw, clamped, best) = score_feature_raw(query, docs, multiplier, limit);
+    (clamped, best)
+}
+
+/// `score_feature`'s body, also returning the unclamped running total: iTerm2's own
+/// `scoreUsingMatcher:...` clamps only its `return` value (`MIN(limit, score)`); the entry it
+/// stores into the shared `features` array for `detailForSession:features:` to compare keeps
+/// the unclamped `score` (`M:1462-1467`). Title-building callers only ever want the clamped
+/// value, so `score_feature` stays the public, two-value interface; `push_feature` (the one
+/// caller that feeds `detailForSession`'s comparison) uses the raw value instead.
+fn score_feature_raw(query: &str, docs: &[String], multiplier: f64, limit: f64) -> (f64, f64, Option<(usize, Vec<usize>)>) {
     if multiplier == 0.0 {
-        return (0.0, None);
+        return (0.0, 0.0, None);
     }
     if query.is_empty() {
         for (i, d) in docs.iter().enumerate() {
             if !d.is_empty() {
-                return (0.01, Some((i, Vec::new())));
+                return (0.01, 0.01, Some((i, Vec::new())));
             }
         }
-        return (0.0, None);
+        return (0.0, 0.0, None);
     }
 
     let mut score = 0.0;
@@ -167,7 +194,7 @@ pub fn score_feature(query: &str, docs: &[String], multiplier: f64, limit: f64) 
             break;
         }
     }
-    (score.min(limit), best)
+    (score, score.min(limit), best)
 }
 
 // -------------------------------------------------------------------------------------------
@@ -373,6 +400,17 @@ fn fill(template: &str, value: &str) -> String {
     template.replacen("{}", value, 1)
 }
 
+/// Like `fill`, also returning the char range `value` landed at, for the one detail that bolds
+/// part of itself: the menu path (`M:393-405`: `itemForMenuItem:matcher:path:` bolds just the
+/// `combinedPath` run, unlike every other detail string, which is built through the delegate's
+/// generic, unhighlighted `openQuicklyModelAttributedStringForDetail:featureName:`).
+fn fill_bold(template: &str, value: &str) -> (String, Range<usize>) {
+    let at = template.find("{}").expect("template has a {} placeholder");
+    let start = template[..at].chars().count();
+    let end = start + value.chars().count();
+    (fill(template, value), start..end)
+}
+
 const SESSION_BADGE_MULT: f64 = 3.0;
 const SESSION_NAME_MULT: f64 = 2.0;
 const GIT_BRANCH_MULT: f64 = 1.5;
@@ -501,10 +539,20 @@ struct Feature {
 }
 
 fn push_feature(features: &mut Vec<Feature>, name: &str, docs: &[String], mult: f64, cap: f64, query: &str, total: &mut f64) {
-    let (score, result) = score_feature(query, docs, mult, cap);
-    *total += score;
+    let (raw, clamped, mut result) = score_feature_raw(query, docs, mult, cap);
+    *total += clamped;
+    if query.is_empty() {
+        // An empty query trivially matches every non-empty document (`M:1416-1434`): iTerm2
+        // adds one `features` entry per non-empty document, all tied at the same score, and
+        // `detailForSession:features:` keeps the last tied entry when picking the winner. For a
+        // multi-document feature (commands, directories, hosts, users) that is the newest
+        // non-empty document, not the oldest.
+        if let Some(i) = docs.iter().rposition(|d| !d.is_empty()) {
+            result = Some((i, Vec::new()));
+        }
+    }
     if let Some((i, idx)) = result {
-        features.push(Feature { name: name.to_string(), score, value: docs[i].clone(), bold: idx });
+        features.push(Feature { name: name.to_string(), score: raw, value: docs[i].clone(), bold: idx });
     }
 }
 
@@ -789,14 +837,14 @@ fn add_menu_items(items: &mut Vec<Item>, query: &str, s: &Sources) {
         }
         let (t, bold) = title_from(&docs, result);
         let joined = path.join(" > ");
-        let detail = fill(if *alternate { ALT_MENU_DETAIL } else { MENU_DETAIL }, &joined);
+        let (detail, path_range) = fill_bold(if *alternate { ALT_MENU_DETAIL } else { MENU_DETAIL }, &joined);
         items.push(Item {
             kind: ItemKind::MenuItem(id.clone()),
             score,
             title: untitled_if_empty(t),
             title_bold: bold,
             detail,
-            detail_bold: Vec::new(),
+            detail_bold: vec![path_range],
         });
     }
 }
@@ -1112,5 +1160,51 @@ mod tests {
     #[test]
     fn color_preset_detail_string_kept_for_milestone_13() {
         assert_eq!(fill(COLOR_PRESET_DETAIL, "Solarized"), "Load color preset \u{201d}Solarized\u{201c}");
+    }
+
+    #[test]
+    fn review_fixes_follow_iterm2() {
+        // 1. bestIndexes stops as soon as a candidate's range length equals the query length,
+        // even when a smaller span exists further on (kept verbatim).
+        let idx = matched("ab", "axbab").unwrap();
+        assert_eq!(idx, vec![0, 2]);
+        assert!((quality(&idx, 5) - 0.9).abs() < 1e-9);
+
+        // 2. Case folding is one char to one char, so indexes stay valid even when a char's
+        // lowercase form is not (e.g. '\u{130}' folds to one char here, not two).
+        let sources = Sources {
+            sessions: vec![SessionSource { pane: 1, name: "\u{130}stanbul".to_string(), ..Default::default() }],
+            ..Default::default()
+        };
+        let item = items("bul", &sources).into_iter().find(|it| it.kind == ItemKind::Session(1)).unwrap();
+        let title_len = item.title.chars().count();
+        assert!(item.title_bold.iter().all(|&i| i < title_len), "{:?} vs len {title_len}", item.title_bold);
+        assert_eq!(item.title_bold, vec![5, 6, 7]);
+
+        // 3. A menu item's detail bolds only the path run.
+        let sources = Sources {
+            menu_items: vec![("id1".to_string(), "Session Status".to_string(), vec!["View".to_string(), "Toolbelt".to_string()], false)],
+            ..Default::default()
+        };
+        let item = items("Session Status", &sources).into_iter().find(|it| it.kind == ItemKind::MenuItem("id1".to_string())).unwrap();
+        let prefix_len = "Menu item under ".chars().count();
+        let path_len = "View > Toolbelt".chars().count();
+        assert_eq!(item.detail_bold, vec![prefix_len..(prefix_len + path_len)]);
+
+        // 4. The score fed to detail-feature selection is the unclamped running total, not the
+        // total returned for the session's own score.
+        let mut features: Vec<Feature> = Vec::new();
+        let mut total = 0.0;
+        push_feature(&mut features, "Command", &[String::from("abcd"), String::from("abcd")], 0.8, 1.0, "abcd", &mut total);
+        assert_eq!(features.len(), 1);
+        assert!((features[0].score - 1.2).abs() < 1e-9, "{}", features[0].score); // 0.8 * (1/2 + 1)
+        assert!((total - 1.0).abs() < 1e-9, "{total}"); // the session's own total keeps the clamp
+
+        // 5. An empty query's multi-document feature shows its newest non-empty document, not
+        // its oldest (detailForSession:features: keeps the last tied entry).
+        let mut features: Vec<Feature> = Vec::new();
+        let mut total = 0.0;
+        push_feature(&mut features, "Command", &[String::from("old"), String::from("new")], 0.8, 10.0, "", &mut total);
+        assert_eq!(features[0].value, "new");
     }
 }
