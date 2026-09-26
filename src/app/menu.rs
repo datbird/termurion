@@ -361,9 +361,12 @@ impl App {
             "findGlobally:" => self.open_global_find(event_loop),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
+                let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
                 self.open_settings(event_loop, Mode::Settings);
                 if let (Some(s), Some(g)) = (self.settings.as_mut(), guid) {
                     s.select(&g);
+                    // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
+                    s.set_tmux_session(tmux);
                 }
             }
             "showBookmarkWindow:" | "openSplitHorizontallySheet:" | "openSplitVerticallySheet:" => {

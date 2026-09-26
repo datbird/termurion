@@ -277,13 +277,6 @@ impl App {
         self.tmux_flush(gw);
     }
 
-    /// The profiles that are tmux sessions' own copies (Settings disables their status bar
-    /// controls, `PSV:569-573`).
-    pub(super) fn tmux_session_profiles(&self) -> std::collections::HashSet<String> {
-        let own = |g: &String| self.store.sessions.iter().any(|s| s.profile.guid() == *g);
-        self.panes.values().filter(|p| p.tmux_io().is_some()).map(|p| p.profile.clone()).filter(own).collect()
-    }
-
     /// `tmux_watch_status` for every gateway; the text of a gateway that ended goes.
     pub(super) fn tmux_watch_status_all(&mut self) {
         let gws: Vec<PaneId> = self.tmux.keys().copied().collect();

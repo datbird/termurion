@@ -341,7 +341,7 @@ impl App {
     fn bar_layout(&self, pane: PaneId) -> (Layout, bool) {
         let layout = self.status_layout(pane);
         let server = self.panes.get(&pane).and_then(|p| p.tmux_io()).and_then(|io| self.tmux.get(&io.gateway)).and_then(|t| t.hs.min);
-        if server.is_some_and(|v| v >= 2.9) && sbc::uses_tmux_layout(self.globals.bool("UseTmuxStatusBar"), &layout) {
+        if sbc::uses_tmux_layout(self.globals.bool("UseTmuxStatusBar"), &layout, server) {
             return (sbc::tmux_layout(&layout), true);
         }
         (layout, false)

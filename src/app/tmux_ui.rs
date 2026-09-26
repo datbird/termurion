@@ -230,6 +230,7 @@ impl App {
             self.disinter(pane);
         }
         self.tmux.remove(&pane);
+        self.tmux_status.retain(|(g, _), _| *g != pane);
         self.tmux_end_panes(pane);
         if let Some(p) = self.panes.get_mut(&pane) {
             p.own_mut().print_message("Detached");

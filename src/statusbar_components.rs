@@ -408,11 +408,11 @@ pub fn tmux_layout(profile_layout: &statusbar::Layout) -> statusbar::Layout {
     statusbar::Layout { components: vec![interpolated(TMUX_LEFT_CLASS, "tmuxStatusLeft"), spring, interpolated(TMUX_RIGHT_CLASS, "tmuxStatusRight")], ..profile_layout.clone() }
 }
 
-/// A tmux tab's bar shows `tmux_layout` (`PTYSession.m:10085-10090`): with
-/// `UseTmuxStatusBar` on, or when the profile's layout has no components
-/// (shouldOverrideLayout).
-pub fn uses_tmux_layout(use_tmux: bool, profile_layout: &statusbar::Layout) -> bool {
-    use_tmux || profile_layout.components.is_empty()
+/// A tmux tab's bar shows `tmux_layout` (`PTYSession.m:10077-10091`): only on a tmux 2.9
+/// or later server (`server`, its minimum version), and then with `UseTmuxStatusBar` on or
+/// when the profile's layout has no components (shouldOverrideLayout).
+pub fn uses_tmux_layout(use_tmux: bool, profile_layout: &statusbar::Layout, server: Option<f64>) -> bool {
+    server.is_some_and(|v| v >= 2.9) && (use_tmux || profile_layout.components.is_empty())
 }
 
 #[cfg(test)]
@@ -438,9 +438,13 @@ mod tests {
         assert!(t.components[1].knobs.is_empty(), "a Spring with no knobs");
         assert_eq!(t.components[2].knobs, table(&[("expression", Value::String("\\(tmuxStatusRight)".into()))]));
         assert_eq!(Kind::of(&t.components[0].class), Some(Kind::TmuxLeft));
-        assert!(uses_tmux_layout(true, &profile));
-        assert!(!uses_tmux_layout(false, &profile));
-        assert!(uses_tmux_layout(false, &statusbar::Layout::default()), "no components");
+        let v = Some(2.9);
+        assert!(uses_tmux_layout(true, &profile, v));
+        assert!(!uses_tmux_layout(false, &profile, v));
+        assert!(uses_tmux_layout(false, &statusbar::Layout::default(), v), "no components");
+        assert!(!uses_tmux_layout(true, &profile, Some(2.8)), "2.8: the profile's own components");
+        assert!(!uses_tmux_layout(true, &statusbar::Layout::default(), Some(2.8)));
+        assert!(!uses_tmux_layout(true, &profile, None), "version not known");
     }
 
     /// `iTermStatusBarViewController.m:248-293`: the temporary left component goes first,

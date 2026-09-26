@@ -846,8 +846,21 @@ impl App {
             Mode::Profiles => &self.profiles_win,
         };
         if let Some(s) = slot {
-            return s.focus();
+            s.focus();
+        } else {
+            self.make_settings(event_loop, mode);
         }
+        // Opened any way but Edit Session from a tmux session (which sets it again after).
+        let slot = match mode {
+            Mode::Settings => &mut self.settings,
+            Mode::Profiles => &mut self.profiles_win,
+        };
+        if let Some(s) = slot {
+            s.set_tmux_session(false);
+        }
+    }
+
+    fn make_settings(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {
         let Some(g) = self.gpu.as_ref() else { return };
         match SettingsWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, mode) {
             Ok(mut s) => {
@@ -2268,9 +2281,6 @@ impl ApplicationHandler<UserEvent> for App {
                     crate::winkeys::set_recording(false);
                 }
                 WindowEvent::RedrawRequested => {
-                    let tmux_profiles = self.tmux_session_profiles();
-                    let slot = if profiles { &mut self.profiles_win } else { &mut self.settings };
-                    slot.as_mut().unwrap().set_tmux_profiles(tmux_profiles);
                     let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());

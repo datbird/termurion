@@ -311,10 +311,10 @@ pub struct Controller {
     /// whether it was asked for.
     status_interval: f64,
     status_interval_asked: bool,
-    /// A not-ready status line was seen (iTerm2's `_accelerated`, never reset), and the one
-    /// early poll of that window's pair it scheduled.
-    accelerated: bool,
-    accelerated_due: Option<(u32, f64)>,
+    /// The windows whose status pair saw a not-ready line (iTerm2's `_accelerated`, one per
+    /// monitor pair, never reset), and the early polls they scheduled.
+    accelerated: BTreeSet<u32>,
+    accelerated_due: Vec<(u32, f64)>,
 }
 
 impl Controller {
@@ -373,8 +373,8 @@ impl Controller {
             last_saved: HashMap::new(),
             status_interval: 1.0,
             status_interval_asked: false,
-            accelerated: false,
-            accelerated_due: None,
+            accelerated: BTreeSet::new(),
+            accelerated_due: Vec::new(),
         }
     }
 
@@ -517,7 +517,7 @@ impl Controller {
             .into_iter()
             .chain(self.windows_due.iter().map(|(_, t)| *t))
             .chain(self.monitors.values().filter_map(|m| m.next_tick()))
-            .chain(self.accelerated_due.map(|(_, t)| t))
+            .chain(self.accelerated_due.iter().map(|(_, t)| *t))
             .reduce(f64::min)
     }
 
@@ -534,13 +534,16 @@ impl Controller {
     /// Sends the lists that are due (the Dashboard's; iTerm2's timers).
     pub fn poll(&mut self, now: f64, gw: &mut Gateway) {
         self.clock = self.clock.max(now);
-        let ticks: Vec<(Key, String)> = self.monitors.iter_mut().filter_map(|(k, m)| Some((*k, m.tick(now)?))).collect();
+        let mut ticks: Vec<(Key, String)> = self.monitors.iter_mut().filter_map(|(k, m)| Some((*k, m.tick(now)?))).collect();
+        // In a fixed order (by command), not the map's.
+        ticks.sort_by(|a, b| a.1.cmp(&b.1));
         for (key, cmd) in ticks {
             let t = self.tag(Req::Fetched(key));
             gw.send(&cmd, Some(t), Flags { tolerate: true, ..Default::default() });
         }
-        if let Some((w, _)) = self.accelerated_due.filter(|(_, t)| *t <= now) {
-            self.accelerated_due = None;
+        let fast: Vec<u32> = self.accelerated_due.iter().filter(|(_, t)| *t <= now).map(|(w, _)| *w).collect();
+        self.accelerated_due.retain(|(_, t)| *t > now);
+        for w in fast {
             self.update(Key::Status(w, Side::Left), gw);
             self.update(Key::Status(w, Side::Right), gw);
         }
@@ -741,6 +744,7 @@ impl Controller {
         if !on {
             self.uninstall(Key::Status(window, Side::Left), gw);
             self.uninstall(Key::Status(window, Side::Right), gw);
+            self.accelerated_due.retain(|(w, _)| *w != window);
             return;
         }
         if self.v() < 2.9 || self.monitors.contains_key(&Key::Status(window, Side::Left)) {
@@ -763,12 +767,13 @@ impl Controller {
     }
 
     /// A status line came back: a not-ready part polls both of its window's lines once more
-    /// 0.01 s later, once per controller (accelerateUpdateIfStringContainsNotReady).
+    /// 0.01 s later, once per window's pair (accelerateUpdateIfStringContainsNotReady). A
+    /// late reply for a window no longer watched does nothing.
     fn status_not_ready(&mut self, key: Key, raw: &str) {
         if let Key::Status(w, _) = key {
-            if !self.accelerated && crate::tmux_monitor::not_ready(raw) {
-                self.accelerated = true;
-                self.accelerated_due = Some((w, self.clock + 0.01));
+            if self.monitors.contains_key(&key) && !self.accelerated.contains(&w) && crate::tmux_monitor::not_ready(raw) {
+                self.accelerated.insert(w);
+                self.accelerated_due.push((w, self.clock + 0.01));
             }
         }
     }
@@ -1988,6 +1993,35 @@ mod tests {
         assert!(r.ctl.status_windows().is_empty());
         r.ctl.poll(30.0, &mut r.gw);
         assert_eq!(r.sent(), "", "uninstalled: no timers");
+        // Each window's pair gets its own one fast re-poll.
+        let line2 = |side, v: &str| Action::StatusLine { window: 2, side, value: v.into() };
+        r.ctl.set_clock(40.0);
+        r.ctl.watch_status(2, true, &mut r.gw);
+        assert_eq!(r.sent().matches("display-message -t '@2'").count(), 2, "the interval is not asked again");
+        assert_eq!(r.answer(Some("<'a' not ready>L")), vec![line2(Side::Left, "L")]);
+        r.answer(Some("R"));
+        assert_eq!(r.ctl.accelerated_due.iter().map(|(w, _)| *w).collect::<Vec<_>>(), vec![2], "window 1 spent its own, not window 2's");
+        r.ctl.poll(40.01, &mut r.gw);
+        assert_eq!(r.sent().matches("display-message -t '@2'").count(), 2, "window 2's fast re-poll (with its first ticks)");
+        r.answer(Some("<'a' not ready>L"));
+        r.answer(Some("R"));
+        assert_eq!(r.ctl.next_due(), Some(45.01), "used once for window 2 too");
+        r.ctl.watch_status(2, false, &mut r.gw);
+        // A late reply for a window no longer watched spends nothing and schedules nothing.
+        r.ctl.watch_status(3, true, &mut r.gw);
+        r.sent();
+        r.ctl.watch_status(3, false, &mut r.gw);
+        assert!(r.answer(Some("<'a' not ready>")).is_empty());
+        assert!(r.answer(Some("<'a' not ready>")).is_empty());
+        assert_eq!(r.ctl.next_due(), None);
+        assert!(!r.ctl.accelerated.contains(&3), "not spent");
+        r.ctl.poll(50.0, &mut r.gw);
+        assert_eq!(r.sent(), "");
+        r.ctl.watch_status(3, true, &mut r.gw);
+        r.sent();
+        r.answer(Some("<'a' not ready>"));
+        r.answer(Some("x"));
+        assert_eq!(r.ctl.next_due().map(|t| t < 50.02), Some(true), "window 3 still has its fast re-poll");
         // 0 is at least 1 s.
         let mut z = rig(2.9);
         z.ctl.watch_status(1, true, &mut z.gw);

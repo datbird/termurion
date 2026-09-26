@@ -98,8 +98,9 @@ pub struct SettingsWindow {
     /// Profiles > Session's "Configure Status Bar" was pressed for this profile Guid: the
     /// status bar setup window opens for it (the app takes it after each frame).
     pub configure_status_bar: Option<String>,
-    /// The profile Guids that are tmux sessions' own profiles (the app sets them).
-    tmux_profiles: std::collections::HashSet<String>,
+    /// The window was opened from a tmux session (iTerm2's `_tmuxSession`, set by how the
+    /// panel opened, `PreferencePanel.m:725-766`): its status bar controls are disabled.
+    tmux_session: bool,
 }
 
 impl SettingsWindow {
@@ -152,13 +153,14 @@ impl SettingsWindow {
             shortcuts: Default::default(),
             hotkeys: Default::default(),
             configure_status_bar: None,
-            tmux_profiles: Default::default(),
+            tmux_session: false,
         })
     }
 
-    /// The profiles of tmux sessions' own copies: their status bar settings are disabled.
-    pub fn set_tmux_profiles(&mut self, guids: std::collections::HashSet<String>) {
-        self.tmux_profiles = guids;
+    /// How the window was last opened: from a tmux session (Edit Session) or any other way.
+    pub fn set_tmux_session(&mut self, tmux: bool) {
+        self.tmux_session = tmux;
+        self.host.window.request_redraw();
     }
 
     /// Shows this profile in the editor (Edit Session).
@@ -226,7 +228,7 @@ impl SettingsWindow {
         settings_keys::set_snippets(&snippets.snippets);
         let hk = &mut self.hotkeys;
         let configure_status_bar = &mut self.configure_status_bar;
-        let tmux_session = self.tmux_profiles.contains(&selected);
+        let tmux_session = self.tmux_session;
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -408,12 +410,12 @@ impl SettingsWindow {
                             // iTerm2's "Configure Status Bar" button, enabled with the
                             // "Status bar enabled" checkbox above it; both disabled for a
                             // tmux session's own profile (PSV:569-573).
-                            if s.key == "Show Status Bar" && tmux_session {
+                            if s.key == "Show Status Bar" && !status_bar_controls(tmux_session, true).0 {
                                 ui.add_enabled_ui(false, |ui| control(ui, profile, s, dark, is_default));
                                 continue;
                             }
                             if s.key == "Status Bar Layout" {
-                                let on = status_bar_configurable(tmux_session, profile.bool("Show Status Bar"));
+                                let on = status_bar_controls(tmux_session, profile.bool("Show Status Bar")).1;
                                 if ui.add_enabled(on, egui::Button::new("Configure Status Bar")).on_hover_text(&s.help).clicked() {
                                     *configure_status_bar = Some(selected.clone());
                                 }
@@ -460,10 +462,11 @@ impl SettingsWindow {
     }
 }
 
-/// Configure Status Bar is enabled (`PSV:569-573`): not for a tmux session's own profile,
-/// and only with "Status bar enabled" on.
-pub fn status_bar_configurable(tmux_session: bool, show: bool) -> bool {
-    !tmux_session && show
+/// updateStatusBarSettingsEnabled (`PSV:569-573`): whether "Status bar enabled" and
+/// "Configure Status Bar" are enabled. Neither is when Settings was opened from a tmux
+/// session, whatever profile it shows; Configure also needs "Status bar enabled" on.
+pub fn status_bar_controls(opened_from_tmux: bool, show: bool) -> (bool, bool) {
+    (!opened_from_tmux, !opened_from_tmux && show)
 }
 
 /// The key a control edits. With separate Light and Dark colors on, a color with
@@ -618,11 +621,12 @@ mod tests {
         assert_eq!(rgb_of(&v), [255, 128, 0]);
     }
 
-    /// `PSV:569-573`: a tmux session's own profile disables both status bar controls.
+    /// `PSV:569-573`: opened from a tmux session, both status bar controls are disabled.
     #[test]
     fn status_bar_settings_follow_psv() {
-        assert!(status_bar_configurable(false, true));
-        assert!(!status_bar_configurable(false, false));
-        assert!(!status_bar_configurable(true, true));
+        assert_eq!(status_bar_controls(false, true), (true, true));
+        assert_eq!(status_bar_controls(false, false), (true, false), "Configure needs the bar on");
+        assert_eq!(status_bar_controls(true, true), (false, false));
+        assert_eq!(status_bar_controls(true, false), (false, false));
     }
 }
