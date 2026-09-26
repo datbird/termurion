@@ -178,6 +178,7 @@ pub mod winpipe;
 pub mod toolbelt;
 pub mod toolbelt_layout;
 pub mod tool_list;
+pub mod toolbelt_tools;
 
 #[cfg(windows)]
 pub mod winclip;

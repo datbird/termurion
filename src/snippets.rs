@@ -334,6 +334,7 @@ fn split_escaped(s: &str, sep: char) -> Vec<String> {
     out
 }
 
+/// Snippet search's own operators (`title:`/`text:`, not profile search's `name:`/`command:`).
 const OPERATORS: [&str; 3] = ["tag:", "title:", "text:"];
 
 /// iTermProfileSearchToken.
@@ -346,14 +347,18 @@ struct Token {
 }
 
 impl Token {
-    fn phrase(original: &str) -> Token {
+    /// Parses one phrase against a caller-chosen operator set (`iTermProfileSearchToken.m`'s
+    /// `initWithPhrase:operators:`): snippet search's own `tag:`/`title:`/`text:`, or profile
+    /// search's `tag:`/`name:`/`command:` (`profile_matches`). `operators` is `'static` so this
+    /// keeps borrowing from the caller's own const array rather than allocating.
+    fn phrase(original: &str, operators: &'static [&'static str]) -> Token {
         let (negated, phrase) = match original.strip_prefix('-') {
             Some(rest) => (true, rest),
             None => (false, original),
         };
         let mut op = None;
         let mut string = phrase;
-        for o in OPERATORS {
+        for &o in operators {
             if let Some(rest) = phrase.strip_prefix(o) {
                 op = Some(o);
                 string = rest;
@@ -452,7 +457,7 @@ fn token_status(t: &Token, s: &Snippet) -> Status {
 /// iTerm2's snippet search: `tag:`, `title:`, `text:`, `-` to exclude, `|` for either,
 /// `^` and `$` anchors, quotes for phrases; `extra_tags` must match too.
 pub fn search(snippets: &[Snippet], query: &str, extra_tags: &[String]) -> Vec<usize> {
-    let mut nodes: Vec<Vec<Token>> = query_words(query).iter().map(|p| split_escaped(p, '|').iter().map(|t| Token::phrase(t)).collect::<Vec<_>>()).filter(|n| !n.is_empty()).collect();
+    let mut nodes: Vec<Vec<Token>> = query_words(query).iter().map(|p| split_escaped(p, '|').iter().map(|t| Token::phrase(t, &OPERATORS)).collect::<Vec<_>>()).filter(|n| !n.is_empty()).collect();
     for tag in extra_tags {
         let node: Vec<Token> = split_escaped(tag, '|').iter().map(|t| Token::tag(t)).collect();
         if !node.is_empty() {
@@ -462,6 +467,52 @@ pub fn search(snippets: &[Snippet], query: &str, extra_tags: &[String]) -> Vec<u
     (0..snippets.len())
         .filter(|&i| nodes.iter().all(|node| node.iter().map(|t| token_status(t, &snippets[i])).max().unwrap_or(Status::None) != Status::Excluded))
         .collect()
+}
+
+/// Profile search's own operators (`iTermProfileSearchToken.m:43`): `tag:`, `name:`, `command:`.
+/// Unlike snippet search there is no `|` alternation (`ProfileModel.m:341-343`'s `parseFilter:`
+/// makes one token per phrase, never splitting on `|`).
+const PROFILE_OPERATORS: [&str; 3] = ["tag:", "name:", "command:"];
+
+fn words(s: &str) -> Vec<&str> {
+    s.split(|c: char| c.is_whitespace()).collect()
+}
+
+/// iTerm2's profile search (`ProfileModel.m:300-343`, `doesProfileWithName:tags:command:
+/// matchFilter:...`), reusing `query_words` and `Token`. A plain word matches the name or a tag;
+/// `tag:` matches only tags; `name:` only the name; `command:` only when named explicitly (and,
+/// per the source, still also checks the name: `matchesAnyWordInNameWords` allows any operator
+/// but `tag:`). `-` negates: a negated token excludes the profile wherever it matches, but never
+/// requires a match to pass.
+pub fn profile_matches(query: &str, name: &str, tags: &[String], command: &str) -> bool {
+    let name_words = words(name);
+    let command_words = words(command);
+    for phrase in query_words(query) {
+        let t = Token::phrase(&phrase, &PROFILE_OPERATORS);
+        let mut found = false;
+        if t.op != Some("tag:") && t.matches_words(&name_words) {
+            if t.negated {
+                return false;
+            }
+            found = true;
+        }
+        if (t.op.is_none() || t.op == Some("tag:")) && tags.iter().any(|tag| t.matches_words(&words(tag))) {
+            if t.negated {
+                return false;
+            }
+            found = true;
+        }
+        if t.op == Some("command:") && t.matches_words(&command_words) {
+            if t.negated {
+                return false;
+            }
+            found = true;
+        }
+        if !t.negated && !found {
+            return false;
+        }
+    }
+    true
 }
 
 /// An `.it2snippets` file: a JSON array of snippet dictionaries.
@@ -624,6 +675,22 @@ mod tests {
         // The profile's Snippets Filter adds tag tokens, matched as substrings of tag words.
         assert_eq!(search(&s, "", &["ops".into()]), vec![1, 2]);
         assert_eq!(search(&s, "make", &["ops".into()]), vec![1]);
+    }
+
+    #[test]
+    fn profile_search_uses_the_snippet_tokens() {
+        // Quotes and escapes route through the same query_words as snippet search.
+        assert!(profile_matches("\"dev box\"", "dev box", &[], ""));
+        assert!(!profile_matches("\"dev box\"", "prod box", &[], ""));
+        // tag:, name:, command: operators (ProfileModel.m:300-343), not snippets' tag:/title:/text:.
+        assert!(profile_matches("tag:work", "x", &["work stuff".to_string()], ""));
+        assert!(profile_matches("name:dev", "dev box", &[], "irrelevant"));
+        assert!(!profile_matches("ssh", "x", &[], "ssh host"), "plain word does not search the command");
+        assert!(profile_matches("command:ssh", "x", &[], "ssh host"));
+        assert!(!profile_matches("-dev", "dev box", &[], ""));
+        // No `|` alternation in profile search: a literal pipe must match literally, not split.
+        assert!(profile_matches("a|b", "a|b", &[], ""));
+        assert!(!profile_matches("a|b", "a", &[], ""));
     }
 
     #[test]

@@ -161,6 +161,27 @@ impl Store {
         self.hosts.get(host).map(|h| h.commands.iter().map(|c| (c.command.clone(), c.uses.len(), c.last_use())).collect()).unwrap_or_default()
     }
 
+    /// Every use of every command of the host, oldest first (`iTermShellHistoryController.m
+    /// :798-802`; Command History shows these for the session's host).
+    pub fn uses(&self, host: &str) -> Vec<(String, Use)> {
+        let Some(h) = self.hosts.get(host) else { return Vec::new() };
+        let mut all: Vec<(String, Use)> = Vec::new();
+        for c in &h.commands {
+            for u in &c.uses {
+                all.push((c.command.clone(), u.clone()));
+            }
+        }
+        all.sort_by(|a, b| a.1.time.total_cmp(&b.1.time));
+        all
+    }
+
+    /// Every directory path across every host, for Recent Directories' abbreviation tree, which
+    /// spans every host's directories (a correction to the research,
+    /// `iTermShellHistoryController.m:765-774`).
+    pub fn all_dir_paths(&self) -> Vec<String> {
+        self.hosts.values().flat_map(|h| h.dirs.iter().map(|d| d.path.clone())).collect()
+    }
+
     /// The host's directories in iTerm2's order.
     pub fn dirs(&self, host: &str) -> Vec<Dir> {
         let Some(h) = self.hosts.get(host) else { return Vec::new() };
@@ -332,6 +353,26 @@ mod tests {
         assert!(h.dirs.iter().any(|d| d.path == "/starred"), "starred directories stay");
         assert_eq!(h.dirs.iter().filter(|d| !d.starred).count(), 1000);
         assert!(!h.dirs.iter().any(|d| d.path == "/d0"), "the oldest unstarred go");
+    }
+
+    #[test]
+    fn uses_come_oldest_first_across_commands() {
+        let mut s = Store::default();
+        s.record_command("h", "ls", None, 5.0);
+        s.record_command("h", "git status", None, 1.0);
+        s.record_command("h", "ls", None, 3.0);
+        s.record_code("h", "git status", 1);
+        let uses = s.uses("h");
+        assert_eq!(uses.iter().map(|(c, u)| (c.as_str(), u.time)).collect::<Vec<_>>(), vec![("git status", 1.0), ("ls", 3.0), ("ls", 5.0)]);
+        assert_eq!(uses[0].1.code, Some(1));
+        assert!(s.uses("other").is_empty());
+
+        let mut d = Store::default();
+        d.record_dir("a@x", "/one", 1.0);
+        d.record_dir("b@y", "/two", 2.0);
+        let mut paths = d.all_dir_paths();
+        paths.sort();
+        assert_eq!(paths, vec!["/one".to_string(), "/two".to_string()]);
     }
 
     #[test]
