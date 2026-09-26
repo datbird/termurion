@@ -416,7 +416,7 @@ pub struct App {
     status_popover_closed: Option<Instant>,
     status_prompt: Option<crate::prompt_ui::PromptWindow>,
     /// The Notes tool's global note (one for every window) and its file.
-    global_note: toolbelt_more_ui::GlobalNote,
+    global_note: crate::notes::GlobalNote,
     /// Jobs' Notify on Termination: each watched process's pid, creation time and name.
     job_watches: Vec<(u32, u64, String)>,
     /// The shell each window's Jobs shows, the trees the watcher keeps for them, the tree
@@ -724,7 +724,7 @@ pub fn run() {
         status_popover: None,
         status_popover_closed: None,
         status_prompt: None,
-        global_note: toolbelt_more_ui::GlobalNote::new(toolbelt_more_ui::notes_path(&std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))),
+        global_note: crate::notes::GlobalNote::new(toolbelt_more_ui::notes_path(&std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir))),
         job_watches: Vec::new(),
         jobs_wanted: HashMap::new(),
         jobs_wanting: Default::default(),

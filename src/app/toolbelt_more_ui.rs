@@ -11,14 +11,16 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use super::toolbelt_tools_ui::{Shown, is_modifier, now_ms, unix};
 use super::toolbelt_ui::{BeltDrag, ToolState, wrap_words};
 use super::*;
 use crate::captured::{self, Captured, Cleared};
 use crate::mouse::Mods;
-use crate::notes::{self, Mode};
+use crate::notes::{self, Mode, Wrote};
+#[cfg(test)]
+use crate::notes::read_note;
 use crate::palette::Rgb;
 use crate::proctree::Proc;
 use crate::status_tool::{self, Pattern, StatusRow};
@@ -226,13 +228,6 @@ pub(super) fn notes_path(appdata: &Path) -> PathBuf {
     appdata.join("Tandem").join(notes::FILE_NAME)
 }
 
-/// The global note's text from its file's bytes: UTF-8, invalid bytes replaced, a leading
-/// byte order mark dropped.
-pub(super) fn read_note(bytes: &[u8]) -> String {
-    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    String::from_utf8_lossy(bytes).into_owned()
-}
-
 /// Jobs' signal popup is as wide as the widest signal name needs (`SignalPicker sizeToFit`).
 pub(super) const SIGNAL_POPUP_W: f32 = 70.0;
 /// Jobs refreshes once a second while it shows (`JT:379-396`), and the termination watches
@@ -246,6 +241,8 @@ const JOB_LEAF: char = ' ';
 /// Inspect's labels (`iTermJobInfoPopoverViewController.swift:75,81`).
 const INSPECT_PID: &str = "Process ID";
 const INSPECT_COMMAND: &str = "Command";
+/// The banner when every process a Send picked has ended by the time it is sent.
+const SIGNAL_NONE_LEFT: &str = "No signal was sent: the selected processes have already ended.";
 /// Notes: the mode control (a small segmented control) and the gap under it (`TN` `relayout`,
 /// `kMargin`), the text's padding inside the frame (the text container's line fragment
 /// padding), in points; a tab is drawn and measured as four spaces.
@@ -254,9 +251,6 @@ const NOTES_GAP: f32 = 4.0;
 const NOTE_PAD_X: f32 = 5.0;
 const NOTE_PAD_Y: f32 = 2.0;
 const TAB_AS: &str = "    ";
-/// The debounced large-note write retries while the file stays unreadable, at most this many
-/// times (`TN` `kMaxLargeNoteWriteRetries`).
-const NOTE_RETRIES: u32 = 60;
 /// Codecierge's button and the gap above it, points (`CC` `layoutSubviews`), its answer bar.
 const CC_BUTTON_H: f32 = 22.0;
 const CC_BUTTON_PAD: f32 = 24.0;
@@ -279,6 +273,25 @@ pub(super) struct JobsShown {
 impl JobsShown {
     fn proc(&self, pid: u32) -> Option<&Proc> {
         self.procs.iter().find(|p| p.pid == pid)
+    }
+}
+
+impl JobsShown {
+    /// Each row's process as the selection keys it: pid and creation time.
+    pub(super) fn keys(&self) -> Vec<(u32, u64)> {
+        self.rows.iter().map(|r| (r.pid, self.proc(r.pid).map_or(0, |p| p.created))).collect()
+    }
+}
+
+/// The Jobs selection follows its processes across a rebuild of the rows (a refreshed tree, a
+/// collapse; `JT:492-569`), each keyed by pid and creation time, so a row added or removed
+/// above it never moves it onto another process; another shell (a new key session) starts
+/// with nothing selected.
+pub(super) fn follow_jobs(sel: &mut tool_list::Selection, old: (Option<u32>, &[(u32, u64)]), new: (Option<u32>, &[(u32, u64)])) {
+    if old.0 != new.0 {
+        *sel = tool_list::Selection::default();
+    } else {
+        sel.remap(old.1, new.1);
     }
 }
 
@@ -308,8 +321,18 @@ fn cannot_notify_text(name: &str, pid: u32) -> (&'static str, String) {
 /// A key as the focused Notes editor reads it, with the Ctrl and Alt that `text_edit::takes`
 /// judges it by: Ctrl turns the arrows, Home, End, Backspace and Delete into their word and
 /// document forms (`ctrl_nav`) and letters into the edit chords (`ctrl_key`); AltGr typing
-/// (Ctrl and Alt together) is plain text. None: not an editor key (another Ctrl chord).
+/// (Ctrl and Alt together) is plain text; Shift+Insert, Ctrl+Insert and Shift+Delete are
+/// paste, copy and cut. None: not an editor key (another Ctrl chord, or a plain Insert, which
+/// the editor swallows).
 pub(super) fn edit_key(key: &WKey, text: Option<&str>, mods: Mods) -> Option<(EditKey, bool, bool)> {
+    // The Windows clipboard keys: Shift+Insert pastes, Ctrl+Insert copies, Shift+Delete cuts.
+    let only = |ctrl: bool, shift: bool| mods.ctrl == ctrl && mods.shift == shift && !mods.alt;
+    match key {
+        WKey::Named(NamedKey::Insert) if only(false, true) => return Some((EditKey::Paste(String::new()), false, false)),
+        WKey::Named(NamedKey::Insert) if only(true, false) => return Some((EditKey::Copy, true, false)),
+        WKey::Named(NamedKey::Delete) if only(false, true) => return Some((EditKey::Cut, false, false)),
+        _ => {}
+    }
     let named = match key {
         WKey::Named(NamedKey::Enter) => Some(EditKey::Enter),
         WKey::Named(NamedKey::Tab) => Some(EditKey::Tab),
@@ -390,209 +413,6 @@ fn alert(owner: Option<isize>, title: &str, text: &str) {
     unsafe { MessageBoxW(owner, wide(text).as_ptr(), wide(title).as_ptr(), MB_OK | MB_ICONINFORMATION) };
 }
 
-/// What a write of the global note did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Wrote {
-    Written,
-    /// Nothing new to write, or an empty note with no file (a deleted note stays deleted).
-    Nothing,
-    /// The file is there but could not be read: its content is unknown, so it is left alone
-    /// and the write retried later.
-    Deferred,
-    /// The file could be read again and holds the note now (the typing over the unread,
-    /// emptied view was backed up and dropped).
-    Adopted,
-}
-
-/// The file's size and modification time: a cheap fingerprint of the notes file, to tell
-/// whether someone else wrote it since this note read or wrote it (`notesFileStatToken`).
-fn stat_token(path: &Path) -> Option<(u64, Option<SystemTime>)> {
-    std::fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))
-}
-
-/// The global note (one for every window) and its file, kept with iTerm2's rules for never
-/// losing a note (`TN:161-280,500-548`): a file that exists but cannot be read is never
-/// overwritten by the empty view that failed read left, unless the file is gone by the time
-/// the user typed; typing over such a view is dropped (backed up) if the file becomes readable;
-/// a file changed by someone else is backed up before it is overwritten; an empty note never
-/// recreates a missing file; every write goes through a temporary file and a rename.
-#[derive(Default)]
-pub(super) struct GlobalNote {
-    path: PathBuf,
-    loaded: bool,
-    pub(super) text: String,
-    /// A read failed: the file may hold a note the view does not (`needsReloadBeforeSave_`).
-    needs_reload: bool,
-    /// The view is empty because that read failed (`viewEmptiedByFailedLoad_`).
-    emptied: bool,
-    /// The user typed since the failed read (`editedSinceFailedReload_`).
-    edited_since_failed: bool,
-    /// The note holds a change not yet on disk (`globalNoteDirty_`).
-    dirty: bool,
-    token: Option<(u64, Option<SystemTime>)>,
-    saver: notes::Saver,
-    retries: u32,
-    retry_at: Option<Instant>,
-}
-
-impl GlobalNote {
-    pub(super) fn new(path: PathBuf) -> GlobalNote {
-        GlobalNote { path, ..GlobalNote::default() }
-    }
-
-    /// Reads the file the first time the note is wanted. Some error when it exists but
-    /// could not be read (the note then shows empty and the file is protected).
-    pub(super) fn ensure_loaded(&mut self) -> Option<String> {
-        if self.loaded {
-            return None;
-        }
-        self.loaded = true;
-        self.edited_since_failed = false;
-        self.dirty = false;
-        match std::fs::read(&self.path) {
-            Ok(bytes) => {
-                self.text = read_note(&bytes);
-                self.needs_reload = false;
-                self.emptied = false;
-                self.token = stat_token(&self.path);
-                None
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.text.clear();
-                self.needs_reload = false;
-                self.emptied = false;
-                self.token = None;
-                None
-            }
-            Err(e) => {
-                self.text.clear();
-                self.needs_reload = true;
-                self.emptied = true;
-                self.token = None;
-                Some(format!("Could not read the notes in {}: {e}", self.path.display()))
-            }
-        }
-    }
-
-    /// The file exists (an error other than not found counts as there: never overwrite what
-    /// cannot be looked at).
-    fn file_exists(&self) -> bool {
-        match std::fs::metadata(&self.path) {
-            Ok(_) => true,
-            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
-        }
-    }
-
-    fn clear_stale(&mut self) {
-        self.needs_reload = false;
-        self.emptied = false;
-        self.edited_since_failed = false;
-    }
-
-    /// The user changed the note to `text` at `now`: written at once while short, else on the
-    /// 2 s trailing debounce (`notes::Saver`).
-    pub(super) fn edited(&mut self, text: String, now: Instant) -> Result<Wrote, String> {
-        self.text = text;
-        self.dirty = true;
-        if self.needs_reload {
-            self.edited_since_failed = true;
-        }
-        self.retries = 0;
-        self.retry_at = None;
-        if self.saver.changed(notes::length(&self.text), now) { self.write_retrying(now) } else { Ok(Wrote::Nothing) }
-    }
-
-    /// When the debounced write or a retry is due.
-    pub(super) fn due(&self) -> Option<Instant> {
-        [self.saver.due(), self.retry_at].into_iter().flatten().min()
-    }
-
-    /// Makes a write that is due at `now`.
-    pub(super) fn tick(&mut self, now: Instant) -> Result<Wrote, String> {
-        let retry = self.retry_at.is_some_and(|t| now >= t);
-        if !self.saver.take_due(now) && !retry {
-            return Ok(Wrote::Nothing);
-        }
-        self.retry_at = None;
-        self.write_retrying(now)
-    }
-
-    /// Writes a pending change now (Tandem is quitting).
-    pub(super) fn flush(&mut self) -> Result<Wrote, String> {
-        self.saver.flush();
-        self.retry_at = None;
-        if self.dirty { self.write() } else { Ok(Wrote::Nothing) }
-    }
-
-    /// `write`, retried after `notes::DEBOUNCE` (at most `NOTE_RETRIES` times) while the file
-    /// cannot be read.
-    fn write_retrying(&mut self, now: Instant) -> Result<Wrote, String> {
-        let r = self.write();
-        if r == Ok(Wrote::Deferred) && self.retries < NOTE_RETRIES {
-            self.retries += 1;
-            self.retry_at = Some(now + notes::DEBOUNCE);
-        }
-        r
-    }
-
-    /// A sibling of the notes file for a recovery copy.
-    fn beside(&self, name: &str) -> PathBuf {
-        self.path.with_file_name(name)
-    }
-
-    fn write(&mut self) -> Result<Wrote, String> {
-        let exists = self.file_exists();
-        if self.needs_reload {
-            if !exists {
-                if self.edited_since_failed {
-                    // The note went away and the user typed a new one: nothing to clobber.
-                    self.clear_stale();
-                } else {
-                    // Unedited and gone: the stale view must not recreate it.
-                    self.text.clear();
-                    self.clear_stale();
-                }
-            } else if self.edited_since_failed && !self.emptied {
-                self.clear_stale();
-            } else {
-                match std::fs::read(&self.path) {
-                    Ok(bytes) => {
-                        if self.edited_since_failed && !self.text.is_empty() {
-                            let _ = std::fs::write(self.beside("notes-discarded.txt"), self.text.as_bytes());
-                        }
-                        self.text = read_note(&bytes);
-                        self.clear_stale();
-                        self.dirty = false;
-                        self.token = stat_token(&self.path);
-                        return Ok(Wrote::Adopted);
-                    }
-                    Err(_) => return Ok(Wrote::Deferred),
-                }
-            }
-        }
-        if self.text.is_empty() && !exists {
-            return Ok(Wrote::Nothing);
-        }
-        if !self.dirty {
-            return Ok(Wrote::Nothing);
-        }
-        if exists && (self.token.is_none() || self.token != stat_token(&self.path)) {
-            // Someone else wrote it since this note read it: keep their copy.
-            let _ = std::fs::copy(&self.path, self.beside("notes-backup.txt"));
-        }
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("Could not save the notes: {e}"))?;
-        }
-        let tmp = self.beside("notes.txt.tmp");
-        if let Err(e) = std::fs::write(&tmp, self.text.as_bytes()).and_then(|()| std::fs::rename(&tmp, &self.path)) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("Could not save the notes: {e}"));
-        }
-        self.token = stat_token(&self.path);
-        self.dirty = false;
-        Ok(Wrote::Written)
-    }
-}
 
 impl App {
     /// The priority patterns as stored (`status_tool::load_patterns`).
@@ -1190,8 +1010,9 @@ impl App {
 
     /// The selected rows' pids, each with its creation time, and whether one has children.
     fn jobs_selected(&mut self) -> (Option<u32>, Vec<(u32, u64)>, bool) {
-        let rows = self.belt.tools.get(&ToolId::Jobs).map(|t| t.selection.rows.clone()).unwrap_or_default();
+        // Rebuilt first: the selection follows the rows it keys (`follow_jobs`).
         let shown = self.tool_shown(ToolId::Jobs);
+        let rows = self.belt.tools.get(&ToolId::Jobs).map(|t| t.selection.rows.clone()).unwrap_or_default();
         let Shown::Jobs(j) = &*shown else { return (None, Vec::new(), false) };
         let picked: Vec<&JobRow> = rows.iter().filter_map(|&i| j.rows.get(i)).collect();
         let pids = picked.iter().filter_map(|r| j.proc(r.pid).map(|p| (p.pid, p.created))).collect();
@@ -1233,14 +1054,24 @@ impl App {
         }
     }
 
-    /// Sends a request's signal to each of its processes that is still in the shell's tree
-    /// as the tree showed it (never a process outside the pane's tree, never a reused pid).
-    /// A console event goes once: it reaches the whole console.
+    /// Sends a request's signal to each of its processes that still runs (the same pid and
+    /// creation time) under the shell: never a process outside the pane's tree, never a reused
+    /// pid. The watcher's tree is the ancestry; when it was dropped (Jobs hidden while the
+    /// question was up), the processes under the shell are looked up now. A console event goes
+    /// once: it reaches the whole console. When none is left, a banner says so.
     fn jobs_signal(&mut self, req: SignalRequest) {
-        let tree = self.jobs.tree(req.shell);
-        let mut consoled = false;
+        self.banners.clear("jobs-signal");
+        let mut tree = self.jobs.tree(req.shell);
+        if tree.is_empty() {
+            match crate::jobwatch::descendants_now(req.shell) {
+                Ok(t) => tree = t,
+                Err(e) => self.banners.set("jobs-signal", format!("Could not read the running programs: {e}")),
+            }
+        }
+        let (mut sent, mut failed, mut consoled) = (false, false, false);
         for (pid, created) in req.pids {
-            if !tree.iter().any(|p| p.pid == pid && p.created == created) {
+            let under_shell = pid == req.shell || tree.iter().any(|p| p.pid == pid && p.created == created);
+            if !under_shell || !crate::jobwatch::process_alive(pid, created) {
                 continue;
             }
             let console = matches!(req.way, SignalWay::CtrlC | SignalWay::CtrlBreak);
@@ -1248,9 +1079,18 @@ impl App {
                 continue;
             }
             match crate::jobwatch::signal_process(pid, Some(created), req.way) {
-                Ok(()) => consoled |= console,
-                Err(e) => self.banners.set("jobs-signal", format!("Could not send the signal: {e}")),
+                Ok(()) => {
+                    sent = true;
+                    consoled |= console;
+                }
+                Err(e) => {
+                    failed = true;
+                    self.banners.set("jobs-signal", format!("Could not send the signal: {e}"));
+                }
             }
+        }
+        if !sent && !failed {
+            self.banners.set("jobs-signal", SIGNAL_NONE_LEFT);
         }
         self.tools_changed();
         self.redraw();
@@ -1262,8 +1102,8 @@ impl App {
         if self.jobs_popover.take().is_some() || self.jobs_popover_closed.is_some_and(|t| t.elapsed() < REOPEN_GUARD) {
             return;
         }
-        let row = self.belt.tools.get(&ToolId::Jobs).and_then(|t| t.selection.rows.first().copied());
         let shown = self.tool_shown(ToolId::Jobs);
+        let row = self.belt.tools.get(&ToolId::Jobs).and_then(|t| t.selection.rows.first().copied());
         let Shown::Jobs(j) = &*shown else { return };
         let Some(p) = row.and_then(|r| j.rows.get(r)).and_then(|r| j.proc(r.pid)) else { return };
         let command = p.cmdline.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| p.name.clone());
@@ -1317,13 +1157,10 @@ impl App {
         true
     }
 
-    /// A row's disclosure: a parent's subtree hides or shows; the selection follows its rows.
+    /// A row's disclosure: a parent's subtree hides or shows; the selection follows its rows
+    /// (the rebuild remaps it, `follow_jobs`).
     pub(super) fn toggle_job(&mut self, pid: u32, open: Option<bool>) {
-        let keys = |shown: &Shown| match shown {
-            Shown::Jobs(j) => j.rows.iter().map(|r| r.pid).collect::<Vec<u32>>(),
-            _ => Vec::new(),
-        };
-        let before = keys(&self.tool_shown(ToolId::Jobs));
+        self.tool_shown(ToolId::Jobs);
         let st = self.tool_state(ToolId::Jobs);
         let closed = st.collapsed.contains(&pid);
         if open.unwrap_or(closed) {
@@ -1331,29 +1168,28 @@ impl App {
         } else {
             st.collapsed.insert(pid);
         }
-        let after = keys(&self.tool_shown(ToolId::Jobs));
-        self.tool_state(ToolId::Jobs).selection.remap(&before, &after);
+        self.tool_shown(ToolId::Jobs);
         self.redraw();
     }
 
-    /// The pid of Jobs' row `row`, and whether it has children.
-    pub(super) fn job_at(&mut self, row: usize) -> Option<(u32, bool)> {
+    /// The process of Jobs' row `row` (pid and creation time), and whether it has children.
+    pub(super) fn job_at(&mut self, row: usize) -> Option<(u32, u64, bool)> {
         let shown = self.tool_shown(ToolId::Jobs);
         let Shown::Jobs(j) = &*shown else { return None };
-        j.rows.get(row).map(|r| (r.pid, r.has_children))
+        j.rows.get(row).map(|r| (r.pid, j.proc(r.pid).map_or(0, |p| p.created), r.has_children))
     }
 
     /// A row's menu (`iTermJobTreeViewController.xib:133-154`): Copy Command, Copy Process ID,
     /// and Notify on Termination, checked while watched.
     pub(super) fn job_row_menu(&mut self, row: usize) {
-        let Some((pid, _)) = self.job_at(row) else { return };
-        let watched = self.job_watches.iter().any(|(p, ..)| *p == pid);
+        let Some((pid, created, _)) = self.job_at(row) else { return };
+        let watched = self.job_watches.iter().any(|(p, c, _)| *p == pid && *c == created);
         let menu = muda::Menu::new();
         let ctx = super::toolbelt_tools_ui::CTX_ID;
         let items: [&dyn muda::IsMenuItem; 3] = [
-            &muda::MenuItem::with_id(format!("{ctx}job-copy:{pid}"), "Copy Command", true, None),
-            &muda::MenuItem::with_id(format!("{ctx}job-pid:{pid}"), "Copy Process ID", true, None),
-            &muda::CheckMenuItem::with_id(format!("{ctx}job-notify:{pid}"), "Notify on Termination", true, watched, None),
+            &muda::MenuItem::with_id(format!("{ctx}job-copy:{pid}:{created}"), "Copy Command", true, None),
+            &muda::MenuItem::with_id(format!("{ctx}job-pid:{pid}:{created}"), "Copy Process ID", true, None),
+            &muda::CheckMenuItem::with_id(format!("{ctx}job-notify:{pid}:{created}"), "Notify on Termination", true, watched, None),
         ];
         if let Err(e) = menu.append_items(&items) {
             self.banners.set("menu", format!("Toolbelt menu: {e}"));
@@ -1376,10 +1212,10 @@ impl App {
     }
 
     /// Copy Command and Copy Process ID: the process's command line (else its name), or its id.
-    pub(super) fn copy_job(&mut self, pid: u32, command: bool) {
+    pub(super) fn copy_job(&mut self, pid: u32, created: u64, command: bool) {
         let shown = self.tool_shown(ToolId::Jobs);
         let Shown::Jobs(j) = &*shown else { return };
-        let Some(p) = j.proc(pid) else { return };
+        let Some(p) = j.proc(pid).filter(|p| p.created == created) else { return };
         let text = if command { p.cmdline.clone().filter(|c| !c.is_empty()).unwrap_or_else(|| p.name.clone()) } else { pid.to_string() };
         if let Some(cb) = self.clipboard.as_mut() {
             if let Err(e) = cb.set_text(text) {
@@ -1388,15 +1224,15 @@ impl App {
         }
     }
 
-    /// Notify on Termination: watches the process (or stops); one already gone says so
-    /// ("Cannot Notify on Termination").
-    pub(super) fn toggle_job_watch(&mut self, pid: u32) {
-        if let Some(i) = self.job_watches.iter().position(|(p, ..)| *p == pid) {
+    /// Notify on Termination: watches the process (its pid and creation time), or stops; one
+    /// already gone says so ("Cannot Notify on Termination").
+    pub(super) fn toggle_job_watch(&mut self, pid: u32, created: u64) {
+        if let Some(i) = self.job_watches.iter().position(|(p, c, _)| *p == pid && *c == created) {
             self.job_watches.remove(i);
         } else {
             let shown = self.tool_shown(ToolId::Jobs);
             let Shown::Jobs(j) = &*shown else { return };
-            let found = j.proc(pid).map(|p| (p.created, crate::proctree::strip_exe(&p.name).to_string()));
+            let found = j.proc(pid).filter(|p| p.created == created).map(|p| (p.created, crate::proctree::strip_exe(&p.name).to_string()));
             match found {
                 Some((created, name)) if crate::jobwatch::process_alive(pid, created) => self.job_watches.push((pid, created, name)),
                 other => {
@@ -1865,70 +1701,36 @@ mod tests {
         assert_eq!(taken(&named(NamedKey::ArrowLeft), None, m(false, true, false, false)), None);
         assert_eq!(taken(&ch("c"), Some("c"), m(false, false, false, true)), None);
         assert_eq!(taken(&named(NamedKey::F5), None, none), None);
+        // The Windows clipboard keys.
+        assert_eq!(taken(&named(NamedKey::Insert), None, m(false, false, true, false)), Some(EditKey::Paste(String::new())));
+        assert_eq!(taken(&named(NamedKey::Insert), None, m(true, false, false, false)), Some(EditKey::Copy));
+        assert_eq!(taken(&named(NamedKey::Delete), None, m(false, false, true, false)), Some(EditKey::Cut));
+        // A plain Insert is no editor key (the editor swallows it, as any plain key).
+        assert_eq!(edit_key(&named(NamedKey::Insert), None, none), None);
     }
 
-    /// Losing a note is the worst failure: a file that could not be read is never written
-    /// over by the empty view that read left, the typing over it is backed up when the file
-    /// reads again, an empty note never creates a file, a file changed elsewhere is backed up,
-    /// and writes leave no temporary file.
+    /// Review finding: the selection stays with the process the user picked when the tree
+    /// refreshes (`JT:492-569`).
     #[test]
-    fn global_note_never_loses_the_file() {
-        let dir = std::env::temp_dir().join(format!("tandem-notes-{}-{}", std::process::id(), now_ms()));
-        let path = dir.join("Tandem").join(notes::FILE_NAME);
-        let now = Instant::now();
-
-        // No file: empty, and an empty note writes nothing.
-        let mut g = GlobalNote::new(path.clone());
-        assert_eq!(g.ensure_loaded(), None);
-        assert_eq!(g.edited(String::new(), now), Ok(Wrote::Nothing));
-        assert!(!path.exists());
-        // A first note is written, through a temporary file that does not stay.
-        assert_eq!(g.edited("hello".into(), now), Ok(Wrote::Written));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
-        assert!(!path.with_file_name("notes.txt.tmp").exists());
-
-        // Someone else rewrote it: their copy is kept aside before it is overwritten.
-        std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(&path, "theirs, longer").unwrap();
-        assert_eq!(g.edited("mine".into(), now), Ok(Wrote::Written));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "mine");
-        assert_eq!(std::fs::read_to_string(path.with_file_name("notes-backup.txt")).unwrap(), "theirs, longer");
-
-        // A file that exists but cannot be read (a directory stands in for a locked file).
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        let mut g = GlobalNote::new(path.clone());
-        assert!(g.ensure_loaded().is_some(), "the failed read is reported");
-        assert_eq!(g.text, "");
-        // Typing over the emptied view never writes over the unread file; it retries.
-        assert_eq!(g.edited("typed".into(), now), Ok(Wrote::Deferred));
-        assert!(path.is_dir());
-        assert!(g.due().is_some(), "a retry is armed");
-        // The file reads again: it wins, and the typing is kept aside.
-        std::fs::remove_dir(&path).unwrap();
-        std::fs::write(&path, "the real note").unwrap();
-        assert_eq!(g.tick(now + notes::DEBOUNCE), Ok(Wrote::Adopted));
-        assert_eq!(g.text, "the real note");
-        assert_eq!(std::fs::read_to_string(path.with_file_name("notes-discarded.txt")).unwrap(), "typed");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the real note");
-
-        // Unreadable, then gone before the user typed: the typing is a new note.
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        let mut g = GlobalNote::new(path.clone());
-        assert!(g.ensure_loaded().is_some());
-        std::fs::remove_dir(&path).unwrap();
-        assert_eq!(g.edited("new".into(), now), Ok(Wrote::Written));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
-
-        // A large note waits for the debounce, and a flush writes it.
-        let big = "x".repeat(notes::LARGE);
-        assert_eq!(g.edited(big.clone(), now), Ok(Wrote::Nothing));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
-        assert_eq!(g.tick(now), Ok(Wrote::Nothing));
-        assert_eq!(g.flush(), Ok(Wrote::Written));
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), big);
-        let _ = std::fs::remove_dir_all(&dir);
+    fn jobs_selection_follows_its_processes() {
+        let mut sel = tool_list::Selection::default();
+        sel.click(1, false, false, true, 0, 500);
+        let before = [(10, 1), (11, 2), (12, 3)];
+        // A new process shows above the selected one: the selection moves down with it.
+        let after = [(10, 1), (99, 9), (11, 2), (12, 3)];
+        follow_jobs(&mut sel, (Some(10), &before), (Some(10), &after));
+        assert_eq!(sel.rows, vec![2]);
+        // One above it ends: it moves up again.
+        follow_jobs(&mut sel, (Some(10), &after), (Some(10), &before));
+        assert_eq!(sel.rows, vec![1]);
+        // The selected pid comes back as another process (a reused pid): nothing selected.
+        let reused = [(10, 1), (11, 7), (12, 3)];
+        follow_jobs(&mut sel, (Some(10), &before), (Some(10), &reused));
+        assert!(sel.rows.is_empty());
+        // Another session's shell: nothing selected.
+        sel.click(0, false, false, true, 1000, 500);
+        follow_jobs(&mut sel, (Some(10), &before), (Some(20), &before));
+        assert!(sel.rows.is_empty());
     }
 
     #[test]

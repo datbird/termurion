@@ -406,6 +406,16 @@ impl App {
             ToolId::Notes => Shown::Notes,
             ToolId::Codecierge => Shown::Codecierge(self.codecierge_now()),
         });
+        // Jobs' selection follows its processes, not its row numbers.
+        if let Shown::Jobs(new) = &*shown {
+            let old = self.belt.shown.get(&ToolId::Jobs).and_then(|(_, s)| match &**s {
+                Shown::Jobs(j) => Some((j.shell, j.keys())),
+                _ => None,
+            });
+            if let Some((shell, keys)) = old {
+                more::follow_jobs(&mut self.tool_state(ToolId::Jobs).selection, (shell, &keys), (new.shell, &new.keys()));
+            }
+        }
         self.belt.shown.insert(tool, (key, shown.clone()));
         shown
     }
@@ -552,7 +562,7 @@ impl App {
             };
             let none = st.selection.rows.is_empty();
             let count = selected_count(&shown, &st.selection.rows);
-            let mut disabled: Vec<ToolButton> = [ToolButton::Open, ToolButton::Send, ToolButton::AdvancedPaste, ToolButton::Apply, ToolButton::Remove, ToolButton::Edit].into_iter().filter(|b| !button_enabled(*b, count)).collect();
+            let mut disabled: Vec<ToolButton> = [ToolButton::Open, ToolButton::Send, ToolButton::AdvancedPaste, ToolButton::Apply, ToolButton::Remove, ToolButton::Edit, ToolButton::Inspect].into_iter().filter(|b| !button_enabled(*b, count)).collect();
             let mut lit = Vec::new();
             match &*shown {
                 // Clear with nothing showing (`CO:268`).
@@ -577,7 +587,8 @@ impl App {
             };
             let popup = match &*shown {
                 Shown::Profiles(_) => Some((tt::PROFILE_OPENS[st.popup.min(tt::PROFILE_OPENS.len() - 1)].1, !none)),
-                Shown::Jobs(_) => Some((tt::SIGNALS[st.signal.min(tt::SIGNALS.len() - 1)].name(), true)),
+                // Enabled with a selection (`JT:573-578`).
+                Shown::Jobs(_) => Some((tt::SIGNALS[st.signal.min(tt::SIGNALS.len() - 1)].name(), !none)),
                 _ => None,
             };
             let d = scene::ListDraw {
@@ -907,8 +918,11 @@ impl App {
 
     /// Profiles' popup, from its rectangle: the four ways to open, the last pick checked.
     fn tool_popup_menu(&mut self, tool: ToolId) {
-        // Jobs' signal popup (always enabled, `JT:52-60`).
+        // Jobs' signal popup, enabled with a selection (`JT:573-578`).
         if tool == ToolId::Jobs {
+            if self.belt.tools.get(&tool).is_none_or(|t| t.selection.rows.is_empty()) {
+                return;
+            }
             let Some(area) = self.tool_area(tool) else { return };
             let (l, ..) = self.tool_layout(tool, area);
             if let Some(r) = l.popup {
@@ -1007,14 +1021,12 @@ impl App {
                     }
                 }
             }
-            "job-copy" | "job-pid" => {
-                if let Ok(pid) = arg.parse::<u32>() {
-                    self.copy_job(pid, what == "job-copy");
-                }
-            }
-            "job-notify" => {
-                if let Ok(pid) = arg.parse::<u32>() {
-                    self.toggle_job_watch(pid);
+            "job-copy" | "job-pid" | "job-notify" => {
+                let process = arg.split_once(':').and_then(|(p, c)| Some((p.parse::<u32>().ok()?, c.parse::<u64>().ok()?)));
+                match (what, process) {
+                    ("job-notify", Some((pid, created))) => self.toggle_job_watch(pid, created),
+                    (_, Some((pid, created))) => self.copy_job(pid, created, what == "job-copy"),
+                    _ => {}
                 }
             }
             "snooze" => {
@@ -1143,7 +1155,7 @@ impl App {
             ListKey::Text(t) if t == " " && tool == ToolId::Jobs => self.jobs_inspect(event_loop),
             ListKey::Right | ListKey::Left if tool == ToolId::Jobs => {
                 let row = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied());
-                if let Some((pid, true)) = row.and_then(|r| self.job_at(r)) {
+                if let Some((pid, _, true)) = row.and_then(|r| self.job_at(r)) {
                     self.toggle_job(pid, Some(key == ListKey::Right));
                 }
             }
@@ -1504,12 +1516,12 @@ fn selected_count(shown: &Shown, rows: &[usize]) -> usize {
     }
 }
 
-/// Whether a button acts with `count` rows selected: Open, Send, Apply and Remove need one or
-/// more, Open in Advanced Paste and Edit exactly one (`ToolProfiles.m:212-215`, `TS:641-647`,
-/// `iTermToolActions.m:309-314`, `ToolNamedMarks.swift:98-101`).
+/// Whether a button acts with `count` rows selected: Open, Send, Apply, Remove and Inspect need
+/// one or more, Open in Advanced Paste and Edit exactly one (`ToolProfiles.m:212-215`,
+/// `TS:641-647`, `iTermToolActions.m:309-314`, `ToolNamedMarks.swift:98-101`, `JT:573-578`).
 fn button_enabled(b: ToolButton, count: usize) -> bool {
     match b {
-        ToolButton::Open | ToolButton::Send | ToolButton::Apply | ToolButton::Remove => count > 0,
+        ToolButton::Open | ToolButton::Send | ToolButton::Apply | ToolButton::Remove | ToolButton::Inspect => count > 0,
         ToolButton::AdvancedPaste | ToolButton::Edit => count == 1,
         _ => true,
     }
@@ -1569,6 +1581,7 @@ mod tests {
         assert!(button_enabled(ToolButton::Remove, 3) && !button_enabled(ToolButton::Apply, 0));
         assert!(button_enabled(ToolButton::Edit, 1) && !button_enabled(ToolButton::Edit, 2) && !button_enabled(ToolButton::AdvancedPaste, 0));
         assert!(button_enabled(ToolButton::Add, 0) && button_enabled(ToolButton::Help, 0));
+        assert!(!button_enabled(ToolButton::Inspect, 0) && button_enabled(ToolButton::Inspect, 1));
 
         let row = |depth: usize, kind: K| SnippetRow { depth, kind, text: String::new(), tags: Vec::new() };
         // A, folder f (open) with B in it, then C at the root.
