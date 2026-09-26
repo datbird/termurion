@@ -200,6 +200,7 @@ pub mod composer_suggest;
 pub mod composer_worker;
 pub mod notes;
 pub mod open_quickly;
+pub mod pwm;
 
 #[cfg(windows)]
 pub mod winclip;
