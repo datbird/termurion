@@ -176,6 +176,7 @@ pub mod doubletap;
 pub mod hotkey_motion;
 pub mod winpipe;
 pub mod toolbelt;
+pub mod toolbelt_layout;
 
 #[cfg(windows)]
 pub mod winclip;
