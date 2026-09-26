@@ -280,6 +280,8 @@ pub struct Renderer {
     toolbelt_pt: f32,
     /// Widths of prose words already measured: (text, scale bits) to pixels.
     widths: std::collections::HashMap<(String, u32), f32>,
+    /// Widths of runs already measured in the toolbelt font: (text, pixel size bits) to pixels.
+    toolbelt_widths: std::collections::HashMap<(String, u32), f32>,
     family: String,
     alt_family: Option<String>,
     /// Segoe Fluent Icons (Windows 11), else Segoe MDL2 Assets (Windows 10, same code points).
@@ -320,6 +322,7 @@ impl Renderer {
             toolbelt_family: "Consolas".into(),
             toolbelt_pt: 11.0,
             widths: std::collections::HashMap::new(),
+            toolbelt_widths: std::collections::HashMap::new(),
             h_spacing: 1.0,
             v_spacing: 1.0,
             font_px,
@@ -413,6 +416,7 @@ impl Renderer {
     pub fn set_toolbelt_family(&mut self, name: &str) {
         let resolved = self.resolve_family(name);
         self.toolbelt_family = if self.has_family(&resolved) { resolved } else { "Consolas".into() };
+        self.toolbelt_widths.clear();
     }
 
     /// The toolbelt font's size in points; 0 is the system default, 11 points
@@ -426,15 +430,25 @@ impl Renderer {
         self.toolbelt_pt * 4.0 / 3.0 * scale
     }
 
-    /// A run's width in the toolbelt font at its size, at `scale`.
+    /// A run's width in the toolbelt font at its size, at `scale` (remembered: the tools measure
+    /// their rows every frame).
     pub fn toolbelt_width(&mut self, text: &str, scale: f32) -> f32 {
         let px = self.toolbelt_px(scale).max(1.0);
+        let key = (text.to_string(), px.to_bits());
+        if let Some(w) = self.toolbelt_widths.get(&key) {
+            return *w;
+        }
         let mut b = Buffer::new(&mut self.font_system, Metrics::new(px, px * 1.2));
         b.set_size(None, None);
         b.set_wrap(Wrap::None);
         b.set_text(text, &Attrs::new().family(Family::Name(&self.toolbelt_family)), Shaping::Advanced, None);
         b.shape_until_scroll(&mut self.font_system, false);
-        b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)
+        let w = b.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
+        if self.toolbelt_widths.len() > 200_000 {
+            self.toolbelt_widths.clear();
+        }
+        self.toolbelt_widths.insert(key, w);
+        w
     }
 
     /// A badge line's width at `px` pixels, in the bold badge font.

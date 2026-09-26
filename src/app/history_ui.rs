@@ -7,7 +7,7 @@ use crate::advanced_paste_ui::{AdvEvent, AdvancedPasteWindow};
 use crate::paste_history::{self, History};
 use crate::list_popup_ui::{ListPopup, PopupEvent};
 
-fn history_path() -> std::path::PathBuf {
+pub(super) fn history_path() -> std::path::PathBuf {
     std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("pbhistory.json")
 }
 
@@ -24,7 +24,7 @@ fn ellipsized(text: &str, max: usize) -> String {
 impl App {
     /// The history, read from disk the first time (iTerm2 reads it whether or not saving
     /// is on).
-    fn history(&mut self) -> &mut History {
+    pub(super) fn history(&mut self) -> &mut History {
         let max = self.globals.int("PasteHistoryMaxOptions").max(0) as usize;
         let h = self.paste_history.get_or_insert_with(|| match std::fs::read_to_string(history_path()) {
             Ok(t) => History::from_json(&t, max),

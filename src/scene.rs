@@ -1269,6 +1269,131 @@ pub fn toolbelt(frame: &mut Frame, d: &BeltDraw, cell: (f32, f32), scale: f32) {
     }
 }
 
+/// One row of a toolbelt tool's list, as the app measured it: `text` and `second` (a smaller
+/// second line, Profiles' tags) are already tail truncated to the row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListRow {
+    pub text: String,
+    pub second: Option<String>,
+    pub bold: bool,
+    /// A glyph (icon font) before the text, in its color.
+    pub icon: Option<(char, Rgb)>,
+    /// Outline depth (Snippets' folders).
+    pub depth: usize,
+}
+
+/// What a toolbelt tool's list widget shows. The app measures the text (the scene cannot).
+pub struct ListDraw<'a> {
+    pub layout: &'a crate::tool_list::ListLayout,
+    pub rows: &'a [ListRow],
+    pub selected: &'a [usize],
+    pub dark: bool,
+    /// The field's text as shown (its end, when it is wider than the field) and that text's
+    /// width, for the caret.
+    pub field: Option<(&'a str, f32)>,
+    /// The part of the tool that has the keyboard.
+    pub focus: Option<crate::tool_list::Focus>,
+    /// Buttons drawn dimmed (they do nothing now).
+    pub disabled: &'a [crate::tool_list::ToolButton],
+    /// The popup's label and whether it is enabled.
+    pub popup: Option<(&'a str, bool)>,
+    /// The second line's text size against the rows'.
+    pub second_scale: f32,
+}
+
+/// A selected row (17, 108, 214, the brief's selection color).
+pub const LIST_SELECTED: Rgb = rgb(17, 108, 214);
+const FIELD_BG_DARK: Rgb = rgb(0x1e, 0x1e, 0x1e);
+const FIELD_BG_LIGHT: Rgb = rgb(0xf3, 0xf3, 0xf3);
+const LIST_DISABLED_DARK: Rgb = rgb(0x5a, 0x5a, 0x5a);
+const LIST_DISABLED_LIGHT: Rgb = rgb(0xb4, 0xb4, 0xb4);
+/// A row's cell inset (`NSTableView+iTerm.m:65-69`) and an outline level's indent, in points.
+pub const LIST_INSET: f32 = 2.0;
+pub const LIST_INDENT: f32 = 16.0;
+/// The popup's disclosure glyph (Segoe Fluent Icons ChevronDown).
+const POPUP_GLYPH: char = '\u{E70D}';
+
+fn list_span(text: String, color: Rgb, bold: bool, font: u8) -> Span {
+    // font: 0 the toolbelt font, 1 the prose font, 2 the icon font.
+    Span { text, color, bold, italic: false, alt_font: false, icon: font == 2, prose: font == 1, badge: false, toolbelt: font == 0 }
+}
+
+/// A 1 pixel frame inside `r`.
+fn frame_lines(quads: &mut Vec<Quad>, r: Rect, color: [f32; 4]) {
+    quads.push(Quad { rect: Rect { h: 1.0, ..r }, color });
+    quads.push(Quad { rect: Rect { y: r.y + r.h - 1.0, h: 1.0, ..r }, color });
+    quads.push(Quad { rect: Rect { w: 1.0, ..r }, color });
+    quads.push(Quad { rect: Rect { x: r.x + r.w - 1.0, w: 1.0, ..r }, color });
+}
+
+/// A toolbelt tool's list widget (`tool_list::layout`): the search field with its caret, the
+/// visible rows with the selection, the top and bottom buttons, and the popup. `text_scale` is
+/// the toolbelt font's size against the terminal font.
+pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: f32, scale: f32) {
+    use crate::tool_list::Focus;
+    let l = d.layout;
+    let (text, dim, disabled, field_bg) = if d.dark { (TAB_TEXT, TAB_TEXT_DIM, LIST_DISABLED_DARK, FIELD_BG_DARK) } else { (BELT_TEXT_LIGHT, BELT_ICON_LIGHT, LIST_DISABLED_LIGHT, FIELD_BG_LIGHT) };
+    let line_h = cell.1 * text_scale;
+    let glyph_w = line_h / 1.2;
+    let inset = LIST_INSET * scale;
+
+    if let (Some(r), Some((shown, width))) = (l.field, d.field) {
+        frame.quads.push(Quad { rect: r, color: rgba(field_bg, 1.0) });
+        let focused = d.focus == Some(Focus::Field);
+        frame_lines(&mut frame.quads, r, if focused { rgba(LIST_SELECTED, 1.0) } else { rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 }) });
+        let x = r.x + 4.0 * scale;
+        let y = r.y + (r.h - line_h) / 2.0;
+        let clip = Rect { x: r.x + 1.0, w: (r.w - 2.0).max(0.0), ..r };
+        if !shown.is_empty() {
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(shown.to_string(), text, false, 0)], clip, scale: text_scale });
+        }
+        if focused {
+            let cx = (x + width).min(r.x + r.w - 2.0);
+            frame.quads.push(Quad { rect: Rect { x: cx, y, w: scale.max(1.0), h: line_h }, color: rgba(text, 1.0) });
+        }
+    }
+
+    let list = l.list;
+    for (i, (row, r)) in d.rows.iter().zip(&l.rows).enumerate() {
+        if r.y >= list.y + list.h || r.y + r.h <= list.y {
+            continue;
+        }
+        let top = r.y.max(list.y);
+        let clip = Rect { x: r.x, y: top, w: r.w, h: (r.y + r.h).min(list.y + list.h) - top };
+        let selected = d.selected.contains(&i);
+        if selected {
+            frame.quads.push(Quad { rect: clip, color: rgba(LIST_SELECTED, 1.0) });
+        }
+        let (fg, fg2) = if selected { (rgb(0xff, 0xff, 0xff), rgb(0xe6, 0xe6, 0xe6)) } else { (text, dim) };
+        let mut x = r.x + inset + row.depth as f32 * LIST_INDENT * scale;
+        let y = r.y + inset;
+        if let Some((c, color)) = row.icon {
+            frame.rows.push(TextRow { x, y, spans: vec![list_span(c.to_string(), if selected { fg } else { color }, false, 2)], clip, scale: text_scale });
+            x += glyph_w + 4.0 * scale;
+        }
+        frame.rows.push(TextRow { x, y, spans: vec![list_span(row.text.clone(), fg, row.bold, 0)], clip, scale: text_scale });
+        if let Some(second) = &row.second {
+            frame.rows.push(TextRow { x, y: y + line_h, spans: vec![list_span(second.clone(), fg2, false, 1)], clip, scale: text_scale * d.second_scale });
+        }
+    }
+
+    for (b, r) in l.top.iter().chain(&l.buttons) {
+        let color = if d.disabled.contains(b) { disabled } else { dim };
+        frame.rows.push(TextRow { x: r.x + (r.w - glyph_w) / 2.0, y: r.y + (r.h - line_h) / 2.0, spans: vec![list_span(b.glyph().to_string(), color, false, 2)], clip: *r, scale: text_scale });
+    }
+
+    if let (Some(r), Some((label, on))) = (l.popup, d.popup) {
+        frame.quads.push(Quad { rect: r, color: rgba(field_bg, 1.0) });
+        frame_lines(&mut frame.quads, r, rgba(DIVIDER, if d.dark { 1.0 } else { 0.4 }));
+        let color = if on { text } else { disabled };
+        let y = r.y + (r.h - line_h) / 2.0;
+        let glyph_x = r.x + r.w - glyph_w - 6.0 * scale;
+        let clip = Rect { w: (glyph_x - r.x).max(0.0), ..r };
+        frame.rows.push(TextRow { x: r.x + 6.0 * scale, y, spans: vec![list_span(label.to_string(), color, false, 1)], clip, scale: text_scale });
+        frame.rows.push(TextRow { x: glyph_x, y, spans: vec![list_span(POPUP_GLYPH.to_string(), color, false, 2)], clip: r, scale: text_scale });
+    }
+}
+
 /// Make Screenshot's sign at the pane's top right while the pane shows the frozen copy: a
 /// small camera (a body, a lens, and a viewfinder).
 pub fn camera_sign(frame: &mut Frame, pane: Rect, cell: (f32, f32)) {
@@ -1400,6 +1525,36 @@ mod tests {
         toolbelt(&mut f, &d, (8.0, 16.0), 1.0);
         assert_eq!(f.quads[0].color, rgba(rgb(0xff, 0xff, 0xff), 1.0));
         assert_eq!(f.rows.last().unwrap().spans[0].text, "No Tools enabled.");
+    }
+
+    /// A tool's list: the field with its caret while it has the keyboard, the selection in
+    /// 17, 108, 214 behind white text, a tag line smaller, dimmed buttons, the popup's label.
+    #[test]
+    fn tool_list_draws_field_rows_and_buttons() {
+        use super::*;
+        use crate::tool_list::{Focus, ListSpec, ToolButton, layout};
+        let area = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let spec = ListSpec { field: true, right: vec![ToolButton::Open], popup_w: 10_000.0, ..ListSpec::default() };
+        let l = layout(area, &spec, &[20.0, 34.0], 0.0, 1.0);
+        let rows = vec![
+            ListRow { text: "\u{2605} Default".into(), second: None, bold: false, icon: None, depth: 0 },
+            ListRow { text: "Work".into(), second: Some("ssh, prod".into()), bold: false, icon: None, depth: 0 },
+        ];
+        let mut f = Frame::default();
+        let d = ListDraw { layout: &l, rows: &rows, selected: &[1], dark: true, field: Some(("ab", 16.0)), focus: Some(Focus::Field), disabled: &[ToolButton::Open], popup: Some(("New Tab", false)), second_scale: 0.8 };
+        tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
+        let texts: Vec<&str> = f.rows.iter().map(|r| r.spans[0].text.as_str()).collect();
+        assert_eq!(texts, vec!["ab", "\u{2605} Default", "Work", "ssh, prod", "\u{E768}", "New Tab", "\u{E70D}"]);
+        // The caret sits after the field's text.
+        assert!(f.quads.iter().any(|q| q.rect.x == 4.0 + 16.0 && q.rect.w == 1.0));
+        // The selected row's background and white text; the tag line is smaller.
+        assert!(f.quads.iter().any(|q| q.color == rgba(LIST_SELECTED, 1.0) && q.rect.y == l.rows[1].y));
+        assert_eq!(f.rows[2].spans[0].color, rgb(0xff, 0xff, 0xff));
+        assert_eq!(f.rows[3].scale, 0.8);
+        assert!(f.rows[3].spans[0].prose && f.rows[2].spans[0].toolbelt);
+        // Open is dimmed, and so is the popup without a selection.
+        assert_eq!(f.rows[4].spans[0].color, LIST_DISABLED_DARK);
+        assert_eq!(f.rows[5].spans[0].color, LIST_DISABLED_DARK);
     }
 
     /// A button face: the corner rows are inset, the middle is full width, and the box

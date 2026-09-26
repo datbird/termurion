@@ -169,8 +169,6 @@ pub fn initial_hiding_resizes(window_right: f32, work_right: f32) -> bool {
     (work_right - window_right).abs() >= 10.0
 }
 
-/// Whether the toolbelt opens itself on a tab's arrival: the tab count reached 1 from 0, the
-/// profile's "Open Toolbelt" key is on, and it is not already shown (`PT:8200-8207`).
 /// A new window that showed its toolbelt as it opened (Open Toolbelt): the deferred
 /// `finishToolbeltInitialization` overwrites the flag the show set, measured on the frame
 /// after it grew by `grow_by` (`PT:782-787`).
@@ -178,6 +176,8 @@ pub fn new_window_hiding_resizes(window_right: f32, grow_by: f32, work_right: f3
     initial_hiding_resizes(window_right + grow_by, work_right)
 }
 
+/// Whether the toolbelt opens itself on a tab's arrival: the tab count reached 1 from 0, the
+/// profile's "Open Toolbelt" key is on, and it is not already shown (`PT:8200-8207`).
 pub fn opens_on_first_tab(tabs_before: usize, tabs_after: usize, open_toolbelt: bool, shown: bool) -> bool {
     tabs_before == 0 && tabs_after == 1 && open_toolbelt && !shown
 }

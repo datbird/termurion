@@ -273,26 +273,33 @@ pub fn layout(area: Rect, spec: &ListSpec, row_heights: &[f32], scroll: f32, sca
     let gap = GAP * scale;
     let btn_w = BTN_W * scale;
 
+    // The top buttons sit at the right of the field's row, left to right, a gap before each
+    // (`ToolCommandHistoryView.m:128-155`: the field, Clear, then Help at the right edge);
+    // without a field they get a row of their own.
     let mut y = area.y;
     let mut top = Vec::new();
+    let top_w = spec.top.len() as f32 * (btn_w + gap);
     if !spec.top.is_empty() {
-        let mut x = area.x;
+        let mut x = if spec.field { area.x + area.w - top_w + gap } else { area.x };
         for &b in &spec.top {
             top.push((b, Rect { x, y, w: btn_w, h: field_h }));
-            x += btn_w;
+            x += btn_w + gap;
         }
-        y += field_h + gap;
+        if !spec.field {
+            y += field_h + gap;
+        }
     }
 
     let field = if spec.field {
-        let r = Rect { x: area.x, y, w: area.w, h: field_h };
+        let w = if spec.top.is_empty() { area.w } else { (area.w - top_w).max(0.0) };
+        let r = Rect { x: area.x, y, w, h: field_h };
         y += field_h + gap;
         Some(r)
     } else {
         None
     };
 
-    let has_strip = !spec.left.is_empty() || !spec.right.is_empty();
+    let has_strip = !spec.left.is_empty() || !spec.right.is_empty() || spec.popup_w > 0.0;
     let strip_h_used = if has_strip { strip_h } else { 0.0 };
     let list = Rect { x: area.x, y, w: area.w, h: (area.y + area.h - strip_h_used - y).max(0.0) };
 
@@ -305,6 +312,7 @@ pub fn layout(area: Rect, spec: &ListSpec, row_heights: &[f32], scroll: f32, sca
     let content_h: f32 = row_heights.iter().sum();
 
     let mut buttons = Vec::new();
+    let mut popup = None;
     if has_strip {
         let strip_y = area.y + area.h - strip_h;
         let mut lx = area.x;
@@ -317,17 +325,14 @@ pub fn layout(area: Rect, spec: &ListSpec, row_heights: &[f32], scroll: f32, sca
             rx -= btn_w;
             buttons.push((b, Rect { x: rx, y: strip_y, w: btn_w, h: strip_h }));
         }
+        // A tool's popup fills the strip between its left and right groups, up to `popup_w`
+        // (`ToolProfiles.m:120-131`: the popup is the width less the Open button, which sits
+        // at its right).
+        if spec.popup_w > 0.0 {
+            let w = (spec.popup_w * scale).min((rx - lx).max(0.0));
+            popup = Some(Rect { x: lx, y: strip_y, w, h: strip_h });
+        }
     }
-
-    // The popup's own geometry is not specified by the source for this task (it belongs to
-    // whichever tool needs one, e.g. Profiles' Open); placed right-aligned at the list's top,
-    // one strip tall, as a placeholder a later task can override. See the report.
-    let popup = if spec.popup_w > 0.0 {
-        let w = spec.popup_w * scale;
-        Some(Rect { x: (area.x + area.w - w).max(area.x), y: list.y, w, h: strip_h.min(list.h) })
-    } else {
-        None
-    };
 
     ListLayout { field, top, list, rows, buttons, popup, content_h }
 }
@@ -383,22 +388,26 @@ pub fn clamp_scroll(scroll: f32, l: &ListLayout) -> f32 {
 
 /// Tail truncation with an ellipsis (`NSStringITerm.m`'s trimming, `NSTableView+iTerm.m`'s
 /// cell truncation): `text` unchanged when it already fits `max_w`; otherwise the longest
-/// prefix that, with a trailing `\u{2026}`, still fits, measured by `width`.
+/// prefix that, with a trailing `\u{2026}`, still fits, measured by `width` (a binary search:
+/// a longer prefix is never narrower).
 pub fn truncate_tail(text: &str, max_w: f32, width: &dyn Fn(&str) -> f32) -> String {
     if width(text) <= max_w {
         return text.to_string();
     }
     const ELLIPSIS: char = '\u{2026}';
     let chars: Vec<char> = text.chars().collect();
-    let mut n = chars.len();
-    while n > 0 {
-        n -= 1;
-        let candidate: String = chars[..n].iter().collect::<String>() + &ELLIPSIS.to_string();
-        if width(&candidate) <= max_w {
-            return candidate;
+    let candidate = |n: usize| chars[..n].iter().collect::<String>() + &ELLIPSIS.to_string();
+    // The longest n in [0, len) whose candidate fits; 0 (the ellipsis alone) when none does.
+    let (mut lo, mut hi) = (0, chars.len());
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if width(&candidate(mid)) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid;
         }
     }
-    ELLIPSIS.to_string()
+    candidate(lo)
 }
 
 /// Whether a key while a tool has `focus` is taken by it (Review Focus 4): nothing is taken
@@ -541,10 +550,20 @@ mod tests {
         assert_eq!(hit(&l, 100.0, 200.0), ListHit::Empty);
         assert_eq!(hit(&l, 100.0, 299.0), ListHit::Nothing);
 
-        let spec_popup = ListSpec { field: true, top: vec![], left: vec![], right: vec![], popup_w: 100.0 };
+        let spec_popup = ListSpec { field: true, top: vec![], left: vec![], right: vec![ToolButton::Open], popup_w: 10_000.0 };
         let lp = layout(area, &spec_popup, &row_heights, 0.0, 1.0);
         let popup = lp.popup.expect("popup present when popup_w > 0");
         assert_eq!(hit(&lp, popup.x + 1.0, popup.y + 1.0), ListHit::Popup);
+        // In the strip, up to the Open button at its right.
+        assert_eq!(popup, Rect { x: 0.0, y: 274.0, w: 220.0, h: 26.0 });
+
+        // Top buttons share the field's row, at its right: field, Clear, Help.
+        let spec_top = ListSpec { field: true, top: vec![ToolButton::Trash, ToolButton::Help], left: vec![], right: vec![], popup_w: 0.0 };
+        let lt = layout(area, &spec_top, &row_heights, 0.0, 1.0);
+        assert_eq!(lt.field, Some(Rect { x: 0.0, y: 0.0, w: 190.0, h: 22.0 }));
+        assert_eq!(lt.top[0].1, Rect { x: 194.0, y: 0.0, w: 22.0, h: 22.0 });
+        assert_eq!(lt.top[1].1, Rect { x: 220.0, y: 0.0, w: 22.0, h: 22.0 });
+        assert_eq!(lt.list.y, 26.0);
 
         // Scale doubles the layout's own point constants; row_heights are already pixels, so
         // they pass straight through untouched (they come from measured text at the render

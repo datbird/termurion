@@ -94,7 +94,7 @@ impl App {
         self.save_shell_history();
     }
 
-    fn save_shell_history(&mut self) {
+    pub(super) fn save_shell_history(&mut self) {
         if !self.globals.bool("SavePasteHistory") {
             return;
         }

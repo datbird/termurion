@@ -102,6 +102,7 @@ mod statusbar_content;
 mod metrics_ui;
 mod git_ui;
 mod toolbelt_ui;
+mod toolbelt_tools_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -1407,6 +1408,10 @@ impl App {
     }
 
     fn key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) {
+        // A tool with the keyboard takes its keys, releases too, before any reach the session.
+        if self.toolbelt_key(ev, event_loop) {
+            return;
+        }
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
             return;
         }

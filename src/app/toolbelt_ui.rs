@@ -3,7 +3,10 @@
 //! parts are `toolbelt` (the registry, the width and growth rules, the arrangement keys) and
 //! `toolbelt_layout` (the split view and the panel layout).
 
+use std::collections::BTreeSet;
+
 use super::statusbar_content::MenuAt;
+use super::toolbelt_tools_ui::ToolUndo;
 use super::*;
 use crate::tool_list;
 use crate::toolbelt::{self, Arranged, ToolId};
@@ -45,14 +48,24 @@ fn wrap_words(text: &str, max_w: f32, width: &dyn Fn(&str) -> f32) -> Vec<String
     lines
 }
 
-/// One tool's state in one window: its search field, its selection and its scroll.
-// Read and written by the tools themselves (`toolbelt_tools_ui`, the next 9j task).
-#[allow(dead_code)]
+/// One tool's state in one window: its search field, its selection, its scroll, its open
+/// folders, its popup's pick and its undo stack (`toolbelt_tools_ui`).
 #[derive(Clone, Debug, Default)]
 pub(super) struct ToolState {
     pub(super) field: tool_list::Field,
     pub(super) selection: tool_list::Selection,
     pub(super) scroll: f32,
+    /// Snippets' open folders, by tag path (the next 9j task).
+    #[allow(dead_code)]
+    pub(super) expanded: BTreeSet<String>,
+    /// Profiles' bottom popup: the index into `toolbelt_tools::PROFILE_OPENS` last picked.
+    pub(super) popup: usize,
+    /// Snippets' and Actions' undo (the next 9j task).
+    #[allow(dead_code)]
+    pub(super) undo: Vec<ToolUndo>,
+    /// The row count last laid out: a list that changed scrolls to its end unless it has the
+    /// keyboard.
+    pub(super) seen: usize,
 }
 
 /// One window's toolbelt. The tool list, the saved proportions and the default width are
@@ -69,7 +82,6 @@ pub(super) struct Belt {
     pub(super) split: Split,
     /// The tool, and its part, that has the keyboard.
     pub(super) focus: Option<(ToolId, tool_list::Focus)>,
-    #[allow(dead_code)]
     pub(super) tools: HashMap<ToolId, ToolState>,
     /// The arrangement's "Toolbelt" dictionary, kept as read and written back.
     pub(super) states: Option<toml::Table>,
@@ -140,7 +152,7 @@ impl App {
         self.belt.split = tbl::resize(&split, before, total);
     }
 
-    fn belt_layout(&self) -> Option<tbl::BeltLayout> {
+    pub(super) fn belt_layout(&self) -> Option<tbl::BeltLayout> {
         self.toolbelt_panel().map(|panel| tbl::layout(panel, &self.belt.split, self.scale()))
     }
 
@@ -339,9 +351,11 @@ impl App {
 
     /// A toolbelt menu pick. False when `id` is not one.
     pub(super) fn toolbelt_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
-        let _ = event_loop;
         if !id.starts_with(MENU_PREFIX) {
             return false;
+        }
+        if self.tool_menu_picked(id, event_loop) {
+            return true;
         }
         if let Some(tool) = tool_from_menu_id(id) {
             self.toggle_toolbelt_tool(tool);
@@ -374,17 +388,26 @@ impl App {
         let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
         let d = scene::BeltDraw { layout: &l, titles: &refs, dark, title_widths: &widths, empty: &empty, text_scale };
         scene::toolbelt(frame, &d, cell, scale);
+        self.draw_tools(frame, cell);
     }
 
     /// A press. True when it was in the toolbelt (other buttons than the left do nothing
-    /// there: the terminal is not under it). A press anywhere else gives the keyboard back.
+    /// there but in a tool's list: the terminal is not under it). A press anywhere else gives
+    /// the keyboard back; a press in it takes it from the Clippings panels.
     pub(super) fn toolbelt_press(&mut self, button: MouseButton, x: f32, y: f32, event_loop: &ActiveEventLoop) -> bool {
-        let _ = event_loop;
         let Some(l) = self.belt_layout().filter(|l| l.panel.contains(x, y)) else {
             self.belt.focus = None;
             return false;
         };
+        for c in self.clips.values_mut() {
+            c.keys = false;
+        }
         if button != MouseButton::Left {
+            if let BeltHit::Content(i) = tbl::hit(&l, x, y) {
+                if let (Some(&tool), Some(area)) = (self.belt.split.tools.get(i), l.wrappers.get(i).and_then(|w| w.content)) {
+                    self.tool_press(tool, area, button, x, y, event_loop);
+                }
+            }
             return true;
         }
         let scale = self.scale();
@@ -411,7 +434,12 @@ impl App {
                 }
             }
             BeltHit::Divider(i) => self.drag = Drag::Belt(BeltDrag::Divider(i)),
-            BeltHit::Title(_) | BeltHit::Content(_) | BeltHit::Nothing => {}
+            BeltHit::Content(i) => {
+                if let (Some(&tool), Some(area)) = (self.belt.split.tools.get(i), l.wrappers.get(i).and_then(|w| w.content)) {
+                    self.tool_press(tool, area, button, x, y, event_loop);
+                }
+            }
+            BeltHit::Title(_) | BeltHit::Nothing => {}
         }
         self.redraw();
         true
@@ -452,9 +480,12 @@ impl App {
 
     /// The wheel over the toolbelt stays there (its lists scroll; the terminal does not).
     pub(super) fn toolbelt_wheel(&mut self, dy: f32) -> bool {
-        let _ = dy;
         let (x, y) = self.cursor;
-        self.toolbelt_panel().is_some_and(|p| p.contains(x, y))
+        if !self.toolbelt_panel().is_some_and(|p| p.contains(x, y)) {
+            return false;
+        }
+        self.tool_wheel(dy);
+        true
     }
 
     /// The arrangement keys for this window (`PT:4579-4589`).
