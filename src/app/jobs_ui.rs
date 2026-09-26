@@ -17,6 +17,9 @@ impl App {
             let now = self.jobs.job(pid);
             let Some(p) = self.panes.get_mut(&id) else { continue };
             let s = p.own_mut();
+            if now.root.is_some() && s.shell.job_root != now.root {
+                s.shell.job_root = now.root.clone();
+            }
             if s.shell.job != now.job || s.shell.job_ancestors != now.ancestors {
                 s.set_job(now.job, now.ancestors);
             }

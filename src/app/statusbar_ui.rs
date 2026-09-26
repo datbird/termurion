@@ -650,7 +650,7 @@ impl App {
         let saved = self.status_layout_value(&target);
         let profiles: Vec<(String, String)> = self.store.profiles.iter().map(|p| (p.guid(), p.name())).collect();
         let Some(g) = self.gpu.as_ref() else { return };
-        match crate::statusbar_setup_ui::StatusBarSetupWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, layout, dark_background, profiles, select, configure) {
+        match crate::statusbar_setup_ui::StatusBarSetupWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, layout, dark_background, profiles, select, configure, super::statusbar_content::clock_for_knobs) {
             Ok(win) => self.status_setup = Some(StatusSetup { win, target, saved }),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -687,10 +687,13 @@ impl App {
         true
     }
 
-    /// Some session whose profile shows a status bar has a Clock in its layout.
+    /// A bar on screen shows a Clock: a bar of the tab in front of the current window or of
+    /// any other window on screen.
     pub(super) fn any_clock_shown(&self) -> bool {
         let clock = Kind::Clock.class();
-        self.panes.keys().any(|&id| self.shows_status_bar(id) && self.status_layout(id).components.iter().any(|c| c.class == clock))
+        let has_clock = |tab: &Tab| self.status_bars(tab).iter().any(|b| self.status_layout(b.pane).components.iter().any(|c| c.class == clock));
+        let current = self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() != Some(true) && g.window.is_visible() != Some(false));
+        (current && self.tabs.get(self.active).is_some_and(has_clock)) || self.parked_front_tabs().into_iter().any(has_clock)
     }
 
     /// Disable Status Bar (`PS:23070-23080`): the session's own copy when it has one, else

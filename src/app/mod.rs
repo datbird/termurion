@@ -971,14 +971,18 @@ impl App {
         }
     }
 
-    fn new_tab(&mut self, guid: Option<&str>) {
-        // "Always open in a new window, never in a tab": a window opens instead (a new
-        // window's first tab is the one exception).
+    /// "Always open in a new window, never in a tab": a new tab of `guid` opens as a window
+    /// instead (a new window's first tab is the one exception).
+    fn new_tab_opens_window(&self, guid: Option<&str>) -> bool {
         let prevent = guid.and_then(|g| self.store.get(g)).unwrap_or_else(|| self.store.default_profile()).bool("Prevent Opening in a Tab");
+        !self.tabs.is_empty() && crate::winmodel::open_target(crate::winmodel::OpenRequest::NewTab, prevent, false) == crate::winmodel::Target::Window
+    }
+
+    fn new_tab(&mut self, guid: Option<&str>) {
         if !self.tabs.is_empty() && !self.layout_allowed(crate::winmodel::LayoutOp::AddTab) {
             return;
         }
-        if !self.tabs.is_empty() && crate::winmodel::open_target(crate::winmodel::OpenRequest::NewTab, prevent, false) == crate::winmodel::Target::Window {
+        if self.new_tab_opens_window(guid) {
             self.pending_windows.push(windows_ui::NewWindow::Profile(guid.map(str::to_string)));
             return self.redraw();
         }

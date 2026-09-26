@@ -178,6 +178,8 @@ pub fn snapshot(roots: &[u32], cache: &mut Cache) -> Result<Vec<Proc>, String> {
 pub struct ShellJob {
     pub job: Option<Job>,
     pub ancestors: Vec<String>,
+    /// The shell's own name (`proctree::root_name`); None once it is gone.
+    pub root: Option<String>,
 }
 
 #[derive(Default)]
@@ -217,7 +219,7 @@ impl JobWatch {
                         Ok(procs) => {
                             s.error = None;
                             for r in roots {
-                                let now = ShellJob { job: proctree::display_job(&procs, r), ancestors: proctree::ancestors(&procs, r) };
+                                let now = ShellJob { job: proctree::display_job(&procs, r), ancestors: proctree::ancestors(&procs, r), root: proctree::root_name(&procs, r) };
                                 if s.roots.contains(&r) && s.jobs.get(&r) != Some(&now) {
                                     s.jobs.insert(r, now);
                                     changed = true;

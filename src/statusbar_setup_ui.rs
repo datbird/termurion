@@ -74,6 +74,9 @@ pub struct StatusBarSetupWindow {
     advanced: Option<AdvancedSheet>,
     /// The Configure Component sheet opens on the first frame (the bar's "Configure").
     configure_first: bool,
+    /// A Clock's text now for its knobs (the app's formatter: the Clock's format through
+    /// ICU when localized, `format_tr35`), for its exemplar.
+    clock: fn(&toml::Table) -> String,
 }
 
 /// A `{r, g, b, a}` table as an egui color.
@@ -176,12 +179,12 @@ impl StatusBarSetupWindow {
     /// Opens the window on `layout`. With `select`, that component is selected; with
     /// `configure` too, its Configure Component sheet opens (the bar's "Configure").
     #[allow(clippy::too_many_arguments)]
-    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, layout: Layout, dark_background: bool, profiles: Vec<(String, String)>, select: Option<usize>, configure: bool) -> Result<StatusBarSetupWindow, String> {
+    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, title: &str, layout: Layout, dark_background: bool, profiles: Vec<(String, String)>, select: Option<usize>, configure: bool, clock: fn(&toml::Table) -> String) -> Result<StatusBarSetupWindow, String> {
         // iTerm2's content view is 918 x 526 (`SXIB:28`).
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 918.0, 526.0)?;
         add_symbol_font(host.ctx());
         let selected = select.filter(|&i| i < layout.components.len());
-        Ok(StatusBarSetupWindow { host, layout, selected, dark_background, profiles, drag: None, sheet: None, advanced: None, configure_first: configure && selected.is_some() })
+        Ok(StatusBarSetupWindow { host, layout, selected, dark_background, profiles, drag: None, sheet: None, advanced: None, configure_first: configure && selected.is_some(), clock })
     }
 
     pub fn id(&self) -> WindowId {
@@ -242,12 +245,12 @@ impl StatusBarSetupWindow {
         let layout_bg = adv.background_color.as_ref().and_then(color32);
         let default_bg = layout_bg.unwrap_or(rgb32(crate::scene::STATUS_BAR_BG));
         // The exemplar's own live data (`statusbar::exemplar`): the OS lookups a Clock,
-        // User Name or Current Directory component's exemplar needs. `clock_text` is the
-        // Clock's already-formatted text; Task 2 builds the formatter, so until then the
-        // palette and Active Components show no sample time for it.
+        // User Name or Current Directory component's exemplar needs; a Clock's sample is
+        // the time now in its own format.
         let user = std::env::var("USERNAME").unwrap_or_default();
         let home = std::env::var("USERPROFILE").unwrap_or_default();
-        let clock_text = String::new();
+        let clock = self.clock;
+        let clock_text = |class: &str, knobs: &toml::Table| if class == crate::statusbar_components::CLOCK_CLASS { clock(knobs) } else { String::new() };
         let sheet_open = self.sheet.is_some() || self.advanced.is_some();
         let mut open_sheet_for: Option<usize> = None;
         let mut open_advanced = false;
@@ -283,7 +286,7 @@ impl StatusBarSetupWindow {
                                 // The palette shows the exemplar with the layout's colors and
                                 // the short description below it (`SVC:381-397`); a generic
                                 // instance's default knobs, since nothing is placed yet.
-                                let exemplar = statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text, &user, &home, algorithm);
+                                let exemplar = statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text(class, &statusbar::default_knobs(class)), &user, &home, algorithm);
                                 let r = element(ui, Id::new(("palette", class)), &exemplar, Some(info.short), default_bg, default_fg, false);
                                 let r = r.on_hover_text(info.detail);
                                 if r.drag_started() {
@@ -304,7 +307,7 @@ impl StatusBarSetupWindow {
                                 // keeps its place under its class name.
                                 let unknown = short_class(&c.class);
                                 let exemplar = match info {
-                                    Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text, &user, &home, algorithm),
+                                    Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text(&c.class, &c.knobs), &user, &home, algorithm),
                                     None => unknown.clone(),
                                 };
                                 let bg = c.background_color().as_ref().and_then(color32).or(layout_bg).unwrap_or(default_bg);
@@ -370,12 +373,12 @@ impl StatusBarSetupWindow {
             // anywhere else is removed (`DCV:278-289`).
             if let (Some(d), Some(pos)) = (drag.clone(), pointer) {
                 let label = match &d {
-                    Drag::Palette(class) => statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text, &user, &home, algorithm),
+                    Drag::Palette(class) => statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text(class, &statusbar::default_knobs(class)), &user, &home, algorithm),
                     Drag::Active(i) => layout
                         .components
                         .get(*i)
                         .map(|c| match statusbar::info_for(&c.class, algorithm) {
-                            Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text, &user, &home, algorithm),
+                            Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text(&c.class, &c.knobs), &user, &home, algorithm),
                             None => short_class(&c.class),
                         })
                         .unwrap_or_default(),

@@ -118,6 +118,12 @@ pub fn ancestors(procs: &[Proc], root: u32) -> Vec<String> {
     out
 }
 
+/// The shell's own name as the ancestors spell theirs (lowercased, no ".exe"); None when
+/// the shell is gone. iTerm2's Job Name chain ends with it (`JOB:109-130`).
+pub fn root_name(procs: &[Proc], root: u32) -> Option<String> {
+    procs.iter().find(|p| p.pid == root).map(|p| strip_exe(&p.name).to_lowercase())
+}
+
 /// Every process under the shell (not the shell), for the close prompt.
 pub fn descendants(procs: &[Proc], root: u32) -> Vec<&Proc> {
     walk(procs, root).into_iter().skip(1).map(|(p, _)| p).collect()
@@ -169,6 +175,8 @@ mod tests {
         let procs = vec![p(10, 1, "pwsh.exe", 100), p(11, 10, "CMD.exe", 110), p(12, 11, "Vim.exe", 120)];
         assert_eq!(ancestors(&procs, 10), vec!["vim", "cmd"]);
         assert!(ancestors(&procs[..1], 10).is_empty());
+        assert_eq!(root_name(&procs, 10).as_deref(), Some("pwsh"));
+        assert_eq!(root_name(&procs, 99), None);
         let names: Vec<&str> = descendants(&procs, 10).iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, vec!["CMD.exe", "Vim.exe"]);
     }

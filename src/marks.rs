@@ -95,6 +95,9 @@ pub struct Shell {
     /// The foreground job and its ancestors (lowercased, deepest first), from the window.
     pub job: Option<crate::proctree::Job>,
     pub job_ancestors: Vec<String>,
+    /// The shell's own name, kept after the shell exits: set once the window has seen the
+    /// session's process tree (Job Name shows U+2026 from then on, never nothing).
+    pub job_root: Option<String>,
     pub history: Vec<CommandRecord>,
 }
 

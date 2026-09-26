@@ -62,17 +62,20 @@ fn knob_str(c: &Component, kind: Kind, key: &str) -> Option<String> {
     c.knobs.get(key).or(sbc::default_knobs(kind).get(key)).and_then(toml::Value::as_str).map(str::to_string)
 }
 
-/// A knob's checkbox value, else `default`.
-fn knob_bool(c: &Component, key: &str, default: bool) -> bool {
-    c.knobs.get(key).and_then(toml::Value::as_bool).unwrap_or(default)
-}
-
-/// `JOB:109-149`: the deepest job first, then its parents. Tandem's ancestors are the job
-/// and its parents below the shell, deepest first, so the job's own name comes first and
-/// the ancestors after their first entry follow. Empty before the session has a job.
-pub(super) fn job_chain(job: Option<&str>, ancestors: &[String]) -> Vec<String> {
-    let Some(name) = job else { return Vec::new() };
-    std::iter::once(name.to_string()).chain(ancestors.iter().skip(1).cloned()).collect()
+/// `JOB:109-149`: the deepest job first, then its parents up to and including the
+/// session's root process, unless that is `login`. Tandem's ancestors are the job and its
+/// parents below the shell, deepest first (empty when the job is the shell itself), so the
+/// job's own name comes first, the ancestors after their first entry follow, and `root`
+/// (the shell's name) ends the chain. Empty before the window has seen the session's
+/// processes; one empty name once it has and no job is left (the shell exited), which
+/// `job_variants` shows as U+2026 (`JOB:92-99`).
+pub(super) fn job_chain(job: Option<&str>, ancestors: &[String], root: Option<&str>) -> Vec<String> {
+    let Some(name) = job else { return if root.is_some() { vec![String::new()] } else { Vec::new() } };
+    let mut chain: Vec<String> = std::iter::once(name.to_string()).chain(ancestors.iter().skip(1).cloned()).collect();
+    if let Some(root) = root.filter(|r| !ancestors.is_empty() && *r != "login") {
+        chain.push(root.to_string());
+    }
+    chain
 }
 
 /// The last component of a path, either separator (`lastPathComponent`).
@@ -173,6 +176,14 @@ pub(super) fn clock_text(format: &str, localize: bool) -> String {
     sbt::format_tr35(&pattern, &local_civil())
 }
 
+/// A Clock's text for its knob values (defaults for the missing ones): the setup
+/// window's sample.
+#[cfg(windows)]
+pub(super) fn clock_for_knobs(knobs: &toml::Table) -> String {
+    let format = knobs.get(FORMAT_KEY).and_then(toml::Value::as_str).unwrap_or(DEFAULT_CLOCK_FORMAT);
+    clock_text(format, knobs.get(LOCALIZE_KEY).and_then(toml::Value::as_bool).unwrap_or(true))
+}
+
 /// The next whole second of the wall clock (the Clock's cadence is 1 s).
 pub(super) fn next_whole_second(now: Instant) -> Instant {
     let into = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_millis());
@@ -188,10 +199,7 @@ impl App {
         let reported_host = shell.and_then(|s| s.host.clone());
         let mut content = match kind {
             // `CLK`: one variant; the SSH knobs wait for milestone 14.
-            Kind::Clock => {
-                let format = knob_str(c, kind, FORMAT_KEY).unwrap_or_else(|| DEFAULT_CLOCK_FORMAT.to_string());
-                Content::text(vec![clock_text(&format, knob_bool(c, LOCALIZE_KEY, true))])
-            }
+            Kind::Clock => Content::text(vec![clock_for_knobs(&c.knobs)]),
             // `VAR:169-202`: the replacement alone on this computer, else the host's
             // variants. The local host name stands in before shell integration reports one.
             Kind::HostName => {
@@ -209,7 +217,7 @@ impl App {
             }
             // `JOB:85-149`: [""] before the first job; U+2026 when every name is empty.
             Kind::JobName => {
-                let chain = shell.map_or_else(Vec::new, |s| job_chain(s.job.as_ref().map(|j| j.name.as_str()), &s.job_ancestors));
+                let chain = shell.map_or_else(Vec::new, |s| job_chain(s.job.as_ref().map(|j| j.name.as_str()), &s.job_ancestors, s.job_root.as_deref()));
                 Content::text(sbt::job_variants(&chain))
             }
             // `VAR:252-345`: home as `~`, compressed from the first component; empty when
@@ -316,10 +324,11 @@ impl App {
                 }
                 None => self.banners.set("action", format!("{path} is not a folder on this computer.")),
             },
-            // The default profile, started in the path.
+            // The default profile, started in the path. A tab that must open as a window
+            // ("Prevent Opening in a Tab") opens it now, so the folder goes with it.
             "dir-new-window" | "dir-new-tab" => {
                 self.start_dir_override = Some(crate::arrangement::Folder::Forced(path.to_string()));
-                if what == "dir-new-window" {
+                if what == "dir-new-window" || self.new_tab_opens_window(None) {
                     self.new_window(event_loop, None);
                 } else {
                     self.new_tab(None);
@@ -341,8 +350,8 @@ impl App {
         }
     }
 
-    /// The Clock's cadence (`CLK`, 1 s): while any session's bar shows a Clock, every
-    /// window redraws on each whole second. When to come back.
+    /// The Clock's cadence (`CLK`, 1 s): while a bar on screen shows a Clock, every window
+    /// redraws on each whole second. When to come back.
     pub(super) fn tick_status_bars(&mut self) -> Option<Instant> {
         let now = Instant::now();
         if let Some(due) = self.status_clock_due {
@@ -368,18 +377,26 @@ impl App {
 mod tests {
     use super::*;
 
-    /// `JOB:109-149` on Tandem's ancestors: the job's own name, then its parents below the
-    /// shell; nothing before the first job. `JOB:92-99`: a job with an empty name still
-    /// shows U+2026.
+    /// `JOB:109-149` on the chain the job watcher really produces (`proctree`): the job's
+    /// own name, its parents, then the shell; the shell alone at the prompt; nothing before
+    /// the first snapshot; U+2026 once the shell is gone or a name is empty (`JOB:92-99`).
     #[test]
     fn job_chain_follows_iterm2() {
-        let anc = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(job_chain(None, &[]), Vec::<String>::new());
-        assert_eq!(sbt::job_variants(&job_chain(None, &[])), vec![String::new()]);
-        assert_eq!(job_chain(Some("pwsh"), &[]), vec!["pwsh"]);
-        assert_eq!(job_chain(Some("Vim"), &anc(&["vim", "bash"])), vec!["Vim", "bash"]);
-        assert_eq!(sbt::job_variants(&job_chain(Some("vim"), &anc(&["vim", "bash"]))), vec!["vim", "vim \u{25C2} bash"]);
-        assert_eq!(sbt::job_variants(&job_chain(Some(""), &[])), vec!["\u{2026}"]);
+        use crate::proctree::{self, Proc};
+        let p = |pid: u32, ppid: u32, name: &str, created: u64| Proc { pid, ppid, name: name.into(), created, gui: false, cmdline: None };
+        let chain_of = |procs: &[Proc]| {
+            let job = proctree::display_job(procs, 10);
+            job_chain(job.as_ref().map(|j| j.name.as_str()), &proctree::ancestors(procs, 10), proctree::root_name(procs, 10).as_deref())
+        };
+        let vim_in_cmd = vec![p(10, 1, "pwsh.exe", 100), p(11, 10, "cmd.exe", 110), p(12, 11, "Vim.exe", 120)];
+        assert_eq!(chain_of(&vim_in_cmd), vec!["Vim", "cmd", "pwsh"]);
+        assert_eq!(sbt::job_variants(&chain_of(&vim_in_cmd[..2])), vec!["cmd", "cmd \u{25C2} pwsh"]);
+        assert_eq!(chain_of(&vim_in_cmd[..1]), vec!["pwsh"], "at the prompt the shell is the job");
+        assert_eq!(sbt::job_variants(&job_chain(None, &[], None)), vec![String::new()], "before the first value");
+        assert_eq!(sbt::job_variants(&job_chain(None, &[], Some("pwsh"))), vec!["\u{2026}"], "the shell exited");
+        assert_eq!(sbt::job_variants(&job_chain(Some(""), &[], Some("pwsh"))), vec!["\u{2026}"]);
+        let login = vec!["vim".to_string()];
+        assert_eq!(job_chain(Some("vim"), &login, Some("login")), vec!["vim"], "login is left out");
     }
 
     #[test]
@@ -410,6 +427,8 @@ mod tests {
         assert!(pattern.contains('M') && pattern.contains("mm"), "{pattern}");
         assert!(clock_text(DEFAULT_CLOCK_FORMAT, true).chars().any(|c| c.is_ascii_digit()));
         assert_eq!(clock_text("'x'", false), "x");
+        let knobs: toml::Table = [(FORMAT_KEY.to_string(), toml::Value::String("'x'".into())), (LOCALIZE_KEY.to_string(), toml::Value::Boolean(false))].into_iter().collect();
+        assert_eq!(clock_for_knobs(&knobs), "x", "the setup sample follows the knobs");
     }
 
     #[test]
