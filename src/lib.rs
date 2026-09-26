@@ -203,6 +203,8 @@ pub mod open_quickly;
 pub mod pwm;
 pub mod echo_probe;
 pub mod pwm_source;
+pub mod pwm_run;
+pub mod pwm_cli;
 
 #[cfg(windows)]
 pub mod winclip;
