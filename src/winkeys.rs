@@ -145,6 +145,33 @@ pub fn remove_window(hwnd: isize) {
         w.retain(|h| *h != hwnd);
     }
 }
+/// Password manager windows: Win+B, Win+U and Win+C go to them (Windows keeps those chords
+/// for itself otherwise).
+static PWM_WINDOWS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+pub fn add_pwm_window(hwnd: isize) {
+    if let Ok(mut w) = PWM_WINDOWS.lock() {
+        if !w.contains(&hwnd) {
+            w.push(hwnd);
+        }
+    }
+}
+
+pub fn remove_pwm_window(hwnd: isize) {
+    if let Ok(mut w) = PWM_WINDOWS.lock() {
+        w.retain(|h| *h != hwnd);
+    }
+}
+
+fn is_pwm(hwnd: isize) -> bool {
+    PWM_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
+}
+
+/// The chords a password manager window takes: Win+B, Win+U, Win+C with no other modifier
+/// (its key equivalents, `WX:138-219`).
+pub fn pwm_chord(c: &Chord) -> bool {
+    matches!(c.key, ChordKey::Char('b' | 'u' | 'c')) && c.cmd && !c.alt && !c.shift && !c.ctrl
+}
 static SETTINGS: AtomicIsize = AtomicIsize::new(0);
 /// The settings window is recording a keystroke: every Win chord goes to it.
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -251,16 +278,17 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             if kb.dwExtraInfo != MAGIC {
                 let fg = unsafe { GetForegroundWindow() } as isize;
                 let recording = RECORDING.load(Ordering::Relaxed) && fg == SETTINGS.load(Ordering::Relaxed);
+                let pwm = is_pwm(fg);
                 let e = KeyEvent {
                     vk: kb.vkCode as u16,
                     down,
                     win_held: held(VK_LWIN as i32) || held(VK_RWIN as i32),
-                    focused: is_tandem(fg) || recording,
+                    focused: is_tandem(fg) || recording || pwm,
                     shift: held(0x10),
                     alt: held(0x12),
                     ctrl: held(0x11),
                 };
-                let bound = |c: &Chord| recording || (h.bound)(c);
+                let bound = |c: &Chord| recording || if pwm { pwm_chord(c) } else { (h.bound)(c) };
                 let verdict = h.gate.lock().unwrap().on_key(e, &bound);
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
@@ -696,5 +724,20 @@ mod tests {
         let mut g = Gate::default();
         let Verdict::Take(Some(c)) = g.on_key(KeyEvent { shift: true, ..key(0x44, true) }, &all) else { panic!() };
         assert_eq!(c, crate::menus::Chord { key: ChordKey::Char('d'), cmd: true, alt: false, shift: true, ctrl: false });
+    }
+
+    #[test]
+    fn password_manager_windows_take_their_win_chords() {
+        let c = |k: char, shift: bool| Chord { key: ChordKey::Char(k), cmd: true, alt: false, shift, ctrl: false };
+        assert!(pwm_chord(&c('b', false)) && pwm_chord(&c('u', false)) && pwm_chord(&c('c', false)));
+        assert!(!pwm_chord(&c('b', true)) && !pwm_chord(&c('x', false)));
+        let mut g = Gate::default();
+        assert!(matches!(g.on_key(key(0x42, true), &|ch| pwm_chord(ch)), Verdict::Take(Some(_))), "Win+B in the manager");
+        assert!(matches!(g.on_key(key(0x42, false), &|ch| pwm_chord(ch)), Verdict::Take(None)));
+        assert!(matches!(g.on_key(key(0x44, true), &|ch| pwm_chord(ch)), Verdict::Pass), "Win+D stays with Windows");
+        add_pwm_window(77);
+        assert!(is_pwm(77));
+        remove_pwm_window(77);
+        assert!(!is_pwm(77));
     }
 }

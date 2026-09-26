@@ -711,7 +711,7 @@ impl App {
     }
 
     /// `backspaceData` (`PS:12893-12922`): what the profile's Backspace mapping sends.
-    fn backspace_data(&self, pane: PaneId) -> Vec<u8> {
+    pub(super) fn backspace_data(&self, pane: PaneId) -> Vec<u8> {
         // `iTermKeystroke.backspace`: kVK_Delete, no modifiers, 0x7f.
         let stroke = keystroke::Keystroke::new(0x7f, 0, Some(0x33), 0x7f);
         let map = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).and_then(|p| p.get("Keyboard Map")).and_then(|v| v.as_table().cloned());

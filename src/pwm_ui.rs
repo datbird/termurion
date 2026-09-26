@@ -781,7 +781,7 @@ fn alert_modal(ctx: &egui::Context, a: &Alert, settings: &mut Option<Vec<Setting
         let mut chosen = None;
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             for (n, title) in a.buttons.iter().enumerate() {
-                if ui.add(egui::Button::new(*title).min_size(egui::vec2(76.0, 24.0))).clicked() {
+                if ui.add(egui::Button::new(title.as_str()).min_size(egui::vec2(76.0, 24.0))).clicked() {
                     chosen = Some(n);
                 }
             }
@@ -790,7 +790,7 @@ fn alert_modal(ctx: &egui::Context, a: &Alert, settings: &mut Option<Vec<Setting
             chosen = chosen.or(Some(0));
         }
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            chosen = chosen.or(a.buttons.iter().position(|b| *b == pwm::TITLE_CANCEL));
+            chosen = chosen.or(a.buttons.iter().position(|b| b == pwm::TITLE_CANCEL));
         }
         match (chosen, settings.as_ref()) {
             (Some(0), Some(values)) if !a.fields.is_empty() => {

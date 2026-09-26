@@ -140,6 +140,16 @@ pub trait Source: Send {
     fn reload(&mut self);
     fn reset_configuration(&mut self);
     fn switch_account(&mut self) -> Result<(), String>;
+    /// A warning the last account list came with (an adapter's `ListAccountsResponse.warning`),
+    /// taken once; the window shows it as iTerm2 does (`AP:690-699`).
+    fn take_warning(&mut self) -> Option<String> {
+        None
+    }
+    /// An adapter's custom command from the gear menu (`runCustomCommand:`): its message, if
+    /// any. Only an adapter declares commands.
+    fn custom_command(&mut self, _name: &str) -> Result<Option<String>, String> {
+        Err("This password manager has no commands.".to_string())
+    }
 }
 
 /// Windows Credential Manager's capabilities (`KeychainPasswordDataSource`): no in-place edit

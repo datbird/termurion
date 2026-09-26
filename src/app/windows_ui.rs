@@ -42,6 +42,8 @@ pub(super) struct WinSlot {
     /// Instant Replay's panel, and the tab and pane it last saw in front.
     replay_window: Option<crate::replay_window::ReplayWindow>,
     replay_seen: Option<(u64, PaneId)>,
+    /// The password manager open over this window.
+    pwm_window: Option<super::pwm_app::PwmWin>,
 }
 
 impl WinSlot {
@@ -83,6 +85,7 @@ impl WinSlot {
             belt: Default::default(),
             replay_window: None,
             replay_seen: None,
+            pwm_window: None,
         }
     }
 }
@@ -127,6 +130,27 @@ impl App {
         swap(&mut self.belt, &mut s.belt);
         swap(&mut self.replay_window, &mut s.replay_window);
         swap(&mut self.replay_seen, &mut s.replay_seen);
+        swap(&mut self.pwm_window, &mut s.pwm_window);
+    }
+
+    /// The terminal window whose password manager is `id`, when it is parked.
+    pub(super) fn window_of_pwm(&self, id: WindowId) -> Option<WindowId> {
+        self.windows.parked().find(|(_, s)| s.pwm_window.as_ref().is_some_and(|w| w.id() == id)).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()))
+    }
+
+    /// Every terminal window with a password manager open, the current one first.
+    pub(super) fn pwm_owners(&self) -> Vec<WindowId> {
+        let current = self.pwm_window.as_ref().and(self.current_window());
+        let parked = self.windows.parked().filter(|(_, s)| s.pwm_window.is_some()).filter_map(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()));
+        current.into_iter().chain(parked).collect()
+    }
+
+    /// The password manager window whose Win32 handle is `hwnd`, and its terminal window.
+    pub(super) fn pwm_of_hwnd(&self, hwnd: isize) -> Option<WindowId> {
+        if self.pwm_window.as_ref().is_some_and(|w| w.hwnd() == Some(hwnd)) {
+            return self.current_window();
+        }
+        self.windows.parked().find(|(_, s)| s.pwm_window.as_ref().is_some_and(|w| w.hwnd() == Some(hwnd))).and_then(|(_, s)| s.gpu.as_ref().map(|g| g.window.id()))
     }
 
     /// The terminal window whose Instant Replay panel is `panel`, when it is parked.
@@ -430,6 +454,7 @@ impl WinSlot {
             belt: Default::default(),
             replay_window: None,
             replay_seen: None,
+            pwm_window: None,
         }
     }
 }

@@ -397,6 +397,9 @@ pub fn map_accounts(resp: ListAccountsResponse) -> Vec<PwmAccount> {
 /// `pwm_cli::MasterPasswordPrompt`.
 pub type MasterPasswordPrompt = Box<dyn FnMut(&str) -> Option<Secret> + Send>;
 
+/// The protocol's own subcommands, which a custom command may not name (`AP:1152-1156`).
+const BUILT_IN_SUBCOMMANDS: [&str; 7] = ["handshake", "login", "list-accounts", "get-password", "set-password", "add-account", "delete-account"];
+
 /// One of the bundled adapters (KeePassXC, Bitwarden or Keeper) as a `Source`, speaking the
 /// protocol above over `runner`. `path_to_database`, `path_to_executable` and `settings` are
 /// already-resolved values the caller supplies (as `OnePassword::new` takes an already-resolved
@@ -413,6 +416,8 @@ pub struct Adapter<R: Runner> {
     handshake: Option<HandshakeResponse>,
     /// The session token from `login`, kept only for this run (never written to disk).
     token: Option<Secret>,
+    /// The last account list's warning, trimmed and non-empty, until `take_warning`.
+    warning: Option<String>,
 }
 
 impl<R: Runner> Adapter<R> {
@@ -426,7 +431,7 @@ impl<R: Runner> Adapter<R> {
         user_account_id: Option<String>,
         prompt: MasterPasswordPrompt,
     ) -> Adapter<R> {
-        Adapter { runner, kind, path, path_to_database, path_to_executable, settings, user_account_id, prompt, handshake: None, token: None }
+        Adapter { runner, kind, path, path_to_database, path_to_executable, settings, user_account_id, prompt, handshake: None, token: None, warning: None }
     }
 
     fn header(&self) -> RequestHeader {
@@ -557,6 +562,7 @@ impl<R: Runner> Source for Adapter<R> {
 
     fn accounts(&mut self) -> Result<Vec<PwmAccount>, String> {
         let response: ListAccountsResponse = self.authed("list-accounts", |a| ListAccountsRequest { header: a.header(), user_account_id: a.user_account_id.clone(), token: a.token_value() })?;
+        self.warning = response.warning.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string);
         Ok(map_accounts(response))
     }
 
@@ -633,6 +639,20 @@ impl<R: Runner> Source for Adapter<R> {
         // call re-handshakes and re-logs in.
         self.handshake = None;
         self.token = None;
+    }
+
+    fn take_warning(&mut self) -> Option<String> {
+        self.warning.take()
+    }
+
+    /// `runCustomCommand:` (`AP:1158-1183`): the command's name is the subcommand; a built-in
+    /// one is refused.
+    fn custom_command(&mut self, name: &str) -> Result<Option<String>, String> {
+        if BUILT_IN_SUBCOMMANDS.contains(&name) {
+            return Err(format!("Cannot run built-in subcommand \u{201c}{name}\u{201d} as a custom command"));
+        }
+        let response: CustomCommandResponse = self.authed(name, |a| CustomCommandRequest { header: a.header(), user_account_id: a.user_account_id.clone(), token: a.token_value(), command_name: name.to_string() })?;
+        Ok(response.message)
     }
 
     fn switch_account(&mut self) -> Result<(), String> {
@@ -746,9 +766,11 @@ mod tests {
         let mut runner = FakeRunner::default();
         runner.push(&handshake_json(serde_json::json!({"requiresMasterPassword": false})));
         runner.push(r#"{"token":"tok"}"#);
-        runner.push(r#"{"accounts":[{"identifier":{"accountID":"id-1"},"userName":"bob","accountName":"github","hasOTP":true,"sourceLabel":"Nested"}]}"#);
+        runner.push(r#"{"accounts":[{"identifier":{"accountID":"id-1"},"userName":"bob","accountName":"github","hasOTP":true,"sourceLabel":"Nested"}],"warning":"  Vault is read-only. \n"}"#);
         let mut a = adapter(runner, Box::new(|_| None));
         let accounts = a.accounts().expect("accounts");
+        assert_eq!(a.take_warning().as_deref(), Some("Vault is read-only."), "the list's warning, trimmed, once");
+        assert_eq!(a.take_warning(), None);
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].id, "id-1");
         assert_eq!(accounts[0].user_name, "bob");
@@ -812,5 +834,23 @@ mod tests {
         let stdin = set_stdin.as_deref().unwrap();
         assert!(stdin.contains("s3cr3t"));
         assert!(stdin.contains("\"accountID\":\"id-1\""));
+    }
+
+    #[test]
+    fn custom_commands_follow_iterm2() {
+        let mut a = adapter(FakeRunner::default(), Box::new(|_| None));
+        assert_eq!(a.custom_command("login").unwrap_err(), "Cannot run built-in subcommand \u{201c}login\u{201d} as a custom command");
+
+        let mut runner = FakeRunner::default();
+        let requests = runner.requests.clone();
+        runner.push(&handshake_json(serde_json::json!({"requiresMasterPassword": false})));
+        runner.push(r#"{"token":"tok"}"#);
+        runner.push(r#"{"message":"Synced 3 items."}"#);
+        let mut a = adapter(runner, Box::new(|_| None));
+        assert_eq!(a.custom_command("sync").unwrap().as_deref(), Some("Synced 3 items."));
+        let calls = requests.lock().unwrap().clone();
+        let last = calls.last().unwrap();
+        assert_eq!(last.1, vec!["sync".to_string()], "the command's name is the subcommand");
+        assert!(last.2.as_deref().is_some_and(|s| s.contains("\"commandName\":\"sync\"")));
     }
 }

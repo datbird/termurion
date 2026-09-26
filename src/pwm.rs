@@ -709,18 +709,18 @@ pub struct Alert {
     pub secret: Option<Secret>,
     /// The adapter Settings sheet's rows with their current values.
     pub fields: Vec<(crate::pwm_source::Field, Secret)>,
-    pub buttons: Vec<&'static str>,
+    pub buttons: Vec<String>,
 }
 
 impl Alert {
     /// A plain alert with OK (the sources' alerts, "Authentication Error" and the like).
     pub fn message(heading: &str, text: &str) -> Alert {
-        Alert { heading: heading.to_string(), text: text.to_string(), secret: None, fields: Vec::new(), buttons: vec![TITLE_OK] }
+        Alert { heading: heading.to_string(), text: text.to_string(), secret: None, fields: Vec::new(), buttons: vec![TITLE_OK.to_string()] }
     }
 
     /// The Remove confirmation (`W:1082-1088`).
     pub fn confirm_delete() -> Alert {
-        Alert { buttons: vec![TITLE_OK, TITLE_CANCEL], ..Alert::message(CONFIRM_DELETE_PASSWORD, "") }
+        Alert { buttons: vec![TITLE_OK.to_string(), TITLE_CANCEL.to_string()], ..Alert::message(CONFIRM_DELETE_PASSWORD, "") }
     }
 
     /// Reveal Password (`W:1582-1621`): OK and Copy.
@@ -734,7 +734,7 @@ impl Alert {
             }
             None => password.duplicate(),
         };
-        Alert { secret: Some(shown), buttons: vec![TITLE_OK, TITLE_COPY], ..Alert::message(&format!("Password for {account}"), "") }
+        Alert { secret: Some(shown), buttons: vec![TITLE_OK.to_string(), TITLE_COPY.to_string()], ..Alert::message(&format!("Password for {account}"), "") }
     }
 
     /// A failed edit (`W:1015-1025`); an empty error reads as the generic one.
@@ -744,12 +744,12 @@ impl Alert {
 
     /// Reset configuration (`W:626-638`).
     pub fn reset() -> Alert {
-        Alert { buttons: vec![TITLE_OK, TITLE_CANCEL], ..Alert::message(HEADING_ARE_YOU_SURE, RESET_WARNING) }
+        Alert { buttons: vec![TITLE_OK.to_string(), TITLE_CANCEL.to_string()], ..Alert::message(HEADING_ARE_YOU_SURE, RESET_WARNING) }
     }
 
     /// An adapter's Settings sheet (`W:1347-1492`).
     pub fn settings(name: &str, fields: Vec<(crate::pwm_source::Field, Secret)>) -> Alert {
-        Alert { fields, buttons: vec![TITLE_OK, TITLE_CANCEL], ..Alert::message(&format!("{name} Settings"), "") }
+        Alert { fields, buttons: vec![TITLE_OK.to_string(), TITLE_CANCEL.to_string()], ..Alert::message(&format!("{name} Settings"), "") }
     }
 
     /// A custom command that failed (`W:1509-1516`): the error (or the generic text), then the
@@ -766,6 +766,64 @@ impl Alert {
     /// A custom command that succeeded with a message: headed by the command's name.
     pub fn command_result(name: &str, message: &str) -> Alert {
         Alert::message(name, message)
+    }
+}
+
+/// The gear menu's settings, as iTerm2 stores them (menu-only globals: no settings rows). The
+/// first two are iTerm2's "secure" defaults; on Windows they are ordinary globals (m10b ruling).
+pub const REQUIRE_OPEN_KEY: &str = "RequireAuthenticationToOpenPasswordManager";
+pub const REQUIRE_LOCK_KEY: &str = "RequireAuthenticationAfterScreenLocks";
+pub const REQUIRE_EVERY_KEY: &str = "RequireAuthenticationOnEveryPasswordManagerOpen";
+pub const PROBE_KEY: &str = "ProbeForPassword";
+pub const SEND_RETURN_KEY: &str = "ShouldSendReturnAfterPassword";
+
+/// A gear setting's value: the stored one, else iTerm2's default (`SecureUserDefaults.swift:86-87`,
+/// `iTermUserDefaults.m:110,210,366`): authentication to open and the probe on, Return after the
+/// password on (a registered default), the other two off.
+pub fn setting(stored: &dyn Fn(&str) -> Option<bool>, key: &str) -> bool {
+    stored(key).unwrap_or(matches!(key, REQUIRE_OPEN_KEY | PROBE_KEY | SEND_RETURN_KEY))
+}
+
+/// The password manager's authentication for this run, shared by every window
+/// (`PasswordManagerDataSourceProvider.authenticated`).
+#[derive(Debug, Default)]
+pub struct Auth {
+    pub authenticated: bool,
+}
+
+impl Auth {
+    /// `mayReuseAuthentication(authRequired:requireEveryOpen:)`: a cached authentication is
+    /// reused unless every open must prompt, which only counts while authentication is required.
+    pub fn may_reuse(required: bool, every_open: bool) -> bool {
+        !required || !every_open
+    }
+
+    /// Whether opening shows the prompt (`requestAuthenticationIfNeeded`): not when the cached
+    /// authentication may be reused, and never when authentication is not required (the caller
+    /// then calls `open_unprompted`).
+    pub fn needs_prompt(&self, required: bool, every_open: bool) -> bool {
+        if self.authenticated && Auth::may_reuse(required, every_open) {
+            return false;
+        }
+        required
+    }
+
+    /// An open that needed no prompt: authenticated from here on.
+    pub fn open_unprompted(&mut self) {
+        self.authenticated = true;
+    }
+
+    /// The prompt's answer: success authenticates, failure revokes.
+    pub fn granted(&mut self, ok: bool) {
+        self.authenticated = ok;
+    }
+
+    /// The screen locked (`staticScreenDidLock:`): revoked when `after_lock`
+    /// (RequireAuthenticationAfterScreenLocks) is on.
+    pub fn screen_locked(&mut self, after_lock: bool) {
+        if after_lock {
+            self.authenticated = false;
+        }
     }
 }
 
@@ -1054,7 +1112,7 @@ mod tests {
         assert_eq!(needs.placeholder, Some("Enter or generate a password"));
 
         let del = Alert::confirm_delete();
-        assert_eq!((del.heading.as_str(), del.buttons.clone()), ("Are you sure you want to delete this password?", vec!["OK", "Cancel"]));
+        assert_eq!((del.heading.as_str(), del.buttons.clone()), ("Are you sure you want to delete this password?", vec!["OK".to_string(), "Cancel".to_string()]));
         let pw = Secret::new("hunter2".to_string());
         let otp = Secret::new("123456".to_string());
         let reveal = Alert::reveal("github", &pw, Some(&otp));
@@ -1079,7 +1137,7 @@ mod tests {
         assert_eq!((cmd.heading.as_str(), cmd.text.as_str()), ("Command Failed", "An error occurred.\n\ndetails"));
         assert_eq!(Alert::command_failed("Boom.", "").text, "Boom.");
         let done = Alert::command_result("sync", "Synced 3 items.");
-        assert_eq!((done.heading.as_str(), done.text.as_str(), done.buttons.clone()), ("sync", "Synced 3 items.", vec!["OK"]));
+        assert_eq!((done.heading.as_str(), done.text.as_str(), done.buttons.clone()), ("sync", "Synced 3 items.", vec!["OK".to_string()]));
 
         // A password field edits its Secret in place and wipes what it drops.
         let mut s = Secret::new(String::new());
@@ -1169,5 +1227,42 @@ mod tests {
         busy.cancel();
         assert!(!busy.shown());
         assert!(!busy.current(token2));
+    }
+
+    #[test]
+    fn auth_follows_iterm2() {
+        assert!(Auth::may_reuse(false, false) && Auth::may_reuse(false, true));
+        assert!(Auth::may_reuse(true, false));
+        assert!(!Auth::may_reuse(true, true));
+
+        let mut a = Auth::default();
+        assert!(a.needs_prompt(true, false), "a first open with authentication required prompts");
+        a.granted(true);
+        assert!(a.authenticated);
+        assert!(!a.needs_prompt(true, false), "reused");
+        assert!(a.needs_prompt(true, true), "every open prompts again");
+        a.granted(false);
+        assert!(!a.authenticated, "a failed prompt revokes");
+
+        let mut a = Auth::default();
+        assert!(!a.needs_prompt(false, true), "not required never prompts");
+        a.open_unprompted();
+        assert!(a.authenticated, "and becomes authenticated");
+
+        a.screen_locked(false);
+        assert!(a.authenticated, "a lock without after-screen-locks keeps it");
+        a.screen_locked(true);
+        assert!(!a.authenticated, "a lock with after-screen-locks revokes");
+
+        let g = |_: &str| None;
+        assert!(setting(&g, REQUIRE_OPEN_KEY) && setting(&g, PROBE_KEY) && setting(&g, SEND_RETURN_KEY));
+        assert!(!setting(&g, REQUIRE_LOCK_KEY) && !setting(&g, REQUIRE_EVERY_KEY));
+        let stored = |k: &str| (k == REQUIRE_OPEN_KEY).then_some(false);
+        assert!(!setting(&stored, REQUIRE_OPEN_KEY));
+        assert_eq!(REQUIRE_OPEN_KEY, "RequireAuthenticationToOpenPasswordManager");
+        assert_eq!(REQUIRE_LOCK_KEY, "RequireAuthenticationAfterScreenLocks");
+        assert_eq!(REQUIRE_EVERY_KEY, "RequireAuthenticationOnEveryPasswordManagerOpen");
+        assert_eq!(PROBE_KEY, "ProbeForPassword");
+        assert_eq!(SEND_RETURN_KEY, "ShouldSendReturnAfterPassword");
     }
 }

@@ -173,8 +173,14 @@ pub struct ConfirmWindow {
     host: EguiHost,
     text: String,
     suppress: bool,
-    /// A warning with OK only and no checkbox (`kiTermWarningTypePersistent`).
-    ok_only: bool,
+    /// The "Suppress this message permanently" checkbox shows.
+    checkbox: bool,
+    /// The button that answers `Ok`, and the one that answers `Cancel` (none for a warning).
+    ok: String,
+    cancel: Option<String>,
+    /// Enter answers the cancel button: an iTerm2 warning whose first action is Cancel makes
+    /// it the default button.
+    enter_cancels: bool,
 }
 
 impl ConfirmWindow {
@@ -192,7 +198,7 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 420.0, 130.0)?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false, ok_only: false })
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false })
     }
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
@@ -208,7 +214,48 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
-        w.ok_only = true;
+        w.checkbox = false;
+        w.cancel = None;
+        Ok(w)
+    }
+
+    /// A warning that cannot be silenced with two actions in iTerm2's order: `first` is the
+    /// default button (Enter) and answers `Cancel`, as does Escape; `second` answers `Ok`
+    /// ("Not all sessions at password prompt", the password prompt check).
+    #[allow(clippy::too_many_arguments)]
+    pub fn choice(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        heading: &str,
+        text: &str,
+        first: &str,
+        second: &str,
+    ) -> Result<ConfirmWindow, String> {
+        let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
+        w.checkbox = false;
+        w.ok = second.into();
+        w.cancel = Some(first.into());
+        w.enter_cancels = true;
+        Ok(w)
+    }
+
+    /// A notice with OK only that can be silenced for good (`kiTermWarningTypePermanentlySilenceable`
+    /// with one action): OK answers `Ok` with the checkbox's state; Escape or closing it `Cancel`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn notice(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        heading: &str,
+        text: &str,
+    ) -> Result<ConfirmWindow, String> {
+        let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
+        w.cancel = None;
         Ok(w)
     }
 
@@ -226,21 +273,35 @@ impl ConfirmWindow {
 
     pub fn redraw(&mut self) -> ConfirmResult {
         let mut result = ConfirmResult::Open;
-        let (text, suppress, ok_only) = (&self.text, &mut self.suppress, self.ok_only);
+        let (text, suppress, checkbox, ok, cancel, enter_cancels) = (&self.text, &mut self.suppress, self.checkbox, &self.ok, &self.cancel, self.enter_cancels);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(text.as_str());
                 ui.add_space(6.0);
-                if !ok_only {
+                if checkbox {
                     ui.checkbox(suppress, Self::SUPPRESS);
                     ui.add_space(6.0);
                 }
                 let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
                 ui.horizontal(|ui| {
-                    if ui.button("OK").clicked() || enter {
+                    if enter_cancels {
+                        if let Some(c) = cancel {
+                            if ui.button(c.as_str()).clicked() || enter {
+                                result = ConfirmResult::Cancel;
+                            }
+                        }
+                        if ui.button(ok.as_str()).clicked() {
+                            result = ConfirmResult::Ok { suppress: *suppress };
+                        }
+                        if escape {
+                            result = ConfirmResult::Cancel;
+                        }
+                        return;
+                    }
+                    if ui.button(ok.as_str()).clicked() || enter {
                         result = ConfirmResult::Ok { suppress: *suppress };
                     }
-                    if (!ok_only && ui.button("Cancel").clicked()) || escape {
+                    if cancel.as_ref().is_some_and(|c| ui.button(c.as_str()).clicked()) || escape {
                         result = ConfirmResult::Cancel;
                     }
                 });

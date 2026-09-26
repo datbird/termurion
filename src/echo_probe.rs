@@ -279,9 +279,10 @@ pub const CHECK_TEXT: &str =
 
 /// One broadcast round: which of the probing sessions have reported in, and how
 /// (`iTermBroadcastPasswordHelper`'s `_successes`/`_failures`/`_indeterminate`). `indeterminate`
-/// is a plain counter the caller bumps directly; it never appears in `pending`.
+/// counts sessions that went away (`vanished`) and counts toward `done`.
 pub struct Round<Id> {
     pending: Vec<Id>,
+    total: usize,
     pub ok: Vec<Id>,
     pub failed: Vec<Id>,
     pub indeterminate: usize,
@@ -289,7 +290,8 @@ pub struct Round<Id> {
 
 impl<Id: PartialEq> Round<Id> {
     pub fn new(probing: Vec<Id>) -> Round<Id> {
-        Round { pending: probing, ok: Vec::new(), failed: Vec::new(), indeterminate: 0 }
+        let total = probing.len();
+        Round { pending: probing, total, ok: Vec::new(), failed: Vec::new(), indeterminate: 0 }
     }
 
     /// Records one probing session's result (`addSuccess:`/`addFailure:`). A report for an id
@@ -305,9 +307,19 @@ impl<Id: PartialEq> Round<Id> {
         }
     }
 
-    /// `checkIfFinished`'s count comparison: every probing session has reported.
+    /// A probing session went away before it reported (the proxy's session is gone): it counts
+    /// as indeterminate (`incrementIndeterminateCount`).
+    pub fn vanished(&mut self, id: Id) {
+        if let Some(pos) = self.pending.iter().position(|p| *p == id) {
+            self.pending.remove(pos);
+            self.indeterminate += 1;
+        }
+    }
+
+    /// `checkIfFinished`'s count comparison: successes, failures and indeterminate sessions
+    /// together reach the number of probing sessions.
     pub fn done(&self) -> bool {
-        self.pending.is_empty()
+        self.ok.len() + self.failed.len() + self.indeterminate >= self.total
     }
 }
 
@@ -472,5 +484,17 @@ mod tests {
         assert!(round.done());
         assert_eq!(round.ok, vec![1, 3]);
         assert_eq!(round.failed, vec![2]);
+
+        // `checkIfFinished` counts sessions that went away (indeterminate) as reported.
+        let mut round = Round::new(vec![1, 2]);
+        round.report(1, true);
+        round.vanished(2);
+        assert!(round.done());
+        assert_eq!(round.indeterminate, 1);
+        assert!(round.failed.is_empty());
+        let mut round = Round::new(vec![1, 2]);
+        round.report(1, false);
+        round.indeterminate += 1;
+        assert!(round.done(), "a directly bumped count finishes the round too");
     }
 }

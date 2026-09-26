@@ -107,6 +107,7 @@ mod toolbelt_tools_ui;
 mod toolbelt_more_ui;
 mod open_quickly_app;
 mod replay_ui;
+mod pwm_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -462,6 +463,11 @@ pub struct App {
     replay_window: Option<crate::replay_window::ReplayWindow>,
     /// The tab and pane in front when last looked, for what ends Instant Replay (per window).
     replay_seen: Option<(u64, PaneId)>,
+    /// This window's password manager (per window: `swap_live`).
+    pwm_window: Option<pwm_app::PwmWin>,
+    /// The password manager's app-wide state: authentication, the source worker, the echo
+    /// probes' passwords, broadcast rounds and questions.
+    pwm: pwm_app::PwmState,
     /// Keys whose press Instant Replay took, so their releases are taken too.
     replay_keys: toolbelt_tools_ui::TakenKeys<PhysicalKey>,
     /// Import and Export Recording's warnings, each opened on the next pass (it needs the
@@ -734,6 +740,8 @@ pub fn run() {
         shot: None,
         replay_window: None,
         replay_seen: None,
+        pwm_window: None,
+        pwm: Default::default(),
         replay_keys: Default::default(),
         recording_warnings: Vec::new(),
         recording_replay: None,
@@ -2472,6 +2480,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_jobs_confirm(event_loop);
         self.open_recording_windows(event_loop);
         self.open_git_log(event_loop);
+        let pwm_due = self.tick_pwm();
+        self.open_pwm_windows(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
@@ -2489,7 +2499,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -2520,6 +2530,10 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Hotkey(ids) => self.hotkey_pressed(&ids, event_loop),
             UserEvent::Chord(c) => {
+                // Win+B, Win+U and Win+C in a password manager window are its own keys.
+                if self.pwm_take_chord(&c) {
+                    return;
+                }
                 if let Some(w) = self.last_window {
                     self.enter(w);
                 }
@@ -2591,7 +2605,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -2685,6 +2699,11 @@ impl ApplicationHandler<UserEvent> for App {
                     if p.screen.term().mode().contains(TermMode::FOCUS_IN_OUT) {
                         p.focus_report(f);
                     }
+                }
+                // A closed password manager's hold ends with the window's next gain, which is
+                // not reported either (its loss was not).
+                if f {
+                    self.pwm_focus_gained();
                 }
                 self.redraw();
             }

@@ -356,6 +356,58 @@ pub fn lp_auth_failed_message(email: &str) -> String {
     format!("You can also try opening a terminal window and running `lpass login {email}`.")
 }
 
+/// The email an `lp_auth_failed_message` names, so the window can tell that failure apart and
+/// show iTerm2's "Authentication Failed" alert (`LP:531-564`) with its buttons.
+pub fn lp_auth_failed_email(message: &str) -> Option<&str> {
+    message.strip_prefix("You can also try opening a terminal window and running `lpass login ")?.strip_suffix("`.")
+}
+
+/// What "Open Terminal Window" types and "Copy Command" copies (`LP:543,559`).
+pub fn lp_login_command(email: &str) -> String {
+    format!("lpass login {email}")
+}
+
+/// The line the terminal login window waits for before "Login Successful" (`LP:544`, the
+/// expectation `^Success: Logged in as`).
+pub fn lp_logged_in(line: &str) -> bool {
+    line.starts_with("Success: Logged in as")
+}
+
+/// The fallback email when no LastPass user name was entered yet (`LP:534`).
+pub const LP_EMAIL_PLACEHOLDER: &str = "your@email.address";
+
+/// `op account list --format=json` (`OT:263-274`), run with no account selected.
+pub fn op_account_list() -> Vec<String> {
+    vec!["account".to_string(), "list".to_string(), "--format=json".to_string()]
+}
+
+/// One signed-in 1Password account (`OnePasswordAccountPicker.Account`).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct OpAccount {
+    pub url: Option<String>,
+    pub email: Option<String>,
+    pub user_uuid: Option<String>,
+    pub account_uuid: Option<String>,
+}
+
+/// The accounts the picker offers: those with both an email and an account id (`OP:73-75`).
+pub fn op_pickable_accounts(json: &str) -> Result<Vec<OpAccount>, String> {
+    let all: Vec<OpAccount> = serde_json::from_str(json).map_err(|_| OP_RUNTIME_ERROR.to_string())?;
+    Ok(all.into_iter().filter(|a| a.email.is_some() && a.account_uuid.is_some()).collect())
+}
+
+/// Whether the configured account (the `onePasswordAccount` setting) names one of `accounts` by
+/// email, account id or user id (`OP:80`).
+pub fn op_account_matches(accounts: &[OpAccount], name: &str) -> bool {
+    let is = |v: &Option<String>| v.as_deref() == Some(name);
+    accounts.iter().any(|a| is(&a.email) || is(&a.account_uuid) || is(&a.user_uuid))
+}
+
+/// "Select an Account" / "Please choose an account:" (`AccountPicker.swift:19-20`), one button per
+/// account titled with its email.
+pub const PICK_ACCOUNT_TITLE: &str = "Select an Account";
+pub const PICK_ACCOUNT_MESSAGE: &str = "Please choose an account:";
+
 // --- CLI location (pure and process parts only; Locate's file picker and remembering the
 // chosen path for the run are UI and belong to the task that wires PromptWindow/ConfirmWindow) ---
 
@@ -435,6 +487,11 @@ fn smells_like_op_auth_error(stderr: &str) -> bool {
 /// is testable with a canned answer and never itself touches egui.
 pub type MasterPasswordPrompt = Box<dyn FnMut(&str) -> Option<Secret> + Send>;
 
+/// Asks which 1Password account to use, given (email, account id) pairs; answers the chosen
+/// account id (`AccountPicker.askUserToSelect`). The app shows it and remembers the answer in
+/// the `onePasswordAccount` setting.
+pub type AccountPicker = Box<dyn FnMut(&[(String, String)]) -> Option<String> + Send>;
+
 /// 1Password's authentication state for this run: unauthenticated, unlocked by the desktop app
 /// (no session token needed), or holding a session token from `op signin --raw` (`OT:306-309`).
 enum Auth {
@@ -451,6 +508,9 @@ pub struct OnePassword<R: Runner> {
     account: Option<String>,
     auth: Auth,
     prompt: MasterPasswordPrompt,
+    picker: Option<AccountPicker>,
+    /// The account list was checked this run (`haveCheckedAccounts`).
+    checked_accounts: bool,
 }
 
 impl<R: Runner> OnePassword<R> {
@@ -459,7 +519,49 @@ impl<R: Runner> OnePassword<R> {
     /// this module). `account` is the 1Password account to use when more than one is signed in
     /// (`--account`), or `None`.
     pub fn new(runner: R, path: String, account: Option<String>, prompt: MasterPasswordPrompt) -> OnePassword<R> {
-        OnePassword { runner, path, account, auth: Auth::None, prompt }
+        OnePassword { runner, path, account, auth: Auth::None, prompt, picker: None, checked_accounts: false }
+    }
+
+    /// Checks the signed-in accounts before the first sign-in, and lets Switch Account choose
+    /// among them (`fetchAccountListAndMakeUserPick`). Without a picker neither happens.
+    pub fn with_picker(mut self, picker: AccountPicker) -> OnePassword<R> {
+        self.picker = Some(picker);
+        self
+    }
+
+    /// The account in use (`--account`), after any pick.
+    pub fn account(&self) -> Option<&str> {
+        self.account.as_deref()
+    }
+
+    /// `fetchAccountListAndMakeUserPick(forceSelection:)`: with more than one signed-in account,
+    /// asks which to use when `force` (Switch Account) or when the configured one is not among
+    /// them. A failed list is ignored, as iTerm2 goes on to sign in. True when the account
+    /// changed.
+    fn pick_account(&mut self, force: bool) -> bool {
+        self.checked_accounts = true;
+        let Some(picker) = self.picker.as_mut() else { return false };
+        let request = Request { program: self.path.clone(), args: op_account_list(), env: Vec::new(), stdin: None, timeout: None };
+        let Ok(out) = self.runner.run(request) else { return false };
+        if out.code != 0 {
+            return false;
+        }
+        let Ok(accounts) = op_pickable_accounts(out.stdout.expose()) else { return false };
+        if accounts.len() < 2 {
+            return false;
+        }
+        let name = self.account.clone().unwrap_or_default();
+        if !force && op_account_matches(&accounts, &name) {
+            return false;
+        }
+        let choices: Vec<(String, String)> = accounts.iter().filter_map(|a| Some((a.email.clone()?, a.account_uuid.clone()?))).collect();
+        match picker(&choices) {
+            Some(id) if Some(&id) != self.account.as_ref() => {
+                self.account = Some(id);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn account_args(&self, args: &mut Vec<String>) {
@@ -495,6 +597,9 @@ impl<R: Runner> OnePassword<R> {
     fn ensure_auth(&mut self) -> Result<(), String> {
         if !matches!(self.auth, Auth::None) {
             return Ok(());
+        }
+        if !self.checked_accounts {
+            self.pick_account(false);
         }
         let mut args = vec!["user".to_string(), "get".to_string(), "--me".to_string()];
         self.account_args(&mut args);
@@ -668,10 +773,12 @@ impl<R: Runner> Source for OnePassword<R> {
         // `canResetConfiguration` is false (`OP:493`): never called.
     }
 
+    /// `switchAccount` (`OP:660-665`): the picker, forced. A new account signs in afresh (its
+    /// items need its own session; iTerm2 keeps the old session, which `op` then refuses).
     fn switch_account(&mut self) -> Result<(), String> {
-        // Picking among several signed-in 1Password accounts (`OP:664-668`,
-        // `OnePasswordAccountPicker`) is not built in this milestone; `caps().multiple_accounts`
-        // enables the menu item, but choosing it does nothing yet.
+        if self.pick_account(true) {
+            self.auth = Auth::None;
+        }
         Ok(())
     }
 }
@@ -724,6 +831,82 @@ impl<R: Runner> LastPass<R> {
         if Self::needs_login(out) { LP_NEEDS_LOGIN.to_string() } else { fallback.to_string() }
     }
 
+    /// `LastPassUtils.recover` (`LP:492-497`): a call that needs a fresh login shows the login
+    /// prompt, and the call still fails (the user retries). A failed login's own message (the
+    /// "Authentication Failed" body) replaces the original error; a canceled one keeps it.
+    fn recover<T>(&mut self, r: Result<T, String>) -> Result<T, String> {
+        match r {
+            Err(e) if e == LP_NEEDS_LOGIN => match self.login() {
+                Err(login) if lp_auth_failed_email(&login).is_some() => Err(login),
+                _ => Err(e),
+            },
+            other => other,
+        }
+    }
+
+    fn accounts_once(&mut self) -> Result<Vec<Account>, String> {
+        let out = match self.runner.run(self.request(lpass_list(&self.groups), Some(LASTPASS_LIST_TIMEOUT))) {
+            Ok(o) => o,
+            Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(lp_timeout_message(LP_ACCOUNT_LIST_FETCH_FAILED)),
+            Err(e) => return Err(e),
+        };
+        if out.code != 0 {
+            return Err(Self::mapped_error(&out, LP_ACCOUNT_LIST_FETCH_FAILED));
+        }
+        Ok(lpass_accounts(out.stdout.expose(), &self.groups))
+    }
+
+    fn password_once(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
+        let out = self.runner.run(self.request(vec!["show".to_string(), "--password".to_string(), a.id.clone()], None))?;
+        if out.code != 0 {
+            return Err(Self::mapped_error(&out, LP_PASSWORD_FETCH_FAILED));
+        }
+        Ok((Secret::new(out.stdout.expose().trim().to_string()), None))
+    }
+
+    fn set_password_once(&mut self, a: &Account, p: Secret) -> Result<(), String> {
+        let mut request = self.request(vec!["edit".to_string(), "--non-interactive".to_string(), "--password".to_string(), a.id.clone()], None);
+        request.stdin = Some(Secret::new(format!("{}\n", p.expose())));
+        let out = self.runner.run(request)?;
+        if out.code != 0 {
+            return Err(Self::mapped_error(&out, LP_PASSWORD_SET_FAILED));
+        }
+        Ok(())
+    }
+
+    fn delete_once(&mut self, a: &Account) -> Result<(), String> {
+        let out = self.runner.run(self.request(vec!["rm".to_string(), a.id.clone()], None))?;
+        if out.code != 0 {
+            return Err(Self::mapped_error(&out, LP_ACCOUNT_DELETE_FAILED));
+        }
+        Ok(())
+    }
+
+    fn add_once(&mut self, name: &str, user: &str, p: Secret) -> Result<Account, String> {
+        // LastPass has no Add Account toggles, so flags is ignored (as iTerm2's `LP:368`).
+        let mut request = self.request(lpass_add(name), None);
+        request.stdin = Some(lpass_add_input(user, &p));
+        let added = self.runner.run(request)?;
+        if added.code != 0 {
+            return Err(Self::mapped_error(&added, LP_ACCOUNT_ADD_FAILED));
+        }
+        match self.runner.run(self.request(vec!["sync".to_string(), "now".to_string()], Some(LASTPASS_LIST_TIMEOUT))) {
+            Ok(out) if out.code == 0 => {}
+            Ok(out) => return Err(Self::mapped_error(&out, LP_ACCOUNT_ADD_FAILED)),
+            Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(lp_timeout_message(LP_ACCOUNT_ADD_FAILED)),
+            Err(e) => return Err(e),
+        }
+        let shown = self.runner.run(self.request(vec!["show".to_string(), "--id".to_string(), format!("iTerm2/{name}")], None))?;
+        if shown.code != 0 {
+            return Err(Self::mapped_error(&shown, LP_ACCOUNT_ADD_FAILED));
+        }
+        let id = shown.stdout.expose().trim().lines().last().unwrap_or_default().to_string();
+        if id.is_empty() || id == "0" {
+            return Err(LP_ACCOUNT_ADD_FAILED.to_string());
+        }
+        Ok(Account { id, account_name: name.to_string(), user_name: user.to_string(), display: format!("{name}{SEP}{user}"), has_otp: false, send_otp: false, source_label: None })
+    }
+
     /// Prompts for LastPass credentials and runs `lpass login` with the password on stdin
     /// (`LP:504-529`, `LastPassUtils.showLoginUI`). A failure never shows raw stderr (the
     /// password went in on stdin): iTerm2's own "Authentication Failed" body, naming the
@@ -768,66 +951,28 @@ impl<R: Runner> Source for LastPass<R> {
     }
 
     fn accounts(&mut self) -> Result<Vec<Account>, String> {
-        let out = match self.runner.run(self.request(lpass_list(&self.groups), Some(LASTPASS_LIST_TIMEOUT))) {
-            Ok(o) => o,
-            Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(lp_timeout_message(LP_ACCOUNT_LIST_FETCH_FAILED)),
-            Err(e) => return Err(e),
-        };
-        if out.code != 0 {
-            return Err(Self::mapped_error(&out, LP_ACCOUNT_LIST_FETCH_FAILED));
-        }
-        Ok(lpass_accounts(out.stdout.expose(), &self.groups))
+        let r = self.accounts_once();
+        self.recover(r)
     }
 
     fn password(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
-        let out = self.runner.run(self.request(vec!["show".to_string(), "--password".to_string(), a.id.clone()], None))?;
-        if out.code != 0 {
-            return Err(Self::mapped_error(&out, LP_PASSWORD_FETCH_FAILED));
-        }
-        Ok((Secret::new(out.stdout.expose().trim().to_string()), None))
+        let r = self.password_once(a);
+        self.recover(r)
     }
 
     fn set_password(&mut self, a: &Account, p: Secret) -> Result<(), String> {
-        let mut request = self.request(vec!["edit".to_string(), "--non-interactive".to_string(), "--password".to_string(), a.id.clone()], None);
-        request.stdin = Some(Secret::new(format!("{}\n", p.expose())));
-        let out = self.runner.run(request)?;
-        if out.code != 0 {
-            return Err(Self::mapped_error(&out, LP_PASSWORD_SET_FAILED));
-        }
-        Ok(())
+        let r = self.set_password_once(a, p);
+        self.recover(r)
     }
 
     fn delete(&mut self, a: &Account) -> Result<(), String> {
-        let out = self.runner.run(self.request(vec!["rm".to_string(), a.id.clone()], None))?;
-        if out.code != 0 {
-            return Err(Self::mapped_error(&out, LP_ACCOUNT_DELETE_FAILED));
-        }
-        Ok(())
+        let r = self.delete_once(a);
+        self.recover(r)
     }
 
     fn add(&mut self, name: &str, user: &str, p: Secret, _flags: &[(String, bool)]) -> Result<Account, String> {
-        // LastPass has no Add Account toggles, so flags is ignored (as iTerm2's `LP:368`).
-        let mut request = self.request(lpass_add(name), None);
-        request.stdin = Some(lpass_add_input(user, &p));
-        let added = self.runner.run(request)?;
-        if added.code != 0 {
-            return Err(Self::mapped_error(&added, LP_ACCOUNT_ADD_FAILED));
-        }
-        match self.runner.run(self.request(vec!["sync".to_string(), "now".to_string()], Some(LASTPASS_LIST_TIMEOUT))) {
-            Ok(out) if out.code == 0 => {}
-            Ok(out) => return Err(Self::mapped_error(&out, LP_ACCOUNT_ADD_FAILED)),
-            Err(e) if e == crate::pwm_run::TIMED_OUT => return Err(lp_timeout_message(LP_ACCOUNT_ADD_FAILED)),
-            Err(e) => return Err(e),
-        }
-        let shown = self.runner.run(self.request(vec!["show".to_string(), "--id".to_string(), format!("iTerm2/{name}")], None))?;
-        if shown.code != 0 {
-            return Err(Self::mapped_error(&shown, LP_ACCOUNT_ADD_FAILED));
-        }
-        let id = shown.stdout.expose().trim().lines().last().unwrap_or_default().to_string();
-        if id.is_empty() || id == "0" {
-            return Err(LP_ACCOUNT_ADD_FAILED.to_string());
-        }
-        Ok(Account { id, account_name: name.to_string(), user_name: user.to_string(), display: format!("{name}{SEP}{user}"), has_otp: false, send_otp: false, source_label: None })
+        let r = self.add_once(name, user, p);
+        self.recover(r)
     }
 
     fn edit_in_place(&mut self, _a: &Account, _name: Option<&str>, _user: Option<&str>, _p: Option<Secret>) -> Result<(), String> {
@@ -1244,5 +1389,70 @@ mod tests {
 
         assert_eq!(lpass_paths(), Vec::<String>::new());
         assert!(resolve_lpass().is_err());
+    }
+
+    #[test]
+    fn one_password_account_picker_follows_iterm2() {
+        let list = r#"[{"url":"a.1password.com","email":"a@x","user_uuid":"UA","account_uuid":"AA"},{"url":"b.1password.com","email":"b@x","user_uuid":"UB","account_uuid":"AB"},{"url":"c","email":null,"user_uuid":"UC","account_uuid":"AC"}]"#;
+        let pickable = op_pickable_accounts(list).unwrap();
+        assert_eq!(pickable.len(), 2, "an account without an email is not offered");
+        assert!(op_account_matches(&pickable, "b@x") && op_account_matches(&pickable, "AA") && op_account_matches(&pickable, "UB"));
+        assert!(!op_account_matches(&pickable, "") && !op_account_matches(&pickable, "UC"));
+
+        // Before the first sign-in, an account that is not among several signed-in ones is asked
+        // for, and the answer goes on every later call.
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        let mut runner = FakeRunner::default();
+        let requests = runner.requests.clone();
+        runner.push(0, list, ""); // account list
+        runner.push(0, "", ""); // user get --me
+        runner.push(0, "[]", ""); // item list
+        runner.push(0, "", ""); // item get -
+        let mut op = OnePassword::new(runner, "op".to_string(), None, Box::new(|_| None)).with_picker(Box::new(move |choices| {
+            seen.lock().unwrap().push(choices.to_vec());
+            Some("AB".to_string())
+        }));
+        op.accounts().unwrap();
+        assert_eq!(asked.lock().unwrap().clone(), vec![vec![("a@x".to_string(), "AA".to_string()), ("b@x".to_string(), "AB".to_string())]]);
+        assert_eq!(op.account(), Some("AB"));
+        let calls = requests.lock().unwrap().clone();
+        assert_eq!(calls[0].args, op_account_list());
+        assert!(calls[0].env.is_empty(), "the list runs with no account selected");
+        assert!(calls[1].args.ends_with(&["--account".to_string(), "AB".to_string()]));
+
+        // A configured account among them is not asked for; Switch Account always asks.
+        let mut runner = FakeRunner::default();
+        runner.push(0, list, ""); // account list at the first sign-in
+        runner.push(0, "", ""); // user get --me
+        runner.push(0, "[]", "");
+        runner.push(0, "", "");
+        runner.push(0, list, ""); // account list for Switch Account
+        let mut op = OnePassword::new(runner, "op".to_string(), Some("AA".to_string()), Box::new(|_| None)).with_picker(Box::new(|_| Some("AB".to_string())));
+        op.accounts().unwrap();
+        assert_eq!(op.account(), Some("AA"));
+        op.switch_account().unwrap();
+        assert_eq!(op.account(), Some("AB"));
+    }
+
+    #[test]
+    fn last_pass_needs_login_asks_to_log_in() {
+        // A call that needs a fresh login shows the login prompt, and still fails; a login that
+        // fails turns into the Authentication Failed text naming the email.
+        let mut runner = FakeRunner::default();
+        runner.push(1, "", "Perhaps you need to login with `lpass login`?"); // show --password
+        runner.push(1, "", "bad password"); // login
+        let asked = Arc::new(Mutex::new(0));
+        let n = asked.clone();
+        let mut lp = LastPass::new(runner, "lpass".to_string(), vec!["iTerm2".to_string()], Box::new(move |_, _| {
+            *n.lock().unwrap() += 1;
+            Some(("me@example.com".to_string(), Secret::new("pw".to_string())))
+        }));
+        let err = lp.password(&account("1", "a", "u")).unwrap_err();
+        assert_eq!(*asked.lock().unwrap(), 1);
+        assert_eq!(lp_auth_failed_email(&err), Some("me@example.com"));
+        assert_eq!(lp_login_command("me@example.com"), "lpass login me@example.com");
+        assert!(lp_logged_in("Success: Logged in as me@example.com.") && !lp_logged_in("Error"));
+        assert_eq!(lp_auth_failed_email(LP_NEEDS_LOGIN), None);
     }
 }

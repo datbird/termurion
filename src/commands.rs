@@ -70,7 +70,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
-    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:",
+    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:", "openPasswordManager:",
 ];
 
 /// Commands that work with a known difference for now.
@@ -266,5 +266,6 @@ mod tests {
         assert_eq!(status(find("clearInstantReplay:", "Clear Instant Replay")), Status::Done, "10a");
         assert_eq!(status(find("exportRecording:", "Export Recording")), Status::Done, "10a");
         assert_eq!(status(find("loadRecording:", "Import Recording")), Status::Done, "10a");
+        assert_eq!(status(find("openPasswordManager:", "Password Manager")), Status::Done, "10b");
     }
 }

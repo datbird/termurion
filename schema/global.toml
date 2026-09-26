@@ -307,6 +307,15 @@ default = false
 help = "Ignores escape sequences that can change settings, reach the clipboard, save files, or report window and screen details (iTerm2's trust gate)."
 
 [[setting]]
+key = "onePasswordAccount"
+tab = "Advanced"
+section = "General"
+label = "1Password account name"
+type = "string"
+default = ""
+help = "1Password account name.\nThis is used if you\u2019ve enabled the 1Password integration in the password manager. Use `op account list` to get the list of accounts. This can be an account shorthand, sign-in address, account ID, or user ID."
+
+[[setting]]
 key = "defaultWideMode"
 tab = "Advanced"
 section = "General"
@@ -677,6 +686,24 @@ label = "Convert italics to reverse video in tmux integration, even when TERM ma
 type = "bool"
 default = false
 help = "Convert italics to reverse video in tmux integration, even when TERM matches *tmux*?\nThis was the default behavior for a long time, but it was incorrect. The conversion should only be done when TERM matches *screen*."
+
+[[setting]]
+key = "echoProbeDuration"
+tab = "Advanced"
+section = "Terminal"
+label = "Seconds to wait while testing if echo is on"
+type = "float"
+default = 0.5
+help = "Amount of time to wait while testing if echo is on (seconds).\nThis is used by the password manager to ensure you're at a password prompt. Set to 0 to disable echo probe."
+
+[[setting]]
+key = "disablePasswordManagerAnimations"
+tab = "Advanced"
+section = "Terminal"
+label = "Disable animations for showing/hiding password manager"
+type = "bool"
+default = false
+help = "Disable animations for showing/hiding password manager."
 
 [[setting]]
 key = "restoreWindowContents"
