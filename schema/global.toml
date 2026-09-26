@@ -1353,3 +1353,39 @@ label = "Status bar shows tmux status bar content, not native components"
 type = "bool"
 default = true
 help = "In a tmux tab with the status bar on, the bar shows tmux's status-left and status-right instead of the profile's components."
+
+[[setting]]
+key = "gitSearchPath"
+tab = "Advanced"
+section = "General"
+label = "Folders searched for git (status bar)"
+type = "string"
+default = ""
+help = "The first folder in this ;-separated list holds the git.exe the status bar runs. Empty: git from PATH. Takes effect at once."
+
+[[setting]]
+key = "gitTimeout"
+tab = "Advanced"
+section = "General"
+label = "git timeout for the status bar, in seconds"
+type = "float"
+default = 4.0
+help = "Timeout in seconds when running git for the status bar component."
+
+[[setting]]
+key = "excludeUtunFromNetworkUtilization"
+tab = "Advanced"
+section = "General"
+label = "Leave tunnel interfaces out of Network Throughput"
+type = "bool"
+default = true
+help = "Leaves Windows tunnel adapters (a VPN's Wintun interface, for example) out of Network Throughput's totals. Useful if you want to see only the traffic that crosses Wi-Fi or Ethernet."
+
+[[setting]]
+key = "animateGraphStatusBarComponents"
+tab = "Advanced"
+section = "Drawing"
+label = "Animate graph status bar components"
+type = "bool"
+default = true
+help = "Off: the graphs jump once a second instead of sliding, which redraws less."

@@ -457,6 +457,10 @@ impl App {
                 let (left, right) = self.tmux_status_of(pane).unwrap_or_default();
                 if kind == Kind::TmuxLeft { Content::text(sbt::tmux_left_variants(&left)) } else { Content { right_align: true, ..Content::text(sbt::tmux_right_variants(&right)) } }
             }
+            // Milestone 9i Task 1's five: `Piece::of` (`statusbar_ui.rs`) never maps them
+            // to a `Piece::Content`, so this arm is never reached yet; it exists only to
+            // keep this match exhaustive over `Kind`. Tasks 3 and 5 replace it.
+            Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network | Kind::Git => Content::text(Vec::new()),
         };
         content.icon = sbc::icon(kind);
         content

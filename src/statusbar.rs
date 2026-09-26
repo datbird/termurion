@@ -1,10 +1,12 @@
 //! iTerm2's status bar framework: the profile's `Status Bar Layout` (components with
 //! their knobs, and the advanced configuration), the base knobs every component shares,
 //! knob descriptors by type, the registry of the framework's own components (the Spring
-//! and the Fixed-size Spacer; the placeholder shown when a layout is empty) plus 9h's
-//! content components (`statusbar_components`, folded into this module's own `registry`,
-//! `info`, `knobs`, `default_knobs` and `exemplar`), Hide, and auto-rainbow colors. Five
-//! content classes (Battery, CPU, Memory, Network, git) arrive in milestone 9i.
+//! and the Fixed-size Spacer; the placeholder shown when a layout is empty) plus 9h's and
+//! 9i's content components (`statusbar_components`, folded into this module's own
+//! `registry`, `info`, `knobs`, `default_knobs` and `exemplar`), Hide, and auto-rainbow
+//! colors. 9i's five content classes (Battery, CPU, Memory, Network, git) are registered
+//! here (Task 1) but stay off screen (`src/app/statusbar_ui.rs`'s `Piece::of`) until
+//! Tasks 3 and 5.
 //!
 //! A layout dictionary looks like `{"components": [{"class": <ObjC name>, "configuration":
 //! {"knobs": {...}, "layout advanced configuration dictionary value": {...}}}, ...],
@@ -366,6 +368,19 @@ pub(crate) fn min_max_width_knobs() -> [Knob; 2] {
     ]
 }
 
+/// The Compression Resistance / Size Multiple knob (by `algorithm`) a generic stretchable
+/// component shows: descriptor default 1 under either algorithm (`BASE:231-237`), unlike
+/// the Spring's own knob above. Shared by `text_component_knobs` and by git's own knob
+/// suite (`statusbar_components`), which is not built on Text (no Custom Font knob) but
+/// still stretches.
+pub(crate) fn stretch_knob(algorithm: Algorithm) -> Knob {
+    let label = match algorithm {
+        Algorithm::TightlyPacked => "Compression Resistance:",
+        Algorithm::Stable => "Size Multiple:",
+    };
+    Knob { label: label.into(), kind: KnobKind::Double, key: BASE_COMPRESSION_RESISTANCE_KEY.into(), placeholder: Some(String::new()), default: Some(Value::Float(1.0)) }
+}
+
 /// The knob suite every stretchable `iTermStatusBarTextComponent` shows after its own
 /// knobs (`TXT:27-48` plus the Base knobs): Text Color, Background Color, Custom Font,
 /// Compression Resistance or Size Multiple (by `algorithm`), Priority, Minimum Width,
@@ -375,15 +390,7 @@ pub(crate) fn text_component_knobs(algorithm: Algorithm) -> Vec<Knob> {
         color_knob("Text Color:", SHARED_TEXT_COLOR_KEY),
         color_knob("Background Color:", SHARED_BACKGROUND_COLOR_KEY),
         Knob { label: "Custom Font".into(), kind: KnobKind::Font, key: SHARED_FONT_KEY.into(), placeholder: None, default: None },
-        {
-            let label = match algorithm {
-                Algorithm::TightlyPacked => "Compression Resistance:",
-                Algorithm::Stable => "Size Multiple:",
-            };
-            // A generic stretchable component's descriptor default is 1 under either
-            // algorithm (`BASE:231-237`), unlike the Spring's own knob above.
-            Knob { label: label.into(), kind: KnobKind::Double, key: BASE_COMPRESSION_RESISTANCE_KEY.into(), placeholder: Some(String::new()), default: Some(Value::Float(1.0)) }
-        },
+        stretch_knob(algorithm),
         priority_knob(),
     ];
     v.extend(min_max_width_knobs());
@@ -391,12 +398,11 @@ pub(crate) fn text_component_knobs(algorithm: Algorithm) -> Vec<Knob> {
 }
 
 /// This milestone's framework registry, in iTerm2's palette order (`SETUP:107-134`): the
-/// 9h content classes (`statusbar_components::infos`) up through Composer, the Fixed-size
+/// content classes (`statusbar_components::infos`) up through Composer, the Fixed-size
 /// Spacer and the Spring (in that palette position), the rest of the content classes, then
-/// the internal Placeholder shown when a layout has no components. The 9i content classes
-/// (Battery, CPU, Memory, Network, git) are not here yet; `info` and `knobs` return nothing
-/// for a class not here yet, which is exactly the "kept in the file, skipped on screen"
-/// behavior for them.
+/// the internal Placeholder shown when a layout has no components. 9i's five content
+/// classes have an `Info`, knobs, and an exemplar here now (Task 1); they stay off screen
+/// only because `Piece::of` (`src/app/statusbar_ui.rs`) does not map their `Kind` yet.
 pub fn registry() -> Vec<Info> {
     let content = crate::statusbar_components::infos();
     // `infos` gives every content kind in one run, Composer immediately followed by
@@ -475,16 +481,21 @@ pub fn info_for(class: &str, algorithm: Algorithm) -> Option<Info> {
     Some(if class == SPRING_CLASS && algorithm == Algorithm::Stable { Info { short: "Empty Space", detail: "Empty space that draws only a background color.", exemplar: "       ", ..i } } else { i })
 }
 
-/// The setup window's component menu, in iTerm2's order (`SETUP:107-134`, less the 9i
-/// classes: Battery, CPU, Memory, Network and git, which are not shown until 9i lands): the
-/// 9h content classes, the Fixed-size Spacer and Spring at their iTerm2 position, then the
-/// rest of the content classes.
-pub const PALETTE: [&str; 16] = [
+/// The setup window's component menu, in iTerm2's order (`SETUP:107-134`): the four graph
+/// classes, the rest of the content classes up through Composer (git state threaded in
+/// after Triggers Menu), the Fixed-size Spacer and Spring at their iTerm2 position, then
+/// Interpolated String and Call Script Function.
+pub const PALETTE: [&str; 21] = [
+    crate::statusbar_components::BATTERY_CLASS,
+    crate::statusbar_components::CPU_CLASS,
+    crate::statusbar_components::MEMORY_CLASS,
+    crate::statusbar_components::NETWORK_CLASS,
     crate::statusbar_components::CLOCK_CLASS,
     crate::statusbar_components::CUSTOM_ACTION_CLASS,
     crate::statusbar_components::ACTIONS_MENU_CLASS,
     crate::statusbar_components::SNIPPETS_MENU_CLASS,
     crate::statusbar_components::TRIGGERS_MENU_CLASS,
+    crate::statusbar_components::GIT_CLASS,
     crate::statusbar_components::HOST_NAME_CLASS,
     crate::statusbar_components::USER_NAME_CLASS,
     crate::statusbar_components::JOB_NAME_CLASS,
@@ -796,9 +807,9 @@ mod tests {
     #[test]
     fn framework_components_follow_iterm2() {
         let reg = registry();
-        // The framework's own 3 (Spring, Fixed-size Spacer, Placeholder) plus 9h's content
-        // registry (14 palette classes, 3 internal): `statusbar_components::infos().len()`.
-        assert_eq!(reg.len(), 20);
+        // The framework's own 3 (Spring, Fixed-size Spacer, Placeholder) plus the content
+        // registry (19 palette classes, 3 internal): `statusbar_components::infos().len()`.
+        assert_eq!(reg.len(), 25);
 
         let spring = info(SPRING_CLASS).unwrap();
         assert_eq!((spring.short, spring.exemplar, spring.stretch, spring.margins, spring.internal), ("Spring", "║〜〜║", true, false, false));
@@ -872,11 +883,11 @@ mod tests {
         assert_eq!(info_for("iTermStatusBarNoSuchComponent", Algorithm::Stable), None);
         // The palette: iTerm2's order, no internal class; the Fixed-size Spacer and Spring
         // (numbers 18 and 19 in iTerm2's own list) sit between Composer and Interpolated
-        // String, where 9h's content classes leave a gap for them (`content_registry_
+        // String, where the content classes leave a gap for them (`content_registry_
         // follows_iterm2` in `statusbar_components.rs` checks the content classes' own
         // positions in full).
-        assert_eq!(PALETTE[12], SPACER_CLASS);
-        assert_eq!(PALETTE[13], SPRING_CLASS);
+        assert_eq!(PALETTE[17], SPACER_CLASS);
+        assert_eq!(PALETTE[18], SPRING_CLASS);
         assert!(PALETTE.iter().all(|&c| info(c).is_some_and(|i| !i.internal)));
         // PALETTE is exactly registry()'s own non-internal classes, in order: the two
         // never drift apart.

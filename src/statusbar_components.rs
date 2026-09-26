@@ -1,21 +1,35 @@
-//! iTerm2's status bar content components (milestone 9h): every class in the setup
-//! picker except the framework's own Spring and Fixed-size Spacer (`statusbar.rs`) and
-//! the five classes deferred to milestone 9i (Battery, CPU, Memory, Network, git state).
-//! Pure data: kinds, descriptions, knobs in iTerm2's order, default knobs, icons and
-//! exemplars. `statusbar.rs` folds this module's registry into its own `registry`, `info`,
-//! `knobs`, `default_knobs` and `exemplar`, in iTerm2's palette order.
+//! iTerm2's status bar content components: every class in the setup picker except the
+//! framework's own Spring and Fixed-size Spacer (`statusbar.rs`). Pure data: kinds,
+//! descriptions, knobs in iTerm2's order, default knobs, icons and exemplars.
+//! `statusbar.rs` folds this module's registry into its own `registry`, `info`, `knobs`,
+//! `default_knobs` and `exemplar`, in iTerm2's palette order. Milestone 9i's five classes
+//! (Battery, CPU, Memory, Network, git state) are registered here but stay off screen
+//! until `src/app/statusbar_ui.rs`'s `Piece::of` maps their `Kind` (milestone 9i Tasks 3
+//! and 5).
 //!
 //! Citations use `.superpowers/research/m9-facts.md` section 2's abbreviations (`BASE` =
 //! `iTermStatusBarBaseComponent.m`, `TXT` = `iTermStatusBarTextComponent.m`, `CLK` =
 //! `iTermStatusBarClockComponent.m`, `ACT` = `iTermStatusBarActionComponent.m`, `VAR` =
 //! `iTermStatusBarVariableBaseComponent.m`, `SRCH`/`FILT` = the Search/Filter field
 //! components, `COMP` = `iTermStatusBarComposerComponent.m`, `SWS` =
-//! `iTermStatusBarSwiftyStringComponent.m`, `FN` = `iTermStatusBarFunctionCallComponent.m`).
+//! `iTermStatusBarSwiftyStringComponent.m`, `FN` = `iTermStatusBarFunctionCallComponent.m`,
+//! `GFX` = `...GraphicComponent.m`, `BAT` = `...BatteryComponent.m`, `NET` =
+//! `...NetworkUtilizationComponent.m`, `GIT` = `...GitComponent.m`).
 
 use toml::Value;
 
 use crate::statusbar::{self, Algorithm, Info, Knob, KnobKind};
 
+/// `iTermStatusBarBatteryComponent`.
+pub const BATTERY_CLASS: &str = "iTermStatusBarBatteryComponent";
+/// `iTermStatusBarCPUUtilizationComponent`.
+pub const CPU_CLASS: &str = "iTermStatusBarCPUUtilizationComponent";
+/// `iTermStatusBarMemoryUtilizationComponent`.
+pub const MEMORY_CLASS: &str = "iTermStatusBarMemoryUtilizationComponent";
+/// `iTermStatusBarNetworkUtilizationComponent`.
+pub const NETWORK_CLASS: &str = "iTermStatusBarNetworkUtilizationComponent";
+/// `iTermStatusBarGitComponent` (git state).
+pub const GIT_CLASS: &str = "iTermStatusBarGitComponent";
 /// `iTermStatusBarClockComponent`.
 pub const CLOCK_CLASS: &str = "iTermStatusBarClockComponent";
 /// `iTermStatusBarActionComponent` (Custom Action).
@@ -62,6 +76,17 @@ const EXPRESSION_KEY: &str = "expression";
 const LABEL_KEY: &str = "label";
 const FUNCTION_INVOCATION_KEY: &str = "function invocation";
 const TIMEOUT_KEY: &str = "timeout";
+/// `BAT:18-19`, iTerm2's own key, verbatim.
+const SHOW_PERCENTAGE_KEY: &str = "ShowPercentage";
+/// `BAT:19`, iTerm2's own key, verbatim.
+const SHOW_TIME_KEY: &str = "ShowTime";
+const DOWNLOAD_COLOR_KEY: &str = "download color";
+const DOWNLOAD_TEXT_COLOR_KEY: &str = "download text color";
+const UPLOAD_COLOR_KEY: &str = "upload color";
+const UPLOAD_TEXT_COLOR_KEY: &str = "upload text color";
+/// `iTermStatusBarGitComponentPollingIntervalKey` (`GIT:113-134`), iTerm2's own key,
+/// verbatim.
+const GIT_POLLING_INTERVAL_KEY: &str = "iTermStatusBarGitComponentPollingIntervalKey";
 
 /// One content class this milestone knows, `com.iterm2.<class>` minus the prefix. Every
 /// variant but the last three (internal: no palette entry, no Configure sheet) is offered
@@ -69,11 +94,16 @@ const TIMEOUT_KEY: &str = "timeout";
 /// less the 9i classes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    Battery,
+    Cpu,
+    Memory,
+    Network,
     Clock,
     CustomAction,
     ActionsMenu,
     SnippetsMenu,
     TriggersMenu,
+    Git,
     HostName,
     UserName,
     JobName,
@@ -88,13 +118,18 @@ pub enum Kind {
     Progress,
 }
 
-/// Every `Kind`, in the order above (the palette's 14, then the 3 internal ones).
-const ALL: [Kind; 17] = [
+/// Every `Kind`, in the order above (the palette's 19, then the 3 internal ones).
+const ALL: [Kind; 22] = [
+    Kind::Battery,
+    Kind::Cpu,
+    Kind::Memory,
+    Kind::Network,
     Kind::Clock,
     Kind::CustomAction,
     Kind::ActionsMenu,
     Kind::SnippetsMenu,
     Kind::TriggersMenu,
+    Kind::Git,
     Kind::HostName,
     Kind::UserName,
     Kind::JobName,
@@ -114,6 +149,11 @@ impl Kind {
     /// know (a 9i class, the framework's own, or one Tandem truly does not recognize).
     pub fn of(class: &str) -> Option<Kind> {
         Some(match class {
+            BATTERY_CLASS => Kind::Battery,
+            CPU_CLASS => Kind::Cpu,
+            MEMORY_CLASS => Kind::Memory,
+            NETWORK_CLASS => Kind::Network,
+            GIT_CLASS => Kind::Git,
             CLOCK_CLASS => Kind::Clock,
             CUSTOM_ACTION_CLASS => Kind::CustomAction,
             ACTIONS_MENU_CLASS => Kind::ActionsMenu,
@@ -137,6 +177,11 @@ impl Kind {
 
     pub fn class(self) -> &'static str {
         match self {
+            Kind::Battery => BATTERY_CLASS,
+            Kind::Cpu => CPU_CLASS,
+            Kind::Memory => MEMORY_CLASS,
+            Kind::Network => NETWORK_CLASS,
+            Kind::Git => GIT_CLASS,
             Kind::Clock => CLOCK_CLASS,
             Kind::CustomAction => CUSTOM_ACTION_CLASS,
             Kind::ActionsMenu => ACTIONS_MENU_CLASS,
@@ -158,14 +203,20 @@ impl Kind {
     }
 }
 
-/// Short description, detailed description, and can-stretch, for the 14 palette kinds
+/// Short description, detailed description, and can-stretch, for the 19 palette kinds
 /// (`statusBarComponentShortDescription`, `statusBarComponentDetailedDescription`,
-/// `statusBarComponentCanStretch`). Every content class but Composer and Call Script
-/// Function can stretch (neither overrides `statusBarComponentCanStretch`, `COMP:54-66`,
-/// `FN:127-167`); so do the 3 internal ones, whose own text below is never shown (no
-/// palette entry, no Active Components slot).
+/// `statusBarComponentCanStretch`). Every content class but Composer, Call Script
+/// Function and the four graphs (Battery, CPU, Memory, Network) can stretch (neither
+/// overrides `statusBarComponentCanStretch`, `COMP:54-66`, `FN:127-167`; the graphs do not
+/// stretch, `GFX:89-107`); so do the 3 internal ones, whose own text below is never shown
+/// (no palette entry, no Active Components slot).
 fn short_detail_stretch(kind: Kind) -> (&'static str, &'static str, bool) {
     match kind {
+        Kind::Battery => ("Battery Level", "Shows current battery level and its recent history.", false),
+        Kind::Cpu => ("CPU Utilization", "Shows current CPU utilization.", false),
+        Kind::Memory => ("Memory Utilization", "Shows current memory utilization.", false),
+        Kind::Network => ("Network Throughput", "Shows current network throughput.", false),
+        Kind::Git => ("git state", "Shows a summary of the git state of the current directory.", true),
         Kind::Clock => ("Clock", "Shows current date and time with a configurable format.", true),
         Kind::CustomAction => ("Custom Action", "Adds a button that performs a user-configurable action, similar to a key binding.", true),
         Kind::ActionsMenu => ("Actions Menu", "When clicked, opens a menu of actions. Actions are like custom key bindings, but without a keystroke attached.", true),
@@ -190,17 +241,45 @@ fn short_detail_stretch(kind: Kind) -> (&'static str, &'static str, bool) {
     }
 }
 
+/// The registry table's own static exemplar for the five 9i classes, whose sample text
+/// never varies with knobs or live data (unlike Clock or Custom Action): read from `Info`
+/// by `statusbar::exemplar`'s fallback, since `exemplar` below returns `None` for them.
+/// Every other kind's `Info::exemplar` is unread ("" is enough); `exemplar` resolves them
+/// dynamically instead.
+fn static_exemplar(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Battery => "95% \u{2582}\u{2583}\u{2585}\u{2587} Batt",
+        Kind::Cpu => "12% \u{2583}\u{2583}\u{2585}\u{2582} CPU",
+        Kind::Memory => "3.1 GB \u{2582}\u{2583}\u{2583}\u{2585} RAM",
+        Kind::Network => "2 MB\u{2193} \u{2583}\u{2583}\u{2585}\u{2582} 1 MB\u{2191}",
+        Kind::Git => "\u{2387} main",
+        _ => "",
+    }
+}
+
 /// This module's own registry (`statusBarComponentShortDescription`,
 /// `statusBarComponentDetailedDescription`, `statusBarComponentCanStretch`): the palette
-/// entries, then the internal ones. `exemplar` is never read from these (see there); every
-/// content class resolves through it instead, so a placeholder is enough here.
+/// entries, then the internal ones. `exemplar` is never read from most of these (see
+/// there); every content class but the five 9i ones resolves through it instead, so a
+/// placeholder is enough for the rest.
 pub fn infos() -> Vec<Info> {
     ALL.iter()
         .map(|&kind| {
             let (short, detail, stretch) = short_detail_stretch(kind);
-            Info { class: kind.class(), short, detail, exemplar: "", stretch, margins: true, internal: matches!(kind, Kind::Progress | Kind::TmuxLeft | Kind::TmuxRight) }
+            Info { class: kind.class(), short, detail, exemplar: static_exemplar(kind), stretch, margins: true, internal: matches!(kind, Kind::Progress | Kind::TmuxLeft | Kind::TmuxRight) }
         })
         .collect()
+}
+
+/// The three knobs every graph (Battery, CPU, Memory, Network) shows: "Background Color:",
+/// the Base knobs' "Priority:" (graphs do not stretch, so no Compression Resistance/Size
+/// Multiple, and none has a Custom Font knob), then "Text Color:" (`GFX:89-107`).
+pub(crate) fn graphic_knobs() -> Vec<Knob> {
+    vec![
+        statusbar::color_knob("Background Color:", statusbar::SHARED_BACKGROUND_COLOR_KEY),
+        statusbar::priority_knob(),
+        statusbar::color_knob("Text Color:", statusbar::SHARED_TEXT_COLOR_KEY),
+    ]
 }
 
 /// The knob descriptors `statusBarComponentKnobs` returns, in order, for `kind` under
@@ -211,6 +290,43 @@ pub fn knobs(kind: Kind, algorithm: Algorithm) -> Vec<Knob> {
         own
     };
     match kind {
+        // `BAT:18-19,43-57`: Show Percentage and Show Estimated Time first, then the
+        // graph knobs.
+        Kind::Battery => {
+            let mut v = vec![
+                Knob { label: "Show Percentage".into(), kind: KnobKind::Checkbox, key: SHOW_PERCENTAGE_KEY.into(), placeholder: None, default: Some(Value::Boolean(true)) },
+                Knob { label: "Show Estimated Time".into(), kind: KnobKind::Checkbox, key: SHOW_TIME_KEY.into(), placeholder: None, default: Some(Value::Boolean(false)) },
+            ];
+            v.extend(graphic_knobs());
+            v
+        }
+        Kind::Cpu | Kind::Memory => graphic_knobs(),
+        // `NET:19-22,43-74`: the graph knobs, then the four download/upload colors, none
+        // with a default.
+        Kind::Network => {
+            let mut v = graphic_knobs();
+            v.extend([
+                statusbar::color_knob("Download Color:", DOWNLOAD_COLOR_KEY),
+                statusbar::color_knob("Download Text Color:", DOWNLOAD_TEXT_COLOR_KEY),
+                statusbar::color_knob("Upload Color:", UPLOAD_COLOR_KEY),
+                statusbar::color_knob("Upload Text Color:", UPLOAD_TEXT_COLOR_KEY),
+            ]);
+            v
+        }
+        // `GIT:113-134`, `ATXT:148-163`: Polling Interval, then Background before Text
+        // (reversed from a Text component's own tail), the stretch knob, Priority, and
+        // the min/max width knobs; no Custom Font (git is not built on Text).
+        Kind::Git => {
+            let mut v = vec![
+                Knob { label: "Polling Interval (seconds):".into(), kind: KnobKind::Double, key: GIT_POLLING_INTERVAL_KEY.into(), placeholder: None, default: Some(Value::Float(2.0)) },
+                statusbar::color_knob("Background Color:", statusbar::SHARED_BACKGROUND_COLOR_KEY),
+                statusbar::color_knob("Text Color:", statusbar::SHARED_TEXT_COLOR_KEY),
+                statusbar::stretch_knob(algorithm),
+                statusbar::priority_knob(),
+            ];
+            v.extend(statusbar::min_max_width_knobs());
+            v
+        }
         Kind::Clock => text(vec![
             Knob { label: "Date Format:".into(), kind: KnobKind::Text, key: FORMAT_KEY.into(), placeholder: Some("Date Format (Unicode TR 35)".into()), default: Some(Value::String("M/dd h:mm".into())) },
             Knob { label: "Localize Date Format".into(), kind: KnobKind::Checkbox, key: LOCALIZE_KEY.into(), placeholder: None, default: Some(Value::Boolean(true)) },
@@ -267,15 +383,43 @@ pub fn default_knobs(kind: Kind) -> toml::Table {
         Kind::CallScriptFunction => {
             t.insert(TIMEOUT_KEY.into(), Value::Float(5.0));
         }
+        // `GIT:245-247`: the interval default 2, plus the min/max width base additions
+        // (`GIT` stretches, unlike Job Name and Current Directory's own reason above).
+        Kind::Git => {
+            t.insert(GIT_POLLING_INTERVAL_KEY.into(), Value::Float(2.0));
+            t.insert(statusbar::MAX_WIDTH_KEY.into(), Value::Float(f64::INFINITY));
+            t.insert(statusbar::MIN_WIDTH_KEY.into(), Value::Float(0.0));
+        }
         _ => {}
     }
     t
+}
+
+/// The battery glyph (has a battery, drawn in a 16 point column so it always reserves the
+/// charging icon's room on the right, `BAT` reserve rules), the no-battery glyph, and the
+/// charging overlay (Resume notes' Icons row).
+pub const BATTERY_GLYPH: char = '\u{E83F}';
+pub const NO_BATTERY_GLYPH: char = '\u{E996}';
+pub const CHARGING_GLYPH: char = '\u{E83E}';
+
+/// The Battery component's own icon: `BATTERY_GLYPH` when this computer has a battery,
+/// else `NO_BATTERY_GLYPH` (`BAT:59-79`'s once-per-process check feeds `has_battery`).
+pub fn battery_icon(has_battery: bool) -> char {
+    if has_battery { BATTERY_GLYPH } else { NO_BATTERY_GLYPH }
 }
 
 /// A Segoe Fluent Icons glyph tinted with the component's text color
 /// (`statusBarComponentIcon`), or None for a class with no icon.
 pub fn icon(kind: Kind) -> Option<char> {
     match kind {
+        // The Battery component's generic icon (the setup picker, a Configure sheet);
+        // the live one, which depends on whether this computer has a battery, is
+        // `battery_icon`.
+        Kind::Battery => Some(BATTERY_GLYPH),
+        Kind::Cpu => Some('\u{E950}'),
+        Kind::Memory => Some('\u{EEA0}'),
+        Kind::Network => Some('\u{E968}'),
+        Kind::Git => Some('\u{E8AB}'),
         Kind::Clock => Some('\u{E823}'),
         Kind::CustomAction | Kind::ActionsMenu => Some('\u{E945}'),
         Kind::SnippetsMenu => Some('\u{E8C6}'),
@@ -318,13 +462,17 @@ pub fn trigger_menu_title(action_title: &str, regex: &str) -> String {
 }
 
 /// `statusBarComponentExemplarWithBackgroundColor:textColor:` for a content class Tandem
-/// knows; None for one it does not (the framework's own classes, or a 9i one), so the
-/// caller (`statusbar::exemplar`) falls back to that class's static `Info::exemplar`.
-/// `clock_text` is the Clock's own text, already formatted (Task 2 builds the formatter);
-/// `user` and `home` are the caller's OS lookups (`%USERNAME%`, `%USERPROFILE%`).
+/// knows; None for one it does not (the framework's own classes), or whose exemplar never
+/// varies (the five 9i classes, `static_exemplar`), so the caller (`statusbar::exemplar`)
+/// falls back to that class's static `Info::exemplar`. `clock_text` is the Clock's own
+/// text, already formatted (Task 2 builds the formatter); `user` and `home` are the
+/// caller's OS lookups (`%USERNAME%`, `%USERPROFILE%`).
 pub fn exemplar(class: &str, knobs: &toml::Table, clock_text: &str, user: &str, home: &str) -> Option<String> {
     let kind = Kind::of(class)?;
     Some(match kind {
+        // The five 9i classes: a static exemplar (`static_exemplar`), read through the
+        // `Info` fallback instead.
+        Kind::Battery | Kind::Cpu | Kind::Memory | Kind::Network | Kind::Git => return None,
         Kind::Clock => clock_text.to_string(),
         Kind::CustomAction => knobs.get(ACTION_KEY).and_then(crate::user_actions::UserAction::from_value).map(|a| a.title).unwrap_or_else(|| "Custom Action".to_string()),
         Kind::ActionsMenu => "Action\u{2026}".to_string(),
@@ -506,11 +654,16 @@ mod tests {
     #[test]
     fn content_registry_follows_iterm2() {
         let order = [
+            BATTERY_CLASS,
+            CPU_CLASS,
+            MEMORY_CLASS,
+            NETWORK_CLASS,
             CLOCK_CLASS,
             CUSTOM_ACTION_CLASS,
             ACTIONS_MENU_CLASS,
             SNIPPETS_MENU_CLASS,
             TRIGGERS_MENU_CLASS,
+            GIT_CLASS,
             HOST_NAME_CLASS,
             USER_NAME_CLASS,
             JOB_NAME_CLASS,
@@ -528,19 +681,24 @@ mod tests {
         for (i, &class) in order.iter().enumerate() {
             assert_eq!(classes.get(i), Some(&class), "position {i}");
         }
-        // 9i inserts its five (Battery, CPU, Memory, Network, git) at iTerm2's positions;
-        // not one of them is here yet.
-        for missing in ["iTermStatusBarBatteryComponent", "iTermStatusBarCPUUtilizationComponent", "iTermStatusBarMemoryUtilizationComponent", "iTermStatusBarNetworkUtilizationComponent", "iTermStatusBarGitComponent"] {
-            assert!(!classes.contains(&missing), "{missing} is 9i's, not 9h's");
+        // 9i's five are registered now: known, in the palette, at iTerm2's positions.
+        for present in [BATTERY_CLASS, CPU_CLASS, MEMORY_CLASS, NETWORK_CLASS, GIT_CLASS] {
+            assert!(classes.contains(&present), "{present} missing");
+            assert!(statusbar::info(present).is_some(), "{present} not known");
         }
 
         let get = |class: &str| statusbar::info(class).unwrap();
-        let cases: [(&str, &str, &str, bool); 14] = [
+        let cases: [(&str, &str, &str, bool); 19] = [
+            (BATTERY_CLASS, "Battery Level", "Shows current battery level and its recent history.", false),
+            (CPU_CLASS, "CPU Utilization", "Shows current CPU utilization.", false),
+            (MEMORY_CLASS, "Memory Utilization", "Shows current memory utilization.", false),
+            (NETWORK_CLASS, "Network Throughput", "Shows current network throughput.", false),
             (CLOCK_CLASS, "Clock", "Shows current date and time with a configurable format.", true),
             (CUSTOM_ACTION_CLASS, "Custom Action", "Adds a button that performs a user-configurable action, similar to a key binding.", true),
             (ACTIONS_MENU_CLASS, "Actions Menu", "When clicked, opens a menu of actions. Actions are like custom key bindings, but without a keystroke attached.", true),
             (SNIPPETS_MENU_CLASS, "Snippets Menu", "When clicked, opens a menu of snippets. Snippets are saved text strings that can be pasted quickly.", true),
             (TRIGGERS_MENU_CLASS, "Triggers Menu", "When clicked, opens a menu of triggers. You can use it to enable or disable triggers.", true),
+            (GIT_CLASS, "git state", "Shows a summary of the git state of the current directory.", true),
             (HOST_NAME_CLASS, "Host Name", "Current host name. Requires shell integration.", true),
             (USER_NAME_CLASS, "User Name", "Current user name. Requires shell integration.", true),
             (JOB_NAME_CLASS, "Job Name", "Shows the currently running job. If space permits, parent process names are also shown.", true),
@@ -647,6 +805,56 @@ mod tests {
         assert_eq!(icon(Kind::InterpolatedString), None);
     }
 
+    /// `GFX:89-107`, `BAT:18-19,43-57`, `NET:19-22,43-74`, `GIT:113-134`, `ATXT:148-163`,
+    /// `GIT:245-247`.
+    #[test]
+    fn metric_and_git_knobs_follow_iterm2() {
+        let labels = |ks: &[Knob]| ks.iter().map(|k| k.label.clone()).collect::<Vec<_>>();
+        let graph_tail = vec!["Background Color:", "Priority:", "Text Color:"];
+
+        for kind in [Kind::Cpu, Kind::Memory] {
+            let ks = knobs(kind, Algorithm::Stable);
+            assert_eq!(labels(&ks), graph_tail, "{kind:?}");
+            assert_eq!(ks[0].key, "shared background color");
+            assert_eq!(ks[2].key, "shared text color");
+            assert!(ks[0].default.is_none() && ks[2].default.is_none(), "a color knob has no default");
+        }
+
+        let battery = knobs(Kind::Battery, Algorithm::Stable);
+        assert_eq!(labels(&battery), ["Show Percentage", "Show Estimated Time", "Background Color:", "Priority:", "Text Color:"]);
+        assert_eq!((battery[0].kind, battery[0].key.as_str(), battery[0].placeholder.as_deref(), battery[0].default.clone()), (KnobKind::Checkbox, "ShowPercentage", None, Some(Value::Boolean(true))));
+        assert_eq!((battery[1].kind, battery[1].key.as_str(), battery[1].default.clone()), (KnobKind::Checkbox, "ShowTime", Some(Value::Boolean(false))));
+
+        let network = knobs(Kind::Network, Algorithm::Stable);
+        assert_eq!(labels(&network), ["Background Color:", "Priority:", "Text Color:", "Download Color:", "Download Text Color:", "Upload Color:", "Upload Text Color:"]);
+        for k in &network[3..] {
+            assert_eq!(k.kind, KnobKind::Color);
+            assert!(k.default.is_none(), "{}", k.label);
+        }
+
+        let git_tight = knobs(Kind::Git, Algorithm::TightlyPacked);
+        assert_eq!(labels(&git_tight), ["Polling Interval (seconds):", "Background Color:", "Text Color:", "Compression Resistance:", "Priority:", "Minimum Width:", "Maximum Width:"]);
+        assert_eq!((git_tight[0].kind, git_tight[0].placeholder.as_deref(), git_tight[0].default.clone()), (KnobKind::Double, None, Some(Value::Float(2.0))));
+        assert_eq!(git_tight[1].key, "shared background color");
+        assert_eq!(git_tight[2].key, "shared text color");
+        let git_stable = knobs(Kind::Git, Algorithm::Stable);
+        assert_eq!(labels(&git_stable)[3], "Size Multiple:");
+
+        assert_eq!(default_knobs(Kind::Git), table(&[(GIT_POLLING_INTERVAL_KEY, Value::Float(2.0)), ("maxwidth", Value::Float(f64::INFINITY)), ("minwidth", Value::Float(0.0))]));
+        for kind in [Kind::Battery, Kind::Cpu, Kind::Memory, Kind::Network] {
+            assert_eq!(default_knobs(kind), toml::Table::new(), "{kind:?}");
+        }
+
+        // Icons: static per graph and git; Battery's live icon is `battery_icon`, not `icon`.
+        assert_eq!(icon(Kind::Battery), Some(BATTERY_GLYPH));
+        assert_eq!(icon(Kind::Cpu), Some('\u{E950}'));
+        assert_eq!(icon(Kind::Memory), Some('\u{EEA0}'));
+        assert_eq!(icon(Kind::Network), Some('\u{E968}'));
+        assert_eq!(icon(Kind::Git), Some('\u{E8AB}'));
+        assert_eq!(battery_icon(true), BATTERY_GLYPH);
+        assert_eq!(battery_icon(false), NO_BATTERY_GLYPH);
+    }
+
     #[test]
     fn exemplars_follow_iterm2() {
         let none = toml::Table::new();
@@ -671,8 +879,28 @@ mod tests {
         assert_eq!(exemplar(FILTER_TOOL_CLASS, &none, "", "", ""), Some("\u{2979} Filter".to_string()));
         assert_eq!(exemplar(COMPOSER_CLASS, &none, "", "", ""), Some(">_ [Command] \u{1F4AC}".to_string()));
 
-        // A class this module does not know: None, so the caller falls back.
-        assert_eq!(exemplar("iTermStatusBarBatteryComponent", &none, "", "", ""), None);
+        // A 9i class: its exemplar never varies, so this returns None and the caller
+        // (`statusbar::exemplar`) falls back to `Info::exemplar` (`metric_exemplars_
+        // follow_iterm2` checks the resolved string).
+        assert_eq!(exemplar(BATTERY_CLASS, &none, "", "", ""), None);
+    }
+
+    /// The registry table's Exemplar column, resolved through `statusbar::exemplar` (the
+    /// fallback path, since `exemplar` above returns None for these five).
+    #[test]
+    fn metric_exemplars_follow_iterm2() {
+        let none = toml::Table::new();
+        let cases = [
+            (BATTERY_CLASS, "95% \u{2582}\u{2583}\u{2585}\u{2587} Batt"),
+            (CPU_CLASS, "12% \u{2583}\u{2583}\u{2585}\u{2582} CPU"),
+            (MEMORY_CLASS, "3.1 GB \u{2582}\u{2583}\u{2583}\u{2585} RAM"),
+            (NETWORK_CLASS, "2 MB\u{2193} \u{2583}\u{2583}\u{2585}\u{2582} 1 MB\u{2191}"),
+            (GIT_CLASS, "\u{2387} main"),
+        ];
+        for (class, want) in cases {
+            assert_eq!(statusbar::exemplar(class, &none, "", "", "", Algorithm::Stable), want, "{class}");
+            assert_eq!(statusbar::exemplar(class, &none, "", "", "", Algorithm::TightlyPacked), want, "{class}: algorithm makes no difference");
+        }
     }
 
     /// `ACT:202-226`, the Snippets Menu's `statusBarComponentIsEmpty`, and the Triggers
