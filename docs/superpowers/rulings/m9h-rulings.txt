@@ -1,0 +1,29 @@
+Ruling: 9g final-review minors 1, 2, 3, 5, 6 (bar hit test covers empty space; auto-rainbow darkness source; Show Status Bar help text; hsb/spacer-width duplication; infinite spring constant NaN) are done as a separate first commit of Task 1 - cost if wrong: one extra commit in Task 1's review.
+Task 1: minor (deferred): icon/knobs/default_knobs only spot-tested for a few of 17 Kind variants.
+Task 2: minor (deferred): job_variants(&[]) collapses never-set and empty chain; Task 3 caller must pass None-state separately (carried into Task 3 dispatch).
+Task 2: minor (deferred): host_compress/dir_compress near-duplicate loops.
+Task 2: minor (deferred): action_variants ignores RegexKitLite's leading-whitespace empty range.
+Task 3: minor (deferred): with no Clock each loop turn re-parses layouts; Interpolated String rebuilds session variables every frame.
+Task 4: Ruling: Custom Action shows the ladybug and the error when its title fails to evaluate (the plan's text); iTerm2 keeps the last good title, blank on a first failure - cost if wrong: an error shows where iTerm2 shows a blank button.
+Task 4: Ruling: refusal clicks (Call Script Function, later Composer) show as pane info bars with OK, Tandem's banner form - cost if wrong: none.
+Task 4: minor (deferred): Call Script Function 0.5 pt offset moves only the label and moves it down; iTerm2 moves the whole button up.
+Task 4: minor (deferred): trigger toggle rewrites the whole list via parse_list/to_value, so a malformed entry is dropped from the session copy (iTerm2 flips one key in place). FINAL REVIEW: consider must-fix (data loss).
+Task 4: minor (deferred): no test for the toggle writing the session copy or the app-wired empty rules.
+Task 4: minor (deferred): status bar menu state not cleared after an Actions/Snippets pick.
+Task 5: Ruling: a temporary search field outlives every other component but is itself dropped by Stable below 151 points (iTerm2's source; the Review Focus wording read that way) - cost if wrong: none, it matches iTerm2.
+Task 5: minor (deferred): narrow-bar test uses a 100-point item; add real 125/200 cases at 150/151 points.
+Task 5: minor (deferred): Erase Search History clears only the focused pane's query (iTerm2 clears history and the shared find pasteboard).
+Task 5: minor (deferred): in-pane find bar menu lacks Erase Search History.
+Task 5: minor (deferred): temporary Filter returns after a slow paste ends (iTerm2 clears the right slot); list in checklist.
+Task 5: minor (deferred): bar_find_host hides the in-pane find bar even when the field was not placed (iTerm2 same); list in checklist.
+Task 5: minor (deferred): paste tick calls both redraw() and redraw_all().
+Task 6: Ruling: the fast re-poll is once per monitor pair (iTerm2's iTermTmuxStatusBarMonitor is per session, and the plan's Review Focus says per pair), overriding the plan's Step 2 "once per controller" - cost if wrong: a few extra fast polls per window.
+Task 6: Ruling: before tmux 3.2 the status monitors poll at once on install (iTerm2 waits one interval); listed in the checklist - cost if wrong: one or two extra polls.
+Task 6: Ruling: a tmux bar has no Hide (the computed tmux layout is never written to a profile); listed in the checklist - cost if wrong: no Hide on tmux bars.
+Task 6: minor (deferred): Settings disabled-checkbox path has no test.
+Task 7: Ruling: Storage::swap now swaps whole rows with slice::swap; upstream's four-qword copy assumed an unpatched Row, so region scrolls panicked in debug builds and left the Tandem row slots (marks, time, block, button, porthole) behind in release. Fixed inside patch 14 because the new test hits it - cost if wrong: a slightly slower row swap on region scrolls.
+Task 7: Ruling: the flag applies whenever the region starts at the top and stops above the bottom row, whether or not Tandem shows its own status bar (iTerm2's VT100Grid reads the profile flag alone) - cost if wrong: none, it matches iTerm2.
+Task 7: Ruling: a selection inside such a region still rotates as a top region does (upstream Selection::rotate), so with the flag off it can move above the region's top - cost if wrong: a stale selection after an app scrolls under its status line.
+Task 7: Ruling: tmux control-mode panes get the flag too (tmux_pane) though tmux draws no status line inside them - cost if wrong: none.
+Task 7: Ruling: the brief's 03 row numbers from 472 up are three lower than the file's (9g added three rows at 472-474); the rows were matched by name - cost if wrong: none.
+Task 7: Ruling: the 9i rows (Battery, CPU, Memory, Network, git state, it2git, gitSearchPath, gitTimeout, excludeUtunFromNetworkUtilization, animateGraphStatusBarComponents) stay missing or partial with a note naming 9i - cost if wrong: none.

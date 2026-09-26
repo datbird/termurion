@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 167 | 126 | 21 |
-| `02-global-settings.md` | 820 | 232 | 73 | 515 |
-| `03-features-and-menus.md` | 643 | 378 | 32 | 233 |
-| Total | 1,777 | 777 | 231 | 769 |
+| `01-profile-settings.md` | 314 | 168 | 125 | 21 |
+| `02-global-settings.md` | 820 | 233 | 72 | 515 |
+| `03-features-and-menus.md` | 643 | 391 | 34 | 218 |
+| Total | 1,777 | 792 | 231 | 754 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -82,7 +82,15 @@ Stable and Tightly Packed layout algorithms, component bands, separators, the ed
 auto-rainbow, the placeholder, the Spring and the Fixed-size Spacer, the bar's right-click menu)
 and iTerm2's setup window (the component menu, Active Components with drag, drop, reorder, and
 delete, Configure Component for every knob type, Auto-Rainbow, Advanced, live apply with Cancel
-restoring the layout); the content components come in milestone 9h.
+restoring the layout); the content components come in milestone 9h. Milestone 9h: the status bar's
+content components (Clock with TR 35 and localized formats, Host Name, User Name, Job Name, Current
+Directory with its click menu, Interpolated String, Custom Action, the Actions, Snippets and Triggers
+menus, Search Tool and Filter Tool bound to find and Filter, the Progress Indicator for slow pastes,
+Call Script Function and the Composer as stubs until milestone 11 and the Composer milestone), each
+text component shorter by iTerm2's width variants as the bar narrows, the temporary search, filter
+and progress components, the tmux status bar (status-left and status-right on the 8f option
+monitors), and Save lines to scrollback with status bar present (alacritty_terminal patch 14).
+Battery, CPU, Memory, Network and git state are milestone 9i.
 
 ## Order
 
