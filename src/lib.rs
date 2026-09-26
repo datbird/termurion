@@ -189,6 +189,7 @@ pub mod text_edit;
 pub mod composer;
 pub mod prompt_state;
 pub mod command_syntax;
+pub mod composer_suggest;
 pub mod notes;
 pub mod open_quickly;
 
