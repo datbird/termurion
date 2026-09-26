@@ -131,11 +131,10 @@ pub struct Marks {
     /// iTerm2's `currentPromptRange` in absolute lines: set to the prompt start at A, to the
     /// captured range at B, and to zeros at D (`MS:3734,4772,4850`).
     prompt_range: ((i64, usize), (i64, usize)),
+    /// The prompt start (set with the range at A) and the command start (at B) as anchors,
+    /// which survive reflow: the range is derived from them again when rows move.
+    prompt_anchors: (Option<Anchor>, Option<Anchor>),
 }
-
-/// The most cells one accrue check reads: a part that long is over `MAX_ACCRUED` anyway
-/// (`prompt_state::output` would drop it).
-const ACCRUE_CELLS: u64 = 4 * crate::prompt_state::MAX_ACCRUED as u64;
 
 /// Decodes %XX escapes (bytes, then UTF-8; Latin-1 when that fails, as iTerm2 does).
 fn percent_decode(s: &str) -> String {
@@ -211,7 +210,8 @@ impl Screen {
         if let Some(cur) = cur.filter(|_| saved.mark() == 0) {
             if let Some(ml) = self.mark_line(cur).filter(|ml| *ml >= line && *ml < cursor.line.0) {
                 let skipped = self.anchor_at(cur, Point::new(cursor.line, Column(0))).map_or(0, |a| a.lines);
-                for a in [&mut self.marks.command_start, &mut self.marks.output_start].into_iter().flatten() {
+                let m = &mut self.marks;
+                for a in [&mut m.command_start, &mut m.output_start, &mut m.prompt_anchors.0, &mut m.prompt_anchors.1].into_iter().flatten() {
                     a.lines = a.lines.saturating_sub(skipped);
                 }
                 let _ = ml;
@@ -226,6 +226,7 @@ impl Screen {
         grid[Line(0)] = saved;
         grid.cursor.point = Point::new(Line(0), cursor.column);
         self.prune_marks();
+        self.composer_rows_moved();
     }
 
     /// At the shell prompt, typing a command (iTerm2's currentCommand); None without shell
@@ -434,8 +435,8 @@ impl Screen {
 
     /// What the shell echoed between two absolute cursors: the cells' characters, wide
     /// spacers skipped, a row that ends in a line break trimmed of its trailing blanks. None
-    /// once it passes `MAX_ACCRUED` characters or `ACCRUE_CELLS` cells: such a part is over
-    /// the cap and dropped anyway. Also returns the cells read.
+    /// once it passes `MAX_ACCRUED` characters: such a part is over the cap and dropped
+    /// anyway. Also returns the cells read.
     fn echo_between(&self, from: (i64, usize), to: (i64, usize)) -> (Option<String>, u64) {
         use crate::prompt_state::MAX_ACCRUED;
         let g = self.term.grid();
@@ -467,17 +468,37 @@ impl Screen {
             }
             chars += text.chars().count();
             out.push_str(&text);
-            if chars > MAX_ACCRUED || cells > ACCRUE_CELLS {
+            if chars > MAX_ACCRUED {
                 return (None, cells);
             }
         }
         (Some(out), cells)
     }
 
+    /// Rows moved without scrolling (a resize's reflow, a splice, a clear): absolute lines
+    /// kept from before no longer name the same rows. The accrue checkpoint goes to the cursor
+    /// (as the triggers do) and the prompt range is derived again from its anchors (zeros,
+    /// as after D, when they no longer resolve).
+    pub(crate) fn composer_rows_moved(&mut self) {
+        if self.composer_from.is_some() {
+            self.composer_from = Some(self.abs_cursor());
+        }
+        let off = self.term.grid().scrolled_off() as i64;
+        let abs = |p: Point| (off + p.line.0 as i64, p.column.0);
+        let (a, b) = self.marks.prompt_anchors;
+        let start = a.and_then(|a| self.resolve(a)).map(abs);
+        let end = b.and_then(|b| self.resolve(b)).map(abs);
+        self.marks.prompt_range = match (start, b, end) {
+            (Some(s), None, _) => (s, s),
+            (Some(s), Some(_), Some(e)) => crate::prompt_state::prompt_range(s, e),
+            _ => Default::default(),
+        };
+    }
+
     /// The accrue check (`PSM:386-433` applied to the grid, milestone 9l Decision): while a
     /// command is entered, the echo from the last checked cursor to the cursor now is the
     /// part. A cursor that moved back (a backspace) only moves the checkpoint. Each read
-    /// scans only what is new, never past `ACCRUE_CELLS`, and nothing once the text is at
+    /// scans only what is new, never past `MAX_ACCRUED` characters, and nothing once the text is at
     /// `MAX_ACCRUED` (no part can fit). Runs before each shell-integration event and after
     /// each read.
     pub(crate) fn composer_accrue(&mut self) {
@@ -650,6 +671,7 @@ impl Screen {
                 let at = self.abs_cursor();
                 if counted && !(redraw && self.marks.prompt_range.0 == at) {
                     self.marks.prompt_range = (at, at);
+                    self.marks.prompt_anchors = (self.marks.current.and_then(|c| self.anchor_here(c)), None);
                 }
             }
             Osc::CommandStart => {
@@ -662,6 +684,7 @@ impl Screen {
                 let range = crate::prompt_state::prompt_range(self.marks.prompt_range.0, self.abs_cursor());
                 if range != self.marks.prompt_range {
                     self.marks.prompt_range = range;
+                    self.marks.prompt_anchors.1 = self.marks.command_start;
                     let (rows, text) = self.prompt_rows();
                     let events = self.prompt_state.captured(rows, text);
                     self.composer_events.extend(events);
@@ -699,6 +722,7 @@ impl Screen {
                 let events = self.prompt_state.d();
                 self.composer_events.extend(events);
                 self.marks.prompt_range = Default::default();
+                self.marks.prompt_anchors = (None, None);
                 if std::mem::take(&mut self.marks.in_command) {
                     // Ended without starting (Ctrl+C at the prompt): the mark goes away.
                     if let Some(cur) = self.marks.current.take() {
@@ -1400,6 +1424,18 @@ mod tests {
         s2.feed(b"\r\nmore output\r\nand more");
         assert_eq!(s2.composer_scanned, at_cap);
         assert!(!so_far.is_empty());
+        // Blank cells do not count toward the bound: echo after many blank rows still accrues.
+        let mut s4 = Screen::with_scrollback(40, 10, 1000);
+        s4.prompt_state.enabled = true;
+        s4.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
+        s4.take_composer_events();
+        let blank = format!("\x1b[{}B", 9);
+        let mut burst = String::new();
+        for _ in 0..600 {
+            burst.push_str("\r\n");
+        }
+        s4.feed(format!("{burst}{blank}ok").as_bytes());
+        assert_eq!(s4.take_composer_events(), vec![Event::Append("ok".into())]);
         // A part larger than the cap is dropped without reading past the bound.
         let mut s3 = Screen::with_scrollback(40, 10, 1000);
         s3.prompt_state.enabled = true;
@@ -1408,7 +1444,7 @@ mod tests {
         let before = s3.composer_scanned;
         s3.feed("y".repeat(MAX_ACCRUED * 3).as_bytes());
         assert!(s3.take_composer_events().is_empty());
-        assert!(s3.composer_scanned - before <= 4 * MAX_ACCRUED as u64 + 40);
+        assert!(s3.composer_scanned - before <= MAX_ACCRUED as u64 + 2 * 40);
         s3.feed(b"z");
         assert_eq!(s3.take_composer_events(), vec![Event::Append("z".into())]);
     }
@@ -1428,5 +1464,26 @@ mod tests {
         assert_eq!(s.prompt_state.state, State::ReceivingPrompt);
         assert_eq!(s.marks_in_order().len(), marks);
         assert_eq!(s.prompt_rows().1, vec!["$ ".to_string()]);
+    }
+    #[test]
+    fn accruing_and_the_prompt_survive_a_resize() {
+        use crate::prompt_state::Event;
+        for (cols, rows) in [(40, 20), (20, 10), (60, 6)] {
+            let mut s = Screen::with_scrollback(40, 10, 1000);
+            s.prompt_state.enabled = true;
+            for i in 0..30 {
+                s.feed(format!("old output line {i:02} that is long enough to wrap\r\n").as_bytes());
+            }
+            s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls");
+            s.take_composer_events();
+            s.resize(cols, rows);
+            s.feed(b"x");
+            assert_eq!(s.take_composer_events(), vec![Event::Append("x".into())], "{cols}x{rows}");
+            assert_eq!(s.prompt_rows().1, vec!["$ ".to_string()], "{cols}x{rows}");
+            // A repeated B at the same place after the resize is still a duplicate: the
+            // cursor goes back to the command start first.
+            s.feed(b"\x08\x08\x08\x1b]133;B\x07");
+            assert!(!s.take_composer_events().iter().any(|e| matches!(e, Event::Reveal { .. })), "{cols}x{rows}");
+        }
     }
 }

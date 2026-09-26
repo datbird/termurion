@@ -412,6 +412,7 @@ impl Screen {
         self.term.resize(GridSize { cols, rows });
         // Reflow moved rows: triggers go on from the cursor.
         self.triggers_from_cursor();
+        self.composer_rows_moved();
     }
 
     pub fn term(&self) -> &Term<Listener> {
@@ -888,6 +889,7 @@ impl Screen {
         let removed = self.term.primary_grid_mut().splice(Line(first), Line(last), with);
         // Rows moved: triggers go on from the cursor.
         self.triggers_from_cursor();
+        self.composer_rows_moved();
         removed
     }
 
