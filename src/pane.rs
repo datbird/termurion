@@ -320,6 +320,12 @@ impl Pane {
                             None => bytes,
                         };
                         let reply = self.live.as_mut().unwrap_or(&mut self.screen).feed(&bytes);
+                        // A report is a write to the session: it cancels the composer's clear
+                        // probe (`PS:16212-16221` to `writeTaskImpl`, `PS:4154-4158`), whether
+                        // or not a tmux pane then drops it (iTerm2 cancels before routing).
+                        if !reply.is_empty() {
+                            self.composer.probe = None;
+                        }
                         // tmux answers queries for its panes itself, but OSC 4 when this
                         // client is the elected one.
                         let reply = match pty {
@@ -711,6 +717,21 @@ mod tests {
     use crate::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_terminal_reply_cancels_the_clear_probe() {
+        // `screenSendReportData` goes through `writeTaskImpl` (`PS:16212-16221`,
+        // `PS:4142-4165`): a DA answer during the probe window cancels it; plain output does
+        // not.
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        p.composer.probe = crate::prompt_state::ClearProbe::start(&[0x15, 0x0b], Instant::now());
+        p.tmux_io().unwrap().push_output(b"hi");
+        assert!(p.pump());
+        assert!(p.composer.probe.is_some(), "output alone keeps it");
+        p.tmux_io().unwrap().push_output(b"\x1b[c");
+        assert!(p.pump());
+        assert!(p.composer.probe.is_none(), "the DA reply cancels it");
+    }
 
     #[test]
     fn tmux_io_queues() {
