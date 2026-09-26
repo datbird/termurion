@@ -620,6 +620,39 @@ impl TextEdit {
         !self.extra.is_empty()
     }
 
+    /// Every caret's range for a mutating `k` (`key_one`'s and `key_multi`'s own choice of
+    /// what to replace): its selection when it has one, else where `k` reaches from it, empty
+    /// at the caret for an insert (`Text`, `Enter`, `Tab`, `Paste`), `prev_boundary`/
+    /// `next_boundary`/`word_left`/`word_right` for the delete keys. Lets a caller (the
+    /// composer's prefix guard) check a key against a protected byte range before performing
+    /// it, without duplicating the boundary walk.
+    pub fn reach(&self, k: &EditKey) -> Vec<Range<usize>> {
+        self.all()
+            .iter()
+            .map(|(c, _)| {
+                let sel = c.range();
+                if !sel.is_empty() {
+                    return sel;
+                }
+                match k {
+                    EditKey::Backspace => prev_boundary(&self.text, c.at)..c.at,
+                    EditKey::Delete => c.at..next_boundary(&self.text, c.at),
+                    EditKey::DeleteWordBack => word_left(&self.text, c.at)..c.at,
+                    EditKey::DeleteWordForward => c.at..word_right(&self.text, c.at),
+                    _ => c.at..c.at,
+                }
+            })
+            .collect()
+    }
+
+    /// Drops all undo and redo history: for a caller (the composer's `take`) that removes
+    /// several ranges directly rather than through one caret's edit, so there is nothing
+    /// coherent left to undo.
+    pub fn clear_undo(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     /// Ctrl+Shift+Down (`below`) or Ctrl+Shift+Up (`MCTV:1163-1183`): a caret on the visual line
     /// below or above the primary's start, at its x, which becomes the primary. False (and
     /// nothing added) when there is no such line.
@@ -1104,6 +1137,34 @@ mod tests {
 
     fn vl(start: usize, end: usize) -> VisualLine {
         VisualLine { start, end }
+    }
+
+    #[test]
+    fn reach_finds_what_a_delete_key_would_touch() {
+        let mut e = TextEdit::default();
+        e.set_text("ab cd");
+        e.caret = 3;
+        assert_eq!(e.reach(&EditKey::Backspace), vec![2..3]);
+        assert_eq!(e.reach(&EditKey::Delete), vec![3..4]);
+        assert_eq!(e.reach(&EditKey::DeleteWordBack), vec![0..3]);
+        assert_eq!(e.reach(&EditKey::Text("x".to_string())), vec![3..3]);
+        e.anchor = Some(1);
+        assert_eq!(e.reach(&EditKey::Backspace), vec![1..3]);
+        assert_eq!(e.reach(&EditKey::Text("x".to_string())), vec![1..3]);
+
+        e.anchor = None;
+        e.caret = 5;
+        e.set_carets(&[Caret { at: 5, anchor: None }, Caret { at: 2, anchor: None }]);
+        assert_eq!(e.reach(&EditKey::Backspace), vec![1..2, 4..5]);
+    }
+
+    #[test]
+    fn clear_undo_drops_history() {
+        let mut e = TextEdit::default();
+        e.set_text("a");
+        press(&mut e, EditKey::Text("b".to_string()), false, 1000.0);
+        e.clear_undo();
+        assert_eq!(press(&mut e, EditKey::Undo, false, 1000.0), EditOut::Kept);
     }
 
     #[test]

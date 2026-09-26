@@ -186,13 +186,16 @@ pub fn action(key: &Key, m: Mods, auto: bool, popup: bool) -> Option<Action> {
         });
     }
     if matches!(key, Key::Edit(EditKey::Tab)) {
-        return Some(Action::Tab);
+        // `CTV:706,765`: Tab is bound with no modifiers at all; Ctrl+Tab switches tabs,
+        // Shift/Alt+Tab are not the composer's either.
+        return if !m.ctrl && !m.alt && !m.shift { Some(Action::Tab) } else { None };
     }
     match key {
         Key::Ctrl(c) => {
-            if auto {
-                // `CTV:735-762`: these five win over the Windows edit chords; Ctrl+A is not
-                // one of them, so it keeps its Windows meaning (Select All) below.
+            if auto && !m.shift && !m.alt {
+                // `CTV:735-762`: these five win over the Windows edit chords, but only for
+                // exactly Ctrl; Ctrl+A is not one of them, so it keeps its Windows meaning
+                // (Select All) below.
                 match c.to_ascii_lowercase() {
                     'c' => return Some(Action::Control(3)),
                     'd' => return Some(Action::ControlIfEmpty(4)),
@@ -205,10 +208,15 @@ pub fn action(key: &Key, m: Mods, auto: bool, popup: bool) -> Option<Action> {
             text_edit::ctrl_key(*c, m.shift).map(Action::Edit)
         }
         Key::Edit(k) => {
-            if m.alt {
+            // AltGr types text with both Ctrl and Alt reported held (winit does not fold Ctrl
+            // out of the text); it must still reach the editor as a plain key, not be dropped
+            // by the Alt gate below (`keyproto::is_altgr`'s precedent - a genuine Ctrl+Alt
+            // chord on anything but a printable key is still not the composer's).
+            let altgr = m.ctrl && m.alt && matches!(k, EditKey::Text(_));
+            if m.alt && !altgr {
                 return None;
             }
-            if m.ctrl {
+            if m.ctrl && !altgr {
                 text_edit::ctrl_nav(k).map(Action::Edit)
             } else {
                 Some(Action::Edit(k.clone()))
@@ -283,49 +291,61 @@ impl Composer {
         }
     }
 
-    /// The caret sits at the end of the first (`first`) or last visual line, with nothing
-    /// selected and no other caret (`moveUp`/`moveDown`'s guard, `CTV:888-908`).
+    /// `cursorAtEnd && !canMoveUp/!canMoveDown && count <= 1` (`CTV:885-908,1165-1173`): a
+    /// single caret, nothing selected, sitting at the end of the *whole* text (not just the
+    /// end of its own line: "abc\ndef" with the caret after "abc" is not this, even though
+    /// that is the first visual line), and the direction has no line above (`first`) or below
+    /// to move to.
     fn at_edge(&self, lines: &[VisualLine], width: &dyn Fn(&str) -> f32, first: bool) -> bool {
-        if !self.edit.extra.is_empty() || self.edit.selection().is_some() {
+        if !self.edit.extra.is_empty() || self.edit.selection().is_some() || self.edit.caret != self.edit.text.len() {
             return false;
         }
         let (line, _) = self.edit.caret_line(lines, width);
-        let edge = if first { line == 0 } else { line + 1 >= lines.len() };
-        edge && self.edit.caret == lines.get(line).map_or(self.edit.text.len(), |l| l.end)
+        if first { line == 0 } else { line + 1 >= lines.len() }
     }
 
-    fn any_caret_before(&self, n: usize) -> bool {
-        self.edit.caret < n || self.edit.anchor.is_some_and(|a| a < n) || self.edit.extra.iter().any(|c| c.at < n || c.anchor.is_some_and(|a| a < n))
-    }
-
-    /// `setStringIncludingPrefix`/`setStringExcludingPrefix` (`CTV:410-425`): `including_prefix`
-    /// takes `s` as the whole text; otherwise `s` is the command and any existing prefix stays
-    /// in front of it. The caret lands at the end (`TextEdit::load`).
+    /// `setStringIncludingPrefix`/`setStringExcludingPrefix` (`CTV:410-425`): both set the
+    /// whole text storage and then re-derive the prefix range from the stored `prefix`
+    /// (`updatePrefix`, `CTV:475-505`), so for content purposes they are the same call: `s` is
+    /// always the command, and the current `prefix` (if any) goes in front of it, whatever `s`
+    /// itself contains. `including_prefix` changes nothing observable here (Cocoa's two
+    /// variants differ only in how they preserve unrelated text attributes); kept for the
+    /// interface `apply`/`CM` calls through. The caret lands at the end (`TextEdit::load`).
     pub fn set_string(&mut self, s: &str, including_prefix: bool) {
-        let full = if including_prefix {
-            s.to_string()
-        } else {
-            match &self.prefix {
-                Some(p) => format!("{}{}", p.text.join("\n"), s),
-                None => s.to_string(),
-            }
+        let _ = including_prefix;
+        let full = match &self.prefix {
+            Some(p) => format!("{}{}", p.text.join("\n"), s),
+            None => s.to_string(),
         };
         self.edit.load(&full);
     }
 
     /// `toggle` (`CM:146-158`): a shown dropdown saves its text and hides regardless of
     /// `status_bar` (the caller's `using_status_bar`); otherwise it opens, in the status bar
-    /// when `status_bar`, else the dropdown. Idempotent when already shown there.
+    /// when `status_bar`, else the dropdown. Idempotent (a refocus, no reload) when already
+    /// shown in the place `status_bar` asks for.
     pub fn toggle(&mut self, status_bar: bool) -> Shown {
-        self.shown = if self.shown == Shown::Dropdown {
-            self.saved = Some(self.contents());
-            Shown::Hidden
-        } else if status_bar {
-            Shown::Field
-        } else {
-            Shown::Dropdown
-        };
+        match self.shown {
+            Shown::Dropdown => {
+                self.saved = Some(self.contents());
+                self.shown = Shown::Hidden;
+            }
+            Shown::Field if status_bar => {}
+            _ => self.reveal(status_bar),
+        }
         self.shown
+    }
+
+    /// A fresh open (`showMinimalComposerInView:`, `CM:234-266`): the underlying view is
+    /// always destroyed on dismiss and rebuilt empty (`finishDismissingMinimalView:` nils
+    /// `_minimalViewController`), so opening starts blank and reloads `saved` only when there
+    /// is one, consuming it (`if (_saved.length) { setString(_saved); _saved = nil; }`,
+    /// `CM:257-260`) - without that, a composer that just sent a command would reopen still
+    /// showing it.
+    fn reveal(&mut self, status_bar: bool) {
+        let s = self.saved.take().unwrap_or_default();
+        self.set_string(&s, true);
+        self.shown = if status_bar { Shown::Field } else { Shown::Dropdown };
     }
 
     /// `showWithCommand:` (key action 64, `CM:123-139`): sets the text and reveals it,
@@ -375,8 +395,10 @@ impl Composer {
         }
     }
 
-    /// Saves the text and hides; false when already hidden.
+    /// `dismissAnimated:` (`CM:271-283`): always turns off the Auto Composer flag, even when
+    /// nothing was showing; saves the text and hides, false when already hidden.
     pub fn dismiss(&mut self) -> bool {
+        self.auto = false;
         if self.shown == Shown::Hidden {
             return false;
         }
@@ -443,30 +465,45 @@ impl Composer {
     }
 
     /// `take()` (`CTV:920-953`): each caret's selection, or else `command_at` at a plain
-    /// caret, removed from the text from the last caret back (so earlier ones keep their byte
-    /// offsets) and returned in text order. A caret with nothing there (an empty document)
-    /// contributes nothing; if none did, the text and carets are untouched.
+    /// caret, removed one at a time from the last caret back (so earlier ones keep their byte
+    /// offsets, and a caret in an already-consumed command finds nothing left there instead of
+    /// repeating its neighbor's piece) and returned in text order. Never reaches into the
+    /// prefix: a selection is clipped to the command portion (nothing taken if it was entirely
+    /// inside the prefix) and a plain caret sitting in the prefix takes nothing. The removals
+    /// bypass the undo stack (several independent ranges, not one caret's edit), so it is
+    /// cleared; the caret is left where the last (leftmost) piece was removed, or 0 if nothing
+    /// was.
     pub fn take(&mut self) -> Vec<String> {
+        let n = self.prefix_len();
         let ranges = self.edit.carets();
-        let mut taken: Vec<(Range<usize>, String)> = Vec::new();
+        let mut taken: Vec<String> = Vec::new();
+        let mut caret_at = 0;
         for r in ranges.iter().rev() {
             if !r.is_empty() {
-                taken.push((r.clone(), self.edit.text[r.clone()].to_string()));
-            } else if let Some(found) = command_at(&self.edit.text, r.start) {
-                taken.push(found);
+                let (start, end) = (r.start.max(n), r.end.max(n));
+                if start < end {
+                    taken.push(self.edit.text[start..end].to_string());
+                    self.edit.text.replace_range(start..end, "");
+                    caret_at = start;
+                }
+            } else if r.start >= n {
+                if let Some((rel, text)) = command_at(&self.edit.text[n..], r.start - n) {
+                    let (start, end) = (rel.start + n, rel.end + n);
+                    taken.push(text);
+                    self.edit.text.replace_range(start..end, "");
+                    caret_at = start;
+                }
             }
         }
         if taken.is_empty() {
             return Vec::new();
         }
-        for (r, _) in &taken {
-            self.edit.text.replace_range(r.clone(), "");
-        }
-        self.edit.caret = 0;
+        self.edit.caret = caret_at.min(self.edit.text.len());
         self.edit.anchor = None;
         self.edit.extra.clear();
         self.edit.at_line_end = false;
-        taken.into_iter().map(|(_, s)| s).rev().collect()
+        self.edit.clear_undo();
+        taken.into_iter().rev().collect()
     }
 
     /// `statusBarComposerComponentDidEndEditing:` (`CM:314-322`): the temporary field goes
@@ -529,8 +566,16 @@ impl Composer {
             // Composer, or a plain hide with the text kept in `saved` otherwise).
             Action::Esc => self.send("", true, true),
             Action::Control(b) => vec![Act::Control(vec![b])],
+            // `CTV:739-748`: with text present this is not handled as a control byte, but as
+            // whatever else Ctrl+D is bound to; a plain text editor's binding for it is delete
+            // forward.
             Action::ControlIfEmpty(b) => {
-                if self.contents().is_empty() { vec![Act::Control(vec![b])] } else { Vec::new() }
+                if self.contents().is_empty() {
+                    vec![Act::Control(vec![b])]
+                } else {
+                    self.edit.key(EditKey::Delete, false, lines, width);
+                    Vec::new()
+                }
             }
             Action::ClearScreen => vec![Act::ClearScreen],
             Action::HistorySearch => {
@@ -539,6 +584,9 @@ impl Composer {
             }
             Action::DeleteAll => {
                 self.edit.key(EditKey::SelectAll, false, lines, width);
+                // Select All reaches the prefix too (selecting it is harmless); clamp before
+                // the Delete that follows so only the command is cleared.
+                self.clamp_prefix();
                 self.edit.key(EditKey::Delete, false, lines, width);
                 Vec::new()
             }
@@ -554,7 +602,12 @@ impl Composer {
             }
             Action::Edit(k) => {
                 let n = self.prefix_len();
-                if n > 0 && mutates(&k) && self.any_caret_before(n) {
+                // A mutating key is refused outright when the range it would actually change
+                // (its selection, or where a delete reaches from the caret; an insert never
+                // reaches left of the caret) starts inside the prefix - not merely when the
+                // caret itself does, which would let a plain Backspace right after the prefix
+                // (caret == n, deleting n-1..n) eat its last character.
+                if n > 0 && mutates(&k) && self.edit.reach(&k).iter().any(|r| r.start < n) {
                     Vec::new()
                 } else {
                     self.edit.key(k, false, lines, width);
@@ -578,7 +631,13 @@ pub fn command_at(text: &str, at: usize) -> Option<(Range<usize>, String)> {
         if text.is_empty() {
             return None;
         }
-        let probe = if i >= text.len() { text.len() - 1 } else { i };
+        if i >= text.len() && text.ends_with('\n') {
+            // An empty last line: NSString's paragraphRange there has length 0, so
+            // `characterRangeOfCommand` returns nil rather than reaching for the line above.
+            return None;
+        }
+        // The start of the last character when probing at or past the end (never mid-char).
+        let probe = if i >= text.len() { text.char_indices().next_back().map_or(0, |(j, _)| j) } else { i };
         let start = text[..probe].rfind('\n').map_or(0, |p| p + 1);
         let end = match text[start..].find('\n') {
             Some(off) => start + off + 1,
@@ -758,6 +817,24 @@ mod tests {
 
         // Win chords are never the composer's.
         assert_eq!(action(&Key::Edit(EditKey::Enter), Mods { win: true, ..Mods::default() }, false, false), None);
+
+        // Tab is bound only with no modifiers; Ctrl+Tab switches tabs, Shift+Tab is not
+        // Completions either.
+        assert_eq!(action(&Key::Edit(EditKey::Tab), m(true, false, false), false, false), None);
+        assert_eq!(action(&Key::Edit(EditKey::Tab), m(false, false, true), false, false), None);
+
+        // The auto-mode Ctrl chords need exactly Ctrl, no Shift or Alt.
+        assert_eq!(action(&Key::Ctrl('c'), m(true, false, true), true, false), None);
+        assert_eq!(action(&Key::Ctrl('l'), m(true, true, false), true, false), None);
+
+        // AltGr (Ctrl+Alt held, but the key types text) reaches the editor as text, not
+        // dropped by the Alt gate.
+        assert_eq!(
+            action(&Key::Edit(EditKey::Text("@".to_string())), m(true, true, false), false, false),
+            Some(Action::Edit(EditKey::Text("@".to_string())))
+        );
+        // A genuine Ctrl+Alt chord on a non-text key is still not the composer's.
+        assert_eq!(action(&Key::Edit(EditKey::Backspace), m(true, true, false), false, false), None);
     }
 
     #[test]
@@ -832,5 +909,195 @@ mod tests {
         assert_eq!(command_at("one\ntwo", 1), Some((0..4, "one\n".to_string())));
         assert_eq!(command_at("a \\\nb", 1), Some((0..5, "a \\\nb".to_string())));
         assert_eq!(command_at("", 0), None);
+    }
+
+    fn dollar_prefix() -> Option<Prompt> {
+        Some(Prompt { rows: Vec::new(), text: vec!["$ ".to_string()], by_trigger: false })
+    }
+
+    #[test]
+    fn command_at_handles_multibyte_and_empty_trailing_lines() {
+        // A caret at the very end after a multi-byte character does not slice mid-char.
+        assert_eq!(command_at("echo \u{e9}", 7), Some((0..7, "echo \u{e9}".to_string())));
+        // An empty last line (the text ends in "\n") takes nothing, not the line above.
+        assert_eq!(command_at("abc\n", 4), None);
+    }
+
+    #[test]
+    fn prefix_survives_auto_reset_and_show_or_append() {
+        // Auto Composer: Enter clears the command but keeps the prompt, and typing right
+        // after does not panic (the caret used to end up past the end of a text whose prefix
+        // had been dropped).
+        let mut c = Composer::default();
+        c.auto = true;
+        c.shown = Shown::Dropdown;
+        c.prefix = dollar_prefix();
+        c.set_string("ls", false);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::Send, &lines, &w), vec![Act::Send("ls\n".to_string())]);
+        assert_eq!(c.edit.text, "$ ");
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        c.apply(Action::Edit(EditKey::Text("x".to_string())), &lines, &w);
+        assert_eq!(c.edit.text, "$ x");
+
+        // Esc in the Auto Composer resets the same way; it must not panic either.
+        let mut c = Composer::default();
+        c.auto = true;
+        c.shown = Shown::Dropdown;
+        c.prefix = dollar_prefix();
+        c.set_string("ls", false);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        c.apply(Action::Esc, &lines, &w);
+        assert_eq!(c.edit.text, "$ ");
+
+        // show_or_append onto an open dropdown keeps the prefix, joining only the commands.
+        let mut c = Composer::default();
+        c.shown = Shown::Dropdown;
+        c.prefix = dollar_prefix();
+        c.set_string("a", false);
+        c.show_or_append("b");
+        assert_eq!(c.edit.text, "$ a\nb");
+    }
+
+    #[test]
+    fn take_stays_out_of_the_prefix_and_avoids_double_removal() {
+        // send-each with a prefix: the prompt and the command share one hard line ("$ ls"), so
+        // a naive paragraph search would sweep the prompt in too.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("ls", false);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::SendEach, &lines, &w), vec![Act::Send("ls\n".to_string())]);
+        assert_eq!(c.edit.text, "$ ");
+        // The caret is left where the command was removed (just after the prefix), not reset
+        // to 0.
+        assert_eq!(c.edit.caret, 2);
+
+        // A selection reaching into the prefix is clipped to the command portion.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("ls", false);
+        c.edit.set_carets(&[Caret { at: 0, anchor: Some(4) }]);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::SendEach, &lines, &w), vec![Act::Send("ls\n".to_string())]);
+        assert_eq!(c.edit.text, "$ ");
+
+        // Two carets landing in the same command (no prefix here) do not try to remove the
+        // same range twice.
+        let mut c = Composer::default();
+        c.edit.load("ab");
+        c.edit.set_carets(&[Caret { at: 0, anchor: None }, Caret { at: 1, anchor: None }]);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::SendEach, &lines, &w), vec![Act::Send("ab\n".to_string())]);
+        assert_eq!(c.edit.text, "");
+
+        // Alt+Enter then Ctrl+Z after a take does not panic (take bypasses the undo stack).
+        let mut c = Composer::default();
+        c.edit.load("one\ntwo");
+        c.edit.caret = 1;
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        c.apply(Action::EnqueueEach, &lines, &w);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::Edit(EditKey::Undo), &lines, &w), Vec::<Act>::new());
+        assert_eq!(c.edit.text, "two");
+    }
+
+    #[test]
+    fn prefix_survives_backspace_and_delete_all() {
+        // Backspace right after the prefix does nothing (refused), not eat its last
+        // character.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("x", false);
+        c.edit.set_carets(&[Caret { at: 2, anchor: None }]);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::Edit(EditKey::Backspace), &lines, &w), Vec::<Act>::new());
+        assert_eq!(c.edit.text, "$ x");
+
+        // Ctrl+Backspace (DeleteWordBack) right after the prefix is refused the same way.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("word", false);
+        c.edit.set_carets(&[Caret { at: 2, anchor: None }]);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::Edit(EditKey::DeleteWordBack), &lines, &w), Vec::<Act>::new());
+        assert_eq!(c.edit.text, "$ word");
+
+        // Ctrl+U (DeleteAll) clears only the command, keeping the prefix.
+        let mut c = Composer::default();
+        c.prefix = dollar_prefix();
+        c.set_string("ls -la", false);
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::DeleteAll, &lines, &w), Vec::<Act>::new());
+        assert_eq!(c.edit.text, "$ ");
+    }
+
+    #[test]
+    fn history_opens_only_at_the_true_end() {
+        // "abc\ndef" with the caret right after "abc" (not the end of the whole text, even
+        // though that is the first visual line): a plain move, not history.
+        let mut c = Composer::default();
+        c.edit.load("abc\ndef");
+        c.edit.caret = 3;
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::Edit(EditKey::Up), &lines, &w), Vec::<Act>::new());
+        assert_eq!(c.edit.caret, 0);
+
+        // At the true end of a multi-line command, Down still opens history.
+        let mut c = Composer::default();
+        c.edit.load("abc\ndef");
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(
+            c.apply(Action::Edit(EditKey::Down), &lines, &w),
+            vec![Act::OpenHistory { prefix: "abc\ndef".to_string(), search: false }]
+        );
+    }
+
+    #[test]
+    fn saved_reloads_once_and_dismiss_clears_auto() {
+        // After a successful send, saved is None; reopening starts empty, not with the sent
+        // text (the underlying view is destroyed and rebuilt on every dismiss/show).
+        let mut c = Composer::default();
+        c.shown = Shown::Dropdown;
+        c.edit.load("ls");
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        c.apply(Action::Send, &lines, &w);
+        assert_eq!(c.saved, None);
+        assert_eq!(c.toggle(false), Shown::Dropdown);
+        assert_eq!(c.edit.text, "");
+
+        // Esc keeps the draft as `saved`; reopening restores it once and then forgets it.
+        let mut c = Composer::default();
+        c.shown = Shown::Dropdown;
+        c.edit.load("draft");
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        c.apply(Action::Esc, &lines, &w);
+        assert_eq!(c.saved.as_deref(), Some("draft"));
+        assert_eq!(c.toggle(false), Shown::Dropdown);
+        assert_eq!(c.edit.text, "draft");
+        assert_eq!(c.saved, None);
+
+        // dismiss() clears the Auto Composer flag (`dismissAnimated:`).
+        let mut c = Composer::default();
+        c.auto = true;
+        c.shown = Shown::Dropdown;
+        assert!(c.dismiss());
+        assert!(!c.auto);
+    }
+
+    #[test]
+    fn control_if_empty_falls_through_when_not_empty() {
+        // With text present, Ctrl+D is not swallowed: it falls through to its normal binding
+        // (delete forward), distinguishable from "handled, nothing to do".
+        let mut c = Composer::default();
+        c.edit.load("abc");
+        c.edit.caret = 0;
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::ControlIfEmpty(4), &lines, &w), Vec::<Act>::new());
+        assert_eq!(c.edit.text, "bc");
+
+        let mut c = Composer::default();
+        let lines = wrap(&c.edit.text, 1000.0, &w);
+        assert_eq!(c.apply(Action::ControlIfEmpty(4), &lines, &w), vec![Act::Control(vec![4])]);
     }
 }
