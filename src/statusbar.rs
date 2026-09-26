@@ -527,10 +527,11 @@ pub fn default_knobs(class: &str) -> toml::Table {
 /// `statusBarComponentExemplarWithBackgroundColor:textColor:` for the setup window's
 /// palette and Active Components: the content module's dynamic exemplar (Task 2's text
 /// formatter supplies `clock_text`; `user` and `home` are the caller's own OS lookups) when
-/// it knows `class`, else this module's own static one (the Spring, the Fixed-size Spacer,
-/// the Placeholder, or a class from a later milestone, none of which need live data).
-pub fn exemplar(class: &str, knobs: &toml::Table, clock_text: &str, user: &str, home: &str) -> String {
-    crate::statusbar_components::exemplar(class, knobs, clock_text, user, home).unwrap_or_else(|| info(class).map_or_else(String::new, |i| i.exemplar.to_string()))
+/// it knows `class`, else this module's own static one under `algorithm` (the Spring,
+/// whose exemplar and name both switch with it, `info_for`; the Fixed-size Spacer, the
+/// Placeholder, or a class from a later milestone, none of which need live data).
+pub fn exemplar(class: &str, knobs: &toml::Table, clock_text: &str, user: &str, home: &str, algorithm: Algorithm) -> String {
+    crate::statusbar_components::exemplar(class, knobs, clock_text, user, home).unwrap_or_else(|| info_for(class, algorithm).map_or_else(String::new, |i| i.exemplar.to_string()))
 }
 
 /// A drop from the palette (`DCV:320-360`): a new component of `class` with its default
@@ -880,6 +881,20 @@ mod tests {
         // PALETTE is exactly registry()'s own non-internal classes, in order: the two
         // never drift apart.
         assert_eq!(PALETTE.to_vec(), registry().into_iter().filter(|i| !i.internal).map(|i| i.class).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn exemplar_follows_the_algorithm() {
+        let none = toml::Table::new();
+        // The Spring's own exemplar switches with the algorithm (`info_for`), unlike a
+        // content class's, which `exemplar` resolves before ever falling back to it.
+        assert_eq!(exemplar(SPRING_CLASS, &none, "", "", "", Algorithm::TightlyPacked), "║〜〜║");
+        assert_eq!(exemplar(SPRING_CLASS, &none, "", "", "", Algorithm::Stable), "       ");
+        // A content class: the fallback is never reached, so the algorithm makes no
+        // difference to its own exemplar.
+        let user_name = crate::statusbar_components::USER_NAME_CLASS;
+        assert_eq!(exemplar(user_name, &none, "", "bob", "/home/bob", Algorithm::TightlyPacked), "bob");
+        assert_eq!(exemplar(user_name, &none, "", "bob", "/home/bob", Algorithm::Stable), "bob");
     }
 
     #[test]

@@ -242,7 +242,7 @@ pub fn knobs(kind: Kind, algorithm: Algorithm) -> Vec<Knob> {
         Kind::CallScriptFunction => vec![
             Knob { label: "Label:".into(), kind: KnobKind::Text, key: LABEL_KEY.into(), placeholder: Some("Button Label".into()), default: None },
             Knob { label: "Function call:".into(), kind: KnobKind::Invocation, key: FUNCTION_INVOCATION_KEY.into(), placeholder: Some("foo(bar: \"baz\")".into()), default: None },
-            Knob { label: "Timeout (seconds):".into(), kind: KnobKind::Double, key: TIMEOUT_KEY.into(), placeholder: Some(String::new()), default: Some(Value::Float(5.0)) },
+            Knob { label: "Timeout (seconds):".into(), kind: KnobKind::Double, key: TIMEOUT_KEY.into(), placeholder: None, default: Some(Value::Float(5.0)) },
             statusbar::color_knob("Background Color:", statusbar::SHARED_BACKGROUND_COLOR_KEY),
             statusbar::color_knob("Text Color:", statusbar::SHARED_TEXT_COLOR_KEY),
             statusbar::priority_knob(),
@@ -443,7 +443,7 @@ mod tests {
         assert_eq!(labels(&fn_call), vec!["Label:", "Function call:", "Timeout (seconds):", "Background Color:", "Text Color:", "Priority:"]);
         assert_eq!((fn_call[0].key.as_str(), fn_call[0].placeholder.as_deref()), (LABEL_KEY, Some("Button Label")));
         assert_eq!((fn_call[1].kind, fn_call[1].key.as_str(), fn_call[1].placeholder.as_deref()), (KnobKind::Invocation, FUNCTION_INVOCATION_KEY, Some("foo(bar: \"baz\")")));
-        assert_eq!((fn_call[2].key.as_str(), fn_call[2].default.clone()), (TIMEOUT_KEY, Some(Value::Float(5.0))));
+        assert_eq!((fn_call[2].key.as_str(), fn_call[2].default.clone(), fn_call[2].placeholder.as_deref()), (TIMEOUT_KEY, Some(Value::Float(5.0)), None));
 
         // Minimum Width's descriptor default is the STRING "0"; Maximum Width's is INFINITY.
         let mnmx = &knobs(Kind::UserName, Algorithm::Stable)[5..7];

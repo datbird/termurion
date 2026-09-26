@@ -283,7 +283,7 @@ impl StatusBarSetupWindow {
                                 // The palette shows the exemplar with the layout's colors and
                                 // the short description below it (`SVC:381-397`); a generic
                                 // instance's default knobs, since nothing is placed yet.
-                                let exemplar = statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text, &user, &home);
+                                let exemplar = statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text, &user, &home, algorithm);
                                 let r = element(ui, Id::new(("palette", class)), &exemplar, Some(info.short), default_bg, default_fg, false);
                                 let r = r.on_hover_text(info.detail);
                                 if r.drag_started() {
@@ -304,7 +304,7 @@ impl StatusBarSetupWindow {
                                 // keeps its place under its class name.
                                 let unknown = short_class(&c.class);
                                 let exemplar = match info {
-                                    Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text, &user, &home),
+                                    Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text, &user, &home, algorithm),
                                     None => unknown.clone(),
                                 };
                                 let bg = c.background_color().as_ref().and_then(color32).or(layout_bg).unwrap_or(default_bg);
@@ -370,12 +370,12 @@ impl StatusBarSetupWindow {
             // anywhere else is removed (`DCV:278-289`).
             if let (Some(d), Some(pos)) = (drag.clone(), pointer) {
                 let label = match &d {
-                    Drag::Palette(class) => statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text, &user, &home),
+                    Drag::Palette(class) => statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text, &user, &home, algorithm),
                     Drag::Active(i) => layout
                         .components
                         .get(*i)
                         .map(|c| match statusbar::info_for(&c.class, algorithm) {
-                            Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text, &user, &home),
+                            Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text, &user, &home, algorithm),
                             None => short_class(&c.class),
                         })
                         .unwrap_or_default(),
