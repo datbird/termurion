@@ -241,6 +241,13 @@ impl StatusBarSetupWindow {
         let default_fg = adv.default_text_color.as_ref().and_then(color32).unwrap_or(rgb32(crate::scene::STATUS_BAR_TEXT));
         let layout_bg = adv.background_color.as_ref().and_then(color32);
         let default_bg = layout_bg.unwrap_or(rgb32(crate::scene::STATUS_BAR_BG));
+        // The exemplar's own live data (`statusbar::exemplar`): the OS lookups a Clock,
+        // User Name or Current Directory component's exemplar needs. `clock_text` is the
+        // Clock's already-formatted text; Task 2 builds the formatter, so until then the
+        // palette and Active Components show no sample time for it.
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let clock_text = String::new();
         let sheet_open = self.sheet.is_some() || self.advanced.is_some();
         let mut open_sheet_for: Option<usize> = None;
         let mut open_advanced = false;
@@ -274,8 +281,10 @@ impl StatusBarSetupWindow {
                             for class in statusbar::PALETTE {
                                 let Some(info) = statusbar::info_for(class, algorithm) else { continue };
                                 // The palette shows the exemplar with the layout's colors and
-                                // the short description below it (`SVC:381-397`).
-                                let r = element(ui, Id::new(("palette", class)), info.exemplar, Some(info.short), default_bg, default_fg, false);
+                                // the short description below it (`SVC:381-397`); a generic
+                                // instance's default knobs, since nothing is placed yet.
+                                let exemplar = statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text, &user, &home);
+                                let r = element(ui, Id::new(("palette", class)), &exemplar, Some(info.short), default_bg, default_fg, false);
                                 let r = r.on_hover_text(info.detail);
                                 if r.drag_started() {
                                     *drag = Some(Drag::Palette(class));
@@ -291,14 +300,17 @@ impl StatusBarSetupWindow {
                             ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
                             for (i, c) in layout.components.iter().enumerate() {
                                 let info = statusbar::info_for(&c.class, algorithm);
-                                // A class Tandem does not show yet (milestone 9h) keeps its
-                                // place under its class name.
+                                // A class Tandem does not show yet (milestone 9i's five)
+                                // keeps its place under its class name.
                                 let unknown = short_class(&c.class);
-                                let exemplar = info.map_or(unknown.as_str(), |i| i.exemplar);
+                                let exemplar = match info {
+                                    Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text, &user, &home),
+                                    None => unknown.clone(),
+                                };
                                 let bg = c.background_color().as_ref().and_then(color32).or(layout_bg).unwrap_or(default_bg);
                                 let fg = if info.is_some() { c.text_color().as_ref().and_then(color32).unwrap_or(default_fg) } else { Color32::GRAY };
                                 // Destination items show only the exemplar (`DCV:221-238`).
-                                let r = element(ui, Id::new(("active", i)), exemplar, None, bg, fg, *selected == Some(i));
+                                let r = element(ui, Id::new(("active", i)), &exemplar, None, bg, fg, *selected == Some(i));
                                 let r = match info {
                                     Some(info) => r.on_hover_text(info.detail),
                                     None => r.on_hover_text(format!("{}: shown in a later milestone", c.class)),
@@ -358,8 +370,15 @@ impl StatusBarSetupWindow {
             // anywhere else is removed (`DCV:278-289`).
             if let (Some(d), Some(pos)) = (drag.clone(), pointer) {
                 let label = match &d {
-                    Drag::Palette(class) => statusbar::info_for(class, algorithm).map_or("", |i| i.exemplar).to_string(),
-                    Drag::Active(i) => layout.components.get(*i).map(|c| statusbar::info_for(&c.class, algorithm).map_or_else(|| short_class(&c.class), |i| i.exemplar.to_string())).unwrap_or_default(),
+                    Drag::Palette(class) => statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text, &user, &home),
+                    Drag::Active(i) => layout
+                        .components
+                        .get(*i)
+                        .map(|c| match statusbar::info_for(&c.class, algorithm) {
+                            Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text, &user, &home),
+                            None => short_class(&c.class),
+                        })
+                        .unwrap_or_default(),
                 };
                 egui::Area::new(Id::new("setup-drag")).order(egui::Order::Tooltip).fixed_pos(pos + egui::vec2(8.0, 8.0)).interactable(false).show(&ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {

@@ -1,8 +1,10 @@
 //! iTerm2's status bar framework: the profile's `Status Bar Layout` (components with
 //! their knobs, and the advanced configuration), the base knobs every component shares,
 //! knob descriptors by type, the registry of the framework's own components (the Spring
-//! and the Fixed-size Spacer; the placeholder shown when a layout is empty), Hide, and
-//! auto-rainbow colors. The 19 content components arrive in milestone 9h.
+//! and the Fixed-size Spacer; the placeholder shown when a layout is empty) plus 9h's
+//! content components (`statusbar_components`, folded into this module's own `registry`,
+//! `info`, `knobs`, `default_knobs` and `exemplar`), Hide, and auto-rainbow colors. Five
+//! content classes (Battery, CPU, Memory, Network, git) arrive in milestone 9i.
 //!
 //! A layout dictionary looks like `{"components": [{"class": <ObjC name>, "configuration":
 //! {"knobs": {...}, "layout advanced configuration dictionary value": {...}}}, ...],
@@ -19,13 +21,16 @@ pub const SPACER_CLASS: &str = "iTermStatusBarFixedSpacerComponent";
 /// `iTermStatusBarPlaceholderComponent`.
 pub const PLACEHOLDER_CLASS: &str = "iTermStatusBarPlaceholderComponent";
 
-const BASE_PRIORITY_KEY: &str = "base: priority";
-const BASE_COMPRESSION_RESISTANCE_KEY: &str = "base: compression resistance";
-const MIN_WIDTH_KEY: &str = "minwidth";
-const MAX_WIDTH_KEY: &str = "maxwidth";
-const SHARED_TEXT_COLOR_KEY: &str = "shared text color";
-const SHARED_BACKGROUND_COLOR_KEY: &str = "shared background color";
-const SHARED_FONT_KEY: &str = "shared font";
+/// `iTermStatusBarPriorityKey`. `pub(crate)` so `statusbar_components` can build the same
+/// shared knob descriptors these consts describe (`BASE:23-27`), rather than duplicating
+/// the strings.
+pub(crate) const BASE_PRIORITY_KEY: &str = "base: priority";
+pub(crate) const BASE_COMPRESSION_RESISTANCE_KEY: &str = "base: compression resistance";
+pub(crate) const MIN_WIDTH_KEY: &str = "minwidth";
+pub(crate) const MAX_WIDTH_KEY: &str = "maxwidth";
+pub(crate) const SHARED_TEXT_COLOR_KEY: &str = "shared text color";
+pub(crate) const SHARED_BACKGROUND_COLOR_KEY: &str = "shared background color";
+pub(crate) const SHARED_FONT_KEY: &str = "shared font";
 const SPRING_CONSTANT_KEY: &str = "iTermStatusBarSpringComponentSpringConstantKey";
 const SIZE_MULTIPLE_KEY: &str = "iTermStatusBarSpringComponentSizeMultipleKey";
 /// `iTermStatusBarFixedSpacerComponentWidthKnob`. `pub(crate)` so the app side's own tests
@@ -340,48 +345,98 @@ pub fn hide_class(layout: &mut Layout, class: &str) {
     layout.components.retain(|c| c.class != class);
 }
 
-fn priority_knob() -> Knob {
+pub(crate) fn priority_knob() -> Knob {
     Knob { label: "Priority:".into(), kind: KnobKind::Double, key: BASE_PRIORITY_KEY.into(), placeholder: Some(String::new()), default: Some(Value::Float(5.0)) }
 }
 
-/// This milestone's framework registry: the Spring, the Fixed-size Spacer, and the
-/// internal Placeholder shown when a layout has no components. The other 19 classes
-/// arrive in milestone 9h; `info` and `knobs` return nothing for a class not here yet,
-/// which is exactly the "kept in the file, skipped on screen" behavior for them.
-pub fn registry() -> Vec<Info> {
-    vec![
-        Info {
-            class: SPRING_CLASS,
-            // Tightly Packed's naming ("Spring"); under Stable this component displays
-            // as "Empty Space" with a matching exemplar and detail text: `info_for`.
-            short: "Spring",
-            detail: "Pushes items apart. Use one spring to right-align status bar elements that follow it. Use two to center those inbetween.",
-            exemplar: "║〜〜║",
-            stretch: true,
-            margins: false,
-            internal: false,
-        },
-        Info {
-            class: SPACER_CLASS,
-            short: "Fixed-size Spacer",
-            detail: "Adds a fixed amount of space",
-            exemplar: "╠══╣",
-            stretch: false,
-            margins: true,
-            internal: false,
-        },
-        Info {
-            class: PLACEHOLDER_CLASS,
-            short: "Placeholder",
-            detail: "Placeholder",
-            // iTerm2's own exemplar method asserts false: the placeholder never appears
-            // in the setup picker (it is internal).
-            exemplar: "",
-            stretch: true,
-            margins: true,
-            internal: true,
-        },
+/// A Color knob, `"Color"` (the Spring, the Fixed-size Spacer, Search and Filter) or
+/// labeled (`"Text Color:"`, `"Icon Color:"`, ...): always no placeholder or default (a
+/// color knob's absence just means "use the layout's own").
+pub(crate) fn color_knob(label: &'static str, key: &'static str) -> Knob {
+    Knob { label: label.into(), kind: KnobKind::Color, key: key.into(), placeholder: None, default: None }
+}
+
+/// `"Minimum Width:"` and `"Maximum Width:"` (`BASE:189-203`), shown by every Text
+/// component. The minimum's descriptor default is oddly the STRING `"0"`
+/// (`[@(defaultMinimumWidth) stringValue]`); the maximum's is the float INFINITY.
+pub(crate) fn min_max_width_knobs() -> [Knob; 2] {
+    [
+        Knob { label: "Minimum Width:".into(), kind: KnobKind::Double, key: MIN_WIDTH_KEY.into(), placeholder: Some(String::new()), default: Some(Value::String("0".into())) },
+        Knob { label: "Maximum Width:".into(), kind: KnobKind::Double, key: MAX_WIDTH_KEY.into(), placeholder: Some(String::new()), default: Some(Value::Float(f64::INFINITY)) },
     ]
+}
+
+/// The knob suite every stretchable `iTermStatusBarTextComponent` shows after its own
+/// knobs (`TXT:27-48` plus the Base knobs): Text Color, Background Color, Custom Font,
+/// Compression Resistance or Size Multiple (by `algorithm`), Priority, Minimum Width,
+/// Maximum Width. Shared by every 9h content class built on Text (`statusbar_components`).
+pub(crate) fn text_component_knobs(algorithm: Algorithm) -> Vec<Knob> {
+    let mut v = vec![
+        color_knob("Text Color:", SHARED_TEXT_COLOR_KEY),
+        color_knob("Background Color:", SHARED_BACKGROUND_COLOR_KEY),
+        Knob { label: "Custom Font".into(), kind: KnobKind::Font, key: SHARED_FONT_KEY.into(), placeholder: None, default: None },
+        {
+            let label = match algorithm {
+                Algorithm::TightlyPacked => "Compression Resistance:",
+                Algorithm::Stable => "Size Multiple:",
+            };
+            // A generic stretchable component's descriptor default is 1 under either
+            // algorithm (`BASE:231-237`), unlike the Spring's own knob above.
+            Knob { label: label.into(), kind: KnobKind::Double, key: BASE_COMPRESSION_RESISTANCE_KEY.into(), placeholder: Some(String::new()), default: Some(Value::Float(1.0)) }
+        },
+        priority_knob(),
+    ];
+    v.extend(min_max_width_knobs());
+    v
+}
+
+/// This milestone's framework registry, in iTerm2's palette order (`SETUP:107-134`): the
+/// 9h content classes (`statusbar_components::infos`) up through Composer, the Fixed-size
+/// Spacer and the Spring (in that palette position), the rest of the content classes, then
+/// the internal Placeholder shown when a layout has no components. The 9i content classes
+/// (Battery, CPU, Memory, Network, git) are not here yet; `info` and `knobs` return nothing
+/// for a class not here yet, which is exactly the "kept in the file, skipped on screen"
+/// behavior for them.
+pub fn registry() -> Vec<Info> {
+    let content = crate::statusbar_components::infos();
+    // `infos` gives every content kind in one run, Composer immediately followed by
+    // Interpolated String; the palette threads the two framework classes in between.
+    let split = content.iter().position(|i| i.class == crate::statusbar_components::COMPOSER_CLASS).map_or(content.len(), |i| i + 1);
+    let mut v = Vec::with_capacity(content.len() + 3);
+    v.extend_from_slice(&content[..split]);
+    v.push(Info {
+        class: SPACER_CLASS,
+        short: "Fixed-size Spacer",
+        detail: "Adds a fixed amount of space",
+        exemplar: "╠══╣",
+        stretch: false,
+        margins: true,
+        internal: false,
+    });
+    v.push(Info {
+        class: SPRING_CLASS,
+        // Tightly Packed's naming ("Spring"); under Stable this component displays
+        // as "Empty Space" with a matching exemplar and detail text: `info_for`.
+        short: "Spring",
+        detail: "Pushes items apart. Use one spring to right-align status bar elements that follow it. Use two to center those inbetween.",
+        exemplar: "║〜〜║",
+        stretch: true,
+        margins: false,
+        internal: false,
+    });
+    v.extend_from_slice(&content[split..]);
+    v.push(Info {
+        class: PLACEHOLDER_CLASS,
+        short: "Placeholder",
+        detail: "Placeholder",
+        // iTerm2's own exemplar method asserts false: the placeholder never appears
+        // in the setup picker (it is internal).
+        exemplar: "",
+        stretch: true,
+        margins: true,
+        internal: true,
+    });
+    v
 }
 
 pub fn info(class: &str) -> Option<Info> {
@@ -389,8 +444,8 @@ pub fn info(class: &str) -> Option<Info> {
 }
 
 /// The knob descriptors `statusBarComponentKnobs` returns, in order, for a class this
-/// milestone knows. A class not here yet (the 9h content components, or one Tandem
-/// truly does not recognize) returns no knobs: it has no Configure sheet, only Hide.
+/// milestone knows. A class not here yet (the 9i content components, or one Tandem truly
+/// does not recognize) returns no knobs: it has no Configure sheet, only Hide.
 pub fn knobs(class: &str, algorithm: Algorithm) -> Vec<Knob> {
     match class {
         SPRING_CLASS => {
@@ -400,15 +455,15 @@ pub fn knobs(class: &str, algorithm: Algorithm) -> Vec<Knob> {
             };
             vec![
                 Knob { label: label.into(), kind: KnobKind::Double, key: key.into(), placeholder: Some(String::new()), default: Some(Value::Float(default)) },
-                Knob { label: "Color".into(), kind: KnobKind::Color, key: SHARED_BACKGROUND_COLOR_KEY.into(), placeholder: None, default: None },
+                color_knob("Color", SHARED_BACKGROUND_COLOR_KEY),
             ]
         }
         SPACER_CLASS => vec![
-            Knob { label: "Color".into(), kind: KnobKind::Color, key: SHARED_BACKGROUND_COLOR_KEY.into(), placeholder: None, default: None },
+            color_knob("Color", SHARED_BACKGROUND_COLOR_KEY),
             Knob { label: "Width".into(), kind: KnobKind::Double, key: SPACER_WIDTH_KEY.into(), placeholder: None, default: Some(Value::Float(5.0)) },
             priority_knob(),
         ],
-        _ => Vec::new(),
+        _ => crate::statusbar_components::Kind::of(class).map_or_else(Vec::new, |kind| crate::statusbar_components::knobs(kind, algorithm)),
     }
 }
 
@@ -420,9 +475,28 @@ pub fn info_for(class: &str, algorithm: Algorithm) -> Option<Info> {
     Some(if class == SPRING_CLASS && algorithm == Algorithm::Stable { Info { short: "Empty Space", detail: "Empty space that draws only a background color.", exemplar: "       ", ..i } } else { i })
 }
 
-/// The setup window's component menu, in iTerm2's order (`SVC:107-146`: the Fixed-size
-/// Spacer is number 18, the Spring 19). Milestone 9h adds the content components before them.
-pub const PALETTE: [&str; 2] = [SPACER_CLASS, SPRING_CLASS];
+/// The setup window's component menu, in iTerm2's order (`SETUP:107-134`, less the 9i
+/// classes: Battery, CPU, Memory, Network and git, which are not shown until 9i lands): the
+/// 9h content classes, the Fixed-size Spacer and Spring at their iTerm2 position, then the
+/// rest of the content classes.
+pub const PALETTE: [&str; 16] = [
+    crate::statusbar_components::CLOCK_CLASS,
+    crate::statusbar_components::CUSTOM_ACTION_CLASS,
+    crate::statusbar_components::ACTIONS_MENU_CLASS,
+    crate::statusbar_components::SNIPPETS_MENU_CLASS,
+    crate::statusbar_components::TRIGGERS_MENU_CLASS,
+    crate::statusbar_components::HOST_NAME_CLASS,
+    crate::statusbar_components::USER_NAME_CLASS,
+    crate::statusbar_components::JOB_NAME_CLASS,
+    crate::statusbar_components::CURRENT_DIRECTORY_CLASS,
+    crate::statusbar_components::SEARCH_TOOL_CLASS,
+    crate::statusbar_components::FILTER_TOOL_CLASS,
+    crate::statusbar_components::COMPOSER_CLASS,
+    SPACER_CLASS,
+    SPRING_CLASS,
+    crate::statusbar_components::INTERPOLATED_STRING_CLASS,
+    crate::statusbar_components::CALL_SCRIPT_FUNCTION_CLASS,
+];
 
 /// `"layout advanced configuration dictionary value"`: the copy of the layout's advanced
 /// configuration iTerm2 keeps in each component's configuration.
@@ -441,9 +515,22 @@ pub fn default_knobs(class: &str) -> toml::Table {
         SPACER_CLASS => {
             t.insert(SPACER_WIDTH_KEY.into(), Value::Float(5.0));
         }
-        _ => {}
+        _ => {
+            if let Some(kind) = crate::statusbar_components::Kind::of(class) {
+                t.extend(crate::statusbar_components::default_knobs(kind));
+            }
+        }
     }
     t
+}
+
+/// `statusBarComponentExemplarWithBackgroundColor:textColor:` for the setup window's
+/// palette and Active Components: the content module's dynamic exemplar (Task 2's text
+/// formatter supplies `clock_text`; `user` and `home` are the caller's own OS lookups) when
+/// it knows `class`, else this module's own static one (the Spring, the Fixed-size Spacer,
+/// the Placeholder, or a class from a later milestone, none of which need live data).
+pub fn exemplar(class: &str, knobs: &toml::Table, clock_text: &str, user: &str, home: &str) -> String {
+    crate::statusbar_components::exemplar(class, knobs, clock_text, user, home).unwrap_or_else(|| info(class).map_or_else(String::new, |i| i.exemplar.to_string()))
 }
 
 /// A drop from the palette (`DCV:320-360`): a new component of `class` with its default
@@ -708,7 +795,9 @@ mod tests {
     #[test]
     fn framework_components_follow_iterm2() {
         let reg = registry();
-        assert_eq!(reg.len(), 3);
+        // The framework's own 3 (Spring, Fixed-size Spacer, Placeholder) plus 9h's content
+        // registry (14 palette classes, 3 internal): `statusbar_components::infos().len()`.
+        assert_eq!(reg.len(), 20);
 
         let spring = info(SPRING_CLASS).unwrap();
         assert_eq!((spring.short, spring.exemplar, spring.stretch, spring.margins, spring.internal), ("Spring", "║〜〜║", true, false, false));
@@ -780,8 +869,17 @@ mod tests {
         assert_eq!(info_for(SPACER_CLASS, Algorithm::Stable), info(SPACER_CLASS));
         assert_eq!(info_for(SPACER_CLASS, Algorithm::TightlyPacked), info(SPACER_CLASS));
         assert_eq!(info_for("iTermStatusBarNoSuchComponent", Algorithm::Stable), None);
-        // The palette: iTerm2's order (the spacer is number 18, the spring 19), no internal class.
-        assert_eq!(PALETTE, [SPACER_CLASS, SPRING_CLASS]);
+        // The palette: iTerm2's order, no internal class; the Fixed-size Spacer and Spring
+        // (numbers 18 and 19 in iTerm2's own list) sit between Composer and Interpolated
+        // String, where 9h's content classes leave a gap for them (`content_registry_
+        // follows_iterm2` in `statusbar_components.rs` checks the content classes' own
+        // positions in full).
+        assert_eq!(PALETTE[12], SPACER_CLASS);
+        assert_eq!(PALETTE[13], SPRING_CLASS);
+        assert!(PALETTE.iter().all(|&c| info(c).is_some_and(|i| !i.internal)));
+        // PALETTE is exactly registry()'s own non-internal classes, in order: the two
+        // never drift apart.
+        assert_eq!(PALETTE.to_vec(), registry().into_iter().filter(|i| !i.internal).map(|i| i.class).collect::<Vec<_>>());
     }
 
     #[test]
