@@ -11,6 +11,7 @@ pub mod mru;
 pub mod dvr;
 pub mod replay;
 pub mod replay_panel;
+pub mod recording;
 pub mod cadence;
 pub mod osc;
 pub mod osc1337;

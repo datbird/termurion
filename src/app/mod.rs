@@ -464,6 +464,11 @@ pub struct App {
     replay_seen: Option<(u64, PaneId)>,
     /// Keys whose press Instant Replay took, so their releases are taken too.
     replay_keys: toolbelt_tools_ui::TakenKeys<PhysicalKey>,
+    /// Import and Export Recording's warnings, each opened on the next pass (it needs the
+    /// event loop); app level, as iTerm2's are (`window:nil`).
+    recording_warnings: Vec<(Option<crate::prompt_ui::ConfirmWindow>, &'static str, String)>,
+    /// A loaded recording's pane, entering replay on the next pass (`RC:124-126`).
+    recording_replay: Option<PaneId>,
     /// Page Setup's printer, paper, and margins.
     print_setup: crate::winprint::Setup,
     /// OpenURL requests waiting for an answer, by pane and host; uploads being sent.
@@ -730,6 +735,8 @@ pub fn run() {
         replay_window: None,
         replay_seen: None,
         replay_keys: Default::default(),
+        recording_warnings: Vec::new(),
+        recording_replay: None,
         block_hover: None,
         block_buttons: Vec::new(),
         porthole_views: HashMap::new(),
@@ -2454,6 +2461,7 @@ impl ApplicationHandler<UserEvent> for App {
         let replay_due = self.replay_frame_due();
         self.open_composer_windows(event_loop);
         self.open_jobs_confirm(event_loop);
+        self.open_recording_windows(event_loop);
         self.open_git_log(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -2574,7 +2582,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

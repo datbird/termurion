@@ -291,6 +291,116 @@ impl Dvr {
         copy
     }
 
+    /// `dictionaryValueFrom:to:` (`D:164-174`, with `DVRBuffer`'s and `DVRIndexEntry`'s
+    /// dictionaries): `{ version: 4, capacity, buffer: { firstKey, nextKey, begin, end,
+    /// index } }`, the range copied as `copy_range` does. Each index entry keeps iTerm2's
+    /// `info`, `position` and `frameLength` and carries its frame's rows in `lines` (key
+    /// frames every row, diffs null for a clean one) where iTerm2 keeps a byte store.
+    /// Null when a row cannot be written (iTerm2's nil dictionary).
+    pub fn to_json(&self, from: i64, to: i64, now_us: &mut dyn FnMut() -> i64) -> serde_json::Value {
+        use serde_json::json;
+        let copy;
+        let d = if from == self.first_timestamp() && to == self.last_timestamp() {
+            self
+        } else {
+            copy = self.copy_range(from, to, now_us);
+            &copy
+        };
+        let mut index = serde_json::Map::new();
+        for (i, (f, (pos, len))) in d.frames.iter().zip(d.ring.blocks.iter()).enumerate() {
+            let lines = match &f.lines {
+                Lines::Key(rows) => serde_json::to_value(rows),
+                Lines::Diff(rows) => serde_json::to_value(rows),
+            };
+            let Ok(lines) = lines else { return serde_json::Value::Null };
+            let info = f.info;
+            let entry = json!({
+                "info": {
+                    "width": info.cols,
+                    "height": info.rows,
+                    "cursorX": info.cursor.0,
+                    "cursorY": info.cursor.1,
+                    "timestamp": info.timestamp,
+                    "frameType": match info.kind { Kind::Key => 0, Kind::Diff => 1 },
+                },
+                "position": pos,
+                "frameLength": len,
+                "lines": lines,
+            });
+            index.insert((d.ring.first + i as u64).to_string(), entry);
+        }
+        json!({
+            "version": 4,
+            "capacity": d.ring.capacity,
+            "buffer": {
+                "firstKey": d.ring.first,
+                "nextKey": d.ring.next,
+                "begin": d.ring.begin,
+                "end": d.ring.end,
+                "index": index,
+            },
+        })
+    }
+
+    /// `loadDictionary:` (`D:176-213`, `B:110-143`): a read-only recorder, or None when the
+    /// inner version is not 1 to 4, the capacity is 0, the buffer is missing, or (Tandem,
+    /// which keeps rows instead of a byte store) an entry is missing or malformed: every
+    /// key from `firstKey` up to `nextKey` needs an entry whose rows match its size, and
+    /// the first must be a key frame. `begin` and `end` outside the store become 0, as
+    /// iTerm2 has it.
+    pub fn from_json(v: &serde_json::Value) -> Option<Dvr> {
+        let version = v.get("version")?.as_i64()?;
+        if !(1..=4).contains(&version) {
+            return None;
+        }
+        let capacity = v.get("capacity")?.as_u64().filter(|c| *c > 0)?;
+        let buffer = v.get("buffer")?.as_object()?;
+        let key_of = |k: &str| buffer.get(k).and_then(|x| x.as_u64());
+        let (first, next) = (key_of("firstKey").unwrap_or(0), key_of("nextKey").unwrap_or(0));
+        if next < first {
+            return None;
+        }
+        let inside = |x: Option<u64>| x.filter(|x| *x < capacity).unwrap_or(0);
+        let index = buffer.get("index")?.as_object()?;
+        let mut d = Dvr::new(capacity);
+        d.ring.first = first;
+        d.ring.next = next;
+        d.ring.begin = inside(key_of("begin"));
+        d.ring.end = inside(key_of("end"));
+        for key in first..next {
+            let e = index.get(&key.to_string())?;
+            let info = e.get("info")?;
+            let n = |k: &str| info.get(k).and_then(|x| x.as_u64()).map(|x| x as usize);
+            let (cols, rows) = (n("width")?, n("height")?);
+            let kind = match info.get("frameType")?.as_u64()? {
+                0 => Kind::Key,
+                1 => Kind::Diff,
+                _ => return None,
+            };
+            if key == first && kind != Kind::Key {
+                return None;
+            }
+            let info = Info { cols, rows, cursor: (n("cursorX")?, n("cursorY")?), timestamp: info.get("timestamp")?.as_i64()?, kind };
+            let lines = e.get("lines")?.clone();
+            let lines = match kind {
+                Kind::Key => {
+                    let l: Vec<Row<Cell>> = serde_json::from_value(lines).ok()?;
+                    (l.len() == rows && l.iter().all(|r| r.len() == cols)).then_some(Lines::Key(l))?
+                }
+                Kind::Diff => {
+                    let l: Vec<Option<Row<Cell>>> = serde_json::from_value(lines).ok()?;
+                    (l.len() == rows && l.iter().flatten().all(|r| r.len() == cols)).then_some(Lines::Diff(l))?
+                }
+            };
+            let pos = e.get("position").and_then(|x| x.as_u64()).unwrap_or(0);
+            let len = e.get("frameLength").and_then(|x| x.as_u64()).unwrap_or(0);
+            d.ring.blocks.push_back((pos, len));
+            d.frames.push_back(Frame { info, lines });
+        }
+        d.read_only = true;
+        Some(d)
+    }
+
     pub fn frame(&self, key: u64) -> Option<&Frame> {
         if key < self.ring.first {
             return None;

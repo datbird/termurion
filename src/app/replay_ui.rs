@@ -3,6 +3,7 @@
 //! `PT` = `TerminalView/PseudoTerminal.m`, `PS` = `PTYSession/PTYSession.m`.
 
 use super::*;
+use crate::recording;
 use crate::replay::{self, Close, IrKey, ReplayEvent};
 use crate::replay_panel::{self, PanelAct};
 use crate::replay_window::{PanelView, ReplayWindow};
@@ -325,8 +326,13 @@ impl App {
                     match act {
                         PanelAct::Seek(f) => self.replay_seek(f, event_loop),
                         PanelAct::Beep => find_ui::beep(),
-                        // Session > Log > Export Recording writes the range (the next task).
-                        PanelAct::Export { .. } => {}
+                        // The range from Set Start to Set End, from the live session's
+                        // recorder (`PT:10442-10444`).
+                        PanelAct::Export { from, to } => {
+                            if let Some(id) = self.focused_id() {
+                                self.export_recording(id, from, to);
+                            }
+                        }
                     }
                     self.update_replay_panel();
                 }
@@ -339,6 +345,167 @@ impl App {
         }
         true
     }
+}
+
+impl App {
+    /// Session > Log > Export Recording (`PT:13809-13811`): the focused session's whole
+    /// recording. Always enabled, as iTerm2's `DVR.empty` is never set (`D:89`), so an empty
+    /// recorder writes an empty recording. During a replay iTerm2's current session is the
+    /// replay view, which has no recorder (`PS:1471`): the dialog shows, then "Error
+    /// encoding recording." (kept).
+    pub(super) fn export_recording_menu(&mut self) {
+        let Some(id) = self.focused_id().filter(|id| self.panes.contains_key(id)) else { return };
+        if self.panes.get(&id).is_some_and(|p| p.replay.is_some()) {
+            if export_dialog().is_some() {
+                self.recording_warning(recording::WARNING, recording::ENCODE_FAILED.to_string());
+            }
+            return;
+        }
+        let (first, last) = self.panes.get(&id).map_or((0, 0), |p| (p.dvr.first_timestamp(), p.dvr.last_timestamp()));
+        self.export_recording(id, first, last);
+    }
+
+    /// `exportRecording:from:to:window:` (`RC:137-208`): the save dialog, then the file
+    /// with the pane's recording from `from` to `to` and its profile without the private
+    /// keys. A write error shows "The recording could not be saved." with the error text.
+    pub(super) fn export_recording(&mut self, pane: PaneId, from: i64, to: i64) {
+        let Some(path) = export_dialog() else { return };
+        let Some(p) = self.panes.get(&pane) else { return };
+        // A range copy stamps its frames now (`D:215-245`); stamps never repeat.
+        let mut last = 0;
+        let mut now = || {
+            last = unix_us().max(last + 1);
+            last
+        };
+        let dvr = p.dvr.to_json(from, to, &mut now);
+        if dvr.is_null() {
+            return self.recording_warning(recording::WARNING, recording::ENCODE_FAILED.to_string());
+        }
+        let profile = self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile());
+        let profile = match serde_json::to_value(&profile.values) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => serde_json::Map::new(),
+        };
+        let guid = uuid::Uuid::new_v4().to_string().to_uppercase();
+        let bytes = recording::encode(dvr, recording::redact(&profile, &guid));
+        if let Err(e) = std::fs::write(&path, bytes) {
+            self.recording_warning(recording::SAVE_FAILED, e.to_string());
+        }
+    }
+
+    /// Session > Log > Import Recording (`RC:23-135`): the open dialog for `.itr` files
+    /// unless `path` names one. A file that does not load shows its warning. One that does
+    /// opens in a new tab at the front of the current window, with a session-local copy
+    /// of its profile, in a pane with no shell at its first frame's size, holding the
+    /// read-only recorder; replay starts on the next pass (`RC:124-126`).
+    pub(super) fn import_recording(&mut self, path: Option<std::path::PathBuf>) {
+        let path = path.or_else(|| {
+            let mut d = rfd::FileDialog::new().add_filter(recording::FILTER, &[recording::EXTENSION]);
+            if let Some(home) = home_folder() {
+                d = d.set_directory(home);
+            }
+            d.pick_file()
+        });
+        let Some(path) = path else { return };
+        let loaded = std::fs::read(&path).map_err(|e| recording::LoadError::Read(e.to_string())).and_then(|b| recording::load(&b));
+        let (dvr, values) = match loaded {
+            Ok(l) => l,
+            Err(e) => {
+                let (heading, text) = recording::warning(&e);
+                return self.recording_warning(heading, text);
+            }
+        };
+        // Keys the file lacks read their defaults. A fresh Guid keeps two imports of one
+        // file apart.
+        let mut profile = crate::profile::Profile::default();
+        for (k, v) in values {
+            if let Ok(v) = serde_json::from_value::<toml::Value>(v) {
+                profile.set(&k, v);
+            }
+        }
+        profile.set(crate::profile::GUID, toml::Value::String(uuid::Uuid::new_v4().to_string().to_uppercase()));
+        self.store.sessions.push(crate::session_profile::SessionProfile { profile: profile.clone(), overridden: Default::default() });
+        let (cols, rows) = match dvr.frame(dvr.ring.first) {
+            Some(f) => (f.info.cols as u16, f.info.rows as u16),
+            None => self.grid_size(self.content_area()),
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        self.install_pane(id, Pane::recording(id, cols, rows), &profile);
+        if let Some(p) = self.panes.get_mut(&id) {
+            p.dvr = dvr;
+        }
+        self.tabs.insert(0, Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+        self.next_tab_id += 1;
+        self.active = 0;
+        self.relayout();
+        self.recording_replay = Some(id);
+    }
+
+    /// Queues a warning with OK only (`iTermWarning`, `kiTermWarningTypePersistent`).
+    fn recording_warning(&mut self, heading: &'static str, text: String) {
+        self.recording_warnings.push((None, heading, text));
+        self.redraw();
+    }
+
+    /// Opens the warnings queued since the last pass and starts a loaded recording's replay
+    /// (`replaySession:`; nothing when it holds no frame).
+    pub(super) fn open_recording_windows(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(id) = self.recording_replay.take() {
+            if self.enter_pane_window(id) && self.panes.contains_key(&id) {
+                self.replay_session(id, event_loop);
+            }
+        }
+        let Some(g) = self.gpu.as_ref() else { return };
+        let mut failed = None;
+        for (slot, heading, text) in self.recording_warnings.iter_mut().filter(|(w, _, _)| w.is_none()) {
+            match crate::prompt_ui::ConfirmWindow::warning(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text) {
+                Ok(w) => *slot = Some(w),
+                Err(e) => failed = Some(e),
+            }
+        }
+        if let Some(e) = failed {
+            self.recording_warnings.retain(|(w, _, _)| w.is_some());
+            self.banners.set("window", format!("Could not open the window: {e}"));
+        }
+    }
+
+    /// Events for a recording warning; OK or closing it dismisses it. False for other
+    /// windows.
+    pub(super) fn recording_warning_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
+        use crate::prompt_ui::ConfirmResult;
+        let Some(i) = self.recording_warnings.iter().position(|(w, _, _)| w.as_ref().is_some_and(|w| w.id() == window)) else { return false };
+        let Some(w) = self.recording_warnings[i].0.as_mut() else { return false };
+        let answer = match event {
+            WindowEvent::CloseRequested => ConfirmResult::Cancel,
+            WindowEvent::RedrawRequested => w.redraw(),
+            other => {
+                w.event(other);
+                ConfirmResult::Open
+            }
+        };
+        if !matches!(answer, ConfirmResult::Open) {
+            self.recording_warnings.remove(i);
+        }
+        true
+    }
+}
+
+/// The save dialog (`RC:144-151`): "Recording", `.itr`, the home folder.
+fn export_dialog() -> Option<std::path::PathBuf> {
+    let mut d = rfd::FileDialog::new().set_file_name(recording::DEFAULT_NAME).add_filter(recording::FILTER, &[recording::EXTENSION]);
+    if let Some(home) = home_folder() {
+        d = d.set_directory(home);
+    }
+    d.save_file()
+}
+
+fn home_folder() -> Option<std::path::PathBuf> {
+    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
+}
+
+fn unix_us() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros() as i64)
 }
 
 /// `stringForTimestamp:` (`IRW:279-299`) with the Windows locale's short date and its

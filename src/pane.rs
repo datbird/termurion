@@ -316,10 +316,20 @@ impl Pane {
         }
     }
 
+    /// A loaded Instant Replay recording's pane (iTerm2's synthetic session, `RC:113-114`):
+    /// no pty, so nothing runs in it, it never exits and it reads no output.
+    pub fn recording(id: PaneId, cols: u16, rows: u16) -> Pane {
+        Pane::with(id, None, cols.max(2), rows.max(1))
+    }
+
     fn with_io(id: PaneId, io: Io, cols: u16, rows: u16) -> Pane {
+        Pane::with(id, Some(io), cols, rows)
+    }
+
+    fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
-        screen.pty_backed = true;
-        Pane { id, screen, pty: Some(io), exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None }
+        screen.pty_backed = pty.is_some();
+        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.

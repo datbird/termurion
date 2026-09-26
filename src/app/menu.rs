@@ -583,6 +583,8 @@ impl App {
             }
             "clearBuffer:" => self.clear_or_reset(true),
             "clearInstantReplay:" => self.clear_instant_replay(),
+            "exportRecording:" => self.export_recording_menu(),
+            "loadRecording:" => self.import_recording(None),
             // Disabled while the focused pane replays (`PT:13940-13941`).
             "irPrev:" => {
                 if self.focused_id().and_then(|id| self.panes.get(&id)).is_some_and(|p| p.replay.is_none()) {

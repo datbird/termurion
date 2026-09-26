@@ -70,7 +70,7 @@ pub const DONE: &[&str] = &[
     "setWindowStyle:|Full-Height Left of Screen", "setWindowStyle:|Full-Height Right of Screen",
     "setWindowStyle:|Bottom of Screen", "setWindowStyle:|Top of Screen", "setWindowStyle:|Left of Screen",
     "setWindowStyle:|Right of Screen", "toggleToolbeltVisibility:", "setDefaultToolbeltWidth:",
-    "irPrev:", "clearInstantReplay:",
+    "irPrev:", "clearInstantReplay:", "exportRecording:", "loadRecording:",
 ];
 
 /// Commands that work with a known difference for now.
@@ -264,5 +264,7 @@ mod tests {
         assert_eq!(status(find("toggleAutoComposer:", "Auto Composer")), Status::Done, "9l");
         assert_eq!(status(find("irPrev:", "Start Instant Replay")), Status::Done, "10a");
         assert_eq!(status(find("clearInstantReplay:", "Clear Instant Replay")), Status::Done, "10a");
+        assert_eq!(status(find("exportRecording:", "Export Recording")), Status::Done, "10a");
+        assert_eq!(status(find("loadRecording:", "Import Recording")), Status::Done, "10a");
     }
 }

@@ -173,6 +173,8 @@ pub struct ConfirmWindow {
     host: EguiHost,
     text: String,
     suppress: bool,
+    /// A warning with OK only and no checkbox (`kiTermWarningTypePersistent`).
+    ok_only: bool,
 }
 
 impl ConfirmWindow {
@@ -190,7 +192,24 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 420.0, 130.0)?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false })
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, ok_only: false })
+    }
+
+    /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
+    /// it too).
+    #[allow(clippy::too_many_arguments)]
+    pub fn warning(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        heading: &str,
+        text: &str,
+    ) -> Result<ConfirmWindow, String> {
+        let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
+        w.ok_only = true;
+        Ok(w)
     }
 
     pub fn id(&self) -> WindowId {
@@ -207,19 +226,21 @@ impl ConfirmWindow {
 
     pub fn redraw(&mut self) -> ConfirmResult {
         let mut result = ConfirmResult::Open;
-        let (text, suppress) = (&self.text, &mut self.suppress);
+        let (text, suppress, ok_only) = (&self.text, &mut self.suppress, self.ok_only);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(text.as_str());
                 ui.add_space(6.0);
-                ui.checkbox(suppress, Self::SUPPRESS);
-                ui.add_space(6.0);
+                if !ok_only {
+                    ui.checkbox(suppress, Self::SUPPRESS);
+                    ui.add_space(6.0);
+                }
                 let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() || enter {
                         result = ConfirmResult::Ok { suppress: *suppress };
                     }
-                    if ui.button("Cancel").clicked() || escape {
+                    if (!ok_only && ui.button("Cancel").clicked()) || escape {
                         result = ConfirmResult::Cancel;
                     }
                 });
