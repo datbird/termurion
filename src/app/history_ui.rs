@@ -42,7 +42,11 @@ impl App {
     /// A copy or a paste goes into the history (saved to disk with "Save copy/paste and
     /// command history to disk").
     pub(super) fn remember_paste(&mut self, text: &str) {
-        if !self.history().save(text, unix_now()) || !self.globals.bool("SavePasteHistory") {
+        let changed = self.history().save(text, unix_now());
+        if changed {
+            self.tools_changed();
+        }
+        if !changed || !self.globals.bool("SavePasteHistory") {
             return;
         }
         let json = self.history().to_json();

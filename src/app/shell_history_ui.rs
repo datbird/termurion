@@ -81,6 +81,7 @@ impl App {
             return;
         }
         let now = unix(std::time::SystemTime::now());
+        self.tools_changed();
         let store = self.shell_history();
         for (host, _, command, cwd, time) in adds {
             store.record_command(&host, &command, cwd.as_deref(), time);

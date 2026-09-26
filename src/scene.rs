@@ -1285,7 +1285,9 @@ pub struct ListRow {
 /// What a toolbelt tool's list widget shows. The app measures the text (the scene cannot).
 pub struct ListDraw<'a> {
     pub layout: &'a crate::tool_list::ListLayout,
+    /// The rows that show, from row `first` on (the app builds only those).
     pub rows: &'a [ListRow],
+    pub first: usize,
     pub selected: &'a [usize],
     pub dark: bool,
     /// The field's text as shown (its end, when it is wider than the field) and that text's
@@ -1354,7 +1356,8 @@ pub fn tool_list(frame: &mut Frame, d: &ListDraw, cell: (f32, f32), text_scale: 
     }
 
     let list = l.list;
-    for (i, (row, r)) in d.rows.iter().zip(&l.rows).enumerate() {
+    for (i, (row, r)) in d.rows.iter().zip(l.rows.iter().skip(d.first)).enumerate() {
+        let i = d.first + i;
         if r.y >= list.y + list.h || r.y + r.h <= list.y {
             continue;
         }
@@ -1541,7 +1544,7 @@ mod tests {
             ListRow { text: "Work".into(), second: Some("ssh, prod".into()), bold: false, icon: None, depth: 0 },
         ];
         let mut f = Frame::default();
-        let d = ListDraw { layout: &l, rows: &rows, selected: &[1], dark: true, field: Some(("ab", 16.0)), focus: Some(Focus::Field), disabled: &[ToolButton::Open], popup: Some(("New Tab", false)), second_scale: 0.8 };
+        let d = ListDraw { layout: &l, rows: &rows, first: 0, selected: &[1], dark: true, field: Some(("ab", 16.0)), focus: Some(Focus::Field), disabled: &[ToolButton::Open], popup: Some(("New Tab", false)), second_scale: 0.8 };
         tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
         let texts: Vec<&str> = f.rows.iter().map(|r| r.spans[0].text.as_str()).collect();
         assert_eq!(texts, vec!["ab", "\u{2605} Default", "Work", "ssh, prod", "\u{E768}", "New Tab", "\u{E70D}"]);
@@ -1555,6 +1558,14 @@ mod tests {
         // Open is dimmed, and so is the popup without a selection.
         assert_eq!(f.rows[4].spans[0].color, LIST_DISABLED_DARK);
         assert_eq!(f.rows[5].spans[0].color, LIST_DISABLED_DARK);
+
+        // Only the rows from `first` on are given; each lands on its own row rectangle.
+        let mut f = Frame::default();
+        let d = ListDraw { layout: &l, rows: &rows[1..], first: 1, selected: &[1], dark: true, field: None, focus: None, disabled: &[], popup: None, second_scale: 0.8 };
+        tool_list(&mut f, &d, (8.0, 16.0), 1.0, 1.0);
+        let work = f.rows.iter().find(|r| r.spans[0].text == "Work").unwrap();
+        assert_eq!(work.y, l.rows[1].y + LIST_INSET);
+        assert_eq!(work.spans[0].color, rgb(0xff, 0xff, 0xff));
     }
 
     /// A button face: the corner rows are inset, the middle is full width, and the box

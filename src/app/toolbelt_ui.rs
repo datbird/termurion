@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 
 use super::statusbar_content::MenuAt;
-use super::toolbelt_tools_ui::ToolUndo;
+use super::toolbelt_tools_ui::{Shown, ShownKey, ToolUndo};
 use super::*;
 use crate::tool_list;
 use crate::toolbelt::{self, Arranged, ToolId};
@@ -83,6 +83,8 @@ pub(super) struct Belt {
     /// The tool, and its part, that has the keyboard.
     pub(super) focus: Option<(ToolId, tool_list::Focus)>,
     pub(super) tools: HashMap<ToolId, ToolState>,
+    /// What each tool shows, and what it was built from (`App::tool_shown`).
+    pub(super) shown: HashMap<ToolId, (ShownKey, std::rc::Rc<Shown>)>,
     /// The arrangement's "Toolbelt" dictionary, kept as read and written back.
     pub(super) states: Option<toml::Table>,
     /// The saved proportions were offered to this window's split (its first layout, or an

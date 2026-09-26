@@ -267,6 +267,10 @@ pub struct App {
     win_title: Option<String>,
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
+    /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
+    tool_gen: u64,
+    /// The keys whose press a focused toolbelt tool took: their releases are its too.
+    belt_keys: toolbelt_tools_ui::TakenKeys<PhysicalKey>,
     /// What the current window's terminals were laid out for: the content area and every
     /// pane's terminal rectangle, per-pane bars included.
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -624,6 +628,8 @@ pub fn run() {
         win_locks: Default::default(),
         win_title: None,
         belt: Default::default(),
+        tool_gen: 0,
+        belt_keys: Default::default(),
         laid_out: None,
         title_prompt: None,
         arrange_prompt: None,
@@ -976,6 +982,7 @@ impl App {
     fn refresh_panes(&mut self) {
         // Session copies follow edits to their saved profiles first.
         self.store.merge_sessions();
+        self.tools_changed();
         let dark = self.dark();
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
@@ -994,6 +1001,7 @@ impl App {
 
     fn save_now(&mut self) {
         self.save_due = None;
+        self.tools_changed();
         match self.store.save() {
             Ok(()) => self.banners.clear("save"),
             Err(e) => self.banners.set("save", format!("Could not save settings: {e}")),
@@ -1542,6 +1550,11 @@ impl App {
         // A press starts over: a tmux drag whose release never came lets tmux go on.
         self.tmux_drag_cancel();
         let (x, y) = self.cursor;
+        // A press anywhere but the toolbelt gives the keyboard back to the session (the tab
+        // bar and the status bar too).
+        if !self.toolbelt_panel().is_some_and(|p| p.contains(x, y)) {
+            self.belt.focus = None;
+        }
         if let Some(i) = tab_hit(&self.tab_rects, self.tabs.len(), x, y) {
             self.active = i;
             return self.redraw();
@@ -2404,9 +2417,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.relayout();
             }
             WindowEvent::Focused(f) => {
-                // A divider drag loses its release when focus goes.
+                // A divider drag loses its release when focus goes, and so do keys.
                 if !f {
                     self.tmux_drag_cancel();
+                    self.belt_keys.clear();
                 }
                 self.focused = f;
                 // Tandem going to the background saves the windows (iTerm2 saves on resign

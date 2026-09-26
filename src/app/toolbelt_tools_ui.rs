@@ -3,7 +3,9 @@
 //! `toolbelt_tools` (each tool's rows and pick rules).
 
 use std::collections::HashSet;
+use std::hash::Hash;
 use std::ops::Range;
+use std::rc::Rc;
 
 use super::close_ui::confirm;
 use super::statusbar_content::MenuAt;
@@ -36,13 +38,15 @@ pub(super) enum ToolUndo {
     Actions(toml::Value),
 }
 
-/// What a tool shows now, behind its rows.
-enum Shown {
+/// What a tool shows now, behind its rows. Kept per window (`Belt::shown`) until its
+/// `ShownKey` changes.
+pub(super) enum Shown {
     Profiles(Vec<tt::ProfileRow>),
     /// The paste history's values, oldest first.
     Paste(Vec<String>),
     Commands(Vec<tt::CommandRow>),
-    Dirs(Vec<Dir>),
+    /// The host's directories, and the abbreviation tree of every host's.
+    Dirs(Vec<Dir>, tt::DirTree),
     Nothing,
 }
 
@@ -52,9 +56,53 @@ impl Shown {
             Shown::Profiles(v) => v.len(),
             Shown::Paste(v) => v.len(),
             Shown::Commands(v) => v.len(),
-            Shown::Dirs(v) => v.len(),
+            Shown::Dirs(v, _) => v.len(),
             Shown::Nothing => 0,
         }
+    }
+}
+
+/// What a tool's `Shown` was built from: its query, the focused session and its host, and
+/// `App::tool_gen` (bumped when the shell history, the paste history or the profiles change).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct ShownKey {
+    query: String,
+    pane: Option<PaneId>,
+    host: String,
+    generation: u64,
+}
+
+/// The keys whose press a focused tool took. A release is the tool's exactly when its press
+/// was, whatever has the keyboard or which modifiers are held by then: an Esc that gave the
+/// keyboard back still owns its release, and the C of a Ctrl+C that went to the session still
+/// sends its release after Ctrl is let go first.
+#[derive(Debug)]
+pub(super) struct TakenKeys<K>(HashSet<K>);
+
+impl<K> Default for TakenKeys<K> {
+    fn default() -> Self {
+        TakenKeys(HashSet::new())
+    }
+}
+
+impl<K: Hash + Eq> TakenKeys<K> {
+    /// A press (a repeat too), taken by the tool or not.
+    pub(super) fn press(&mut self, key: K, taken: bool) {
+        if taken {
+            self.0.insert(key);
+        } else {
+            self.0.remove(&key);
+        }
+    }
+
+    /// A release: true when the tool took its press.
+    pub(super) fn release(&mut self, key: &K) -> bool {
+        self.0.remove(key)
+    }
+
+    /// The window lost focus: its releases will not come.
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
     }
 }
 
@@ -202,15 +250,44 @@ impl App {
         tt::dir_filter(&dirs, query).into_iter().map(|i| dirs[i].clone()).collect()
     }
 
-    fn tool_shown(&mut self, tool: ToolId) -> Shown {
+    /// Something a tool shows changed (the shell history, the paste history, the profiles):
+    /// every window's tools rebuild their rows on their next use.
+    pub(super) fn tools_changed(&mut self) {
+        self.tool_gen = self.tool_gen.wrapping_add(1);
+    }
+
+    /// What `tool` shows, rebuilt only when its `ShownKey` changed.
+    fn tool_shown(&mut self, tool: ToolId) -> Rc<Shown> {
         let query = self.tool_field_text(tool);
-        match tool {
+        let pane = self.focused_id();
+        let per_host = matches!(tool, ToolId::CommandHistory | ToolId::RecentDirectories);
+        let host = match pane {
+            Some(p) if per_host => self.history_host_pub(p),
+            _ => String::new(),
+        };
+        let key = ShownKey { query, pane, host, generation: self.tool_gen };
+        if let Some((k, shown)) = self.belt.shown.get(&tool) {
+            if *k == key {
+                return shown.clone();
+            }
+        }
+        let query = key.query.clone();
+        let shown = Rc::new(match tool {
             ToolId::Profiles => Shown::Profiles(self.profile_shown(&query)),
             ToolId::PasteHistory => Shown::Paste(self.history().entries.iter().map(|e| e.value.clone()).collect()),
             ToolId::CommandHistory => Shown::Commands(self.command_shown(&query)),
-            ToolId::RecentDirectories => Shown::Dirs(self.dir_shown(&query)),
+            ToolId::RecentDirectories => {
+                let dirs = self.dir_shown(&query);
+                let mut tree = tt::DirTree::default();
+                for p in self.shell_history_pub().all_dir_paths() {
+                    tree.add(&p);
+                }
+                Shown::Dirs(dirs, tree)
+            }
             ToolId::Snippets | ToolId::Actions | ToolId::NamedMarks => Shown::Nothing,
-        }
+        });
+        self.belt.shown.insert(tool, (key, shown.clone()));
+        shown
     }
 
     fn row_heights(shown: &Shown, m: ListMetrics) -> Vec<f32> {
@@ -220,48 +297,34 @@ impl App {
         }
     }
 
-    /// A tool's rows as drawn, `width` pixels wide, from what it shows. Only rows in `visible`
-    /// are measured and fitted (tail truncated; directories abbreviated first); the rest keep
-    /// their whole text and are never drawn (a long Command History would otherwise be
-    /// measured every frame).
+    /// The rows in `visible` as drawn, `width` pixels wide, from what the tool shows: only
+    /// those are built and fitted (tail truncated; directories abbreviated first). The first
+    /// returned row is row `visible.start` (`ListDraw::first`).
     fn tool_rows(&mut self, shown: &Shown, width: f32, visible: Range<usize>) -> Vec<scene::ListRow> {
         let scale = self.scale();
         let m = self.list_metrics();
         let avail = (width - 2.0 * tool_list_inset(scale)).max(0.0);
-        let plain = |text: String, bold: bool| scene::ListRow { text, second: None, bold, icon: None, depth: 0 };
-        let mut rows: Vec<scene::ListRow> = match shown {
-            Shown::Profiles(v) => v.iter().map(|r| scene::ListRow { second: (!r.tags.is_empty()).then(|| r.tags.clone()), ..plain(r.name.clone(), false) }).collect(),
-            Shown::Paste(v) => tt::paste_rows(&v.iter().map(String::as_str).collect::<Vec<_>>()).into_iter().map(|t| plain(t, false)).collect(),
-            Shown::Commands(v) => v.iter().map(|r| plain(r.text.clone(), r.bold)).collect(),
-            Shown::Dirs(v) => v.iter().map(|d| plain(d.path.clone(), false)).collect(),
-            Shown::Nothing => Vec::new(),
-        };
-        let tree = match shown {
-            Shown::Dirs(_) => {
-                let mut tree = tt::DirTree::default();
-                for p in self.shell_history_pub().all_dir_paths() {
-                    tree.add(&p);
-                }
-                Some(tree)
-            }
-            _ => None,
-        };
-        let Some(g) = self.gpu.as_mut() else { return rows };
+        let range = visible.start.min(shown.len())..visible.end.min(shown.len());
+        let Some(g) = self.gpu.as_mut() else { return Vec::new() };
         let renderer = std::cell::RefCell::new(&mut g.renderer);
         let width = |s: &str| renderer.borrow_mut().toolbelt_width(s, scale);
         let second_width = |s: &str| renderer.borrow_mut().text_width(s, true, m.text_scale * m.second_scale);
-        for i in visible.start.min(rows.len())..visible.end.min(rows.len()) {
-            if let (Shown::Dirs(v), Some(tree)) = (shown, tree.as_ref()) {
-                let d = &v[i];
-                rows[i].text = tt::dir_text(&d.path, d.starred, &tree.safe(&d.path), avail, &width);
-            }
-            let r = &mut rows[i];
-            r.text = tool_list::truncate_tail(&r.text, avail, &width);
-            if let Some(second) = r.second.take() {
-                r.second = Some(tool_list::truncate_tail(&second, avail, &second_width));
-            }
-        }
-        rows
+        let plain = |text: String, bold: bool| scene::ListRow { text: tool_list::truncate_tail(&text, avail, &width), second: None, bold, icon: None, depth: 0 };
+        range
+            .map(|i| match shown {
+                Shown::Profiles(v) => {
+                    let r = &v[i];
+                    scene::ListRow { second: (!r.tags.is_empty()).then(|| tool_list::truncate_tail(&r.tags, avail, &second_width)), ..plain(r.name.clone(), false) }
+                }
+                Shown::Paste(v) => plain(tt::paste_rows(&[v[i].as_str()]).remove(0), false),
+                Shown::Commands(v) => plain(v[i].text.clone(), v[i].bold),
+                Shown::Dirs(v, tree) => {
+                    let d = &v[i];
+                    plain(tt::dir_text(&d.path, d.starred, &tree.safe(&d.path), avail, &width), false)
+                }
+                Shown::Nothing => plain(String::new(), false),
+            })
+            .collect()
     }
 
     /// The content rectangle of `tool`'s wrapper, while it shows and is not collapsed.
@@ -272,7 +335,7 @@ impl App {
 
     /// The tool's list laid out in `area`, its scroll kept in range (and at the end for a list
     /// that changed without the keyboard), and its rows fitted where they show.
-    fn tool_layout(&mut self, tool: ToolId, area: Rect) -> (ListLayout, Vec<scene::ListRow>, Shown) {
+    fn tool_layout(&mut self, tool: ToolId, area: Rect) -> (ListLayout, Vec<scene::ListRow>, usize, Rc<Shown>) {
         let scale = self.scale();
         let m = self.list_metrics();
         let spec = self.tool_spec(tool);
@@ -297,7 +360,7 @@ impl App {
         let first = l.rows.iter().position(|r| r.y + r.h > list.y).unwrap_or(n);
         let last = l.rows.iter().rposition(|r| r.y < list.y + list.h).map_or(first, |i| i + 1);
         let rows = self.tool_rows(&shown, list.w, first..last.max(first));
-        (l, rows, shown)
+        (l, rows, first, shown)
     }
 
     /// Draws each shown tool's list into its wrapper.
@@ -308,7 +371,7 @@ impl App {
         let m = self.list_metrics();
         let areas: Vec<(ToolId, Rect)> = bl.wrappers.iter().zip(self.belt.split.tools.clone()).filter_map(|(w, t)| w.content.map(|c| (t, c))).collect();
         for (tool, area) in areas {
-            let (l, rows, shown) = self.tool_layout(tool, area);
+            let (l, rows, first, shown) = self.tool_layout(tool, area);
             let st = self.belt.tools.get(&tool).cloned().unwrap_or_default();
             let focus = self.belt.focus.filter(|(t, _)| *t == tool).map(|(_, f)| f);
             let field = match (l.field, self.gpu.as_mut()) {
@@ -326,10 +389,11 @@ impl App {
                 ToolId::Profiles if none => vec![ToolButton::Open],
                 _ => Vec::new(),
             };
-            let popup = matches!(shown, Shown::Profiles(_)).then(|| (tt::PROFILE_OPENS[st.popup.min(tt::PROFILE_OPENS.len() - 1)].1, !none));
+            let popup = matches!(*shown, Shown::Profiles(_)).then(|| (tt::PROFILE_OPENS[st.popup.min(tt::PROFILE_OPENS.len() - 1)].1, !none));
             let d = scene::ListDraw {
                 layout: &l,
                 rows: &rows,
+                first,
                 selected: &st.selection.rows,
                 dark,
                 field: field.as_ref().map(|(t, w)| (t.as_str(), *w)),
@@ -344,7 +408,7 @@ impl App {
 
     /// A press in `tool`'s content.
     pub(super) fn tool_press(&mut self, tool: ToolId, area: Rect, button: MouseButton, x: f32, y: f32, event_loop: &ActiveEventLoop) {
-        let (l, _, _) = self.tool_layout(tool, area);
+        let (l, ..) = self.tool_layout(tool, area);
         let hit = tool_list::hit(&l, x, y);
         self.tool_click(tool, hit, button, event_loop);
     }
@@ -391,7 +455,8 @@ impl App {
             return;
         }
         let Some(row) = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied()) else { return };
-        let Shown::Commands(rows) = self.tool_shown(tool) else { return };
+        let shown = self.tool_shown(tool);
+        let Shown::Commands(rows) = &*shown else { return };
         let (Some(r), Some(pane)) = (rows.get(row), self.focused_id()) else { return };
         let line = self.panes.get_mut(&pane).and_then(|p| p.screen.marks_in_order().into_iter().find(|(_, m)| m.command.trim() == r.command && m.start.map(unix) == Some(r.time)).map(|(l, _)| l));
         if let Some(line) = line {
@@ -410,7 +475,7 @@ impl App {
         let Some(&first) = rows.first() else { return };
         let shown = self.tool_shown(tool);
         let pane = self.focused_id();
-        match shown {
+        match &*shown {
             Shown::Profiles(_) => self.open_profiles(tt::profile_open(ctrl, alt, shift)),
             Shown::Paste(values) => {
                 let (Some(v), Some(pane)) = (values.get(first), pane) else { return };
@@ -425,7 +490,7 @@ impl App {
                     self.user_write(pane, text.as_bytes(), Write::SendText);
                 }
             }
-            Shown::Dirs(v) => {
+            Shown::Dirs(v, _) => {
                 let (Some(d), Some(pane)) = (v.get(first), pane) else { return };
                 let shell = self.panes.get(&pane).and_then(|p| p.own().shell.shell.clone());
                 let text = tt::dir_insert(&d.path, shell.as_deref(), alt, shift);
@@ -467,6 +532,7 @@ impl App {
             (ToolId::PasteHistory, ToolButton::Trash) => {
                 if confirm(self.hwnd(), tt::ERASE_PASTE.0, tt::ERASE_PASTE.1) {
                     self.history().clear();
+                    self.tools_changed();
                     let path = super::history_ui::history_path();
                     if let Err(e) = std::fs::remove_file(&path) {
                         if e.kind() != std::io::ErrorKind::NotFound {
@@ -480,6 +546,7 @@ impl App {
                 if confirm(self.hwnd(), tt::ERASE_COMMANDS.0, tt::ERASE_COMMANDS.1) {
                     self.shell_history_pub().erase_commands();
                     self.save_shell_history();
+                    self.tools_changed();
                     self.tool_state(tool).selection.rows.clear();
                 }
             }
@@ -487,6 +554,7 @@ impl App {
                 if confirm(self.hwnd(), tt::ERASE_DIRS.0, tt::ERASE_DIRS.1) {
                     self.shell_history_pub().erase_dirs();
                     self.save_shell_history();
+                    self.tools_changed();
                     self.tool_state(tool).selection.rows.clear();
                 }
             }
@@ -507,7 +575,7 @@ impl App {
             return;
         }
         let Some(area) = self.tool_area(tool) else { return };
-        let (l, _, _) = self.tool_layout(tool, area);
+        let (l, ..) = self.tool_layout(tool, area);
         let Some(r) = l.popup else { return };
         let pick = self.tool_state(tool).popup;
         let menu = muda::Menu::new();
@@ -522,9 +590,9 @@ impl App {
     /// A row's menu: Paste History's Copy and Open in Advanced Paste
     /// (`ToolPasteHistory.m:96-144`), Recent Directories' Toggle Star, on the clicked row.
     fn tool_row_menu(&mut self, tool: ToolId, row: usize) {
-        let items: Vec<(String, &str)> = match self.tool_shown(tool) {
+        let items: Vec<(String, &str)> = match &*self.tool_shown(tool) {
             Shown::Paste(v) if row < v.len() => vec![(format!("{CTX_ID}paste-copy:{row}"), "Copy"), (format!("{CTX_ID}paste-advanced:{row}"), "Open in Advanced Paste")],
-            Shown::Dirs(v) => match v.get(row) {
+            Shown::Dirs(v, _) => match v.get(row) {
                 Some(d) => vec![(format!("{CTX_ID}star:{}", d.path), "Toggle Star")],
                 None => return,
             },
@@ -572,6 +640,7 @@ impl App {
                     let host = self.history_host_pub(pane);
                     self.shell_history_pub().toggle_star(&host, arg);
                     self.save_shell_history();
+                    self.tools_changed();
                 }
             }
             _ => {}
@@ -585,9 +654,16 @@ impl App {
     /// Alt or Win go on as usual, except Ctrl+V into a field, Return with its modifiers, and
     /// AltGr typing.
     pub(super) fn toolbelt_key(&mut self, ev: &KeyEvent, event_loop: &ActiveEventLoop) -> bool {
-        let Some((tool, focus)) = self.belt.focus else { return false };
+        if ev.state != ElementState::Pressed {
+            return self.belt_keys.release(&ev.physical_key);
+        }
+        let Some((tool, focus)) = self.belt.focus else {
+            self.belt_keys.press(ev.physical_key, false);
+            return false;
+        };
         if !self.belt.visible || !self.belt.split.tools.contains(&tool) {
             self.belt.focus = None;
+            self.belt_keys.press(ev.physical_key, false);
             return false;
         }
         let mods = self.mods;
@@ -601,11 +677,9 @@ impl App {
                 None => !(mods.ctrl || mods.alt || mods.cmd),
             }
         };
+        self.belt_keys.press(ev.physical_key, taken);
         if !taken {
             return false;
-        }
-        if ev.state != ElementState::Pressed {
-            return true;
         }
         let Some(key) = key else { return true };
         match focus {
@@ -679,7 +753,7 @@ impl App {
     /// Scrolls the tool's list so its first selected row shows.
     fn tool_reveal(&mut self, tool: ToolId) {
         let Some(area) = self.tool_area(tool) else { return };
-        let (l, _, _) = self.tool_layout(tool, area);
+        let (l, ..) = self.tool_layout(tool, area);
         let Some(row) = self.belt.tools.get(&tool).and_then(|t| t.selection.rows.first().copied()) else { return };
         let Some(r) = l.rows.get(row) else { return };
         let st = self.tool_state(tool);
@@ -697,7 +771,7 @@ impl App {
         let Some(bl) = self.belt_layout() else { return };
         let Some((tool, area)) = bl.wrappers.iter().zip(self.belt.split.tools.clone()).find_map(|(w, t)| w.content.filter(|c| c.contains(x, y)).map(|c| (t, c))) else { return };
         let row_h = self.list_metrics().row_h;
-        let (l, _, _) = self.tool_layout(tool, area);
+        let (l, ..) = self.tool_layout(tool, area);
         let st = self.tool_state(tool);
         st.scroll = tool_list::clamp_scroll(st.scroll - dy * row_h, &l);
         self.redraw();
@@ -715,6 +789,31 @@ mod tests {
 
     fn m(ctrl: bool, alt: bool, shift: bool) -> Mods {
         Mods { shift, alt, ctrl, cmd: false }
+    }
+
+    /// A release belongs to the tool exactly when its press did, whatever the keyboard focus
+    /// or the modifiers are by then.
+    #[test]
+    fn releases_follow_their_press() {
+        let mut keys = TakenKeys::default();
+        // Esc taken on press (it gives the keyboard back): its release is still the tool's.
+        keys.press("Esc", true);
+        assert!(keys.release(&"Esc"));
+        // Only once.
+        assert!(!keys.release(&"Esc"));
+        // Ctrl+C went to the session: C's release goes there too, Ctrl let go first or not.
+        keys.press("C", false);
+        assert!(!keys.release(&"C"));
+        // A key pressed before the tool had the keyboard is not the tool's.
+        assert!(!keys.release(&"A"));
+        // A press the tool no longer takes (a repeat after focus left) forgets the old one.
+        keys.press("B", true);
+        keys.press("B", false);
+        assert!(!keys.release(&"B"));
+        // Focus lost: no release will come.
+        keys.press("D", true);
+        keys.clear();
+        assert!(!keys.release(&"D"));
     }
 
     #[test]
