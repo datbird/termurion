@@ -279,11 +279,10 @@ impl App {
         // After the style, so a Maximized or Full Screen style does not restore it again.
         if steps.profile_window && !hotkey {
             self.apply_window_profile(first_guid.as_deref());
-            // Open Toolbelt: the first tab of a new window (`PT:8200-8207`).
-            let open = self.profile(first_guid.as_deref()).bool("Open Toolbelt");
-            if crate::toolbelt::opens_on_first_tab(0, self.tabs.len(), open, self.belt.visible) {
-                self.set_toolbelt_visible(true, true);
-            }
+        }
+        // A restored window (hotkey ones too) keeps its arrangement's "Has Toolbelt".
+        if !arranged && !self.tabs.is_empty() {
+            self.open_toolbelt_on_first_tab(first_guid.as_deref());
         }
         if self.tabs.is_empty() {
             // The shell did not start: the window closes again (keeping no frame for its

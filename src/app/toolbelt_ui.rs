@@ -145,19 +145,28 @@ impl App {
     }
 
     /// Whether showing the toolbelt may grow the window: a Normal or No Title Bar window that
-    /// is not maximized, full screen, minimized or size-locked.
+    /// is not maximized, full screen, minimized or size-locked. A hotkey window never grows.
     fn belt_can_grow(&self) -> bool {
         let Some(g) = self.gpu.as_ref() else { return false };
+        if self.hotkey.is_some() {
+            return false;
+        }
         let style = crate::frames::unthemed(self.win_style);
         (style == crate::frames::NORMAL || style == crate::frames::NO_TITLE_BAR) && !g.window.is_maximized() && g.window.fullscreen().is_none() && g.window.is_minimized() != Some(true) && !self.win_locks.size
     }
 
-    /// The window's inner width grows (or shrinks, negative) by `points`.
-    fn grow_window_by(&self, points: f32) {
-        let Some(g) = self.gpu.as_ref() else { return };
+    /// The window's inner width grows (or shrinks, negative) by `points`. True when the size
+    /// changed, so a Resized event follows (Windows resizes at once, and a size it refuses or
+    /// one equal to the current size sends none).
+    fn grow_window_by(&self, points: f32) -> bool {
+        let Some(g) = self.gpu.as_ref() else { return false };
         let inner = g.window.inner_size();
         let w = (inner.width as f32 + points * self.scale()).round().max(1.0) as u32;
+        if w == inner.width {
+            return false;
+        }
         let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w, inner.height));
+        g.window.inner_size() != inner
     }
 
     /// View > Toolbelt > Show Toolbelt (Win+Shift+B).
@@ -169,11 +178,21 @@ impl App {
     /// toolbelt's width where it can (`PT:1286-1315`) and hiding shrinks a window that grew
     /// (`PT:1317-1346`).
     pub(super) fn set_toolbelt_visible(&mut self, on: bool, grow: bool) {
+        self.show_toolbelt_growing(on, grow);
+    }
+
+    /// `set_toolbelt_visible`, returning how far showing grew the window (points). When the
+    /// window resized, its Resized event lays it out; laying out now, against the old size,
+    /// would shrink the panes and tell tmux the narrower size first (iTerm2 repositions and
+    /// notifies tmux only when the window did not resize, `PT:1338-1341`).
+    fn show_toolbelt_growing(&mut self, on: bool, grow: bool) -> f32 {
         if on == self.belt.visible {
-            return;
+            return 0.0;
         }
         let scale = self.scale();
         let can_grow = self.belt_can_grow();
+        let mut grown = 0.0;
+        let mut resized = false;
         if on {
             self.belt_first_show();
             if grow {
@@ -184,7 +203,8 @@ impl App {
                     self.belt.width = g.width;
                     self.belt.hiding_resizes = g.resized;
                     if g.grow_by > 0.0 {
-                        self.grow_window_by(g.grow_by);
+                        grown = g.grow_by;
+                        resized = self.grow_window_by(g.grow_by);
                     }
                 }
             }
@@ -195,14 +215,39 @@ impl App {
                 let width = self.toolbelt_panel().map_or(self.belt.width, |p| p.w / scale);
                 let shrink = toolbelt::hide_shrink(width, self.belt.hiding_resizes, can_grow);
                 if shrink > 0.0 {
-                    self.grow_window_by(-shrink);
+                    resized = self.grow_window_by(-shrink);
                 }
             }
             self.belt.visible = false;
             self.belt.focus = None;
         }
-        self.relayout();
+        if resized {
+            self.redraw();
+        } else {
+            self.relayout();
+        }
         self.sync_checks();
+        grown
+    }
+
+    /// Open Toolbelt on a new window's first tab (`PT:8200-8207`); a hotkey window too, never
+    /// growing. The deferred `finishToolbeltInitialization` then sets the resize flag from the
+    /// grown frame's distance to the screen edge (`PT:782-787`, `PT:1061-1076`).
+    pub(super) fn open_toolbelt_on_first_tab(&mut self, guid: Option<&str>) {
+        let open = self.profile(guid).bool("Open Toolbelt");
+        if !toolbelt::opens_on_first_tab(0, self.tabs.len(), open, self.belt.visible) {
+            return;
+        }
+        let scale = self.scale();
+        let right = self.gpu.as_ref().map(|g| {
+            let r = Self::outer_rect(g);
+            (r.x + r.w) / scale
+        });
+        let work = self.monitor_rects().map(|(w, _)| (w.x + w.w) / scale);
+        let grown = self.show_toolbelt_growing(true, true);
+        if let (Some(right), Some(work)) = (right, work) {
+            self.belt.hiding_resizes = toolbelt::new_window_hiding_resizes(right, grown, work);
+        }
     }
 
     /// The default width is read when the window first shows its toolbelt (`RTV:1497-1507`).

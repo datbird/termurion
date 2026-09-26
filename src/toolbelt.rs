@@ -161,15 +161,23 @@ pub fn hide_shrink(width: f32, resized: bool, can_grow: bool) -> f32 {
     if resized && can_grow { width } else { 0.0 }
 }
 
-/// A restored window with the toolbelt shown and no saved "Hiding Toolbelt Should Resize
-/// Window" flag: the flag is set when the window's right edge sits 10 points or more inside
-/// the visible frame's right edge (`PT:1061-1076`).
+/// `finishToolbeltInitialization` (`PT:1061-1076`), run once after a new window is set up
+/// (a restored window never runs it: its arrangement's key, absent reading as false, marks the
+/// flag initialized, `PT:4201-4202`): hiding resizes unless the window's right edge is within
+/// 10 points of the visible frame's right edge, either side (`fabs`).
 pub fn initial_hiding_resizes(window_right: f32, work_right: f32) -> bool {
-    work_right - window_right >= 10.0
+    (work_right - window_right).abs() >= 10.0
 }
 
 /// Whether the toolbelt opens itself on a tab's arrival: the tab count reached 1 from 0, the
 /// profile's "Open Toolbelt" key is on, and it is not already shown (`PT:8200-8207`).
+/// A new window that showed its toolbelt as it opened (Open Toolbelt): the deferred
+/// `finishToolbeltInitialization` overwrites the flag the show set, measured on the frame
+/// after it grew by `grow_by` (`PT:782-787`).
+pub fn new_window_hiding_resizes(window_right: f32, grow_by: f32, work_right: f32) -> bool {
+    initial_hiding_resizes(window_right + grow_by, work_right)
+}
+
 pub fn opens_on_first_tab(tabs_before: usize, tabs_after: usize, open_toolbelt: bool, shown: bool) -> bool {
     tabs_before == 0 && tabs_after == 1 && open_toolbelt && !shown
 }
@@ -279,6 +287,12 @@ mod tests {
 
         assert!(!initial_hiding_resizes(1895.0, 1900.0));
         assert!(initial_hiding_resizes(1880.0, 1900.0));
+        // A new window that opened its toolbelt: measured on the grown frame (`PT:1061-1076`
+        // runs after the growth); `fabs`, so a window past the edge counts as far from it.
+        assert!(new_window_hiding_resizes(1600.0, 250.0, 1900.0), "grown to 1850: 50 inside");
+        assert!(!new_window_hiding_resizes(1650.0, 250.0, 1900.0), "grown to the edge");
+        assert!(new_window_hiding_resizes(1860.0, 0.0, 1900.0), "40 inside, no growth");
+        assert!(new_window_hiding_resizes(1900.0, 50.0, 1900.0), "50 past the edge");
     }
 
     #[test]
