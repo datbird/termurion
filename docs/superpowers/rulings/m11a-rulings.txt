@@ -1,0 +1,261 @@
+Plan: Ruling: the peer check is the owning process of the loopback connection (GetExtendedTcpTable) with the same user SID and the same elevation as Tandem, instead of the process-ancestry check the brief mentioned: iTerm2's check is the peer's euid, not its ancestry, and ancestry would refuse scripts started from Explorer or a scheduler - cost if wrong: any program running as the user at the same elevation passes the peer check (then needs a cookie or allow-all), exactly as any same-euid process reaches iTerm2's socket.
+
+Plan: Ruling: elevation must match too (a Windows addition): a normal process may not drive an elevated Tandem, nor the reverse - cost if wrong: a script started elevated cannot reach a normal Tandem.
+
+Plan: Ruling: protobuf is prost 0.14 with the generated code checked in (src/api_pb.rs), made by tools/protogen (prost-build plus protox, no protoc), rather than a build script, since EXTREME has no protoc and a checked-in file keeps Tandem's build free of code generation - cost if wrong: regenerating after a proto change is a manual scripts/xt run --manifest-path tools/protogen/Cargo.toml and an scp; proto_is_vendored_unchanged catches a forgotten one.
+
+Plan: Ruling: the websocket layer is tungstenite 0.28, framing only (WebSocket::from_raw_socket, derive_accept_key), with Tandem's own HTTP parsing so iTerm2's checks, order, reasons and 400/401/406 answers are exact (tungstenite's own handshake refuses with its own errors and no HTTP response) - cost if wrong: one new crate with its small dependency set (sha1, http, httparse, rand, data-encoding, utf-8).
+
+Plan: Ruling: threads, not async: an accept thread per listener and a thread per connection, events posted to the UI thread through a channel and the existing wake, as tandem-host's pipe threads do - cost if wrong: a thread per connected script. (The plan's own detail that connection threads would poll their socket every 10 ms to interleave writes was superseded before Task 2 shipped; see Task 2 fix round 1 below for the final mechanism.)
+
+Plan: Ruling: getrandom 0.4 (already in the lock through uuid) makes cookies; Win32_Networking_WinSock is enabled for the exclusive bind - cost if wrong: none.
+
+Plan: Ruling: loopback only, both families, port 1912, SO_EXCLUSIVEADDRUSE (the analog of iTerm2's socket.lock), backlog 5; a V6 stack that is missing is tolerated, a port in use is fatal and shows "The Python API could not start: ..." (Tandem's own text) - cost if wrong: WSL2 in NAT mode cannot reach the API (mirrored networking can).
+
+Plan: Ruling: X-iTerm2-Protocol-Version is iTerm2's 1.19, so the package enables the same features; requests Tandem does not handle yet answer iTerm2's malformed error ("Invalid request. Upgrade Tandem to a newer version."), and so do NotificationRequests of types beyond the five - cost if wrong: a script using an 11b request fails with an RPC error until 11b.
+
+Plan: Ruling: session cookies are reusable for the pane's life (removed when the pane is dropped for good), not single-use, since the package deletes the cookie only from its own process and Windows has no AppleScript fallback for the second script run from the same shell - cost if wrong: any process that reads a Tandem session's environment can connect as often as it likes while that session lives.
+
+Plan: Ruling: there is no Windows twin of AppleScript's "request cookie and key"; the allow-all file and session cookies replace it - cost if wrong: a script started outside Tandem needs "Allow all apps to connect", or it crashes in the package with FileNotFoundError for /usr/bin/osascript (kept).
+
+Plan: Ruling: "Allow all apps to connect" is stored as iTerm2's allow-all file at %USERPROFILE%/Library/Application Support/iTerm2/disable-automation-auth with the magic the package checks, and Tandem reads the choice from that file as iTerm2 does; no administrator prompt - cost if wrong: any program running as the user can turn allow-all on by writing that file; such a program could equally rewrite Tandem's settings.
+
+Plan: Ruling: the popup's first item is "Require a cookie" and the allow-all warning's second paragraph is Windows text (no Automation permission and no administrator step exist); reasons naming a Settings location use Tandem's ("Settings > General > Python API"); More Info links stay iTerm2's pages (Tandem has no documentation site) - cost if wrong: those pages describe macOS.
+
+Plan: Ruling: "Reveal In Finder" is "Show in Explorer" (m10b's Windows-words ruling) - cost if wrong: none.
+
+Plan: Ruling: session ids are the pane id in decimal (as the id variable and arrangements' "Session GUID" already are), window ids pty-<UUID> minted by the Registry, tab ids the stable Tab.id - cost if wrong: session ids are not stable across a restart (iTerm2 keeps GUIDs through restoration).
+
+Plan: Ruling: the session environment in 11a is ITERM2_COOKIE, ITERM_SESSION_ID, TERM_SESSION_ID and ITERM_PROFILE; TERM_PROGRAM, TERM_PROGRAM_VERSION, LC_TERMINAL, LC_TERMINAL_VERSION, COLORTERM and the utilities PATH wait for 11e with the version fix they depend on. The window, tab and pane numbers are those at launch (iTerm2 does the same) - cost if wrong: tools that look for TERM_PROGRAM=iTerm.app do not see Tandem until 11e.
+
+Plan: Ruling: the host protocol goes to version 3, meaning "honors Launch's env"; no new message. A running older tandem-host keeps serving and its new sessions lack the variables until it restarts - cost if wrong: after an upgrade without a host restart, scripts in new hosted sessions have no cookie.
+
+Plan: Ruling: notifications come from a diff of a pure model built on each loop pass while any connection subscribes (not from hooks at every call site): order NEW, TERMINATE, LAYOUT, FOCUS, BROADCAST; layout compares structure (ids, order, split trees, selected tab, active sessions, buried and minimized, tmux ids), never frames, grid sizes or titles - cost if wrong: several changes in one pass arrive together, and a pure resize posts no layout change.
+
+Plan: Ruling: binary splits flatten same-axis chains into one split view, matching iTerm2's n-ary split views; a single pane is a vertical root with one leaf - cost if wrong: none.
+
+Plan: Ruling: frames are Windows physical pixels with y down (the window's outer frame, a pane's rect within the window) - cost if wrong: scripts doing macOS screen arithmetic are off.
+
+Plan: Ruling: windows are listed by window number (iTerm2 lists its terminal order) - cost if wrong: none visible.
+
+Plan: Ruling: a transaction freezes the UI thread as iTerm2's does (no output drawn, no input handled) until its end or the owner's disconnect; new connections wait - cost if wrong: a script that never ends its transaction hangs Tandem until the script exits.
+
+Plan: Ruling: the Log keeps accept and refuse reasons in memory for the Script Console (11d) - cost if wrong: none.
+
+Plan: Ruling: parity rows are found by title - cost if wrong: none.
+
+Scan: Ruling: tools/protogen paths are repo-root-relative (proto/api.proto, src/api_pb.rs), since scripts/xt runs cargo from the repo root - cost if wrong: none.
+
+Scan: Ruling: tests bind port 0, except Task 9's ignored stock_iterm2_package_connects, which binds 1912 because the stock package hardcodes it - cost if wrong: none.
+
+Scan: Ruling: Task 2 adds the one fresh-key generator (uppercase UUID via getrandom, through the uuid crate) as a pub fn in the module Task 4 will use (api_auth::fresh_key, created early in Task 2 with a test); Task 4 reuses it, no second UUID formatter - cost if wrong: none.
+
+Scan: Ruling: api_http::accept_response uses Task 1's SUBPROTOCOL and PROTOCOL_VERSION consts, never literals - cost if wrong: none.
+
+Scan: Ruling: Task 7 moves Task 5's inline Message/Closed arms in api_tick into api_message / api_closed / api_freeze and rewrites api_tick to call them - cost if wrong: none.
+
+Scan: Ruling: 11a builds the 11b plan's dispatcher signatures from the start (api_tick, api_message, api_run, api_answer, api_freeze take event_loop; answers go through Answer::{Now, Later}), carried into the Task 5 and Task 7 dispatches, so 11b does not rework 11a - cost if wrong: none.
+
+Ledger: Ruling (recorded in this ledger while the 11c plan was written alongside 11a; not an 11a ruling): web views (dynamic toolbelt tools, HTML status bar popovers) are deferred from 11c and tracked as a parity gap for milestone 13's audit (WebView2 host), since the goal is full parity - cost if wrong: those tools stay invisible until then.
+
+Ledger: Ruling (recorded in this ledger while the 11d plan was written alongside 11a; not an 11a ruling): signed .its import (certificate check) is deferred and tracked as a parity gap for milestone 13's audit with the WebView2 host - cost if wrong: signed script archives from iTerm2 cannot be imported until then.
+
+Task 1: Ruling: the proto file has no license comment at HEAD 64791fc, so "byte for byte, its license comment kept" is a no-op: there was nothing to strip and nothing to keep separately - cost if wrong: none, the copy is byte-identical either way.
+
+Task 1: Ruling: request_name returns the proto-declared message name (ServerOriginatedRPCResultRequest) rather than prost's renamed Rust variant identifier (ServerOriginatedRpcResultRequest), hardcoded as string literals for all 34 request types - review verified - cost if wrong: a script or log line expecting the exact iTerm2-style name for that one request type would see "Rpc" instead of "RPC".
+
+Task 1: Ruling: tools/protogen writes prost-build's output to a std::env::temp_dir() subdirectory named by the running process's PID, rather than adding the tempfile crate, since the brief names only prost-build and protox for this crate - cost if wrong: none observed; a crash mid-run would leave one stray temp directory per PID.
+
+Task 1: minors carried to the final fix wave: reply_to has no direct unit test; protogen should assert prost-build emitted exactly one .rs file.
+
+Task 2: Ruling: a missing upgrade, connection or sec-websocket-protocol header passes, as in iTerm2 (comparing against nil reads as equal, so iTerm2 never refuses a missing one); a present wrong value is still refused - source over brief; review verified - cost if wrong: a client omitting those headers gets further than the brief intended; every other check (origin, host, key, version, library, peer, authorization) still applies, so no security loss.
+
+Task 2: Ruling: parse follows readRequest beyond the brief: three request-line parts, HTTP/1.1 only, CRLF-only line splitting, 4096-byte lines, fewer than 100 headers, a header ending in its colon (x:), and any content-length all give None (400, READ_FAILED) - cost if wrong: an odd client that iTerm2 also refuses is refused.
+
+Task 2: Ruling: Request.path keeps the raw target; check compares url_path(target) (query and fragment dropped, scheme and authority dropped for an absolute target), approximating NSURL.path, with no percent-decoding - cost if wrong: a bizarre target differs; the stock package sends /.
+
+Task 2: Ruling: an origin with no parsable host prints an empty host in "Origin's host is not localhost: is  (string value is ...)" where iTerm2 prints "(null)", matching the brief's "Tandem prints an empty value" choice - cost if wrong: one log text differs.
+
+Task 2: Ruling: the too-old reason prints the versions normalized as NSDecimalNumber does ("0.230" prints "0.23", a non-number prints "NaN", which is too old); a library name other than "python" has no minimum and passes - cost if wrong: a log text differs for odd version strings.
+
+Task 2: Ruling: sec-websocket-version is read like integerValue (leading integer, 0 when none), and Upgrade.ws_version is that value clamped to u32 - cost if wrong: none for real clients.
+
+Task 2: Ruling: fresh_key uses uuid::Uuid::new_v4() uppercased, whose randomness is getrandom 0.4 already in the lock through uuid, meeting the scan ruling's "via getrandom" with no second UUID formatter - cost if wrong: Task 4 may prefer formatting 16 getrandom bytes itself; a one-line change.
+
+Task 2: Ruling: Upgrade.key is the raw x-iterm2-key or fresh key; iTerm2's mapping of keys to small integer connection identifiers is left to the Script Console (11d) - cost if wrong: 11d adds the map.
+
+Task 2: Ruling: a refusal lingers: after writing 400/401/406 the server shuts down its write side and drains the client for up to 1 s before closing, so an unread request does not turn into a reset that loses the answer on Windows - cost if wrong: a refused connection's thread lives up to 1 s longer.
+
+Task 2: Ruling: Rejected.key follows iTerm2's posts: None for a peer refusal, an unreadable request and a bad path; the client's x-iterm2-key for the other upgrade refusals. A deny verdict posts no Rejected - cost if wrong: the Script Console groups a bad-path refusal under no key.
+
+Task 2: Ruling: every upgraded connection ends with exactly one Closed, whether the client closed, an error happened, close(conn) was called, or the server stopped - cost if wrong: the UI sees a Closed after its own close, which it can ignore.
+
+Task 2: Ruling: one bounded event queue of 16 for all connections; a flooding client's thread blocks on it, which also delays other connections' events until the UI drains; stop drops the receiver first so no thread stays blocked - cost if wrong: one flooding script slows others' events (it cannot starve the UI).
+
+Task 2: Ruling: port 0 retries up to 8 ephemeral ports when [::1] finds the port V4 took in use; a fixed port never retries (AddrInUse is fatal) - cost if wrong: none; only tests use port 0.
+
+Task 2: Ruling: bind_exclusive returns InvalidInput for any non-loopback address, defense in depth beyond the two call sites - cost if wrong: none.
+
+Task 2: Ruling: sockets are created with WSA_FLAG_OVERLAPPED as well as WSA_FLAG_NO_HANDLE_INHERIT, as std creates its own, so std's timeouts and non-blocking mode behave identically - cost if wrong: none observed.
+
+Task 2: Ruling: accepted sockets get TCP_NODELAY to keep small replies from Nagle delay on loopback - cost if wrong: none.
+
+Task 2: Ruling: stop waits up to 1 s for connections to send their close frames, then shuts down any socket still open and joins every thread - cost if wrong: stop can take about 1 s with a wedged client.
+
+Task 2 fix round 1: Ruling: a dedicated reader thread per connection (iTerm2's design), not non-blocking reads on the connection thread, since on Windows neither shutdown nor closing the other handle wakes a blocking recv; it waits with WSAPoll (50 ms) before each read and the same poll watches for room to write. This replaces the plan's original design of polling the socket every 10 ms to interleave writes - cost if wrong: two threads per connection (64 at the cap) and up to 50 ms for a reader to notice its connection ended.
+
+Task 2 fix round 1: Ruling: after the upgrade the socket is non-blocking for writes; unflushed bytes stay in tungstenite's buffer until the reader sees room - cost if wrong: none observed; a client that never reads is cut off by the outbound cap or the stop, never waited on.
+
+Task 2 fix round 1: Ruling: caps of 32 live and 8 unauthorized connections, refused with HTTP/1.1 503 Service Unavailable and the reason "Too many Python API connections", Tandem's own (iTerm2 has no cap or equivalent answer) - cost if wrong: a 33rd simultaneous script is refused.
+
+Task 2 fix round 1: Ruling: events from the accept thread (peer and cap refusals) use try_send; a full event queue drops them, though the refusal itself always happens - cost if wrong: under a flood some refusals are not logged.
+
+Task 2 fix round 1: Ruling: outbound overflow policy is close: more than 32 MiB queued for one client cuts it off at once with no close frame, ending with Closed - cost if wrong: a script that reads very slowly while Tandem sends a burst is disconnected.
+
+Task 2 fix round 1: Ruling: 16 MiB message and frame caps inbound (iTerm2 has none); a larger message ends the connection with no reply - cost if wrong: a request over 16 MiB (none exists in the protocol) fails.
+
+Task 2 fix round 1: Ruling: a close initiated by the UI or by the client waits for the close frame to be flushed; a stop sends it best effort and ends at once - cost if wrong: none.
+
+Task 2 fix round 1: Ruling (controller ruling): if port 1912 is already held by another process when the API starts, Tandem does not fall back to another port; it shows an alert naming the owning process (found with GetExtendedTcpTable) and the API stays off - cost if wrong: a squatter on 1912 keeps the API off until it exits, and (recorded, not a defect) a squatter can also collect cookies the stock package sends to whatever answers on 1912, a cost of iTerm2's TCP design on Windows.
+
+Task 2: minor (deferred, satisfied by the Decisions above): the missing-header pass, the 1 s linger for same-user refusals, and the 16 MiB frame caps (iTerm2 has no cap) are recorded as Decisions in this file.
+
+Task 2 fix round 2: Ruling: two condition variables with change detection (to_conn, to_reader), rather than closures reporting their own mutations, so no closure can forget to report a change - cost if wrong: none.
+
+Task 2 fix round 2: Ruling: spawned is never lowered by the guard; it is a test-only count of connection threads ever started (proving a peer refusal made no thread), while the live count is what the guard lowers - cost if wrong: none outside tests.
+
+Task 2 fix round 2: Ruling: outbound memory per client is at most a 32 MiB queue plus tungstenite's 32 MiB write buffer; passing either cuts the client off. This replaces fix round 1's "more than 32 MiB queued" wording - cost if wrong: one stalled client can pin up to 64 MiB until it is cut off.
+
+Task 3: Ruling: owner compares only the address and port, ignoring the V6 scope id and flow info, since the table's scope id need not equal what accept reports - cost if wrong: none for loopback, where the scope is always the loopback interface.
+
+Task 3: Ruling: owner skips rows owned by pid 0 and returns None when matching rows name two different pids, refusing rather than guessing on an ambiguous match - cost if wrong: a connection whose 4-tuple collides with another live row is refused (401); cannot happen for two established connections.
+
+Task 3: Ruling: check reads only the table for the peer's family, not both, so a machine without an IPv6 stack still checks IPv4 peers instead of refusing every connection - cost if wrong: none; the other family's rows can never match.
+
+Task 3: Ruling: NO_OWNER is Tandem's own text; iTerm2 has no such case (a missing euid prints "Peer's euid of (null) not equal to my euid of %@") - cost if wrong: one reason text differs from what iTerm2 would log.
+
+Task 3: Ruling: the table-read retry loop gives up after 8 tries with "GetExtendedTcpTable failed: the table kept growing", which is a refusal - cost if wrong: a connection could be refused on a machine whose TCP table grows by more than 4 KiB between every call, 8 times in a row.
+
+Task 3: Ruling (ledger summary, review verified): the peer check matches by address and port (V6 scope id ignored), skips pid 0 rows, refuses a match naming two pids, reads only the peer family's table, and refuses after 8 table-read retries; it fails closed in every case - cost if wrong: none.
+
+Task 3: minor carried to the final fix wave: check() opens the peer token twice (share one process_token handle).
+
+Task 4: Ruling: allow_all_step(Corrupt, false) is Nothing, not the brief's Remove, since setRequireApplescriptAuth: returns at once when the wanted "require" already equals the file's state, which is YES for a corrupt file - source over brief - cost if wrong: a corrupt file stays on disk until the user picks allow-all (which overwrites it); it grants nothing to Tandem or the package either way.
+
+Task 4: Ruling: Jar implements Debug by hand, showing only the cookie count, instead of deriving it, so a {:?} anywhere can never print a cookie - cost if wrong: none (still Debug).
+
+Task 4: Ruling: mint panics ("the system random source failed") if getrandom fails, keeping the brief's -> String signature; on Windows getrandom uses ProcessPrng, which does not fail - cost if wrong: a panic on the thread minting a cookie in a situation that should not occur.
+
+Task 4: Ruling: IT2_SUITE is not followed by noauth_path - cost if wrong: a user with IT2_SUITE set sees the package ignore Tandem's allow-all file.
+
+Task 4: Ruling: consume compares against every cookie in constant time (a linear scan, black_box on the accumulated difference) rather than a hash lookup, so the time depends only on how many cookies exist, not on a guess's content - cost if wrong: O(n) per connection over at most a few hundred cookies.
+
+Task 4 fix round 1: Ruling: a plain owned file of the wrong size is Corrupt, not None, since iTerm2 checks no size and reads the contents, which then cannot match - cost if wrong: a wrong-size file shows the reset warning instead of silently requiring a cookie.
+
+Task 4 fix round 1: Ruling: the allow-all file's owner must be exactly the user's SID; Administrators is refused, since a file created by an elevated process is owned by BUILTIN\Administrators. The app-side writer sets the owner to the user's SID explicitly when Tandem runs elevated - cost if wrong: an allow-all file the user made from an elevated shell by hand is not trusted until its owner is changed.
+
+Task 4 fix round 1: Ruling: read_noauth_file lives in api_auth.rs under #[cfg(windows)], beside the pure check it feeds, with the owner lookup in winpipe - cost if wrong: a move later.
+
+Task 4 fix round 1: Ruling (kept, restated): an unknown alert button index maps to Deny (the brief's "a closed alert is Deny"), where iTerm2's default case logs REASON_INTERNAL, which stays available for the app side - cost if wrong: a closed alert logs "Denied by user" instead of "Internal error".
+
+Task 4: Ruling (ledger summary, review verified): the allow-all file counts only as a plain regular file of the magic's size owned by the user's SID, read from one handle opened with FILE_FLAG_OPEN_REPARSE_POINT (never following a symlink or junction); a corrupt file plus choosing "Require a cookie" does nothing, since a corrupt file already requires a cookie - source over brief - cost if wrong: none.
+
+Task 4: minors carried to the final fix wave: op_accounts turns a malformed item into empty id/title instead of an error (m10b carry, not touched here); the "Tandem/*" allow-all filter literal is not tied to a shared constant beyond api_auth itself.
+
+Task 5: Ruling: the server field is api_server, not api, since App already has api: Api (the ConPTY API used by Pane::start) - cost if wrong: a rename in later tasks' briefs, which say self.api for the server.
+
+Task 5: Ruling: one extra app-wide field api_settings_seen: (bool, bool), the Enable and allow-all values last acted on, so a failed start or a file changed outside Tandem does not re-ask on every unrelated global edit - cost if wrong: none visible; one field.
+
+Task 5: Ruling: a failed start (port held) shows an alert, not a banner: Alert::StartFailed(String), heading "Could Not Start the Python API," text naming the port and, when found via GetExtendedTcpTable's listener table, the owning process and pid. The setting stays on, api_on stays false, and there is no fallback port - cost if wrong: a second running copy of Tandem with the API on shows this alert at each launch.
+
+Task 5: Ruling: api_alert_event takes event_loop, as tmux_dashboard_event and replay_window_event do, because "Reveal Preference" opens Settings > General through open_settings_page, which needs it - cost if wrong: none; signature differs from the brief's.
+
+Task 5: Ruling: Answer::{Now, Later} is not introduced yet in Task 5, since Task 5 has no answer producer besides the placeholder malformed reply and a variant never built would be dead code; api_tick and api_message already take event_loop, and api_message/api_closed are named functions - cost if wrong: Task 7 adds Answer with api_answer, no code moves.
+
+Task 5: Ruling: closing an alert window answers per action_keys (Escape's Cancel button, else the last button); for Reset and RemoveFailed that means closing opens Settings / Explorer (iTerm2's NSAlert cannot be closed, so the source is silent); every alert holding a connection still answers Cancel = Deny on close - cost if wrong: closing those two warnings opens Settings or Explorer.
+
+Task 5: Ruling: the allow-all file's owner is set to the user's SID on every write, elevated or not (a no-op when not elevated), on the temp file before the move, with WRITE_OWNER from the inherited profile ACL - cost if wrong: none seen; an unusual profile ACL without WRITE_OWNER for the user makes the write fail and shows "Failed to make change."
+
+Task 5: Ruling: the reset warning's "distinct contents" key is the file's text, or "(N bytes, unreadable)" when it has none, so an unreadable corrupt file warns once rather than every time (iTerm2 warns again whenever the contents are nil) - cost if wrong: none.
+
+Task 5: Ruling: the auth popup is mirrored when the Settings window is opened or focused, not only created - cost if wrong: none.
+
+Task 5: Ruling: api_launch runs right after the first window is registered in resumed, before its sessions start, so Task 6's sessions see the API as on - cost if wrong: none.
+
+Task 5 fix round 1: Ruling: a consent marker file, %APPDATA%\Tandem\python-api-consent, gates every server start through a pure start_rule(setting, consent) -> ServerStep{Start, Warn, Off}, written only by OK on "Enable Python API?" and deleted whenever the API goes off; this covers Import from iTerm2, the Toggle Setting key action, a settings import, and a hand-edited file, since every one of them reaches the same start point. This replaces the Task 5 original design, where the Enable warning alone (via api_auth::enable_step) gated the start; enable_step is no longer called by the app - cost if wrong: a user who hand-copies settings to a new machine is asked once there.
+
+Task 5 fix round 1: Ruling: existing users with EnableAPIServer already true and no marker see "Enable Python API?" at their next launch, and the setting stays off until they click OK - cost if wrong: one extra prompt.
+
+Task 5 fix round 1: Ruling: failing to write the marker shows banner "api" and still enables for this run, in memory only - cost if wrong: that user is asked again at the next launch.
+
+Task 5: Ruling (ledger summary, review verified): the server starts only with the consent marker; alerts without a Cancel button close as OK; connection alerts (Allow, ConfirmAlways) close as Deny - cost if wrong: none.
+
+Task 5: minor carried to the final fix wave: api_auth::enable_step / EnableStep is dead code after fix round 1 (remove or use).
+
+Task 6: Ruling: pane number follows iTerm2's sessionPaneNumber: rather than the brief's "index in layout.panes()": the tab's pane count less one when the pane is already in the tab (Restart Session), the target tab's current pane count for a split, 0 for a new tab - source over brief - cost if wrong: a split in the middle of a tab reports the count, not its position, exactly as iTerm2 does.
+
+Task 6: Ruling: a split's target tab comes from a transient start_tab field set around split's start_pane call, because Tandem starts a pane before placing it in the layout, and the brief's fallback (self.tabs.len()) would give a split the number of a new tab - cost if wrong: one more app-wide field, set and cleared in one call.
+
+Task 6: Ruling: the tab number is the tab's current index (the brief's rule), not iTerm2's sticky-per-tab number - cost if wrong: after tabs are moved or closed, a later pane of an older tab can get a different tab number than iTerm2 would give.
+
+Task 6: Ruling: restored panes that build a multi-pane tab from an arrangement each get pane number 0, since they start before their tab exists - cost if wrong: ITERM_SESSION_ID pane numbers of restored new shells differ from iTerm2's; the ids after the colon stay unique.
+
+Task 6: Ruling: the host client steps down one version at a time on a refusal (3, 2, 1) rather than jumping to MIN_VERSION, so a version 2 host keeps password prompts and Send Signal - cost if wrong: a host that does not answer at all costs one more reply wait before Tandem gives up on it.
+
+Task 6: Ruling: env is sent to older hosts too (they decode and ignore it, the field having always been on the wire); their new sessions lack the variables until the host restarts, as the controller ruled - cost if wrong: an old host process holds the cookie in memory without using it.
+
+Task 6: Ruling: a restored cookie is re-added only where the shell was taken back (attach_pane), not for every restored session as iTerm2 does, since a new shell started in its place gets a fresh cookie; a restored value that is not 32 lowercase hex is ignored - cost if wrong: none for scripts; an unreattached saved cookie is simply dead.
+
+Task 6: Ruling: the cookie is also removed from the jar on Restart Session, on a failed arrangement restore's cleanup, and at once for a cookie minted for a start that failed - cost if wrong: none.
+
+Task 6: Ruling: the inherited environment is read with vars_os converted lossily to String, the brief's interface - cost if wrong: an inherited variable holding an unpaired UTF-16 surrogate reaches a Tandem session with U+FFFD in place of it, only when Tandem adds variables.
+
+Task 6: Ruling: env_reaches_the_child uses a modified command (echo, then where cmd, then a sentinel) instead of the brief's exact command, because ConPTY's console title carries the command line and would otherwise match instead of the child's output - cost if wrong: none; it checks the same things.
+
+Task 6: Ruling (ledger summary, review verified): pane number follows PTYTab.m; tab number is the current index; host fallback steps 3 -> 2 -> 1; a restored cookie is re-added only on reattach and only if 32 lowercase hex - cost if wrong: none (each restated above with its own cost).
+
+Task 6: minors carried to the final fix wave: extract session_env's window/tab/pane arithmetic as a pure tested function; dedupe the api_jar remove line; restate the cookie-save gate Decision in arrange_ui.rs.
+
+Task 7: Ruling: released requests are offered through Transactions::offer again, not run directly, as iTerm2's drainTransaction re-enqueues them through enqueueOrDispatchRequest - source over brief - cost if wrong: none visible for scripts that never overlap transactions.
+
+Task 7: Ruling: released work is drained before a freeze starts, so a freeze that began at a released begin cannot strand that connection's already-queued end while the freeze waits on the socket - cost if wrong: none; iTerm2 gets the same effect because its drain runs asynchronously after the re-enqueue.
+
+Task 7: Ruling: Transactions::closed also drops the closed connection's held requests, owner or not, as iTerm2 skips a re-enqueued request whose connection is gone - cost if wrong: a dead connection's requests would run and their replies would be dropped.
+
+Task 7: Ruling: api_closed gains event_loop, because released requests run through api_run, which takes it under the 11b signature ruling - cost if wrong: one call site to change.
+
+Task 7: Ruling: Answer lives in src/app/api_ui.rs for now, since 11b's plan creates src/app/api_requests.rs where it names Answer; Later carries #[allow(dead_code)] until 11b constructs it - cost if wrong: 11b moves eight lines.
+
+Task 7: Ruling: a TransactionRequest that reaches route answers ALREADY_IN_TRANSACTION rather than malformed, matching iTerm2's handleTransactionRequest, though offer never lets one through today - cost if wrong: none.
+
+Task 7: Ruling: a missing or unknown notification_type reads as iTerm2's default (NOTIFY_ON_KEYSTROKE, the first enum value) and gets None, so route answers malformed - cost if wrong: a request with no type gets the malformed error rather than a NotificationResponse.
+
+Task 7: Ruling: turning the server off resets api_subs and api_tx and clears api_deferred, since a dropped server posts no Closed and a new server numbers its connections from 0 again - cost if wrong: none.
+
+Task 7: Ruling: if wait_event returns None during a freeze (the server's channel is gone), the transaction ends as though the owner closed - cost if wrong: none.
+
+Task 7: Ruling (ledger summary, review verified): held requests are re-offered in order after a transaction ends, a held begin starting the next transaction, all handled before a new freeze - cost if wrong: none.
+
+Task 7: minors carried to the final fix wave: api_freeze's owner parameter shadowed by the loop variable; Answer lives in api_ui.rs (11b moves it to api_requests.rs).
+
+Task 8: Ruling: window.number is the window number plus 1, following the source over the brief's plain window_number(), since iTerm2 sets @(number_ + 1) while termid / ITERM_SESSION_ID use the 0-based number - source over brief - cost if wrong: scripts reading window.number see one more than Tandem's 0-based registry number; ListSessions' own number field is separate and not touched here.
+
+Task 8: Ruling: tab.title is the tab's label as the tab bar computes it (tmux label, else Edit Tab Title, else session_title), not the focused pane's raw OSC title as before, since iTerm2's tab title is the tab's shown title - cost if wrong: a badge or status bar using \(tab.title) now shows the session title instead of the program's own title.
+
+Task 8: Ruling: window.title is what the window shows before the number and tmux decorations (Edit Window Title's text, else the front tab's focused pane's window title), rather than always the queried session's own title - cost if wrong: a pane in a background tab reports its window's front session title, not its own.
+
+Task 8: Ruling: tab.titleOverride of a tmux tab is the gateway's tab_overrides entry, since Tandem stores the tmux window name in Tab.title for those tabs - cost if wrong: none visible outside tmux.
+
+Task 8: Ruling: tab and window variables are built for panes in parked windows too, and a buried pane gets no tab or window variables (it had window.id "0" and window.title before) - cost if wrong: a buried session's \(tab.window.title) is now empty.
+
+Task 8: Ruling: app.localhostName reuses aps_ui::local_host, read once per run in a OnceLock rather than every 60 s as iTerm2 does, because variables_with runs per frame for status bars - cost if wrong: a rename of the computer shows only after a restart.
+
+Task 8: Ruling: API user values that are not strings reach Vars as their JSON (1, true, [1]); strings as they are - cost if wrong: an interpolated \(tab.user.x) of a number set through the API reads as its JSON text, which is also what iTerm2's string conversion gives for numbers.
+
+Task 8: Ruling: only tab and window scopes are forgotten on close, as the brief says; the Session scope is not forgotten in close_pane because Undo Close brings a pane back with its id, and 11a keeps session user values in shell.vars - cost if wrong: seen baselines of closed sessions stay in memory until 11b's watcher forgets them.
+
+Task 8: Ruling: a tab reopened by Undo Close, or a window reopened with the same registry key, keeps nothing of the store: a tab is forgotten on close, and a window's open keeps an existing id only for a key already open - cost if wrong: user variables set on a tab through the API do not survive Undo Close (iTerm2 keeps the tab object).
+
+Task 8: Ruling (ledger summary, review verified): window.number counts from 1; tab.title is the tab label; parked windows get tab/window variables, buried panes none; close forgets tab/window scopes only; localhostName is cached per run (iTerm2 refreshes every 60 s) - cost if wrong: a renamed host shows the old name until restart (each restated above with its own cost).
+
+Task 8: minor carried to the final fix wave: scope_variables looks up the tab index twice.

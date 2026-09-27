@@ -690,16 +690,16 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### Python API
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Python API | Session/window/tab control | Create tabs, split panes, send text, list sessions, activate/focus a session or window, close, reorder tabs, set tab layout. | missing | |
+| Python API | Session/window/tab control | Create tabs, split panes, send text, list sessions, activate/focus a session or window, close, reorder tabs, set tab layout. | partial | Milestone 11a: ListSessions only (windows, tabs, splits, focus, tmux and buried sessions). Create/split/send/close/reorder wait for milestone 11b. |
 | Python API | Screen/buffer reading | Read the on-screen grid contents, capture a screenshot of a session, get the current shell prompt, list recent prompts. | missing | |
-| Python API | Variables | Get, set, and monitor iTerm2/session/user-defined variables in real time. | missing | |
+| Python API | Variables | Get, set, and monitor iTerm2/session/user-defined variables in real time. | partial | Milestone 11a: the scope model (session/tab/window/app) and stable ids exist internally. The API's own get/set/monitor requests wait for milestone 11b. |
 | Python API | Profiles | List profiles, read/write individual profile properties, react to profile-change events. | missing | |
-| Python API | Notifications and monitors | Subscribe to keystroke events, and filter/suppress them, prompt events, and other async notifications. | missing | |
+| Python API | Notifications and monitors | Subscribe to keystroke events, and filter/suppress them, prompt events, and other async notifications. | partial | Milestone 11a: new session, terminate session, layout change, focus change, and broadcast change notifications. Keystroke and prompt-event monitors wait for milestone 11b/11c. |
 | Python API | Server-originated RPC / registered functions | Register Python functions that iTerm2 itself can call, for example from triggers or status bar, and invoke arbitrary registered functions. | missing | |
 | Python API | Status bar components | Register a custom status bar component driven entirely from a Python script. | missing | |
 | Python API | Color presets | Apply or enumerate color presets programmatically. | missing | |
 | Python API | Preferences | Read and write app-level preferences via the API. | missing | |
-| Python API | Broadcast domains | Get and set which sessions are grouped into a broadcast-input domain. | missing | |
+| Python API | Broadcast domains | Get and set which sessions are grouped into a broadcast-input domain. | partial | Milestone 11a: GetBroadcastDomains and broadcast-change notifications. Setting the domain via the API waits for milestone 11b. |
 | Python API | tmux integration control | Drive tmux integration mode, attach, list, and so on, through the API. | missing | |
 | Python API | Menu items | Trigger any application menu command by identifier. | missing | |
 | Python API | Session restart | Restart a session's underlying shell process. | missing | |
@@ -707,7 +707,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Python API | Selection | Read or set the current text selection in a session. | missing | |
 | Python API | Inject | Feed synthetic data into a session as if it were program output. | missing | |
 | Python API | Generic property get/set | Generic get/set for object properties not covered by a specific message type. | missing | |
-| Python API | Transactions | Batch multiple API calls into a single atomic transaction. | missing | |
+| Python API | Transactions | Batch multiple API calls into a single atomic transaction. | have | Milestone 11a: a begin freezes the UI thread (as iTerm2's does) until it ends or the owning connection closes; other connections' requests wait and run in arrival order after. |
 
 ### Instant Replay
 | Subsystem | Feature | What it does | Tandem status | Windows note |

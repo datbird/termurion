@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 171 | 123 | 20 |
-| `02-global-settings.md` | 823 | 259 | 72 | 492 |
-| `03-features-and-menus.md` | 643 | 456 | 43 | 144 |
-| Total | 1,780 | 886 | 238 | 656 |
+| `02-global-settings.md` | 823 | 262 | 72 | 489 |
+| `03-features-and-menus.md` | 643 | 457 | 47 | 139 |
+| Total | 1,780 | 890 | 242 | 648 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -147,7 +147,24 @@ trigger action (01); and echoProbeDuration, disablePasswordManagerAnimations,
 detectPasswordInput, detectPasswordInputDebounce, lastpassGroups, onePasswordAccount, and the
 three Require Authentication globals (02), each keeping iTerm2's own quirks, listed in
 `docs/acceptance/m10b-checklist.md` and ruled on in `docs/superpowers/rulings/m10b-rulings.txt`.
-Milestone 10 is now complete.
+Milestone 10 is now complete. Milestone 11a closed the Python API server's core (03): a
+loopback WebSocket server (127.0.0.1 and [::1], port 1912, iTerm2's protobuf-over-websocket
+protocol 1.19) that starts only after a forced "Enable Python API?" warning (the Settings
+checkbox, Import from iTerm2, and the Toggle Setting key action all reach it) and a consent
+marker; the peer check (matching the connecting process's Windows user SID and elevation, in
+place of macOS's euid check); authorization (a per-session or allow-all cookie, the allow-all
+file at the same path and magic the `iterm2` pip package reads, and the "Allow Python API
+Usage?" prompt); the session environment (ITERM2_COOKIE, ITERM_SESSION_ID, TERM_SESSION_ID,
+ITERM_PROFILE) reaching new, split, restored and tandem-host sessions (host protocol version 3);
+transactions that freeze the UI thread until they end or the owner disconnects; subscriptions
+and notifications for new session, terminate session, layout change, focus change, and broadcast
+change; the variable store (session, tab, window and app scopes with `user.*` values); and
+ListSessions, Focus, and GetBroadcastDomains matching iTerm2's shapes, so the stock `iterm2` pip
+package connects unmodified and lists Tandem's real windows, tabs and sessions; Enable Python
+API, Require "Automation" permission for Python API, and setCookie (02) are done. Session/window/
+tab control beyond ListSessions, setting the broadcast domain, and the variables API's own get/
+set/monitor requests wait for milestone 11b. Every kept quirk is listed in
+`docs/acceptance/m11a-checklist.md` and ruled on in `docs/superpowers/rulings/m11a-rulings.txt`.
 
 ## Order
 
