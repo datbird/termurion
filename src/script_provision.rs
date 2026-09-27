@@ -368,13 +368,14 @@ pub struct RealRunner {
     pub timeout: Duration,
 }
 
-/// A Job Object whose processes all end when it is closed.
+/// A Job Object whose processes all end when it is closed (provisioning runs and launched
+/// scripts).
 #[cfg(windows)]
-struct KillJob(windows_sys::Win32::Foundation::HANDLE);
+pub(crate) struct KillJob(windows_sys::Win32::Foundation::HANDLE);
 
 #[cfg(windows)]
 impl KillJob {
-    fn new() -> Result<KillJob, String> {
+    pub(crate) fn new() -> Result<KillJob, String> {
         use windows_sys::Win32::System::JobObjects::{CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -394,7 +395,7 @@ impl KillJob {
 
     /// Puts a process started suspended in the job, then lets it run, so nothing it starts can
     /// get out of the job first.
-    fn adopt(&self, child: &std::process::Child) -> Result<(), String> {
+    pub(crate) fn adopt(&self, child: &std::process::Child) -> Result<(), String> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
         if unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) } == 0 {
@@ -404,7 +405,8 @@ impl KillJob {
         Ok(())
     }
 
-    fn terminate(&self) {
+    /// Ends every process in the job with exit code 1.
+    pub(crate) fn terminate(&self) {
         unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) };
     }
 }

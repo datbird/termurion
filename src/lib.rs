@@ -53,6 +53,9 @@ pub mod script_statusbar;
 pub mod script_provision;
 pub mod script_runtime;
 pub mod script_history;
+pub mod script_launch;
+#[cfg(windows)]
+pub mod script_proc;
 pub mod scripts;
 #[cfg(windows)]
 pub mod scripts_scan;

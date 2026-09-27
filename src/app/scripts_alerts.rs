@@ -34,6 +34,13 @@ pub(super) enum Then {
     Consent(Vec<(Job, After)>),
     /// "Performance Issue": Stop (0) or Continue (1).
     SlowScan,
+    /// "Cannot Run Script": OK (0) or Reveal (1) the folder.
+    Malformed(std::path::PathBuf),
+    /// "Rebuild Python Environment?": Rebuild (0) builds the container again, then launches
+    /// it; Cancel (1) does nothing.
+    Rebuild(crate::script_launch::Request),
+    /// "Error running script": OK only.
+    ErrorRunning,
 }
 
 /// The remembered-choice keys of a silenceable warning: the silence flag and the chosen
@@ -130,7 +137,17 @@ impl App {
     /// Acts on an answer: the button's place in the alert's buttons.
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
-            Then::Nothing => {}
+            Then::Nothing | Then::ErrorRunning => {}
+            Then::Malformed(path) => {
+                if index == 1 {
+                    self.reveal_path(&path);
+                }
+            }
+            Then::Rebuild(req) => {
+                if index == 0 {
+                    self.rebuild_script(req);
+                }
+            }
             Then::Consent(jobs) => {
                 if index == 0 {
                     self.provision_jobs(jobs);

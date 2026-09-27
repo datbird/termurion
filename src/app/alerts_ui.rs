@@ -42,7 +42,10 @@ impl App {
         let (name, tab) = self.session_label(pane);
         let (title, body) = alerts::text(&kind, &name, tab, self.globals.bool("simpleNotifications"), &self.globals.string("sessionEndMessageText"));
         match crate::notify::show_with(&title, &body, self.globals.bool("silentUserNotifications")) {
-            Ok(()) => self.last_notified = Some(pane),
+            Ok(()) => {
+                self.last_notified = Some(pane);
+                self.last_notified_script = None;
+            }
             Err(e) => self.banners.set("notify", format!("Could not show a notification: {e}")),
         }
     }
@@ -54,8 +57,12 @@ impl App {
         }
     }
 
-    /// A click on a notification: Tandem comes forward on the session it named.
+    /// A click on a notification: Tandem comes forward on the session it named, or on the
+    /// Script Console entry of the script that failed.
     pub(super) fn reveal_notified(&mut self) {
+        if let Some(id) = self.last_notified_script.clone() {
+            return self.reveal_script_entry(&id);
+        }
         let Some(pane) = self.last_notified else { return };
         self.reveal_pane(pane);
     }

@@ -20,6 +20,11 @@ pub(super) enum After {
     InstallRuntime,
     /// Check for Updated Runtime: the result shows as an alert and a console line.
     CheckRuntime,
+    /// A script launch runs the script (Task 5).
+    Launch(crate::script_launch::Request),
+    /// "Rebuild Python Environment?" answered Rebuild: the script launches; a failure shows
+    /// "Could Not Rebuild Environment".
+    Rebuild(crate::script_launch::Request),
     /// The REPL, an import and the dependency editor continue here (Tasks 9 and 10).
     #[allow(dead_code)]
     Repl,
@@ -45,6 +50,8 @@ fn env_name(target: &Target, after: &After) -> String {
     let stem = |p: &Path| p.file_stem().map(|s| s.to_string_lossy().into_owned());
     match (after, target) {
         (After::Import(p) | After::Deps(p), _) => stem(p),
+        // iTerm2 names the launched path's last component (`M:915-917`).
+        (After::Launch(r) | After::Rebuild(r), _) => r.path.file_name().map(|s| s.to_string_lossy().into_owned()),
         (_, Target::Container(c)) => c.file_name().map(|s| s.to_string_lossy().into_owned()),
         (_, Target::Shared(minor)) => Some(format!("Python {minor}")),
     }
@@ -113,7 +120,6 @@ impl App {
     /// Makes sure `target` is ready, then continues with `after`. Ready now: at once. Else a
     /// download is needed: a person's action asks first, naming what will download; any
     /// other path logs the environment-missing line and stops.
-    #[allow(dead_code)]
     pub(super) fn ensure_environment(&mut self, target: Target, requested: &str, dependencies: &[String], explicit: bool, after: After) {
         let dir = uv_dir();
         if let Some(python) = script_provision::ready_python(&target, &dir, &|p: &Path| p.exists(), &|p: &Path| std::fs::read_to_string(p).ok()) {
@@ -198,7 +204,8 @@ impl App {
     /// (a build makes many file events; iTerm2 skips them), then it is scanned once.
     fn provision_busy(&mut self, busy: bool) {
         if busy {
-            self.banners.set("scripts", rt::SETTING_UP);
+            let rebuilding = self.provision_after.values().any(|a| matches!(a, After::Rebuild(_)));
+            self.banners.set("scripts", if rebuilding { crate::script_launch::REBUILDING } else { rt::SETTING_UP });
         } else {
             self.banners.clear("scripts");
         }
@@ -266,6 +273,7 @@ impl App {
                         self.runtime_alert(rt::INSTALL_FAILED_HEADING, rt::install_failed(&e));
                     }
                     After::CheckRuntime => self.runtime_alert(rt::UPDATE_FAILED_HEADING, e),
+                    After::Rebuild(_) => self.runtime_alert(crate::script_launch::COULD_NOT_REBUILD, e),
                     _ => self.runtime_alert(rt::ENV_UNAVAILABLE_HEADING, rt::env_unavailable(&e)),
                 }
             }
@@ -291,9 +299,11 @@ impl App {
     }
 
     /// The environment is ready: what waited on it goes on.
-    fn environment_ready(&mut self, after: After, _python: PathBuf) {
+    fn environment_ready(&mut self, after: After, python: PathBuf) {
         match after {
             After::Nothing | After::InstallRuntime | After::CheckRuntime => {}
+            After::Launch(req) => self.script_environment_ready(req, python),
+            After::Rebuild(req) => self.launch_script(req),
             // Their tasks (9 and 10) continue these with the interpreter.
             After::Repl | After::Import(_) | After::Deps(_) => {}
         }

@@ -113,6 +113,7 @@ mod api_requests;
 mod script_ui;
 mod script_runtime_ui;
 mod scripts_alerts;
+mod scripts_app;
 mod builtin_ui;
 
 pub enum UserEvent {
@@ -646,6 +647,13 @@ pub struct App {
     /// The Scripts features' alerts waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// Launched scripts' processes by their Script Console entry's id (their key), the
+    /// launches waiting for "Enable Python API?" to be answered, and the script whose
+    /// failure notification was posted last (a click reveals its entry; a session's alert
+    /// takes the click over, as `last_notified`).
+    script_procs: HashMap<String, crate::script_proc::ScriptProcess>,
+    script_after_enable: Vec<crate::script_launch::Request>,
+    last_notified_script: Option<String>,
     /// Status bar strings with function calls, by session and string: their shown values
     /// and running evaluations (app-wide; a pane's entries go with the pane).
     script_templates: HashMap<(PaneId, String), script_ui::Template>,
@@ -1037,6 +1045,9 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        script_procs: HashMap::new(),
+        script_after_enable: Vec::new(),
+        last_notified_script: None,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
         script_components: HashMap::new(),
@@ -2882,6 +2893,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.tick_script_titles();
         let script_due = self.script_tick();
         let provision_due = self.provision_tick();
+        self.scripts_tick();
         self.scripts_scan_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);

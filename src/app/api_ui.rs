@@ -463,6 +463,8 @@ impl App {
             ServerStep::Off => {
                 if let Some(s) = self.api_server.take() {
                     std::thread::spawn(move || drop(s));
+                    // Every entry stops and launched scripts end (`SH:182-188`).
+                    self.scripts_api_stopped();
                 }
                 clear_on_stop(&mut self.api_pending, &mut self.api_alerts);
                 // No Closed event comes from a dropped server. Connection ids are never reused
@@ -585,7 +587,7 @@ impl App {
     }
 
     /// Queues an alert unless the same one already waits.
-    fn queue_api_alert(&mut self, alert: Alert) {
+    pub(super) fn queue_api_alert(&mut self, alert: Alert) {
         if !self.api_alerts.iter().any(|(_, a)| *a == alert) {
             self.api_alerts.push((None, alert));
         }
@@ -1118,6 +1120,9 @@ impl App {
                 if let Alert::Allow { conn } | Alert::ConfirmAlways { conn } = alert {
                     self.api_decided(conn, false, api_auth::REASON_INTERNAL);
                 }
+                if alert == Alert::Enable {
+                    self.script_after_enable.clear();
+                }
                 self.banners.set("window", format!("Could not open the window: {e}"));
             }
         }
@@ -1147,6 +1152,7 @@ impl App {
     }
 
     fn api_alert_answered(&mut self, alert: Alert, index: usize, suppress: bool, event_loop: &ActiveEventLoop) {
+        let enable = alert == Alert::Enable;
         for effect in effects(&alert, index, suppress) {
             match effect {
                 Effect::Enable => {
@@ -1177,6 +1183,20 @@ impl App {
                 }
                 Effect::RevealPreference => self.open_settings_page(event_loop, crate::settings_ui::Page::General),
                 Effect::RevealFile => self.reveal_allow_all_file(),
+            }
+        }
+        if enable {
+            self.enable_answered(index == 0);
+        }
+    }
+
+    /// "Enable Python API?" was answered: the launches that waited for it go on once the
+    /// server runs (OK), else they are dropped (Cancel, or a server that failed to start).
+    fn enable_answered(&mut self, ok: bool) {
+        let waiting = std::mem::take(&mut self.script_after_enable);
+        if ok && self.api_on {
+            for req in waiting {
+                self.launch_script(req);
             }
         }
     }
