@@ -17,6 +17,9 @@ use crate::scripts::{self, RealFs, ScanResult};
 
 /// How long the folder must be quiet after a change before it is scanned again.
 const SETTLE: Duration = Duration::from_millis(500);
+/// How often a folder that cannot be watched (missing, or removed while watched) is looked
+/// for, so the watch starts again when it comes back.
+const POLL: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 pub enum ScanEvent {
@@ -45,9 +48,14 @@ impl Drop for Wake {
 
 pub struct Scanner {
     folder: PathBuf,
-    commands: Sender<Cmd>,
+    /// Taken in Drop, before the worker is woken, so the worker always sees it gone.
+    commands: Option<Sender<Cmd>>,
     events: Receiver<ScanEvent>,
     wake: Arc<Wake>,
+    /// The worker thread; not joined (a scan in progress finishes on its own). The tests
+    /// watch it end.
+    #[cfg_attr(not(test), allow(dead_code))]
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Scanner {
@@ -59,8 +67,8 @@ impl Scanner {
         let (event_tx, events) = mpsc::channel();
         let wake = Arc::new(Wake(unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) }));
         let worker = Worker { folder: folder.clone(), commands: command_rx, events: event_tx, notify, wake: wake.clone(), disabled: false };
-        std::thread::spawn(move || worker.run());
-        Scanner { folder, commands, events, wake }
+        let worker = std::thread::spawn(move || worker.run());
+        Scanner { folder, commands: Some(commands), events, wake, worker: Some(worker) }
     }
 
     pub fn try_event(&self) -> Option<ScanEvent> {
@@ -83,16 +91,27 @@ impl Scanner {
     }
 
     fn send(&self, cmd: Cmd) {
-        let _ = self.commands.send(cmd);
+        if let Some(commands) = &self.commands {
+            let _ = commands.send(cmd);
+        }
         unsafe { SetEvent(self.wake.0) };
     }
 }
 
 impl Drop for Scanner {
-    /// The worker sees its commands end and stops; a scan in progress finishes first.
+    /// The worker sees its commands end and stops; a scan in progress finishes first. The
+    /// channel closes before the wake, so a worker that wakes finds it closed.
     fn drop(&mut self) {
+        self.commands = None;
         unsafe { SetEvent(self.wake.0) };
     }
+}
+
+/// A change notification on the whole tree under `folder`, None when it cannot be watched.
+fn watch(folder: &Path) -> Option<HANDLE> {
+    let wide: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
+    let h = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 1, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME) };
+    (h != INVALID_HANDLE_VALUE).then_some(h)
 }
 
 struct Worker {
@@ -106,13 +125,9 @@ struct Worker {
 
 impl Worker {
     fn run(mut self) {
-        let wide: Vec<u16> = self.folder.as_os_str().encode_wide().chain(Some(0)).collect();
-        let change = unsafe { FindFirstChangeNotificationW(wide.as_ptr(), 1, FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME) };
-        // Without a watch (the folder could not be made) only rescans scan.
-        let mut handles = vec![self.wake.0];
-        if change != INVALID_HANDLE_VALUE {
-            handles.push(change);
-        }
+        // Without a watch (the folder is missing) the folder is looked for every POLL and
+        // watched again when it is back.
+        let mut change = watch(&self.folder);
         let mut due = Some(Instant::now());
         'run: loop {
             if due.is_some_and(|t| Instant::now() >= t) {
@@ -127,7 +142,11 @@ impl Worker {
                     }
                 }
             }
-            let timeout = due.map_or(INFINITE, |t| t.saturating_duration_since(Instant::now()).as_millis() as u32);
+            let mut timeout = due.map_or(INFINITE, |t| t.saturating_duration_since(Instant::now()).as_millis() as u32);
+            if change.is_none() {
+                timeout = timeout.min(POLL.as_millis() as u32);
+            }
+            let handles: Vec<HANDLE> = std::iter::once(self.wake.0).chain(change).collect();
             let r = unsafe { WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, timeout) };
             if r == WAIT_OBJECT_0 {
                 loop {
@@ -139,15 +158,29 @@ impl Worker {
                         Err(TryRecvError::Disconnected) => break 'run,
                     }
                 }
-            } else if r == WAIT_OBJECT_0 + 1 {
-                unsafe { FindNextChangeNotification(change) };
-                due = Some(Instant::now() + SETTLE);
-            } else if r != WAIT_TIMEOUT {
+            } else if let (true, Some(h)) = (r == WAIT_OBJECT_0 + 1, change) {
+                // A watch that cannot go on (its folder was removed) is dropped at once, or
+                // it would stay signaled and spin; the scan then finds the folder missing.
+                if unsafe { FindNextChangeNotification(h) } == 0 || !self.folder.is_dir() {
+                    unsafe { FindCloseChangeNotification(h) };
+                    change = None;
+                    due = Some(Instant::now());
+                } else {
+                    due = Some(Instant::now() + SETTLE);
+                }
+            } else if r == WAIT_TIMEOUT {
+                if change.is_none() && self.folder.is_dir() {
+                    change = watch(&self.folder);
+                    if change.is_some() {
+                        due = Some(Instant::now());
+                    }
+                }
+            } else {
                 break;
             }
         }
-        if change != INVALID_HANDLE_VALUE {
-            unsafe { FindCloseChangeNotification(change) };
+        if let Some(h) = change {
+            unsafe { FindCloseChangeNotification(h) };
         }
     }
 
@@ -198,7 +231,7 @@ mod tests {
     use super::*;
 
     fn wait_for_done(s: &Scanner, want: &[&str]) -> Vec<String> {
-        let until = Instant::now() + Duration::from_secs(3);
+        let until = Instant::now() + Duration::from_secs(6);
         let mut last = Vec::new();
         while Instant::now() < until {
             match s.try_event() {
@@ -215,18 +248,70 @@ mod tests {
         last
     }
 
+    /// A fresh temp folder, removed when the test ends, passed or not.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> TempDir {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+            let dir = std::env::temp_dir().join(format!("tandem-scripts-{tag}-{}-{nanos}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The worker thread ends within 3 s of the scanner going.
+    fn ends(mut s: Scanner) -> bool {
+        let worker = s.worker.take().unwrap();
+        drop(s);
+        let until = Instant::now() + Duration::from_secs(3);
+        while !worker.is_finished() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        worker.is_finished()
+    }
+
     #[test]
     fn scanner_sees_changes() {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let dir = std::env::temp_dir().join(format!("tandem-scripts-scan-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = TempDir::new("scan");
+        let dir = tmp.0.clone();
         std::fs::write(dir.join("a.py"), "").unwrap();
         let s = Scanner::start(dir.clone(), Arc::new(|| {}));
         assert_eq!(s.folder(), dir);
         assert_eq!(wait_for_done(&s, &["a.py"]), ["a.py"]);
         std::fs::write(dir.join("b.py"), "").unwrap();
         assert_eq!(wait_for_done(&s, &["a.py", "b.py"]), ["a.py", "b.py"]);
-        drop(s);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(ends(s), "the worker thread did not end");
+    }
+
+    #[test]
+    fn scanner_survives_folder_removal() {
+        let tmp = TempDir::new("gone");
+        let dir = tmp.0.join("Scripts");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.py"), "").unwrap();
+        let s = Scanner::start(dir.clone(), Arc::new(|| {}));
+        assert_eq!(wait_for_done(&s, &["a.py"]), ["a.py"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        // The watch lets go of the removed folder and a scan finds it empty.
+        assert!(wait_for_done(&s, &[]).is_empty());
+        // Back again: once it can be made (the removal completes when the watch closes),
+        // the poll watches it again and scans it, with no rescan asked for.
+        let until = Instant::now() + Duration::from_secs(3);
+        while std::fs::create_dir(&dir).is_err() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::fs::write(dir.join("a.py"), "").unwrap();
+        assert_eq!(wait_for_done(&s, &["a.py"]), ["a.py"]);
+        // And the new watch sees changes.
+        std::fs::write(dir.join("b.py"), "").unwrap();
+        assert_eq!(wait_for_done(&s, &["a.py", "b.py"]), ["a.py", "b.py"]);
+        assert!(ends(s), "the worker thread did not end");
     }
 }

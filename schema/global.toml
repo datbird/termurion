@@ -632,7 +632,7 @@ section = "Python API"
 label = "Custom Python API Scripts Folder"
 type = "bool"
 default = false
-help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path."
+help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path. Network paths are not supported."
 
 [[setting]]
 key = "CustomScriptsFolder"
@@ -641,7 +641,7 @@ section = "Python API"
 label = "Custom folder for Python API scripts"
 type = "string"
 default = ""
-help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path."
+help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path. Network paths are not supported."
 
 [[setting]]
 key = "openNewWindowAtStartup"

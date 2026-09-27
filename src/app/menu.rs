@@ -757,6 +757,7 @@ impl App {
         if !self.confirm_close(close_ui::Closing::App) {
             return;
         }
+        self.save_pending_settings();
         // Before any window closes, so the saved state holds every window.
         self.save_state_for_quit();
         self.flush_notes();

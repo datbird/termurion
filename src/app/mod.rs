@@ -1420,10 +1420,12 @@ impl App {
         while let Some(event) = scanner.try_event() {
             match event {
                 crate::scripts_scan::ScanEvent::Slow => scanner.answer_slow(true),
-                crate::scripts_scan::ScanEvent::Done(result) => {
+                // An unchanged tree is left alone, so nothing built from it is rebuilt.
+                crate::scripts_scan::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
                     self.scripts_all = crate::scripts::all_scripts(&result.tree);
                     self.scripts_tree = result.tree;
                 }
+                crate::scripts_scan::ScanEvent::Done(_) => {}
             }
         }
     }
@@ -1661,6 +1663,7 @@ impl App {
             }
             // The window's last tab closed: the window goes; the last window ends Tandem.
             if !self.drop_current_window() {
+                self.save_pending_settings();
                 self.save_empty_state();
                 self.flush_notes();
                 // The last window closed: its shells end (iTerm2), and the host hears it.
@@ -1885,6 +1888,14 @@ impl App {
             .collect();
         *self.exempt_map.write().unwrap() = exempt;
         *self.remap_tags.write().unwrap() = crate::remap::Tags::from_globals(&self.globals);
+    }
+
+    /// Saves a custom scripts folder typed in the open Settings window and not yet applied,
+    /// before Tandem ends, so nothing typed is lost.
+    fn save_pending_settings(&mut self) {
+        if self.settings.as_mut().is_some_and(|s| s.take_folder_pending()) {
+            self.save_globals();
+        }
     }
 
     fn save_globals(&mut self) {
@@ -2965,8 +2976,14 @@ impl ApplicationHandler<UserEvent> for App {
             }
             match event {
                 WindowEvent::CloseRequested => {
+                    // A custom scripts folder typed and not yet applied is applied as the
+                    // window closes (iTerm2's `windowWillClose`, `GP:3428-3430`).
+                    let pending = slot.as_mut().is_some_and(|s| s.take_folder_pending());
                     *slot = None;
                     crate::winkeys::set_recording(false);
+                    if pending {
+                        self.apply_edit(Edit::GlobalsChanged);
+                    }
                 }
                 WindowEvent::RedrawRequested => {
                     let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);

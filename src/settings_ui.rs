@@ -114,6 +114,12 @@ impl SettingsWindow {
         self.page = page;
     }
 
+    /// Whether a custom scripts folder was typed and not yet applied, clearing the note
+    /// (`settings_keys::take_folder_pending`).
+    pub fn take_folder_pending(&mut self) -> bool {
+        settings_keys::take_folder_pending(self.host.ctx())
+    }
+
     /// Shows one profile on one of its tabs (Profiles > Session for the status bar).
     pub fn show_profile_tab(&mut self, guid: &str, tab: &str) {
         self.page = Page::Profiles;
@@ -489,6 +495,11 @@ impl SettingsWindow {
             });
         });
         self.tab = tab;
+        // Leaving a page applies a custom scripts folder typed there (iTerm2's
+        // `willDeselectTab`, `GP:3432-3434`); the field is no longer drawn to lose the focus.
+        if page != self.page && matches!(edit, Edit::None) && self.take_folder_pending() {
+            edit = Edit::GlobalsChanged;
+        }
         self.page = page;
         crate::winkeys::set_recording(self.keys.recording());
         if let Some(g) = pick {

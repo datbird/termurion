@@ -39,12 +39,19 @@ pub fn archive_text(file: &str) -> String {
     format!("A script archive named \u{201c}{file}\u{201d} was found in the Scripts directory. Would you like to install it?")
 }
 
+/// How deep the scan goes below the Scripts folder; links could otherwise nest folders
+/// without end.
+pub const MAX_DEPTH: usize = 32;
+
 /// What the scan reads from the disk.
 pub trait Fs {
-    /// The entries of `dir`: each name and whether it is a folder, in any order.
+    /// The entries of `dir`: each name and whether it is a folder (a link or junction to a
+    /// local folder counts), in any order.
     fn list(&self, dir: &Path) -> Vec<(String, bool)>;
     fn is_file(&self, p: &Path) -> bool;
     fn is_dir(&self, p: &Path) -> bool;
+    /// The folder's real path with every link resolved, None when it cannot be read.
+    fn canonical(&self, dir: &Path) -> Option<PathBuf>;
 }
 
 pub struct RealFs;
@@ -52,7 +59,17 @@ pub struct RealFs;
 impl Fs for RealFs {
     fn list(&self, dir: &Path) -> Vec<(String, bool)> {
         let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-        entries.flatten().map(|e| (e.file_name().to_string_lossy().into_owned(), e.file_type().is_ok_and(|t| t.is_dir()))).collect()
+        entries
+            .flatten()
+            .map(|e| {
+                let folder = match e.file_type() {
+                    Ok(t) if t.is_symlink() => link_is_local_folder(&e.path()),
+                    Ok(t) => t.is_dir(),
+                    Err(_) => false,
+                };
+                (e.file_name().to_string_lossy().into_owned(), folder)
+            })
+            .collect()
     }
     fn is_file(&self, p: &Path) -> bool {
         p.is_file()
@@ -60,6 +77,40 @@ impl Fs for RealFs {
     fn is_dir(&self, p: &Path) -> bool {
         p.is_dir()
     }
+    fn canonical(&self, dir: &Path) -> Option<PathBuf> {
+        std::fs::canonicalize(dir).ok()
+    }
+}
+
+/// Whether a symbolic link or junction leads to a local folder. Each hop of the link is read
+/// first, so a link to a network path is never followed (and never probed).
+fn link_is_local_folder(link: &Path) -> bool {
+    let mut at = link.to_path_buf();
+    for _ in 0..8 {
+        let Ok(target) = std::fs::read_link(&at) else {
+            // Not a link any more: the end of the chain.
+            return at.is_dir();
+        };
+        let target = match at.parent() {
+            Some(parent) if target.is_relative() => parent.join(target),
+            _ => target,
+        };
+        if is_network_path(&target.to_string_lossy()) {
+            return false;
+        }
+        at = target;
+    }
+    false
+}
+
+/// A path Tandem never touches as a file: a network path (`\\host`, `//host`, `\\?\UNC\`) or a
+/// device path (`\\.\`). The local long-path form `\\?\C:\` is an ordinary path.
+pub fn is_network_path(text: &str) -> bool {
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        let b = rest.as_bytes();
+        return !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':');
+    }
+    text.starts_with(r"\\") || text.starts_with("//")
 }
 
 /// `%APPDATA%\Tandem\Scripts`, iTerm2's `<Application Support>/iTerm2/Scripts`.
@@ -79,9 +130,9 @@ pub fn expand_tilde(text: &str, home: &Path) -> PathBuf {
 }
 
 /// `customScriptsFolderIsValid:` (`FM:228-234`): tilde-expanded, no space, an existing folder.
-/// A network path (`\\host`, `//host`) is never probed and never valid.
+/// A network or device path (`is_network_path`) is never probed and never valid.
 pub fn custom_folder_valid(text: &str, home: &Path, fs: &dyn Fs) -> bool {
-    if text.is_empty() || text.starts_with("\\\\") || text.starts_with("//") {
+    if text.is_empty() || is_network_path(text) {
         return false;
     }
     let candidate = expand_tilde(text, home);
@@ -141,7 +192,7 @@ pub struct ScanResult {
 /// once it reaches the limit `slow` is asked: true extends the limit to that time plus
 /// `SCAN_EXTEND`, false stops, keeping what the finished folders held.
 pub fn scan(root: &Path, fs: &dyn Fs, elapsed: &mut dyn FnMut() -> Duration, slow: &mut dyn FnMut() -> bool) -> ScanResult {
-    let mut walk = Walk { fs, elapsed, slow, limit: SCAN_LIMIT, stopped: false, archives: Vec::new() };
+    let mut walk = Walk { fs, elapsed, slow, limit: SCAN_LIMIT, stopped: false, archives: Vec::new(), walking: Vec::new() };
     let mut tree = walk.folder(root, false, true);
     sort(&mut tree);
     let mut archives = walk.archives;
@@ -156,10 +207,24 @@ struct Walk<'a> {
     limit: Duration,
     stopped: bool,
     archives: Vec<(PathBuf, bool)>,
+    /// The real paths of the folders being walked, the root first: a link back to one of
+    /// them is not entered again.
+    walking: Vec<PathBuf>,
 }
 
 impl Walk<'_> {
     fn folder(&mut self, dir: &Path, autolaunch: bool, top: bool) -> Vec<Node> {
+        let real = self.fs.canonical(dir);
+        if self.walking.len() > MAX_DEPTH || real.as_ref().is_some_and(|r| self.walking.contains(r)) {
+            return Vec::new();
+        }
+        self.walking.push(real.unwrap_or_else(|| dir.to_path_buf()));
+        let out = self.entries(dir, autolaunch, top);
+        self.walking.pop();
+        out
+    }
+
+    fn entries(&mut self, dir: &Path, autolaunch: bool, top: bool) -> Vec<Node> {
         let mut entries = self.fs.list(dir);
         // The listing's order is the file system's; a fixed order keeps a stopped scan's
         // result the same from run to run.
@@ -205,7 +270,7 @@ impl Walk<'_> {
 }
 
 /// iTerm2's item order (`M:68-77`): folders first, then names ignoring case.
-pub fn sort(nodes: &mut Vec<Node>) {
+pub fn sort(nodes: &mut [Node]) {
     nodes.sort_by(|a, b| b.is_folder().cmp(&a.is_folder()).then_with(|| a.name().to_lowercase().cmp(&b.name().to_lowercase())).then_with(|| a.name().cmp(b.name())));
     for n in nodes.iter_mut() {
         if let Node::Folder { children, .. } = n {
@@ -253,6 +318,8 @@ mod tests {
     struct FakeFs {
         files: BTreeSet<PathBuf>,
         dirs: BTreeSet<PathBuf>,
+        /// Folder links: the link's path and the folder it leads to.
+        links: std::collections::BTreeMap<PathBuf, PathBuf>,
     }
 
     impl FakeFs {
@@ -279,20 +346,38 @@ mod tests {
         }
     }
 
+    impl FakeFs {
+        /// A path with its first link resolved (the fake's links do not chain).
+        fn resolve(&self, p: &Path) -> PathBuf {
+            for (link, target) in &self.links {
+                if let Ok(rest) = p.strip_prefix(link) {
+                    return target.join(rest);
+                }
+            }
+            p.to_path_buf()
+        }
+    }
+
     impl Fs for FakeFs {
         fn list(&self, dir: &Path) -> Vec<(String, bool)> {
+            let dir = &self.resolve(dir);
             let name = |p: &PathBuf| p.file_name().unwrap().to_string_lossy().into_owned();
             // Reversed, so the scan's own order is what the tests see.
             let mut out: Vec<(String, bool)> = self.files.iter().filter(|p| p.parent() == Some(dir)).map(|p| (name(p), false)).collect();
             out.extend(self.dirs.iter().filter(|p| p.parent() == Some(dir)).map(|p| (name(p), true)));
+            out.extend(self.links.keys().filter(|p| p.parent() == Some(dir)).map(|p| (name(p), true)));
             out.reverse();
             out
         }
         fn is_file(&self, p: &Path) -> bool {
-            self.files.contains(p)
+            self.files.contains(&self.resolve(p))
         }
         fn is_dir(&self, p: &Path) -> bool {
-            self.dirs.contains(p)
+            self.dirs.contains(&self.resolve(p))
+        }
+        fn canonical(&self, dir: &Path) -> Option<PathBuf> {
+            let real = self.resolve(dir);
+            self.dirs.contains(&real).then_some(real)
         }
     }
 
@@ -327,9 +412,15 @@ mod tests {
         assert!(custom_folder_valid("~/s", home, &fs));
         assert_eq!(expand_tilde("~", home), home);
         assert_eq!(expand_tilde(r"D:\~s", home), PathBuf::from(r"D:\~s"));
-        // A network path is never probed.
-        fs.dirs.insert(PathBuf::from(r"\\host\s"));
-        assert!(!custom_folder_valid(r"\\host\s", home, &fs));
+        // A network or device path is never probed; the local long-path form is a path.
+        for p in [r"\\host\s", "//host/s", r"\\?\UNC\host\s", r"\\.\D:\s"] {
+            fs.dirs.insert(PathBuf::from(p));
+            assert!(!custom_folder_valid(p, home, &fs), "{p}");
+            assert!(is_network_path(p), "{p}");
+        }
+        fs.dirs.insert(PathBuf::from(r"\\?\D:\s"));
+        assert!(custom_folder_valid(r"\\?\D:\s", home, &fs));
+        assert!(!is_network_path(r"\\?\D:\s") && !is_network_path(r"D:\s"));
         assert_eq!(scripts_folder(true, r"D:\s", appdata, home, &fs), PathBuf::from(r"D:\s"));
         assert_eq!(scripts_folder(true, r"~\s", appdata, home, &fs), PathBuf::from(r"C:\Users\u\s"));
         assert_eq!(scripts_folder(false, r"D:\s", appdata, home, &fs), default);
@@ -381,6 +472,27 @@ mod tests {
         let r = scan(root, &fs, &mut never(), &mut || false);
         assert_eq!(r.archives, vec![(root.join(r"sub\AutoLaunch\deep.its"), false)]);
         assert!(r.tree.is_empty());
+    }
+
+    #[test]
+    fn links_are_followed_without_loops() {
+        let root = Path::new(r"C:\S");
+        let mut fs = FakeFs::default();
+        fs.file(root, r"real\r.py");
+        fs.dirs.insert(root.to_path_buf());
+        // A link to a folder is entered as the folder is (`M:519-529`); a link back to a
+        // folder being walked is not entered again.
+        fs.links.insert(root.join("alias"), root.join("real"));
+        fs.links.insert(root.join(r"real\up"), root.to_path_buf());
+        let r = scan(root, &fs, &mut never(), &mut || false);
+        assert_eq!(all_scripts(&r.tree), ["alias/r.py", "real/r.py"]);
+        // Past MAX_DEPTH folders nothing more is read.
+        let mut fs = FakeFs::default();
+        let deep = (0..MAX_DEPTH + 2).map(|i| format!("d{i}")).collect::<Vec<_>>().join("\\");
+        fs.file(root, &format!(r"{deep}\deep.py"));
+        fs.file(root, r"d0\shallow.py");
+        let r = scan(root, &fs, &mut never(), &mut || false);
+        assert_eq!(all_scripts(&r.tree), ["d0/shallow.py"]);
     }
 
     #[test]

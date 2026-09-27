@@ -756,12 +756,39 @@ pub fn add_icon_font(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(icon_font_id(), true));
 }
 
+/// Where a window's egui memory notes a custom scripts folder typed and not yet applied.
+fn folder_pending_id() -> egui::Id {
+    egui::Id::new("tandem-scripts-folder-pending")
+}
+
+/// Where a window's egui memory keeps the last folder text checked and whether it was valid.
+fn folder_valid_id() -> egui::Id {
+    egui::Id::new("tandem-scripts-folder-valid")
+}
+
+/// Whether the custom scripts folder's text was typed and not yet applied (iTerm2's
+/// `_customScriptsFolderDidChange`), clearing the note. The Settings window applies it when it
+/// closes or turns to another page (`GP:3417-3434`).
+pub fn take_folder_pending(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(folder_pending_id())).unwrap_or(false)
+}
+
+/// `chooseCustomScriptsFolder`: the folder picker; a picked folder becomes the text, which is
+/// returned.
+fn choose_scripts_folder(g: &mut Globals) -> Option<String> {
+    let dir = rfd::FileDialog::new().pick_folder()?;
+    let text = dir.display().to_string();
+    g.set("CustomScriptsFolder", Value::String(text.clone()));
+    Some(text)
+}
+
 /// The custom scripts folder's row (`GP:2137-2163`, `GP:4204-4219`): the text field and
 /// Browse, both enabled with the checkbox, and the mark saying whether the text is a usable
-/// folder. The text is stored as it is typed; "editing ended" is true when the field lets go
-/// of the focus or Browse picked a folder, the only times the scripts folder is looked at
-/// again (iTerm2 posts on end of editing, since a partial path would scan a whole drive).
-/// Returns (changed, editing ended).
+/// folder (checked when the text changes, not on every frame). The text is stored as it is
+/// typed; "editing ended" is true when the field lets go of the focus or Browse picked a
+/// folder (iTerm2 posts on end of editing, since a partial path would scan a whole drive).
+/// Text typed without an end is noted for `take_folder_pending`. Returns (changed, editing
+/// ended).
 pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> (bool, bool) {
     let (mut changed, mut ended) = (false, false);
     let on = g.bool("UseCustomScriptsFolder");
@@ -778,15 +805,27 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
                 ended = true;
             }
             if ui.button("Browse").clicked() {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    text = dir.display().to_string();
-                    g.set("CustomScriptsFolder", Value::String(text.clone()));
+                if let Some(picked) = choose_scripts_folder(g) {
+                    text = picked;
                     changed = true;
                     ended = true;
                 }
             }
         });
-        let valid = crate::scripts::custom_folder_valid(&text, home, &crate::scripts::RealFs);
+        if ended {
+            ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
+        } else if changed {
+            ui.ctx().data_mut(|d| d.insert_temp(folder_pending_id(), true));
+        }
+        let cached = ui.ctx().data(|d| d.get_temp::<(String, bool)>(folder_valid_id()));
+        let valid = match cached {
+            Some((checked, valid)) if checked == text => valid,
+            _ => {
+                let valid = crate::scripts::custom_folder_valid(&text, home, &crate::scripts::RealFs);
+                ui.ctx().data_mut(|d| d.insert_temp(folder_valid_id(), (text.clone(), valid)));
+                valid
+            }
+        };
         let have_font = ui.ctx().data(|d| d.get_temp::<bool>(icon_font_id())).unwrap_or(false);
         if let (Some((glyph, alpha)), true) = (crate::scripts::folder_glyph(on, &text, valid), have_font) {
             let color = ui.visuals().text_color().gamma_multiply(alpha);
@@ -820,7 +859,13 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
                     continue;
                 }
                 let enabled = row_enabled(g, &s.key);
-                changed |= global_control(ui, g, s, enabled);
+                let was_on = g.bool(&s.key);
+                let c = global_control(ui, g, s, enabled);
+                changed |= c;
+                // Turned on with no folder named: the folder picker opens (`GP:4247-4259`).
+                if c && s.key == "UseCustomScriptsFolder" && !was_on && g.bool(&s.key) && g.string("CustomScriptsFolder").is_empty() && choose_scripts_folder(g).is_some() {
+                    ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
+                }
             }
             ui.add_space(8.0);
         }
@@ -1036,7 +1081,7 @@ mod tests {
         assert_eq!((custom.tab.as_str(), custom.section.as_str(), custom.label.as_str()), ("General", "Python API", "Custom folder for Python API scripts"));
         assert_eq!(custom.kind, Kind::String);
         assert_eq!(custom.default, Some(Value::String(String::new())));
-        let help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path.";
+        let help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path. Network paths are not supported.";
         assert_eq!((use_custom.help.as_str(), custom.help.as_str()), (help, help));
         // The field follows the checkbox (`GP:2152-2154`).
         let mut g = Globals::empty(std::path::Path::new("scripts-rows-test.toml"));
