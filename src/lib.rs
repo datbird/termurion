@@ -77,6 +77,7 @@ pub mod util_api;
 pub mod util_osc;
 pub mod util_cli;
 pub mod util_files;
+pub mod util_imgls;
 #[cfg(windows)]
 pub mod util_console;
 pub mod builtin_fns;

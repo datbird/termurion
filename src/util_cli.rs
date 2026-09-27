@@ -149,6 +149,14 @@ pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
         "imgcat" => util_files::imgcat(args, io),
         "it2cat" => util_files::it2cat(args, io),
         "it2dl" => util_files::it2dl(args, io),
+        #[cfg(windows)]
+        "imgls" => {
+            let fs = crate::util_imgls::WinFs { cwd: io.cwd.clone() };
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            // `stamps::local` takes unsigned seconds: a time before 1970 reads as 1970.
+            let local = |t: i64| crate::stamps::local(t.max(0) as u64);
+            crate::util_imgls::imgls(args, io, &fs, now, &local)
+        }
         _ => {
             let _ = io.err.write_all(multi_usage().as_bytes());
             2

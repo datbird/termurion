@@ -80,7 +80,7 @@ fn token_sid(token: HANDLE) -> Result<String, String> {
 }
 
 /// A SID as text ("S-1-5-21-...").
-unsafe fn sid_text(sid: PSID) -> Result<String, String> {
+pub(crate) unsafe fn sid_text(sid: PSID) -> Result<String, String> {
     unsafe {
         let mut text: *mut u16 = null_mut();
         if ConvertSidToStringSidW(sid, &mut text) == 0 {
