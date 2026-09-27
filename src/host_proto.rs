@@ -3,7 +3,12 @@
 
 use std::collections::VecDeque;
 
-pub const VERSION: u32 = 1;
+/// The protocol this build speaks, and the oldest it still speaks. Version 2 adds password
+/// prompt detection (`WatchPrompts`, `PasswordInput`); both ends speak the lower of their two
+/// versions, so a version 1 peer never sees those messages (an unknown message breaks the
+/// stream).
+pub const VERSION: u32 = 2;
+pub const MIN_VERSION: u32 = 1;
 /// A frame longer than this is refused (a broken or hostile peer).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
@@ -46,6 +51,12 @@ pub enum Msg {
     Forget { id: u64 },
     Kill { id: u64 },
     KillAll,
+    /// Version 2, Tandem to the host: read each session's console input mode for password
+    /// prompts, debounced by `debounce_ms`, or stop (None: nothing is attached to).
+    WatchPrompts { debounce_ms: Option<u32> },
+    /// Version 2, the host to Tandem: a session's console reached (or left) a password prompt,
+    /// debounced. A host that never sends it leaves every session "not at a prompt".
+    PasswordInput { id: u64, on: bool },
 }
 
 /// Field writers: integers little-endian, byte strings with a u32 length.
@@ -160,6 +171,11 @@ pub fn encode(m: &Msg) -> Vec<u8> {
         Msg::Forget { id } => w.u8(15).u64(*id),
         Msg::Kill { id } => w.u8(16).u64(*id),
         Msg::KillAll => w.u8(17),
+        Msg::WatchPrompts { debounce_ms } => match debounce_ms {
+            Some(ms) => w.u8(18).u8(1).u32(*ms),
+            None => w.u8(18).u8(0),
+        },
+        Msg::PasswordInput { id, on } => w.u8(19).u64(*id).u8(*on as u8),
     };
     let mut out = (w.0.len() as u32).to_le_bytes().to_vec();
     out.extend(w.0);
@@ -202,6 +218,8 @@ fn decode(payload: &[u8]) -> Result<Msg, String> {
         15 => Msg::Forget { id: r.u64()? },
         16 => Msg::Kill { id: r.u64()? },
         17 => Msg::KillAll,
+        18 => Msg::WatchPrompts { debounce_ms: if r.bool()? { Some(r.u32()?) } else { None } },
+        19 => Msg::PasswordInput { id: r.u64()?, on: r.bool()? },
         t => return Err(format!("unknown message {t}")),
     };
     if !r.0.is_empty() {
@@ -310,6 +328,10 @@ mod tests {
             Msg::Forget { id: 9 },
             Msg::Kill { id: 9 },
             Msg::KillAll,
+            Msg::WatchPrompts { debounce_ms: Some(200) },
+            Msg::WatchPrompts { debounce_ms: None },
+            Msg::PasswordInput { id: 9, on: true },
+            Msg::PasswordInput { id: 9, on: false },
         ]
     }
 

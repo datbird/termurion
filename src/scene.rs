@@ -406,10 +406,6 @@ pub fn pane_with(
         };
     }
 
-    // The key stands in the cursor's cell alone.
-    if let Some(c) = cursor.filter(|_| key_cursor).and_then(|(row, col)| grid.get_mut(row).and_then(|r| r.get_mut(col))) {
-        c.text = " ".into();
-    }
     for (row, cells) in grid.iter().enumerate() {
         let y = rect.y + row as f32 * ch;
         // Background runs.
@@ -522,8 +518,9 @@ pub fn pane_with(
     }
 
     if let Some((row, col)) = cursor.filter(|_| key_cursor) {
-        // Light on a dark background, dark on a light one (`key-light`, `key-dark`), sized to
-        // the cell: the icon font's em is about the line height over 1.2.
+        // Drawn over the cell, as iTerm2 draws its key image: light on a dark background, dark
+        // on a light one (`key-light`, `key-dark`), sized to the cell (the icon font's em is
+        // about the line height over 1.2).
         let r = Rect { x: rect.x + col as f32 * cw, y: rect.y + row as f32 * ch, w: cw, h: ch };
         let bg = grid.get(row).and_then(|l| l.get(col)).map_or(palette.bg, |c| c.bg);
         let scale = (cw * 1.2 / ch.max(1.0)).min(1.0);
@@ -2654,6 +2651,12 @@ mod tests {
         let mut blink = Frame::default();
         pane_with(&mut blink, &s, RECT, CELL, true, false, Some(&hl(true)));
         assert!(key_row(&blink).is_none(), "it blinks with the cursor");
+        // Over the cell: the character under the cursor is still drawn.
+        let on_c = screen(b"abc\x1b[D");
+        let mut over = Frame::default();
+        pane_with(&mut over, &on_c, RECT, CELL, true, true, Some(&hl(true)));
+        assert!(key_row(&over).is_some_and(|r| r.clip.x == 20.0));
+        assert_eq!(row_text(&over, 0).trim_end(), "abc", "the key does not blank the cell");
         let s = screen(b"ab");
         let mut plain = Frame::default();
         pane_with(&mut plain, &s, RECT, CELL, true, true, Some(&hl(false)));

@@ -202,6 +202,9 @@ pub struct App {
     mouse_override: HashMap<PaneId, bool>,
     /// An Alt single click in a pane at a cell, which may move the cursor on release.
     alt_click: Option<(PaneId, (u32, u32))>,
+    /// A plain single click began in this pane: its release may open the password manager
+    /// (`PTYMouseHandler.m:644-659` looks at the mouse-up).
+    key_click: Option<PaneId>,
     wheel_acc_x: f32,
     /// Mark navigation: the mark each pane is at.
     mark_pos: HashMap<PaneId, u32>,
@@ -660,6 +663,7 @@ pub fn run() {
         pointer_down: None,
         mouse_override: HashMap::new(),
         alt_click: None,
+        key_click: None,
         wheel_acc_x: 0.0,
         mark_pos: HashMap::new(),
         finds: HashMap::new(),
@@ -981,6 +985,9 @@ impl App {
         pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
+            if pane.owns_console() {
+                self.jobs.watch_console(pid);
+            }
         }
         self.panes.insert(id, pane);
     }
@@ -1845,10 +1852,6 @@ impl App {
                 let count = self.clicks.press(Instant::now(), col, row);
                 let point = self.grid_point(id, col, row);
                 let plain = !mods.shift && !mods.alt && !mods.ctrl && !mods.cmd;
-                // A click on the key cursor opens the password manager (`PTYMouseHandler.m:644-659`).
-                if count == 1 && !mods.shift && self.clicked_password_prompt(id, point, mods) {
-                    self.open_password_manager(None, Some(id));
-                }
                 if count == 1 && plain && (self.click_unfold(id, point) || self.click_note(id, point, event_loop)) {
                     return;
                 }
@@ -1874,6 +1877,7 @@ impl App {
                 self.drag = if smart { Drag::None } else { Drag::Select { pane: id } };
                 let alt_only = mods.alt && !mods.shift && !mods.ctrl && !mods.cmd;
                 self.alt_click = (count == 1 && alt_only).then_some((id, (col, row)));
+                self.key_click = (count == 1 && !mods.shift).then_some(id);
             }
             // With no binding and no reporting app, a right click opens the menu (iTerm2's native behavior).
             1 => {
@@ -1918,6 +1922,7 @@ impl App {
             self.pointer_down = Some(pd);
         }
         let alt_click = self.alt_click.take();
+        let key_click = self.key_click.take();
         match std::mem::replace(&mut self.drag, Drag::None) {
             Drag::Porthole { pane, id, .. } => self.porthole_release(pane, id),
             Drag::Clip { pane, kind } => self.clip_release(pane, kind),
@@ -1932,6 +1937,11 @@ impl App {
                     }
                     if let Some((p, cell)) = alt_click.filter(|(p, _)| *p == pane) {
                         self.alt_click_moves_cursor(p, cell);
+                    }
+                    // A click (no drag) that comes up on the key cursor opens the password
+                    // manager.
+                    if key_click == Some(pane) && self.released_on_key_cursor(pane) {
+                        self.open_password_manager(None, Some(pane));
                     }
                 } else {
                     // iTerm2 copies a selection as soon as it is made.

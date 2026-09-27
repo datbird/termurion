@@ -7,13 +7,15 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use crate::host_proto::{Decoder, Live, Msg, VERSION, encode};
+use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, VERSION, encode};
 use crate::pty::{Notify, Read};
 use crate::winpipe::Pipe;
 
 /// What the host said at the handshake.
 #[derive(Clone, Debug)]
 pub struct Welcome {
+    /// The protocol version both ends speak.
+    pub version: u32,
     pub instance: String,
     pub host_pid: u32,
     pub sessions: Vec<Live>,
@@ -57,6 +59,8 @@ struct Incoming {
     /// The connection to the host is gone.
     lost: bool,
     notify: Option<Notify>,
+    /// The host's last word on its console: at a password prompt (debounced).
+    password_input: bool,
 }
 
 type Slot = Arc<Mutex<Incoming>>;
@@ -71,6 +75,10 @@ struct Inner {
     attaches: Mutex<HashMap<u64, mpsc::Sender<(u64, bool)>>>,
     next_tag: AtomicUsize,
     lost: AtomicBool,
+    /// The protocol version agreed at the handshake (version 2 reads password prompts).
+    version: std::sync::atomic::AtomicU32,
+    /// The last `WatchPrompts` sent: None before any.
+    watching: Mutex<Option<Option<u32>>>,
 }
 
 #[derive(Clone)]
@@ -135,9 +143,19 @@ fn read_loop(inner: Arc<Inner>, welcome: mpsc::Sender<Result<Welcome, HostError>
 
 fn dispatch(inner: &Inner, m: Msg, welcome: &mut Option<mpsc::Sender<Result<Welcome, HostError>>>) {
     match m {
-        Msg::Welcome { instance, host_pid, sessions, .. } => {
+        Msg::Welcome { version, instance, host_pid, sessions } => {
+            inner.version.store(version, Ordering::Release);
             if let Some(w) = welcome.take() {
-                let _ = w.send(Ok(Welcome { instance, host_pid, sessions }));
+                let _ = w.send(Ok(Welcome { version, instance, host_pid, sessions }));
+            }
+        }
+        Msg::PasswordInput { id, on } => {
+            if let Some(slot) = inner.slot(id) {
+                let mut s = slot.lock().unwrap();
+                if s.password_input != on {
+                    s.password_input = on;
+                    wake(&s);
+                }
             }
         }
         Msg::Refused { busy, reason } => {
@@ -210,6 +228,15 @@ impl Client {
     /// Connects to the host at `pipe` and says hello. None when no host listens there. The
     /// host must run as this user.
     pub fn connect(pipe: &str, wait: Duration) -> Result<Option<(Client, Welcome)>, HostError> {
+        match Client::connect_as(pipe, wait, VERSION) {
+            // A host from an older Tandem refuses this version (and says so, not busy): speak
+            // its version on a new connection. Password prompts of its sessions read as unknown.
+            Err(HostError::Failed(_)) if VERSION > MIN_VERSION => Client::connect_as(pipe, wait, MIN_VERSION),
+            other => other,
+        }
+    }
+
+    fn connect_as(pipe: &str, wait: Duration, version: u32) -> Result<Option<(Client, Welcome)>, HostError> {
         let Some(p) = crate::winpipe::connect(pipe, wait)? else { return Ok(None) };
         p.server_is_this_user()?;
         let pipe = Arc::new(p);
@@ -235,12 +262,14 @@ impl Client {
             attaches: Mutex::new(HashMap::new()),
             next_tag: AtomicUsize::new(1),
             lost: AtomicBool::new(false),
+            version: std::sync::atomic::AtomicU32::new(version),
+            watching: Mutex::new(None),
         });
         let (tx, rx) = mpsc::channel();
         let reader = inner.clone();
         std::thread::spawn(move || read_loop(reader, tx));
         let client = Client { inner };
-        client.inner.send(&Msg::Hello { version: VERSION })?;
+        client.inner.send(&Msg::Hello { version })?;
         match rx.recv_timeout(wait.max(REPLY_WAIT)) {
             Ok(Ok(w)) => Ok(Some((client, w))),
             Ok(Err(e)) => {
@@ -298,6 +327,19 @@ impl Client {
     }
 
     /// An ended session nobody claimed: the host drops it.
+    /// Asks the host to read its sessions' consoles for password prompts with this debounce
+    /// (seconds), or to stop (None). Sent when it changes, and only to a version 2 host.
+    pub fn watch_prompts(&self, debounce: Option<f64>) {
+        if self.inner.version.load(Ordering::Acquire) < 2 {
+            return;
+        }
+        let ms = debounce.map(|d| (d.max(0.0) * 1000.0).round().min(u32::MAX as f64) as u32);
+        let mut last = self.inner.watching.lock().unwrap();
+        if *last != Some(ms) && self.inner.send(&Msg::WatchPrompts { debounce_ms: ms }).is_ok() {
+            *last = Some(ms);
+        }
+    }
+
     pub fn forget(&self, id: u64) {
         let _ = self.inner.send(&Msg::Forget { id });
     }
@@ -374,6 +416,13 @@ impl HostedPty {
         self.inner.queued.load(Ordering::Relaxed) + self.slot.lock().unwrap().host_pending as usize
     }
 
+    /// The host's session is at a password prompt (debounced); false when the host never
+    /// said (an older host), or the connection is gone.
+    pub fn password_input(&self) -> bool {
+        let s = self.slot.lock().unwrap();
+        s.password_input && !s.lost
+    }
+
     /// The exit code; a host that went away took the shell with it (0xFFFFFFFF).
     pub fn exit_code(&self) -> Option<u32> {
         let s = self.slot.lock().unwrap();
@@ -438,6 +487,51 @@ mod tests {
 
     fn quiet() -> Notify {
         Arc::new(|| {})
+    }
+
+    /// A host from an older Tandem refuses version 2; the client speaks version 1 to it on a
+    /// new connection and never sends it a version 2 message.
+    #[test]
+    fn an_older_host_is_spoken_to_in_version_one() {
+        use crate::host_proto::Decoder;
+        let name = crate::winpipe::tests::test_name("oldhost");
+        let mut listener = crate::winpipe::Listener::bind(&name).unwrap();
+        let old_host = std::thread::spawn(move || {
+            let hello = |p: &Pipe| {
+                let mut d = Decoder::default();
+                let mut buf = vec![0u8; 4096];
+                loop {
+                    let n = p.read(&mut buf).unwrap();
+                    d.push(&buf[..n]);
+                    if let Some(m) = d.next() {
+                        return (m.unwrap(), d, buf);
+                    }
+                }
+            };
+            let first = listener.accept(Duration::from_secs(10)).unwrap().expect("a first connection");
+            let (m, _, _) = hello(&first);
+            assert_eq!(m, Msg::Hello { version: VERSION });
+            first.write_all(&encode(&Msg::Refused { busy: false, reason: "the session host speaks version 1, not 2".into() })).unwrap();
+            first.shutdown();
+            let second = listener.accept(Duration::from_secs(10)).unwrap().expect("a second connection");
+            let (m, mut d, mut buf) = hello(&second);
+            assert_eq!(m, Msg::Hello { version: 1 });
+            second.write_all(&encode(&Msg::Welcome { version: 1, host_pid: 1, instance: "old".into(), sessions: vec![] })).unwrap();
+            // Whatever comes next must be a version 1 message (KillAll here), never WatchPrompts.
+            loop {
+                if let Some(m) = d.next() {
+                    return m.unwrap();
+                }
+                let n = second.read(&mut buf).unwrap();
+                d.push(&buf[..n]);
+            }
+        });
+        let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the old host answers");
+        assert_eq!(welcome.version, 1);
+        client.watch_prompts(Some(0.2));
+        client.kill_all();
+        assert_eq!(old_host.join().unwrap(), Msg::KillAll, "no version 2 message reached the old host");
+        client.close();
     }
 
     fn connect(name: &str) -> (Client, Welcome) {

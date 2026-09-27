@@ -914,51 +914,59 @@ impl App {
             self.pwm.entries.remove(&id);
         }
         self.check_rounds();
-        let prompt_due = self.tick_password_input();
-        self.panes.values().filter_map(|p| p.echo_probe.as_ref().and_then(Probe::due)).chain(prompt_due).min()
+        self.tick_password_input();
+        self.panes.values().filter_map(|p| p.echo_probe.as_ref().and_then(Probe::due)).min()
     }
 
-    /// Password prompt detection (`PTYSession.m:7657-7682`): each session takes the watcher's
-    /// last reading of its shell's console through its debounce, and a change goes to
-    /// `password_input_changed`. Returns when a held reading next turns into a prompt
-    /// (`scheduleRecheck:`).
-    fn tick_password_input(&mut self) -> Option<Instant> {
-        let detect = self.globals.bool(pwm_prompt::DETECT_KEY);
-        self.jobs.set_read_modes(detect);
-        let debounce = self.globals.number(pwm_prompt::DEBOUNCE_KEY).unwrap_or(pwm_prompt::DEFAULT_DEBOUNCE);
-        let now = Instant::now();
+    /// Password prompt detection (`PTYSession.m:7657-7682`): the job watcher (local panes)
+    /// and tandem-host (hosted panes) debounce real samples of each console; a session whose
+    /// state changed goes to `password_input_changed`. A new sample wakes the window, so
+    /// nothing waits here.
+    fn tick_password_input(&mut self) {
+        let debounce = self.globals.bool(pwm_prompt::DETECT_KEY).then(|| self.globals.number(pwm_prompt::DEBOUNCE_KEY).unwrap_or(pwm_prompt::DEFAULT_DEBOUNCE));
+        self.jobs.set_read_modes(debounce);
+        if let Some(h) = &self.host {
+            h.watch_prompts(debounce);
+        }
         let mut changes = Vec::new();
         for (id, p) in self.panes.iter_mut() {
-            let raw = p.exited.is_none() && p.shell_pid().is_some_and(|pid| self.jobs.password_input(pid));
-            if let Some(on) = p.password_input.update(detect, raw, debounce, now) {
-                changes.push((*id, on));
+            let local = || p.owns_console() && p.shell_pid().is_some_and(|pid| self.jobs.password_input(pid));
+            let now = debounce.is_some() && p.exited.is_none() && p.hosted_password_input().unwrap_or_else(local);
+            if now != p.password_input {
+                changes.push((*id, p.password_input, now));
+                p.password_input = now;
             }
         }
-        for (id, on) in changes {
-            self.password_input_changed(id, on);
+        for (id, was, now) in changes {
+            self.password_input_changed(id, was, now);
         }
-        self.panes.values().filter_map(|p| p.password_input.recheck_at(debounce)).min()
     }
 
     /// A session reached or left a password prompt: the key cursor follows, and reaching one
-    /// opens the manager when its profile says so (`didBeginPasswordInput`). A session showing
-    /// Instant Replay drops input, so it does not open one by itself.
-    pub(super) fn password_input_changed(&mut self, pane: PaneId, on: bool) {
+    /// opens the manager by `pwm_prompt::opens_automatically` (`didBeginPasswordInput`).
+    pub(super) fn password_input_changed(&mut self, pane: PaneId, was: bool, now: bool) {
         self.redraw();
-        let Some(p) = self.panes.get(&pane).filter(|_| on) else { return };
-        if p.replay.is_none() && self.store.get(&p.profile).is_some_and(|pr| pr.bool(pwm_prompt::AUTO_OPEN_KEY)) {
+        let Some(p) = self.panes.get(&pane) else { return };
+        let profile_on = self.store.get(&p.profile).is_some_and(|pr| pr.bool(pwm_prompt::AUTO_OPEN_KEY));
+        if pwm_prompt::opens_automatically(was, now, profile_on, p.replay.is_some()) {
             self.open_password_manager(None, Some(pane));
         }
     }
 
-    /// A plain click at `point` of `pane` lands on its cursor while it is at a password prompt
-    /// (`mouseHandlerAtPasswordPrompt:`, `mouseHandlerCursorCoord:`).
-    pub(super) fn clicked_password_prompt(&self, pane: PaneId, point: Point, mods: Mods) -> bool {
-        let Some(p) = self.panes.get(&pane) else { return false };
+    /// The pointer came up on `pane`'s cursor cell while it is at a password prompt, with
+    /// neither Alt nor Win down (`mouseHandlerAtPasswordPrompt:`, `mouseHandlerCursorCoord:`).
+    pub(super) fn released_on_key_cursor(&self, pane: PaneId) -> bool {
+        let (Some(p), Some(rect)) = (self.panes.get(&pane), self.pane_rect(pane)) else { return false };
+        let (x, y) = self.cursor;
+        if !rect.contains(x, y) {
+            return false;
+        }
+        let (col, row, _) = self.cell_at(pane, rect, x, y);
+        let point = self.grid_point(pane, col, row);
         let Ok(line) = usize::try_from(point.line.0) else { return false };
         let cursor = p.screen.term().grid().cursor.point;
         let cursor = (cursor.column.0, cursor.line.0.max(0) as usize);
-        pwm_prompt::opens_on_click(p.at_password_prompt(), mods.alt, mods.cmd, (point.column.0, line), cursor)
+        pwm_prompt::opens_on_click(p.at_password_prompt(), self.mods.alt, self.mods.cmd, (point.column.0, line), cursor)
     }
 
     /// The screen locked (`staticScreenDidLock:`, `instanceScreenDidLock:`).

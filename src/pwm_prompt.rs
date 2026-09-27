@@ -27,41 +27,42 @@ pub fn at_prompt(mode: u32) -> bool {
     mode & ENABLE_LINE_INPUT != 0 && mode & ENABLE_ECHO_INPUT == 0
 }
 
-/// A session's latched password prompt state: a reading that says "prompt" counts once it
-/// has held for the debounce (so a script's brief echo off is not a prompt); any other
-/// reading ends it at once.
-#[derive(Debug, Default)]
+/// One console's samples, debounced: a run of samples that say "prompt" counts once a
+/// sample at least the debounce after the run's first one still says so (so a script's brief
+/// echo off is not a prompt, however the samples fall); any other sample ends it at once.
+/// The watcher (local panes) and tandem-host (hosted panes) keep one per shell and feed it
+/// each real reading, so a recheck never re-reads an old sample.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Debounce {
     since: Option<Instant>,
     pub on: bool,
 }
 
 impl Debounce {
-    /// One reading. `detect` is the global switch, `raw` the console rule's answer (false
-    /// when the mode could not be read). Some(new state) when it changed.
-    pub fn update(&mut self, detect: bool, raw: bool, debounce: f64, now: Instant) -> Option<bool> {
-        let now_on = if !detect || !raw {
+    /// One sample taken at `at`: `prompt` is the console rule's answer (false when the mode
+    /// could not be read). Some(new state) when it changed.
+    pub fn sample(&mut self, prompt: bool, at: Instant, debounce: f64) -> Option<bool> {
+        let on = if !prompt {
             self.since = None;
             false
         } else if debounce <= 0.0 {
             true
         } else {
-            let since = *self.since.get_or_insert(now);
-            now.saturating_duration_since(since) >= Duration::from_secs_f64(debounce)
+            let since = *self.since.get_or_insert(at);
+            at.saturating_duration_since(since) >= Duration::from_secs_f64(debounce)
         };
-        (now_on != self.on).then(|| {
-            self.on = now_on;
-            now_on
+        (on != self.on).then(|| {
+            self.on = on;
+            on
         })
     }
+}
 
-    /// When a held reading turns into a prompt, while one waits.
-    pub fn recheck_at(&self, debounce: f64) -> Option<Instant> {
-        match self.since {
-            Some(t) if !self.on && debounce > 0.0 => Some(t + Duration::from_secs_f64(debounce)),
-            _ => None,
-        }
-    }
+/// Whether a change of a session's prompt state opens the manager by itself
+/// (`didBeginPasswordInput`): only on the rising edge, only with the profile's "Open Password
+/// Manager Automatically", and not while Instant Replay shows (a replaying session drops input).
+pub fn opens_automatically(was: bool, now: bool, profile_on: bool, replaying: bool) -> bool {
+    !was && now && profile_on && !replaying
 }
 
 /// The trigger's placeholder parameter: open without an account.
@@ -124,32 +125,36 @@ mod tests {
         let t0 = Instant::now();
         let s = |x: f64| t0 + Duration::from_secs_f64(x);
         let mut d = Debounce::default();
-        assert_eq!(d.update(true, true, 0.2, t0), None, "held, not yet a prompt");
-        assert_eq!(d.recheck_at(0.2), Some(s(0.2)));
-        assert_eq!(d.update(true, true, 0.2, s(0.1)), None);
-        assert_eq!(d.update(true, true, 0.2, s(0.2)), Some(true), "a prompt once it held for the debounce");
+        assert_eq!(d.sample(true, t0, 0.2), None, "one sample at a prompt is not yet one");
+        assert!(!d.on, "no later sample confirmed it, however long the UI waits");
+        assert_eq!(d.sample(true, s(0.1), 0.2), None, "0.1 s after the first: not held long enough");
+        assert_eq!(d.sample(true, s(0.2), 0.2), Some(true), "a later sample 0.2 s after the first confirms it");
         assert!(d.on);
-        assert_eq!(d.recheck_at(0.2), None, "nothing waits once on");
-        assert_eq!(d.update(true, true, 0.2, s(0.3)), None, "no change");
-        assert_eq!(d.update(true, false, 0.2, s(0.35)), Some(false), "a reading off ends it at once");
-        assert_eq!(d.recheck_at(0.2), None);
-        // Starting over: the hold starts at the new reading.
-        assert_eq!(d.update(true, true, 0.2, s(1.0)), None);
-        assert_eq!(d.update(true, false, 0.2, s(1.1)), None, "a brief echo off never turned on");
-        assert_eq!(d.update(true, true, 0.2, s(1.15)), None);
-        assert_eq!(d.update(true, true, 0.2, s(1.3)), None, "the hold restarted at 1.15");
-        assert_eq!(d.update(true, true, 0.2, s(1.35)), Some(true));
-
-        let mut off = Debounce::default();
-        for i in 0..5 {
-            assert_eq!(off.update(false, true, 0.2, s(i as f64)), None, "detection off never turns on");
-        }
-        assert_eq!(off.recheck_at(0.2), None);
-        let mut was_on = Debounce::default();
-        assert_eq!(was_on.update(true, true, 0.0, t0), Some(true), "debounce 0 turns on at once");
-        assert_eq!(was_on.update(false, true, 0.0, t0), Some(false), "turning detection off ends it");
+        assert_eq!(d.sample(true, s(0.7), 0.2), None, "no change");
+        assert_eq!(d.sample(false, s(1.2), 0.2), Some(false), "a sample off ends it at once");
+        // The watcher's 0.5 s rate: a blip seen by one sample never turns on.
+        let mut blip = Debounce::default();
+        assert_eq!(blip.sample(false, t0, 0.2), None);
+        assert_eq!(blip.sample(true, s(0.5), 0.2), None, "a brief echo off, sampled once");
+        assert_eq!(blip.sample(false, s(1.0), 0.2), None, "gone at the next sample: never a prompt");
+        assert_eq!(blip.sample(true, s(1.5), 0.2), None, "a new run starts over");
+        assert_eq!(blip.sample(true, s(2.0), 0.2), Some(true), "two samples 0.5 s apart: a prompt");
+        let mut zero = Debounce::default();
+        assert_eq!(zero.sample(true, t0, 0.0), Some(true), "debounce 0 turns on at the first sample");
         let mut negative = Debounce::default();
-        assert_eq!(negative.update(true, true, -1.0, t0), Some(true), "a negative debounce is none");
+        assert_eq!(negative.sample(true, t0, -1.0), Some(true), "a negative debounce is none");
+        let mut unread = Debounce::default();
+        for i in 0..4 {
+            assert_eq!(unread.sample(false, s(i as f64), 0.2), None, "an unreadable console is never a prompt");
+        }
+
+        // Opening by itself: the rising edge only, with the profile setting, not while replaying.
+        assert!(opens_automatically(false, true, true, false));
+        assert!(!opens_automatically(true, true, true, false), "already on: no edge");
+        assert!(!opens_automatically(true, false, true, false), "a falling edge");
+        assert!(!opens_automatically(false, false, true, false));
+        assert!(!opens_automatically(false, true, false, false), "the profile setting is off");
+        assert!(!opens_automatically(false, true, true, true), "Instant Replay shows");
 
         assert_eq!(trigger_param(UNLOCK), None);
         assert_eq!(trigger_param(""), None);

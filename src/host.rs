@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::conpty::Api;
-use crate::host_proto::{Decoder, Live, Msg, Ring, VERSION, encode};
+use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, Ring, VERSION, encode};
 use crate::pty::{Pty, Read};
 use crate::winpipe::{Listener, Pipe};
 
@@ -40,11 +40,15 @@ struct Session {
     /// Its output goes to the attached Tandem.
     attached: bool,
     pending: usize,
+    /// Its console's password prompt samples, debounced, while the attached Tandem asks.
+    prompt: crate::pwm_prompt::Debounce,
 }
 
 struct Client {
     conn: u64,
     out: mpsc::Sender<Vec<u8>>,
+    /// The protocol version agreed at the handshake.
+    version: u32,
 }
 
 struct Host {
@@ -53,6 +57,8 @@ struct Host {
     client: Option<Client>,
     /// Tells this host run from any other: session ids are only good within it.
     instance: String,
+    /// The attached Tandem asked for password prompt readings with this debounce (seconds).
+    prompt_debounce: Option<f64>,
 }
 
 impl Host {
@@ -71,6 +77,56 @@ impl Host {
         out.sort_by_key(|l| l.id);
         out
     }
+
+    /// Password prompt readings start over (a new request, or no Tandem to tell).
+    fn watch_prompts(&mut self, debounce: Option<f64>) {
+        self.prompt_debounce = debounce;
+        for s in self.sessions.values_mut() {
+            s.prompt = Default::default();
+        }
+    }
+}
+
+/// How often the host reads its sessions' console input modes while Tandem asks (the job
+/// watcher's rate in front).
+const PROMPT_EVERY: Duration = Duration::from_millis(500);
+
+/// Reads each live session's console input mode while the attached Tandem asks, and tells it
+/// when one reaches or leaves a password prompt. Only the host attaches to its own consoles:
+/// it owns every close of them, and `Pty::drop` holds `pty::CONSOLE`, so it is never attached
+/// while one closes (which would end the host and every shell with it).
+fn watch_prompts(host: std::sync::Weak<Mutex<Host>>) {
+    loop {
+        std::thread::sleep(PROMPT_EVERY);
+        let Some(shared) = host.upgrade() else { return };
+        let (debounce, targets) = {
+            let h = shared.lock().unwrap();
+            let targets: Vec<(u64, u32)> = match h.prompt_debounce {
+                Some(_) => h.sessions.iter().filter(|(_, s)| s.pty.is_some() && s.exited.is_none()).map(|(id, s)| (*id, s.pid)).collect(),
+                None => Vec::new(),
+            };
+            (h.prompt_debounce, targets)
+        };
+        drop(shared);
+        let Some(debounce) = debounce else { continue };
+        // Unknown (the mode could not be read) is never a prompt.
+        let samples: Vec<(u64, bool, Instant)> = targets.into_iter().map(|(id, pid)| (id, crate::pty::console_mode(pid).is_ok_and(crate::pwm_prompt::at_prompt), Instant::now())).collect();
+        let Some(shared) = host.upgrade() else { return };
+        let mut h = shared.lock().unwrap();
+        // A request changed while these were read: they belong to the old one.
+        if h.prompt_debounce != Some(debounce) {
+            continue;
+        }
+        let mut msgs = Vec::new();
+        for (id, prompt, at) in samples {
+            if let Some(on) = h.sessions.get_mut(&id).and_then(|s| s.prompt.sample(prompt, at, debounce)) {
+                msgs.push(Msg::PasswordInput { id, on });
+            }
+        }
+        for m in &msgs {
+            h.send(m);
+        }
+    }
 }
 
 /// Closing a pty can take about 2 s (milestone 0), so it happens on its own thread.
@@ -84,7 +140,9 @@ type Shared = Arc<Mutex<Host>>;
 pub fn run(pipe: &str, api: Api, opts: Options) -> Result<(), String> {
     let mut listener = Listener::bind(pipe)?;
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let host: Shared = Arc::new(Mutex::new(Host { sessions: HashMap::new(), next_id: 1, client: None, instance: format!("{}-{nanos}", std::process::id()) }));
+    let host: Shared = Arc::new(Mutex::new(Host { sessions: HashMap::new(), next_id: 1, client: None, instance: format!("{}-{nanos}", std::process::id()), prompt_debounce: None }));
+    let watched = Arc::downgrade(&host);
+    std::thread::spawn(move || watch_prompts(watched));
     let (wake, woken) = mpsc::channel::<u64>();
     let pumped = host.clone();
     std::thread::spawn(move || {
@@ -188,8 +246,8 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
                 let mut h = host.lock().unwrap();
                 let refuse = if h.client.is_some() {
                     Some((true, "another Tandem is attached to the session host".to_string()))
-                } else if version != VERSION {
-                    Some((false, format!("the session host speaks version {VERSION}, not {version}")))
+                } else if !(MIN_VERSION..=VERSION).contains(&version) {
+                    Some((false, format!("the session host speaks versions {MIN_VERSION} to {VERSION}, not {version}")))
                 } else {
                     None
                 };
@@ -197,8 +255,9 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
                     let _ = out.send(encode(&Msg::Refused { busy, reason }));
                     break 'read;
                 }
-                h.client = Some(Client { conn, out: out.clone() });
-                let welcome = Msg::Welcome { version: VERSION, host_pid: std::process::id(), instance: h.instance.clone(), sessions: h.live() };
+                h.client = Some(Client { conn, out: out.clone(), version });
+                h.watch_prompts(None);
+                let welcome = Msg::Welcome { version, host_pid: std::process::id(), instance: h.instance.clone(), sessions: h.live() };
                 h.send(&welcome);
                 welcomed = true;
             }
@@ -206,6 +265,7 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
         let mut h = host.lock().unwrap();
         if h.client.as_ref().is_some_and(|c| c.conn == conn) {
             h.client = None;
+            h.watch_prompts(None);
             for s in h.sessions.values_mut() {
                 s.attached = false;
                 // A pane paused for Undo Close must not stay parked with no Tandem to resume
@@ -235,7 +295,7 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
                 Ok(pty) => {
                     let pid = pty.pid();
                     let mut h = host.lock().unwrap();
-                    h.sessions.insert(id, Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline, cwd, cols, rows, exited: None, attached: true, pending: 0 });
+                    h.sessions.insert(id, Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline, cwd, cols, rows, exited: None, attached: true, pending: 0, prompt: Default::default() });
                     h.send(&Msg::Launched { tag, id, pid });
                     drop(h);
                     // Output that came before the session was in the table.
@@ -282,6 +342,13 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
         Msg::Forget { id } | Msg::Kill { id } => {
             if let Some(p) = host.lock().unwrap().sessions.remove(&id).and_then(|s| s.pty) {
                 drop_later(p);
+            }
+        }
+        // Only a version 2 Tandem asks (a version 1 one never sends it).
+        Msg::WatchPrompts { debounce_ms } => {
+            let mut h = host.lock().unwrap();
+            if h.client.as_ref().is_some_and(|c| c.version >= 2) {
+                h.watch_prompts(debounce_ms.map(|ms| ms as f64 / 1000.0));
             }
         }
         Msg::KillAll => {
@@ -473,6 +540,41 @@ pub(crate) mod tests {
         c.send(&Msg::Attach { id, since: 0 });
         c.output_until(id, "after-pause");
         c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn versions_one_and_two_are_spoken() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        // An older Tandem: version 1, and nothing it does not know ever comes back.
+        let old = Conn::open(&name);
+        old.send(&Msg::Hello { version: 1 });
+        assert_eq!(old.wait(|m| match m {
+            Msg::Welcome { version, .. } => Some(*version),
+            _ => None,
+        }), 1);
+        let id = old.launch("cmd.exe /d /c echo old-tandem");
+        old.output_until(id, "old-tandem");
+        old.close();
+        std::thread::sleep(Duration::from_millis(300));
+        // A version 2 Tandem asks for prompt readings; the stream stays whole.
+        let new = Conn::open(&name);
+        new.send(&Msg::Hello { version: 2 });
+        assert_eq!(new.wait(|m| match m {
+            Msg::Welcome { version, .. } => Some(*version),
+            _ => None,
+        }), 2);
+        new.send(&Msg::WatchPrompts { debounce_ms: Some(200) });
+        let id = new.launch("cmd.exe /d /c echo new-tandem");
+        new.output_until(id, "new-tandem");
+        new.send(&Msg::WatchPrompts { debounce_ms: None });
+        new.close();
+        std::thread::sleep(Duration::from_millis(300));
+        let future = Conn::open(&name);
+        future.send(&Msg::Hello { version: 3 });
+        assert!(future.wait(|m| match m {
+            Msg::Refused { busy, .. } => Some(!*busy),
+            _ => None,
+        }), "a version it does not speak is refused, not busy");
     }
 
     #[test]

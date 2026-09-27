@@ -98,6 +98,9 @@ impl App {
     fn put_back(&mut self, mut pane: Pane) {
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
+            if pane.owns_console() {
+                self.jobs.watch_console(pid);
+            }
         }
         pane.set_paused(false);
         self.panes.insert(pane.id, pane);

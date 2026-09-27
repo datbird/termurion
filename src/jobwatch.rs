@@ -7,9 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{BOOL, CloseHandle, FILETIME, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
-use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
-use windows_sys::Win32::System::Console::{AttachConsole, CTRL_BREAK_EVENT, CTRL_C_EVENT, FreeConsole, GenerateConsoleCtrlEvent, GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetStdHandle};
+use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
+use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, GenerateConsoleCtrlEvent};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess};
@@ -219,12 +218,15 @@ struct Shared {
     trees: HashMap<u32, Vec<Proc>>,
     /// Bumped whenever a kept tree changes (the Jobs tool refreshes on it).
     tree_gen: u64,
-    /// Password prompt detection is on (`detectPasswordInput`): each watched shell's console
-    /// input mode is read at every look.
-    read_modes: bool,
-    /// Each watched shell's last reading: at a password prompt by the console rule. A shell
-    /// whose mode could not be read is not at one.
-    prompts: HashMap<u32, bool>,
+    /// Password prompt detection's debounce while it is on (`detectPasswordInput`,
+    /// `detectPasswordInputDebounce`): each local shell's console input mode is read at every
+    /// look. None: off, nothing is attached to.
+    read_debounce: Option<f64>,
+    /// The shells whose consoles Tandem owns (local panes; tandem-host reads its own).
+    consoles: HashSet<u32>,
+    /// Each local shell's samples, debounced. A console whose mode could not be read is not
+    /// at a prompt.
+    prompts: HashMap<u32, crate::pwm_prompt::Debounce>,
 }
 
 /// The watcher: a thread that looks at the registered shells' trees and calls `notify`
@@ -246,29 +248,35 @@ impl JobWatch {
                     let s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     let trees: Vec<u32> = s.trees_wanted.iter().copied().collect();
                     let roots: Vec<u32> = s.roots.union(&s.trees_wanted).copied().collect();
-                    let shells: Vec<u32> = if s.read_modes { s.roots.iter().copied().collect() } else { Vec::new() };
+                    let shells: Vec<u32> = if s.read_debounce.is_some() { s.consoles.iter().copied().collect() } else { Vec::new() };
                     (roots, trees, s.fast, shells)
                 };
                 drop(shared);
-                if !roots.is_empty() {
-                    let result = snapshot_trees(&roots, &trees, &mut cache);
-                    // Unknown (the mode could not be read) is never a password prompt.
-                    let prompts: Vec<(u32, bool)> = shells.iter().map(|&pid| (pid, console_mode(pid).is_ok_and(crate::pwm_prompt::at_prompt))).collect();
+                if !shells.is_empty() {
+                    // Each sample with its own time. Unknown (the mode could not be read) is
+                    // never a password prompt.
+                    let samples: Vec<(u32, bool, std::time::Instant)> = shells.iter().map(|&pid| (pid, crate::pty::console_mode(pid).is_ok_and(crate::pwm_prompt::at_prompt), std::time::Instant::now())).collect();
                     let Some(shared) = weak.upgrade() else { return };
                     let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     let mut changed = false;
-                    if s.read_modes {
-                        for (pid, now) in prompts {
+                    if let Some(debounce) = s.read_debounce {
+                        for (pid, prompt, at) in samples {
                             // A shell forgotten while it was read stays forgotten.
-                            if s.roots.contains(&pid) && s.prompts.get(&pid) != Some(&now) {
-                                s.prompts.insert(pid, now);
-                                changed = true;
+                            if s.consoles.contains(&pid) {
+                                changed |= s.prompts.entry(pid).or_default().sample(prompt, at, debounce).is_some();
                             }
                         }
-                    } else if !s.prompts.is_empty() {
-                        s.prompts.clear();
-                        changed = true;
                     }
+                    drop(s);
+                    if changed {
+                        notify();
+                    }
+                }
+                if !roots.is_empty() {
+                    let result = snapshot_trees(&roots, &trees, &mut cache);
+                    let Some(shared) = weak.upgrade() else { return };
+                    let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut changed = false;
                     match result {
                         Ok((procs, got)) => {
                             s.error = None;
@@ -320,6 +328,7 @@ impl JobWatch {
         s.roots.remove(&shell);
         s.jobs.remove(&shell);
         s.prompts.remove(&shell);
+        s.consoles.remove(&shell);
         s.trees_wanted.remove(&shell);
         if s.trees.remove(&shell).is_some() {
             s.tree_gen = s.tree_gen.wrapping_add(1);
@@ -351,20 +360,26 @@ impl JobWatch {
         self.lock().tree_gen
     }
 
-    /// Password prompt detection on or off: off, no console is attached to and every shell
-    /// reads as not at a prompt.
-    pub fn set_read_modes(&self, on: bool) {
+    /// A local pane's shell: Tandem owns its console (and every close of it), so the watcher
+    /// may read its input mode. A hosted shell's console is never attached to here.
+    pub fn watch_console(&self, shell: u32) {
+        self.lock().consoles.insert(shell);
+    }
+
+    /// Password prompt detection on with its debounce (seconds), or off (None): off, no
+    /// console is attached to and every shell reads as not at a prompt.
+    pub fn set_read_modes(&self, debounce: Option<f64>) {
         let mut s = self.lock();
-        s.read_modes = on;
-        if !on {
+        s.read_debounce = debounce;
+        if debounce.is_none() {
             s.prompts.clear();
         }
     }
 
-    /// The shell's console was at a password prompt at the last look (echo off, line input
-    /// on); false when unknown.
+    /// The local shell's console is at a password prompt by its debounced samples (echo off,
+    /// line input on); false when unknown.
     pub fn password_input(&self, shell: u32) -> bool {
-        self.lock().prompts.get(&shell).copied().unwrap_or(false)
+        self.lock().prompts.get(&shell).is_some_and(|d| d.on)
     }
 
     /// Tandem in front: look every 0.5 s; else every 5 s.
@@ -425,47 +440,9 @@ pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay) -> Result<
     }
 }
 
-/// One console attach at a time (events and mode reads): the console a process is attached
-/// to is process-wide.
-static CONSOLE: Mutex<()> = Mutex::new(());
-
-/// Tandem's own answer to the Ctrl+C and Ctrl+Break it sends while attached: handled, so they
-/// never end Tandem. Registered once and kept (the null handler's ignore flag would be
-/// inherited by every shell started after it, and removing a handler before the event's
-/// thread runs here would let the default handler exit).
-unsafe extern "system" fn ignore_ctrl(kind: u32) -> BOOL {
-    (kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT) as BOOL
-}
-
-/// Runs `f` attached to the console `pid` runs on, under `CONSOLE`, with Tandem's
-/// ignore-Ctrl handler installed first (a Ctrl+C typed in that console while attached reaches
-/// Tandem too). The standard handles the attach may set are put back after.
-fn attached<T>(pid: u32, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    let _one = CONSOLE.lock().unwrap_or_else(|e| e.into_inner());
-    static HANDLER: std::sync::Once = std::sync::Once::new();
-    HANDLER.call_once(|| unsafe {
-        SetConsoleCtrlHandler(Some(ignore_ctrl), 1);
-    });
-    let kinds = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
-    let before = kinds.map(|k| unsafe { GetStdHandle(k) });
-    if unsafe { AttachConsole(pid) } == 0 {
-        return Err(os_err("AttachConsole"));
-    }
-    let result = f();
-    unsafe {
-        FreeConsole();
-        for (k, h) in kinds.into_iter().zip(before) {
-            if GetStdHandle(k) != h {
-                SetStdHandle(k, h);
-            }
-        }
-    }
-    result
-}
-
 fn console_event(pid: u32, event: u32) -> Result<(), String> {
     std::thread::spawn(move || {
-        attached(pid, || {
+        crate::pty::attached(pid, || {
             if unsafe { GenerateConsoleCtrlEvent(event, 0) } == 0 {
                 return Err(os_err("GenerateConsoleCtrlEvent"));
             }
@@ -474,25 +451,6 @@ fn console_event(pid: u32, event: u32) -> Result<(), String> {
     })
     .join()
     .unwrap_or_else(|_| Err("the signal thread stopped".into()))
-}
-
-/// The input mode of the console `pid` runs on (`ENABLE_ECHO_INPUT`, `ENABLE_LINE_INPUT`, ...):
-/// attached for the moment, `CONIN$` opened, read and closed. Never while a console event is
-/// being sent (both hold `CONSOLE`).
-pub fn console_mode(pid: u32) -> Result<u32, String> {
-    attached(pid, || {
-        let name: Vec<u16> = "CONIN$".encode_utf16().chain(Some(0)).collect();
-        let h = unsafe { CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut()) };
-        if h == INVALID_HANDLE_VALUE {
-            return Err(os_err("CreateFileW(CONIN$)"));
-        }
-        let h = Handle(h);
-        let mut mode = 0u32;
-        if unsafe { GetConsoleMode(h.0, &mut mode) } == 0 {
-            return Err(os_err("GetConsoleMode"));
-        }
-        Ok(mode)
-    })
 }
 
 /// Every process under a shell now (for the close prompt), with its name.
@@ -521,7 +479,7 @@ mod tests {
     #[test]
     fn an_unreadable_console_is_not_a_prompt() {
         // No such process: the mode is unknown, which the watcher reads as no prompt.
-        let got = console_mode(0xFFFF_FFF0);
+        let got = crate::pty::console_mode(0xFFFF_FFF0);
         assert!(got.is_err(), "{got:?}");
         assert!(!got.is_ok_and(crate::pwm_prompt::at_prompt));
         let w = JobWatch::start(std::sync::Arc::new(|| {}));

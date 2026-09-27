@@ -9,9 +9,12 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE, WAIT_OBJECT_0};
-use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-use windows_sys::Win32::System::Console::{COORD, HPCON};
+use windows_sys::Win32::Foundation::{BOOL, CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadFile, WriteFile};
+use windows_sys::Win32::System::Console::{
+    AttachConsole, COORD, CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, FreeConsole, GetConsoleMode, GetStdHandle, HPCON, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+    STD_OUTPUT_HANDLE, SetConsoleCtrlHandler, SetStdHandle,
+};
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
@@ -22,6 +25,75 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::conpty::Api;
+
+/// One console attach at a time (Send Signal's events, password prompt mode reads, the write
+/// side), and never across a pseudoconsole close: `Pty::drop` holds the read side, because
+/// closing a pseudoconsole ends every process attached to it, and Tandem (or tandem-host) must
+/// never be one then. Closes share the read side, so they still run side by side.
+pub(crate) static CONSOLE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// Attached right now (inside `attached`).
+static ATTACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The process's answer to console events while attached: Ctrl+C and Ctrl+Break (sent by Send
+/// Signal, or typed in that console) are handled, so they never end it. A close event while
+/// attached is answered handled too, so no other handler runs; Windows still ends the process
+/// after a close event whatever the answer, which is why a close never happens while attached
+/// (`CONSOLE`). Registered once and kept (the null handler's ignore flag would be inherited by
+/// every shell started after it, and removing a handler before the event's thread runs here
+/// would let the default handler exit).
+unsafe extern "system" fn ignore_ctrl(kind: u32) -> BOOL {
+    let attached_close = kind == CTRL_CLOSE_EVENT && ATTACHED.load(std::sync::atomic::Ordering::SeqCst);
+    (kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT || attached_close) as BOOL
+}
+
+/// Runs `f` attached to the console `pid` runs on, under `CONSOLE`, with the ignore-Ctrl
+/// handler installed first. The standard handles the attach may set are put back after.
+/// Nothing may log to stderr inside `f` (it would show in that console): errors come back
+/// and are reported by the caller, after the detach.
+pub(crate) fn attached<T>(pid: u32, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _one = CONSOLE.write().unwrap_or_else(|e| e.into_inner());
+    static HANDLER: std::sync::Once = std::sync::Once::new();
+    HANDLER.call_once(|| unsafe {
+        SetConsoleCtrlHandler(Some(ignore_ctrl), 1);
+    });
+    let kinds = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+    let before = kinds.map(|k| unsafe { GetStdHandle(k) });
+    if unsafe { AttachConsole(pid) } == 0 {
+        return Err(format!("AttachConsole failed: {}", std::io::Error::last_os_error()));
+    }
+    ATTACHED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let result = f();
+    unsafe {
+        FreeConsole();
+        ATTACHED.store(false, std::sync::atomic::Ordering::SeqCst);
+        for (k, h) in kinds.into_iter().zip(before) {
+            if GetStdHandle(k) != h {
+                SetStdHandle(k, h);
+            }
+        }
+    }
+    result
+}
+
+/// The input mode of the console `pid` runs on (`ENABLE_ECHO_INPUT`, `ENABLE_LINE_INPUT`, ...):
+/// attached for the moment, `CONIN$` opened, read and closed. Never while a console event is
+/// being sent or a pseudoconsole is closing (all hold `CONSOLE`). Only for a console this
+/// process owns the closes of: Tandem reads its local panes, tandem-host its own sessions.
+pub fn console_mode(pid: u32) -> Result<u32, String> {
+    attached(pid, || {
+        let name: Vec<u16> = "CONIN$".encode_utf16().chain(Some(0)).collect();
+        let h = unsafe { CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, 0, null_mut()) };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(format!("CreateFileW(CONIN$) failed: {}", std::io::Error::last_os_error()));
+        }
+        let mut mode = 0u32;
+        let ok = unsafe { GetConsoleMode(h, &mut mode) } != 0;
+        let err = (!ok).then(|| format!("GetConsoleMode failed: {}", std::io::Error::last_os_error()));
+        unsafe { CloseHandle(h) };
+        err.map_or(Ok(mode), Err)
+    })
+}
 
 pub struct Pty {
     api: Api,
@@ -388,6 +460,9 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
+        // No attach while the pseudoconsole closes (it would end this process), and the
+        // messages below never land in an attached console.
+        let _console = CONSOLE.read().unwrap_or_else(|e| e.into_inner());
         // Closing the pseudoconsole ends the child and closes the output pipe. The
         // reader thread keeps draining meanwhile, so the close cannot block on a full pipe.
         unsafe { (self.api.close)(self.hpc) };
@@ -425,6 +500,57 @@ mod tests {
 
     fn text(bytes: &[u8]) -> String {
         String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    /// The child half of `a_close_never_happens_while_attached`: started detached (no console
+    /// of its own, as the GUI and tandem-host run), it reads a shell's console mode in a loop
+    /// on one thread while the pty closes on another. A close that landed inside an attach
+    /// would end this process.
+    #[test]
+    #[ignore]
+    fn close_while_reading_child() {
+        if std::env::var_os("TANDEM_CLOSE_CHILD").is_none() {
+            return;
+        }
+        let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
+        for _ in 0..4 {
+            let pty = spawn(&api, "cmd.exe /d /k", 80, 24).unwrap();
+            let pid = pty.pid();
+            let start = Instant::now();
+            while console_mode(pid).is_err() && start.elapsed() < secs(5) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(console_mode(pid).is_ok_and(|m| m & 0x4 != 0), "a shell at its prompt echoes");
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let s2 = stop.clone();
+            let reader = std::thread::spawn(move || {
+                while !s2.load(Ordering::SeqCst) {
+                    let _ = console_mode(pid);
+                    // Room for the close to take the lock (the watcher reads twice a second).
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            });
+            std::thread::sleep(Duration::from_millis(30));
+            drop(pty);
+            stop.store(true, Ordering::SeqCst);
+            reader.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_close_never_happens_while_attached() {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "pty::tests::close_while_reading_child", "--ignored", "--test-threads=1"])
+            .env("TANDEM_CLOSE_CHILD", "1")
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "the reading process survived every close: {status:?}");
     }
 
     #[test]
