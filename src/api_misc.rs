@@ -133,6 +133,12 @@ pub fn create_window_answer(made: bool, tab: Option<u64>) -> pb::TmuxResponse {
     pb::TmuxResponse { status: None, payload }
 }
 
+/// The tabs (id, panes) that hold any of `panes`, in the order given: the tabs a closing
+/// tmux window's panes were waiting in.
+pub fn tabs_holding(tabs: &[(u64, Vec<u64>)], panes: &[u64]) -> Vec<u64> {
+    tabs.iter().filter(|(_, ps)| ps.iter().any(|p| panes.contains(p))).map(|(t, _)| *t).collect()
+}
+
 /// ColorPreset (`H:3883-3950`) until milestone 13 brings presets: a list is OK with no names
 /// (so no payload), every name is PRESET_NOT_FOUND, an unset request REQUEST_MALFORMED.
 pub fn color_preset(r: &pb::ColorPresetRequest) -> pb::ColorPresetResponse {
@@ -267,6 +273,15 @@ mod tests {
         // tab's uniqueId.
         assert_eq!(tab(create_window_answer(true, None)).as_deref(), Some("0"));
         assert_eq!(create_window_answer(false, None), pb::TmuxResponse::default(), "no window made: nothing set");
+    }
+
+    #[test]
+    fn closing_panes_find_their_pending_tabs() {
+        let tabs = [(4, vec![10, 11]), (5, vec![12]), (6, vec![])];
+        assert_eq!(tabs_holding(&tabs, &[11]), vec![4]);
+        assert_eq!(tabs_holding(&tabs, &[12, 10]), vec![4, 5]);
+        assert!(tabs_holding(&tabs, &[99]).is_empty());
+        assert!(tabs_holding(&tabs, &[]).is_empty(), "a window with no panes left finds none");
     }
 
     #[test]

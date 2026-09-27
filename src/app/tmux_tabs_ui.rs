@@ -112,6 +112,8 @@ impl App {
                         t.tab_overrides.remove(&window);
                     }
                     let ids = self.tmux_window_panes(gw, window);
+                    // Its tab may still wait to become a window (opened in this same batch).
+                    self.api_tmux_tabs_closed(gw, &ids);
                     self.tmux_forget(gw, &ids);
                     for id in ids {
                         self.close_pane(id, event_loop);

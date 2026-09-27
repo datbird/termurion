@@ -1327,6 +1327,31 @@ impl App {
         }
     }
 
+    /// A tmux window of `gw` closes with `panes`: a CreateWindow whose tab still waits (in
+    /// `pending_windows`) to become a window and holds one of them gets no tab ("0"), so a
+    /// window opened and closed in one batch leaves no request waiting.
+    pub(super) fn api_tmux_tabs_closed(&mut self, gw: PaneId, panes: &[PaneId]) {
+        if self.api_tmux_tabs.is_empty() || panes.is_empty() {
+            return;
+        }
+        let tabs: Vec<(u64, Vec<PaneId>)> = self
+            .pending_windows
+            .iter()
+            .flat_map(|w| match w {
+                super::windows_ui::NewWindow::Tab(t) => std::slice::from_ref(t),
+                super::windows_ui::NewWindow::Tabs(ts) => ts.as_slice(),
+                _ => &[],
+            })
+            .map(|t| (t.id, t.layout.panes()))
+            .collect();
+        let closing = api_misc::tabs_holding(&tabs, panes);
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.api_tmux_tabs).into_iter().partition(|(g, t, _)| *g == gw && closing.contains(t));
+        self.api_tmux_tabs = kept;
+        for (_, _, w) in gone {
+            self.api_tmux_created(w, true, None);
+        }
+    }
+
     /// The gateway `gw` went away: its waiting SendCommand and CreateWindow requests answer
     /// with an empty response (the forwarder's failure, `H:3624-3626`).
     pub(super) fn api_tmux_gone(&mut self, gw: PaneId) {
