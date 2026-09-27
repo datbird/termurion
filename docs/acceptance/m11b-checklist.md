@@ -54,7 +54,7 @@ Each check below runs a short script against `iterm2.run_until_complete` with th
 | 35 | `ColorPreset` list is empty, and getting any named preset (even a real iTerm2 preset name) answers "not found" (kept until milestone 13). | |
 | 36 | A `KeystrokeMonitor` on the split's session prints Alt, Win (Cmd) and the four arrow keys, each with iTerm2's macOS key code. | |
 | 37 | A `KeystrokeFilter` for Ctrl+C on that session swallows it (the shell never sees it), while the `KeystrokeMonitor` on the same session still reports it. | |
-| 38 | Ending the filter script (Ctrl+C the script itself, or closing its window) immediately lets Ctrl+C reach the shell again — a filter dies with its script. | |
+| 38 | Ending the filter script (Ctrl+C the script itself, or closing its window) immediately lets Ctrl+C reach the shell again: a filter dies with its script. | |
 | 39 | A key with no macOS key code (for example F21, if the keyboard or a remap can send it) is not caught by a `KeystrokeFilter` on key codes, though a filter on its character still catches it. | |
 | 40 | A `ScreenStreamer` on the split's session wakes as soon as new output appears (running `echo hi`). | |
 | 41 | A `PromptMonitor` on the split's session sees PROMPT when Enter is pressed, COMMAND_START once the command begins running, and COMMAND_END when it finishes. | |
