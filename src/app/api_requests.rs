@@ -6,7 +6,9 @@
 //! ListPrompts read a session's own screen, Screenshot renders its visible lines
 //! (`api_buffer`); VariableRequest and the VARIABLE_CHANGE subscriptions read the objects
 //! ids name (`api_vars`); GetProperty and SetProperty read and change a window's frame and
-//! full screen and a session's grid size and burial (`api_props`).
+//! full screen and a session's grid size and burial (`api_props`); GetProfileProperty,
+//! SetProfileProperty, ListProfiles and Preferences read and change profiles and settings
+//! (`api_profile`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -16,12 +18,14 @@ use super::close_ui::Closing;
 use super::{App, Rect, GAP};
 use crate::api_buffer;
 use crate::api_create::{self, SplitResult};
+use crate::api_profile;
 use crate::api_props::{self, Prop};
 use crate::api_proto::{self, pb};
 use crate::api_session::{self, CloseStep, Snapshot};
 use crate::api_vars::{self, Objects, Scope, Values};
 use crate::broadcast::Write;
 use crate::layout::{Axis, PaneId};
+use crate::settings_ui::Edit;
 use crate::winmodel::LayoutOp;
 use pb::client_originated_message::Submessage as Req;
 use pb::server_originated_message::Submessage as Resp;
@@ -88,6 +92,13 @@ impl App {
                 let status = self.api_set_property(r, event_loop);
                 reply(req, Resp::SetPropertyResponse(pb::SetPropertyResponse { status: Some(status as i32) }))
             }
+            Some(Req::GetProfilePropertyRequest(r)) => reply(req, Resp::GetProfilePropertyResponse(self.api_get_profile_property(r))),
+            Some(Req::SetProfilePropertyRequest(r)) => {
+                let status = self.api_set_profile_property(r);
+                reply(req, Resp::SetProfilePropertyResponse(pb::SetProfilePropertyResponse { status: Some(status as i32) }))
+            }
+            Some(Req::ListProfilesRequest(r)) => reply(req, Resp::ListProfilesResponse(api_profile::list_profiles(&self.store.profiles, &r.properties, &r.guids))),
+            Some(Req::PreferencesRequest(r)) => reply(req, Resp::PreferencesResponse(self.api_preferences(r))),
             Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => {
                 let status = self.api_variable_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
@@ -726,6 +737,107 @@ impl App {
                 }
             }
         }
+    }
+
+    /// GetProfileProperty (`H:2354-2365`, `PS:22595-22615`): the keys asked (all when none
+    /// are) from the profile the session uses, its own copy when it has one.
+    fn api_get_profile_property(&self, r: &pb::GetProfilePropertyRequest) -> pb::GetProfilePropertyResponse {
+        use pb::get_profile_property_response::Status;
+        let Some(p) = self.api_session_pane(r.session.as_deref()).and_then(|id| self.panes.get(&id)) else {
+            return pb::GetProfilePropertyResponse { status: Some(Status::SessionNotFound as i32), properties: Vec::new() };
+        };
+        let profile = self.store.get(&p.profile).unwrap_or_else(|| self.store.default_profile());
+        pb::GetProfilePropertyResponse { status: Some(Status::Ok as i32), properties: api_profile::properties(profile, &r.keys) }
+    }
+
+    /// SetProfileProperty (`H:2245-2352`), in iTerm2's order: the target (a guid list's
+    /// unknown guid BAD_GUID before anything is set, a session SESSION_NOT_FOUND), then every
+    /// value's JSON, then its legality (REQUEST_MALFORMED); with nothing targeted nothing is
+    /// checked further. A session's values go to its own copy of its profile, a saved
+    /// profile's through the same edit the Settings window makes.
+    fn api_set_profile_property(&mut self, r: &pb::SetProfilePropertyRequest) -> pb::set_profile_property_response::Status {
+        use pb::set_profile_property_request::Target;
+        use pb::set_profile_property_response::Status;
+        let (guids, panes) = match &r.target {
+            None => return Status::RequestMalformed,
+            Some(Target::GuidList(list)) => {
+                if list.guids.iter().any(|g| self.store.get_mut(g).is_none()) {
+                    return Status::BadGuid;
+                }
+                (list.guids.clone(), Vec::new())
+            }
+            Some(Target::Session(s)) if s == api_session::ALL => (Vec::new(), self.api_ids().all_panes()),
+            Some(Target::Session(s)) => match self.api_session_pane(Some(s)) {
+                Some(p) => (Vec::new(), vec![p]),
+                None => return Status::SessionNotFound,
+            },
+        };
+        let Some(parsed) = api_profile::assignments(r) else { return Status::RequestMalformed };
+        // iTerm2 checks legality per object, so with none nothing is refused.
+        if guids.is_empty() && panes.is_empty() {
+            return Status::Ok;
+        }
+        let Some(values) = api_profile::legal(&parsed) else { return Status::RequestMalformed };
+        if let Some(first) = guids.first().cloned() {
+            for g in &guids {
+                if let Some(p) = self.store.get_mut(g) {
+                    for (k, v) in &values {
+                        p.set(k, v.clone());
+                    }
+                }
+            }
+            self.apply_edit(Edit::Changed(first));
+        }
+        let session_values: Vec<(String, Option<toml::Value>)> = values.into_iter().map(|(k, v)| (k, Some(v))).collect();
+        for pane in panes {
+            self.set_session_values(pane, &session_values);
+        }
+        self.redraw();
+        Status::Ok
+    }
+
+    /// Preferences (`H:3802-3881`): one result per request, in order. A setting is stored and
+    /// applied as a Settings edit; the default profile must be a saved profile (BAD_GUID).
+    fn api_preferences(&mut self, r: &pb::PreferencesRequest) -> pb::PreferencesResponse {
+        use pb::preferences_request::request::Request as Q;
+        use pb::preferences_response::result::{self as res, Result as A};
+        let mut results = Vec::new();
+        for q in &r.requests {
+            let result = match &q.request {
+                None => A::UnrecognizedRequest(res::UnrecognizedResult {}),
+                Some(Q::GetPreferenceRequest(g)) => {
+                    let key = g.key.as_deref().unwrap_or_default();
+                    A::GetPreferenceResult(res::GetPreferenceResult { json_value: api_profile::preference_json(self.globals.get(key).as_ref()) })
+                }
+                Some(Q::SetPreferenceRequest(s)) => {
+                    let status = match api_profile::preference_value(s.json_value.as_deref().unwrap_or_default()) {
+                        Ok(v) => {
+                            self.globals.set(s.key.as_deref().unwrap_or_default(), v);
+                            self.apply_edit(Edit::GlobalsChanged);
+                            res::set_preference_result::Status::Ok
+                        }
+                        Err(status) => status,
+                    };
+                    A::SetPreferenceResult(res::SetPreferenceResult { status: Some(status as i32) })
+                }
+                Some(Q::GetDefaultProfileRequest(_)) => A::GetDefaultProfileResult(res::GetDefaultProfileResult { guid: Some(self.store.default_profile().guid()) }),
+                Some(Q::SetDefaultProfileRequest(d)) => {
+                    use res::set_default_profile_result::Status;
+                    let guid = d.guid.clone().unwrap_or_default();
+                    let status = if self.store.get_mut(&guid).is_some() {
+                        self.store.default_guid = guid.clone();
+                        self.apply_edit(Edit::Changed(guid));
+                        Status::Ok
+                    } else {
+                        Status::BadGuid
+                    };
+                    A::SetDefaultProfileResult(res::SetDefaultProfileResult { status: Some(status as i32) })
+                }
+            };
+            results.push(pb::preferences_response::Result { result: Some(result) });
+        }
+        self.redraw();
+        pb::PreferencesResponse { results }
     }
 
     /// SetProperty `grid_size` (`sessionInitiatedResize:`, `PT:7126-7160`): IMPOSSIBLE in
