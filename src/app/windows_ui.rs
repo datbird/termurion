@@ -1025,6 +1025,21 @@ impl App {
         }
     }
 
+    /// Edit Tab Title's text for a tab of the current window (None clears it): a tmux tab's
+    /// names its tmux window.
+    pub(super) fn apply_tab_title(&mut self, tab: u64, text: Option<String>) {
+        let first = self.tabs.iter().find(|t| t.id == tab).map(|t| t.focused);
+        let renamed = match (first, text.as_deref()) {
+            (Some(f), Some(name)) => self.tmux_rename(f, name),
+            _ => false,
+        };
+        if !renamed {
+            if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
+                t.title = text;
+            }
+        }
+    }
+
     /// Events for the title window. False when `window` is not it.
     pub(super) fn title_prompt_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
         use crate::prompt_ui::PromptResult;
@@ -1048,16 +1063,7 @@ impl App {
                         }
                         TitleEdit::Tab(id, tab) => {
                             if self.enter(id) {
-                                let first = self.tabs.iter().find(|t| t.id == tab).map(|t| t.focused);
-                                let renamed = match (first, text.as_deref()) {
-                                    (Some(f), Some(name)) => self.tmux_rename(f, name),
-                                    _ => false,
-                                };
-                                if !renamed {
-                                    if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab) {
-                                        t.title = text;
-                                    }
-                                }
+                                self.apply_tab_title(tab, text);
                             }
                         }
                     }

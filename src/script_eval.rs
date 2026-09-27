@@ -276,6 +276,15 @@ impl Invocation {
         &self.missing
     }
 
+    /// The calls of a sequence, in order (none for an interpolated string): a method
+    /// invocation's calls go to its receiver (`SFC:512-521`).
+    pub fn calls(&self) -> Vec<&Call> {
+        match &self.calls {
+            Body::Calls(calls) => calls.iter().filter_map(|e| if let Expr::Call(c) = e { Some(c) } else { None }).collect(),
+            Body::Template(_) => Vec::new(),
+        }
+    }
+
     /// The tokens of the started calls not yet delivered.
     pub fn tokens(&self) -> Vec<u64> {
         self.waiting.keys().copied().collect()

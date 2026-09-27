@@ -111,6 +111,7 @@ mod pwm_app;
 mod api_ui;
 mod api_requests;
 mod script_ui;
+mod builtin_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -622,6 +623,20 @@ pub struct App {
     /// "Function Call Failed" alerts (and results) waiting to show, and the one showing.
     script_alerts: VecDeque<script_ui::Alert>,
     script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert)>,
+    /// Status bar component unread counts set by scripts: by component identifier, and per
+    /// session (which wins when set, `iTermStatusBarUnreadCountController.m:51-60`). Read by
+    /// the script components (Task 7).
+    #[allow(dead_code)]
+    unread_counts: HashMap<String, i64>,
+    #[allow(dead_code)]
+    unread_session_counts: HashMap<(PaneId, String), i64>,
+    /// `alert` and `get_string` dialogs waiting to open, and the one showing.
+    script_dialogs: VecDeque<builtin_ui::Dialog>,
+    script_dialog: Option<builtin_ui::Open>,
+    /// `run_tmux_command` calls waiting for tmux's reply, by (gateway, tag), with their token.
+    script_tmux: HashMap<(PaneId, crate::tmux_gateway::Tag), u64>,
+    /// `move_tab_to_window` calls waiting for their tab's new window: (tab id, token).
+    script_moved: Vec<(u64, u64)>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -966,6 +981,12 @@ pub fn run() {
         script_tokens: HashMap::new(),
         script_alerts: VecDeque::new(),
         script_alert: None,
+        unread_counts: HashMap::new(),
+        unread_session_counts: HashMap::new(),
+        script_dialogs: VecDeque::new(),
+        script_dialog: None,
+        script_tmux: HashMap::new(),
+        script_moved: Vec::new(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
@@ -1497,9 +1518,10 @@ impl App {
                 _ => {
                     self.forget_cookie(&p);
                     self.forget_session_profile(&p.profile);
-                    // Gone for good: its API subscriptions go (a pane kept for Undo Close
-                    // keeps them).
+                    // Gone for good: its API subscriptions and unread counts go (a pane kept
+                    // for Undo Close keeps them).
                     self.api_session_subs.forget_session(id);
+                    self.unread_session_counts.retain(|(p, _), _| *p != id);
                 }
             }
         }
@@ -2727,6 +2749,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_api_alerts(event_loop);
         let script_due = self.script_tick();
         self.open_script_alerts(event_loop);
+        self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
@@ -2840,7 +2863,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.script_dialog_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

@@ -134,6 +134,8 @@ pub enum Entry {
     SmartSelection,
     SemanticHistory,
     FileDrop,
+    /// A script's `run_coprocess` method.
+    Api,
 }
 
 /// Why a start is refused, and how the refusal shows.
@@ -155,7 +157,7 @@ pub fn start_policy(running: bool, entry: Entry) -> Result<(), Refusal> {
     Err(match entry {
         Entry::Menu | Entry::FileDrop => Refusal::Quiet,
         Entry::Trigger => Refusal::TriggerWarning,
-        Entry::KeyBinding | Entry::ContextMenu | Entry::SmartSelection | Entry::SemanticHistory => Refusal::Banner,
+        Entry::KeyBinding | Entry::ContextMenu | Entry::SmartSelection | Entry::SemanticHistory | Entry::Api => Refusal::Banner,
     })
 }
 
@@ -246,6 +248,7 @@ mod tests {
         assert_eq!(start_policy(true, Entry::Menu), Err(Refusal::Quiet));
         assert_eq!(start_policy(true, Entry::Trigger), Err(Refusal::TriggerWarning));
         assert_eq!(start_policy(true, Entry::KeyBinding), Err(Refusal::Banner));
+        assert_eq!(start_policy(true, Entry::Api), Err(Refusal::Banner), "refused like a key binding");
         assert_eq!(start_policy(true, Entry::FileDrop), Err(Refusal::Quiet));
         assert_eq!(trigger_warning("Run Coprocess\u{2026}"), "Run Coprocess trigger: Can't run two coprocesses at once.");
     }

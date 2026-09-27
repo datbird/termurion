@@ -1,6 +1,7 @@
 //! Running invocations (`SFC:203-276`, `PS:11657-11673`): each is a `Run` of the pure
 //! `script_eval::Invocation` with the scope it reads and where its result goes. The host
-//! routes a call to a built-in (Task 4) or, while the Python API runs, to the script that
+//! routes a call to a built-in (`builtin_fns`, run by `builtin_ui`), a method invocation's
+//! calls to its receiver, and the rest, while the Python API runs, to the script that
 //! registered it (`script_fn`); script results and timeouts come back through
 //! `api_rpc_done` and `script_tick` steps the runs they finish. Failures reported to the
 //! person show iTerm2's "Function Call Failed" alert (`H:566-591`), one at a time.
@@ -20,6 +21,7 @@ use crate::layout::PaneId;
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::script_eval::{self, Host, HostOutcome, Invocation, Layered, Step, Timeout};
 use crate::script_fn;
+use crate::builtin_fns;
 
 /// The scope an invocation reads: a session's with a frame of temporary values on top (a
 /// trigger's, a component's `__knobs`), a tab's by id, a window's by Registry key, the
@@ -65,6 +67,8 @@ pub(super) struct Run {
     pub scope: ScopeSpec,
     pub base: Values,
     pub origin: Origin,
+    /// A method invocation's receiver id: its calls are the receiver's methods.
+    pub receiver: Option<String>,
 }
 
 /// An alert waiting to show: a failed call's heading and text, or an invocation's result
@@ -121,22 +125,71 @@ fn next_wake(runs: &BTreeMap<u64, Run>, registry: Option<Instant>) -> Option<Ins
     runs.values().filter_map(|r| r.inv.deadline()).chain(registry).min()
 }
 
-/// The host of one run's calls: built-ins first (Task 4), then scripts (`SFC:510-560`).
+/// The host of one run's calls: a method invocation's calls on its receiver, built-ins
+/// first, then scripts (`SFC:510-560`).
 struct ScriptHost<'a> {
     app: &'a mut App,
     run: u64,
     scope: &'a dyn expr::Scope,
+    /// A method invocation's receiver id, and the sites of the calls it receives (the
+    /// sequence's, not their arguments').
+    receiver: Option<&'a str>,
+    methods: BTreeSet<usize>,
+}
+
+/// The arguments a built-in runs with: nulls dropped (`BIF:268`).
+fn without_nulls(args: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    args.into_iter().filter(|(_, v)| !v.is_null()).collect()
+}
+
+impl ScriptHost<'_> {
+    /// A built-in's answer; a later answer's token belongs to this run.
+    fn started(&mut self, out: HostOutcome) -> HostOutcome {
+        if let HostOutcome::Started(token) = out {
+            self.app.script_tokens.insert(token, self.run);
+        }
+        out
+    }
+
+    /// A method call (`SFC:512-521`, `iTermObject.m:79-91`): the receiver is looked up for
+    /// each call (`object_not_found` when it names nothing now), then the method its catalog
+    /// has for the signature, else "No method found ...", as unregistered.
+    fn method(&mut self, id: &str, sig: &str, args: &BTreeMap<String, Value>, sync: bool, side_effects: bool) -> HostOutcome {
+        let Some((on, key)) = self.app.receiver(id, sig) else { return HostOutcome::Failed(Failure::plain(script_eval::object_not_found(id))) };
+        let Some(b) = builtin_fns::find(on, sig) else {
+            return HostOutcome::Failed(Failure { reason: builtin_fns::no_method(on, id, sig), detail: None, kind: FailKind::Unregistered, conn: None });
+        };
+        if let Err(e) = builtin_fns::type_check(b, args) {
+            return HostOutcome::Failed(Failure::plain(e));
+        }
+        let out = self.app.builtin(b, without_nulls(args.clone()), Some((on, key)), side_effects, sync);
+        self.started(out)
+    }
 }
 
 impl Host for ScriptHost<'_> {
-    fn call(&mut self, call: &Call, args: &BTreeMap<String, Value>, sync: bool, _side_effects: bool) -> HostOutcome {
+    fn call(&mut self, call: &Call, args: &BTreeMap<String, Value>, sync: bool, side_effects: bool) -> HostOutcome {
         let sig = call.signature();
+        if let Some(id) = self.receiver.filter(|_| self.methods.contains(&call.site)) {
+            return self.method(id, &sig, args, sync, side_effects);
+        }
+        // Built-ins first (`SFC:510-525`, `BIF:237-268`): the explicit arguments type-checked,
+        // then the defaults filled from the scope.
+        if let Some(b) = builtin_fns::find(builtin_fns::On::Function, &sig) {
+            if let Err(e) = builtin_fns::type_check(b, args) {
+                return HostOutcome::Failed(Failure::plain(e));
+            }
+            let amended = builtin_fns::amend(b, args, self.scope);
+            let out = self.app.builtin(b, without_nulls(amended), None, side_effects, sync);
+            return self.started(out);
+        }
         if let Some(answer) = script_gate(&sig, sync, self.app.api_on) {
             return answer;
         }
         let fq = call.fq_name();
         let Some((conn, params)) = self.app.api_fns.resolve(&fq, args, self.scope) else {
-            let reason = script_fn::unregistered_text(&sig, self.app.api_fns.similar(&fq).as_deref());
+            let similar = self.app.api_fns.similar(&fq).or_else(|| builtin_fns::similar(builtin_fns::On::Function, &fq));
+            let reason = script_fn::unregistered_text(&sig, similar.as_deref());
             return HostOutcome::Failed(Failure { reason, detail: None, kind: FailKind::Unregistered, conn: None });
         };
         let token = self.app.script_next;
@@ -149,6 +202,16 @@ impl Host for ScriptHost<'_> {
             }
             Err(f) => HostOutcome::Failed(f),
         }
+    }
+}
+
+/// The scope of a method's receiver.
+fn receiver_scope(on: builtin_fns::On, key: u64) -> ScopeSpec {
+    match on {
+        builtin_fns::On::Session => ScopeSpec::Session { pane: key, frame: Values::new() },
+        builtin_fns::On::Tab => ScopeSpec::Tab(key),
+        builtin_fns::On::Window => ScopeSpec::Window(key),
+        builtin_fns::On::Function => ScopeSpec::App,
     }
 }
 
@@ -165,18 +228,24 @@ impl App {
                 return None;
             }
         };
-        let base = match (self.script_values(&scope), &scope) {
-            (Some(values), _) => values,
-            (None, ScopeSpec::Receiver(id)) => {
-                self.script_answer(&origin, invocation, Err(Failure::plain(script_eval::object_not_found(id))));
-                return None;
+        // A method invocation runs in its receiver's scope, the object whose catalog has the
+        // first call's method.
+        let (scope, receiver) = match scope {
+            ScopeSpec::Receiver(id) => {
+                let sig = inv.calls().first().map(|c| c.signature()).unwrap_or_default();
+                let Some((on, key)) = self.receiver(&id, &sig) else {
+                    self.script_answer(&origin, invocation, Err(Failure::plain(script_eval::object_not_found(&id))));
+                    return None;
+                };
+                (receiver_scope(on, key), Some(id))
             }
-            // An object already gone reads as an empty scope.
-            (None, _) => Values::new(),
+            other => (other, None),
         };
+        // An object already gone reads as an empty scope.
+        let base = self.script_values(&scope).unwrap_or_default();
         let id = self.script_next;
         self.script_next += 1;
-        self.script_runs.insert(id, Run { inv, scope, base, origin });
+        self.script_runs.insert(id, Run { inv, scope, base, origin, receiver });
         self.script_step(id);
         self.script_runs.contains_key(&id).then_some(id)
     }
@@ -184,8 +253,7 @@ impl App {
     /// The values a scope reads (11b's `scope_values` with the API's typed user values): a
     /// session's with its selection, a tab's focused session's in tab scope, a window's
     /// current tab's focused session's in window scope, any session's app scope (else an
-    /// empty one). A receiver is a window id when it starts `pty-`, else a session, else a
-    /// tab. None when the object is gone.
+    /// empty one). A receiver is its object's (`receiver`). None when the object is gone.
     pub(super) fn script_values(&self, spec: &ScopeSpec) -> Option<Values> {
         let session = |pane: PaneId| -> Option<Values> {
             if !self.panes.contains_key(&pane) {
@@ -208,10 +276,11 @@ impl App {
             ScopeSpec::Tab(t) => tab(*t),
             ScopeSpec::Window(k) => window(*k),
             ScopeSpec::App => Some(objects.values(Scope::App, "")),
-            ScopeSpec::Receiver(id) if id.starts_with("pty-") => ids.window_key(id).and_then(window),
-            ScopeSpec::Receiver(id) => match ids.pane(id) {
-                Some(p) => session(p),
-                None => ids.tab_by_id(id).and_then(tab),
+            ScopeSpec::Receiver(id) => match self.receiver(id, "")? {
+                (builtin_fns::On::Session, p) => session(p),
+                (builtin_fns::On::Tab, t) => tab(t),
+                (builtin_fns::On::Window, k) => window(k),
+                (builtin_fns::On::Function, _) => None,
             },
         }
     }
@@ -226,7 +295,9 @@ impl App {
             _ => Values::new(),
         };
         let scope = Layered { frame: &frame, base: &base };
-        let step = run.inv.step(&scope, &mut ScriptHost { app: self, run: id, scope: &scope });
+        let receiver = run.receiver.clone();
+        let methods = if receiver.is_some() { run.inv.calls().iter().map(|c| c.site).collect() } else { BTreeSet::new() };
+        let step = run.inv.step(&scope, &mut ScriptHost { app: self, run: id, scope: &scope, receiver: receiver.as_deref(), methods });
         run.base = base;
         match step {
             Step::Waiting => {
@@ -243,6 +314,7 @@ impl App {
     /// fires, the registry's included.
     pub(super) fn script_tick(&mut self) -> Option<Instant> {
         let now = Instant::now();
+        let moving = self.script_moved_tabs();
         for (token, f) in self.api_fns.expire(now) {
             self.api_rpc_done.push_back((token, Err(f)));
         }
@@ -252,11 +324,18 @@ impl App {
         for id in late_runs(&self.script_runs, now) {
             let Some(run) = self.script_runs.remove(&id) else { continue };
             let mut f = run.inv.timed_out();
-            f.conn = run.inv.returning().and_then(|t| self.api_fns.conn_of(t));
+            // A method invocation's calls carry the requester's connection (`H:4336`).
+            let requester = match (&run.receiver, &run.origin) {
+                (Some(_), Origin::Api { conn, .. }) => Some(*conn),
+                _ => None,
+            };
+            f.conn = run.inv.returning().and_then(|t| self.api_fns.conn_of(t)).or(requester);
             self.script_log(f.conn, f.reason.clone());
             self.script_finished(run, Err(f));
         }
-        next_wake(&self.script_runs, self.api_fns.next_deadline())
+        // A tab moved to a new window is answered once the window opens, on the next pass.
+        let soon = moving.then_some(now);
+        next_wake(&self.script_runs, self.api_fns.next_deadline()).into_iter().chain(soon).min()
     }
 
     /// A finished run: its calls still running are forgotten (their results are dropped),
@@ -343,7 +422,7 @@ mod tests {
     use std::time::Duration;
 
     fn run(text: &str, timeout: Timeout, now: Instant) -> Run {
-        Run { inv: Invocation::new(text, timeout, true, true, now).unwrap(), scope: ScopeSpec::App, base: Values::new(), origin: Origin::Quiet }
+        Run { inv: Invocation::new(text, timeout, true, true, now).unwrap(), scope: ScopeSpec::App, base: Values::new(), origin: Origin::Quiet, receiver: None }
     }
 
     /// Starts every script call with the next token.

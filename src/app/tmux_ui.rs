@@ -143,6 +143,13 @@ impl App {
                 Event::Print(line) => self.tmux_print(pane, &line),
                 Event::Reply { tag, ok, text, data } => {
                     // A Python API SendCommand: its output answers the request (`H:3620-3623`).
+                    // A script's run_tmux_command: tmux's output, or "tmux error"
+                    // (`PS:23730-23742`).
+                    if let Some(token) = self.script_tmux.remove(&(pane, tag)) {
+                        let r = if ok { Ok(crate::expr::Value::String(text)) } else { Err(crate::expr::Failure::plain(crate::builtin_fns::TMUX_ERROR)) };
+                        self.api_rpc_done.push_back((token, r));
+                        continue;
+                    }
                     if let Some(waiting) = self.api_tmux_commands.remove(&(pane, tag)) {
                         let output = ok.then_some(text);
                         let payload = Some(crate::api_proto::pb::tmux_response::Payload::SendCommand(crate::api_proto::pb::tmux_response::SendCommand { output }));

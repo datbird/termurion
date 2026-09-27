@@ -46,6 +46,8 @@ pub struct PromptWindow {
     refuse_blank: bool,
     /// A button between OK and Cancel.
     extra: Option<String>,
+    /// Gray text the empty field shows (NSTextField's placeholder).
+    hint: String,
 }
 
 impl PromptWindow {
@@ -61,7 +63,7 @@ impl PromptWindow {
         initial: &str,
     ) -> Result<PromptWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 420.0, 130.0)?;
-        Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None })
+        Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None, hint: String::new() })
     }
 
     /// Earlier entries, offered in a list under the text.
@@ -81,6 +83,17 @@ impl PromptWindow {
     pub fn with_extra(mut self, label: &str) -> PromptWindow {
         self.extra = Some(label.into());
         self
+    }
+
+    /// The field's placeholder text.
+    pub fn with_hint(mut self, hint: &str) -> PromptWindow {
+        self.hint = hint.into();
+        self
+    }
+
+    /// The field's text now.
+    pub fn text(&self) -> &str {
+        &self.text
     }
 
     pub fn refuse_blank(mut self) -> PromptWindow {
@@ -108,12 +121,12 @@ impl PromptWindow {
     /// Draws the window. Enter or OK gives the text; Escape or Cancel gives up.
     pub fn redraw(&mut self) -> PromptResult {
         let mut result = PromptResult::Open;
-        let (label, text, first, choices, check, refuse_blank, extra) = (&self.label, &mut self.text, &mut self.first, &self.choices, &mut self.check, self.refuse_blank, &self.extra);
+        let (label, text, first, choices, check, refuse_blank, extra, hint) = (&self.label, &mut self.text, &mut self.first, &self.choices, &mut self.check, self.refuse_blank, &self.extra, &self.hint);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(label.as_str());
                 let before = text.clone();
-                let r = ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
+                let r = ui.add(egui::TextEdit::singleline(text).hint_text(hint.as_str()).desired_width(f32::INFINITY));
                 if *first {
                     r.request_focus();
                     *first = false;

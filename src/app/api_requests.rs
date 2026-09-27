@@ -1424,6 +1424,14 @@ impl App {
         for w in waiting {
             self.api_tmux_answer(w, pb::TmuxResponse::default());
         }
+        // A script's run_tmux_command waiting on it fails.
+        let mut calls: Vec<_> = self.script_tmux.keys().filter(|(g, _)| *g == gw).copied().collect();
+        calls.sort();
+        for k in calls {
+            if let Some(token) = self.script_tmux.remove(&k) {
+                self.api_rpc_done.push_back((token, Err(crate::expr::Failure::plain(crate::builtin_fns::TMUX_ERROR))));
+            }
+        }
     }
 
     /// For a tmux pane, whether its tmux window is hidden (how Tandem and iTerm2 bury a tmux
