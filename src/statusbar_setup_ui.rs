@@ -36,10 +36,11 @@ pub const HELP_URL: &str = "https://iterm2.com/status-bar-layout";
 /// The Auto-Rainbow popup's items (`SXIB:198-207`).
 const RAINBOW_ITEMS: [(Rainbow, &str); 4] = [(Rainbow::Disabled, "Disabled"), (Rainbow::Light, "Light Colors"), (Rainbow::Dark, "Dark Colors"), (Rainbow::Automatic, "Automatic")];
 
-/// A drag in progress: from the palette (a class) or from Active Components (an index).
+/// A drag in progress: from the palette (a class and the new component's configuration, a
+/// script component's registration) or from Active Components (an index).
 #[derive(Clone, Debug, PartialEq)]
 enum Drag {
-    Palette(&'static str),
+    Palette(&'static str, toml::Table),
     Active(usize),
 }
 
@@ -212,7 +213,7 @@ impl StatusBarSetupWindow {
     fn open_sheet(&mut self, index: usize) {
         let algorithm = self.layout.advanced.algorithm;
         let Some(c) = self.layout.components.get(index) else { return };
-        let knobs = statusbar::knobs(&c.class, algorithm);
+        let knobs = statusbar::knobs(&c.class, &c.config, algorithm);
         if knobs.is_empty() {
             return;
         }
@@ -255,7 +256,7 @@ impl StatusBarSetupWindow {
         let mut open_sheet_for: Option<usize> = None;
         let mut open_advanced = false;
         let mut delete: Option<usize> = None;
-        let mut insert: Option<(usize, &'static str)> = None;
+        let mut insert: Option<(usize, &'static str, toml::Table)> = None;
         let mut moved: Option<(usize, usize)> = None;
         let mut rainbow = adv.rainbow;
         let (layout, selected, drag, profiles) = (&self.layout, &mut self.selected, &mut self.drag, &self.profiles);
@@ -281,16 +282,21 @@ impl StatusBarSetupWindow {
                         ui.set_min_size(egui::vec2(ui.available_width(), 150.0));
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
-                            for class in statusbar::PALETTE {
-                                let Some(info) = statusbar::info_for(class, algorithm) else { continue };
+                            // The built-in classes, then each registered script component
+                            // (`SVC:154-158`), whose configuration carries its registration.
+                            let scripts = crate::script_statusbar::live().into_iter().map(|r| (crate::script_statusbar::class_of(&r), crate::script_statusbar::config_for(&r)));
+                            let entries: Vec<(&'static str, toml::Table)> = statusbar::PALETTE.iter().map(|&c| (c, toml::Table::new())).chain(scripts).collect();
+                            for (n, (class, config)) in entries.into_iter().enumerate() {
+                                let Some(info) = statusbar::info_for(class, &config, algorithm) else { continue };
                                 // The palette shows the exemplar with the layout's colors and
                                 // the short description below it (`SVC:381-397`); a generic
                                 // instance's default knobs, since nothing is placed yet.
-                                let exemplar = statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text(class, &statusbar::default_knobs(class)), &user, &home, algorithm);
-                                let r = element(ui, Id::new(("palette", class)), &exemplar, Some(info.short), default_bg, default_fg, false);
-                                let r = r.on_hover_text(info.detail);
+                                let defaults = statusbar::default_knobs(class, &config);
+                                let exemplar = statusbar::exemplar(class, &config, &defaults, &clock_text(class, &defaults), &user, &home, algorithm);
+                                let r = element(ui, Id::new(("palette", n)), &exemplar, Some(&info.short), default_bg, default_fg, false);
+                                let r = r.on_hover_text(info.detail.as_ref());
                                 if r.drag_started() {
-                                    *drag = Some(Drag::Palette(class));
+                                    *drag = Some(Drag::Palette(class, config));
                                 }
                             }
                         });
@@ -302,12 +308,12 @@ impl StatusBarSetupWindow {
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
                             for (i, c) in layout.components.iter().enumerate() {
-                                let info = statusbar::info_for(&c.class, algorithm);
+                                let info = statusbar::info_for(&c.class, &c.config, algorithm);
                                 // A class Tandem does not show yet (milestone 9i's five)
                                 // keeps its place under its class name.
                                 let unknown = short_class(&c.class);
                                 let exemplar = match info {
-                                    Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text(&c.class, &c.knobs), &user, &home, algorithm),
+                                    Some(_) => statusbar::exemplar(&c.class, &c.config, &c.knobs, &clock_text(&c.class, &c.knobs), &user, &home, algorithm),
                                     None => unknown.clone(),
                                 };
                                 let bg = c.background_color().as_ref().and_then(color32).or(layout_bg).unwrap_or(default_bg);
@@ -315,7 +321,7 @@ impl StatusBarSetupWindow {
                                 // Destination items show only the exemplar (`DCV:221-238`).
                                 let r = element(ui, Id::new(("active", i)), &exemplar, None, bg, fg, *selected == Some(i));
                                 let r = match info {
-                                    Some(info) => r.on_hover_text(info.detail),
+                                    Some(info) => r.on_hover_text(info.detail.as_ref()),
                                     None => r.on_hover_text(format!("{}: shown in a later milestone", c.class)),
                                 };
                                 if r.clicked() {
@@ -335,7 +341,7 @@ impl StatusBarSetupWindow {
                     active_area = group.response.rect;
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        let has_knobs = selected.and_then(|i| layout.components.get(i)).is_some_and(|c| !statusbar::knobs(&c.class, algorithm).is_empty());
+                        let has_knobs = selected.and_then(|i| layout.components.get(i)).is_some_and(|c| !statusbar::knobs(&c.class, &c.config, algorithm).is_empty());
                         if ui.add_enabled(has_knobs, egui::Button::new("Configure Component")).clicked() {
                             open_sheet_for = *selected;
                         }
@@ -373,12 +379,15 @@ impl StatusBarSetupWindow {
             // anywhere else is removed (`DCV:278-289`).
             if let (Some(d), Some(pos)) = (drag.clone(), pointer) {
                 let label = match &d {
-                    Drag::Palette(class) => statusbar::exemplar(class, &statusbar::default_knobs(class), &clock_text(class, &statusbar::default_knobs(class)), &user, &home, algorithm),
+                    Drag::Palette(class, config) => {
+                        let defaults = statusbar::default_knobs(class, config);
+                        statusbar::exemplar(class, config, &defaults, &clock_text(class, &defaults), &user, &home, algorithm)
+                    }
                     Drag::Active(i) => layout
                         .components
                         .get(*i)
-                        .map(|c| match statusbar::info_for(&c.class, algorithm) {
-                            Some(_) => statusbar::exemplar(&c.class, &c.knobs, &clock_text(&c.class, &c.knobs), &user, &home, algorithm),
+                        .map(|c| match statusbar::info_for(&c.class, &c.config, algorithm) {
+                            Some(_) => statusbar::exemplar(&c.class, &c.config, &c.knobs, &clock_text(&c.class, &c.knobs), &user, &home, algorithm),
                             None => short_class(&c.class),
                         })
                         .unwrap_or_default(),
@@ -399,10 +408,10 @@ impl StatusBarSetupWindow {
                 }
                 if released {
                     match d {
-                        Drag::Palette(class) if over => insert = Some((drop_index(&active_rects, pos), class)),
+                        Drag::Palette(class, config) if over => insert = Some((drop_index(&active_rects, pos), class, config)),
                         Drag::Active(from) if over => moved = Some((from, drop_index(&active_rects, pos))),
                         Drag::Active(from) => delete = Some(from),
-                        Drag::Palette(_) => {}
+                        Drag::Palette(..) => {}
                     }
                     *drag = None;
                 }
@@ -441,8 +450,8 @@ impl StatusBarSetupWindow {
         if open_advanced {
             self.advanced = Some(AdvancedSheet { advanced: self.layout.advanced.clone(), font_edit: None });
         }
-        if let Some((at, class)) = insert {
-            let at = statusbar::insert_component(&mut self.layout, at, class);
+        if let Some((at, class, config)) = insert {
+            let at = statusbar::insert_component(&mut self.layout, at, class, config);
             self.selected = Some(at);
             changed = true;
         }

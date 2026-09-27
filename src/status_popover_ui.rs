@@ -1,6 +1,7 @@
 //! Session Status' settings popover (`StatusPrioritySettings.swift`, `SPS:197-365`): the
 //! priority patterns with their Notify boxes, reordered by dragging and edited in place, + and
-//! -, and the two checkboxes; and `InfoPopover`, a plain two-column popover (Jobs' Inspect).
+//! -, and the two checkboxes; `InfoPopover`, a plain two-column popover (Jobs' Inspect); and
+//! `TextPopover`, a script component's popover of text.
 //! Both are small frameless egui windows that close when they lose focus (a transient
 //! popover) or on Esc, as the git Log popover does.
 
@@ -299,6 +300,59 @@ impl InfoPopover {
                         ui.add(egui::Label::new(value.as_str()).selectable(true));
                         ui.end_row();
                     }
+                });
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
+        });
+        open
+    }
+}
+
+/// The popover a script opens from its status bar component (StatusBarComponentRequest,
+/// `BASE:363-389`): iTerm2 shows the HTML in a web view; Tandem shows its text
+/// (`script_statusbar::html_text`), selectable and scrolling, in a content area of the
+/// requested size. It closes when it loses focus (a semitransient popover) or on Esc.
+pub struct TextPopover {
+    host: EguiHost,
+    text: String,
+    focused: bool,
+}
+
+impl TextPopover {
+    /// `size`: the content area in points (at least one); `at`: the point its bottom centers
+    /// on, screen pixels; `work`: the work area of that point's monitor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, text: &str, size: (f64, f64), at: (f64, f64), work: Option<Rect>) -> Result<TextPopover, String> {
+        let (w, h) = (size.0.max(1.0), size.1.max(1.0));
+        let host = popover_window(event_loop, instance, adapter, device, queue, "Popover", w, h, at, work)?;
+        Ok(TextPopover { host, text: text.to_string(), focused: false })
+    }
+
+    pub fn id(&self) -> WindowId {
+        self.host.id()
+    }
+
+    /// Handles one of its window's events. False when it should close.
+    pub fn event(&mut self, event: &WindowEvent) -> bool {
+        if let Some(close) = closes(event, &mut self.focused, false) {
+            return !close;
+        }
+        if matches!(event, WindowEvent::RedrawRequested) {
+            return self.redraw();
+        }
+        self.host.event(event);
+        true
+    }
+
+    fn redraw(&mut self) -> bool {
+        let mut open = true;
+        let text = &self.text;
+        self.host.paint(|ui| {
+            egui::CentralPanel::default().frame(egui::Frame::central_panel(ui.style()).inner_margin(MARGIN)).show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add(egui::Label::new(text.as_str()).selectable(true).wrap());
                 });
             });
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {

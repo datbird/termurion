@@ -144,6 +144,7 @@ impl App {
                 if let Some(text) = line {
                     self.api_log_conn(conn, text);
                 }
+                self.api_fns_changed(r, status);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
             }
             // A script's answer to a call; always acknowledged (`H:3490-3496`).
@@ -154,6 +155,7 @@ impl App {
                 reply(req, Resp::ServerOriginatedRpcResultResponse(pb::ServerOriginatedRpcResultResponse {}))
             }
             Some(Req::InvokeFunctionRequest(r)) => self.api_invoke_function(conn, req, r),
+            Some(Req::StatusBarComponentRequest(r)) => self.api_status_bar_component(req, r, event_loop),
             _ => Answer::Now(api_proto::malformed(req)),
         };
         if let Some(b) = back {
@@ -1315,6 +1317,38 @@ impl App {
         };
         self.invoke(r.invocation.as_deref().unwrap_or_default(), scope, timeout, true, Origin::Api { conn, req: req.clone() });
         Answer::Later
+    }
+
+    /// After a function registration request: the status bar's view of the live components
+    /// follows, and a status bar component registered now makes that unique id's components
+    /// evaluate again (`iTermAPIDidRegisterStatusBarComponentNotification`, `RPC:456-462`).
+    fn api_fns_changed(&mut self, r: &pb::NotificationRequest, status: pb::notification_response::Status) {
+        crate::script_statusbar::set_live(self.api_fns.status_bar_components());
+        let Some(pb::notification_request::Arguments::RpcRegistrationRequest(reg)) = &r.arguments else { return };
+        if status == pb::notification_response::Status::Ok && r.subscribe == Some(true) {
+            if let Some(id) = crate::script_statusbar::unique_id(reg).filter(|_| crate::script_statusbar::registration_is_component(reg)) {
+                self.script_component_registered(&id.to_string());
+            }
+        }
+    }
+
+    /// StatusBarComponentRequest (`H:4101-4140`): its status over the session (buried ones
+    /// found) and that session's status bar components by identifier; OK opens the popover.
+    fn api_status_bar_component(&mut self, req: &pb::ClientOriginatedMessage, r: &pb::StatusBarComponentRequest, event_loop: &ActiveEventLoop) -> Answer {
+        use pb::status_bar_component_request::Request;
+        let id = r.identifier.clone().unwrap_or_default();
+        let Some(Request::OpenPopover(open)) = &r.request else {
+            let status = crate::script_statusbar::popover_status(r, false, false);
+            return reply(req, Resp::StatusBarComponentResponse(pb::StatusBarComponentResponse { status: Some(status as i32) }));
+        };
+        let pane = self.api_ids().pane(open.session_id.as_deref().unwrap_or_default());
+        let component = pane.is_some_and(|p| self.bar_has_component(p, &id));
+        let status = crate::script_statusbar::popover_status(r, pane.is_some(), component);
+        if let (pb::status_bar_component_response::Status::Ok, Some(pane)) = (status, pane) {
+            let size = open.size.as_ref().map_or((0.0, 0.0), |s| (f64::from(s.width.unwrap_or_default()), f64::from(s.height.unwrap_or_default())));
+            self.open_text_popover(pane, &id, &crate::script_statusbar::html_text(open.html.as_deref().unwrap_or_default()), size, event_loop);
+        }
+        reply(req, Resp::StatusBarComponentResponse(pb::StatusBarComponentResponse { status: Some(status as i32) }))
     }
 
     /// Answers a waiting Tmux request.

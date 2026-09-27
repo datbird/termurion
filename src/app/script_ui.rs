@@ -21,6 +21,7 @@ use crate::layout::PaneId;
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::script_eval::{self, Host, HostOutcome, Invocation, Layered, Step, Timeout};
 use crate::script_fn;
+use crate::script_statusbar;
 use crate::builtin_fns;
 
 /// The scope an invocation reads: a session's with a frame of temporary values on top (a
@@ -45,12 +46,13 @@ pub(super) enum Origin {
     },
     Report(String),
     OpenQuickly,
-    // Constructed by the callers of Tasks 7 to 9.
+    // Constructed by the callers of Tasks 8 and 9.
     #[allow(dead_code)]
     Title(PaneId),
-    #[allow(dead_code)]
-    Component { pane: PaneId, id: String },
-    #[allow(dead_code)]
+    /// A script status bar component's evaluation: its entry (`script_components`), the
+    /// evaluation's number there, and the registration it ran (for the failure text).
+    Component { pane: PaneId, id: String, nth: u64, reg: Box<pb::RpcRegistrationRequest> },
+    /// A script component's click (`RPC:560-571`): a failure goes to the console log.
     Click,
     /// A status bar string's evaluation: its cache entry (`script_templates`) and the
     /// evaluation's number there, so an older one never replaces a newer one's value.
@@ -118,6 +120,67 @@ fn sweep<T>(map: &mut HashMap<(PaneId, String), T>, pane: PaneId, pass: u64, pas
     map.retain(|(p, _), t| *p != pane || pass_of(t) == pass);
 }
 
+/// A script status bar component in one session (`RPC:145-155`): the variants shown (none
+/// before the first evaluation, the ladybug after an error), the error text a click shows,
+/// the evaluation running, the dependencies (the invocation's paths with `__knobs`) it last
+/// started with (empty: evaluate again), when its cadence comes due, the functions it found
+/// unregistered, the registry generation it last checked them against, and the last bar
+/// layout that asked for it.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Component {
+    pub variants: Vec<String>,
+    pub error: Option<String>,
+    pub running: Option<u64>,
+    pub deps: String,
+    pub due: Option<Instant>,
+    pub missing: BTreeSet<String>,
+    pub generation: u64,
+    pub pass: u64,
+}
+
+impl Component {
+    /// Whether an evaluation starts now (`RPC:200-222`, `RPC:456-473`): the dependencies
+    /// changed (the first time, a session variable it reads, its knobs, a cadence beat or its
+    /// registration again, which empty `deps`), or, once per change of the registered
+    /// functions, a function it missed is registered now (those alone leave `missing`).
+    fn needs_start(&mut self, deps: &str, generation: u64, registered: impl Fn(&str) -> bool) -> bool {
+        let mut start = self.deps != deps;
+        if self.generation != generation {
+            self.generation = generation;
+            let before = self.missing.len();
+            self.missing.retain(|s| !registered(s));
+            start |= self.missing.len() != before;
+        }
+        start
+    }
+
+    /// An evaluation finished: dropped when a newer one already finished, else it replaces
+    /// what shows (`RPC:413-449`). True when that changed.
+    fn finish(&mut self, nth: u64, shown: Result<Vec<String>, String>, missing: Option<&BTreeSet<String>>) -> bool {
+        if self.running.is_none_or(|r| nth > r) {
+            return false;
+        }
+        if self.running == Some(nth) {
+            self.running = None;
+        }
+        let (variants, error) = match shown {
+            Ok(v) => (v, None),
+            Err(e) => (vec![super::statusbar_content::LADYBUG.to_string()], Some(e)),
+        };
+        // A failure keeps the functions it missed (`RPC:447`); a success leaves them.
+        if let Some(m) = missing {
+            self.missing = m.clone();
+        }
+        let changed = self.variants != variants || self.error != error;
+        self.variants = variants;
+        self.error = error;
+        changed
+    }
+}
+
+/// A script component's click times out after 30 s (`RPC:561`).
+const CLICK_TIMEOUT_SECS: f64 = 30.0;
+
 /// Status bar strings have iTerm2's interpolated string timeout (`iTermGenericEvaluator.m`,
 /// 30 s asynchronously).
 const TEMPLATE_TIMEOUT_SECS: f64 = 30.0;
@@ -149,6 +212,8 @@ pub(super) enum Alert {
         text: String,
     },
     Result(String),
+    /// A failed script status bar component's text (`RPC:533-555`): persistent, OK only.
+    Component(String),
 }
 
 impl Alert {
@@ -157,6 +222,7 @@ impl Alert {
         match self {
             Alert::Failed { heading, text } => (heading.as_str(), text.as_str()),
             Alert::Result(text) => (script_eval::RESULT_HEADING, text.as_str()),
+            Alert::Component(text) => (script_statusbar::ERROR_HEADING, text.as_str()),
         }
     }
 }
@@ -484,8 +550,15 @@ impl App {
                 Err(f) => self.report_function_error(OPEN_QUICKLY, invocation, &f),
             },
             Origin::Template { pane, key, nth } => self.template_finished(*pane, key, *nth, missing, r),
-            // The callers of Tasks 7 to 9 take their results there.
-            Origin::Title(_) | Origin::Component { .. } | Origin::Click | Origin::Quiet => {}
+            Origin::Component { pane, id, nth, reg } => self.component_finished(*pane, id, *nth, reg, invocation, missing, r),
+            // `RPC:566-570`: "Error in onclick handler" in the console.
+            Origin::Click => {
+                if let Err(f) = r {
+                    self.script_log(f.conn, script_statusbar::onclick_error(&f.reason, f.detail.as_deref().unwrap_or_default()));
+                }
+            }
+            // The callers of Tasks 8 and 9 take their results there.
+            Origin::Title(_) | Origin::Quiet => {}
         }
     }
 
@@ -539,6 +612,114 @@ impl App {
     /// text, a removed component) go, with any evaluation still running for them.
     pub(super) fn end_script_pass(&mut self, pane: PaneId, pass: u64) {
         sweep(&mut self.script_templates, pane, pass, |t| t.pass);
+        sweep(&mut self.script_components, pane, pass, |c| c.pass);
+    }
+
+    /// A script component on a bar (`RPC:351-385`): its entry, after starting an evaluation
+    /// when `Component::needs_start` says so. The invocation (`script_statusbar::invocation`,
+    /// the newest registration of its unique id) runs in the session's scope with `__knobs`
+    /// (the knob values' JSON) in a frame, side effects on, with the registration's timeout
+    /// else none. None when the configuration holds no registration (iTerm2 makes no
+    /// component, `RPC:172-183`). With the entry, the component's identifier.
+    pub(super) fn script_component(&mut self, pane: PaneId, c: &crate::statusbar::Component) -> Option<(String, Component)> {
+        let saved = script_statusbar::request_of(&c.config)?;
+        // The component's identifier is the saved registration's (`RPC:241-244`).
+        let id = script_statusbar::unique_id(&saved).unwrap_or_default().to_string();
+        let reg = self.api_fns.status_bar_component(&id).cloned().unwrap_or(saved);
+        let invocation = script_statusbar::invocation(&reg);
+        let frame = Values::from([(script_statusbar::KNOBS_PATH.to_string(), Value::String(script_statusbar::knobs_json(&c.knobs)))]);
+        let paths = script_statusbar::invocation_paths(&invocation);
+        let selection = paths.iter().any(|p| crate::prompted::names_selection(p));
+        let base = self.session_values(pane, selection).unwrap_or_default();
+        let deps = script_eval::deps_key(&paths, &Layered { frame: &frame, base: &base });
+        let (pass, now) = (self.script_pass, Instant::now());
+        let fns = &self.api_fns;
+        let entry = self.script_components.entry((pane, id.clone())).or_default();
+        entry.pass = pass;
+        if entry.needs_start(&deps, fns.generation(), |sig| fns.has_signature(sig)) {
+            let nth = self.script_next;
+            self.script_next += 1;
+            entry.deps = deps;
+            entry.running = Some(nth);
+            entry.due = script_statusbar::cadence(&reg).map(|d| now + d);
+            // `timeout ?: distantFuture` (`RPC:372`): none or 0 waits forever.
+            let timeout = reg.timeout.filter(|t| *t != 0.0).map_or(Timeout::Never, |t| Timeout::from_secs(f64::from(t)));
+            let origin = Origin::Component { pane, id: id.clone(), nth, reg: Box::new(reg) };
+            self.invoke(&invocation, ScopeSpec::Session { pane, frame }, timeout, true, origin);
+        }
+        let entry = self.script_components.get(&(pane, id.clone())).cloned()?;
+        Some((id, entry))
+    }
+
+    /// A script component's evaluation finished (`RPC:413-449`): a string or a list of strings
+    /// shows, anything else and a failure show the ladybug with iTerm2's text, written to the
+    /// log of the connection that registered the function. The bars redraw when it changed.
+    #[allow(clippy::too_many_arguments)]
+    fn component_finished(&mut self, pane: PaneId, id: &str, nth: u64, reg: &pb::RpcRegistrationRequest, invocation: &str, missing: &BTreeSet<String>, r: Result<Value, Failure>) {
+        let (shown, missed) = match r {
+            Ok(v) => (script_statusbar::variants(invocation, &v), None),
+            Err(f) => (Err(script_statusbar::failed_text(reg, invocation, &f.reason, f.detail.as_deref())), Some(missing)),
+        };
+        if let Err(text) = &shown {
+            let owner = self.api_fns.owner(&script_fn::reg_signature(reg));
+            self.script_log(owner, text.clone());
+        }
+        let Some(entry) = self.script_components.get_mut(&(pane, id.to_string())) else { return };
+        if entry.finish(nth, shown, missed) {
+            self.redraw();
+            self.redraw_all();
+        }
+    }
+
+    /// A script component's click (`RPC:533-572`): with an error, iTerm2's alert (OK; Launch
+    /// Script and Reveal wait for 11d); else its script's click handler, in the session's
+    /// scope, with a 30 s timeout.
+    pub(super) fn script_component_click(&mut self, pane: PaneId, id: &str) {
+        let invocation = script_statusbar::click_invocation(id, &pane.to_string());
+        let scope = ScopeSpec::Session { pane, frame: Values::new() };
+        self.invoke(&invocation, scope, Timeout::from_secs(CLICK_TIMEOUT_SECS), true, Origin::Click);
+    }
+
+    /// A failed script component's click: its error text under "Status Bar Script Error".
+    pub(super) fn script_component_error(&mut self, text: &str) {
+        let alert = Alert::Component(text.to_string());
+        if !self.script_alerts.contains(&alert) && self.script_alert.as_ref().map(|(_, a)| a) != Some(&alert) {
+            self.script_alerts.push_back(alert);
+        }
+    }
+
+    /// A status bar component registration (`didRegisterStatusBarComponent:`, `RPC:456-462`):
+    /// that unique id's components forget what they missed and evaluate again.
+    pub(super) fn script_component_registered(&mut self, id: &str) {
+        for ((_, i), c) in self.script_components.iter_mut() {
+            if i == id {
+                c.missing.clear();
+                c.deps.clear();
+            }
+        }
+        self.redraw();
+        self.redraw_all();
+    }
+
+    /// The cadences (`RPC:475-481`, `CV:57`): a component whose beat came evaluates again on
+    /// the next frame that draws it (a beat while it still runs is skipped). When the next
+    /// beat comes.
+    pub(super) fn tick_script_components(&mut self, now: Instant) -> Option<Instant> {
+        let mut fired = false;
+        for c in self.script_components.values_mut() {
+            if c.due.is_some_and(|d| d <= now) {
+                c.due = None;
+                if c.running.is_none() {
+                    c.deps.clear();
+                    fired = true;
+                }
+            }
+        }
+        if fired {
+            self.redraw();
+            self.redraw_all();
+        }
+        self.script_components.values().filter_map(|c| c.due).min()
     }
 
     /// Starts one evaluation of a status bar string, recorded as its entry's running one.
@@ -814,6 +995,41 @@ mod tests {
         let mut keys: Vec<_> = map.keys().cloned().collect();
         keys.sort();
         assert_eq!(keys, [(1, "new".to_string()), (2, "other".to_string())]);
+    }
+
+    /// A script component's entry (`RPC:200-222`, `RPC:413-473`): it starts when its
+    /// dependencies change (emptied for a cadence beat or a new registration), once per
+    /// registration change when a missed function is registered; a result replaces what shows
+    /// unless a newer one already finished; a failure shows the ladybug with its text and
+    /// keeps what it missed.
+    #[test]
+    fn script_component_cache_follows_iterm2() {
+        let none = |_: &str| false;
+        let mut c = Component::default();
+        assert!(c.needs_start("d", 0, none), "never started");
+        c.deps = "d".into();
+        c.running = Some(3);
+        assert!(!c.needs_start("d", 0, none));
+        assert!(c.needs_start("e", 0, none), "a variable or a knob changed");
+        assert!(c.finish(3, Ok(vec!["12:00".into()]), None));
+        assert_eq!((c.variants.clone(), c.error.clone(), c.running), (vec!["12:00".to_string()], None, None));
+        assert!(!c.finish(2, Ok(vec!["old".into()]), None), "an older one after the newest finished");
+        // A failure: the ladybug, its text, the functions it missed.
+        c.running = Some(5);
+        let missed = BTreeSet::from(["f()".to_string()]);
+        assert!(c.finish(5, Err("boom".into()), Some(&missed)));
+        assert_eq!((c.variants.clone(), c.error.clone()), (vec![super::super::statusbar_content::LADYBUG.to_string()], Some("boom".to_string())));
+        assert!(!c.needs_start("d", 0, |s| s == "f()"), "no registration happened");
+        assert!(c.needs_start("d", 1, |s| s == "f()"), "the missed function is registered");
+        assert!(c.missing.is_empty());
+        // An older evaluation finishing while a newer runs shows until the newer's comes.
+        c.running = Some(9);
+        assert!(c.finish(8, Ok(vec!["a".into(), "b".into()]), None));
+        assert_eq!(c.running, Some(9));
+        assert!(!c.finish(9, Ok(vec!["a".into(), "b".into()]), None), "the same variants");
+        assert_eq!(c.running, None);
+        assert_eq!(script_statusbar::ERROR_HEADING, Alert::Component("x".into()).form().0);
+        assert_eq!(CLICK_TIMEOUT_SECS, 30.0);
     }
 
     /// Review finding 1: an Invoke Script Function trigger whose function is not registered

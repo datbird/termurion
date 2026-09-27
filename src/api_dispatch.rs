@@ -175,9 +175,9 @@ pub enum Route {
 /// types are answered from `subs`, VARIABLE_CHANGE ones and those routed by session (the five
 /// session kinds, LOCATION_CHANGE and PROFILE_CHANGE) go to the app; ListSessions, Focus, GetBroadcastDomains and every request
 /// of milestone 11b go to the app, as do NOTIFY_ON_SERVER_ORIGINATED_RPC registrations,
-/// ServerOriginatedRPCResult and InvokeFunction; a TransactionRequest reaching dispatch (a
-/// begin inside a transaction) answers ALREADY_IN_TRANSACTION (`S:732-737`); everything else
-/// (tools, status bar components, an empty oneof) answers iTerm2's malformed error
+/// ServerOriginatedRPCResult, InvokeFunction and StatusBarComponent; a TransactionRequest
+/// reaching dispatch (a begin inside a transaction) answers ALREADY_IN_TRANSACTION
+/// (`S:732-737`); everything else (tools, an empty oneof) answers iTerm2's malformed error
 /// (`S:1040-1044`) until a later milestone handles it.
 pub fn route(subs: &mut Subscriptions, conn: u64, req: pb::ClientOriginatedMessage) -> Route {
     match &req.submessage {
@@ -191,6 +191,8 @@ pub fn route(subs: &mut Subscriptions, conn: u64, req: pb::ClientOriginatedMessa
         Some(Req::ServerOriginatedRpcResultRequest(_)) => Route::App(req),
         // Invocations run in the app (`H:4257-4394`).
         Some(Req::InvokeFunctionRequest(_)) => Route::App(req),
+        // A script component's popover opens in its session's status bar (`H:4101-4140`).
+        Some(Req::StatusBarComponentRequest(_)) => Route::App(req),
         Some(Req::NotificationRequest(r)) => match subs.request(conn, r) {
             Some(status) => {
                 let mut m = api_proto::reply_to(&req);
@@ -430,6 +432,7 @@ mod tests {
         }
         assert!(matches!(route(&mut s, 1, msg(8, Req::ServerOriginatedRpcResultRequest(Default::default()))), Route::App(r) if r.id == Some(8)));
         assert!(matches!(route(&mut s, 1, msg(9, Req::InvokeFunctionRequest(Default::default()))), Route::App(r) if r.id == Some(9)));
+        assert!(matches!(route(&mut s, 1, msg(10, Req::StatusBarComponentRequest(Default::default()))), Route::App(r) if r.id == Some(10)));
         // VARIABLE_CHANGE goes to the app, subscribing or not.
         for subscribe in [Some(true), Some(false), None] {
             assert!(matches!(route(&mut s, 1, msg(7, Req::NotificationRequest(notif(N::NotifyOnVariableChange, subscribe, None)))), Route::App(r) if r.id == Some(7)));
@@ -473,10 +476,7 @@ mod tests {
             assert!(matches!(route(&mut s, 1, msg(id, sub)), Route::App(r) if r.id == Some(id)), "request {i}");
         }
         // Later milestones' requests still answer malformed.
-        let later = [
-            Req::RegisterToolRequest(Default::default()),
-            Req::StatusBarComponentRequest(Default::default()),
-        ];
+        let later = [Req::RegisterToolRequest(Default::default())];
         for (i, sub) in later.into_iter().enumerate() {
             let id = 200 + i as i64;
             assert!(is_malformed(&route(&mut s, 1, msg(id, sub)), id), "request {i}");

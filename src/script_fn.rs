@@ -221,6 +221,11 @@ impl Registry {
         self.regs.contains_key(sig)
     }
 
+    /// The connection that registered a signature (`logToConnectionHostingFunctionWithSignature:`).
+    pub fn owner(&self, sig: &str) -> Option<u64> {
+        self.regs.get(sig).map(|(c, _)| *c)
+    }
+
     /// The connection a call goes to and its full arguments (`H:1139-1168`, `H:214-257`): a
     /// registration with the fully qualified name whose required arguments (those without
     /// defaults) are all given, each missing default filled from `scope` (a path ending `?`
@@ -689,6 +694,8 @@ mod tests {
         assert_eq!(fns.status_bar_component("com.x").map(fq_name).as_deref(), Some("statusbar.com.x.s"));
         assert_eq!(fns.status_bar_component("com.y").map(fq_name).as_deref(), Some("statusbar.com.y.s"));
         assert!(fns.status_bar_component("com.z").is_none());
+        assert_eq!(fns.status_bar_component("com.x").map(|r| fns.owner(&reg_signature(r)).is_some()), Some(true));
+        assert_eq!(fns.owner("nothing()"), None);
         // Context menu items by display name, ignoring case.
         for (name, display) in [("f1", "b"), ("f2", "A"), ("f3", "c")] {
             subscribe(&mut fns, 1, menu(reg(name, &[]), display, name));

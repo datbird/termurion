@@ -270,7 +270,7 @@ pub fn infos() -> Vec<Info> {
     ALL.iter()
         .map(|&kind| {
             let (short, detail, stretch) = short_detail_stretch(kind);
-            Info { class: kind.class(), short, detail, exemplar: static_exemplar(kind), stretch, margins: true, internal: matches!(kind, Kind::Progress | Kind::TmuxLeft | Kind::TmuxRight) }
+            Info { class: kind.class(), short: short.into(), detail: detail.into(), exemplar: static_exemplar(kind).into(), stretch, margins: true, internal: matches!(kind, Kind::Progress | Kind::TmuxLeft | Kind::TmuxRight) }
         })
         .collect()
 }
@@ -734,7 +734,7 @@ mod tests {
         ];
         for (class, short, detail, stretch) in cases {
             let i = get(class);
-            assert_eq!((i.short, i.detail, i.stretch), (short, detail, stretch), "{class}");
+            assert_eq!((&*i.short, &*i.detail, i.stretch), (short, detail, stretch), "{class}");
         }
 
         for internal in [PROGRESS_CLASS, TMUX_LEFT_CLASS, TMUX_RIGHT_CLASS] {
@@ -816,7 +816,7 @@ mod tests {
         }
         assert_eq!(default_knobs(Kind::CallScriptFunction), table(&[(TIMEOUT_KEY, Value::Float(5.0))]));
         assert_eq!(
-            statusbar::default_knobs(CLOCK_CLASS),
+            statusbar::default_knobs(CLOCK_CLASS, &toml::Table::new()),
             table(&[("base: compression resistance", Value::Float(1.0)), ("base: priority", Value::Float(5.0)), (FORMAT_KEY, Value::String("M/dd h:mm".into()))])
         );
 
@@ -925,8 +925,8 @@ mod tests {
             (GIT_CLASS, "\u{2387} main"),
         ];
         for (class, want) in cases {
-            assert_eq!(statusbar::exemplar(class, &none, "", "", "", Algorithm::Stable), want, "{class}");
-            assert_eq!(statusbar::exemplar(class, &none, "", "", "", Algorithm::TightlyPacked), want, "{class}: algorithm makes no difference");
+            assert_eq!(statusbar::exemplar(class, &none, &none, "", "", "", Algorithm::Stable), want, "{class}");
+            assert_eq!(statusbar::exemplar(class, &none, &none, "", "", "", Algorithm::TightlyPacked), want, "{class}: algorithm makes no difference");
         }
     }
 

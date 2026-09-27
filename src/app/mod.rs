@@ -629,12 +629,15 @@ pub struct App {
     /// The last bar layout pass that asked for status bar strings (`begin_script_pass`).
     script_pass: u64,
     /// Status bar component unread counts set by scripts: by component identifier, and per
-    /// session (which wins when set, `iTermStatusBarUnreadCountController.m:51-60`). Read by
-    /// the script components (Task 7).
-    #[allow(dead_code)]
+    /// session (which wins when set, `iTermStatusBarUnreadCountController.m:51-60`), drawn as
+    /// a badge on the component.
     unread_counts: HashMap<String, i64>,
-    #[allow(dead_code)]
     unread_session_counts: HashMap<(PaneId, String), i64>,
+    /// Script status bar components by session and unique id: what they show and their
+    /// evaluations (app-wide; a pane's entries go with the pane).
+    script_components: HashMap<(PaneId, String), script_ui::Component>,
+    /// The popover a StatusBarComponentRequest opened (one at a time).
+    text_popover: Option<crate::status_popover_ui::TextPopover>,
     /// `alert` and `get_string` dialogs waiting to open, and the one showing.
     script_dialogs: VecDeque<builtin_ui::Dialog>,
     script_dialog: Option<builtin_ui::Open>,
@@ -990,6 +993,8 @@ pub fn run() {
         script_alert: None,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
+        script_components: HashMap::new(),
+        text_popover: None,
         script_dialogs: VecDeque::new(),
         script_dialog: None,
         script_tmux: HashMap::new(),
@@ -1121,6 +1126,7 @@ impl App {
         self.api_session_subs.forget_session(id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
+        self.script_components.retain(|(p, _), _| *p != id);
     }
 
     /// A cookie that will never be used takes itself out of the jar.
@@ -2877,7 +2883,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.script_dialog_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

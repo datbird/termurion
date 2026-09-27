@@ -14,6 +14,8 @@
 //! unknown class is kept in the file (there so a round trip through Tandem does not lose
 //! it) and skipped on screen by Task 3.
 
+use std::borrow::Cow;
+
 use toml::Value;
 
 /// `iTermStatusBarSpringComponent`.
@@ -122,13 +124,14 @@ pub struct Knob {
 /// A component's description in the setup picker: `iTermStatusBarComponent`'s
 /// `statusBarComponentShortDescription`, `statusBarComponentDetailedDescription`,
 /// `statusBarComponentExemplarWithBackgroundColor:textColor:`, `statusBarComponentCanStretch`,
-/// `statusBarComponentHasMargins`, `statusBarComponentIsInternal`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `statusBarComponentHasMargins`, `statusBarComponentIsInternal`. A script component's texts
+/// come from its registration (`info_for`).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Info {
     pub class: &'static str,
-    pub short: &'static str,
-    pub detail: &'static str,
-    pub exemplar: &'static str,
+    pub short: Cow<'static, str>,
+    pub detail: Cow<'static, str>,
+    pub exemplar: Cow<'static, str>,
     pub stretch: bool,
     pub margins: bool,
     pub internal: bool,
@@ -412,9 +415,9 @@ pub fn registry() -> Vec<Info> {
     v.extend_from_slice(&content[..split]);
     v.push(Info {
         class: SPACER_CLASS,
-        short: "Fixed-size Spacer",
-        detail: "Adds a fixed amount of space",
-        exemplar: "╠══╣",
+        short: "Fixed-size Spacer".into(),
+        detail: "Adds a fixed amount of space".into(),
+        exemplar: "╠══╣".into(),
         stretch: false,
         margins: true,
         internal: false,
@@ -423,9 +426,9 @@ pub fn registry() -> Vec<Info> {
         class: SPRING_CLASS,
         // Tightly Packed's naming ("Spring"); under Stable this component displays
         // as "Empty Space" with a matching exemplar and detail text: `info_for`.
-        short: "Spring",
-        detail: "Pushes items apart. Use one spring to right-align status bar elements that follow it. Use two to center those inbetween.",
-        exemplar: "║〜〜║",
+        short: "Spring".into(),
+        detail: "Pushes items apart. Use one spring to right-align status bar elements that follow it. Use two to center those inbetween.".into(),
+        exemplar: "║〜〜║".into(),
         stretch: true,
         margins: false,
         internal: false,
@@ -433,11 +436,11 @@ pub fn registry() -> Vec<Info> {
     v.extend_from_slice(&content[split..]);
     v.push(Info {
         class: PLACEHOLDER_CLASS,
-        short: "Placeholder",
-        detail: "Placeholder",
+        short: "Placeholder".into(),
+        detail: "Placeholder".into(),
         // iTerm2's own exemplar method asserts false: the placeholder never appears
         // in the setup picker (it is internal).
-        exemplar: "",
+        exemplar: "".into(),
         stretch: true,
         margins: true,
         internal: true,
@@ -451,8 +454,13 @@ pub fn info(class: &str) -> Option<Info> {
 
 /// The knob descriptors `statusBarComponentKnobs` returns, in order, for a class this
 /// milestone knows. A class not here yet (the 9i content components, or one Tandem truly
-/// does not recognize) returns no knobs: it has no Configure sheet, only Hide.
-pub fn knobs(class: &str, algorithm: Algorithm) -> Vec<Knob> {
+/// does not recognize) returns no knobs: it has no Configure sheet, only Hide. A script
+/// component's are its registration's (from `config`, the newest registration of its
+/// unique id first) then its class's (`script_statusbar::knobs`).
+pub fn knobs(class: &str, config: &toml::Table, algorithm: Algorithm) -> Vec<Knob> {
+    if let Some(r) = crate::script_statusbar::registration(class, config) {
+        return crate::script_statusbar::knobs(&r, crate::script_statusbar::class_knobs(class, algorithm));
+    }
     match class {
         SPRING_CLASS => {
             let (label, key, default) = match algorithm {
@@ -475,10 +483,18 @@ pub fn knobs(class: &str, algorithm: Algorithm) -> Vec<Knob> {
 
 /// `info` as the setup window shows it under `algorithm`: the Spring is "Spring" with the
 /// `║〜〜║` exemplar under Tightly Packed, and "Empty Space" with seven spaces under Stable
-/// (`SPR:32-58`). Every other class is the same under either.
-pub fn info_for(class: &str, algorithm: Algorithm) -> Option<Info> {
+/// (`SPR:32-58`). Every other class is the same under either. A script component's
+/// descriptions and exemplar are its registration's (`RPC:259-265`, `RPC:332-335`); it
+/// stretches, and without a registration in `config` it is unknown.
+pub fn info_for(class: &str, config: &toml::Table, algorithm: Algorithm) -> Option<Info> {
+    if class == crate::script_statusbar::TEXT_CLASS || class == crate::script_statusbar::HTML_CLASS {
+        let r = crate::script_statusbar::registration(class, config)?;
+        let (short, detail, exemplar) = crate::script_statusbar::descriptions(&r);
+        let class = if class == crate::script_statusbar::HTML_CLASS { crate::script_statusbar::HTML_CLASS } else { crate::script_statusbar::TEXT_CLASS };
+        return Some(Info { class, short: short.into(), detail: detail.into(), exemplar: exemplar.into(), stretch: true, margins: true, internal: false });
+    }
     let i = info(class)?;
-    Some(if class == SPRING_CLASS && algorithm == Algorithm::Stable { Info { short: "Empty Space", detail: "Empty space that draws only a background color.", exemplar: "       ", ..i } } else { i })
+    Some(if class == SPRING_CLASS && algorithm == Algorithm::Stable { Info { short: "Empty Space".into(), detail: "Empty space that draws only a background color.".into(), exemplar: "       ".into(), ..i } } else { i })
 }
 
 /// The setup window's component menu, in iTerm2's order (`SETUP:107-134`): the four graph
@@ -514,7 +530,11 @@ pub const PALETTE: [&str; 21] = [
 pub const ADVANCED_COPY_KEY: &str = "layout advanced configuration dictionary value";
 
 /// `statusBarComponentDefaultKnobs`: what a component dropped from the palette starts with.
-pub fn default_knobs(class: &str) -> toml::Table {
+/// A script component's factory gives only its registration's defaults (`RPC:104-113`).
+pub fn default_knobs(class: &str, config: &toml::Table) -> toml::Table {
+    if let Some(r) = crate::script_statusbar::registration(class, config) {
+        return crate::script_statusbar::default_knobs(&r);
+    }
     let mut t = toml::Table::new();
     t.insert(BASE_COMPRESSION_RESISTANCE_KEY.into(), Value::Float(1.0));
     t.insert(BASE_PRIORITY_KEY.into(), Value::Float(5.0));
@@ -541,17 +561,19 @@ pub fn default_knobs(class: &str) -> toml::Table {
 /// it knows `class`, else this module's own static one under `algorithm` (the Spring,
 /// whose exemplar and name both switch with it, `info_for`; the Fixed-size Spacer, the
 /// Placeholder, or a class from a later milestone, none of which need live data).
-pub fn exemplar(class: &str, knobs: &toml::Table, clock_text: &str, user: &str, home: &str, algorithm: Algorithm) -> String {
-    crate::statusbar_components::exemplar(class, knobs, clock_text, user, home).unwrap_or_else(|| info_for(class, algorithm).map_or_else(String::new, |i| i.exemplar.to_string()))
+pub fn exemplar(class: &str, config: &toml::Table, knobs: &toml::Table, clock_text: &str, user: &str, home: &str, algorithm: Algorithm) -> String {
+    crate::statusbar_components::exemplar(class, knobs, clock_text, user, home).unwrap_or_else(|| info_for(class, config, algorithm).map_or_else(String::new, |i| i.exemplar.into_owned()))
 }
 
-/// A drop from the palette (`DCV:320-360`): a new component of `class` with its default
-/// knobs goes before `index` (clamped to the end). Returns where it went.
-pub fn insert_component(layout: &mut Layout, index: usize, class: &str) -> usize {
-    let mut config = toml::Table::new();
+/// A drop from the palette (`DCV:320-360`): a new component of `class` with `config` (a
+/// script component's `script_statusbar::config_for`, else empty) and its default knobs goes
+/// before `index` (clamped to the end). Returns where it went.
+pub fn insert_component(layout: &mut Layout, index: usize, class: &str, config: toml::Table) -> usize {
+    let mut config = config;
+    let knobs = default_knobs(class, &config);
     config.insert(ADVANCED_COPY_KEY.into(), Value::Table(layout.advanced.to_table()));
     let at = index.min(layout.components.len());
-    layout.components.insert(at, Component { class: class.to_string(), knobs: default_knobs(class), config });
+    layout.components.insert(at, Component { class: class.to_string(), knobs, config });
     at
 }
 
@@ -574,7 +596,7 @@ pub fn move_component(layout: &mut Layout, from: usize, to: usize) -> usize {
 /// class's knobs under `algorithm`, at its saved value or else its default; a knob with
 /// neither is left out, and so is any key no knob shows.
 pub fn knob_values(c: &Component, algorithm: Algorithm) -> toml::Table {
-    knobs(&c.class, algorithm).into_iter().filter_map(|k| c.knobs.get(&k.key).cloned().or(k.default).map(|v| (k.key, v))).collect()
+    knobs(&c.class, &c.config, algorithm).into_iter().filter_map(|k| c.knobs.get(&k.key).cloned().or(k.default).map(|v| (k.key, v))).collect()
 }
 
 /// Two knob values equal within iTerm2's 0.0001 (`isApproximatelyEqualToObject:epsilon:`,
@@ -812,11 +834,11 @@ mod tests {
         assert_eq!(reg.len(), 25);
 
         let spring = info(SPRING_CLASS).unwrap();
-        assert_eq!((spring.short, spring.exemplar, spring.stretch, spring.margins, spring.internal), ("Spring", "║〜〜║", true, false, false));
+        assert_eq!((&*spring.short, &*spring.exemplar, spring.stretch, spring.margins, spring.internal), ("Spring", "║〜〜║", true, false, false));
 
         let spacer = info(SPACER_CLASS).unwrap();
         assert_eq!(
-            (spacer.short, spacer.detail, spacer.exemplar, spacer.stretch, spacer.margins, spacer.internal),
+            (&*spacer.short, &*spacer.detail, &*spacer.exemplar, spacer.stretch, spacer.margins, spacer.internal),
             ("Fixed-size Spacer", "Adds a fixed amount of space", "╠══╣", false, true, false)
         );
 
@@ -827,25 +849,25 @@ mod tests {
 
         // Spring's own knob switches label, key and descriptor default with the
         // algorithm; no Priority knob (unlike every other component).
-        let tight = knobs(SPRING_CLASS, Algorithm::TightlyPacked);
+        let tight = knobs(SPRING_CLASS, &toml::Table::new(), Algorithm::TightlyPacked);
         assert_eq!(tight.len(), 2);
         assert_eq!((tight[0].label.as_str(), tight[0].key.as_str(), tight[0].default.as_ref().and_then(Value::as_float)), ("Compression Resistance:", SPRING_CONSTANT_KEY, Some(0.01)));
         assert_eq!((tight[1].label.as_str(), tight[1].kind, tight[1].key.as_str()), ("Color", KnobKind::Color, SHARED_BACKGROUND_COLOR_KEY));
         assert_eq!(tight[1].placeholder, None);
-        let stable = knobs(SPRING_CLASS, Algorithm::Stable);
+        let stable = knobs(SPRING_CLASS, &toml::Table::new(), Algorithm::Stable);
         assert_eq!((stable[0].label.as_str(), stable[0].key.as_str(), stable[0].default.as_ref().and_then(Value::as_float)), ("Size Multiple:", SIZE_MULTIPLE_KEY, Some(1.0)));
 
         // Fixed spacer: Color, Width, then the inherited Priority (no compression knob:
         // it cannot stretch).
-        let spacer_knobs = knobs(SPACER_CLASS, Algorithm::Stable);
+        let spacer_knobs = knobs(SPACER_CLASS, &toml::Table::new(), Algorithm::Stable);
         assert_eq!(spacer_knobs.iter().map(|k| k.label.as_str()).collect::<Vec<_>>(), vec!["Color", "Width", "Priority:"]);
         assert_eq!(spacer_knobs[1].key, SPACER_WIDTH_KEY);
         assert_eq!(spacer_knobs[1].default.as_ref().and_then(Value::as_float), Some(5.0));
         assert_eq!(spacer_knobs[2].default.as_ref().and_then(Value::as_float), Some(5.0));
 
         // Internal (Placeholder) and unknown classes have no Configure sheet.
-        assert!(knobs(PLACEHOLDER_CLASS, Algorithm::Stable).is_empty());
-        assert!(knobs("iTermStatusBarNoSuchComponent", Algorithm::Stable).is_empty());
+        assert!(knobs(PLACEHOLDER_CLASS, &toml::Table::new(), Algorithm::Stable).is_empty());
+        assert!(knobs("iTermStatusBarNoSuchComponent", &toml::Table::new(), Algorithm::Stable).is_empty());
     }
 
     #[test]
@@ -871,16 +893,17 @@ mod tests {
 
     #[test]
     fn info_for_follows_the_algorithm() {
-        let tight = info_for(SPRING_CLASS, Algorithm::TightlyPacked).unwrap();
-        assert_eq!((tight.short, tight.exemplar), ("Spring", "║〜〜║"));
+        let none = toml::Table::new();
+        let tight = info_for(SPRING_CLASS, &none, Algorithm::TightlyPacked).unwrap();
+        assert_eq!((&*tight.short, &*tight.exemplar), ("Spring", "║〜〜║"));
         assert!(tight.detail.starts_with("Pushes items apart."));
-        let stable = info_for(SPRING_CLASS, Algorithm::Stable).unwrap();
-        assert_eq!((stable.short, stable.exemplar, stable.detail), ("Empty Space", "       ", "Empty space that draws only a background color."));
+        let stable = info_for(SPRING_CLASS, &none, Algorithm::Stable).unwrap();
+        assert_eq!((&*stable.short, &*stable.exemplar, &*stable.detail), ("Empty Space", "       ", "Empty space that draws only a background color."));
         assert_eq!(stable.exemplar.chars().count(), 7);
         // Everything else is the same under either algorithm.
-        assert_eq!(info_for(SPACER_CLASS, Algorithm::Stable), info(SPACER_CLASS));
-        assert_eq!(info_for(SPACER_CLASS, Algorithm::TightlyPacked), info(SPACER_CLASS));
-        assert_eq!(info_for("iTermStatusBarNoSuchComponent", Algorithm::Stable), None);
+        assert_eq!(info_for(SPACER_CLASS, &none, Algorithm::Stable), info(SPACER_CLASS));
+        assert_eq!(info_for(SPACER_CLASS, &none, Algorithm::TightlyPacked), info(SPACER_CLASS));
+        assert_eq!(info_for("iTermStatusBarNoSuchComponent", &none, Algorithm::Stable), None);
         // The palette: iTerm2's order, no internal class; the Fixed-size Spacer and Spring
         // (numbers 18 and 19 in iTerm2's own list) sit between Composer and Interpolated
         // String, where the content classes leave a gap for them (`content_registry_
@@ -899,13 +922,13 @@ mod tests {
         let none = toml::Table::new();
         // The Spring's own exemplar switches with the algorithm (`info_for`), unlike a
         // content class's, which `exemplar` resolves before ever falling back to it.
-        assert_eq!(exemplar(SPRING_CLASS, &none, "", "", "", Algorithm::TightlyPacked), "║〜〜║");
-        assert_eq!(exemplar(SPRING_CLASS, &none, "", "", "", Algorithm::Stable), "       ");
+        assert_eq!(exemplar(SPRING_CLASS, &none, &none, "", "", "", Algorithm::TightlyPacked), "║〜〜║");
+        assert_eq!(exemplar(SPRING_CLASS, &none, &none, "", "", "", Algorithm::Stable), "       ");
         // A content class: the fallback is never reached, so the algorithm makes no
         // difference to its own exemplar.
         let user_name = crate::statusbar_components::USER_NAME_CLASS;
-        assert_eq!(exemplar(user_name, &none, "", "bob", "/home/bob", Algorithm::TightlyPacked), "bob");
-        assert_eq!(exemplar(user_name, &none, "", "bob", "/home/bob", Algorithm::Stable), "bob");
+        assert_eq!(exemplar(user_name, &none, &none, "", "bob", "/home/bob", Algorithm::TightlyPacked), "bob");
+        assert_eq!(exemplar(user_name, &none, &none, "", "bob", "/home/bob", Algorithm::Stable), "bob");
     }
 
     #[test]
@@ -914,20 +937,20 @@ mod tests {
         // (`statusBarComponentDefaultKnobs`) and an advanced-configuration copy.
         let mut l = Layout::default();
         l.advanced.algorithm = Algorithm::TightlyPacked;
-        assert_eq!(insert_component(&mut l, 0, SPACER_CLASS), 0);
+        assert_eq!(insert_component(&mut l, 0, SPACER_CLASS, toml::Table::new()), 0);
         let spacer = &l.components[0];
         assert_eq!(spacer.class, SPACER_CLASS);
         assert_eq!(spacer.knobs, table(&[(BASE_COMPRESSION_RESISTANCE_KEY, Value::Float(1.0)), (BASE_PRIORITY_KEY, Value::Float(5.0)), (SPACER_WIDTH_KEY, Value::Float(5.0))]));
         let injected = spacer.config.get(ADVANCED_COPY_KEY).and_then(Value::as_table).unwrap();
         assert_eq!(injected.get("algorithm"), Some(&Value::Integer(1)));
         // Drop before the spacer.
-        assert_eq!(insert_component(&mut l, 0, SPRING_CLASS), 0);
+        assert_eq!(insert_component(&mut l, 0, SPRING_CLASS, toml::Table::new()), 0);
         assert_eq!(
             l.components[0].knobs,
             table(&[(BASE_COMPRESSION_RESISTANCE_KEY, Value::Float(1.0)), (BASE_PRIORITY_KEY, Value::Float(5.0)), (SPRING_CONSTANT_KEY, Value::Float(0.01)), (SIZE_MULTIPLE_KEY, Value::Float(1.0))])
         );
         // Past the end goes last.
-        assert_eq!(insert_component(&mut l, 99, SPACER_CLASS), 2);
+        assert_eq!(insert_component(&mut l, 99, SPACER_CLASS, toml::Table::new()), 2);
         let classes = |l: &Layout| l.components.iter().map(|c| c.class.clone()).collect::<Vec<String>>();
         assert_eq!(classes(&l), vec![SPRING_CLASS, SPACER_CLASS, SPACER_CLASS]);
 

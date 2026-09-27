@@ -571,8 +571,12 @@ pub const RESULT_HEADING: &str = "Function Call Result";
 /// The body of Open Quickly's result alert (`OQW:495`): the value as NSObject's
 /// `description` prints it (a top-level null is nil, "(null)", `H:3481`).
 pub fn result_text(invocation: &str, v: &Value) -> String {
-    let value = if v.is_null() { "(null)".to_string() } else { description(v, 0, true) };
-    format!("{invocation} returned:\n{value}")
+    format!("{invocation} returned:\n{}", description_text(v))
+}
+
+/// A value as `%@` prints it (NSObject's `description`; nil "(null)").
+pub fn description_text(v: &Value) -> String {
+    if v.is_null() { "(null)".to_string() } else { description(v, 0, true) }
 }
 
 /// Foundation's `description` of a decoded JSON value: a string itself (quoted inside a

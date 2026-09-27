@@ -36,6 +36,27 @@ const ICON_PT: f32 = 17.0;
 /// The status bar font's size when neither the layout nor the component sets one
 /// (`[NSFont systemFontOfSize:12]`).
 const DEFAULT_FONT_PT: f32 = 12.0;
+/// The unread count badge (`iTermUnreadCountView.m`): 11 point white text on a red rounded
+/// box (sRGB 0.976, 0.243, 0.223 at 0.92) two points taller and wider than the text, at
+/// least as wide as tall, reaching two points past the component's right edge
+/// (`CV:265-269`), in points.
+const BADGE_FONT_PT: f32 = 11.0;
+const BADGE_H_PT: f32 = 16.0;
+const BADGE_PAD_PT: f32 = 6.0;
+const BADGE_OUT_PT: f32 = 2.0;
+const BADGE_ALPHA: f32 = 0.92;
+const BADGE_COLOR: Rgb = crate::palette::rgb(249, 62, 57);
+
+/// Where an unread count badge goes, in window pixels, for a component whose right edge is
+/// `right_pt` points into `bar` and a count `text_pt` points wide (`iTermUnreadCountView.m`,
+/// `CV:265-269`): centered on the bar, reaching `BADGE_OUT_PT` past the edge.
+fn badge_rect(bar: Rect, right_pt: f32, text_pt: f32, scale: f32) -> Rect {
+    let h_pt = BADGE_H_PT.min(bar.h / scale - 2.0).max(1.0);
+    let w_pt = (text_pt + BADGE_PAD_PT).max(h_pt);
+    let right = bar.x + ((right_pt + BADGE_OUT_PT) * scale).round();
+    let (w, h) = ((w_pt * scale).round(), (h_pt * scale).round());
+    Rect { x: right - w, y: bar.y + ((bar.h - h) / 2.0).round(), w, h }
+}
 
 /// What one on-screen component is and does. The framework's own pieces, and the content
 /// components (`statusbar_content`), whose `Content` says what they show and do now.
@@ -50,6 +71,9 @@ pub(super) enum Piece {
     Placeholder,
     /// A content component (milestone 9h).
     Content(Kind),
+    /// A script's status bar component (`iTermStatusBarRPCProvidedTextComponent`, plain text
+    /// or HTML): a text component whose content its script computes.
+    Script,
 }
 
 /// What a left click on a component does.
@@ -72,6 +96,10 @@ pub(super) enum Click {
     /// Call Script Function (`FN:170-194`): invokes the function call in the bar's session
     /// with the timeout, side effects on; an error is reported with the label as origin.
     Invoke { invocation: String, timeout: f64, label: String },
+    /// A failed script component (`RPC:533-555`): its error text in an alert.
+    ScriptError(String),
+    /// A script component (`RPC:557-571`): its script's click handler, by unique id.
+    ScriptClick(String),
 }
 
 /// The placeholder's content: its one text, and a click that opens the settings.
@@ -87,6 +115,7 @@ impl Piece {
         match class {
             SPRING_CLASS => Some(Piece::Spring),
             SPACER_CLASS => Some(Piece::Spacer),
+            crate::script_statusbar::TEXT_CLASS | crate::script_statusbar::HTML_CLASS => Some(Piece::Script),
             _ => match Kind::of(class)? {
                 k @ (Kind::Clock
                 | Kind::HostName
@@ -137,8 +166,9 @@ impl Piece {
                 let w = c.spacer_width() as f32;
                 Item { min: w.max(knob_min), preferred: w, kind: ItemKind::FixedSpacer, ..base }
             }
-            Piece::Placeholder | Piece::Content(_) => {
-                let stretch = statusbar::info_for(&c.class, algorithm).is_none_or(|i| i.stretch);
+            Piece::Placeholder | Piece::Content(_) | Piece::Script => {
+                // A script component stretches (`RPC:337-339`).
+                let stretch = self == Piece::Script || statusbar::info_for(&c.class, &c.config, algorithm).is_none_or(|i| i.stretch);
                 let (own_min, preferred) = match content.fixed {
                     Some(fixed) => fixed,
                     None => {
@@ -199,13 +229,15 @@ struct Shown {
     text_scale: f32,
     /// A `tail` content's first variant cut to its placed room, and its width in points.
     tail: Option<(String, f32)>,
+    /// The unread count badge's text and its text's width in points (a count above 0).
+    badge: Option<(String, f32)>,
 }
 
 impl Shown {
     /// `statusBarComponentCopyableString`: the content's own, else a text component's
     /// widest variant (`TXT`: `longestStringValue`); the framework's pieces have none.
     fn copyable(&self) -> Option<String> {
-        let content = self.content.as_ref().filter(|c| matches!(self.piece, Piece::Content(_)) && !c.uncopyable)?;
+        let content = self.content.as_ref().filter(|c| matches!(self.piece, Piece::Content(_) | Piece::Script) && !c.uncopyable)?;
         content.copy.clone().or_else(|| (!self.widths.is_empty()).then(|| sbt::pick(&self.widths, f32::INFINITY))).filter(|t| !t.is_empty())
     }
 }
@@ -372,6 +404,12 @@ impl App {
         pt * self.scale() / term_px
     }
 
+    /// The unread count badge's text size, as a scale of the terminal font.
+    fn badge_text_scale(&self) -> f32 {
+        let term_px = self.gpu.as_ref().map_or(16.0, |g| g.renderer.font_px()).max(1.0);
+        BADGE_FONT_PT * self.scale() / term_px
+    }
+
     /// Lays out one bar (`VC:156-198`): the layout's components Tandem knows, with the
     /// temporary ones (`VC:248-293`), or the placeholder when there are none, by the
     /// layout's algorithm. Find with no Search Tool in the layout puts a temporary one
@@ -432,19 +470,29 @@ impl App {
                     // The temporary Composer shows the composer's text, a layout's one its own.
                     Piece::Content(Kind::Composer) if index.is_none() => Some(self.composer_field_content(bar.pane, true)),
                     Piece::Content(kind) => Some(self.content(bar.pane, kind, c)),
+                    // A script component with no registration saved is not made (`RPC:172-183`).
+                    Piece::Script => match self.script_content(bar.pane, c) {
+                        Some(content) => Some(content),
+                        None => continue,
+                    },
                     _ => None,
                 };
-                shown.push(Shown { index, temporary: index.is_none(), piece, component: c.clone(), content, widths: Vec::new(), min_text_pt: None, text_scale: self.status_text_scale(&layout, c), tail: None });
+                // The unread count by the component's identifier (`VC:276-285`).
+                let id = crate::script_statusbar::identifier(&c.class, &c.config);
+                let count = crate::script_statusbar::unread(self.unread_counts.get(&id).copied(), self.unread_session_counts.get(&(bar.pane, id)).copied());
+                let badge = (count > 0).then(|| (crate::script_statusbar::count_text(count), 0.0));
+                shown.push(Shown { index, temporary: index.is_none(), piece, component: c.clone(), content, widths: Vec::new(), min_text_pt: None, text_scale: self.status_text_scale(&layout, c), tail: None, badge });
             }
         }
         self.end_script_pass(bar.pane, pass);
         if shown.is_empty() {
             let c = Component { class: PLACEHOLDER_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
             let text_scale = self.status_text_scale(&layout, &c);
-            shown.push(Shown { index: None, temporary: false, piece: Piece::Placeholder, component: c, content: Some(placeholder_content()), widths: Vec::new(), min_text_pt: None, text_scale, tail: None });
+            shown.push(Shown { index: None, temporary: false, piece: Piece::Placeholder, component: c, content: Some(placeholder_content()), widths: Vec::new(), min_text_pt: None, text_scale, tail: None, badge: None });
         }
         let scale = self.scale();
         let cell_w = self.cell().0;
+        let badge_scale = self.badge_text_scale();
         // A text's width in points: `Renderer::text_width` in pixels over the scale, rounded
         // up (no NSTextField padding).
         let mut measure = |t: &str, text_scale: f32| -> f32 {
@@ -456,6 +504,9 @@ impl App {
         };
         let mut items = Vec::with_capacity(shown.len());
         for s in &mut shown {
+            if let Some((text, w)) = s.badge.as_mut() {
+                *w = measure(text, badge_scale);
+            }
             match s.content.as_ref() {
                 // A field's label and text, measured for drawing: the label first; then the
                 // text before its caret, when it draws one.
@@ -544,6 +595,7 @@ impl App {
             // a quarter alpha.
             let separator_color = Some(adv.separator_color.as_ref().and_then(color_of).unwrap_or((scene::STATUS_BAR_TEXT, 0.25)));
             let mut texts = Vec::new();
+            let badge_scale = self.badge_text_scale();
             for (k, pl) in p.placed.iter().enumerate() {
                 let s = &p.shown[pl.index];
                 let Some(content) = &s.content else { continue };
@@ -553,6 +605,19 @@ impl App {
                 };
                 let x = px(pl.x);
                 let clip = Rect { x, y: bar.rect.y, w: (pl.width * scale).round(), h: bar.rect.h };
+                // The unread count badge over the component's right edge; the component's own
+                // text stops at it.
+                let badge_left = s.badge.as_ref().map(|(count, text_pt)| {
+                    let r = badge_rect(bar.rect, pl.x + pl.width, *text_pt, scale);
+                    buttons.push((r, BADGE_COLOR, BADGE_ALPHA, r.h / 2.0));
+                    let tx = r.x + ((r.w - text_pt * scale) / 2.0).round();
+                    texts.push(scene::BarText { x: tx, text: count.clone(), color: crate::palette::rgb(255, 255, 255), scale: badge_scale, clip: r, icon: false, dy: 0.0 });
+                    r.x
+                });
+                let clip = match badge_left {
+                    Some(left) => Rect { w: (left - clip.x).clamp(0.0, clip.w), ..clip },
+                    None => clip,
+                };
                 // A button's face: its room, inset from the bar's edges, and its label 6
                 // points in (`FN`: a borderless rounded button sized to fit).
                 if content.button {
@@ -663,6 +728,8 @@ impl App {
                         let scope = super::script_ui::ScopeSpec::Session { pane: bar.pane, frame: crate::api_vars::Values::new() };
                         self.invoke(&invocation, scope, crate::script_eval::Timeout::from_secs(timeout), true, super::script_ui::Origin::Report(label));
                     }
+                    Click::ScriptError(text) => self.script_component_error(&text),
+                    Click::ScriptClick(id) => self.script_component_click(bar.pane, &id),
                     Click::Field => {
                         let Some((i, pl)) = hit.and_then(|i| p.placed.iter().find(|pl| pl.index == i).map(|pl| (i, *pl))) else { return true };
                         let Piece::Content(kind) = p.shown[i].piece else { return true };
@@ -698,6 +765,50 @@ impl App {
             _ => {}
         }
         self.redraw();
+        true
+    }
+
+    /// Whether the session's status bar has a component with the identifier
+    /// (`componentWithIdentifier:`, `VC:310-314`; `script_statusbar::identifier`).
+    pub(super) fn bar_has_component(&self, pane: PaneId, id: &str) -> bool {
+        self.shows_status_bar(pane) && self.bar_layout(pane).0.components.iter().any(|c| crate::script_statusbar::identifier(&c.class, &c.config) == id)
+    }
+
+    /// Where a component's popover points, in window pixels: the middle of the component's
+    /// top edge on its session's bar in the current tab; None when it is not on screen there.
+    fn component_anchor(&mut self, pane: PaneId, id: &str) -> Option<(f32, f32)> {
+        let tab = self.tabs.get(self.active)?;
+        let bar = self.status_bars(tab).into_iter().find(|b| b.pane == pane)?;
+        let p = self.place_bar(&bar);
+        let pl = p.placed.iter().find(|pl| crate::script_statusbar::identifier(&p.shown[pl.index].component.class, &p.shown[pl.index].component.config) == id)?;
+        Some((bar.rect.x + (pl.x + pl.width / 2.0) * self.scale(), bar.rect.y))
+    }
+
+    /// A StatusBarComponentRequest's popover (`BASE:363-389`): `text` in a content area of
+    /// `size` points above the component (above the middle of the window's top when the
+    /// component is not on screen); it replaces one already open.
+    pub(super) fn open_text_popover(&mut self, pane: PaneId, id: &str, text: &str, size: (f64, f64), event_loop: &ActiveEventLoop) {
+        let anchor = self.component_anchor(pane, id).unwrap_or_else(|| {
+            let a = self.window_area();
+            (a.x + a.w / 2.0, a.y)
+        });
+        let work = self.monitor_rects().map(|(w, _)| w);
+        let Some(g) = self.gpu.as_ref() else { return };
+        let origin = g.window.inner_position().unwrap_or_default();
+        let at = (origin.x as f64 + f64::from(anchor.0), origin.y as f64 + f64::from(anchor.1));
+        self.text_popover = None;
+        match crate::status_popover_ui::TextPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, text, size, at, work) {
+            Ok(w) => self.text_popover = Some(w),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+    }
+
+    /// Events for a StatusBarComponentRequest's popover. False for other windows.
+    pub(super) fn text_popover_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
+        let Some(p) = self.text_popover.as_mut().filter(|p| p.id() == window) else { return false };
+        if !p.event(event) {
+            self.text_popover = None;
+        }
         true
     }
 
@@ -792,10 +903,10 @@ impl App {
         let mut checkboxes = Vec::new();
         if let Some(s) = shown {
             // A temporary component is not the layout's: nothing to configure or hide.
-            if let Some(info) = statusbar::info_for(&s.component.class, algorithm).filter(|i| !i.internal && !s.temporary) {
+            if let Some(info) = statusbar::info_for(&s.component.class, &s.component.config, algorithm).filter(|i| !i.internal && !s.temporary) {
                 // The spring's Stable name is "Empty Space" (`SPR:42-49`).
                 let short = info.short;
-                let knobs = statusbar::knobs(&s.component.class, algorithm);
+                let knobs = statusbar::knobs(&s.component.class, &s.component.config, algorithm);
                 if !knobs.is_empty() {
                     results.push(menu.append(&MenuItem::with_id("statusbar:configure", format!("Configure {short}").replace('&', "&&"), true, None)));
                 }
@@ -1167,6 +1278,16 @@ mod tests {
 
     #[test]
     fn pieces_size_like_iterm2() {
+        assert_eq!(Piece::of(crate::script_statusbar::TEXT_CLASS), Some(Piece::Script));
+        assert_eq!(Piece::of(crate::script_statusbar::HTML_CLASS), Some(Piece::Script));
+        // A script component stretches and sizes by its variants, as a text component.
+        let script = Piece::Script.item(&component(crate::script_statusbar::TEXT_CLASS, &[]), Algorithm::Stable, &Content::text(vec!["12:00".into()]), &widths(&[("12:00", 30.0)]), None);
+        assert_eq!((script.min, script.preferred, script.stretch), (30.0, 30.0, true));
+        // The unread badge: 16 points tall, the text plus 6 but at least as wide as tall,
+        // reaching 2 points past the component's right edge, centered on the bar.
+        let bar = Rect { x: 100.0, y: 0.0, w: 400.0, h: 42.0 };
+        assert_eq!(badge_rect(bar, 50.0, 7.0, 2.0), Rect { x: 172.0, y: 5.0, w: 32.0, h: 32.0 });
+        assert_eq!(badge_rect(bar, 50.0, 30.0, 2.0), Rect { x: 132.0, y: 5.0, w: 72.0, h: 32.0 });
         assert_eq!(Piece::of(SPRING_CLASS), Some(Piece::Spring));
         assert_eq!(Piece::of(SPACER_CLASS), Some(Piece::Spacer));
         assert_eq!(Piece::of("iTermStatusBarClockComponent"), Some(Piece::Content(Kind::Clock)));
@@ -1255,7 +1376,7 @@ mod tests {
         let menu = Content { uncopyable: true, click: Click::Menu(Kind::ActionsMenu), ..Content::text(vec!["Perform Action\u{2026}".into()]) };
         let menu_item = Piece::Content(Kind::ActionsMenu).item(&component(ACTIONS_MENU_CLASS, &[]), Algorithm::Stable, &menu, &widths(&[("Perform Action\u{2026}", 90.0)]), None);
         assert_eq!((menu_item.min, menu_item.preferred, menu_item.stretch), (90.0, 90.0, true));
-        let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::ActionsMenu), component: component(ACTIONS_MENU_CLASS, &[]), content: Some(menu), widths: widths(&[("Perform Action\u{2026}", 90.0)]), min_text_pt: None, text_scale: 1.0, tail: None };
+        let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::ActionsMenu), component: component(ACTIONS_MENU_CLASS, &[]), content: Some(menu), widths: widths(&[("Perform Action\u{2026}", 90.0)]), min_text_pt: None, text_scale: 1.0, tail: None, badge: None };
         assert_eq!(shown.copyable(), None, "no Copy for a menu");
     }
 
@@ -1284,7 +1405,7 @@ mod tests {
                     assert_eq!(placed[0].width, size + ICON_PT, "{class}");
                 }
             }
-            let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(kind), component: c, content: Some(content), widths: Vec::new(), min_text_pt: None, text_scale: 1.0, tail: None };
+            let shown = Shown { index: Some(0), temporary: false, piece: Piece::Content(kind), component: c, content: Some(content), widths: Vec::new(), min_text_pt: None, text_scale: 1.0, tail: None, badge: None };
             assert_eq!(shown.copyable(), None, "{class} has no Copy");
         }
         let no_battery = graph_of(Kind::Battery, &component(BATTERY_CLASS, &[]), &meters, false, None);
@@ -1319,7 +1440,7 @@ mod tests {
         assert_eq!((capped.min, capped.preferred), (20.0, 50.0));
         let floor = sized(&component(GIT_CLASS, &[("minwidth", toml::Value::Integer(120))]), &content, &w, Some(20.0));
         assert_eq!((floor.min, floor.preferred), (120.0, 120.0));
-        let shown = |content: Content, w: Vec<(String, f32)>| Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::Git), component: component(GIT_CLASS, &[]), content: Some(content), widths: w, min_text_pt: None, text_scale: 1.0, tail: None };
+        let shown = |content: Content, w: Vec<(String, f32)>| Shown { index: Some(0), temporary: false, piece: Piece::Content(Kind::Git), component: component(GIT_CLASS, &[]), content: Some(content), widths: w, min_text_pt: None, text_scale: 1.0, tail: None, badge: None };
         assert_eq!(shown(content.clone(), w.clone()).copyable().as_deref(), Some("feature/login"), "Copy is the branch, not the text");
 
         // No branch: empty, nothing to copy, no minimum.

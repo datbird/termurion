@@ -5,7 +5,8 @@
 //! menu and button components: Custom Action, Actions Menu, Snippets Menu, Triggers Menu
 //! (and their menus), Call Script Function (its click invokes the function); the field components: Search Tool, Filter
 //! Tool (both bound to the pane's find bar), the Composer (the pane's composer as a one-line
-//! field), and the paste Progress Indicator.
+//! field), and the paste Progress Indicator; and a script's own components (`script_content`,
+//! their evaluations in `script_ui`, their cadences in `tick_status_bars`).
 //!
 //! Citations use `.superpowers/research/m9-facts.md` section 2's abbreviations (`TXT` =
 //! `iTermStatusBarTextComponent.m`, `VAR` = `iTermStatusBarVariableBaseComponent.m`, `JOB`
@@ -581,6 +582,20 @@ impl App {
         crate::interp::evaluate_lax(expression, &lookup, &[], self.globals.bool("laxNilPolicyInInterpolatedStrings"))
     }
 
+    /// A script component's content (`RPC:341-349`): its variants ("" before the first
+    /// evaluation), an HTML component's as their text (`RPC:811-822`; Decision: text, not
+    /// attributed HTML); a click shows the error, else runs the script's click handler. None
+    /// when its configuration holds no registration.
+    pub(super) fn script_content(&mut self, pane: PaneId, c: &Component) -> Option<Content> {
+        let (id, state) = self.script_component(pane, c)?;
+        let variants = if c.class == crate::script_statusbar::HTML_CLASS { state.variants.iter().map(|v| crate::script_statusbar::html_text(v)).collect() } else { state.variants };
+        let click = match state.error {
+            Some(text) => Click::ScriptError(text),
+            None => Click::ScriptClick(id),
+        };
+        Some(Content { click, ..Content::text(variants) })
+    }
+
     /// How many triggers the session's profile has (`PS:23168-23170`).
     fn session_trigger_count(&self, pane: PaneId) -> usize {
         self.profile_of(pane).and_then(|p| p.get("Triggers")).and_then(|v| v.as_array().map(Vec::len)).unwrap_or(0)
@@ -774,13 +789,15 @@ impl App {
         }
     }
 
-    /// The status bars' clocks: the Clock's, the graphs' (`tick_meters`) and the git
-    /// pollers' (`tick_git`, which also drains the git worker's answers). When to come back.
+    /// The status bars' clocks: the Clock's, the graphs' (`tick_meters`), the git
+    /// pollers' (`tick_git`, which also drains the git worker's answers) and the script
+    /// components' cadences (`tick_script_components`). When to come back.
     pub(super) fn tick_status_bars(&mut self) -> Option<Instant> {
         let now = Instant::now();
         let meters = self.tick_meters(now);
         let git = self.tick_git(now);
-        [self.tick_clock(now), meters, git].into_iter().flatten().min()
+        let scripts = self.tick_script_components(now);
+        [self.tick_clock(now), meters, git, scripts].into_iter().flatten().min()
     }
 
     /// The Clock's cadence (`CLK`, 1 s): while a bar on screen shows a Clock, every window
@@ -1022,7 +1039,7 @@ mod tests {
         assert_eq!(content.fixed, Some((200.0, f32::INFINITY)));
         assert_eq!(content.click, Click::Field);
         assert!(!content.empty && content.uncopyable);
-        assert!(!crate::statusbar::info_for(sbc::COMPOSER_CLASS, crate::statusbar::Algorithm::Stable).unwrap().stretch, "cannot stretch");
+        assert!(!crate::statusbar::info_for(sbc::COMPOSER_CLASS, &toml::Table::new(), crate::statusbar::Algorithm::Stable).unwrap().stretch, "cannot stretch");
         assert_eq!(EXPAND_GLYPH, '\u{E740}');
         let idle = composer_content("", false, None);
         assert!(matches!(idle.widget, Some(Widget::Field { focused: false, caret: None, .. })));
