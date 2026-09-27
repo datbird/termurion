@@ -69,7 +69,8 @@ pub(crate) const TOO_MANY: &str = "Too many Python API connections";
 /// request the protocol has.
 pub(crate) const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
-/// Bytes queued for one client past which it is cut off, and tungstenite's write buffer cap.
+/// Bytes queued for one client past which it is cut off, and separately tungstenite's write
+/// buffer cap: at most 32 MiB queue plus tungstenite's 32 MiB buffer per client.
 pub(crate) const OUTBOUND_LIMIT: usize = 2 * MAX_MESSAGE;
 
 /// How often an accept loop polls its listener.
@@ -97,14 +98,79 @@ struct Shared {
     next_conn: AtomicU64,
     conns: Mutex<HashMap<u64, Control>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
-    /// Live connection threads and those among them not yet authorized.
-    live: AtomicUsize,
-    unauthorized: AtomicUsize,
-    /// Connection threads ever started (tests).
+    /// Live connection threads and those among them not yet authorized, checked and raised in
+    /// one step by either accept thread.
+    counts: Mutex<Counts>,
+    /// Connection threads ever started (tests): never lowered, it proves a refusal made none.
     spawned: AtomicUsize,
     peer: PeerCheck,
     cookie: CookieCheck,
     wake: Notify,
+}
+
+#[derive(Default)]
+struct Counts {
+    live: usize,
+    unauthorized: usize,
+    /// The highest of each ever reached (tests).
+    peak: (usize, usize),
+}
+
+impl Shared {
+    /// Takes a live, unauthorized place if both caps allow, in one step.
+    fn reserve(&self) -> bool {
+        let mut c = self.counts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if c.live >= MAX_CONNECTIONS || c.unauthorized >= MAX_UNAUTHORIZED {
+            return false;
+        }
+        c.live += 1;
+        c.unauthorized += 1;
+        c.peak = (c.peak.0.max(c.live), c.peak.1.max(c.unauthorized));
+        true
+    }
+
+    /// Gives back a place; `authorized` places were already off the unauthorized count.
+    fn release(&self, authorized: bool) {
+        let mut c = self.counts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        c.live -= 1;
+        if !authorized {
+            c.unauthorized -= 1;
+        }
+    }
+}
+
+/// A connection's place in the caps and the table and its reader, given back on every exit of
+/// its thread, a panic included.
+struct Slot {
+    shared: Arc<Shared>,
+    conn: u64,
+    mailbox: Arc<Mailbox>,
+    /// A handle on the socket, to end the reader's reads.
+    stream: TcpStream,
+    reader: Option<JoinHandle<()>>,
+    authorized: bool,
+}
+
+impl Slot {
+    /// The verdict allowed it: off the unauthorized count.
+    fn authorize(&mut self) {
+        if !self.authorized {
+            self.authorized = true;
+            self.shared.counts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).unauthorized -= 1;
+        }
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.mailbox.update(|m| m.done = true);
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        if let Some(r) = self.reader.take() {
+            let _ = r.join();
+        }
+        self.shared.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.conn);
+        self.shared.release(self.authorized);
+    }
 }
 
 /// The UI thread's handles on one connection.
@@ -114,12 +180,17 @@ struct Control {
     stream: TcpStream,
 }
 
-/// What a connection thread waits on: its reader's chunks, the UI's frames and verdict, and the
-/// stop. One condition variable wakes the connection thread and its reader alike.
+/// What a connection thread waits on (its reader's chunks, the UI's frames and verdict, the
+/// stop) and what its reader waits on (room in the queue, its handed-over room to write being
+/// used, the end). Each side has its own condition variable and is woken only when the other
+/// changed something it looks at, so two waiting sides never wake each other in a loop.
 #[derive(Default)]
 struct Mailbox {
     mail: Mutex<Mail>,
-    ready: Condvar,
+    to_conn: Condvar,
+    to_reader: Condvar,
+    /// Times a wait woke (tests).
+    wakeups: AtomicUsize,
 }
 
 #[derive(Default)]
@@ -147,33 +218,55 @@ enum Out {
     Close,
 }
 
+impl Mail {
+    /// What either side's waits look at; a change wakes the other side.
+    fn view(&self) -> (usize, bool, bool, bool, bool) {
+        (self.inbound.len(), self.eof, self.writable, self.want_write, self.done)
+    }
+}
+
 impl Mailbox {
-    /// Waits until `f` yields, `until` passes (None) or forever; wakes everyone after each look,
-    /// since `f` may have made room for the reader.
-    fn wait<T>(&self, until: Option<Instant>, mut f: impl FnMut(&mut Mail) -> Option<T>) -> Option<T> {
+    /// The connection thread waits until `f` yields, `until` passes (None) or forever.
+    fn wait_conn<T>(&self, until: Option<Instant>, f: impl FnMut(&mut Mail) -> Option<T>) -> Option<T> {
+        self.wait(&self.to_conn, &self.to_reader, until, f)
+    }
+
+    /// The reader waits until `f` yields.
+    fn wait_reader<T>(&self, f: impl FnMut(&mut Mail) -> Option<T>) -> Option<T> {
+        self.wait(&self.to_reader, &self.to_conn, None, f)
+    }
+
+    /// Waits on `mine`, waking `theirs` only when `f` changed what the other side looks at.
+    fn wait<T>(&self, mine: &Condvar, theirs: &Condvar, until: Option<Instant>, mut f: impl FnMut(&mut Mail) -> Option<T>) -> Option<T> {
         let mut m = self.mail.lock().unwrap();
         loop {
+            let before = m.view();
             let got = f(&mut m);
-            self.ready.notify_all();
+            if m.view() != before {
+                theirs.notify_all();
+            }
             if got.is_some() {
                 return got;
             }
             m = match until {
-                None => self.ready.wait(m).unwrap(),
+                None => mine.wait(m).unwrap(),
                 Some(t) => {
                     let now = Instant::now();
                     if now >= t {
                         return None;
                     }
-                    self.ready.wait_timeout(m, t - now).unwrap().0
+                    mine.wait_timeout(m, t - now).unwrap().0
                 }
             };
+            self.wakeups.fetch_add(1, Ordering::Relaxed);
         }
     }
 
+    /// Changes the mail and wakes both sides.
     fn update(&self, f: impl FnOnce(&mut Mail)) {
-        f(&mut self.mail.lock().unwrap());
-        self.ready.notify_all();
+        f(&mut self.mail.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        self.to_conn.notify_all();
+        self.to_reader.notify_all();
     }
 }
 
@@ -258,7 +351,7 @@ impl Server {
             m.outbound_bytes += bytes.len();
             m.outbound.push_back(Out::Frame(bytes));
         }
-        c.mailbox.ready.notify_all();
+        c.mailbox.to_conn.notify_all();
     }
 
     /// Closes a connection with a close frame.
@@ -278,12 +371,29 @@ impl Server {
     /// Live connection threads and those not yet authorized.
     #[cfg(test)]
     fn counts(&self) -> (usize, usize) {
-        (self.shared.live.load(Ordering::SeqCst), self.shared.unauthorized.load(Ordering::SeqCst))
+        let c = self.shared.counts.lock().unwrap();
+        (c.live, c.unauthorized)
     }
 
     #[cfg(test)]
     fn spawned(&self) -> usize {
         self.shared.spawned.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn peak(&self) -> (usize, usize) {
+        self.shared.counts.lock().unwrap().peak
+    }
+
+    #[cfg(test)]
+    fn conns_len(&self) -> usize {
+        self.shared.conns.lock().unwrap().len()
+    }
+
+    /// Wake-ups of every live connection's waits so far.
+    #[cfg(test)]
+    fn wakeups(&self) -> usize {
+        self.shared.conns.lock().unwrap().values().map(|c| c.mailbox.wakeups.load(Ordering::Relaxed)).sum()
     }
 }
 
@@ -300,8 +410,7 @@ fn serve_on(listeners: Vec<TcpListener>, peer: PeerCheck, cookie: CookieCheck, w
         next_conn: AtomicU64::new(1),
         conns: Mutex::new(HashMap::new()),
         threads: Mutex::new(Vec::new()),
-        live: AtomicUsize::new(0),
-        unauthorized: AtomicUsize::new(0),
+        counts: Mutex::new(Counts::default()),
         spawned: AtomicUsize::new(0),
         peer,
         cookie,
@@ -425,47 +534,48 @@ fn admit(stream: TcpStream, peer: SocketAddr, shared: &Arc<Shared>, tx: &SyncSen
             return;
         }
     };
-    if shared.live.load(Ordering::SeqCst) >= MAX_CONNECTIONS || shared.unauthorized.load(Ordering::SeqCst) >= MAX_UNAUTHORIZED {
+    if !shared.reserve() {
         refuse_now(stream, 503);
         post_now(shared, tx, Event::Rejected { key: None, reason: TOO_MANY.to_string() });
         return;
     }
     // An accepted socket inherits the listener's non-blocking mode.
-    if stream.set_nonblocking(false).is_err() {
-        return;
-    }
     let _ = stream.set_nodelay(true);
-    let (Ok(handle), Ok(reader_stream)) = (stream.try_clone(), stream.try_clone()) else {
+    let (Ok(()), Ok(handle), Ok(slot_stream), Ok(reader_stream)) = (stream.set_nonblocking(false), stream.try_clone(), stream.try_clone(), stream.try_clone()) else {
+        shared.release(false);
         return;
     };
     let conn = shared.next_conn.fetch_add(1, Ordering::SeqCst);
     let mailbox = Arc::new(Mailbox::default());
     shared.conns.lock().unwrap().insert(conn, Control { mailbox: mailbox.clone(), stream: handle });
-    // Only the accept thread raises the counts, so these checks and increments do not race.
-    shared.live.fetch_add(1, Ordering::SeqCst);
-    shared.unauthorized.fetch_add(1, Ordering::SeqCst);
+    // From here the slot gives everything back, whatever happens to the thread (and if the
+    // thread cannot start, the closure drops it at once).
+    let slot = Slot { shared: shared.clone(), conn, mailbox: mailbox.clone(), stream: slot_stream, reader: None, authorized: false };
     shared.spawned.fetch_add(1, Ordering::SeqCst);
     let (thread_shared, tx) = (shared.clone(), tx.clone());
-    let h = std::thread::spawn(move || {
+    let spawned = std::thread::Builder::new().spawn(move || {
+        let mut slot = slot;
         let reader_box = mailbox.clone();
-        let reader = std::thread::spawn(move || read_into(reader_stream, &reader_box));
-        let mut c = Connection { conn, shared: thread_shared, tx, mailbox, authorized: false };
-        let last = c.serve(&stream, peer_pid);
-        c.mailbox.update(|m| m.done = true);
-        let _ = stream.shutdown(std::net::Shutdown::Both);
-        let _ = reader.join();
-        c.shared.conns.lock().unwrap().remove(&conn);
-        if !c.authorized {
-            c.shared.unauthorized.fetch_sub(1, Ordering::SeqCst);
+        slot.reader = std::thread::Builder::new().spawn(move || read_into(reader_stream, &reader_box)).ok();
+        if slot.reader.is_none() {
+            return;
         }
-        c.shared.live.fetch_sub(1, Ordering::SeqCst);
-        if let Some(e) = last {
-            c.event(e);
+        let mut c = Connection { conn, shared: thread_shared, tx, mailbox, slot };
+        let last = c.serve(&stream, peer_pid);
+        let Connection { slot, shared, tx, .. } = c;
+        // The counts are settled before the last event is seen.
+        drop(slot);
+        if let Some(e) = last
+            && tx.send(e).is_ok()
+        {
+            (shared.wake)();
         }
     });
-    let mut threads = shared.threads.lock().unwrap();
-    threads.retain(|t| !t.is_finished());
-    threads.push(h);
+    if let Ok(h) = spawned {
+        let mut threads = shared.threads.lock().unwrap();
+        threads.retain(|t| !t.is_finished());
+        threads.push(h);
+    }
 }
 
 /// A connection's reader, as iTerm2's (`W:231-256`): blocking reads with no timeout, queued for
@@ -487,7 +597,7 @@ fn read_into(mut stream: TcpStream, mailbox: &Mailbox) {
         if write {
             // Hand the room over, then wait until the connection thread has used it.
             mailbox.update(|m| m.writable = true);
-            let done = mailbox.wait(None, |m| {
+            let done = mailbox.wait_reader(|m| {
                 if !m.want_write {
                     // Flushed meanwhile: nobody will take the room.
                     m.writable = false;
@@ -514,7 +624,7 @@ fn read_into(mut stream: TcpStream, mailbox: &Mailbox) {
             return;
         }
         let chunk = buf[..n].to_vec();
-        let queued = mailbox.wait(None, |m| {
+        let queued = mailbox.wait_reader(|m| {
             if m.done {
                 Some(false)
             } else if m.inbound.len() < INBOUND_CHUNKS {
@@ -552,7 +662,7 @@ struct Connection {
     shared: Arc<Shared>,
     tx: SyncSender<Event>,
     mailbox: Arc<Mailbox>,
-    authorized: bool,
+    slot: Slot,
 }
 
 impl Connection {
@@ -593,13 +703,12 @@ impl Connection {
             self.refuse(stream, 401);
             return None;
         }
-        let allowed = self.mailbox.wait(None, |m| m.verdict.or(m.stop.then_some(false))).unwrap_or(false);
+        let allowed = self.mailbox.wait_conn(None, |m| m.verdict.or(m.stop.then_some(false))).unwrap_or(false);
         if !allowed {
             self.refuse(stream, 401);
             return None;
         }
-        self.authorized = true;
-        self.shared.unauthorized.fetch_sub(1, Ordering::SeqCst);
+        self.slot.authorize();
         let mut writer = stream;
         if writer.write_all(api_http::accept_response(&ws_key, ws_version).as_bytes()).is_err() {
             return Some(Event::Closed { conn: self.conn });
@@ -628,17 +737,21 @@ impl Connection {
         let deadline = Instant::now() + api_http::REQUEST_DEADLINE;
         let mut buf = Vec::new();
         loop {
-            let (chunks, eof, stop) = self.mailbox.wait(Some(deadline), |m| {
+            let (chunks, eof, stop) = self.mailbox.wait_conn(Some(deadline), |m| {
                 (!m.inbound.is_empty() || m.eof || m.stop).then(|| (std::mem::take(&mut m.inbound), m.eof, m.stop))
             })?;
-            for chunk in chunks {
+            let mut chunks = chunks.into_iter();
+            while let Some(chunk) = chunks.next() {
                 let from = buf.len().saturating_sub(3);
                 buf.extend_from_slice(&chunk);
                 if let Some(end) = api_http::head_end(&buf[from..]).map(|e| from + e) {
                     if end > api_http::MAX_REQUEST {
                         return None;
                     }
-                    let tail = buf.split_off(end);
+                    // Bytes pipelined behind the head, in this chunk and any later one, are the
+                    // WebSocket's.
+                    let mut tail = buf.split_off(end);
+                    chunks.for_each(|c| tail.extend_from_slice(&c));
                     return Some((buf, tail));
                 }
                 if buf.len() >= api_http::MAX_REQUEST {
@@ -659,7 +772,7 @@ impl Connection {
             return;
         }
         let _ = stream.shutdown(std::net::Shutdown::Write);
-        self.mailbox.wait(Some(Instant::now() + LINGER), |m| {
+        self.mailbox.wait_conn(Some(Instant::now() + LINGER), |m| {
             m.inbound.clear();
             (m.eof || m.stop).then_some(())
         });
@@ -674,7 +787,7 @@ impl Connection {
         let would_block = |e: &tungstenite::Error| matches!(e, tungstenite::Error::Io(e) if e.kind() == std::io::ErrorKind::WouldBlock);
         let mut closing = false;
         loop {
-            let got = self.mailbox.wait(None, |m| {
+            let got = self.mailbox.wait_conn(None, |m| {
                 let any = !m.inbound.is_empty() || !m.outbound.is_empty() || m.eof || m.stop || m.abort || (m.want_write && m.writable);
                 any.then(|| {
                     m.outbound_bytes = 0;
@@ -1072,6 +1185,64 @@ mod tests {
         c.join().unwrap().unwrap();
         drop(idle);
         drop(open);
+    }
+
+    #[test]
+    fn pending_verdict_does_not_spin() {
+        let s = start_with(allow());
+        let mut t = TcpStream::connect(s.addrs()[0]).unwrap();
+        t.write_all(head("/", "python 2.24", "").as_bytes()).unwrap();
+        let p = pending(&s);
+        // Fill the reader's queue while the verdict waits: the reader then waits for room.
+        let mut flood = t.try_clone().unwrap();
+        let writer = std::thread::spawn(move || {
+            let junk = vec![0u8; 64 * 1024];
+            while flood.write_all(&junk).is_ok() {}
+        });
+        std::thread::sleep(Duration::from_millis(500));
+        let before = s.wakeups();
+        std::thread::sleep(Duration::from_millis(200));
+        let woke = s.wakeups() - before;
+        assert!(woke < 10, "{woke} wake-ups in 200 ms");
+        s.verdict(p.conn, false);
+        drop(t);
+        let _ = writer.join();
+    }
+
+    #[test]
+    fn panicking_connection_frees_its_slot() {
+        let cookie: CookieCheck = Arc::new(|c: &str| {
+            assert!(c != "boom", "cookie check failed on purpose");
+            c == "good"
+        });
+        let s = Server::start(0, allow(), cookie, Arc::new(|| {})).unwrap();
+        let addr = s.addrs()[0];
+        let mut t = TcpStream::connect(addr).unwrap();
+        t.write_all(head("/", "python 2.24", "x-iterm2-cookie: boom\r\n").as_bytes()).unwrap();
+        let _ = read_all(&mut t);
+        settle(&s, (0, 0));
+        assert_eq!(s.conns_len(), 0);
+        let c = client(addr);
+        let p = pending(&s);
+        s.verdict(p.conn, true);
+        c.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn caps_hold_across_both_listeners() {
+        let s = start_with(allow());
+        let racers: Vec<_> = s
+            .addrs()
+            .into_iter()
+            .map(|addr| std::thread::spawn(move || (0..3 * MAX_UNAUTHORIZED).filter_map(|_| TcpStream::connect(addr).ok()).collect::<Vec<_>>()))
+            .collect();
+        let held: Vec<Vec<TcpStream>> = racers.into_iter().map(|r| r.join().unwrap()).collect();
+        settle(&s, (MAX_UNAUTHORIZED, MAX_UNAUTHORIZED));
+        std::thread::sleep(Duration::from_millis(200));
+        let (live, unauthorized) = s.peak();
+        assert!(live <= MAX_CONNECTIONS && unauthorized <= MAX_UNAUTHORIZED, "peak {live}, {unauthorized}");
+        drop(held);
+        settle(&s, (0, 0));
     }
 
     #[test]
