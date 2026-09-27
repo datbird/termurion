@@ -82,3 +82,13 @@ Each check below runs a short script against `iterm2.run_until_complete` with th
 | 58 | Sending a tmux command whose text contains a raw CR or LF desynchronizes later tmux replies, exactly as it would against a real iTerm2 with tmux integration. | |
 | 59 | A prompt's command range, read right after Enter with no text typed, is empty rather than one character wide; typing text (not yet run) grows it to the cursor. | |
 | 60 | A profile-change notification subscription is accepted by iTerm2's own routing rules but never actually fires, even from Tandem, since the stock `iterm2` package cannot send that subscription type at all. | |
+
+## Final fix wave
+
+| # | Check | Result |
+|---|---|---|
+| 61 | In a pane with long lines in its history (run `seq -s ' ' 1 400` a few times), split it vertically so it narrows, then read `number_of_lines` with `GetProperty` and the whole buffer with `async_get_contents` (or GetBuffer with `trailing_lines`): the overflow and every line number are 0 or more, and the oldest line's number equals the overflow. Selecting the oldest line in Tandem, reading it with `async_get_selection` and setting it back with `async_set_selection` works (no REQUEST_MALFORMED). | |
+| 62 | In the tmux tab, set tmux's `default-command` to something that exits at once (`tmux set -g default-command 'exit'`), then `Window.async_create_window` through the tmux connection (`async_create_window` on the gateway's `TmuxConnection`): the call returns promptly instead of hanging, with no window; reset `default-command` afterward. | |
+| 63 | With Lock Layout on in window 1, `Window.async_create_tab()` on it creates the tab (and `index=0` places it first), while New Tab from the menu or its key is still refused there. | |
+| 64 | A styled GetBuffer larger than 32 MiB (a session with a very long scrollback, all of it read with styles through `async_get_contents` or a raw GetBuffer with a large `trailing_lines`) is answered; the script stays connected and its next request works. | |
+| 65 | An advanced `KeystrokeMonitor` on the split's session: hold Shift, then click another window (or Alt+Tab away) before releasing it: the monitor reports one FLAGS_CHANGED with no modifiers when focus leaves, and none while Shift is merely held. | |

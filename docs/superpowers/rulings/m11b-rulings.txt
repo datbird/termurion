@@ -104,7 +104,7 @@ Task 1: minor (deferred): api_requests.rs has no app-side unit test of its own; 
 
 Task 2: Ruling: SplitPane checks Lock Layout before tmux, not after as the brief's Step 3 says (source over brief): PT:11420-11429 refuses a locked split before looking at tmux, and the handler's newSession == nil && !session.isTmuxClient (H:2660-2664) keeps a refused tmux split from being CANNOT_SPLIT, so a locked tmux pane answers Tmux (OK, no id) and tmux is not asked; Instant Replay is checked after tmux, only on the non-tmux path - review verified - cost if wrong: under Lock Layout a tmux split sent through the API does nothing instead of splitting in tmux.
 
-Task 2: Ruling: CreateTab with select_tab unset or true in an existing window calls focus_terminal_window (brings Tandem forward, sets last_window), matching Task 1's Activate ruling for "raise"; iTerm2 uses makeKey with canActivate = NO (in-app raise only) - cost if wrong: from a background script Windows may flash the taskbar button, or Tandem comes forward where iTerm2 would only reorder its own windows.
+Task 2: Ruling: CreateTab with select_tab unset or true in an existing window calls focus_terminal_window (brings Tandem forward, sets last_window), matching Task 1's Activate ruling for "raise"; iTerm2 uses makeKey with canActivate = NO (in-app raise only) - cost if wrong: from a background script Windows may flash the taskbar button, or Tandem comes forward where iTerm2 would only reorder its own windows. - superseded by Final: CreateTab raises with order_front (no activation).
 
 Task 2: Ruling: a new window opened by CreateTab sets last_window to itself, so "active" and later requests see it as the current window after api_request restores the prior window - cost if wrong: until the OS focus event arrives, "active" would otherwise name the old window's session.
 
@@ -116,7 +116,7 @@ Task 2: Ruling: a JSON value that nests nulls inside arrays or objects keeps iTe
 
 Task 2: Ruling: on a failed start, the session copy made for it is removed with forget_session_profile, so store.sessions never leaks - cost if wrong: none.
 
-Task 2: minor carried forward (unresolved in m11b): CreateTab raises an existing window with activation where iTerm2's canActivate is NO; it should use the same no-activate order-front as Task 1's fix round 1 - cost if wrong: as the CreateTab raise Ruling above (a background script's new tab can take focus). Also carried: comment the unreachable branch at api_requests.rs:287.
+Task 2: minor carried forward (unresolved in m11b): CreateTab raises an existing window with activation where iTerm2's canActivate is NO; it should use the same no-activate order-front as Task 1's fix round 1 - cost if wrong: as the CreateTab raise Ruling above (a background script's new tab can take focus). Also carried: comment the unreachable branch at api_requests.rs:287. - resolved in the final fix wave.
 
 Task 3: Ruling: image cells report ITERM2 with 0 code points and no fg or bg color (Cell::image() tiles written by images.rs for inline files, sixel and kitty); KITTY never appears since Tandem has no kitty Unicode placeholder cells - supersedes the plan's "image is NONE" - review verified - cost if wrong: a script that expected NONE everywhere sees ITERM2 on image cells.
 
@@ -132,7 +132,7 @@ Task 3: Ruling: the API screenshot draws the cursor when the view is at the bott
 
 Task 3: Ruling: GetBuffer, GetPrompt, ListPrompts and Screenshot all read Pane::own(), the live session's screen, during Instant Replay, a filter or Zoom, because iTerm2 swaps a new session with a fresh uuid into the tab for those views (PTYTab.m:1737-1782, PTYSession.m:869) while Tandem's session id is the pane id, which cannot split that way - corrects the first round's reasoning, same behavior and cost - review verified - cost if wrong: a script reading a replaying pane gets the live text, not the frame shown.
 
-Task 3: Ruling: on the alternate screen, lines below the history come from the grid shown (the alternate one); history lines come from the main grid and absolute numbering uses the main grid's scrolled_off; the cursor is the shown grid's - cost if wrong: none found.
+Task 3: Ruling: on the alternate screen, lines below the history come from the grid shown (the alternate one); history lines come from the main grid and absolute numbering uses the main grid's scrolled_off; the cursor is the shown grid's - cost if wrong: none found. - superseded in part by Final: absolute numbering uses the main grid's lost lines plus its history, not scrolled_off.
 
 Task 3: Ruling: uninitialized cells are alacritty's empty cells, trimmed at a line's end only; an interior blank is a space with 1 code point. iTerm2 gives an interior null 1 code point too (a U+0000 in the text), not 0 as first thought; the count matches, only the character differs (a space in Tandem, U+0000 in iTerm2) - corrects the first round's "iTerm2 gives interior nulls 0 code points" - cost if wrong: a script sees a space where iTerm2 sends U+0000.
 
@@ -150,7 +150,7 @@ Task 3: Ruling: a hyperlink identifier that has the exact shape alacritty genera
 
 Task 3: Ruling: prompt ids are strict decimal, as session ids are ("07" names nothing) - cost if wrong: none.
 
-Task 3: carried to the final review (pending, not yet fixed in m11b): absolute line numbers (scrolled_off) after a resize reflow are now visible to scripts.
+Task 3: carried to the final review (pending, not yet fixed in m11b): absolute line numbers (scrolled_off) after a resize reflow are now visible to scripts. - resolved in the final fix wave (Final, line numbers).
 
 Task 4: Ruling: Objects has a required id(scope, id) -> Option<String> that returns the id the store keys by, with exists as a provided method on top of it (the brief listed only exists); resolution is needed so "active" and decimal ids store and watch the right object - review verified - cost if wrong: none for callers, because exists still exists.
 
@@ -172,7 +172,7 @@ Task 4: Ruling: a monitor request that carries no VariableMonitorRequest is trea
 
 Task 4: Ruling: an "all" unsubscribe with no windows or sessions to match answers OK rather than NOT_SUBSCRIBED, since Tandem's list-based model has no per-object entry to check where iTerm2 would answer NOT_SUBSCRIBED; only reachable with no windows open - review verified - cost if wrong: none realistic.
 
-Task 4: minors carried forward (unresolved in m11b): answer's doc comment on the "all" OK case; replace `let _ = set_user(...)` with an expect on the unreachable error; add a test for the "all" unsubscribe edge.
+Task 4: minors carried forward (unresolved in m11b): answer's doc comment on the "all" OK case; replace `let _ = set_user(...)` with an expect on the unreachable error; add a test for the "all" unsubscribe edge. - resolved in the final fix wave.
 
 Task 5: Ruling: the source wins on grid clamping: safelySetSessionSize makes the grid at least 20 columns by 2 rows and caps row growth at what the window can grow by; Tandem's wanted_grid does the same, with the cap taken from the current monitor's full height less the window's outer height (winit has no work area); width growth is not capped, as in iTerm2 - review verified - cost if wrong: a script asking for fewer than 20 columns gets 20; a very tall request may overshoot the taskbar by a few rows.
 
@@ -246,7 +246,7 @@ Task 7: Ruling: a tab counts as tmux for SetTabLayout when its focused pane is a
 
 Task 7: Ruling: a tab holding a loaded recording never moves to another window through ReorderTabs (INVALID_ASSIGNMENT before anything moves), keeping Tandem's rule - review verified.
 
-Task 7: minors carried forward (unresolved in m11b): a moved tab leaves its ids in the source window's broadcast settings (move_tab_to_new_window and merge_all_windows share the same gap and should be fixed together); a tmux tab moved alone does not save its window assignment; the code that takes a tab out of its window should be one shared helper; restart_pane's doc comment needs updating.
+Task 7: minors carried forward (unresolved in m11b): a moved tab leaves its ids in the source window's broadcast settings (move_tab_to_new_window and merge_all_windows share the same gap and should be fixed together); a tmux tab moved alone does not save its window assignment; the code that takes a tab out of its window should be one shared helper; restart_pane's doc comment needs updating. - resolved in the final fix wave.
 
 Task 8: Ruling: a separate qa function escapes the XIB identifier's non-ASCII characters as TOML \uXXXX escapes; the existing q function is left unchanged so it does not rewrite the existing key lines that hold raw private-use characters (arrow and function keys), keeping the "only identifier lines added" diff rule - cost if wrong: none at runtime; titles and keys keep their existing spelling.
 
@@ -262,7 +262,7 @@ Task 8: Ruling: gen-menus.py decodes a base64 keyEquivalent child element and ap
 
 Task 8: Ruling: Dashboard's mods order follows the generator's order (ctrl, shift, cmd) rather than the old hand edit's (ctrl, cmd, shift); the chord is unchanged since Item::chord tests each modifier by name - cost if wrong: none (order is not significant).
 
-Task 8: minors carried forward (unresolved in m11b): the submenu-exclusion test in identifiers_follow_the_xib is structurally always true and should be strengthened or renamed; comment the difference between q() and qa() in gen-menus.py.
+Task 8: minors carried forward (unresolved in m11b): the submenu-exclusion test in identifiers_follow_the_xib is structurally always true and should be strengthened or renamed; comment the difference between q() and qa() in gen-menus.py. - resolved in the final fix wave.
 
 Task 9: Ruling: BROADCAST_DOMAINS_NOT_DISJOINT is never answered, since H:4150-4159 checks sessionIDs but never adds to it, so iTerm2 never refuses overlapping domains - source over brief - review verified - cost if wrong: a script relying on the refusal gets OK and a sanitized result; set_domains sanitizes an overlap deterministically, a pane staying in the last domain naming it, so [{1,2},{2,3}] becomes [{2,3}].
 
@@ -302,7 +302,7 @@ Task 10: Ruling: FLAGS_CHANGED carries the modifiers held after the key, compute
 
 Task 10: Ruling: a custom escape sequence with no id parameter leaves sender_identity unset (ApiEvent::Custom.id is Option<String>), not the empty string; the trigger event still gets "" - supersedes the first round's "posts sender_identity as an empty string" - cost if wrong: a script comparing the identity to None would otherwise see "" instead.
 
-Task 10: Ruling: screen updates come from the panes the user_event output loop pumped, plus the panes an Inject fed (queued through api_output_elsewhere and posted at the next flush, after the InjectResponse, not directly by Inject); tmux integration panes fed through the gateway's %output also post a screen update this way, once per pane per flush rather than once per output line - supersedes the first round's "tmux panes fed through the gateway post no screen update" - cost if wrong: without this a ScreenStreamer on a tmux integration pane would never fire.
+Task 10: Ruling: screen updates come from the panes the user_event output loop pumped, plus the panes an Inject fed (queued through api_output_elsewhere and posted at the next flush, after the InjectResponse, not directly by Inject); tmux integration panes fed through the gateway's %output also post a screen update this way, once per pane per flush rather than once per output line - supersedes the first round's "tmux panes fed through the gateway post no screen update" - cost if wrong: without this a ScreenStreamer on a tmux integration pane would never fire. - superseded in part by Final: every screen update, the output loop's included, is queued through api_output and posted once per pane per loop pass.
 
 Task 10: Ruling: prompt and custom escape sequence events are drained both after the output loop and every pass in api_notify_tick, so events from Inject and tmux panes are posted too; the PROMPT answer is computed when drained, in the same pass, not at the instant of B - cost if wrong: a prompt's ranges can already include output that arrived in the same read.
 
@@ -318,4 +318,26 @@ Task 10: Ruling: the "all" unsubscribe quirk (H:2080-2090) is kept as ruled in t
 
 Task 10: minor: SessionSubs gained an any() method beyond the plan's interface, used to keep the model snapshot and to skip key work when no session subscription exists - cost if wrong: none.
 
-Task 10: carried to the final review (pending, not yet fixed in m11b): no FLAGS_CHANGED is posted when focus leaves mid-hold, a pre-existing key-state handling gap; there is no end-to-end test of Undo Close then expiry versus restore for subscriptions.
+Task 10: carried to the final review (pending, not yet fixed in m11b): no FLAGS_CHANGED is posted when focus leaves mid-hold, a pre-existing key-state handling gap; there is no end-to-end test of Undo Close then expiry versus restore for subscriptions. - resolved in the final fix wave.
+
+Final: Ruling: the line numbers the API gives and takes (GetBuffer and GetScreenContents lines and cursor, number_of_lines overflow and first visible line, GetSelection, SetSelection, prompts) are lines lost off the top of the main screen's history plus the history kept (iTerm2's cumulativeScrollbackOverflow plus the line buffer), from a Tandem patch counter Grid::dropped (a full history scrolling, a smaller history limit, a reflow past the limit); the grid's running scrolled_off, which triggers and marks use, is unchanged, so a narrowing reflow that rewraps history can no longer make an overflow or a line number negative and a selection GetSelection reads is one SetSelection accepts - cost if wrong: after a reflow, API line numbers and trigger/mark numbers differ (they never meet: marks and triggers never cross the API).
+
+Final: Ruling: clearing the history (ESC [ 3 J, Clear Buffer, a reset) does not add to the lost-lines count, as iTerm2's clearScrollbackBuffer drops the line buffer without incrementing its overflow; the numbers of the lines still on screen go down by the history cleared, as iTerm2's do - cost if wrong: a script holding a line number across a clear finds a different line under it (the same as against iTerm2).
+
+Final: Ruling: a tmux window that closes while it is still opening (its display reply or captures still out) is reported by the controller as Action::Abandoned, which answers a waiting CreateWindow with tab "0" as a window that never opens is answered; it changes no tab, so it triggers no relayout - cost if wrong: none; before, async_create_window waited until the gateway disconnected.
+
+Final: Ruling: screen updates are coalesced: output from the loop, tmux integration panes and Inject only marks a pane dirty, and api_notify_tick posts at most one SCREEN_UPDATE per pane per loop pass, however many output wakes the pass had (iTerm2 posts from its refresh, PS:13241-13254); an Inject's update follows its response - cost if wrong: a script sees fewer updates under heavy output, never none for a pane that got output.
+
+Final: Ruling: a setCookie Confirm alert queued by a script belongs to that script's connection: it goes when the script disconnects and when the API is turned off, like the Allow and Confirm-Always alerts; OK on it still only turns setCookie on - cost if wrong: a person who wanted to answer it after the script ended has to ask again.
+
+Final: Ruling: CreateTab in a window under Lock Layout creates the tab, and places it at tab_index, as iTerm2's API does (its CreateTab handler and insertTab:atIndex: have no lock check; Lock Layout guards the person's tab creation through menu validation, PT:13832, and the person's splits and closes); New Tab from the menu or a key is still refused under the lock - cost if wrong: a script can add tabs to a locked window.
+
+Final: Ruling: a response may exceed the 32 MiB outbound queue cap: responses are counted apart from notifications and one is always taken when no other response waits (Server::respond), and the connection's write buffer takes it past its cap until it is empty, so a large styled GetBuffer (trailing_lines up to 1,000,000) is answered instead of dropping the connection; notifications keep the cap, and responses waiting together share it. Cost: one large answer can use that much memory again in the write buffer (a 100 MB answer holds about 100 MB until the client reads it); a second oversized answer sent before the first leaves the buffer closes the connection.
+
+Final: Ruling: new sessions for kept "all" session requests are found by comparing the set of session ids (the panes of every window's tabs, read from the parked window slots without entering any window) each pass; the window model is not built for them at all, only for app-wide 11a subscriptions - cost if wrong: none; the same sessions are found, in window order.
+
+Final: Ruling: when a window loses focus while modifier keys are held, the focused pane's advanced keystroke subscribers get one FLAGS_CHANGED with no modifiers (the release the focus change implies), keyed by the first held of Shift, Control, Option, Command, as AppKit sends flagsChanged when the key window changes; the held state comes from Tandem's own modifier presses and releases, since winit reports the modifiers as empty on the focus loss - cost if wrong: a script sees one FLAGS_CHANGED iTerm2 might key by another modifier.
+
+Final: Ruling: the Undo Close then expiry or restore path for session subscriptions is covered by a SessionSubs test (undo_close_keeps_subscriptions_until_it_expires): kept through the undo, the "all" requests not doubled on restore, all of the session's gone on expiry - cost if wrong: none.
+
+Final: Ruling: a tab that leaves a window (ReorderTabs across windows, Move Tab to New Window, Merge All Windows) leaves that window's broadcasting tabs, domains and sources (Broadcast::forget; custom mode with no domain left turns off); a tmux tab that ReorderTabs moves to another window saves its gateway's window assignment even when it moved alone - cost if wrong: none.
