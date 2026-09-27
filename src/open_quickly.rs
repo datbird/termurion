@@ -308,6 +308,8 @@ pub enum ItemKind {
     Snippet(usize),
     NamedMark { pane: u64, mark: u32 },
     MenuItem(String),
+    /// A script: its path under the Scripts folder, "/" between names (`OQM:813-831`).
+    Script(String),
     /// A script function invocation: the whole query (`OQM:699-716`).
     Invocation(String),
 }
@@ -373,6 +375,8 @@ pub struct Sources {
     pub named_marks: Vec<(u64, u32, String, bool)>,
     /// (id, title, menu path, alternate).
     pub menu_items: Vec<(String, String, Vec<String>, bool)>,
+    /// Every script's path under the Scripts folder (`allScripts`, "folder/name.py").
+    pub scripts: Vec<String>,
     /// The whole query when it parses as a call or a call sequence (`OQM:950-1003`).
     pub invocation: Option<String>,
 }
@@ -402,6 +406,8 @@ pub const COLOR_PRESET_DETAIL: &str = "Load color preset \u{201d}{}\u{201c}";
 pub const UNTITLED: &str = "Untitled";
 /// An invocation item's detail (`OQM:705`).
 pub const INVOKE_DETAIL: &str = "Invoke";
+/// A script item's detail (`OQM:821`).
+pub const RUN_SCRIPT: &str = "Run Script";
 /// An invocation's multiplier (`kInvocationMultiplier`); its limit is twice that.
 pub const INVOCATION_MULTIPLIER: f64 = 5.0;
 
@@ -436,11 +442,13 @@ const NAMED_MARK_MULT: f64 = 0.5;
 const ARRANGEMENT_MULT: f64 = 0.11;
 const PROFILE_ITEM_MULT: f64 = 0.1;
 const MENU_ITEM_MULT: f64 = 0.096;
+/// `kProfileNameMultiplierForScriptItem`; its limit is twice that.
+const SCRIPT_MULT: f64 = 0.09;
 const WINDOW_MULT: f64 = 0.08;
 
 /// What a command restricts the search to (`supportsSessionLocation` and friends). Color
-/// presets, scripts and bookmarks have no Tandem source (milestones 13, 11, and never), so
-/// their commands support nothing here; their tips still show.
+/// presets and bookmarks have no Tandem source (milestone 13, and never), so their commands
+/// support nothing here; their tips still show.
 struct Supports {
     session_location: bool,
     window_location: bool,
@@ -452,6 +460,7 @@ struct Supports {
     snippet: bool,
     named_marks: bool,
     menu_items: bool,
+    script: bool,
 }
 
 const NOTHING: Supports = Supports {
@@ -464,6 +473,7 @@ const NOTHING: Supports = Supports {
     snippet: false,
     named_marks: false,
     menu_items: false,
+    script: false,
 };
 
 fn supports(cmd: Command) -> Supports {
@@ -478,6 +488,7 @@ fn supports(cmd: Command) -> Supports {
             snippet: true,
             named_marks: true,
             menu_items: true,
+            script: true,
         },
         Command::InTabsArrangement => Supports { open_arrangement: Some(true), ..NOTHING },
         Command::Arrangement => Supports { open_arrangement: Some(false), ..NOTHING },
@@ -485,7 +496,8 @@ fn supports(cmd: Command) -> Supports {
         Command::SwitchProfile => Supports { change_profile: true, ..NOTHING },
         Command::Windows => Supports { window_location: true, ..NOTHING },
         Command::CreateTab => Supports { create_new_tab: true, ..NOTHING },
-        Command::ColorPreset | Command::Script | Command::Bookmark => NOTHING,
+        Command::Script => Supports { script: true, ..NOTHING },
+        Command::ColorPreset | Command::Bookmark => NOTHING,
         Command::Action => Supports { action: true, ..NOTHING },
         Command::Snippet => Supports { snippet: true, ..NOTHING },
     }
@@ -774,6 +786,19 @@ fn add_arrangements(items: &mut Vec<Item>, query: &str, s: &Sources, tabs_only: 
     }
 }
 
+/// Script items (`addScriptToItems:withMatcher:`, `OQM:813-858`, `OQM:1107-1118`).
+fn add_scripts(items: &mut Vec<Item>, query: &str, s: &Sources) {
+    for name in &s.scripts {
+        let docs = vec![name.clone()];
+        let (score, result) = score_feature(query, &docs, SCRIPT_MULT, 2.0 * SCRIPT_MULT);
+        if score <= 0.0 {
+            continue;
+        }
+        let (title, title_bold) = title_from(&docs, result);
+        items.push(Item { kind: ItemKind::Script(name.clone()), score, title, title_bold, detail: RUN_SCRIPT.to_string(), detail_bold: Vec::new() });
+    }
+}
+
 fn add_actions(items: &mut Vec<Item>, query: &str, s: &Sources) {
     let cap = 2.0 * ACTION_MULT;
     for (i, (title, display)) in s.actions.iter().enumerate() {
@@ -894,6 +919,9 @@ pub fn items(query: &str, s: &Sources) -> Vec<Item> {
     }
     if let Some(tabs_only) = sup.open_arrangement {
         add_arrangements(&mut items, &text, s, tabs_only);
+    }
+    if sup.script {
+        add_scripts(&mut items, &text, s);
     }
     if sup.action && s.has_window {
         add_actions(&mut items, &text, s);
@@ -1098,6 +1126,27 @@ mod tests {
         // Added even when the text does not match: no title, score 0.
         let got: Vec<Item> = items("zzz", &with).into_iter().filter(|i| matches!(i.kind, ItemKind::Invocation(_))).collect();
         assert_eq!((got.len(), got[0].score, got[0].title.as_str()), (1, 0.0, ""));
+    }
+
+    #[test]
+    fn open_quickly_scripts_follow_iterm2() {
+        let with = Sources { scripts: vec!["AutoLaunch/run.py".to_string(), "tool.py".to_string()], ..Default::default() };
+        let scripts = |q: &str, s: &Sources| -> Vec<Item> { items(q, s).into_iter().filter(|i| matches!(i.kind, ItemKind::Script(_))).collect() };
+        let got = scripts("tool", &with);
+        assert_eq!(got.len(), 1);
+        let (score, result) = score_feature("tool", &["tool.py".to_string()], 0.09, 0.18);
+        assert_eq!(got[0].kind, ItemKind::Script("tool.py".to_string()));
+        assert_eq!((got[0].detail.as_str(), got[0].detail_bold.is_empty()), ("Run Script", true));
+        assert_eq!((RUN_SCRIPT, SCRIPT_MULT), ("Run Script", 0.09));
+        assert!((got[0].score - score).abs() < 1e-9 && score > 0.0, "{} {score}", got[0].score);
+        assert_eq!((got[0].title.as_str(), Some(got[0].title_bold.clone())), ("tool.py", result.map(|(_, b)| b)));
+        // /s searches only scripts; /p none.
+        let all = items("/s tool", &with);
+        assert!(!all.is_empty() && all.iter().all(|i| i.kind == ItemKind::Script("tool.py".to_string())), "{all:?}");
+        assert!(scripts("/p tool", &with).is_empty());
+        assert!(scripts("tool", &Sources::default()).is_empty());
+        // The tip still shows.
+        assert!(items("/", &Sources::default()).iter().any(|i| i.kind == ItemKind::Tip('s')));
     }
 
     #[test]

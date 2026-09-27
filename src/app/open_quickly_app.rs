@@ -41,6 +41,8 @@ fn icon(kind: &ItemKind) -> char {
         ItemKind::Snippet(_) => '\u{E8BD}',
         ItemKind::NamedMark { .. } => '\u{E8A4}',
         ItemKind::MenuItem(_) => '\u{E700}',
+        // Code, iTerm2's script icon.
+        ItemKind::Script(_) => '\u{E943}',
         ItemKind::Invocation(_) => '\u{E943}',
     }
 }
@@ -254,8 +256,9 @@ impl App {
         s.menu_items = crate::menus::items()
             .iter()
             .filter(|i| !i.separator && !i.submenu && !i.selector.is_empty() && crate::commands::status(i) == crate::commands::Status::Done)
-            .map(|i| (i.id(), i.label().to_string(), i.path[..i.path.len().saturating_sub(1)].to_vec(), i.alternate))
+            .map(|i| (i.id(), crate::menus::shown_label(i.label()), i.path[..i.path.len().saturating_sub(1)].to_vec(), i.alternate))
             .collect();
+        s.scripts = self.scripts_all.clone();
         s
     }
 
@@ -470,6 +473,8 @@ impl App {
                 let scope = Self::session_or_app(invocation_pane);
                 self.invoke(text, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::OpenQuickly);
             }
+            // `OQW:444-448`: launched as a person's choice.
+            ItemKind::Script(name) => self.launch_relative_script(name),
             ItemKind::MenuItem(id) => {
                 // On the next turn, after the palette is gone; the command runs only if it
                 // still does (`run_command` skips a command owned by a later milestone).

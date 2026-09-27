@@ -1,7 +1,9 @@
 //! Launching scripts (`M:867-977`, `L:725-1029`): a path is classified, its environment made
 //! ready (asking before any download), the API started when a person asked while it was
 //! off, and the script run hidden with a fresh cookie and key. Its output goes to its Script
-//! Console entry; Terminate and Restart end and relaunch it.
+//! Console entry; Terminate and Restart end and relaunch it. The Scripts menu lists the
+//! scripts after its fixed items (`M:1559-1577`), AutoLaunch starts its folder's scripts
+//! once (`M:1587-1650`), and Open Quickly and MenuItemRequest reach the same items.
 
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
@@ -29,6 +31,89 @@ fn first_line(p: &Path) -> Option<String> {
     let mut line = Vec::new();
     std::io::BufReader::new(file.take(FIRST_LINE_LIMIT)).read_until(b'\n', &mut line).ok()?;
     (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned())
+}
+
+/// Menu ids of the Scripts menu's scripts: the prefix, then the script's full path (iTerm2's
+/// item identifier, `M:1559-1566`).
+pub(super) const SCRIPT_ID: &str = "script:";
+
+/// iTerm2's prefix for a script's Option alternate "Reveal %@" (`M:1568-1576`).
+const REVEAL_PREFIX: &str = "/Reveal/";
+
+/// One entry of the Scripts menu after its fixed items.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MenuEntry {
+    Script { id: String, label: String, path: PathBuf, checked: bool },
+    Folder { label: String, children: Vec<MenuEntry> },
+}
+
+/// The Scripts menu's entries for the scanned tree (`M:476-545`, `M:1559-1566`): folders as
+/// submenus, scripts titled by their file names. A script is checked while `running` says an
+/// entry runs with its path (`M:180-185`); a full environment's entry runs its main .py, so
+/// its item (the folder) is never checked, as in iTerm2 (kept).
+pub(super) fn menu_entries(nodes: &[crate::scripts::Node], running: &dyn Fn(&Path) -> bool) -> Vec<MenuEntry> {
+    use crate::scripts::Node;
+    nodes
+        .iter()
+        .map(|n| match n {
+            Node::Script { name, path, .. } => MenuEntry::Script { id: format!("{SCRIPT_ID}{}", path.display()), label: name.clone(), path: path.clone(), checked: running(path) },
+            Node::Folder { name, children, .. } => MenuEntry::Folder { label: name.clone(), children: menu_entries(children, running) },
+        })
+        .collect()
+}
+
+/// Every script path in the tree, in menu order.
+fn script_paths(nodes: &[crate::scripts::Node], out: &mut Vec<PathBuf>) {
+    use crate::scripts::Node;
+    for n in nodes {
+        match n {
+            Node::Script { path, .. } => out.push(path.clone()),
+            Node::Folder { children, .. } => script_paths(children, out),
+        }
+    }
+}
+
+/// What choosing a script item does (`M:833-851`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Pick {
+    Launch,
+    Terminate,
+    Reveal,
+}
+
+/// The Option alternate (Alt held, Decision) reveals; a running script is terminated; any
+/// other is launched.
+pub(super) fn pick(running: bool, alt: bool) -> Pick {
+    match (running, alt) {
+        (_, true) => Pick::Reveal,
+        (true, false) => Pick::Terminate,
+        (false, false) => Pick::Launch,
+    }
+}
+
+/// What AutoLaunch starts (`M:1620-1650`): every entry of its folder but hidden ones and
+/// `__pycache__`, folders first and then names ignoring case (iTerm2 takes the file system's
+/// order; Decision).
+pub(super) fn autolaunch_targets(listing: &[(String, bool)], folder: &Path) -> Vec<PathBuf> {
+    let mut kept: Vec<&(String, bool)> = listing.iter().filter(|(name, _)| !name.starts_with('.') && name != "__pycache__").collect();
+    kept.sort_by(|(a, a_dir), (b, b_dir)| b_dir.cmp(a_dir).then_with(|| a.to_lowercase().cmp(&b.to_lowercase())).then_with(|| a.cmp(b)));
+    kept.into_iter().map(|(name, _)| folder.join(name)).collect()
+}
+
+/// `shouldRunAutoLaunchScripts` (`M:1600-1606`): once, and only when the folder exists.
+pub(super) fn should_autolaunch(ran: bool, folder_exists: bool) -> bool {
+    !ran && folder_exists
+}
+
+/// A MenuItemRequest's identifier as one of the Scripts menu's items (`H:1526-1539` searches
+/// every item, the scripts' and their "/Reveal/" alternates too): the script's path and
+/// whether it is the reveal item.
+pub(super) fn script_menu_answer(identifier: &str, scripts: &[PathBuf]) -> Option<(PathBuf, bool)> {
+    let (text, reveal) = match identifier.strip_prefix(REVEAL_PREFIX) {
+        Some(rest) => (rest, true),
+        None => (identifier, false),
+    };
+    scripts.iter().find(|p| p.as_os_str() == text).map(|p| (p.clone(), reveal))
 }
 
 /// What a full environment is built from (`M:1009-1016`): the version its marker recorded,
@@ -152,13 +237,12 @@ impl App {
                 self.ask_scripts(Ask { heading: sl::ERROR_RUNNING_TITLE.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::ErrorRunning });
             }
         }
+        self.refresh_scripts_menu();
         self.redraw();
     }
 
     /// Terminate (`SH:190-196`): the note in the log, the script and everything it started
     /// ended, and its API connections closed.
-    // Called by the Scripts menu (Task 6) and the Script Console (Task 8).
-    #[allow(dead_code)]
     pub(super) fn terminate_script(&mut self, id: &str) {
         let stamp = self.history_stamp();
         self.script_history.kill(id, &stamp);
@@ -173,6 +257,7 @@ impl App {
     }
 
     /// Restart (`SC:224-232`): Terminate, then the same launch again, as a person's.
+    // Called by the Script Console (Task 8).
     #[allow(dead_code)]
     pub(super) fn relaunch_script(&mut self, id: &str) {
         let relaunch = self.script_history.find(id).and_then(|e| e.relaunch.clone());
@@ -209,6 +294,8 @@ impl App {
             }
         }
         if changed {
+            // A script that ended loses its check mark.
+            self.refresh_scripts_menu();
             self.redraw();
         }
     }
@@ -247,6 +334,7 @@ impl App {
         for p in self.script_procs.values_mut().filter(|p| pids.contains(&p.pid())) {
             p.terminate();
         }
+        self.refresh_scripts_menu();
     }
 
     /// A failed script's notification was clicked: its Script Console entry shows its end
@@ -262,5 +350,196 @@ impl App {
         cmd.raw_arg(format!("/select,{}", crate::semantic::cmd_quote(&text)));
         // Explorer shows its own message for a path it cannot select.
         let _ = cmd.spawn();
+    }
+
+    /// Rebuilds the Scripts menu after its fixed items (Manage and the line) when what it
+    /// lists or checks changed: after a scan, and when a script starts or stops.
+    pub(super) fn refresh_scripts_menu(&mut self) {
+        let history = &self.script_history;
+        let entries = menu_entries(&self.scripts_tree, &|p| history.running_with_path(p).is_some());
+        let Some(bar) = &mut self.menu_bar else { return };
+        if bar.script_entries == entries {
+            return;
+        }
+        let Some((sub, fixed)) = &bar.scripts else { return };
+        while sub.remove_at(*fixed).is_some() {}
+        let mut errors = Vec::new();
+        fill_scripts(sub, &entries, &mut errors);
+        bar.script_entries = entries;
+        if let Some(e) = errors.first() {
+            self.banners.set("menu", format!("Scripts menu: {e}"));
+        }
+    }
+
+    /// A pick from the Scripts menu's scripts. False for other ids.
+    pub(super) fn script_picked(&mut self, id: &str) -> bool {
+        let Some(path) = id.strip_prefix(SCRIPT_ID) else { return false };
+        // Alt held at the pick stands in for the Option alternate (m7a's precedent).
+        let alt = unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } < 0;
+        self.pick_script(Path::new(path), alt);
+        // The menu toggled the item's check itself: it is rebuilt from what runs.
+        if let Some(bar) = &mut self.menu_bar {
+            bar.script_entries.clear();
+        }
+        self.refresh_scripts_menu();
+        true
+    }
+
+    /// Reveals, terminates or launches a script as its menu item does
+    /// (`launchOrTerminateScript:`, `revealScript:`).
+    fn pick_script(&mut self, path: &Path, reveal: bool) {
+        let running = self.script_history.running_with_path(path).map(|e| e.id.clone());
+        match pick(running.is_some(), reveal) {
+            Pick::Reveal => self.reveal_path(path),
+            Pick::Terminate => {
+                if let Some(id) = running {
+                    self.terminate_script(&id);
+                }
+            }
+            Pick::Launch => self.launch_script(Request { path: path.to_path_buf(), args: Vec::new(), explicit: true }),
+        }
+    }
+
+    /// Scripts > Manage > Reveal Scripts in Explorer (`M:642-650`): the folder is made first.
+    pub(super) fn reveal_scripts_folder(&mut self) {
+        let folder = self.scripts_folder();
+        if let Err(e) = std::fs::create_dir_all(&folder) {
+            return self.banners.set("scripts", format!("Could not create {}: {e}", folder.display()));
+        }
+        self.reveal_path(&folder);
+    }
+
+    /// AutoLaunch (`runAutoLaunchScriptsIfNeeded`, `M:631-641`, `M:1587-1650`), once: every
+    /// entry of the AutoLaunch folder is launched as nobody's choice, so nothing runs while
+    /// the API is off and nothing is downloaded.
+    pub(super) fn run_autolaunch(&mut self) {
+        let ran = std::mem::replace(&mut self.autolaunch_ran, true);
+        let folder = crate::scripts::autolaunch_folder(&self.scripts_folder());
+        if !should_autolaunch(ran, folder.is_dir()) {
+            return;
+        }
+        use crate::scripts::Fs;
+        for path in autolaunch_targets(&crate::scripts::RealFs.list(&folder), &folder) {
+            self.launch_script(Request { path, args: Vec::new(), explicit: false });
+        }
+    }
+
+    /// Open Quickly's script item (`OQW:444-448`): the path relative to the Scripts folder,
+    /// launched as a person's choice.
+    pub(super) fn launch_relative_script(&mut self, name: &str) {
+        let path = name.split('/').fold(self.scripts_folder(), |p, part| p.join(part));
+        self.launch_script(Request { path, args: Vec::new(), explicit: true });
+    }
+
+    /// MenuItemRequest for a script item (`H:3524-3547`): None when `identifier` is none of
+    /// them; otherwise the answer (a script item is always enabled; checked while it runs, a
+    /// reveal item never) and, unless only asked, the pick the menu would make.
+    pub(super) fn script_menu_request(&mut self, identifier: &str, query_only: bool) -> Option<crate::api_proto::pb::MenuItemResponse> {
+        let mut scripts = Vec::new();
+        script_paths(&self.scripts_tree, &mut scripts);
+        let (path, reveal) = script_menu_answer(identifier, &scripts)?;
+        let checked = !reveal && self.script_history.running_with_path(&path).is_some();
+        let (answer, run) = crate::menus::menu_answer(Some(&crate::menus::Item::default()), true, checked, query_only);
+        if run {
+            self.pick_script(&path, reveal);
+            self.refresh_scripts_menu();
+        }
+        Some(answer)
+    }
+}
+
+/// Appends `entries` to `sub`: folders as submenus, scripts as check items.
+fn fill_scripts(sub: &muda::Submenu, entries: &[MenuEntry], errors: &mut Vec<String>) {
+    for e in entries {
+        let appended = match e {
+            MenuEntry::Script { id, label, checked, .. } => sub.append(&muda::CheckMenuItem::with_id(id.clone(), label.replace('&', "&&"), true, *checked, None)),
+            MenuEntry::Folder { label, children } => {
+                let folder = muda::Submenu::new(label.replace('&', "&&"), true);
+                fill_scripts(&folder, children, errors);
+                sub.append(&folder)
+            }
+        };
+        if let Err(e) = appended {
+            errors.push(e.to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scripts::Node;
+
+    fn script(path: &str, full: bool) -> Node {
+        let path = PathBuf::from(path);
+        Node::Script { name: path.file_name().unwrap().to_string_lossy().into_owned(), path, full_environment: full }
+    }
+
+    fn folder(path: &str, children: Vec<Node>) -> Node {
+        let path = PathBuf::from(path);
+        Node::Folder { name: path.file_name().unwrap().to_string_lossy().into_owned(), path, children }
+    }
+
+    fn item(path: &str, checked: bool) -> MenuEntry {
+        let path = PathBuf::from(path);
+        MenuEntry::Script { id: format!("script:{}", path.display()), label: path.file_name().unwrap().to_string_lossy().into_owned(), path, checked }
+    }
+
+    #[test]
+    fn menu_entries_follow_iterm2() {
+        // Task 1's tree.
+        let tree = vec![
+            folder(r"C:\S\AutoLaunch", vec![script(r"C:\S\AutoLaunch\run.py", false)]),
+            folder(r"C:\S\zeta", vec![script(r"C:\S\zeta\z.py", false)]),
+            script(r"C:\S\A.py", false),
+            script(r"C:\S\b.py", false),
+            script(r"C:\S\Full", true),
+        ];
+        // b.py runs, and so does Full's main: a full environment's entry has the main .py as
+        // its path, so its item (the container) is never checked (`M:180-185`, kept).
+        let running = |p: &Path| p == Path::new(r"C:\S\b.py") || p == Path::new(r"C:\S\Full\Full\Full.py");
+        let entries = menu_entries(&tree, &running);
+        assert_eq!(
+            entries,
+            vec![
+                MenuEntry::Folder { label: "AutoLaunch".into(), children: vec![item(r"C:\S\AutoLaunch\run.py", false)] },
+                MenuEntry::Folder { label: "zeta".into(), children: vec![item(r"C:\S\zeta\z.py", false)] },
+                item(r"C:\S\A.py", false),
+                item(r"C:\S\b.py", true),
+                item(r"C:\S\Full", false),
+            ]
+        );
+        let MenuEntry::Script { id, .. } = &entries[2] else { panic!() };
+        assert_eq!(id, r"script:C:\S\A.py");
+        let MenuEntry::Script { id, label, .. } = &entries[4] else { panic!() };
+        assert_eq!((id.as_str(), label.as_str()), (r"script:C:\S\Full", "Full"));
+        assert_eq!(SCRIPT_ID, "script:");
+    }
+
+    #[test]
+    fn picks_follow_iterm2() {
+        assert_eq!(pick(false, false), Pick::Launch);
+        assert_eq!(pick(true, false), Pick::Terminate);
+        assert_eq!(pick(true, true), Pick::Reveal);
+        assert_eq!(pick(false, true), Pick::Reveal);
+    }
+
+    #[test]
+    fn autolaunch_follows_iterm2() {
+        let listing: Vec<(String, bool)> = [(".DS_Store", false), ("__pycache__", true), ("run.py", false), ("notes.txt", false), ("Tool", true)].into_iter().map(|(n, d)| (n.to_string(), d)).collect();
+        let folder = Path::new(r"C:\S\AutoLaunch");
+        assert_eq!(autolaunch_targets(&listing, folder), vec![PathBuf::from(r"C:\S\AutoLaunch\Tool"), PathBuf::from(r"C:\S\AutoLaunch\notes.txt"), PathBuf::from(r"C:\S\AutoLaunch\run.py")]);
+        assert!(should_autolaunch(false, true));
+        assert!(!should_autolaunch(true, true));
+        assert!(!should_autolaunch(false, false));
+    }
+
+    #[test]
+    fn menu_identifiers_reach_scripts() {
+        let scripts = [PathBuf::from(r"C:\S\a.py")];
+        assert_eq!(script_menu_answer(r"C:\S\a.py", &scripts), Some((PathBuf::from(r"C:\S\a.py"), false)));
+        assert_eq!(script_menu_answer(r"/Reveal/C:\S\a.py", &scripts), Some((PathBuf::from(r"C:\S\a.py"), true)));
+        assert_eq!(script_menu_answer("New Tab", &scripts), None);
+        assert_eq!(script_menu_answer(r"/Reveal/C:\S\b.py", &scripts), None);
     }
 }

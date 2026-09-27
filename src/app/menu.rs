@@ -51,9 +51,10 @@ const LEVELS: [(&str, u16); 5] = [("VT100", 100), ("VT200", 200), ("VT300", 300)
 /// How far one Move Divider command moves a divider, as a share of its split.
 const NUDGE: f32 = 0.05;
 
-/// Windows shows "&" as a mnemonic marker, so a literal "&" is written "&&".
+/// Windows shows "&" as a mnemonic marker, so a literal "&" is written "&&". Mac words read
+/// as Windows ones ("Finder" is "Explorer").
 fn menu_text(item: &Item) -> String {
-    let label = item.label().replace('&', "&&");
+    let label = menus::shown_label(item.label()).replace('&', "&&");
     match item.chord().filter(menus::reaches_tandem) {
         Some(c) => format!("{label}\t{}", menus::chord_label(&c)),
         None => label,
@@ -90,6 +91,9 @@ pub(super) struct MenuBar {
     /// Scripts > Manage > Install Python Runtime, retitled "Check for Updated Runtime" once uv
     /// is installed.
     pub(super) install_runtime: Option<MenuItem>,
+    /// The Scripts menu and its fixed items (Manage and the line), then the scripts after them.
+    pub(super) scripts: Option<(Submenu, usize)>,
+    pub(super) script_entries: Vec<super::scripts_app::MenuEntry>,
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -189,7 +193,11 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime });
+        let scripts = subs.get(&vec!["Scripts".to_string()]).cloned().map(|s| {
+            let fixed = s.items().len();
+            (s, fixed)
+        });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, scripts, script_entries: Vec::new() });
         self.runtime_menu_title();
         self.sync_checks();
     }
@@ -289,6 +297,7 @@ impl App {
         let action = self.globals.string("Mark Alert Action");
         self.refresh_named_marks();
         self.refresh_profiles_menu();
+        self.refresh_scripts_menu();
         self.refresh_arrangement_menus();
         self.refresh_buried_menu();
         self.refresh_snippet_menus();
@@ -335,7 +344,7 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
-        if self.buried_picked(id) {
+        if self.buried_picked(id) || self.script_picked(id) {
             return;
         }
         if self.arrangement_picked(id) {
@@ -405,6 +414,7 @@ impl App {
             "findGlobally:" => self.open_global_find(event_loop),
             "openQuickly:" => self.open_quickly(event_loop),
             "installPythonRuntime:" => self.install_python_runtime(),
+            "revealScriptsInFinder:" => self.reveal_scripts_folder(),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
                 let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));

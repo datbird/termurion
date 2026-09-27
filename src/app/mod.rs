@@ -304,6 +304,8 @@ pub struct App {
     /// "Custom Python API Scripts Folder" and its text when the scanner last started: a change
     /// to either starts it again.
     scripts_keys: (bool, String),
+    /// AutoLaunch was tried (`_ranAutoLaunchScript`): it runs once per Tandem run.
+    autolaunch_ran: bool,
     composer_windows: composer_ui::Windows,
     composer_clip: Option<(String, Vec<usize>)>,
     /// The pane whose dropdown's Help button is under the pointer (its tooltip shows).
@@ -868,6 +870,7 @@ pub fn run() {
         scripts_tree: Vec::new(),
         scripts_all: Vec::new(),
         scripts_keys: Default::default(),
+        autolaunch_ran: false,
         composer_windows: Default::default(),
         composer_clip: None,
         composer_hover: None,
@@ -1432,15 +1435,20 @@ impl App {
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
     fn scripts_scan_start(&mut self) {
         let keys = (self.globals.bool("UseCustomScriptsFolder"), self.globals.string("CustomScriptsFolder"));
-        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
-        let folder = crate::scripts::scripts_folder(keys.0, &keys.1, &appdata, &home, &crate::scripts::RealFs);
+        let folder = self.scripts_folder();
         // The old scanner's thread ends on its own; a scan it is in finishes first.
         let mut scanner = crate::scripts_scan::Scanner::start(folder, self.notify.clone());
         // A build under way keeps holding scans (its file events), as with the old scanner.
         scanner.hold(self.provisioner.as_ref().is_some_and(|p| p.busy()));
         self.scripts_scan = Some(scanner);
         self.scripts_keys = keys;
+    }
+
+    /// The Scripts folder the settings name now (`scriptsPath`, `FM:236-252`).
+    pub(super) fn scripts_folder(&self) -> PathBuf {
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        crate::scripts::scripts_folder(self.globals.bool("UseCustomScriptsFolder"), &self.globals.string("CustomScriptsFolder"), &appdata, &home, &crate::scripts::RealFs)
     }
 
     /// iTerm2's `scriptsFolderDidChange:` (`M:172-178`): either scripts folder setting changed
@@ -1470,6 +1478,7 @@ impl App {
                 crate::scripts_scan::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
                     self.scripts_all = crate::scripts::all_scripts(&result.tree);
                     self.scripts_tree = result.tree;
+                    self.refresh_scripts_menu();
                 }
                 crate::scripts_scan::ScanEvent::Done(_) => {}
             }
@@ -2733,6 +2742,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // The Python API starts with the first window when it is on.
                 self.api_launch();
                 self.scripts_scan_start();
+                // With the API up (or not) and the Scripts folder made: AutoLaunch, once.
+                self.run_autolaunch();
             }
             Err(e) => {
                 message_box(&format!("Could not start the GPU renderer: {e}"));

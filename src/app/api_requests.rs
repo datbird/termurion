@@ -10,10 +10,11 @@
 //! SetProfileProperty, ListProfiles and Preferences read and change profiles and settings
 //! (`api_profile`); SavedArrangement, RestartSession, SetTabLayout and ReorderTabs save and
 //! restore arrangements, start sessions again, set split sizes and move tabs (`api_layout`);
-//! MenuItem finds a menu item by its XIB identifier and runs it as the menu does (`menus`);
-//! Selection reads and sets a session's selection, SetBroadcastDomains sets each window's
-//! custom domains, Tmux lists gateways and sends them commands, shows, hides and creates tmux
-//! windows (its command and create answers come later, from tmux), and ColorPreset finds no
+//! MenuItem finds a menu item by its XIB identifier, or a Scripts menu script by its path,
+//! and runs it as the menu does (`menus`); Selection reads and sets a session's selection,
+//! SetBroadcastDomains sets each window's custom domains, Tmux lists gateways and sends them
+//! commands, shows, hides and creates tmux windows (its command and create answers come
+//! later, from tmux), and ColorPreset finds no
 //! preset until milestone 13 (`api_misc`); session NotificationRequests subscribe sessions
 //! to keystrokes, the keystroke filter, screen updates, prompts and custom escape sequences
 //! (`api_notify`); function registrations and the scripts' results to calls go to the
@@ -1141,6 +1142,10 @@ impl App {
             self.enter(w);
         }
         self.sync_checks();
+        // The Scripts menu's scripts are items too, by their paths (`H:1526-1539`).
+        if let Some(answer) = self.script_menu_request(r.identifier.as_deref().unwrap_or(""), r.query_only.unwrap_or(false)) {
+            return answer;
+        }
         let item = menus::by_identifier(r.identifier.as_deref().unwrap_or(""));
         let enabled = item.is_some_and(App::menu_enabled);
         let checked = item.is_some_and(|i| self.menu_checked(i.label()));

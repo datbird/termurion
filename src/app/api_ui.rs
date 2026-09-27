@@ -608,6 +608,8 @@ impl App {
                 Event::Rejected { key, reason } => {
                     let (stamp, now) = (self.history_stamp(), unix_secs());
                     self.script_history.rejected(key.as_deref(), "", &reason, &stamp, &api_auth::fresh_key(), now);
+                    // A refused script's entry stops: its menu item loses its check mark.
+                    self.refresh_scripts_menu();
                 }
             }
             true
@@ -647,6 +649,7 @@ impl App {
         } else {
             let key = (!p.upgrade.disable_auth_ui).then_some(key.as_str());
             self.script_history.rejected(key, &name, reason, &stamp, &api_auth::fresh_key(), now);
+            self.refresh_scripts_menu();
         }
     }
 
@@ -721,6 +724,8 @@ impl App {
             let key = key.clone();
             let stamp = self.history_stamp();
             self.script_history.closed(&key, &stamp);
+            // A script whose connection closed reads as stopped (`SC:616-623`), unchecked too.
+            self.refresh_scripts_menu();
         }
         self.api_subs.drop_conn(conn);
         self.api_var_subs.drop_conn(conn);

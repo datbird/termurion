@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::api_proto::pb;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct Item {
     pub path: Vec<String>,
     #[serde(default)]
@@ -119,6 +119,12 @@ impl Item {
         };
         Some(Chord { key, cmd: has("cmd"), alt: has("opt"), shift: has("shift") || implied_shift, ctrl: has("ctrl") })
     }
+}
+
+/// A menu title as Tandem shows it (the menu bar, Open Quickly): iTerm2's with "Finder" as
+/// "Explorer" (Decision). The schema keeps iTerm2's titles, which menu ids are made of.
+pub fn shown_label(label: &str) -> String {
+    label.replace("Finder", "Explorer")
 }
 
 pub fn by_id(id: &str) -> Option<&'static Item> {
@@ -314,6 +320,12 @@ mod tests {
         assert_eq!((r.status, r.checked, r.enabled, run), (Some(Status::Ok as i32), Some(true), Some(false), false));
         let (r, run) = menu_answer(i, true, false, false);
         assert_eq!((r.status, r.checked, r.enabled, run), (Some(Status::Ok as i32), Some(false), Some(true), true));
+    }
+
+    #[test]
+    fn script_labels_follow_windows() {
+        assert_eq!(shown_label("Reveal Scripts in Finder"), "Reveal Scripts in Explorer");
+        assert_eq!(shown_label("New Tab"), "New Tab");
     }
 
     #[test]
