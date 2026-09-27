@@ -417,21 +417,63 @@ pub fn deps_key(paths: &BTreeSet<String>, scope: &dyn expr::Scope) -> String {
     serde_json::to_string(&now).unwrap_or_default()
 }
 
-/// Answers every call as still running: an evaluation that only reads paths.
-struct Waits;
-
-impl expr::Calls for Waits {
-    fn call(&mut self, _call: &Call, _args: &BTreeMap<String, Value>) -> Outcome {
-        Outcome::Pending
+/// Every path an expression names, in every branch and every call's arguments: iTerm2 reads
+/// each variable when it parses (`EP:409-445`), and those reads are the recorded references
+/// (`iTermGenericEvaluator.m`, `iTermVariableRecordingScope`).
+pub fn paths_in(e: &Expr, out: &mut BTreeSet<String>) {
+    match e {
+        Expr::Num(_) | Expr::Bool(_) | Expr::Null => {}
+        Expr::Path { path, .. } => {
+            out.insert(path.clone());
+        }
+        Expr::Index { path, index } => {
+            out.insert(path.clone());
+            paths_in(index, out);
+        }
+        Expr::Str(parts) => template_paths_into(parts, out),
+        Expr::Array(items) => items.iter().for_each(|x| paths_in(x, out)),
+        Expr::Call(c) => call_paths(c, out),
+        Expr::Not(x) | Expr::Neg(x) | Expr::Opt(x) => paths_in(x, out),
+        Expr::Bin(l, _, r) => {
+            paths_in(l, out);
+            paths_in(r, out);
+        }
+        Expr::Cond(c, t, f) => {
+            paths_in(c, out);
+            paths_in(t, out);
+            paths_in(f, out);
+        }
     }
 }
 
+/// The paths a call's argument values name (`paths_in`).
+pub fn call_paths(c: &Call, out: &mut BTreeSet<String>) {
+    for (_, a) in &c.args {
+        if let Arg::Value(x) = a {
+            paths_in(x, out);
+        }
+    }
+}
+
+fn template_paths_into(parts: &[Part], out: &mut BTreeSet<String>) {
+    for p in parts {
+        if let Part::Expr(x) = p {
+            paths_in(x, out);
+        }
+    }
+}
+
+/// Every path an interpolated string names (`paths_in`).
+pub fn template_paths(parts: &[Part]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    template_paths_into(parts, &mut out);
+    out
+}
+
 /// An interpolated string's dependencies now (`iTermGenericEvaluator.m`'s recorded
-/// references): the paths it reads, calls answering nothing, and their values as one text.
-pub fn template_deps(parts: &[Part], text: &str, scope: &dyn expr::Scope, lax: bool) -> String {
-    let rec = Recorder { inner: scope, read: RefCell::default() };
-    let _ = expr::eval_template(parts, &rec, &mut Waits, &expr::Ctx { invocation: text, lax });
-    deps_key(&rec.read.into_inner(), scope)
+/// references): the values of every path it names, as one text.
+pub fn template_deps(parts: &[Part], scope: &dyn expr::Scope) -> String {
+    deps_key(&template_paths(parts), scope)
 }
 
 /// What a status bar string shows after an evaluation (`iTermGenericEvaluator.m`
@@ -448,7 +490,7 @@ pub fn template_outcome(value: &Outcome) -> Option<Result<String, String>> {
 /// "Invocation of ... failed with error" (`iTermGenericEvaluator.m`): a failed status bar
 /// string, in the failing connection's log.
 pub fn template_failed_text(template: &str, reason: &str) -> String {
-    format!("Invocation of \u{201c}{template}\u{201d} failed with error:\n{reason}")
+    format!("Invocation of \u{201c}{template}\u{201d} failed with error:\n{reason}\n")
 }
 
 /// A frame of temporary values (a trigger's, a component's `__knobs`) over a scope.
@@ -1006,13 +1048,22 @@ mod tests {
 
         let mut v = scope();
         let parts = expr::parse_template("a\\(f(n: columns))\\(user.x)").unwrap();
-        let before = template_deps(&parts, "t", &v, true);
+        let before = template_deps(&parts, &v);
         v.insert("user.other".into(), json!(1));
-        assert_eq!(template_deps(&parts, "t", &v, true), before, "an unread path");
+        assert_eq!(template_deps(&parts, &v), before, "an unread path");
         v.insert("columns".into(), json!(81));
-        let after = template_deps(&parts, "t", &v, true);
+        let after = template_deps(&parts, &v);
         assert_ne!(after, before, "a call's argument");
         v.insert("user.x".into(), json!("changed"));
-        assert_ne!(template_deps(&parts, "t", &v, true), after, "a part after a waiting call");
+        assert_ne!(template_deps(&parts, &v), after, "a part after a waiting call");
+
+        // Review finding 2: every path of the parse, also in a branch a call decides
+        // (`EP:409-445` reads each path at parse time), in an index and in a nested string.
+        let parts = expr::parse_template("\\(f() ? a : b)\\(m[g(x: i)])\\(h(s: \"\\(q?)\"))").unwrap();
+        assert_eq!(template_paths(&parts), BTreeSet::from(["a", "b", "m", "i", "q"].map(String::from)));
+        let before = template_deps(&parts, &v);
+        v.insert("a".into(), json!(1));
+        assert_ne!(template_deps(&parts, &v), before, "a path in a call-decided branch");
+        assert_eq!(template_failed_text("\\(f())", "boom"), "Invocation of \u{201c}\\(f())\u{201d} failed with error:\nboom\n");
     }
 }

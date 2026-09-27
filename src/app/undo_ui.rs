@@ -85,7 +85,7 @@ impl App {
         for mut p in panes {
             let guid = p.profile.clone();
             self.forget_cookie(&p);
-            self.api_session_subs.forget_session(p.id);
+            self.pane_gone(p.id);
             // A paused reader would hold up the pty's shutdown: let it drain first.
             p.set_paused(false);
             drop(p);

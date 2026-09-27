@@ -424,6 +424,7 @@ impl App {
         let n_left = usize::from(left.is_some());
         let all = sbc::with_temporaries(&layout.components, left, right);
         let mut shown: Vec<Shown> = Vec::new();
+        let pass = self.begin_script_pass();
         for (j, c) in all.iter().enumerate() {
             let index = j.checked_sub(n_left).filter(|&i| i < layout.components.len());
             if let Some(piece) = Piece::of(&c.class) {
@@ -436,6 +437,7 @@ impl App {
                 shown.push(Shown { index, temporary: index.is_none(), piece, component: c.clone(), content, widths: Vec::new(), min_text_pt: None, text_scale: self.status_text_scale(&layout, c), tail: None });
             }
         }
+        self.end_script_pass(bar.pane, pass);
         if shown.is_empty() {
             let c = Component { class: PLACEHOLDER_CLASS.into(), knobs: toml::Table::new(), config: toml::Table::new() };
             let text_scale = self.status_text_scale(&layout, &c);

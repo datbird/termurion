@@ -626,6 +626,8 @@ pub struct App {
     /// Status bar strings with function calls, by session and string: their shown values
     /// and running evaluations (app-wide; a pane's entries go with the pane).
     script_templates: HashMap<(PaneId, String), script_ui::Template>,
+    /// The last bar layout pass that asked for status bar strings (`begin_script_pass`).
+    script_pass: u64,
     /// Status bar component unread counts set by scripts: by component identifier, and per
     /// session (which wins when set, `iTermStatusBarUnreadCountController.m:51-60`). Read by
     /// the script components (Task 7).
@@ -984,6 +986,7 @@ pub fn run() {
         script_tokens: HashMap::new(),
         script_alerts: VecDeque::new(),
         script_templates: HashMap::new(),
+        script_pass: 0,
         script_alert: None,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
@@ -1109,6 +1112,15 @@ impl App {
     /// keeps it).
     fn forget_cookie(&self, pane: &Pane) {
         self.forget_cookie_text(pane.cookie.as_deref());
+    }
+
+    /// A pane dropped for good (closed with no Undo Close, its Undo Close expired, or a
+    /// failed arrangement's): its API subscriptions, unread counts and script caches go.
+    /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
+    pub(super) fn pane_gone(&mut self, id: PaneId) {
+        self.api_session_subs.forget_session(id);
+        self.unread_session_counts.retain(|(p, _), _| *p != id);
+        self.script_templates.retain(|(p, _), _| *p != id);
     }
 
     /// A cookie that will never be used takes itself out of the jar.
@@ -1522,11 +1534,8 @@ impl App {
                 _ => {
                     self.forget_cookie(&p);
                     self.forget_session_profile(&p.profile);
-                    // Gone for good: its API subscriptions, unread counts and status bar
-                    // strings go (a pane kept for Undo Close keeps them).
-                    self.api_session_subs.forget_session(id);
-                    self.unread_session_counts.retain(|(p, _), _| *p != id);
-                    self.script_templates.retain(|(p, _), _| *p != id);
+                    // Gone for good (a pane kept for Undo Close keeps its state).
+                    self.pane_gone(id);
                 }
             }
         }

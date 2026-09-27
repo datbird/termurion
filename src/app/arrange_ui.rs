@@ -315,7 +315,7 @@ impl App {
                         self.jobs.forget(pid);
                     }
                     self.forget_cookie(&p);
-                    self.api_session_subs.forget_session(id);
+                    self.pane_gone(id);
                 }
             }
             return Err(e);

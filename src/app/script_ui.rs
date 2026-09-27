@@ -59,26 +59,39 @@ pub(super) enum Origin {
     Quiet,
 }
 
-/// A status bar string with function calls (`iTermGenericEvaluator.m`): the value shown
-/// (empty before the first evaluation finishes), the evaluation still running, the
-/// dependencies it started with, the newest evaluation whose value was applied, and the
-/// functions it found unregistered (their registration starts it again).
+/// A status bar string with function calls (`iTermGenericEvaluator.m`): the paths its parse
+/// names (or its syntax error), parsed once; the value shown (empty before the first
+/// evaluation finishes), the evaluation still running, the dependencies it started with, the
+/// newest evaluation whose value was applied, the functions it found unregistered, the
+/// registry generation it last checked them against, and the last bar layout that asked for
+/// it (an entry no layout asks for any more goes).
 #[derive(Clone, Debug, Default)]
 pub(super) struct Template {
+    pub paths: Option<Result<BTreeSet<String>, String>>,
     pub value: Option<Result<String, String>>,
     pub running: Option<u64>,
     pub deps: String,
     pub applied: u64,
     pub missing: BTreeSet<String>,
+    pub generation: u64,
+    pub pass: u64,
 }
 
 impl Template {
     /// Whether an evaluation starts now (`reevaluateIfNeeded`, `dependencyDidChange`,
     /// `registeredFunctionsDidChange:`): nothing ran yet, the dependencies changed since the
-    /// last start, or a function it missed is registered now. Never while its own
+    /// last start, or, once per change of the registered functions (`generation`), a
+    /// function it missed is registered now; those alone leave `missing`. Never while its own
     /// evaluation runs with the same dependencies.
-    fn needs_start(&self, deps: &str, registered: impl Fn(&str) -> bool) -> bool {
-        (self.value.is_none() && self.running.is_none()) || self.deps != deps || self.missing.iter().any(|s| registered(s))
+    fn needs_start(&mut self, deps: &str, generation: u64, registered: impl Fn(&str) -> bool) -> bool {
+        let mut start = (self.value.is_none() && self.running.is_none()) || self.deps != deps;
+        if self.generation != generation {
+            self.generation = generation;
+            let before = self.missing.len();
+            self.missing.retain(|s| !registered(s));
+            start |= self.missing.len() != before;
+        }
+        start
     }
 
     /// An evaluation finished (`evaluateSynchronously:sideEffectsAllowed:`): dropped when a
@@ -98,6 +111,11 @@ impl Template {
         self.value = Some(value);
         changed
     }
+}
+
+/// Drops `pane`'s entries not stamped with `pass`: its bar's layout no longer asks for them.
+fn sweep<T>(map: &mut HashMap<(PaneId, String), T>, pane: PaneId, pass: u64, pass_of: impl Fn(&T) -> u64) {
+    map.retain(|(p, _), t| *p != pane || pass_of(t) == pass);
 }
 
 /// Status bar strings have iTerm2's interpolated string timeout (`iTermGenericEvaluator.m`,
@@ -353,15 +371,7 @@ impl App {
     /// current tab's focused session's in window scope, any session's app scope (else an
     /// empty one). A receiver is its object's (`receiver`). None when the object is gone.
     pub(super) fn script_values(&self, spec: &ScopeSpec) -> Option<Values> {
-        let session = |pane: PaneId| -> Option<Values> {
-            if !self.panes.contains_key(&pane) {
-                return None;
-            }
-            let vars = self.variables_with(pane, true);
-            let mut out = api_vars::scope_values(&vars, Scope::Session);
-            api_vars::typed_users(&self.api_vars, &vars, Scope::Session, &pane.to_string(), &mut out);
-            Some(out)
-        };
+        let session = |pane: PaneId| self.session_values(pane, true);
         // The object catalog only for the scopes that read it (a status bar string reads a
         // session's scope every frame).
         let window = |k: u64| -> Option<Values> {
@@ -381,6 +391,19 @@ impl App {
                 (builtin_fns::On::Function, _) => None,
             },
         }
+    }
+
+    /// A session's scope values (`script_values`), with its selection only when asked (a
+    /// copy of the selection is costly and a status bar string reads it every frame). None
+    /// when the pane is gone.
+    pub(super) fn session_values(&self, pane: PaneId, selection: bool) -> Option<Values> {
+        if !self.panes.contains_key(&pane) {
+            return None;
+        }
+        let vars = self.variables_with(pane, selection);
+        let mut out = api_vars::scope_values(&vars, Scope::Session);
+        api_vars::typed_users(&self.api_vars, &vars, Scope::Session, &pane.to_string(), &mut out);
+        Some(out)
     }
 
     /// Steps a run against the values its scope had when it started; a finished run goes to
@@ -471,28 +494,51 @@ impl App {
     /// (empty before the first) and starts an evaluation when `Template::needs_start` says
     /// so. The first evaluation is preceded by a synchronous one, script calls answering
     /// nothing (`reevaluateIfNeeded`); evaluations have no side effects
-    /// (`SWS:117-119`, `ACT:72-74`) and time out after 30 s.
+    /// (`SWS:117-119`, `ACT:72-74`) and time out after 30 s. The string is parsed once, and
+    /// its dependencies read the selection only when it names it.
     pub(super) fn template(&mut self, pane: PaneId, template: &str) -> Result<String, String> {
-        if !crate::interp::has_calls(template) {
-            return self.evaluate_for(pane, template);
-        }
-        let parts = expr::parse_template(template)?;
-        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
-        let spec = ScopeSpec::Session { pane, frame: Values::new() };
-        let deps = script_eval::template_deps(&parts, template, &self.script_values(&spec).unwrap_or_default(), lax);
         let key = (pane, template.to_string());
+        if !self.script_templates.contains_key(&key) {
+            if !crate::interp::has_calls(template) {
+                return self.evaluate_for(pane, template);
+            }
+            let paths = expr::parse_template(template).map(|parts| script_eval::template_paths(&parts));
+            self.script_templates.insert(key.clone(), Template { paths: Some(paths), ..Template::default() });
+        }
+        let pass = self.script_pass;
+        let Some(entry) = self.script_templates.get_mut(&key) else { return Ok(String::new()) };
+        entry.pass = pass;
+        let paths = match entry.paths.as_ref() {
+            Some(Ok(paths)) => paths.clone(),
+            Some(Err(e)) => return Err(e.clone()),
+            None => BTreeSet::new(),
+        };
+        let selection = paths.iter().any(|p| crate::prompted::names_selection(p));
+        let deps = script_eval::deps_key(&paths, &self.session_values(pane, selection).unwrap_or_default());
         let fns = &self.api_fns;
-        let entry = self.script_templates.entry(key.clone()).or_default();
-        if entry.needs_start(&deps, |sig| fns.has_signature(sig)) {
+        let Some(entry) = self.script_templates.get_mut(&key) else { return Ok(String::new()) };
+        if entry.needs_start(&deps, fns.generation(), |sig| fns.has_signature(sig)) {
             let first = entry.value.is_none();
             entry.deps = deps;
-            entry.missing.clear();
             if first {
                 self.start_template(pane, template, Timeout::Sync);
             }
             self.start_template(pane, template, Timeout::from_secs(TEMPLATE_TIMEOUT_SECS));
         }
         self.script_templates.get(&key).and_then(|t| t.value.clone()).unwrap_or(Ok(String::new()))
+    }
+
+    /// A bar's layout is about to ask for its strings: entries it asks for are stamped with
+    /// this pass.
+    pub(super) fn begin_script_pass(&mut self) -> u64 {
+        self.script_pass += 1;
+        self.script_pass
+    }
+
+    /// After a bar asked for its strings: the pane's entries it did not ask for (an edited
+    /// text, a removed component) go, with any evaluation still running for them.
+    pub(super) fn end_script_pass(&mut self, pane: PaneId, pass: u64) {
+        sweep(&mut self.script_templates, pane, pass, |t| t.pass);
     }
 
     /// Starts one evaluation of a status bar string, recorded as its entry's running one.
@@ -729,18 +775,25 @@ mod tests {
     fn template_cache_follows_iterm2() {
         let none = |_: &str| false;
         let mut t = Template::default();
-        assert!(t.needs_start("d", none), "nothing ran yet");
+        assert!(t.needs_start("d", 0, none), "nothing ran yet");
         t.deps = "d".into();
         t.running = Some(5);
-        assert!(!t.needs_start("d", none), "its evaluation runs");
-        assert!(t.needs_start("e", none), "a dependency changed");
+        assert!(!t.needs_start("d", 0, none), "its evaluation runs");
+        assert!(t.needs_start("e", 0, none), "a dependency changed");
         // The synchronous pass (4) then the asynchronous one (5).
         assert!(t.finish(4, &BTreeSet::new(), &expr::Outcome::Done(json!("sync"))));
         assert_eq!((t.value.clone(), t.running), (Some(Ok("sync".into())), Some(5)));
         assert!(t.finish(5, &BTreeSet::from(["f()".to_string()]), &expr::Outcome::Failed(Failure::plain("No function"))));
         assert_eq!((t.value.clone(), t.running), (Some(Err("No function".into())), None));
-        assert!(!t.needs_start("d", none));
-        assert!(t.needs_start("d", |s| s == "f()"), "the missed function is registered now");
+        assert!(!t.needs_start("d", 0, none));
+        // Review finding 4: once per change of the registered functions, and only the newly
+        // registered names leave `missing`.
+        t.missing.insert("g()".into());
+        assert!(!t.needs_start("d", 0, |s| s == "f()"), "no registration happened");
+        assert!(t.needs_start("d", 1, |s| s == "f()"), "the missed function is registered now");
+        assert_eq!(t.missing, BTreeSet::from(["g()".to_string()]));
+        assert!(!t.needs_start("d", 1, |s| s == "f()" || s == "g()"), "once per registration");
+        assert!(!t.needs_start("d", 2, |s| s == "f()"), "another registration, none it missed");
         // Two running: the newer finishes first, then the older is dropped.
         t.running = Some(8);
         assert!(t.finish(8, &BTreeSet::new(), &expr::Outcome::Done(json!("new"))));
@@ -752,6 +805,15 @@ mod tests {
         assert_eq!((t.value.clone(), t.running), (Some(Ok("nine".into())), Some(10)));
         assert!(!t.finish(10, &BTreeSet::new(), &expr::Outcome::Done(json!("nine"))), "the same value");
         assert_eq!(t.running, None);
+
+        // Review finding 5: a pane's entries its layout did not ask for this pass go; other
+        // panes' stay.
+        let stamp = |pass| Template { pass, ..Template::default() };
+        let mut map = HashMap::from([((1, "old".to_string()), stamp(3)), ((1, "new".to_string()), stamp(4)), ((2, "other".to_string()), stamp(1))]);
+        sweep(&mut map, 1, 4, |t| t.pass);
+        let mut keys: Vec<_> = map.keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, [(1, "new".to_string()), (2, "other".to_string())]);
     }
 
     /// Review finding 1: an Invoke Script Function trigger whose function is not registered
