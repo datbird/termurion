@@ -87,6 +87,9 @@ pub(super) struct MenuBar {
     /// View > Toolbelt and its fixed items, then its tool items (by tool name) after them.
     pub(super) toolbelt: Option<(Submenu, usize)>,
     pub(super) toolbelt_checks: Vec<(String, CheckMenuItem)>,
+    /// Scripts > Manage > Install Python Runtime, retitled "Check for Updated Runtime" once uv
+    /// is installed.
+    pub(super) install_runtime: Option<MenuItem>,
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -107,6 +110,7 @@ impl App {
         let menu = Menu::new();
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();
+        let mut install_runtime = None;
         for item in menus::items() {
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
@@ -124,7 +128,11 @@ impl App {
                     checks.insert(item.label().to_string(), c.clone());
                     (parent, Box::new(c))
                 } else {
-                    (parent, Box::new(MenuItem::with_id(item.id(), menu_text(item), enabled, None)))
+                    let m = MenuItem::with_id(item.id(), menu_text(item), enabled, None);
+                    if item.selector == "installPythonRuntime:" {
+                        install_runtime = Some(m.clone());
+                    }
+                    (parent, Box::new(m))
                 }
             };
             let appended = if parent.is_empty() {
@@ -181,7 +189,8 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime });
+        self.runtime_menu_title();
         self.sync_checks();
     }
 
@@ -246,7 +255,8 @@ impl App {
 
     /// Whether a menu bar item is enabled: the rule `install_menus` builds the bar with.
     pub(super) fn menu_enabled(item: &Item) -> bool {
-        !matches!(commands::status(item), Status::Later(_)) && !commands::DISABLED_IN_SESSION.contains(&item.selector.as_str())
+        let sel = item.selector.as_str();
+        !matches!(commands::status(item), Status::Later(_)) && !commands::DISABLED_IN_SESSION.contains(&sel) && !commands::DISABLED_UNDER_UV.contains(&sel)
     }
 
     /// Check marks follow the focused pane's terminal modes.
@@ -394,6 +404,7 @@ impl App {
             "renderSelection:" => self.render_selection(),
             "findGlobally:" => self.open_global_find(event_loop),
             "openQuickly:" => self.open_quickly(event_loop),
+            "installPythonRuntime:" => self.install_python_runtime(),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
                 let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));

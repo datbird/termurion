@@ -111,6 +111,8 @@ mod pwm_app;
 mod api_ui;
 mod api_requests;
 mod script_ui;
+mod script_runtime_ui;
+mod scripts_alerts;
 mod builtin_ui;
 
 pub enum UserEvent {
@@ -632,6 +634,14 @@ pub struct App {
     /// "Function Call Failed" alerts (and results) waiting to show, and the one showing.
     script_alerts: VecDeque<script_ui::Alert>,
     script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert)>,
+    /// The provisioning worker (started on first use), what each submitted job continues
+    /// with, and whether Tandem's uv is installed (the runtime menu item's title).
+    provisioner: Option<crate::script_provision::Provisioner>,
+    provision_after: HashMap<u64, script_runtime_ui::After>,
+    uv_installed: bool,
+    /// The Scripts features' alerts waiting to show, and the one showing.
+    scripts_alerts: VecDeque<scripts_alerts::Ask>,
+    scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
     /// Status bar strings with function calls, by session and string: their shown values
     /// and running evaluations (app-wide; a pane's entries go with the pane).
     script_templates: HashMap<(PaneId, String), script_ui::Template>,
@@ -1013,6 +1023,11 @@ pub fn run() {
         script_templates: HashMap::new(),
         script_pass: 0,
         script_alert: None,
+        provisioner: None,
+        provision_after: HashMap::new(),
+        uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
+        scripts_alerts: VecDeque::new(),
+        scripts_alert: None,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
         script_components: HashMap::new(),
@@ -1413,13 +1428,17 @@ impl App {
         }
     }
 
-    /// Takes the scanner's results: the tree and the script names. The slow-scan question
-    /// and found archives are asked about in later tasks; until then a slow scan goes on.
+    /// Takes the scanner's results: the tree and the script names, and the slow-scan question
+    /// ("Performance Issue", Stop or Continue, `M:489-509`). Found archives are asked about in
+    /// a later task.
     fn scripts_scan_tick(&mut self) {
-        let Some(scanner) = self.scripts_scan.as_ref() else { return };
-        while let Some(event) = scanner.try_event() {
+        while let Some((event, folder)) = self.scripts_scan.as_ref().and_then(|s| Some((s.try_event()?, s.folder().to_path_buf()))) {
             match event {
-                crate::scripts_scan::ScanEvent::Slow => scanner.answer_slow(true),
+                crate::scripts_scan::ScanEvent::Slow => {
+                    let text = crate::scripts::slow_text(&folder);
+                    let buttons = vec![crate::scripts::STOP.to_string(), crate::scripts::CONTINUE.to_string()];
+                    self.ask_scripts(scripts_alerts::Ask { heading: crate::scripts::SLOW_HEADING.to_string(), text, buttons, silence: None, then: scripts_alerts::Then::SlowScan });
+                }
                 // An unchanged tree is left alone, so nothing built from it is rebuilt.
                 crate::scripts_scan::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
                     self.scripts_all = crate::scripts::all_scripts(&result.tree);
@@ -2850,8 +2869,10 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_api_alerts(event_loop);
         self.tick_script_titles();
         let script_due = self.script_tick();
+        let provision_due = self.provision_tick();
         self.scripts_scan_tick();
         self.open_script_alerts(event_loop);
+        self.open_scripts_alerts(event_loop);
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -2870,7 +2891,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -2966,7 +2987,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

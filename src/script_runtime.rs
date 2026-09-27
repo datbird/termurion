@@ -635,6 +635,11 @@ pub fn update_check_failed(reason: &str) -> String {
 }
 pub const UPDATE_DOWNLOAD_FAILED: &str = "Could not download the uv update.";
 pub const SETTING_UP: &str = "Setting up the Python environment\u{2026}";
+/// The Script Console line when a script's environment is missing and nothing may download
+/// it (AutoLaunch and other paths no one chose, `M:916`).
+pub fn env_missing_line(name: &str) -> String {
+    format!("The Python environment for \u{201c}{name}\u{201d} is missing (the shared runtime may have been deleted). Launch it from the Scripts menu to rebuild it.\n")
+}
 pub const CHECKSUM_MISMATCH: &str = "The downloaded uv did not match its checksum.";
 
 
@@ -827,6 +832,10 @@ mod tests {
         let (heading, text) = update_consent();
         assert_eq!(heading, "Check for Updated Runtime?");
         assert!(text.contains("pypi.org") && text.contains("github.com/astral-sh/uv"), "{text}");
+        assert_eq!(
+            env_missing_line("Full"),
+            "The Python environment for \u{201c}Full\u{201d} is missing (the shared runtime may have been deleted). Launch it from the Scripts menu to rebuild it.\n"
+        );
         for t in [uv_consent(12).1, packages_consent(&packages, Some("3.12")).1, text] {
             assert!(!t.contains("automatically"), "{t}");
         }

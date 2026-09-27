@@ -17,6 +17,10 @@ pub enum Status {
 /// to undo there, and Cut is never allowed.
 pub const DISABLED_IN_SESSION: &[&str] = &["undo:", "redo:", "cut:"];
 
+/// Commands iTerm2 disables while its Python runtime comes from uv, its default and Tandem's
+/// only way (`AD:454-462`): installing a hand-downloaded legacy runtime zip means nothing then.
+pub const DISABLED_UNDER_UV: &[&str] = &["installAlreadyDownloadedPythonRuntime:"];
+
 /// Commands that work now. "selector|Label" names one item of a shared selector.
 pub const DONE: &[&str] = &[
     "showAbout:", "showPrefWindow:", "terminate:", "hide:", "newSession:", "newSessionAlternate:",
@@ -52,7 +56,7 @@ pub const DONE: &[&str] = &[
     "toggleSizeLocked:", "toggleLayoutLocked:", "decreaseHeight:", "increaseHeight:", "decreaseWidth:", "increaseWidth:",
     "editWindowTitle:", "editTabTitle:", "arrangeHorizontally:", "undoCloseSession:",
     "saveWindowArrangement:", "saveCurrentWindowAsArrangement:", "importWindowArrangement:", "changeProfileInArrangement:",
-    "showBookmarkWindow:", "installShellIntegration:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
+    "showBookmarkWindow:", "installShellIntegration:", "installPythonRuntime:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
     "previousMark:", "clearToLastMark:", "selectOutputOfLastCommand:", "selectCurrentCommand:",
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",
     "enableMarkAlertPostsNotification:", "enableMarkAlertRingsBell:", "performMiniaturize:", "performZoom:", "nextTab:", "previousTab:", "moveTabLeft:",
@@ -267,5 +271,9 @@ mod tests {
         assert_eq!(status(find("exportRecording:", "Export Recording")), Status::Done, "10a");
         assert_eq!(status(find("loadRecording:", "Import Recording")), Status::Done, "10a");
         assert_eq!(status(find("openPasswordManager:", "Password Manager")), Status::Done, "10b");
+        assert_eq!(status(find("installPythonRuntime:", "Install Python Runtime")), Status::Done, "11d");
+        for sel in DISABLED_UNDER_UV {
+            assert!(items().iter().any(|i| i.selector == *sel), "{sel} is not in the menu");
+        }
     }
 }

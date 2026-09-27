@@ -50,6 +50,7 @@ pub mod interp;
 pub mod script_fn;
 pub mod script_eval;
 pub mod script_statusbar;
+pub mod script_provision;
 pub mod script_runtime;
 pub mod scripts;
 #[cfg(windows)]

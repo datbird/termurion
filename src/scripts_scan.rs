@@ -31,6 +31,7 @@ pub enum ScanEvent {
 enum Cmd {
     Answer(bool),
     Rescan,
+    Hold(bool),
 }
 
 /// An auto-reset event that wakes the worker when a command is sent or the scanner goes.
@@ -52,6 +53,8 @@ pub struct Scanner {
     commands: Option<Sender<Cmd>>,
     events: Receiver<ScanEvent>,
     wake: Arc<Wake>,
+    /// Scans are held (a Python environment is being built in the folder).
+    held: bool,
     /// The worker thread; not joined (a scan in progress finishes on its own). The tests
     /// watch it end.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -66,9 +69,9 @@ impl Scanner {
         let (commands, command_rx) = mpsc::channel();
         let (event_tx, events) = mpsc::channel();
         let wake = Arc::new(Wake(unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) }));
-        let worker = Worker { folder: folder.clone(), commands: command_rx, events: event_tx, notify, wake: wake.clone(), disabled: false };
+        let worker = Worker { folder: folder.clone(), commands: command_rx, events: event_tx, notify, wake: wake.clone(), disabled: false, held: false };
         let worker = std::thread::spawn(move || worker.run());
-        Scanner { folder, commands: Some(commands), events, wake, worker: Some(worker) }
+        Scanner { folder, commands: Some(commands), events, wake, held: false, worker: Some(worker) }
     }
 
     pub fn try_event(&self) -> Option<ScanEvent> {
@@ -79,6 +82,16 @@ impl Scanner {
     /// scan is empty until a new scanner starts (iTerm2's `_disableEnumeration`).
     pub fn answer_slow(&self, go_on: bool) {
         self.send(Cmd::Answer(go_on));
+    }
+
+    /// Holds scans while a Python environment is built (its many file events would rescan
+    /// again and again; iTerm2 skips them while provisioning, `M:1669-1680`); letting go scans
+    /// once. Repeating the current state does nothing.
+    pub fn hold(&mut self, on: bool) {
+        if self.held != on {
+            self.held = on;
+            self.send(Cmd::Hold(on));
+        }
     }
 
     /// Scans again now.
@@ -121,6 +134,7 @@ struct Worker {
     notify: Notify,
     wake: Arc<Wake>,
     disabled: bool,
+    held: bool,
 }
 
 impl Worker {
@@ -130,6 +144,10 @@ impl Worker {
         let mut change = watch(&self.folder);
         let mut due = Some(Instant::now());
         'run: loop {
+            // A scan falling due while held waits for the hold to end, which scans anyway.
+            if self.held && due.is_some() {
+                due = None;
+            }
             if due.is_some_and(|t| Instant::now() >= t) {
                 due = None;
                 match self.scan_once() {
@@ -152,6 +170,12 @@ impl Worker {
                 loop {
                     match self.commands.try_recv() {
                         Ok(Cmd::Rescan) => due = Some(Instant::now()),
+                        Ok(Cmd::Hold(on)) => {
+                            self.held = on;
+                            if !on {
+                                due = Some(Instant::now());
+                            }
+                        }
                         // An answer with no question waiting.
                         Ok(Cmd::Answer(_)) => {}
                         Err(TryRecvError::Empty) => break,
@@ -192,7 +216,7 @@ impl Worker {
             return Some(false);
         }
         let start = Instant::now();
-        let (mut gone, mut again) = (false, false);
+        let (mut gone, mut again, mut held) = (false, false, self.held);
         let result = {
             let (events, notify, commands) = (&self.events, &self.notify, &self.commands);
             scripts::scan(&self.folder, &RealFs, &mut || start.elapsed(), &mut || {
@@ -202,6 +226,11 @@ impl Worker {
                     match commands.recv() {
                         Ok(Cmd::Answer(go_on)) => return go_on,
                         Ok(Cmd::Rescan) => again = true,
+                        Ok(Cmd::Hold(on)) => {
+                            held = on;
+                            // Letting go asks for the scan the hold put off.
+                            again |= !on;
+                        }
                         Err(_) => {
                             gone = true;
                             return false;
@@ -210,6 +239,7 @@ impl Worker {
                 }
             })
         };
+        self.held = held;
         if gone {
             return None;
         }
@@ -286,6 +316,24 @@ mod tests {
         assert_eq!(s.folder(), dir);
         assert_eq!(wait_for_done(&s, &["a.py"]), ["a.py"]);
         std::fs::write(dir.join("b.py"), "").unwrap();
+        assert_eq!(wait_for_done(&s, &["a.py", "b.py"]), ["a.py", "b.py"]);
+        assert!(ends(s), "the worker thread did not end");
+    }
+
+    #[test]
+    fn scanner_holds_while_provisioning() {
+        let tmp = TempDir::new("hold");
+        let dir = tmp.0.clone();
+        std::fs::write(dir.join("a.py"), "").unwrap();
+        let mut s = Scanner::start(dir.clone(), Arc::new(|| {}));
+        assert_eq!(wait_for_done(&s, &["a.py"]), ["a.py"]);
+        s.hold(true);
+        std::fs::write(dir.join("b.py"), "").unwrap();
+        // Past the settle time no scan comes while held.
+        std::thread::sleep(SETTLE * 3);
+        assert!(s.try_event().is_none(), "a scan came while held");
+        // Letting go scans once and sees the change.
+        s.hold(false);
         assert_eq!(wait_for_done(&s, &["a.py", "b.py"]), ["a.py", "b.py"]);
         assert!(ends(s), "the worker thread did not end");
     }
