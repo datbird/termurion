@@ -199,7 +199,7 @@ fn error(io: &mut Io, msg: &str) {
 }
 
 /// What `[ -r "$1" ]` and `cat "$1"` find for an argument, resolved against `cwd`.
-enum Found {
+pub(crate) enum Found {
     File(Vec<u8>),
     Dir(PathBuf),
     Missing,
@@ -207,7 +207,7 @@ enum Found {
 
 /// A network path, or one reached through a link to one, is never probed (it counts as
 /// missing).
-fn find(cwd: &Path, arg: &str) -> Found {
+pub(crate) fn find(cwd: &Path, arg: &str) -> Found {
     if arg.is_empty() || crate::prompted::network_path(arg) {
         return Found::Missing;
     }
@@ -320,7 +320,7 @@ fn view(tool: Viewer, args: &[String], io: &mut Io) -> i32 {
             _ => {
                 let data = if is_url {
                     // `curl -fs "$1" | b64_encode` under pipefail: curl's code decides.
-                    let cmd = Cmd { program: "curl".into(), args: vec!["-fs".into(), a.to_string()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false };
+                    let cmd = Cmd { program: "curl".into(), args: vec!["-fs".into(), a.to_string()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false };
                     match (io.run)(&cmd) {
                         Ok(o) if o.code == 0 => o.stdout,
                         other => {
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(h.run("imgcat", &["-u", "http://h/x.png"]), 0);
         assert_eq!(
             h.runs,
-            vec![Cmd { program: "curl".into(), args: vec!["-fs".into(), "http://h/x.png".into()], cwd: Some(dir.clone()), stdin: None, inherit: false }]
+            vec![Cmd { program: "curl".into(), args: vec!["-fs".into(), "http://h/x.png".into()], cwd: Some(dir.clone()), stdin: None, inherit: false, quiet: false }]
         );
         assert_eq!(
             text(&h.out),

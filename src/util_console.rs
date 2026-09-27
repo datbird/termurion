@@ -261,7 +261,7 @@ pub fn run_command(c: &Cmd) -> Result<Output, String> {
         let status = cmd.status().map_err(|e| e.to_string())?;
         return Ok(Output { code: status.code().unwrap_or(1), stdout: Vec::new() });
     }
-    cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
+    cmd.stdout(Stdio::piped()).stderr(if c.quiet { Stdio::null() } else { Stdio::inherit() });
     cmd.stdin(if c.stdin.is_some() { Stdio::piped() } else { Stdio::null() });
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     let feeder = match (c.stdin.clone(), child.stdin.take()) {

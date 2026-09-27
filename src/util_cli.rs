@@ -107,6 +107,8 @@ pub struct Cmd {
     pub stdin: Option<Vec<u8>>,
     /// Standard streams shared with the utility; the output is not captured.
     pub inherit: bool,
+    /// Standard error discarded (the scripts' `2>/dev/null`).
+    pub quiet: bool,
 }
 
 /// A finished program: its exit code and captured standard output.
@@ -152,11 +154,18 @@ pub fn term(io: &Io) -> Option<String> {
 /// calls `std::process::exit`: the console's restore (`Drop`, then `real_main`'s restore of
 /// every saved mode) runs only when it returns.
 pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
-    use crate::util_files;
+    use crate::{util_files, util_git, util_simple, util_tip};
     match name {
         "imgcat" => util_files::imgcat(args, io),
         "it2cat" => util_files::it2cat(args, io),
         "it2dl" => util_files::it2dl(args, io),
+        "it2copy" => util_simple::it2copy(args, io),
+        "it2setcolor" => util_simple::it2setcolor(args, io),
+        "it2attention" => util_simple::it2attention(args, io),
+        "it2universion" => util_simple::it2universion(args, io),
+        "it2setkeylabel" => util_simple::it2setkeylabel(args, io),
+        "it2git" => util_git::it2git(args, io),
+        "it2tip" => util_tip::it2tip(args, io),
         #[cfg(windows)]
         "imgls" => {
             let fs = crate::util_imgls::WinFs::new(io.cwd.clone());

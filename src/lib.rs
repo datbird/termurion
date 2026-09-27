@@ -78,6 +78,9 @@ pub mod util_osc;
 pub mod util_cli;
 pub mod util_files;
 pub mod util_imgls;
+pub mod util_simple;
+pub mod util_git;
+pub mod util_tip;
 #[cfg(windows)]
 pub mod util_console;
 pub mod builtin_fns;
