@@ -115,6 +115,32 @@ fn token_elevated(token: HANDLE) -> Result<bool, String> {
     Ok(e.TokenIsElevated != 0)
 }
 
+/// The token of process `pid`, for queries.
+fn process_token(pid: u32) -> Result<Owned, String> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return Err(last_error("OpenProcess"));
+        }
+        let process = Owned(process);
+        let mut token: HANDLE = null_mut();
+        if OpenProcessToken(process.0, TOKEN_QUERY, &mut token) == 0 {
+            return Err(last_error("OpenProcessToken"));
+        }
+        Ok(Owned(token))
+    }
+}
+
+/// The SID of the user process `pid` runs as, as text.
+pub fn process_sid(pid: u32) -> Result<String, String> {
+    token_sid(process_token(pid)?.0)
+}
+
+/// Whether process `pid` runs elevated.
+pub fn process_elevated(pid: u32) -> Result<bool, String> {
+    token_elevated(process_token(pid)?.0)
+}
+
 /// `\\.\pipe\tandem-host-<user SID>`.
 pub fn host_pipe_name() -> Result<String, String> {
     // An elevated Tandem has its own host: normal and elevated shells never mix.
@@ -328,31 +354,19 @@ impl Pipe {
         if !*open {
             return Err("the pipe is closed".into());
         }
-        unsafe {
-            let mut pid = 0u32;
-            if GetNamedPipeServerProcessId(self.handle(), &mut pid) == 0 {
-                return Err(last_error("GetNamedPipeServerProcessId"));
-            }
-            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if process.is_null() {
-                return Err(last_error("OpenProcess"));
-            }
-            let process = Owned(process);
-            let mut token: HANDLE = null_mut();
-            if OpenProcessToken(process.0, TOKEN_QUERY, &mut token) == 0 {
-                return Err(last_error("OpenProcessToken"));
-            }
-            let token = Owned(token);
-            let theirs = token_sid(token.0)?;
-            let mine = user_sid()?;
-            if theirs != mine {
-                return Err(format!("the session host pipe is served by another user ({theirs})"));
-            }
-            if token_elevated(token.0)? != elevated()? {
-                return Err("the session host runs at another elevation than this Tandem".into());
-            }
-            Ok(())
+        let mut pid = 0u32;
+        if unsafe { GetNamedPipeServerProcessId(self.handle(), &mut pid) } == 0 {
+            return Err(last_error("GetNamedPipeServerProcessId"));
         }
+        let theirs = process_sid(pid)?;
+        let mine = user_sid()?;
+        if theirs != mine {
+            return Err(format!("the session host pipe is served by another user ({theirs})"));
+        }
+        if process_elevated(pid)? != elevated()? {
+            return Err("the session host runs at another elevation than this Tandem".into());
+        }
+        Ok(())
     }
 }
 
