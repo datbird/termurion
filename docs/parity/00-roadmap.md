@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 169 | 124 | 21 |
-| `02-global-settings.md` | 820 | 250 | 72 | 498 |
-| `03-features-and-menus.md` | 643 | 447 | 39 | 157 |
-| Total | 1,777 | 866 | 235 | 676 |
+| `01-profile-settings.md` | 314 | 171 | 123 | 20 |
+| `02-global-settings.md` | 823 | 259 | 72 | 492 |
+| `03-features-and-menus.md` | 643 | 456 | 43 | 144 |
+| Total | 1,780 | 886 | 238 | 656 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -135,7 +135,19 @@ Win+Alt+B, key action 15), the floating scrub panel (slider, ticks, Left/Right/S
 Export/Set Start/Set End), and Session > Log > Import Recording and Export Recording, each
 keeping iTerm2's own kept bugs (the second-newest first frame, a stranded Clear during replay, a
 restamped range export, tick marks fixed at panel-open time, and more, listed in
-`docs/acceptance/m10a-checklist.md`). Milestone 10b (the password manager) is next.
+`docs/acceptance/m10a-checklist.md`). Milestone 10b closed milestone 10: the password manager (03),
+opened by Win+Alt+F, a trigger, an automatic rising-edge detection of a password prompt, or a
+click on the key-cursor glyph, one window per terminal window; Windows Credential Manager as the
+built-in store, 1Password and LastPass through their CLIs, and an adapter protocol for KeePassXC,
+Bitwarden and Keeper whose bundled adapter executables are not yet ported; the echo probe and
+broadcast-safe entry, OTP/2FA autofill, and a Windows Hello (falling back to the Windows
+credential prompt) re-authentication gate with its own Settings > Advanced > Password Manager
+override rows; the profile's Open Password Manager Automatically and Open Password Manager
+trigger action (01); and echoProbeDuration, disablePasswordManagerAnimations,
+detectPasswordInput, detectPasswordInputDebounce, lastpassGroups, onePasswordAccount, and the
+three Require Authentication globals (02), each keeping iTerm2's own quirks, listed in
+`docs/acceptance/m10b-checklist.md` and ruled on in `docs/superpowers/rulings/m10b-rulings.txt`.
+Milestone 10 is now complete.
 
 ## Order
 

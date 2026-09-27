@@ -638,8 +638,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | smartCursorColorFgThreshold | smartCursorColorFgThreshold (float, default 0.75) | Threshold for Smart Cursor Color for text color (0 to 1). | missing |  |
 | findUrlsRegex | findUrlsRegex (string, default @"https?://([a-z0-9A-Z]+(:[a-zA-Z0-9]+)?@)?[a-z0-9A-Z\\-]+(\\.[a-z0-9A-Z\\-]+)*"               @"((:[0-9]+)?)(/[a-zA-Z0-9;:/\\.\\-_+%~?&amp;@=#\\(\\)]*)?") | Regular expression for “Find URLs” command. | partial | Tandem uses its own URL pattern for Find URLs; the Advanced pane comes in milestone 13. |
 | findURLsRespectsSoftBoundaries | findURLsRespectsSoftBoundaries (bool, default YES) | When using “Find URLs”, extend results across soft boundaries like tmux pane dividers. | missing |  |
-| echoProbeDuration | echoProbeDuration (float, default 0.5) | Amount of time to wait while testing if echo is on (seconds). | missing |  |
-| disablePasswordManagerAnimations | disablePasswordManagerAnimations (bool, default NO) | Disable animations for showing/hiding password manager. | missing |  |
+| echoProbeDuration | echoProbeDuration (float, default 0.5) | Amount of time to wait while testing if echo is on (seconds). | have | Milestone 10b: the echo probe's duration; the probe off, 0 s, or no backspace bytes to type over sends the password at once, with no wait. |
+| disablePasswordManagerAnimations | disablePasswordManagerAnimations (bool, default NO) | Disable animations for showing/hiding password manager. | have | Milestone 10b: stored with its help text; the password manager window has nothing to animate, so it has no visible effect. |
 | noSyncSilenceAnnoyingBellAutomatically | noSyncSilenceAnnoyingBellAutomatically (bool, default NO) | Automatically silence bell when it rings too much. | have | Milestone 6b. |
 | noSyncVariablesToReport | noSyncVariablesToReport (string, default @"") | Variables to report via control sequence This is a comma-delimited list of variables that can be reported with the OSC 1337 ReportVariable=name control sequence. | missing |  |
 | restoreWindowContents | restoreWindowContents (bool, default YES) | Restore window contents at startup. | have | Milestone 7d: styled text (SGR only), capped by maxHistoryLinesToRestore; both grids, modes, and marks are not restored. |
@@ -660,8 +660,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | maxHistoryLinesToRestore | maxHistoryLinesToRestore (int, default 20000) | Maximum number of lines of history to restore. | have | Milestone 7d. |
 | verticalBarCursorWidth | verticalBarCursorWidth (float, default 1) | Width of vertical bar cursor. | missing |  |
 | acceptOSC7 | acceptOSC7 (bool, default YES) | Accept OSC 7 to set username, hostname, and path. | missing |  |
-| detectPasswordInput | detectPasswordInput (bool, default YES) | Show key at cursor at password prompt? | missing |  |
-| detectPasswordInputDebounce | detectPasswordInputDebounce (float, default 0.2) | How long (seconds) terminal echo must remain disabled before iTerm2 treats it as a password prompt. | missing |  |
+| detectPasswordInput | detectPasswordInput (bool, default YES) | Show key at cursor at password prompt? | have | Milestone 10b: off turns off the console-mode watch entirely, so the key cursor never shows and nothing opens automatically. |
+| detectPasswordInputDebounce | detectPasswordInputDebounce (float, default 0.2) | How long (seconds) terminal echo must remain disabled before iTerm2 treats it as a password prompt. | have | Milestone 10b: a port of `iTermPasswordInputDebouncer`; 0 or negative turns on at once, and a reading that stops echoing off resets at once. |
 | tabsWrapAround | tabsWrapAround (bool, default NO) | Tabs wrap around to the next line. | missing |  |
 | sshSchemePath | sshSchemePath (string, default @"ssh") | Command to run when handling an ssh:// URL. | missing |  |
 | defaultTabStopWidth | defaultTabStopWidth (int, default 8) | Default tab stop width for new sessions. | missing |  |
@@ -676,6 +676,14 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | maxURLLength | maxURLLength (int, default 2097152) | Maximum length for OSC 8 URLs. | missing |  |
 | defaultWideMode | defaultWideMode (bool, default NO) | When rendering natively, use wide mode by default? | have | Milestone 5f, Advanced > General. |
 | bufferDepth | bufferDepth (int, default 40) | Maximum number of chunks to buffer. | missing |  |
+
+### Password Manager
+
+| Setting (UI name) | Key | What it does | Tandem status | Windows note |
+|---|---|---|---|---|
+| Require Authentication to Open Password Manager | RequireAuthenticationToOpenPasswordManager (bool, default YES) | Require the user to authenticate before the password manager opens. | have | Milestone 10b: the gear menu's first item, plus its own Settings > Advanced > Password Manager row; an ordinary global on Windows, not admin-protected as iTerm2 keeps it, so it can always be turned off. |
+| Require Authentication after Screen Locks | RequireAuthenticationAfterScreenLocks (bool, default NO) | Require re-authentication the next time the password manager opens, once the screen has locked. | have | Milestone 10b: enabled only with the row above; shown checked and disabled while Require Authentication on Every Open is on, whatever its own stored value (kept iTerm2 bug); watched via `WTSRegisterSessionNotification`. |
+| Require Authentication on Every Open | RequireAuthenticationOnEveryPasswordManagerOpen (bool, default NO) | Require authentication every time the password manager opens, not only once per unlock. | have | Milestone 10b: enabled only with Require Authentication to Open. |
 
 ### Hotkey
 
@@ -756,8 +764,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | commandHistoryUsePower | commandHistoryUsePower (float, default 3) | When sorting command history for auto command completion: how much should number of uses of a command contribute to its score? A higher score moves the command closer to the top of the list. | have | Milestone 9c. |
 | commandHistoryAgePower | commandHistoryAgePower (float, default 1) | When sorting command history for auto command completion: how much should the time-since-last-use of a command contribute to its score? A higher score moves the command closer to the top of the list. | have | Milestone 9c. |
 | performSQLiteIntegrityCheck | performSQLiteIntegrityCheck (bool, default YES) | Perform restorable state integrity checks? | missing |  |
-| lastpassGroups | lastpassGroups (string, default @"") | Comma-separated list of LastPass groups for the password manager to look in for passwords. | missing |  |
-| onePasswordAccount | onePasswordAccount (string, default @"") | 1Password account name. | missing |  |
+| lastpassGroups | lastpassGroups (string, default @"") | Comma-separated list of LastPass groups for the password manager to look in for passwords. | have | Milestone 10b: filters `lpass ls`'s account list. |
+| onePasswordAccount | onePasswordAccount (string, default @"") | 1Password account name. | have | Milestone 10b: written by the 1Password account picker (Switch Account) when signing in to more than one account. |
 | excludeUtunFromNetworkUtilization | excludeUtunFromNetworkUtilization (bool, default YES) | Exclude utun interfaces from network utilization? This is useful if you use a VPN and only want to see the traffic that goes over Wi-Fi or Ethernet. | have | Milestone 9i: excludes Windows tunnel interfaces (IF_TYPE_TUNNEL or a nonzero TunnelType) from the Network Throughput component; on by default. |
 | noSyncDownloadPrefsTimeout | noSyncDownloadPrefsTimeout (float, default 5.0) | Timeout for downloading settings. | missing |  |
 | showButtonsForSelectedCommand | showButtonsForSelectedCommand (bool, default YES) | Show buttons at the top of a selected command? When you select a command by single clicking the command line or its output, buttons are shown on the top right with options like Copy and Share. | missing |  |

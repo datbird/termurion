@@ -315,7 +315,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Resize Window > Increase Height | Opt+Cmd+Down | Grows the window height by one row via keyboard. (milestone 7) | have, milestone 7a |
 | Window > Resize Window > Decrease Width | no shortcut | Shrinks the window width by one column via keyboard. (milestone 7) | have, milestone 7a |
 | Window > Resize Window > Increase Width | no shortcut | Grows the window width by one column via keyboard. (milestone 7) | have, milestone 7a |
-| Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. (milestone 10) | missing |
+| Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. (milestone 10) | have | Milestone 10b: Win+Alt+F, one window per terminal window, owned by it; opens for the focused (or given) session, unburying and revealing it first. |
 | Window > AI Chats | Cmd+Y | Opens the window listing all AI chat conversations. (milestone 12) | missing |
 | Window > Cockpit | Opt+Cmd+C | Opens the Cockpit window, a command and session overview dashboard. (milestone 12) | missing |
 | Window > Pin Hotkey Window | Shift+Cmd+- | Pins the hotkey (Quake-style dropdown) window so it stays open. (milestone 7) | have |
@@ -534,7 +534,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Triggers | Prompt Detected trigger | Manually marks a matching line as a shell prompt for terminals without shell integration installed. | have, milestone 6a |  |
 | Triggers | Stop Processing Triggers trigger | Halts evaluation of any further triggers on the current line. | have, milestone 6a |  |
 | Triggers | Set Title trigger | Sets the session's title from the match. | have, milestone 6a |  |
-| Triggers | Open Password Manager trigger | Opens the password manager automatically on match, for example detecting a login prompt. | missing, milestone 10 (listed in the editor) |  |
+| Triggers | Open Password Manager trigger | Opens the password manager automatically on match, for example detecting a login prompt. | have | Milestone 10b: `Kind::Accounts`, no `later` delay, empty placeholder; the pop-up lists cached account names plus UNLOCK, sorted; backreferences and interpolation fill the parameter before the trigger fires. |
 | Triggers | Post Notification trigger | Posts a system notification on match. | have, milestone 6b |  |
 | Triggers | Send Text trigger | Sends literal text back into the session as if typed, on match, for example auto-answering a prompt. | have, milestone 6a |  |
 | Triggers | Fold trigger | Collapses matched lines into a folded/hidden block in scrollback. | have, milestone 6a |  |
@@ -722,18 +722,18 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 ### password manager
 | Subsystem | Feature | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Password manager | Local encrypted store (Keychain) | Stores account/password pairs in the macOS Keychain by default. | missing | Would need Windows Credential Manager or DPAPI-backed store instead of Keychain. |
-| Password manager | 1Password integration | Reads accounts/passwords/OTP from a running 1Password app via its CLI/API. | missing | |
-| Password manager | LastPass integration | Reads accounts and can send OTP codes from LastPass. | missing | |
-| Password manager | Bitwarden integration | Reads accounts from Bitwarden CLI. | missing | |
-| Password manager | KeePassXC integration | Reads accounts from a local KeePassXC database. | missing | |
-| Password manager | Keeper integration | Reads accounts from Keeper password manager. | missing | |
-| Password manager | Generic command-line adapter | Lets a user plug in any external password tool via a shell adapter. | missing | |
-| Password manager | Send password into session | Selecting an entry types/pastes the password into the focused pane, with a masked echo probe so it does not print to screen. | missing | |
-| Password manager | OTP / TOTP autofill | Reads a one-time-password field and can type it after the password. | missing | |
-| Password manager | Trigger-driven auto-open | A trigger can be configured to open the password manager automatically when a password prompt is detected. | missing | |
-| Password manager | Re-authentication gate | Requires the user to re-authenticate before reusing access to stored credentials after a timeout. | missing | |
-| Password manager | Broadcast-safe password entry | The password manager's broadcast choice: echo-probes every broadcast session and sends the password only to those at a password prompt; ordinary Enter Password is never broadcast. | missing | Milestone 10 (password manager). |
+| Password manager | Local encrypted store (Keychain) | Stores account/password pairs in the macOS Keychain by default. | have | Milestone 10b: Windows Credential Manager (generic credentials, target `Tandem/<account>\u{2002}\u{2014}\u{2002}<user>`, per-user, `CRED_PERSIST_LOCAL_MACHINE`); the stored source name stays "Keychain" so iTerm2-shaped settings import unchanged. |
+| Password manager | 1Password integration | Reads accounts/passwords/OTP from a running 1Password app via its CLI/API. | have | Milestone 10b: through `op.exe` (winget or PATH, 2.23 or later), keeping iTerm2's tag "iTerm2" and "iTerm2-no-otp"; sign-in with one retry on an expired session, the Can't Find/Locate flow, and the account picker (Switch Account). |
+| Password manager | LastPass integration | Reads accounts and can send OTP codes from LastPass. | partial | Milestone 10b: through `lpass` (Locate only, no Windows auto-detect path), the needs-login alert (Open Terminal Window, Copy Command), `LPASS_DISABLE_PINENTRY=1`; iTerm2's mid-command re-authentication is not ported, so an expired session fails once instead of silently retrying. |
+| Password manager | Bitwarden integration | Reads accounts from Bitwarden CLI. | partial | Milestone 10b: the adapter protocol is built (handshake, list/get/set/add/delete, custom commands), but the `bw`-wrapping adapter executable is not ported; choosing it shows "Adapter not found." and falls back to Credential Manager. |
+| Password manager | KeePassXC integration | Reads accounts from a local KeePassXC database. | partial | Milestone 10b: same adapter protocol as Bitwarden and Keeper; the `keepassxc-cli`-wrapping adapter executable is not ported, same fallback. |
+| Password manager | Keeper integration | Reads accounts from Keeper password manager. | partial | Milestone 10b: same adapter protocol as Bitwarden and KeePassXC; the Keeper Commander-wrapping adapter executable is not ported, same fallback. |
+| Password manager | Generic command-line adapter | Lets a user plug in any external password tool via a shell adapter. | missing | Not a real iTerm2 feature: there is no user-pluggable adapter, only the built-in protocol serving iTerm2's own bundled adapters (KeePassXC, Bitwarden, Keeper); a correction to the initial research (section 0). |
+| Password manager | Send password into session | Selecting an entry types/pastes the password into the focused pane, with a masked echo probe so it does not print to screen. | have | Milestone 10b: the echo probe (a port of `iTermEchoProbe`'s state machine over raw output bytes) checks the session is at a password prompt before sending; on failure it asks (Cancel or Enter Password); the write never broadcasts even with Broadcast Input on. |
+| Password manager | OTP / TOTP autofill | Reads a one-time-password field and can type it after the password. | have | Milestone 10b: the typed 2FA field wins when non-empty (trimmed), else the account's own OTP is appended to the password before sending; 1Password OTP items and the adapter protocol's `hasOTP` are read; Append OTP toggles per account. |
+| Password manager | Trigger-driven auto-open | A trigger can be configured to open the password manager automatically when a password prompt is detected. | have | Milestone 10b: "Open Password Manager Automatically" (profile setting) opens on the rising edge of password-prompt detection (echo off, line input on, debounced); the Open Password Manager trigger opens on any regex match. |
+| Password manager | Re-authentication gate | Requires the user to re-authenticate before reusing access to stored credentials after a timeout. | have | Milestone 10b: Windows Hello first (PIN, fingerprint, face via `UserConsentVerifier`), falling back to the Windows credential prompt (`CredUIPromptForWindowsCredentialsW` plus `LogonUserW`) when Hello is unavailable; a Hello cancel fails the gate. Require Authentication to Open, after Screen Locks, and on Every Open are also Settings > Advanced > Password Manager rows, so the gate can be turned off without opening the manager (a correction to the initial research, section 0: not credential-prompt-only). |
+| Password manager | Broadcast-safe password entry | The password manager's broadcast choice: echo-probes every broadcast session and sends the password only to those at a password prompt; ordinary Enter Password is never broadcast. | have | Milestone 10b: `iTermBroadcastPasswordHelper`'s round; every session with backspace bytes is probed, all succeeding sends to all, any failure asks (heading "Not all sessions at password prompt", Cancel or "Enter Password in Sessions at Prompt"), and OK or Cancel on that alert sends to none. |
 
 ### Composer
 | Subsystem | Feature | What it does | Tandem status | Windows note |

@@ -1,0 +1,247 @@
+Plan: Ruling: the backing store is Windows Credential Manager (generic credentials, target `Tandem/<account>\u{2002}\u{2014}\u{2002}<user>`, per-user, `CRED_PERSIST_LOCAL_MACHINE` so it does not roam); the stored source name stays "Keychain" so iTerm2-shaped settings import unchanged - cost if wrong: none.
+
+Plan: Ruling: secrets live in `pwm::Secret` (zeroed on drop, redacted `Debug`) and cross process boundaries only on stdin or the child's environment; Tandem never logs, prints or writes them to disk, and CLI stderr is never shown for a command that can echo a secret - cost if wrong: an `op` or `lpass` failure message may be less specific.
+
+Plan: Ruling: 1Password (`op.exe`, winget or PATH) and LastPass (`lpass`, Locate only on Windows) keep iTerm2's tag "iTerm2" and group "iTerm2", so vaults shared with iTerm2 on a Mac show the same items - cost if wrong: the tag name mentions iTerm2.
+
+Plan: Ruling: the adapter protocol is built to iTerm2's JSON, but the KeePassXC, Bitwarden and Keeper adapter executables are not ported in 10b (they are Swift programs wrapping `keepassxc-cli`, `bw`, Keeper Commander); choosing them shows "Adapter not found." and falls back - cost if wrong: those three managers do not work until the adapters are ported (a later task, flagged to Robert).
+
+Plan: Ruling: adapter settings that are not secret and the database path persist in the globals; master passwords and secret settings are kept in memory for the run only (iTerm2 can persist them in the keychain) - cost if wrong: KeePassXC-style adapters ask for the master password once per run.
+
+Plan: Ruling: the "secure" defaults (Require Authentication to Open, on Every Open) are ordinary globals on Windows, not admin-protected as iTerm2 keeps them - cost if wrong: another program running as the user can turn the gate off.
+
+Plan: Ruling: password prompt detection reads the shell console's input mode (echo off, line input on) through `AttachConsole` on the job watcher thread at its 500 ms rate, debounced by `detectPasswordInputDebounce` - cost if wrong: detection lags up to half a second; programs that read passwords key by key with line input off (PowerShell `Read-Host -AsSecureString`) are not detected; a pane whose shell has exited is never at a prompt.
+
+Plan: Ruling: the password manager is an egui host window owned by the terminal window (iTerm2 uses a sheet); its panels and alerts are modals inside it - cost if wrong: none.
+
+Plan: Ruling: the key cursor is the Segoe Fluent Icons key glyph `\u{E8D7}` drawn in the cell (iTerm2 draws a key image) - cost if wrong: none.
+
+Plan: Ruling: `disablePasswordManagerAnimations` is stored with its help and has nothing to disable - cost if wrong: none.
+
+Plan: Ruling: user text replaces "iTerm2" with "Tandem", "macOS Keychain" with "Windows Credential Manager", "Option" with "Alt", and Mac key glyphs with Windows words - cost if wrong: none.
+
+Plan: Ruling: parity rows are found by title - cost if wrong: none.
+
+(The plan's thirteenth Decision, that authentication would be the Windows credential prompt only, not Windows Hello, was superseded before the milestone shipped; see Task 7 fix round 1 below for the final state.)
+
+Scan: Ruling: Tasks 6 and 7 may add to `src/pwm.rs` (Task 6 a test, Task 7 the `Auth` struct) though their Files lists omit it, since the plan's own steps require it - cost if wrong: none.
+
+Scan: Ruling: plan file:line references into `src/pane.rs`, `src/app/mod.rs`, `src/app/menu.rs` and `src/commands.rs` are stale after milestone 10a; implementers relocate by symbol name (`focus_report`, `pump`, `mouse_press`, the hosted/local pane match, `owner`, `known_statuses`) - cost if wrong: none.
+
+Task 1: Ruling: button enable and title are two independent conditions, and `add_check` refuses in the order NoName, Loading, NeedsPassword, Duplicate (source over brief; review verified) - cost if wrong: none; the two-condition split only matters when `send_user_by_default` and `send_both` are both true, a combination no iTerm2 call site produces, and the `add_check` ordering only matters when Loading and NeedsPassword are both true at once, which a fresh Add panel can never do.
+
+Task 1: Ruling: the scope of `pwm.rs`'s `pub const` window texts in this task is the three button titles, the Broadcast/Enter-User-Name tooltips, the three column headers, the New/Edit Account panel's field labels and titles, the dice and 2FA tooltips, the delete confirmation, the generic edit-error alert, and the busy overlay's "Working\u{2026}" text; the reveal-password alert, the Credential-Manager-specific query-failed error, reset/settings text, and CLI/adapter error text are left for the tasks that own that surface - cost if wrong: a later task duplicates a short literal instead of importing a const; no behavior risk.
+
+Task 1: Ruling: `ButtonState` derives `Clone, Copy, Debug, Default` though the brief specified derives only for `Buttons`, `Account`, `Commit`, `Double`, `AddRefusal`, `Busy` - cost if wrong: none, purely additive.
+
+Task 1: Ruling: `Secret::duplicate` (not `Clone`, which `Secret` does not implement) is used inside `edit_password` to hand back an owned `Secret` built from the typed value - cost if wrong: none.
+
+Task 1: minor (deferred): the comment at `pwm.rs:222-226` overstates a divergence risk (the code is right); reword in the final fix wave.
+
+Task 2: Ruling: `echo_probe::Finish::Ask` (heading, text, two custom button labels) is shown through a new `ConfirmWindow` form with a heading and two labeled buttons (as milestone 10a's Task 6 added `ConfirmWindow::warning`); `App::ask` is not used for it, since it carries no heading field and no custom two-label buttons - cost if wrong: one extra small form in `prompt_ui.rs`.
+
+Task 2: Ruling: the Tokenizer's printable-byte test is ASCII-only (`0x20..0x7f`); a byte at or above `0x80` becomes a separate `Token::Other` per byte rather than decoded UTF-8 text, since the probe only ever needs to recognize a literal "*" or " " - cost if wrong: none observed; a shell that echoes multi-byte UTF-8 during the probe window fails the probe like any other unexpected byte.
+
+Task 2: minor (deferred): the CSI tokenizer treats only digits and ';' as parameter bytes (a private-mode byte ends the token early; still fails the probe, harmless); add a comment in the final fix wave.
+
+Task 3: Ruling: the failed-read alert text is built by the window, not the source: `CredentialManager::password` returns the bare Windows message, and `pwm_source::password_failed(msg)` gives "Could not get password. Credential Manager query failed: <msg>" for every source (source over brief, which put the wrapped text on the Credential Manager read alone) - cost if wrong: Task 7 shows the bare message, or double-wraps if a source also wraps it (Task 7 in fact calls `password_failed` for every read failure, so this resolved as planned).
+
+Task 3: Ruling: the Windows error message keeps std's " (os error N)" suffix, matching `winpipe.rs` and `jobwatch.rs`; iTerm2 shows the keychain's `localizedDescription` with no code - cost if wrong: a trimmed suffix in one helper.
+
+Task 3: Ruling: `Toggle` and `Field` (named but not defined by the plan) mirror the adapter protocol's `AddAccountToggle` and `SettingsField` in snake case, deriving `Clone, Debug, PartialEq, Eq`; neither holds a secret - cost if wrong: Task 5 renames fields (it did not need to).
+
+Task 3: Ruling: `CredentialManager::name()` is "Credential Manager" (iTerm2's is "Keychain"); it only shows in "Reset %@ Configuration"/"%@ Settings", neither of which Credential Manager can show (no reset, no settings) - cost if wrong: none visible.
+
+Task 3: Ruling: Credential Manager's caps are a pure `pwm_source::credman_caps()` so the brief's `Caps` assertion runs in the pure test - cost if wrong: none.
+
+Task 3: Ruling: `Kind::ALL` (gear menu order) was added for `from_stored` and the menu, though not in the brief's list - cost if wrong: none.
+
+Task 3: Ruling: `parse_target` requires the exact "Tandem/" prefix; `CredEnumerateW`'s filter is case-insensitive, so a hand-made "tandem/x" is enumerated but skipped, and a bare "Tandem/" parses to an empty account and user - cost if wrong: such odd items hidden or shown.
+
+Task 3: Ruling: a stored blob that is not valid UTF-8 (for example one made by hand with `cmdkey`, which stores UTF-16) is the error "The stored password is not UTF-8 text." rather than a lossy or UTF-16 guess - cost if wrong: hand-made UTF-16 items cannot be used.
+
+Task 3: Ruling: the too-long refusal reads "The password is too long for Windows Credential Manager (at most 2560 bytes)." (Tandem's own text; iTerm2 has no limit) - cost if wrong: one string.
+
+Task 3: Ruling: `toggle_otp` returns "One-time codes are not supported." and `edit_in_place` returns "In-place edit is not supported." (iTerm2 traps both with `it_fatalError`); neither is reachable from the window - cost if wrong: none.
+
+Task 3: Ruling: `UserName` is left null when the user name is empty (Windows accepts a null user for a generic credential) - cost if wrong: Control Panel shows no user for such items, which is accurate.
+
+Task 3: Ruling: later dispatches forbid running anything in the user's interactive session (an implementer ran a live Credential Manager test there via a one-shot `schtasks /it` task without asking, then cleaned it up); the Win32 side is covered by the Task 9 checklist instead - cost if wrong: none.
+
+Task 3: minors carried to the final fix wave: an empty password passes a dangling `CredentialBlob` pointer (use null); the "Tandem/*" filter literal is not tied to `SERVICE`; lossy `from_wide` names make unreadable rows.
+
+Task 4: Ruling: the interactive CLI-locate flow (the Can't Find alert with a Locate file picker, keeping the chosen path for the run) is not orchestrated inside `pwm_cli.rs`/`pwm_run.rs`; `OnePassword`/`LastPass` take an already-resolved executable path via their constructor, and `op_paths` (pure) plus the alert-text consts are provided for whichever later task resolves and remembers the path. Fix round 1 added `resolve_op`/`resolve_lpass` inside `pwm_cli.rs` to try each candidate and probe its version against `OP_MIN`; the interactive Locate picker and remembering the pick across runs still went to Task 7 - cost if wrong: a later task must still wire path resolution and the Locate dialog before either source can be constructed for real.
+
+Task 4: Ruling: the master-password prompt (1Password) and the login prompt (LastPass) are injected as closures rather than calling `prompt_ui::PromptWindow` directly, since wiring a real window is outside this task's files - cost if wrong: the closure signature may need adjusting once wired to a real window.
+
+Task 4: Ruling: `OnePassword::available()` only probes the resolved path's version (`op_probe_version`) and never authenticates; this replaces the task's original decision that `available()` would eagerly call `ensure_auth()` (which could prompt for the master password at open time, more eager than iTerm2's `checkAvailability`) - cost if wrong: none, now matches iTerm2 exactly.
+
+Task 4: Ruling: there is no 30-minute account-list cache for OnePassword (iTerm2 caches `listAccountsRecipe`); `accounts()` always re-fetches and `reload()` is a no-op - cost if wrong: one extra `op item list`/`item get` round trip per window refresh; no correctness effect.
+
+Task 4: Ruling: OnePassword's Switch Account picking is implemented (Task 7 added `OnePasswordAccountPicker`/`AccountPicker`/`OnePassword::with_picker`, and `switch_account` forces a fresh pick and sign-in); this replaces Task 4's original decision that `switch_account()` would be a no-op for OnePassword. LastPass and the (unshipped) adapters keep a no-op `switch_account`, since LastPass has one account and no adapter ships yet - cost if wrong: one extra master password prompt after a switch without the 1Password desktop app.
+
+Task 4: Ruling: LastPass's mid-command re-authentication (the Swift `ErrorHandler` that watches a running command's stderr for a login prompt and retries inside the same recipe) is not ported; only `available()`'s top-level "Not logged in" check triggers `login()`. Task 7 later added `pwm_cli::recover`: a call that needs a fresh login prompts, and the call still fails as iTerm2's does, with the login failure's "Authentication Failed" text replacing the error - cost if wrong: an expired LastPass session surfaces as a failed action instead of a silent mid-command re-prompt; reopening the manager recovers it.
+
+Task 4: Ruling: LastPass's last-used username is kept only in memory (`last_username` on the struct), not persisted like iTerm2's `UserDefaults` key - cost if wrong: the login prompt does not pre-fill the username across separate window openings.
+
+Task 4: Ruling: LastPass's "Not Logged In" recovery alert (Open Terminal Window, Copy Command, Cancel) was left for Task 7, which built it: Open Terminal Window opens a window with `lpass login <email>` typed and shows "Login Successful" on "Success: Logged in as"; Copy Command copies the command - cost if wrong: none, resolved as planned.
+
+Task 4: Ruling: alert texts with a runtime placeholder (`op_too_old_message`, `op_master_password_prompt_for_account`, `lp_timeout_message`) are `pub fn`, not `pub const`, since a const cannot hold a runtime-computed value; every text with no placeholder is a plain `pub const` - cost if wrong: none.
+
+Task 4: Ruling: a CLI's stdout is decoded with `String::from_utf8` when already valid (moved at zero cost into the `Secret`) and only falls back to a lossy, zeroed-after copy on invalid UTF-8, unlike `pwm_credman.rs`'s strict, error-returning check for a stored blob - cost if wrong: a pathological password containing invalid UTF-8 bytes could be silently corrupted instead of erroring; Credential Manager, which stores rather than merely relays a blob, keeps the stricter check.
+
+Task 4: Ruling: the Windows process runner uses `std::process::Command` with `creation_flags(CREATE_NO_WINDOW)`, not `git_run_win.rs`'s Job-Object-based process-tree kill, since `op`/`lpass` do not normally spawn child processes of their own - cost if wrong: a hung `op`/`lpass` that itself spawned a subprocess before the timeout could leave an orphan; not expected in practice.
+
+Task 4: Ruling: the stdin-writer thread copies a `Secret`'s bytes into a plain `Vec<u8>` to write out, then zeroes that copy immediately after, matching `pwm.rs`'s `Secret::drop` and `pwm_credman.rs`'s blob handling - cost if wrong: none noticed; stricter than iTerm2, which does not zero its own copy.
+
+Task 4 fix round 1: Ruling: every failed `op` call, not only the ones the review's numbered findings named, now returns a fixed, safe string rather than the CLI's own stderr, matching how `LastPass` was already written - cost if wrong: a real `op` failure's specific reason (a network error, a locked vault) is less visible than iTerm2 shows.
+
+Task 4 fix round 1: Ruling: an expired 1Password session (an `op` call failing with "[ERROR] ..." mentioning "You are not currently signed in") is retried exactly once, after clearing and refreshing authentication with a duplicated stdin `Secret`; a second failure is returned as-is - cost if wrong: none observed.
+
+Task 4 fix round 1: Ruling: only `op item list` (10 s) and `lpass ls`/`sync now` (5 s) keep timeouts, matching where iTerm2 itself sets a deadline; every other `op`/`lpass` call is untimed, and a timeout is reported through a shared `pwm_run::TIMED_OUT` sentinel mapped to fixed text, never the runner's generic message - cost if wrong: none.
+
+Task 4 fix round 1: Ruling: `resolve_op` returns the first usable CLI candidate, not iTerm2's "pick the newest among several usable candidates" - cost if wrong: if a user has two working `op` installs of different versions on PATH, the older-but-usable one might be picked instead of the newest.
+
+Task 4 fix round 1: Ruling: `resolve_lpass`/`lpass_paths` are trivial placeholders (LastPass has no Windows auto-detect paths at all), added only so Task 7's wiring can call a same-shaped function for either source - cost if wrong: none.
+
+Task 4 fix round 1: Ruling: the "authorization prompt dismissed" (biometric cancel) and "connecting to desktop app timed out" nuances are still not ported; a dismissed `user get --me` still falls through to the master-password prompt rather than being treated as a cancel - cost if wrong: an extra, unwanted master-password prompt after dismissing a biometric check.
+
+Task 4 fix round 1: Ruling (binding text, review verified): "Can't Find 1Password CLI" reads "In order to use the 1Password integration, Tandem needs to know where to find the CLI app named \u{201c}op\u{201d}. Tandem looks on your PATH and in WinGet\u{2019}s install folder. If you have installed it elsewhere, please select Locate to provide its location." - cost if wrong: none.
+
+Task 4: minors carried to the final fix wave: `op_accounts` turns a malformed item into empty id/title instead of an error; the `Output` doc comment about stderr is stale.
+
+Task 5: Ruling: `pwm_source::Toggle` and `Field` derive `serde::Deserialize` with `#[serde(rename_all = "camelCase")]` instead of `pwm_adapter.rs` defining its own wire types and converting, since every field name transforms losslessly - cost if wrong: a future adapter-protocol field that does not fit the camelCase transform would need an explicit rename visible to every `Source` using `Toggle`/`Field`, not just adapters.
+
+Task 5: Ruling: `Adapter::available()` only checks the executable's existence, never running a handshake; handshake and login happen lazily inside `ensure_authenticated`, called from every other `Source` method - cost if wrong: none observed; matches iTerm2 exactly.
+
+Task 5: Ruling: Tandem never persists an adapter's master password, session token, database path, executable path or settings inside `pwm_adapter.rs`; they are taken as already-resolved constructor inputs (the same shape as `OnePassword::new`'s already-resolved path), and any persistence across runs is the app layer's job - cost if wrong: none beyond what the plan's own decision already accepts (re-prompting once per run).
+
+Task 5: Ruling: `Adapter::toggle_otp` always returns "One-time codes are not supported.", reusing `LastPass::toggle_otp`'s text, since the adapter protocol has no per-account OTP opt-out and `send_otp` always equals `has_otp` - cost if wrong: none; matches the source.
+
+Task 5: Ruling: `ListAccountsResponse.warning` (a non-fatal listing issue) is parsed but dropped by `Source::accounts`, since the `Source` trait has no side channel for a non-fatal warning. Task 7 later exposed it through a new `Source::take_warning` method and shows it as a permanently silenceable notice - cost if wrong: resolved as planned by Task 7.
+
+Task 5: Ruling: `Adapter::switch_account` is a no-op returning `Ok(())`, the same deferral as `OnePassword::switch_account` and `LastPass::switch_account` were at the time (before Task 7 built OnePassword's real picker); `caps().multiple_accounts` only enables the menu item - cost if wrong: none for adapters, which are not shipped.
+
+Task 5: Ruling: every request/response type that can carry a master password or session token does not derive `Debug`, even though the field is a plain `String` rather than a `pwm::Secret` (the wire protocol's own shape) - cost if wrong: none; nothing here should ever be printable regardless of the field's static type.
+
+Task 5: minor (deferred): `Adapter::new` takes 8 positional parameters.
+
+Task 5: minors carried to the final fix wave: `header()` sends the full settings map unfiltered by the handshake's declared keys (iTerm2's `standardHeader` filters); the `set_password_and_delete` test never calls delete or add; the comment at `pwm_adapter.rs:228-230` about reading the dropped warning is untrue.
+
+Task 6: Ruling: `Gear` holds the stored values as bools (`require_lock`, `require_every`) plus a new `authenticated: bool`, instead of the brief's `Option<bool>`s, because an `Option<bool>` cannot show the kept screen-lock-checked-and-disabled bug and had no way to disable everything while unauthenticated - cost if wrong: Task 7 builds `Gear` from raw globals, which is simpler, and only the field types change.
+
+Task 6: Ruling: `Gear`, `GearItem`, `AccountPanel` and `Alert` are defined in `pwm.rs` and re-exported by `pwm_ui`, keeping them pure and tested in `window_texts_follow_iterm2` - cost if wrong: none.
+
+Task 6: Ruling: `PwmAct::Settings(Vec<(String, Secret)>)` was added, sent instead of `AlertButton(0)` on OK of an adapter Settings sheet, since the brief's acts had no way to return typed values; Cancel still sends `AlertButton(1)` - cost if wrong: one variant.
+
+Task 6: Ruling: `PwmView::accounts` is the full sorted list; the window filters it itself against the search text, and every index (`selected`, `Select`, `Edit`, `Reveal`, ...) points into the full list so indexes stay stable across filtering - cost if wrong: Task 7 must not pre-filter.
+
+Task 6: Ruling (source over brief notes): the xib keeps a separator before "Reload Items" whether or not an adapter adds items; an adapter's Settings and commands go after Switch Account, with a separator inserted before them - cost if wrong: one separator.
+
+Task 6: Ruling: the password fields (panel and secret Settings fields) are a custom `secret_field` that edits a `Secret` in place, only appending, popping and clearing, with no mid-text cursor, because egui's `TextEdit` snapshots its text into plain `String`s every frame and keeps them in its undo history - cost if wrong: no caret movement or selection inside a password field (NSSecureTextField has both).
+
+Task 6: Ruling: non-secret adapter Settings values are edited as plain Strings in a `TextEdit` and returned as `Secret`s - cost if wrong: none.
+
+Task 6: Ruling: Ctrl+C (and Win+C) copies the selected row's password, since Windows has no iTerm2-style clicked-but-unselected row; a text field with a selection still keeps Ctrl+C (review verified) - cost if wrong: none visible.
+
+Task 6: Ruling: the new-panel toggle, the fetched password and the dice go through window methods (`fill_password`, `shake`) keyed by `AccountPanel::serial`; a new serial reseeds the typed fields and wipes the old password, and `fill_password` drops a password whose serial is older than the current panel's (panel serials only grow) - cost if wrong: Task 7 has to call these hooks; none for the drop rule.
+
+Task 6: Ruling: Return in an alert is button 0 and Esc is a button titled "Cancel", as `NSAlert` does; a one-button OK alert ignores Esc - cost if wrong: none.
+
+Task 6: Ruling: `disablePasswordManagerAnimations` is only described in the module doc, since the window has nothing to animate - cost if wrong: none.
+
+Task 6: Ruling: the window is placed centered on the owner's client top, where a sheet would drop - cost if wrong: none.
+
+Task 6 fix round 1: Ruling: when the filter hides the selected account, the selection clears (`pwm::select_after_filter`); a lone remaining row still selects itself; this replaces Task 7's initial decision to keep the selection by account id across a filter or reload - cost if wrong: after narrowing the filter the user presses Down once more.
+
+Task 6 fix round 1: Ruling: a field-bearing alert that replaces another is prevented from carrying stale typed values forward by giving every `Alert` a serial (`pwm::next_alert_serial()`), and the window reseeds a Settings sheet's typed values whenever the serial changes; this replaces Task 7's original one-frame-blank-redraw workaround, which is removed - cost if wrong: none, a cleaner mechanism with the same effect.
+
+Task 6 fix round 1: Ruling: Return and Esc act only on the topmost modal (the busy scrim, then an alert, then the panel) - cost if wrong: none.
+
+Task 6 fix round 1: Ruling: pasted or typed line breaks (CR, LF) are dropped from secret fields (`Secret::push_line`) - cost if wrong: none.
+
+Task 6 fix round 1: Ruling: window keys are skipped while an egui popup menu is open, so Esc closes the menu, not the window - cost if wrong: none.
+
+Task 6 fix round 1: Ruling: the search field regains focus on every window refocus while authenticated, as iTerm2's `windowDidBecomeKey` does - cost if wrong: none.
+
+Task 7: Ruling: authentication runs before the manager window opens, owned by the terminal window (iTerm2 shows the empty sheet behind the Touch ID prompt); the "remembered until authentication" account name is simply the name selected after the first list - cost if wrong: nothing visible; the window would open first and fill after.
+
+Task 7: Ruling (source over brief): canceling the credential prompt shows "Authentication failed because password entry was cancelled." (iTerm2 shows `userCancel`; only system and app cancels are silent) - cost if wrong: one extra alert on Cancel.
+
+Task 7: Ruling (source over brief): in the probe check (Cancel, "Enter Password") and the broadcast warning (Cancel, "Enter Password in Sessions at Prompt"), Return answers the first action, Cancel, since iTerm2's first warning action is the NSAlert default button; the brief's "Enter sends" read as the second button - cost if wrong: Return would enter the password at a prompt that echoes.
+
+Task 7: Ruling: the probe check's heading is "Warning", `iTermWarning`'s default when no heading is given - cost if wrong: a title string.
+
+Task 7: Ruling (source): `ShouldSendReturnAfterPassword` defaults to true (the registered default); `RequireAuthenticationToOpenPasswordManager` and `ProbeForPassword` default to true, the other two to false - cost if wrong: one default.
+
+Task 7: Ruling: the focus hold taken when the manager opens is released on the next focus gain of a window that holds that session, not when the manager closes, since the terminal's loss of focus to the manager was never reported - cost if wrong: one missed focus-in report in a rare path.
+
+Task 7: Ruling: the Locate picks are remembered in `NoSyncPasswordManagerOnePasswordCLI` and `NoSyncPasswordManagerLastPassCLI` (menu-only globals, no rows); a remembered path that fails its check is forgotten, so the next use searches and offers Locate again - cost if wrong: key names.
+
+Task 7: Ruling: the `onePasswordAccount` schema row was added because the account picker stores its choice there, as iTerm2 does - cost if wrong: one row that Task 9's parity has to count (counted in this task).
+
+Task 7: Ruling: `echo_probe::Round::done()` now counts indeterminate sessions against the pending total, as `iTermBroadcastPasswordHelper`'s `checkIfFinished` does, and `Round::vanished(id)` marks a session that went away; this replaces Task 2's original decision that `done()` would not count indeterminate sessions - cost if wrong: none, matches the source now.
+
+Task 7: Ruling: Switch Account signs in afresh when the account changes (iTerm2 keeps its cached session, which `op` then rejects for the new account); the account list is checked once per built source, where iTerm2 checks once per run - cost if wrong: one extra master password prompt after a switch without the desktop app.
+
+Task 7: Ruling: LastPass's mid-command recovery is built in `pwm_cli` (`recover`): a call that needs a fresh login prompts, and the call still fails as iTerm2's does; a failed login's "Authentication Failed" text replaces the error, and the window turns it into the three-button alert; a canceled login keeps the original error - cost if wrong: small; changes only which text reaches the window.
+
+Task 7: Ruling (plan ruling kept over source): choosing KeePassXC, Bitwarden or Keeper when the adapter is missing shows "Adapter not found." under "Password Manager Error", then falls back to Credential Manager; the same alert shows on open if an adapter source is already stored - cost if wrong: one alert.
+
+Task 7: Ruling: an adapter's list warning is shown as iTerm2 shows it: heading "Password Manager", OK, permanently silenceable under `NoSyncAdapterListWarning_<identifier>`, using `ConfirmWindow::notice` and `Source::take_warning` - cost if wrong: none while adapters are not shipped.
+
+Task 7: Ruling: adapter settings persist under iTerm2's keys (`AdapterSetting_<identifier>_<key>`, `PathToDatabase_<identifier>`, `PathToExecutable_<identifier>`); secret settings stay in memory; Reset removes them; the database/URL and executable prompts are not wired since no adapter ships - cost if wrong: a later task wires the prompts when an adapter is ported.
+
+Task 7: Ruling: custom commands needed `Source::custom_command` (the trait had no such call), implemented for `Adapter` - cost if wrong: one trait method.
+
+Task 7: Ruling: a worker prompt (master password, LastPass login) is an alert inside the manager with secret fields, using the Settings sheet form, since iTerm2's `ModalPasswordAlert` is app-modal; the busy scrim hides while such a prompt or the account picker is in front - cost if wrong: the layout of the prompt.
+
+Task 7: Ruling: the Edit panel's password prefetch runs without the scrim, and Cancel on the scrim does not drop its reply, since the panel serial guards against a stale reply - cost if wrong: none.
+
+Task 7: Ruling: a rename by delete-then-add runs as one worker request (fetch unless a new password was typed, delete, add), where iTerm2 chains three busy steps - cost if wrong: the scrim shows once instead of three times.
+
+Task 7: Ruling: the "Password sent" toast shows for the probe's own space (kept bug) but not for its backspace, since iTerm2 writes the backspace as data with no toast; fix round 1 refined this so the toast says nothing at all when the pane is replaying or gone - cost if wrong: one toast.
+
+Task 7: Ruling: Enter User Name and every password write skip a tmux gateway pane - cost if wrong: none.
+
+Task 7: Ruling: the screen lock is watched on each terminal window that has hosted a manager, and on the current window again whenever none is watched while authenticated; a registration dies with its window - cost if wrong: a lock missed in the gap between closing the last watched window and the next pass.
+
+Task 7: Ruling: random passwords draw from the first four bytes of a version 4 UUID (the `uuid` crate's system random source) with rejection sampling, avoiding a new crate or `windows-sys` feature - cost if wrong: none (the bytes are OS randomness).
+
+Task 7: Ruling: there is no standalone manager when no terminal window exists, since Tandem always has a terminal window while it runs - cost if wrong: none.
+
+Task 7: Ruling: opening for a buried session unburies it and reveals it first - cost if wrong: none.
+
+Task 7 fix round 1: Ruling: a reply (`Job`/`Reply`) is dropped unless its instance number matches the currently open manager and, for a scrim request, its token is current (`pwm::reply_current`); a dropped prompt's sender answers Cancel - cost if wrong: none; fixes a real stale-reply bug found in review.
+
+Task 7 fix round 1: Ruling: the gate uses Windows Hello (PIN, fingerprint, face, via `UserConsentVerifier`) whenever it reports available, falling back to the Windows credential prompt (`CredUIPromptForWindowsCredentialsW` plus `LogonUserW`) otherwise; a Hello cancel fails the gate (only `DeviceNotPresent`/`NotConfiguredForUser` fall back to the credential prompt). This replaces the plan's Decision that authentication would be the Windows credential prompt only (WinRT not in `windows-sys`) - cost if wrong: a PIN-only account could not pass the password prompt; with Hello first, it can.
+
+Task 7 fix round 1: Ruling: the three Require Authentication settings (to Open, after Screen Locks, on Every Open) also have rows in Settings > Advanced > Password Manager, overriding the "gear-only globals have no settings row" precedent for these three, so a failed gate never locks the user out; Probe and Send Return stay gear-only - cost if wrong: three rows Task 9's parity must count (counted in this task).
+
+Task 7 fix round 1: Ruling: a probe check alert does nothing when its session now has a newer check entry, so an answer to a stale check cannot act on a newer prompt - cost if wrong: none.
+
+Task 7 fix round 1: Ruling: `Config::same_source` now compares the 1Password account, and the worker writes the picker's chosen account back into the built source's config before that comparison, so picking an account does not force an unwanted extra rebuild - cost if wrong: none.
+
+Task 7: minor (deferred): key remaps do not apply in the manager window; adapter secret settings are kept as plain strings.
+
+Task 8: Ruling (source over brief): `trigger_choices(&[], "x")` returns `[UNLOCK, "x"]` (and `["abc", UNLOCK]` for "abc"), since iTerm2's pop-up shows its items sorted case-insensitively, not in the brief's stated order - cost if wrong: only the order of two items in the pop-up.
+
+Task 8: Ruling (source over brief): `addUnlockToAccountNamesIfNeeded` adds UNLOCK (and the current parameter) only when the cache has no name other than UNLOCK; once a list has loaded, the pop-up shows account names only - cost if wrong: after a load, the settings pop-up cannot set the placeholder back; an existing UNLOCK or empty parameter still opens unlocked.
+
+Task 8: Ruling: the pop-up's shown text is the real parameter, or UNLOCK when the parameter is empty or UNLOCK; iTerm2's display quirk of showing the first account for an empty parameter (while still opening unlocked) is not kept - cost if wrong: none in behavior.
+
+Task 8: Ruling: a pane showing a view (Filter, Zoom, Instant Replay, a Make Screenshot freeze) shows its normal cursor and does not open on a click at the cursor; automatic opening is skipped only while Instant Replay shows, because replay drops input; a rising edge during a replay does not open the manager when the replay ends - cost if wrong: the key cursor is absent under a Filter or Zoom view, and a prompt reached mid-replay needs the menu or a click after the replay.
+
+Task 8: Ruling: the key glyph blanks the cursor cell's character (iTerm2 draws a key image over it), is scaled to `cw * 1.2 / ch` (at most 1) of the terminal font, and is clipped to the cell; not checked visually since the GUI is not launched - cost if wrong: the key may look a little small or large in the cell.
+
+Task 8: Ruling: the watcher reads console modes at every look (every 0.5 s while Tandem is in front, every 5 s otherwise), never while `detectPasswordInput` is off - cost if wrong: a background window detects a prompt up to 5 s late.
+
+Task 8: Ruling: `attached()` saves the three standard handles before `AttachConsole` and restores any that changed after `FreeConsole`, since AttachConsole in a GUI process can set them to console handles that become invalid after `FreeConsole` - cost if wrong: none found.
+
+Task 8: Ruling: the `PasswordTrigger` placeholder is now "" (iTerm2's `triggerOptionalParameterPlaceholderWithInterpolation:` returns ""), since the pop-up shows no hint - cost if wrong: none.
+
+Task 8: Ruling: a click on the key cursor opens the manager and then continues as an ordinary click, checked on the mouse press (the brief names `mouse_press`) rather than iTerm2's mouse up - cost if wrong: a press that turns into a drag at the cursor cell still opens the manager.
+
+Task 8: Ruling (from review; a fix round was in progress when Task 9 ran, to be reflected in the final fix wave): remote and WSL sudo prompts are not detected by console mode, since they run their own raw mode; the trigger and the click still work for them - cost if wrong: none.
+
+Task 8: carry to Task 9 checklist: detection needs a release build, since the debug build is a console-subsystem app.
