@@ -114,7 +114,7 @@ impl App {
                 subs.insert(item.path.clone(), s.clone());
                 (&item.path[..item.path.len() - 1], Box::new(s))
             } else {
-                let enabled = !matches!(commands::status(item), Status::Later(_)) && !commands::DISABLED_IN_SESSION.contains(&item.selector.as_str());
+                let enabled = Self::menu_enabled(item);
                 let parent = &item.path[..item.path.len() - 1];
                 let alert_check = super::marks_ui::CHECKS.iter().any(|(s, _)| *s == item.selector) || super::seltools_ui::CHECKED.contains(&item.selector.as_str()) || matches!(item.selector.as_str(), "toggleMultiLinePasteWarning:" | "promptToConvertTabsToSpacesWhenPasting:");
                 let state_check = parent.iter().any(|p| p == "Terminal State") && item.label() != "Reset";
@@ -230,6 +230,17 @@ impl App {
         }
         unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
         self.popup_menu = Some(menu);
+    }
+
+    /// Whether the menu bar's check item for this label is checked (false when the item has
+    /// no check mark).
+    pub(super) fn menu_checked(&self, label: &str) -> bool {
+        self.menu_bar.as_ref().and_then(|b| b.checks.get(label)).is_some_and(|c| c.is_checked())
+    }
+
+    /// Whether a menu bar item is enabled: the rule `install_menus` builds the bar with.
+    pub(super) fn menu_enabled(item: &Item) -> bool {
+        !matches!(commands::status(item), Status::Later(_)) && !commands::DISABLED_IN_SESSION.contains(&item.selector.as_str())
     }
 
     /// Check marks follow the focused pane's terminal modes.

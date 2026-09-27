@@ -8,18 +8,22 @@ submenu = true
 [[item]]
 path = ["iTerm2", "About iTerm2"]
 selector = "showAbout:"
+identifier = "About iTerm2"
 
 [[item]]
 path = ["iTerm2", "Show Tip of the Day"]
 selector = "showTipOfTheDay:"
+identifier = "Show Tip of the Day"
 
 [[item]]
 path = ["iTerm2", "Companion Device Settings"]
 selector = "pairCompanionDevice:"
+identifier = "Pair Companion Device"
 
 [[item]]
 path = ["iTerm2", "Suppressed Alerts..."]
 selector = "showSuppressedAlerts:"
+identifier = "Suppressed Alerts"
 
 [[item]]
 path = ["iTerm2"]
@@ -28,6 +32,7 @@ separator = true
 [[item]]
 path = ["iTerm2", "Check for Updates..."]
 selector = "checkForUpdatesFromMenu:"
+identifier = "Check For Updates\u2026"
 
 [[item]]
 path = ["iTerm2"]
@@ -36,24 +41,29 @@ separator = true
 [[item]]
 path = ["iTerm2", "Toggle Debug Logging"]
 selector = "debugLogging:"
+identifier = "Toggle Debug Logging"
 
 [[item]]
 path = ["iTerm2", "Save Retrospective Debug Logs"]
 selector = "saveRetrospectiveDebugLogs:"
+identifier = "Save Retrospective Debug Logs"
 
 [[item]]
 path = ["iTerm2", "Copy Performance Stats"]
 selector = "copyPerformanceStats:"
+identifier = "Copy Performance Stats"
 
 [[item]]
 path = ["iTerm2", "Capture GPU Frame"]
 selector = "captureNextMetalFrame:"
+identifier = "Capture Metal Frame"
 key = "g"
 mods = ["ctrl", "opt", "cmd", "shift"]
 
 [[item]]
 path = ["iTerm2", "Check Settings Control Truncation"]
 selector = "debugCheckSettingsControlTruncation:"
+identifier = "Check Settings Control Truncation"
 
 [[item]]
 path = ["iTerm2"]
@@ -62,6 +72,7 @@ separator = true
 [[item]]
 path = ["iTerm2", "Preferences..."]
 selector = "showPrefWindow:"
+identifier = "Preferences..."
 key = ","
 mods = ["cmd"]
 
@@ -81,18 +92,21 @@ separator = true
 [[item]]
 path = ["iTerm2", "Hide iTerm2"]
 selector = "hide:"
+identifier = "Hide iTerm2"
 key = "h"
 mods = ["cmd"]
 
 [[item]]
 path = ["iTerm2", "Hide Others"]
 selector = "hideOtherApplications:"
+identifier = "Hide Others"
 key = "h"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["iTerm2", "Show All"]
 selector = "unhideAllApplications:"
+identifier = "Show All"
 
 [[item]]
 path = ["iTerm2"]
@@ -101,6 +115,7 @@ separator = true
 [[item]]
 path = ["iTerm2", "Secure Keyboard Entry"]
 selector = "toggleSecureInput:"
+identifier = "Secure Keyboard Entry"
 key = "s"
 mods = ["opt", "cmd"]
 
@@ -111,12 +126,14 @@ separator = true
 [[item]]
 path = ["iTerm2", "Make iTerm2 Default Term"]
 selector = "makeDefaultTerminal:"
+identifier = "Make iTerm2 Default Term"
 key = "\\"
 mods = ["ctrl", "shift", "cmd"]
 
 [[item]]
 path = ["iTerm2", "Make Terminal Default Term"]
 selector = "unmakeDefaultTerminal:"
+identifier = "Make Terminal Default Term"
 key = "\\"
 mods = ["ctrl", "opt", "shift", "cmd"]
 alternate = true
@@ -128,23 +145,28 @@ separator = true
 [[item]]
 path = ["iTerm2", "Install Shell Integration"]
 selector = "installShellIntegration:"
+identifier = "Install Shell Integration"
 alternate = true
 
 [[item]]
 path = ["iTerm2", "Install Claude Code Integration"]
 selector = "installClaudeCodeIntegration:"
+identifier = "Install Claude Code Integration"
 
 [[item]]
 path = ["iTerm2", "Reinstall Claude Code Integration"]
 selector = "reinstallClaudeCodeIntegration:"
+identifier = "Reinstall Claude Code Integration"
 
 [[item]]
 path = ["iTerm2", "Uninstall Claude Code Integration"]
 selector = "uninstallClaudeCodeIntegration:"
+identifier = "Uninstall Claude Code Integration"
 
 [[item]]
 path = ["iTerm2", "Remove Recent Profiles from Dock Menu"]
 selector = "removeRecentProfilesFromDockMenu:"
+identifier = "Remove Recent Profiles from Dock Menu"
 
 [[item]]
 path = ["iTerm2"]
@@ -153,6 +175,7 @@ separator = true
 [[item]]
 path = ["iTerm2", "Quit iTerm2"]
 selector = "terminate:"
+identifier = "Quit iTerm2"
 key = "q"
 mods = ["cmd"]
 
@@ -164,6 +187,7 @@ submenu = true
 [[item]]
 path = ["Shell", "New Window"]
 selector = "newWindow:"
+identifier = "New Window"
 key = "n"
 mods = ["cmd"]
 alternate = true
@@ -171,18 +195,21 @@ alternate = true
 [[item]]
 path = ["Shell", "New Window with Current Profile"]
 selector = "newWindowWithSameProfile:"
+identifier = "New Window with Current Profile"
 key = "n"
 mods = ["opt", "cmd", "shift"]
 
 [[item]]
 path = ["Shell", "New Tab"]
 selector = "newSession:"
+identifier = "New Tab"
 key = "t"
 mods = ["cmd"]
 
 [[item]]
 path = ["Shell", "New Tab Next to Current Tab"]
 selector = "newSessionAlternate:"
+identifier = "New Tab Next to Current Tab"
 key = "t"
 mods = ["opt", "cmd"]
 alternate = true
@@ -190,6 +217,7 @@ alternate = true
 [[item]]
 path = ["Shell", "New Tab with Current Profile"]
 selector = "newSessionWithSameProfile:"
+identifier = "New Tab with Current Profile"
 key = "t"
 mods = ["opt", "cmd", "shift"]
 
@@ -200,10 +228,12 @@ separator = true
 [[item]]
 path = ["Shell", "Duplicate Window"]
 selector = "duplicateWindow:"
+identifier = "Duplicate Window"
 
 [[item]]
 path = ["Shell", "Duplicate Tab"]
 selector = "duplicateTab:"
+identifier = "Duplicate Tab"
 
 [[item]]
 path = ["Shell"]
@@ -212,24 +242,28 @@ separator = true
 [[item]]
 path = ["Shell", "Split Horizontally with Current Profile"]
 selector = "splitHorizontally:"
+identifier = "Split Horizontally with Current Profile"
 key = "d"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Shell", "Split Vertically with Current Profile"]
 selector = "splitVertically:"
+identifier = "Split Vertically with Current Profile"
 key = "d"
 mods = ["cmd"]
 
 [[item]]
 path = ["Shell", "Split Horizontally..."]
 selector = "openSplitHorizontallySheet:"
+identifier = "Split Horizontally\u2026"
 key = "h"
 mods = ["opt", "cmd", "shift"]
 
 [[item]]
 path = ["Shell", "Split Vertically..."]
 selector = "openSplitVerticallySheet:"
+identifier = "Split Vertically\u2026"
 key = "v"
 mods = ["opt", "cmd", "shift"]
 
@@ -240,10 +274,12 @@ separator = true
 [[item]]
 path = ["Shell", "Save Contents..."]
 selector = "saveContents:"
+identifier = "Log.SaveContents"
 
 [[item]]
 path = ["Shell", "Save Selected Text..."]
 selector = "saveDocumentAs:"
+identifier = "Save Selected Text\u2026"
 key = "s"
 mods = ["cmd"]
 
@@ -254,18 +290,21 @@ separator = true
 [[item]]
 path = ["Shell", "Close"]
 selector = "closeCurrentSession:"
+identifier = "Close"
 key = "w"
 mods = ["cmd"]
 
 [[item]]
 path = ["Shell", "Close Terminal Window"]
 selector = "closeTerminalWindow:"
+identifier = "Close Terminal Window"
 key = "w"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Shell", "Close All Panes in Tab"]
 selector = "closeCurrentTab:"
+identifier = "Close All Panes in Tab"
 key = "w"
 mods = ["opt", "cmd"]
 
@@ -276,6 +315,7 @@ separator = true
 [[item]]
 path = ["Shell", "Undo Close"]
 selector = "undoCloseSession:"
+identifier = "Undo Close"
 key = "t"
 mods = ["cmd", "shift"]
 
@@ -291,10 +331,12 @@ submenu = true
 [[item]]
 path = ["Shell", "Archives", "Save Archive of Current Session..."]
 selector = "saveArchive:"
+identifier = "Save Archive of Current Session"
 
 [[item]]
 path = ["Shell", "Archives", "Restore Archive..."]
 selector = "restoreArchive:"
+identifier = "Restore Archive"
 
 [[item]]
 path = ["Shell", "Archives"]
@@ -316,6 +358,7 @@ separator = true
 [[item]]
 path = ["Shell", "Workgroups", "Exit Workgroup"]
 selector = "exitWorkgroup:"
+identifier = "Exit Workgroup"
 
 [[item]]
 path = ["Shell"]
@@ -329,24 +372,28 @@ submenu = true
 [[item]]
 path = ["Shell", "Broadcast Input", "Send Input to Current Session Only"]
 selector = "disableBroadcasting:"
+identifier = "Broadcast Input.Send Input to Current Session Only"
 key = "i"
 mods = ["opt", "cmd", "shift"]
 
 [[item]]
 path = ["Shell", "Broadcast Input", "Broadcast Input to All Panes in All Tabs"]
 selector = "enableSendInputToAllTabs:"
+identifier = "Broadcast Input.Broadcast Input to All Panes in All Tabs"
 key = "i"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Shell", "Broadcast Input", "Broadcast Input to All Panes in Current Tab"]
 selector = "enableSendInputToAllPanes:"
+identifier = "Broadcast Input.Broadcast Input to All Panes in Current Tab"
 key = "i"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Shell", "Broadcast Input", "Toggle Broadcast Input to Current Session"]
 selector = "toggleBroadcastingToCurrentSession:"
+identifier = "Broadcast Input.Toggle Broadcast Input to Current Session"
 key = "i"
 mods = ["ctrl", "opt", "cmd", "shift"]
 
@@ -357,14 +404,17 @@ separator = true
 [[item]]
 path = ["Shell", "Broadcast Input", "Show Background Pattern Indicator"]
 selector = "toggleUseBackgroundPatternIndicator:"
+identifier = "Broadcast Input.Show Background Pattern Indicator"
 
 [[item]]
 path = ["Shell", "Broadcast Input", "Current Session is Broadcast Source"]
 selector = "toggleBroadcastSource:"
+identifier = "Broadcast Input.Current Session is Broadcast Source"
 
 [[item]]
 path = ["Shell", "Toggle Buffer Input"]
 selector = "toggleBufferInput:"
+identifier = "Toggle Buffer Input"
 
 [[item]]
 path = ["Shell"]
@@ -378,6 +428,7 @@ submenu = true
 [[item]]
 path = ["Shell", "tmux", "Detach"]
 selector = "detachTmux:"
+identifier = "tmux.Detach"
 key = "d"
 mods = ["ctrl", "cmd", "shift"]
 alternate = true
@@ -385,6 +436,7 @@ alternate = true
 [[item]]
 path = ["Shell", "tmux", "Force Detach"]
 selector = "forceDetachTmux:"
+identifier = "tmux.Force Detach"
 alternate = true
 
 [[item]]
@@ -394,6 +446,7 @@ separator = true
 [[item]]
 path = ["Shell", "tmux", "New Tmux Window"]
 selector = "newTmuxWindow:"
+identifier = "tmux.New Tmux Window"
 key = "n"
 mods = ["ctrl", "cmd", "shift"]
 alternate = true
@@ -401,6 +454,7 @@ alternate = true
 [[item]]
 path = ["Shell", "tmux", "New Tmux Tab"]
 selector = "newTmuxTab:"
+identifier = "tmux.New Tmux Tab"
 key = "t"
 mods = ["ctrl", "cmd", "shift"]
 alternate = true
@@ -412,6 +466,7 @@ separator = true
 [[item]]
 path = ["Shell", "tmux", "Pause Pane"]
 selector = "toggleTmuxPausePane:"
+identifier = "trmux.Pause Pane"
 key = "p"
 mods = ["ctrl", "cmd", "shift"]
 alternate = true
@@ -423,8 +478,9 @@ separator = true
 [[item]]
 path = ["Shell", "tmux", "Dashboard"]
 selector = "openDashboard:"
+identifier = "tmux.Dashboard"
 key = "\r"
-mods = ["ctrl", "cmd", "shift"]
+mods = ["ctrl", "shift", "cmd"]
 alternate = true
 
 [[item]]
@@ -435,14 +491,17 @@ submenu = true
 [[item]]
 path = ["Shell", "ssh", "Disconnect"]
 selector = "sshDisconnect:"
+identifier = "ssh.Disconnect"
 
 [[item]]
 path = ["Shell", "ssh", "Download Files..."]
 selector = "downloadFiles:"
+identifier = "ssh.Download Files"
 
 [[item]]
 path = ["Shell", "ssh", "Remote host can control iTerm2"]
 selector = "toggleRemoteHostCanControlIterm2:"
+identifier = "ssh.Remote host can control iTerm2"
 
 [[item]]
 path = ["Shell"]
@@ -451,6 +510,7 @@ separator = true
 [[item]]
 path = ["Shell", "Page Setup..."]
 selector = "runPageLayout:"
+identifier = "Page Setup..."
 key = "p"
 mods = ["cmd", "shift"]
 
@@ -462,18 +522,21 @@ submenu = true
 [[item]]
 path = ["Shell", "Print", "Screen"]
 selector = "print:"
+identifier = "Print.Screen"
 key = "p"
 mods = ["cmd"]
 
 [[item]]
 path = ["Shell", "Print", "Selection"]
 selector = "print:"
+identifier = "Print.Selection"
 key = "p"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Shell", "Print", "Buffer"]
 selector = "print:"
+identifier = "Print.Buffer"
 key = "p"
 mods = ["opt", "cmd", "shift"]
 
@@ -489,12 +552,14 @@ submenu = true
 [[item]]
 path = ["Edit", "Undo"]
 selector = "undo:"
+identifier = "Undo"
 key = "z"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Redo"]
 selector = "redo:"
+identifier = "Redo"
 key = "z"
 mods = ["cmd", "shift"]
 
@@ -505,18 +570,21 @@ separator = true
 [[item]]
 path = ["Edit", "Cut"]
 selector = "cut:"
+identifier = "Cut"
 key = "x"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Copy"]
 selector = "copy:"
+identifier = "Copy"
 key = "c"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Copy with Styles"]
 selector = "copyWithStyles:"
+identifier = "Copy with Styles"
 key = "c"
 mods = ["opt", "cmd"]
 alternate = true
@@ -524,17 +592,20 @@ alternate = true
 [[item]]
 path = ["Edit", "Copy with Control Sequences"]
 selector = "copyWithControlSequences:"
+identifier = "Copy with Control Sequences"
 alternate = true
 
 [[item]]
 path = ["Edit", "Copy Mode"]
 selector = "toggleCopyMode:"
+identifier = "Copy Mode"
 key = "c"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Paste"]
 selector = "paste:"
+identifier = "Paste"
 key = "v"
 mods = ["cmd"]
 
@@ -546,18 +617,21 @@ submenu = true
 [[item]]
 path = ["Edit", "Paste Special", "Advanced Paste..."]
 selector = "pasteOptions:"
+identifier = "Paste Special.Advanced Paste\u2026"
 key = "v"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Edit", "Paste Special", "Paste Selection"]
 selector = "pasteSelection:"
+identifier = "Paste Special.Paste Selection"
 key = "v"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Paste Special", "Paste File Base64-Encoded"]
 selector = "pasteBase64Encoded:"
+identifier = "Paste Special.Paste File Base64-Encoded"
 
 [[item]]
 path = ["Edit", "Paste Special"]
@@ -566,6 +640,7 @@ separator = true
 [[item]]
 path = ["Edit", "Paste Special", "Paste Slowly"]
 selector = "paste:"
+identifier = "Paste Special.Paste Slowly"
 
 [[item]]
 path = ["Edit", "Paste Special"]
@@ -574,19 +649,23 @@ separator = true
 [[item]]
 path = ["Edit", "Paste Special", "Paste Faster"]
 selector = "pasteFaster:"
+identifier = "Paste Special.Paste Faster"
 
 [[item]]
 path = ["Edit", "Paste Special", "Paste Slowly Faster"]
 selector = "pasteSlowlyFaster:"
+identifier = "Paste Special.Paste Slowly Faster"
 alternate = true
 
 [[item]]
 path = ["Edit", "Paste Special", "Paste Slower"]
 selector = "pasteSlower:"
+identifier = "Paste Special.Paste Slower"
 
 [[item]]
 path = ["Edit", "Paste Special", "Paste Slowly Slower"]
 selector = "pasteSlowlySlower:"
+identifier = "Paste Special.Paste Slowly Slower"
 alternate = true
 
 [[item]]
@@ -596,10 +675,12 @@ separator = true
 [[item]]
 path = ["Edit", "Paste Special", "Warn Before Multi-Line Paste"]
 selector = "toggleMultiLinePasteWarning:"
+identifier = "Paste Special.Warn Before Multi-Line Paste"
 
 [[item]]
 path = ["Edit", "Paste Special", "Limit Multi-Line Paste Warning to Shell Prompt"]
 selector = "toggleMultiLinePasteWarning:"
+identifier = "Paste Special.Limit Multi-Line Paste Warning to Shell Prompt"
 
 [[item]]
 path = ["Edit", "Paste Special"]
@@ -608,6 +689,7 @@ separator = true
 [[item]]
 path = ["Edit", "Paste Special", "Prompt to Convert Tabs to Spaces when Pasting"]
 selector = "promptToConvertTabsToSpacesWhenPasting:"
+identifier = "Paste Special.Prompt to Convert Tabs to Spaces when Pasting"
 
 [[item]]
 path = ["Edit", "Paste Special"]
@@ -616,6 +698,7 @@ separator = true
 [[item]]
 path = ["Edit", "Paste Special", "Warn Before Pasting One Line Ending in a Newline at Shell Prompt"]
 selector = "toggleMultiLinePasteWarning:"
+identifier = "Paste Special.Warn Before Pasting One Line Ending in a Newline at Shell Prompt"
 
 [[item]]
 path = ["Edit"]
@@ -629,20 +712,24 @@ submenu = true
 [[item]]
 path = ["Edit", "Replace Selection", "Render Selection Natively"]
 selector = "renderSelection:"
+identifier = "Render Selection Natively"
 key = "e"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Edit", "Replace Selection", "Replace with Pretty-Printed JSON"]
 selector = "replaceSelectionWithPrettyPrintedJSON:"
+identifier = "Replace Selection.Replace with Pretty-Printed JSON"
 
 [[item]]
 path = ["Edit", "Replace Selection", "Replace with Base 64-Encoded Value"]
 selector = "replaceSelectionWithBase64Encoded:"
+identifier = "Replace Selection.Replace with Base 64-Encoded Value"
 
 [[item]]
 path = ["Edit", "Replace Selection", "Replace with Base 64-Decoded Value"]
 selector = "replaceSelectionWithBase64Decoded:"
+identifier = "Replace Selection.Replace with Base 64-Decoded Value"
 
 [[item]]
 path = ["Edit"]
@@ -651,12 +738,14 @@ separator = true
 [[item]]
 path = ["Edit", "Engage Artificial Intelligence"]
 selector = "performNaturalLanguageQuery:"
+identifier = "Engage Artificial Intelligence"
 key = "y"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Explain Output with AI"]
 selector = "explainOutputWithAI:"
+identifier = "Explain Output with AI"
 key = "y"
 mods = ["opt", "cmd"]
 
@@ -667,11 +756,13 @@ separator = true
 [[item]]
 path = ["Edit", "Snippets"]
 selector = ""
+identifier = "Edit.Snippets"
 submenu = true
 
 [[item]]
 path = ["Edit", "Actions"]
 selector = ""
+identifier = "Edit.Actions"
 submenu = true
 
 [[item]]
@@ -681,12 +772,14 @@ separator = true
 [[item]]
 path = ["Edit", "Open Selection"]
 selector = "openSelection:"
+identifier = "Open Selection"
 key = "o"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Edit", "Jump to Selection"]
 selector = "jumpToSelection:"
+identifier = "Find.Jump to Selection"
 key = "j"
 mods = ["cmd"]
 
@@ -697,24 +790,28 @@ separator = true
 [[item]]
 path = ["Edit", "Select All"]
 selector = "selectAll:"
+identifier = "Select All"
 key = "a"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Selection Respects Soft Boundaries"]
 selector = "toggleSelectionRespectsSoftBoundaries:"
+identifier = "Selection Respects Soft Boundaries"
 key = "a"
 mods = ["opt", "cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Select Output of Last Command"]
 selector = "selectOutputOfLastCommand:"
+identifier = "Select Output of Last Command"
 key = "a"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Select Current Command"]
 selector = "selectCurrentCommand:"
+identifier = "Select Current Command"
 
 [[item]]
 path = ["Edit"]
@@ -728,42 +825,51 @@ submenu = true
 [[item]]
 path = ["Edit", "Find", "Find..."]
 selector = "performFindPanelAction:"
+identifier = "Find.Find..."
 key = "f"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Find", "Find Next"]
 selector = "findNext:"
+identifier = "Find.Find Next"
 key = "g"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Find", "Find Previous"]
 selector = "findPrevious:"
+identifier = "Find.Find Previous"
 key = "g"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Find", "Use Selection for Find"]
 selector = "performFindPanelAction:"
+identifier = "Find.Use Selection for Find"
 key = "e"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Find", "Clear Find"]
 selector = "clearFindString:"
+identifier = "Find.Clear Find"
 key = "e"
 mods = ["opt", "cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Find", "Find Globally..."]
 selector = "findGlobally:"
+identifier = "Find.Find Globally..."
 key = "f"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Find", "Select Matches"]
 selector = "performFindPanelAction:"
+identifier = "Find.ConvertMatchesToSelections"
+key = "\r"
+mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Edit", "Find"]
@@ -772,18 +878,21 @@ separator = true
 [[item]]
 path = ["Edit", "Find", "Find URLs"]
 selector = "findUrls:"
+identifier = "Find.Find URLs"
 key = "u"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Edit", "Find", "Find All Smart Selection Matches"]
 selector = "smartSelectAllVisible:"
+identifier = "Find.Find All Smart Selection  Matches"
 key = "u"
 mods = ["opt", "cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Find", "Pick Result to Open"]
 selector = "revealContentNavigationShortcuts:"
+identifier = "Find.Pick Result To Open"
 key = "o"
 mods = ["opt", "cmd", "shift"]
 
@@ -794,6 +903,7 @@ separator = true
 [[item]]
 path = ["Edit", "Find", "Filter"]
 selector = "filter:"
+identifier = "Find.Filter"
 key = "f"
 mods = ["opt", "cmd", "shift"]
 
@@ -809,12 +919,14 @@ submenu = true
 [[item]]
 path = ["Edit", "Marks and Annotations", "Set Mark"]
 selector = "saveScrollPosition:"
+identifier = "Marks and Annotations.Set Mark"
 key = "m"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Marks and Annotations", "Jump to Mark"]
 selector = "jumpToSavedScrollPosition:"
+identifier = "Marks and Annotations.Jump to Mark"
 key = "j"
 mods = ["cmd", "shift"]
 
@@ -825,12 +937,14 @@ separator = true
 [[item]]
 path = ["Edit", "Marks and Annotations", "Next Mark"]
 selector = "nextMark:"
+identifier = "Marks and Annotations.Next Mark"
 key = ""
 mods = ["shift", "cmd"]
 
 [[item]]
 path = ["Edit", "Marks and Annotations", "Previous Mark"]
 selector = "previousMark:"
+identifier = "Marks and Annotations.Previous Mark"
 key = ""
 mods = ["shift", "cmd"]
 
@@ -841,12 +955,14 @@ separator = true
 [[item]]
 path = ["Edit", "Marks and Annotations", "Add Annotation at Cursor"]
 selector = "addNoteAtCursor:"
+identifier = "Marks and Annotations.Add Annotation at Cursor"
 key = "m"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Edit", "Marks and Annotations", "Annotate Selection"]
 selector = "annotateSelection:"
+identifier = "Marks and Annotations.Annotate Selection"
 
 [[item]]
 path = ["Edit", "Marks and Annotations"]
@@ -855,12 +971,14 @@ separator = true
 [[item]]
 path = ["Edit", "Marks and Annotations", "Next Annotation"]
 selector = "nextAnnotation:"
+identifier = "Marks and Annotations.Next  Annotation"
 key = ""
 mods = ["opt", "shift", "cmd"]
 
 [[item]]
 path = ["Edit", "Marks and Annotations", "Previous Annotation"]
 selector = "previousAnnotation:"
+identifier = "Marks and Annotations.Previous  Annotation"
 key = ""
 mods = ["opt", "shift", "cmd"]
 
@@ -876,12 +994,14 @@ submenu = true
 [[item]]
 path = ["Edit", "Marks and Annotations", "Alerts", "Alert on Next Mark"]
 selector = "toggleAlertOnNextMark:"
+identifier = "Marks and Annotations.Alerts.Alert on Next Mark"
 key = "a"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Edit", "Marks and Annotations", "Alerts", "Alert on Marks in Offscreen Sessions"]
 selector = "toggleAlertOnMarksInOffscreenSessions:"
+identifier = "Marks and Alerts.Alerts.Alert on Marks in Offscreen Sessions"
 
 [[item]]
 path = ["Edit", "Marks and Annotations", "Alerts"]
@@ -890,18 +1010,22 @@ separator = true
 [[item]]
 path = ["Edit", "Marks and Annotations", "Alerts", "Show Modal Alert Box"]
 selector = "enableMarkAlertShowsModalAlert:"
+identifier = "Marks and Annotations.Alerts.Show Modal Alert Box"
 
 [[item]]
 path = ["Edit", "Marks and Annotations", "Alerts", "Post Notification"]
 selector = "enableMarkAlertPostsNotification:"
+identifier = "Marks and Annotations.Alerts.Post Notification"
 
 [[item]]
 path = ["Edit", "Marks and Annotations", "Alerts", "Play a Sound"]
 selector = "enableMarkAlertRingsBell:"
+identifier = "Marks and Notes.Alerts.Play a Sound"
 
 [[item]]
 path = ["Edit", "Set Named Mark"]
 selector = "addNamedMark:"
+identifier = "Set Named Mark"
 key = "m"
 mods = ["opt", "cmd", "shift"]
 
@@ -917,12 +1041,14 @@ separator = true
 [[item]]
 path = ["Edit", "Fold Selected Lines"]
 selector = "foldSelection:"
+identifier = "Fold Selected Lines"
 key = "l"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Fold All"]
 selector = "foldAll:"
+identifier = "Fold All Above Cursor"
 key = "l"
 mods = ["opt", "shift", "cmd"]
 
@@ -933,47 +1059,55 @@ separator = true
 [[item]]
 path = ["Edit", "Clear Buffer"]
 selector = "clearBuffer:"
+identifier = "Clear Buffer"
 key = "k"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Clear Instant Replay"]
 selector = "clearInstantReplay:"
+identifier = "Clear Instant Replay"
 key = "k"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Edit", "Clear Scrollback Buffer"]
 selector = "clearScrollbackBuffer:"
+identifier = "Clear Scrollback Buffer"
 key = "k"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Edit", "Clear to Start of Selection"]
 selector = "clearToStartOfSelection:"
+identifier = "Clear to Start of Selection"
 key = "l"
 mods = ["cmd"]
 
 [[item]]
 path = ["Edit", "Clear to Last Mark"]
 selector = "clearToLastMark:"
+identifier = "Clear to Last Mark"
 key = "l"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["View"]
 selector = ""
+identifier = "View"
 submenu = true
 
 [[item]]
 path = ["View", "Show Tabs in Fullscreen"]
 selector = "toggleFullScreenTabBar:"
+identifier = "Show Tabs in Fullscreen"
 key = "u"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["View", "Toggle Full Screen"]
 selector = "toggleFullScreenMode:"
+identifier = "Toggle Full Screen"
 key = "f"
 mods = ["ctrl", "cmd"]
 
@@ -984,17 +1118,20 @@ separator = true
 [[item]]
 path = ["View", "Toolbelt"]
 selector = ""
+identifier = "Toolbelt"
 submenu = true
 
 [[item]]
 path = ["View", "Toolbelt", "Show Toolbelt"]
 selector = "toggleToolbeltVisibility:"
+identifier = "Show Toolbelt"
 key = "b"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["View", "Toolbelt", "Set Default Width"]
 selector = "setDefaultToolbeltWidth:"
+identifier = "Set Default Width"
 
 [[item]]
 path = ["View", "Toolbelt"]
@@ -1007,12 +1144,14 @@ separator = true
 [[item]]
 path = ["View", "Use Transparency"]
 selector = "toggleUseTransparency:"
+identifier = "Use Transparency"
 key = "u"
 mods = ["cmd"]
 
 [[item]]
 path = ["View", "Disable Transparency for Active Window"]
 selector = "toggleDisableTransparencyForActiveWindow:"
+identifier = "Disable Transparency for Active Window"
 
 [[item]]
 path = ["View"]
@@ -1021,12 +1160,14 @@ separator = true
 [[item]]
 path = ["View", "Zoom In on Selection"]
 selector = "zoomOnSelection:"
+identifier = "Zoom In on Selection"
 key = "z"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["View", "Zoom Out"]
 selector = "zoomOut:"
+identifier = "Zoom Out"
 
 [[item]]
 path = ["View"]
@@ -1035,6 +1176,7 @@ separator = true
 [[item]]
 path = ["View", "Find Cursor"]
 selector = "findCursor:"
+identifier = "Find Cursor"
 key = "/"
 mods = ["cmd"]
 
@@ -1045,42 +1187,49 @@ separator = true
 [[item]]
 path = ["View", "Show Annotations"]
 selector = "showHideNotes:"
+identifier = "Show Annotations"
 key = "\\"
 mods = ["cmd"]
 
 [[item]]
 path = ["View", "Show Clippings"]
 selector = "toggleShowClippings:"
+identifier = "Show Clippings"
 key = "="
 mods = ["shift", "cmd"]
 
 [[item]]
 path = ["View", "Show Inline Chat"]
 selector = "toggleShowInlineChat:"
+identifier = "Show Inline Chat"
 key = ","
 mods = ["shift", "cmd"]
 
 [[item]]
 path = ["View", "Show Composer"]
 selector = "compose:"
+identifier = "Composer"
 key = "."
 mods = ["shift", "cmd"]
 
 [[item]]
 path = ["View", "Show Cursor Guide"]
 selector = "toggleCursorGuide:"
+identifier = "Show Cursor Guide"
 key = ";"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["View", "Show Session Note"]
 selector = "editSessionNote:"
+identifier = "Edit Session Note"
 key = "g"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["View", "Show Timestamps"]
 selector = "toggleShowTimestamps:"
+identifier = "Show Timestamps"
 key = "e"
 mods = ["cmd", "shift"]
 
@@ -1091,12 +1240,14 @@ separator = true
 [[item]]
 path = ["View", "Auto Command Completion"]
 selector = "toggleAutoCommandHistory:"
+identifier = "Auto Command Completion"
 key = "y"
 mods = ["opt", "cmd", "shift"]
 
 [[item]]
 path = ["View", "Auto Composer"]
 selector = "toggleAutoComposer:"
+identifier = "Auto Composer"
 key = "."
 mods = ["opt", "shift", "cmd"]
 
@@ -1107,6 +1258,7 @@ separator = true
 [[item]]
 path = ["View", "Open Quickly"]
 selector = "openQuickly:"
+identifier = "Open Quickly"
 key = "o"
 mods = ["cmd", "shift"]
 
@@ -1117,6 +1269,9 @@ separator = true
 [[item]]
 path = ["View", "Maximize Active Pane"]
 selector = "maximizePane:"
+identifier = "Maximize Active Pane"
+key = "\r"
+mods = ["shift", "cmd"]
 
 [[item]]
 path = ["View"]
@@ -1125,18 +1280,21 @@ separator = true
 [[item]]
 path = ["View", "Make Text Bigger"]
 selector = "biggerFont:"
+identifier = "Make Text Bigger"
 key = "+"
 mods = ["cmd"]
 
 [[item]]
 path = ["View", "Make Text Normal Size"]
 selector = "returnToDefaultSize:"
+identifier = "Make Text Normal Size"
 key = "0"
 mods = ["cmd"]
 
 [[item]]
 path = ["View", "Restore Text and Session Size"]
 selector = "returnToDefaultSize:"
+identifier = "Restore Text and Session Size"
 key = "0"
 mods = ["opt", "cmd"]
 alternate = true
@@ -1144,12 +1302,14 @@ alternate = true
 [[item]]
 path = ["View", "Make Text Smaller"]
 selector = "smallerFont:"
+identifier = "Make Text Smaller"
 key = "-"
 mods = ["cmd"]
 
 [[item]]
 path = ["View", "Size Changes Update Profile"]
 selector = "toggleSizeChangesAffectProfile:"
+identifier = "Size Changes Update Profile"
 
 [[item]]
 path = ["View"]
@@ -1158,17 +1318,20 @@ separator = true
 [[item]]
 path = ["View", "Start Instant Replay"]
 selector = "irPrev:"
+identifier = "Start Instant Replay"
 key = "b"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Session"]
 selector = ""
+identifier = "Session"
 submenu = true
 
 [[item]]
 path = ["Session", "Edit Session..."]
 selector = "editCurrentSession:"
+identifier = "Edit Session\u2026"
 key = "i"
 mods = ["cmd"]
 
@@ -1179,12 +1342,14 @@ separator = true
 [[item]]
 path = ["Session", "Run Coprocess..."]
 selector = "runCoprocess:"
+identifier = "Run Coprocess\u2026"
 key = "r"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Session", "Stop Coprocess"]
 selector = "stopCoprocess:"
+identifier = "Stop Coprocess"
 key = "r"
 mods = ["opt", "cmd", "shift"]
 
@@ -1195,10 +1360,12 @@ separator = true
 [[item]]
 path = ["Session", "Restart Session"]
 selector = "restartSession:"
+identifier = "Restart Session"
 
 [[item]]
 path = ["Session", "Duplicate Session"]
 selector = "duplicateSession:"
+identifier = "Duplicate Session"
 
 [[item]]
 path = ["Session"]
@@ -1207,30 +1374,35 @@ separator = true
 [[item]]
 path = ["Session", "Open Autocomplete..."]
 selector = "openAutocomplete:"
+identifier = "Open Autocomplete\u2026"
 key = ";"
 mods = ["cmd"]
 
 [[item]]
 path = ["Session", "Open Command History..."]
 selector = "openCommandHistory:"
+identifier = "Open Command History\u2026"
 key = ";"
 mods = ["shift", "cmd"]
 
 [[item]]
 path = ["Session", "Open Recent Directories..."]
 selector = "openDirectories:"
+identifier = "Open Recent Directories\u2026"
 key = "/"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Session", "Open Paste History..."]
 selector = "openPasteHistory:"
+identifier = "Open Paste History\u2026"
 key = "h"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Session", "Open AI Chat..."]
 selector = "openAIChat:"
+identifier = "Open AI Chat"
 key = "y"
 mods = ["ctrl", "cmd", "shift"]
 
@@ -1241,19 +1413,23 @@ separator = true
 [[item]]
 path = ["Session", "Triggers"]
 selector = ""
+identifier = "Triggers"
 submenu = true
 
 [[item]]
 path = ["Session", "Triggers", "Add Trigger..."]
 selector = "addTrigger:"
+identifier = "Add Trigger"
 
 [[item]]
 path = ["Session", "Triggers", "Edit Triggers"]
 selector = "editTriggers:"
+identifier = "Edit Triggers"
 
 [[item]]
 path = ["Session", "Triggers", "Enable Triggers in Interactive Apps"]
 selector = "toggleEnableTriggersInInteractiveApps:"
+identifier = "Enable Triggers in Interactive Apps"
 
 [[item]]
 path = ["Session", "Triggers"]
@@ -1262,10 +1438,12 @@ separator = true
 [[item]]
 path = ["Session", "Triggers", "Enable All"]
 selector = "enableAllTriggers:"
+identifier = "Triggers.Enable All"
 
 [[item]]
 path = ["Session", "Triggers", "Disable All"]
 selector = "disableAllTriggers:"
+identifier = "Triggers.Disable All"
 
 [[item]]
 path = ["Session"]
@@ -1274,12 +1452,14 @@ separator = true
 [[item]]
 path = ["Session", "Reset"]
 selector = "reset:"
+identifier = "Reset"
 key = "r"
 mods = ["cmd"]
 
 [[item]]
 path = ["Session", "Reset Character Set"]
 selector = "resetCharset:"
+identifier = "Reset Character Set"
 
 [[item]]
 path = ["Session"]
@@ -1293,14 +1473,17 @@ submenu = true
 [[item]]
 path = ["Session", "Move Session", "Move Session to Window"]
 selector = "moveSessionToWindow:"
+identifier = "Move Session to Window"
 
 [[item]]
 path = ["Session", "Move Session", "Move Session to Tab"]
 selector = "moveSessionToTab:"
+identifier = "Move Session to Tab"
 
 [[item]]
 path = ["Session", "Move Session", "Move Session to Split Pane"]
 selector = "movePane:"
+identifier = "Move Session to Split Pane"
 
 [[item]]
 path = ["Session"]
@@ -1314,6 +1497,7 @@ submenu = true
 [[item]]
 path = ["Session", "Log", "Log to File"]
 selector = "startStopLogging:"
+identifier = "Log.Toggle"
 
 [[item]]
 path = ["Session", "Log"]
@@ -1322,10 +1506,12 @@ separator = true
 [[item]]
 path = ["Session", "Log", "Import Recording"]
 selector = "loadRecording:"
+identifier = "Log.ImportRecording"
 
 [[item]]
 path = ["Session", "Log", "Export Recording"]
 selector = "exportRecording:"
+identifier = "Log.ExportRecording"
 
 [[item]]
 path = ["Session", "Log"]
@@ -1338,6 +1524,7 @@ separator = true
 [[item]]
 path = ["Session", "Make Screenshot..."]
 selector = "makeScreenshot:"
+identifier = "Make Screenshot"
 
 [[item]]
 path = ["Session"]
@@ -1351,6 +1538,7 @@ submenu = true
 [[item]]
 path = ["Session", "Terminal State", "Alternate Screen"]
 selector = "terminalStateToggleAlternateScreen:"
+identifier = "Alternate Screen"
 
 [[item]]
 path = ["Session", "Terminal State"]
@@ -1359,14 +1547,17 @@ separator = true
 [[item]]
 path = ["Session", "Terminal State", "Focus Reporting"]
 selector = "terminalStateToggleFocusReporting:"
+identifier = "Focus Reporting"
 
 [[item]]
 path = ["Session", "Terminal State", "Mouse Reporting"]
 selector = "terminalStateToggleMouseReporting:"
+identifier = "Mouse Reporting"
 
 [[item]]
 path = ["Session", "Terminal State", "Paste Bracketing"]
 selector = "terminalStateTogglePasteBracketing:"
+identifier = "Paste Bracketing"
 
 [[item]]
 path = ["Session", "Terminal State"]
@@ -1375,10 +1566,12 @@ separator = true
 [[item]]
 path = ["Session", "Terminal State", "Application Cursor"]
 selector = "terminalStateToggleApplicationCursor:"
+identifier = "Application Cursor"
 
 [[item]]
 path = ["Session", "Terminal State", "Application Keypad"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Application Keypad"
 
 [[item]]
 path = ["Session", "Terminal State"]
@@ -1387,22 +1580,27 @@ separator = true
 [[item]]
 path = ["Session", "Terminal State", "Standard Key Reporting Mode"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Standard Key Reporting"
 
 [[item]]
 path = ["Session", "Terminal State", "modifyOtherKeys Mode 1"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Report Modifiers like xterm 1"
 
 [[item]]
 path = ["Session", "Terminal State", "modifyOtherKeys Mode 2"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Report Modifiers like xterm 2"
 
 [[item]]
 path = ["Session", "Terminal State", "CSI u Mode"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Report Modifiers with CSI u"
 
 [[item]]
 path = ["Session", "Terminal State", "Raw Key Reporting Mode"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Raw Key Reporting"
 
 [[item]]
 path = ["Session", "Terminal State"]
@@ -1411,22 +1609,27 @@ separator = true
 [[item]]
 path = ["Session", "Terminal State", "Disambiguate Escape"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Disambiguate Escape"
 
 [[item]]
 path = ["Session", "Terminal State", "Report All Event Types"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Report All Event Types"
 
 [[item]]
 path = ["Session", "Terminal State", "Report Alternate Keys"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Report Alternate Keys"
 
 [[item]]
 path = ["Session", "Terminal State", "Report All Keys as Escape Codes"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Report All Keys as Escape Codes"
 
 [[item]]
 path = ["Session", "Terminal State", "Report Associated Text"]
 selector = "terminalStateToggleApplicationKeypad:"
+identifier = "Terminal State.Report Associated Text"
 
 [[item]]
 path = ["Session", "Terminal State"]
@@ -1435,6 +1638,7 @@ separator = true
 [[item]]
 path = ["Session", "Terminal State", "Literal Controls"]
 selector = "terminalStateToggleLiteralMode:"
+identifier = "Terminal State.Literal Mode"
 
 [[item]]
 path = ["Session", "Terminal State"]
@@ -1448,22 +1652,27 @@ submenu = true
 [[item]]
 path = ["Session", "Terminal State", "Emulation Level", "VT100"]
 selector = "terminalStateSetEmulationLevel:"
+identifier = "Terminal State.Emulation Level.VT100"
 
 [[item]]
 path = ["Session", "Terminal State", "Emulation Level", "VT200"]
 selector = "terminalStateSetEmulationLevel:"
+identifier = "Terminal State.Emulation Level.VT200"
 
 [[item]]
 path = ["Session", "Terminal State", "Emulation Level", "VT300"]
 selector = "terminalStateSetEmulationLevel:"
+identifier = "Terminal State.Emulation Level.VT300"
 
 [[item]]
 path = ["Session", "Terminal State", "Emulation Level", "VT400"]
 selector = "terminalStateSetEmulationLevel:"
+identifier = "Terminal State.Emulation Level.VT400"
 
 [[item]]
 path = ["Session", "Terminal State", "Emulation Level", "VT500"]
 selector = "terminalStateSetEmulationLevel:"
+identifier = "Terminal State.Emulation Level.VT500"
 
 [[item]]
 path = ["Session", "Terminal State"]
@@ -1472,6 +1681,7 @@ separator = true
 [[item]]
 path = ["Session", "Terminal State", "Reset"]
 selector = "terminalStateReset:"
+identifier = "Reset Terminal State"
 
 [[item]]
 path = ["Session"]
@@ -1480,6 +1690,7 @@ separator = true
 [[item]]
 path = ["Session", "Bury Session"]
 selector = "bury:"
+identifier = "Bury Session"
 key = "b"
 mods = ["opt", "cmd", "shift"]
 
@@ -1501,6 +1712,7 @@ submenu = true
 [[item]]
 path = ["Scripts", "Manage", "New Python Script"]
 selector = "newPythonScript:"
+identifier = "New Python Script"
 
 [[item]]
 path = ["Scripts", "Manage"]
@@ -1509,6 +1721,7 @@ separator = true
 [[item]]
 path = ["Scripts", "Manage", "Open Python REPL"]
 selector = "openREPL:"
+identifier = "Open Interactive Window"
 
 [[item]]
 path = ["Scripts", "Manage"]
@@ -1517,19 +1730,23 @@ separator = true
 [[item]]
 path = ["Scripts", "Manage", "Manage Dependencies..."]
 selector = "openDependencyEditor:"
+identifier = "Manage Dependencies"
 
 [[item]]
 path = ["Scripts", "Manage", "Install Python Runtime"]
 selector = "installPythonRuntime:"
+identifier = "Install Python Runtime"
 
 [[item]]
 path = ["Scripts", "Manage", "Install Already-Downloaded Python Runtime"]
 selector = "installAlreadyDownloadedPythonRuntime:"
+identifier = "Install Already-Downloaded Python Runtime"
 alternate = true
 
 [[item]]
 path = ["Scripts", "Manage", "Reveal Scripts in Finder"]
 selector = "revealScriptsInFinder:"
+identifier = "Reveal in Finder"
 
 [[item]]
 path = ["Scripts", "Manage"]
@@ -1538,10 +1755,12 @@ separator = true
 [[item]]
 path = ["Scripts", "Manage", "Import..."]
 selector = "importScript:"
+identifier = "Import Script"
 
 [[item]]
 path = ["Scripts", "Manage", "Export..."]
 selector = "exportScript:"
+identifier = "Export Script"
 
 [[item]]
 path = ["Scripts", "Manage"]
@@ -1550,6 +1769,7 @@ separator = true
 [[item]]
 path = ["Scripts", "Manage", "Console"]
 selector = "openScriptConsole:"
+identifier = "Script Console"
 key = "j"
 mods = ["opt", "cmd"]
 
@@ -1560,11 +1780,13 @@ separator = true
 [[item]]
 path = ["Profiles"]
 selector = ""
+identifier = ".Profiles"
 submenu = true
 
 [[item]]
 path = ["Profiles", "Open Profiles..."]
 selector = "showBookmarkWindow:"
+identifier = "Open Profiles\u2026"
 key = "o"
 mods = ["cmd"]
 
@@ -1575,10 +1797,12 @@ separator = true
 [[item]]
 path = ["Profiles", "Press Option for New Window"]
 selector = ""
+identifier = "Press Option for New Window"
 
 [[item]]
 path = ["Profiles", "Open In New Window"]
 selector = ""
+identifier = "Open In New Window"
 alternate = true
 
 [[item]]
@@ -1593,12 +1817,14 @@ submenu = true
 [[item]]
 path = ["Window", "Minimize"]
 selector = "performMiniaturize:"
+identifier = "Minimize"
 key = "m"
 mods = ["cmd"]
 
 [[item]]
 path = ["Window", "Zoom"]
 selector = "performZoom:"
+identifier = "Zoom"
 key = "0"
 mods = ["shift", "cmd"]
 
@@ -1609,17 +1835,20 @@ separator = true
 [[item]]
 path = ["Window", "Arrangements"]
 selector = ""
+identifier = "Arrangements"
 submenu = true
 
 [[item]]
 path = ["Window", "Arrangements", "Save Window Arrangement"]
 selector = "saveWindowArrangement:"
+identifier = "Save Window Arrangement"
 key = "s"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Window", "Arrangements", "Save Current Window as Arrangement"]
 selector = "saveCurrentWindowAsArrangement:"
+identifier = "Save Current Window as Arrangement"
 key = "s"
 mods = ["opt", "cmd", "shift"]
 alternate = true
@@ -1631,6 +1860,7 @@ separator = true
 [[item]]
 path = ["Window", "Arrangements", "Load Arrangement from File..."]
 selector = "importWindowArrangement:"
+identifier = "Load Arrangement from File\u2026"
 
 [[item]]
 path = ["Window", "Arrangements", "Restore Window Arrangement"]
@@ -1649,6 +1879,7 @@ separator = true
 [[item]]
 path = ["Window", "Arrangements", "Change Profile in Arrangement..."]
 selector = "changeProfileInArrangement:"
+identifier = "Change Profile in Arrangement\u2026"
 
 [[item]]
 path = ["Window"]
@@ -1657,6 +1888,7 @@ separator = true
 [[item]]
 path = ["Window", "Edit Window Title"]
 selector = "editWindowTitle:"
+identifier = "Edit Window Title"
 
 [[item]]
 path = ["Window"]
@@ -1670,6 +1902,7 @@ submenu = true
 [[item]]
 path = ["Window", "Tab", "Edit Tab Title"]
 selector = "editTabTitle:"
+identifier = "Edit Tab Title"
 
 [[item]]
 path = ["Window", "Tab", "Select Tab"]
@@ -1679,12 +1912,14 @@ submenu = true
 [[item]]
 path = ["Window", "Tab", "Select Tab", "Select Next Tab"]
 selector = "nextTab:"
+identifier = "Select Next Tab"
 key = "]"
 mods = ["shift", "cmd"]
 
 [[item]]
 path = ["Window", "Tab", "Select Tab", "Select Previous Tab"]
 selector = "previousTab:"
+identifier = "Select Previous Tab"
 key = "["
 mods = ["shift", "cmd"]
 
@@ -1695,12 +1930,14 @@ separator = true
 [[item]]
 path = ["Window", "Tab", "Select Tab", "Select Next Tab Group"]
 selector = "nextTabGroup:"
+identifier = "Select Next Tab Group"
 key = "]"
 mods = ["ctrl", "shift", "cmd"]
 
 [[item]]
 path = ["Window", "Tab", "Select Tab", "Select Previous Tab Group"]
 selector = "previousTabGroup:"
+identifier = "Select Previous Tab Group"
 key = "["
 mods = ["ctrl", "shift", "cmd"]
 
@@ -1716,6 +1953,7 @@ submenu = true
 [[item]]
 path = ["Window", "Tab", "Move Tab", "Move Tab to New Window"]
 selector = "moveTabToNewWindow:"
+identifier = "Move Tab to New Window"
 
 [[item]]
 path = ["Window", "Tab", "Move Tab"]
@@ -1724,12 +1962,14 @@ separator = true
 [[item]]
 path = ["Window", "Tab", "Move Tab", "Move Tab Left"]
 selector = "moveTabLeft:"
+identifier = "Move Tab Left"
 key = "["
 mods = ["opt", "shift", "cmd"]
 
 [[item]]
 path = ["Window", "Tab", "Move Tab", "Move Tab Right"]
 selector = "moveTabRight:"
+identifier = "Move Tab Right"
 key = "]"
 mods = ["opt", "shift", "cmd"]
 
@@ -1740,10 +1980,12 @@ separator = true
 [[item]]
 path = ["Window", "Tab", "Add Tab to New Group..."]
 selector = "addTabToNewGroupAction:"
+identifier = "Add Tab to New Group"
 
 [[item]]
 path = ["Window", "Tab", "Remove Tab from Group"]
 selector = "removeTabFromGroupAction:"
+identifier = "Remove Tab from Group"
 
 [[item]]
 path = ["Window", "Split Pane"]
@@ -1758,24 +2000,28 @@ submenu = true
 [[item]]
 path = ["Window", "Split Pane", "Select Split Pane", "Select Pane Above"]
 selector = "selectPaneUp:"
+identifier = "Select Split Pane.Select Pane Above"
 key = ""
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Select Split Pane", "Select Pane Below"]
 selector = "selectPaneDown:"
+identifier = "Select Split Pane.Select Pane Below"
 key = ""
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Select Split Pane", "Select Pane Left"]
 selector = "selectPaneLeft:"
+identifier = "Select Split Pane.Select Pane Left"
 key = ""
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Select Split Pane", "Select Pane Right"]
 selector = "selectPaneRight:"
+identifier = "Select Split Pane.Select Pane Right"
 key = ""
 mods = ["opt", "cmd"]
 
@@ -1786,12 +2032,14 @@ separator = true
 [[item]]
 path = ["Window", "Split Pane", "Select Split Pane", "Next Pane"]
 selector = "nextPane:"
+identifier = "Select Split Pane.Next Pane"
 key = "]"
 mods = ["cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Select Split Pane", "Previous Pane"]
 selector = "previousPane:"
+identifier = "Select Split Pane.Previous Pane"
 key = "["
 mods = ["cmd"]
 
@@ -1802,12 +2050,14 @@ separator = true
 [[item]]
 path = ["Window", "Split Pane", "Select Split Pane", "Previous Peer"]
 selector = "previousWorkgroupPeer:"
+identifier = "Select Split Pane.Previous Peer"
 key = "["
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Select Split Pane", "Next Peer"]
 selector = "nextWorkgroupPeer:"
+identifier = "Select Split Pane.Next Peer"
 key = "]"
 mods = ["opt", "cmd"]
 
@@ -1819,30 +2069,35 @@ submenu = true
 [[item]]
 path = ["Window", "Split Pane", "Resize Split Pane", "Move Divider Up"]
 selector = "movePaneDividerUp:"
+identifier = "Resize Split Pane.Move Divider Up"
 key = ""
 mods = ["ctrl", "cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Resize Split Pane", "Move Divider Down"]
 selector = "movePaneDividerDown:"
+identifier = "Resize Split Pane.Move Divider Down"
 key = ""
 mods = ["ctrl", "cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Resize Split Pane", "Move Divider Left"]
 selector = "movePaneDividerLeft:"
+identifier = "Resize Split Pane.Move Divider Left"
 key = ""
 mods = ["ctrl", "cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Resize Split Pane", "Move Divider Right"]
 selector = "movePaneDividerRight:"
+identifier = "Resize Split Pane.Move Divider Right"
 key = ""
 mods = ["ctrl", "cmd"]
 
 [[item]]
 path = ["Window", "Split Pane", "Lock Split Pane Width"]
 selector = "toggleLockSplitPaneWidth:"
+identifier = "Lock Split Pane Width"
 
 [[item]]
 path = ["Window"]
@@ -1856,6 +2111,7 @@ submenu = true
 [[item]]
 path = ["Window", "Window Style", "Normal"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Normal"
 
 [[item]]
 path = ["Window", "Window Style"]
@@ -1864,10 +2120,12 @@ separator = true
 [[item]]
 path = ["Window", "Window Style", "Full Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Full Screen"
 
 [[item]]
 path = ["Window", "Window Style", "Maximized"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Maximized"
 
 [[item]]
 path = ["Window", "Window Style"]
@@ -1876,6 +2134,7 @@ separator = true
 [[item]]
 path = ["Window", "Window Style", "No Title Bar"]
 selector = "setWindowStyle:"
+identifier = "Window Style.No Title Bar"
 
 [[item]]
 path = ["Window", "Window Style"]
@@ -1884,10 +2143,12 @@ separator = true
 [[item]]
 path = ["Window", "Window Style", "Centered"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Centered"
 
 [[item]]
 path = ["Window", "Window Style", "Centered, No Title Bar"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Centered No Title Bar"
 
 [[item]]
 path = ["Window", "Window Style"]
@@ -1896,18 +2157,22 @@ separator = true
 [[item]]
 path = ["Window", "Window Style", "Full-Width Bottom of Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style.FullWidth Bottom of Screen"
 
 [[item]]
 path = ["Window", "Window Style", "Full-Width Top of Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style.FullWidth Top of Screen"
 
 [[item]]
 path = ["Window", "Window Style", "Full-Height Left of Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style..FullHeight Left of Screen"
 
 [[item]]
 path = ["Window", "Window Style", "Full-Height Right of Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style.FullHeight Right of Screen"
 
 [[item]]
 path = ["Window", "Window Style"]
@@ -1916,18 +2181,22 @@ separator = true
 [[item]]
 path = ["Window", "Window Style", "Bottom of Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Bottom of Screen"
 
 [[item]]
 path = ["Window", "Window Style", "Top of Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Top of Screen"
 
 [[item]]
 path = ["Window", "Window Style", "Left of Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Left of Screen"
 
 [[item]]
 path = ["Window", "Window Style", "Right of Screen"]
 selector = "setWindowStyle:"
+identifier = "Window Style.Right of Screen"
 
 [[item]]
 path = ["Window"]
@@ -1936,14 +2205,17 @@ separator = true
 [[item]]
 path = ["Window", "Lock Size"]
 selector = "toggleSizeLocked:"
+identifier = "Lock Size"
 
 [[item]]
 path = ["Window", "Lock Layout"]
 selector = "toggleLayoutLocked:"
+identifier = "Lock Layout"
 
 [[item]]
 path = ["Window", "Notify on Status Change"]
 selector = "toggleNotifyOnStatusChange:"
+identifier = "Notify on Status Change"
 
 [[item]]
 path = ["Window"]
@@ -1957,6 +2229,7 @@ submenu = true
 [[item]]
 path = ["Window", "Arrange Windows", "Merge All Windows"]
 selector = "mergeAllWindows:"
+identifier = "Merge All Windows"
 
 [[item]]
 path = ["Window", "Arrange Windows"]
@@ -1965,10 +2238,12 @@ separator = true
 [[item]]
 path = ["Window", "Arrange Windows", "Arrange Windows Horizontally"]
 selector = "arrangeHorizontally:"
+identifier = "Arrange Windows Horizontally"
 
 [[item]]
 path = ["Window", "Arrange Windows", "Arrange Split Panes Evenly"]
 selector = "arrangeSplitPanesEvenly:"
+identifier = "Arrange Split Panes Evenly"
 
 [[item]]
 path = ["Window", "Resize Window"]
@@ -1978,22 +2253,26 @@ submenu = true
 [[item]]
 path = ["Window", "Resize Window", "Decrease Height"]
 selector = "decreaseHeight:"
+identifier = "Resize Window.Decrease Height"
 key = ""
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Window", "Resize Window", "Increase Height"]
 selector = "increaseHeight:"
+identifier = "Resize Window.Increase Height"
 key = ""
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Window", "Resize Window", "Decrease Width"]
 selector = "decreaseWidth:"
+identifier = "Resize Window.Decrease Width"
 
 [[item]]
 path = ["Window", "Resize Window", "Increase Width"]
 selector = "increaseWidth:"
+identifier = "Resize Window.Increase Width"
 
 [[item]]
 path = ["Window"]
@@ -2002,18 +2281,21 @@ separator = true
 [[item]]
 path = ["Window", "Password Manager"]
 selector = "openPasswordManager:"
+identifier = "Password Manager"
 key = "f"
 mods = ["opt", "cmd"]
 
 [[item]]
 path = ["Window", "AI Chats"]
 selector = "openAIChats:"
+identifier = "AI Chats"
 key = "y"
 mods = ["cmd", "shift"]
 
 [[item]]
 path = ["Window", "Cockpit"]
 selector = "revealCockpit:"
+identifier = "Cockpit"
 key = "c"
 mods = ["opt", "cmd", "shift"]
 
@@ -2024,6 +2306,7 @@ separator = true
 [[item]]
 path = ["Window", "Pin Hotkey Window"]
 selector = "togglePinHotkeyWindow:"
+identifier = "Pin Hotkey Window"
 key = "-"
 mods = ["shift", "cmd"]
 
@@ -2034,6 +2317,7 @@ separator = true
 [[item]]
 path = ["Window", "Bring All To Front"]
 selector = "arrangeInFront:"
+identifier = "Bring All To Front"
 
 [[item]]
 path = ["Help"]
@@ -2043,12 +2327,14 @@ submenu = true
 [[item]]
 path = ["Help", "iTerm2 Help"]
 selector = "showHelp:"
+identifier = "iTerm2 Help"
 key = "?"
 mods = ["cmd"]
 
 [[item]]
 path = ["Help", "Copy Mode Shortcuts"]
 selector = "copyModeShortcuts:"
+identifier = "Copy Mode Shortcuts"
 
 [[item]]
 path = ["Help"]
@@ -2057,6 +2343,7 @@ separator = true
 [[item]]
 path = ["Help", "Open Source Licenses"]
 selector = "openSourceLicenses:"
+identifier = "Open Source Licenses"
 
 [[item]]
 path = ["Help"]
@@ -2065,3 +2352,4 @@ separator = true
 [[item]]
 path = ["Help", "GPU Renderer Availability"]
 selector = "gpuRendererAvailability:"
+identifier = "GPU Renderer Availability"

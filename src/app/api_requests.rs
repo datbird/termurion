@@ -9,7 +9,8 @@
 //! full screen and a session's grid size and burial (`api_props`); GetProfileProperty,
 //! SetProfileProperty, ListProfiles and Preferences read and change profiles and settings
 //! (`api_profile`); SavedArrangement, RestartSession, SetTabLayout and ReorderTabs save and
-//! restore arrangements, start sessions again, set split sizes and move tabs (`api_layout`).
+//! restore arrangements, start sessions again, set split sizes and move tabs (`api_layout`);
+//! MenuItem finds a menu item by its XIB identifier and runs it as the menu does (`menus`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -27,6 +28,7 @@ use crate::api_session::{self, CloseStep, Snapshot};
 use crate::api_vars::{self, Objects, Scope, Values};
 use crate::broadcast::Write;
 use crate::layout::{Axis, PaneId};
+use crate::menus;
 use crate::settings_ui::Edit;
 use crate::winmodel::LayoutOp;
 use pb::client_originated_message::Submessage as Req;
@@ -114,6 +116,7 @@ impl App {
                 let status = self.api_reorder_tabs(r);
                 reply(req, Resp::ReorderTabsResponse(pb::ReorderTabsResponse { status: Some(status as i32) }))
             }
+            Some(Req::MenuItemRequest(r)) => reply(req, Resp::MenuItemResponse(self.api_menu_item(r, event_loop))),
             Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => {
                 let status = self.api_variable_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
@@ -1050,6 +1053,23 @@ impl App {
                 self.redraw();
             }
         }
+    }
+
+    /// MenuItem (`H:3524-3547`): the menu is brought up to date first, as iTerm2 updates it;
+    /// the item runs in the window a menu pick would use, through the menu's own path.
+    fn api_menu_item(&mut self, r: &pb::MenuItemRequest, event_loop: &ActiveEventLoop) -> pb::MenuItemResponse {
+        if let Some(w) = self.last_window {
+            self.enter(w);
+        }
+        self.sync_checks();
+        let item = menus::by_identifier(r.identifier.as_deref().unwrap_or(""));
+        let enabled = item.is_some_and(App::menu_enabled);
+        let checked = item.is_some_and(|i| self.menu_checked(i.label()));
+        let (answer, run) = menus::menu_answer(item, enabled, checked, r.query_only.unwrap_or(false));
+        if let (true, Some(item)) = (run, item) {
+            self.run_command(item, event_loop);
+        }
+        answer
     }
 
     /// For a tmux pane, whether its tmux window is hidden (how Tandem and iTerm2 bury a tmux

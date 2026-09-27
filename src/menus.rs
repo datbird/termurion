@@ -6,11 +6,17 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
+use crate::api_proto::pb;
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Item {
     pub path: Vec<String>,
     #[serde(default)]
     pub selector: String,
+    /// The XIB identifier, what the Python API's MenuItem request names; empty when the
+    /// XIB gives none.
+    #[serde(default)]
+    pub identifier: String,
     #[serde(default)]
     pub key: String,
     #[serde(default)]
@@ -117,6 +123,32 @@ impl Item {
 
 pub fn by_id(id: &str) -> Option<&'static Item> {
     items().iter().find(|i| !i.separator && i.id() == id)
+}
+
+/// The leaf item (not a separator, not a submenu) with this XIB identifier, first in
+/// menu order, as iTerm2 searches its main menu (`H:1526-1539`).
+pub fn by_identifier(id: &str) -> Option<&'static Item> {
+    items().iter().find(|i| !i.separator && !i.submenu && !i.identifier.is_empty() && i.identifier == id)
+}
+
+/// iTerm2's MenuItem answer (`H:3524-3547`) for the item found (None when no leaf has the
+/// identifier), whether it is enabled and checked now, and whether the request only asks;
+/// with whether to run the item's command.
+pub fn menu_answer(item: Option<&Item>, enabled: bool, checked: bool, query_only: bool) -> (pb::MenuItemResponse, bool) {
+    use pb::menu_item_response::Status;
+    let mut r = pb::MenuItemResponse::default();
+    if item.is_none() {
+        r.status = Some(Status::BadIdentifier as i32);
+        return (r, false);
+    }
+    if !enabled && !query_only {
+        r.status = Some(Status::Disabled as i32);
+        return (r, false);
+    }
+    r.checked = Some(checked);
+    r.enabled = Some(enabled);
+    r.status = Some(Status::Ok as i32);
+    (r, !query_only)
 }
 
 /// The command a chord runs. When items share a chord, the first in menu order wins,
@@ -239,6 +271,42 @@ mod tests {
         for i in items().iter().filter(|i| !i.separator) {
             assert!(seen.insert(i.id()), "duplicate id {}", i.id());
         }
+    }
+
+    #[test]
+    fn identifiers_follow_the_xib() {
+        let label = |id: &str| by_identifier(id).unwrap_or_else(|| panic!("{id}")).label().to_string();
+        assert_eq!(label("New Tab"), "New Tab");
+        assert_eq!(label("trmux.Pause Pane"), "Pause Pane");
+        assert_eq!(label("Paste Special.Paste Slowly"), "Paste Slowly");
+        assert_eq!(label("Find.Find Globally..."), "Find Globally...");
+        assert_eq!(label("Open Interactive Window"), "Open Python REPL");
+        assert_eq!(label("Script Console"), "Console");
+        assert_eq!(label("Run Coprocess\u{2026}"), "Run Coprocess...");
+        assert!(by_identifier("Check For Updates\u{2026}").is_some());
+        assert!(by_identifier("New Tab ").is_none());
+        assert!(by_identifier("").is_none());
+        for i in items().iter().filter(|i| i.submenu && !i.identifier.is_empty()) {
+            assert!(by_identifier(&i.identifier).is_none_or(|found| !found.submenu), "{} is a submenu", i.identifier);
+        }
+        let mut seen = std::collections::HashSet::new();
+        for i in items().iter().filter(|i| !i.identifier.is_empty()) {
+            assert!(seen.insert(i.identifier.as_str()), "duplicate identifier {}", i.identifier);
+        }
+    }
+
+    #[test]
+    fn menu_answers_follow_iterm2() {
+        use pb::menu_item_response::Status;
+        let i = by_identifier("New Tab");
+        let (r, run) = menu_answer(None, true, false, false);
+        assert_eq!((r.status, r.checked, r.enabled, run), (Some(Status::BadIdentifier as i32), None, None, false));
+        let (r, run) = menu_answer(i, false, false, false);
+        assert_eq!((r.status, r.checked, r.enabled, run), (Some(Status::Disabled as i32), None, None, false));
+        let (r, run) = menu_answer(i, false, true, true);
+        assert_eq!((r.status, r.checked, r.enabled, run), (Some(Status::Ok as i32), Some(true), Some(false), false));
+        let (r, run) = menu_answer(i, true, false, false);
+        assert_eq!((r.status, r.checked, r.enabled, run), (Some(Status::Ok as i32), Some(false), Some(true), true));
     }
 
     #[test]
