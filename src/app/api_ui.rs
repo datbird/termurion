@@ -466,6 +466,7 @@ impl App {
                 self.api_tmux_creates.clear();
                 self.api_tmux_windows.clear();
                 self.api_tmux_tabs.clear();
+                self.api_dirty.clear();
                 self.api_sync_watch();
                 self.api_tx = Default::default();
                 self.api_deferred.clear();
@@ -714,23 +715,24 @@ impl App {
     /// the baseline. The snapshots compared carry no titles (no change reads them); titles
     /// are built only for a layout change, whose ListSessions carries them.
     ///
-    /// Session subscriptions keep the snapshot too: a new session takes the "all" requests
-    /// and an ended one's subscriptions go (`H:909-925`). Prompt and custom escape sequence
-    /// events are drained first (`api_session_events`).
+    /// A kept "all" session request keeps the snapshot too: a new session (or one an Undo
+    /// Close brings back) takes the "all" requests (`H:909-925`). A session's own
+    /// subscriptions go only when its pane is dropped for good (`close_pane`, `end_undone`),
+    /// so per-session subscriptions alone never snapshot the windows. Prompt and custom
+    /// escape sequence events, and screen updates for panes fed outside the output loop, are
+    /// posted first.
     pub(super) fn api_notify_tick(&mut self) {
         self.api_variable_tick();
         self.api_session_events();
-        if !self.api_subs.any() && !self.api_session_subs.any() {
+        self.api_screen_updates(&[]);
+        if !self.api_subs.any() && !self.api_session_subs.has_all() {
             self.api_last = None;
             return;
         }
         let new = self.api_model(false);
         if let Some(old) = self.api_last.take() {
             let c = api_model::changes(&old, &new);
-            if self.api_session_subs.any() {
-                for id in c.terminated.iter().filter_map(|s| s.parse::<u64>().ok()) {
-                    self.api_session_subs.forget_session(id);
-                }
+            if self.api_session_subs.has_all() && !c.new_sessions.is_empty() {
                 for id in c.new_sessions.iter().filter_map(|s| s.parse::<u64>().ok()) {
                     self.api_session_subs.new_session(id);
                 }
@@ -777,7 +779,7 @@ impl App {
             let session = pane.to_string();
             for ev in events {
                 let (kind, mode, n) = match &ev {
-                    ApiEvent::Custom { id, payload } => (N::NotifyOnCustomEscapeSequence, None, api_notify::custom(&session, id, payload)),
+                    ApiEvent::Custom { id, payload } => (N::NotifyOnCustomEscapeSequence, None, api_notify::custom(&session, id.as_deref(), payload)),
                     _ => {
                         let prompt = match &ev {
                             ApiEvent::Prompt(mark) => {
@@ -808,10 +810,29 @@ impl App {
         }
     }
 
-    /// One SCREEN_UPDATE per pane that got output this pass, to its subscribers
-    /// (`PS:13241-13254`).
+    /// Output reached these panes outside the output loop (tmux integration output, Inject):
+    /// their screen updates go with the next `api_screen_updates`.
+    pub(super) fn api_output_elsewhere(&mut self, panes: &[crate::layout::PaneId]) {
+        if self.api_session_subs.watching(pb::NotificationType::NotifyOnScreenUpdate).is_empty() {
+            return;
+        }
+        for p in panes {
+            if !self.api_dirty.contains(p) {
+                self.api_dirty.push(*p);
+            }
+        }
+    }
+
+    /// One SCREEN_UPDATE per pane that got output since the last call (`panes`, and those
+    /// `api_output_elsewhere` noted), to its subscribers (`PS:13241-13254`).
     pub(super) fn api_screen_updates(&mut self, panes: &[crate::layout::PaneId]) {
-        for &pane in panes {
+        let mut all = std::mem::take(&mut self.api_dirty);
+        for p in panes {
+            if !all.contains(p) {
+                all.push(*p);
+            }
+        }
+        for pane in all {
             let conns: Vec<u64> = self.api_session_subs.subscribers(pb::NotificationType::NotifyOnScreenUpdate, pane).into_iter().map(|(c, _)| c).collect();
             if conns.is_empty() {
                 continue;
@@ -863,6 +884,10 @@ impl App {
         };
         let pressed = ev.state == ElementState::Pressed;
         let key = if let Some(keycode) = code.and_then(crate::keystroke::mac_modifier_keycode) {
+            // One per modifier change: no auto-repeat, Caps Lock once per toggle.
+            if !api_notify::flags_changed(keycode, pressed, ev.repeat) {
+                return;
+            }
             // The modifiers held after this key, as a flags-changed event carries them.
             let mut mods = self.mods;
             match code {

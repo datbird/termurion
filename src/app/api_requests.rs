@@ -200,7 +200,7 @@ impl App {
             let target = r.session.as_deref().and_then(|s| ids.pane(s));
             self.api_session_subs.request(conn, r, target, &[])
         };
-        if self.api_last.is_none() && self.api_session_subs.any() {
+        if self.api_last.is_none() && self.api_session_subs.has_all() {
             self.api_last = Some(self.api_model(false));
         }
         self.api_sync_watch();
@@ -239,9 +239,9 @@ impl App {
                 }
             }
         }
-        // The same step real output runs, screen updates included.
+        // The same step real output runs; its screen updates follow the response.
         self.after_output(&fed, std::time::Instant::now());
-        self.api_screen_updates(&fed);
+        self.api_output_elsewhere(&fed);
         resp
     }
 

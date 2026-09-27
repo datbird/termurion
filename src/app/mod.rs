@@ -585,6 +585,9 @@ pub struct App {
     /// The session notification subscriptions of upgraded connections (keystrokes and their
     /// filter, screen updates, prompts, custom escape sequences), and the "all" ones.
     api_session_subs: crate::api_notify::SessionSubs,
+    /// Panes fed outside the output loop (tmux integration output, Inject) since screen
+    /// updates were last posted.
+    api_dirty: Vec<PaneId>,
     /// The snapshot notifications were last computed from, kept only while a connection
     /// subscribes.
     api_last: Option<crate::api_model::Model>,
@@ -925,6 +928,7 @@ pub fn run() {
         api_vars: Default::default(),
         api_var_subs: Default::default(),
         api_session_subs: Default::default(),
+        api_dirty: Vec::new(),
         api_last: None,
         api_tmux_commands: HashMap::new(),
         api_tmux_creates: HashMap::new(),
@@ -1452,6 +1456,9 @@ impl App {
                 _ => {
                     self.forget_cookie(&p);
                     self.forget_session_profile(&p.profile);
+                    // Gone for good: its API subscriptions go (a pane kept for Undo Close
+                    // keeps them).
+                    self.api_session_subs.forget_session(id);
                 }
             }
         }

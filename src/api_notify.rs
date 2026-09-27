@@ -134,10 +134,16 @@ impl SessionSubs {
     pub fn any(&self) -> bool {
         !self.per.is_empty() || !self.all.is_empty()
     }
+
+    /// An "all" request is kept: new sessions must be found.
+    pub fn has_all(&self) -> bool {
+        !self.all.is_empty()
+    }
 }
 
 /// A key event as the API reports it: `NSEvent`'s characters, characters ignoring modifiers,
-/// modifiers, key code and type.
+/// modifiers, key code and type. `keycode_known` is false for a key with no macOS key code:
+/// it then reports `NO_KEYCODE` and no key code pattern matches it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Key {
     pub characters: Option<String>,
@@ -145,6 +151,25 @@ pub struct Key {
     pub modifiers: Vec<i32>,
     pub keycode: i32,
     pub action: i32,
+    pub keycode_known: bool,
+}
+
+/// The key code reported for a key with no macOS key code (Print Screen, Pause, the Menu
+/// key, F21 to F24 and the rest): kVK_Function, a value the stock package's `Keycode` enum
+/// accepts and that Windows never delivers as a key.
+pub const NO_KEYCODE: i32 = 0x3F;
+
+/// kVK_CapsLock.
+const CAPS_LOCK: u16 = 0x39;
+
+/// Whether a modifier key event changes the modifier state (macOS posts one flagsChanged per
+/// change): never an auto-repeat, Caps Lock only when pressed (one per toggle), any other
+/// modifier on press and release.
+pub fn flags_changed(keycode: u16, pressed: bool, repeat: bool) -> bool {
+    if repeat {
+        return false;
+    }
+    keycode != CAPS_LOCK || pressed
 }
 
 fn text_of(c: u32) -> Option<String> {
@@ -164,7 +189,7 @@ fn modifiers(ctrl: bool, alt: bool, cmd: bool, shift: bool, numpad: bool, functi
 
 /// A key down or up: the typed character, the character without modifiers but Shift, the
 /// modifiers (Function for a macOS function-key character, U+F700 to U+F8FF, as AppKit sets
-/// it), and the macOS key code (0 when the key has none).
+/// it), and the macOS key code (`NO_KEYCODE` when the key has none).
 pub fn key_from(k: &Keystroke, action: pb::keystroke_notification::Action) -> Key {
     let f = k.flags;
     let function = (0xF700..=0xF8FF).contains(&k.ch);
@@ -172,8 +197,9 @@ pub fn key_from(k: &Keystroke, action: pb::keystroke_notification::Action) -> Ke
         characters: text_of(k.modified),
         ignoring: text_of(k.ch),
         modifiers: modifiers(f & keystroke::CONTROL != 0, f & keystroke::OPTION != 0, f & keystroke::COMMAND != 0, f & keystroke::SHIFT != 0, f & keystroke::NUMPAD != 0, function),
-        keycode: k.keycode.map_or(0, i32::from),
+        keycode: k.keycode.map_or(NO_KEYCODE, i32::from),
         action: action as i32,
+        keycode_known: k.keycode.is_some(),
     }
 }
 
@@ -186,11 +212,13 @@ pub fn flags_key(mods: crate::mouse::Mods, keycode: u16) -> Key {
         modifiers: modifiers(mods.ctrl, mods.alt, mods.cmd, mods.shift, false, false),
         keycode: i32::from(keycode),
         action: pb::keystroke_notification::Action::FlagsChanged as i32,
+        keycode_known: true,
     }
 }
 
 /// iTerm2's `event:matchesPattern:` (`PS:11251-11304`): key downs only; every required and no
-/// forbidden modifier, then any key code, characters or characters ignoring modifiers.
+/// forbidden modifier, then any key code (never for a key with no macOS key code), characters
+/// or characters ignoring modifiers.
 pub fn matches(p: &pb::KeystrokePattern, k: &Key) -> bool {
     if k.action != pb::keystroke_notification::Action::KeyDown as i32 {
         return false;
@@ -198,7 +226,7 @@ pub fn matches(p: &pb::KeystrokePattern, k: &Key) -> bool {
     if !p.required_modifiers.iter().all(|m| k.modifiers.contains(m)) || p.forbidden_modifiers.iter().any(|m| k.modifiers.contains(m)) {
         return false;
     }
-    p.keycodes.contains(&k.keycode)
+    (k.keycode_known && p.keycodes.contains(&k.keycode))
         || k.characters.as_ref().is_some_and(|c| p.characters.contains(c))
         || k.ignoring.as_ref().is_some_and(|c| p.characters_ignoring_modifiers.contains(c))
 }
@@ -251,7 +279,8 @@ pub enum ApiEvent {
     Prompt(Option<u32>),
     CommandStart { command: Option<String>, mark: Option<u32> },
     CommandEnd { code: i32, mark: Option<u32> },
-    Custom { id: String, payload: String },
+    /// The sender identity is None when the sequence has no `id` parameter.
+    Custom { id: Option<String>, payload: String },
 }
 
 /// The ScreenUpdateNotification (`PS:13244-13246`).
@@ -259,12 +288,13 @@ pub fn screen_update(session: &str) -> pb::Notification {
     pb::Notification { screen_update_notification: Some(pb::ScreenUpdateNotification { session: Some(session.to_string()) }), ..Default::default() }
 }
 
-/// The CustomEscapeSequenceNotification (`PS:18274-18278`).
-pub fn custom(session: &str, id: &str, payload: &str) -> pb::Notification {
+/// The CustomEscapeSequenceNotification (`PS:18274-18278`): the sender identity unset when
+/// the sequence named none.
+pub fn custom(session: &str, id: Option<&str>, payload: &str) -> pb::Notification {
     pb::Notification {
         custom_escape_sequence_notification: Some(pb::CustomEscapeSequenceNotification {
             session: Some(session.to_string()),
-            sender_identity: Some(id.to_string()),
+            sender_identity: id.map(str::to_string),
             payload: Some(payload.to_string()),
         }),
         ..Default::default()
@@ -350,13 +380,16 @@ mod tests {
     #[test]
     fn keystrokes_follow_iterm2() {
         let k = key_from(&Keystroke::new('a' as u32, CONTROL | SHIFT, Some(0), 'A' as u32), Action::KeyDown);
-        assert_eq!(k, Key { characters: Some("A".into()), ignoring: Some("a".into()), modifiers: vec![M::Control as i32, M::Shift as i32], keycode: 0, action: Action::KeyDown as i32 });
+        assert_eq!(k, Key { characters: Some("A".into()), ignoring: Some("a".into()), modifiers: vec![M::Control as i32, M::Shift as i32], keycode: 0, action: Action::KeyDown as i32, keycode_known: true });
         // An arrow: Numpad (Tandem sets it as iTerm2 does) then Function, in iTerm2's order.
         let k = key_from(&Keystroke::new(0xF702, 0, Some(0x7B), 0xF702), Action::KeyDown);
         assert_eq!(k.modifiers, [M::Numpad as i32, M::Function as i32]);
         assert_eq!(k.keycode, 0x7B);
         let f = flags_key(crate::mouse::Mods { shift: true, ..Default::default() }, 0x38);
-        assert_eq!(f, Key { characters: None, ignoring: None, modifiers: vec![M::Shift as i32], keycode: 0x38, action: Action::FlagsChanged as i32 });
+        assert_eq!(f, Key { characters: None, ignoring: None, modifiers: vec![M::Shift as i32], keycode: 0x38, action: Action::FlagsChanged as i32, keycode_known: true });
+        // A key with no macOS key code reports kVK_Function, which the package's enum accepts.
+        let k = key_from(&Keystroke::new(0xF704 + 20, 0, None, 0xF704 + 20), Action::KeyDown);
+        assert_eq!((k.keycode, k.keycode_known), (NO_KEYCODE, false));
         // Advanced events only reach `advanced` subscribers.
         let plain = req(N::NotifyOnKeystroke, Some(true), Some("1"));
         assert!(wants_key(&plain, false));
@@ -367,6 +400,20 @@ mod tests {
         let n = keystroke(&f, "1").keystroke_notification.unwrap();
         assert_eq!(n.session.as_deref(), Some("1"));
         assert_eq!((n.characters, n.characters_ignoring_modifiers, n.key_code, n.action), (None, None, Some(0x38), Some(Action::FlagsChanged as i32)));
+    }
+
+    #[test]
+    fn modifier_changes_follow_macos() {
+        // Shift, Control, Option, Command: press and release, never a repeat.
+        for code in [0x38, 0x3C, 0x3B, 0x3E, 0x3A, 0x3D, 0x37, 0x36] {
+            assert!(flags_changed(code, true, false));
+            assert!(!flags_changed(code, true, true), "auto-repeat of {code:#x}");
+            assert!(flags_changed(code, false, false));
+        }
+        // Caps Lock: one per toggle, on its press.
+        assert!(flags_changed(0x39, true, false));
+        assert!(!flags_changed(0x39, true, true));
+        assert!(!flags_changed(0x39, false, false));
     }
 
     #[test]
@@ -385,6 +432,15 @@ mod tests {
         assert!(matches(&pb::KeystrokePattern { characters: vec!["A".into()], ..Default::default() }, &a));
         // Modifiers alone are necessary, never sufficient.
         assert!(!matches(&pb::KeystrokePattern { required_modifiers: vec![M::Shift as i32], ..Default::default() }, &a));
+        // A key with no macOS key code never matches a key code pattern, not even the code it
+        // reports; its characters still match.
+        let f21 = key_from(&Keystroke::new(0xF704 + 20, 0, None, 0xF704 + 20), Action::KeyDown);
+        assert!(!matches(&pb::KeystrokePattern { keycodes: vec![0], ..Default::default() }, &f21));
+        assert!(!matches(&pb::KeystrokePattern { keycodes: vec![NO_KEYCODE], ..Default::default() }, &f21));
+        assert!(matches(&pb::KeystrokePattern { characters_ignoring_modifiers: vec!["\u{F718}".into()], ..Default::default() }, &f21));
+        let any_code = pb::NotificationRequest { arguments: Some(Arguments::KeystrokeFilterRequest(pb::KeystrokeFilterRequest { patterns_to_ignore: vec![pb::KeystrokePattern { keycodes: vec![0, NO_KEYCODE], ..Default::default() }] })), ..req(N::KeystrokeFilter, Some(true), Some("1")) };
+        assert!(!filtered([&any_code].into_iter(), &f21));
+        assert!(filtered([&any_code].into_iter(), &a));
         // Only key downs match.
         let up = Key { action: Action::KeyUp as i32, ..a.clone() };
         assert!(!matches(&pb::KeystrokePattern { keycodes: vec![0], ..Default::default() }, &up));
@@ -432,10 +488,11 @@ mod tests {
         let n = n.prompt_notification.unwrap();
         assert_eq!(n.event, Some(Event::CommandEnd(pb::PromptNotificationCommandEnd { status: Some(2) })));
         assert_eq!(n.unique_prompt_id, None);
-        assert!(prompt_event("1", &ApiEvent::Custom { id: "me".into(), payload: "hi".into() }, None).is_none());
+        assert!(prompt_event("1", &ApiEvent::Custom { id: Some("me".into()), payload: "hi".into() }, None).is_none());
         // The other two notifications.
         assert_eq!(screen_update("1").screen_update_notification.unwrap().session.as_deref(), Some("1"));
-        let c = custom("1", "me", "hi").custom_escape_sequence_notification.unwrap();
+        let c = custom("1", Some("me"), "hi").custom_escape_sequence_notification.unwrap();
         assert_eq!((c.session.as_deref(), c.sender_identity.as_deref(), c.payload.as_deref()), (Some("1"), Some("me"), Some("hi")));
+        assert_eq!(custom("1", None, "hi").custom_escape_sequence_notification.unwrap().sender_identity, None);
     }
 }

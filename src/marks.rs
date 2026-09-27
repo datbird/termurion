@@ -941,11 +941,12 @@ impl Screen {
                 "Custom" if self.trusted => {
                     if let Some((head, payload)) = value.split_once(':') {
                         let args = crate::blocks::parse(head);
-                        let id = crate::blocks::get(&args, "id").unwrap_or("").to_string();
+                        let sender = crate::blocks::get(&args, "id").map(str::to_string);
+                        let id = sender.clone().unwrap_or_default();
                         let facts = crate::trigger_events::EventFacts { name: id.clone(), ..Default::default() };
-                        self.fire_event(crate::trigger_events::EventKind::CustomEscapeSequence, &facts, &[id.clone(), payload.to_string()]);
+                        self.fire_event(crate::trigger_events::EventKind::CustomEscapeSequence, &facts, &[id, payload.to_string()]);
                         if self.api_watch {
-                            self.api_events.push(crate::api_notify::ApiEvent::Custom { id, payload: payload.to_string() });
+                            self.api_events.push(crate::api_notify::ApiEvent::Custom { id: sender, payload: payload.to_string() });
                         }
                     }
                 }
@@ -1696,7 +1697,7 @@ mod tests {
                 ApiEvent::Prompt(Some(m)),
                 ApiEvent::CommandStart { command: Some("ls".into()), mark: Some(m) },
                 ApiEvent::CommandEnd { code: 1, mark: Some(m) },
-                ApiEvent::Custom { id: "me".into(), payload: "hi".into() },
+                ApiEvent::Custom { id: Some("me".into()), payload: "hi".into() },
             ]
         );
         // Without its colon a custom sequence is nothing: no API event and no Custom Escape
@@ -1710,8 +1711,12 @@ mod tests {
         assert!(s.api_events.is_empty());
         assert_eq!(alerts(&mut s), 0);
         s.feed(b"\x1b]1337;Custom=id=me:\x07");
-        assert_eq!(std::mem::take(&mut s.api_events), vec![ApiEvent::Custom { id: "me".into(), payload: String::new() }]);
+        assert_eq!(std::mem::take(&mut s.api_events), vec![ApiEvent::Custom { id: Some("me".into()), payload: String::new() }]);
         assert_eq!(alerts(&mut s), 1, "with its colon the trigger event fires");
+        // No `id` parameter: the sender identity is unset (`PS:18276`).
+        s.feed(b"\x1b]1337;Custom=x=y:hi\x07");
+        assert_eq!(std::mem::take(&mut s.api_events), vec![ApiEvent::Custom { id: None, payload: "hi".into() }]);
+        s.take_requests();
         // Unwatched, nothing is queued.
         s.api_watch = false;
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]1337;Custom=id=me:hi\x07");

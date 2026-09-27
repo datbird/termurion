@@ -315,6 +315,7 @@ impl App {
                         self.jobs.forget(pid);
                     }
                     self.forget_cookie(&p);
+                    self.api_session_subs.forget_session(id);
                 }
             }
             return Err(e);

@@ -155,6 +155,8 @@ impl App {
                     }
                     // Read now: nothing else wakes the loop for it.
                     p.pump();
+                    self.api_output_elsewhere(&[id]);
+                    let Some(p) = self.panes.get_mut(&id) else { continue };
                     let title_changed = p.own().title().map(str::to_string) != title;
                     let now_vars = (p.own().shell.vars != vars).then(|| p.own().shell.vars.iter().map(|(k, v)| (format!("user.{k}"), v.clone())).collect());
                     let Some(t) = self.tmux.get_mut(&gw) else { continue };

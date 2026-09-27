@@ -70,6 +70,7 @@ impl App {
                         if let Some(p) = self.panes.get_mut(id) {
                             p.feed_output(&bytes);
                         }
+                        self.api_output_elsewhere(&[*id]);
                     }
                     Out::Enter => self.tmux_enter(*id),
                     Out::Line(line) | Out::Exit(line) => {
