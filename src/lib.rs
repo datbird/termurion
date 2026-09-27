@@ -232,6 +232,7 @@ pub mod api_dispatch;
 pub mod api_vars;
 pub mod api_model;
 pub mod api_session;
+pub mod api_create;
 pub mod session_env;
 #[cfg(windows)]
 pub mod api_server;

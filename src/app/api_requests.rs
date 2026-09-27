@@ -1,16 +1,21 @@
 //! The Python API's requests of milestone 11b: `api_request` is the one match over them,
 //! each carried out from a pure module's plan. Ids resolve through `api_ids` (`H:1615-1644`);
 //! SendText types through `user_write`, Inject feeds output, Activate and Close follow
-//! iTerm2's order (`api_session`).
+//! iTerm2's order (`api_session`); CreateTab and SplitPane start sessions from a
+//! request's profile and custom properties (`api_create`).
 
 use winit::event_loop::ActiveEventLoop;
 
+use winit::window::WindowId;
+
 use super::close_ui::Closing;
-use super::App;
+use super::{App, Rect, GAP};
+use crate::api_create::{self, SplitResult};
 use crate::api_proto::{self, pb};
 use crate::api_session::{self, CloseStep, Snapshot};
 use crate::broadcast::Write;
-use crate::layout::PaneId;
+use crate::layout::{Axis, PaneId};
+use crate::winmodel::LayoutOp;
 use pb::client_originated_message::Submessage as Req;
 use pb::server_originated_message::Submessage as Resp;
 
@@ -64,6 +69,8 @@ impl App {
             Some(Req::InjectRequest(r)) => reply(req, Resp::InjectResponse(self.api_inject(r))),
             Some(Req::ActivateRequest(r)) => reply(req, Resp::ActivateResponse(self.api_activate(r, event_loop))),
             Some(Req::CloseRequest(r)) => reply(req, Resp::CloseResponse(self.api_close(r, event_loop))),
+            Some(Req::CreateTabRequest(r)) => reply(req, Resp::CreateTabResponse(self.api_create_tab(r, event_loop))),
+            Some(Req::SplitPaneRequest(r)) => reply(req, Resp::SplitPaneResponse(self.api_split_pane(r))),
             _ => Answer::Now(api_proto::malformed(req)),
         };
         if let Some(b) = back {
@@ -255,5 +262,202 @@ impl App {
         }
         self.close_session_undoable(pane, event_loop);
         true
+    }
+
+    /// The Guid of the profile a request names: the default one, else the first saved
+    /// profile with that name; None when no profile has it.
+    fn api_profile_guid(&self, name: Option<&str>) -> Option<String> {
+        let by_name = |n: &str| self.store.profiles.iter().find(|p| p.name() == n).map(|p| p.guid());
+        api_create::profile_guid(name, &by_name, &self.store.default_profile().guid())
+    }
+
+    /// A session copy (`store.sessions`) of the profile `guid` with `values` set, made before
+    /// a session starts from it so a Command or folder applies; its Guid.
+    pub(super) fn api_session_copy(&mut self, guid: &str, values: &[(String, Option<toml::Value>)]) -> String {
+        let shared = self.store.get(guid).cloned().unwrap_or_else(|| self.store.default_profile().clone());
+        let mut copy = crate::session_profile::divorce(&shared, uuid::Uuid::new_v4().to_string().to_uppercase());
+        copy.set(values, &shared);
+        let new_guid = copy.profile.guid();
+        self.store.sessions.push(copy);
+        new_guid
+    }
+
+    /// The profile a request starts its sessions from: the named (or default) profile, or a
+    /// session copy of it when the request customizes it. Err with the name's status or the
+    /// custom properties' status.
+    fn api_start_profile<S>(&mut self, name: Option<&str>, props: &[pb::ProfileProperty], no_name: S, bad_props: S) -> Result<(String, Vec<(String, Option<toml::Value>)>), S> {
+        let base = self.api_profile_guid(name).ok_or(no_name)?;
+        let values = api_create::custom_values(props).ok_or(bad_props)?;
+        Ok((base, values))
+    }
+
+    /// CreateTab (`H:2465-2588`): the window, then the profile, then a tab made in the window
+    /// (or a new window when there is none, or the profile never opens in a tab), then the
+    /// requested index.
+    fn api_create_tab(&mut self, r: &pb::CreateTabRequest, event_loop: &ActiveEventLoop) -> pb::CreateTabResponse {
+        use pb::create_tab_response::Status;
+        let fail = |s: Status| pb::CreateTabResponse { status: Some(s as i32), ..Default::default() };
+        let window = match &r.window_id {
+            Some(id) => match self.api_ids().window_key(id).and_then(|k| self.window_id_of_key(k)) {
+                Some(w) => Some(w),
+                None => return fail(Status::InvalidWindowId),
+            },
+            None => None,
+        };
+        // A custom property whose JSON does not parse leaves iTerm2 no profile, so no session.
+        let (base, values) = match self.api_start_profile(r.profile_name.as_deref(), &r.custom_profile_properties, Status::InvalidProfileName, Status::MissingSubstitution) {
+            Ok(p) => p,
+            Err(s) => return fail(s),
+        };
+        let guid = if values.is_empty() { base } else { self.api_session_copy(&base, &values) };
+        let Some((w, pane)) = self.api_start_tab(window, &guid, r.select_tab.unwrap_or(true), event_loop) else {
+            self.forget_session_profile(&guid);
+            return fail(Status::MissingSubstitution);
+        };
+        // The tab's window is current now.
+        let Some(index) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) else { return fail(Status::MissingSubstitution) };
+        let tab_id = self.tabs[index].id;
+        let landed = match r.tab_index {
+            Some(i) if (i as usize) < self.tabs.len() => {
+                let to = i as usize;
+                if to != index && self.layout_allowed(LayoutOp::ReorderTab) {
+                    let active = self.tabs.get(self.active).map(|t| t.id);
+                    let tab = self.tabs.remove(index);
+                    self.tabs.insert(to, tab);
+                    if let Some(a) = active.and_then(|a| self.tabs.iter().position(|t| t.id == a)) {
+                        self.active = a;
+                    }
+                    self.tmux_reorder();
+                    self.relayout();
+                    self.redraw();
+                }
+                self.tabs.iter().position(|t| t.id == tab_id)
+            }
+            _ => None,
+        };
+        pb::CreateTabResponse {
+            status: Some(api_create::tab_index_status(r.tab_index, self.tabs.len(), landed) as i32),
+            window_id: self.registry.guid(super::windows_ui::key(w)).map(str::to_string),
+            tab_id: Some(tab_id as i32),
+            session_id: Some(pane.to_string()),
+        }
+    }
+
+    /// Makes CreateTab's tab with profile `guid`: in `window` unless its profile never opens
+    /// in a tab, else in a new window (which comes to the front). In an existing window
+    /// `select` false keeps the tab in front and does not raise the window. The window it is
+    /// in (current on return) and its session; None when no session started.
+    fn api_start_tab(&mut self, window: Option<WindowId>, guid: &str, select: bool, event_loop: &ActiveEventLoop) -> Option<(WindowId, PaneId)> {
+        if let Some(w) = window {
+            if !self.enter(w) {
+                return None;
+            }
+            if !self.new_tab_opens_window(Some(guid)) {
+                let (front, count) = (self.active, self.tabs.len());
+                self.new_tab(Some(guid));
+                if self.tabs.len() == count {
+                    return None;
+                }
+                let pane = self.tabs.last()?.focused;
+                if select {
+                    self.focus_terminal_window(w);
+                } else {
+                    self.active = front;
+                    self.relayout();
+                }
+                self.redraw();
+                return Some((w, pane));
+            }
+        }
+        match self.open_window(event_loop, Some(guid)) {
+            Ok(w) => {
+                self.last_window = Some(w);
+                Some((w, self.tabs.first()?.focused))
+            }
+            Err(e) => {
+                self.banners.set("window", format!("Could not open a window: {e}"));
+                self.redraw();
+                None
+            }
+        }
+    }
+
+    /// SplitPane (`H:2608-2677`): every target must be in a window (SESSION_NOT_FOUND), then
+    /// the profile and its custom properties, then one split per target, each new session
+    /// with its own session copy.
+    fn api_split_pane(&mut self, r: &pb::SplitPaneRequest) -> pb::SplitPaneResponse {
+        use pb::split_pane_response::Status;
+        let fail = |s: Status| pb::SplitPaneResponse { status: Some(s as i32), session_id: Vec::new() };
+        let ids = self.api_ids();
+        let session = r.session.as_deref().unwrap_or_default();
+        let targets = if session == api_session::ALL {
+            ids.all_panes()
+        } else {
+            match ids.pane(session) {
+                Some(p) => vec![p],
+                None => return fail(Status::SessionNotFound),
+            }
+        };
+        // A buried session is in no window.
+        if targets.iter().any(|p| ids.pane_tab(*p).is_none()) {
+            return fail(Status::SessionNotFound);
+        }
+        let (base, values) = match self.api_start_profile(r.profile_name.as_deref(), &r.custom_profile_properties, Status::InvalidProfileName, Status::MalformedCustomProfileProperty) {
+            Ok(p) => p,
+            Err(s) => return fail(s),
+        };
+        let axis = api_create::split_axis(r.split_direction.unwrap_or(0));
+        let before = r.before.unwrap_or(false);
+        let mut results = Vec::new();
+        for target in targets {
+            let guid = if values.is_empty() { base.clone() } else { self.api_session_copy(&base, &values) };
+            let result = self.api_split(target, axis, before, &guid);
+            if !matches!(result, SplitResult::Made(_)) {
+                self.forget_session_profile(&guid);
+            }
+            results.push(result);
+        }
+        self.redraw();
+        api_create::split_response(&results)
+    }
+
+    /// Splits `target` with a new session of profile `guid`, the new one first when `before`
+    /// (a split, then a swap of the two). iTerm2's order (`PT:11414-11470`): Lock Layout
+    /// refuses first (a tmux pane's refusal is still no CANNOT_SPLIT), a tmux pane asks tmux,
+    /// then Instant Replay refuses (`PT:11124-11129`). Focus moves to the new session, as
+    /// Split does.
+    pub(super) fn api_split(&mut self, target: PaneId, axis: Axis, before: bool, guid: &str) -> SplitResult {
+        if !self.enter_pane_window(target) {
+            return SplitResult::Refused;
+        }
+        if !self.layout_allowed(LayoutOp::Split) {
+            return if self.tmux_of(target).is_some() { SplitResult::Tmux } else { SplitResult::Refused };
+        }
+        if self.tmux_split(target, axis == Axis::Row) {
+            return SplitResult::Tmux;
+        }
+        if crate::replay::on_event(self.in_instant_replay(), crate::replay::ReplayEvent::Split) == crate::replay::Close::Refuse {
+            return SplitResult::Refused;
+        }
+        let Some(index) = self.tabs.iter().position(|t| t.layout.panes().contains(&target)) else { return SplitResult::Refused };
+        let area = self.content_area_for(&self.tabs[index]);
+        let Some((_, rect)) = self.tabs[index].layout.rects(area, GAP).into_iter().find(|(id, _)| *id == target) else { return SplitResult::Refused };
+        let half = match axis {
+            Axis::Row => Rect { w: rect.w / 2.0, ..rect },
+            Axis::Column => Rect { h: rect.h / 2.0, ..rect },
+        };
+        self.start_tab = Some(index);
+        let started = self.start_pane(half, Some(guid));
+        self.start_tab = None;
+        let Some(id) = started else { return SplitResult::Refused };
+        let tab = &mut self.tabs[index];
+        tab.layout.split(target, axis, id);
+        if before {
+            tab.layout.swap(target, id);
+        }
+        tab.focused = id;
+        tab.zoomed = None;
+        self.relayout();
+        SplitResult::Made(id)
     }
 }

@@ -79,7 +79,7 @@ fn from_plist_at(v: &plist::Value, depth: usize) -> Option<Value> {
     })
 }
 
-fn from_json(v: &serde_json::Value) -> Option<Value> {
+pub(crate) fn from_json(v: &serde_json::Value) -> Option<Value> {
     Some(match v {
         serde_json::Value::Bool(b) => Value::Boolean(*b),
         serde_json::Value::Number(n) => n.as_i64().map(Value::Integer).or_else(|| n.as_f64().map(Value::Float))?,
