@@ -367,7 +367,7 @@ impl App {
             let last = first + g.screen_lines().max(1) - 1;
             // Drawn from the pane's own screen, taken out for a moment (as Make Screenshot does).
             let screen = std::mem::replace(&mut p.screen, crate::screen::Screen::new(1, 1));
-            let drawn = self.render_lines(pane, &screen, first, last);
+            let drawn = self.render_lines(pane, &screen, first, last, false);
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.screen = screen;
             }

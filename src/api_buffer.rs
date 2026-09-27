@@ -122,6 +122,13 @@ fn kind(c: Color) -> Kind {
     }
 }
 
+/// A link's identifier: None for one alacritty generated (`N_alacritty`) for a link sent
+/// without an id, which iTerm2 sends with none.
+fn link_id(id: &str) -> Option<String> {
+    let generated = id.strip_suffix("_alacritty").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    (!generated).then(|| id.to_string())
+}
+
 /// A cell's style (`protoStyleForCharacter:externalAttributes:`, `PS:22176-22315`), `repeats`
 /// 1. An image cell has no colors and is an iTerm2 image. Alacritty keeps no blink or
 /// guarded attribute: both are false.
@@ -151,7 +158,7 @@ pub fn style_of(cell: &Cell) -> pb::CellStyle {
         Color::Indexed(i) => pb::RgbColor { red: Some(i as u32), green: Some(0), blue: Some(0) },
         Color::Named(n) => pb::RgbColor { red: Some(n as u32), green: Some(0), blue: Some(0) },
     });
-    let url = cell.hyperlink().map(|h| pb::Url { url: Some(h.uri().to_string()), identifier: Some(h.id().to_string()) });
+    let url = cell.hyperlink().map(|h| pb::Url { url: Some(h.uri().to_string()), identifier: link_id(h.id()) });
     pb::CellStyle {
         fg_color: fg,
         bg_color: bg,
@@ -211,6 +218,40 @@ pub fn line_contents(row: &[Cell], from: usize, to: usize, wrapped: bool, styles
     pb::LineContents { text: Some(text), code_points_per_cell: cpps, continuation: Some(continuation as i32), style: runs }
 }
 
+/// The facts of a screen: absolute lines count the main screen's rows that scrolled off, the
+/// history is the main screen's, the size the screen's.
+pub fn facts(screen: &crate::screen::Screen) -> Facts {
+    use alacritty_terminal::grid::Dimensions;
+    let (primary, shown) = (screen.term().primary_grid(), screen.term().grid());
+    Facts { scrolled_off: primary.scrolled_off() as i64, history: primary.history_size() as i64, rows: shown.screen_lines() as i64, cols: shown.columns() as i32 }
+}
+
+/// GetBuffer's answer from `screen` (`PS:22416-22488`): each line of the range still kept,
+/// history from the main screen and the rows of the screen shown below it (iTerm2 reads the
+/// alternate screen under the main history), and the cursor of the screen shown. None for an
+/// invalid range, which is answered with no GetBuffer response (`S:739-751`).
+pub fn get_buffer(screen: &crate::screen::Screen, range: Option<&pb::LineRange>, styles: bool) -> Option<pb::GetBufferResponse> {
+    use alacritty_terminal::index::{Column, Line};
+    let f = facts(screen);
+    let w = line_range(range, f)?;
+    let (primary, shown) = (screen.term().primary_grid(), screen.term().grid());
+    // Block ids by number (a number whose id was reused since has none).
+    let blocks: std::collections::HashMap<u32, &str> = screen.blocks.by_id.iter().map(|(id, n)| (*n, id.as_str())).collect();
+    let first = w.start.1.max(abs_line(-(f.history as i32), f));
+    let last = w.end.1.min(abs_line(f.rows as i32 - 1, f));
+    let mut lines = Vec::new();
+    for y in first..=last {
+        let Some(line) = grid_line(y, f) else { continue };
+        let row = if line < 0 { &primary[Line(line)] } else { &shown[Line(line)] };
+        let cells = &row[Column(0)..];
+        let wrapped = cells.last().is_some_and(|c| c.flags.contains(Flags::WRAPLINE));
+        let Some((from, to, soft)) = span(cells, y == first, y == w.end.1, wrapped, w) else { continue };
+        lines.push(line_contents(cells, from, to, soft, styles, blocks.get(&row.block()).copied()));
+    }
+    let cursor = shown.cursor.point;
+    Some(buffer_response(lines, w, (cursor.column.0 as i32, abs_line(cursor.line.0, f))))
+}
+
 fn coord(p: (i32, i64)) -> pb::Coord {
     pb::Coord { x: Some(p.0), y: Some(p.1) }
 }
@@ -235,8 +276,8 @@ pub fn buffer_response(lines: Vec<pb::LineContents>, w: Window, cursor: (i32, i6
 }
 
 /// What a prompt mark says, in (x, absolute line) points: its id, the prompt (from the mark's
-/// row), the command, where output began, the cursor, the command's text, the directory and
-/// the exit code.
+/// row), the command, where output began, the cursor, the command's text (None when there is
+/// neither the mark's command nor one being typed), the directory and the exit code.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PromptFacts {
     pub id: u32,
@@ -244,7 +285,7 @@ pub struct PromptFacts {
     pub command: Option<((i32, i64), (i32, i64))>,
     pub output_start: Option<(i32, i64)>,
     pub cursor: (i32, i64),
-    pub text: String,
+    pub text: Option<String>,
     pub directory: Option<String>,
     pub code: Option<i32>,
 }
@@ -267,7 +308,7 @@ pub fn prompt_response(f: Option<&PromptFacts>) -> pb::GetPromptResponse {
         command_range: f.command.map(|(a, b)| coord_range(a, b)),
         output_range: f.output_start.map(|a| coord_range(a, f.cursor)),
         working_directory: f.directory.clone(),
-        command: Some(f.text.clone()),
+        command: f.text.clone(),
         prompt_state: Some(state as i32),
         exit_status: f.code.map(|c| c as u32),
         unique_prompt_id: Some(f.id.to_string()),
@@ -400,6 +441,9 @@ mod tests {
         let mut linked = cell('x');
         linked.set_hyperlink(Some(Hyperlink::new(Some("id1"), "https://example.com/".into())));
         assert_eq!(style_of(&linked).url, Some(pb::Url { url: Some("https://example.com/".into()), identifier: Some("id1".into()) }));
+        let mut anonymous = cell('x');
+        anonymous.set_hyperlink(Some(Hyperlink::new(None::<String>, "https://example.com/".into())));
+        assert_eq!(style_of(&anonymous).url, Some(pb::Url { url: Some("https://example.com/".into()), identifier: None }));
         let mut under = cell('x');
         under.set_underline_color(Some(Color::Spec(Rgb { r: 4, g: 5, b: 6 })));
         assert_eq!(style_of(&under).underline_color, Some(pb::RgbColor { red: Some(4), green: Some(5), blue: Some(6) }));
@@ -442,7 +486,7 @@ mod tests {
     }
 
     fn facts() -> PromptFacts {
-        PromptFacts { id: 7, cursor: (3, 12), text: "ls".into(), directory: Some("/tmp".into()), ..Default::default() }
+        PromptFacts { id: 7, cursor: (3, 12), text: Some("ls".into()), directory: Some("/tmp".into()), ..Default::default() }
     }
 
     #[test]
@@ -466,6 +510,8 @@ mod tests {
         assert_eq!(editing.working_directory.as_deref(), Some("/tmp"));
         assert_eq!(editing.unique_prompt_id.as_deref(), Some("7"));
         assert!(editing.excluded_subranges.is_empty());
+        // No command and none being typed: the field is unset.
+        assert_eq!(prompt_response(Some(&PromptFacts { text: None, ..facts() })).command, None);
         assert_eq!(editing.status, Some(Status::Ok as i32));
     }
 
@@ -478,6 +524,33 @@ mod tests {
         assert_eq!(prompt_ids(&ids, None, Some("5")), s(&["3", "5"]));
         assert_eq!(prompt_ids(&ids, Some("4"), None), Vec::<String>::new());
         assert_eq!(prompt_ids(&ids, Some("9"), Some("3")), s(&["9"]));
+    }
+
+    fn texts(r: &pb::GetBufferResponse) -> Vec<String> {
+        r.contents.iter().map(|l| l.text().to_string()).collect()
+    }
+
+    fn cursor_of(r: &pb::GetBufferResponse) -> (i32, i64) {
+        r.cursor.map(|c| (c.x(), c.y())).unwrap()
+    }
+
+    #[test]
+    fn get_buffer_reads_history_and_the_screen_shown() {
+        let screen_only = pb::LineRange { screen_contents_only: Some(true), ..Default::default() };
+        let trailing = pb::LineRange { trailing_lines: Some(5), ..Default::default() };
+        let mut s = crate::screen::Screen::new(10, 3);
+        s.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+        let r = get_buffer(&s, Some(&screen_only), false).unwrap();
+        assert_eq!(texts(&r), vec!["3", "4", "5"]);
+        assert_eq!(cursor_of(&r), (1, 4));
+        assert_eq!(texts(&get_buffer(&s, Some(&trailing), false).unwrap()), vec!["1", "2", "3", "4", "5"]);
+        // On the alternate screen: the main history, then the alternate rows.
+        s.feed(b"\x1b[?1049h\x1b[Halt");
+        let r = get_buffer(&s, Some(&screen_only), false).unwrap();
+        assert_eq!(texts(&r), vec!["alt", "", ""]);
+        assert_eq!(cursor_of(&r), (3, 2));
+        assert_eq!(texts(&get_buffer(&s, Some(&trailing), false).unwrap()), vec!["1", "2", "alt", "", ""]);
+        assert_eq!(get_buffer(&s, None, false), None);
     }
 
     #[test]

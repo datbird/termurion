@@ -7,8 +7,9 @@ use crate::screenshot;
 impl App {
     /// Renders buffer lines `first..=last` (0 is the oldest line) of `screen` as one RGBA
     /// image: the pane's full width with its side padding, no top or bottom margin, opaque,
-    /// with the pane's background image laid out over the whole image's height.
-    pub(super) fn render_lines(&mut self, pane: PaneId, screen: &crate::screen::Screen, first: usize, last: usize) -> Result<(u32, u32, Vec<u8>), String> {
+    /// with the pane's background image laid out over the whole image's height. With `cursor`,
+    /// `screen`'s cursor is drawn where it is shown, as a focused pane's, undimmed.
+    pub(super) fn render_lines(&mut self, pane: PaneId, screen: &crate::screen::Screen, first: usize, last: usize, cursor: bool) -> Result<(u32, u32, Vec<u8>), String> {
         use alacritty_terminal::grid::Dimensions;
         let cell = self.cell();
         let pad = (PAD * self.scale()).round();
@@ -24,7 +25,10 @@ impl App {
         let mut out = Vec::with_capacity((width as usize) * (total_h as usize) * 4);
         for (b0, b1) in screenshot::batches(first, last, max_rows) {
             let count = b1 + 1 - b0;
-            let batch = screenshot::slice(screen, b0 as i32 - history, count);
+            let mut batch = screenshot::slice(screen, b0 as i32 - history, count);
+            if cursor {
+                screenshot::carry_cursor(screen, &mut batch, b0 as i32 - history);
+            }
             let h = count as f32 * cell.1;
             let mut frame = Frame { clear: rgba(bg, 1.0), ..Default::default() };
             let area = Rect { x: 0.0, y: 0.0, w: width, h };
@@ -34,7 +38,7 @@ impl App {
                 let pieces = crate::bgimage::quads(*mode, image.size, container, area);
                 scene::background(&mut frame, area, &pieces, image, bg, *blend);
             }
-            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, false, false, None);
+            scene::pane_with(&mut frame, &batch, Rect { x: pad, y: 0.0, w: cols as f32 * cell.0, h }, cell, cursor, cursor, None);
             let gpu = self.gpu.as_mut().ok_or("no window")?;
             out.extend(gpu.renderer.draw_offscreen(&frame, width as u32, h as u32)?);
         }
@@ -127,7 +131,7 @@ impl App {
             let lines = crate::shotimage::minimap_lines(total, rows);
             let picked = screenshot::pick(snap, &lines);
             let last = lines.len().max(1) - 1;
-            app.render_lines(pane, &picked, 0, last)
+            app.render_lines(pane, &picked, 0, last, false)
         });
         match drawn {
             Some(Ok((w, h, px))) => {
@@ -179,7 +183,7 @@ impl App {
         let scale = self.scale();
         let pad = (PAD * scale).round();
         self.with_snapshot(|app, pane, snap| {
-            let (w, h, mut px) = app.render_lines(pane, snap, first, last)?;
+            let (w, h, mut px) = app.render_lines(pane, snap, first, last, false)?;
             let bg = snap.palette.bg;
             let dark = (0.299 * bg.r as f32 + 0.587 * bg.g as f32 + 0.114 * bg.b as f32) < 128.0;
             let (wu, hu) = (w as usize, h as usize);

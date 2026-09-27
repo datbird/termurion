@@ -13,7 +13,7 @@ use winit::window::WindowId;
 
 use super::close_ui::Closing;
 use super::{App, Rect, GAP};
-use crate::api_buffer::{self, Facts};
+use crate::api_buffer;
 use crate::api_create::{self, SplitResult};
 use crate::api_proto::{self, pb};
 use crate::api_session::{self, CloseStep, Snapshot};
@@ -536,39 +536,17 @@ impl App {
     }
 
     /// GetBuffer (`PS:22416-22488`) from the session's own screen (also while a view or
-    /// Instant Replay shows): each line of the range still kept, history from the main screen
-    /// and the screen shown below it, as iTerm2 reads the alternate screen under the main
-    /// history. An invalid range answers with no GetBuffer response (`S:739-751`).
+    /// Instant Replay shows, `api_buffer::get_buffer`). An invalid range answers with no
+    /// GetBuffer response (`S:739-751`).
     fn api_get_buffer(&mut self, req: &pb::ClientOriginatedMessage, r: &pb::GetBufferRequest) -> Answer {
-        use alacritty_terminal::grid::Dimensions;
-        use alacritty_terminal::index::{Column, Line};
-        use alacritty_terminal::term::cell::Flags;
         let Some(p) = self.api_session_pane(r.session.as_deref()).and_then(|id| self.panes.get(&id)) else {
             let status = Some(pb::get_buffer_response::Status::SessionNotFound as i32);
             return reply(req, Resp::GetBufferResponse(pb::GetBufferResponse { status, ..Default::default() }));
         };
-        let screen = p.own();
-        let (primary, shown) = (screen.term().primary_grid(), screen.term().grid());
-        let f = Facts { scrolled_off: primary.scrolled_off() as i64, history: primary.history_size() as i64, rows: shown.screen_lines() as i64, cols: shown.columns() as i32 };
-        let Some(w) = api_buffer::line_range(r.line_range.as_ref(), f) else { return Answer::Now(api_proto::reply_to(req)) };
-        // Block ids by number (a number whose id was reused since has none).
-        let blocks: std::collections::HashMap<u32, &str> = screen.blocks.by_id.iter().map(|(id, n)| (*n, id.as_str())).collect();
-        let styles = r.include_styles.unwrap_or(false);
-        let first = w.start.1.max(api_buffer::abs_line(-(f.history as i32), f));
-        let last = w.end.1.min(api_buffer::abs_line(f.rows as i32 - 1, f));
-        let mut lines = Vec::new();
-        for y in first..=last {
-            let Some(line) = api_buffer::grid_line(y, f) else { continue };
-            let row = if line < 0 { &primary[Line(line)] } else { &shown[Line(line)] };
-            let cells = &row[Column(0)..];
-            let wrapped = cells.last().is_some_and(|c| c.flags.contains(Flags::WRAPLINE));
-            let Some((from, to, soft)) = api_buffer::span(cells, y == first, y == w.end.1, wrapped, w) else { continue };
-            let block = blocks.get(&row.block()).copied();
-            lines.push(api_buffer::line_contents(cells, from, to, soft, styles, block));
+        match api_buffer::get_buffer(p.own(), r.line_range.as_ref(), r.include_styles.unwrap_or(false)) {
+            Some(resp) => reply(req, Resp::GetBufferResponse(resp)),
+            None => Answer::Now(api_proto::reply_to(req)),
         }
-        let cursor = shown.cursor.point;
-        let cursor = (cursor.column.0 as i32, api_buffer::abs_line(cursor.line.0, f));
-        reply(req, Resp::GetBufferResponse(api_buffer::buffer_response(lines, w, cursor)))
     }
 
     /// GetPrompt (`PS:22500-22574`): the prompt mark with the given id, else the newest one;
@@ -595,8 +573,9 @@ impl App {
     }
 
     /// Screenshot (`H:1658-1676`, `PS:9118-9124`): the lines the session's own screen shows
-    /// (`rangeOfVisibleLines`), rendered alone by its window (a buried session by the current
-    /// one) as PNG; INTERNAL_ERROR when there is no window or rendering fails.
+    /// (`rangeOfVisibleLines`) with its cursor (`showCursor:YES`), rendered alone by its
+    /// window (a buried session by the current one) as PNG; INTERNAL_ERROR when there is no
+    /// window or rendering fails.
     fn api_screenshot(&mut self, r: &pb::ScreenshotRequest) -> pb::ScreenshotResponse {
         use alacritty_terminal::grid::Dimensions;
         use pb::screenshot_response::Status;
@@ -604,11 +583,9 @@ impl App {
         let Some(pane) = self.api_session_pane(r.session.as_deref()) else { return answer(Status::SessionNotFound, None) };
         self.enter_pane_window(pane);
         let Some(p) = self.panes.get(&pane) else { return answer(Status::SessionNotFound, None) };
-        let own = p.own();
-        let g = own.term().grid();
-        let rows = g.screen_lines();
-        let visible = crate::screenshot::slice(own, -(g.display_offset() as i32), rows);
-        match self.render_lines(pane, &visible, 0, rows.max(1) - 1).and_then(|(w, h, px)| crate::screenshot::png(w, h, px)) {
+        let visible = crate::screenshot::visible(p.own());
+        let rows = visible.term().screen_lines();
+        match self.render_lines(pane, &visible, 0, rows.max(1) - 1, true).and_then(|(w, h, px)| crate::screenshot::png(w, h, px)) {
             Ok(png) => answer(Status::Ok, Some(png)),
             Err(_) => answer(Status::InternalError, None),
         }

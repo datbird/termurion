@@ -625,10 +625,11 @@ impl Screen {
 
     /// Prompt mark `id` (the newest one when None) as the API reads it
     /// (`getPromptResponseForMark:`, `PS:22532-22574`), in (x, absolute line) points: the
-    /// prompt from its row's start to its end (empty before 133;B), the command once it has
-    /// text (empty at the prompt's end before that, `MS:4827-4845`), where output began, the
-    /// cursor of the screen shown, the command's text (else the one being typed, as
-    /// `currentCommand`), the directory at the prompt's end (else the shell's) and the code.
+    /// prompt from its row's start to its end (empty before 133;B), the command (empty at the
+    /// prompt's end from 133;B, `MS:4827-4845`, to the cursor once text is typed, then the
+    /// command's own range), where output began, the cursor of the screen shown, the command's
+    /// text (else the one being typed, as `currentCommand`; None with neither), the directory
+    /// at the prompt's end (else the shell's) and the code.
     /// None when no such prompt mark is in the buffer.
     pub fn prompt_facts(&self, id: Option<u32>) -> Option<crate::api_buffer::PromptFacts> {
         let mut prompts = self.row_marks().into_iter().filter(|(_, m)| self.marks.records.get(m).is_some_and(|r| r.kind == Kind::Prompt));
@@ -642,17 +643,22 @@ impl Screen {
         let at = |a: Anchor| self.resolve(a).map(abs);
         let start = (0, off + line as i64);
         let end = m.prompt_end.and_then(at);
+        let text = if m.command.is_empty() { self.typed_command() } else { Some(m.command.clone()) };
+        let cursor = abs(self.cursor_point());
+        // While this prompt's command is typed, its range runs to the cursor once it holds
+        // text (`commandRangeDidChange`, `MS:3765-3790`; `VT100ScreenState.m:994-1004`).
+        let typed = self.marks.current == Some(id) && self.marks.in_command && text.as_deref().is_some_and(|t| !t.trim().is_empty());
         let command = match m.command_range.filter(|_| !m.command.is_empty()) {
             Some((a, b)) => at(a).zip(at(b)),
+            None if typed => self.marks.command_start.and_then(at).or(end).map(|s| (s, cursor)),
             None => end.map(|e| (e, e)),
         };
-        let text = if m.command.is_empty() { self.typed_command().unwrap_or_default() } else { m.command.clone() };
         Some(crate::api_buffer::PromptFacts {
             id,
             prompt: Some((start, end.unwrap_or(start))),
             command,
             output_start: m.output_start.and_then(at),
-            cursor: abs(self.cursor_point()),
+            cursor,
             text,
             directory: m.directory.clone().or_else(|| self.shell.cwd.clone()),
             code: m.code,
@@ -1628,13 +1634,33 @@ mod tests {
         assert_eq!(f.prompt, Some(((0, 0), (2, 0))));
         assert_eq!(f.command.map(|c| c.0), Some((2, 0)));
         assert_eq!(f.output_start, Some((0, 1)));
-        assert_eq!(f.text, "ls");
+        assert_eq!(f.text.as_deref(), Some("ls"));
         assert_eq!(f.code, Some(2));
         s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07");
         let g = s.prompt_facts(None).unwrap();
+        // At B the command range is empty at the prompt's end, then runs to the cursor.
+        assert_eq!(g.command, Some(((2, 2), (2, 2))));
+        s.feed(b"  ");
+        assert_eq!(s.prompt_facts(None).unwrap().command, Some(((2, 2), (2, 2))));
+        s.feed(b"\x08\x08ls");
+        let typing = s.prompt_facts(None).unwrap();
+        assert_eq!(typing.command, Some(((2, 2), (4, 2))));
+        assert_eq!(typing.text.as_deref(), Some("ls"));
+        s.feed(b"\x08\x08");
         assert_ne!(g.id, first);
         assert_eq!((g.code, g.output_start), (None, None));
         assert_eq!(s.prompt_ids(), vec![first, g.id]);
         assert_eq!(s.prompt_facts(Some(first)), Some(crate::api_buffer::PromptFacts { cursor: g.cursor, ..f }));
+    }
+
+    #[test]
+    fn an_empty_command_has_no_output_start() {
+        let mut s = Screen::new(20, 5);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07\r\n\x1b]133;C\x07");
+        let f = s.prompt_facts(None).unwrap();
+        assert_eq!((f.output_start, f.code), (None, None));
+        // No command and none being typed: no text.
+        assert_eq!(f.text, None);
+        assert_eq!(f.command, Some(((2, 0), (2, 0))));
     }
 }

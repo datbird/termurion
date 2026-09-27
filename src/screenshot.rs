@@ -115,6 +115,36 @@ pub fn pick(from: &crate::screen::Screen, lines: &[usize]) -> crate::screen::Scr
     s
 }
 
+/// Puts `from`'s cursor into `to`, a slice of `from` starting at grid line `first`, when the
+/// cursor is shown and on one of its rows, in `from`'s cursor shape.
+pub fn carry_cursor(from: &crate::screen::Screen, to: &mut crate::screen::Screen, first: i32) {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::term::TermMode;
+    use alacritty_terminal::vte::ansi::Handler;
+    let term = from.term();
+    let p = term.grid().cursor.point;
+    let row = p.line.0 - first;
+    if !term.mode().contains(TermMode::SHOW_CURSOR) || row < 0 || row >= to.term().screen_lines() as i32 {
+        return;
+    }
+    to.feed(format!("\x1b[?25h\x1b[{};{}H", row + 1, p.column.0 + 1).as_bytes());
+    to.term_mut().set_cursor_shape(term.cursor_style().shape);
+}
+
+/// The lines `from` shows at its scroll position (`rangeOfVisibleLines`) as a screen of their
+/// own, with the cursor where `from` shows it (`showCursor:YES`, `PS:9036`): only when the view
+/// is at the bottom, where the cursor is.
+pub fn visible(from: &crate::screen::Screen) -> crate::screen::Screen {
+    use alacritty_terminal::grid::Dimensions;
+    let g = from.term().grid();
+    let offset = g.display_offset();
+    let mut s = slice(from, -(offset as i32), g.screen_lines());
+    if offset == 0 {
+        carry_cursor(from, &mut s, 0);
+    }
+    s
+}
+
 /// Batches of at most `max` lines covering `first..=last`.
 pub fn batches(first: usize, last: usize, max: usize) -> Vec<(usize, usize)> {
     let max = max.max(1);
@@ -220,6 +250,36 @@ pub fn png(w: u32, h: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screenshots_draw_the_cursor() {
+        use crate::scene::{self, Frame};
+        use alacritty_terminal::grid::Scroll;
+        let cell = (10.0, 20.0);
+        let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 60.0 };
+        let mut s = crate::screen::Screen::new(10, 3);
+        s.feed(b"ab");
+        let v = visible(&s);
+        let color = scene::rgba(v.palette.cursor, 1.0);
+        let mut f = Frame::default();
+        scene::pane_with(&mut f, &v, rect, cell, true, true, None);
+        assert!(f.quads.iter().any(|q| q.color == color && q.rect.x == 20.0 && q.rect.y == 0.0), "{:?}", f.quads);
+        // A hidden cursor is not drawn, nor one below a scrolled-back view.
+        let mut hidden = crate::screen::Screen::new(10, 3);
+        hidden.feed(b"ab\x1b[?25l");
+        let mut f = Frame::default();
+        scene::pane_with(&mut f, &visible(&hidden), rect, cell, true, true, None);
+        assert!(!f.quads.iter().any(|q| q.color == color));
+        s.feed(b"\r\n1\r\n2\r\n3\r\n4");
+        s.term_mut().scroll_display(Scroll::Delta(2));
+        let mut f = Frame::default();
+        scene::pane_with(&mut f, &visible(&s), rect, cell, true, true, None);
+        assert!(!f.quads.iter().any(|q| q.color == color));
+        // A batch starting below the cursor's row carries no cursor.
+        let mut later = slice(&hidden, 1, 2);
+        carry_cursor(&s, &mut later, 5);
+        assert_eq!(later.term().mode().contains(alacritty_terminal::term::TermMode::SHOW_CURSOR), false);
+    }
 
     #[test]
     fn png_encodes_rgba() {
