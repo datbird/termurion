@@ -180,7 +180,9 @@ impl App {
         if b.apply_mode == 0 || !user_actions::shows_apply_mode(b.action) || !user_actions::fans_out(b.action) {
             return false;
         }
-        let Some(current) = self.focused_id() else { return true };
+        // With no session, Invoke Script Function runs once in the app's scope, whatever the
+        // apply mode (`+[PTYSession performKeyBindingAction:event:]`, `PS:11799-11813`).
+        let Some(current) = self.focused_id() else { return b.action != 60 };
         let text = self.action_text(b);
         for t in self.apply_targets(b.apply_mode, current) {
             if self.panes.get(&t).is_none_or(|p| p.exited.is_some()) {

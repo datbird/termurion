@@ -23,6 +23,9 @@ pub(super) struct Quickly {
     /// The monitor's work area, pixels, for placing the preview.
     work: Rect,
     images: HashMap<PaneId, (u32, u32, Vec<u8>)>,
+    /// The session whose scope the query's invocation runs in, taken when the query was
+    /// typed (`scopeForValidInvocation:`, `OQM:950-1003`); None is the app's.
+    invocation_pane: Option<PaneId>,
 }
 
 /// Each item kind's Segoe Fluent Icons glyph (Decisions; no generated session logo).
@@ -92,7 +95,7 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         match OpenQuicklyWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, monitor, &self.quickly_query, dark, duration) {
             Ok(window) => {
-                self.open_quickly = Some(Quickly { window, preview: None, items: Vec::new(), snippet_guids: Vec::new(), actions: Vec::new(), work, images: HashMap::new() });
+                self.open_quickly = Some(Quickly { window, preview: None, items: Vec::new(), snippet_guids: Vec::new(), actions: Vec::new(), work, images: HashMap::new(), invocation_pane: None });
                 self.quickly_refresh(event_loop);
             }
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
@@ -157,9 +160,14 @@ impl App {
             self.enter(w);
         }
         let (mut sources, snippet_guids, actions) = (self.quickly_sources(), self.quickly_snippets().into_iter().map(|i| self.snippets.snippets[i].guid.clone()).collect(), self.quickly_actions());
+        let current = self.focused_id();
         let Some(q) = self.open_quickly.as_mut() else { return };
-        // The whole query, when it is a call or a call sequence (`OQM:916-923`).
+        // The whole query, when it is a call or a call sequence (`OQM:916-923`), in the
+        // current session's scope, else the app's (`OQM:950-1003`). Tandem's call parser
+        // reads no scope, so the parse in the app's scope iTerm2 falls back to answers as the
+        // first did: the scope is the session's whenever there is one.
         sources.invocation = crate::expr::parse_calls(q.window.query()).ok().map(|_| q.window.query().to_string());
+        q.invocation_pane = current;
         let items = open_quickly::items(q.window.query(), &sources);
         q.window.set_items(items.iter().map(row_of).collect());
         q.items = items;
@@ -392,7 +400,7 @@ impl App {
             self.quickly_query = format!("/{c} ");
             return self.quickly_refresh(event_loop);
         }
-        let (snippet_guids, actions) = self.open_quickly.as_ref().map(|q| (q.snippet_guids.clone(), q.actions.clone())).unwrap_or_default();
+        let (snippet_guids, actions, invocation_pane) = self.open_quickly.as_ref().map(|q| (q.snippet_guids.clone(), q.actions.clone(), q.invocation_pane)).unwrap_or_default();
         self.close_quickly();
         if let Some(w) = self.last_window {
             self.enter(w);
@@ -457,9 +465,9 @@ impl App {
                 }
                 self.redraw();
             }
-            // `OQW:481-503`: in the current session's scope (else the app's), no timeout.
+            // `OQW:481-503`: in the scope taken when the query was typed, no timeout.
             ItemKind::Invocation(text) => {
-                let scope = Self::session_or_app(self.focused_id());
+                let scope = Self::session_or_app(invocation_pane);
                 self.invoke(text, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::OpenQuickly);
             }
             ItemKind::MenuItem(id) => {

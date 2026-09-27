@@ -61,6 +61,14 @@ pub fn utf16_ranges(line: &str, spans: &[Option<(usize, usize)>]) -> Vec<(usize,
     spans.iter().map(|s| s.map_or((NOT_FOUND, 0), |(a, b)| (units(&line[..a]), units(&line[a..b])))).collect()
 }
 
+/// A match's captured strings (event triggers pass their own; a regex match its
+/// `captures_iter` groups) and their byte spans in the line, the latter only for the action
+/// that reads them (Invoke Script Function, as UTF-16 ranges) and empty otherwise.
+pub(crate) struct Captures<'a> {
+    pub groups: &'a [Option<&'a str>],
+    pub spans: &'a [Option<(usize, usize)>],
+}
+
 /// An action whose parameter is used as written: Invoke Script Function's is the invocation
 /// (`iTermRPCTrigger.m:62`, no backreferences or interpolation).
 pub(crate) fn raw_parameter(action: &str) -> bool {
@@ -456,7 +464,8 @@ impl Screen {
                 let Ok(caps) = caps else { break };
                 let Some(m) = caps.get(0).filter(|m| m.start() < m.end()) else { continue };
                 let groups: Vec<Option<&str>> = (0..caps.len()).map(|g| caps.get(g).map(|m| m.as_str())).collect();
-                let spans: Vec<Option<(usize, usize)>> = (0..caps.len()).map(|g| caps.get(g).map(|m| (m.start(), m.end()))).collect();
+                // Only Invoke Script Function reads the groups' places.
+                let spans: Vec<Option<(usize, usize)>> = if raw { (0..caps.len()).map(|g| caps.get(g).map(|m| (m.start(), m.end()))).collect() } else { Vec::new() };
                 // iTerm2 interpolates only a parameter holding an expression; Invoke Script
                 // Function takes its parameter as written.
                 let value = if raw {
@@ -476,8 +485,7 @@ impl Screen {
                     triggers::substitute(&param, &groups)
                 };
                 fired = true;
-                let ranges = utf16_ranges(&line.text, &spans);
-                match self.trigger_action(i, &value, (m.start(), m.end()), &line, row, &groups, &ranges) {
+                match self.trigger_action(i, &value, (m.start(), m.end()), &line, row, &Captures { groups: &groups, spans: &spans }) {
                     Flow::More => {}
                     Flow::Done => break,
                     Flow::StopAll => {
@@ -496,14 +504,12 @@ impl Screen {
     }
 
     /// An event trigger's action, on the cursor's line; its captured strings are all at
-    /// `(0, 0)`, and with none there is one empty one (`VT100Screen.m:2168-2182`). True to
-    /// stop the rest.
+    /// `(0, 0)` (`VT100Screen.m:2168-2182`). True to stop the rest.
     pub(crate) fn run_event_action(&mut self, i: usize, value: &str, groups: &[Option<&str>]) -> bool {
         let line = self.logical_line(self.term.grid().cursor.point.line.0);
         let row = self.cursor_row();
-        let groups = if groups.is_empty() { &[Some("")][..] } else { groups };
-        let ranges = vec![(0, 0); groups.len()];
-        matches!(self.trigger_action(i, value, (0, 0), &line, row, groups, &ranges), Flow::StopAll)
+        let spans = if raw_parameter(&self.triggers.list[i].trigger.action) { vec![Some((0, 0)); groups.len()] } else { Vec::new() };
+        matches!(self.trigger_action(i, value, (0, 0), &line, row, &Captures { groups, spans: &spans }), Flow::StopAll)
     }
 
     /// The cells of a match: (line, column), from byte offsets in the logical line.
@@ -522,11 +528,9 @@ impl Screen {
     }
 
     /// Runs trigger `i`'s action on a match (byte range in the line). `row` is the line's
-    /// absolute row number and `groups` its capture groups (event triggers pass their own
-    /// captured strings; a plain regex match its `captures_iter` groups) and `ranges` their
-    /// UTF-16 ranges.
-    #[allow(clippy::too_many_arguments)]
-    fn trigger_action(&mut self, i: usize, value: &str, span: (usize, usize), line: &LineText, row: i64, groups: &[Option<&str>], ranges: &[(usize, usize)]) -> Flow {
+    /// absolute row number and `caps` its captures.
+    fn trigger_action(&mut self, i: usize, value: &str, span: (usize, usize), line: &LineText, row: i64, caps: &Captures) -> Flow {
+        let groups = caps.groups;
         let raw = self.triggers.list[i].trigger.action.clone();
         let Some(info) = triggers::action_info(&raw) else {
             self.requests.push(Request::Trigger(TriggerRequest::Unavailable { trigger: i, title: raw, milestone: 0 }));
@@ -680,7 +684,8 @@ impl Screen {
             // Every match on the line invokes (`iTermRPCTrigger.m:78` returns YES).
             "iTermRPCTrigger" => {
                 let captures = groups.iter().map(|g| g.unwrap_or("").to_string()).collect();
-                self.requests.push(Request::Trigger(TriggerRequest::Invoke { invocation: value.to_string(), captures, ranges: ranges.to_vec(), input: line.text.clone(), line: row }));
+                let ranges = utf16_ranges(&line.text, caps.spans);
+                self.requests.push(Request::Trigger(TriggerRequest::Invoke { invocation: value.to_string(), captures, ranges, input: line.text.clone(), line: row }));
                 Flow::More
             }
             "iTermSetTabStatusTrigger" => {

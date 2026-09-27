@@ -508,16 +508,78 @@ pub fn console_text(invocation: &str, reason: &str, traceback: &str) -> String {
 
 /// The function call error alert's identifier (`H:580`).
 pub const ERROR_ID: &str = "NoSyncFunctionCallError";
+/// Where the alert's temporary silence ends (`iTermWarning.m:581-584`,
+/// `<identifier>_SilenceUntil`), in Unix seconds, and the selection it remembers
+/// (`<identifier>_selection`, OK).
+pub const SILENCE_UNTIL_KEY: &str = "NoSyncFunctionCallError_SilenceUntil";
+pub const SELECTION_KEY: &str = "NoSyncFunctionCallError_selection";
+/// `kTemporarySilenceTime` (`iTermWarning.m:13`): ten minutes.
+pub const TEMPORARY_SILENCE_SECS: f64 = 600.0;
+
+/// Whether a temporary silence ending at `until` holds at `now` (`identifierIsSilenced:`,
+/// `iTermWarning.m:632-636`).
+pub fn silenced(until: Option<f64>, now: f64) -> bool {
+    until.is_some_and(|u| u > now)
+}
 /// The error alert's second button when there is a traceback (`H:570`); 11d.
 pub const REVEAL_IN_CONSOLE: &str = "Reveal in Script Console";
 /// The heading of an invocation's result shown by Open Quickly (`OQW:494`).
 pub const RESULT_HEADING: &str = "Function Call Result";
 
 /// The body of Open Quickly's result alert (`OQW:495`): the value as NSObject's
-/// `description` prints it (null "(null)").
+/// `description` prints it (a top-level null is nil, "(null)", `H:3481`).
 pub fn result_text(invocation: &str, v: &Value) -> String {
-    let value = if v.is_null() { "(null)".to_string() } else { expr::to_text(v) };
+    let value = if v.is_null() { "(null)".to_string() } else { description(v, 0, true) };
     format!("{invocation} returned:\n{value}")
+}
+
+/// Foundation's `description` of a decoded JSON value: a string itself (quoted inside a
+/// collection when it is not plain alphanumerics, `"` `\\` and controls escaped, characters
+/// outside ASCII as `\\Uxxxx`), a number as NSNumber prints it, NSNull `<null>`, an array
+/// `(` one element per line `)`, a dictionary `{` `key = value;` per line in key order `}`,
+/// each level indented four spaces; a nested collection's brackets carry its own level's
+/// indent too (`b =     (`).
+fn description(v: &Value, level: usize, top: bool) -> String {
+    let pad = |n: usize| "    ".repeat(n);
+    match v {
+        Value::String(s) if top => s.clone(),
+        Value::String(s) => quoted(s),
+        Value::Null => "<null>".to_string(),
+        Value::Array(items) => {
+            let body: Vec<String> = items.iter().map(|x| format!("{}{}", pad(level + 1), description(x, level + 1, false))).collect();
+            let body = if body.is_empty() { String::new() } else { format!("{}\n", body.join(",\n")) };
+            format!("{}(\n{body}{})", pad(level), pad(level))
+        }
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let body: String = keys.iter().map(|k| format!("{}{} = {};\n", pad(level + 1), quoted(k), description(&map[*k], level + 1, false))).collect();
+            format!("{}{{\n{body}{}}}", pad(level), pad(level))
+        }
+        other => expr::to_text(other),
+    }
+}
+
+/// A string inside a collection's description: bare when it is ASCII letters and digits,
+/// else quoted and escaped.
+fn quoted(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return s.to_string();
+    }
+    let mut out = String::from("\"");
+    for u in s.encode_utf16() {
+        match u {
+            0x22 => out.push_str("\\\""),
+            0x5c => out.push_str("\\\\"),
+            0x0a => out.push_str("\\n"),
+            0x09 => out.push_str("\\t"),
+            0x0d => out.push_str("\\r"),
+            0x20..=0x7e => out.push(char::from(u as u8)),
+            _ => out.push_str(&format!("\\U{u:04x}")),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// The temporary values an Invoke Script Function trigger adds to the session's scope
@@ -882,6 +944,13 @@ mod tests {
         assert_eq!(result_text("f()", &Value::Null), "f() returned:\n(null)");
         assert_eq!(result_text("f()", &json!("hi")), "f() returned:\nhi");
         assert_eq!(result_text("f()", &json!(true)), "f() returned:\n1");
+        // Collections as Foundation describes them (review Minor 3).
+        assert_eq!(result_text("f()", &json!([1, 2])), "f() returned:\n(\n    1,\n    2\n)");
+        assert_eq!(result_text("f()", &json!([])), "f() returned:\n(\n)");
+        assert_eq!(result_text("f()", &json!(["ab1", "a b", "", null, 0.5])), "f() returned:\n(\n    ab1,\n    \"a b\",\n    \"\",\n    <null>,\n    0.5\n)");
+        assert_eq!(result_text("f()", &json!({"b": [true], "a": "x\u{e9}\"q"})), "f() returned:\n{\n    a = \"x\\U00e9\\\"q\";\n    b =     (\n        1\n    );\n}");
+        assert_eq!(result_text("f()", &json!({})), "f() returned:\n{\n}");
+        assert_eq!(result_text("f()", &json!([[1]])), "f() returned:\n(\n        (\n        1\n    )\n)");
     }
 
     #[test]

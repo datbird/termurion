@@ -208,8 +208,9 @@ pub struct ConfirmWindow {
     host: EguiHost,
     text: String,
     suppress: bool,
-    /// The "Suppress this message permanently" checkbox shows.
+    /// The "Suppress this message permanently" checkbox shows, and its label.
     checkbox: bool,
+    checkbox_label: &'static str,
     /// The button that answers `Ok`, and the one that answers `Cancel` (none for a warning).
     ok: String,
     cancel: Option<String>,
@@ -223,6 +224,8 @@ pub struct ConfirmWindow {
 impl ConfirmWindow {
     /// The checkbox's label (`iTermWarning.m:400-406`).
     pub const SUPPRESS: &'static str = "Suppress this message permanently";
+    /// A temporarily silenceable warning's checkbox with one action (`iTermWarning.m:381-390`).
+    pub const SUPPRESS_TEN_MINUTES: &'static str = "Suppress this message for ten minutes";
 
     #[allow(clippy::too_many_arguments)]
     pub fn open(
@@ -235,7 +238,7 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 420.0, 130.0)?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new() })
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new() })
     }
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
@@ -319,6 +322,12 @@ impl ConfirmWindow {
         Ok(w)
     }
 
+    /// Shows the checkbox with another label (a temporarily silenceable warning's).
+    pub fn set_checkbox_label(&mut self, label: &'static str) {
+        self.checkbox = true;
+        self.checkbox_label = label;
+    }
+
     /// The answer when the window is closed: Cancel, or for an `actions` window `close_index`'s
     /// button, with the checkbox not remembered.
     pub fn close_answer(&self) -> ConfirmResult {
@@ -343,13 +352,13 @@ impl ConfirmWindow {
 
     pub fn redraw(&mut self) -> ConfirmResult {
         let mut result = ConfirmResult::Open;
-        let (text, suppress, checkbox, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
+        let (text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, self.checkbox_label, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(text.as_str());
                 ui.add_space(6.0);
                 if checkbox {
-                    ui.checkbox(suppress, Self::SUPPRESS);
+                    ui.checkbox(suppress, checkbox_label);
                     ui.add_space(6.0);
                 }
                 let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));

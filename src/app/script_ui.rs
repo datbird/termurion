@@ -143,6 +143,22 @@ impl Alert {
     }
 }
 
+/// Queues a failure's alert (`reportFunctionCallError`, `H:566-591`): none while the
+/// temporary silence holds (`iTermWarning.m` `preempt:`), and none when the same heading and
+/// text is already queued or showing, so a burst of one failure (a trigger matching many
+/// times) shows once.
+fn queue_alert(queue: &mut VecDeque<Alert>, showing: Option<&Alert>, alert: Alert, silenced: bool) {
+    if silenced || showing == Some(&alert) || queue.contains(&alert) {
+        return;
+    }
+    queue.push_back(alert);
+}
+
+/// Unix seconds now, the clock of the alert's silence.
+fn unix_now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
 /// What a script call answers before any script is asked (`SFC:527-545`): a synchronous
 /// evaluation null, and with the API off iTerm2's undefined function text.
 fn script_gate(sig: &str, sync: bool, api_on: bool) -> Option<HostOutcome> {
@@ -512,10 +528,20 @@ impl App {
     }
 
     /// iTerm2's `reportFunctionCallError` (`H:566-591`): the console text in the log of the
-    /// connection that failed, and the alert queued (OK only; no suppress box).
+    /// connection that failed, and the alert queued (`queue_alert`: OK, temporarily
+    /// silenceable under `NoSyncFunctionCallError`, the same one merged).
     pub(super) fn report_function_error(&mut self, origin: &str, invocation: &str, f: &Failure) {
         self.script_log(f.conn, script_eval::console_text(invocation, &f.reason, f.detail.as_deref().unwrap_or_default()));
-        self.script_alerts.push_back(Alert::Failed { heading: script_eval::report_heading(origin), text: script_eval::report_text(invocation, &f.reason) });
+        let alert = Alert::Failed { heading: script_eval::report_heading(origin), text: script_eval::report_text(invocation, &f.reason) };
+        let silenced = self.function_errors_silenced();
+        let showing = self.script_alert.as_ref().map(|(_, a)| a);
+        queue_alert(&mut self.script_alerts, showing, alert, silenced);
+    }
+
+    /// Whether the person silenced the function call error alert for ten minutes.
+    fn function_errors_silenced(&self) -> bool {
+        let until = self.globals.get(script_eval::SILENCE_UNTIL_KEY).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+        script_eval::silenced(until, unix_now())
     }
 
     /// A line for a connection's Script Console entry; nothing without a connection (iTerm2
@@ -531,10 +557,21 @@ impl App {
         if self.script_alert.is_some() {
             return;
         }
+        // Failures queued before the person silenced the alert are not shown either (each
+        // warning checks the silence when it would show, `preempt:`).
+        if self.function_errors_silenced() {
+            self.script_alerts.retain(|a| !matches!(a, Alert::Failed { .. }));
+        }
         let Some(alert) = self.script_alerts.front() else { return };
         let Some(g) = self.gpu.as_ref() else { return };
         let (heading, text) = alert.form();
-        let opened = ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &[crate::api_auth::OK], false);
+        let failed = matches!(alert, Alert::Failed { .. });
+        let opened = ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &[crate::api_auth::OK], false).map(|mut w| {
+            if failed {
+                w.set_checkbox_label(ConfirmWindow::SUPPRESS_TEN_MINUTES);
+            }
+            w
+        });
         let Some(alert) = self.script_alerts.pop_front() else { return };
         match opened {
             Ok(w) => self.script_alert = Some((w, alert)),
@@ -553,9 +590,18 @@ impl App {
                 ConfirmResult::Open
             }
         };
-        if !matches!(answer, ConfirmResult::Open) {
-            self.script_alert = None;
+        match answer {
+            ConfirmResult::Open => return true,
+            // "Suppress this message for ten minutes" checked on a failure's OK
+            // (`iTermWarning.m:577-593`): the silence and the remembered selection.
+            ConfirmResult::Action { suppress: true, .. } if matches!(self.script_alert, Some((_, Alert::Failed { .. }))) => {
+                self.globals.set(script_eval::SILENCE_UNTIL_KEY, toml::Value::Float(unix_now() + script_eval::TEMPORARY_SILENCE_SECS));
+                self.globals.set(script_eval::SELECTION_KEY, toml::Value::Integer(0));
+                self.save_globals();
+            }
+            _ => {}
         }
+        self.script_alert = None;
         true
     }
 }
@@ -706,6 +752,33 @@ mod tests {
         assert_eq!((t.value.clone(), t.running), (Some(Ok("nine".into())), Some(10)));
         assert!(!t.finish(10, &BTreeSet::new(), &expr::Outcome::Done(json!("nine"))), "the same value");
         assert_eq!(t.running, None);
+    }
+
+    /// Review finding 1: an Invoke Script Function trigger whose function is not registered
+    /// fails on every match; 1000 matches queue one alert, none while silenced, none while
+    /// the same one shows; another failure still queues.
+    #[test]
+    fn trigger_alerts_are_bounded() {
+        let failure = |sig: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), text: script_eval::report_text(sig, &script_fn::unregistered_text(sig, None)) };
+        let mut queue = VecDeque::new();
+        for _ in 0..1000 {
+            queue_alert(&mut queue, None, failure("f()"), false);
+        }
+        assert_eq!(queue.len(), 1);
+        queue_alert(&mut queue, None, failure("g()"), false);
+        assert_eq!(queue.len(), 2, "a different failure");
+        let showing = queue.pop_front();
+        queue_alert(&mut queue, showing.as_ref(), failure("f()"), false);
+        assert_eq!(queue.len(), 1, "the one showing");
+        let mut quiet = VecDeque::new();
+        queue_alert(&mut quiet, None, failure("f()"), true);
+        assert!(quiet.is_empty(), "silenced");
+        // The silence: ten minutes from the OK (`iTermWarning.m:13`, `:632-636`).
+        assert_eq!((script_eval::SILENCE_UNTIL_KEY, script_eval::TEMPORARY_SILENCE_SECS), ("NoSyncFunctionCallError_SilenceUntil", 600.0));
+        assert!(script_eval::silenced(Some(100.0), 99.0));
+        assert!(!script_eval::silenced(Some(100.0), 100.0));
+        assert!(!script_eval::silenced(None, 0.0));
+        assert_eq!(crate::prompt_ui::ConfirmWindow::SUPPRESS_TEN_MINUTES, "Suppress this message for ten minutes");
     }
 
     #[test]

@@ -286,11 +286,13 @@ impl Screen {
 }
 
 impl Screen {
-    /// Runs one trigger's action with captured strings (event triggers). True to stop the rest.
+    /// Runs one trigger's action with captured strings (event triggers); with none there is
+    /// one empty one, for the parameter and the action alike (`VT100Screen.m:2169-2176`).
+    /// True to stop the rest.
     pub(crate) fn fire_trigger_with(&mut self, i: usize, captures: &[String]) -> bool {
         let Some(c) = self.triggers.list.get(i) else { return false };
         let param = c.trigger.parameter.clone();
-        let groups: Vec<Option<&str>> = captures.iter().map(|s| Some(s.as_str())).collect();
+        let groups: Vec<Option<&str>> = if captures.is_empty() { vec![Some("")] } else { captures.iter().map(|s| Some(s.as_str())).collect() };
         let value = if crate::trigger_eval::raw_parameter(&c.trigger.action) {
             param.clone()
         } else if self.triggers.prefs.interpolated && param.contains("\\(") {
@@ -393,6 +395,19 @@ mod tests {
         s.last_output = Some(t0 + std::time::Duration::from_secs(4));
         s.check_event_timers(t0 + std::time::Duration::from_secs(6));
         assert_eq!(alerts(&mut s), vec!["idle 1"], "a new quiet spell");
+    }
+
+    /// An event with no captured strings has one empty one, which the parameter reads as the
+    /// action does (`VT100Screen.m:2169-2176`).
+    #[test]
+    fn empty_event_captures_follow_iterm2() {
+        let mut s = Screen::new(40, 4);
+        s.set_triggers(vec![event(EventKind::BellReceived, "[\\(matches[0] == \"\")]", &[])], TriggerPrefs { interactive: false, interpolated: true });
+        s.feed(b"\x07");
+        assert_eq!(alerts(&mut s), vec!["[1]"], "matches is [\"\"], not undefined");
+        s.set_triggers(vec![event(EventKind::BellReceived, "[\\0]", &[])], TriggerPrefs::default());
+        s.feed(b"\x07");
+        assert_eq!(alerts(&mut s), vec!["[]"], "a backreference too");
     }
 
     #[test]
