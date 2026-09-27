@@ -252,12 +252,13 @@ impl App {
             }
         }
 
-        // Every menu command Tandem runs.
+        // Every menu command Tandem runs, then the Scripts menu's script items.
         s.menu_items = crate::menus::items()
             .iter()
             .filter(|i| !i.separator && !i.submenu && !i.selector.is_empty() && crate::commands::status(i) == crate::commands::Status::Done)
             .map(|i| (i.id(), crate::menus::shown_label(i.label()), i.path[..i.path.len().saturating_sub(1)].to_vec(), i.alternate))
             .collect();
+        s.menu_items.extend(self.quickly_script_menu_items());
         s.scripts = self.scripts_all.clone();
         s
     }

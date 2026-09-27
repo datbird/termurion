@@ -82,25 +82,41 @@ impl Fs for RealFs {
     }
 }
 
-/// Whether a symbolic link or junction leads to a local folder. Each hop of the link is read
-/// first, so a link to a network path is never followed (and never probed).
-fn link_is_local_folder(link: &Path) -> bool {
-    let mut at = link.to_path_buf();
-    for _ in 0..8 {
-        let Ok(target) = std::fs::read_link(&at) else {
+/// How many hops of a link chain are followed.
+const LINK_HOPS: usize = 8;
+
+/// Where a chain of symbolic links or junctions from `start` ends, reading each hop with
+/// `read_link` (None: not a link). None when a hop names a network path (it is never followed)
+/// or the chain is longer than `LINK_HOPS`; `start` itself when it is no link.
+pub fn link_chain_end(start: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Option<PathBuf> {
+    let mut at = start.to_path_buf();
+    for _ in 0..LINK_HOPS {
+        let Some(target) = read_link(&at) else {
             // Not a link any more: the end of the chain.
-            return at.is_dir();
+            return Some(at);
         };
         let target = match at.parent() {
             Some(parent) if target.is_relative() => parent.join(target),
             _ => target,
         };
         if is_network_path(&target.to_string_lossy()) {
-            return false;
+            return None;
         }
         at = target;
     }
-    false
+    None
+}
+
+/// Whether a symbolic link or junction leads to a local folder. Each hop of the link is read
+/// first, so a link to a network path is never followed (and never probed).
+fn link_is_local_folder(link: &Path) -> bool {
+    link_chain_end(link, &|p: &Path| std::fs::read_link(p).ok()).is_some_and(|end| end.is_dir())
+}
+
+/// Whether `path` is safe to touch as a file without a person asking: not a network path,
+/// and not a link whose chain reaches one (or never ends). Reads only the links themselves.
+pub fn stays_local(path: &Path) -> bool {
+    !is_network_path(&path.to_string_lossy()) && link_chain_end(path, &|p: &Path| std::fs::read_link(p).ok()).is_some()
 }
 
 /// A path Tandem never touches as a file: a network path (`\\host`, `//host`, `\\?\UNC\`) or a

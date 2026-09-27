@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::api_proto::pb;
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Item {
     pub path: Vec<String>,
     #[serde(default)]
