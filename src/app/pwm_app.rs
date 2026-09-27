@@ -62,9 +62,6 @@ pub(super) struct PwmWin {
     editing: Option<Account>,
     baseline: Option<Secret>,
     alerts: VecDeque<(Alert, AlertFor)>,
-    /// A field-bearing alert just replaced another: the window sees one frame without it, so
-    /// the new one's fields start from its own values.
-    fresh_alert: bool,
     two_factor: String,
     broadcast: bool,
     /// The account name it opened to (`defaultAccountName`): Add's starting name.
@@ -291,7 +288,6 @@ impl App {
             editing: None,
             baseline: None,
             alerts: VecDeque::new(),
-            fresh_alert: false,
             two_factor: String::new(),
             broadcast: false,
             default_name: account.clone().unwrap_or_default(),
@@ -355,12 +351,8 @@ impl App {
         match event {
             WindowEvent::CloseRequested => self.close_pwm(),
             WindowEvent::RedrawRequested => {
-                let (acts, again) = self.pwm_redraw();
-                for act in acts {
+                for act in self.pwm_redraw() {
                     self.pwm_act(act);
-                }
-                if let (true, Some(w)) = (again, self.pwm_window.as_ref()) {
-                    w.window.request_redraw();
                 }
             }
             other => {
@@ -374,13 +366,12 @@ impl App {
         true
     }
 
-    /// Draws the manager; also whether it must draw again (an alert held back a frame).
-    fn pwm_redraw(&mut self) -> (Vec<PwmAct>, bool) {
+    /// Draws the manager.
+    fn pwm_redraw(&mut self) -> Vec<PwmAct> {
         let buttons = self.pwm_buttons();
         let gear = self.pwm_gear();
-        let Some(w) = self.pwm_window.as_mut() else { return (Vec::new(), false) };
+        let Some(w) = self.pwm_window.as_mut() else { return Vec::new() };
         let asking = matches!(w.alerts.front(), Some((_, AlertFor::Prompt(_) | AlertFor::Pick(..))));
-        let hide_alert = std::mem::take(&mut w.fresh_alert) && w.alerts.front().is_some_and(|(a, _)| !a.fields.is_empty());
         let PwmWin { window, accounts, filter, selected, busy, panel, alerts, .. } = w;
         let view = PwmView {
             accounts,
@@ -391,9 +382,9 @@ impl App {
             busy: busy.shown() && !asking,
             gear,
             panel: panel.as_ref(),
-            alert: if hide_alert { None } else { alerts.front().map(|(a, _)| a) },
+            alert: alerts.front().map(|(a, _)| a),
         };
-        (window.redraw(&view), hide_alert)
+        window.redraw(&view)
     }
 
     /// `updateWithAvailability:`'s inputs.
@@ -481,11 +472,10 @@ impl App {
         match act {
             PwmAct::Filter(f) => {
                 w.filter = f;
-                if w.selected_account().is_some_and(|a| !pwm::matches(a, &w.filter)) {
-                    w.selected = None;
-                }
+                let rows: Vec<usize> = (0..w.accounts.len()).filter(|&i| pwm::matches(&w.accounts[i], &w.filter)).collect();
+                w.selected = pwm::select_after_filter(&rows, w.selected);
             }
-            PwmAct::Select(i) => w.selected = (i < w.accounts.len()).then_some(i),
+            PwmAct::Select(i) => w.selected = i.filter(|&i| i < w.accounts.len()),
             PwmAct::TwoFactor(s) => w.two_factor = s,
             PwmAct::Broadcast(on) => w.broadcast = on,
             PwmAct::Close => self.close_pwm(),
@@ -553,8 +543,10 @@ impl App {
                 w.baseline = None;
             }
             PwmAct::Generate { alnum } => {
-                let p = pwm::random_password(alnum, &mut random_below);
-                w.window.fill_password(p);
+                if let Some(serial) = w.panel.as_ref().map(|p| p.serial) {
+                    let p = pwm::random_password(alnum, &mut random_below);
+                    w.window.fill_password(serial, p);
+                }
             }
             PwmAct::AlertButton(n) => self.pwm_alert_answer(Some(n), None),
             PwmAct::Settings(values) => self.pwm_alert_answer(None, Some(values)),
@@ -687,7 +679,6 @@ impl App {
     fn pwm_alert_answer(&mut self, button: Option<usize>, values: Option<Vec<(String, Secret)>>) {
         let Some(w) = self.pwm_window.as_mut() else { return };
         let Some((alert, what)) = w.alerts.pop_front() else { return };
-        w.fresh_alert = true;
         let ok = values.is_some() || button == Some(0);
         match what {
             AlertFor::Plain => {}
@@ -946,11 +937,12 @@ impl App {
                     fields.push((field(PROMPT_USER, pwm::LABEL_USER_NAME, false), Secret::new(u)));
                 }
                 fields.push((field(PROMPT_PASSWORD, pwm::LABEL_PASSWORD, true), Secret::new(String::new())));
-                let alert = Alert { heading, text: String::new(), secret: None, fields, buttons: vec![pwm::TITLE_OK.to_string(), pwm::TITLE_CANCEL.to_string()] };
+                let alert = Alert { serial: pwm::next_alert_serial(), heading, text: String::new(), secret: None, fields, buttons: vec![pwm::TITLE_OK.to_string(), pwm::TITLE_CANCEL.to_string()] };
                 w.push_alert(alert, AlertFor::Prompt(answer));
             }
             Done::Pick { choices, answer } => {
                 let alert = Alert {
+                    serial: pwm::next_alert_serial(),
                     heading: pwm_cli::PICK_ACCOUNT_TITLE.to_string(),
                     text: pwm_cli::PICK_ACCOUNT_MESSAGE.to_string(),
                     secret: None,
@@ -1164,7 +1156,7 @@ impl App {
                 let Some(p) = w.panel.as_mut().filter(|p| p.serial == serial && w.editing.is_some()) else { return };
                 p.fetched();
                 w.baseline = Some(password.duplicate());
-                w.window.fill_password(password);
+                w.window.fill_password(serial, password);
             }
             Why::Reveal => {
                 if let Some(w) = self.pwm_window.as_mut() {

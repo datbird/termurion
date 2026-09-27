@@ -45,6 +45,13 @@ impl Secret {
         self.0.push_str(s);
     }
 
+    /// Appends typed or pasted text, dropping line breaks (a single-line secure field does).
+    pub fn push_line(&mut self, s: &str) {
+        for part in s.split(['\r', '\n']) {
+            self.push_str(part);
+        }
+    }
+
     /// Removes the last character (Backspace), wiping its bytes.
     pub fn pop(&mut self) {
         if let Some(c) = self.0.chars().next_back() {
@@ -199,10 +206,21 @@ pub const TITLE_ENTER_PASSWORD: &str = "Enter Password";
 pub const TITLE_BROADCAST: &str = "Broadcast (Win+B)";
 pub const TOOLTIP_ENTER_USER_NAME: &str = "Win+U";
 
+/// The default button's action (`performDefaultAction:`): Enter User Name when opened to send
+/// the user name by default, else Enter Password (which enters the user name first in
+/// send-both mode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultAct {
+    EnterUserName,
+    EnterPassword,
+}
+
 /// What the window shows: titles, which buttons are enabled, and which are visible.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Buttons {
     pub default_title: &'static str,
+    /// What the default button (Return, a double-click) does.
+    pub default_act: DefaultAct,
     pub secondary_shown: bool,
     pub default_on: bool,
     pub secondary_on: bool,
@@ -238,6 +256,7 @@ pub fn buttons(s: &ButtonState) -> Buttons {
 
     Buttons {
         default_title,
+        default_act: if default_title == TITLE_ENTER_USER_NAME { DefaultAct::EnterUserName } else { DefaultAct::EnterPassword },
         secondary_shown,
         default_on,
         secondary_on,
@@ -247,6 +266,17 @@ pub fn buttons(s: &ButtonState) -> Buttons {
         two_factor_on: !s.account_sends_otp,
         remove_on: s.selected,
     }
+}
+
+/// The selection after the filter changes, over the rows it leaves (indexes into the full
+/// list): the one remaining row is selected (`W:2370-2372`); otherwise a selection still shown
+/// stays and a hidden one clears (iTerm2's table only ever holds shown rows, so Return can
+/// never enter an account the user cannot see).
+pub fn select_after_filter(rows: &[usize], selected: Option<usize>) -> Option<usize> {
+    if rows.len() == 1 {
+        return Some(rows[0]);
+    }
+    selected.filter(|s| rows.contains(s))
 }
 
 /// Tab jumps from the table, or from the search field with exactly one result, to the 2FA
@@ -702,6 +732,9 @@ pub const ALERT_AN_ERROR_OCCURRED: &str = "An error occurred.";
 /// titled "Cancel" also answers Escape, as an NSAlert's does.
 #[derive(Debug)]
 pub struct Alert {
+    /// Unique per alert (`next_alert_serial`): the window keeps a Settings sheet's typed values
+    /// for this serial only, so an alert that replaces another never inherits its text.
+    pub serial: u64,
     pub heading: String,
     pub text: String,
     /// Reveal's password (and one-time code on a second line). `Secret`, so `Debug` of an
@@ -712,10 +745,16 @@ pub struct Alert {
     pub buttons: Vec<String>,
 }
 
+/// A new alert serial, never repeated in a run.
+pub fn next_alert_serial() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 impl Alert {
     /// A plain alert with OK (the sources' alerts, "Authentication Error" and the like).
     pub fn message(heading: &str, text: &str) -> Alert {
-        Alert { heading: heading.to_string(), text: text.to_string(), secret: None, fields: Vec::new(), buttons: vec![TITLE_OK.to_string()] }
+        Alert { serial: next_alert_serial(), heading: heading.to_string(), text: text.to_string(), secret: None, fields: Vec::new(), buttons: vec![TITLE_OK.to_string()] }
     }
 
     /// The Remove confirmation (`W:1082-1088`).
@@ -1154,6 +1193,8 @@ mod tests {
         assert!(s.is_empty());
         s.pop();
         assert!(s.is_empty());
+        s.push_line("a\r\nb\nc");
+        assert_eq!(s.expose(), "abc", "a pasted line break is dropped");
     }
 
     #[test]
@@ -1227,6 +1268,28 @@ mod tests {
         busy.cancel();
         assert!(!busy.shown());
         assert!(!busy.current(token2));
+    }
+
+    #[test]
+    fn filter_and_default_follow_iterm2() {
+        // One remaining row is selected; a hidden selection clears; a visible one stays.
+        assert_eq!(select_after_filter(&[4], None), Some(4));
+        assert_eq!(select_after_filter(&[4], Some(2)), Some(4));
+        assert_eq!(select_after_filter(&[1, 2, 3], Some(2)), Some(2));
+        assert_eq!(select_after_filter(&[1, 3], Some(2)), None);
+        assert_eq!(select_after_filter(&[], Some(2)), None);
+        assert_eq!(select_after_filter(&[1, 3], None), None);
+
+        let base = ButtonState { selected: true, can_enter: true, ..ButtonState::default() };
+        assert_eq!(buttons(&base).default_act, DefaultAct::EnterPassword);
+        assert_eq!(buttons(&ButtonState { send_both: true, ..base }).default_act, DefaultAct::EnterPassword);
+        assert_eq!(buttons(&ButtonState { send_user_by_default: true, ..base }).default_act, DefaultAct::EnterUserName);
+
+        // Every alert is its own: a replacement never shares a serial with what it replaces.
+        let a = Alert::message("a", "");
+        let b = Alert::message("a", "");
+        let c = Alert { buttons: vec![TITLE_OK.to_string()], ..Alert::settings("x", Vec::new()) };
+        assert!(a.serial != b.serial && b.serial != c.serial && a.serial != c.serial);
     }
 
     #[test]

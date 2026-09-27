@@ -29,7 +29,9 @@ pub use crate::pwm::{AccountPanel, Alert, Gear, GearItem};
 /// What the window shows, built by the app at each redraw.
 pub struct PwmView<'a> {
     /// Every account, sorted (`pwm::sorted`); the window filters them by `filter` itself, and
-    /// every index in `selected` and in a `PwmAct` is an index into this list.
+    /// every index in `selected` and in a `PwmAct` is an index into this list. The selection
+    /// must be a row the filter shows (`pwm::select_after_filter`); a hidden one is treated as
+    /// none (no Enter, Edit, Remove or copy).
     pub accounts: &'a [Account],
     pub filter: &'a str,
     pub selected: Option<usize>,
@@ -46,7 +48,8 @@ pub struct PwmView<'a> {
 #[derive(Debug)]
 pub enum PwmAct {
     Filter(String),
-    Select(usize),
+    /// The new selection; `None` clears it (the filter hid the selected row).
+    Select(Option<usize>),
     EnterPassword,
     EnterUserName,
     Close,
@@ -110,7 +113,11 @@ pub struct PwmWindow {
     two_factor: String,
     broadcast: bool,
     panel: Option<PanelFields>,
-    settings: Option<Vec<SettingValue>>,
+    /// A Settings sheet's typed values, for the alert with this serial.
+    settings: Option<(u64, Vec<SettingValue>)>,
+    /// A password for a panel whose fields do not exist yet (it arrived before the panel's first
+    /// redraw): the fields start with it.
+    pending_password: Option<(u64, Secret)>,
     shake: Option<Instant>,
     focus_password: bool,
     /// The search field takes the focus once the window is authenticated.
@@ -153,6 +160,7 @@ impl PwmWindow {
             broadcast: false,
             panel: None,
             settings: None,
+            pending_password: None,
             shake: None,
             focus_password: false,
             focus_search: true,
@@ -185,11 +193,14 @@ impl PwmWindow {
         self.host.request_redraw();
     }
 
-    /// Puts `p` in the panel's password field: the Edit panel's fetched password, or the dice's.
-    /// The field's old value is wiped.
-    pub fn fill_password(&mut self, p: Secret) {
-        if let Some(f) = self.panel.as_mut() {
-            f.password = p;
+    /// Puts `p` in the password field of the panel with `serial`: the Edit panel's fetched
+    /// password, or the dice's. The field's old value is wiped. A password that arrives before
+    /// that panel's first redraw is kept for it; one for an older panel is dropped.
+    pub fn fill_password(&mut self, serial: u64, p: Secret) {
+        match self.panel.as_mut() {
+            Some(f) if f.serial == serial => f.password = p,
+            Some(f) if f.serial > serial => {}
+            _ => self.pending_password = Some((serial, p)),
         }
         self.host.request_redraw();
     }
@@ -216,6 +227,8 @@ impl PwmWindow {
                 }
             }
             WindowEvent::Focused(false) => self.win_down = false,
+            // iTerm2 makes the search field first responder whenever the window becomes key.
+            WindowEvent::Focused(true) => self.focus_search = true,
             _ => {}
         }
         self.host.event(e)
@@ -230,12 +243,33 @@ impl PwmWindow {
             self.shake = None;
         }
         let chords = std::mem::take(&mut self.chords);
+        let rows: Vec<usize> = (0..v.accounts.len()).filter(|&i| pwm::matches(&v.accounts[i], &self.search)).collect();
+        // A selection the filter hides is none here: nothing enters, edits, removes or copies
+        // an account the user cannot see, and the app hears the corrected selection.
+        let hidden = v.selected.filter(|s| !rows.contains(s));
+        let shown;
+        let v = if hidden.is_some() {
+            acts.push(PwmAct::Select(pwm::select_after_filter(&rows, v.selected)));
+            shown = PwmView {
+                accounts: v.accounts,
+                filter: v.filter,
+                selected: None,
+                buttons: Buttons { default_on: false, secondary_on: false, edit_on: false, remove_on: false, ..v.buttons.clone() },
+                busy: v.busy,
+                gear: v.gear.clone(),
+                panel: v.panel,
+                alert: v.alert,
+            };
+            &shown
+        } else {
+            v
+        };
         let Self { host, search, two_factor, broadcast, panel, settings, focus_password, focus_search, .. } = self;
         host.paint(|ui| {
             let ctx = ui.ctx().clone();
             let modal = v.busy || v.panel.is_some() || v.alert.is_some();
-            let rows: Vec<usize> = (0..v.accounts.len()).filter(|&i| pwm::matches(&v.accounts[i], search)).collect();
-            if !modal {
+            // A menu that is open takes Return and Esc for itself (Esc closes the menu only).
+            if !modal && !egui::Popup::is_any_open(&ctx) {
                 keys(&ctx, v, &rows, &chords, &mut acts);
                 for c in &chords {
                     if *c == 'b' && v.buttons.broadcast_on {
@@ -251,11 +285,12 @@ impl PwmWindow {
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(ui.visuals().panel_fill).inner_margin(20)).show(ui, |ui| {
                 main(ui, v, &rows, search, two_factor, broadcast, &mut acts);
             });
+            // Return and Esc go only to the topmost modal: the scrim, then an alert, then the panel.
             if let (Some(p), Some(f)) = (v.panel, panel.as_mut()) {
-                panel_modal(&ctx, p, f, shaking, focus_password, &mut acts);
+                panel_modal(&ctx, p, f, shaking, focus_password, !v.busy && v.alert.is_none(), &mut acts);
             }
             if let Some(a) = v.alert {
-                alert_modal(&ctx, a, settings, &mut acts);
+                alert_modal(&ctx, a, settings, !v.busy, &mut acts);
             }
             if v.busy {
                 busy_modal(&ctx, &mut acts);
@@ -278,11 +313,19 @@ impl PwmWindow {
         match v.panel {
             Some(p) if self.panel.as_ref().is_some_and(|f| f.serial == p.serial) => {}
             Some(p) => {
+                let password = match self.pending_password.take() {
+                    Some((serial, pw)) if serial == p.serial => pw,
+                    Some(newer) if newer.0 > p.serial => {
+                        self.pending_password = Some(newer);
+                        Secret::new(String::new())
+                    }
+                    _ => Secret::new(String::new()),
+                };
                 self.panel = Some(PanelFields {
                     serial: p.serial,
                     name: p.name.clone(),
                     user: p.user.clone(),
-                    password: Secret::new(String::new()),
+                    password,
                     toggle: p.toggle.as_ref().is_some_and(|t| t.default_value),
                     first: true,
                 });
@@ -293,13 +336,13 @@ impl PwmWindow {
         }
         match v.alert {
             Some(a) if !a.fields.is_empty() => {
-                if self.settings.is_none() {
-                    self.settings = Some(
-                        a.fields
-                            .iter()
-                            .map(|(f, val)| if f.is_secret { SettingValue::Secret(val.duplicate(), false) } else { SettingValue::Plain(val.expose().to_string()) })
-                            .collect(),
-                    );
+                if self.settings.as_ref().is_none_or(|(serial, _)| *serial != a.serial) {
+                    let values = a
+                        .fields
+                        .iter()
+                        .map(|(f, val)| if f.is_secret { SettingValue::Secret(val.duplicate(), false) } else { SettingValue::Plain(val.expose().to_string()) })
+                        .collect();
+                    self.settings = Some((a.serial, values));
                 }
             }
             _ => self.settings = None,
@@ -327,13 +370,11 @@ fn sheet_origin(owner: isize, size: winit::dpi::PhysicalSize<u32>) -> Option<win
     Some(winit::dpi::PhysicalPosition::new(x, top_left.y))
 }
 
-/// The default button's action: Enter User Name when that is its title, else Enter Password
-/// (which enters the user name first in send-both mode; `performDefaultAction:`).
+/// The default button's action (`Buttons::default_act`).
 fn default_act(b: &Buttons) -> PwmAct {
-    if b.default_title == pwm::TITLE_ENTER_USER_NAME {
-        PwmAct::EnterUserName
-    } else {
-        PwmAct::EnterPassword
+    match b.default_act {
+        pwm::DefaultAct::EnterUserName => PwmAct::EnterUserName,
+        pwm::DefaultAct::EnterPassword => PwmAct::EnterPassword,
     }
 }
 
@@ -375,10 +416,8 @@ fn keys(ctx: &egui::Context, v: &PwmView, rows: &[usize], chords: &[char], acts:
             (_, true, None) if !rows.is_empty() => Some(0),
             _ => None,
         };
-        if let Some(p) = next {
-            if Some(rows[p]) != v.selected {
-                acts.push(PwmAct::Select(rows[p]));
-            }
+        if let Some(p) = next.filter(|&p| Some(rows[p]) != v.selected) {
+            acts.push(PwmAct::Select(Some(rows[p])));
         }
     }
     if table && b.remove_on {
@@ -396,10 +435,8 @@ fn keys(ctx: &egui::Context, v: &PwmView, rows: &[usize], chords: &[char], acts:
     let copy = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)))
         && !field_selection(ctx, SEARCH_ID)
         && !field_selection(ctx, TWO_FACTOR_ID);
-    if copy || chords.contains(&'c') {
-        if let Some(s) = v.selected {
-            acts.push(PwmAct::CopyPassword(s));
-        }
+    if let (true, Some(s)) = (copy || chords.contains(&'c'), v.selected) {
+        acts.push(PwmAct::CopyPassword(s));
     }
     if chords.contains(&'u') && b.secondary_shown && b.secondary_on {
         acts.push(PwmAct::EnterUserName);
@@ -421,10 +458,10 @@ fn main(ui: &mut egui::Ui, v: &PwmView, rows: &[usize], search: &mut String, two
         );
         if r.changed() {
             acts.push(PwmAct::Filter(search.clone()));
-            // One remaining row is selected (`W:2370-2372`).
             let now: Vec<usize> = (0..v.accounts.len()).filter(|&i| pwm::matches(&v.accounts[i], search)).collect();
-            if now.len() == 1 && v.selected != Some(now[0]) {
-                acts.push(PwmAct::Select(now[0]));
+            let next = pwm::select_after_filter(&now, v.selected);
+            if next != v.selected {
+                acts.push(PwmAct::Select(next));
             }
         }
         gear_button(ui, &v.gear, acts);
@@ -443,10 +480,9 @@ fn main(ui: &mut egui::Ui, v: &PwmView, rows: &[usize], search: &mut String, two
         if ui.add_enabled(b.remove_on, egui::Button::new(pwm::TITLE_REMOVE).min_size(small)).clicked() {
             acts.push(PwmAct::Remove);
         }
-        if ui.add_enabled(b.edit_on, egui::Button::new(pwm::TITLE_EDIT).min_size(egui::vec2(95.0, 22.0))).clicked() {
-            if let Some(s) = v.selected {
-                acts.push(PwmAct::Edit(s));
-            }
+        let edit = ui.add_enabled(b.edit_on, egui::Button::new(pwm::TITLE_EDIT).min_size(egui::vec2(95.0, 22.0))).clicked();
+        if let (true, Some(s)) = (edit, v.selected) {
+            acts.push(PwmAct::Edit(s));
         }
         let r = ui
             .add_enabled(
@@ -572,7 +608,7 @@ fn table(ui: &mut egui::Ui, rect: egui::Rect, v: &PwmView, rows: &[usize], acts:
                 ui.memory_mut(|m| m.request_focus(table_id));
             }
             if resp.clicked() && !selected {
-                acts.push(PwmAct::Select(i));
+                acts.push(PwmAct::Select(Some(i)));
             }
             if resp.double_clicked() {
                 let x = resp.interact_pointer_pos().map_or(0.0, |p| p.x);
@@ -596,9 +632,12 @@ fn table(ui: &mut egui::Ui, rect: egui::Rect, v: &PwmView, rows: &[usize], acts:
     });
 }
 
-/// A password field that edits a `Secret` in place: typing and pasting append, Backspace
-/// deletes the last character (Ctrl+Backspace all of it), and it shows a bullet per character,
-/// or the text itself when `shown`. It never copies to the clipboard.
+/// A password field that edits a `Secret` in place: typing and pasting append (a pasted line
+/// break is dropped, as in a single-line secure field), Backspace deletes the last character
+/// (Ctrl+Backspace all of it), and it shows a bullet per character, or the text itself when
+/// `shown`. It never copies to the clipboard. It publishes no IME output, so egui-winit turns
+/// the IME off while it has focus (a secure field's secure input does the same): nothing is
+/// composed in plain text, and keys arrive as `Event::Text`.
 fn secret_field(ui: &mut egui::Ui, id: egui::Id, s: &mut Secret, enabled: bool, hint: Option<&str>, width: f32, shown: bool) -> egui::Response {
     let h = ui.spacing().interact_size.y;
     let (_, rect) = ui.allocate_space(egui::vec2(width, h));
@@ -611,7 +650,7 @@ fn secret_field(ui: &mut egui::Ui, id: egui::Id, s: &mut Secret, enabled: bool, 
         ui.input(|i| {
             for e in &i.events {
                 match e {
-                    egui::Event::Text(t) | egui::Event::Paste(t) => s.push_str(t),
+                    egui::Event::Text(t) | egui::Event::Paste(t) => s.push_line(t),
                     egui::Event::Key { key: egui::Key::Backspace, pressed: true, modifiers, .. } => {
                         if modifiers.command {
                             s.clear();
@@ -622,14 +661,6 @@ fn secret_field(ui: &mut egui::Ui, id: egui::Id, s: &mut Secret, enabled: bool, 
                     _ => {}
                 }
             }
-        });
-        ui.output_mut(|o| {
-            o.ime = Some(egui::output::IMEOutput {
-                purpose: egui::IMEPurpose::Password,
-                rect,
-                cursor_rect: rect,
-                should_interrupt_composition: false,
-            });
         });
     }
     let v = ui.visuals();
@@ -662,7 +693,7 @@ fn secret_field(ui: &mut egui::Ui, id: egui::Id, s: &mut Secret, enabled: bool, 
 /// common column, the toggle row with its note when adding with a source that has one, a
 /// spinner in the password field's place while an edit fetches, OK (Return; off without a
 /// name or while fetching) and Cancel (Esc).
-fn panel_modal(ctx: &egui::Context, p: &AccountPanel, f: &mut PanelFields, shaking: Option<f32>, focus_password: &mut bool, acts: &mut Vec<PwmAct>) {
+fn panel_modal(ctx: &egui::Context, p: &AccountPanel, f: &mut PanelFields, shaking: Option<f32>, focus_password: &mut bool, top: bool, acts: &mut Vec<PwmAct>) {
     let dx = shaking.map_or(0.0, |t| 12.0 * (t / SHAKE_SECS * 3.0 * std::f32::consts::TAU).sin() * (1.0 - t / SHAKE_SECS));
     let area = egui::Modal::default_area(egui::Id::new("pwm-panel")).anchor(egui::Align2::CENTER_CENTER, egui::vec2(dx, 0.0));
     egui::Modal::new(egui::Id::new("pwm-panel")).area(area).show(ctx, |ui| {
@@ -718,7 +749,7 @@ fn panel_modal(ctx: &egui::Context, p: &AccountPanel, f: &mut PanelFields, shaki
         let ok_on = p.ok_on(&f.name);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ok = ui.add_enabled(ok_on, egui::Button::new(pwm::TITLE_OK).min_size(egui::vec2(53.0, 24.0))).clicked();
-            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none());
+            let enter = top && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none());
             if (ok || enter) && ok_on {
                 acts.push(PwmAct::PanelOk {
                     name: f.name.clone(),
@@ -728,7 +759,7 @@ fn panel_modal(ctx: &egui::Context, p: &AccountPanel, f: &mut PanelFields, shaki
                 });
             }
             let cancel = ui.add(egui::Button::new(pwm::TITLE_CANCEL).min_size(egui::vec2(76.0, 24.0))).clicked();
-            if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if cancel || (top && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
                 acts.push(PwmAct::PanelCancel);
             }
         });
@@ -738,7 +769,7 @@ fn panel_modal(ctx: &egui::Context, p: &AccountPanel, f: &mut PanelFields, shaki
 /// An alert (`NSAlert`): the heading, the text, Reveal's password, an adapter Settings sheet's
 /// rows (a Show toggle beside each secret field, the note under it), and the buttons with the
 /// first on the right. Return is the first button; Esc is a button titled Cancel.
-fn alert_modal(ctx: &egui::Context, a: &Alert, settings: &mut Option<Vec<SettingValue>>, acts: &mut Vec<PwmAct>) {
+fn alert_modal(ctx: &egui::Context, a: &Alert, settings: &mut Option<(u64, Vec<SettingValue>)>, top: bool, acts: &mut Vec<PwmAct>) {
     egui::Modal::new(egui::Id::new("pwm-alert")).show(ctx, |ui| {
         let width = if a.fields.is_empty() { ALERT_WIDTH } else { SETTINGS_WIDTH };
         ui.set_width(width);
@@ -751,7 +782,7 @@ fn alert_modal(ctx: &egui::Context, a: &Alert, settings: &mut Option<Vec<Setting
             ui.add_space(4.0);
             ui.add(egui::Label::new(egui::RichText::new(s.expose()).monospace()).selectable(false));
         }
-        if let (false, Some(values)) = (a.fields.is_empty(), settings.as_mut()) {
+        if let (false, Some((_, values))) = (a.fields.is_empty(), settings.as_mut()) {
             ui.add_space(12.0);
             for (n, ((field, _), value)) in a.fields.iter().zip(values.iter_mut()).enumerate() {
                 ui.horizontal(|ui| {
@@ -786,14 +817,14 @@ fn alert_modal(ctx: &egui::Context, a: &Alert, settings: &mut Option<Vec<Setting
                 }
             }
         });
-        if ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none()) && !a.buttons.is_empty() {
+        if top && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none()) && !a.buttons.is_empty() {
             chosen = chosen.or(Some(0));
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if top && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             chosen = chosen.or(a.buttons.iter().position(|b| b == pwm::TITLE_CANCEL));
         }
         match (chosen, settings.as_ref()) {
-            (Some(0), Some(values)) if !a.fields.is_empty() => {
+            (Some(0), Some((_, values))) if !a.fields.is_empty() => {
                 let out = a
                     .fields
                     .iter()
