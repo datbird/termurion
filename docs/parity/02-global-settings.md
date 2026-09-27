@@ -417,7 +417,7 @@ Every action selectable for a row in the Key Bindings table (also used by per-pr
 | Swap With Split Pane Above | KEY_ACTION_SWAP_PANE_ABOVE | Swaps the current pane's contents with the pane above. | have |  |
 | Swap With Split Pane Below | KEY_ACTION_SWAP_PANE_BELOW | Swaps the current pane's contents with the pane below. | have |  |
 | Toggle Mouse Reporting | KEY_ACTION_TOGGLE_MOUSE_REPORTING | Turns mouse-reporting-to-app on or off for the session. | have |  |
-| Invoke Script Function... | KEY_ACTION_INVOKE_SCRIPT_FUNCTION | Calls a registered Python API script function. | missing | Comes in milestone 11. |
+| Invoke Script Function... | KEY_ACTION_INVOKE_SCRIPT_FUNCTION | Calls a registered Python API script function. | have | Milestone 11c: with a session, the session's scope, origin "Key Binding"; with none, the app's scope; the apply-mode fan-out (key action 60) runs it once per targeted session, or once in the app's scope with no session focused. |
 | Duplicate Tab | KEY_ACTION_DUPLICATE_TAB | Opens a new tab that is a copy of the current one (same profile/directory). | have |  |
 | Move to Split Pane | KEY_ACTION_MOVE_TO_SPLIT_PANE | Moves the current session into an adjacent split pane. | missing | Comes in milestone 7. |
 | Send Snippet... | KEY_ACTION_SEND_SNIPPET | Sends a saved Snippet's text. | have | Milestone 9e: a snippet picker; the snippet's own escaping; a deleted snippet does nothing. |
@@ -463,7 +463,7 @@ A table mapping a mouse button-plus-click-count-plus-modifiers combo, or a track
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | Ignore | kIgnoreAction | Swallows the click/gesture; nothing happens. | have |  |
-| Invoke Script Function... | kInvokeScriptFunction | Calls a registered Python API script function. | missing | Comes in milestone 11. |
+| Invoke Script Function... | kInvokeScriptFunction | Calls a registered Python API script function. | have | Milestone 11c: the clicked pane's scope, origin "Pointer action"; does not change focus. |
 | Paste from Clipboard... | kPasteFromClipboardPointerAction | Pastes the system clipboard. | have | Milestone 9a: with an argument, the paste configuration. |
 | Paste from Selection... | kPasteFromSelectionPointerAction | Pastes the current selection (primary-selection style paste). | have | Milestone 9a. |
 | Extend Selection | kExtendSelectionPointerAction | Extends the existing selection to the clicked point. | have |  |
@@ -711,7 +711,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | idleTimeSeconds | idleTimeSeconds (float, default 2) | Time in seconds before a session is considered idle. | partial | Milestone 6b uses iTerm2's default; changing it comes with the advanced settings sweep (milestone 13). |
 | findDelaySeconds | findDelaySeconds (float, default 1) | Time to wait before performing Find action on 1- or 2- character queries. | partial | Tandem uses iTerm2's default; the Advanced pane that sets it comes in milestone 13. |
 | maximumBytesToProvideToServices | maximumBytesToProvideToServices (int, default 100000) | Maximum number of bytes of selection to provide to Services. | missing |  |
-| maximumBytesToProvideToPythonAPI | maximumBytesToProvideToPythonAPI (int, default 100) | Maximum number of bytes of selection to provide to Python API. | missing |  |
+| maximumBytesToProvideToPythonAPI | maximumBytesToProvideToPythonAPI (int, default 100) | Maximum number of bytes of selection to provide to Python API. | have | Milestone 11c: caps the `selection` variable's character count given to script calls (Tandem counts Unicode scalar values, iTerm2 counts UTF-16 units); `selectionLength` still reports the full count; a negative value caps nothing. |
 | useOpenDirectory | useOpenDirectory (bool, default YES) | Use Open Directory to determine the user shell. | missing |  |
 | disableDECRQCRA | disableDECRQCRA (bool, default YES) | Disable DECRQCRA? This control sequence allows an app running in the terminal to read its contents. | missing |  |
 | disablePotentiallyInsecureEscapeSequences | disablePotentiallyInsecureEscapeSequences (bool, default NO) | Disable potentially insecure escape sequences. | have |  |
@@ -1137,7 +1137,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | pythonRuntimeDownloadURL | pythonRuntimeDownloadURL (string, default iTermDefaultPythonRuntimeDownloadURL()) | URL to check for new versions of the Python scripting runtime. | missing |  |
 | uvManifestDownloadURL | uvManifestDownloadURL (string, default @"https://iterm2.com/downloads/uv/manifest.json") | URL of the uv download manifest (used when the Python runtime is provisioned with uv). | missing |  |
 | pythonRuntimeBetaDownloadURL | pythonRuntimeBetaDownloadURL (string, default @"https://iterm2.com/downloads/pyenv/betamanifest.json") | URL to check for new Beta versions of the Python scripting runtime. | missing |  |
-| laxNilPolicyInInterpolatedStrings | laxNilPolicyInInterpolatedStrings (bool, default YES) | Should references to undefined variables in interpolated strings be converted to empty string? When enabled, an expression in an interpolated string that references an undefined variable will be treated as an empty string. | missing |  |
+| laxNilPolicyInInterpolatedStrings | laxNilPolicyInInterpolatedStrings (bool, default YES) | Should references to undefined variables in interpolated strings be converted to empty string? When enabled, an expression in an interpolated string that references an undefined variable will be treated as an empty string. | have | Milestone 11c: on by default; a bare undefined reference inside `\( )` becomes empty when lax, an error when off; a reference inside a function call's arguments is always an error. Trigger parameters, badges, Automatic Profile Switching rules, coprocess templates and Copy Interpolated String are always lax regardless of the setting. |
 | pythonRuntimeUsesUV | pythonRuntimeUsesUV (bool, default YES) | Use uv to provision the Python runtime for API scripts? When enabled, iTerm2 uses uv to download Python and build per-script environments instead of the bundled Python runtime. | missing |  |
 | setCookie | setCookie (bool, default NO) | Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation? This will only affect sessions created after changing this setting. | have | Session cookies are reusable for the session's life (not single-use); ITERM2_COOKIE is only set when Enable Python API and this setting are both on. |
 | setIT2AppPath | setIT2AppPath (bool, default NO) | Set IT2_APP_PATH environment variable on new sessions, pointing at this iTerm2 build’s app bundle? This disambiguates the AppleScript target when multiple iTerm2 builds with the same bundle identifier are running, so that the “it2” CLI requests its cookie from this iTerm2 instance. | missing |  |

@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 171 | 123 | 20 |
-| `02-global-settings.md` | 823 | 262 | 72 | 489 |
-| `03-features-and-menus.md` | 643 | 470 | 45 | 128 |
-| Total | 1,780 | 903 | 240 | 637 |
+| `01-profile-settings.md` | 314 | 173 | 122 | 19 |
+| `02-global-settings.md` | 823 | 266 | 72 | 485 |
+| `03-features-and-menus.md` | 643 | 475 | 44 | 124 |
+| Total | 1,780 | 914 | 238 | 628 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -117,8 +117,8 @@ arrangements, actions, snippets, named marks and menu items, with its minimum-su
 commands, preview and activation, keeping iTerm2's own bugs (Jobs' plural "processes" for one, Open
 Quickly's x button closing instead of clearing, tips scoring below matches, the reversed
 color-preset quotes, the double modifier symbol for a double-tap hotkey). Codecierge shows only its
-onboarding panel (EnableAI stays off until milestone 12). Dynamic web tools, scripts and function
-invocations wait for milestone 11 and color presets for milestone 13. Browser bookmarks stay
+onboarding panel (EnableAI stays off until milestone 12). Scripts and function invocations closed
+in milestone 11c; a dynamic web tool's own drawing and color presets wait for milestone 13. Browser bookmarks stay
 missing with no target milestone: Tandem has no browser profiles to read them from. Milestone 9l
 closed milestone 9 (9a through 9l): the Composer, a native multi-line command editor drawn in the
 pane like the find bar and the Notes editor (multiple carets, iTerm2's syntax highlighting and
@@ -179,6 +179,28 @@ hide/show, create), and ColorPreset (empty until milestone 13); and per-session 
 keystrokes (with a filter), screen updates, prompts and custom escape sequences. Every kept quirk
 is listed in `docs/acceptance/m11b-checklist.md` and ruled on in
 `docs/superpowers/rulings/m11b-rulings.txt`.
+Milestone 11c closed the Python API's scripting layer (03): the full iTerm2 expression language,
+ported to a hand-written tokenizer and precedence parser (arithmetic, comparisons, `x?` and `expr
+?`, indexing, `&path` references, interpolated strings gated by `laxNilPolicyInInterpolatedStrings`,
+with `??` kept as a Tandem extension); server-originated RPC registration and dispatch (namespaces,
+signatures, timeouts, defaults resolved from scope, results and exceptions decoded with iTerm2's
+texts); InvokeFunctionRequest for the app, a tab, a window, a session, or a method receiver; the
+built-ins iTerm2 ships ported (`count`, `urlEncode`, `with_alpha`, `alert`, `get_string`, `focus`,
+`paste`, the clippings functions, `get_profile_property`, `set_status`, the unread-count setter,
+`move_tab_to_window`, and the session/tab/window methods, including `run_tmux_command` and
+`run_coprocess`), the rest answering as unregistered functions until ported; every caller iTerm2
+wires a function call into (a key or pointer binding's Invoke Script Function, a trigger's Invoke
+Script Function with `matches` and the capture variables, the Call Script Function status bar
+button, Open Quickly invocations, and `iterm2.async_invoke_function` itself) with iTerm2's scopes,
+origins and timeouts, and a silenceable, mergeable Function Call Failed alert on error; a script
+status bar component (knobs, cadence, click handler, an unread-count badge, an error ladybug and
+alert, `async_open_popover` as a text popover); a Title Function provider chosen in Settings >
+Profiles > General > Title; a context menu provider item; and RegisterTool, which answers iTerm2's
+statuses and lists a dynamic tool in the Toolbelt menu, though it draws nothing (web views wait for
+a milestone that hosts WebView2, flagged to Robert). A per-pane title bar menu adding context menu
+provider items, the Title Function popup's title preview, and a tmux Custom title's prefix are
+documented gaps for milestone 13. Every kept quirk is listed in
+`docs/acceptance/m11c-checklist.md` and ruled on in `docs/superpowers/rulings/m11c-rulings.txt`.
 
 ## Order
 
