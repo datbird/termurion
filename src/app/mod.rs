@@ -108,6 +108,7 @@ mod toolbelt_more_ui;
 mod open_quickly_app;
 mod replay_ui;
 mod pwm_app;
+mod api_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -545,6 +546,25 @@ pub struct App {
     /// Cursor blink phase, and when it last flipped.
     blink_on: bool,
     last_blink: Instant,
+    /// The Python API's server while it runs (app-wide, as every API field is: none goes in
+    /// `swap_live`). Not `api`, which is the ConPTY API.
+    api_server: Option<crate::api_server::Server>,
+    /// The cookies handed to sessions, shared with the server's cookie check.
+    api_jar: Arc<Mutex<crate::api_auth::Jar>>,
+    /// Accepted and refused connections, for the Script Console (11d).
+    api_log: crate::api_auth::Log,
+    /// The API's alerts, shown one at a time in order; each window opens on a pass (it needs
+    /// the event loop).
+    api_alerts: Vec<(Option<crate::prompt_ui::ConfirmWindow>, api_ui::Alert)>,
+    /// The server runs.
+    api_on: bool,
+    /// Connections waiting for the "Allow Python API Usage?" answer.
+    api_pending: HashMap<u64, crate::api_server::Pending>,
+    /// The corrupt allow-all file contents the reset warning was last shown for.
+    api_reset_seen: Option<String>,
+    /// "Enable Python API" and "Allow all apps to connect" as last acted on, so a change of
+    /// another setting does not act on them again.
+    api_settings_seen: (bool, bool),
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -850,6 +870,14 @@ pub fn run() {
         profiles_win: None,
         blink_on: true,
         last_blink: Instant::now(),
+        api_server: None,
+        api_jar: Default::default(),
+        api_log: Default::default(),
+        api_alerts: Vec::new(),
+        api_on: false,
+        api_pending: HashMap::new(),
+        api_reset_seen: None,
+        api_settings_seen: (false, false),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
@@ -1059,6 +1087,10 @@ impl App {
     }
 
     fn open_settings(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {
+        // The Python API's authentication popup shows what the allow-all file says now.
+        if mode == Mode::Settings {
+            self.api_settings_opened();
+        }
         let slot = match mode {
             Mode::Settings => &self.settings,
             Mode::Profiles => &self.profiles_win,
@@ -1111,6 +1143,7 @@ impl App {
             Edit::SnippetsChanged => self.save_snippets(),
             Edit::GlobalsChanged => {
                 self.save_globals();
+                self.api_settings_changed();
                 // The Actions tool shows the actions.
                 self.tools_changed();
                 self.settle_action_undo();
@@ -2343,6 +2376,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.gpu = Some(gpu);
                 self.windows.start(k);
                 self.registry.open(k);
+                // The Python API starts with the first window when it is on.
+                self.api_launch();
             }
             Err(e) => {
                 message_box(&format!("Could not start the GPU renderer: {e}"));
@@ -2500,6 +2535,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_git_log(event_loop);
         let pwm_due = self.tick_pwm();
         self.open_pwm_windows(event_loop);
+        self.api_tick(event_loop);
+        self.open_api_alerts(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
@@ -2623,7 +2660,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) {
             return;
         }
         for profiles in [false, true] {

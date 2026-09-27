@@ -164,6 +164,14 @@ pub enum ConfirmResult {
     Cancel,
     /// OK, and whether "Suppress this message permanently" was checked.
     Ok { suppress: bool },
+    /// A button of an `actions` window, by its place in the labels, and the checkbox's state.
+    Action { index: usize, suppress: bool },
+}
+
+/// The buttons Enter and Escape press in an `actions` window: Enter the first, Escape the one
+/// labeled "Cancel", if any (`NSAlert`'s key equivalents, which `iTermWarning` keeps).
+pub fn action_keys(labels: &[&str]) -> (usize, Option<usize>) {
+    (0, labels.iter().position(|l| *l == "Cancel"))
 }
 
 /// An OK and Cancel question with iTerm2's permanently silenceable checkbox
@@ -181,6 +189,8 @@ pub struct ConfirmWindow {
     /// Enter answers the cancel button: an iTerm2 warning whose first action is Cancel makes
     /// it the default button.
     enter_cancels: bool,
+    /// An `actions` window's buttons, left to right.
+    actions: Vec<String>,
 }
 
 impl ConfirmWindow {
@@ -198,7 +208,7 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 420.0, 130.0)?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false })
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new() })
     }
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
@@ -259,6 +269,39 @@ impl ConfirmWindow {
         Ok(w)
     }
 
+    /// An `iTermWarning` with any number of actions: the text, one button per label, left to
+    /// right in the labels' order (iTerm2's), and "Suppress this message permanently" only when
+    /// `silenceable`. A button answers `Action` with its index; Enter and Escape press the
+    /// buttons `action_keys` names.
+    #[allow(clippy::too_many_arguments)]
+    pub fn actions(
+        event_loop: &ActiveEventLoop,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        heading: &str,
+        text: &str,
+        labels: &[&str],
+        silenceable: bool,
+    ) -> Result<ConfirmWindow, String> {
+        let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
+        w.checkbox = silenceable;
+        w.cancel = None;
+        w.actions = labels.iter().map(|l| l.to_string()).collect();
+        Ok(w)
+    }
+
+    /// The answer when the window is closed: Cancel, or for an `actions` window Escape's button,
+    /// else its last one, with the checkbox not remembered.
+    pub fn close_answer(&self) -> ConfirmResult {
+        if self.actions.is_empty() {
+            return ConfirmResult::Cancel;
+        }
+        let labels: Vec<&str> = self.actions.iter().map(String::as_str).collect();
+        ConfirmResult::Action { index: action_keys(&labels).1.unwrap_or(labels.len() - 1), suppress: false }
+    }
+
     pub fn id(&self) -> WindowId {
         self.host.id()
     }
@@ -273,7 +316,7 @@ impl ConfirmWindow {
 
     pub fn redraw(&mut self) -> ConfirmResult {
         let mut result = ConfirmResult::Open;
-        let (text, suppress, checkbox, ok, cancel, enter_cancels) = (&self.text, &mut self.suppress, self.checkbox, &self.ok, &self.cancel, self.enter_cancels);
+        let (text, suppress, checkbox, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(text.as_str());
@@ -284,6 +327,21 @@ impl ConfirmWindow {
                 }
                 let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
                 ui.horizontal(|ui| {
+                    if !actions.is_empty() {
+                        let labels: Vec<&str> = actions.iter().map(String::as_str).collect();
+                        let (enter_index, escape_index) = action_keys(&labels);
+                        for (index, label) in labels.iter().enumerate() {
+                            if ui.button(*label).clicked() {
+                                result = ConfirmResult::Action { index, suppress: *suppress };
+                            }
+                        }
+                        if enter {
+                            result = ConfirmResult::Action { index: enter_index, suppress: *suppress };
+                        } else if let (true, Some(index)) = (escape, escape_index) {
+                            result = ConfirmResult::Action { index, suppress: *suppress };
+                        }
+                        return;
+                    }
                     if enter_cancels {
                         if let Some(c) = cancel {
                             if ui.button(c.as_str()).clicked() || enter {
@@ -314,6 +372,13 @@ impl ConfirmWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_keys_follow_iterm2() {
+        assert_eq!(action_keys(&["OK", "Cancel", "More Info", "Always"]), (0, Some(1)));
+        assert_eq!(action_keys(&["OK", "Reveal Preference"]), (0, None));
+        assert_eq!(action_keys(&["OK"]), (0, None));
+    }
 
     #[test]
     fn a_named_mark_defaults_to_the_time() {

@@ -598,6 +598,25 @@ max = 1000
 help = "Megabytes of memory each session keeps for Instant Replay. A change applies to sessions started after it."
 
 [[setting]]
+key = "EnableAPIServer"
+tab = "General"
+section = "Python API"
+label = "Enable Python API"
+type = "bool"
+default = false
+help = "Runs the Python API server on 127.0.0.1 and [::1] port 1912 so scripts can control Tandem. Turning it off disconnects every script."
+
+[[setting]]
+key = "API Authentication Method"
+tab = "General"
+section = "Python API"
+label = "Authentication method for Python API"
+type = "enum"
+choices = [{ value = 0, label = "Require a cookie" }, { value = 1, label = "Allow all apps to connect" }]
+default = 0
+help = "Whether scripts need a cookie (scripts started in a Tandem session with setCookie on have one), or any program running as you may connect. The choice is stored as a file that the iterm2 Python package also reads."
+
+[[setting]]
 key = "openNewWindowAtStartup"
 tab = "Advanced"
 section = "General"
@@ -1607,3 +1626,12 @@ label = "Toolbelt font size in points"
 type = "float"
 default = 0.0
 help = "Toolbelt font size in points.\nSet to 0 to use the system default (11 points). Changing this setting does not affect existing windows."
+
+[[setting]]
+key = "setCookie"
+tab = "Advanced"
+section = "Scripting"
+label = "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?"
+type = "bool"
+default = false
+help = "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?\nThis will only affect sessions created after changing this setting."

@@ -52,6 +52,19 @@ pub fn owner(rows: &[Row], peer: SocketAddr, local: SocketAddr) -> Option<u32> {
     found
 }
 
+/// The pid listening on `port` among the listener table's rows (pid 0 skipped); the first found.
+pub fn listener(rows: &[Row], port: u16) -> Option<u32> {
+    rows.iter().find(|r| r.pid != 0 && r.local.port() == port).map(|r| r.pid)
+}
+
+/// The text naming a process, for "port in use" (Tandem's own).
+pub fn process_label(name: Option<&str>, pid: u32) -> String {
+    match name {
+        Some(n) => format!("{n} (pid {pid})"),
+        None => format!("pid {pid}"),
+    }
+}
+
 #[cfg(windows)]
 mod win {
     use super::*;
@@ -60,7 +73,7 @@ mod win {
     use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
-        TCP_TABLE_OWNER_PID_CONNECTIONS,
+        TCP_TABLE_CLASS, TCP_TABLE_OWNER_PID_CONNECTIONS, TCP_TABLE_OWNER_PID_LISTENER,
     };
     use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
@@ -68,12 +81,12 @@ mod win {
 
     /// The raw table for one family, in u64 cells so the rows are aligned. The table can grow
     /// between the size call and the data call, so it retries a few times.
-    fn table(family: u32) -> Result<(Vec<u64>, usize), String> {
+    fn table(family: u32, class: TCP_TABLE_CLASS) -> Result<(Vec<u64>, usize), String> {
         let mut size = 0u32;
         for _ in 0..8 {
             let mut buf = vec![0u64; (size as usize).div_ceil(8).max(1)];
             let mut len = (buf.len() * 8) as u32;
-            let r = unsafe { GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut len, 0, family, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) };
+            let r = unsafe { GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut len, 0, family, class, 0) };
             match r {
                 NO_ERROR => return Ok((buf, len as usize)),
                 // Room for a few more rows that may appear before the next call.
@@ -94,8 +107,8 @@ mod win {
         Ok(unsafe { std::slice::from_raw_parts(first, count as usize) })
     }
 
-    fn v4_rows() -> Result<Vec<Row>, String> {
-        let (buf, len) = table(AF_INET as u32)?;
+    fn v4_rows(class: TCP_TABLE_CLASS) -> Result<Vec<Row>, String> {
+        let (buf, len) = table(AF_INET as u32, class)?;
         let t = buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID;
         let rows: &[MIB_TCPROW_OWNER_PID] = unsafe { rows_of(&buf, len, (*t).dwNumEntries, (*t).table.as_ptr())? };
         Ok(rows
@@ -108,8 +121,8 @@ mod win {
             .collect())
     }
 
-    fn v6_rows() -> Result<Vec<Row>, String> {
-        let (buf, len) = table(AF_INET6 as u32)?;
+    fn v6_rows(class: TCP_TABLE_CLASS) -> Result<Vec<Row>, String> {
+        let (buf, len) = table(AF_INET6 as u32, class)?;
         let t = buf.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID;
         let rows: &[MIB_TCP6ROW_OWNER_PID] = unsafe { rows_of(&buf, len, (*t).dwNumEntries, (*t).table.as_ptr())? };
         Ok(rows
@@ -124,9 +137,33 @@ mod win {
 
     /// Every TCP connection on the machine, IPv4 then IPv6.
     pub fn tcp_rows() -> Result<Vec<Row>, String> {
-        let mut rows = v4_rows()?;
-        rows.extend(v6_rows()?);
+        let mut rows = v4_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)?;
+        rows.extend(v6_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)?);
         Ok(rows)
+    }
+
+    /// Every listening TCP socket on the machine, IPv4 then IPv6 (a machine without IPv6 lists
+    /// only IPv4).
+    pub fn listen_rows() -> Result<Vec<Row>, String> {
+        let mut rows = v4_rows(TCP_TABLE_OWNER_PID_LISTENER)?;
+        rows.extend(v6_rows(TCP_TABLE_OWNER_PID_LISTENER).unwrap_or_default());
+        Ok(rows)
+    }
+
+    /// The file name of process `pid`'s program ("python.exe"), when it can be read.
+    pub fn process_name(pid: u32) -> Option<String> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW};
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            return None;
+        }
+        let mut buf = vec![0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) } != 0;
+        unsafe { CloseHandle(h) };
+        let path = ok.then(|| String::from_utf16_lossy(&buf[..len as usize]))?;
+        path.rsplit(['\\', '/']).next().map(str::to_string)
     }
 
     /// The pid of the process that owns the other end of the connection that reached `local`
@@ -134,7 +171,7 @@ mod win {
     /// refused. Every failure refuses.
     pub fn check(peer: SocketAddr, local: SocketAddr) -> Result<u32, String> {
         // Only the peer's family: a machine without IPv6 still checks IPv4 peers.
-        let rows = if peer.is_ipv4() { v4_rows()? } else { v6_rows()? };
+        let rows = if peer.is_ipv4() { v4_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)? } else { v6_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)? };
         let pid = owner(&rows, peer, local).ok_or_else(|| NO_OWNER.to_string())?;
         let theirs = winpipe::process_sid(pid)?;
         let mine = winpipe::user_sid()?;
@@ -149,7 +186,7 @@ mod win {
 }
 
 #[cfg(windows)]
-pub use win::{check, tcp_rows};
+pub use win::{check, listen_rows, process_name, tcp_rows};
 
 #[cfg(test)]
 mod tests {
@@ -178,6 +215,28 @@ mod tests {
         assert_eq!(owner(&[Row { local: c, remote: s, pid: 0 }], c, s), None);
         assert_eq!(owner(&[Row { local: c, remote: s, pid: 0 }, Row { local: c, remote: s, pid: 42 }], c, s), Some(42));
         assert_eq!(owner(&[Row { local: c, remote: s, pid: 42 }, Row { local: c, remote: s, pid: 43 }], c, s), None);
+    }
+
+    #[test]
+    fn listener_names_the_port_owner() {
+        let rows = [
+            Row { local: a("127.0.0.1:80"), remote: a("0.0.0.0:0"), pid: 5 },
+            Row { local: a("0.0.0.0:1912"), remote: a("0.0.0.0:0"), pid: 0 },
+            Row { local: a("[::1]:1912"), remote: a("[::]:0"), pid: 9 },
+        ];
+        assert_eq!(listener(&rows, 1912), Some(9));
+        assert_eq!(listener(&rows, 81), None);
+        assert_eq!(process_label(Some("python.exe"), 9), "python.exe (pid 9)");
+        assert_eq!(process_label(None, 9), "pid 9");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn this_process_owns_its_listener() {
+        let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert_eq!(listener(&listen_rows().unwrap(), port), Some(std::process::id()));
+        assert!(process_name(std::process::id()).is_some_and(|n| n.ends_with(".exe") && !n.contains('\\')));
     }
 
     #[test]

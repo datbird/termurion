@@ -1179,7 +1179,8 @@ impl App {
         };
         match answer {
             ConfirmResult::Open => {}
-            ConfirmResult::Cancel => self.jobs_confirm = None,
+            // Only an `actions` window answers Action; this one never does.
+            ConfirmResult::Cancel | ConfirmResult::Action { .. } => self.jobs_confirm = None,
             ConfirmResult::Ok { suppress } => {
                 // The checkbox is remembered only on OK (`iTermWarning.m:517-520`).
                 if suppress {

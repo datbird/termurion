@@ -725,6 +725,15 @@ fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Ta
     }
 }
 
+/// Whether a global row takes input: the Python API's authentication popup only while the API
+/// is on (`GP:2055-2057`); every other row always.
+pub fn row_enabled(g: &Globals, key: &str) -> bool {
+    match key {
+        "API Authentication Method" => g.bool("EnableAPIServer"),
+        _ => true,
+    }
+}
+
 /// A pane that shows only the global settings the schema has for it so far, by section
 /// (General and Advanced; the rest of each comes in milestone 13).
 pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
@@ -739,7 +748,8 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
         for section in sections {
             ui.strong(section);
             for s in schema::global().iter().filter(|s| s.tab == tab && s.section == section) {
-                changed |= global_control(ui, g, s, true);
+                let enabled = row_enabled(g, &s.key);
+                changed |= global_control(ui, g, s, enabled);
             }
             ui.add_space(8.0);
         }
@@ -901,6 +911,38 @@ mod tests {
         let e = st.key_editor.as_ref().unwrap();
         assert!(!e.recording);
         assert_eq!(e.stroke.as_ref().unwrap().label(), "Leader, S");
+    }
+
+    #[test]
+    fn api_rows_follow_iterm2() {
+        use crate::api_auth::{ALLOW_ALL_APPS, AUTH_METHOD_LABEL, REQUIRE_COOKIE};
+        let enable = schema::find_global("EnableAPIServer").unwrap();
+        assert_eq!((enable.tab.as_str(), enable.section.as_str(), enable.label.as_str()), ("General", "Python API", "Enable Python API"));
+        assert_eq!(enable.kind, Kind::Bool);
+        assert_eq!(enable.default, Some(Value::Boolean(false)));
+        let auth = schema::find_global("API Authentication Method").unwrap();
+        assert_eq!((auth.tab.as_str(), auth.section.as_str(), auth.label.as_str()), ("General", "Python API", AUTH_METHOD_LABEL));
+        assert_eq!(auth.kind, Kind::Enum);
+        let choices: Vec<(Value, &str)> = auth.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        assert_eq!(choices, [(Value::Integer(0), REQUIRE_COOKIE), (Value::Integer(1), ALLOW_ALL_APPS)]);
+        assert_eq!(auth.default, Some(Value::Integer(0)));
+        let cookie = schema::find_global("setCookie").unwrap();
+        assert_eq!((cookie.tab.as_str(), cookie.section.as_str()), ("Advanced", "Scripting"));
+        assert_eq!(cookie.kind, Kind::Bool);
+        assert_eq!(cookie.default, Some(Value::Boolean(false)));
+        assert_eq!(cookie.label, "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?");
+        assert_eq!(
+            cookie.help,
+            "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?\nThis will only affect sessions created after changing this setting."
+        );
+        // The popup is enabled only while the API is on; every other row always.
+        let mut g = Globals::empty(std::path::Path::new("api-rows-test.toml"));
+        assert!(!row_enabled(&g, "API Authentication Method"));
+        assert!(row_enabled(&g, "EnableAPIServer"));
+        assert!(row_enabled(&g, "setCookie"));
+        g.set("EnableAPIServer", Value::Boolean(true));
+        assert!(row_enabled(&g, "API Authentication Method"));
+        assert!(row_enabled(&g, "IRMemory"));
     }
 
     #[test]

@@ -12,7 +12,8 @@ use windows_sys::Win32::Foundation::{
     HLOCAL, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1,
+    SE_FILE_OBJECT, SetSecurityInfo,
 };
 use windows_sys::Win32::Security::{GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -114,6 +115,25 @@ pub fn file_owner_sid(handle: HANDLE) -> Result<String, String> {
         LocalFree(sd as HLOCAL);
         text
     }
+}
+
+/// Makes this user the owner of an open file. An elevated process's new files are owned by
+/// BUILTIN\Administrators; the user's own SID is always a valid owner for its token. The handle
+/// needs `WRITE_OWNER`.
+pub fn set_file_owner_to_user(handle: HANDLE) -> Result<(), String> {
+    let text = wide(&user_sid()?);
+    unsafe {
+        let mut sid: PSID = null_mut();
+        if ConvertStringSidToSidW(text.as_ptr(), &mut sid) == 0 {
+            return Err(last_error("ConvertStringSidToSidW"));
+        }
+        let err = SetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, sid, null_mut(), null(), null());
+        LocalFree(sid as HLOCAL);
+        if err != 0 {
+            return Err(format!("SetSecurityInfo failed: {}", std::io::Error::from_raw_os_error(err as i32)));
+        }
+    }
+    Ok(())
 }
 
 /// This user's SID as text ("S-1-5-21-...").

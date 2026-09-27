@@ -2336,7 +2336,8 @@ impl App {
         let (pane, url) = (*pane, url.clone());
         match answer {
             ConfirmResult::Open => {}
-            ConfirmResult::Cancel => self.composer_windows.explain = None,
+            // Only an `actions` window answers Action; this one never does.
+            ConfirmResult::Cancel | ConfirmResult::Action { .. } => self.composer_windows.explain = None,
             ConfirmResult::Ok { suppress } => {
                 self.composer_windows.explain = None;
                 // Remembered only on OK (`iTermWarning.m:517-520`).
