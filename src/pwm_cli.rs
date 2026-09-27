@@ -108,14 +108,15 @@ fn op_field<'a>(fields: &'a [OpField], id: &str) -> Option<&'a OpField> {
 /// listed items, since `item get` includes concealed values) is never copied into a Rust
 /// `String` that would outlive the parse; only "username"'s value, which is not secret, is
 /// pulled out. Unknown keys (`section`, `reference`, `label`, and anything else a real item
-/// carries) are simply never looked at.
+/// carries) are simply never looked at. An item without a string `id` or `title` is skipped
+/// (a row with no id could name nothing; iTerm2's typed decode would fail the whole list).
 pub fn op_accounts(json: &str) -> Result<Vec<Account>, String> {
     let items: Vec<serde_json::Value> = serde_json::from_str(&op_split_objects(json)).map_err(|e| e.to_string())?;
     Ok(items
         .into_iter()
-        .map(|item| {
-            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|v| v.as_str())?.to_string();
+            let title = item.get("title").and_then(|v| v.as_str())?.to_string();
             let empty = Vec::new();
             let fields = item.get("fields").and_then(|v| v.as_array()).unwrap_or(&empty);
             let user = fields
@@ -127,7 +128,7 @@ pub fn op_accounts(json: &str) -> Result<Vec<Account>, String> {
                 .to_string();
             let has_otp = fields.iter().any(|f| f.get("type").and_then(|v| v.as_str()) == Some("OTP"));
             let no_otp = item.get("tags").and_then(|v| v.as_array()).is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some(NO_OTP_TAG)));
-            Account {
+            Some(Account {
                 id,
                 account_name: title.clone(),
                 user_name: user.clone(),
@@ -135,7 +136,7 @@ pub fn op_accounts(json: &str) -> Result<Vec<Account>, String> {
                 has_otp,
                 send_otp: has_otp && !no_otp,
                 source_label: None,
-            }
+            })
         })
         .collect())
 }
@@ -1182,6 +1183,10 @@ mod tests {
         let a = &op_accounts(with_otp).unwrap()[0];
         assert!(a.has_otp);
         assert!(a.send_otp);
+
+        let malformed = "{\"title\":\"no id\",\"fields\":[]}\n{\"id\":\"7\",\"fields\":[]}\n{\"id\":8,\"title\":\"x\"}\n{\"id\":\"9\",\"title\":\"kept\",\"fields\":[]}";
+        let accounts = op_accounts(malformed).expect("a malformed item does not fail the list");
+        assert_eq!(accounts.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), vec!["9"], "items missing an id or title are skipped");
 
         let password_item = r#"{"id":"5","title":"e","fields":[{"id":"password","value":"hunter2\r"},{"id":"secret","type":"OTP","totp":"246810"}]}"#;
         let (pw, otp) = op_password(password_item).unwrap();

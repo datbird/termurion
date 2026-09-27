@@ -26,9 +26,10 @@ impl Request {
 }
 
 /// A finished command: its exit code, stdout (a `Secret`: a CLI's stdout is often a password, a
-/// session token, or JSON carrying one) and stderr as plain text. Callers never show stderr for
-/// a command that can carry a secret (`op`'s and `lpass`'s authentication errors can quote the
-/// master password back), so it is kept as a bare `String` only for commands that cannot.
+/// session token, or JSON carrying one) and stderr as plain text. Callers only look into stderr
+/// to tell failures apart (an expired session) and never show it for any command (`op`'s and
+/// `lpass`'s authentication errors can quote the master password back): a failure shows one of
+/// the fixed texts.
 #[derive(Debug)]
 pub struct Output {
     pub code: i32,

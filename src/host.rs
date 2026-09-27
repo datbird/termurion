@@ -78,6 +78,22 @@ impl Host {
         out
     }
 
+    /// The sessions whose consoles the prompt watch reads: live ones a Tandem shows. Never
+    /// one paused for Undo Close (or otherwise not attached): nothing drains its output, so
+    /// once its pipe fills OpenConsole blocks every console call on it, and an attach there
+    /// would hold `pty::CONSOLE` for good (and every later close with it). Each comes with its
+    /// pause flag, checked again under that lock.
+    fn prompt_targets(&self) -> Vec<(u64, u32, Arc<std::sync::atomic::AtomicBool>)> {
+        let mut out: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.attached && s.exited.is_none())
+            .filter_map(|(id, s)| s.pty.as_ref().filter(|p| !p.is_paused()).map(|p| (*id, s.pid, p.pause_flag())))
+            .collect();
+        out.sort_by_key(|t| t.0);
+        out
+    }
+
     /// Password prompt readings start over (a new request, or no Tandem to tell).
     /// Returns a "not at a prompt" for each session that was at one, so a Tandem that keeps
     /// listening never holds a stale "at a prompt".
@@ -112,16 +128,17 @@ fn watch_prompts(host: std::sync::Weak<Mutex<Host>>) {
         let Some(shared) = host.upgrade() else { return };
         let (debounce, targets) = {
             let h = shared.lock().unwrap();
-            let targets: Vec<(u64, u32)> = match h.prompt_debounce {
-                Some(_) => h.sessions.iter().filter(|(_, s)| s.pty.is_some() && s.exited.is_none()).map(|(id, s)| (*id, s.pid)).collect(),
+            let targets = match h.prompt_debounce {
+                Some(_) => h.prompt_targets(),
                 None => Vec::new(),
             };
             (h.prompt_debounce, targets)
         };
         drop(shared);
         let Some(debounce) = debounce else { continue };
-        // Unknown (the mode could not be read) is never a prompt.
-        let samples: Vec<(u64, bool, Instant)> = targets.into_iter().map(|(id, pid)| (id, crate::pty::console_mode(pid).is_ok_and(crate::pwm_prompt::at_prompt), Instant::now())).collect();
+        // Unknown (the mode could not be read, or the session was paused since) is never a
+        // prompt.
+        let samples: Vec<(u64, bool, Instant)> = targets.into_iter().map(|(id, pid, paused)| (id, crate::pty::console_mode_unless(pid, &paused).is_ok_and(crate::pwm_prompt::at_prompt), Instant::now())).collect();
         let Some(shared) = host.upgrade() else { return };
         let mut h = shared.lock().unwrap();
         // A request changed while these were read: they belong to the old one.
@@ -348,10 +365,27 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
             with_pty(host, id, |p| p.resize(cols, rows));
         }
         Msg::Clear { id } => with_pty(host, id, |p| p.clear()),
+        // A pause waits out a prompt read in flight, so none runs on a paused console.
         Msg::Pause { id, paused } => with_pty(host, id, |p| {
-            p.set_paused(paused);
+            if paused {
+                p.pause_after_reads();
+            } else {
+                p.set_paused(false);
+            }
             Ok(())
         }),
+        // Send Signal to a hosted pane: the host attaches, on its own thread (never while a
+        // close runs, never to a paused session); a failure goes to the log.
+        Msg::Signal { id, ctrl_break } => {
+            let target = host.lock().unwrap().sessions.get(&id).filter(|s| s.exited.is_none()).and_then(|s| s.pty.as_ref().map(|p| (s.pid, p.pause_flag())));
+            if let Some((pid, paused)) = target {
+                std::thread::spawn(move || {
+                    if let Ok(Err(e)) = crate::jobwatch::console_event(pid, ctrl_break, paused).join() {
+                        log(&format!("session {id}: signal: {e}"));
+                    }
+                });
+            }
+        }
         Msg::Forget { id } | Msg::Kill { id } => {
             if let Some(p) = host.lock().unwrap().sessions.remove(&id).and_then(|s| s.pty) {
                 drop_later(p);
@@ -574,6 +608,94 @@ pub(crate) mod tests {
         assert!(h.sessions.values().all(|s| !s.prompt.on));
         assert_eq!(h.prompt_debounce, Some(0.5));
         assert!(h.watch_prompts(None).is_empty(), "nothing was on any more");
+    }
+
+    #[test]
+    fn the_prompt_watch_skips_paused_and_unattached_sessions() {
+        let api = api();
+        let session = |attached: bool| {
+            let pty = crate::pty::spawn(&api, "cmd.exe /d /k", 80, 24).unwrap();
+            let pid = pty.pid();
+            Session { pty: Some(pty), ring: Ring::new(16), pid, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached, pending: 0, prompt: Default::default() }
+        };
+        let mut h = Host { sessions: HashMap::new(), next_id: 4, client: None, instance: "t".into(), prompt_debounce: Some(0.2) };
+        h.sessions.insert(1, session(true));
+        h.sessions.insert(2, session(true));
+        h.sessions.insert(3, session(false));
+        let ids = |h: &Host| h.prompt_targets().into_iter().map(|t| t.0).collect::<Vec<_>>();
+        assert_eq!(ids(&h), vec![1, 2], "a session no Tandem shows is not read");
+        h.sessions[&2].pty.as_ref().unwrap().pause_after_reads();
+        assert_eq!(ids(&h), vec![1], "a session paused for Undo Close is not read");
+        // One paused after it was picked is refused without an attach.
+        let targets = h.prompt_targets();
+        h.sessions[&1].pty.as_ref().unwrap().pause_after_reads();
+        let (_, pid, paused) = &targets[0];
+        assert_eq!(crate::pty::console_mode_unless(*pid, paused), Err("the console is paused".to_string()));
+        h.sessions[&2].pty.as_ref().unwrap().set_paused(false);
+        assert_eq!(ids(&h), vec![2], "an undone close is read again");
+        for s in h.sessions.drain().map(|(_, s)| s) {
+            drop(s.pty);
+        }
+    }
+
+    /// The child half of `a_signal_goes_through_the_host`: detached (no console, as
+    /// tandem-host runs), so the host can attach to its session's console.
+    #[test]
+    #[ignore]
+    fn signal_child() {
+        if std::env::var_os("TANDEM_SIGNAL_CHILD").is_none() {
+            return;
+        }
+        // This process ignores Ctrl+C (a console-subsystem test process is not asked by the
+        // handler the host installs; tandem-host is a windows-subsystem one). Its sessions
+        // inherit that, so the session's program takes Ctrl+C back first.
+        unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1) };
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello();
+        let script = "$k = Add-Type -Name C -Namespace T -PassThru -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern bool SetConsoleCtrlHandler(IntPtr h, bool add);'; [void]$k::SetConsoleCtrlHandler([IntPtr]::Zero, $false); 'ready'; Start-Sleep 60";
+        let id = c.launch(&format!("powershell.exe -NoProfile -EncodedCommand {}", crate::pty::tests::encoded_command(script)));
+        c.output_until(id, "ready");
+        std::thread::sleep(Duration::from_millis(500));
+        c.send(&Msg::Signal { id, ctrl_break: false });
+        // Within the 10 s wait, long before the minute is up.
+        c.wait(|m| matches!(m, Msg::Exited { id: i, .. } if *i == id).then_some(()));
+        c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn a_signal_goes_through_the_host() {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "host::tests::signal_child", "--ignored", "--test-threads=1"])
+            .env("TANDEM_SIGNAL_CHILD", "1")
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = child.stdout.take().unwrap();
+        let reading = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut out, &mut s);
+            s
+        });
+        let end = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= end {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let got = reading.join().unwrap();
+        assert!(status.is_some_and(|s| s.success()), "the host sent Ctrl+C to its session within 60 s: {status:?}\n{got}");
     }
 
     #[test]

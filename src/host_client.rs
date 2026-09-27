@@ -421,6 +421,15 @@ impl HostedPty {
         let _ = self.inner.send(&Msg::Pause { id: self.id, paused });
     }
 
+    /// Send Signal's Ctrl+C (or Ctrl+Break) to this session's console, sent by the host (the
+    /// console is the host's: Tandem never attaches to it). A version 1 host cannot.
+    pub fn signal(&self, ctrl_break: bool) -> Result<(), String> {
+        if self.inner.version.load(Ordering::Acquire) < 2 {
+            return Err("the session host is too old to send console signals; quit Tandem with no sessions kept to update it".into());
+        }
+        self.inner.send(&Msg::Signal { id: self.id, ctrl_break })
+    }
+
     /// Bytes on their way to the shell: queued here, plus what the host has not written.
     pub fn pending(&self) -> usize {
         self.inner.queued.load(Ordering::Relaxed) + self.slot.lock().unwrap().host_pending as usize

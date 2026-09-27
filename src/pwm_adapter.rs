@@ -181,9 +181,8 @@ pub struct ListAccountsRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListAccountsResponse {
     pub accounts: Vec<Account>,
-    /// A non-fatal listing issue (`AP:690-700`); Tandem has no side channel to a toast from
-    /// inside a `Source` call, so a caller with one (a later app-layer task) reads it here
-    /// instead of it being silently dropped by `map_accounts`.
+    /// A non-fatal listing issue (`AP:690-700`): `accounts` keeps it, trimmed, for
+    /// `Source::take_warning`, through which the app shows it.
     #[serde(default)]
     pub warning: Option<String>,
 }
@@ -434,12 +433,16 @@ impl<R: Runner> Adapter<R> {
         Adapter { runner, kind, path, path_to_database, path_to_executable, settings, user_account_id, prompt, handshake: None, token: None, warning: None }
     }
 
+    /// `standardHeader` (`AP:314-329`): only the settings the handshake declared, and none
+    /// when that leaves nothing.
     fn header(&self) -> RequestHeader {
+        let declared = self.handshake.as_ref().and_then(|h| h.settings_fields.as_deref()).unwrap_or_default();
+        let settings: HashMap<String, String> = declared.iter().filter_map(|f| self.settings.get(&f.key).map(|v| (f.key.clone(), v.clone()))).collect();
         RequestHeader {
             path_to_database: self.path_to_database.clone(),
             path_to_executable: self.path_to_executable.clone(),
             mode: MODE_TERMINAL.to_string(),
-            settings: if self.settings.is_empty() { None } else { Some(self.settings.clone()) },
+            settings: if settings.is_empty() { None } else { Some(settings) },
         }
     }
 
@@ -825,15 +828,45 @@ mod tests {
         runner.push(&handshake_json(serde_json::json!({"requiresMasterPassword": false})));
         runner.push(r#"{"token":"tok"}"#);
         runner.push(r#"{}"#); // set-password
+        runner.push(r#"{}"#); // delete-account
+        runner.push(r#"{"accountIdentifier":{"accountID":"id-2"}}"#); // add-account
         let mut a = adapter(runner, Box::new(|_| None));
         let acc = PwmAccount { id: "id-1".to_string(), account_name: "github".to_string(), user_name: "bob".to_string(), display: "github".to_string(), has_otp: false, send_otp: false, source_label: None };
         a.set_password(&acc, Secret::new("s3cr3t".to_string())).expect("set_password");
+        a.delete(&acc).expect("delete");
+        let added = a.add("gitlab", "amy", Secret::new("n3wpass".to_string()), &[]).expect("add");
+        assert_eq!(added.id, "id-2");
         let calls = requests.lock().unwrap();
-        let (_, set_args, set_stdin) = calls.iter().find(|(_, args, _)| args == &vec!["set-password".to_string()]).expect("a set-password call");
+        let call = |name: &str| calls.iter().find(|(_, args, _)| args == &vec![name.to_string()]).unwrap_or_else(|| panic!("a {name} call")).clone();
+        let (_, set_args, set_stdin) = call("set-password");
         assert!(!set_args.iter().any(|a| a.contains("s3cr3t")));
         let stdin = set_stdin.as_deref().unwrap();
         assert!(stdin.contains("s3cr3t"));
         assert!(stdin.contains("\"accountID\":\"id-1\""));
+        let (_, delete_args, delete_stdin) = call("delete-account");
+        assert_eq!(delete_args, vec!["delete-account".to_string()], "the account id rides on stdin only");
+        assert!(delete_stdin.as_deref().is_some_and(|s| s.contains("\"accountID\":\"id-1\"") && !s.contains("s3cr3t")));
+        let (_, add_args, add_stdin) = call("add-account");
+        assert!(!add_args.iter().any(|a| a.contains("n3wpass")), "the new password is never an argument");
+        assert!(add_stdin.as_deref().is_some_and(|s| s.contains("n3wpass") && s.contains("gitlab") && s.contains("amy")));
+    }
+
+    #[test]
+    fn the_header_sends_only_declared_settings() {
+        let mut runner = FakeRunner::default();
+        let requests = runner.requests.clone();
+        runner.push(&handshake_json(serde_json::json!({"requiresMasterPassword": false, "settingsFields": [{"key": "url", "label": "Server URL", "isSecret": false, "persistInKeychain": false}]})));
+        runner.push(r#"{"token":"tok"}"#);
+        runner.push(r#"{"accounts":[]}"#);
+        let settings = HashMap::from([("url".to_string(), "https://vault".to_string()), ("stray".to_string(), "left-over".to_string())]);
+        let mut a = Adapter::new(runner, Kind::KeePassXC, PathBuf::from("adapter.exe"), None, None, settings, None, Box::new(|_| None));
+        // The adapter file is not there; the handshake still runs through the fake.
+        a.accounts().expect("accounts");
+        let calls = requests.lock().unwrap();
+        let (_, _, stdin) = calls.iter().find(|(_, args, _)| args == &vec!["list-accounts".to_string()]).expect("a list-accounts call");
+        let stdin = stdin.as_deref().unwrap();
+        assert!(stdin.contains("\"url\":\"https://vault\""));
+        assert!(!stdin.contains("stray") && !stdin.contains("left-over"), "a setting the handshake did not declare is not sent");
     }
 
     #[test]

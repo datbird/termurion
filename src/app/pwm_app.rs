@@ -137,6 +137,10 @@ pub(super) struct PwmState {
     confirms: Vec<Confirm>,
     /// Opens asked for, done on the next pass (a window needs the event loop).
     requests: Vec<(Option<String>, Option<PaneId>)>,
+    /// The window whose authentication gate failed on the last pass: opens for it queued
+    /// meanwhile (events held during the modal prompt) are dropped, so one cancel never pops
+    /// a second prompt at once.
+    refused: Option<WindowId>,
     /// Sessions whose focus reports stay held until their window next gains focus.
     holds: Vec<PaneId>,
     serial: u64,
@@ -186,8 +190,11 @@ impl App {
 
     /// Opens what waited for the event loop: managers, questions, LastPass's login window.
     pub(super) fn open_pwm_windows(&mut self, event_loop: &ActiveEventLoop) {
+        // One open per window a pass: the first; the rest (a trigger and automatic opening at
+        // the same prompt, say) would only find it open, or ask to authenticate again.
+        let mut handled: Vec<WindowId> = self.pwm.refused.take().into_iter().collect();
         for (account, pane) in std::mem::take(&mut self.pwm.requests) {
-            self.open_pwm_now(event_loop, account, pane);
+            self.open_pwm_now(event_loop, account, pane, &mut handled);
         }
         if let Some(email) = self.pwm.lp_terminal.take() {
             self.open_lp_login(event_loop, &email);
@@ -222,7 +229,7 @@ impl App {
     }
 
     /// `openPasswordManagerToAccountName:inSession:forUser:didSendUserName:` (`PT:10302-10346`).
-    fn open_pwm_now(&mut self, event_loop: &ActiveEventLoop, account: Option<String>, pane: Option<PaneId>) {
+    fn open_pwm_now(&mut self, event_loop: &ActiveEventLoop, account: Option<String>, pane: Option<PaneId>, handled: &mut Vec<WindowId>) {
         if let Some(p) = pane {
             // Unburied first, else it has no window (`AD:650-653`).
             self.disinter(p);
@@ -232,6 +239,10 @@ impl App {
             self.reveal_pane(p);
         } else if let Some(w) = self.last_window {
             self.enter(w);
+        }
+        let Some(here) = self.current_window() else { return };
+        if !first_for(handled, here) {
+            return;
         }
         if self.pwm_window.is_some() {
             return; // "Password manager sheet already open"
@@ -254,6 +265,7 @@ impl App {
                 if let Some(p) = hold {
                     self.pwm.holds.push(p);
                 }
+                self.pwm.refused = Some(here);
                 return;
             }
         } else if !required {
@@ -457,6 +469,19 @@ impl App {
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.no_focus_reports = p.no_focus_reports.saturating_sub(1);
             }
+        }
+    }
+
+    /// A pane back from Undo Close: its focus reports are held once for each hold still on it
+    /// (a manager open over it, a closed manager's hold waiting for the focus, its waiting
+    /// password), never more, since holds dropped while it was stashed took nothing off; and a
+    /// probe nothing waits on any more ends.
+    pub(super) fn pwm_restored(&self, pane: &mut Pane) {
+        let windows: Vec<Option<PaneId>> = self.pwm_windows().into_iter().map(|w| w.hold).collect();
+        pane.no_focus_reports = true_holds(pane.id, self.pwm.entries.contains_key(&pane.id), &self.pwm.holds, windows);
+        let waited = self.pwm.entries.contains_key(&pane.id) || self.pwm.rounds.iter().any(|r| r.panes.contains(&pane.id));
+        if !waited {
+            pane.echo_probe = None;
         }
     }
 
@@ -773,9 +798,13 @@ impl App {
         }
     }
 
+    /// Copy Password, Reveal's Copy, Ctrl+C and Win+C: kept out of Windows clipboard history
+    /// (Win+V) and cloud clipboard. A Windows addition (m10b ruling): iTerm2 copies a plain
+    /// string (`copyPasswordToClipboard:`), and macOS keeps no history to leak it into.
     fn pwm_copy(&mut self, s: &Secret) {
+        use arboard::SetExtWindows;
         if let Some(cb) = &mut self.clipboard {
-            if let Err(e) = cb.set_text(s.expose().to_string()) {
+            if let Err(e) = cb.set().exclude_from_history().exclude_from_cloud().text(s.expose()) {
                 self.banners.set("clipboard", format!("Copy failed: {e}"));
             }
         }
@@ -2036,8 +2065,10 @@ mod win_auth {
         })
     }
 
-    /// Waits for a Windows Runtime operation, handling this thread's messages meanwhile (the
-    /// Hello dialog and Tandem's windows keep working, as in any modal loop).
+    /// Waits for a Windows Runtime operation, handling this thread's messages meanwhile, so
+    /// the Hello dialog works. Tandem's own windows are frozen until it returns: winit holds
+    /// every event while its handler is on the stack, so they neither repaint nor take input
+    /// (as with the credential prompt and the file pickers; accepted, checklist "modal calls").
     fn wait<T: windows::core::RuntimeType + 'static>(op: &windows_future::IAsyncOperation<T>) -> Option<T> {
         use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT};
         while op.Status().ok()? == windows_future::AsyncStatus::Started {
@@ -2129,9 +2160,45 @@ mod win_auth {
     }
 }
 
+/// How many holds on its focus reports `pane` has: its waiting password, closed managers'
+/// holds waiting for the focus, and managers open over it.
+fn true_holds(pane: PaneId, entry: bool, holds: &[PaneId], windows: impl IntoIterator<Item = Option<PaneId>>) -> u32 {
+    let waiting = holds.iter().filter(|p| **p == pane).count();
+    let open = windows.into_iter().filter(|w| *w == Some(pane)).count();
+    entry as u32 + waiting as u32 + open as u32
+}
+
+/// True the first time `window` asks in a pass (it is then noted in `seen`).
+fn first_for<W: PartialEq>(seen: &mut Vec<W>, window: W) -> bool {
+    if seen.contains(&window) {
+        return false;
+    }
+    seen.push(window);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restored_pane_counts_only_its_live_holds() {
+        assert_eq!(true_holds(3, false, &[], [None, Some(4)]), 0, "nothing left on it: reports flow");
+        assert_eq!(true_holds(3, true, &[3, 5, 3], [Some(3), None]), 4);
+        assert_eq!(true_holds(3, false, &[5], [Some(3)]), 1, "a manager still open over it keeps one");
+    }
+
+    #[test]
+    fn opens_for_one_window_coalesce() {
+        let mut seen = Vec::new();
+        assert!(first_for(&mut seen, 1));
+        assert!(!first_for(&mut seen, 1), "a second open for the same window in a pass is dropped");
+        assert!(first_for(&mut seen, 2), "another window opens its own");
+        // A window whose gate was refused on the last pass starts the next one seen.
+        let mut seen = vec![7];
+        assert!(!first_for(&mut seen, 7));
+        assert!(first_for(&mut seen, 8));
+    }
 
     #[test]
     fn source_alerts_follow_iterm2() {

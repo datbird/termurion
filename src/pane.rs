@@ -596,6 +596,15 @@ impl Pane {
         matches!(self.pty, Some(Io::Local(_)))
     }
 
+    /// Send Signal's Ctrl+C (or Ctrl+Break) to a hosted pane's console, through tandem-host;
+    /// None for other panes (a local pane's goes from Tandem).
+    pub fn hosted_signal(&self, ctrl_break: bool) -> Option<Result<(), String>> {
+        match &self.pty {
+            Some(Io::Hosted(p)) => Some(p.signal(ctrl_break)),
+            _ => None,
+        }
+    }
+
     /// A hosted pane's password prompt state as tandem-host last said; None for other panes.
     pub fn hosted_password_input(&self) -> Option<bool> {
         match &self.pty {

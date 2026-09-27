@@ -2,12 +2,11 @@
 //! in Windows words). Accounts are the current user's generic credentials whose target starts
 //! with `Tandem/` (`pwm_source::target_name` and `parse_target` hold the naming); the password is
 //! the credential's blob as UTF-8. A blob is copied straight into a `Secret` and the copy Windows
-//! handed back is zeroed before `CredFree`. No test calls this module; the milestone's checklist
-//! covers it by hand.
+//! handed back is zeroed before `CredFree`. No test calls Credential Manager; the milestone's
+//! checklist covers that by hand.
 
 use crate::pwm::{Account, Secret};
 use crate::pwm_source::{self, Caps, Kind, Source};
-use windows_sys::w;
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
 use windows_sys::Win32::Security::Credentials::{
     CredDeleteW, CredEnumerateW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_MAX_CREDENTIAL_BLOB_SIZE,
@@ -25,13 +24,20 @@ fn last_error() -> String {
     std::io::Error::last_os_error().to_string()
 }
 
-/// A NUL-terminated wide string Windows owns, copied out (target and user names, never secrets).
+/// The enumeration filter: every target named under `pwm_source::SERVICE`.
+fn filter() -> Vec<u16> {
+    wide(&format!("{}/*", pwm_source::SERVICE))
+}
+
+/// A NUL-terminated wide string Windows owns, copied out (target names, never secrets). None
+/// when it is not valid UTF-16: a name decoded with replacements would no longer name the
+/// credential, so every later call on it would fail.
 ///
 /// # Safety
 /// `p` is null or points at a NUL-terminated UTF-16 string.
-unsafe fn from_wide(p: *const u16) -> String {
+unsafe fn from_wide(p: *const u16) -> Option<String> {
     if p.is_null() {
-        return String::new();
+        return Some(String::new());
     }
     // SAFETY: the caller's contract; the scan stops at the terminating NUL.
     unsafe {
@@ -39,7 +45,7 @@ unsafe fn from_wide(p: *const u16) -> String {
         while *p.add(n) != 0 {
             n += 1;
         }
-        String::from_utf16_lossy(std::slice::from_raw_parts(p, n))
+        String::from_utf16(std::slice::from_raw_parts(p, n)).ok()
     }
 }
 
@@ -87,8 +93,11 @@ fn write(target: &str, user: &str, p: &Secret) -> Result<(), String> {
     c.TargetName = target_w.as_mut_ptr();
     c.Comment = comment_w.as_mut_ptr();
     c.CredentialBlobSize = bytes.len() as u32;
-    // CredWriteW only reads the blob; the pointer is mutable in the struct's type alone.
-    c.CredentialBlob = bytes.as_ptr() as *mut u8;
+    // CredWriteW only reads the blob; the pointer is mutable in the struct's type alone. An
+    // empty password has no blob (null, not an empty slice's dangling pointer).
+    if !bytes.is_empty() {
+        c.CredentialBlob = bytes.as_ptr() as *mut u8;
+    }
     c.Persist = CRED_PERSIST_LOCAL_MACHINE;
     if !user.is_empty() {
         c.UserName = user_w.as_mut_ptr();
@@ -130,8 +139,9 @@ impl Source for CredentialManager {
     fn accounts(&mut self) -> Result<Vec<Account>, String> {
         let mut count = 0u32;
         let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
+        let filter = filter();
         // SAFETY: out-pointers are valid; on success Windows owns `list` until CredFree.
-        if unsafe { CredEnumerateW(w!("Tandem/*"), 0, &mut count, &mut list) } == 0 {
+        if unsafe { CredEnumerateW(filter.as_ptr(), 0, &mut count, &mut list) } == 0 {
             // SAFETY: plain thread-local read right after the failing call.
             if unsafe { GetLastError() } == ERROR_NOT_FOUND {
                 return Ok(Vec::new());
@@ -144,7 +154,8 @@ impl Source for CredentialManager {
             unsafe {
                 let c = *list.add(i);
                 // The filter is case-insensitive; parse_target keeps only Tandem's exact prefix.
-                if let Some(a) = pwm_source::parse_target(&from_wide((*c).TargetName)) {
+                // A name that is not valid UTF-16 is skipped (it could not be used).
+                if let Some(a) = from_wide((*c).TargetName).and_then(|t| pwm_source::parse_target(&t)) {
                     out.push(a);
                 }
                 // Enumeration returns every blob too; none is read, all are zeroed.
@@ -225,5 +236,20 @@ impl Source for CredentialManager {
 
     fn switch_account(&mut self) -> Result<(), String> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_decode_strictly_and_the_filter_follows_service() {
+        assert_eq!(filter(), wide("Tandem/*"));
+        let good = wide("Tandem/site/me");
+        assert_eq!(unsafe { from_wide(good.as_ptr()) }.as_deref(), Some("Tandem/site/me"));
+        // An unpaired surrogate: skipped, never shown as a row that names nothing.
+        let bad = [0x54u16, 0xD800, 0x61, 0];
+        assert_eq!(unsafe { from_wide(bad.as_ptr()) }, None);
     }
 }

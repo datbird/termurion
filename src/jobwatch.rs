@@ -406,16 +406,21 @@ pub fn process_alive(pid: u32, created: u64) -> bool {
     running && self::created(&h) == created
 }
 
-/// Sends one of the Jobs tool's signals to `pid` (`toolbelt_tools::signal_way`).
-pub fn send_signal(pid: u32, way: SignalWay) -> Result<(), String> {
-    signal_process(pid, None, way)
+/// A signal sent, or on its way.
+pub enum Sent {
+    Done,
+    /// A console event, sent from its own thread (the attach waits out any pseudoconsole
+    /// close, up to 2 s): its result, for the caller to collect when the thread ends.
+    Later(std::thread::JoinHandle<Result<(), String>>),
 }
 
-/// `send_signal`, only to the process created at `created` when given (a pid the tree showed
-/// may have been reused since): `Terminate(code)` opens the process for termination and ends
-/// it with that exit code; `CtrlC` and `CtrlBreak` are console events sent to the whole
-/// console `pid` runs on, from a worker thread that attaches to it for the moment.
-pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay) -> Result<(), String> {
+/// Sends one of the Jobs tool's signals (`toolbelt_tools::signal_way`) to `pid`, only to the
+/// process created at `created` when given (a pid the tree showed may have been reused
+/// since): `Terminate(code)` opens the process for termination and ends it with that exit
+/// code; `CtrlC` and `CtrlBreak` are console events sent to the whole console `pid` runs on,
+/// from a thread that attaches to it for the moment. Only for a console this process owns
+/// the closes of (a local pane): a hosted pane's goes through tandem-host.
+pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay) -> Result<Sent, String> {
     let access = match way {
         SignalWay::Terminate(_) => PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
         SignalWay::CtrlC | SignalWay::CtrlBreak => PROCESS_QUERY_LIMITED_INFORMATION,
@@ -433,24 +438,25 @@ pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay) -> Result<
             if unsafe { TerminateProcess(h.0, code) } == 0 {
                 return Err(os_err("TerminateProcess"));
             }
-            Ok(())
+            Ok(Sent::Done)
         }
-        SignalWay::CtrlC => console_event(pid, CTRL_C_EVENT),
-        SignalWay::CtrlBreak => console_event(pid, CTRL_BREAK_EVENT),
+        SignalWay::CtrlC | SignalWay::CtrlBreak => Ok(Sent::Later(console_event(pid, way == SignalWay::CtrlBreak, Arc::new(std::sync::atomic::AtomicBool::new(false))))),
     }
 }
 
-fn console_event(pid: u32, event: u32) -> Result<(), String> {
+/// Ctrl+C (or Ctrl+Break) to the whole console `pid` runs on, from its own thread, never
+/// joined by the caller: attached under `pty::CONSOLE`, and not at all once `stop` is set
+/// (a session paused for Undo Close).
+pub fn console_event(pid: u32, ctrl_break: bool, stop: Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<Result<(), String>> {
+    let event = if ctrl_break { CTRL_BREAK_EVENT } else { CTRL_C_EVENT };
     std::thread::spawn(move || {
-        crate::pty::attached(pid, || {
+        crate::pty::attached_unless(pid, &stop, || {
             if unsafe { GenerateConsoleCtrlEvent(event, 0) } == 0 {
                 return Err(os_err("GenerateConsoleCtrlEvent"));
             }
             Ok(())
         })
     })
-    .join()
-    .unwrap_or_else(|_| Err("the signal thread stopped".into()))
 }
 
 /// Every process under a shell now (for the close prompt), with its name.
@@ -517,8 +523,9 @@ mod tests {
         assert!(process_alive(ping.pid, ping.created));
         // A pid with another creation time is another process: never signalled.
         assert!(signal_process(ping.pid, Some(ping.created.wrapping_add(1)), SignalWay::Terminate(137)).is_err());
+        assert!(signal_process(ping.pid, Some(ping.created.wrapping_add(1)), SignalWay::CtrlC).is_err(), "nor sent a console event");
         assert!(process_alive(ping.pid, ping.created));
-        signal_process(root, Some(tree[0].created), SignalWay::Terminate(137)).unwrap();
+        assert!(matches!(signal_process(root, Some(tree[0].created), SignalWay::Terminate(137)), Ok(Sent::Done)));
         let status = child.wait().unwrap();
         assert_eq!(status.code(), Some(137), "KILL ends with 128 + 9");
         assert!(!process_alive(root, tree[0].created));

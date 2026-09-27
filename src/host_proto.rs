@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 
 /// The protocol this build speaks, and the oldest it still speaks. Version 2 adds password
-/// prompt detection (`WatchPrompts`, `PasswordInput`); both ends speak the lower of their two
+/// prompt detection (`WatchPrompts`, `PasswordInput`) and console signals (`Signal`); both ends speak the lower of their two
 /// versions, so a version 1 peer never sees those messages (an unknown message breaks the
 /// stream).
 pub const VERSION: u32 = 2;
@@ -57,6 +57,9 @@ pub enum Msg {
     /// Version 2, the host to Tandem: a session's console reached (or left) a password prompt,
     /// debounced. A host that never sends it leaves every session "not at a prompt".
     PasswordInput { id: u64, on: bool },
+    /// Version 2, Tandem to the host: Send Signal's Ctrl+C (or Ctrl+Break) to a session's
+    /// whole console. The host attaches (its consoles are its own to attach to).
+    Signal { id: u64, ctrl_break: bool },
 }
 
 /// Field writers: integers little-endian, byte strings with a u32 length.
@@ -176,6 +179,7 @@ pub fn encode(m: &Msg) -> Vec<u8> {
             None => w.u8(18).u8(0),
         },
         Msg::PasswordInput { id, on } => w.u8(19).u64(*id).u8(*on as u8),
+        Msg::Signal { id, ctrl_break } => w.u8(20).u64(*id).u8(*ctrl_break as u8),
     };
     let mut out = (w.0.len() as u32).to_le_bytes().to_vec();
     out.extend(w.0);
@@ -220,6 +224,7 @@ fn decode(payload: &[u8]) -> Result<Msg, String> {
         17 => Msg::KillAll,
         18 => Msg::WatchPrompts { debounce_ms: if r.bool()? { Some(r.u32()?) } else { None } },
         19 => Msg::PasswordInput { id: r.u64()?, on: r.bool()? },
+        20 => Msg::Signal { id: r.u64()?, ctrl_break: r.bool()? },
         t => return Err(format!("unknown message {t}")),
     };
     if !r.0.is_empty() {
@@ -332,6 +337,8 @@ mod tests {
             Msg::WatchPrompts { debounce_ms: None },
             Msg::PasswordInput { id: 9, on: true },
             Msg::PasswordInput { id: 9, on: false },
+            Msg::Signal { id: 9, ctrl_break: false },
+            Msg::Signal { id: 9, ctrl_break: true },
         ]
     }
 

@@ -145,6 +145,11 @@ impl App {
         current.into_iter().chain(parked).collect()
     }
 
+    /// Every open password manager, the current window's first.
+    pub(super) fn pwm_windows(&self) -> Vec<&super::pwm_app::PwmWin> {
+        self.pwm_window.iter().chain(self.windows.parked().filter_map(|(_, s)| s.pwm_window.as_ref())).collect()
+    }
+
     /// The password manager window whose Win32 handle is `hwnd`, and its terminal window.
     pub(super) fn pwm_of_hwnd(&self, hwnd: isize) -> Option<WindowId> {
         if self.pwm_window.as_ref().is_some_and(|w| w.hwnd() == Some(hwnd)) {

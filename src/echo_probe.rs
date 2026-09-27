@@ -110,7 +110,10 @@ enum Esc {
 
 /// Parses one escape sequence starting at `buf[0]` (which is ESC). Only CSI final bytes `D`
 /// (cursor back) and `K` (erase line) are given a typed token; anything else recognized as a
-/// complete sequence is `Other`.
+/// complete sequence is `Other`. Only digits and ';' count as parameter bytes, so a sequence
+/// with a private marker or intermediate byte (`CSI ? 25 h`) ends early as `Other` and its rest
+/// reads as text: safe here, since neither matches any step the probe waits for (it fails
+/// either way), but this is not a general CSI parser.
 fn parse_escape(buf: &[u8]) -> Esc {
     if buf.len() < 2 {
         return Esc::Incomplete;

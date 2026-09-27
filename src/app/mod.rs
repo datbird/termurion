@@ -458,6 +458,9 @@ pub struct App {
     jobs_popover: Option<crate::status_popover_ui::InfoPopover>,
     jobs_popover_closed: Option<Instant>,
     jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest)>,
+    /// Send Signal's console events on their way from a local pane (app-wide): each result is
+    /// collected when its thread ends, so a close in progress never holds the window up.
+    signal_waits: Vec<std::thread::JoinHandle<Result<(), String>>>,
     idle_sent: HashMap<PaneId, Instant>,
     started: Instant,
     /// An open Make Screenshot panel.
@@ -797,6 +800,7 @@ pub fn run() {
         jobs_popover: None,
         jobs_popover_closed: None,
         jobs_confirm: None,
+        signal_waits: Vec::new(),
         idle_sent: HashMap::new(),
         started: Instant::now(),
         uploads: HashMap::new(),

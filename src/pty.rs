@@ -39,28 +39,36 @@ static ATTACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// Signal, or typed in that console) are handled, so they never end it. A close event while
 /// attached is answered handled too, so no other handler runs; Windows still ends the process
 /// after a close event whatever the answer, which is why a close never happens while attached
-/// (`CONSOLE`). Registered once and kept (the null handler's ignore flag would be inherited by
-/// every shell started after it, and removing a handler before the event's thread runs here
-/// would let the default handler exit).
+/// (`CONSOLE`). Registered after each attach, never removed on the way out (the null handler's
+/// ignore flag would be inherited by every shell started after it, and removing a handler
+/// before the event's thread runs here would let the default handler exit).
 unsafe extern "system" fn ignore_ctrl(kind: u32) -> BOOL {
     let attached_close = kind == CTRL_CLOSE_EVENT && ATTACHED.load(std::sync::atomic::Ordering::SeqCst);
     (kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT || attached_close) as BOOL
 }
 
 /// Runs `f` attached to the console `pid` runs on, under `CONSOLE`, with the ignore-Ctrl
-/// handler installed first. The standard handles the attach may set are put back after.
-/// Nothing may log to stderr inside `f` (it would show in that console): errors come back
-/// and are reported by the caller, after the detach.
-pub(crate) fn attached<T>(pid: u32, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+/// handler installed; refused (no attach) when `stop` is set once `CONSOLE` is held. The
+/// standard handles the attach may set are put back after. Nothing may log to stderr inside
+/// `f` (it would show in that console): errors come back and are reported by the caller,
+/// after the detach.
+pub(crate) fn attached_unless<T>(pid: u32, stop: &std::sync::atomic::AtomicBool, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     let _one = CONSOLE.write().unwrap_or_else(|e| e.into_inner());
-    static HANDLER: std::sync::Once = std::sync::Once::new();
-    HANDLER.call_once(|| unsafe {
-        SetConsoleCtrlHandler(Some(ignore_ctrl), 1);
-    });
+    if stop.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("the console is paused".into());
+    }
     let kinds = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
     let before = kinds.map(|k| unsafe { GetStdHandle(k) });
     if unsafe { AttachConsole(pid) } == 0 {
         return Err(format!("AttachConsole failed: {}", std::io::Error::last_os_error()));
+    }
+    // After the attach, every time: an attach starts the process's handler list over
+    // (measured in a windows-subsystem build: a handler added before the attach, or at an
+    // earlier one, was not asked, and a Ctrl+Break ended the process). The removal finds
+    // nothing then; it only keeps the list from growing should an attach ever keep it.
+    unsafe {
+        SetConsoleCtrlHandler(Some(ignore_ctrl), 0);
+        SetConsoleCtrlHandler(Some(ignore_ctrl), 1);
     }
     ATTACHED.store(true, std::sync::atomic::Ordering::SeqCst);
     let result = f();
@@ -80,8 +88,18 @@ pub(crate) fn attached<T>(pid: u32, f: impl FnOnce() -> Result<T, String>) -> Re
 /// attached for the moment, `CONIN$` opened, read and closed. Never while a console event is
 /// being sent or a pseudoconsole is closing (all hold `CONSOLE`). Only for a console this
 /// process owns the closes of: Tandem reads its local panes, tandem-host its own sessions.
+///
+/// There is no timeout: a console whose OpenConsole hangs (its output pipe full and not
+/// read) would hold this, and `CONSOLE` with it, for good. Tandem never reads a pane it
+/// paused, and tandem-host skips paused sessions (`console_mode_unless`).
 pub fn console_mode(pid: u32) -> Result<u32, String> {
-    attached(pid, || {
+    console_mode_unless(pid, &std::sync::atomic::AtomicBool::new(false))
+}
+
+/// `console_mode`, refused without attaching when `paused` is set, checked under `CONSOLE`
+/// (so a pause made with `Pty::pause_after_reads` never lands inside the read).
+pub fn console_mode_unless(pid: u32, paused: &std::sync::atomic::AtomicBool) -> Result<u32, String> {
+    attached_unless(pid, paused, || {
         let name: Vec<u16> = "CONIN$".encode_utf16().chain(Some(0)).collect();
         let h = unsafe { CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, 0, null_mut()) };
         if h == INVALID_HANDLE_VALUE {
@@ -384,6 +402,25 @@ impl Pty {
         self.paused.store(paused, std::sync::atomic::Ordering::Release);
     }
 
+    /// `set_paused(true)` once no console mode read is under way (it holds `CONSOLE` for
+    /// writing): a paused console can fill its output pipe, after which OpenConsole blocks
+    /// every console call on it, so a read must never start on it or run across the pause.
+    /// Readers check `is_paused` under the same lock (`console_mode_unless`).
+    pub fn pause_after_reads(&self) {
+        let _reads = CONSOLE.read().unwrap_or_else(|e| e.into_inner());
+        self.set_paused(true);
+    }
+
+    /// Paused for Undo Close.
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The pause flag, for a reader that checks it under `CONSOLE` (`console_mode_unless`).
+    pub fn pause_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.paused.clone()
+    }
+
     /// Bytes queued for the child that it has not taken yet.
     pub fn pending(&self) -> usize {
         self.pending.load(std::sync::atomic::Ordering::Relaxed)
@@ -464,7 +501,9 @@ impl Drop for Pty {
         // messages below never land in an attached console.
         let _console = CONSOLE.read().unwrap_or_else(|e| e.into_inner());
         // Closing the pseudoconsole ends the child and closes the output pipe. The
-        // reader thread keeps draining meanwhile, so the close cannot block on a full pipe.
+        // reader thread keeps draining meanwhile (a pause for Undo Close ends here), so the
+        // close cannot block on a full pipe.
+        self.set_paused(false);
         unsafe { (self.api.close)(self.hpc) };
         // The writer thread closes the input pipe once its queue ends or a write fails.
         self.writer.take();
@@ -481,7 +520,7 @@ impl Drop for Pty {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::conpty::{self, Source, dev_vendor_dir};
     use std::sync::Arc;
@@ -535,6 +574,110 @@ mod tests {
             stop.store(true, Ordering::SeqCst);
             reader.join().unwrap();
         }
+    }
+
+    /// The PowerShell reader the m10b checklist names: line input on, echo off, then one line.
+    const LINE_NO_ECHO_READER: &str = "$k = Add-Type -Name K -Namespace T -PassThru -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern IntPtr GetStdHandle(int n); [DllImport(\"kernel32.dll\")] public static extern bool SetConsoleMode(IntPtr h, uint m);'; [void]$k::SetConsoleMode($k::GetStdHandle(-10), 3); Write-Host -NoNewline 'Password: '; $null = [Console]::In.ReadLine()";
+
+    /// Base64 of `text` as UTF-16LE, for `powershell -EncodedCommand`.
+    pub(crate) fn encoded_command(text: &str) -> String {
+        const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut out = String::new();
+        for c in bytes.chunks(3) {
+            let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+            for i in 0..4 {
+                out.push(if i <= c.len() { ABC[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            }
+        }
+        out
+    }
+
+    /// The child half of `measure_password_prompt_modes`: each reader waits at its password
+    /// prompt in a ConPTY, its console input mode is read three times, and the reader is
+    /// ended. Nothing is typed. Started detached (no console of its own) so it can attach.
+    #[test]
+    #[ignore]
+    fn measure_password_prompt_modes_child() {
+        if std::env::var_os("TANDEM_MEASURE_CHILD").is_none() {
+            return;
+        }
+        let api = conpty::load(&Source::Shipped(dev_vendor_dir())).unwrap();
+        let reader = format!("powershell.exe -NoProfile -NoLogo -EncodedCommand {}", encoded_command(LINE_NO_ECHO_READER));
+        let cases = [
+            ("ssh", "ssh.exe -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL nobody@localhost".to_string()),
+            ("runas", "runas.exe /user:nobody cmd".to_string()),
+            ("powershell line-no-echo reader", reader),
+        ];
+        for (label, cmdline) in cases {
+            let pty = spawn(&api, &cmdline, 120, 30).unwrap();
+            let seen = pty.read_until(b"assword", secs(30));
+            let prompt = seen.is_ok();
+            // Room for the reader to reach its read after printing the prompt.
+            std::thread::sleep(Duration::from_millis(1500));
+            let modes: Vec<String> = (0..3)
+                .map(|_| {
+                    let m = console_mode(pty.pid());
+                    std::thread::sleep(Duration::from_millis(300));
+                    match m {
+                        Ok(m) => format!("{m:#06x} (line {}, echo {}, processed {}, at_prompt {})", m & 0x2 != 0, m & 0x4 != 0, m & 0x1 != 0, crate::pwm_prompt::at_prompt(m)),
+                        Err(e) => format!("unreadable: {e}"),
+                    }
+                })
+                .collect();
+            unsafe { TerminateProcess(pty.process, 1) };
+            let shown = if prompt { String::new() } else { format!(" output {:?}", text(&seen.unwrap_err()).chars().rev().take(200).collect::<String>().chars().rev().collect::<String>()) };
+            println!("MEASURED {label}: prompt seen {prompt}; modes {modes:?}{shown}");
+            drop(pty);
+        }
+    }
+
+    /// Final review I3 of m10b: the console input modes of ssh's and runas's password prompts
+    /// (and the checklist's PowerShell reader). Run by hand:
+    /// `cargo test --lib pty::tests::measure_password_prompt_modes -- --ignored --exact --nocapture`.
+    #[test]
+    #[ignore]
+    fn measure_password_prompt_modes() {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "pty::tests::measure_password_prompt_modes_child", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("TANDEM_MEASURE_CHILD", "1")
+            .creation_flags(DETACHED_PROCESS)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = child.stdout.take().unwrap();
+        let reading = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut out, &mut s);
+            s
+        });
+        let end = Instant::now() + secs(150);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= end {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let got = reading.join().unwrap();
+        for line in got.lines().filter(|l| l.contains("MEASURED")) {
+            println!("{line}");
+        }
+        assert!(status.is_some_and(|s| s.success()), "the measuring process failed or hung: {status:?}\n{got}");
+    }
+
+    #[test]
+    fn encoded_command_is_utf16_base64() {
+        assert_eq!(encoded_command("dir"), "ZABpAHIA");
+        assert_eq!(encoded_command("ab"), "YQBiAA==");
     }
 
     #[test]

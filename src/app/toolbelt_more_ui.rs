@@ -233,6 +233,8 @@ pub(super) const SIGNAL_POPUP_W: f32 = 70.0;
 /// Jobs refreshes once a second while it shows (`JT:379-396`), and the termination watches
 /// look as often.
 const JOBS_TICK: Duration = Duration::from_secs(1);
+/// How often Send Signal's console events on their way are looked at.
+const SIGNAL_POLL: Duration = Duration::from_millis(50);
 /// Jobs' disclosure glyphs (Segoe Fluent Icons ChevronRight and ChevronDown); a row without
 /// children keeps the room blank, as NSOutlineView does.
 const JOB_CLOSED: char = '\u{E76C}';
@@ -1014,7 +1016,21 @@ impl App {
             }
         }
         let polling = (!self.jobs_wanting.is_empty()).then_some(now + JOBS_TICK);
-        [polling, self.jobs_watch_at].into_iter().flatten().min()
+        [polling, self.jobs_watch_at, self.collect_signals(now)].into_iter().flatten().min()
+    }
+
+    /// Send Signal's console events that finished: a failure shows in the banner. When to look
+    /// again while some are still on their way.
+    fn collect_signals(&mut self, now: Instant) -> Option<Instant> {
+        let (done, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.signal_waits).into_iter().partition(|h| h.is_finished());
+        self.signal_waits = waiting;
+        for h in done {
+            if let Err(e) = h.join().unwrap_or_else(|_| Err("the signal thread stopped".into())) {
+                self.banners.set("jobs-signal", format!("Could not send the signal: {e}"));
+                self.redraw();
+            }
+        }
+        (!self.signal_waits.is_empty()).then(|| now + SIGNAL_POLL)
     }
 
     /// The selected rows' pids, each with its creation time, and whether one has children.
@@ -1087,7 +1103,18 @@ impl App {
             if console && consoled {
                 continue;
             }
-            match crate::jobwatch::signal_process(pid, Some(created), req.way) {
+            // A hosted pane's console belongs to tandem-host, which sends the event: Tandem
+            // never attaches to it.
+            let hosted = if console { self.panes.values().find(|p| p.shell_pid() == Some(req.shell)).and_then(|p| p.hosted_signal(req.way == SignalWay::CtrlBreak)) } else { None };
+            let result = match hosted {
+                Some(r) => r,
+                None => crate::jobwatch::signal_process(pid, Some(created), req.way).map(|s| {
+                    if let crate::jobwatch::Sent::Later(h) = s {
+                        self.signal_waits.push(h);
+                    }
+                }),
+            };
+            match result {
                 Ok(()) => {
                     sent = true;
                     consoled |= console;

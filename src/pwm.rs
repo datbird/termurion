@@ -232,10 +232,10 @@ pub struct Buttons {
 }
 
 /// iTerm2's `updateKeyEquivalents` (titles and which button shows) and `updateWithAvailability`
-/// (enabling), kept as the two independent checks the source runs: the title depends on
-/// `send_user_by_default` only when `send_both` is not also set, but enabling checks `send_both`
-/// alone, so a caller that somehow sets both sees the send-both enabling rule under the
-/// send-user-by-default title. In practice iTerm2 never opens with both set.
+/// (enabling), kept as the two checks the source runs. Both key off `send_both` first and look
+/// at `send_user_by_default` only when it is not set, so they always agree: with both set, the
+/// title is "Enter Username & Password" and enabling needs a user name. (The terminal never
+/// opens with both set; iTerm2's browser manager does.)
 pub fn buttons(s: &ButtonState) -> Buttons {
     let should_enable = s.selected && s.can_enter;
 

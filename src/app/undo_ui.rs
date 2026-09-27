@@ -103,6 +103,8 @@ impl App {
             }
         }
         pane.set_paused(false);
+        // Focus report holds dropped while it was stashed took nothing off its count.
+        self.pwm_restored(&mut pane);
         self.panes.insert(pane.id, pane);
     }
 
