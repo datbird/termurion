@@ -84,8 +84,9 @@ pub(super) struct MenuBar {
     pub(super) snippet_items: Option<Vec<crate::snippets::MenuEntry>>,
     pub(super) actions: Option<Submenu>,
     pub(super) action_items: Vec<(String, String)>,
-    /// View > Toolbelt's tool items, after its separator.
-    pub(super) toolbelt_checks: Vec<(crate::toolbelt::ToolId, CheckMenuItem)>,
+    /// View > Toolbelt and its fixed items, then its tool items (by tool name) after them.
+    pub(super) toolbelt: Option<(Submenu, usize)>,
+    pub(super) toolbelt_checks: Vec<(String, CheckMenuItem)>,
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -170,13 +171,17 @@ impl App {
             }
             Ok(()) => {}
         }
-        let toolbelt_checks = subs.get(&["View", "Toolbelt"].map(str::to_string).to_vec()).cloned().map(|s| self.append_toolbelt_menu(&s)).unwrap_or_default();
+        let toolbelt = subs.get(&["View", "Toolbelt"].map(str::to_string).to_vec()).cloned().map(|s| {
+            let fixed = s.items().len();
+            (s, fixed)
+        });
+        let toolbelt_checks = toolbelt.clone().map(|(s, _)| self.append_toolbelt_menu(&s)).unwrap_or_default();
         let named = subs.get(&vec!["Edit".to_string(), "Named Marks".to_string()]).cloned();
         let profiles = subs.get(&vec!["Profiles".to_string()]).cloned().map(|s| {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt_checks });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks });
         self.sync_checks();
     }
 

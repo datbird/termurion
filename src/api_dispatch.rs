@@ -193,6 +193,8 @@ pub fn route(subs: &mut Subscriptions, conn: u64, req: pb::ClientOriginatedMessa
         Some(Req::InvokeFunctionRequest(_)) => Route::App(req),
         // A script component's popover opens in its session's status bar (`H:4101-4140`).
         Some(Req::StatusBarComponentRequest(_)) => Route::App(req),
+        // A dynamic tool joins the Toolbelt menu (`H:2216-2243`).
+        Some(Req::RegisterToolRequest(_)) => Route::App(req),
         Some(Req::NotificationRequest(r)) => match subs.request(conn, r) {
             Some(status) => {
                 let mut m = api_proto::reply_to(&req);
@@ -433,6 +435,7 @@ mod tests {
         assert!(matches!(route(&mut s, 1, msg(8, Req::ServerOriginatedRpcResultRequest(Default::default()))), Route::App(r) if r.id == Some(8)));
         assert!(matches!(route(&mut s, 1, msg(9, Req::InvokeFunctionRequest(Default::default()))), Route::App(r) if r.id == Some(9)));
         assert!(matches!(route(&mut s, 1, msg(10, Req::StatusBarComponentRequest(Default::default()))), Route::App(r) if r.id == Some(10)));
+        assert!(matches!(route(&mut s, 1, msg(11, Req::RegisterToolRequest(Default::default()))), Route::App(r) if r.id == Some(11)));
         // VARIABLE_CHANGE goes to the app, subscribing or not.
         for subscribe in [Some(true), Some(false), None] {
             assert!(matches!(route(&mut s, 1, msg(7, Req::NotificationRequest(notif(N::NotifyOnVariableChange, subscribe, None)))), Route::App(r) if r.id == Some(7)));
@@ -474,12 +477,6 @@ mod tests {
         for (i, sub) in app.into_iter().enumerate() {
             let id = 100 + i as i64;
             assert!(matches!(route(&mut s, 1, msg(id, sub)), Route::App(r) if r.id == Some(id)), "request {i}");
-        }
-        // Later milestones' requests still answer malformed.
-        let later = [Req::RegisterToolRequest(Default::default())];
-        for (i, sub) in later.into_iter().enumerate() {
-            let id = 200 + i as i64;
-            assert!(is_malformed(&route(&mut s, 1, msg(id, sub)), id), "request {i}");
         }
     }
 }

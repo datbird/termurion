@@ -357,8 +357,9 @@ impl App {
             v.session.insert("lastCommand", c.command.clone());
         }
         if let Some(sel) = selection.then(|| s.term().selection_to_string()).flatten() {
-            v.session.insert("selectionLength", sel.chars().count().to_string());
-            v.session.insert("selection", sel);
+            let (capped, length) = capped_selection(&sel, self.globals.int("maximumBytesToProvideToPythonAPI"));
+            v.session.insert("selectionLength", length.to_string());
+            v.session.insert("selection", capped);
         }
         if let Some(pr) = self.store.get(&p.profile) {
             v.session.insert("profileName", pr.name());
@@ -499,6 +500,14 @@ impl App {
     }
 }
 
+/// iTerm2's `selection` variable: at most `max` characters of the selection, with the whole
+/// selection's length in characters (`PS:12518-12529`). A negative `max` caps nothing, as
+/// iTerm2's unsigned `MIN` does.
+pub(super) fn capped_selection(sel: &str, max: i64) -> (String, usize) {
+    let max = usize::try_from(max).unwrap_or(usize::MAX);
+    (sel.chars().take(max).collect(), sel.chars().count())
+}
+
 /// User variables as text: a string as it is, anything else as its JSON.
 fn user_strings(values: crate::api_vars::Values) -> std::collections::BTreeMap<String, String> {
     values.into_iter().map(|(k, v)| (k, v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect()
@@ -508,4 +517,18 @@ fn user_strings(values: crate::api_vars::Values) -> std::collections::BTreeMap<S
 fn local_host_name() -> &'static str {
     static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     NAME.get_or_init(super::aps_ui::local_host)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_cap_follows_iterm2() {
+        assert_eq!(capped_selection("abcdef", 3), ("abc".to_string(), 6));
+        assert_eq!(capped_selection("abcdef", 100), ("abcdef".to_string(), 6));
+        assert_eq!(capped_selection("abcdef", 0), (String::new(), 6));
+        assert_eq!(capped_selection("\u{e9}\u{e9}\u{e9}", 2), ("\u{e9}\u{e9}".to_string(), 3));
+        assert_eq!(capped_selection("", 100), (String::new(), 0));
+    }
 }

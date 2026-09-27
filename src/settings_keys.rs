@@ -935,6 +935,16 @@ mod tests {
             cookie.help,
             "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?\nThis will only affect sessions created after changing this setting."
         );
+        let cap = schema::find_global("maximumBytesToProvideToPythonAPI").unwrap();
+        assert_eq!((cap.tab.as_str(), cap.section.as_str()), ("Advanced", "General"));
+        assert_eq!(cap.kind, Kind::Int);
+        assert_eq!(cap.default, Some(Value::Integer(100)));
+        assert_eq!(cap.label, "Maximum number of bytes of selection to provide to Python API.");
+        assert_eq!(cap.help, "Maximum number of bytes of selection to provide to Python API.\nA large value here can cause performance issues when you have a big selection.");
+        let lax = schema::find_global("laxNilPolicyInInterpolatedStrings").unwrap();
+        assert_eq!((lax.tab.as_str(), lax.section.as_str()), ("Advanced", "Scripting"));
+        assert_eq!(lax.kind, Kind::Bool);
+        assert_eq!(lax.default, Some(Value::Boolean(true)));
         // The popup is enabled only while the API is on; every other row always.
         let mut g = Globals::empty(std::path::Path::new("api-rows-test.toml"));
         assert!(!row_enabled(&g, "API Authentication Method"));

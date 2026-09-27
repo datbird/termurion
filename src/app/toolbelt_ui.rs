@@ -21,12 +21,14 @@ const TITLE_PT: f32 = 13.0;
 /// Room above and below a 1 point divider that still grabs it, in points.
 const DIVIDER_SLOP: f32 = 3.0;
 
-pub(super) fn tool_menu_id(tool: ToolId) -> String {
-    format!("{TOOL_ID}{}", tool.name())
+/// A tool's check item id, by the tool's name (built-in or dynamic).
+pub(super) fn tool_menu_id(name: &str) -> String {
+    format!("{TOOL_ID}{name}")
 }
 
-pub(super) fn tool_from_menu_id(id: &str) -> Option<ToolId> {
-    id.strip_prefix(TOOL_ID).and_then(ToolId::from_name)
+/// The tool name a check item's id carries.
+pub(super) fn tool_name_from_menu_id(id: &str) -> Option<&str> {
+    id.strip_prefix(TOOL_ID)
 }
 
 /// `text` broken at spaces into lines no wider than `max_w` (a word wider than that gets a
@@ -348,9 +350,45 @@ impl App {
     /// A tool switched on (at the bottom) or off in `ToolbeltTools`; every window follows
     /// (`TBV:256-271`).
     pub(super) fn toggle_toolbelt_tool(&mut self, tool: ToolId) {
-        let names = toolbelt::toggle_name(&self.toolbelt_names(), tool);
+        self.toggle_toolbelt_named(tool.name());
+    }
+
+    /// `toggle_toolbelt_tool` by name: a dynamic tool's check item toggles it so.
+    fn toggle_toolbelt_named(&mut self, name: &str) {
+        let names = toolbelt::toggle_named(&self.toolbelt_names(), name);
         self.globals.set(toolbelt::TOOLS_KEY, toolbelt::names_value(&names));
         self.save_globals();
+        self.toolbelt_names_changed(&names);
+    }
+
+    /// RegisterTool (`H:2216-2243`): iTerm2's status; on OK the tool is registered
+    /// (`TBV:154-186`), what changed is saved, and every window's Toolbelt menu follows.
+    pub(super) fn api_register_tool(&mut self, r: &crate::api_proto::pb::RegisterToolRequest) -> crate::api_proto::pb::register_tool_response::Status {
+        use crate::api_proto::pb::register_tool_response::Status;
+        let status = toolbelt::register_tool_status(r);
+        if status != Status::Ok {
+            return status;
+        }
+        let (name, identifier, url) = (r.name.as_deref().unwrap_or_default(), r.identifier.as_deref().unwrap_or_default(), r.url.as_deref().unwrap_or_default());
+        let before = self.toolbelt_names();
+        let (registry, names) = toolbelt::register_dynamic(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref(), &before, identifier, name, url, r.reveal_if_already_registered());
+        let renamed = names != before;
+        if let Some(registry) = &registry {
+            self.globals.set(toolbelt::DYNAMIC_TOOLS_KEY, registry.clone());
+        }
+        if renamed {
+            self.globals.set(toolbelt::TOOLS_KEY, toolbelt::names_value(&names));
+        }
+        if registry.is_some() || renamed {
+            self.save_globals();
+            self.toolbelt_names_changed(&names);
+        }
+        status
+    }
+
+    /// `ToolbeltTools` or the dynamic tools changed: every window drops focus from a hidden
+    /// tool, lays out again and refreshes its Toolbelt menu.
+    fn toolbelt_names_changed(&mut self, names: &[String]) {
         self.menus_dirty = true;
         let back = self.current_window();
         let ids: Vec<WindowId> = self.registry.order().into_iter().filter_map(|k| self.window_id_of_key(k)).collect();
@@ -368,36 +406,57 @@ impl App {
         }
     }
 
+    /// Every tool's name as the Toolbelt menu lists them: the built-in and dynamic tools
+    /// sorted by name (`TBV:227-254`).
+    fn toolbelt_menu_names(&self) -> Vec<String> {
+        toolbelt::all_tool_names(&toolbelt::dynamic_tools(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref()))
+    }
+
     /// The tools as check items, sorted by name, checked when configured (`TBV:227-254`).
-    fn toolbelt_menu_items(&self) -> Vec<muda::CheckMenuItem> {
+    fn toolbelt_menu_items(&self, all: &[String]) -> Vec<muda::CheckMenuItem> {
         let names = self.toolbelt_names();
-        toolbelt::menu_order().into_iter().map(|t| muda::CheckMenuItem::with_id(tool_menu_id(t), t.name(), true, names.iter().any(|n| n == t.name()), None)).collect()
+        all.iter().map(|t| muda::CheckMenuItem::with_id(tool_menu_id(t), t.replace('&', "&&"), true, names.contains(t), None)).collect()
     }
 
     /// The hamburger's menu: the tool list.
     pub(super) fn show_toolbelt_menu(&mut self, at: MenuAt) {
         let menu = muda::Menu::new();
-        if let Some(Err(e)) = self.toolbelt_menu_items().iter().map(|i| menu.append(i)).find(Result::is_err) {
+        if let Some(Err(e)) = self.toolbelt_menu_items(&self.toolbelt_menu_names()).iter().map(|i| menu.append(i)).find(Result::is_err) {
             self.banners.set("menu", format!("Toolbelt menu: {e}"));
         }
         self.show_menu_at(menu, at);
     }
 
     /// View > Toolbelt's tool items, after its separator. Returns them for `sync_checks`.
-    pub(super) fn append_toolbelt_menu(&mut self, sub: &muda::Submenu) -> Vec<(ToolId, muda::CheckMenuItem)> {
-        let items = self.toolbelt_menu_items();
+    pub(super) fn append_toolbelt_menu(&mut self, sub: &muda::Submenu) -> Vec<(String, muda::CheckMenuItem)> {
+        let all = self.toolbelt_menu_names();
+        let items = self.toolbelt_menu_items(&all);
         if let Some(Err(e)) = items.iter().map(|i| sub.append(i)).find(Result::is_err) {
             self.banners.set("menu", format!("View > Toolbelt: {e}"));
         }
-        toolbelt::menu_order().into_iter().zip(items).collect()
+        all.into_iter().zip(items).collect()
     }
 
-    /// The tool items' check marks follow `ToolbeltTools`.
-    pub(super) fn sync_toolbelt_checks(&self) {
+    /// The tool items follow the registered tools (a dynamic tool added or renamed rebuilds
+    /// them) and their check marks follow `ToolbeltTools`.
+    pub(super) fn sync_toolbelt_checks(&mut self) {
+        let all = self.toolbelt_menu_names();
+        let listed = self.menu_bar.as_ref().is_none_or(|b| b.toolbelt_checks.iter().map(|(n, _)| n).eq(all.iter()));
+        if !listed {
+            let items = self.toolbelt_menu_items(&all);
+            let Some(bar) = &mut self.menu_bar else { return };
+            if let Some((sub, fixed)) = &bar.toolbelt {
+                while sub.remove_at(*fixed).is_some() {}
+                if let Some(Err(e)) = items.iter().map(|i| sub.append(i)).find(Result::is_err) {
+                    self.banners.set("menu", format!("View > Toolbelt: {e}"));
+                }
+                bar.toolbelt_checks = all.into_iter().zip(items).collect();
+            }
+        }
         let Some(bar) = &self.menu_bar else { return };
         let names = self.toolbelt_names();
         for (t, c) in &bar.toolbelt_checks {
-            c.set_checked(names.iter().any(|n| n == t.name()));
+            c.set_checked(names.contains(t));
         }
     }
 
@@ -409,8 +468,8 @@ impl App {
         if self.tool_menu_picked(id, event_loop) {
             return true;
         }
-        if let Some(tool) = tool_from_menu_id(id) {
-            self.toggle_toolbelt_tool(tool);
+        if let Some(name) = tool_name_from_menu_id(id) {
+            self.toggle_toolbelt_named(name);
         }
         true
     }
@@ -587,12 +646,12 @@ mod tests {
 
     #[test]
     fn toolbelt_menu_ids_round_trip() {
-        assert_eq!(tool_menu_id(ToolId::PasteHistory), "toolbelt:tool:Paste History");
+        assert_eq!(tool_menu_id(ToolId::PasteHistory.name()), "toolbelt:tool:Paste History");
         for tool in ToolId::ALL {
-            assert_eq!(tool_from_menu_id(&tool_menu_id(tool)), Some(tool));
+            assert_eq!(tool_name_from_menu_id(&tool_menu_id(tool.name())), Some(tool.name()));
         }
-        assert_eq!(tool_from_menu_id("toolbelt:tool:Bogus"), None);
-        assert_eq!(tool_from_menu_id("Paste History"), None);
+        assert_eq!(tool_name_from_menu_id("toolbelt:tool:My Web Tool"), Some("My Web Tool"));
+        assert_eq!(tool_name_from_menu_id("Paste History"), None);
     }
 
     #[test]

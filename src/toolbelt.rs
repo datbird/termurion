@@ -106,7 +106,9 @@ pub fn stored_names(v: Option<&Value>) -> Vec<String> {
     }
 }
 
-/// The stored names that are one of 9j's seven tools, in the order stored.
+/// The stored names that are one of the built-in tools, in the order stored. A dynamic tool's
+/// name draws nothing: its web view cannot be made without a WebView2 host, and iTerm2 adds no
+/// wrapper for a tool whose view it could not make (`TBV:580-611`).
 pub fn shown_tools(names: &[String]) -> Vec<ToolId> {
     names.iter().filter_map(|n| ToolId::from_name(n)).collect()
 }
@@ -114,7 +116,11 @@ pub fn shown_tools(names: &[String]) -> Vec<ToolId> {
 /// Toggles a tool in the stored name list: removes it if present, else appends it at the
 /// bottom (`TBV:256-271,559-560`). Other names (someone else's tools) are left untouched.
 pub fn toggle_name(names: &[String], tool: ToolId) -> Vec<String> {
-    let name = tool.name();
+    toggle_named(names, tool.name())
+}
+
+/// `toggle_name` for any tool name, built-in or dynamic.
+pub fn toggle_named(names: &[String], name: &str) -> Vec<String> {
     if names.iter().any(|n| n == name) {
         names.iter().filter(|n| n.as_str() != name).cloned().collect()
     } else {
@@ -124,17 +130,116 @@ pub fn toggle_name(names: &[String], tool: ToolId) -> Vec<String> {
     }
 }
 
+/// The global's key: the dynamic tools scripts registered, identifier to `{name, URL}`
+/// (`TBV:87-89`).
+pub const DYNAMIC_TOOLS_KEY: &str = "NoSyncDynamicTools";
+const DYNAMIC_NAME: &str = "name";
+const DYNAMIC_URL: &str = "URL";
+
+/// A tool a script registered with RegisterTool: a web view in iTerm2 (`ToolWebView`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DynamicTool {
+    pub identifier: String,
+    pub name: String,
+    pub url: String,
+}
+
+/// `NoSyncDynamicTools` read back, in identifier order; entries without a name or URL are
+/// skipped.
+pub fn dynamic_tools(v: Option<&Value>) -> Vec<DynamicTool> {
+    let Some(t) = v.and_then(Value::as_table) else { return Vec::new() };
+    t.iter()
+        .filter_map(|(id, e)| {
+            let name = e.get(DYNAMIC_NAME)?.as_str()?;
+            let url = e.get(DYNAMIC_URL)?.as_str()?;
+            Some(DynamicTool { identifier: id.clone(), name: name.to_string(), url: url.to_string() })
+        })
+        .collect()
+}
+
+/// A URL's host as `NSURL.host` gives it: the authority after `scheme://`, without user info
+/// or port. None for a string that is not a URL (no scheme, a space or control character) and
+/// for one without a host (`about:blank`, `file:///x`).
+pub fn url_host(url: &str) -> Option<&str> {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let (scheme, rest) = url.split_once(':')?;
+    let mut sc = scheme.chars();
+    if !sc.next().is_some_and(|c| c.is_ascii_alphabetic()) || !sc.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+        return None;
+    }
+    let rest = rest.strip_prefix("//")?;
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = match hostport.strip_prefix('[') {
+        Some(v6) => v6.split_once(']')?.0,
+        None => hostport.split_once(':').map_or(hostport, |(h, _)| h),
+    };
+    (!host.is_empty()).then_some(host)
+}
+
+/// RegisterTool's status (`H:2216-2243`): a missing name, identifier or URL, or a URL without
+/// a host, is REQUEST_MALFORMED; a built-in tool's name PERMISSION_DENIED; otherwise OK.
+pub fn register_tool_status(r: &crate::api_proto::pb::RegisterToolRequest) -> crate::api_proto::pb::register_tool_response::Status {
+    use crate::api_proto::pb::register_tool_response::Status;
+    let (Some(name), Some(_), Some(url)) = (&r.name, &r.identifier, &r.url) else { return Status::RequestMalformed };
+    if url_host(url).is_none() {
+        Status::RequestMalformed
+    } else if ToolId::from_name(name).is_some() {
+        Status::PermissionDenied
+    } else {
+        Status::Ok
+    }
+}
+
+/// `registerDynamicToolWithIdentifier:` (`TBV:154-186`) over the registry and the configured
+/// names: the same name and URL again only shows the tool, when `reveal` and it is not
+/// configured; otherwise the registry gets the entry, the identifier's old name is hidden when
+/// shown, and the new name is shown when not. Returns the new registry when it changed, and
+/// the new configured names.
+pub fn register_dynamic(registry: Option<&Value>, names: &[String], identifier: &str, name: &str, url: &str, reveal: bool) -> (Option<Value>, Vec<String>) {
+    let table = registry.and_then(Value::as_table);
+    let old = table.and_then(|t| t.get(identifier));
+    let old_name = old.and_then(|e| e.get(DYNAMIC_NAME)).and_then(Value::as_str);
+    let old_url = old.and_then(|e| e.get(DYNAMIC_URL)).and_then(Value::as_str);
+    let configured = |names: &[String], n: &str| names.iter().any(|x| x == n);
+    if old_url == Some(url) && old_name == Some(name) {
+        let names = if reveal && !configured(names, name) { toggle_named(names, name) } else { names.to_vec() };
+        return (None, names);
+    }
+    let mut t = table.cloned().unwrap_or_default();
+    let mut entry = Table::new();
+    entry.insert(DYNAMIC_NAME.into(), Value::String(name.to_string()));
+    entry.insert(DYNAMIC_URL.into(), Value::String(url.to_string()));
+    t.insert(identifier.to_string(), Value::Table(entry));
+    let mut names = names.to_vec();
+    if let Some(old_name) = old_name.filter(|n| configured(&names, n)) {
+        names = toggle_named(&names, old_name);
+    }
+    if !configured(&names, name) {
+        names = toggle_named(&names, name);
+    }
+    (Some(Value::Table(t)), names)
+}
+
+/// The Toolbelt menu and the hamburger's list order: every built-in tool and every dynamic
+/// one, sorted by display name ignoring case (`localizedStandardCompare:`, `TBV:227-254`); a
+/// dynamic name listed twice appears once.
+pub fn all_tool_names(dynamic: &[DynamicTool]) -> Vec<String> {
+    let mut v: Vec<String> = ToolId::ALL.iter().map(|t| t.name().to_string()).collect();
+    for d in dynamic {
+        if !v.contains(&d.name) {
+            v.push(d.name.clone());
+        }
+    }
+    v.sort_by_key(|n| n.to_lowercase());
+    v
+}
+
 /// The stored-name list as a TOML value, for writing back to the global.
 pub fn names_value(names: &[String]) -> Value {
     Value::Array(names.iter().map(|n| Value::String(n.clone())).collect())
-}
-
-/// The Toolbelt menu and the hamburger's list order: every tool, sorted by display name
-/// ignoring case (`localizedStandardCompare:`, `TBV:227-254`).
-pub fn menu_order() -> Vec<ToolId> {
-    let mut v = ToolId::ALL.to_vec();
-    v.sort_by(|a, b| a.name().to_lowercase().cmp(&b.name().to_lowercase()));
-    v
 }
 
 /// The toolbelt's width limit: at most half the window's content width, at least the smaller
@@ -281,9 +386,8 @@ mod tests {
         let notes_and_profiles = vec!["Notes".to_string(), "Profiles".to_string()];
         assert_eq!(toggle_name(&notes_and_profiles, ToolId::Profiles), vec!["Notes".to_string()]);
 
-        let order = menu_order();
+        let order: Vec<ToolId> = all_tool_names(&[]).iter().filter_map(|n| ToolId::from_name(n)).collect();
         assert_eq!(order.len(), 12);
-        assert_eq!(&order[..4], &[ToolId::Actions, ToolId::CapturedOutput, ToolId::Codecierge, ToolId::CommandHistory]);
         assert_eq!(
             order,
             vec![
@@ -303,6 +407,80 @@ mod tests {
         );
 
         assert_eq!(NO_TOOLS, "No Tools enabled. Select them from the menu above.");
+    }
+
+    #[test]
+    fn register_tool_follows_iterm2() {
+        use crate::api_proto::pb;
+        use pb::register_tool_response::Status;
+        let req = |name: Option<&str>, identifier: Option<&str>, url: Option<&str>| pb::RegisterToolRequest {
+            name: name.map(str::to_string),
+            identifier: identifier.map(str::to_string),
+            url: url.map(str::to_string),
+            ..Default::default()
+        };
+        assert_eq!(register_tool_status(&req(None, Some("id"), Some("https://example.com/x"))), Status::RequestMalformed);
+        assert_eq!(register_tool_status(&req(Some("My Tool"), None, Some("https://example.com/x"))), Status::RequestMalformed);
+        assert_eq!(register_tool_status(&req(Some("My Tool"), Some("id"), None)), Status::RequestMalformed);
+        assert_eq!(register_tool_status(&req(Some("My Tool"), Some("id"), Some("file:///c/x"))), Status::RequestMalformed);
+        assert_eq!(register_tool_status(&req(Some("My Tool"), Some("id"), Some("not a url"))), Status::RequestMalformed);
+        assert_eq!(register_tool_status(&req(Some("Profiles"), Some("id"), Some("https://example.com/x"))), Status::PermissionDenied);
+        assert_eq!(register_tool_status(&req(Some("My Tool"), Some("id"), Some("https://example.com/x"))), Status::Ok);
+
+        assert_eq!(url_host("https://user@example.com:8080/p"), Some("example.com"));
+        assert_eq!(url_host("https://example.com"), Some("example.com"));
+        assert_eq!(url_host("http://localhost:9000?q#f"), Some("localhost"));
+        assert_eq!(url_host("about:blank"), None);
+        assert_eq!(url_host("file:///c/x"), None);
+        assert_eq!(url_host("not a url"), None);
+        assert_eq!(url_host("https://a b/"), None);
+        assert_eq!(url_host("example.com/x"), None);
+    }
+
+    #[test]
+    fn dynamic_tools_follow_iterm2() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        let profiles = s(&["Profiles"]);
+        let (reg, names) = register_dynamic(None, &profiles, "id1", "Web", "https://a", false);
+        let reg = reg.expect("a new registry");
+        let expected: Value = toml::from_str::<Table>("[id1]\nname = \"Web\"\nURL = \"https://a\"\n").map(Value::Table).unwrap();
+        assert_eq!(reg, expected);
+        assert_eq!(names, s(&["Profiles", "Web"]));
+        assert_eq!(dynamic_tools(Some(&reg)), vec![DynamicTool { identifier: "id1".into(), name: "Web".into(), url: "https://a".into() }]);
+        assert!(dynamic_tools(None).is_empty());
+
+        // The same name and URL again: nothing saved, the names as they were...
+        assert_eq!(register_dynamic(Some(&reg), &names, "id1", "Web", "https://a", false), (None, names.clone()));
+        assert_eq!(register_dynamic(Some(&reg), &profiles, "id1", "Web", "https://a", false), (None, profiles.clone()));
+        // ...unless asked to reveal a tool that is not configured.
+        assert_eq!(register_dynamic(Some(&reg), &profiles, "id1", "Web", "https://a", true), (None, s(&["Profiles", "Web"])));
+        assert_eq!(register_dynamic(Some(&reg), &names, "id1", "Web", "https://a", true), (None, names.clone()));
+
+        // A new name for the identifier: the old name hides, the new one shows.
+        let shown = s(&["Web", "Profiles"]);
+        let (reg2, names2) = register_dynamic(Some(&reg), &shown, "id1", "Web 2", "https://a", false);
+        let reg2 = reg2.expect("a changed registry");
+        assert_eq!(names2, s(&["Profiles", "Web 2"]));
+        assert_eq!(dynamic_tools(Some(&reg2)), vec![DynamicTool { identifier: "id1".into(), name: "Web 2".into(), url: "https://a".into() }]);
+        // A new URL under the same name: hidden and shown again, so it moves to the bottom.
+        let (reg3, names3) = register_dynamic(Some(&reg), &shown, "id1", "Web", "https://b", false);
+        assert!(reg3.is_some());
+        assert_eq!(names3, s(&["Profiles", "Web"]));
+        // A second identifier joins the first.
+        let (reg4, _) = register_dynamic(Some(&reg), &names, "id2", "Other", "https://o", false);
+        assert_eq!(dynamic_tools(reg4.as_ref()).len(), 2);
+
+        let all = all_tool_names(&dynamic_tools(Some(&reg)));
+        assert_eq!(all.len(), 13);
+        let web = all.iter().position(|n| n == "Web").unwrap();
+        assert_eq!(all[web - 1], "Snippets");
+        assert_eq!(&all[..3], &s(&["Actions", "Captured Output", "Codecierge"])[..]);
+        let lower = all_tool_names(&[DynamicTool { identifier: "x".into(), name: "codex".into(), url: "https://c".into() }]);
+        assert_eq!(&lower[2..5], &s(&["Codecierge", "codex", "Command History"])[..]);
+
+        assert!(toggle_named(&s(&["Web"]), "Web").is_empty());
+        assert_eq!(toggle_named(&profiles, "Web"), s(&["Profiles", "Web"]));
+        assert_eq!(DYNAMIC_TOOLS_KEY, "NoSyncDynamicTools");
     }
 
     #[test]

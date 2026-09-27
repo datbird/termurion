@@ -298,6 +298,15 @@ default = false
 help = "Lets programs put text on the clipboard with OSC 52 and OSC 1337 Copy. A program that asks to read the clipboard is asked about separately."
 
 [[setting]]
+key = "maximumBytesToProvideToPythonAPI"
+tab = "Advanced"
+section = "General"
+label = "Maximum number of bytes of selection to provide to Python API."
+type = "int"
+default = 100
+help = "Maximum number of bytes of selection to provide to Python API.\nA large value here can cause performance issues when you have a big selection."
+
+[[setting]]
 key = "disablePotentiallyInsecureEscapeSequences"
 tab = "Advanced"
 section = "General"

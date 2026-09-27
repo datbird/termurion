@@ -17,7 +17,8 @@
 //! preset until milestone 13 (`api_misc`); session NotificationRequests subscribe sessions
 //! to keystrokes, the keystroke filter, screen updates, prompts and custom escape sequences
 //! (`api_notify`); function registrations and the scripts' results to calls go to the
-//! function registry (`script_fn`); InvokeFunction runs an invocation (`script_ui`).
+//! function registry (`script_fn`); InvokeFunction runs an invocation (`script_ui`); RegisterTool
+//! adds a dynamic tool to the Toolbelt menu (`toolbelt_ui`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -156,6 +157,7 @@ impl App {
             }
             Some(Req::InvokeFunctionRequest(r)) => self.api_invoke_function(conn, req, r),
             Some(Req::StatusBarComponentRequest(r)) => self.api_status_bar_component(req, r, event_loop),
+            Some(Req::RegisterToolRequest(r)) => reply(req, Resp::RegisterToolResponse(pb::RegisterToolResponse { status: Some(self.api_register_tool(r) as i32) })),
             _ => Answer::Now(api_proto::malformed(req)),
         };
         if let Some(b) = back {
