@@ -43,11 +43,9 @@ pub(super) enum Origin {
         conn: u64,
         req: pb::ClientOriginatedMessage,
     },
-    // Constructed by the callers of Tasks 5 to 9.
-    #[allow(dead_code)]
     Report(String),
-    #[allow(dead_code)]
     OpenQuickly,
+    // Constructed by the callers of Tasks 6 to 9.
     #[allow(dead_code)]
     Title(PaneId),
     #[allow(dead_code)]
@@ -71,6 +69,13 @@ pub(super) struct Run {
     pub receiver: Option<String>,
 }
 
+/// The origin names of the callers (`PS:12220-12224`, `PS:13431-13433`, `PS:25443-25452`,
+/// `OQW:492`).
+pub(super) const TRIGGER: &str = "Trigger";
+pub(super) const KEY_BINDING: &str = "Key Binding";
+pub(super) const POINTER_ACTION: &str = "Pointer action";
+pub(super) const OPEN_QUICKLY: &str = "Open Quickly";
+
 /// An alert waiting to show: a failed call's heading and text, or an invocation's result
 /// (Open Quickly, Task 5).
 #[derive(Clone, Debug, PartialEq)]
@@ -79,7 +84,6 @@ pub(super) enum Alert {
         heading: String,
         text: String,
     },
-    #[allow(dead_code)]
     Result(String),
 }
 
@@ -216,6 +220,12 @@ fn receiver_scope(on: builtin_fns::On, key: u64) -> ScopeSpec {
 }
 
 impl App {
+    /// The session scope of `pane`, else the app's (key action 60 with no session,
+    /// `PS:11799-11813`; Open Quickly with no current session, `OQM:950-1003`).
+    pub(super) fn session_or_app(pane: Option<PaneId>) -> ScopeSpec {
+        pane.map_or(ScopeSpec::App, |pane| ScopeSpec::Session { pane, frame: Values::new() })
+    }
+
     /// Starts an invocation (`callFunction`, `SFC:203-276`) and takes its first step. The
     /// run's id while it waits; None when it finished at once (its result already went to
     /// its origin), including a syntax error or a receiver that names no object.
@@ -361,8 +371,13 @@ impl App {
                     self.report_function_error(name, invocation, &f);
                 }
             }
-            // The callers of Tasks 5 to 9 take their results there.
-            Origin::OpenQuickly | Origin::Title(_) | Origin::Component { .. } | Origin::Click | Origin::Template { .. } | Origin::Quiet => {}
+            // `OQW:481-503`: a failure reported as Open Quickly's, a value shown.
+            Origin::OpenQuickly => match r {
+                Ok(v) => self.script_alerts.push_back(Alert::Result(script_eval::result_text(invocation, &v))),
+                Err(f) => self.report_function_error(OPEN_QUICKLY, invocation, &f),
+            },
+            // The callers of Tasks 6 to 9 take their results there.
+            Origin::Title(_) | Origin::Component { .. } | Origin::Click | Origin::Template { .. } | Origin::Quiet => {}
         }
     }
 

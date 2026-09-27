@@ -235,6 +235,12 @@ impl App {
                 }
             }
             72 => self.copy_interpolated(&b.text),
+            // Invoke Script Function (`PS:12220-12224`, `PS:11799-11813`): the focused
+            // session's scope, else the app's, no timeout.
+            60 => {
+                let scope = Self::session_or_app(self.focused_id());
+                self.invoke(&b.text, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::Report(super::script_ui::KEY_BINDING.into()));
+            }
             // Toggle Pin Hotkey Window: the session's profile (its saved original) flips.
             43 => {
                 if let Some(g) = self.focused_guid() {
@@ -442,6 +448,11 @@ impl App {
                 }
             }
             "kPasteFromClipboardPointerAction" => self.paste(),
+            // `textViewInvokeScriptFunction:` (`PS:13431-13433`): the clicked session's scope.
+            "kInvokeScriptFunction" => {
+                let scope = Self::session_or_app(Some(pane));
+                self.invoke(&b.argument, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::Report(super::script_ui::POINTER_ACTION.into()));
+            }
             "kPasteFromSelectionPointerAction" => {
                 let sel = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string());
                 if let (Some(s), Some(id)) = (sel, self.focused_id()) {

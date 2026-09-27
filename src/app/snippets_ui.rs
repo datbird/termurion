@@ -192,6 +192,11 @@ impl App {
                 37 => self.set_profile_on(t, &b.text),
                 41 | 42 => self.paste_special_in(t, b),
                 73 => self.copy_mode_commands_in(t, &b.text),
+                // Invoke Script Function: once in each target session's scope.
+                60 => {
+                    let scope = Self::session_or_app(Some(t));
+                    self.invoke(&b.text, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::Report(super::script_ui::KEY_BINDING.into()));
+                }
                 // The text actions: each target gets the text once (its own broadcasting
                 // does not repeat it).
                 _ => {

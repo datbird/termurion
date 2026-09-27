@@ -479,6 +479,28 @@ pub const REVEAL_IN_CONSOLE: &str = "Reveal in Script Console";
 /// The heading of an invocation's result shown by Open Quickly (`OQW:494`).
 pub const RESULT_HEADING: &str = "Function Call Result";
 
+/// The body of Open Quickly's result alert (`OQW:495`): the value as NSObject's
+/// `description` prints it (null "(null)").
+pub fn result_text(invocation: &str, v: &Value) -> String {
+    let value = if v.is_null() { "(null)".to_string() } else { expr::to_text(v) };
+    format!("{invocation} returned:\n{value}")
+}
+
+/// The temporary values an Invoke Script Function trigger adds to the session's scope
+/// (`Triggers/iTermRPCTrigger.m:55-78`, `PS:25443-25452`): its captured strings, their
+/// ranges as `[location, length]` pairs, the line's text and its absolute number, and the
+/// captures again as `matches` (the backreferences).
+pub fn trigger_frame(captures: &[String], ranges: &[(usize, usize)], input: &str, line: i64) -> Values {
+    let pairs: Vec<Value> = ranges.iter().map(|(at, len)| serde_json::json!([at, len])).collect();
+    Values::from([
+        ("trigger.captured_strings".to_string(), serde_json::json!(captures)),
+        ("trigger.captured_ranges".to_string(), Value::Array(pairs)),
+        ("trigger.input".to_string(), Value::from(input)),
+        ("trigger.line_number".to_string(), Value::from(line)),
+        ("matches".to_string(), serde_json::json!(captures)),
+    ])
+}
+
 /// What an InvokeFunctionRequest runs in: the app, a tab by id, a window by Registry key, a
 /// session by pane, or a method's receiver id.
 #[derive(Clone, Debug, PartialEq)]
@@ -803,6 +825,29 @@ mod tests {
         assert_eq!(invoke_target(&req(Some(Context::Method(Method { receiver: None })), None), &s), err(Status::RequestMalformed, "No receiver"));
         assert_eq!(invoke_target(&req(Some(Context::Method(Method { receiver: Some("7".into()) })), None), &s), Ok((Target::Method("7".into()), thirty)));
         assert_eq!(invoke_target(&req(None, None), &s), err(Status::RequestMalformed, "Invalid context"));
+    }
+
+    #[test]
+    fn trigger_invocation_follows_iterm2() {
+        let caps = ["ab".to_string(), "b".to_string()];
+        let f = trigger_frame(&caps, &[(0, 2), (1, 1)], "xab", 7);
+        assert_eq!(f.get("trigger.captured_strings"), Some(&json!(["ab", "b"])));
+        assert_eq!(f.get("trigger.captured_ranges"), Some(&json!([[0, 2], [1, 1]])));
+        assert_eq!(f.get("trigger.input"), Some(&json!("xab")));
+        assert_eq!(f.get("trigger.line_number"), Some(&json!(7)));
+        assert_eq!(f.get("matches"), Some(&json!(["ab", "b"])));
+        assert_eq!(f.len(), 5);
+        // Through an invocation, the frame over a scope: `matches[1]` is the first group.
+        let base = scope();
+        let l = Layered { frame: &f, base: &base };
+        for (text, want) in [("matches[1]", json!("b")), ("trigger.line_number + columns", json!(87)), ("trigger.captured_ranges[1]", json!([1, 1]))] {
+            let e = expr::parse_expression(text).unwrap();
+            assert_eq!(expr::eval(&e, &l, &mut expr::NoCalls, &expr::Ctx { invocation: "", lax: true }), Outcome::Done(want), "{text}");
+        }
+        assert_eq!(result_text("f()", &json!(3)), "f() returned:\n3");
+        assert_eq!(result_text("f()", &Value::Null), "f() returned:\n(null)");
+        assert_eq!(result_text("f()", &json!("hi")), "f() returned:\nhi");
+        assert_eq!(result_text("f()", &json!(true)), "f() returned:\n1");
     }
 
     #[test]

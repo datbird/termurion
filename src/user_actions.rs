@@ -99,7 +99,7 @@ pub fn shows_apply_mode(action: i64) -> bool {
 
 /// Actions Tandem runs once per target session.
 pub fn fans_out(action: i64) -> bool {
-    matches!(action, 10 | 11 | 12 | 35 | 36 | 37 | 38 | 41 | 42 | 63 | 73 | 76)
+    matches!(action, 10 | 11 | 12 | 35 | 36 | 37 | 38 | 41 | 42 | 60 | 63 | 73 | 76)
 }
 
 /// iTerm2's sessionsForActionApplyMode. An empty `broadcast` means broadcasting is off.

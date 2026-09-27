@@ -44,8 +44,27 @@ pub enum TriggerRequest {
     /// placeholder or an empty one opens without an account, `pwm_prompt::trigger_param`).
     OpenPasswordManager(String),
     Unavailable { trigger: usize, title: String, milestone: u8 },
+    /// Invoke Script Function: the raw parameter, the match's groups (a group that did not
+    /// match ""), their UTF-16 ranges in the line, the line's text and its row.
+    Invoke { invocation: String, captures: Vec<String>, ranges: Vec<(usize, usize)>, input: String, line: i64 },
     /// An interpolated parameter that cannot be evaluated (shown once).
     ParameterError { trigger: usize, text: String },
+}
+
+/// A group that did not match starts here (NSNotFound on 64-bit Windows and macOS).
+pub const NOT_FOUND: usize = i64::MAX as usize;
+
+/// UTF-16 `(location, length)` of byte spans in `line`, as NSRange counts them; a group that
+/// did not match is `(NOT_FOUND, 0)`.
+pub fn utf16_ranges(line: &str, spans: &[Option<(usize, usize)>]) -> Vec<(usize, usize)> {
+    let units = |s: &str| s.encode_utf16().count();
+    spans.iter().map(|s| s.map_or((NOT_FOUND, 0), |(a, b)| (units(&line[..a]), units(&line[a..b])))).collect()
+}
+
+/// An action whose parameter is used as written: Invoke Script Function's is the invocation
+/// (`iTermRPCTrigger.m:62`, no backreferences or interpolation).
+pub(crate) fn raw_parameter(action: &str) -> bool {
+    action == "iTermRPCTrigger"
 }
 
 /// A trigger with its compiled pattern (or the pattern's error).
@@ -430,14 +449,19 @@ impl Screen {
             }
             let re = c.re.clone().expect("checked above");
             let param = t.parameter.clone();
+            let raw = raw_parameter(&t.action);
             let mut fired = false;
             let mut stop = false;
             for caps in re.captures_iter(&line.text) {
                 let Ok(caps) = caps else { break };
                 let Some(m) = caps.get(0).filter(|m| m.start() < m.end()) else { continue };
                 let groups: Vec<Option<&str>> = (0..caps.len()).map(|g| caps.get(g).map(|m| m.as_str())).collect();
-                // iTerm2 interpolates only a parameter holding an expression.
-                let value = if self.triggers.prefs.interpolated && param.contains("\\(") {
+                let spans: Vec<Option<(usize, usize)>> = (0..caps.len()).map(|g| caps.get(g).map(|m| (m.start(), m.end()))).collect();
+                // iTerm2 interpolates only a parameter holding an expression; Invoke Script
+                // Function takes its parameter as written.
+                let value = if raw {
+                    param.clone()
+                } else if self.triggers.prefs.interpolated && param.contains("\\(") {
                     match crate::interp::evaluate(&param, &|n| self.trigger_var(n, row), &groups) {
                         Ok(v) => v,
                         Err(e) => {
@@ -452,7 +476,8 @@ impl Screen {
                     triggers::substitute(&param, &groups)
                 };
                 fired = true;
-                match self.trigger_action(i, &value, (m.start(), m.end()), &line, row, &groups) {
+                let ranges = utf16_ranges(&line.text, &spans);
+                match self.trigger_action(i, &value, (m.start(), m.end()), &line, row, &groups, &ranges) {
                     Flow::More => {}
                     Flow::Done => break,
                     Flow::StopAll => {
@@ -470,11 +495,15 @@ impl Screen {
         }
     }
 
-    /// An event trigger's action, on the cursor's line. True to stop the rest.
+    /// An event trigger's action, on the cursor's line; its captured strings are all at
+    /// `(0, 0)`, and with none there is one empty one (`VT100Screen.m:2168-2182`). True to
+    /// stop the rest.
     pub(crate) fn run_event_action(&mut self, i: usize, value: &str, groups: &[Option<&str>]) -> bool {
         let line = self.logical_line(self.term.grid().cursor.point.line.0);
         let row = self.cursor_row();
-        matches!(self.trigger_action(i, value, (0, 0), &line, row, groups), Flow::StopAll)
+        let groups = if groups.is_empty() { &[Some("")][..] } else { groups };
+        let ranges = vec![(0, 0); groups.len()];
+        matches!(self.trigger_action(i, value, (0, 0), &line, row, groups, &ranges), Flow::StopAll)
     }
 
     /// The cells of a match: (line, column), from byte offsets in the logical line.
@@ -494,8 +523,10 @@ impl Screen {
 
     /// Runs trigger `i`'s action on a match (byte range in the line). `row` is the line's
     /// absolute row number and `groups` its capture groups (event triggers pass their own
-    /// captured strings; a plain regex match its `captures_iter` groups).
-    fn trigger_action(&mut self, i: usize, value: &str, span: (usize, usize), line: &LineText, row: i64, groups: &[Option<&str>]) -> Flow {
+    /// captured strings; a plain regex match its `captures_iter` groups) and `ranges` their
+    /// UTF-16 ranges.
+    #[allow(clippy::too_many_arguments)]
+    fn trigger_action(&mut self, i: usize, value: &str, span: (usize, usize), line: &LineText, row: i64, groups: &[Option<&str>], ranges: &[(usize, usize)]) -> Flow {
         let raw = self.triggers.list[i].trigger.action.clone();
         let Some(info) = triggers::action_info(&raw) else {
             self.requests.push(Request::Trigger(TriggerRequest::Unavailable { trigger: i, title: raw, milestone: 0 }));
@@ -646,6 +677,12 @@ impl Screen {
             "ScriptTrigger" => ask(self, TriggerRequest::RunCommand(value.to_string())),
             "iTermSetTitleTrigger" => ask(self, TriggerRequest::SetTitle(value.to_string())),
             "PasswordTrigger" => ask(self, TriggerRequest::OpenPasswordManager(value.to_string())),
+            // Every match on the line invokes (`iTermRPCTrigger.m:78` returns YES).
+            "iTermRPCTrigger" => {
+                let captures = groups.iter().map(|g| g.unwrap_or("").to_string()).collect();
+                self.requests.push(Request::Trigger(TriggerRequest::Invoke { invocation: value.to_string(), captures, ranges: ranges.to_vec(), input: line.text.clone(), line: row }));
+                Flow::More
+            }
             "iTermSetTabStatusTrigger" => {
                 let mut parts = value.splitn(3, '\u{1}');
                 let (dot, text, status) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
@@ -1153,6 +1190,48 @@ mod tests {
             Request::Trigger(t) => Some(t),
             _ => None,
         }).collect()
+    }
+
+    #[test]
+    fn invoke_trigger_asks_the_window() {
+        let want = |input: &str| TriggerRequest::Invoke { invocation: "f(x: matches[1])".into(), captures: vec!["ab".into(), "b".into()], ranges: vec![(1, 2), (2, 1)], input: input.into(), line: 0 };
+        let mut s = one("a(b)", "iTermRPCTrigger", "f(x: matches[1])", b"xab\r\n");
+        assert_eq!(trigger_requests(&mut s), vec![want("xab")]);
+        // Each match on the line invokes.
+        let mut s = one("a(b)", "iTermRPCTrigger", "f(x: matches[1])", b"\r\n\r\nabab\r\n");
+        let got = trigger_requests(&mut s);
+        let ranges: Vec<_> = got.iter().filter_map(|r| match r {
+            TriggerRequest::Invoke { ranges, line, input, .. } if input == "abab" && *line == 2 => Some(ranges.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(ranges, vec![vec![(0, 2), (1, 1)], vec![(2, 2), (3, 1)]], "{got:?}");
+        // The raw parameter, never interpolated nor substituted (`iTermRPCTrigger.m:62`).
+        for param in ["f(x: \"\\(bogus)\")", "f(x: \"\\1\")"] {
+            let mut s = Screen::new(40, 5);
+            s.set_triggers(vec![trig("a(b)", "iTermRPCTrigger", param, false)], TriggerPrefs { interactive: false, interpolated: true });
+            s.feed(b"xab\r\n");
+            let got = trigger_requests(&mut s);
+            assert!(matches!(got.as_slice(), [TriggerRequest::Invoke { invocation, .. }] if invocation == param), "{got:?}");
+        }
+        // A group that did not match is "" at NSNotFound.
+        let mut s = one("a(b)?(c)", "iTermRPCTrigger", "f()", b"ac\r\n");
+        let got = trigger_requests(&mut s);
+        assert!(
+            matches!(got.as_slice(), [TriggerRequest::Invoke { captures, ranges, .. }] if captures == &["ac", "", "c"] && ranges == &[(0, 2), (NOT_FOUND, 0), (1, 1)]),
+            "{got:?}"
+        );
+        // An event trigger: its captured strings at (0, 0), the cursor's line.
+        let mut s = Screen::new(40, 5);
+        let mut t = trig("", "iTermRPCTrigger", "g()", false);
+        t.match_type = crate::trigger_events::EventKind::VariableChanged.match_type();
+        s.set_triggers(vec![t], TriggerPrefs::default());
+        s.feed(b"$ ");
+        s.set_user_var("n", "1".into());
+        assert_eq!(trigger_requests(&mut s), vec![TriggerRequest::Invoke { invocation: "g()".into(), captures: vec!["1".into(), "user.n".into()], ranges: vec![(0, 0), (0, 0)], input: "$ ".into(), line: 0 }]);
+        // UTF-16 units: a character outside the Basic Multilingual Plane is two.
+        let line = "\u{1F600}ab\u{e9}c";
+        let b = line.find('b').unwrap();
+        assert_eq!(utf16_ranges(line, &[Some((0, line.len())), Some((b, b + 1)), None]), vec![(0, 6), (3, 1), (NOT_FOUND, 0)]);
     }
 
     #[test]

@@ -94,6 +94,12 @@ impl App {
                 self.tools_changed();
                 self.redraw();
             }
+            // `PS:25443-25452`: the session's scope with the trigger's values, no timeout.
+            TriggerRequest::Invoke { invocation, captures, ranges, input, line } => {
+                let frame = crate::script_eval::trigger_frame(&captures, &ranges, &input, line);
+                let scope = super::script_ui::ScopeSpec::Session { pane, frame };
+                self.invoke(&invocation, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::Report(super::script_ui::TRIGGER.into()));
+            }
             TriggerRequest::ParameterError { trigger, text } => self.tell_once(pane, &format!("parameter-{trigger}"), &format!("Error in Trigger Parameter: {text}")),
             TriggerRequest::Unavailable { title, milestone, .. } => {
                 let text = if milestone == 0 { format!("The trigger action \u{201c}{title}\u{201d} is not available in Tandem yet.") } else { format!("The trigger action \u{201c}{title}\u{201d} comes in milestone {milestone}.") };

@@ -38,6 +38,7 @@ fn icon(kind: &ItemKind) -> char {
         ItemKind::Snippet(_) => '\u{E8BD}',
         ItemKind::NamedMark { .. } => '\u{E8A4}',
         ItemKind::MenuItem(_) => '\u{E700}',
+        ItemKind::Invocation(_) => '\u{E943}',
     }
 }
 
@@ -155,8 +156,10 @@ impl App {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
-        let (sources, snippet_guids, actions) = (self.quickly_sources(), self.quickly_snippets().into_iter().map(|i| self.snippets.snippets[i].guid.clone()).collect(), self.quickly_actions());
+        let (mut sources, snippet_guids, actions) = (self.quickly_sources(), self.quickly_snippets().into_iter().map(|i| self.snippets.snippets[i].guid.clone()).collect(), self.quickly_actions());
         let Some(q) = self.open_quickly.as_mut() else { return };
+        // The whole query, when it is a call or a call sequence (`OQM:916-923`).
+        sources.invocation = crate::expr::parse_calls(q.window.query()).ok().map(|_| q.window.query().to_string());
         let items = open_quickly::items(q.window.query(), &sources);
         q.window.set_items(items.iter().map(row_of).collect());
         q.items = items;
@@ -453,6 +456,11 @@ impl App {
                     self.mark_pos.insert(*pane, *mark);
                 }
                 self.redraw();
+            }
+            // `OQW:481-503`: in the current session's scope (else the app's), no timeout.
+            ItemKind::Invocation(text) => {
+                let scope = Self::session_or_app(self.focused_id());
+                self.invoke(text, scope, crate::script_eval::Timeout::Never, true, super::script_ui::Origin::OpenQuickly);
             }
             ItemKind::MenuItem(id) => {
                 // On the next turn, after the palette is gone; the command runs only if it

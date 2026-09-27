@@ -130,7 +130,7 @@ pub const CATALOG: &[ActionInfo] = &[
     act("iTermHighlightLineTrigger", "Highlight Line\u{2026}", Kind::TwoColors, "", true),
     ActionInfo { multi_fire: true, ..act("HighlightTrigger", "Highlight Text\u{2026}", Kind::TwoColors, "", true) },
     act("iTermInjectTrigger", "Inject Data\u{2026}", Kind::Text, "Use \\e for esc, \\a for ^G.", false),
-    ActionInfo { later: Some(11), ..act("iTermRPCTrigger", "Invoke Script Function", Kind::Text, "Function call", false) },
+    act("iTermRPCTrigger", "Invoke Script Function", Kind::Text, "Function call", false),
     act("iTermHyperlinkTrigger", "Make Hyperlink\u{2026}", Kind::Text, "https://\\0", true),
     act("PasswordTrigger", "Open Password Manager\u{2026}", Kind::Accounts, "", false),
     act("iTermUserNotificationTrigger", "Post Notification\u{2026}", Kind::Text, "Enter Message", false),
@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(action_info("GrowlTrigger").map(|a| a.title), Some("Post Notification\u{2026}"), "iTerm2's synonym");
         assert_eq!(action_info("iTermSGRTrigger").map(|a| a.kind), Some(Kind::Text));
         assert_eq!(action_info("CaptureTrigger").and_then(|a| a.later), None);
-        assert_eq!(action_info("iTermRPCTrigger").and_then(|a| a.later), Some(11));
+        assert_eq!(action_info("iTermRPCTrigger").and_then(|a| a.later), None);
         assert_eq!(action_info("PasswordTrigger").and_then(|a| a.later), None);
         assert_eq!(action_info("PasswordTrigger").map(|a| (a.kind, a.idempotent)), Some((Kind::Accounts, false)));
         assert!(action_info("HighlightTrigger").is_some_and(|a| a.idempotent && a.multi_fire));

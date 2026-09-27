@@ -291,7 +291,9 @@ impl Screen {
         let Some(c) = self.triggers.list.get(i) else { return false };
         let param = c.trigger.parameter.clone();
         let groups: Vec<Option<&str>> = captures.iter().map(|s| Some(s.as_str())).collect();
-        let value = if self.triggers.prefs.interpolated && param.contains("\\(") {
+        let value = if crate::trigger_eval::raw_parameter(&c.trigger.action) {
+            param.clone()
+        } else if self.triggers.prefs.interpolated && param.contains("\\(") {
             match crate::interp::evaluate(&param, &|n| self.trigger_var(n, 0), &groups) {
                 Ok(v) => v,
                 Err(e) => {

@@ -378,7 +378,6 @@ pub fn status(code: i64) -> Status {
     match code {
         44 | 62 => Status::Later(7),
         40 => Status::Later(13),
-        60 => Status::Later(11),
         _ => Status::Done,
     }
 }
@@ -443,6 +442,7 @@ mod tests {
         assert_eq!((status(35), status(72)), (Status::Done, Status::Done), "Run Coprocess and Copy Interpolated String arrive in 6c");
         assert_eq!(status(45), Status::Done);
         assert_eq!(status(57), Status::Done);
+        assert_eq!(status(60), Status::Done, "11c: Invoke Script Function");
     }
 
     #[test]

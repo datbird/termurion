@@ -308,6 +308,8 @@ pub enum ItemKind {
     Snippet(usize),
     NamedMark { pane: u64, mark: u32 },
     MenuItem(String),
+    /// A script function invocation: the whole query (`OQM:699-716`).
+    Invocation(String),
 }
 
 /// One ranked result: its score, its display title with the query-matched char indexes to bold,
@@ -371,6 +373,8 @@ pub struct Sources {
     pub named_marks: Vec<(u64, u32, String, bool)>,
     /// (id, title, menu path, alternate).
     pub menu_items: Vec<(String, String, Vec<String>, bool)>,
+    /// The whole query when it parses as a call or a call sequence (`OQM:950-1003`).
+    pub invocation: Option<String>,
 }
 
 /// The most results kept, highest score first (`kMaxItems`).
@@ -396,6 +400,10 @@ pub const ALT_MENU_DETAIL: &str = "Alternate menu item under {}";
 /// yet (color presets are milestone 13; the source is empty).
 pub const COLOR_PRESET_DETAIL: &str = "Load color preset \u{201d}{}\u{201c}";
 pub const UNTITLED: &str = "Untitled";
+/// An invocation item's detail (`OQM:705`).
+pub const INVOKE_DETAIL: &str = "Invoke";
+/// An invocation's multiplier (`kInvocationMultiplier`); its limit is twice that.
+pub const INVOCATION_MULTIPLIER: f64 = 5.0;
 
 fn fill(template: &str, value: &str) -> String {
     template.replacen("{}", value, 1)
@@ -850,6 +858,17 @@ fn add_menu_items(items: &mut Vec<Item>, query: &str, s: &Sources) {
     }
 }
 
+/// The invocation item (`addInvocation:scope:toItems:withMatcher:`, `OQM:699-716`), for every
+/// command and whatever its score.
+fn add_invocation(items: &mut Vec<Item>, query: &str, s: &Sources) {
+    let Some(invocation) = &s.invocation else { return };
+    let docs = vec![invocation.clone()];
+    let (score, result) = score_feature(query, &docs, INVOCATION_MULTIPLIER, 2.0 * INVOCATION_MULTIPLIER);
+    // The title is the matched document only (`OQM:1051-1064`).
+    let (title, title_bold) = result.map(|(i, idx)| (docs[i].clone(), idx)).unwrap_or_default();
+    items.push(Item { kind: ItemKind::Invocation(invocation.clone()), score, title, title_bold, detail: INVOKE_DETAIL.to_string(), detail_bold: Vec::new() });
+}
+
 /// The ranked results for `query` over `s` (`updateWithQuery:`): tips only for a bare `/`;
 /// otherwise the sources the parsed command restricts to, each item kept only when its score is
 /// positive; sorted highest score first and capped at `MAX_ITEMS`.
@@ -888,6 +907,7 @@ pub fn items(query: &str, s: &Sources) -> Vec<Item> {
     if sup.menu_items {
         add_menu_items(&mut items, &text, s);
     }
+    add_invocation(&mut items, &text, s);
 
     items.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     items.truncate(MAX_ITEMS);
@@ -1056,6 +1076,28 @@ mod tests {
         let result = items("/t", &sources);
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0].kind, ItemKind::NewTab(_)));
+    }
+
+    #[test]
+    fn open_quickly_invocation_follows_iterm2() {
+        let with = Sources { invocation: Some("f(x: 1)".to_string()), ..Default::default() };
+        let got: Vec<Item> = items("f(x: 1)", &with).into_iter().filter(|i| matches!(i.kind, ItemKind::Invocation(_))).collect();
+        assert_eq!(got.len(), 1);
+        let (score, _) = score_feature("f(x: 1)", &["f(x: 1)".to_string()], INVOCATION_MULTIPLIER, 10.0);
+        assert_eq!(got[0].kind, ItemKind::Invocation("f(x: 1)".to_string()));
+        assert_eq!((got[0].detail.as_str(), got[0].detail_bold.is_empty()), (INVOKE_DETAIL, true));
+        assert!((got[0].score - score).abs() < 1e-9 && score > 0.0, "{} {score}", got[0].score);
+        assert_eq!((got[0].title.as_str(), got[0].title_bold.clone()), ("f(x: 1)", (0..7).collect::<Vec<usize>>()));
+        assert_eq!((INVOKE_DETAIL, INVOCATION_MULTIPLIER), ("Invoke", 5.0));
+        // None: no item.
+        assert!(!items("f(x: 1)", &Sources::default()).iter().any(|i| matches!(i.kind, ItemKind::Invocation(_))));
+        // A restricting command keeps it; its search text is scored.
+        let got: Vec<Item> = items("/p fx", &with).into_iter().filter(|i| matches!(i.kind, ItemKind::Invocation(_))).collect();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].title_bold, vec![0, 2]);
+        // Added even when the text does not match: no title, score 0.
+        let got: Vec<Item> = items("zzz", &with).into_iter().filter(|i| matches!(i.kind, ItemKind::Invocation(_))).collect();
+        assert_eq!((got.len(), got[0].score, got[0].title.as_str()), (1, 0.0, ""));
     }
 
     #[test]
