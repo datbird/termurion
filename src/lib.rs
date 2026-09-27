@@ -50,6 +50,9 @@ pub mod interp;
 pub mod script_fn;
 pub mod script_eval;
 pub mod script_statusbar;
+pub mod scripts;
+#[cfg(windows)]
+pub mod scripts_scan;
 pub mod builtin_fns;
 pub mod activity;
 pub mod alerts;

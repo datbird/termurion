@@ -292,6 +292,15 @@ pub struct App {
     /// worker thread, the windows it opens, and the last multi-caret copy's groups.
     composers: HashMap<PaneId, composer_ui::View>,
     composer_worker: crate::composer_worker::Worker,
+    /// Watches and scans the Scripts folder (started with the first window).
+    scripts_scan: Option<crate::scripts_scan::Scanner>,
+    /// The Scripts menu's tree from the last scan.
+    scripts_tree: Vec<crate::scripts::Node>,
+    /// Every script's relative name ("folder/name.py"), iTerm2's `allScripts`.
+    scripts_all: Vec<String>,
+    /// "Custom Python API Scripts Folder" and its text when the scanner last started: a change
+    /// to either starts it again.
+    scripts_keys: (bool, String),
     composer_windows: composer_ui::Windows,
     composer_clip: Option<(String, Vec<usize>)>,
     /// The pane whose dropdown's Help button is under the pointer (its tooltip shows).
@@ -825,6 +834,10 @@ pub fn run() {
         composer_keys: Default::default(),
         composers: HashMap::new(),
         composer_worker,
+        scripts_scan: None,
+        scripts_tree: Vec::new(),
+        scripts_all: Vec::new(),
+        scripts_keys: Default::default(),
         composer_windows: Default::default(),
         composer_clip: None,
         composer_hover: None,
@@ -1368,6 +1381,45 @@ impl App {
         self.menus_dirty = true;
         self.sync_checks();
         self.register_hotkeys();
+        self.scripts_folder_changed();
+    }
+
+    /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
+    fn scripts_scan_start(&mut self) {
+        let keys = (self.globals.bool("UseCustomScriptsFolder"), self.globals.string("CustomScriptsFolder"));
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        let folder = crate::scripts::scripts_folder(keys.0, &keys.1, &appdata, &home, &crate::scripts::RealFs);
+        // The old scanner's thread ends on its own; a scan it is in finishes first.
+        self.scripts_scan = Some(crate::scripts_scan::Scanner::start(folder, self.notify.clone()));
+        self.scripts_keys = keys;
+    }
+
+    /// iTerm2's `scriptsFolderDidChange:` (`M:172-178`): either scripts folder setting changed
+    /// (the text only when its editing ended), so the folder is watched and scanned afresh and
+    /// a stopped scan is allowed again.
+    fn scripts_folder_changed(&mut self) {
+        if self.scripts_scan.is_none() {
+            return;
+        }
+        if (self.globals.bool("UseCustomScriptsFolder"), self.globals.string("CustomScriptsFolder")) != self.scripts_keys {
+            self.scripts_scan_start();
+        }
+    }
+
+    /// Takes the scanner's results: the tree and the script names. The slow-scan question
+    /// and found archives are asked about in later tasks; until then a slow scan goes on.
+    fn scripts_scan_tick(&mut self) {
+        let Some(scanner) = self.scripts_scan.as_ref() else { return };
+        while let Some(event) = scanner.try_event() {
+            match event {
+                crate::scripts_scan::ScanEvent::Slow => scanner.answer_slow(true),
+                crate::scripts_scan::ScanEvent::Done(result) => {
+                    self.scripts_all = crate::scripts::all_scripts(&result.tree);
+                    self.scripts_tree = result.tree;
+                }
+            }
+        }
     }
 
     /// Rebuilds every pane's colors and cursor from its profile and the system appearance.
@@ -2617,6 +2669,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.registry.open(k);
                 // The Python API starts with the first window when it is on.
                 self.api_launch();
+                self.scripts_scan_start();
             }
             Err(e) => {
                 message_box(&format!("Could not start the GPU renderer: {e}"));
@@ -2780,6 +2833,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_api_alerts(event_loop);
         self.tick_script_titles();
         let script_due = self.script_tick();
+        self.scripts_scan_tick();
         self.open_script_alerts(event_loop);
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {

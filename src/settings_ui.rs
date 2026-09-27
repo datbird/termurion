@@ -156,6 +156,7 @@ impl SettingsWindow {
             Mode::Profiles => ("Profiles", 420.0, 460.0),
         };
         let host = crate::egui_host::EguiHost::open(event_loop, instance, adapter, device, queue, title, w, h)?;
+        settings_keys::add_icon_font(host.ctx());
         if mode == Mode::Settings {
             if let Some(h) = host.hwnd() {
                 crate::winkeys::set_settings_window(h);

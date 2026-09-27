@@ -626,6 +626,24 @@ default = 0
 help = "Whether scripts need a cookie (scripts started in a Tandem session with setCookie on have one), or any program running as you may connect. The choice is stored as a file that the iterm2 Python package also reads."
 
 [[setting]]
+key = "UseCustomScriptsFolder"
+tab = "General"
+section = "Python API"
+label = "Custom Python API Scripts Folder"
+type = "bool"
+default = false
+help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path."
+
+[[setting]]
+key = "CustomScriptsFolder"
+tab = "General"
+section = "Python API"
+label = "Custom folder for Python API scripts"
+type = "string"
+default = ""
+help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path."
+
+[[setting]]
 key = "openNewWindowAtStartup"
 tab = "Advanced"
 section = "General"

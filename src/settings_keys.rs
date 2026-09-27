@@ -726,18 +726,83 @@ fn finish_key_editor(ctx: &egui::Context, st: &mut KeysState, map: &mut toml::Ta
 }
 
 /// Whether a global row takes input: the Python API's authentication popup only while the API
-/// is on (`GP:2055-2057`); every other row always.
+/// is on (`GP:2055-2057`), the custom scripts folder only while its checkbox is on
+/// (`GP:2152-2154`); every other row always.
 pub fn row_enabled(g: &Globals, key: &str) -> bool {
     match key {
         "API Authentication Method" => g.bool("EnableAPIServer"),
+        "CustomScriptsFolder" => g.bool("UseCustomScriptsFolder"),
         _ => true,
     }
+}
+
+/// The key under which a window's egui memory notes that `add_icon_font` found the font.
+fn icon_font_id() -> egui::Id {
+    egui::Id::new("tandem-settings-icons")
+}
+
+fn icon_family() -> egui::FontFamily {
+    egui::FontFamily::Name("icons".into())
+}
+
+/// Gives the window the icon font (Segoe Fluent Icons on Windows 11, Segoe MDL2 Assets on
+/// Windows 10, same code points) for the custom scripts folder's mark. Called before the
+/// first frame; without the font the mark is not drawn.
+pub fn add_icon_font(ctx: &egui::Context) {
+    use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+    let dir = std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
+    let Some(bytes) = ["SegoeIcons.ttf", "segmdl2.ttf"].iter().find_map(|f| std::fs::read(dir.join(f)).ok()) else { return };
+    ctx.add_font(FontInsert::new("tandem-icons", egui::FontData::from_owned(bytes), vec![InsertFontFamily { family: icon_family(), priority: FontPriority::Highest }]));
+    ctx.data_mut(|d| d.insert_temp(icon_font_id(), true));
+}
+
+/// The custom scripts folder's row (`GP:2137-2163`, `GP:4204-4219`): the text field and
+/// Browse, both enabled with the checkbox, and the mark saying whether the text is a usable
+/// folder. The text is stored as it is typed; "editing ended" is true when the field lets go
+/// of the focus or Browse picked a folder, the only times the scripts folder is looked at
+/// again (iTerm2 posts on end of editing, since a partial path would scan a whole drive).
+/// Returns (changed, editing ended).
+pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> (bool, bool) {
+    let (mut changed, mut ended) = (false, false);
+    let on = g.bool("UseCustomScriptsFolder");
+    let mut text = g.string("CustomScriptsFolder");
+    let setting = schema::find_global("CustomScriptsFolder");
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(on, |ui| {
+            let field = ui.text_edit_singleline(&mut text);
+            if field.changed() {
+                g.set("CustomScriptsFolder", Value::String(text.clone()));
+                changed = true;
+            }
+            if field.lost_focus() {
+                ended = true;
+            }
+            if ui.button("Browse").clicked() {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    text = dir.display().to_string();
+                    g.set("CustomScriptsFolder", Value::String(text.clone()));
+                    changed = true;
+                    ended = true;
+                }
+            }
+        });
+        let valid = crate::scripts::custom_folder_valid(&text, home, &crate::scripts::RealFs);
+        let have_font = ui.ctx().data(|d| d.get_temp::<bool>(icon_font_id())).unwrap_or(false);
+        if let (Some((glyph, alpha)), true) = (crate::scripts::folder_glyph(on, &text, valid), have_font) {
+            let color = ui.visuals().text_color().gamma_multiply(alpha);
+            ui.label(egui::RichText::new(glyph.to_string()).family(icon_family()).color(color)).on_hover_text(setting.map_or("", |s| s.label.as_str()));
+        }
+    })
+    .response
+    .on_hover_text(setting.map_or("", |s| s.help.as_str()));
+    (changed, ended)
 }
 
 /// A pane that shows only the global settings the schema has for it so far, by section
 /// (General and Advanced; the rest of each comes in milestone 13).
 pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
     let mut changed = false;
+    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
     egui::ScrollArea::vertical().show(ui, |ui| {
         let mut sections: Vec<&str> = Vec::new();
         for s in schema::global().iter().filter(|s| s.tab == tab) {
@@ -748,6 +813,12 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
         for section in sections {
             ui.strong(section);
             for s in schema::global().iter().filter(|s| s.tab == tab && s.section == section) {
+                if s.key == "CustomScriptsFolder" {
+                    // The typed text is saved and applied when editing ends, not per key.
+                    let (_, ended) = custom_scripts_folder_row(ui, g, &home);
+                    changed |= ended;
+                    continue;
+                }
                 let enabled = row_enabled(g, &s.key);
                 changed |= global_control(ui, g, s, enabled);
             }
@@ -953,6 +1024,26 @@ mod tests {
         g.set("EnableAPIServer", Value::Boolean(true));
         assert!(row_enabled(&g, "API Authentication Method"));
         assert!(row_enabled(&g, "IRMemory"));
+    }
+
+    #[test]
+    fn scripts_folder_rows_follow_iterm2() {
+        let use_custom = schema::find_global("UseCustomScriptsFolder").unwrap();
+        assert_eq!((use_custom.tab.as_str(), use_custom.section.as_str(), use_custom.label.as_str()), ("General", "Python API", "Custom Python API Scripts Folder"));
+        assert_eq!(use_custom.kind, Kind::Bool);
+        assert_eq!(use_custom.default, Some(Value::Boolean(false)));
+        let custom = schema::find_global("CustomScriptsFolder").unwrap();
+        assert_eq!((custom.tab.as_str(), custom.section.as_str(), custom.label.as_str()), ("General", "Python API", "Custom folder for Python API scripts"));
+        assert_eq!(custom.kind, Kind::String);
+        assert_eq!(custom.default, Some(Value::String(String::new())));
+        let help = "Tandem looks for Python API scripts in this folder instead of %APPDATA%\\Tandem\\Scripts. It must exist and have no spaces in its path.";
+        assert_eq!((use_custom.help.as_str(), custom.help.as_str()), (help, help));
+        // The field follows the checkbox (`GP:2152-2154`).
+        let mut g = Globals::empty(std::path::Path::new("scripts-rows-test.toml"));
+        assert!(!row_enabled(&g, "CustomScriptsFolder"));
+        assert!(row_enabled(&g, "UseCustomScriptsFolder"));
+        g.set("UseCustomScriptsFolder", Value::Boolean(true));
+        assert!(row_enabled(&g, "CustomScriptsFolder"));
     }
 
     #[test]
