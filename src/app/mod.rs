@@ -599,6 +599,13 @@ fn message_box(text: &str) {
 }
 
 pub fn run() {
+    // A cookie in Tandem's own environment (Tandem started from a Tandem shell) must reach no
+    // session and no child: only a cookie Tandem mints for a session is ever set.
+    for name in crate::session_env::NEVER_INHERITED {
+        // SAFETY: the first thing Tandem does, before any thread (the event loop, tandem-host,
+        // the API server) exists, so nothing reads the environment meanwhile.
+        unsafe { std::env::remove_var(name) };
+    }
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(l) => l,
         Err(e) => return message_box(&format!("Could not start the event loop: {e}")),
@@ -997,13 +1004,9 @@ impl App {
     /// never log it.
     fn session_env(&mut self, id: PaneId, p: &Profile) -> (Vec<String>, Option<String>) {
         let window = self.window_number();
-        let (tab, pane) = match self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
-            Some(t) => (t, self.tabs[t].layout.panes().len() - 1),
-            None => match self.start_tab {
-                Some(t) => (t, self.tabs.get(t).map_or(0, |t| t.layout.panes().len())),
-                None => (self.tabs.len(), 0),
-            },
-        };
+        let counts: Vec<usize> = self.tabs.iter().map(|t| t.layout.panes().len()).collect();
+        let holding = self.tabs.iter().position(|t| t.layout.panes().contains(&id));
+        let (tab, pane) = crate::session_env::numbers(&counts, holding, self.start_tab);
         let cookie = (self.globals.bool(api_ui::ENABLE_KEY) && self.globals.bool(api_ui::SET_COOKIE_KEY) && self.api_server.is_some())
             .then(|| self.api_jar.lock().unwrap().mint(crate::api_auth::CookieUse::Session));
         let name = p.name();
@@ -1015,7 +1018,12 @@ impl App {
     /// A pane dropped for good takes its cookie out of the jar (a pane stashed for Undo Close
     /// keeps it).
     fn forget_cookie(&self, pane: &Pane) {
-        if let Some(c) = &pane.cookie {
+        self.forget_cookie_text(pane.cookie.as_deref());
+    }
+
+    /// A cookie that will never be used takes itself out of the jar.
+    fn forget_cookie_text(&self, cookie: Option<&str>) {
+        if let Some(c) = cookie {
             self.api_jar.lock().unwrap().remove(c);
         }
     }
@@ -1059,9 +1067,7 @@ impl App {
                 true
             }
             Err(e) => {
-                if let Some(c) = &cookie {
-                    self.api_jar.lock().unwrap().remove(c);
-                }
+                self.forget_cookie_text(cookie.as_deref());
                 self.banners.set("start", format!("Could not start {cmd}: {e}"));
                 false
             }

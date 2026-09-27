@@ -145,6 +145,14 @@ mod tests {
     }
 
     #[test]
+    fn reply_to_carries_only_the_id() {
+        let r = reply_to(&pb::ClientOriginatedMessage { id: Some(9), submessage: Some(Req::FocusRequest(pb::FocusRequest {})) });
+        assert_eq!(r, pb::ServerOriginatedMessage { id: Some(9), submessage: None });
+        assert_eq!(reply_to(&pb::ClientOriginatedMessage { id: None, submessage: None }).id, None);
+        assert_eq!(encode(&reply_to(&req_with_id(9))), [0x08, 0x09]);
+    }
+
+    #[test]
     fn defaults_are_explicit() {
         use pb::transaction_response::Status;
         let r = pb::TransactionResponse { status: Some(Status::Ok as i32) };

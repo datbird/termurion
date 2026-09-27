@@ -200,7 +200,7 @@ fn window_focus(status: WindowStatus, id: Option<&str>) -> pb::FocusChangedNotif
 /// iTerm2's Focus (`H:3338-3380`): whether the app is active; the current terminal window,
 /// BECAME_KEY when it is the key window, IS_CURRENT when it is not, RESIGNED_KEY with no id
 /// when there is none; then for each window with a selected tab, that tab and each of its
-/// tabs' active session.
+/// tabs' active session (a tab with none is skipped, never sent as an empty id).
 pub fn focus(m: &Model) -> pb::FocusResponse {
     let mut out = vec![focus_event(Focus::ApplicationActive(m.app_active))];
     let current = m.current_window.as_deref();
@@ -212,8 +212,9 @@ pub fn focus(m: &Model) -> pb::FocusResponse {
     for w in &m.windows {
         let Some(selected) = w.selected_tab else { continue };
         out.push(focus_event(Focus::SelectedTab(selected.to_string())));
-        for t in &w.tabs {
-            out.push(focus_event(Focus::Session(t.active.clone().unwrap_or_default())));
+        // A tab with no active session has no event (iTerm2's nil guid clears the oneof).
+        for a in w.tabs.iter().filter_map(|t| t.active.clone()) {
+            out.push(focus_event(Focus::Session(a)));
         }
     }
     pb::FocusResponse { notifications: out }
@@ -365,6 +366,12 @@ fn focus_changes(old: &Model, new: &Model) -> Vec<pb::FocusChangedNotification> 
         }
     }
     out
+}
+
+/// `id` when it names one of `windows`: a window closed since it was used last is no current
+/// window.
+pub fn live_window(windows: &[ApiWindow], id: Option<String>) -> Option<String> {
+    id.filter(|i| windows.iter().any(|w| w.id == *i))
 }
 
 /// The difference of two snapshots.
@@ -598,6 +605,50 @@ mod tests {
         empty.windows[1].selected_tab = None;
         empty.windows[1].tabs.clear();
         assert_eq!(focus(&empty).notifications[2..], [tab("5"), sess("2"), sess("4")]);
+        // A tab with no active session sends no session event, never an empty id (the
+        // package would refresh on an id it cannot find, and again, `H:3360-3368`).
+        let mut idle = m.clone();
+        idle.windows[0].tabs[1].active = None;
+        assert_eq!(focus(&idle).notifications[2..], [tab("5"), sess("2"), tab("9"), sess("7")]);
+    }
+
+    #[test]
+    fn current_window_is_a_live_one() {
+        let m = fixture();
+        assert_eq!(live_window(&m.windows, Some("pty-B".into())), Some("pty-B".into()));
+        // A just-closed window is no current window.
+        assert_eq!(live_window(&m.windows, Some("pty-C".into())), None);
+        assert_eq!(live_window(&m.windows, None), None);
+    }
+
+    #[test]
+    fn changes_never_read_titles() {
+        // The notification tick diffs snapshots built without titles; the result is the same.
+        let untitled = |m: &Model| {
+            let mut m = m.clone();
+            fn clear(n: &mut ApiNode) {
+                match n {
+                    ApiNode::Leaf(s) => s.title.clear(),
+                    ApiNode::Split { children, .. } => children.iter_mut().for_each(clear),
+                }
+            }
+            for t in m.windows.iter_mut().flat_map(|w| &mut w.tabs) {
+                clear(&mut t.root);
+                t.minimized.iter_mut().for_each(|s| s.title.clear());
+            }
+            m.buried.iter_mut().for_each(|s| s.title.clear());
+            m
+        };
+        let old = fixture();
+        let mut new = fixture();
+        let extra = ApiTab { id: 11, ..new.windows[1].tabs[0].clone() };
+        new.windows[1].tabs.push(extra);
+        new.windows[0].selected_tab = Some(6);
+        new.buried.clear();
+        new.app_active = false;
+        for (a, b) in [(&old, &new), (&new, &old), (&old, &old)] {
+            assert_eq!(changes(&untitled(a), &untitled(b)), changes(a, b));
+        }
     }
 
     fn view(tabs: &[(bool, &[PaneId])], current_tab: usize, current: PaneId) -> View {

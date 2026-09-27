@@ -135,6 +135,34 @@ pub(super) fn clear_on_stop<P, W>(pending: &mut std::collections::HashMap<u64, P
     alerts.retain(|(_, a)| !holds_connection(a));
 }
 
+/// A connection that is gone: it waits no longer, its alerts go (dropping a showing one closes
+/// its window), and one still deferred for authorization is dropped. What it waited with.
+pub(super) fn forget_waiting<W>(conn: u64, pending: &mut std::collections::HashMap<u64, Pending>, alerts: &mut Vec<(Option<W>, Alert)>, deferred: &mut VecDeque<Event>) -> Option<Pending> {
+    alerts.retain(|(_, a)| !matches!(a, Alert::Allow { conn: c } | Alert::ConfirmAlways { conn: c } if *c == conn));
+    let mut gone = pending.remove(&conn);
+    if let Some(i) = deferred.iter().position(|e| matches!(e, Event::Pending(p) if p.conn == conn))
+        && let Some(Event::Pending(p)) = deferred.remove(i)
+    {
+        gone.get_or_insert(p);
+    }
+    gone
+}
+
+/// Server events handled in one pass at most, so a chatty script cannot starve input and
+/// drawing.
+pub(super) const EVENTS_PER_PASS: usize = 64;
+
+/// Runs `step` until it has nothing left or `limit` times; true when the limit ended it (more
+/// may wait).
+pub(super) fn pump(limit: usize, step: &mut dyn FnMut() -> bool) -> bool {
+    for _ in 0..limit {
+        if !step() {
+            return false;
+        }
+    }
+    true
+}
+
 /// What answering an alert does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Effect {
@@ -421,8 +449,8 @@ impl App {
                     std::thread::spawn(move || drop(s));
                 }
                 clear_on_stop(&mut self.api_pending, &mut self.api_alerts);
-                // No Closed event comes from a dropped server, and a new one numbers its
-                // connections from the start again.
+                // No Closed event comes from a dropped server. Connection ids are never reused
+                // (`api_server::NEXT_CONN`), but nothing of these connections is kept either.
                 self.api_subs = Default::default();
                 self.api_tx = Default::default();
                 self.api_deferred.clear();
@@ -530,14 +558,20 @@ impl App {
     pub(super) fn api_tick(&mut self, event_loop: &ActiveEventLoop) {
         // A setting written by any path (an import, a key action) is acted on here.
         self.api_settings_changed();
-        // What a transaction deferred comes first.
-        while let Some(event) = self.api_deferred.pop_front().or_else(|| self.api_server.as_ref().and_then(Server::try_event)) {
+        // What a transaction deferred comes first. A bounded number per pass: when that many
+        // were handled, another pass comes after input and drawing.
+        let more = pump(EVENTS_PER_PASS, &mut || {
+            let Some(event) = self.api_deferred.pop_front().or_else(|| self.api_server.as_ref().and_then(Server::try_event)) else { return false };
             match event {
                 Event::Pending(p) => self.api_authorize(p),
                 Event::Message { conn, bytes } => self.api_message(conn, bytes, event_loop),
                 Event::Closed { conn } => self.api_closed(conn, event_loop),
                 Event::Rejected { key, reason } => self.api_log.push(LogEntry { key, name: api_auth::display_name(None), text: reason }),
             }
+            true
+        });
+        if more {
+            (self.notify)();
         }
     }
 
@@ -586,17 +620,23 @@ impl App {
         serve(&mut AppHost { app: self, event_loop }, released);
     }
 
-    /// Forgets a closed connection; the requests its transaction's end released.
+    /// Forgets a closed connection; the requests its transaction's end released. The one
+    /// per-connection cleanup: `api_closed` and the freeze (through `Host::forget`) both come
+    /// here, so state keyed by connection is dropped here (and in `sync_api_server`'s Off
+    /// reset). A connection gone before its verdict takes its Allow alert with it, answered
+    /// Deny (logged as an internal error).
     fn api_forget(&mut self, conn: u64) -> Work {
         self.api_subs.drop_conn(conn);
-        self.api_pending.remove(&conn);
+        if let Some(p) = forget_waiting(conn, &mut self.api_pending, &mut self.api_alerts, &mut self.api_deferred) {
+            self.api_verdict(&p, false, api_auth::REASON_INTERNAL);
+        }
         self.api_tx.closed(conn).into()
     }
 
     /// The app's answer to ListSessions, Focus and GetBroadcastDomains, from a snapshot taken
     /// for the request.
     pub(super) fn api_answer(&mut self, _conn: u64, req: &pb::ClientOriginatedMessage, _event_loop: &ActiveEventLoop) -> Answer {
-        let model = self.api_model();
+        let model = self.api_model(true);
         answer_from(req, &model)
     }
 
@@ -609,15 +649,17 @@ impl App {
 
     /// Posts what changed since the last pass to the subscribers (`H:1000-1133`). Nothing is
     /// snapshotted while no connection subscribes; the first pass with a subscriber only takes
-    /// the baseline.
+    /// the baseline. The snapshots compared carry no titles (no change reads them); titles
+    /// are built only for a layout change, whose ListSessions carries them.
     pub(super) fn api_notify_tick(&mut self) {
         if !self.api_subs.any() {
             self.api_last = None;
             return;
         }
-        let new = self.api_model();
+        let new = self.api_model(false);
         if let Some(old) = self.api_last.take() {
-            let notes = api_model::notifications(&api_model::changes(&old, &new), &new);
+            let c = api_model::changes(&old, &new);
+            let notes = if c.layout { api_model::notifications(&c, &self.api_model(true)) } else { api_model::notifications(&c, &new) };
             post(&self.api_subs, notes, &mut |conn, m| self.api_reply(conn, m));
         }
         self.api_last = Some(new);
@@ -625,7 +667,8 @@ impl App {
 
     /// The snapshot `async_get_app` reads: each window by number (entered to read its tabs,
     /// the current one restored after, as `snapshot_all` does), the buried sessions, and focus.
-    pub(super) fn api_model(&mut self) -> api_model::Model {
+    /// Without `titles`, every session's title is left empty.
+    pub(super) fn api_model(&mut self, titles: bool) -> api_model::Model {
         let back = self.current_window();
         let mut windows = Vec::new();
         let mut key_window = None;
@@ -634,7 +677,7 @@ impl App {
             if !self.enter(id) {
                 continue;
             }
-            let w = self.api_window(k);
+            let w = self.api_window(k, titles);
             if self.focused && self.app_active {
                 key_window = Some(w.id.clone());
             }
@@ -643,13 +686,14 @@ impl App {
         if let Some(b) = back {
             self.enter(b);
         }
-        let buried = self.buried.items().into_iter().map(|(p, title)| api_model::ApiSession { id: p.to_string(), frame: None, grid: None, title }).collect();
-        let current_window = self.last_window.and_then(|w| self.registry.guid(super::windows_ui::key(w))).map(str::to_string);
+        let buried = self.buried.items().into_iter().map(|(p, title)| api_model::ApiSession { id: p.to_string(), frame: None, grid: None, title: if titles { title } else { String::new() } }).collect();
+        let last = self.last_window.and_then(|w| self.registry.guid(super::windows_ui::key(w))).map(str::to_string);
+        let current_window = api_model::live_window(&windows, last);
         api_model::Model { windows, buried, app_active: self.app_active, key_window, current_window }
     }
 
     /// The current window as the snapshot shows it: `k` is its registry key.
-    fn api_window(&self, k: u64) -> api_model::ApiWindow {
+    fn api_window(&self, k: u64, titles: bool) -> api_model::ApiWindow {
         let frame = self.gpu.as_ref().map_or((0, 0, 0, 0), |g| {
             let p = g.window.outer_position().unwrap_or_default();
             let s = g.window.outer_size();
@@ -661,7 +705,7 @@ impl App {
             frame,
             number: self.registry.number(k).unwrap_or(0) as i32,
             selected_tab: self.tabs.get(self.active).map(|t| t.id),
-            tabs: self.tabs.iter().map(|t| self.api_tab(t)).collect(),
+            tabs: self.tabs.iter().map(|t| self.api_tab(t, titles)).collect(),
             domains,
         }
     }
@@ -669,7 +713,7 @@ impl App {
     /// A tab of the current window: pane frames in window pixels, grids from each pane's own
     /// screen, names as the tab bar shows them, and the tmux window and client of its active
     /// pane.
-    fn api_tab(&self, tab: &super::Tab) -> api_model::ApiTab {
+    fn api_tab(&self, tab: &super::Tab, titles: bool) -> api_model::ApiTab {
         use alacritty_terminal::grid::Dimensions;
         let rects: std::collections::HashMap<_, _> = self.visible(tab).into_iter().collect();
         let session = |p: crate::layout::PaneId| api_model::ApiSession {
@@ -679,18 +723,15 @@ impl App {
                 let g = pane.own().term().grid();
                 (g.columns() as i32, g.screen_lines() as i32)
             }),
-            title: self.session_title(p),
+            title: if titles { self.session_title(p) } else { String::new() },
         };
         let (root, minimized) = api_model::node_of(&tab.layout.tree(), tab.zoomed, &session);
-        let tmux = self.panes.get(&tab.focused).and_then(|p| p.tmux_io()).and_then(|io| {
-            let gw = self.tmux.get(&io.gateway)?;
-            Some((gw.client.clone(), gw.panes.get(&io.pane).map(|(_, w)| *w)))
-        });
+        let tmux = self.tmux_of(tab.focused).and_then(|(gateway, _, window)| Some((self.tmux.get(&gateway)?.client.clone(), window)));
         api_model::ApiTab {
             id: tab.id,
             root,
             active: tab.layout.panes().contains(&tab.focused).then(|| tab.focused.to_string()),
-            tmux_window: tmux.as_ref().and_then(|(_, w)| *w).map_or_else(|| "-1".to_string(), |w| w.to_string()),
+            tmux_window: tmux.as_ref().map_or_else(|| "-1".to_string(), |(_, w)| w.to_string()),
             tmux_connection: tmux.map(|(client, _)| client),
             minimized,
         }
@@ -864,6 +905,54 @@ mod tests {
         assert_eq!(alerts.into_iter().map(|(_, a)| a).collect::<Vec<_>>(), [Alert::Enable, Alert::Reset]);
     }
 
+    fn waiting(conn: u64) -> Pending {
+        let upgrade = crate::api_http::Upgrade {
+            key: format!("K{conn}"),
+            ws_key: String::new(),
+            ws_version: 13,
+            preauthorized: false,
+            advisory_name: None,
+            library_version: "python 2.24".into(),
+            disable_auth_ui: false,
+        };
+        Pending { conn, upgrade, peer_pid: 1 }
+    }
+
+    #[test]
+    fn a_gone_connection_takes_its_question_with_it() {
+        let mut pending: std::collections::HashMap<u64, Pending> = [(1, waiting(1)), (2, waiting(2))].into_iter().collect();
+        let mut alerts: Vec<(Option<()>, Alert)> =
+            vec![(Some(()), Alert::Allow { conn: 1 }), (None, Alert::Enable), (None, Alert::ConfirmAlways { conn: 1 }), (None, Alert::Allow { conn: 2 })];
+        let mut deferred: VecDeque<Event> = VecDeque::from([Event::Pending(waiting(3)), Event::Rejected { key: None, reason: "r".into() }]);
+        // The showing Allow alert and the queued confirmation go; the rest stay.
+        assert_eq!(forget_waiting(1, &mut pending, &mut alerts, &mut deferred).map(|p| p.conn), Some(1));
+        assert_eq!(alerts.iter().map(|(_, a)| a.clone()).collect::<Vec<_>>(), [Alert::Enable, Alert::Allow { conn: 2 }]);
+        assert!(pending.contains_key(&2) && !pending.contains_key(&1));
+        // One still deferred (it closed during a transaction) is dropped before it is asked.
+        assert_eq!(forget_waiting(3, &mut pending, &mut alerts, &mut deferred).map(|p| p.conn), Some(3));
+        assert!(matches!(deferred.iter().collect::<Vec<_>>()[..], [Event::Rejected { .. }]));
+        // An upgraded connection waits for nothing.
+        assert!(forget_waiting(9, &mut pending, &mut alerts, &mut deferred).is_none());
+        assert_eq!(alerts.len(), 2);
+    }
+
+    #[test]
+    fn events_are_handled_in_bounded_passes() {
+        let mut left = 150;
+        let mut step = || {
+            if left == 0 {
+                return false;
+            }
+            left -= 1;
+            true
+        };
+        assert!(pump(EVENTS_PER_PASS, &mut step), "more may wait: another pass");
+        assert!(pump(EVENTS_PER_PASS, &mut step));
+        assert!(!pump(EVENTS_PER_PASS, &mut step), "drained");
+        assert_eq!(left, 0);
+        assert!(!pump(EVENTS_PER_PASS, &mut || false));
+    }
+
     #[test]
     fn alert_answers_follow_iterm2() {
         use Effect::*;
@@ -933,6 +1022,9 @@ mod tests {
         model: api_model::Model,
         deferred: Vec<Event>,
         replies: Vec<(u64, Option<i64>)>,
+        /// Told the connection of every message the loop takes, so a client can wait until
+        /// its request was taken.
+        seen: std::sync::mpsc::Sender<u64>,
     }
 
     impl Host for TestHost {
@@ -954,7 +1046,11 @@ mod tests {
         }
 
         fn wait_event(&mut self) -> Option<Event> {
-            self.server.wait_event()
+            let e = self.server.wait_event();
+            if let Some(Event::Message { conn, .. }) = &e {
+                let _ = self.seen.send(*conn);
+            }
+            e
         }
 
         fn defer(&mut self, e: Event) {
@@ -1025,7 +1121,8 @@ mod tests {
         use pb::server_originated_message::Submessage as Resp;
         let server = Server::start(0, Arc::new(|_: std::net::SocketAddr, _: std::net::SocketAddr| Ok::<u32, String>(1)), Arc::new(|_: &str| false), Arc::new(|| {})).unwrap();
         let model = api_model::fixture();
-        let mut h = TestHost { server, subs: Default::default(), tx: Default::default(), model: model.clone(), deferred: Vec::new(), replies: Vec::new() };
+        let (seen, taken) = std::sync::mpsc::channel();
+        let mut h = TestHost { server, subs: Default::default(), tx: Default::default(), model: model.clone(), deferred: Vec::new(), replies: Vec::new(), seen };
         let (a, mut wa) = connect(&h);
         let (b, mut wb) = connect(&h);
         let list = || Req::ListSessionsRequest(pb::ListSessionsRequest {});
@@ -1038,7 +1135,14 @@ mod tests {
             send(&mut wb, 10, list());
             send(&mut wa, 2, list());
             assert!(matches!(read(&mut wa), pb::ServerOriginatedMessage { id: Some(2), submessage: Some(Resp::ListSessionsResponse(_)) }));
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            // The end goes only once the frozen loop has taken B's request.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if taken.recv_timeout(left).expect("the loop never took B's request") == b {
+                    break;
+                }
+            }
             send(&mut wa, 3, tx(false));
             assert_eq!(read(&mut wa).id, Some(3));
             // B's held request is answered after the end.

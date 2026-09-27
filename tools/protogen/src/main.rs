@@ -22,15 +22,17 @@ fn main() {
         .compile_fds(fds)
         .expect("generate Rust code from the descriptor set");
 
-    let mut generated = None;
+    let mut files = Vec::new();
     for entry in fs::read_dir(&out_dir).expect("read temporary output directory") {
         let entry = entry.expect("read directory entry");
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            generated = Some(path);
+            files.push(path);
         }
     }
-    let generated = generated.expect("prost-build produced no Rust file");
+    // One proto package gives one file; anything else must fail loudly, never pick one.
+    assert_eq!(files.len(), 1, "prost-build must emit exactly one .rs file, emitted {files:?}");
+    let generated = files.remove(0);
     let code = fs::read_to_string(&generated).expect("read generated Rust file");
     fs::remove_dir_all(&out_dir).ok();
 

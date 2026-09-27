@@ -39,7 +39,8 @@ pub enum Event {
     Pending(Pending),
     /// A binary frame's payload.
     Message { conn: u64, bytes: Vec<u8> },
-    /// An upgraded connection ended, whoever ended it.
+    /// An upgraded connection ended, whoever ended it, or a pending one's client went before
+    /// its verdict.
     Closed { conn: u64 },
     /// A connection refused before any verdict: by the peer check, an unreadable request or an
     /// upgrade check. `key` is the client's `x-iterm2-key` where iTerm2 posts it.
@@ -93,9 +94,13 @@ pub struct Server {
     accepts: Vec<JoinHandle<()>>,
 }
 
+/// The next connection id: unique for the life of the process, never reset when a server
+/// stops and a new one starts, so no per-connection state of an old connection can ever be
+/// taken for a new one's.
+static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
+
 struct Shared {
     stop: AtomicBool,
-    next_conn: AtomicU64,
     conns: Mutex<HashMap<u64, Control>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
     /// Live connection threads and those among them not yet authorized, checked and raised in
@@ -407,7 +412,6 @@ fn serve_on(listeners: Vec<TcpListener>, peer: PeerCheck, cookie: CookieCheck, w
     let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE);
     let shared = Arc::new(Shared {
         stop: AtomicBool::new(false),
-        next_conn: AtomicU64::new(1),
         conns: Mutex::new(HashMap::new()),
         threads: Mutex::new(Vec::new()),
         counts: Mutex::new(Counts::default()),
@@ -545,7 +549,7 @@ fn admit(stream: TcpStream, peer: SocketAddr, shared: &Arc<Shared>, tx: &SyncSen
         shared.release(false);
         return;
     };
-    let conn = shared.next_conn.fetch_add(1, Ordering::SeqCst);
+    let conn = NEXT_CONN.fetch_add(1, Ordering::SeqCst);
     let mailbox = Arc::new(Mailbox::default());
     shared.conns.lock().unwrap().insert(conn, Control { mailbox: mailbox.clone(), stream: handle });
     // From here the slot gives everything back, whatever happens to the thread (and if the
@@ -657,6 +661,13 @@ fn ready(stream: &TcpStream, write: bool) -> std::io::Result<(bool, bool)> {
     }
 }
 
+/// How the wait for a verdict ended.
+enum Waited {
+    Verdict(bool),
+    /// The client closed its end first.
+    Gone,
+}
+
 struct Connection {
     conn: u64,
     shared: Arc<Shared>,
@@ -703,10 +714,21 @@ impl Connection {
             self.refuse(stream, 401);
             return None;
         }
-        let allowed = self.mailbox.wait_conn(None, |m| m.verdict.or(m.stop.then_some(false))).unwrap_or(false);
-        if !allowed {
-            self.refuse(stream, 401);
-            return None;
+        // The wait also ends when the client goes: its slot is freed at once, and `Closed`
+        // tells the UI to drop its question about it.
+        let answer = self.mailbox.wait_conn(None, |m| match (m.verdict, m.stop, m.eof) {
+            (Some(v), ..) => Some(Waited::Verdict(v)),
+            (None, true, _) => Some(Waited::Verdict(false)),
+            (None, false, true) => Some(Waited::Gone),
+            _ => None,
+        });
+        match answer {
+            Some(Waited::Verdict(true)) => {}
+            Some(Waited::Gone) => return Some(Event::Closed { conn: self.conn }),
+            _ => {
+                self.refuse(stream, 401);
+                return None;
+            }
         }
         self.slot.authorize();
         let mut writer = stream;
@@ -1188,6 +1210,41 @@ mod tests {
     }
 
     #[test]
+    fn connection_ids_are_never_reused() {
+        let first = start_with(allow());
+        let mut t = TcpStream::connect(first.addrs()[0]).unwrap();
+        t.write_all(head("/", "python 2.24", "").as_bytes()).unwrap();
+        let a = pending(&first).conn;
+        drop(t);
+        drop(first);
+        // A new server (the API turned off and on) goes on from the last id.
+        let second = start_with(allow());
+        let mut t = TcpStream::connect(second.addrs()[0]).unwrap();
+        t.write_all(head("/", "python 2.24", "").as_bytes()).unwrap();
+        assert!(pending(&second).conn > a);
+    }
+
+    #[test]
+    fn a_client_gone_before_its_verdict_frees_its_slot() {
+        let s = start_with(allow());
+        let mut t = TcpStream::connect(s.addrs()[0]).unwrap();
+        t.write_all(head("/", "python 2.24", "").as_bytes()).unwrap();
+        let p = pending(&s);
+        settle(&s, (1, 1));
+        drop(t);
+        // The wait ends with the client, not with the verdict: the slot is free at once and
+        // the UI hears the connection is gone.
+        match next(&s) {
+            Event::Closed { conn } => assert_eq!(conn, p.conn),
+            e => panic!("{e:?}"),
+        }
+        settle(&s, (0, 0));
+        // A late verdict for it does nothing.
+        s.verdict(p.conn, true);
+        quiet(&s);
+    }
+
+    #[test]
     fn pending_verdict_does_not_spin() {
         let s = start_with(allow());
         let mut t = TcpStream::connect(s.addrs()[0]).unwrap();
@@ -1426,7 +1483,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("stock_get_app.py");
         std::fs::write(&script, "import iterm2\n\nasync def main(connection):\n    print(len((await iterm2.async_get_app(connection)).windows))\n\niterm2.run_until_complete(main)\n").unwrap();
-        let mut child = std::process::Command::new(&python)
+        /// The script's process, killed on every way out of the test (a failed assert included).
+        struct Script(Option<std::process::Child>);
+        impl Drop for Script {
+            fn drop(&mut self) {
+                if let Some(c) = self.0.as_mut() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+            }
+        }
+        let child = std::process::Command::new(&python)
             .args(&args)
             .arg(&script)
             .env("ITERM2_COOKIE", &cookie)
@@ -1436,6 +1503,8 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
+        let mut script_process = Script(Some(child));
+        let child = script_process.0.as_mut().unwrap();
         let model = crate::api_model::fixture();
         let mut subs = crate::api_dispatch::Subscriptions::default();
         let mut rejected = Vec::new();
@@ -1463,7 +1532,7 @@ mod tests {
                 None => std::thread::sleep(Duration::from_millis(5)),
             }
         }
-        let out = child.wait_with_output().unwrap();
+        let out = script_process.0.take().unwrap().wait_with_output().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         assert_eq!(stdout.trim(), "2", "stderr: {stderr}\nrefusals: {rejected:?}");

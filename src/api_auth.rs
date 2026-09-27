@@ -289,26 +289,6 @@ pub fn ask_answer(index: usize) -> AskAnswer {
     }
 }
 
-/// What a change of "Enable Python API" asks for (`H:629-656`, `H:782-795`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EnableStep {
-    Nothing,
-    /// Show the Enable warning (`ENABLE_HEADING`, `ENABLE_TEXT`, `ENABLE_ID`, OK and Cancel,
-    /// persistent); OK starts the server, Cancel turns the setting back off.
-    Confirm,
-    /// Stop the server, disconnecting every script.
-    Stop,
-}
-
-/// The step for the setting's value and whether the server runs.
-pub fn enable_step(setting: bool, running: bool) -> EnableStep {
-    match (setting, running) {
-        (true, false) => EnableStep::Confirm,
-        (false, true) => EnableStep::Stop,
-        _ => EnableStep::Nothing,
-    }
-}
-
 /// What a choice in the authentication popup asks for (`H:466-560`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AllowAllStep {
@@ -616,10 +596,6 @@ mod tests {
 
     #[test]
     fn steps_follow_iterm2() {
-        assert_eq!(enable_step(true, false), EnableStep::Confirm);
-        assert_eq!(enable_step(false, true), EnableStep::Stop);
-        assert_eq!(enable_step(true, true), EnableStep::Nothing);
-        assert_eq!(enable_step(false, false), EnableStep::Nothing);
         assert_eq!(allow_all_step(AllowAll::None, true), AllowAllStep::Warn);
         assert_eq!(allow_all_step(AllowAll::Valid, false), AllowAllStep::Remove);
         // iTerm2 reads a corrupt file as "require": choosing require again changes nothing

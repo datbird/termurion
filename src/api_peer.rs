@@ -1,5 +1,5 @@
 //! The Python API's peer check: the process that owns the other end of a loopback TCP
-//! connection, which must run as this user at this elevation. iTerm2 compares the peer's euid
+//! connection, which must run as this user at this elevation and integrity level, unsandboxed. iTerm2 compares the peer's euid
 //! with its own (`S:457-472`); Windows has no euid on a socket, so the owner is found in the
 //! TCP table (`GetExtendedTcpTable`) and its token is compared instead.
 
@@ -15,6 +15,48 @@ pub struct Row {
 
 pub const NO_OWNER: &str = "Could not find the process that owns the connection.";
 pub const OTHER_ELEVATION: &str = "Peer's elevation is not equal to mine.";
+
+pub const OTHER_INTEGRITY: &str = "Peer's integrity level is not equal to mine.";
+pub const APP_CONTAINER: &str = "Peer runs in an app container.";
+pub const RESTRICTED: &str = "Peer runs with a restricted token.";
+
+/// Mandatory integrity levels: the last subauthority of a token's label SID.
+pub const LOW_RID: u32 = 0x1000;
+pub const MEDIUM_RID: u32 = 0x2000;
+pub const HIGH_RID: u32 = 0x3000;
+
+/// What the peer check reads from a process's token, all from one handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub sid: String,
+    pub elevated: bool,
+    /// The integrity level's RID (`LOW_RID`, `MEDIUM_RID`, ...).
+    pub integrity: u32,
+    pub app_container: bool,
+    pub restricted: bool,
+}
+
+/// Whether the peer's token may drive Tandem's: the same user (iTerm2's euid compare), not
+/// sandboxed (an AppContainer or a restricted token), at the same elevation and the same
+/// integrity level, so no less trusted process can type into Tandem's shells.
+pub fn judge(theirs: &Token, mine: &Token) -> Result<(), String> {
+    if theirs.sid != mine.sid {
+        return Err(other_user(&theirs.sid, &mine.sid));
+    }
+    if theirs.app_container {
+        return Err(APP_CONTAINER.to_string());
+    }
+    if theirs.restricted {
+        return Err(RESTRICTED.to_string());
+    }
+    if theirs.elevated != mine.elevated {
+        return Err(OTHER_ELEVATION.to_string());
+    }
+    if theirs.integrity != mine.integrity {
+        return Err(OTHER_INTEGRITY.to_string());
+    }
+    Ok(())
+}
 
 /// iTerm2's "Peer's euid of %@ not equal to my euid of %@" with the user's SID for the euid.
 pub fn other_user(theirs: &str, mine: &str) -> String {
@@ -167,20 +209,14 @@ mod win {
     }
 
     /// The pid of the process that owns the other end of the connection that reached `local`
-    /// from `peer`, when it runs as this user at this elevation; otherwise the reason it is
-    /// refused. Every failure refuses.
+    /// from `peer`, when its token passes `judge`; otherwise the reason it is refused. Every
+    /// failure refuses.
     pub fn check(peer: SocketAddr, local: SocketAddr) -> Result<u32, String> {
         // Only the peer's family: a machine without IPv6 still checks IPv4 peers.
         let rows = if peer.is_ipv4() { v4_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)? } else { v6_rows(TCP_TABLE_OWNER_PID_CONNECTIONS)? };
         let pid = owner(&rows, peer, local).ok_or_else(|| NO_OWNER.to_string())?;
-        let theirs = winpipe::process_sid(pid)?;
-        let mine = winpipe::user_sid()?;
-        if theirs != mine {
-            return Err(other_user(&theirs, &mine));
-        }
-        if winpipe::process_elevated(pid)? != winpipe::elevated()? {
-            return Err(OTHER_ELEVATION.to_string());
-        }
+        // Each token is opened once; any query that fails refuses.
+        judge(&winpipe::process_token_facts(pid)?, &winpipe::own_token_facts()?)?;
         Ok(pid)
     }
 }
@@ -240,6 +276,25 @@ mod tests {
     }
 
     #[test]
+    fn tokens_must_match_mine() {
+        let mine = Token { sid: "S-1-5-21-1".into(), elevated: false, integrity: MEDIUM_RID, app_container: false, restricted: false };
+        assert_eq!(judge(&mine.clone(), &mine), Ok(()));
+        let other = Token { sid: "S-1-5-21-2".into(), ..mine.clone() };
+        assert_eq!(judge(&other, &mine), Err(other_user("S-1-5-21-2", "S-1-5-21-1")));
+        assert_eq!(judge(&Token { elevated: true, integrity: HIGH_RID, ..mine.clone() }, &mine), Err(OTHER_ELEVATION.to_string()));
+        // A sandboxed process of the same user: Low integrity, or an AppContainer or a
+        // restricted token at any level, is refused.
+        assert_eq!(judge(&Token { integrity: LOW_RID, ..mine.clone() }, &mine), Err(OTHER_INTEGRITY.to_string()));
+        assert_eq!(judge(&Token { integrity: LOW_RID, app_container: true, ..mine.clone() }, &mine), Err(APP_CONTAINER.to_string()));
+        assert_eq!(judge(&Token { restricted: true, ..mine.clone() }, &mine), Err(RESTRICTED.to_string()));
+        // A higher level than mine is refused too: the levels must be equal.
+        assert_eq!(judge(&Token { integrity: HIGH_RID, ..mine.clone() }, &mine), Err(OTHER_INTEGRITY.to_string()));
+        let high = Token { elevated: true, integrity: HIGH_RID, ..mine.clone() };
+        assert_eq!(judge(&high.clone(), &high), Ok(()));
+        assert_eq!(judge(&mine, &high), Err(OTHER_ELEVATION.to_string()));
+    }
+
+    #[test]
     fn port_bytes_follow_windows() {
         assert_eq!(port_from_table(0x7807), 1912);
         assert_eq!(port_from_table(0xFFFF_7807), 1912);
@@ -268,10 +323,14 @@ mod tests {
         }
         // A connection that does not exist has no owner.
         assert_eq!(check("127.0.0.1:1".parse().unwrap(), "127.0.0.1:2".parse().unwrap()), Err(NO_OWNER.to_string()));
-        assert_eq!(winpipe::process_sid(std::process::id()), winpipe::user_sid());
-        assert_eq!(winpipe::process_elevated(std::process::id()), winpipe::elevated());
+        let mine = winpipe::own_token_facts().unwrap();
+        assert_eq!(winpipe::process_token_facts(std::process::id()), Ok(mine.clone()));
+        assert_eq!(Ok(mine.sid.clone()), winpipe::user_sid());
+        assert_eq!(Ok(mine.elevated), winpipe::elevated());
+        assert!(!mine.app_container && !mine.restricted);
+        assert!(mine.integrity >= MEDIUM_RID, "the suite runs at Medium or higher");
         // A pid that is no process is refused, never passed.
-        assert!(winpipe::process_sid(0).is_err());
+        assert!(winpipe::process_token_facts(0).is_err());
     }
 
     #[cfg(windows)]

@@ -15,7 +15,11 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1,
     SE_FILE_OBJECT, SetSecurityInfo,
 };
-use windows_sys::Win32::Security::{GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser};
+use windows_sys::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER, TokenElevation,
+    TokenIntegrityLevel, TokenIsAppContainer, TokenIsRestricted, TokenUser,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
     SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
@@ -189,14 +193,64 @@ fn process_token(pid: u32) -> Result<Owned, String> {
     }
 }
 
-/// The SID of the user process `pid` runs as, as text.
-pub fn process_sid(pid: u32) -> Result<String, String> {
-    token_sid(process_token(pid)?.0)
+/// A DWORD-sized token fact.
+fn token_dword(token: HANDLE, class: TOKEN_INFORMATION_CLASS, what: &str) -> Result<u32, String> {
+    let mut v = 0u32;
+    let mut len = 0u32;
+    if unsafe { GetTokenInformation(token, class, (&mut v as *mut u32).cast(), size_of::<u32>() as u32, &mut len) } == 0 {
+        return Err(last_error(&format!("GetTokenInformation({what})")));
+    }
+    Ok(v)
 }
 
-/// Whether process `pid` runs elevated.
-pub fn process_elevated(pid: u32) -> Result<bool, String> {
-    token_elevated(process_token(pid)?.0)
+/// The token's integrity level: the last subauthority of its mandatory label's SID.
+fn token_integrity(token: HANDLE) -> Result<u32, String> {
+    unsafe {
+        let mut len = 0u32;
+        GetTokenInformation(token, TokenIntegrityLevel, null_mut(), 0, &mut len);
+        // u64 cells keep TOKEN_MANDATORY_LABEL aligned.
+        let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
+        if GetTokenInformation(token, TokenIntegrityLevel, buf.as_mut_ptr().cast(), len, &mut len) == 0 {
+            return Err(last_error("GetTokenInformation(TokenIntegrityLevel)"));
+        }
+        let sid = (*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL)).Label.Sid;
+        if sid.is_null() || IsValidSid(sid) == 0 {
+            return Err("GetTokenInformation(TokenIntegrityLevel) failed: no valid label".into());
+        }
+        let count = *GetSidSubAuthorityCount(sid);
+        if count == 0 {
+            return Err("GetTokenInformation(TokenIntegrityLevel) failed: the label has no level".into());
+        }
+        Ok(*GetSidSubAuthority(sid, u32::from(count) - 1))
+    }
+}
+
+/// Everything the peer check reads, from one token handle.
+fn token_facts(token: HANDLE) -> Result<crate::api_peer::Token, String> {
+    Ok(crate::api_peer::Token {
+        sid: token_sid(token)?,
+        elevated: token_elevated(token)?,
+        integrity: token_integrity(token)?,
+        app_container: token_dword(token, TokenIsAppContainer, "TokenIsAppContainer")? != 0,
+        restricted: token_dword(token, TokenIsRestricted, "TokenIsRestricted")? != 0,
+    })
+}
+
+/// The peer check's facts about process `pid`'s token, opened once.
+pub fn process_token_facts(pid: u32) -> Result<crate::api_peer::Token, String> {
+    token_facts(process_token(pid)?.0)
+}
+
+/// The peer check's facts about this process's token.
+pub fn own_token_facts() -> Result<crate::api_peer::Token, String> {
+    unsafe {
+        let mut token: HANDLE = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(last_error("OpenProcessToken"));
+        }
+        let token = Owned(token);
+        token_facts(token.0)
+    }
 }
 
 /// `\\.\pipe\tandem-host-<user SID>`.
@@ -416,12 +470,13 @@ impl Pipe {
         if unsafe { GetNamedPipeServerProcessId(self.handle(), &mut pid) } == 0 {
             return Err(last_error("GetNamedPipeServerProcessId"));
         }
-        let theirs = process_sid(pid)?;
+        let token = process_token(pid)?;
+        let theirs = token_sid(token.0)?;
         let mine = user_sid()?;
         if theirs != mine {
             return Err(format!("the session host pipe is served by another user ({theirs})"));
         }
-        if process_elevated(pid)? != elevated()? {
+        if token_elevated(token.0)? != elevated()? {
             return Err("the session host runs at another elevation than this Tandem".into());
         }
         Ok(())
@@ -461,6 +516,36 @@ pub(crate) mod tests {
         let t = std::thread::spawn(move || connect(&n2, Duration::from_secs(5)).unwrap().unwrap());
         let server = l.accept(Duration::from_secs(5)).unwrap().expect("a client");
         (server, t.join().unwrap())
+    }
+
+    /// A copy of this process's token lowered to Low integrity (as a sandbox broker makes for
+    /// its children) reads as Low, so the peer check refuses it.
+    #[test]
+    fn a_lowered_token_reads_as_low() {
+        use windows_sys::Win32::Security::{
+            DuplicateTokenEx, SID_AND_ATTRIBUTES, SecurityImpersonation, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
+            TOKEN_DUPLICATE, TokenPrimary,
+        };
+        const SE_GROUP_INTEGRITY: u32 = 0x20;
+        unsafe {
+            let mut own: HANDLE = null_mut();
+            assert_ne!(OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut own), 0);
+            let own = Owned(own);
+            let mut dup: HANDLE = null_mut();
+            assert_ne!(DuplicateTokenEx(own.0, TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, null(), SecurityImpersonation, TokenPrimary, &mut dup), 0);
+            let dup = Owned(dup);
+            let mut low: PSID = null_mut();
+            assert_ne!(ConvertStringSidToSidW(wide("S-1-16-4096").as_ptr(), &mut low), 0);
+            let label = TOKEN_MANDATORY_LABEL { Label: SID_AND_ATTRIBUTES { Sid: low, Attributes: SE_GROUP_INTEGRITY } };
+            let set = SetTokenInformation(dup.0, TokenIntegrityLevel, (&label as *const TOKEN_MANDATORY_LABEL).cast(), size_of::<TOKEN_MANDATORY_LABEL>() as u32);
+            LocalFree(low as HLOCAL);
+            assert_ne!(set, 0, "{}", last_error("SetTokenInformation"));
+            let lowered = token_facts(dup.0).unwrap();
+            let mine = own_token_facts().unwrap();
+            assert_eq!(lowered.integrity, crate::api_peer::LOW_RID);
+            assert_eq!(lowered.sid, mine.sid);
+            assert_eq!(crate::api_peer::judge(&lowered, &mine), Err(crate::api_peer::OTHER_INTEGRITY.to_string()));
+        }
     }
 
     #[test]

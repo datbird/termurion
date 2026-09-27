@@ -380,8 +380,8 @@ impl App {
         let Some(w) = self.pane_window(pane) else { return };
         let number = self.registry.number(w.key).unwrap_or(0);
         let guid = self.registry.guid(w.key).unwrap_or_default().to_string();
-        if let Some(t) = w.tabs.iter().position(|t| t.layout.panes().contains(&pane)) {
-            let tab = &w.tabs[t];
+        let t = w.tab;
+        if let Some(tab) = w.tabs.get(t) {
             let index = tab.layout.panes().iter().position(|x| *x == pane).unwrap_or(0);
             v.session.insert("termid", format!("w{number}t{t}p{index}"));
             v.tab.insert("id", tab.id.to_string());
@@ -413,9 +413,7 @@ impl App {
 
     /// The tmux gateway and tmux window id of a tmux pane.
     fn tmux_window_of(&self, pane: PaneId) -> Option<(PaneId, u32)> {
-        let io = self.panes.get(&pane)?.tmux_io()?;
-        let window = self.tmux.get(&io.gateway)?.panes.get(&io.pane)?.1;
-        Some((io.gateway, window))
+        self.tmux_of(pane).map(|(gateway, _, window)| (gateway, window))
     }
 
     /// RequestUpload: pick files, answer, and send the archive.

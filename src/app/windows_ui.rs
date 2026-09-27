@@ -434,20 +434,24 @@ impl App {
 
     /// The window that shows `pane`, the current one or a parked one.
     pub(super) fn pane_window(&self, pane: PaneId) -> Option<PaneWindow<'_>> {
-        let holds = |tabs: &[Tab]| tabs.iter().any(|t| t.layout.panes().contains(&pane));
-        if holds(&self.tabs) {
+        let holding = |tabs: &[Tab]| tabs.iter().position(|t| t.layout.panes().contains(&pane));
+        if let Some(tab) = holding(&self.tabs) {
             let key = self.windows.current()?;
-            return Some(PaneWindow { key, tabs: &self.tabs, front: self.tabs.get(self.active), title: self.win_title.as_deref(), hotkey: self.hotkey.is_some() });
+            return Some(PaneWindow { key, tabs: &self.tabs, tab, front: self.tabs.get(self.active), title: self.win_title.as_deref(), hotkey: self.hotkey.is_some() });
         }
-        self.windows.parked().find(|(_, s)| holds(&s.tabs)).map(|(k, s)| PaneWindow { key: *k, tabs: &s.tabs, front: s.active_tab(), title: s.win_title.as_deref(), hotkey: s.hotkey.is_some() })
+        self.windows
+            .parked()
+            .find_map(|(k, s)| holding(&s.tabs).map(|tab| PaneWindow { key: *k, tabs: &s.tabs, tab, front: s.active_tab(), title: s.win_title.as_deref(), hotkey: s.hotkey.is_some() }))
     }
 }
 
-/// What the variables need of a window: its registry key, its tabs and the one in front,
-/// its Edit Window Title text, and whether it is a hotkey window.
+/// What the variables need of a window: its registry key, its tabs, the index of the one
+/// holding the pane, the one in front, its Edit Window Title text, and whether it is a hotkey
+/// window.
 pub(super) struct PaneWindow<'a> {
     pub(super) key: u64,
     pub(super) tabs: &'a [Tab],
+    pub(super) tab: usize,
     pub(super) front: Option<&'a Tab>,
     pub(super) title: Option<&'a str>,
     pub(super) hotkey: bool,
