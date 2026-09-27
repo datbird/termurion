@@ -3517,6 +3517,7 @@ dependencies = [
  "egui-winit",
  "fancy-regex 0.14.0",
  "flate2",
+ "getrandom 0.4.3",
  "glyphon",
  "image",
  "muda",
