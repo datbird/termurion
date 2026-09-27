@@ -462,7 +462,14 @@ impl App {
     /// the API is off and nothing is downloaded.
     pub(super) fn run_autolaunch(&mut self) {
         let ran = std::mem::replace(&mut self.autolaunch_ran, true);
+        if ran {
+            return;
+        }
         let folder = crate::scripts::autolaunch_folder(&self.scripts_folder());
+        // The folder, or one above it, may be a link to a share: nothing there is probed.
+        if !crate::scripts::ancestors_stay_local(&folder, &crate::scripts::read_link) {
+            return self.script_log_app(crate::scripts::autolaunch_not_local(&folder));
+        }
         if !should_autolaunch(ran, folder.is_dir()) {
             return;
         }

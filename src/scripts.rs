@@ -52,6 +52,11 @@ pub trait Fs {
     fn is_dir(&self, p: &Path) -> bool;
     /// The folder's real path with every link resolved, None when it cannot be read.
     fn canonical(&self, dir: &Path) -> Option<PathBuf>;
+    /// Where a symbolic link or junction points, read from the link itself (nothing it
+    /// names is touched); None when `p` is no link.
+    fn read_link(&self, _p: &Path) -> Option<PathBuf> {
+        None
+    }
 }
 
 pub struct RealFs;
@@ -80,6 +85,15 @@ impl Fs for RealFs {
     fn canonical(&self, dir: &Path) -> Option<PathBuf> {
         std::fs::canonicalize(dir).ok()
     }
+    fn read_link(&self, p: &Path) -> Option<PathBuf> {
+        read_link(p)
+    }
+}
+
+/// Where a symbolic link or junction points, read from the local link itself; None when `p`
+/// is no link.
+pub fn read_link(p: &Path) -> Option<PathBuf> {
+    std::fs::read_link(p).ok()
 }
 
 /// How many hops of a link chain are followed.
@@ -110,13 +124,26 @@ pub fn link_chain_end(start: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>
 /// Whether a symbolic link or junction leads to a local folder. Each hop of the link is read
 /// first, so a link to a network path is never followed (and never probed).
 fn link_is_local_folder(link: &Path) -> bool {
-    link_chain_end(link, &|p: &Path| std::fs::read_link(p).ok()).is_some_and(|end| end.is_dir())
+    link_chain_end(link, &read_link).is_some_and(|end| end.is_dir())
 }
 
 /// Whether `path` is safe to touch as a file without a person asking: not a network path,
 /// and not a link whose chain reaches one (or never ends). Reads only the links themselves.
 pub fn stays_local(path: &Path) -> bool {
-    !is_network_path(&path.to_string_lossy()) && link_chain_end(path, &|p: &Path| std::fs::read_link(p).ok()).is_some()
+    !is_network_path(&path.to_string_lossy()) && link_chain_end(path, &read_link).is_some()
+}
+
+/// Whether a folder can be listed without a person asking: `stays_local` for it and for
+/// every folder above it, since any of them may be a link or junction to a network path
+/// (a Scripts folder, or `%APPDATA%` itself, redirected to a share). Reads only the links.
+pub fn ancestors_stay_local(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> bool {
+    !is_network_path(&path.to_string_lossy()) && path.ancestors().filter(|a| !a.as_os_str().is_empty()).all(|a| link_chain_end(a, read_link).is_some())
+}
+
+/// Logged in the app-wide entry when AutoLaunch is skipped because its folder is reached
+/// through a link to a network path (Tandem's).
+pub fn autolaunch_not_local(folder: &Path) -> String {
+    format!("AutoLaunch skipped: {} is reached through a link to a network path.\n", folder.display())
 }
 
 /// A path Tandem never touches as a file: a network path (`\\host`, `//host`, `\\?\UNC\`) or a
@@ -207,7 +234,11 @@ pub struct ScanResult {
 /// `populateScriptItem:` (`M:476-545`) from `root`, sorted. `elapsed` is read before each entry;
 /// once it reaches the limit `slow` is asked: true extends the limit to that time plus
 /// `SCAN_EXTEND`, false stops, keeping what the finished folders held.
+/// A root reached through a link to a network path is never listed: the result is empty.
 pub fn scan(root: &Path, fs: &dyn Fs, elapsed: &mut dyn FnMut() -> Duration, slow: &mut dyn FnMut() -> bool) -> ScanResult {
+    if !ancestors_stay_local(root, &|p: &Path| fs.read_link(p)) {
+        return ScanResult::default();
+    }
     let mut walk = Walk { fs, elapsed, slow, limit: SCAN_LIMIT, stopped: false, archives: Vec::new(), walking: Vec::new() };
     let mut tree = walk.folder(root, false, true);
     sort(&mut tree);
@@ -395,6 +426,9 @@ mod tests {
             let real = self.resolve(dir);
             self.dirs.contains(&real).then_some(real)
         }
+        fn read_link(&self, p: &Path) -> Option<PathBuf> {
+            self.links.get(p).cloned()
+        }
     }
 
     fn never() -> impl FnMut() -> Duration {
@@ -509,6 +543,45 @@ mod tests {
         fs.file(root, r"d0\shallow.py");
         let r = scan(root, &fs, &mut never(), &mut || false);
         assert_eq!(all_scripts(&r.tree), ["d0/shallow.py"]);
+    }
+
+    #[test]
+    fn roots_never_follow_network_links() {
+        // The Scripts folder itself, or a folder above it, a link or junction to a share: the
+        // scan lists nothing there.
+        let root = Path::new(r"C:\Users\u\AppData\Roaming\Tandem\Scripts");
+        let mut fs = FakeFs::default();
+        fs.file(root, "a.py");
+        assert_eq!(all_scripts(&scan(root, &fs, &mut never(), &mut || false).tree), ["a.py"]);
+        for link in [r"C:\Users\u\AppData\Roaming\Tandem\Scripts", r"C:\Users\u\AppData"] {
+            let mut fs = FakeFs::default();
+            fs.file(root, "a.py");
+            fs.links.insert(PathBuf::from(link), PathBuf::from(r"\\server\share"));
+            assert_eq!(scan(root, &fs, &mut never(), &mut || panic!("not slow")), ScanResult::default(), "{link}");
+        }
+
+        // The same rule for the AutoLaunch folder: a link on it or above it that reaches a
+        // network path, straight or on a later hop, or that loops.
+        let links: std::collections::HashMap<PathBuf, PathBuf> = [
+            (r"C:\S1\AutoLaunch", r"\\server\x"),
+            (r"C:\S2", r"C:\hop"),
+            (r"C:\hop", r"\\?\UNC\srv\y"),
+            (r"C:\S3", r"C:\loop"),
+            (r"C:\loop", r"C:\S3"),
+            (r"C:\S4", r"D:\scripts"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (PathBuf::from(a), PathBuf::from(b)))
+        .collect();
+        let read = |p: &Path| links.get(p).cloned();
+        let local = |p: &str| ancestors_stay_local(&autolaunch_folder(Path::new(p)), &read);
+        assert!(!local(r"C:\S1"));
+        assert!(!local(r"C:\S2"));
+        assert!(!local(r"C:\S3"));
+        assert!(local(r"C:\S4"));
+        assert!(local(r"C:\S5"));
+        assert!(!ancestors_stay_local(Path::new(r"\\server\s\AutoLaunch"), &|_| panic!("a network path is never read")));
+        assert_eq!(autolaunch_not_local(Path::new(r"C:\S1\AutoLaunch")), "AutoLaunch skipped: C:\\S1\\AutoLaunch is reached through a link to a network path.\n");
     }
 
     #[test]
