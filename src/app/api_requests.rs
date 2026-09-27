@@ -5,7 +5,8 @@
 //! request's profile and custom properties (`api_create`); GetBuffer, GetPrompt and
 //! ListPrompts read a session's own screen, Screenshot renders its visible lines
 //! (`api_buffer`); VariableRequest and the VARIABLE_CHANGE subscriptions read the objects
-//! ids name (`api_vars`).
+//! ids name (`api_vars`); GetProperty and SetProperty read and change a window's frame and
+//! full screen and a session's grid size and burial (`api_props`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -15,6 +16,7 @@ use super::close_ui::Closing;
 use super::{App, Rect, GAP};
 use crate::api_buffer;
 use crate::api_create::{self, SplitResult};
+use crate::api_props::{self, Prop};
 use crate::api_proto::{self, pb};
 use crate::api_session::{self, CloseStep, Snapshot};
 use crate::api_vars::{self, Objects, Scope, Values};
@@ -81,6 +83,11 @@ impl App {
             Some(Req::ListPromptsRequest(r)) => reply(req, Resp::ListPromptsResponse(self.api_list_prompts(r))),
             Some(Req::ScreenshotRequest(r)) => reply(req, Resp::ScreenshotResponse(self.api_screenshot(r))),
             Some(Req::VariableRequest(r)) => reply(req, Resp::VariableResponse(self.api_variable(r))),
+            Some(Req::GetPropertyRequest(r)) => reply(req, Resp::GetPropertyResponse(self.api_get_property(r))),
+            Some(Req::SetPropertyRequest(r)) => {
+                let status = self.api_set_property(r, event_loop);
+                reply(req, Resp::SetPropertyResponse(pb::SetPropertyResponse { status: Some(status as i32) }))
+            }
             Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => {
                 let status = self.api_variable_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
@@ -589,6 +596,172 @@ impl App {
             Ok(png) => answer(Status::Ok, Some(png)),
             Err(_) => answer(Status::InternalError, None),
         }
+    }
+
+    /// GetProperty (`H:2852-2984`): a window's frame (physical pixels, y down) and full
+    /// screen, a session's grid size (one less each way, kept), burial and line counts from its
+    /// own screen; a target not found (session "all" too) is INVALID_TARGET, a name the target
+    /// does not have UNRECOGNIZED_NAME.
+    fn api_get_property(&mut self, r: &pb::GetPropertyRequest) -> pb::GetPropertyResponse {
+        use alacritty_terminal::grid::Dimensions;
+        use pb::get_property_request::Identifier;
+        use pb::get_property_response::Status;
+        let answer = |s: Status, json_value: Option<String>| pb::GetPropertyResponse { status: Some(s as i32), json_value };
+        let name = r.name.as_deref().unwrap_or_default();
+        let json = match &r.identifier {
+            None => return answer(Status::InvalidTarget, None),
+            Some(Identifier::WindowId(id)) => {
+                let Some(w) = self.api_ids().window_key(id).and_then(|k| self.window_id_of_key(k)) else { return answer(Status::InvalidTarget, None) };
+                if !self.enter(w) {
+                    return answer(Status::InvalidTarget, None);
+                }
+                let Some(g) = self.gpu.as_ref() else { return answer(Status::InvalidTarget, None) };
+                match api_props::window_prop(name) {
+                    Some(Prop::Frame) => {
+                        let p = g.window.outer_position().unwrap_or_default();
+                        let s = g.window.outer_size();
+                        Some(api_props::frame_json(p.x.into(), p.y.into(), s.width.into(), s.height.into()))
+                    }
+                    Some(Prop::Fullscreen) => Some(g.window.fullscreen().is_some().to_string()),
+                    _ => None,
+                }
+            }
+            Some(Identifier::SessionId(id)) => {
+                let Some(pane) = self.api_session_pane(Some(id)) else { return answer(Status::InvalidTarget, None) };
+                let Some(p) = self.panes.get(&pane) else { return answer(Status::InvalidTarget, None) };
+                let screen = p.own();
+                let g = screen.term().grid();
+                match api_props::session_prop(name, false) {
+                    Some(Prop::GridSize) => Some(api_props::grid_json(g.columns(), g.screen_lines())),
+                    Some(Prop::Buried) => Some(self.buried.contains(pane).to_string()),
+                    Some(Prop::NumberOfLines) => {
+                        let (off, history) = (g.scrolled_off() as i64, g.history_size() as i64);
+                        Some(api_props::lines_json(off - history, g.screen_lines() as i64, history, off - g.display_offset() as i64))
+                    }
+                    _ => None,
+                }
+            }
+        };
+        match json {
+            Some(j) => answer(Status::Ok, Some(j)),
+            None => answer(Status::UnrecognizedName, None),
+        }
+    }
+
+    /// SetProperty (`H:2690-2850`): a value that is not JSON is INVALID_VALUE before
+    /// anything else, then the target (INVALID_TARGET), then the name (UNRECOGNIZED_NAME),
+    /// then the value's shape (INVALID_VALUE). Session "all" sets the first session only
+    /// (`H:2723-2729`, kept).
+    fn api_set_property(&mut self, r: &pb::SetPropertyRequest, event_loop: &ActiveEventLoop) -> pb::set_property_response::Status {
+        use pb::set_property_request::Identifier;
+        use pb::set_property_response::Status;
+        let Some(value) = api_props::parse_value(r.json_value.as_deref().unwrap_or_default()) else { return Status::InvalidValue };
+        let name = r.name.as_deref().unwrap_or_default();
+        let ids = self.api_ids();
+        match &r.identifier {
+            None => Status::InvalidTarget,
+            Some(Identifier::WindowId(id)) => {
+                let Some(w) = ids.window_key(id).and_then(|k| self.window_id_of_key(k)) else { return Status::InvalidTarget };
+                if !self.enter(w) {
+                    return Status::InvalidTarget;
+                }
+                let Some(g) = self.gpu.as_ref() else { return Status::InvalidTarget };
+                match api_props::window_prop(name) {
+                    // iTerm2 answers INVALID_VALUE and then sets a zero frame; one answer here.
+                    Some(Prop::Frame) => {
+                        let Some((x, y, w, h)) = api_props::parse_frame(&value) else { return Status::InvalidValue };
+                        // The outer size asked for, less the window's frame thickness.
+                        let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+                        let (dw, dh) = (f64::from(outer.width) - f64::from(inner.width), f64::from(outer.height) - f64::from(inner.height));
+                        g.window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
+                        let size = winit::dpi::PhysicalSize::new((w - dw).round().max(1.0) as u32, (h - dh).round().max(1.0) as u32);
+                        let _ = g.window.request_inner_size(size);
+                        Status::Ok
+                    }
+                    Some(Prop::Fullscreen) => {
+                        let Some(on) = api_props::as_bool(&value) else { return Status::InvalidValue };
+                        if g.window.fullscreen().is_some() != on {
+                            super::menu::toggle_fullscreen(Some(&*g.window));
+                        }
+                        Status::Ok
+                    }
+                    _ => Status::UnrecognizedName,
+                }
+            }
+            Some(Identifier::SessionId(id)) => {
+                let pane = if id == api_session::ALL {
+                    // With no session iTerm2 falls through to INVALID_TARGET.
+                    match ids.all_panes().first() {
+                        Some(p) => *p,
+                        None => return Status::InvalidTarget,
+                    }
+                } else {
+                    match self.api_session_pane(Some(id)) {
+                        Some(p) => p,
+                        None => return Status::InvalidTarget,
+                    }
+                };
+                match api_props::session_prop(name, true) {
+                    Some(Prop::GridSize) => match api_props::parse_size(&value) {
+                        Some((cols, rows)) => self.api_set_grid_size(pane, cols, rows),
+                        None => Status::InvalidValue,
+                    },
+                    Some(Prop::Buried) => {
+                        let Some(bury) = api_props::as_bool(&value) else { return Status::InvalidValue };
+                        if bury != self.buried.contains(pane) {
+                            if bury {
+                                // A replay view is never buried (`bury`'s `_synthetic`); a tmux
+                                // pane hides its tmux window. iTerm2 answers OK either way.
+                                if self.enter_pane_window(pane) && !self.bury_refused(pane) {
+                                    self.bury_pane(pane);
+                                }
+                            } else {
+                                self.api_disinter(pane, event_loop);
+                            }
+                            self.redraw();
+                        }
+                        Status::Ok
+                    }
+                    _ => Status::UnrecognizedName,
+                }
+            }
+        }
+    }
+
+    /// SetProperty `grid_size` (`sessionInitiatedResize:`, `PT:7126-7160`): IMPOSSIBLE in
+    /// full screen, with Lock Size, for a tmux pane or a session in no window; otherwise the
+    /// window's inner size grows or shrinks by the cells between the session's grid and the
+    /// one asked for (at least 20 by 2, rows capped by the monitor, `safelySetSessionSize:`),
+    /// so the other panes of its tab change too. An exited session keeps its size (OK).
+    pub(super) fn api_set_grid_size(&mut self, pane: PaneId, cols: i64, rows: i64) -> pb::set_property_response::Status {
+        use alacritty_terminal::grid::Dimensions;
+        use pb::set_property_response::Status;
+        let in_window = self.enter_pane_window(pane);
+        let (fullscreen, locked, tmux) = match self.gpu.as_ref().filter(|_| in_window) {
+            Some(g) => (g.window.fullscreen().is_some(), self.win_locks.size, self.tmux_of(pane).is_some()),
+            None => (false, false, self.tmux_of(pane).is_some()),
+        };
+        let status = api_props::grid_status(fullscreen, locked, tmux, in_window);
+        if status != Status::Ok {
+            return status;
+        }
+        let Some(p) = self.panes.get(&pane).filter(|p| p.exited.is_none()) else { return status };
+        let (cur_cols, cur_rows) = {
+            let g = p.own().term().grid();
+            (g.columns() as i64, g.screen_lines() as i64)
+        };
+        let (cw, ch) = self.cell();
+        let Some(g) = self.gpu.as_ref() else { return status };
+        let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+        let max_new_rows = match g.window.current_monitor() {
+            Some(m) => ((f64::from(m.size().height) - f64::from(outer.height)) / f64::from(ch.max(1.0))).floor() as i64,
+            None => i64::MAX,
+        };
+        let (want_cols, want_rows) = api_props::wanted_grid(cols, rows, cur_rows, max_new_rows);
+        let w = f64::from(inner.width) + (want_cols - cur_cols) as f64 * f64::from(cw);
+        let h = f64::from(inner.height) + (want_rows - cur_rows) as f64 * f64::from(ch);
+        let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.round().max(1.0) as u32, h.round().max(1.0) as u32));
+        status
     }
 }
 

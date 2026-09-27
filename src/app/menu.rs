@@ -880,7 +880,7 @@ impl App {
     }
 }
 
-fn toggle_fullscreen(window: Option<&Window>) {
+pub(super) fn toggle_fullscreen(window: Option<&Window>) {
     if let Some(w) = window {
         w.set_fullscreen(if w.fullscreen().is_some() { None } else { Some(Fullscreen::Borderless(None)) });
     }
