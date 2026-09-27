@@ -1671,3 +1671,48 @@ label = "Should references to undefined variables in interpolated strings be con
 type = "bool"
 default = true
 help = "Should references to undefined variables in interpolated strings be converted to empty string?\nWhen enabled, an expression in an interpolated string that references an undefined variable will be treated as an empty string. For example, \u201c\\(bogus)\u201d. References to undefined variables as arguments to function calls, such as \u201c\\(f(bogus))\u201d, are still errors."
+
+[[setting]]
+key = "pythonRuntimeDownloadURL"
+tab = "Advanced"
+section = "Scripting"
+label = "URL to check for new versions of the Python scripting runtime."
+type = "string"
+default = "https://iterm2.com/downloads/pyenv/manifest.json"
+help = "URL to check for new versions of the Python scripting runtime."
+
+[[setting]]
+key = "uvManifestDownloadURL"
+tab = "Advanced"
+section = "Scripting"
+label = "URL of the uv download manifest (used when the Python runtime is provisioned with uv)."
+type = "string"
+default = "https://iterm2.com/downloads/uv/manifest.json"
+help = "URL of the uv download manifest (used when the Python runtime is provisioned with uv)."
+
+[[setting]]
+key = "pythonRuntimeBetaDownloadURL"
+tab = "Advanced"
+section = "Scripting"
+label = "URL to check for new Beta versions of the Python scripting runtime."
+type = "string"
+default = "https://iterm2.com/downloads/pyenv/betamanifest.json"
+help = "URL to check for new Beta versions of the Python scripting runtime."
+
+[[setting]]
+key = "pythonRuntimeUsesUV"
+tab = "Advanced"
+section = "Scripting"
+label = "Use uv to provision the Python runtime for API scripts?"
+type = "bool"
+default = true
+help = "Use uv to provision the Python runtime for API scripts?\nWhen enabled, Tandem uses uv to download Python and build per-script environments instead of the bundled Python runtime. Scripts already provisioned continue to run regardless of this setting; it only affects creating, importing, and migrating scripts."
+
+[[setting]]
+key = "setIT2AppPath"
+tab = "Advanced"
+section = "Scripting"
+label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u2019s app bundle?"
+type = "bool"
+default = false
+help = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u2019s app bundle?\nThis disambiguates the AppleScript target when multiple Tandem builds with the same bundle identifier are running, so that the \u201cit2\u201d CLI requests its cookie from this Tandem instance. Intended for Tandem developers. Only affects sessions created after changing this setting."

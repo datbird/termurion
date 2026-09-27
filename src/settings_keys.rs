@@ -1047,6 +1047,51 @@ mod tests {
     }
 
     #[test]
+    fn scripting_rows_follow_iterm2() {
+        for (key, default, help) in [
+            ("pythonRuntimeDownloadURL", "https://iterm2.com/downloads/pyenv/manifest.json", "URL to check for new versions of the Python scripting runtime."),
+            (
+                "uvManifestDownloadURL",
+                "https://iterm2.com/downloads/uv/manifest.json",
+                "URL of the uv download manifest (used when the Python runtime is provisioned with uv).",
+            ),
+            (
+                "pythonRuntimeBetaDownloadURL",
+                "https://iterm2.com/downloads/pyenv/betamanifest.json",
+                "URL to check for new Beta versions of the Python scripting runtime.",
+            ),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Scripting"), "{key}");
+            assert_eq!(row.kind, Kind::String, "{key}");
+            assert_eq!(row.default, Some(Value::String(default.to_string())), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (help, help), "{key}");
+        }
+        let uv_label = "Use uv to provision the Python runtime for API scripts?";
+        let app_label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u{2019}s app bundle?";
+        for (key, default, label, help) in [
+            (
+                "pythonRuntimeUsesUV",
+                true,
+                uv_label,
+                format!("{uv_label}\nWhen enabled, Tandem uses uv to download Python and build per-script environments instead of the bundled Python runtime. Scripts already provisioned continue to run regardless of this setting; it only affects creating, importing, and migrating scripts."),
+            ),
+            (
+                "setIT2AppPath",
+                false,
+                app_label,
+                format!("{app_label}\nThis disambiguates the AppleScript target when multiple Tandem builds with the same bundle identifier are running, so that the \u{201c}it2\u{201d} CLI requests its cookie from this Tandem instance. Intended for Tandem developers. Only affects sessions created after changing this setting."),
+            ),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Scripting"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+        }
+    }
+
+    #[test]
     fn pointer_rows_show_labels() {
         let rows = pointer_rows(crate::globals::keymaps::factory_pointer());
         assert!(rows.contains(&("Button,1,1,,".to_string(), "Right button, single click".to_string(), "Open Context Menu".to_string())));
