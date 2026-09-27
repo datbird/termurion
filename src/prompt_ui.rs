@@ -48,6 +48,8 @@ pub struct PromptWindow {
     extra: Option<String>,
     /// Gray text the empty field shows (NSTextField's placeholder).
     hint: String,
+    /// A lone OK (NSAlert's default): no Cancel, and Escape does nothing.
+    ok_only: bool,
 }
 
 impl PromptWindow {
@@ -63,7 +65,7 @@ impl PromptWindow {
         initial: &str,
     ) -> Result<PromptWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, title, 420.0, 130.0)?;
-        Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None, hint: String::new() })
+        Ok(PromptWindow { host, label: label.into(), text: initial.into(), first: true, choices: Vec::new(), check: None, refuse_blank: false, extra: None, hint: String::new(), ok_only: false })
     }
 
     /// Earlier entries, offered in a list under the text.
@@ -88,6 +90,12 @@ impl PromptWindow {
     /// The field's placeholder text.
     pub fn with_hint(mut self, hint: &str) -> PromptWindow {
         self.hint = hint.into();
+        self
+    }
+
+    /// OK only, as an NSAlert with a text field has (`get_string`).
+    pub fn ok_only(mut self) -> PromptWindow {
+        self.ok_only = true;
         self
     }
 
@@ -121,7 +129,7 @@ impl PromptWindow {
     /// Draws the window. Enter or OK gives the text; Escape or Cancel gives up.
     pub fn redraw(&mut self) -> PromptResult {
         let mut result = PromptResult::Open;
-        let (label, text, first, choices, check, refuse_blank, extra, hint) = (&self.label, &mut self.text, &mut self.first, &self.choices, &mut self.check, self.refuse_blank, &self.extra, &self.hint);
+        let (label, text, first, choices, check, refuse_blank, extra, hint, ok_only) = (&self.label, &mut self.text, &mut self.first, &self.choices, &mut self.check, self.refuse_blank, &self.extra, &self.hint, self.ok_only);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(label.as_str());
@@ -147,7 +155,7 @@ impl PromptWindow {
                     ui.checkbox(on, label.as_str());
                 }
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let escape = !ok_only && ui.input(|i| i.key_pressed(egui::Key::Escape));
                 ui.horizontal(|ui| {
                     if ui.button("OK").clicked() || enter {
                         if refuse_blank && text.trim().is_empty() {
@@ -161,7 +169,7 @@ impl PromptWindow {
                             result = PromptResult::Extra(text.clone());
                         }
                     }
-                    if ui.button("Cancel").clicked() || escape {
+                    if (!ok_only && ui.button("Cancel").clicked()) || escape {
                         result = PromptResult::Cancel;
                     }
                 });

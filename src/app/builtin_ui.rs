@@ -28,7 +28,7 @@ pub(super) enum Dialog {
 
 /// The dialog showing.
 pub(super) enum Open {
-    Alert { window: ConfirmWindow, token: u64, buttons: usize },
+    Alert { window: ConfirmWindow, token: u64, buttons: Vec<String> },
     Text { window: PromptWindow, token: u64 },
 }
 
@@ -41,6 +41,23 @@ fn alert_buttons(buttons: Option<&Value>) -> Vec<String> {
 /// `alert`'s answer for the button at `index` (NSAlertFirstButtonReturn plus the index).
 fn alert_answer(index: usize) -> Value {
     json!(bf::ALERT_FIRST_BUTTON + index as i64)
+}
+
+/// Closing an alert: the button Escape presses ("Cancel"), else the first; closing never
+/// picks an action the person did not (`prompt_ui::close_index`).
+fn alert_closed(buttons: &[String]) -> Value {
+    let labels: Vec<&str> = buttons.iter().map(String::as_str).collect();
+    alert_answer(crate::prompt_ui::close_index(&labels))
+}
+
+/// A numeric argument, a boolean as 1 or 0 (NSNumber's `doubleValue`).
+fn num_arg(args: &BTreeMap<String, Value>, name: &str) -> Option<f64> {
+    args.get(name).and_then(|a| a.as_f64().or_else(|| a.as_bool().map(f64::from)))
+}
+
+/// An unread count (`integerValue`: truncated, a boolean 1 or 0).
+fn count_arg(args: &BTreeMap<String, Value>) -> i64 {
+    num_arg(args, "count").unwrap_or(0.0) as i64
 }
 
 fn str_arg<'a>(args: &'a BTreeMap<String, Value>, name: &str) -> Option<&'a str> {
@@ -151,7 +168,7 @@ impl App {
         match name {
             "count" => done(bf::count(args.get("array"))),
             "urlEncode" => done(bf::url_encode(args.get("string"))),
-            "with_alpha" => match (str_arg(args, "color"), args.get("alpha").and_then(|a| a.as_f64().or_else(|| a.as_bool().map(f64::from)))) {
+            "with_alpha" => match (str_arg(args, "color"), num_arg(args, "alpha")) {
                 (Some(c), Some(a)) => done(bf::with_alpha(c, a)),
                 _ => failed("with_alpha requires a color string and a numeric alpha"),
             },
@@ -245,7 +262,7 @@ impl App {
             }
             "set_status_bar_component_unread_count" => {
                 let id = str_arg(args, "identifier").unwrap_or_default().to_string();
-                let n = args.get("count").and_then(Value::as_f64).unwrap_or(0.0) as i64;
+                let n = count_arg(args);
                 self.unread_counts.insert(id, n);
                 self.redraw_all();
                 self.redraw();
@@ -346,11 +363,14 @@ impl App {
     /// Session methods (`PS:23440-23578`, `PS:23705-23748`).
     fn session_method(&mut self, name: &str, pane: PaneId, args: &BTreeMap<String, Value>) -> HostOutcome {
         match name {
-            // Tandem's session name is its title (`session.name`).
+            // `PS:23744-23748`: the session's own profile Name. As a local name it replaces a
+            // name a program or trigger set (`PS:3196-3203`), so the pane's title goes.
             "set_name" => {
+                let name = str_arg(args, "name").unwrap_or_default().to_string();
                 if let Some(p) = self.panes.get_mut(&pane) {
-                    p.own_mut().set_title(Some(str_arg(args, "name").unwrap_or_default().to_string()));
+                    p.own_mut().set_title(None);
                 }
+                self.set_session_values(pane, &[("Name".to_string(), Some(toml::Value::String(name)))]);
                 self.redraw_all();
                 self.redraw();
                 HostOutcome::Done(Value::Null)
@@ -359,14 +379,16 @@ impl App {
                 // A tmux window's session or the gateway's own (both have a controller).
                 let gw = self.panes.get(&pane).and_then(|p| p.tmux_io()).map(|io| io.gateway).or_else(|| self.tmux.contains_key(&pane).then_some(pane));
                 let Some(gw) = gw else { return failed(bf::NOT_TMUX) };
-                let Some(tag) = self.tmux_api_send(gw, str_arg(args, "command").unwrap_or_default()) else { return failed(bf::NOT_TMUX) };
+                // Sent tolerating errors (`PS:23723-23727`): a bad command answers "tmux error".
+                let tolerant = crate::tmux_gateway::Flags { tolerate: true, ..Default::default() };
+                let Some(tag) = self.tmux_api_send(gw, str_arg(args, "command").unwrap_or_default(), tolerant) else { return failed(bf::NOT_TMUX) };
                 let token = self.builtin_token();
                 self.script_tmux.insert((gw, tag), token);
                 HostOutcome::Started(token)
             }
             "set_status_bar_component_unread_count" => {
                 let id = str_arg(args, "identifier").unwrap_or_default().to_string();
-                let n = args.get("count").and_then(Value::as_f64).unwrap_or(0.0) as i64;
+                let n = count_arg(args);
                 self.unread_session_counts.insert((pane, id), n);
                 self.redraw_all();
                 self.redraw();
@@ -446,10 +468,10 @@ impl App {
         let opened = match d {
             Dialog::Alert { title, subtitle, buttons, .. } => {
                 let labels: Vec<&str> = buttons.iter().map(String::as_str).collect();
-                ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, &subtitle, &labels, false).map(|window| Open::Alert { window, token, buttons: buttons.len() })
+                ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, &subtitle, &labels, false).map(|window| Open::Alert { window, token, buttons: buttons.clone() })
             }
             Dialog::Text { title, subtitle, placeholder, default, .. } => {
-                PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, &subtitle, &default).map(|w| Open::Text { window: w.with_hint(&placeholder), token })
+                PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &title, &subtitle, &default).map(|w| Open::Text { window: w.with_hint(&placeholder).ok_only(), token })
             }
         };
         match opened {
@@ -461,16 +483,16 @@ impl App {
         }
     }
 
-    /// Events for the showing dialog. An alert answers with its button (closing it is the
-    /// last button); a text dialog with the field's text whatever closes it. False for other
-    /// windows.
+    /// Events for the showing dialog. An alert answers with its button (closing it is
+    /// `alert_closed`'s); a text dialog with the field's text whatever closes it. False for
+    /// other windows.
     pub(super) fn script_dialog_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
         let answer = match self.script_dialog.as_mut() {
             Some(Open::Alert { window: w, token, buttons }) if w.id() == window => {
-                let index = match event {
-                    WindowEvent::CloseRequested => Some(buttons.saturating_sub(1)),
+                let value = match event {
+                    WindowEvent::CloseRequested => Some(alert_closed(buttons)),
                     WindowEvent::RedrawRequested => match w.redraw() {
-                        ConfirmResult::Action { index, .. } => Some(index),
+                        ConfirmResult::Action { index, .. } => Some(alert_answer(index)),
                         _ => None,
                     },
                     other => {
@@ -478,7 +500,7 @@ impl App {
                         None
                     }
                 };
-                index.map(|i| (*token, alert_answer(i)))
+                value.map(|v| (*token, v))
             }
             Some(Open::Text { window: w, token }) if w.id() == window => {
                 let text = match event {
@@ -521,6 +543,15 @@ mod tests {
         assert_eq!(alert_buttons(Some(&json!([]))), ["OK"], "NSAlert's lone OK");
         assert_eq!(alert_answer(0), json!(1000));
         assert_eq!(alert_answer(2), json!(1002));
+        // Closing never picks an action: Escape's "Cancel", else the first.
+        let labels = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        assert_eq!(alert_closed(&labels(&["Keep", "Delete"])), json!(1000));
+        assert_eq!(alert_closed(&labels(&["Delete", "Cancel"])), json!(1001));
+        assert_eq!(alert_closed(&labels(&["OK"])), json!(1000));
+        // Counts as `integerValue`: a boolean is 1, a fraction truncated.
+        let count = |v: Value| count_arg(&BTreeMap::from([("count".to_string(), v)]));
+        assert_eq!((count(json!(true)), count(json!(false)), count(json!(2.7)), count(json!(3))), (1, 0, 2, 3));
+        assert_eq!(num_arg(&BTreeMap::from([("alpha".to_string(), json!(true))]), "alpha"), Some(1.0));
         let args: BTreeMap<String, Value> = [("status", json!("Working")), ("text_color", json!("")), ("dot_color", json!("#0f0")), ("background_tasks", json!(2))].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         assert_eq!(status_pairs(&args), Ok(vec![("status".to_string(), "Working".to_string()), ("status-color".to_string(), String::new()), ("indicator".to_string(), "#0f0".to_string())]));
         let bad: BTreeMap<String, Value> = [("status", json!("x")), ("dot_color", json!("red"))].into_iter().map(|(k, v)| (k.to_string(), v)).collect();

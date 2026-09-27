@@ -361,13 +361,14 @@ impl App {
         true
     }
 
-    /// A Python API SendCommand to the gateway `pane`: sent with a tag of its own, whose
-    /// output is not printed. The tag, or None when `pane` is no gateway.
-    pub(super) fn tmux_api_send(&mut self, pane: PaneId, command: &str) -> Option<Tag> {
+    /// A command for the Python API to the gateway `pane` (SendCommand with the default
+    /// flags, `run_tmux_command` tolerating errors): sent with a tag of its own, whose output
+    /// is not printed. The tag, or None when `pane` is no gateway.
+    pub(super) fn tmux_api_send(&mut self, pane: PaneId, command: &str, flags: crate::tmux_gateway::Flags) -> Option<Tag> {
         let t = self.tmux.get_mut(&pane)?;
         let tag = t.next_tag;
         t.next_tag += 1;
-        t.gw.send(command, Some(tag), Default::default());
+        t.gw.send(command, Some(tag), flags);
         self.tmux_flush(pane);
         Some(tag)
     }

@@ -1251,7 +1251,7 @@ impl App {
             Some(Payload::ListConnections(_)) => reply(req, Resp::TmuxResponse(api_misc::connections(&self.api_tmux_clients()))),
             Some(Payload::SendCommand(c)) => {
                 let Some(gw) = gateway(self, c.connection_id.as_deref()) else { return status(Status::InvalidConnectionId) };
-                let Some(tag) = self.tmux_api_send(gw, c.command.as_deref().unwrap_or_default()) else { return status(Status::InvalidConnectionId) };
+                let Some(tag) = self.tmux_api_send(gw, c.command.as_deref().unwrap_or_default(), Default::default()) else { return status(Status::InvalidConnectionId) };
                 self.api_tmux_commands.insert((gw, tag), (conn, req.clone()));
                 Answer::Later
             }

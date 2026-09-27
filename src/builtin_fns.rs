@@ -214,7 +214,8 @@ pub fn with_alpha(color: &str, alpha: f64) -> Result<Value, String> {
     // `colorFromHexString:allowingAlpha:YES` (`NSColor+iTerm.m:963-1014`): eight digits carry
     // an alpha, which the new one replaces.
     let rgb = match color.strip_prefix('#') {
-        Some(d) if d.len() == 8 => {
+        // Checked as characters first: a byte count of 8 may split a multibyte character.
+        Some(d) if d.len() == 8 && d.is_ascii() => {
             if !d[6..].bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(cannot_parse_color(color));
             }
@@ -301,6 +302,11 @@ pub fn no_method(on: On, id: &str, sig: &str) -> String {
         On::Window => "Window",
     };
     format!("No method found on <{object} id={id}> with signature {sig}")
+}
+
+/// A method call whose receiver is gone when the call runs (`iTermObject.m:61-67`).
+pub fn no_object(id: &str) -> String {
+    format!("No object with ID {id}")
 }
 
 /// `with_alpha`'s parse failure.
@@ -409,6 +415,8 @@ mod tests {
         assert_eq!(with_alpha("#ffff80800000", 1.0), Ok(json!("#ff8000ff")), "the 16-bit form");
         assert_eq!(with_alpha("bogus", 1.0), Err("with_alpha could not parse color \u{201c}bogus\u{201d}".to_string()));
         assert_eq!(with_alpha("#ff00zz", 1.0), Err(cannot_parse_color("#ff00zz")));
+        assert_eq!(with_alpha("#fffff\u{e9}f", 1.0), Err(cannot_parse_color("#fffff\u{e9}f")), "eight bytes, not eight digits");
+        assert_eq!(with_alpha("#\u{e9}\u{e9}\u{e9}", 1.0), Err(cannot_parse_color("#\u{e9}\u{e9}\u{e9}")));
         assert_eq!(direction("left"), Some(crate::layout::Dir::Left));
         assert_eq!(direction("right"), Some(crate::layout::Dir::Right));
         assert_eq!(direction("above"), Some(crate::layout::Dir::Up));
@@ -430,5 +438,6 @@ mod tests {
         assert_eq!(receiver_kind("7", false, false, false, "iterm2.set_name(name)"), None);
         assert_eq!(crate::script_eval::object_not_found("7"), "Object with identifier \u{201c}7\u{201d} not found");
         assert_eq!(no_method(On::Session, "7", "iterm2.x()"), "No method found on <Session id=7> with signature iterm2.x()");
+        assert_eq!(no_object("7"), "No object with ID 7");
     }
 }

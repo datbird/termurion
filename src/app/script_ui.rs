@@ -129,6 +129,27 @@ fn next_wake(runs: &BTreeMap<u64, Run>, registry: Option<Instant>) -> Option<Ins
     runs.values().filter_map(|r| r.inv.deadline()).chain(registry).min()
 }
 
+/// A method call's target (`SFC:512-521`, `iTermObject.m:55-91`): the receiver looked up
+/// again for each call with that call's signature ("No object with ID" when it names nothing
+/// now), then the method its catalog has for the signature ("No method found ...", as
+/// unregistered), its explicit arguments type-checked.
+fn method_target(lookup: &mut dyn FnMut(&str, &str) -> Option<(builtin_fns::On, u64)>, id: &str, sig: &str, args: &BTreeMap<String, Value>) -> Result<((builtin_fns::On, u64), &'static builtin_fns::Builtin), Failure> {
+    let (on, key) = lookup(id, sig).ok_or_else(|| Failure::plain(builtin_fns::no_object(id)))?;
+    let b = builtin_fns::find(on, sig).ok_or_else(|| Failure { reason: builtin_fns::no_method(on, id, sig), detail: None, kind: FailKind::Unregistered, conn: None })?;
+    builtin_fns::type_check(b, args).map_err(Failure::plain)?;
+    Ok(((on, key), b))
+}
+
+/// The connection a timed-out run's failure carries (`SFC:396-401`): the one serving the call
+/// it waits to return from, else for a method invocation the requester's (`H:4331-4336`).
+fn timeout_conn(run: &Run, conn_of: impl Fn(u64) -> Option<u64>) -> Option<u64> {
+    let requester = match (&run.receiver, &run.origin) {
+        (Some(_), Origin::Api { conn, .. }) => Some(*conn),
+        _ => None,
+    };
+    run.inv.returning().and_then(conn_of).or(requester)
+}
+
 /// The host of one run's calls: a method invocation's calls on its receiver, built-ins
 /// first, then scripts (`SFC:510-560`).
 struct ScriptHost<'a> {
@@ -155,19 +176,17 @@ impl ScriptHost<'_> {
         out
     }
 
-    /// A method call (`SFC:512-521`, `iTermObject.m:79-91`): the receiver is looked up for
-    /// each call (`object_not_found` when it names nothing now), then the method its catalog
-    /// has for the signature, else "No method found ...", as unregistered.
+    /// A method call: its target (`method_target`, the receiver looked up for this call),
+    /// then the built-in method runs.
     fn method(&mut self, id: &str, sig: &str, args: &BTreeMap<String, Value>, sync: bool, side_effects: bool) -> HostOutcome {
-        let Some((on, key)) = self.app.receiver(id, sig) else { return HostOutcome::Failed(Failure::plain(script_eval::object_not_found(id))) };
-        let Some(b) = builtin_fns::find(on, sig) else {
-            return HostOutcome::Failed(Failure { reason: builtin_fns::no_method(on, id, sig), detail: None, kind: FailKind::Unregistered, conn: None });
-        };
-        if let Err(e) = builtin_fns::type_check(b, args) {
-            return HostOutcome::Failed(Failure::plain(e));
+        let app = &*self.app;
+        match method_target(&mut |i, s| app.receiver(i, s), id, sig, args) {
+            Ok((receiver, b)) => {
+                let out = self.app.builtin(b, without_nulls(args.clone()), Some(receiver), side_effects, sync);
+                self.started(out)
+            }
+            Err(f) => HostOutcome::Failed(f),
         }
-        let out = self.app.builtin(b, without_nulls(args.clone()), Some((on, key)), side_effects, sync);
-        self.started(out)
     }
 }
 
@@ -334,12 +353,7 @@ impl App {
         for id in late_runs(&self.script_runs, now) {
             let Some(run) = self.script_runs.remove(&id) else { continue };
             let mut f = run.inv.timed_out();
-            // A method invocation's calls carry the requester's connection (`H:4336`).
-            let requester = match (&run.receiver, &run.origin) {
-                (Some(_), Origin::Api { conn, .. }) => Some(*conn),
-                _ => None,
-            };
-            f.conn = run.inv.returning().and_then(|t| self.api_fns.conn_of(t)).or(requester);
+            f.conn = timeout_conn(&run, |t| self.api_fns.conn_of(t));
             self.script_log(f.conn, f.reason.clone());
             self.script_finished(run, Err(f));
         }
@@ -488,6 +502,62 @@ mod tests {
             Some(HostOutcome::Failed(Failure { reason: "Undefined function with signature \u{201c}f(a)\u{201d}".into(), detail: None, kind: FailKind::Disabled, conn: None }))
         );
         assert_eq!(script_gate("f()", false, true), None, "the registry is asked");
+    }
+
+    /// Runs a method invocation's calls through `method_target`, recording each lookup; the
+    /// receiver answers as a session for the first `alive` lookups, then is gone.
+    struct Methods {
+        lookups: Vec<(String, String)>,
+        alive: usize,
+    }
+
+    impl Host for Methods {
+        fn call(&mut self, call: &Call, args: &BTreeMap<String, Value>, _sync: bool, _side_effects: bool) -> HostOutcome {
+            let (lookups, alive) = (&mut self.lookups, self.alive);
+            let mut lookup = |id: &str, sig: &str| {
+                lookups.push((id.to_string(), sig.to_string()));
+                (lookups.len() <= alive).then_some((builtin_fns::On::Session, 7))
+            };
+            match method_target(&mut lookup, "7", &call.signature(), args) {
+                Ok(_) => HostOutcome::Done(Value::Null),
+                Err(f) => HostOutcome::Failed(f),
+            }
+        }
+    }
+
+    #[test]
+    fn method_calls_follow_iterm2() {
+        let empty = Values::new();
+        // The receiver is looked up again for each call, with that call's signature.
+        let mut r = run("iterm2.set_name(name: \"a\"); iterm2.stop_coprocess()", Timeout::Never, Instant::now());
+        let mut host = Methods { lookups: Vec::new(), alive: 9 };
+        assert_eq!(r.inv.step(&empty, &mut host), Step::Done(Value::Null));
+        assert_eq!(host.lookups, [("7".to_string(), "iterm2.set_name(name)".to_string()), ("7".to_string(), "iterm2.stop_coprocess()".to_string())]);
+        // Gone by the second call: "No object with ID" (`iTermObject.m:61-67`), a plain failure.
+        let mut r = run("iterm2.set_name(name: \"a\"); iterm2.stop_coprocess()", Timeout::Never, Instant::now());
+        let mut host = Methods { lookups: Vec::new(), alive: 1 };
+        let step = r.inv.step(&empty, &mut host);
+        assert!(matches!(&step, Step::Failed(f) if f.reason == "No object with ID 7" && f.kind != FailKind::Unregistered), "{step:?}");
+        // A method the receiver lacks: unregistered; a bad argument type: the mismatch.
+        let mut none = |_: &str, _: &str| Some((builtin_fns::On::Tab, 3));
+        let f = method_target(&mut none, "3", "iterm2.set_name(name)", &BTreeMap::new()).unwrap_err();
+        assert_eq!((f.reason.as_str(), f.kind), ("No method found on <Tab id=3> with signature iterm2.set_name(name)", FailKind::Unregistered));
+        let mut session = |_: &str, _: &str| Some((builtin_fns::On::Session, 7));
+        assert!(method_target(&mut session, "7", "iterm2.set_name(name)", &BTreeMap::from([("name".to_string(), json!(3))])).is_err());
+
+        // A timeout carries the connection serving the waited call, else a method
+        // invocation's requester, else none.
+        let t0 = Instant::now();
+        let mut r = run("f()", Timeout::After(Duration::from_secs(1)), t0);
+        assert_eq!(r.inv.step(&empty, &mut Starter(40)), Step::Waiting);
+        assert_eq!(timeout_conn(&r, |_| None), None, "no connection and no requester");
+        assert_eq!(timeout_conn(&r, |t| (t == 41).then_some(5)), Some(5));
+        r.receiver = Some("7".into());
+        r.origin = Origin::Api { conn: 9, req: pb::ClientOriginatedMessage::default() };
+        assert_eq!(timeout_conn(&r, |_| None), Some(9), "the requester's");
+        assert_eq!(timeout_conn(&r, |t| (t == 41).then_some(5)), Some(5), "the serving connection first");
+        r.receiver = None;
+        assert_eq!(timeout_conn(&r, |_| None), None, "an InvokeFunction that is not a method");
     }
 
     #[test]
