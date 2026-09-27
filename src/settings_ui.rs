@@ -518,9 +518,9 @@ pub fn title_choice(components: i64, function: Option<(String, String)>, provide
 }
 
 /// The Title Function row: a popup of `title_choice`'s items in place of the list's "n
-/// item(s)". A provider writes Title Function `[display name, unique id]` and Title
-/// Components Custom (`PGP:1427-1437`); "Built-in components" writes Title Components Job
-/// and keeps the Title Function. A saved function with no registered provider shows
+/// item(s)". A provider writes Title Function `[{value = display name}, {value = unique
+/// id}]` (`jobtitle::title_function_value`) and Title Components Custom (`PGP:1427-1437`);
+/// "Built-in components" writes Title Components Job and keeps the Title Function. A saved function with no registered provider shows
 /// disabled. True when the profile changed.
 fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, providers: &[(String, String)]) -> bool {
     use crate::jobtitle::{CUSTOM, JOB};
@@ -554,7 +554,7 @@ fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, pro
         }
         Some(i) => {
             let (name, id) = items[i].clone();
-            profile.set("Title Function", Value::Array(vec![Value::String(name), Value::String(id)]));
+            profile.set("Title Function", crate::jobtitle::title_function_value(&name, &id));
             profile.set("Title Components", Value::Integer(i64::from(CUSTOM)));
             true
         }

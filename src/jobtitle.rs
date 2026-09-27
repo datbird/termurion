@@ -50,9 +50,9 @@ fn pretty_path(path: &str, home: &str) -> String {
 }
 
 /// The profile's Title Function (`PS:22680-22692`, `iTermTuple fromPlistValue:`): the
-/// display name and the unique id of its title provider, when the array has both. Tandem
-/// writes `[display name, unique id]`; an imported iTerm2 profile has each element as
-/// `{value = ...}` (`iTermTuple plistValue`).
+/// display name and the unique id of its title provider, when the array has both. Each
+/// element is `{value = ...}` as iTerm2 and `title_function_value` write it, or a plain
+/// string as iTerm2's Python library writes it (`profile.py:4283-4284`).
 pub fn title_function(v: Option<&toml::Value>) -> Option<(String, String)> {
     let a = v?.as_array()?;
     let item = |i: usize| match a.get(i)? {
@@ -61,6 +61,13 @@ pub fn title_function(v: Option<&toml::Value>) -> Option<(String, String)> {
         _ => None,
     };
     Some((item(0)?, item(1)?))
+}
+
+/// The Title Function as iTerm2 stores it (`PGP:1434`, `PGP:1487-1489`, `iTermTuple
+/// plistValue`, `iTermTuple.m:59-63`): `[{value = display name}, {value = unique id}]`.
+pub fn title_function_value(display_name: &str, unique_id: &str) -> toml::Value {
+    let item = |v: &str| toml::Value::Table(toml::Table::from_iter([("value".to_string(), toml::Value::String(v.to_string()))]));
+    toml::Value::Array(vec![item(display_name), item(unique_id)])
 }
 
 /// The title for `components` (the profile's Title Components bits).
@@ -173,6 +180,12 @@ mod tests {
         // iTerm2's own plist form (`iTermTuple plistValue`), as an imported profile has it.
         let table = |v: &str| toml::Value::Table(toml::Table::from_iter([("value".to_string(), toml::Value::String(v.into()))]));
         assert_eq!(title_function(Some(&toml::Value::Array(vec![table("Hello"), table("com.ex.t")]))), Some(("Hello".to_string(), "com.ex.t".to_string())));
+        // The popup writes iTerm2's form, which reads back.
+        let written = title_function_value("Hello", "com.ex.t");
+        assert_eq!(written, toml::Value::Array(vec![table("Hello"), table("com.ex.t")]));
+        assert_eq!(title_function(Some(&written)), Some(("Hello".to_string(), "com.ex.t".to_string())));
+        // GetProfileProperty answers the stored form, as iTerm2's does.
+        assert_eq!(crate::api_profile::json_of("Title Function", &written).as_deref(), Some(r#"[{"value":"Hello"},{"value":"com.ex.t"}]"#));
         assert_eq!(title(CUSTOM, &parts()), "");
         assert_eq!(title(CUSTOM, &TitleParts { explicit: Some("t".into()), ..parts() }), "", "a program's title does not turn on the temporary name");
     }

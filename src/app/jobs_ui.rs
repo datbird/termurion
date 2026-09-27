@@ -38,16 +38,20 @@ impl App {
     }
 
     /// A session's title from its profile's Title Components; with Custom alone, its title
-    /// provider's (`SNC:98-170`): "" with no Title Function, the ellipsis while no registered
-    /// provider has its unique id, else the provider's last value (`script_titles`).
+    /// provider's (`SNC:98-170`): "" with no Title Function, the last value evaluated for its
+    /// unique id (`script_titles`; kept when the provider goes, until the next evaluation
+    /// shows the ellipsis), else the ellipsis while no registered provider has the unique id.
     pub(super) fn session_title(&self, pane: PaneId) -> String {
         match self.title_provider_id(pane) {
             Some(None) => return String::new(),
             Some(Some(id)) => {
-                if !self.api_fns.title_providers().iter().any(|p| p.unique_id == id) {
+                if let Some(t) = self.script_titles.get(&pane).filter(|t| t.unique_id == id && !t.deps.is_empty()) {
+                    return t.value.clone();
+                }
+                if !self.api_fns.has_title_provider(&id) {
                     return crate::script_eval::TITLE_UNREGISTERED.to_string();
                 }
-                return self.script_titles.get(&pane).filter(|t| t.unique_id == id).map(|t| t.value.clone()).unwrap_or_default();
+                return String::new();
             }
             None => {}
         }

@@ -152,14 +152,17 @@ pub struct Pending {
 }
 
 /// The registrations by signature with their connections, the calls waiting by request id,
-/// the next request id, and a count bumped whenever registrations are added or a closed
-/// connection took some away (iTerm2's registered-functions-changed notification).
+/// the next request id, a count bumped whenever registrations are added or a closed
+/// connection took some away (iTerm2's registered-functions-changed notification), and a
+/// count bumped only when a session title provider registers
+/// (`iTermAPIDidRegisterSessionTitleFunctionNotification`, `H:1935-1941`).
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
     regs: BTreeMap<String, (u64, pb::RpcRegistrationRequest)>,
     pending: BTreeMap<String, Pending>,
     next_id: u64,
     generation: u64,
+    title_generation: u64,
 }
 
 /// A registration's role; iTerm2's default, Generic, when unset or unknown.
@@ -209,6 +212,9 @@ impl Registry {
             }
             self.regs.insert(sig, (conn, reg.clone()));
             self.generation += 1;
+            if role(reg) == Role::SessionTitle {
+                self.title_generation += 1;
+            }
             return (Status::Ok, None);
         }
         match self.regs.get(&sig) {
@@ -394,6 +400,17 @@ impl Registry {
             .collect()
     }
 
+    /// Whether a SESSION_TITLE registration has this unique id (`SNC:120-124`).
+    pub fn has_title_provider(&self, unique_id: &str) -> bool {
+        self.regs.values().any(|(_, r)| {
+            role(r) == Role::SessionTitle
+                && match &r.role_specific_attributes {
+                    Some(RoleSpecificAttributes::SessionTitleAttributes(a)) => a.unique_identifier.as_deref().unwrap_or_default() == unique_id,
+                    _ => unique_id.is_empty(),
+                }
+        })
+    }
+
     /// The STATUS_BAR_COMPONENT registrations (`H:1404-1415`).
     pub fn status_bar_components(&self) -> Vec<pb::RpcRegistrationRequest> {
         self.regs.values().filter(|(_, r)| role(r) == Role::StatusBarComponent).map(|(_, r)| r.clone()).collect()
@@ -421,6 +438,12 @@ impl Registry {
     /// Bumped whenever registrations were added, or a closed connection took some away.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Bumped only when a session title provider registers; title providers re-evaluate on
+    /// it and on nothing else the registry does (`SNC:51-55`, `SNC:451-455`).
+    pub fn title_generation(&self) -> u64 {
+        self.title_generation
     }
 }
 
@@ -711,6 +734,21 @@ mod tests {
         assert!(fns.status_bar_component("com.z").is_none());
         assert_eq!(fns.status_bar_component("com.x").map(|r| fns.owner(&reg_signature(r)).is_some()), Some(true));
         assert_eq!(fns.owner("nothing()"), None);
+        // Title providers by unique id; only a title registration bumps the title generation,
+        // never another role's or a closed connection (`H:1935-1941`, `H:2190`).
+        assert!(fns.has_title_provider("com.x-y"));
+        assert!(!fns.has_title_provider("com.x"));
+        let (all, titles) = (fns.generation(), fns.title_generation());
+        assert_eq!(titles, 2, "two title registrations");
+        subscribe(&mut fns, 3, reg("other", &[]));
+        subscribe(&mut fns, 3, statusbar(reg("s", &[]), "com.z"));
+        fns.drop_conn(3);
+        assert_eq!((fns.generation(), fns.title_generation()), (all + 3, 2));
+        subscribe(&mut fns, 3, title(reg("t", &[]), "Other", "com.t"));
+        assert_eq!(fns.title_generation(), 3);
+        fns.drop_conn(3);
+        assert_eq!(fns.title_generation(), 3);
+        assert!(!fns.has_title_provider("com.t"));
         // Context menu items by display name, ignoring case.
         for (name, display) in [("f1", "b"), ("f2", "A"), ("f3", "c")] {
             subscribe(&mut fns, 1, menu(reg(name, &[]), display, name));
