@@ -366,6 +366,8 @@ impl App {
         for (k, val) in &s.shell.vars {
             v.user.insert(k.clone(), val.clone());
         }
+        // Values the API set win over SetUserVar's until the script sets them null.
+        v.user.extend(user_strings(self.api_vars.user(crate::api_vars::Scope::Session, &pane.to_string())));
         v.app.insert("pid", std::process::id().to_string());
         v.app.insert("localhostName", local_host_name().to_string());
         v.app.insert("effectiveTheme", if self.dark() { "dark" } else { "light" }.to_string());

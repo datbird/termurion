@@ -4,7 +4,8 @@
 //! iTerm2's order (`api_session`); CreateTab and SplitPane start sessions from a
 //! request's profile and custom properties (`api_create`); GetBuffer, GetPrompt and
 //! ListPrompts read a session's own screen, Screenshot renders its visible lines
-//! (`api_buffer`).
+//! (`api_buffer`); VariableRequest and the VARIABLE_CHANGE subscriptions read the objects
+//! ids name (`api_vars`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -16,6 +17,7 @@ use crate::api_buffer::{self, Facts};
 use crate::api_create::{self, SplitResult};
 use crate::api_proto::{self, pb};
 use crate::api_session::{self, CloseStep, Snapshot};
+use crate::api_vars::{self, Objects, Scope, Values};
 use crate::broadcast::Write;
 use crate::layout::{Axis, PaneId};
 use crate::winmodel::LayoutOp;
@@ -65,7 +67,7 @@ impl App {
     /// The app's answer to a request of 11b. A request no task handles yet answers iTerm2's
     /// malformed error. The window current before is current again after, as `api_model`
     /// leaves it (a raised window becomes current through `last_window`).
-    pub(super) fn api_request(&mut self, _conn: u64, req: &pb::ClientOriginatedMessage, event_loop: &ActiveEventLoop) -> Answer {
+    pub(super) fn api_request(&mut self, conn: u64, req: &pb::ClientOriginatedMessage, event_loop: &ActiveEventLoop) -> Answer {
         let back = self.current_window();
         let answer = match &req.submessage {
             Some(Req::SendTextRequest(r)) => reply(req, Resp::SendTextResponse(self.api_send_text(r))),
@@ -78,12 +80,59 @@ impl App {
             Some(Req::GetPromptRequest(r)) => reply(req, Resp::GetPromptResponse(self.api_get_prompt(r))),
             Some(Req::ListPromptsRequest(r)) => reply(req, Resp::ListPromptsResponse(self.api_list_prompts(r))),
             Some(Req::ScreenshotRequest(r)) => reply(req, Resp::ScreenshotResponse(self.api_screenshot(r))),
+            Some(Req::VariableRequest(r)) => reply(req, Resp::VariableResponse(self.api_variable(r))),
+            Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => {
+                let status = self.api_variable_subscribe(conn, r);
+                reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
+            }
             _ => Answer::Now(api_proto::malformed(req)),
         };
         if let Some(b) = back {
             self.enter(b);
         }
         answer
+    }
+
+    /// The objects ids name now, their values read when asked for.
+    pub(super) fn api_objects(&self) -> ApiObjects<'_> {
+        ApiObjects { app: self, ids: self.api_ids() }
+    }
+
+    /// VariableRequest (`H:3106-3267`): the plan's sets go to the store, the only place a
+    /// script writes variables (user variables alone, as iTerm2 allows).
+    fn api_variable(&mut self, r: &pb::VariableRequest) -> pb::VariableResponse {
+        let (resp, sets) = api_vars::answer(r, &self.api_objects());
+        if sets.is_empty() {
+            return resp;
+        }
+        for (scope, id, name, value) in sets {
+            // `answer` passes only legal "user." names, which the store always takes.
+            let _ = self.api_vars.set_user(scope, &id, &name, value);
+        }
+        // Titles and status bars may interpolate them.
+        self.redraw();
+        self.redraw_all();
+        resp
+    }
+
+    /// A VARIABLE_CHANGE (un)subscribe (`H:1804-1864`). The objects a new subscription
+    /// watches take their baseline now, so a change the script makes right after is posted.
+    fn api_variable_subscribe(&mut self, conn: u64, r: &pb::NotificationRequest) -> pb::notification_response::Status {
+        let mut subs = std::mem::take(&mut self.api_var_subs);
+        let objects = self.api_objects();
+        let status = subs.request(conn, r, &objects);
+        let mut now = Vec::new();
+        if status == pb::notification_response::Status::Ok && r.subscribe == Some(true) {
+            for (s, id) in subs.watched(&objects) {
+                let v = objects.values(s, &id);
+                now.push((s, id, v));
+            }
+        }
+        self.api_var_subs = subs;
+        for (s, id, v) in now {
+            self.api_vars.baseline(s, &id, v);
+        }
+        status
     }
 
     /// SendText: typed into each session through `user_write` from its own window, so
@@ -563,5 +612,50 @@ impl App {
             Ok(png) => answer(Status::Ok, Some(png)),
             Err(_) => answer(Status::InternalError, None),
         }
+    }
+}
+
+/// The sessions, tabs and windows ids name (`api_ids`), and their variables as the session
+/// standing for each shows them: a tab's focused session, a window's current tab's focused
+/// session, any session for the app.
+pub(super) struct ApiObjects<'a> {
+    app: &'a App,
+    ids: Snapshot,
+}
+
+impl Objects for ApiObjects<'_> {
+    fn id(&self, scope: Scope, id: &str) -> Option<String> {
+        match scope {
+            Scope::Session => self.ids.pane(id).map(|p| p.to_string()),
+            Scope::Tab => self.ids.tab_by_id(id).map(|t| t.to_string()),
+            Scope::Window => self.ids.window_key(id).map(|_| id.to_string()),
+            Scope::App => Some(String::new()),
+        }
+    }
+
+    fn all(&self, scope: Scope) -> Vec<String> {
+        match scope {
+            Scope::Session => self.ids.all_panes().iter().map(u64::to_string).collect(),
+            Scope::Tab => self.ids.all_tabs().iter().map(u64::to_string).collect(),
+            Scope::Window => self.ids.window_guids(),
+            Scope::App => vec![String::new()],
+        }
+    }
+
+    fn values(&self, scope: Scope, id: &str) -> Values {
+        let app = self.app;
+        let pane = match scope {
+            Scope::Session => id.parse::<PaneId>().ok(),
+            Scope::Tab => id.parse::<u64>().ok().and_then(|t| {
+                let (tabs, _) = app.window_tabs(self.ids.tab_window(t)?)?;
+                tabs.iter().find(|x| x.id == t).map(|x| x.focused)
+            }),
+            Scope::Window => self.ids.window_key(id).and_then(|k| app.window_tabs(k)).and_then(|(tabs, a)| tabs.get(a)).map(|t| t.focused),
+            Scope::App => app.panes.keys().next().copied(),
+        };
+        let vars = pane.map(|p| app.variables_with(p, false)).unwrap_or_default();
+        let mut out = api_vars::scope_values(&vars, scope);
+        api_vars::typed_users(&app.api_vars, &vars, scope, id, &mut out);
+        out
     }
 }

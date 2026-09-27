@@ -172,13 +172,15 @@ pub enum Route {
 }
 
 /// Routes a request outside of the transaction logic: NotificationRequests of the five handled
-/// types are answered from `subs`; ListSessions, Focus, GetBroadcastDomains and every request
+/// types are answered from `subs`, VARIABLE_CHANGE ones go to the app; ListSessions, Focus, GetBroadcastDomains and every request
 /// of milestone 11b go to the app; a TransactionRequest reaching dispatch (a begin inside a
 /// transaction) answers ALREADY_IN_TRANSACTION (`S:732-737`); everything else (tools, status
 /// bar components, function calls, an empty oneof) answers iTerm2's malformed error
 /// (`S:1040-1044`) until a later milestone handles it.
 pub fn route(subs: &mut Subscriptions, conn: u64, req: pb::ClientOriginatedMessage) -> Route {
     match &req.submessage {
+        // VARIABLE_CHANGE is routed first (`H:2124-2128`); its objects are the app's.
+        Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => Route::App(req),
         Some(Req::NotificationRequest(r)) => match subs.request(conn, r) {
             Some(status) => {
                 let mut m = api_proto::reply_to(&req);
@@ -406,6 +408,11 @@ mod tests {
         // Another type answers malformed.
         let r = route(&mut s, 1, msg(3, Req::NotificationRequest(notif(N::NotifyOnPrompt, Some(true), Some("all")))));
         assert!(is_malformed(&r, 3));
+        // VARIABLE_CHANGE goes to the app, subscribing or not.
+        for subscribe in [Some(true), Some(false), None] {
+            assert!(matches!(route(&mut s, 1, msg(7, Req::NotificationRequest(notif(N::NotifyOnVariableChange, subscribe, None)))), Route::App(r) if r.id == Some(7)));
+        }
+        assert!(s.subscribers(N::NotifyOnVariableChange).is_empty());
         // The three `async_get_app` requests go to the app.
         assert!(matches!(route(&mut s, 1, list(4)), Route::App(r) if r.id == Some(4)));
         assert!(matches!(route(&mut s, 1, msg(5, Req::FocusRequest(pb::FocusRequest {}))), Route::App(r) if r.id == Some(5)));

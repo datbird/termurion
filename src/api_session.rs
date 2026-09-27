@@ -76,7 +76,7 @@ impl Snapshot {
 
     /// iTerm2's `tabWithID:` (`IC:1293-1311`): decimal digits only, then the tab with that
     /// number.
-    fn tab_by_id(&self, id: &str) -> Option<u64> {
+    pub fn tab_by_id(&self, id: &str) -> Option<u64> {
         if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }

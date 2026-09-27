@@ -578,8 +578,10 @@ pub struct App {
     /// Connections to authorize and refusals that arrived while a transaction froze the UI
     /// thread; `api_tick` takes them first.
     api_deferred: VecDeque<crate::api_server::Event>,
-    /// User variables of tabs, windows and the app, and each scope's last observed values.
+    /// User variables set through the API, and each scope's last observed values.
     api_vars: crate::api_vars::Store,
+    /// The VARIABLE_CHANGE subscriptions of upgraded connections.
+    api_var_subs: crate::api_vars::Subs,
     /// The snapshot notifications were last computed from, kept only while a connection
     /// subscribes.
     api_last: Option<crate::api_model::Model>,
@@ -909,6 +911,7 @@ pub fn run() {
         api_tx: Default::default(),
         api_deferred: VecDeque::new(),
         api_vars: Default::default(),
+        api_var_subs: Default::default(),
         api_last: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {

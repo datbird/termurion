@@ -17,6 +17,7 @@ use crate::api_dispatch::{Route, Subscriptions, Transactions, Tx};
 use crate::api_model;
 use crate::api_proto::pb;
 use crate::api_server::{Event, Pending, Server};
+use crate::api_vars::{self, Objects};
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 
 /// The settings this module follows.
@@ -446,6 +447,7 @@ impl App {
                 // No Closed event comes from a dropped server. Connection ids are never reused
                 // (`api_server::NEXT_CONN`), but nothing of these connections is kept either.
                 self.api_subs = Default::default();
+                self.api_var_subs = Default::default();
                 self.api_tx = Default::default();
                 self.api_deferred.clear();
                 if self.api_consent {
@@ -621,6 +623,7 @@ impl App {
     /// Deny (logged as an internal error).
     fn api_forget(&mut self, conn: u64) -> Work {
         self.api_subs.drop_conn(conn);
+        self.api_var_subs.drop_conn(conn);
         if let Some(p) = forget_waiting(conn, &mut self.api_pending, &mut self.api_alerts, &mut self.api_deferred) {
             self.api_verdict(&p, false, api_auth::REASON_INTERNAL);
         }
@@ -647,11 +650,38 @@ impl App {
         }
     }
 
-    /// Posts what changed since the last pass to the subscribers (`H:1000-1133`). Nothing is
+    /// Posts each watched variable that changed since the last pass to its subscribers
+    /// (`H:1866-1877`). Objects no longer watched lose their baseline; nothing is built while
+    /// no connection watches a variable.
+    fn api_variable_tick(&mut self) {
+        if !self.api_var_subs.any() {
+            self.api_vars.keep_seen(&[]);
+            return;
+        }
+        let objects = self.api_objects();
+        let watched = self.api_var_subs.watched(&objects);
+        let now: Vec<(api_vars::Scope, String, api_vars::Values)> = watched
+            .iter()
+            .map(|(s, id)| (*s, id.clone(), objects.values(*s, id)))
+            .collect();
+        self.api_vars.keep_seen(&watched);
+        for (scope, id, values) in now {
+            for c in self.api_vars.observe(scope, &id, values) {
+                for (conn, identifier) in self.api_var_subs.subscribers(scope, &id, &c.name) {
+                    let m = crate::api_proto::notification(api_vars::change_notification(scope, &identifier, &c.name, &c.json));
+                    self.api_reply(conn, &m);
+                }
+            }
+        }
+    }
+
+    /// Posts what changed since the last pass to the subscribers (`H:1000-1133`), variable
+    /// changes first (`api_variable_tick`). Nothing is
     /// snapshotted while no connection subscribes; the first pass with a subscriber only takes
     /// the baseline. The snapshots compared carry no titles (no change reads them); titles
     /// are built only for a layout change, whose ListSessions carries them.
     pub(super) fn api_notify_tick(&mut self) {
+        self.api_variable_tick();
         if !self.api_subs.any() {
             self.api_last = None;
             return;
