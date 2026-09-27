@@ -118,6 +118,8 @@ Task 2 fix round 1: Ruling: a close initiated by the UI or by the client waits f
 
 Task 2 fix round 1: Ruling (controller ruling): if port 1912 is already held by another process when the API starts, Tandem does not fall back to another port; it shows an alert naming the owning process (found with GetExtendedTcpTable) and the API stays off - cost if wrong: a squatter on 1912 keeps the API off until it exits, and (recorded, not a defect) a squatter can also collect cookies the stock package sends to whatever answers on 1912, a cost of iTerm2's TCP design on Windows.
 
+Task 2 fix round 1: Ruling: the peer check runs in the accept loop (admit, on the accept thread) right after accept, before any connection thread is spawned and before any byte of the request is read, so another user's process never gets a thread - cost if wrong: none (iTerm2 also checks the peer before reading, S:457-472).
+
 Task 2: minor (deferred, satisfied by the Decisions above): the missing-header pass, the 1 s linger for same-user refusals, and the 16 MiB frame caps (iTerm2 has no cap) are recorded as Decisions in this file.
 
 Task 2 fix round 2: Ruling: two condition variables with change detection (to_conn, to_reader), rather than closures reporting their own mutations, so no closure can forget to report a change - cost if wrong: none.
@@ -259,3 +261,49 @@ Task 8: Ruling: a tab reopened by Undo Close, or a window reopened with the same
 Task 8: Ruling (ledger summary, review verified): window.number counts from 1; tab.title is the tab label; parked windows get tab/window variables, buried panes none; close forgets tab/window scopes only; localhostName is cached per run (iTerm2 refreshes every 60 s) - cost if wrong: a renamed host shows the old name until restart (each restated above with its own cost).
 
 Task 8: minor carried to the final fix wave: scope_variables looks up the tab index twice.
+
+Task 9: Ruling (decision): the stock-package test never creates a venv or runs pip, against the brief's "creates target\api-venv ... and pip install iterm2", since the dispatch forbids installing or downloading; it looks for a prepared target\api-venv\Scripts\python.exe, then py -3, each checked with import iterm2, and skips with instructions otherwise (the websockets<14 pin is in the skip message) - cost if wrong: someone prepares the venv once by hand before the test proves anything.
+
+Task 9: Ruling (decision, source over brief): Focus's window entry follows H:3346-3355: BECAME_KEY when the current terminal window is the key window, IS_CURRENT whenever there is a current terminal window that is not key (Tandem inactive included), RESIGNED_KEY with no id only when there is no current window; the diff still posts RESIGNED_KEY(A) when the app goes inactive (windowDidResignKey, H:1033-1043) - cost if wrong: an inactive Tandem answers IS_CURRENT where the brief expected RESIGNED_KEY; the package treats both as "current window is A".
+
+Task 9: Ruling (decision): focus changes in the diff come in this order: application_active first, then RESIGNED_KEY for a terminal window that lost the keyboard, then BECAME_KEY for one that got it, or IS_CURRENT(current window) when another of Tandem's windows took it while Tandem is active (H:1011-1031); then per window a changed selected tab and per tab a changed active session; a new window or tab counts as a change from nothing - cost if wrong: a few extra FOCUS_CHANGE notifications on window or tab creation, which the protocol says clients must tolerate.
+
+Task 9: Ruling (decision): the layout shape compared for LAYOUT_CHANGE leaves out window numbers along with frames, grid sizes, titles, domains and focus (it keeps ids, order, split trees, selected tab, active sessions, buried and minimized, tmux ids); numbers change only as windows open or close, which already changes the ids - cost if wrong: none seen.
+
+Task 9: Ruling (decision): Task 7's dispatch loop became free functions (serve, offer, run, freeze) over a Host trait, with AppHost { app, event_loop } for the app, so the carried integration test drives the real loop and freeze - cost if wrong: one trait and an adapter struct, with no change in behaviour.
+
+Task 9: Ruling (decision): the tmux ids of a tab come from its focused pane, as Task 8's tmuxWindow variable does; the inline copy of the lookup was merged in the final fix wave (see below) - cost if wrong: none.
+
+Task 9: Ruling (decision): active_session_id is set only when the tab's focused pane is in its layout - cost if wrong: none; the field is optional in iTerm2 too.
+
+Task 9: Ruling (decision): api_model builds the whole model (entering each window) for every ListSessions, Focus and GetBroadcastDomains request, and on every loop pass while any connection subscribes; the final fix wave leaves titles out of the per-pass snapshots (see below) - cost if wrong: some CPU per pass while a script listens (a swap of about 30 fields per window).
+
+Task 9: Ruling (ledger, review verified): Focus answers IS_CURRENT with the current window's id when Tandem is inactive but a terminal window is current (H:3346-3355) - cost if wrong: none beyond the decision above.
+
+Task 9: Ruling (ledger): the stock-package test never installs anything and skips without iterm2/protobuf; the live run is a checklist item - cost if wrong: the stock package is proven only by hand.
+
+Task 9: minors carried to the final fix wave (all fixed there, see below): focus() must never send an empty session id (latent refresh loop); last_window can name a just-closed window; the integration test's 200 ms sleep (make it event-driven); the full model rebuilds every pass while subscribed (cheaper diff); dedupe the tmux lookup with tmux_window_of; kill the Python child if the preauthorized assert fails.
+
+Final review: Ruling: Tandem removes ITERM2_COOKIE and ITERM2_KEY from its own process environment as the first thing run() does (before the event loop, tandem-host or any thread), and session_env::merge drops an inherited ITERM2_COOKIE / ITERM2_KEY from every session block (NEVER_INHERITED), so only a cookie Tandem minted for that session is set; a restored or reattached session re-adds only a cookie Tandem itself recorded, of the 32-lowercase-hex form - cost if wrong: a script that relied on an ITERM2_KEY inherited through Tandem loses it (iTerm2 never passes one either).
+
+Final review: Ruling: the peer check reads SID, elevation, integrity level (the label SID's last subauthority), TokenIsAppContainer and TokenIsRestricted from one handle on the peer's token (winpipe::process_token_facts) and refuses, in this order, another user, an AppContainer ("Peer runs in an app container."), a restricted token ("Peer runs with a restricted token."), another elevation, and another integrity level ("Peer's integrity level is not equal to mine.", equal is required, higher is refused too); any query error refuses - cost if wrong: a script run from a lower-integrity host (a sandboxed app, a Low-integrity browser child, an AppContainer with a loopback exemption) is refused, even with a cookie.
+
+Final review: Ruling: TokenIsRestricted is read with GetTokenInformation, not IsTokenRestricted, whose 0 means both "not restricted" and "failed" - cost if wrong: none.
+
+Final review: Ruling: the session host pipe check (Pipe::server_is_this_user) keeps its SID and elevation compare, now from one token handle; it does not add the integrity or sandbox checks, since the host is Tandem's own child - cost if wrong: none.
+
+Final review: Ruling: connection ids come from one process-wide counter (api_server::NEXT_CONN), never reset when a server stops and a new one starts (superseding Task 7's note that a new server numbers its connections from the start again); App::api_forget is the one per-connection cleanup, reached from api_closed and from the freeze's Host::forget, and sync_api_server's Off arm resets the same state for a stopped server; the 11b plan was corrected to name serve / freeze / Host and api_forget - cost if wrong: none.
+
+Final review: Ruling: a client that closes while its verdict is pending ends the wait at once: the connection thread returns Closed for it, which frees its pre-auth slot, and api_forget removes it from api_pending, closes its Allow or Confirm alert (showing or queued), drops a Pending still deferred by a transaction, and logs a Deny with the internal-error reason - cost if wrong: a client that half-closes its write side after sending the request, before the verdict, is taken as gone (no WebSocket client does this).
+
+Final review: Ruling: api_tick handles at most 64 server events per pass (EVENTS_PER_PASS); when it stops at the limit it calls the wake, so another pass follows after input and drawing - cost if wrong: one extra empty pass when exactly 64 events were waiting.
+
+Final review: Ruling (recorded only): a refusal from the accept thread (peer 401, cap 503) is written once on the non-blocking socket and closed with no linger, so a client whose request is still unread in the buffer may see a connection reset instead of the status; intended for another user's process, and for a same-user 503 it only makes the error less clear - cost if wrong: a script over the cap sees a reset rather than "503".
+
+Final fix wave: Ruling (decision): the notification tick diffs snapshots built without titles (no change reads a title) and builds a titled model only when the layout changed, for LAYOUT_CHANGE's ListSessions; requests still get titled models - cost if wrong: none; frames and grids are still read every pass.
+
+Final fix wave: Ruling (decision): the tmux lookups share tmux_tabs_ui's existing tmux_of (gateway, tmux pane, window): tmux_window_of and api_tab both use it, so a tmux pane whose gateway does not yet list its window reads as not in tmux (it had a connection id and window "-1") - cost if wrong: for that moment ListSessions shows the tab as a plain one, and the next pass posts a layout change.
+
+Final fix wave: Ruling (decision): current_window is the last used window only while it is one of the snapshot's windows (api_model::live_window); Focus skips a tab with no active session instead of sending an empty id - cost if wrong: none.
+
+Final fix wave: carried minors resolved: reply_to has a unit test and protogen asserts one .rs file (Task 1); one token handle (Task 3); api_auth::enable_step / EnableStep removed (Task 5); session_env::numbers is the pure window/tab/pane arithmetic, forget_cookie_text is the one api_jar remove, and arrange_ui.rs restates the cookie-save gate (Task 6); api_freeze's shadowed owner parameter no longer exists since Task 9's refactor (freeze takes only the host), and Answer stays in api_ui.rs for 11b to move (Task 7); pane_window returns the tab index, so scope_variables looks it up once (Task 8); all six Task 9 minors. Not in this wave: Task 4's op_accounts malformed item and the "Tandem/*" filter literal, and Task 5's clippy not_unsafe_ptr_arg_deref on the winpipe owner functions.

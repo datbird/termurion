@@ -13,6 +13,20 @@ a second window with a tmux tab (tmux integration mode) and one buried session. 
 Windows account (or `runas /user:`) available to test the peer check, and, if possible, one
 elevated and one normal `cmd.exe` window.
 
+The stock package always sends `x-iterm2-disable-auth-ui: true`, so it never gets the "Allow Python
+API Usage?" prompt. To see the prompt, save this client (it omits that header) as `ask.py` and run it
+with the venv's Python:
+
+```
+import asyncio, websockets
+async def main():
+    async with websockets.connect("ws://localhost:1912/", subprotocols=["api.iterm2.com"], origin="ws://localhost/",
+                                  extra_headers={"x-iterm2-library-version": "python 2.24"}) as ws:
+        print("connected")
+        await asyncio.sleep(3600)
+asyncio.run(main())
+```
+
 | # | Check | Result |
 |---|---|---|
 | 1 | With "Enable Python API" off, `Test-NetConnection 127.0.0.1 -Port 1912` fails: nothing listens. | |
@@ -24,8 +38,8 @@ elevated and one normal `cmd.exe` window.
 | 7 | Settings > General > Python API > "Authentication method for Python API" shows "Require a cookie" or "Allow all apps to connect", mirroring the allow-all file's actual state (not a stored preference). | |
 | 8 | Choose "Allow all apps to connect": a warning appears, then the file `%USERPROFILE%\Library\Application Support\iTerm2\disable-automation-auth` is created; its Properties > Security tab shows the current user as owner, and its size matches the expected magic length. | |
 | 9 | With a symlink or junction placed at that same path by hand (`mklink` or `mklink /J`) instead of a plain file: the popup still reads "Require a cookie" and a script presenting no cookie is refused; the link is never treated as a valid allow-all file. | |
-| 10 | From a shell outside any Tandem session (`ITERM2_COOKIE` unset) with "Require a cookie" selected, run a Python script that calls `iterm2.Connection.async_create()`: the "Allow Python API Usage?" prompt appears; close it with the window's X button: the connection is denied and the script fails. | |
-| 11 | Re-run the script: OK on the prompt allows the connection; Cancel denies it; More Info opens the security page and also denies. | |
+| 10 | With "Require a cookie" selected, run a stock-package script (`iterm2.run_until_complete`) with neither a cookie nor the allow-all file: once from a shell outside any Tandem session (`ITERM2_COOKIE` unset), once from a Tandem session with `setCookie` off. No prompt appears in Tandem; each time the script dies in the package with `FileNotFoundError` for `/usr/bin/osascript` before it connects (see item 31). | |
+| 11 | Run `ask.py` (see Setup) from a shell outside Tandem: the "Allow Python API Usage?" prompt appears. Close it with the window's X button: the connection is denied (the script fails with 401). Re-run it: OK connects (it prints `connected`); Cancel denies; More Info opens the security page and also denies. | |
 | 12 | Switch to "Allow all apps to connect": the same outside script now connects with no prompt at all. Switch back to "Require a cookie": the allow-all file is deleted from disk. | |
 | 13 | With the API enabled and port 1912 already held (a second Tandem, or any other program listening on it), the alert names the port, the owning process, and its pid; the API stays off for whichever Tandem lost the race. | |
 | 14 | In a Tandem session with `setCookie` on, run a Python script from that session's own shell: it connects with no prompt (`ITERM2_COOKIE` is set). Run it a second time from the same shell: it still connects (the cookie is reusable, not single-use). | |
@@ -35,21 +49,25 @@ elevated and one normal `cmd.exe` window.
 | 18 | A script run as a different Windows user (`runas /user:otheruser`) is refused by the peer check, whether or not it presents a cookie. | |
 | 19 | With Tandem running elevated, a script from a normal (non-elevated) shell is refused; with Tandem running normally, a script from an elevated shell is refused. | |
 | 20 | A script that begins a transaction (`StartTransactionRequest`) freezes the Tandem window (no redraw, no input) until it ends; killing the script (Ctrl+C, or closing its window) unfreezes Tandem at once. | |
-| 21 | With the stock `iterm2` package (`python -m pip install iterm2`, no modification), a short script (`async_get_app`, then print each window/tab/session) connects over `ws://localhost:1912` and lists windows, tabs, splits, the tmux tab and the buried session matching Tandem's actual layout. | |
+| 21 | From an already authorized place (the shell of a Tandem session with `setCookie` on, so `ITERM2_COOKIE` is set, or any shell while "Allow all apps to connect" is on), a short script using the stock `iterm2` package (`python -m pip install iterm2`, no modification; `async_get_app`, then print each window/tab/session) connects over `ws://localhost:1912` and lists windows, tabs, splits, the tmux tab and the buried session matching Tandem's actual layout. Checks 22 to 24 run the same way. | |
 | 22 | The same script's five subscriptions (new session, terminate session, layout change, focus change, broadcast change) each fire once for the matching action: opening a tab or window, closing a pane, splitting a pane, switching the selected tab, and Tandem gaining or losing focus. | |
 | 23 | Turn Broadcast Input on for two sessions, then off: the broadcast-change subscription fires both times, and `GetBroadcastDomains` reports the broadcasting sessions while it is on and nothing extra once it is off. | |
 | 24 | Subscribing the same connection to the same notification type twice answers ALREADY_SUBSCRIBED on the second attempt; unsubscribing without a prior subscription answers NOT_SUBSCRIBED. | |
 | 25 | With a script connected, turn "Enable Python API" off: the script's connection drops at once (its next call fails). | |
+| 26 | Inherited cookies: in a Tandem session with `setCookie` on, start a second Tandem from that session's shell (quit the first one's API first: turn "Enable Python API" off there, so the new one can hold port 1912). In the new Tandem, with `setCookie` off, open a new session: `echo %ITERM2_COOKIE%` prints `%ITERM2_COOKIE%` (unset), and a stock-package script from it fails as in check 10. With `setCookie` on, a new session's `ITERM2_COOKIE` differs from the first shell's. | |
+| 27 | Integrity level: in a Tandem session with `setCookie` on, copy the venv's `python.exe` to `low-python.exe` and run `icacls low-python.exe /setintegritylevel low`. A stock-package script run with `low-python.exe` is refused (401, "Peer's integrity level is not equal to mine.") though it carries the session's cookie; the same script with the normal `python.exe` connects. | |
+| 28 | Run `ask.py` and, while the "Allow Python API Usage?" prompt shows, end the script (Ctrl+C or close its console): the prompt closes at once by itself. Start and end `ask.py` nine times in a row this way: a tenth run still gets a prompt (no slot was kept by a script that left). | |
+| 29 | From an authorized place, run a script that floods requests without waiting for answers (in `main`: `await asyncio.gather(*(iterm2.rpc.async_list_sessions(connection) for _ in range(5000)))`): while it runs, typing in a Tandem pane still echoes and the window still redraws and moves. | |
 
 ## Kept bugs and rulings a person can see
 
 | # | Item | Result |
 |---|---|---|
-| 26 | Session cookies are reusable for the whole life of the pane, not single-use: a script can reconnect from the same shell as many times as it likes while the session lives (see check 14). | |
-| 27 | A script started outside any Tandem session with no allow-all file crashes in the stock package with `FileNotFoundError` for `/usr/bin/osascript` (there is no Windows twin of AppleScript's cookie request); "Allow all apps to connect" or a session cookie is the only way in (see check 10). | |
-| 28 | A missing `Upgrade`, `Connection`, or `Sec-WebSocket-Protocol` header passes rather than refuses, matching iTerm2's own nil comparison; a present but wrong value is still refused. | |
-| 29 | Port 1912 already held by another process is fatal, with no fallback port (see check 13); that other process could also collect any cookie a script sends to whatever answers on 1912, a cost of iTerm2's TCP-based design carried onto Windows. | |
-| 30 | A transaction that is never ended by its script (a runaway or crashed process that does not disconnect) hangs Tandem until the connection closes (see check 20). | |
-| 31 | Some refusals (400, 401, 406) keep the socket open for up to 1 s after writing the answer, so the client reads the real answer instead of a connection reset. | |
-| 32 | A request or frame over 16 MiB is refused and ends the connection (Tandem's own cap; iTerm2 has none). | |
-| 33 | WSL2 in NAT mode cannot reach the loopback API (WSL2 in mirrored networking mode can). | |
+| 30 | Session cookies are reusable for the whole life of the pane, not single-use: a script can reconnect from the same shell as many times as it likes while the session lives (see check 14). | |
+| 31 | A script started outside any Tandem session with no allow-all file crashes in the stock package with `FileNotFoundError` for `/usr/bin/osascript` (there is no Windows twin of AppleScript's cookie request); "Allow all apps to connect" or a session cookie is the only way in (see check 10). The "Allow Python API Usage?" prompt is reached only by a client that omits `x-iterm2-disable-auth-ui` (see check 11). | |
+| 32 | A missing `Upgrade`, `Connection`, or `Sec-WebSocket-Protocol` header passes rather than refuses, matching iTerm2's own nil comparison; a present but wrong value is still refused. | |
+| 33 | Port 1912 already held by another process is fatal, with no fallback port (see check 13); that other process could also collect any cookie a script sends to whatever answers on 1912, a cost of iTerm2's TCP-based design carried onto Windows. | |
+| 34 | A transaction that is never ended by its script (a runaway or crashed process that does not disconnect) hangs Tandem until the connection closes (see check 20). | |
+| 35 | Some refusals (400, 401, 406) keep the socket open for up to 1 s after writing the answer, so the client reads the real answer instead of a connection reset. | |
+| 36 | A request or frame over 16 MiB is refused and ends the connection (Tandem's own cap; iTerm2 has none). | |
+| 37 | WSL2 in NAT mode cannot reach the loopback API (WSL2 in mirrored networking mode can). | |
