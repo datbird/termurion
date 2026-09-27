@@ -467,6 +467,13 @@ impl App {
                 self.api_tmux_creates.clear();
                 self.api_tmux_windows.clear();
                 self.api_tmux_tabs.clear();
+                // Every connection's functions go and its waiting calls fail, as a close
+                // would (iTerm2's stop drops them unanswered, `H:813-846`); the finished
+                // calls stay for the invocations that wait on them.
+                let conns: Vec<u64> = self.api_keys.keys().copied().collect();
+                for conn in conns {
+                    self.api_forget_fns(conn);
+                }
                 self.api_dirty.clear();
                 self.api_sync_watch();
                 self.api_tx = Default::default();
@@ -617,7 +624,28 @@ impl App {
         if let Some(s) = &self.api_server {
             s.verdict(p.conn, allow);
         }
-        self.api_log.push(LogEntry { key: Some(p.upgrade.key.clone()), name: api_auth::display_name(p.upgrade.advisory_name.as_deref()), text: reason.to_string() });
+        let name = api_auth::display_name(p.upgrade.advisory_name.as_deref());
+        if allow {
+            self.api_keys.insert(p.conn, (p.upgrade.key.clone(), name.clone()));
+        }
+        self.api_log.push(LogEntry { key: Some(p.upgrade.key.clone()), name, text: reason.to_string() });
+    }
+
+    /// Writes a line to a connection's log (its entry in the Script Console).
+    pub(super) fn api_log_conn(&mut self, conn: u64, text: String) {
+        let (key, name) = match self.api_keys.get(&conn) {
+            Some((key, name)) => (Some(key.clone()), name.clone()),
+            None => (None, api_auth::display_name(None)),
+        };
+        self.api_log.push(LogEntry { key, name, text });
+    }
+
+    /// A connection's functions go and its waiting calls fail (`H:2154-2214`).
+    fn api_forget_fns(&mut self, conn: u64) {
+        self.api_keys.remove(&conn);
+        for (token, failure) in self.api_fns.drop_conn(conn) {
+            self.api_rpc_done.push_back((token, Err(failure)));
+        }
     }
 
     /// Answers a waiting connection, if it still waits.
@@ -635,8 +663,8 @@ impl App {
         }
     }
 
-    /// An upgraded connection ended: its subscriptions, held requests and wait for a verdict
-    /// go, and a transaction it owned ends (`S:1418-1424`, `H:2154-2192`), running what it
+    /// An upgraded connection ended: its subscriptions, functions, held requests and wait for
+    /// a verdict go, its waiting function calls fail, and a transaction it owned ends (`S:1418-1424`, `H:2154-2192`), running what it
     /// held.
     pub(super) fn api_closed(&mut self, conn: u64, event_loop: &ActiveEventLoop) {
         let released = self.api_forget(conn);
@@ -659,6 +687,7 @@ impl App {
         self.api_tmux_windows.retain(|_, (c, _)| *c != conn);
         self.api_tmux_tabs.retain(|(_, _, (c, _))| *c != conn);
         self.api_sync_watch();
+        self.api_forget_fns(conn);
         if let Some(p) = forget_waiting(conn, &mut self.api_pending, &mut self.api_alerts, &mut self.api_deferred) {
             self.api_verdict(&p, false, api_auth::REASON_INTERNAL);
         }

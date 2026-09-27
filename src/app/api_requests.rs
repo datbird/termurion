@@ -16,7 +16,8 @@
 //! windows (its command and create answers come later, from tmux), and ColorPreset finds no
 //! preset until milestone 13 (`api_misc`); session NotificationRequests subscribe sessions
 //! to keystrokes, the keystroke filter, screen updates, prompts and custom escape sequences
-//! (`api_notify`).
+//! (`api_notify`); function registrations and the scripts' results to calls go to the
+//! function registry (`script_fn`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -137,6 +138,20 @@ impl App {
             Some(Req::NotificationRequest(r)) if crate::api_notify::by_session(r) => {
                 let status = self.api_session_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
+            }
+            Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnServerOriginatedRpc as i32) => {
+                let (status, line) = self.api_fns.request(conn, r);
+                if let Some(text) = line {
+                    self.api_log_conn(conn, text);
+                }
+                reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
+            }
+            // A script's answer to a call; always acknowledged (`H:3490-3496`).
+            Some(Req::ServerOriginatedRpcResultRequest(r)) => {
+                if let Some(done) = self.api_fns.finish(r) {
+                    self.api_rpc_done.push_back(done);
+                }
+                reply(req, Resp::ServerOriginatedRpcResultResponse(pb::ServerOriginatedRpcResultResponse {}))
             }
             _ => Answer::Now(api_proto::malformed(req)),
         };

@@ -606,6 +606,13 @@ pub struct App {
     api_tmux_windows: HashMap<(PaneId, u32), (u64, crate::api_proto::pb::ClientOriginatedMessage)>,
     /// Tmux CreateWindow requests whose tab (gateway, tab id) waits to become a window.
     api_tmux_tabs: Vec<(PaneId, u64, (u64, crate::api_proto::pb::ClientOriginatedMessage))>,
+    /// The functions scripts registered and the calls waiting for them.
+    api_fns: crate::script_fn::Registry,
+    /// Finished script calls (a result, a failure, a timeout, a closed connection) by the
+    /// caller's token, for the invocations waiting on them.
+    api_rpc_done: VecDeque<(u64, Result<crate::expr::Value, crate::expr::Failure>)>,
+    /// Each allowed connection's `x-iterm2-key` and display name, for its log lines.
+    api_keys: HashMap<u64, (String, String)>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -942,6 +949,9 @@ pub fn run() {
         api_tmux_creates: HashMap::new(),
         api_tmux_windows: HashMap::new(),
         api_tmux_tabs: Vec::new(),
+        api_fns: Default::default(),
+        api_rpc_done: VecDeque::new(),
+        api_keys: HashMap::new(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));

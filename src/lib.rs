@@ -47,6 +47,7 @@ pub mod porthole;
 pub mod triggers;
 pub mod expr;
 pub mod interp;
+pub mod script_fn;
 pub mod activity;
 pub mod alerts;
 pub mod badge;

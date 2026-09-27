@@ -174,7 +174,8 @@ pub enum Route {
 /// Routes a request outside of the transaction logic: NotificationRequests of the five handled
 /// types are answered from `subs`, VARIABLE_CHANGE ones and those routed by session (the five
 /// session kinds, LOCATION_CHANGE and PROFILE_CHANGE) go to the app; ListSessions, Focus, GetBroadcastDomains and every request
-/// of milestone 11b go to the app; a TransactionRequest reaching dispatch (a begin inside a
+/// of milestone 11b go to the app, as do NOTIFY_ON_SERVER_ORIGINATED_RPC registrations and
+/// ServerOriginatedRPCResult; a TransactionRequest reaching dispatch (a begin inside a
 /// transaction) answers ALREADY_IN_TRANSACTION (`S:732-737`); everything else (tools, status
 /// bar components, function calls, an empty oneof) answers iTerm2's malformed error
 /// (`S:1040-1044`) until a later milestone handles it.
@@ -185,6 +186,9 @@ pub fn route(subs: &mut Subscriptions, conn: u64, req: pb::ClientOriginatedMessa
         // Every type iTerm2 routes by `session` (`H:2137-2150`) is the app's: it finds the
         // sessions.
         Some(Req::NotificationRequest(r)) if crate::api_notify::by_session(r) => Route::App(req),
+        // Function registrations are the app's (`H:1919-1960`), as are the scripts' results.
+        Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnServerOriginatedRpc as i32) => Route::App(req),
+        Some(Req::ServerOriginatedRpcResultRequest(_)) => Route::App(req),
         Some(Req::NotificationRequest(r)) => match subs.request(conn, r) {
             Some(status) => {
                 let mut m = api_proto::reply_to(&req);
@@ -411,14 +415,18 @@ mod tests {
         }
         assert_eq!(s.subscribers(N::NotifyOnFocusChange), [1]);
         // The types routed by session go to the app, a missing type (iTerm2's default,
-        // NOTIFY_ON_KEYSTROKE) too; server-originated RPCs still answer malformed.
+        // NOTIFY_ON_KEYSTROKE) too.
         for kind in [N::NotifyOnKeystroke, N::NotifyOnScreenUpdate, N::NotifyOnPrompt, N::NotifyOnCustomEscapeSequence, N::KeystrokeFilter, N::NotifyOnLocationChange, N::NotifyOnProfileChange] {
             assert!(matches!(route(&mut s, 1, msg(3, Req::NotificationRequest(notif(kind, Some(true), Some("all"))))), Route::App(r) if r.id == Some(3)), "{kind:?}");
         }
         let untyped = pb::NotificationRequest { notification_type: None, subscribe: Some(true), ..Default::default() };
         assert!(matches!(route(&mut s, 1, msg(3, Req::NotificationRequest(untyped))), Route::App(_)));
-        let r = route(&mut s, 1, msg(3, Req::NotificationRequest(notif(N::NotifyOnServerOriginatedRpc, Some(true), Some("all")))));
-        assert!(is_malformed(&r, 3));
+        // Server-originated RPC registrations and results are the app's (`H:1919-1960`,
+        // `H:3490-3496`), subscribing or not.
+        for subscribe in [Some(true), Some(false), None] {
+            assert!(matches!(route(&mut s, 1, msg(3, Req::NotificationRequest(notif(N::NotifyOnServerOriginatedRpc, subscribe, Some("all"))))), Route::App(r) if r.id == Some(3)));
+        }
+        assert!(matches!(route(&mut s, 1, msg(8, Req::ServerOriginatedRpcResultRequest(Default::default()))), Route::App(r) if r.id == Some(8)));
         // VARIABLE_CHANGE goes to the app, subscribing or not.
         for subscribe in [Some(true), Some(false), None] {
             assert!(matches!(route(&mut s, 1, msg(7, Req::NotificationRequest(notif(N::NotifyOnVariableChange, subscribe, None)))), Route::App(r) if r.id == Some(7)));
@@ -464,7 +472,6 @@ mod tests {
         // Later milestones' requests still answer malformed.
         let later = [
             Req::RegisterToolRequest(Default::default()),
-            Req::ServerOriginatedRpcResultRequest(Default::default()),
             Req::StatusBarComponentRequest(Default::default()),
             Req::InvokeFunctionRequest(Default::default()),
         ];
