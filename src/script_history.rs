@@ -19,6 +19,31 @@ pub const MAX_LOG_LINES: usize = 1000;
 pub const MAX_CALLS: usize = 100;
 /// The most of one call's text kept; the rest becomes "\u{2026}".
 pub const MAX_CALL_BYTES: usize = 16384;
+/// The longest log line kept whole: output with no newline is broken here, the rest going on
+/// as a line of its own with the stamp, so an open line stays bounded (Decision; iTerm2 lets
+/// it grow).
+pub const MAX_LINE_BYTES: usize = 16384;
+
+/// `line` in pieces of at most `MAX_LINE_BYTES` (whole characters), each after the first
+/// starting with the stamp.
+fn break_long(line: String, stamp: &str) -> Vec<String> {
+    if line.len() <= MAX_LINE_BYTES {
+        return vec![line];
+    }
+    let mut out = Vec::new();
+    let mut rest = line;
+    while rest.len() > MAX_LINE_BYTES {
+        let mut end = MAX_LINE_BYTES;
+        while !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        let tail = format!("{stamp}: {}", &rest[end..]);
+        rest.truncate(end);
+        out.push(std::mem::replace(&mut rest, tail));
+    }
+    out.push(rest);
+    out
+}
 
 /// The name of a connection with no advisory name (`SC:568-571`).
 pub use crate::api_auth::UNKNOWN_NAME;
@@ -214,7 +239,8 @@ impl Entry {
     }
 
     /// iTerm2's `appendLogs` (`SH:223-311`): every line starts with the stamp; a chunk
-    /// without a final newline leaves its last line open for the next chunk.
+    /// without a final newline leaves its last line open for the next chunk. A line past
+    /// `MAX_LINE_BYTES` is broken.
     fn append_log(&mut self, text: &str, stamp: &str) {
         let continuation = self.continues;
         self.continues = !text.ends_with('\n');
@@ -226,13 +252,18 @@ impl Entry {
         let mut lines = out.split('\n').map(str::to_string);
         if continuation {
             if let Some(first) = lines.next() {
-                match self.log_lines.last_mut() {
-                    Some(last) => last.push_str(&first),
-                    None => self.log_lines.push(first),
+                match self.log_lines.pop() {
+                    Some(mut last) => {
+                        last.push_str(&first);
+                        self.log_lines.extend(break_long(last, stamp));
+                    }
+                    None => self.log_lines.extend(break_long(first, stamp)),
                 }
             }
         }
-        self.log_lines.extend(lines);
+        for line in lines {
+            self.log_lines.extend(break_long(line, stamp));
+        }
         if self.log_lines.len() > MAX_LOG_LINES {
             let extra = self.log_lines.len() - MAX_LOG_LINES;
             self.log_lines.drain(..extra);
@@ -463,6 +494,36 @@ mod tests {
         h.add_log("nobody", "x\n", "S8");
         assert_eq!(h.generation(), g);
         assert!(h.find("nobody").is_none());
+    }
+
+    #[test]
+    fn long_lines_are_broken() {
+        let mut h = History::new(false, 0);
+        h.add(Entry::new("k", "tool", 0));
+        // One line with no newline, longer than the limit: broken, the rest open.
+        h.add_log("k", &"x".repeat(20000), "S1");
+        let l = lines(&h, "k");
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].len(), MAX_LINE_BYTES);
+        assert_eq!(l[0], format!("S1: {}", "x".repeat(MAX_LINE_BYTES - 4)));
+        assert_eq!(l[1], format!("S1: {}", "x".repeat(20000 - (MAX_LINE_BYTES - 4))));
+        assert!(h.find("k").unwrap().continues());
+        // More of the same line goes on the open piece and is broken again at the limit.
+        h.add_log("k", &"y".repeat(20000), "S2");
+        let l = lines(&h, "k");
+        assert!(l.iter().all(|line| line.len() <= MAX_LINE_BYTES), "{:?}", l.iter().map(String::len).collect::<Vec<_>>());
+        assert_eq!(l.len(), 3);
+        assert!(l[2].starts_with("S2: "));
+        let text: String = l.iter().map(|line| line.trim_start_matches("S1: ").trim_start_matches("S2: ")).collect();
+        assert_eq!(text, format!("{}{}", "x".repeat(20000), "y".repeat(20000)));
+        // A break never splits a character.
+        h.add_log("k", "\n", "S3");
+        // "S45: " is five bytes, so the limit falls inside a two-byte character.
+        h.add_log("k", &"\u{e9}".repeat(10000), "S45");
+        let l = lines(&h, "k");
+        assert!(l.iter().all(|line| line.len() <= MAX_LINE_BYTES));
+        assert_eq!(l[3].len(), MAX_LINE_BYTES - 1);
+        assert_eq!(l[4], format!("S45: {}", "\u{e9}".repeat(10000 - (MAX_LINE_BYTES - 6) / 2)));
     }
 
     #[test]
