@@ -197,7 +197,7 @@ status bar component (knobs, cadence, click handler, an unread-count badge, an e
 alert, `async_open_popover` as a text popover); a Title Function provider chosen in Settings >
 Profiles > General > Title; a context menu provider item; and RegisterTool, which answers iTerm2's
 statuses and lists a dynamic tool in the Toolbelt menu, though it draws nothing (web views wait for
-a milestone that hosts WebView2, flagged to Robert). A per-pane title bar menu adding context menu
+milestone 13, which hosts WebView2, flagged to Robert). A per-pane title bar menu adding context menu
 provider items, the Title Function popup's title preview, and a tmux Custom title's prefix are
 documented gaps for milestone 13. Every kept quirk is listed in
 `docs/acceptance/m11c-checklist.md` and ruled on in `docs/superpowers/rulings/m11c-rulings.txt`.
