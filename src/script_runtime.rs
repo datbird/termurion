@@ -368,6 +368,26 @@ pub fn setup_cfg_text(name: &str, deps: &[String], ensure_iterm2: bool, python_v
     )
 }
 
+/// iTerm2's `iTermMinimumPythonEnvironmentVersion`
+/// (`API/iTermOptionalComponentDownloadWindowController.m:20`): the `[iterm2] environment` a
+/// new `setup.cfg` pins.
+pub const MINIMUM_ENVIRONMENT_VERSION: i64 = 72;
+
+/// The `setup.cfg` written once a full environment is built (`UV:672-689`): an existing
+/// file's name and environment version are kept (the folder's name and
+/// `MINIMUM_ENVIRONMENT_VERSION` for a new one), the Python version is the one built (the
+/// marker's), and the dependencies are those the build accepted (`refused_dependencies` are
+/// left out, as the build left them out). The one writer of `setup.cfg` for the provisioner,
+/// New Python Script, an export's staged script and the dependency editor.
+pub fn setup_cfg_after_build(existing: Option<&str>, folder_name: &str, deps: &[String], built: &str) -> String {
+    let old = existing.and_then(SetupCfg::parse);
+    let name = old.as_ref().map(|c| c.name.as_str()).filter(|n| !n.is_empty()).unwrap_or(folder_name);
+    let environment = old.as_ref().map_or(MINIMUM_ENVIRONMENT_VERSION, |c| c.environment_version);
+    let refused = refused_dependencies(deps);
+    let accepted: Vec<String> = deps.iter().filter(|d| !refused.contains(d)).cloned().collect();
+    setup_cfg_text(name, &accepted, true, built, environment)
+}
+
 /// The package name of a dependency such as "aiohttp>=3.1": a PEP 508 name, optionally
 /// followed by one comparison and a version (`CFG:143-185`).
 pub fn python_package(dep: &str) -> Option<String> {
@@ -735,6 +755,16 @@ mod tests {
         assert_eq!(env.environment_version, 3);
         assert_eq!(SetupCfg::parse("[metadata\nname=x\n"), None);
         assert_eq!(SetupCfg::parse("just words\n"), None);
+        // After a build: a new file names the folder, pins environment 72 and the version
+        // built, and lists only accepted dependencies; an existing file keeps its name and
+        // environment version (`UV:680-689`).
+        let fresh = setup_cfg_after_build(None, "tool", &s(&["requests", "--index-url=https://h/simple"]), "3.10");
+        assert_eq!(fresh, setup_cfg_text("tool", &s(&["requests"]), true, "3.10", 72));
+        assert_eq!(MINIMUM_ENVIRONMENT_VERSION, 72);
+        let old = setup_cfg_text("renamed", &s(&["x"]), true, "3.9", 5);
+        assert_eq!(setup_cfg_after_build(Some(&old), "tool", &s(&["y"]), "3.12"), setup_cfg_text("renamed", &s(&["y"]), true, "3.12", 5));
+        // An unreadable existing file counts as none.
+        assert_eq!(setup_cfg_after_build(Some("just words\n"), "tool", &[], "3.12"), setup_cfg_text("tool", &[], true, "3.12", 72));
         assert_eq!(python_package("aiohttp>=3.14.3"), Some("aiohttp".to_string()));
         assert_eq!(python_package("a b"), None);
         assert_eq!(python_package("x == 1.0"), Some("x".to_string()));

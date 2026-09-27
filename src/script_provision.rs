@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::script_runtime::{
-    dotted, numeric_version, packages_for, pip_install_args, py_list, refused_dependencies, refused_dependency_line, resolve, setup_cfg_text, shared_venv, two_part, upgraded, up_to_date, uv_env, uv_exe, uv_minors, uv_pip_install_args, uv_python_list_args,
+    dotted, numeric_version, packages_for, pip_install_args, py_list, refused_dependencies, refused_dependency_line, resolve, setup_cfg_after_build, shared_venv, two_part, upgraded, up_to_date, uv_env, uv_exe, uv_minors, uv_pip_install_args, uv_python_list_args,
     uv_sha256, uv_venv_args, uv_version, uv_zip_url, venv_args, venv_python, venvs_dir, Arch, Backend, Marker, DEFAULT_PYTHON, MARKER, NOT_INSTALLED, PACKAGES, SETUP_CFG, UPDATE_DOWNLOAD_FAILED, UV_VERSION, VENV_DIR,
 };
 
@@ -213,9 +213,20 @@ fn provision(backend: &Backend, target: &Target, requested: &str, deps: &[String
             let available = listed.map(|o| uv_minors(&o)).unwrap_or_default();
             resolve(requested, &available).ok_or_else(|| format!("\u{201c}{requested}\u{201d} is not a Python version."))?
         }
-        Backend::Python { minor, .. } => {
+        Backend::Python { argv, minor } => {
             let asked = numeric_version(requested).then(|| two_part(requested));
-            (minor.clone(), asked.filter(|a| a != minor).map(|_| requested.to_string()))
+            match asked {
+                // The py launcher builds the version asked for when it is installed, else the
+                // nearest by `resolve` (the version popup lists the launcher's minors).
+                Some(a) if a != *minor && argv.first().is_some_and(|p| is_py_launcher(p)) => {
+                    let installed = py_minors(&argv[0], r);
+                    match resolve(requested, &installed) {
+                        Some(found) if !installed.is_empty() => found,
+                        _ => (minor.clone(), Some(requested.to_string())),
+                    }
+                }
+                _ => (minor.clone(), asked.filter(|a| a != minor).map(|_| requested.to_string())),
+            }
         }
     };
     let (venv, marker_path) = match target {
@@ -237,7 +248,8 @@ fn provision(backend: &Backend, target: &Target, requested: &str, deps: &[String
         }
         Backend::Python { argv, .. } => {
             let program = PathBuf::from(argv.first().cloned().unwrap_or_default());
-            let mut args: Vec<String> = argv.iter().skip(1).cloned().collect();
+            // The launcher is told the minor chosen; a lone Python is itself.
+            let mut args: Vec<String> = if is_py_launcher(&argv[0]) { vec![format!("-{minor}")] } else { argv.iter().skip(1).cloned().collect() };
             args.extend(venv_args(&build));
             (Step { program, args, env: Vec::new() }, Step { program: venv_python(&build), args: pip_install_args(&packages, false), env: Vec::new() })
         }
@@ -279,7 +291,8 @@ fn provision(backend: &Backend, target: &Target, requested: &str, deps: &[String
                 r.write(&venvs_dir(uv_dir).join(REMAPS).join(two_part(from)), &minor)?;
             }
         }
-        (Target::Container(c), Some(name)) => r.write(&c.join(SETUP_CFG), &setup_cfg_text(name, deps, true, requested, 0))?,
+        // The version built, not the one asked for (`UV:683-689`).
+        (Target::Container(c), Some(name)) => r.write(&c.join(SETUP_CFG), &setup_cfg_after_build(None, name, deps, &minor))?,
         (Target::Container(_), None) => {}
     }
     Ok((venv_python(&venv), marker))
@@ -339,14 +352,21 @@ fn minors(backend: &Backend, uv_dir: &Path, r: &mut dyn Runner) -> Vec<String> {
     match backend {
         Backend::Uv(uv) => r.run(&uv_step(uv, uv_python_list_args(), uv_dir, false)).map(|o| uv_minors(&o)).unwrap_or_default(),
         Backend::Python { argv, minor } if argv.len() > 1 && is_py_launcher(&argv[0]) => {
-            let step = Step { program: PathBuf::from(&argv[0]), args: vec!["-0p".to_string()], env: Vec::new() };
-            let mut out: Vec<String> = r.run(&step).map(|o| py_list(&o).into_iter().map(|(v, _)| v).collect()).unwrap_or_default();
-            out.sort_by(|a, b| dotted(a, b));
-            out.dedup();
+            let out = py_minors(&argv[0], r);
             if out.is_empty() { vec![minor.clone()] } else { out }
         }
         Backend::Python { minor, .. } => vec![minor.clone()],
     }
+}
+
+/// The minors the py launcher has installed (`py -0p`), sorted by number; none when it
+/// cannot be asked.
+fn py_minors(launcher: &str, r: &mut dyn Runner) -> Vec<String> {
+    let step = Step { program: PathBuf::from(launcher), args: vec!["-0p".to_string()], env: Vec::new() };
+    let mut out: Vec<String> = r.run(&step).map(|o| py_list(&o).into_iter().map(|(v, _)| v).collect()).unwrap_or_default();
+    out.sort_by(|a, b| dotted(a, b));
+    out.dedup();
+    out
 }
 
 /// Whether a program is the py launcher (`py.exe`).
@@ -953,9 +973,26 @@ mod tests {
                 }),
                 Call::Rename(build, p(r"C:\S\tool\.venv")),
                 Call::Write(p(r"C:\S\tool\python-runtime.json"), marker.json()),
-                Call::Write(p(r"C:\S\tool\setup.cfg"), setup_cfg_text("tool", &deps, true, "3.12", 0)),
+                Call::Write(p(r"C:\S\tool\setup.cfg"), crate::script_runtime::setup_cfg_text("tool", &deps, true, "3.12", 72)),
             ]
         );
+        // With the py launcher a different pick is built with `py -X.Y` when installed, and
+        // setup.cfg records the version built; one not installed is resolved (3.11 to 3.12).
+        let listing = "-V:3.12 *  C:\\Py312\\python.exe\n -V:3.10  C:\\Py310\\python.exe\n";
+        for (asked, built, remapped) in [("3.10", "3.10", None), ("3.11", "3.12", Some("3.11"))] {
+            let mut r = FakeRunner::new(&[]).answer("-0p", Ok(listing));
+            let job = Job::Provision { backend: py.clone(), target: Target::Container(p(r"C:\S\tool")), requested: asked.into(), dependencies: deps.clone(), name: Some("tool".into()) };
+            let Ok(Outcome::Provisioned { marker, .. }) = run_job(&job, Path::new(r"C:\u"), &mut r) else { panic!("{:?}", r.calls) };
+            assert_eq!((marker.python.as_str(), marker.remapped_from.as_deref()), (built, remapped), "{asked}");
+            let venv = Step { program: p(r"C:\Windows\py.exe"), args: s(&[format!("-{built}").as_str(), "-m", "venv", r"C:\S\tool\.venv.building"]), env: vec![] };
+            assert!(r.calls.contains(&Call::Run(venv)), "{asked}: {:?}", r.calls);
+            assert!(r.calls.contains(&Call::Write(p(r"C:\S\tool\setup.cfg"), crate::script_runtime::setup_cfg_text("tool", &deps, true, built, 72))), "{asked}");
+        }
+        // The same pick as the backend's asks the launcher nothing.
+        let mut r = FakeRunner::new(&[]);
+        let job = Job::Provision { backend: py.clone(), target: Target::Container(p(r"C:\S\tool")), requested: "3.12".into(), dependencies: vec![], name: None };
+        assert!(run_job(&job, Path::new(r"C:\u"), &mut r).is_ok());
+        assert!(!r.calls.iter().any(|c| matches!(c, Call::Run(st) if st.args == s(&["-0p"]))));
         // With no name no setup.cfg is written.
         let mut r = FakeRunner::new(&[]);
         let job = Job::Provision { backend: py.clone(), target: Target::Container(p(r"C:\S\tool")), requested: "3.12".into(), dependencies: deps.clone(), name: None };

@@ -657,7 +657,11 @@ impl App {
             Env::Basic => vec![(dest.clone(), text)],
             Env::Full => {
                 let name = plan.chosen.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                sn::full_environment_files(&sn::container(&plan.chosen, &scripts), &name, &plan.dependencies, &plan.python, &text)
+                let container = sn::container(&plan.chosen, &scripts);
+                let read = |f: &str| std::fs::read_to_string(container.join(f)).ok();
+                // The version the build made, which the launcher may have resolved to another.
+                let built = sn::built_python(read(rt::MARKER).as_deref(), &plan.python);
+                sn::full_environment_files(&container, &name, &plan.dependencies, &built, &text, read(rt::SETUP_CFG).as_deref())
             }
         };
         if let Err(e) = sn::write_files(&files) {
