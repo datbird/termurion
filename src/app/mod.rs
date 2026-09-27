@@ -568,8 +568,8 @@ pub struct App {
     api_server: Option<crate::api_server::Server>,
     /// The cookies handed to sessions, shared with the server's cookie check.
     api_jar: Arc<Mutex<crate::api_auth::Jar>>,
-    /// Accepted and refused connections, for the Script Console (11d).
-    api_log: crate::api_auth::Log,
+    /// The Script Console's entries: scripts, connections and the app-wide logs.
+    script_history: crate::script_history::History,
     /// The API's alerts, shown one at a time in order; each window opens on a pass (it needs
     /// the event loop).
     api_alerts: Vec<(Option<crate::prompt_ui::ConfirmWindow>, api_ui::Alert)>,
@@ -749,6 +749,9 @@ pub fn run() {
             Globals::load(&side).unwrap_or_else(|_| Globals::empty(&side))
         }
     };
+    // The Script Console starts with the Automatic Profile Switching entry while its logging
+    // is on (`SH:340-351`).
+    let aps_logging = globals.bool(aps_ui::LOG_KEY);
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
     // a change needs a restart, as in iTerm2).
     // A second Tandem (the host serves the first) neither restores nor saves windows: the
@@ -992,7 +995,7 @@ pub fn run() {
         last_blink: Instant::now(),
         api_server: None,
         api_jar: Default::default(),
-        api_log: Default::default(),
+        script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
         api_on: false,
         api_pending: HashMap::new(),

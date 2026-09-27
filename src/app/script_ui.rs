@@ -1074,7 +1074,12 @@ impl App {
     /// connection that failed, and the alert queued (`queue_alert`: OK, temporarily
     /// silenceable under `NoSyncFunctionCallError`, the same one merged).
     pub(super) fn report_function_error(&mut self, origin: &str, invocation: &str, f: &Failure) {
-        self.script_log(f.conn, script_eval::console_text(invocation, &f.reason, f.detail.as_deref().unwrap_or_default()));
+        // The failing connection's entry only: no connection, no entry (`H:574-576`).
+        if let Some((key, _)) = f.conn.and_then(|c| self.api_keys.get(&c)) {
+            let key = key.clone();
+            let stamp = self.history_stamp();
+            self.script_history.add_log(&key, &script_eval::console_text(invocation, &f.reason, f.detail.as_deref().unwrap_or_default()), &stamp);
+        }
         let alert = Alert::Failed { heading: script_eval::report_heading(origin), invocation: invocation.to_string(), text: script_eval::report_text(invocation, &f.reason) };
         let silenced = self.function_errors_silenced();
         let showing = self.script_alert.as_ref().map(|(_, a)| a);
@@ -1087,12 +1092,12 @@ impl App {
         script_eval::silenced(until, unix_now())
     }
 
-    /// A line for a connection's Script Console entry; nothing without a connection (iTerm2
-    /// finds no entry for a nil key).
+    /// A line for a connection's Script Console entry, else the app-wide entry
+    /// (`logToConnectionWithKey`, `H:1506-1516`).
     pub(super) fn script_log(&mut self, conn: Option<u64>, text: String) {
-        if let Some(conn) = conn {
-            self.api_log_conn(conn, text);
-        }
+        let key = self.history_key(conn);
+        let stamp = self.history_stamp();
+        self.script_history.add_log(&key, &text, &stamp);
     }
 
     /// Opens the next queued alert when none shows.

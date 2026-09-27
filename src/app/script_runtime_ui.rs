@@ -10,9 +10,6 @@ use super::App;
 use crate::script_provision::{self, Gate, Job, Outcome, Provisioner, RealRunner, Runner, Step, Target};
 use crate::script_runtime::{self as rt, Arch, Backend};
 
-/// The Script Console's app-wide entry (`SH:32-43`, "iTerm2 App").
-const APP_ENTRY: &str = "Tandem App";
-
 /// What happens once an environment is ready (or what a runtime job reports).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum After {
@@ -91,7 +88,8 @@ impl App {
 
     /// A line for the Script Console's app-wide entry.
     pub(super) fn script_log_app(&mut self, text: String) {
-        self.api_log.push(crate::api_auth::LogEntry { key: None, name: APP_ENTRY.to_string(), text });
+        let stamp = self.history_stamp();
+        self.script_history.add_log(crate::script_history::GLOBAL_ID, &text, &stamp);
     }
 
     fn runtime_alert(&mut self, heading: &str, text: String) {

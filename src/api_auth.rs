@@ -2,7 +2,7 @@
 //! `iterm2` package also reads, iTerm2's authorization decision and every alert text. Pure; the
 //! app side (`app/api_ui.rs`) reads the file, shows the alerts and applies the steps.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 /// How long a cookie lasts: a Single cookie authorizes one connection (`J:50-52`); a Session
 /// cookie authorizes any number until removed (Tandem's session cookies, a Decision; iTerm2's
@@ -364,36 +364,6 @@ pub fn change_failed_text(error: &str) -> String {
     format!("The setting could not be changed: {error}")
 }
 
-/// One accepted or refused connection, for the Script Console (11d): its key, display name and
-/// reason. Never a cookie.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LogEntry {
-    pub key: Option<String>,
-    pub name: String,
-    pub text: String,
-}
-
-const LOG_LIMIT: usize = 500;
-
-/// The newest `LOG_LIMIT` entries, oldest first.
-#[derive(Clone, Debug, Default)]
-pub struct Log {
-    entries: VecDeque<LogEntry>,
-}
-
-impl Log {
-    pub fn push(&mut self, e: LogEntry) {
-        if self.entries.len() == LOG_LIMIT {
-            self.entries.pop_front();
-        }
-        self.entries.push_back(e);
-    }
-
-    pub fn entries(&self) -> impl Iterator<Item = &LogEntry> {
-        self.entries.iter()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,13 +643,5 @@ mod tests {
             assert!(!t.contains("iTerm2"), "{t}");
         }
         assert!(AUTH_URL.contains("iterm2.com") && SECURITY_URL.contains("iterm2.com"));
-
-        let mut log = Log::default();
-        for i in 0..501 {
-            log.push(LogEntry { key: None, name: display_name(None), text: format!("{i}") });
-        }
-        assert_eq!(log.entries().count(), 500);
-        assert_eq!(log.entries().next().unwrap().text, "1");
-        assert_eq!(log.entries().last().unwrap().text, "500");
     }
 }

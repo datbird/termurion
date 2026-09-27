@@ -4,7 +4,7 @@
 use super::*;
 use crate::aps::{Candidate, Facts, Switcher};
 
-const LOG_KEY: &str = "NoSyncEnableAutomaticProfileSwitchingLogging";
+pub(super) const LOG_KEY: &str = "NoSyncEnableAutomaticProfileSwitchingLogging";
 
 /// This computer's full DNS name (iTerm2 starts sessions with the local host name, so host
 /// rules work without shell integration).
@@ -92,15 +92,12 @@ impl App {
         self.redraw();
     }
 
-    /// The Automatic Profile Switching debug log (the Script Console comes in milestone 11):
-    /// a file beside the settings.
+    /// The Automatic Profile Switching debug log: the Script Console's "Automatic Profile
+    /// Switching" entry, added when missing (`iTermAutomaticProfileSwitcher.m:20-35`).
     fn aps_log(&mut self, pane: PaneId, line: &str) {
-        use std::io::Write;
-        let path = crate::globals::default_path().with_file_name("automatic-profile-switching.log");
         let title = self.session_title(pane);
-        let written = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut f| writeln!(f, "[{title} - session {pane}] {line}"));
-        if let Err(e) = written {
-            self.banners.set("aps", format!("Could not write {}: {e}", path.display()));
-        }
+        let stamp = self.history_stamp();
+        self.script_history.ensure_aps(api_ui::unix_secs());
+        self.script_history.add_log(crate::script_history::APS_ID, &crate::script_history::aps_line(&title, line), &stamp);
     }
 }

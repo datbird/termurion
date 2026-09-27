@@ -143,7 +143,7 @@ impl App {
             Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnServerOriginatedRpc as i32) => {
                 let (status, line) = self.api_fns.request(conn, r);
                 if let Some(text) = line {
-                    self.api_log_conn(conn, text);
+                    self.script_log(Some(conn), text);
                 }
                 self.api_fns_changed(r, status);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
@@ -1360,7 +1360,7 @@ impl App {
     }
 
     /// Answers a waiting Tmux request.
-    pub(super) fn api_tmux_answer(&self, (conn, req): (u64, pb::ClientOriginatedMessage), resp: pb::TmuxResponse) {
+    pub(super) fn api_tmux_answer(&mut self, (conn, req): (u64, pb::ClientOriginatedMessage), resp: pb::TmuxResponse) {
         let mut m = api_proto::reply_to(&req);
         m.submessage = Some(Resp::TmuxResponse(resp));
         self.api_reply(conn, &m);
@@ -1368,7 +1368,7 @@ impl App {
 
     /// Answers a waiting CreateWindow (`api_misc::create_window_answer`): `made` says whether
     /// tmux made a window, `tab` is its tab when it has one.
-    pub(super) fn api_tmux_created(&self, waiting: (u64, pb::ClientOriginatedMessage), made: bool, tab: Option<u64>) {
+    pub(super) fn api_tmux_created(&mut self, waiting: (u64, pb::ClientOriginatedMessage), made: bool, tab: Option<u64>) {
         self.api_tmux_answer(waiting, api_misc::create_window_answer(made, tab));
     }
 

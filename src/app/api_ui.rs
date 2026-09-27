@@ -12,7 +12,7 @@ use winit::window::WindowId;
 
 use super::api_requests::Answer;
 use super::App;
-use crate::api_auth::{self, AllowAll, AllowAllStep, AskAnswer, LogEntry, Verdict};
+use crate::api_auth::{self, AllowAll, AllowAllStep, AskAnswer, Verdict};
 use crate::api_dispatch::{Route, Subscriptions, Transactions, Tx};
 use crate::api_model;
 use crate::api_proto::pb;
@@ -596,7 +596,10 @@ impl App {
                 Event::Pending(p) => self.api_authorize(p),
                 Event::Message { conn, bytes } => self.api_message(conn, bytes, event_loop),
                 Event::Closed { conn } => self.api_closed(conn, event_loop),
-                Event::Rejected { key, reason } => self.api_log.push(LogEntry { key, name: api_auth::display_name(None), text: reason }),
+                Event::Rejected { key, reason } => {
+                    let (stamp, now) = (self.history_stamp(), unix_secs());
+                    self.script_history.rejected(key.as_deref(), "", &reason, &stamp, &api_auth::fresh_key(), now);
+                }
             }
             true
         });
@@ -619,25 +622,50 @@ impl App {
         }
     }
 
-    /// Answers a connection and logs why.
+    /// Answers a connection and logs why in the Script Console (`API/iTermAPIServer.m:545-583`):
+    /// an accepted one in its entry (a launched script's, else a new one); a refused one in
+    /// its entry by key, or a fresh entry when the client turned the authorization UI off.
     fn api_verdict(&mut self, p: &Pending, allow: bool, reason: &str) {
         if let Some(s) = &self.api_server {
             s.verdict(p.conn, allow);
         }
         let name = api_auth::display_name(p.upgrade.advisory_name.as_deref());
+        let (stamp, now) = (self.history_stamp(), unix_secs());
+        let key = &p.upgrade.key;
         if allow {
-            self.api_keys.insert(p.conn, (p.upgrade.key.clone(), name.clone()));
+            self.api_keys.insert(p.conn, (key.clone(), name.clone()));
+            self.script_history.accepted(key, &name, reason, &stamp, now);
+        } else {
+            let key = (!p.upgrade.disable_auth_ui).then_some(key.as_str());
+            self.script_history.rejected(key, &name, reason, &stamp, &api_auth::fresh_key(), now);
         }
-        self.api_log.push(LogEntry { key: Some(p.upgrade.key.clone()), name, text: reason.to_string() });
     }
 
-    /// Writes a line to a connection's log (its entry in the Script Console).
-    pub(super) fn api_log_conn(&mut self, conn: u64, text: String) {
-        let (key, name) = match self.api_keys.get(&conn) {
-            Some((key, name)) => (Some(key.clone()), name.clone()),
-            None => (None, api_auth::display_name(None)),
-        };
-        self.api_log.push(LogEntry { key, name, text });
+    /// A Script Console timestamp for now.
+    pub(super) fn history_stamp(&self) -> String {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        crate::script_history::stamp_log(&crate::stamps::local(t.as_secs()), t.subsec_millis() as u16)
+    }
+
+    /// The Script Console entry a connection logs to: its key while its entry is there, else
+    /// the app-wide entry (`H:1506-1516`).
+    pub(super) fn history_key(&self, conn: Option<u64>) -> String {
+        match conn.and_then(|c| self.api_keys.get(&c)) {
+            Some((key, _)) if self.script_history.find(key).is_some() => key.clone(),
+            _ => crate::script_history::GLOBAL_ID.to_string(),
+        }
+    }
+
+    /// A message to or from a connection, in its entry's Calls (`SH:143-179`); nothing for a
+    /// connection with no entry.
+    fn history_call(&mut self, conn: u64, dir: crate::script_history::Dir, text: &dyn Fn() -> String) {
+        let Some((key, _)) = self.api_keys.get(&conn) else { return };
+        if self.script_history.find(key).is_none() {
+            return;
+        }
+        let key = key.clone();
+        let stamp = self.history_stamp();
+        self.script_history.add_call(&key, dir, &format!("{}\n", text()), &stamp);
     }
 
     /// A connection's functions go and its waiting calls fail (`H:2154-2214`).
@@ -660,6 +688,7 @@ impl App {
     /// a request goes through the transaction logic (`S:1397-1411`).
     pub(super) fn api_message(&mut self, conn: u64, bytes: Vec<u8>, event_loop: &ActiveEventLoop) {
         if let Some(req) = crate::api_proto::decode(&bytes) {
+            self.history_call(conn, crate::script_history::Dir::In, &|| format!("{req:#?}"));
             serve(&mut AppHost { app: self, event_loop }, VecDeque::from([(conn, req)]));
         }
     }
@@ -668,6 +697,11 @@ impl App {
     /// a verdict go, its waiting function calls fail, and a transaction it owned ends (`S:1418-1424`, `H:2154-2192`), running what it
     /// held.
     pub(super) fn api_closed(&mut self, conn: u64, event_loop: &ActiveEventLoop) {
+        if let Some((key, _)) = self.api_keys.get(&conn) {
+            let key = key.clone();
+            let stamp = self.history_stamp();
+            self.script_history.closed(&key, &stamp);
+        }
         let released = self.api_forget(conn);
         serve(&mut AppHost { app: self, event_loop }, released);
     }
@@ -710,8 +744,9 @@ impl App {
 
     /// Sends a message to a connection: a notification under the outbound cap, a response
     /// even past it (`Server::respond`).
-    pub(super) fn api_reply(&self, conn: u64, m: &crate::api_proto::pb::ServerOriginatedMessage) {
+    pub(super) fn api_reply(&mut self, conn: u64, m: &crate::api_proto::pb::ServerOriginatedMessage) {
         use crate::api_proto::pb::server_originated_message::Submessage;
+        self.history_call(conn, crate::script_history::Dir::Out, &|| format!("{m:#?}"));
         if let Some(s) = &self.api_server {
             if matches!(m.submessage, Some(Submessage::Notification(_))) {
                 s.send(conn, crate::api_proto::encode(m));
@@ -788,7 +823,11 @@ impl App {
         if let Some(old) = self.api_last.take() {
             let c = api_model::changes(&old, &new);
             let notes = if c.layout { api_model::notifications(&c, &self.api_model(true)) } else { api_model::notifications(&c, &new) };
-            post(&self.api_subs, notes, &mut |conn, m| self.api_reply(conn, m));
+            let mut out = Vec::new();
+            post(&self.api_subs, notes, &mut |conn, m| out.push((conn, m.clone())));
+            for (conn, m) in out {
+                self.api_reply(conn, &m);
+            }
         }
         self.api_last = Some(new);
     }
@@ -886,7 +925,7 @@ impl App {
 
     /// Posts `key` to the focused pane's keystroke subscribers; an advanced event (key up,
     /// flags changed) only to those asking for it (`PS:11617-11619`).
-    fn api_post_key(&self, pane: crate::layout::PaneId, key: &crate::api_notify::Key, advanced: bool) {
+    fn api_post_key(&mut self, pane: crate::layout::PaneId, key: &crate::api_notify::Key, advanced: bool) {
         let conns: Vec<u64> = self
             .api_session_subs
             .subscribers(pb::NotificationType::NotifyOnKeystroke, pane)
@@ -1160,6 +1199,11 @@ impl App {
 fn port_owner(port: u16) -> Option<String> {
     let pid = crate::api_peer::listener(&crate::api_peer::listen_rows().ok()?, port)?;
     Some(crate::api_peer::process_label(crate::api_peer::process_name(pid).as_deref(), pid))
+}
+
+/// Unix seconds now (a Script Console entry's start).
+pub(super) fn unix_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]
