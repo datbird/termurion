@@ -562,8 +562,9 @@ impl App {
     }
 
     /// An interpolated string evaluated in the session (`iTermSwiftyString` with no side
-    /// effects), under `laxNilPolicyInInterpolatedStrings`. The session's variables are gathered only when the string names one, and
-    /// the selection only when it names `selection` or `selectionLength`.
+    /// effects), under `laxNilPolicyInInterpolatedStrings`. The session's variables are
+    /// gathered only when the string names one, and the selection only when it names
+    /// `selection` or `selectionLength`.
     fn evaluate_for(&self, pane: PaneId, expression: &str) -> Result<String, String> {
         let (light, full) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
         let lookup = |n: &str| {

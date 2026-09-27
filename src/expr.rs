@@ -9,7 +9,8 @@
 //! operation runs ("Nil operand", `iTermParsedExpression.m:415-436`). The evaluator keeps
 //! that split: `stat` is what the parse would have found, `run` what evaluation finds.
 
-use std::collections::BTreeMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap};
 
 pub use serde_json::Value;
 
@@ -167,10 +168,15 @@ fn ident_body(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-fn tokenize(chars: &[char]) -> Vec<Token> {
+/// The text's tokens; `used` counts the tokens of the whole parse (nested strings too),
+/// which may not pass `MAX_TOKENS`.
+fn tokenize(chars: &[char], used: &mut usize) -> Result<Vec<Token>, String> {
     let mut out = Vec::new();
     let mut i = 0;
     'outer: while i < chars.len() {
+        if out.len() + *used >= MAX_TOKENS {
+            return Err(too_long());
+        }
         let c = chars[i];
         // OptionalPath first: an identifier path immediately followed by `?`.
         if ident_start(c) {
@@ -188,8 +194,8 @@ fn tokenize(chars: &[char]) -> Vec<Token> {
             }
         }
         for op in TWO {
-            let o: Vec<char> = op.chars().collect();
-            if chars[i..].starts_with(&o) {
+            let o = op.as_bytes();
+            if c == o[0] as char && chars.get(i + 1) == Some(&(o[1] as char)) {
                 out.push(Token { tok: Tok::Op(op), at: i });
                 i += 2;
                 continue 'outer;
@@ -259,8 +265,9 @@ fn tokenize(chars: &[char]) -> Vec<Token> {
         out.push(Token { tok: Tok::Bad, at: i });
         break;
     }
+    *used += out.len();
     out.push(Token { tok: Tok::End, at: chars.len() });
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -349,8 +356,9 @@ fn swifty(chars: &[char], stop_at_quote: bool) -> Swifty {
             }
         }
     }
+    // An expression left open: the rest is literal text (`iTermSwiftyStringParser.m:125-131`).
     let open = matches!(st, St::Expr | St::ExprStr | St::ExprStrEsc).then_some(open);
-    if open.is_none() && start < chars.len() {
+    if start < chars.len() {
         pieces.push((false, chars[start..].iter().collect()));
     }
     Swifty { pieces, end: None, open }
@@ -404,22 +412,28 @@ fn expand_escapes(s: &str) -> String {
 }
 
 /// An interpolated string split into literal text (escapes expanded) and the raw text of
-/// each `\( )` (`true`); an unclosed `\(` is an error naming its column (1-based). Tandem
-/// keeps that error where iTerm2 reads the rest as text.
-pub fn template_pieces(template: &str) -> Result<Vec<(bool, String)>, String> {
+/// each `\( )` (`true`), as iTerm2 splits it (`EP:343-407`): the rest of an unclosed `\(`
+/// is literal text, and a string with no expression is its whole text expanded.
+pub fn template_pieces(template: &str) -> Vec<(bool, String)> {
     let chars: Vec<char> = template.chars().collect();
     let s = swifty(&chars, false);
-    if let Some(at) = s.open {
-        return Err(format!("Unclosed \\( at column {}.", at + 1));
+    if !s.pieces.iter().any(|(expr, _)| *expr) {
+        return vec![(false, expand_escapes(template))];
     }
-    Ok(s.pieces.into_iter().map(|(expr, t)| if expr { (true, t) } else { (false, expand_escapes(&t)) }).collect())
+    s.pieces.into_iter().map(|(expr, t)| if expr { (true, t) } else { (false, expand_escapes(&t)) }).collect()
 }
 
-fn template_at(template: &str, site: &mut usize) -> Result<Vec<Part>, String> {
+/// The column (1-based) of an unclosed `\(`, whose rest iTerm2 reads as text.
+pub fn unclosed_at(template: &str) -> Option<usize> {
+    let chars: Vec<char> = template.chars().collect();
+    swifty(&chars, false).open.map(|at| at + 1)
+}
+
+fn template_at(template: &str, b: &mut Budget) -> Result<Vec<Part>, String> {
     let mut parts: Vec<Part> = Vec::new();
-    for (expr, text) in template_pieces(template)? {
+    for (expr, text) in template_pieces(template) {
         if expr {
-            parts.push(Part::Expr(parse_at(&text, site)?));
+            parts.push(Part::Expr(parse_at(&text, b)?.0));
         } else if let Some(Part::Text(last)) = parts.last_mut() {
             last.push_str(&text);
         } else {
@@ -431,22 +445,72 @@ fn template_at(template: &str, site: &mut usize) -> Result<Vec<Part>, String> {
 
 /// Parses an interpolated string; the calls of all its parts are numbered together.
 pub fn parse_template(template: &str) -> Result<Vec<Part>, String> {
-    template_at(template, &mut 0)
+    template_at(template, &mut Budget::default())
 }
 
 // ---------------------------------------------------------------------------------------
 // The parser (`EP:465-807`)
+//
+// Terminal output reaches the parser (OSC 1337 SetBadgeFormat, trigger parameters), so a
+// parse is bounded: at most `MAX_TOKENS` tokens (nested strings included) and a tree and
+// a parser nesting of at most `MAX_DEPTH` levels. Evaluating and dropping the largest
+// tree accepted then recurses at most `MAX_DEPTH` deep.
+
+/// The deepest tree (and parser nesting) a parse accepts.
+pub const MAX_DEPTH: usize = 64;
+/// The most tokens a parse accepts, nested strings included.
+pub const MAX_TOKENS: usize = 4096;
+
+fn too_deep() -> String {
+    format!("Expression is nested too deeply (the limit is {MAX_DEPTH} levels).")
+}
+
+fn too_long() -> String {
+    format!("Expression is too long (the limit is {MAX_TOKENS} tokens).")
+}
+
+/// What a parse and the strings nested in it share: the next call site, the tokens used
+/// and the parser's nesting.
+#[derive(Default)]
+struct Budget {
+    site: usize,
+    tokens: usize,
+    nest: usize,
+}
 
 /// What may start a primary expression, in Tandem's order.
 const PRIMARY: [&str; 9] = ["(", "!", "-", "Number", "true", "false", "Identifier", "OptionalPath", "SwiftyString"];
 /// What may follow a complete operand.
 const FOLLOW: [&str; 13] = ["*", "/", "+", "-", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "?"];
 
+/// The binary operators by precedence, loosest first.
+fn binop(t: &Tok) -> Option<(usize, BinOp)> {
+    let Tok::Op(o) = t else { return None };
+    Some(match *o {
+        "||" => (0, BinOp::Or),
+        "&&" => (1, BinOp::And),
+        "==" => (2, BinOp::Eq),
+        "!=" => (2, BinOp::Ne),
+        "<" => (3, BinOp::Lt),
+        ">" => (3, BinOp::Gt),
+        "<=" => (3, BinOp::Le),
+        ">=" => (3, BinOp::Ge),
+        "+" => (4, BinOp::Add),
+        "-" => (4, BinOp::Sub),
+        "*" => (5, BinOp::Mul),
+        "/" => (5, BinOp::Div),
+        _ => return None,
+    })
+}
+
+/// An expression and the depth of its tree.
+type Parsed = (Expr, usize);
+
 struct Parser<'a> {
     text: &'a str,
     toks: Vec<Token>,
     pos: usize,
-    site: &'a mut usize,
+    b: &'a mut Budget,
     /// The operand just parsed was a bare path (it could have gone on with `.`, `(` or `[`).
     after_path: bool,
 }
@@ -460,6 +524,7 @@ impl Parser<'_> {
         &self.toks[self.pos].tok
     }
 
+    /// Consumes a token; the end stays put.
     fn next(&mut self) -> Tok {
         let t = self.toks[self.pos].tok.clone();
         if self.pos + 1 < self.toks.len() {
@@ -478,6 +543,23 @@ impl Parser<'_> {
             self.next();
         }
         yes
+    }
+
+    /// An identifier, consumed only when there is one.
+    fn ident(&mut self) -> Option<String> {
+        let Tok::Ident(n) = self.peek() else { return None };
+        let n = n.clone();
+        self.next();
+        Some(n)
+    }
+
+    /// A node of depth `d`, refused past `MAX_DEPTH`.
+    fn node(&self, d: usize) -> Result<usize, String> {
+        if d > MAX_DEPTH {
+            Err(too_deep())
+        } else {
+            Ok(d)
+        }
     }
 
     /// "Syntax error at index N of \u{201c}text\u{201d}. Expected ..." (`EP:850-865`).
@@ -521,167 +603,187 @@ impl Parser<'_> {
     fn path_rest(&mut self, first: String) -> Result<String, String> {
         let mut path = first;
         while self.eat(".") {
-            match self.next() {
-                Tok::Ident(p) => {
-                    path.push('.');
-                    path.push_str(&p);
-                }
-                _ => {
-                    self.pos -= 1;
-                    return Err(self.syntax(&["Identifier"]));
-                }
-            }
+            let Some(p) = self.ident() else { return Err(self.syntax(&["Identifier"])) };
+            path.push('.');
+            path.push_str(&p);
         }
         Ok(path)
     }
 
     /// `expression ::= Subexpression | '[' ']' | '[' comma_delimited_expressions ']'`.
-    fn expression(&mut self, closers: &[&'static str]) -> Result<Expr, String> {
+    fn expression(&mut self, closers: &[&'static str]) -> Result<Parsed, String> {
         if !self.eat("[") {
             return self.conditional(closers);
         }
         let mut items = Vec::new();
-        if self.eat("]") {
-            self.after_path = false;
-            return Ok(Expr::Array(items));
-        }
-        loop {
-            items.push(self.expression(&[",", "]"])?);
-            if self.eat(",") {
-                continue;
+        let mut d = 0;
+        if !self.eat("]") {
+            loop {
+                let (e, ed) = self.expression(&[",", "]"])?;
+                items.push(e);
+                d = d.max(ed);
+                if self.eat(",") {
+                    continue;
+                }
+                self.expect_after("]", &[",", "]"])?;
+                break;
             }
-            self.expect_after("]", &[",", "]"])?;
-            self.after_path = false;
-            return Ok(Expr::Array(items));
         }
+        self.after_path = false;
+        Ok((Expr::Array(items), self.node(d + 1)?))
     }
 
-    /// `ConditionalExpression`: the ternary (right-nested) and `expr ?`.
-    fn conditional(&mut self, closers: &[&'static str]) -> Result<Expr, String> {
-        let c = self.binary(0, closers)?;
+    /// `ConditionalExpression`: the ternary (right-nested) and `expr ?`. Every nesting of
+    /// the parser passes here, so this is where it is counted.
+    fn conditional(&mut self, closers: &[&'static str]) -> Result<Parsed, String> {
+        self.b.nest += 1;
+        if self.b.nest > MAX_DEPTH {
+            return Err(too_deep());
+        }
+        let r = self.conditional_body(closers);
+        self.b.nest -= 1;
+        r
+    }
+
+    fn conditional_body(&mut self, closers: &[&'static str]) -> Result<Parsed, String> {
+        let (c, cd) = self.binary(0)?;
         if !self.eat("?") {
-            return Ok(c);
+            return Ok((c, cd));
         }
         if !self.starts_primary() {
             self.after_path = false;
-            return Ok(Expr::Opt(Box::new(c)));
+            return Ok((Expr::Opt(Box::new(c)), self.node(cd + 1)?));
         }
-        let t = self.conditional(&[":"])?;
+        let (t, td) = self.conditional(&[":"])?;
         self.expect_after(":", &[":"])?;
-        let f = self.conditional(closers)?;
-        Ok(Expr::Cond(Box::new(c), Box::new(t), Box::new(f)))
+        let (f, fd) = self.conditional(closers)?;
+        Ok((Expr::Cond(Box::new(c), Box::new(t), Box::new(f)), self.node(1 + cd.max(td).max(fd))?))
     }
 
-    /// The binary levels, loosest first: `||`, `&&`, `==` `!=`, relational, `+` `-`, `*` `/`.
-    fn binary(&mut self, level: usize, closers: &[&'static str]) -> Result<Expr, String> {
-        const LEVELS: [&[(&str, BinOp)]; 6] = [
-            &[("||", BinOp::Or)],
-            &[("&&", BinOp::And)],
-            &[("==", BinOp::Eq), ("!=", BinOp::Ne)],
-            &[("<", BinOp::Lt), (">", BinOp::Gt), ("<=", BinOp::Le), (">=", BinOp::Ge)],
-            &[("+", BinOp::Add), ("-", BinOp::Sub)],
-            &[("*", BinOp::Mul), ("/", BinOp::Div)],
-        ];
-        if level == LEVELS.len() {
-            return self.unary();
-        }
-        let mut l = self.binary(level + 1, closers)?;
-        'more: loop {
-            for (text, op) in LEVELS[level] {
-                if self.eat(text) {
-                    let r = self.binary(level + 1, closers)?;
-                    l = Expr::Bin(Box::new(l), *op, Box::new(r));
-                    continue 'more;
-                }
+    /// The binary operators by precedence climbing: left-associative, at most six calls
+    /// deep for one nesting.
+    fn binary(&mut self, min: usize) -> Result<Parsed, String> {
+        let (mut l, mut d) = self.unary()?;
+        while let Some((prec, op)) = binop(self.peek()) {
+            if prec < min {
+                break;
             }
-            return Ok(l);
+            self.next();
+            let (r, rd) = self.binary(prec + 1)?;
+            d = self.node(1 + d.max(rd))?;
+            l = Expr::Bin(Box::new(l), op, Box::new(r));
         }
+        Ok((l, d))
     }
 
-    fn unary(&mut self) -> Result<Expr, String> {
-        if self.eat("!") {
-            return Ok(Expr::Not(Box::new(self.unary()?)));
+    /// Unary `!` and `-`, gathered without recursion.
+    fn unary(&mut self) -> Result<Parsed, String> {
+        let mut ops = Vec::new();
+        while self.is("!") || self.is("-") {
+            ops.push(self.is("!"));
+            self.next();
         }
-        if self.eat("-") {
-            return Ok(Expr::Neg(Box::new(self.unary()?)));
+        let (mut e, mut d) = self.primary()?;
+        for not in ops.into_iter().rev() {
+            d = self.node(d + 1)?;
+            e = if not { Expr::Not(Box::new(e)) } else { Expr::Neg(Box::new(e)) };
         }
-        self.primary()
+        Ok((e, d))
     }
 
-    fn primary(&mut self) -> Result<Expr, String> {
+    fn primary(&mut self) -> Result<Parsed, String> {
         self.after_path = false;
         let at = self.pos;
-        let e = match self.next() {
-            Tok::Num(n) => Expr::Num(n),
-            Tok::True => Expr::Bool(true),
-            Tok::False => Expr::Bool(false),
-            Tok::Str(raw) => Expr::Str(template_at(&raw, &mut *self.site)?),
-            Tok::OptPath(path) => Expr::Path { path, optional: true },
+        let parsed = match self.next() {
+            Tok::Num(n) => (Expr::Num(n), 1),
+            Tok::True => (Expr::Bool(true), 1),
+            Tok::False => (Expr::Bool(false), 1),
+            Tok::Str(raw) => self.string(&raw)?,
+            Tok::OptPath(path) => (Expr::Path { path, optional: true }, 1),
             Tok::Op("(") => {
                 let e = self.conditional(&[")"])?;
                 self.expect_after(")", &[")"])?;
                 self.after_path = false;
                 e
             }
-            Tok::Ident(first) => {
-                let path = self.path_rest(first)?;
-                if self.is("(") {
-                    Expr::Call(self.call(path)?)
-                } else if self.eat("[") {
-                    let index = self.conditional(&["]"])?;
-                    self.expect_after("]", &["]"])?;
-                    Expr::Index { path, index: Box::new(index) }
-                } else if path == "null" {
-                    Expr::Null
-                } else {
-                    self.after_path = true;
-                    Expr::Path { path, optional: false }
-                }
-            }
+            Tok::Ident(first) => self.reference(first)?,
             _ => {
                 self.pos = at;
                 return Err(self.syntax(&PRIMARY));
             }
         };
-        Ok(e)
+        Ok(parsed)
+    }
+
+    /// A nested string, one more level of the parser. The heavier arms of `primary` are
+    /// functions of their own to keep its stack frame small.
+    #[inline(never)]
+    fn string(&mut self, raw: &str) -> Result<Parsed, String> {
+        self.b.nest += 1;
+        if self.b.nest > MAX_DEPTH {
+            return Err(too_deep());
+        }
+        let parts = template_at(raw, self.b)?;
+        self.b.nest -= 1;
+        let d = parts.iter().map(|p| if let Part::Expr(e) = p { depth(e) } else { 0 }).max().unwrap_or(0);
+        Ok((Expr::Str(parts), self.node(d + 1)?))
+    }
+
+    /// A path, a call, an indexed path or `null`.
+    #[inline(never)]
+    fn reference(&mut self, first: String) -> Result<Parsed, String> {
+        let path = self.path_rest(first)?;
+        if self.is("(") {
+            let (c, d) = self.call(path)?;
+            Ok((Expr::Call(c), d))
+        } else if self.eat("[") {
+            let (index, d) = self.conditional(&["]"])?;
+            self.expect_after("]", &["]"])?;
+            Ok((Expr::Index { path, index: Box::new(index) }, self.node(d + 1)?))
+        } else if path == "null" {
+            Ok((Expr::Null, 1))
+        } else {
+            self.after_path = true;
+            Ok((Expr::Path { path, optional: false }, 1))
+        }
     }
 
     /// `call ::= path arglist`; the next token is `(`.
-    fn call(&mut self, fq: String) -> Result<Call, String> {
-        let site = *self.site;
-        *self.site += 1;
+    #[inline(never)]
+    fn call(&mut self, fq: String) -> Result<(Call, usize), String> {
+        let site = self.b.site;
+        self.b.site += 1;
         self.next();
         let mut args = Vec::new();
+        let mut d = 0;
         if !self.eat(")") {
             loop {
-                let name = match self.next() {
-                    Tok::Ident(n) => n,
-                    _ => {
-                        self.pos -= 1;
-                        return Err(self.syntax(&["Identifier"]));
-                    }
-                };
+                let Some(name) = self.ident() else { return Err(self.syntax(&["Identifier"])) };
                 if !self.eat(":") {
                     return Err(self.syntax(&[":"]));
                 }
                 let arg = if self.eat("&") {
-                    let path = match self.next() {
-                        Tok::Ident(p) => self.path_rest(p)?,
-                        _ => {
-                            self.pos -= 1;
-                            return Err(self.syntax(&["Identifier"]));
-                        }
-                    };
+                    let Some(first) = self.ident() else { return Err(self.syntax(&["Identifier"])) };
+                    let path = self.path_rest(first)?;
                     if path == "null" {
                         return Err("&null is never allowed".into());
                     }
                     if !path.starts_with("user.") {
                         return Err(cannot_reference(&path));
                     }
-                    self.after_path = true;
-                    Arg::Ref(path)
+                    args.push((name, Arg::Ref(path)));
+                    if self.eat(",") {
+                        continue;
+                    }
+                    // Only more of the path, or the next argument, can follow a reference.
+                    if !self.eat(")") {
+                        return Err(self.syntax(&[".", ",", ")"]));
+                    }
+                    break;
                 } else {
-                    Arg::Value(self.expression(&[",", ")"])?)
+                    let (e, ed) = self.expression(&[",", ")"])?;
+                    d = d.max(ed);
+                    Arg::Value(e)
                 };
                 args.push((name, arg));
                 if self.eat(",") {
@@ -693,25 +795,19 @@ impl Parser<'_> {
         }
         self.after_path = false;
         let (namespace, name) = split_name(&fq);
-        Ok(Call { namespace: namespace.map(str::to_string), name: name.to_string(), args, site })
+        Ok((Call { namespace: namespace.map(str::to_string), name: name.to_string(), args, site }, self.node(d + 1)?))
     }
 
     /// `callsequence ::= callsequence ';' call | call`.
     fn calls(&mut self) -> Result<Vec<Call>, String> {
         let mut out = Vec::new();
         loop {
-            let first = match self.next() {
-                Tok::Ident(p) => p,
-                _ => {
-                    self.pos -= 1;
-                    return Err(self.syntax(&["Identifier"]));
-                }
-            };
+            let Some(first) = self.ident() else { return Err(self.syntax(&["Identifier"])) };
             let path = self.path_rest(first)?;
             if !self.is("(") {
                 return Err(self.syntax(&["(", "."]));
             }
-            out.push(self.call(path)?);
+            out.push(self.call(path)?.0);
             if self.eat(";") {
                 continue;
             }
@@ -723,17 +819,32 @@ impl Parser<'_> {
     }
 }
 
+/// A tree's depth; the parser has bounded it by `MAX_DEPTH`.
+fn depth(e: &Expr) -> usize {
+    1 + match e {
+        Expr::Num(_) | Expr::Bool(_) | Expr::Null | Expr::Path { .. } => 0,
+        Expr::Str(parts) => parts.iter().map(|p| if let Part::Expr(e) = p { depth(e) } else { 0 }).max().unwrap_or(0),
+        Expr::Index { index, .. } => depth(index),
+        Expr::Array(items) => items.iter().map(depth).max().unwrap_or(0),
+        Expr::Call(c) => c.args.iter().map(|(_, a)| if let Arg::Value(e) = a { depth(e) } else { 0 }).max().unwrap_or(0),
+        Expr::Not(x) | Expr::Neg(x) | Expr::Opt(x) => depth(x),
+        Expr::Bin(l, _, r) => depth(l).max(depth(r)),
+        Expr::Cond(c, t, f) => depth(c).max(depth(t)).max(depth(f)),
+    }
+}
+
 fn cannot_reference(path: &str) -> String {
     format!("Can\u{2019}t form reference to non-existent or read-only container for variable {path}")
 }
 
-fn parser<'a>(text: &'a str, site: &'a mut usize) -> Parser<'a> {
+fn parser<'a>(text: &'a str, b: &'a mut Budget) -> Result<Parser<'a>, String> {
     let chars: Vec<char> = text.chars().collect();
-    Parser { text, toks: tokenize(&chars), pos: 0, site, after_path: false }
+    let toks = tokenize(&chars, &mut b.tokens)?;
+    Ok(Parser { text, toks, pos: 0, b, after_path: false })
 }
 
-fn parse_at(text: &str, site: &mut usize) -> Result<Expr, String> {
-    let mut p = parser(text, site);
+fn parse_at(text: &str, b: &mut Budget) -> Result<Parsed, String> {
+    let mut p = parser(text, b)?;
     let e = p.expression(&["EOF"])?;
     if *p.peek() != Tok::End {
         return Err(p.syntax(&p.after_operand(&["EOF"])));
@@ -743,14 +854,14 @@ fn parse_at(text: &str, site: &mut usize) -> Result<Expr, String> {
 
 /// Parses an expression (iTerm2's `expression` start).
 pub fn parse_expression(text: &str) -> Result<Expr, String> {
-    parse_at(text, &mut 0)
+    parse_at(text, &mut Budget::default()).map(|(e, _)| e)
 }
 
 /// Parses a call or a call sequence (iTerm2's `callsequence` start); sites are numbered
 /// across the whole sequence. A value is a syntax error.
 pub fn parse_calls(text: &str) -> Result<Vec<Call>, String> {
-    let mut site = 0;
-    parser(text, &mut site).calls()
+    let mut b = Budget::default();
+    parser(text, &mut b)?.calls()
 }
 
 /// The signature of an invocation holding one call (`EP:38-90`).
@@ -825,7 +936,14 @@ pub enum Outcome {
 /// Runs function calls; asked once per call whose arguments are all known.
 pub trait Calls {
     fn call(&mut self, call: &Call, args: &BTreeMap<String, Value>) -> Outcome;
+    /// Whether `call`'s answer came only after waiting (it was `Pending` when first asked).
+    /// An operator error keeps its "In <invocation>: " prefix only when neither operand
+    /// waited (`SUB:806-846`); a replay that remembers finished calls says so here.
+    fn waited(&self, _call: &Call) -> bool {
+        false
+    }
 }
+
 
 /// Refuses every call.
 pub struct NoCalls;
@@ -1140,6 +1258,7 @@ fn nil_operand(what: &str) -> Failure {
 
 /// What the parse would have made of an expression before `ConditionalExpression` takes it
 /// as a whole: fine, an undefined reference, an optional undefined one (null), or an error.
+#[derive(Clone)]
 enum Stat {
     Ok,
     Undef(String),
@@ -1151,65 +1270,8 @@ fn lookup(scope: &dyn Scope, path: &str) -> Option<Value> {
     scope.value(path).filter(|v| !v.is_null())
 }
 
-fn stat(e: &Expr, scope: &dyn Scope, cx: &Ctx) -> Stat {
-    match e {
-        Expr::Path { path, optional } => match lookup(scope, path) {
-            None if *optional => Stat::OptNil,
-            None => Stat::Undef(path.clone()),
-            Some(Value::Object(_)) => Stat::Err(Failure::plain(undefined(path))),
-            Some(_) => Stat::Ok,
-        },
-        Expr::Index { path, index } => match lookup(scope, path) {
-            None => Stat::Undef(path.clone()),
-            // The index waits on a call: the rest is checked when it has a value.
-            Some(Value::Array(_)) if contains_call(index) => Stat::Ok,
-            Some(_) => match element(path, index, None, scope, cx) {
-                Ok(_) => Stat::Ok,
-                Err(f) => Stat::Err(f),
-            },
-        },
-        Expr::Str(parts) => {
-            for p in parts {
-                if let Part::Expr(x) = p {
-                    if let Some(f) = whole(x, scope, cx) {
-                        if !(cx.lax && bare(x)) {
-                            return Stat::Err(f);
-                        }
-                    }
-                }
-            }
-            Stat::Ok
-        }
-        Expr::Call(c) => {
-            for (_, a) in &c.args {
-                match a {
-                    Arg::Value(x) => {
-                        if let Some(f) = whole(x, scope, cx) {
-                            return Stat::Err(f);
-                        }
-                    }
-                    Arg::Ref(p) if p == "null" => return Stat::Err(Failure::plain("&null is never allowed")),
-                    Arg::Ref(p) if !scope.writable(p) => return Stat::Err(Failure::plain(cannot_reference(p))),
-                    Arg::Ref(_) => {}
-                }
-            }
-            Stat::Ok
-        }
-        Expr::Opt(x) => match stat(x, scope, cx) {
-            Stat::Undef(_) => Stat::OptNil,
-            other => other,
-        },
-        _ => Stat::Ok,
-    }
-}
-
-/// The error a whole expression has before it runs (an undefined reference is one).
-fn whole(e: &Expr, scope: &dyn Scope, cx: &Ctx) -> Option<Failure> {
-    match stat(e, scope, cx) {
-        Stat::Undef(p) => Some(Failure::plain(undefined(&p))),
-        Stat::Err(f) => Some(f),
-        Stat::Ok | Stat::OptNil => None,
-    }
+fn not_array(path: &str, v: &Value) -> String {
+    format!("Variable \u{201c}{path}\u{201d} is of type {}, not array", type_name(v))
 }
 
 /// A bare reference (`EP:380-398`: a path or an indexed path, perhaps optionalized), which
@@ -1219,80 +1281,6 @@ fn bare(e: &Expr) -> bool {
         Expr::Path { .. } | Expr::Index { .. } => true,
         Expr::Opt(x) => bare(x),
         _ => false,
-    }
-}
-
-/// True when an operand has no value for its operation (`iTermParsedExpression.m:415-436`):
-/// an undefined reference, an error, an array held by a variable, or an interpolated string.
-fn operand_nil(e: &Expr, scope: &dyn Scope, cx: &Ctx) -> bool {
-    if matches!(stat(e, scope, cx), Stat::Undef(_) | Stat::Err(_)) {
-        return true;
-    }
-    let mut base = e;
-    while let Expr::Opt(x) = base {
-        base = x;
-    }
-    match base {
-        Expr::Path { path, .. } => matches!(lookup(scope, path), Some(Value::Array(_))),
-        Expr::Index { path, index } if !contains_call(index) => matches!(element(path, index, None, scope, cx), Ok(V::Arr(_))),
-        Expr::Str(parts) => parts.iter().any(|p| matches!(p, Part::Expr(_))),
-        Expr::Array(_) => true,
-        _ => false,
-    }
-}
-
-fn not_array(path: &str, v: &Value) -> String {
-    format!("Variable \u{201c}{path}\u{201d} is of type {}, not array", type_name(v))
-}
-
-/// `path[index]` (`EP:409-460`); `known` is the index's value when a call made it.
-fn element(path: &str, index: &Expr, known: Option<V>, scope: &dyn Scope, cx: &Ctx) -> Result<V, Failure> {
-    let array = match lookup(scope, path) {
-        None => return Err(Failure::plain(undefined(path))),
-        Some(Value::Array(a)) => a,
-        Some(v) => return Err(Failure::plain(not_array(path, &v))),
-    };
-    let value = match known {
-        Some(v) => v,
-        None => {
-            if operand_nil(index, scope, cx) {
-                return Err(Failure::plain(format!("Array index for \u{201c}{path}\u{201d} must be a number, not {}", index_type(index, scope))));
-            }
-            match run(index, scope, &mut NoCalls, cx) {
-                R::Val(v) => v,
-                R::Fail(f) => return Err(Failure::plain(format!("Error evaluating index expression: {}", f.reason))),
-                R::Pending => return Err(Failure::plain("Error evaluating index expression")),
-            }
-        }
-    };
-    let i = match &value {
-        V::Str(_) => return Err(Failure::plain("Error evaluating index expression: Cannot convert string literal to number")),
-        V::Null => return Err(Failure::plain("Error evaluating index expression: Cannot convert null to number")),
-        v => match v.number() {
-            Some(n) => n as i64,
-            None => return Err(Failure::plain(format!("Array index for \u{201c}{path}\u{201d} must be a number, not {}", v.type_name()))),
-        },
-    };
-    if i < 0 || i as usize >= array.len() {
-        let n = array.len();
-        return Err(Failure::plain(if n == 1 {
-            format!("Index {i} out of range of \u{201c}{path}\u{201d}, which has 1 value")
-        } else {
-            format!("Index {i} out of range of \u{201c}{path}\u{201d}, which has {n} values")
-        }));
-    }
-    match &array[i as usize] {
-        Value::Null | Value::Object(_) => Err(Failure::plain(undefined(path))),
-        v => Ok(V::from_json(v.clone())),
-    }
-}
-
-/// The type an index with no value reports.
-fn index_type(index: &Expr, scope: &dyn Scope) -> &'static str {
-    match index {
-        Expr::Path { path, .. } => lookup(scope, path).map_or("null", |v| type_name(&v)),
-        Expr::Str(_) => "string",
-        _ => "null",
     }
 }
 
@@ -1321,155 +1309,343 @@ fn gather(results: Vec<R>) -> Result<Vec<V>, R> {
     }
 }
 
-fn run(e: &Expr, scope: &dyn Scope, calls: &mut dyn Calls, cx: &Ctx) -> R {
-    if let Expr::Opt(x) = e {
-        return match stat(x, scope, cx) {
-            Stat::Undef(_) => R::Val(V::Null),
-            _ => run(x, scope, calls, cx),
-        };
-    }
-    if let Some(f) = whole(e, scope, cx) {
-        return R::Fail(f);
-    }
-    match e {
-        Expr::Num(n) => R::Val(V::Num(*n)),
-        Expr::Bool(b) => R::Val(V::Bool(*b)),
-        Expr::Null => R::Val(V::Null),
-        Expr::Str(parts) => run_template(parts, scope, calls, cx),
-        Expr::Path { path, .. } => R::Val(lookup(scope, path).map_or(V::Null, V::from_json)),
-        Expr::Index { path, index } => {
-            let known = if contains_call(index) {
-                match run(index, scope, calls, cx) {
-                    R::Val(v) => Some(v),
-                    other => return other,
-                }
-            } else {
-                None
-            };
-            match element(path, index, known, scope, cx) {
-                Ok(v) => R::Val(v),
-                Err(f) => R::Fail(f),
-            }
-        }
-        Expr::Array(items) => match gather(items.iter().map(|x| run(x, scope, calls, cx)).collect()) {
-            Ok(vals) => R::Val(V::Arr(vals)),
-            Err(r) => r,
-        },
-        Expr::Call(c) => run_call(c, scope, calls, cx),
-        Expr::Not(x) | Expr::Neg(x) => {
-            let not = matches!(e, Expr::Not(_));
-            if operand_nil(x, scope, cx) {
-                return R::Fail(nil_operand(if not { "logical not operation" } else { "unary operation" }));
-            }
-            match run(x, scope, calls, cx) {
-                R::Val(v) => match (v.number(), not) {
-                    (Some(n), true) => R::Val(V::Num(if n == 0.0 { 1.0 } else { 0.0 })),
-                    (Some(n), false) => R::Val(V::Num(-n)),
-                    (None, true) => R::Fail(Failure::plain(format!("Logical not requires numeric operand, got {}", v.type_name()))),
-                    (None, false) => R::Fail(Failure::plain("Cannot negate non-numeric value")),
-                },
-                other => other,
-            }
-        }
-        Expr::Bin(l, op, r) => {
-            if operand_nil(l, scope, cx) || operand_nil(r, scope, cx) {
-                return R::Fail(nil_operand(&format!("binary operation ({})", op.text())));
-            }
-            // Both sides run (no short circuit); the right side's failure wins (SUB:806-825).
-            let (a, b) = (run(l, scope, calls, cx), run(r, scope, calls, cx));
-            let (a, b) = match (a, b) {
-                (_, R::Fail(f)) | (R::Fail(f), _) => return R::Fail(f),
-                (R::Val(a), R::Val(b)) => (a, b),
-                _ => return R::Pending,
-            };
-            match binary(*op, &a, &b) {
-                Ok(v) => R::Val(v),
-                // An operand that waited on a call loses the prefix (SUB:826-846).
-                Err(m) if contains_call(l) || contains_call(r) => R::Fail(Failure::plain(m)),
-                Err(m) => R::Fail(Failure::plain(format!("In {}: {m}", cx.invocation))),
-            }
-        }
-        Expr::Cond(c, t, f) => {
-            if [c, t, f].iter().any(|x| operand_nil(x, scope, cx)) {
-                return R::Fail(nil_operand("ternary operation"));
-            }
-            match run(c, scope, calls, cx) {
-                R::Val(v) => match truthy(&v) {
-                    Ok(true) => run(t, scope, calls, cx),
-                    Ok(false) => run(f, scope, calls, cx),
-                    Err(m) => R::Fail(Failure::plain(m)),
-                },
-                other => other,
-            }
-        }
-        Expr::Opt(_) => unreachable!("handled above"),
-    }
+/// One evaluation. Each node's static classification and each index's element are worked
+/// out once and kept by node address, so an evaluation is linear in the tree's size.
+struct Ev<'a> {
+    scope: &'a dyn Scope,
+    cx: &'a Ctx<'a>,
+    stats: RefCell<HashMap<*const Expr, Stat>>,
+    elements: RefCell<HashMap<*const Expr, Result<V, Failure>>>,
+    /// Calls so far that answered only after waiting (`Calls::waited`).
+    waited: Cell<usize>,
 }
 
-/// A call: its arguments together (`SFC:586-620`), then the hook once all are known. A
-/// failing argument that is a call becomes "In call to <name>: ..." unless no function was
-/// registered for it (`SFC:655-679`).
-fn run_call(c: &Call, scope: &dyn Scope, calls: &mut dyn Calls, cx: &Ctx) -> R {
-    let mut results = Vec::new();
-    for (_, a) in &c.args {
-        results.push(match a {
-            Arg::Ref(p) => R::Val(V::Str(p.clone())),
-            Arg::Value(x) => match run(x, scope, calls, cx) {
-                R::Fail(f) => match x {
-                    Expr::Call(inner) if f.kind != FailKind::Unregistered => R::Fail(Failure {
-                        reason: format!("In call to {}: {}", inner.name, f.reason),
-                        kind: FailKind::Plain,
-                        ..f
-                    }),
-                    _ => R::Fail(f),
+impl<'a> Ev<'a> {
+    fn new(scope: &'a dyn Scope, cx: &'a Ctx<'a>) -> Ev<'a> {
+        Ev { scope, cx, stats: RefCell::default(), elements: RefCell::default(), waited: Cell::new(0) }
+    }
+
+    fn stat(&self, e: &Expr) -> Stat {
+        let key = e as *const Expr;
+        if let Some(s) = self.stats.borrow().get(&key) {
+            return s.clone();
+        }
+        let s = self.stat_of(e);
+        self.stats.borrow_mut().insert(key, s.clone());
+        s
+    }
+
+    fn stat_of(&self, e: &Expr) -> Stat {
+        match e {
+            Expr::Path { path, optional } => match lookup(self.scope, path) {
+                None if *optional => Stat::OptNil,
+                None => Stat::Undef(path.clone()),
+                Some(Value::Object(_)) => Stat::Err(Failure::plain(undefined(path))),
+                Some(_) => Stat::Ok,
+            },
+            Expr::Index { path, index } => match lookup(self.scope, path) {
+                None => Stat::Undef(path.clone()),
+                // The index waits on a call: the rest is checked when it has a value.
+                Some(Value::Array(_)) if contains_call(index) => Stat::Ok,
+                Some(_) => match self.element(path, index) {
+                    Ok(_) => Stat::Ok,
+                    Err(f) => Stat::Err(f),
                 },
+            },
+            Expr::Str(parts) => {
+                for p in parts {
+                    if let Part::Expr(x) = p {
+                        if let Some(f) = self.whole(x) {
+                            if !(self.cx.lax && bare(x)) {
+                                return Stat::Err(f);
+                            }
+                        }
+                    }
+                }
+                Stat::Ok
+            }
+            Expr::Call(c) => {
+                for (_, a) in &c.args {
+                    match a {
+                        Arg::Value(x) => {
+                            if let Some(f) = self.whole(x) {
+                                return Stat::Err(f);
+                            }
+                        }
+                        Arg::Ref(p) if p == "null" => return Stat::Err(Failure::plain("&null is never allowed")),
+                        Arg::Ref(p) if !self.scope.writable(p) => return Stat::Err(Failure::plain(cannot_reference(p))),
+                        Arg::Ref(_) => {}
+                    }
+                }
+                Stat::Ok
+            }
+            Expr::Opt(x) => match self.stat(x) {
+                Stat::Undef(_) => Stat::OptNil,
                 other => other,
             },
-        });
+            _ => Stat::Ok,
+        }
     }
-    // The first failing argument, else wait for all.
-    if let Some(i) = results.iter().position(|r| matches!(r, R::Fail(_))) {
-        return results.swap_remove(i);
-    }
-    let vals = match gather(results) {
-        Ok(v) => v,
-        Err(r) => return r,
-    };
-    let args: BTreeMap<String, Value> = c.args.iter().zip(vals).map(|((n, _), v)| (n.clone(), v.to_json())).collect();
-    match calls.call(c, &args) {
-        Outcome::Done(v) => R::Val(V::from_json(v)),
-        Outcome::Failed(f) => R::Fail(f),
-        Outcome::Pending => R::Pending,
-    }
-}
 
-/// An interpolated string (`EP:343-407`, `EV:338-414`): an error a part has before it runs
-/// stops the string (with `lax`, a bare reference's is ""); then every part runs.
-fn run_template(parts: &[Part], scope: &dyn Scope, calls: &mut dyn Calls, cx: &Ctx) -> R {
-    let mut skip = vec![false; parts.len()];
-    for (i, p) in parts.iter().enumerate() {
-        if let Part::Expr(x) = p {
-            if let Some(f) = whole(x, scope, cx) {
-                if cx.lax && bare(x) {
-                    skip[i] = true;
-                } else {
-                    return R::Fail(f);
+    /// The error a whole expression has before it runs (an undefined reference is one).
+    fn whole(&self, e: &Expr) -> Option<Failure> {
+        match self.stat(e) {
+            Stat::Undef(p) => Some(Failure::plain(undefined(&p))),
+            Stat::Err(f) => Some(f),
+            Stat::Ok | Stat::OptNil => None,
+        }
+    }
+
+    /// True when an operand has no value for its operation (`iTermParsedExpression.m:415-436`):
+    /// an undefined reference, an error, an array held by a variable, or an interpolated
+    /// string.
+    fn operand_nil(&self, e: &Expr) -> bool {
+        if matches!(self.stat(e), Stat::Undef(_) | Stat::Err(_)) {
+            return true;
+        }
+        let mut base = e;
+        while let Expr::Opt(x) = base {
+            base = x;
+        }
+        match base {
+            Expr::Path { path, .. } => matches!(lookup(self.scope, path), Some(Value::Array(_))),
+            Expr::Index { path, index } if !contains_call(index) => matches!(self.element(path, index), Ok(V::Arr(_))),
+            Expr::Str(parts) => parts.iter().any(|p| matches!(p, Part::Expr(_))),
+            Expr::Array(_) => true,
+            _ => false,
+        }
+    }
+
+    /// `path[index]` for an index with no call (`EP:409-460`), worked out once.
+    fn element(&self, path: &str, index: &Expr) -> Result<V, Failure> {
+        let key = index as *const Expr;
+        if let Some(r) = self.elements.borrow().get(&key) {
+            return r.clone();
+        }
+        let r = self.element_of(path, index, None);
+        self.elements.borrow_mut().insert(key, r.clone());
+        r
+    }
+
+    /// `path[index]`; `known` is the index's value when a call made it.
+    fn element_of(&self, path: &str, index: &Expr, known: Option<V>) -> Result<V, Failure> {
+        let array = match lookup(self.scope, path) {
+            None => return Err(Failure::plain(undefined(path))),
+            Some(Value::Array(a)) => a,
+            Some(v) => return Err(Failure::plain(not_array(path, &v))),
+        };
+        let value = match known {
+            Some(v) => v,
+            None => {
+                if self.operand_nil(index) {
+                    return Err(Failure::plain(format!("Array index for \u{201c}{path}\u{201d} must be a number, not {}", self.index_type(index))));
+                }
+                match self.run(index, &mut NoCalls) {
+                    R::Val(v) => v,
+                    R::Fail(f) => return Err(Failure::plain(format!("Error evaluating index expression: {}", f.reason))),
+                    R::Pending => return Err(Failure::plain("Error evaluating index expression")),
+                }
+            }
+        };
+        let i = match &value {
+            V::Str(_) => return Err(Failure::plain("Error evaluating index expression: Cannot convert string literal to number")),
+            V::Null => return Err(Failure::plain("Error evaluating index expression: Cannot convert null to number")),
+            v => match v.number() {
+                Some(n) => n as i64,
+                None => return Err(Failure::plain(format!("Array index for \u{201c}{path}\u{201d} must be a number, not {}", v.type_name()))),
+            },
+        };
+        if i < 0 || i as usize >= array.len() {
+            let n = array.len();
+            return Err(Failure::plain(if n == 1 {
+                format!("Index {i} out of range of \u{201c}{path}\u{201d}, which has 1 value")
+            } else {
+                format!("Index {i} out of range of \u{201c}{path}\u{201d}, which has {n} values")
+            }));
+        }
+        match &array[i as usize] {
+            Value::Null | Value::Object(_) => Err(Failure::plain(undefined(path))),
+            v => Ok(V::from_json(v.clone())),
+        }
+    }
+
+    /// The type an index with no value reports.
+    fn index_type(&self, index: &Expr) -> &'static str {
+        match index {
+            Expr::Path { path, .. } => lookup(self.scope, path).map_or("null", |v| type_name(&v)),
+            Expr::Str(_) => "string",
+            _ => "null",
+        }
+    }
+
+    fn run(&self, e: &Expr, calls: &mut dyn Calls) -> R {
+        if let Expr::Opt(x) = e {
+            return match self.stat(x) {
+                Stat::Undef(_) => R::Val(V::Null),
+                _ => self.run(x, calls),
+            };
+        }
+        if let Some(f) = self.whole(e) {
+            return R::Fail(f);
+        }
+        match e {
+            Expr::Num(n) => R::Val(V::Num(*n)),
+            Expr::Bool(b) => R::Val(V::Bool(*b)),
+            Expr::Null => R::Val(V::Null),
+            Expr::Str(parts) => self.run_template(parts, calls),
+            Expr::Path { path, .. } => R::Val(lookup(self.scope, path).map_or(V::Null, V::from_json)),
+            Expr::Index { path, index } => self.run_index(path, index, calls),
+            Expr::Array(items) => match gather(items.iter().map(|x| self.run(x, calls)).collect()) {
+                Ok(vals) => R::Val(V::Arr(vals)),
+                Err(r) => r,
+            },
+            Expr::Call(c) => self.run_call(c, calls),
+            Expr::Not(x) => self.run_unary(x, true, calls),
+            Expr::Neg(x) => self.run_unary(x, false, calls),
+            Expr::Bin(l, op, r) => self.run_bin(l, *op, r, calls),
+            Expr::Cond(c, t, f) => self.run_cond(c, t, f, calls),
+            Expr::Opt(_) => unreachable!("handled above"),
+        }
+    }
+
+    // The arms of `run` are functions of their own to keep its stack frame small.
+
+    #[inline(never)]
+    fn run_index(&self, path: &str, index: &Expr, calls: &mut dyn Calls) -> R {
+        let r = if contains_call(index) {
+            match self.run(index, calls) {
+                R::Val(v) => self.element_of(path, index, Some(v)),
+                other => return other,
+            }
+        } else {
+            self.element(path, index)
+        };
+        match r {
+            Ok(v) => R::Val(v),
+            Err(f) => R::Fail(f),
+        }
+    }
+
+    #[inline(never)]
+    fn run_unary(&self, x: &Expr, not: bool, calls: &mut dyn Calls) -> R {
+        if self.operand_nil(x) {
+            return R::Fail(nil_operand(if not { "logical not operation" } else { "unary operation" }));
+        }
+        match self.run(x, calls) {
+            R::Val(v) => match (v.number(), not) {
+                (Some(n), true) => R::Val(V::Num(if n == 0.0 { 1.0 } else { 0.0 })),
+                (Some(n), false) => R::Val(V::Num(-n)),
+                (None, true) => R::Fail(Failure::plain(format!("Logical not requires numeric operand, got {}", v.type_name()))),
+                (None, false) => R::Fail(Failure::plain("Cannot negate non-numeric value")),
+            },
+            other => other,
+        }
+    }
+
+    #[inline(never)]
+    fn run_bin(&self, l: &Expr, op: BinOp, r: &Expr, calls: &mut dyn Calls) -> R {
+        if self.operand_nil(l) || self.operand_nil(r) {
+            return R::Fail(nil_operand(&format!("binary operation ({})", op.text())));
+        }
+        // Both sides run (no short circuit); the right side's failure wins (SUB:806-825).
+        let waited = self.waited.get();
+        let (a, b) = (self.run(l, calls), self.run(r, calls));
+        let (a, b) = match (a, b) {
+            (_, R::Fail(f)) | (R::Fail(f), _) => return R::Fail(f),
+            (R::Val(a), R::Val(b)) => (a, b),
+            _ => return R::Pending,
+        };
+        match binary(op, &a, &b) {
+            Ok(v) => R::Val(v),
+            // An operand that waited on a call loses the prefix (SUB:826-846).
+            Err(m) if self.waited.get() > waited => R::Fail(Failure::plain(m)),
+            Err(m) => R::Fail(Failure::plain(format!("In {}: {m}", self.cx.invocation))),
+        }
+    }
+
+    #[inline(never)]
+    fn run_cond(&self, c: &Expr, t: &Expr, f: &Expr, calls: &mut dyn Calls) -> R {
+        if [c, t, f].iter().any(|x| self.operand_nil(x)) {
+            return R::Fail(nil_operand("ternary operation"));
+        }
+        match self.run(c, calls) {
+            R::Val(v) => match truthy(&v) {
+                Ok(true) => self.run(t, calls),
+                Ok(false) => self.run(f, calls),
+                Err(m) => R::Fail(Failure::plain(m)),
+            },
+            other => other,
+        }
+    }
+
+    /// A call: its arguments together (`SFC:586-620`), then the hook once all are known. A
+    /// failing argument that is a call becomes "In call to <name>: ..." unless no function
+    /// was registered for it (`SFC:655-679`).
+    fn run_call(&self, c: &Call, calls: &mut dyn Calls) -> R {
+        let mut results = Vec::new();
+        for (_, a) in &c.args {
+            results.push(match a {
+                Arg::Ref(p) => R::Val(V::Str(p.clone())),
+                Arg::Value(x) => match self.run(x, calls) {
+                    R::Fail(f) => match x {
+                        Expr::Call(inner) if f.kind != FailKind::Unregistered => {
+                            R::Fail(Failure { reason: format!("In call to {}: {}", inner.name, f.reason), kind: FailKind::Plain, ..f })
+                        }
+                        _ => R::Fail(f),
+                    },
+                    other => other,
+                },
+            });
+        }
+        // The first failing argument, else wait for all.
+        if let Some(i) = results.iter().position(|r| matches!(r, R::Fail(_))) {
+            return results.swap_remove(i);
+        }
+        let vals = match gather(results) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        let args: BTreeMap<String, Value> = c.args.iter().zip(vals).map(|((n, _), v)| (n.clone(), v.to_json())).collect();
+        match calls.call(c, &args) {
+            Outcome::Done(v) => {
+                if calls.waited(c) {
+                    self.waited.set(self.waited.get() + 1);
+                }
+                R::Val(V::from_json(v))
+            }
+            Outcome::Failed(f) => R::Fail(f),
+            Outcome::Pending => R::Pending,
+        }
+    }
+
+    /// An interpolated string (`EP:343-407`, `EV:338-414`): an error a part has before it
+    /// runs stops the string (with `lax`, a bare reference's is ""); then every part runs.
+    fn run_template(&self, parts: &[Part], calls: &mut dyn Calls) -> R {
+        let mut skip = vec![false; parts.len()];
+        for (i, p) in parts.iter().enumerate() {
+            if let Part::Expr(x) = p {
+                if let Some(f) = self.whole(x) {
+                    if self.cx.lax && bare(x) {
+                        skip[i] = true;
+                    } else {
+                        return R::Fail(f);
+                    }
                 }
             }
         }
-    }
-    let results = parts
-        .iter()
-        .zip(skip)
-        .map(|(p, skip)| match p {
-            Part::Text(t) => R::Val(V::Str(t.clone())),
-            Part::Expr(_) if skip => R::Val(V::Null),
-            Part::Expr(x) => run(x, scope, calls, cx),
-        })
-        .collect();
-    match gather(results) {
-        Ok(vals) => R::Val(V::Str(vals.iter().map(V::text).collect())),
-        Err(r) => r,
+        let results = parts
+            .iter()
+            .zip(skip)
+            .map(|(p, skip)| match p {
+                Part::Text(t) => R::Val(V::Str(t.clone())),
+                Part::Expr(_) if skip => R::Val(V::Null),
+                Part::Expr(x) => self.run(x, calls),
+            })
+            .collect();
+        match gather(results) {
+            Ok(vals) => R::Val(V::Str(vals.iter().map(V::text).collect())),
+            Err(r) => r,
+        }
     }
 }
 
@@ -1483,12 +1659,17 @@ fn outcome(r: R) -> Outcome {
 
 /// Evaluates an expression; every call goes to `calls`.
 pub fn eval(e: &Expr, scope: &dyn Scope, calls: &mut dyn Calls, cx: &Ctx) -> Outcome {
-    outcome(run(e, scope, calls, cx))
+    outcome(Ev::new(scope, cx).run(e, calls))
 }
 
 /// Evaluates an interpolated string to a `Value::String`.
 pub fn eval_template(parts: &[Part], scope: &dyn Scope, calls: &mut dyn Calls, cx: &Ctx) -> Outcome {
-    outcome(run_template(parts, scope, calls, cx))
+    outcome(Ev::new(scope, cx).run_template(parts, calls))
+}
+
+#[cfg(test)]
+fn run(e: &Expr, scope: &dyn Scope, calls: &mut dyn Calls, cx: &Ctx) -> R {
+    Ev::new(scope, cx).run(e, calls)
 }
 
 #[cfg(test)]
@@ -1540,6 +1721,8 @@ mod tests {
         pending: BTreeSet<usize>,
         fail: BTreeSet<String>,
         asked: Vec<(String, usize)>,
+        /// Every call answered only after waiting.
+        waited: bool,
     }
 
     impl Calls for Fake {
@@ -1553,6 +1736,29 @@ mod tests {
             }
             Outcome::Done(self.values.get(&call.name).cloned().unwrap_or(Value::Null))
         }
+
+        fn waited(&self, _call: &Call) -> bool {
+            self.waited
+        }
+    }
+
+    /// Runs `f` on a thread with the stack of a Windows main thread (1 MiB), in a debug
+    /// build whose frames are several times a release build's. A stack overflow aborts the
+    /// whole test binary, so these tests were run one at a time for RED.
+    fn small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new().stack_size(1 << 20).spawn(f).expect("thread").join().expect("no panic")
+    }
+
+    /// Runs `f` on its own thread and fails the test when it takes more than `secs`.
+    fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || {
+                let _ = tx.send(f());
+            })
+            .expect("thread");
+        rx.recv_timeout(std::time::Duration::from_secs(secs)).expect("finished in time")
     }
 
     #[test]
@@ -1635,7 +1841,12 @@ mod tests {
         assert_eq!(run_text("f() == g()", &mut fake), Outcome::Done(Value::Bool(true)));
         assert_eq!(run_text("f() < h()", &mut fake), Outcome::Done(Value::Bool(true)));
         match run_text("f() + 1", &mut fake) {
-            Outcome::Failed(f) => assert_eq!(f.reason, "Arithmetic operations require numeric operands", "no prefix when an operand is a call"),
+            Outcome::Failed(f) => assert_eq!(f.reason, "In f() + 1: Arithmetic operations require numeric operands", "a call that answered at once keeps the prefix"),
+            other => panic!("{other:?}"),
+        }
+        fake.waited = true;
+        match run_text("f() + 1", &mut fake) {
+            Outcome::Failed(f) => assert_eq!(f.reason, "Arithmetic operations require numeric operands", "no prefix when an operand waited on a call (SUB:826-846)"),
             other => panic!("{other:?}"),
         }
     }
@@ -1711,5 +1922,90 @@ mod tests {
         assert!(matches!(run_text("f(x: nope)", &mut fake), Outcome::Failed(_)));
         assert!(fake.asked.is_empty(), "an undefined argument is a parse error: nothing is called");
         assert_eq!(run_text("f()", &mut NoCalls), Outcome::Failed(Failure::plain(CALLS_NOT_ALLOWED)));
+    }
+
+    #[test]
+    fn hostile_input_is_refused() {
+        small_stack(|| {
+            let deep = format!("{}1{}", "(".repeat(100_000), ")".repeat(100_000));
+            assert_eq!(parse_expression(&deep).unwrap_err(), too_long());
+            assert_eq!(parse_expression(&format!("{}1{}", "(".repeat(1_000), ")".repeat(1_000))).unwrap_err(), too_deep());
+            assert_eq!(parse_expression(&format!("{}1", "!".repeat(100_000))).unwrap_err(), too_long());
+            assert_eq!(parse_expression(&format!("{}1", "!".repeat(1_000))).unwrap_err(), too_deep());
+            assert_eq!(parse_expression(&format!("1{}", "+1".repeat(100_000))).unwrap_err(), too_long());
+            assert_eq!(parse_expression(&format!("1{}", "+1".repeat(1_000))).unwrap_err(), too_deep(), "a flat chain deeper than the limit");
+            let mut nested = "1".to_string();
+            for _ in 0..5000 {
+                nested = format!("\"\\({nested})\"");
+            }
+            assert_eq!(parse_expression(&nested).unwrap_err(), too_deep());
+            let wrapped = format!("\\({deep})");
+            assert!(!crate::interp::has_calls(&wrapped));
+            assert!(crate::interp::evaluate(&wrapped, &|_| None, &[]).is_err());
+            assert!(!crate::interp::has_calls(&format!("\\({nested})")));
+            assert!(parse_calls(&format!("f(x: {deep})")).is_err());
+
+            // A huge string is one token.
+            let big = format!("\"{}\"", "a".repeat(1 << 20));
+            assert_eq!(ok(&big), Value::from("a".repeat(1 << 20)));
+            let template = format!("{}\\(1)", "b".repeat(1 << 20));
+            assert_eq!(crate::interp::evaluate(&template, &|_| None, &[]).unwrap().len(), (1 << 20) + 1);
+
+            // The largest trees accepted parse, evaluate and drop on this stack.
+            let n = MAX_DEPTH - 1;
+            assert_eq!(ok(&format!("{}1{}", "(".repeat(n), ")".repeat(n))), Value::from(1));
+            assert_eq!(ok(&format!("1{}", "+1".repeat(n))), Value::from(MAX_DEPTH as i64));
+            assert_eq!(ok(&format!("{}1", "!".repeat(n - 1))), Value::from(1));
+            let mut strings = "user.x".to_string();
+            for _ in 0..MAX_DEPTH / 2 - 1 {
+                strings = format!("\"\\({strings})\"");
+            }
+            assert_eq!(ok(&strings), Value::from("42"));
+            let wide = vec!["1"; MAX_TOKENS / 2 - 1].join("+");
+            assert!(parse_expression(&wide).is_err(), "a wide tree is deep on its left");
+            let wide = format!("[{}]", vec!["1"; MAX_TOKENS / 2 - 1].join(","));
+            assert_eq!(ok(&wide).as_array().map(Vec::len), Some(MAX_TOKENS / 2 - 1));
+        });
+    }
+
+    #[test]
+    fn empty_calls_are_refused() {
+        assert_eq!(parse_calls("").unwrap_err(), "Syntax error at index 0 of \u{201c}\u{201d}. Expected: \u{201c}Identifier\u{201d}");
+        assert!(parse_calls("  ").unwrap_err().starts_with("Syntax error at index 2 of"), "the end of input");
+        assert!(call_signature("").is_err());
+        assert!(parse_calls("f(").unwrap_err().starts_with("Syntax error at index 2 of"), "the end of input is where the error is");
+        assert_eq!(
+            parse_calls("f(x: &user.a b)").unwrap_err(),
+            "Syntax error at index 13 of \u{201c}f(x: &user.a b)\u{201d}. Expected one of: \u{201c}.\u{201d}, \u{201c},\u{201d}, \u{201c})\u{201d}"
+        );
+    }
+
+    #[test]
+    fn evaluation_is_linear() {
+        let out = within(5, || {
+            let mut text = "0".to_string();
+            // Two levels of tree each: just under the limit.
+            for _ in 0..(MAX_DEPTH - 2) / 2 {
+                text = format!("user.zeros[{text} + 0]");
+            }
+            let mut m = BTreeMap::new();
+            m.insert("user.zeros".to_string(), serde_json::json!([0]));
+            let e = parse_expression(&text).unwrap();
+            eval(&e, &Fix(m), &mut NoCalls, &Ctx { invocation: &text, lax: true })
+        });
+        assert_eq!(out, Outcome::Done(Value::from(0)));
+        let out = within(5, || {
+            let mut text = "user.x".to_string();
+            // A nested string is two levels of the parser.
+            for _ in 0..MAX_DEPTH / 2 - 1 {
+                text = format!("\"\\({text})\"");
+            }
+            let mut opt = "nope".to_string();
+            for _ in 0..MAX_DEPTH - 2 {
+                opt = format!("({opt} ?)");
+            }
+            (run_text(&text, &mut NoCalls), run_text(&opt, &mut NoCalls))
+        });
+        assert_eq!(out, (Outcome::Done(Value::from("42")), Outcome::Done(Value::Null)));
     }
 }

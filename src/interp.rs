@@ -87,7 +87,7 @@ fn alt_calls(alt: &str) -> bool {
 
 /// True when an expression inside the template calls a function (SetBadgeFormat refuses).
 pub fn has_calls(template: &str) -> bool {
-    expr::template_pieces(template).is_ok_and(|p| p.iter().any(|(is_expr, body)| *is_expr && split_fallback(body).iter().any(|a| alt_calls(a))))
+    expr::template_pieces(template).iter().any(|(is_expr, body)| *is_expr && split_fallback(body).iter().any(|a| alt_calls(a)))
 }
 
 enum Piece {
@@ -96,10 +96,10 @@ enum Piece {
     Alts(Vec<expr::Expr>),
 }
 
-/// The template parsed: an unclosed `\(` first, then a function call anywhere, then the
-/// first syntax error.
+/// The template parsed: a function call anywhere first, then the first syntax error. The
+/// rest of an unclosed `\(` is text, as in iTerm2.
 fn parse(template: &str) -> Result<Vec<Piece>, String> {
-    let raw = expr::template_pieces(template)?;
+    let raw = expr::template_pieces(template);
     if raw.iter().any(|(is_expr, body)| *is_expr && split_fallback(body).iter().any(|a| alt_calls(a))) {
         return Err(expr::CALLS_NOT_ALLOWED.into());
     }
@@ -115,8 +115,12 @@ fn parse(template: &str) -> Result<Vec<Piece>, String> {
     Ok(out)
 }
 
-/// Whether the template would evaluate: its syntax, and no function call.
+/// Whether the template would evaluate: its syntax and no function call; an unclosed `\(`
+/// is reported too, though evaluation reads its rest as text (the trigger editor warns).
 pub fn check(template: &str) -> Result<(), String> {
+    if let Some(column) = expr::unclosed_at(template) {
+        return Err(format!("Unclosed \\( at column {column}."));
+    }
     parse(template).map(|_| ())
 }
 
@@ -197,8 +201,9 @@ mod tests {
     fn interpolation_refuses_calls_and_bad_syntax() {
         let e = evaluate(r"\(f(x))", &vars, &[]).unwrap_err();
         assert!(e.contains("Function calls"), "{e}");
-        let e = evaluate(r"a \(session.hostname", &vars, &[]).unwrap_err();
-        assert!(e.contains("column 3"), "{e}");
+        assert_eq!(evaluate(r"a \(session.hostname", &vars, &[]).unwrap(), r"a \(session.hostname", "no expression: the whole text (EP:400-405)");
+        assert_eq!(evaluate(r"\(user.x) \(session.hostname", &vars, &[]).unwrap(), "42 session.hostname", "the rest of an unclosed \\( is text");
+        assert!(check(r"a \(session.hostname").unwrap_err().contains("column 3"), "the trigger editor still warns");
         assert_eq!(evaluate(r"\(1 + 2)", &vars, &[]).unwrap(), "3", "the full expression language");
         assert!(has_calls(r"x \(f(1))"));
         assert!(has_calls(r#"\(user.x ?? g())"#));
