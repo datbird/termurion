@@ -786,28 +786,35 @@ impl App {
 
     /// A StatusBarComponentRequest's popover (`BASE:363-389`): `text` in a content area of
     /// `size` points above the component (above the middle of the window's top when the
-    /// component is not on screen); it replaces one already open.
+    /// component is not on screen), measured in the session's own window; it replaces one
+    /// already open and goes with its session (`pane_gone`).
     pub(super) fn open_text_popover(&mut self, pane: PaneId, id: &str, text: &str, size: (f64, f64), event_loop: &ActiveEventLoop) {
+        let back = self.current_window();
+        self.enter_pane_window(pane);
         let anchor = self.component_anchor(pane, id).unwrap_or_else(|| {
             let a = self.window_area();
             (a.x + a.w / 2.0, a.y)
         });
         let work = self.monitor_rects().map(|(w, _)| w);
         let scale = f64::from(self.scale());
-        let Some(g) = self.gpu.as_ref() else { return };
-        let size = crate::status_popover_ui::popover_size(size, work, scale, f64::from(g.device.limits().max_texture_dimension_2d));
-        let origin = g.window.inner_position().unwrap_or_default();
-        let at = (origin.x as f64 + f64::from(anchor.0), origin.y as f64 + f64::from(anchor.1));
         self.text_popover = None;
-        match crate::status_popover_ui::TextPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, text, size, at, work) {
-            Ok(w) => self.text_popover = Some(w),
-            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        if let Some(g) = self.gpu.as_ref() {
+            let size = crate::status_popover_ui::popover_size(size, work, scale, f64::from(g.device.limits().max_texture_dimension_2d));
+            let origin = g.window.inner_position().unwrap_or_default();
+            let at = (origin.x as f64 + f64::from(anchor.0), origin.y as f64 + f64::from(anchor.1));
+            match crate::status_popover_ui::TextPopover::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, text, size, at, work) {
+                Ok(w) => self.text_popover = Some((pane, w)),
+                Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+            }
+        }
+        if let Some(w) = back {
+            self.enter(w);
         }
     }
 
     /// Events for a StatusBarComponentRequest's popover. False for other windows.
     pub(super) fn text_popover_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
-        let Some(p) = self.text_popover.as_mut().filter(|p| p.id() == window) else { return false };
+        let Some((_, p)) = self.text_popover.as_mut().filter(|(_, p)| p.id() == window) else { return false };
         if !p.event(event) {
             self.text_popover = None;
         }

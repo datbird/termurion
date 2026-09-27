@@ -18,6 +18,8 @@ pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 /// A context menu provider's invocation timeout when the registration names none
 /// (`CMH:1386`).
 pub const CONTEXT_MENU_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest a call waits (a registration's timeout beyond it is clamped).
+const MAX_WAIT: Duration = Duration::from_secs(365 * 24 * 3600);
 /// Names never sent to scripts (`H:1144`).
 pub const PRIVATE_PREFIX: &str = "iterm2.";
 
@@ -105,6 +107,42 @@ pub fn namespace(r: &pb::RpcRegistrationRequest) -> Option<String> {
     Some(format!("{prefix}.{}", id.as_deref().unwrap_or_default().replace('-', "_")))
 }
 
+/// A unique identifier that can stand in an invocation's namespace: after `-` becomes `_`,
+/// only ASCII letters, digits, `_` and `.`, with no empty part between dots. Anything else
+/// would let a saved registration's text add calls of its own to the invocation.
+pub fn unique_id_ok(id: &str) -> bool {
+    id.replace('-', "_").split('.').all(|part| !part.is_empty() && part.chars().all(identifier_char))
+}
+
+/// A default's path as the invocation grammar reads one path: dotted identifiers, the first
+/// starting with a letter or `_`, optionally ending in `?`.
+pub fn path_ok(path: &str) -> bool {
+    let path = path.strip_suffix('?').unwrap_or(path);
+    path.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && path.split('.').all(|part| !part.is_empty() && part.chars().all(identifier_char))
+}
+
+/// Whether an invocation built from this registration (`fq_name` plus `defaults`) holds only
+/// what the registration claims: its name, unique id, default names and default paths each
+/// checked. A registration read from saved profile data is only ever run through this check,
+/// so profile text can never name a call.
+pub fn invocation_parts_ok(r: &pb::RpcRegistrationRequest) -> bool {
+    let name = r.name.as_deref().unwrap_or_default();
+    let id_ok = match r.role_specific_attributes.as_ref() {
+        None => true,
+        Some(RoleSpecificAttributes::SessionTitleAttributes(a)) => unique_id_ok(a.unique_identifier.as_deref().unwrap_or_default()),
+        Some(RoleSpecificAttributes::StatusBarComponentAttributes(a)) => unique_id_ok(a.unique_identifier.as_deref().unwrap_or_default()),
+        Some(RoleSpecificAttributes::ContextMenuAttributes(a)) => unique_id_ok(a.unique_identifier.as_deref().unwrap_or_default()),
+    };
+    let ident = |s: &str| !s.is_empty() && s.chars().all(identifier_char);
+    ident(name) && id_ok && r.defaults.iter().all(|d| ident(d.name.as_deref().unwrap_or_default()) && path_ok(d.path.as_deref().unwrap_or_default()))
+}
+
+/// A registration's invocation from its defaults (`invocation`), or none when its parts do
+/// not pass `invocation_parts_ok`.
+pub fn reg_invocation(r: &pb::RpcRegistrationRequest) -> Option<String> {
+    invocation_parts_ok(r).then(|| invocation(&fq_name(r), &defaults(r)))
+}
+
 /// `namespace.name`, or the name alone (`H:188-194`).
 pub fn fq_name(r: &pb::RpcRegistrationRequest) -> String {
     let name = r.name.as_deref().unwrap_or_default();
@@ -163,6 +201,8 @@ pub struct Registry {
     next_id: u64,
     generation: u64,
     title_generation: u64,
+    /// Bumped on every change to the registrations, unsubscribes too.
+    revision: u64,
 }
 
 /// A registration's role; iTerm2's default, Generic, when unset or unknown.
@@ -212,6 +252,7 @@ impl Registry {
             }
             self.regs.insert(sig, (conn, reg.clone()));
             self.generation += 1;
+            self.revision += 1;
             if role(reg) == Role::SessionTitle {
                 self.title_generation += 1;
             }
@@ -220,6 +261,7 @@ impl Registry {
         match self.regs.get(&sig) {
             Some((owner, _)) if *owner == conn => {
                 self.regs.remove(&sig);
+                self.revision += 1;
                 (Status::Ok, None)
             }
             _ => (Status::NotSubscribed, None),
@@ -372,6 +414,7 @@ impl Registry {
         self.regs.retain(|_, (c, _)| *c != conn);
         if self.regs.len() != before {
             self.generation += 1;
+            self.revision += 1;
         }
         let mut failed = Vec::new();
         self.pending.retain(|_, p| {
@@ -385,17 +428,18 @@ impl Registry {
         failed
     }
 
-    /// Every SESSION_TITLE registration as a provider (`H:81-100`, `H:1393-1402`).
+    /// Every SESSION_TITLE registration as a provider (`H:81-100`, `H:1393-1402`); one whose
+    /// invocation would not be only its own parts (`invocation_parts_ok`) is left out.
     pub fn title_providers(&self) -> Vec<TitleProvider> {
         self.regs
             .values()
             .filter(|(_, r)| role(r) == Role::SessionTitle)
-            .map(|(_, r)| {
+            .filter_map(|(_, r)| {
                 let (display_name, unique_id) = match &r.role_specific_attributes {
                     Some(RoleSpecificAttributes::SessionTitleAttributes(a)) => (a.display_name.clone().unwrap_or_default(), a.unique_identifier.clone().unwrap_or_default()),
                     _ => Default::default(),
                 };
-                TitleProvider { display_name, unique_id, invocation: invocation(&fq_name(r), &defaults(r)) }
+                Some(TitleProvider { display_name, unique_id, invocation: reg_invocation(r)? })
             })
             .collect()
     }
@@ -427,17 +471,19 @@ impl Registry {
     /// The CONTEXT_MENU registrations sorted by display name ignoring case (`H:1417-1436`).
     pub fn context_menu_items(&self) -> Vec<pb::RpcRegistrationRequest> {
         let mut items: Vec<pb::RpcRegistrationRequest> = self.regs.values().filter(|(_, r)| role(r) == Role::ContextMenu).map(|(_, r)| r.clone()).collect();
-        let key = |r: &pb::RpcRegistrationRequest| match &r.role_specific_attributes {
-            Some(RoleSpecificAttributes::ContextMenuAttributes(a)) => a.display_name.clone().unwrap_or_default().to_lowercase(),
-            _ => String::new(),
-        };
-        items.sort_by_cached_key(key);
+        items.sort_by_cached_key(|r| context_attrs(r).map_or_else(String::new, |(d, _)| d.to_lowercase()));
         items
     }
 
     /// Bumped whenever registrations were added, or a closed connection took some away.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Bumped on every change to the registrations (an unsubscribe too, which moves neither
+    /// generation): what a copy of a list made from them is checked against.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Bumped only when a session title provider registers; title providers re-evaluate on
@@ -447,20 +493,30 @@ impl Registry {
     }
 }
 
+/// A context menu provider's display name and unique id; none for another role.
+pub fn context_attrs(r: &pb::RpcRegistrationRequest) -> Option<(&str, &str)> {
+    match &r.role_specific_attributes {
+        Some(RoleSpecificAttributes::ContextMenuAttributes(a)) => Some((a.display_name.as_deref().unwrap_or_default(), a.unique_identifier.as_deref().unwrap_or_default())),
+        _ => None,
+    }
+}
+
 /// The right-click menu's provider rows (`CMH:898-914`): each registration's display name
-/// and unique id, in order.
+/// and unique id, in order. Control characters in the name show as spaces: a tab would move
+/// the rest into the menu's shortcut column and a NUL would cut the label, where iTerm2's menu
+/// shows the text as it is.
 pub fn context_rows(items: &[pb::RpcRegistrationRequest]) -> Vec<(String, String)> {
     items
         .iter()
-        .map(|r| match &r.role_specific_attributes {
-            Some(RoleSpecificAttributes::ContextMenuAttributes(a)) => (a.display_name.clone().unwrap_or_default(), a.unique_identifier.clone().unwrap_or_default()),
-            _ => Default::default(),
-        })
+        .map(|r| context_attrs(r).map_or_else(Default::default, |(d, u)| (d.chars().map(|c| if c.is_control() { ' ' } else { c }).collect(), u.to_string())))
         .collect()
 }
 
-/// The longest a call waits (a registration's timeout beyond it is clamped).
-const MAX_WAIT: Duration = Duration::from_secs(365 * 24 * 3600);
+/// A context menu provider's invocation timeout in seconds (`CMH:1386`): the registration's,
+/// else `CONTEXT_MENU_TIMEOUT`.
+pub fn context_menu_timeout_secs(r: &pb::RpcRegistrationRequest) -> f64 {
+    r.timeout.map_or(CONTEXT_MENU_TIMEOUT.as_secs_f64(), f64::from)
+}
 
 #[cfg(test)]
 mod tests {
@@ -587,6 +643,8 @@ mod tests {
         assert!(!fns.has_signature("f(a)"));
         assert_eq!(fns.request(1, &notif(Some(false), Some(f.clone()))), (Status::NotSubscribed, None));
         assert_eq!(fns.generation(), 1);
+        // The revision moves on every change, the unsubscribe too, and on nothing else.
+        assert_eq!(fns.revision(), 2);
         // No `subscribe`: malformed, nothing logged, before the registration is looked at.
         assert_eq!(fns.request(1, &notif(None, Some(f.clone()))), (Status::RequestMalformed, None));
         assert_eq!(fns.request(1, &notif(None, None)), (Status::RequestMalformed, None));
@@ -783,6 +841,16 @@ mod tests {
         let r = menu(with_defaults(reg("g", &["session_id"]), &[("session_id", "id")]), "G", "com.x");
         assert_eq!(invocation(&fq_name(&r), &defaults(&r)), "contextMenu.com.x.g(session_id:id)");
         assert_eq!(CONTEXT_MENU_TIMEOUT, Duration::from_secs(30));
+        // The pick's timeout: the registration's, else 30 s.
+        assert_eq!(context_menu_timeout_secs(&r), 30.0);
+        let mut timed = r.clone();
+        timed.timeout = Some(2.5);
+        assert_eq!(context_menu_timeout_secs(&timed), 2.5);
+        assert_eq!(reg_invocation(&r).as_deref(), Some("contextMenu.com.x.g(session_id:id)"));
+        // A tab or NUL in a display name shows as a space.
+        let rows = context_rows(&[menu(reg("h", &[]), "a\tb\0c", "u")]);
+        assert_eq!(rows, vec![("a b c".to_string(), "u".to_string())]);
+        assert_eq!(context_attrs(&reg("h", &[])), None);
         assert_eq!(crate::script_eval::menu_origin("Copy it"), "Menu Item \u{201c}Copy it\u{201d}");
     }
 }

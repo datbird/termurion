@@ -176,6 +176,12 @@ impl App {
         toolbelt::stored_names(self.globals.get(toolbelt::TOOLS_KEY).as_ref())
     }
 
+    /// `ToolbeltTools` without the names no tool is registered under (`configuredTools`), what
+    /// a toggle or a registration writes back.
+    fn configured_toolbelt_names(&self) -> Vec<String> {
+        toolbelt::configured_names(&self.toolbelt_names(), &toolbelt::dynamic_tools(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref()))
+    }
+
     pub(super) fn toolbelt_tools(&self) -> Vec<ToolId> {
         toolbelt::shown_tools(&self.toolbelt_names())
     }
@@ -355,7 +361,7 @@ impl App {
 
     /// `toggle_toolbelt_tool` by name: a dynamic tool's check item toggles it so.
     fn toggle_toolbelt_named(&mut self, name: &str) {
-        let names = toolbelt::toggle_named(&self.toolbelt_names(), name);
+        let names = toolbelt::toggle_named(&self.configured_toolbelt_names(), name);
         self.globals.set(toolbelt::TOOLS_KEY, toolbelt::names_value(&names));
         self.save_globals();
         self.toolbelt_names_changed(&names);
@@ -371,15 +377,15 @@ impl App {
         }
         let (name, identifier, url) = (r.name.as_deref().unwrap_or_default(), r.identifier.as_deref().unwrap_or_default(), r.url.as_deref().unwrap_or_default());
         let before = self.toolbelt_names();
-        let (registry, names) = toolbelt::register_dynamic(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref(), &before, identifier, name, url, r.reveal_if_already_registered());
-        let renamed = names != before;
+        let (registry, names) = toolbelt::register_dynamic(self.globals.get(toolbelt::DYNAMIC_TOOLS_KEY).as_ref(), &self.configured_toolbelt_names(), identifier, name, url, r.reveal_if_already_registered());
+        let names_changed = names != before;
         if let Some(registry) = &registry {
             self.globals.set(toolbelt::DYNAMIC_TOOLS_KEY, registry.clone());
         }
-        if renamed {
+        if names_changed {
             self.globals.set(toolbelt::TOOLS_KEY, toolbelt::names_value(&names));
         }
-        if registry.is_some() || renamed {
+        if registry.is_some() || names_changed {
             self.save_globals();
             self.toolbelt_names_changed(&names);
         }

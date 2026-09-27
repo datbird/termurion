@@ -146,11 +146,16 @@ pub fn default_knobs(r: &pb::RpcRegistrationRequest) -> toml::Table {
 }
 
 /// The invocation that computes the text (`RPC:232-239`): the registration's defaults plus
-/// `knobs:__knobs`, as a provider's invocation.
-pub fn invocation(r: &pb::RpcRegistrationRequest) -> String {
+/// `knobs:__knobs`, as a provider's invocation. None when the registration's unique id, name
+/// or defaults are anything but what they claim (`script_fn::invocation_parts_ok`): a saved
+/// registration comes from profile data, which must never be able to name a call.
+pub fn invocation(r: &pb::RpcRegistrationRequest) -> Option<String> {
+    if !crate::script_fn::invocation_parts_ok(r) {
+        return None;
+    }
     let mut defaults: Vec<(String, String)> = r.defaults.iter().map(|d: &RpcArgument| (d.name.clone().unwrap_or_default(), d.path.clone().unwrap_or_default())).collect();
     defaults.push(("knobs".into(), KNOBS_PATH.into()));
-    crate::script_fn::invocation(&crate::script_fn::fq_name(r), &defaults)
+    Some(crate::script_fn::invocation(&crate::script_fn::fq_name(r), &defaults))
 }
 
 /// `__knobs`: the knob values' JSON (`RPC:368-370`).
@@ -181,10 +186,14 @@ pub fn failed_text(r: &pb::RpcRegistrationRequest, invocation: &str, reason: &st
     format!("Status bar component \u{201c}{short}\u{201d} ({id}) failed.\n\nThis function call had an error:\n\n{invocation}\n\nThe error was:\n\n{reason}\n\n{tail}")
 }
 
-/// A click's invocation (`RPC:557-559`): the unique id with `.` and `-` as `_`.
-pub fn click_invocation(unique_id: &str, session_id: &str) -> String {
+/// A click's invocation (`RPC:557-559`): the unique id with `.` and `-` as `_`; none when
+/// the id is not one (`script_fn::unique_id_ok`).
+pub fn click_invocation(unique_id: &str, session_id: &str) -> Option<String> {
+    if !crate::script_fn::unique_id_ok(unique_id) {
+        return None;
+    }
     let id = unique_id.replace(['.', '-'], "_");
-    format!("__{id}__on_click(session_id: \"{session_id}\")")
+    Some(format!("__{id}__on_click(session_id: \"{session_id}\")"))
 }
 
 /// A failed click, for the console (`RPC:567`).
@@ -482,15 +491,15 @@ mod tests {
         assert_eq!(k[..4], want[..]);
         assert_eq!(k[4..], tail[..]);
 
-        assert_eq!(invocation(&r), "statusbar.com.ex.clock_1.f(knobs:__knobs,sid:id)");
+        assert_eq!(invocation(&r).as_deref(), Some("statusbar.com.ex.clock_1.f(knobs:__knobs,sid:id)"));
         assert_eq!(knobs_json(&sec), "{\"sec\":true}");
         assert_eq!(cadence(&r), Some(Duration::from_secs(2)));
         assert_eq!(cadence(&with_attributes(fixture(), |a| a.update_cadence = None)), None);
-        assert_eq!(click_invocation("com.ex.clock-1", "7"), "__com_ex_clock_1__on_click(session_id: \"7\")");
+        assert_eq!(click_invocation("com.ex.clock-1", "7").as_deref(), Some("__com_ex_clock_1__on_click(session_id: \"7\")"));
         assert_eq!(unread(Some(3), None), 3);
         assert_eq!(unread(Some(3), Some(1)), 1);
         assert_eq!(unread(None, None), 0);
-        assert_eq!(invocation_paths(&invocation(&r)), BTreeSet::from(["__knobs".to_string(), "id".to_string()]));
+        assert_eq!(invocation_paths(&invocation(&r).unwrap()), BTreeSet::from(["__knobs".to_string(), "id".to_string()]));
         assert_eq!(identifier(TEXT_CLASS, &config), "com.ex.clock-1");
         assert_eq!(identifier("iTermStatusBarClockComponent", &toml::Table::new()), "com.iterm2.iTermStatusBarClockComponent");
         assert_eq!((count_text(7), count_text(1234), count_text(1234567)), ("7".to_string(), "1,234".to_string(), "1,234,567".to_string()));
@@ -532,9 +541,37 @@ mod tests {
     }
 
     #[test]
+    fn saved_components_never_name_a_call() {
+        // Profile data (a Dynamic Profiles import) decides a saved registration's unique id and
+        // default paths: none of these may reach an invocation, so nothing runs.
+        let paste = "iterm2.paste(session_id: id, text: \"x\")";
+        let by_id = with_attributes(fixture(), |a| a.unique_identifier = Some(format!("x.f(a:{paste});y")));
+        assert_eq!(invocation(&by_id), None);
+        let mut by_path = fixture();
+        by_path.defaults[0].path = Some(format!("id, x: {paste}"));
+        assert_eq!(invocation(&by_path), None);
+        let mut by_name = fixture();
+        by_name.defaults[0].name = Some(format!("x: {paste}, sid"));
+        assert_eq!(invocation(&by_name), None);
+        assert_eq!(click_invocation(paste, "7"), None);
+        assert_eq!(click_invocation("a b", "7"), None);
+        assert_eq!(click_invocation("", "7"), None);
+        // What a real registration carries still builds.
+        let mut optional = fixture();
+        optional.defaults[0].path = Some("session.user_x?".into());
+        assert_eq!(invocation(&optional).as_deref(), Some("statusbar.com.ex.clock_1.f(knobs:__knobs,sid:session.user_x?)"));
+        for bad in ["", "?", "1a", "a..b", "a.", ".a", "a b", "a(b)", "a?b"] {
+            assert!(!crate::script_fn::path_ok(bad), "{bad}");
+        }
+        for good in ["id", "session.name", "user.x?", "_a.b_2"] {
+            assert!(crate::script_fn::path_ok(good), "{good}");
+        }
+    }
+
+    #[test]
     fn script_component_texts_follow_iterm2() {
         let r = fixture();
-        let inv = invocation(&r);
+        let inv = invocation(&r).unwrap();
         assert_eq!(variants(&inv, &json!("a")), Ok(vec!["a".to_string()]));
         assert_eq!(variants(&inv, &json!(["a", "b"])), Ok(vec!["a".to_string(), "b".to_string()]));
         assert_eq!(variants(&inv, &json!(3)), Err(format!("Return value from {inv} invalid.\n\nIt should have returned a string or a list of strings.\n\nInstead, it returned:\n\n3")));

@@ -651,9 +651,11 @@ pub struct App {
     script_titles: HashMap<PaneId, script_ui::TitleState>,
     /// Script component configurations parsed, by their saved registration's text (emptied
     /// whenever the registrations change).
-    script_parsed: HashMap<String, std::rc::Rc<script_ui::Parsed>>,
-    /// The popover a StatusBarComponentRequest opened (one at a time).
-    text_popover: Option<crate::status_popover_ui::TextPopover>,
+    script_parsed: HashMap<String, Option<std::rc::Rc<script_ui::Parsed>>>,
+    /// The popover a StatusBarComponentRequest opened (one at a time) and its session.
+    text_popover: Option<(PaneId, crate::status_popover_ui::TextPopover)>,
+    /// The session title providers, as of the registry revision they were listed at.
+    script_title_providers: Option<(u64, std::rc::Rc<Vec<crate::script_fn::TitleProvider>>)>,
     /// `alert` and `get_string` dialogs waiting to open, and the one showing.
     script_dialogs: VecDeque<builtin_ui::Dialog>,
     script_dialog: Option<builtin_ui::Open>,
@@ -1017,6 +1019,7 @@ pub fn run() {
         script_parsed: HashMap::new(),
         script_titles: HashMap::new(),
         text_popover: None,
+        script_title_providers: None,
         script_dialogs: VecDeque::new(),
         script_dialog: None,
         script_tmux: HashMap::new(),
@@ -1150,6 +1153,9 @@ impl App {
         self.script_templates.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
         self.script_titles.remove(&id);
+        if self.text_popover.as_ref().is_some_and(|(p, _)| *p == id) {
+            self.text_popover = None;
+        }
     }
 
     /// A cookie that will never be used takes itself out of the jar.

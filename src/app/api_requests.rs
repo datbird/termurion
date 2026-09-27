@@ -167,14 +167,20 @@ impl App {
     }
 
     /// The objects ids name now, their values read when asked for.
+    /// The API's view of the objects, without the session's `selection` (a copy of the whole
+    /// selection; `api_variable` asks for it only when a request names it).
     pub(super) fn api_objects(&self) -> ApiObjects<'_> {
-        ApiObjects { app: self, ids: self.api_ids() }
+        ApiObjects { app: self, ids: self.api_ids(), selection: false }
     }
 
     /// VariableRequest (`H:3106-3267`): the plan's sets go to the store, the only place a
     /// script writes variables (user variables alone, as iTerm2 allows).
     fn api_variable(&mut self, r: &pb::VariableRequest) -> pb::VariableResponse {
-        let (resp, sets) = api_vars::answer(r, &self.api_objects());
+        // `selection` and `selectionLength` are session variables to the API too, capped by
+        // maximumBytesToProvideToPythonAPI (`PS:12518-12529`).
+        let session = matches!(r.scope, Some(pb::variable_request::Scope::SessionId(_)));
+        let objects = ApiObjects { selection: session && api_vars::wants_selection(&r.get), ..self.api_objects() };
+        let (resp, sets) = api_vars::answer(r, &objects);
         if sets.is_empty() {
             return resp;
         }
@@ -1520,6 +1526,8 @@ impl App {
 pub(super) struct ApiObjects<'a> {
     app: &'a App,
     ids: Snapshot,
+    /// Whether session values include the (capped) selection.
+    selection: bool,
 }
 
 impl Objects for ApiObjects<'_> {
@@ -1552,7 +1560,7 @@ impl Objects for ApiObjects<'_> {
             Scope::Window => self.ids.window_key(id).and_then(|k| app.window_tabs(k)).and_then(|(tabs, a)| tabs.get(a)).map(|t| t.focused),
             Scope::App => app.panes.keys().next().copied(),
         };
-        let vars = pane.map(|p| app.variables_with(p, false)).unwrap_or_default();
+        let vars = pane.map(|p| app.variables_with(p, self.selection)).unwrap_or_default();
         let mut out = api_vars::scope_values(&vars, scope);
         api_vars::typed_users(&app.api_vars, &vars, scope, id, &mut out);
         out

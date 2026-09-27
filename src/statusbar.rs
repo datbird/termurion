@@ -417,7 +417,7 @@ pub fn registry() -> Vec<Info> {
         class: SPACER_CLASS,
         short: "Fixed-size Spacer".into(),
         detail: "Adds a fixed amount of space".into(),
-        exemplar: "╠══╣".into(),
+        exemplar: "\u{2560}\u{2550}\u{2550}\u{2563}".into(),
         stretch: false,
         margins: true,
         internal: false,
@@ -428,7 +428,7 @@ pub fn registry() -> Vec<Info> {
         // as "Empty Space" with a matching exemplar and detail text: `info_for`.
         short: "Spring".into(),
         detail: "Pushes items apart. Use one spring to right-align status bar elements that follow it. Use two to center those inbetween.".into(),
-        exemplar: "║〜〜║".into(),
+        exemplar: "\u{2551}\u{301c}\u{301c}\u{2551}".into(),
         stretch: true,
         margins: false,
         internal: false,
@@ -482,7 +482,7 @@ pub fn knobs(class: &str, config: &toml::Table, algorithm: Algorithm) -> Vec<Kno
 }
 
 /// `info` as the setup window shows it under `algorithm`: the Spring is "Spring" with the
-/// `║〜〜║` exemplar under Tightly Packed, and "Empty Space" with seven spaces under Stable
+/// wave-dash exemplar under Tightly Packed, and "Empty Space" with seven spaces under Stable
 /// (`SPR:32-58`). Every other class is the same under either. A script component's
 /// descriptions and exemplar are its registration's (`RPC:259-265`, `RPC:332-335`); it
 /// stretches, and without a registration in `config` it is unknown.
@@ -834,12 +834,12 @@ mod tests {
         assert_eq!(reg.len(), 25);
 
         let spring = info(SPRING_CLASS).unwrap();
-        assert_eq!((&*spring.short, &*spring.exemplar, spring.stretch, spring.margins, spring.internal), ("Spring", "║〜〜║", true, false, false));
+        assert_eq!((&*spring.short, &*spring.exemplar, spring.stretch, spring.margins, spring.internal), ("Spring", "\u{2551}\u{301c}\u{301c}\u{2551}", true, false, false));
 
         let spacer = info(SPACER_CLASS).unwrap();
         assert_eq!(
             (&*spacer.short, &*spacer.detail, &*spacer.exemplar, spacer.stretch, spacer.margins, spacer.internal),
-            ("Fixed-size Spacer", "Adds a fixed amount of space", "╠══╣", false, true, false)
+            ("Fixed-size Spacer", "Adds a fixed amount of space", "\u{2560}\u{2550}\u{2550}\u{2563}", false, true, false)
         );
 
         let placeholder = info(PLACEHOLDER_CLASS).unwrap();
@@ -895,7 +895,7 @@ mod tests {
     fn info_for_follows_the_algorithm() {
         let none = toml::Table::new();
         let tight = info_for(SPRING_CLASS, &none, Algorithm::TightlyPacked).unwrap();
-        assert_eq!((&*tight.short, &*tight.exemplar), ("Spring", "║〜〜║"));
+        assert_eq!((&*tight.short, &*tight.exemplar), ("Spring", "\u{2551}\u{301c}\u{301c}\u{2551}"));
         assert!(tight.detail.starts_with("Pushes items apart."));
         let stable = info_for(SPRING_CLASS, &none, Algorithm::Stable).unwrap();
         assert_eq!((&*stable.short, &*stable.exemplar, &*stable.detail), ("Empty Space", "       ", "Empty space that draws only a background color."));
@@ -922,7 +922,7 @@ mod tests {
         let none = toml::Table::new();
         // The Spring's own exemplar switches with the algorithm (`info_for`), unlike a
         // content class's, which `exemplar` resolves before ever falling back to it.
-        assert_eq!(exemplar(SPRING_CLASS, &none, &none, "", "", "", Algorithm::TightlyPacked), "║〜〜║");
+        assert_eq!(exemplar(SPRING_CLASS, &none, &none, "", "", "", Algorithm::TightlyPacked), "\u{2551}\u{301c}\u{301c}\u{2551}");
         assert_eq!(exemplar(SPRING_CLASS, &none, &none, "", "", "", Algorithm::Stable), "       ");
         // A content class: the fallback is never reached, so the algorithm makes no
         // difference to its own exemplar.

@@ -38,7 +38,8 @@ pub(super) enum ScopeSpec {
 }
 
 /// Where an invocation's result goes: an InvokeFunctionRequest's answer, the error alert
-/// with the origin's name, or one of the callers of Tasks 5 to 9; `Quiet` drops it.
+/// with the origin's name, or one of the callers (triggers, bindings, the status bar, title
+/// providers, menus).
 #[derive(Clone, Debug)]
 pub(super) enum Origin {
     Api {
@@ -58,8 +59,6 @@ pub(super) enum Origin {
     /// A status bar string's evaluation: its cache entry (`script_templates`) and the
     /// evaluation's number there, so an older one never replaces a newer one's value.
     Template { pane: PaneId, key: String, nth: u64 },
-    #[allow(dead_code)]
-    Quiet,
 }
 
 /// A status bar string with function calls (`iTermGenericEvaluator.m`): the paths its parse
@@ -67,9 +66,11 @@ pub(super) enum Origin {
 /// evaluation finishes), the evaluation still running, the dependencies it started with, the
 /// newest evaluation whose value was applied, the functions it found unregistered, the
 /// registry generation it last checked them against, and the last bar layout that asked for
-/// it (an entry no layout asks for any more goes).
+/// it (an entry no layout asks for any more goes). A string with no call keeps an entry with
+/// `plain` set, so it is not parsed for calls again each frame.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Template {
+    pub plain: bool,
     pub paths: Option<Result<BTreeSet<String>, String>>,
     pub value: Option<Result<String, String>>,
     pub running: Option<u64>,
@@ -355,8 +356,11 @@ pub(super) const OPEN_QUICKLY: &str = "Open Quickly";
 /// (Open Quickly, Task 5).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Alert {
+    /// A failed call: the heading names its origin, `invocation` is what failed (with the
+    /// heading, what merges repeats), `text` the reason as shown.
     Failed {
         heading: String,
+        invocation: String,
         text: String,
     },
     Result(String),
@@ -368,22 +372,45 @@ impl Alert {
     /// The alert's heading and text.
     fn form(&self) -> (&str, &str) {
         match self {
-            Alert::Failed { heading, text } => (heading.as_str(), text.as_str()),
+            Alert::Failed { heading, text, .. } => (heading.as_str(), text.as_str()),
             Alert::Result(text) => (script_eval::RESULT_HEADING, text.as_str()),
             Alert::Component(text) => (script_statusbar::ERROR_HEADING, text.as_str()),
         }
     }
 }
 
+/// The most script alerts, or script dialogs, that wait in their queue (the one showing is
+/// not counted): output-driven callers (a trigger matching many times) cannot grow either.
+pub(super) const MAX_QUEUED: usize = 16;
+
+/// Adds to a bounded queue; the oldest waiting item goes when it is full, and is returned.
+pub(super) fn push_capped<T>(queue: &mut VecDeque<T>, item: T) -> Option<T> {
+    queue.push_back(item);
+    if queue.len() > MAX_QUEUED { queue.pop_front() } else { None }
+}
+
 /// Queues a failure's alert (`reportFunctionCallError`, `H:566-591`): none while the
-/// temporary silence holds (`iTermWarning.m` `preempt:`), and none when the same heading and
-/// text is already queued or showing, so a burst of one failure (a trigger matching many
-/// times) shows once.
+/// temporary silence holds (`iTermWarning.m` `preempt:`); a failure of the same origin and
+/// invocation as one showing is dropped, as one queued replaces that one's text (so a burst
+/// of one failure, a trigger matching many times, shows once with the newest reason); other
+/// alerts merge only when identical. At most `MAX_QUEUED` wait.
 fn queue_alert(queue: &mut VecDeque<Alert>, showing: Option<&Alert>, alert: Alert, silenced: bool) {
-    if silenced || showing == Some(&alert) || queue.contains(&alert) {
+    if silenced {
         return;
     }
-    queue.push_back(alert);
+    if let Alert::Failed { heading, invocation, text } = &alert {
+        let same = |a: &Alert| matches!(a, Alert::Failed { heading: h, invocation: i, .. } if h == heading && i == invocation);
+        if showing.is_some_and(same) {
+            return;
+        }
+        if let Some(Alert::Failed { text: queued, .. }) = queue.iter_mut().find(|a| same(a)) {
+            queued.clone_from(text);
+            return;
+        }
+    } else if showing == Some(&alert) || queue.contains(&alert) {
+        return;
+    }
+    push_capped(queue, alert);
 }
 
 /// Unix seconds now, the clock of the alert's silence.
@@ -694,7 +721,9 @@ impl App {
             }
             // `OQW:481-503`: a failure reported as Open Quickly's, a value shown.
             Origin::OpenQuickly => match r {
-                Ok(v) => self.script_alerts.push_back(Alert::Result(script_eval::result_text(invocation, &v))),
+                Ok(v) => {
+                    push_capped(&mut self.script_alerts, Alert::Result(script_eval::result_text(invocation, &v)));
+                }
                 Err(f) => self.report_function_error(OPEN_QUICKLY, invocation, &f),
             },
             Origin::Template { pane, key, nth } => self.template_finished(*pane, key, *nth, missing, r),
@@ -706,8 +735,6 @@ impl App {
                 }
             }
             Origin::Title { pane, nth } => self.title_finished(*pane, *nth, invocation, r),
-            // The callers of Task 9 take their results there.
-            Origin::Quiet => {}
         }
     }
 
@@ -720,16 +747,21 @@ impl App {
     /// its dependencies read the selection only when it names it.
     pub(super) fn template(&mut self, pane: PaneId, template: &str) -> Result<String, String> {
         let key = (pane, template.to_string());
-        if !self.script_templates.contains_key(&key) {
-            if !crate::interp::has_calls(template) {
-                return self.evaluate_for(pane, template);
-            }
-            let paths = expr::parse_template(template).map(|parts| script_eval::template_paths(&parts));
-            self.script_templates.insert(key.clone(), Template { paths: Some(paths), ..Template::default() });
-        }
         let pass = self.script_pass;
+        if !self.script_templates.contains_key(&key) {
+            let entry = if crate::interp::has_calls(template) {
+                let paths = expr::parse_template(template).map(|parts| script_eval::template_paths(&parts));
+                Template { paths: Some(paths), ..Template::default() }
+            } else {
+                Template { plain: true, ..Template::default() }
+            };
+            self.script_templates.insert(key.clone(), entry);
+        }
         let Some(entry) = self.script_templates.get_mut(&key) else { return Ok(String::new()) };
         entry.pass = pass;
+        if entry.plain {
+            return self.evaluate_for(pane, template);
+        }
         let paths = match entry.paths.as_ref() {
             Some(Ok(paths)) => paths.clone(),
             Some(Err(e)) => return Err(e.clone()),
@@ -767,7 +799,8 @@ impl App {
     /// A script component on a bar (`RPC:351-385`): its entry, after starting an evaluation
     /// when `Component::needs_start` says so. The invocation (`script_statusbar::invocation`,
     /// the newest registration of its unique id) runs in the session's scope with `__knobs`
-    /// (the knob values' JSON) in a frame, side effects on, with the registration's timeout
+    /// (the knob values' JSON) in a frame, side effects off (a Tandem ruling: iTerm2 allows
+    /// them, `RPC:373`, but a component comes from profile data), with the registration's timeout
     /// else none. None when the configuration holds no registration (iTerm2 makes no
     /// component, `RPC:172-183`). With it, the component's identifier, the texts it shows (an
     /// HTML component's variants as text, `html`) and its error.
@@ -791,7 +824,8 @@ impl App {
             // `timeout ?: distantFuture` (`RPC:372`): none or 0 waits forever.
             let timeout = reg.timeout.filter(|t| *t != 0.0).map_or(Timeout::Never, |t| Timeout::from_secs(f64::from(t)));
             let origin = Origin::Component { pane, id: id.clone(), nth, reg: Box::new(reg) };
-            self.invoke(&parsed.invocation, ScopeSpec::Session { pane, frame }, timeout, true, origin);
+            // Side effects off: a status bar component never runs a built-in that acts.
+            self.invoke(&parsed.invocation, ScopeSpec::Session { pane, frame }, timeout, false, origin);
         }
         let entry = self.script_components.get_mut(&(pane, id.clone()))?;
         let texts = if html { entry.texts.get_or_insert_with(|| entry.variants.iter().map(|v| script_statusbar::html_text(v)).collect()).clone() } else { entry.variants.clone() };
@@ -801,21 +835,23 @@ impl App {
     /// A script component's configuration parsed (`Parsed`), from the cache until the
     /// registrations change: the saved registration decoded once, its identifier the saved
     /// one's (`RPC:241-244`), the registration it runs the newest of that unique id. None when
-    /// the configuration holds no registration.
+    /// the configuration holds no registration, or one whose invocation would hold more than
+    /// its own parts (`script_statusbar::invocation`): saved profile data never runs anything.
     fn parsed_component(&mut self, config: &toml::Table) -> Option<Rc<Parsed>> {
         let key = config.get(script_statusbar::REQUEST_KEY)?.as_str()?;
         if let Some(p) = self.script_parsed.get(key) {
-            return Some(p.clone());
+            return p.clone();
         }
-        let saved = script_statusbar::request_of(config)?;
-        let id = script_statusbar::unique_id(&saved).unwrap_or_default().to_string();
-        let reg = self.api_fns.status_bar_component(&id).cloned().unwrap_or(saved);
-        let invocation = script_statusbar::invocation(&reg);
-        let paths = script_statusbar::invocation_paths(&invocation);
-        let selection = paths.iter().any(|p| crate::prompted::names_selection(p));
-        let parsed = Rc::new(Parsed { id, reg, invocation, paths, selection });
+        let parsed = script_statusbar::request_of(config).and_then(|saved| {
+            let id = script_statusbar::unique_id(&saved).unwrap_or_default().to_string();
+            let reg = self.api_fns.status_bar_component(&id).cloned().unwrap_or(saved);
+            let invocation = script_statusbar::invocation(&reg)?;
+            let paths = script_statusbar::invocation_paths(&invocation);
+            let selection = paths.iter().any(|p| crate::prompted::names_selection(p));
+            Some(Rc::new(Parsed { id, reg, invocation, paths, selection }))
+        });
         self.script_parsed.insert(key.to_string(), parsed.clone());
-        Some(parsed)
+        parsed
     }
 
     /// The registrations changed (a subscribe or unsubscribe, a connection's go): the one
@@ -848,23 +884,26 @@ impl App {
 
     /// A script component's click (`RPC:533-572`): with an error, iTerm2's alert (OK; Launch
     /// Script and Reveal wait for 11d); else its script's click handler, in the session's
-    /// scope, with a 30 s timeout.
+    /// scope, with a 30 s timeout, side effects off. A unique id that is not one runs nothing.
     pub(super) fn script_component_click(&mut self, pane: PaneId, id: &str) {
-        let invocation = script_statusbar::click_invocation(id, &pane.to_string());
+        let Some(invocation) = script_statusbar::click_invocation(id, &pane.to_string()) else { return };
         let scope = ScopeSpec::Session { pane, frame: Values::new() };
-        self.invoke(&invocation, scope, Timeout::from_secs(CLICK_TIMEOUT_SECS), true, Origin::Click);
+        // Side effects off, as the component's evaluation.
+        self.invoke(&invocation, scope, Timeout::from_secs(CLICK_TIMEOUT_SECS), false, Origin::Click);
     }
 
     /// A pick of a script context menu provider's item (`CMH:1377-1398`): the registration
-    /// with that unique id now (none: nothing happens), its invocation from its defaults, in
-    /// the session's scope, with the registration's timeout else 30 s, side effects on; a
-    /// failure reported as the menu item's.
+    /// with that unique id now (none, or the session closed while the menu was open: nothing
+    /// happens), its invocation from its defaults, in the session's scope, with the
+    /// registration's timeout else 30 s, side effects on; a failure reported as the menu item's.
     pub(super) fn context_provider_picked(&mut self, pane: PaneId, unique_id: &str, title: &str) {
+        if !self.panes.contains_key(&pane) {
+            return;
+        }
         let items = self.api_fns.context_menu_items();
-        let rows = script_fn::context_rows(&items);
-        let Some((reg, _)) = items.iter().zip(&rows).find(|(_, (_, id))| id == unique_id) else { return };
-        let invocation = script_fn::invocation(&script_fn::fq_name(reg), &script_fn::defaults(reg));
-        let timeout = reg.timeout.map_or(Timeout::from_secs(script_fn::CONTEXT_MENU_TIMEOUT.as_secs_f64()), |t| Timeout::from_secs(f64::from(t)));
+        let Some(reg) = items.iter().find(|r| script_fn::context_attrs(r).is_some_and(|(_, id)| id == unique_id)) else { return };
+        let Some(invocation) = script_fn::reg_invocation(reg) else { return };
+        let timeout = Timeout::from_secs(script_fn::context_menu_timeout_secs(reg));
         let scope = ScopeSpec::Session { pane, frame: Values::new() };
         self.invoke(&invocation, scope, timeout, true, Origin::Report(script_eval::menu_origin(title)));
     }
@@ -919,13 +958,22 @@ impl App {
     /// finds none and shows the ellipsis (`SNC:120-124`). The settings window's popup follows
     /// the providers.
     pub(super) fn tick_script_titles(&mut self) {
-        let providers = self.api_fns.title_providers();
-        if let Some(s) = self.settings.as_mut() {
-            let items = provider_items(&providers);
-            if s.title_providers != items {
-                s.title_providers = items;
+        // The providers are listed again only when the registrations changed.
+        let revision = self.api_fns.revision();
+        let providers = match &self.script_title_providers {
+            Some((r, list)) if *r == revision => list.clone(),
+            _ => {
+                let list = Rc::new(self.api_fns.title_providers());
+                self.script_title_providers = Some((revision, list.clone()));
+                if let Some(s) = self.settings.as_mut() {
+                    let items = provider_items(&list);
+                    if s.title_providers != items {
+                        s.title_providers = items;
+                    }
+                }
+                list
             }
-        }
+        };
         let generation = self.api_fns.title_generation();
         let panes: Vec<PaneId> = self.panes.keys().copied().collect();
         for pane in panes {
@@ -1027,7 +1075,7 @@ impl App {
     /// silenceable under `NoSyncFunctionCallError`, the same one merged).
     pub(super) fn report_function_error(&mut self, origin: &str, invocation: &str, f: &Failure) {
         self.script_log(f.conn, script_eval::console_text(invocation, &f.reason, f.detail.as_deref().unwrap_or_default()));
-        let alert = Alert::Failed { heading: script_eval::report_heading(origin), text: script_eval::report_text(invocation, &f.reason) };
+        let alert = Alert::Failed { heading: script_eval::report_heading(origin), invocation: invocation.to_string(), text: script_eval::report_text(invocation, &f.reason) };
         let silenced = self.function_errors_silenced();
         let showing = self.script_alert.as_ref().map(|(_, a)| a);
         queue_alert(&mut self.script_alerts, showing, alert, silenced);
@@ -1108,7 +1156,7 @@ mod tests {
     use std::time::Duration;
 
     fn run(text: &str, timeout: Timeout, now: Instant) -> Run {
-        Run { inv: Invocation::new(text, timeout, true, true, now).unwrap(), scope: ScopeSpec::App, base: Values::new(), origin: Origin::Quiet, receiver: None }
+        Run { inv: Invocation::new(text, timeout, true, true, now).unwrap(), scope: ScopeSpec::App, base: Values::new(), origin: Origin::Click, receiver: None }
     }
 
     /// Starts every script call with the next token.
@@ -1403,7 +1451,7 @@ mod tests {
     /// the same one shows; another failure still queues.
     #[test]
     fn trigger_alerts_are_bounded() {
-        let failure = |sig: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), text: script_eval::report_text(sig, &script_fn::unregistered_text(sig, None)) };
+        let failure = |sig: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), invocation: sig.to_string(), text: script_eval::report_text(sig, &script_fn::unregistered_text(sig, None)) };
         let mut queue = VecDeque::new();
         for _ in 0..1000 {
             queue_alert(&mut queue, None, failure("f()"), false);
@@ -1417,6 +1465,29 @@ mod tests {
         let mut quiet = VecDeque::new();
         queue_alert(&mut quiet, None, failure("f()"), true);
         assert!(quiet.is_empty(), "silenced");
+        // Final review: a failure whose text varies per match (the reason echoes the match)
+        // merges by origin and invocation, keeping the newest text; different invocations
+        // stop at MAX_QUEUED, the oldest going first.
+        let varying = |inv: &str, reason: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), invocation: inv.to_string(), text: script_eval::report_text(inv, reason) };
+        let mut queue = VecDeque::new();
+        for i in 0..1000 {
+            queue_alert(&mut queue, None, varying("f(x: matches[1])", &format!("bad {i}")), false);
+        }
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].form().1, script_eval::report_text("f(x: matches[1])", "bad 999"));
+        let mut queue = VecDeque::new();
+        for i in 0..1000 {
+            queue_alert(&mut queue, None, varying(&format!("f(x: \"{i}\")"), &format!("bad {i}")), false);
+        }
+        assert_eq!(queue.len(), MAX_QUEUED);
+        assert_eq!(queue[0].form().1, script_eval::report_text("f(x: \"984\")", "bad 984"), "the oldest went");
+        let showing = varying("g()", "one");
+        let mut queue = VecDeque::new();
+        queue_alert(&mut queue, Some(&showing), varying("g()", "two"), false);
+        assert!(queue.is_empty(), "the same failure as the one showing");
+        let mut dialogs: VecDeque<u64> = VecDeque::new();
+        let dropped: Vec<u64> = (0..1000).filter_map(|i| push_capped(&mut dialogs, i)).collect();
+        assert_eq!((dialogs.len(), dropped.len(), dropped[0], dialogs[0]), (MAX_QUEUED, 1000 - MAX_QUEUED, 0, 984));
         // The silence: ten minutes from the OK (`iTermWarning.m:13`, `:632-636`).
         assert_eq!((script_eval::SILENCE_UNTIL_KEY, script_eval::TEMPORARY_SILENCE_SECS), ("NoSyncFunctionCallError_SilenceUntil", 600.0));
         assert!(script_eval::silenced(Some(100.0), 99.0));
@@ -1427,7 +1498,7 @@ mod tests {
 
     #[test]
     fn script_alerts_follow_iterm2() {
-        let failed = Alert::Failed { heading: script_eval::report_heading("Trigger"), text: script_eval::report_text("f()", "boom") };
+        let failed = Alert::Failed { heading: script_eval::report_heading("Trigger"), invocation: "f()".into(), text: script_eval::report_text("f()", "boom") };
         assert_eq!(failed.form(), ("Trigger Function Call Failed", "Error running \u{201c}f()\u{201d}:\nboom"));
         assert_eq!(Alert::Result("f() returned:\n3".into()).form(), ("Function Call Result", "f() returned:\n3"));
     }

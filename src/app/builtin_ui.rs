@@ -26,6 +26,13 @@ pub(super) enum Dialog {
     Text { token: u64, title: String, subtitle: String, placeholder: String, default: String },
 }
 
+/// The most identifiers `set_status_bar_component_unread_count` keeps, app-wide and per
+/// session (Tandem's bound; iTerm2 keeps every one). Session entries go with their session.
+pub(super) const MAX_UNREAD_IDS: usize = 64;
+
+/// The failure of a dialog dropped from a full queue (Tandem's; iTerm2 shows every one).
+pub(super) const DIALOG_DROPPED: &str = "Too many dialogs were waiting, so this one was not shown.";
+
 /// The dialog showing.
 pub(super) enum Open {
     Alert { window: ConfirmWindow, token: u64, buttons: Vec<String> },
@@ -101,11 +108,12 @@ fn id_text(v: &Value) -> Option<String> {
 
 impl App {
     /// Runs a built-in whose arguments are type-checked, amended and without nulls; a method
-    /// runs on `receiver`. With side effects off a built-in with a placeholder answers it
-    /// (`BIF:264-267`); a synchronous evaluation cannot wait, so a built-in that waits for an
-    /// answer answers null there without acting.
+    /// runs on `receiver`. With side effects off a function with a placeholder answers it
+    /// (`BIF:264-267`); a method never does, as iTerm2's method path never asks
+    /// (`iTermObject.m:73-91`). A synchronous evaluation cannot wait, so a built-in that
+    /// waits for an answer answers null there without acting.
     pub(super) fn builtin(&mut self, b: &'static Builtin, args: BTreeMap<String, Value>, receiver: Option<(On, u64)>, side_effects: bool, sync: bool) -> HostOutcome {
-        if !side_effects {
+        if !side_effects && receiver.is_none() {
             if let Some(p) = b.placeholder {
                 return HostOutcome::Done(json!(p));
             }
@@ -176,13 +184,13 @@ impl App {
                 let token = self.builtin_token();
                 let title = str_arg(args, "title").unwrap_or_default().to_string();
                 let subtitle = str_arg(args, "subtitle").unwrap_or_default().to_string();
-                self.script_dialogs.push_back(Dialog::Alert { token, title, subtitle, buttons: alert_buttons(args.get("buttons")) });
+                self.queue_dialog(Dialog::Alert { token, title, subtitle, buttons: alert_buttons(args.get("buttons")) });
                 HostOutcome::Started(token)
             }
             "get_string" => {
                 let token = self.builtin_token();
                 let text = |n: &str| str_arg(args, n).unwrap_or_default().to_string();
-                self.script_dialogs.push_back(Dialog::Text { token, title: text("title"), subtitle: text("subtitle"), placeholder: text("placeholder"), default: text("defaultValue") });
+                self.queue_dialog(Dialog::Text { token, title: text("title"), subtitle: text("subtitle"), placeholder: text("placeholder"), default: text("defaultValue") });
                 HostOutcome::Started(token)
             }
             "focus" => match self.session_arg(args, "session_id", false) {
@@ -263,7 +271,10 @@ impl App {
             "set_status_bar_component_unread_count" => {
                 let id = str_arg(args, "identifier").unwrap_or_default().to_string();
                 let n = count_arg(args);
-                self.unread_counts.insert(id, n);
+                // A new identifier past the cap is ignored (a trigger could pass one per match).
+                if self.unread_counts.contains_key(&id) || self.unread_counts.len() < MAX_UNREAD_IDS {
+                    self.unread_counts.insert(id, n);
+                }
                 self.redraw_all();
                 self.redraw();
                 HostOutcome::Done(Value::Null)
@@ -389,7 +400,10 @@ impl App {
             "set_status_bar_component_unread_count" => {
                 let id = str_arg(args, "identifier").unwrap_or_default().to_string();
                 let n = count_arg(args);
-                self.unread_session_counts.insert((pane, id), n);
+                let key = (pane, id);
+                if self.unread_session_counts.contains_key(&key) || self.unread_session_counts.keys().filter(|(p, _)| *p == pane).count() < MAX_UNREAD_IDS {
+                    self.unread_session_counts.insert(key, n);
+                }
                 self.redraw_all();
                 self.redraw();
                 HostOutcome::Done(Value::Null)
@@ -452,6 +466,15 @@ impl App {
             self.redraw();
         }
         HostOutcome::Done(Value::Null)
+    }
+
+    /// Queues an `alert` or `get_string` dialog. At most `MAX_QUEUED` wait (a trigger can call
+    /// them once per match); the oldest waiting one goes, its call failing with
+    /// `DIALOG_DROPPED` so its run does not wait forever.
+    fn queue_dialog(&mut self, d: Dialog) {
+        if let Some(old) = super::script_ui::push_capped(&mut self.script_dialogs, d) {
+            self.api_rpc_done.push_back((dialog_token(&old), Err(Failure::plain(DIALOG_DROPPED.to_string()))));
+        }
     }
 
     /// Opens the next queued dialog when none shows; a dialog whose run finished is dropped.

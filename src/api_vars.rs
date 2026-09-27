@@ -235,6 +235,12 @@ pub fn typed_users(store: &Store, v: &crate::prompted::Vars, scope: Scope, id: &
 
 /// VariableRequest's gets (`H:3242-3253`): "*" is every value as a string in one JSON
 /// dictionary; any other name the JSON of its value, "null" when unset.
+/// Whether a session's VariableRequest gets need its selection (a copy of the whole
+/// selection, so it is read only then): `*`, `selection` or `selectionLength`.
+pub fn wants_selection(names: &[String]) -> bool {
+    names.iter().any(|n| n == "*" || crate::prompted::names_selection(n))
+}
+
 pub fn gets(names: &[String], values: &Values) -> Vec<String> {
     names
         .iter()
@@ -581,6 +587,21 @@ mod tests {
         assert_eq!(set_value("null"), serde_json::Value::Null);
         assert_eq!(set_value("{bad"), serde_json::Value::Null);
         assert_eq!(set_value("\"s\""), json!("s"));
+    }
+
+    #[test]
+    fn api_selection_follows_iterm2() {
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+        assert!(wants_selection(&names(&["selection"])));
+        assert!(wants_selection(&names(&["columns", "selectionLength"])));
+        assert!(wants_selection(&names(&["*"])));
+        assert!(!wants_selection(&names(&["columns", "user.selection"])));
+        // A session's selection is an ordinary session variable to the API.
+        let mut v = crate::prompted::Vars::default();
+        v.session.insert("selection", "abc".into());
+        v.session.insert("selectionLength", "3".into());
+        let s = scope_values(&v, Scope::Session);
+        assert_eq!(gets(&names(&["selection", "selectionLength"]), &s), ["\"abc\"", "3"]);
     }
 
     #[test]

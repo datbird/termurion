@@ -157,20 +157,26 @@ pub fn dynamic_tools(v: Option<&Value>) -> Vec<DynamicTool> {
         .collect()
 }
 
-/// A URL's host as `NSURL.host` gives it: the authority after `scheme://`, without user info
-/// or port. None for a string that is not a URL (no scheme, a space or control character) and
-/// for one without a host (`about:blank`, `file:///x`).
+/// Whether NSURL finds a host in a URL (`URLWithString:`, RFC 3986), and the host as written
+/// (not percent-decoded): an optional `scheme:`, then `//` and an authority, the host being
+/// the authority without user info or port. None without an authority (`about:blank`,
+/// `file:///x`, `example.com/x`) or with a space or control character inside it; elsewhere
+/// NSURL encodes such characters, so they do not matter.
 pub fn url_host(url: &str) -> Option<&str> {
-    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return None;
-    }
-    let (scheme, rest) = url.split_once(':')?;
-    let mut sc = scheme.chars();
-    if !sc.next().is_some_and(|c| c.is_ascii_alphabetic()) || !sc.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
-        return None;
-    }
+    let scheme_ok = |scheme: &str| {
+        let mut sc = scheme.chars();
+        sc.next().is_some_and(|c| c.is_ascii_alphabetic()) && sc.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    };
+    // A network-path reference (`//host/x`) has no scheme.
+    let rest = match url.split_once(':') {
+        Some((scheme, rest)) if scheme_ok(scheme) => rest,
+        _ => url,
+    };
     let rest = rest.strip_prefix("//")?;
     let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    if authority.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
     let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = match hostport.strip_prefix('[') {
         Some(v6) => v6.split_once(']')?.0,
@@ -224,8 +230,9 @@ pub fn register_dynamic(registry: Option<&Value>, names: &[String], identifier: 
 }
 
 /// The Toolbelt menu and the hamburger's list order: every built-in tool and every dynamic
-/// one, sorted by display name ignoring case (`localizedStandardCompare:`, `TBV:227-254`); a
-/// dynamic name listed twice appears once.
+/// one, sorted by display name as `localizedStandardCompare:` does (`TBV:227-254`): ignoring
+/// case, runs of digits by their value ("Web 2" before "Web 10"); a dynamic name listed twice
+/// appears once.
 pub fn all_tool_names(dynamic: &[DynamicTool]) -> Vec<String> {
     let mut v: Vec<String> = ToolId::ALL.iter().map(|t| t.name().to_string()).collect();
     for d in dynamic {
@@ -233,8 +240,47 @@ pub fn all_tool_names(dynamic: &[DynamicTool]) -> Vec<String> {
             v.push(d.name.clone());
         }
     }
-    v.sort_by_key(|n| n.to_lowercase());
+    v.sort_by(|a, b| standard_cmp(a, b).then_with(|| a.cmp(b)));
     v
+}
+
+/// `localizedStandardCompare:` for plain names: case ignored, digit runs compared by value.
+fn standard_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (a, b): (Vec<char>, Vec<char>) = (a.to_lowercase().chars().collect(), b.to_lowercase().chars().collect());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        if a[i].is_ascii_digit() && b[j].is_ascii_digit() {
+            let (si, sj) = (i, j);
+            while i < a.len() && a[i].is_ascii_digit() {
+                i += 1;
+            }
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            // Leading zeros do not count; then the longer run is the larger number.
+            let x: String = a[si..i].iter().skip_while(|c| **c == '0').collect();
+            let y: String = b[sj..j].iter().skip_while(|c| **c == '0').collect();
+            let o = x.len().cmp(&y.len()).then_with(|| x.cmp(&y));
+            if o != Ordering::Equal {
+                return o;
+            }
+        } else {
+            if a[i] != b[j] {
+                return a[i].cmp(&b[j]);
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    (a.len() - i).cmp(&(b.len() - j))
+}
+
+/// `configuredTools` (`TBV:192-205`): the stored names that are a registered tool (a built-in
+/// or one of `dynamic`), in the order stored. A toggle or a registration starts from this, so
+/// a name nothing registers any more is dropped when the list is next written.
+pub fn configured_names(names: &[String], dynamic: &[DynamicTool]) -> Vec<String> {
+    names.iter().filter(|n| ToolId::from_name(n).is_some() || dynamic.iter().any(|d| &d.name == *n)).cloned().collect()
 }
 
 /// The stored-name list as a TOML value, for writing back to the global.
@@ -435,6 +481,14 @@ mod tests {
         assert_eq!(url_host("not a url"), None);
         assert_eq!(url_host("https://a b/"), None);
         assert_eq!(url_host("example.com/x"), None);
+        // As NSURL: a network-path reference has a host, and a space outside the authority is
+        // encoded, not refused; a percent-encoded host is given as written.
+        assert_eq!(url_host("//example.com/x"), Some("example.com"));
+        assert_eq!(url_host("https://example.com/a b"), Some("example.com"));
+        assert_eq!(url_host("https://example.com/a\u{a0}b"), Some("example.com"));
+        assert_eq!(url_host("http://%65xample.com"), Some("%65xample.com"));
+        assert_eq!(register_tool_status(&req(Some("My Tool"), Some("id"), Some("//example.com/x"))), Status::Ok);
+        assert_eq!(register_tool_status(&req(Some("My Tool"), Some("id"), Some("https://example.com/a b"))), Status::Ok);
     }
 
     #[test]
@@ -477,6 +531,20 @@ mod tests {
         assert_eq!(&all[..3], &s(&["Actions", "Captured Output", "Codecierge"])[..]);
         let lower = all_tool_names(&[DynamicTool { identifier: "x".into(), name: "codex".into(), url: "https://c".into() }]);
         assert_eq!(&lower[2..5], &s(&["Codecierge", "codex", "Command History"])[..]);
+        // Numbers in names go by value, as localizedStandardCompare.
+        let web = |n: &str| DynamicTool { identifier: n.into(), name: n.into(), url: "https://w".into() };
+        let numbered: Vec<String> = all_tool_names(&[web("Web 10"), web("Web 2"), web("web 1")]).into_iter().filter(|n| n.to_lowercase().starts_with("web")).collect();
+        assert_eq!(numbered, s(&["web 1", "Web 2", "Web 10"]));
+        assert_eq!(standard_cmp("a02", "a2"), std::cmp::Ordering::Equal);
+        assert_eq!(standard_cmp("a", "a1"), std::cmp::Ordering::Less);
+
+        // Only registered tools stay configured (`configuredTools`): a stale "Web" left from a
+        // removed registry is dropped, so registering "Web" again appends it at the bottom.
+        let stored = s(&["Web", "Profiles", "Junk"]);
+        assert_eq!(configured_names(&stored, &[]), s(&["Profiles"]));
+        assert_eq!(configured_names(&stored, &dynamic_tools(Some(&reg))), s(&["Web", "Profiles"]));
+        let (_, again) = register_dynamic(None, &configured_names(&stored, &[]), "id1", "Web", "https://a", false);
+        assert_eq!(again, s(&["Profiles", "Web"]));
 
         assert!(toggle_named(&s(&["Web"]), "Web").is_empty());
         assert_eq!(toggle_named(&profiles, "Web"), s(&["Profiles", "Web"]));
