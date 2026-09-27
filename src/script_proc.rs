@@ -1,10 +1,14 @@
 //! One launched script's process (iTerm2's `NSTask` in `tryLaunchScript:`, `L:799-853`, and
 //! `waitForTask:`, `L:941-1012`): hidden, stdin empty, stdout and stderr on one pipe, in a Job
-//! Object so the script and whatever it starts end together (Terminate, and Tandem quitting).
+//! Object so Terminate and an API stop end the script and whatever it started. When the script
+//! ends by itself the job is handed back (`into_job`), so its helpers keep running as in iTerm2
+//! until they end or Tandem quits.
 
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
 
 use crate::pty::Notify;
 use crate::script_provision::KillJob;
@@ -19,20 +23,36 @@ enum Msg {
 /// Exit code for a process that could not be waited for (reads as killed, `exit_text`).
 const LOST: u32 = u32::MAX;
 
+/// The exit code Terminate and an API stop give (`STATUS_CONTROL_C_EXIT`), which reads as
+/// "killed by a signal" as iTerm2's SIGHUP and signal 9 do (`SH:182-212`).
+pub const KILLED_CODE: u32 = 0xC000_013A;
+
+/// Output chunks the reader may queue before it waits (the script then waits on its pipe, as
+/// in a terminal), and each chunk's most bytes.
+const QUEUED_CHUNKS: usize = 16;
+const CHUNK: usize = 8192;
+
 pub struct ScriptProcess {
     pid: u32,
     job: KillJob,
     rx: Receiver<Msg>,
-    /// Output taken off the channel by `exit_code` before `try_output` asked for it.
+    /// At most one chunk `exit_code` took off the channel before `take_output` asked for it.
     stash: VecDeque<Vec<u8>>,
     exit: Option<u32>,
+    /// Set by the reader when it woke the app, cleared when output is taken: one wake for any
+    /// number of chunks.
+    woken: Arc<AtomicBool>,
+    notify: Notify,
     /// The Script Console's decoder for this script's output.
     pub decoder: crate::script_launch::Decoder,
+    /// The one-time cookie the script was given (set by the launcher), removed from the jar
+    /// when the script ends; never logged.
+    pub cookie: String,
 }
 
 impl ScriptProcess {
     /// Starts `program` with `args`, exactly `env` as its environment and `cwd` (None: Tandem's
-    /// own). `notify` wakes the app for each piece of output and at the end.
+    /// own). `notify` wakes the app when output waits and at the end.
     pub fn start(program: &Path, args: &[String], env: &[(String, String)], cwd: Option<&Path>, notify: Notify) -> Result<ScriptProcess, String> {
         use std::io::Read;
         use std::os::windows::process::CommandExt;
@@ -64,22 +84,26 @@ impl ScriptProcess {
             return Err(e);
         }
         let pid = child.id();
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(QUEUED_CHUNKS);
+        let woken = Arc::new(AtomicBool::new(false));
+        let (reader_woken, reader_notify) = (woken.clone(), notify.clone());
         std::thread::spawn(move || {
-            let mut buf = vec![0u8; 8192];
+            let mut buf = vec![0u8; CHUNK];
             // Read to the end of the output (every process holding the pipe gone), then wait,
             // as iTerm2 reads until end of file before `waitUntilExit`.
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 || tx.send(Msg::Output(buf[..n].to_vec())).is_err() {
                     break;
                 }
-                notify();
+                if !reader_woken.swap(true, Ordering::AcqRel) {
+                    reader_notify();
+                }
             }
             let code = child.wait().ok().and_then(|s| s.code()).map_or(LOST, |c| c as u32);
             let _ = tx.send(Msg::Exit(code));
-            notify();
+            reader_notify();
         });
-        Ok(ScriptProcess { pid, job, rx, stash: VecDeque::new(), exit: None, decoder: Default::default() })
+        Ok(ScriptProcess { pid, job, rx, stash: VecDeque::new(), exit: None, woken, notify, decoder: Default::default(), cookie: String::new() })
     }
 
     pub fn pid(&self) -> u32 {
@@ -106,22 +130,45 @@ impl ScriptProcess {
         }
     }
 
-    /// Output that arrived, oldest first; None when none waits.
-    pub fn try_output(&mut self) -> Option<Vec<u8>> {
-        self.stash.pop_front().or_else(|| self.receive())
+    /// Output that arrived, oldest first, about `cap` bytes at most (whole chunks); when more
+    /// may wait the app is woken again, so a script that never stops printing is read a piece
+    /// per pass and the app stays responsive.
+    pub fn take_output(&mut self, cap: usize) -> Vec<u8> {
+        self.woken.store(false, Ordering::Release);
+        let mut out = Vec::new();
+        while out.len() < cap {
+            match self.stash.pop_front().or_else(|| self.receive()) {
+                Some(b) => out.extend(b),
+                None => return out,
+            }
+        }
+        (self.notify)();
+        out
     }
 
     /// The exit code once the script ended and all its output was taken.
     pub fn exit_code(&mut self) -> Option<u32> {
-        while let Some(b) = self.receive() {
-            self.stash.push_back(b);
+        if self.stash.is_empty() {
+            if let Some(b) = self.receive() {
+                self.stash.push_back(b);
+            }
         }
         if self.stash.is_empty() { self.exit } else { None }
     }
 
-    /// Ends the script and everything it started (`TerminateJobObject`, exit code 1).
+    /// Ends the script and everything it started (`TerminateJobObject` with `KILLED_CODE`).
     pub fn terminate(&mut self) {
-        self.job.terminate();
+        self.job.terminate_with(KILLED_CODE);
+    }
+
+    /// How many of the script's processes (it and what it started) still run.
+    pub fn active_processes(&self) -> u32 {
+        self.job.active_processes()
+    }
+
+    /// The script's job, for keeping what it started running after it ended by itself.
+    pub(crate) fn into_job(self) -> KillJob {
+        self.job
     }
 }
 
@@ -142,9 +189,7 @@ mod tests {
         let deadline = Instant::now() + limit;
         let mut out = Vec::new();
         loop {
-            while let Some(b) = p.try_output() {
-                out.extend(b);
-            }
+            out.extend(p.take_output(usize::MAX));
             if let Some(code) = p.exit_code() {
                 return (String::from_utf8_lossy(&out).into_owned(), Some(code));
             }
@@ -168,12 +213,40 @@ mod tests {
         assert!(out.contains("out") && out.contains("err"), "{out:?}");
         assert_eq!(code, Some(3));
 
-        let mut p = ScriptProcess::start(Path::new("ping.exe"), &args(&["-n", "30", "127.0.0.1"]), &env_with(&[]), None, quiet.clone()).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        // Terminate ends the script and what it started (a grandchild ping here), and reads
+        // as killed.
+        let mut p = ScriptProcess::start(Path::new("cmd.exe"), &args(&["/c", "start /b ping.exe -n 30 127.0.0.1 & ping.exe -n 30 127.0.0.1"]), &env_with(&[]), None, quiet.clone()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while p.active_processes() < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(p.active_processes() >= 3, "cmd and both pings: {}", p.active_processes());
         let t = Instant::now();
         p.terminate();
         let (_, code) = run_out(&mut p, Duration::from_secs(5));
-        assert_eq!(code, Some(1), "ended after {:?}", t.elapsed());
+        assert_eq!(code, Some(KILLED_CODE), "ended after {:?}", t.elapsed());
+        assert_eq!(crate::script_launch::exit_text(KILLED_CODE).as_deref(), Some(crate::script_launch::KILLED));
+        assert_eq!(p.active_processes(), 0, "the grandchild ended with the job");
+
+        // Output is taken a piece at a time; a piece past the cap wakes the app again.
+        let woke = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = woke.clone();
+        let mut p = ScriptProcess::start(Path::new("cmd.exe"), &args(&["/c", "for /l %i in (1,1,400) do @echo 0123456789012345678901234567890123456789"]), &env_with(&[]), None, Arc::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut total = 0;
+        let mut pieces = 0;
+        while p.exit_code().is_none() && Instant::now() < deadline {
+            let piece = p.take_output(100);
+            assert!(piece.len() < 100 + CHUNK, "{}", piece.len());
+            total += piece.len();
+            pieces += usize::from(!piece.is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(p.exit_code(), Some(0));
+        assert!(total >= 400 * 40 && pieces > 1, "{total} bytes in {pieces} pieces");
+        assert!(woke.load(std::sync::atomic::Ordering::SeqCst) >= 1);
 
         let mut p = ScriptProcess::start(Path::new("cmd.exe"), &args(&["/c", "echo %TANDEM_T%"]), &env_with(&[("TANDEM_T", "1")]), None, quiet).unwrap();
         let (out, code) = run_out(&mut p, Duration::from_secs(20));
@@ -222,9 +295,7 @@ mod tests {
         let (mut out, mut rejected) = (Vec::new(), Vec::new());
         let deadline = Instant::now() + Duration::from_secs(60);
         let code = loop {
-            while let Some(b) = p.try_output() {
-                out.extend(b);
-            }
+            out.extend(p.take_output(usize::MAX));
             if let Some(code) = p.exit_code() {
                 break Some(code);
             }

@@ -652,6 +652,9 @@ pub struct App {
     /// failure notification was posted last (a click reveals its entry; a session's alert
     /// takes the click over, as `last_notified`).
     script_procs: HashMap<String, crate::script_proc::ScriptProcess>,
+    /// The jobs of scripts that ended by themselves while something they started still runs;
+    /// dropped when that ends (closing a job ends what is in it, so Tandem's quit ends them).
+    script_jobs_left: Vec<crate::script_provision::KillJob>,
     script_after_enable: Vec<crate::script_launch::Request>,
     last_notified_script: Option<String>,
     /// Status bar strings with function calls, by session and string: their shown values
@@ -1046,6 +1049,7 @@ pub fn run() {
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
         script_procs: HashMap::new(),
+        script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
         last_notified_script: None,
         unread_counts: HashMap::new(),

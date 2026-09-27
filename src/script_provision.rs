@@ -394,20 +394,41 @@ impl KillJob {
     }
 
     /// Puts a process started suspended in the job, then lets it run, so nothing it starts can
-    /// get out of the job first.
+    /// get out of the job first. A process none of whose threads could be resumed would sit
+    /// suspended for ever: that is a failed start.
     pub(crate) fn adopt(&self, child: &std::process::Child) -> Result<(), String> {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
         if unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) } == 0 {
             return Err(format!("AssignProcessToJobObject failed: {}", std::io::Error::last_os_error()));
         }
-        resume_threads(child.id());
+        if resume_threads(child.id()) == 0 {
+            return Err(format!("Could not resume the new process: {}", std::io::Error::last_os_error()));
+        }
         Ok(())
     }
 
     /// Ends every process in the job with exit code 1.
     pub(crate) fn terminate(&self) {
-        unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) };
+        self.terminate_with(1);
+    }
+
+    /// Ends every process in the job with exit code `code`.
+    pub(crate) fn terminate_with(&self, code: u32) {
+        unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, code) };
+    }
+
+    /// How many processes in the job are still running (0 when that cannot be read).
+    pub(crate) fn active_processes(&self) -> u32 {
+        use windows_sys::Win32::System::JobObjects::{JobObjectBasicAccountingInformation, QueryInformationJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION};
+        unsafe {
+            let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
+            let size = std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32;
+            if QueryInformationJobObject(self.0, JobObjectBasicAccountingInformation, (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(), size, std::ptr::null_mut()) == 0 {
+                return 0;
+            }
+            info.ActiveProcesses
+        }
     }
 }
 
@@ -418,17 +439,19 @@ impl Drop for KillJob {
     }
 }
 
-/// Resumes the threads of a process started suspended (it has only its first one).
+/// Resumes the threads of a process started suspended (it has only its first one); how many
+/// were resumed.
 #[cfg(windows)]
-fn resume_threads(pid: u32) {
+fn resume_threads(pid: u32) -> u32 {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
     use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
     unsafe {
         let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if snap == INVALID_HANDLE_VALUE {
-            return;
+            return 0;
         }
+        let mut resumed = 0;
         let mut entry: THREADENTRY32 = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
         let mut more = Thread32First(snap, &mut entry) != 0;
@@ -436,13 +459,16 @@ fn resume_threads(pid: u32) {
             if entry.th32OwnerProcessID == pid {
                 let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
                 if !thread.is_null() {
-                    ResumeThread(thread);
+                    if ResumeThread(thread) != u32::MAX {
+                        resumed += 1;
+                    }
                     CloseHandle(thread);
                 }
             }
             more = Thread32Next(snap, &mut entry) != 0;
         }
         CloseHandle(snap);
+        resumed
     }
 }
 

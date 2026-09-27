@@ -19,6 +19,10 @@ use crate::script_runtime as rt;
 /// The most of a first line read for its shebang.
 const FIRST_LINE_LIMIT: u64 = 4096;
 
+/// The most output taken from one script in one pass of the loop; the rest waits for the
+/// next pass.
+const OUTPUT_PER_PASS: usize = 64 * 1024;
+
 /// A script's first line (`L:677-723` reads it with `fgetln`).
 fn first_line(p: &Path) -> Option<String> {
     let file = std::fs::File::open(p).ok()?;
@@ -78,7 +82,10 @@ impl App {
             // iTerm2 only logs this to its debug log.
             LaunchGate::Skip => {}
             LaunchGate::EnableFirst => {
-                self.script_after_enable.push(req);
+                // iTerm2's alert is modal, so picking the script again cannot queue a second copy.
+                if !self.script_after_enable.iter().any(|r| r.path == req.path) {
+                    self.script_after_enable.push(req);
+                }
                 self.queue_api_alert(Alert::Enable);
             }
             LaunchGate::Launch => {
@@ -128,10 +135,11 @@ impl App {
         let mut args = vec![main.to_string_lossy().into_owned()];
         args.extend(req.args.iter().cloned());
         match ScriptProcess::start(&python, &args, &env, None, self.notify.clone()) {
-            Ok(p) => {
+            Ok(mut p) => {
                 if let Some(e) = self.script_history.find_mut(&key) {
                     e.pids = vec![p.pid()];
                 }
+                p.cookie = cookie;
                 self.script_procs.insert(key, p);
             }
             Err(e) => {
@@ -174,38 +182,52 @@ impl App {
         }
     }
 
-    /// Moves each script's output into its entry; an ended script's entry gets the exit text
-    /// and, unless the person terminated it, a notification (`L:960-1012`), then stops.
+    /// Moves each script's output into its entry (a piece per pass); an ended script's entry
+    /// gets the exit text and, unless the person terminated it, a notification
+    /// (`L:960-1012`), then stops. Redraws only when something changed.
     pub(super) fn scripts_tick(&mut self) {
+        // What ended scripts left running is let go once it has ended too.
+        self.script_jobs_left.retain(|j| j.active_processes() > 0);
         if self.script_procs.is_empty() {
             return;
         }
+        let mut changed = false;
         let ids: Vec<String> = self.script_procs.keys().cloned().collect();
         for id in ids {
             let Some(p) = self.script_procs.get_mut(&id) else { continue };
-            let mut text = String::new();
-            while let Some(bytes) = p.try_output() {
-                text.push_str(&p.decoder.push(&bytes));
-            }
+            let bytes = p.take_output(OUTPUT_PER_PASS);
+            let text = p.decoder.push(&bytes);
             let code = p.exit_code();
             if !text.is_empty() {
                 let stamp = self.history_stamp();
                 self.script_history.add_log(&id, &text, &stamp);
+                changed = true;
             }
             if let Some(code) = code {
                 self.script_ended(&id, code);
+                changed = true;
             }
         }
-        self.redraw();
+        if changed {
+            self.redraw();
+        }
     }
 
     fn script_ended(&mut self, id: &str, code: u32) {
-        // Whatever the script left running ends with its job.
-        self.script_procs.remove(id);
+        if let Some(p) = self.script_procs.remove(id) {
+            // A one-time cookie the script never used goes (using it removed it already).
+            self.api_jar.lock().unwrap().remove(&p.cookie);
+            // What the script started keeps running, as in iTerm2 (`L:960-1010` signals
+            // nothing); its job is kept until that ends, or Tandem quits.
+            let job = p.into_job();
+            if job.active_processes() > 0 {
+                self.script_jobs_left.push(job);
+            }
+        }
         if let Some(text) = sl::exit_text(code) {
             let stamp = self.history_stamp();
             self.script_history.add_log(id, &text, &stamp);
-            let failed = self.script_history.find(id).filter(|e| !e.terminated_by_user).map(|e| e.name.clone());
+            let failed = self.script_history.find(id).filter(|e| sl::notifies(code, e.terminated_by_user)).map(|e| e.name.clone());
             if let Some(name) = failed {
                 match crate::notify::show_with(sl::SCRIPT_FAILED, &sl::ended_unexpectedly(&name), self.globals.bool("silentUserNotifications")) {
                     Ok(()) => {

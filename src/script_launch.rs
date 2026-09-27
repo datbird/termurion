@@ -218,6 +218,11 @@ impl Decoder {
 
 /// The notification when a script ends unexpectedly (`L:985-993`).
 pub const SCRIPT_FAILED: &str = "Script Failed";
+/// Whether a script's end posts "Script Failed" (`L:983-1004`): only an abnormal end (a
+/// status other than 0, or killed) the person did not ask for.
+pub fn notifies(code: u32, terminated_by_user: bool) -> bool {
+    exit_text(code).is_some() && !terminated_by_user
+}
 pub fn ended_unexpectedly(name: &str) -> String {
     format!("\u{201c}{name}\u{201d} ended unexpectedly.")
 }
@@ -354,6 +359,8 @@ mod tests {
         assert_eq!(exit_text(0xC000013A).as_deref(), Some("\n** Script was killed by a signal **"));
         assert_eq!(ended_unexpectedly("tool"), "\u{201c}tool\u{201d} ended unexpectedly.");
         assert_eq!(SCRIPT_FAILED, "Script Failed");
+        assert!(notifies(3, false) && notifies(0xC000013A, false));
+        assert!(!notifies(0, false) && !notifies(3, true) && !notifies(0xC000013A, true));
         assert_eq!(ERROR_RUNNING_TITLE, "Error running script");
         assert_eq!(error_running(r"C:\S\a.py", "boom"), "Script at \u{201c}C:\\S\\a.py\u{201d} failed.\n\nboom");
         assert_eq!(failed_to_launch("boom"), "ERROR: Failed to launch: boom");
