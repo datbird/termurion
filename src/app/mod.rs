@@ -568,6 +568,8 @@ pub struct App {
     /// "Enable Python API" and "Allow all apps to connect" as last acted on, so a change of
     /// another setting does not act on them again.
     api_settings_seen: (bool, bool),
+    /// "Enable Python API?" was confirmed (its marker file exists): the server may start.
+    api_consent: bool,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -882,6 +884,7 @@ pub fn run() {
         api_pending: HashMap::new(),
         api_reset_seen: None,
         api_settings_seen: (false, false),
+        api_consent: false,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));

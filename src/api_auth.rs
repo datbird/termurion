@@ -184,7 +184,6 @@ pub fn noauth_status(path: &str, file: Option<&NoauthFile>) -> AllowAll {
 pub fn read_noauth_file(path: &str) -> Option<NoauthFile> {
     use std::io::Read;
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-    use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
         FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
@@ -211,7 +210,7 @@ pub fn read_noauth_file(path: &str) -> Option<NoauthFile> {
         FileKind::Regular
     };
     let size = meta.file_size();
-    let owner_is_user = match (crate::winpipe::file_owner_sid(file.as_raw_handle()), crate::winpipe::user_sid()) {
+    let owner_is_user = match (crate::winpipe::file_owner_sid(&file), crate::winpipe::user_sid()) {
         (Ok(owner), Ok(user)) => owner == user,
         _ => false,
     };

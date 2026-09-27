@@ -10,7 +10,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use super::App;
-use crate::api_auth::{self, AllowAll, AllowAllStep, AskAnswer, EnableStep, LogEntry, Verdict};
+use crate::api_auth::{self, AllowAll, AllowAllStep, AskAnswer, LogEntry, Verdict};
 use crate::api_server::{Event, Pending, Server};
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 
@@ -81,6 +81,117 @@ pub(super) fn form(alert: &Alert, set_cookie: bool) -> Form {
     }
 }
 
+/// What the server should do for "Enable Python API" and the consent marker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ServerStep {
+    /// Run (start it if it does not run).
+    Start,
+    /// The setting is on but "Enable Python API?" was never confirmed: turn the setting back
+    /// off and ask.
+    Warn,
+    /// Stop it, and forget the consent.
+    Off,
+}
+
+/// The server never starts unless the forced warning was confirmed: the setting alone, however
+/// it was written (the Settings checkbox, Import from iTerm2, a Toggle Setting key, an edited
+/// file), only asks.
+pub(super) fn start_rule(setting: bool, consent: bool) -> ServerStep {
+    match (setting, consent) {
+        (true, true) => ServerStep::Start,
+        (true, false) => ServerStep::Warn,
+        (false, _) => ServerStep::Off,
+    }
+}
+
+/// Which of ("Enable Python API", "Allow all apps to connect") differ from the values last acted
+/// on, as their new values.
+pub(super) fn changes(seen: (bool, bool), now: (bool, bool)) -> (Option<bool>, Option<bool>) {
+    ((now.0 != seen.0).then_some(now.0), (now.1 != seen.1).then_some(now.1))
+}
+
+/// The alert holds a waiting connection.
+fn holds_connection(a: &Alert) -> bool {
+    matches!(a, Alert::Allow { .. } | Alert::ConfirmAlways { .. })
+}
+
+/// A stopped server closed every connection: none waits, and their alerts go.
+pub(super) fn clear_on_stop<P, W>(pending: &mut std::collections::HashMap<u64, P>, alerts: &mut Vec<(Option<W>, Alert)>) {
+    pending.clear();
+    alerts.retain(|(_, a)| !holds_connection(a));
+}
+
+/// What answering an alert does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Effect {
+    /// Record the consent, turn "Enable Python API" on and start the server.
+    Enable,
+    Verdict { conn: u64, allow: bool, reason: &'static str },
+    OpenUrl(&'static str),
+    /// Show Always's confirmation next.
+    ConfirmAlways { conn: u64 },
+    /// Turn `setCookie` on.
+    SetCookie,
+    WriteAllowAll,
+    /// The popup shows the file again.
+    Mirror,
+    /// "Suppress this message permanently" for the reset warning.
+    SilenceReset,
+    /// Settings > General.
+    RevealPreference,
+    /// The allow-all file selected in Explorer.
+    RevealFile,
+}
+
+/// The effects of button `index` (a closed window answers `close_index`'s button).
+pub(super) fn effects(alert: &Alert, index: usize, suppress: bool) -> Vec<Effect> {
+    use Effect::*;
+    let verdict = |conn, allow, reason| Verdict { conn, allow, reason };
+    match alert {
+        // Cancel leaves the setting off (`H:647-649`).
+        Alert::Enable => if index == 0 { vec![Enable] } else { vec![] },
+        Alert::Allow { conn } => match api_auth::ask_answer(index) {
+            AskAnswer::Allow => vec![verdict(*conn, true, api_auth::REASON_ALLOWED)],
+            AskAnswer::Deny => vec![verdict(*conn, false, api_auth::REASON_DENIED)],
+            AskAnswer::MoreInfo => vec![OpenUrl(api_auth::SECURITY_URL), verdict(*conn, false, api_auth::REASON_DENIED)],
+            // The confirmation shows next; the connection keeps waiting.
+            AskAnswer::Always => vec![ConfirmAlways { conn: *conn }],
+        },
+        Alert::ConfirmAlways { conn } => {
+            if index == 0 { vec![SetCookie, verdict(*conn, true, api_auth::REASON_ALLOWED)] } else { vec![verdict(*conn, false, api_auth::REASON_DENIED)] }
+        }
+        Alert::AllowAll => match index {
+            0 => vec![WriteAllowAll, Mirror],
+            2 => vec![OpenUrl(api_auth::AUTH_URL), Mirror],
+            _ => vec![Mirror],
+        },
+        // The checkbox is remembered only for OK: "Reveal Preference" is a one-time navigation
+        // (`H:449-451`).
+        Alert::Reset => match index {
+            0 if suppress => vec![SilenceReset],
+            1 => vec![RevealPreference],
+            _ => vec![],
+        },
+        Alert::RemoveFailed(_) => if index == 1 { vec![RevealFile] } else { vec![] },
+        Alert::MakeChangeFailed(_) | Alert::StartFailed(_) => vec![],
+    }
+}
+
+/// The consent marker: a file beside the settings that only OK in "Enable Python API?" writes,
+/// so no writer of the settings (an import, a key action, an edited file) can grant it.
+fn consent_path() -> std::path::PathBuf {
+    crate::globals::default_path().with_file_name("python-api-consent")
+}
+
+/// Writes the consent marker.
+fn record_consent() -> std::io::Result<()> {
+    let path = consent_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, b"confirmed\n")
+}
+
 /// The allow-all file's path, from `USERPROFILE`.
 fn noauth_path() -> Option<String> {
     std::env::var("USERPROFILE").ok().filter(|p| !p.is_empty()).map(|p| api_auth::noauth_path(&p))
@@ -94,13 +205,13 @@ fn noauth_now() -> (AllowAll, Option<api_auth::NoauthFile>) {
 }
 
 /// Writes the allow-all file as iTerm2 does (`H:538-560`): the contents go to a new temporary
-/// file beside it, owned by the user (an elevated Tandem's files are otherwise owned by
-/// Administrators, which the check reads as no file), then moved over the path, so a link at
-/// the path is replaced, never written through.
-pub(super) fn write_noauth_file(path: &str) -> Result<(), String> {
+/// file beside it, then moved over the path, so a link at the path is replaced, never written
+/// through. With `set_owner` (an elevated Tandem, whose files are otherwise owned by
+/// Administrators, which the check reads as no file) the temporary file is given the user as
+/// its owner first.
+pub(super) fn write_noauth_file(path: &str, set_owner: bool) -> Result<(), String> {
     use std::io::Write;
     use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_WRITE, READ_CONTROL, WRITE_OWNER};
     let target = std::path::Path::new(path);
     if let Some(dir) = target.parent() {
@@ -108,8 +219,11 @@ pub(super) fn write_noauth_file(path: &str) -> Result<(), String> {
     }
     let temp = format!("{path}.{}.tmp", api_auth::cookie_text(*uuid::Uuid::new_v4().as_bytes()));
     let written = (|| {
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).access_mode(FILE_GENERIC_WRITE | WRITE_OWNER | READ_CONTROL).open(&temp).map_err(|e| e.to_string())?;
-        crate::winpipe::set_file_owner_to_user(f.as_raw_handle())?;
+        let access = if set_owner { FILE_GENERIC_WRITE | WRITE_OWNER | READ_CONTROL } else { FILE_GENERIC_WRITE };
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).access_mode(access).open(&temp).map_err(|e| e.to_string())?;
+        if set_owner {
+            crate::winpipe::set_file_owner_to_user(&f)?;
+        }
         f.write_all(api_auth::noauth_contents(path).as_bytes()).map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
         drop(f);
@@ -125,52 +239,65 @@ impl App {
     /// At the first window: the popup mirrors the file and the server starts when the setting
     /// is on.
     pub(super) fn api_launch(&mut self) {
+        self.api_consent = consent_path().is_file();
         self.api_settings_seen.0 = self.globals.bool(ENABLE_KEY);
         self.api_mirror_auth();
         self.sync_api_server();
     }
 
-    /// Starts the server when "Enable Python API" is on and it does not run; stops it (every
-    /// connection closed, `H:782-795`) when the setting is off. A failed start shows why and
-    /// leaves the API off.
+    /// The one start and stop point (`start_rule`): the server starts only when "Enable Python
+    /// API" is on and its warning was confirmed; on without that turns the setting back off and
+    /// asks (a declined warning leaves it off); off stops the server (every connection closed,
+    /// `H:782-795`, dropped on another thread so the UI never waits for scripts to close) and
+    /// forgets the consent. A failed start shows why and leaves the API off.
     pub(super) fn sync_api_server(&mut self) {
-        let want = self.globals.bool(ENABLE_KEY);
-        if want && self.api_server.is_none() {
-            let jar = self.api_jar.clone();
-            let cookie: crate::api_server::CookieCheck = Arc::new(move |c: &str| jar.lock().unwrap().consume(c));
-            match Server::start(crate::api_http::PORT, Arc::new(crate::api_peer::check), cookie, self.notify.clone()) {
-                Ok(s) => self.api_server = Some(s),
-                Err(e) => {
-                    let owner = port_owner(crate::api_http::PORT);
-                    self.queue_api_alert(Alert::StartFailed(start_failed_text(&e, owner.as_deref())));
+        match start_rule(self.globals.bool(ENABLE_KEY), self.api_consent) {
+            ServerStep::Start if self.api_server.is_none() => {
+                let jar = self.api_jar.clone();
+                let cookie: crate::api_server::CookieCheck = Arc::new(move |c: &str| jar.lock().unwrap().consume(c));
+                match Server::start(crate::api_http::PORT, Arc::new(crate::api_peer::check), cookie, self.notify.clone()) {
+                    Ok(s) => self.api_server = Some(s),
+                    Err(e) => {
+                        let owner = port_owner(crate::api_http::PORT);
+                        self.queue_api_alert(Alert::StartFailed(start_failed_text(&e, owner.as_deref())));
+                    }
                 }
             }
-        } else if !want && self.api_server.is_some() {
-            self.api_server = None;
-            self.api_pending.clear();
-            self.api_alerts.retain(|(_, a)| !matches!(a, Alert::Allow { .. } | Alert::ConfirmAlways { .. }));
+            ServerStep::Start => {}
+            ServerStep::Warn => {
+                // The checkbox shows off until OK, as iTerm2 turns it back off.
+                self.set_api_enabled(false);
+                self.queue_api_alert(Alert::Enable);
+            }
+            ServerStep::Off => {
+                if let Some(s) = self.api_server.take() {
+                    std::thread::spawn(move || drop(s));
+                }
+                clear_on_stop(&mut self.api_pending, &mut self.api_alerts);
+                if self.api_consent {
+                    self.api_consent = false;
+                    let _ = std::fs::remove_file(consent_path());
+                }
+            }
         }
         self.api_on = self.api_server.is_some();
     }
 
-    /// A global setting changed in the Settings window: acts on "Enable Python API" and the
-    /// authentication popup when they are what changed (`GP:3512-3535`, `GP:2045-2053`).
+    /// Acts on "Enable Python API" and the authentication popup when either changed, whoever
+    /// changed it: called after a Settings edit and on every pass (`GP:3512-3535`,
+    /// `GP:2045-2053`).
     pub(super) fn api_settings_changed(&mut self) {
-        let enable = self.globals.bool(ENABLE_KEY);
-        if enable != self.api_settings_seen.0 {
-            self.api_settings_seen.0 = enable;
-            match api_auth::enable_step(enable, self.api_on) {
-                EnableStep::Confirm => {
-                    // The checkbox shows off until OK, as iTerm2 turns it back off.
-                    self.set_api_enabled(false);
-                    self.queue_api_alert(Alert::Enable);
-                }
-                EnableStep::Stop => self.sync_api_server(),
-                EnableStep::Nothing => {}
-            }
+        // Nothing is acted on before the first window's `api_launch`.
+        if self.gpu.is_none() {
+            return;
         }
-        let want_allow_all = self.globals.int(AUTH_KEY) == 1;
-        if want_allow_all != self.api_settings_seen.1 {
+        let now = (self.globals.bool(ENABLE_KEY), self.globals.int(AUTH_KEY) == 1);
+        let (enable, allow_all) = changes(self.api_settings_seen, now);
+        if let Some(on) = enable {
+            self.api_settings_seen.0 = on;
+            self.sync_api_server();
+        }
+        if let Some(want_allow_all) = allow_all {
             match api_auth::allow_all_step(self.allow_all_checked(), want_allow_all) {
                 AllowAllStep::Warn => self.queue_api_alert(Alert::AllowAll),
                 AllowAllStep::Remove => self.remove_allow_all(),
@@ -210,15 +337,16 @@ impl App {
     /// Writes (on) or deletes (off) the allow-all file.
     pub(super) fn set_allow_all(&mut self, on: bool) -> Result<(), String> {
         let path = noauth_path().ok_or_else(|| "USERPROFILE is not set".to_string())?;
-        if on { write_noauth_file(&path) } else { std::fs::remove_file(&path).map_err(|e| e.to_string()) }
+        if on { write_noauth_file(&path, crate::winpipe::elevated().unwrap_or(false)) } else { std::fs::remove_file(&path).map_err(|e| e.to_string()) }
     }
 
-    /// The popup's value is never trusted: it shows the file.
+    /// The popup's value is never trusted: it shows the file, and is saved like any setting.
     fn api_mirror_auth(&mut self) {
         let allow_all = self.allow_all_state() == AllowAll::Valid;
         self.api_settings_seen.1 = allow_all;
         if self.globals.int(AUTH_KEY) != allow_all as i64 {
             self.globals.set(AUTH_KEY, toml::Value::Integer(allow_all as i64));
+            self.save_globals();
         }
     }
 
@@ -248,6 +376,8 @@ impl App {
 
     /// Takes the server's events: connections to authorize, messages, closes and refusals.
     pub(super) fn api_tick(&mut self, event_loop: &ActiveEventLoop) {
+        // A setting written by any path (an import, a key action) is acted on here.
+        self.api_settings_changed();
         while let Some(event) = self.api_server.as_ref().and_then(Server::try_event) {
             match event {
                 Event::Pending(p) => self.api_authorize(p),
@@ -356,61 +486,37 @@ impl App {
     }
 
     fn api_alert_answered(&mut self, alert: Alert, index: usize, suppress: bool, event_loop: &ActiveEventLoop) {
-        match alert {
-            Alert::Enable => {
-                // Cancel leaves the setting off (`H:647-649`).
-                if index == 0 {
+        for effect in effects(&alert, index, suppress) {
+            match effect {
+                Effect::Enable => {
+                    // The consent is what lets the server start, now and at later launches.
+                    if let Err(e) = record_consent() {
+                        self.banners.set("api", format!("Could not record the Python API choice: {e}"));
+                    }
+                    self.api_consent = true;
                     self.set_api_enabled(true);
                     self.sync_api_server();
                 }
-            }
-            Alert::Allow { conn } => match api_auth::ask_answer(index) {
-                AskAnswer::Allow => self.api_decided(conn, true, api_auth::REASON_ALLOWED),
-                AskAnswer::Deny => self.api_decided(conn, false, api_auth::REASON_DENIED),
-                AskAnswer::MoreInfo => {
-                    self.open_link(api_auth::SECURITY_URL);
-                    self.api_decided(conn, false, api_auth::REASON_DENIED);
-                }
-                // The confirmation shows next; the connection keeps waiting.
-                AskAnswer::Always => self.api_alerts.insert(0, (None, Alert::ConfirmAlways { conn })),
-            },
-            Alert::ConfirmAlways { conn } => {
-                if index == 0 {
+                Effect::Verdict { conn, allow, reason } => self.api_decided(conn, allow, reason),
+                Effect::OpenUrl(url) => self.open_link(url),
+                Effect::ConfirmAlways { conn } => self.api_alerts.insert(0, (None, Alert::ConfirmAlways { conn })),
+                Effect::SetCookie => {
                     self.globals.set(SET_COOKIE_KEY, toml::Value::Boolean(true));
                     self.save_globals();
-                    self.api_decided(conn, true, api_auth::REASON_ALLOWED);
-                } else {
-                    self.api_decided(conn, false, api_auth::REASON_DENIED);
                 }
-            }
-            Alert::AllowAll => {
-                match index {
-                    0 => {
-                        if let Err(e) = self.set_allow_all(true) {
-                            self.queue_api_alert(Alert::MakeChangeFailed(e));
-                        }
+                Effect::WriteAllowAll => {
+                    if let Err(e) = self.set_allow_all(true) {
+                        self.queue_api_alert(Alert::MakeChangeFailed(e));
                     }
-                    2 => self.open_link(api_auth::AUTH_URL),
-                    _ => {}
                 }
-                self.api_mirror_auth();
-            }
-            Alert::Reset => match index {
-                // The checkbox is remembered only for OK: "Reveal Preference" is a one-time
-                // navigation (`H:449-451`).
-                0 if suppress => {
+                Effect::Mirror => self.api_mirror_auth(),
+                Effect::SilenceReset => {
                     self.globals.set(api_auth::RESET_ID, toml::Value::Boolean(true));
                     self.save_globals();
                 }
-                1 => self.open_settings_page(event_loop, crate::settings_ui::Page::General),
-                _ => {}
-            },
-            Alert::RemoveFailed(_) => {
-                if index == 1 {
-                    self.reveal_allow_all_file();
-                }
+                Effect::RevealPreference => self.open_settings_page(event_loop, crate::settings_ui::Page::General),
+                Effect::RevealFile => self.reveal_allow_all_file(),
             }
-            Alert::MakeChangeFailed(_) | Alert::StartFailed(_) => {}
         }
     }
 
@@ -474,24 +580,87 @@ mod tests {
     }
 
     #[test]
+    fn start_rule_needs_consent() {
+        assert_eq!(start_rule(true, true), ServerStep::Start);
+        assert_eq!(start_rule(true, false), ServerStep::Warn);
+        assert_eq!(start_rule(false, true), ServerStep::Off);
+        assert_eq!(start_rule(false, false), ServerStep::Off);
+    }
+
+    #[test]
+    fn settings_changes_are_tracked() {
+        assert_eq!(changes((false, false), (false, false)), (None, None));
+        assert_eq!(changes((false, false), (true, false)), (Some(true), None));
+        assert_eq!(changes((true, true), (true, false)), (None, Some(false)));
+        assert_eq!(changes((true, false), (false, true)), (Some(false), Some(true)));
+    }
+
+    #[test]
+    fn stop_clears_waiting_connections() {
+        let mut pending: std::collections::HashMap<u64, ()> = [(1, ()), (2, ())].into_iter().collect();
+        let mut alerts: Vec<(Option<()>, Alert)> =
+            vec![(Some(()), Alert::Allow { conn: 1 }), (None, Alert::Enable), (None, Alert::ConfirmAlways { conn: 2 }), (None, Alert::Reset)];
+        clear_on_stop(&mut pending, &mut alerts);
+        assert!(pending.is_empty());
+        assert_eq!(alerts.into_iter().map(|(_, a)| a).collect::<Vec<_>>(), [Alert::Enable, Alert::Reset]);
+    }
+
+    #[test]
+    fn alert_answers_follow_iterm2() {
+        use Effect::*;
+        let closed = |a: &Alert| effects(a, crate::prompt_ui::close_index(&form(a, false).labels), false);
+        let deny = |conn| Verdict { conn, allow: false, reason: REASON_DENIED };
+        // Enable: OK turns the API on; Cancel or closing leaves it off.
+        assert_eq!(effects(&Alert::Enable, 0, false), [Enable]);
+        assert_eq!(closed(&Alert::Enable), []);
+        // Allow: OK, Cancel, More Info, Always; closing denies.
+        let allow = Alert::Allow { conn: 4 };
+        assert_eq!(effects(&allow, 0, false), [Verdict { conn: 4, allow: true, reason: REASON_ALLOWED }]);
+        assert_eq!(effects(&allow, 1, false), [deny(4)]);
+        assert_eq!(effects(&allow, 2, false), [OpenUrl(SECURITY_URL), deny(4)]);
+        assert_eq!(effects(&allow, 3, false), [ConfirmAlways { conn: 4 }]);
+        assert_eq!(closed(&allow), [deny(4)]);
+        // Confirm: OK turns setCookie on and allows; Cancel or closing denies.
+        let confirm = Alert::ConfirmAlways { conn: 4 };
+        assert_eq!(effects(&confirm, 0, false), [SetCookie, Verdict { conn: 4, allow: true, reason: REASON_ALLOWED }]);
+        assert_eq!(closed(&confirm), [deny(4)]);
+        // Allow all: OK writes the file, More Info opens the page; the popup mirrors after.
+        assert_eq!(effects(&Alert::AllowAll, 0, false), [WriteAllowAll, Mirror]);
+        assert_eq!(effects(&Alert::AllowAll, 2, false), [OpenUrl(AUTH_URL), Mirror]);
+        assert_eq!(closed(&Alert::AllowAll), [Mirror]);
+        // Reset: the checkbox counts only with OK; closing does nothing.
+        assert_eq!(effects(&Alert::Reset, 0, true), [SilenceReset]);
+        assert_eq!(effects(&Alert::Reset, 0, false), []);
+        assert_eq!(effects(&Alert::Reset, 1, true), [RevealPreference]);
+        assert_eq!(closed(&Alert::Reset), []);
+        // Remove failed: Show in Explorer reveals; closing does nothing.
+        assert_eq!(effects(&Alert::RemoveFailed("t".into()), 1, false), [RevealFile]);
+        assert_eq!(closed(&Alert::RemoveFailed("t".into())), []);
+        assert_eq!(closed(&Alert::MakeChangeFailed("e".into())), []);
+        assert_eq!(closed(&Alert::StartFailed("e".into())), []);
+    }
+
+    #[test]
     fn allow_all_file_is_written_as_the_package_reads_it() {
         let dir = std::env::temp_dir().join(format!("tandem-noauth-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = format!("{}/Library/Application Support/iTerm2/disable-automation-auth", dir.display());
-        write_noauth_file(&path).unwrap();
+        // The owner step (an elevated Tandem's) works for a normal one too.
+        write_noauth_file(&path, true).unwrap();
         let file = read_noauth_file(&path).unwrap();
         assert!(file.owner_is_user);
         assert_eq!(noauth_status(&path, Some(&file)), AllowAll::Valid);
-        // A second write replaces the file, leaving no temporary file behind.
+        // A second write, setting the owner only when elevated as `set_allow_all` does,
+        // replaces the file, leaving no temporary file behind.
         std::fs::write(&path, "stale").unwrap();
-        write_noauth_file(&path).unwrap();
+        write_noauth_file(&path, crate::winpipe::elevated().unwrap()).unwrap();
         assert_eq!(noauth_status(&path, read_noauth_file(&path).as_ref()), AllowAll::Valid);
         let parent = std::path::Path::new(&path).parent().unwrap();
         assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);
         // A directory at the path is not replaced.
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
-        assert!(write_noauth_file(&path).is_err());
+        assert!(write_noauth_file(&path, false).is_err());
         assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }

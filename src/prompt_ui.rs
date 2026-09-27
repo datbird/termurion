@@ -174,6 +174,12 @@ pub fn action_keys(labels: &[&str]) -> (usize, Option<usize>) {
     (0, labels.iter().position(|l| *l == "Cancel"))
 }
 
+/// The button closing an `actions` window answers: Escape's (Cancel), else the first (OK),
+/// which only dismisses. iTerm2's alerts cannot be closed, so closing never acts.
+pub fn close_index(labels: &[&str]) -> usize {
+    action_keys(labels).1.unwrap_or(0)
+}
+
 /// An OK and Cancel question with iTerm2's permanently silenceable checkbox
 /// (`iTermWarning.m:400-406,517-520`: "Suppress this message permanently", remembered only on
 /// OK). Enter is OK and Escape Cancel.
@@ -292,14 +298,14 @@ impl ConfirmWindow {
         Ok(w)
     }
 
-    /// The answer when the window is closed: Cancel, or for an `actions` window Escape's button,
-    /// else its last one, with the checkbox not remembered.
+    /// The answer when the window is closed: Cancel, or for an `actions` window `close_index`'s
+    /// button, with the checkbox not remembered.
     pub fn close_answer(&self) -> ConfirmResult {
         if self.actions.is_empty() {
             return ConfirmResult::Cancel;
         }
         let labels: Vec<&str> = self.actions.iter().map(String::as_str).collect();
-        ConfirmResult::Action { index: action_keys(&labels).1.unwrap_or(labels.len() - 1), suppress: false }
+        ConfirmResult::Action { index: close_index(&labels), suppress: false }
     }
 
     pub fn id(&self) -> WindowId {
@@ -378,6 +384,15 @@ mod tests {
         assert_eq!(action_keys(&["OK", "Cancel", "More Info", "Always"]), (0, Some(1)));
         assert_eq!(action_keys(&["OK", "Reveal Preference"]), (0, None));
         assert_eq!(action_keys(&["OK"]), (0, None));
+    }
+
+    #[test]
+    fn closing_is_harmless() {
+        // Escape's Cancel, else the first (OK) button, which never acts.
+        assert_eq!(close_index(&["OK", "Cancel", "More Info", "Always"]), 1);
+        assert_eq!(close_index(&["OK", "Reveal Preference"]), 0);
+        assert_eq!(close_index(&["OK", "Show in Explorer"]), 0);
+        assert_eq!(close_index(&["OK"]), 0);
     }
 
     #[test]

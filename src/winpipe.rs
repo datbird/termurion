@@ -94,7 +94,9 @@ unsafe fn sid_text(sid: PSID) -> Result<String, String> {
 
 /// The owner SID of an open file or other kernel object, as text. The handle needs
 /// `READ_CONTROL`.
-pub fn file_owner_sid(handle: HANDLE) -> Result<String, String> {
+pub fn file_owner_sid(object: impl std::os::windows::io::AsHandle) -> Result<String, String> {
+    use std::os::windows::io::AsRawHandle;
+    let handle: HANDLE = object.as_handle().as_raw_handle();
     unsafe {
         let mut owner: PSID = null_mut();
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
@@ -120,7 +122,9 @@ pub fn file_owner_sid(handle: HANDLE) -> Result<String, String> {
 /// Makes this user the owner of an open file. An elevated process's new files are owned by
 /// BUILTIN\Administrators; the user's own SID is always a valid owner for its token. The handle
 /// needs `WRITE_OWNER`.
-pub fn set_file_owner_to_user(handle: HANDLE) -> Result<(), String> {
+pub fn set_file_owner_to_user(object: impl std::os::windows::io::AsHandle) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    let handle: HANDLE = object.as_handle().as_raw_handle();
     let text = wide(&user_sid()?);
     unsafe {
         let mut sid: PSID = null_mut();
