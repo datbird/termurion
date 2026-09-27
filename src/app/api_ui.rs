@@ -12,7 +12,8 @@ use winit::window::WindowId;
 
 use super::App;
 use crate::api_auth::{self, AllowAll, AllowAllStep, AskAnswer, LogEntry, Verdict};
-use crate::api_dispatch::{Route, Tx};
+use crate::api_dispatch::{Route, Subscriptions, Transactions, Tx};
+use crate::api_model;
 use crate::api_proto::pb;
 use crate::api_server::{Event, Pending, Server};
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
@@ -42,7 +43,7 @@ pub(super) enum Answer {
 }
 
 /// Requests waiting to be offered to the transaction logic, in order.
-type Work = VecDeque<(u64, pb::ClientOriginatedMessage)>;
+pub(super) type Work = VecDeque<(u64, pb::ClientOriginatedMessage)>;
 
 /// An alert waiting its turn or showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,6 +249,139 @@ pub(super) fn write_noauth_file(path: &str, set_owner: bool) -> Result<(), Strin
     written
 }
 
+/// What the dispatch loop needs of its host: the app, or a test's stand-in with a real server.
+pub(super) trait Host {
+    fn subs(&mut self) -> &mut Subscriptions;
+    fn tx(&mut self) -> &mut Transactions;
+    fn reply(&mut self, conn: u64, m: &pb::ServerOriginatedMessage);
+    /// The answer to a request `route` gives the app.
+    fn answer(&mut self, conn: u64, req: &pb::ClientOriginatedMessage) -> Answer;
+    /// Blocks for the server's next event; None once the server is gone.
+    fn wait_event(&mut self) -> Option<Event>;
+    /// Keeps a connection to authorize or a refusal for after the freeze.
+    fn defer(&mut self, e: Event);
+    /// Forgets a closed connection; the requests its transaction's end released.
+    fn forget(&mut self, conn: u64) -> Work;
+}
+
+/// The app as the dispatch loop's host.
+struct AppHost<'a> {
+    app: &'a mut App,
+    event_loop: &'a ActiveEventLoop,
+}
+
+impl Host for AppHost<'_> {
+    fn subs(&mut self) -> &mut Subscriptions {
+        &mut self.app.api_subs
+    }
+
+    fn tx(&mut self) -> &mut Transactions {
+        &mut self.app.api_tx
+    }
+
+    fn reply(&mut self, conn: u64, m: &pb::ServerOriginatedMessage) {
+        self.app.api_reply(conn, m);
+    }
+
+    fn answer(&mut self, conn: u64, req: &pb::ClientOriginatedMessage) -> Answer {
+        self.app.api_answer(conn, req, self.event_loop)
+    }
+
+    fn wait_event(&mut self) -> Option<Event> {
+        self.app.api_server.as_ref().and_then(Server::wait_event)
+    }
+
+    fn defer(&mut self, e: Event) {
+        self.app.api_deferred.push_back(e);
+    }
+
+    fn forget(&mut self, conn: u64) -> Work {
+        self.app.api_forget(conn)
+    }
+}
+
+/// Offers `work` in order, then freezes while a transaction it began runs.
+pub(super) fn serve(h: &mut impl Host, mut work: Work) {
+    while let Some((conn, req)) = work.pop_front() {
+        offer(h, conn, req, &mut work);
+    }
+    if h.tx().owner().is_some() {
+        freeze(h);
+    }
+}
+
+/// One request through the transaction logic. An end's released requests join `work`, so
+/// they are offered again in order (`S:703-714`): a held begin starts the next transaction
+/// and the requests after it are held behind that one.
+fn offer(h: &mut impl Host, conn: u64, req: pb::ClientOriginatedMessage, work: &mut Work) {
+    match h.tx().offer(conn, req) {
+        Tx::Run(req) => run(h, conn, req),
+        Tx::Held => {}
+        Tx::Began(m) | Tx::Reply(m) => h.reply(conn, &m),
+        Tx::Ended(m) => {
+            h.reply(conn, &m);
+            work.extend(h.tx().release());
+        }
+    }
+}
+
+/// Dispatches a request: answered here, or by the app.
+fn run(h: &mut impl Host, conn: u64, req: pb::ClientOriginatedMessage) {
+    match crate::api_dispatch::route(h.subs(), conn, req) {
+        Route::Reply(m) => h.reply(conn, &m),
+        Route::App(req) => match h.answer(conn, &req) {
+            Answer::Now(m) => h.reply(conn, &m),
+            Answer::Later => {}
+        },
+    }
+}
+
+/// Blocks the UI thread while a transaction runs, as iTerm2's `drainTransaction` blocks its
+/// main queue (`S:675-715`): nothing is drawn and no input is handled. Only the server's
+/// events are taken: the owner's requests run, the others' are held, and connections to
+/// authorize and refusals are deferred. It ends when the owner ends the transaction or its
+/// connection closes (a script that dies mid-transaction always closes it); a released begin
+/// from another connection freezes on in the same loop.
+fn freeze(h: &mut impl Host) {
+    let mut work = Work::new();
+    while let Some(owner) = h.tx().owner() {
+        match h.wait_event() {
+            Some(Event::Message { conn, bytes }) => {
+                if let Some(req) = crate::api_proto::decode(&bytes) {
+                    work.push_back((conn, req));
+                }
+            }
+            Some(Event::Closed { conn }) => work.extend(h.forget(conn)),
+            Some(e @ (Event::Pending(_) | Event::Rejected { .. })) => h.defer(e),
+            // The server is gone, and every connection with it.
+            None => work.extend(h.forget(owner)),
+        }
+        while let Some((conn, req)) = work.pop_front() {
+            offer(h, conn, req, &mut work);
+        }
+    }
+}
+
+/// The model's answer to a request `route` gave the app; iTerm2's malformed error for one it
+/// does not answer.
+pub(super) fn answer_from(req: &pb::ClientOriginatedMessage, model: &api_model::Model) -> Answer {
+    Answer::Now(api_model::answer(req, model).unwrap_or_else(|| crate::api_proto::malformed(req)))
+}
+
+/// Sends each notification to every connection subscribed to its type, in order.
+pub(super) fn post(subs: &Subscriptions, notes: Vec<(pb::NotificationType, pb::Notification)>, send: &mut dyn FnMut(u64, &pb::ServerOriginatedMessage)) {
+    for (kind, n) in notes {
+        let conns = subs.subscribers(kind);
+        if conns.is_empty() {
+            continue;
+        }
+        let m = crate::api_proto::notification(n);
+        for conn in conns {
+            send(conn, &m);
+        }
+    }
+}
+
 impl App {
     /// At the first window: the popup mirrors the file and the server starts when the setting
     /// is on.
@@ -440,7 +574,7 @@ impl App {
     /// a request goes through the transaction logic (`S:1397-1411`).
     pub(super) fn api_message(&mut self, conn: u64, bytes: Vec<u8>, event_loop: &ActiveEventLoop) {
         if let Some(req) = crate::api_proto::decode(&bytes) {
-            self.api_serve(VecDeque::from([(conn, req)]), event_loop);
+            serve(&mut AppHost { app: self, event_loop }, VecDeque::from([(conn, req)]));
         }
     }
 
@@ -449,7 +583,7 @@ impl App {
     /// held.
     pub(super) fn api_closed(&mut self, conn: u64, event_loop: &ActiveEventLoop) {
         let released = self.api_forget(conn);
-        self.api_serve(released, event_loop);
+        serve(&mut AppHost { app: self, event_loop }, released);
     }
 
     /// Forgets a closed connection; the requests its transaction's end released.
@@ -459,79 +593,106 @@ impl App {
         self.api_tx.closed(conn).into()
     }
 
-    /// Offers `work` in order, then freezes while a transaction it began runs.
-    fn api_serve(&mut self, mut work: Work, event_loop: &ActiveEventLoop) {
-        while let Some((conn, req)) = work.pop_front() {
-            self.api_offer(conn, req, &mut work, event_loop);
-        }
-        if let Some(owner) = self.api_tx.owner() {
-            self.api_freeze(owner, event_loop);
-        }
-    }
-
-    /// One request through the transaction logic. An end's released requests join `work`, so
-    /// they are offered again in order (`S:703-714`): a held begin starts the next transaction
-    /// and the requests after it are held behind that one.
-    fn api_offer(&mut self, conn: u64, req: pb::ClientOriginatedMessage, work: &mut Work, event_loop: &ActiveEventLoop) {
-        match self.api_tx.offer(conn, req) {
-            Tx::Run(req) => self.api_run(conn, req, event_loop),
-            Tx::Held => {}
-            Tx::Began(m) | Tx::Reply(m) => self.api_reply(conn, &m),
-            Tx::Ended(m) => {
-                self.api_reply(conn, &m);
-                work.extend(self.api_tx.release());
-            }
-        }
-    }
-
-    /// Dispatches a request: answered here, or by the app.
-    pub(super) fn api_run(&mut self, conn: u64, req: pb::ClientOriginatedMessage, event_loop: &ActiveEventLoop) {
-        match crate::api_dispatch::route(&mut self.api_subs, conn, req) {
-            Route::Reply(m) => self.api_reply(conn, &m),
-            Route::App(req) => match self.api_answer(conn, &req, event_loop) {
-                Answer::Now(m) => self.api_reply(conn, &m),
-                Answer::Later => {}
-            },
-        }
-    }
-
-    /// The app's answer to ListSessions, Focus and GetBroadcastDomains (Task 9); malformed
-    /// until then.
+    /// The app's answer to ListSessions, Focus and GetBroadcastDomains, from a snapshot taken
+    /// for the request.
     pub(super) fn api_answer(&mut self, _conn: u64, req: &pb::ClientOriginatedMessage, _event_loop: &ActiveEventLoop) -> Answer {
-        Answer::Now(crate::api_proto::malformed(req))
-    }
-
-    /// Blocks the UI thread while a transaction runs, as iTerm2's `drainTransaction` blocks its
-    /// main queue (`S:675-715`): nothing is drawn and no input is handled. Only the server's
-    /// events are taken: the owner's requests run, the others' are held, and connections to
-    /// authorize and refusals wait in `api_deferred`. It ends when the owner ends the
-    /// transaction or its connection closes (a script that dies mid-transaction always closes
-    /// it); a released begin from another connection freezes on in the same loop.
-    pub(super) fn api_freeze(&mut self, owner: u64, event_loop: &ActiveEventLoop) {
-        debug_assert_eq!(self.api_tx.owner(), Some(owner));
-        let mut work = Work::new();
-        while let Some(owner) = self.api_tx.owner() {
-            match self.api_server.as_ref().and_then(Server::wait_event) {
-                Some(Event::Message { conn, bytes }) => {
-                    if let Some(req) = crate::api_proto::decode(&bytes) {
-                        work.push_back((conn, req));
-                    }
-                }
-                Some(Event::Closed { conn }) => work.extend(self.api_forget(conn)),
-                Some(e @ (Event::Pending(_) | Event::Rejected { .. })) => self.api_deferred.push_back(e),
-                // The server is gone, and every connection with it.
-                None => work.extend(self.api_forget(owner)),
-            }
-            while let Some((conn, req)) = work.pop_front() {
-                self.api_offer(conn, req, &mut work, event_loop);
-            }
-        }
+        let model = self.api_model();
+        answer_from(req, &model)
     }
 
     /// Sends a message to a connection.
     pub(super) fn api_reply(&self, conn: u64, m: &crate::api_proto::pb::ServerOriginatedMessage) {
         if let Some(s) = &self.api_server {
             s.send(conn, crate::api_proto::encode(m));
+        }
+    }
+
+    /// Posts what changed since the last pass to the subscribers (`H:1000-1133`). Nothing is
+    /// snapshotted while no connection subscribes; the first pass with a subscriber only takes
+    /// the baseline.
+    pub(super) fn api_notify_tick(&mut self) {
+        if !self.api_subs.any() {
+            self.api_last = None;
+            return;
+        }
+        let new = self.api_model();
+        if let Some(old) = self.api_last.take() {
+            let notes = api_model::notifications(&api_model::changes(&old, &new), &new);
+            post(&self.api_subs, notes, &mut |conn, m| self.api_reply(conn, m));
+        }
+        self.api_last = Some(new);
+    }
+
+    /// The snapshot `async_get_app` reads: each window by number (entered to read its tabs,
+    /// the current one restored after, as `snapshot_all` does), the buried sessions, and focus.
+    pub(super) fn api_model(&mut self) -> api_model::Model {
+        let back = self.current_window();
+        let mut windows = Vec::new();
+        let mut key_window = None;
+        for k in self.registry.order() {
+            let Some(id) = self.window_id_of_key(k) else { continue };
+            if !self.enter(id) {
+                continue;
+            }
+            let w = self.api_window(k);
+            if self.focused && self.app_active {
+                key_window = Some(w.id.clone());
+            }
+            windows.push(w);
+        }
+        if let Some(b) = back {
+            self.enter(b);
+        }
+        let buried = self.buried.items().into_iter().map(|(p, title)| api_model::ApiSession { id: p.to_string(), frame: None, grid: None, title }).collect();
+        let current_window = self.last_window.and_then(|w| self.registry.guid(super::windows_ui::key(w))).map(str::to_string);
+        api_model::Model { windows, buried, app_active: self.app_active, key_window, current_window }
+    }
+
+    /// The current window as the snapshot shows it: `k` is its registry key.
+    fn api_window(&self, k: u64) -> api_model::ApiWindow {
+        let frame = self.gpu.as_ref().map_or((0, 0, 0, 0), |g| {
+            let p = g.window.outer_position().unwrap_or_default();
+            let s = g.window.outer_size();
+            (p.x, p.y, s.width as i32, s.height as i32)
+        });
+        let domains = api_model::domains(&self.broadcast, &self.broadcast_view()).into_iter().map(|d| d.into_iter().map(|p| p.to_string()).collect()).collect();
+        api_model::ApiWindow {
+            id: self.registry.guid(k).unwrap_or_default().to_string(),
+            frame,
+            number: self.registry.number(k).unwrap_or(0) as i32,
+            selected_tab: self.tabs.get(self.active).map(|t| t.id),
+            tabs: self.tabs.iter().map(|t| self.api_tab(t)).collect(),
+            domains,
+        }
+    }
+
+    /// A tab of the current window: pane frames in window pixels, grids from each pane's own
+    /// screen, names as the tab bar shows them, and the tmux window and client of its active
+    /// pane.
+    fn api_tab(&self, tab: &super::Tab) -> api_model::ApiTab {
+        use alacritty_terminal::grid::Dimensions;
+        let rects: std::collections::HashMap<_, _> = self.visible(tab).into_iter().collect();
+        let session = |p: crate::layout::PaneId| api_model::ApiSession {
+            id: p.to_string(),
+            frame: rects.get(&p).map(|r| (r.x.round() as i32, r.y.round() as i32, r.w.round() as i32, r.h.round() as i32)),
+            grid: self.panes.get(&p).map(|pane| {
+                let g = pane.own().term().grid();
+                (g.columns() as i32, g.screen_lines() as i32)
+            }),
+            title: self.session_title(p),
+        };
+        let (root, minimized) = api_model::node_of(&tab.layout.tree(), tab.zoomed, &session);
+        let tmux = self.panes.get(&tab.focused).and_then(|p| p.tmux_io()).and_then(|io| {
+            let gw = self.tmux.get(&io.gateway)?;
+            Some((gw.client.clone(), gw.panes.get(&io.pane).map(|(_, w)| *w)))
+        });
+        api_model::ApiTab {
+            id: tab.id,
+            root,
+            active: tab.layout.panes().contains(&tab.focused).then(|| tab.focused.to_string()),
+            tmux_window: tmux.as_ref().and_then(|(_, w)| *w).map_or_else(|| "-1".to_string(), |w| w.to_string()),
+            tmux_connection: tmux.map(|(client, _)| client),
+            minimized,
         }
     }
 
@@ -761,5 +922,170 @@ mod tests {
         assert!(write_noauth_file(&path, false).is_err());
         assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The dispatch loop's host with a real server on an ephemeral loopback port, answering
+    /// from the fixture model, and a log of every reply it sent.
+    struct TestHost {
+        server: Server,
+        subs: Subscriptions,
+        tx: Transactions,
+        model: api_model::Model,
+        deferred: Vec<Event>,
+        replies: Vec<(u64, Option<i64>)>,
+    }
+
+    impl Host for TestHost {
+        fn subs(&mut self) -> &mut Subscriptions {
+            &mut self.subs
+        }
+
+        fn tx(&mut self) -> &mut Transactions {
+            &mut self.tx
+        }
+
+        fn reply(&mut self, conn: u64, m: &pb::ServerOriginatedMessage) {
+            self.replies.push((conn, m.id));
+            self.server.send(conn, crate::api_proto::encode(m));
+        }
+
+        fn answer(&mut self, _conn: u64, req: &pb::ClientOriginatedMessage) -> Answer {
+            answer_from(req, &self.model)
+        }
+
+        fn wait_event(&mut self) -> Option<Event> {
+            self.server.wait_event()
+        }
+
+        fn defer(&mut self, e: Event) {
+            self.deferred.push(e);
+        }
+
+        fn forget(&mut self, conn: u64) -> Work {
+            self.subs.drop_conn(conn);
+            self.tx.closed(conn).into()
+        }
+    }
+
+    type Ws = tungstenite::WebSocket<std::net::TcpStream>;
+
+    /// A websocket client with the stock package's headers, upgraded by the host.
+    fn connect(h: &TestHost) -> (u64, Ws) {
+        use tungstenite::client::IntoClientRequest;
+        let addr = h.server.addrs()[0];
+        let mut req = format!("ws://{addr}/").into_client_request().unwrap();
+        let hd = req.headers_mut();
+        hd.insert("Sec-WebSocket-Protocol", "api.iterm2.com".parse().unwrap());
+        hd.insert("origin", "ws://localhost/".parse().unwrap());
+        hd.insert("x-iterm2-library-version", "python 2.24".parse().unwrap());
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        let hs = std::thread::spawn(move || tungstenite::client::client(req, stream).map_err(|e| e.to_string()));
+        let conn = match next_event(h) {
+            Event::Pending(p) => p.conn,
+            e => panic!("{e:?}"),
+        };
+        h.server.verdict(conn, true);
+        let (ws, _) = hs.join().unwrap().unwrap();
+        ws.get_ref().set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        (conn, ws)
+    }
+
+    fn next_event(h: &TestHost) -> Event {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Some(e) = h.server.try_event() {
+                return e;
+            }
+            assert!(std::time::Instant::now() < deadline, "no event");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn send(ws: &mut Ws, id: i64, sub: pb::client_originated_message::Submessage) {
+        let m = pb::ClientOriginatedMessage { id: Some(id), submessage: Some(sub) };
+        ws.send(tungstenite::Message::binary(prost::Message::encode_to_vec(&m))).unwrap();
+    }
+
+    fn read(ws: &mut Ws) -> pb::ServerOriginatedMessage {
+        loop {
+            match ws.read().unwrap() {
+                tungstenite::Message::Binary(b) => return prost::Message::decode(&b[..]).unwrap(),
+                tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => {}
+                m => panic!("{m:?}"),
+            }
+        }
+    }
+
+    /// The real dispatch loop (`serve`, the freeze included) over a real server: a
+    /// transaction holds another connection's request until it ends, and a notification
+    /// reaches only the subscribed connection.
+    #[test]
+    fn dispatch_loop_holds_and_posts() {
+        use pb::client_originated_message::Submessage as Req;
+        use pb::server_originated_message::Submessage as Resp;
+        let server = Server::start(0, Arc::new(|_: std::net::SocketAddr, _: std::net::SocketAddr| Ok::<u32, String>(1)), Arc::new(|_: &str| false), Arc::new(|| {})).unwrap();
+        let model = api_model::fixture();
+        let mut h = TestHost { server, subs: Default::default(), tx: Default::default(), model: model.clone(), deferred: Vec::new(), replies: Vec::new() };
+        let (a, mut wa) = connect(&h);
+        let (b, mut wb) = connect(&h);
+        let list = || Req::ListSessionsRequest(pb::ListSessionsRequest {});
+        let tx = |begin| Req::TransactionRequest(pb::TransactionRequest { begin: Some(begin) });
+        let script = std::thread::spawn(move || {
+            send(&mut wa, 1, tx(true));
+            let r = read(&mut wa);
+            assert_eq!((r.id, r.submessage), (Some(1), Some(Resp::TransactionResponse(pb::TransactionResponse { status: Some(0) }))));
+            // B's request arrives inside the transaction; A's own request runs.
+            send(&mut wb, 10, list());
+            send(&mut wa, 2, list());
+            assert!(matches!(read(&mut wa), pb::ServerOriginatedMessage { id: Some(2), submessage: Some(Resp::ListSessionsResponse(_)) }));
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            send(&mut wa, 3, tx(false));
+            assert_eq!(read(&mut wa).id, Some(3));
+            // B's held request is answered after the end.
+            assert!(matches!(read(&mut wb), pb::ServerOriginatedMessage { id: Some(10), submessage: Some(Resp::ListSessionsResponse(_)) }));
+            // B subscribes; the notification reaches B and not A (A's next message is its
+            // own answer).
+            let notif = Req::NotificationRequest(pb::NotificationRequest {
+                session: Some("all".into()),
+                subscribe: Some(true),
+                notification_type: Some(pb::NotificationType::NotifyOnNewSession as i32),
+                arguments: None,
+            });
+            send(&mut wb, 11, notif);
+            assert_eq!(read(&mut wb).id, Some(11));
+            let n = read(&mut wb);
+            match n.submessage {
+                Some(Resp::Notification(n)) => assert_eq!(n.new_session_notification.and_then(|s| s.session_id).as_deref(), Some("10")),
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(n.id, None);
+            send(&mut wa, 4, Req::FocusRequest(pb::FocusRequest {}));
+            assert!(matches!(read(&mut wa), pb::ServerOriginatedMessage { id: Some(4), submessage: Some(Resp::FocusResponse(_)) }));
+        });
+        // The loop the app runs: each message through `serve`; the begin freezes it until
+        // the end.
+        let message = |h: &mut TestHost| match next_event(h) {
+            Event::Message { conn, bytes } => serve(h, VecDeque::from([(conn, crate::api_proto::decode(&bytes).unwrap())])),
+            e => panic!("{e:?}"),
+        };
+        message(&mut h);
+        assert_eq!(h.replies, [(a, Some(1)), (a, Some(2)), (a, Some(3)), (b, Some(10))]);
+        assert_eq!(h.tx.owner(), None);
+        message(&mut h);
+        // A new session, posted as the app's notification tick posts it.
+        let mut new = model.clone();
+        new.windows[1].tabs[0].root = api_model::node_of(
+            &crate::layout::Tree::Split { axis: crate::layout::Axis::Row, ratio: 0.5, a: Box::new(crate::layout::Tree::Leaf(7)), b: Box::new(crate::layout::Tree::Leaf(10)) },
+            None,
+            &api_model::fixture_session,
+        )
+        .0;
+        let notes = api_model::notifications(&api_model::changes(&model, &new), &new);
+        assert!(notes.len() > 1, "a layout change as well, to nobody");
+        let server = &h.server;
+        post(&h.subs, notes, &mut |conn, m| server.send(conn, crate::api_proto::encode(m)));
+        message(&mut h);
+        script.join().unwrap();
+        assert!(h.deferred.is_empty());
     }
 }

@@ -1378,4 +1378,94 @@ mod tests {
         }
         assert!(TcpStream::connect_timeout(&addr, Duration::from_secs(5)).is_err());
     }
+
+    /// A Python with the stock `iterm2` package: `target\\api-venv` when someone prepared it,
+    /// else `py -3`. Nothing is ever installed or downloaded here.
+    fn python_with_iterm2() -> Option<(std::path::PathBuf, Vec<&'static str>)> {
+        let venv = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("api-venv").join("Scripts").join("python.exe");
+        let candidates = [(venv, vec![]), (std::path::PathBuf::from("py"), vec!["-3"])];
+        candidates.into_iter().find(|(exe, args)| {
+            std::process::Command::new(exe)
+                .args(args)
+                .args(["-c", "import iterm2"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+    }
+
+    /// The stock `iterm2` package, unmodified, connects on port 1912 with a session cookie and
+    /// builds its App from Tandem's answers (the fixture model through `route` and `answer`).
+    /// Run with `scripts/xt test --lib stock_iterm2 -- --ignored`.
+    #[test]
+    #[ignore]
+    fn stock_iterm2_package_connects() {
+        let Some((python, args)) = python_with_iterm2() else {
+            eprintln!(
+                "skipped: no Python with the iterm2 package. This test never installs anything; to run it, \
+                 prepare target\\api-venv yourself (py -3 -m venv target\\api-venv, then its pip install iterm2 \"websockets<14\")."
+            );
+            return;
+        };
+        let jar = Arc::new(Mutex::new(crate::api_auth::Jar::default()));
+        let cookie = jar.lock().unwrap().mint(crate::api_auth::CookieUse::Session);
+        let check: CookieCheck = {
+            let jar = jar.clone();
+            Arc::new(move |c: &str| jar.lock().unwrap().consume(c))
+        };
+        let s = match Server::start(api_http::PORT, Arc::new(crate::api_peer::check), check, Arc::new(|| {})) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skipped: port {} is taken: {e}", api_http::PORT);
+                return;
+            }
+        };
+        let dir = std::env::temp_dir().join(format!("tandem-stock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("stock_get_app.py");
+        std::fs::write(&script, "import iterm2\n\nasync def main(connection):\n    print(len((await iterm2.async_get_app(connection)).windows))\n\niterm2.run_until_complete(main)\n").unwrap();
+        let mut child = std::process::Command::new(&python)
+            .args(&args)
+            .arg(&script)
+            .env("ITERM2_COOKIE", &cookie)
+            .env_remove("ITERM2_KEY")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let model = crate::api_model::fixture();
+        let mut subs = crate::api_dispatch::Subscriptions::default();
+        let mut rejected = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                break;
+            }
+            match s.try_event() {
+                Some(Event::Pending(p)) => {
+                    assert!(p.upgrade.preauthorized, "the session cookie authorizes the package");
+                    s.verdict(p.conn, true);
+                }
+                Some(Event::Message { conn, bytes }) => {
+                    let Some(req) = crate::api_proto::decode(&bytes) else { continue };
+                    let reply = match crate::api_dispatch::route(&mut subs, conn, req) {
+                        crate::api_dispatch::Route::Reply(m) => m,
+                        crate::api_dispatch::Route::App(req) => crate::api_model::answer(&req, &model).unwrap_or_else(|| crate::api_proto::malformed(&req)),
+                    };
+                    s.send(conn, crate::api_proto::encode(&reply));
+                }
+                Some(Event::Rejected { reason, .. }) => rejected.push(reason),
+                Some(Event::Closed { .. }) => {}
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        let out = child.wait_with_output().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert_eq!(stdout.trim(), "2", "stderr: {stderr}\nrefusals: {rejected:?}");
+    }
 }

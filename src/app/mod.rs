@@ -579,6 +579,9 @@ pub struct App {
     api_deferred: VecDeque<crate::api_server::Event>,
     /// User variables of tabs, windows and the app, and each scope's last observed values.
     api_vars: crate::api_vars::Store,
+    /// The snapshot notifications were last computed from, kept only while a connection
+    /// subscribes.
+    api_last: Option<crate::api_model::Model>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -898,6 +901,7 @@ pub fn run() {
         api_tx: Default::default(),
         api_deferred: VecDeque::new(),
         api_vars: Default::default(),
+        api_last: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
@@ -2603,6 +2607,7 @@ impl ApplicationHandler<UserEvent> for App {
         let pwm_due = self.tick_pwm();
         self.open_pwm_windows(event_loop);
         self.api_tick(event_loop);
+        self.api_notify_tick();
         self.open_api_alerts(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
