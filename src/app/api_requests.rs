@@ -19,7 +19,7 @@ use super::{App, Rect, GAP};
 use crate::api_buffer;
 use crate::api_create::{self, SplitResult};
 use crate::api_profile;
-use crate::api_props::{self, Prop};
+use crate::api_props::{self, BuryStep, Prop};
 use crate::api_proto::{self, pb};
 use crate::api_session::{self, CloseStep, Snapshot};
 use crate::api_vars::{self, Objects, Scope, Values};
@@ -644,7 +644,7 @@ impl App {
                 let g = screen.term().grid();
                 match api_props::session_prop(name, false) {
                     Some(Prop::GridSize) => Some(api_props::grid_json(g.columns(), g.screen_lines())),
-                    Some(Prop::Buried) => Some(self.buried.contains(pane).to_string()),
+                    Some(Prop::Buried) => Some(api_props::is_buried(self.buried.contains(pane), self.api_tmux_hidden(pane)).to_string()),
                     Some(Prop::NumberOfLines) => {
                         let (off, history) = (g.scrolled_off() as i64, g.history_size() as i64);
                         Some(api_props::lines_json(off - history, g.screen_lines() as i64, history, off - g.display_offset() as i64))
@@ -719,18 +719,27 @@ impl App {
                     },
                     Some(Prop::Buried) => {
                         let Some(bury) = api_props::as_bool(&value) else { return Status::InvalidValue };
-                        if bury != self.buried.contains(pane) {
-                            if bury {
-                                // A replay view is never buried (`bury`'s `_synthetic`); a tmux
-                                // pane hides its tmux window. iTerm2 answers OK either way.
+                        match api_props::bury_step(bury, self.buried.contains(pane), self.api_tmux_hidden(pane)) {
+                            BuryStep::Nothing => {}
+                            // A replay view is never buried (`bury`'s `_synthetic`); a tmux pane
+                            // hides its tmux window. iTerm2 answers OK either way.
+                            BuryStep::Bury => {
                                 if self.enter_pane_window(pane) && !self.bury_refused(pane) {
                                     self.bury_pane(pane);
                                 }
-                            } else {
-                                self.api_disinter(pane, event_loop);
                             }
-                            self.redraw();
+                            BuryStep::Restore => self.api_disinter(pane, event_loop),
+                            // As Session > Buried Sessions shows a hidden tmux window.
+                            BuryStep::ShowTmux => {
+                                if let Some((gw, _, window)) = self.tmux_of(pane) {
+                                    if let Some(t) = self.tmux.get_mut(&gw) {
+                                        t.ctl.open_windows(&[window], false, &mut t.gw);
+                                    }
+                                    self.tmux_flush(gw);
+                                }
+                            }
                         }
+                        self.redraw();
                         Status::Ok
                     }
                     _ => Status::UnrecognizedName,
@@ -838,6 +847,13 @@ impl App {
         }
         self.redraw();
         pb::PreferencesResponse { results }
+    }
+
+    /// For a tmux pane, whether its tmux window is hidden (how Tandem and iTerm2 bury a tmux
+    /// session); None for any other session.
+    fn api_tmux_hidden(&self, pane: PaneId) -> Option<bool> {
+        let (gw, _, window) = self.tmux_of(pane)?;
+        Some(self.tmux.get(&gw).is_some_and(|t| t.ctl.hidden().contains(&window)))
     }
 
     /// SetProperty `grid_size` (`sessionInitiatedResize:`, `PT:7126-7160`): IMPOSSIBLE in

@@ -16,7 +16,7 @@ pub enum Prop {
     NumberOfLines,
 }
 
-/// A window's properties, got and set alike (`H:2789-2791`, `H:2896-2898`).
+/// A window's properties, got and set alike (`H:2790-2791`, `H:2918-2919`).
 pub fn window_prop(name: &str) -> Option<Prop> {
     match name {
         "frame" => Some(Prop::Frame),
@@ -25,7 +25,7 @@ pub fn window_prop(name: &str) -> Option<Prop> {
     }
 }
 
-/// A session's properties: `number_of_lines` is only got (`H:2838-2841`, `H:2972-2976`).
+/// A session's properties: `number_of_lines` is only got (`H:2841-2843`, `H:2973-2976`).
 pub fn session_prop(name: &str, setting: bool) -> Option<Prop> {
     match name {
         "grid_size" => Some(Prop::GridSize),
@@ -50,7 +50,7 @@ fn number(v: f64) -> Value {
     }
 }
 
-/// A window frame as GetProperty answers it (`H:2881-2890`).
+/// A window frame as GetProperty answers it (`H:2903-2911`).
 pub fn frame_json(x: f64, y: f64, w: f64, h: f64) -> String {
     json!({"origin": {"x": number(x), "y": number(y)}, "size": {"width": number(w), "height": number(h)}}).to_string()
 }
@@ -84,7 +84,7 @@ pub fn parse_size(v: &Value) -> Option<(i64, i64)> {
     Some((w.trunc() as i64, h.trunc() as i64))
 }
 
-/// A session's line counts (`H:2967-2970`): lines dropped from history, the grid's rows, the
+/// A session's line counts (`H:2959-2966`): lines dropped from history, the grid's rows, the
 /// history kept, and the absolute number of the first visible line.
 pub fn lines_json(overflow: i64, grid: i64, history: i64, first_visible: i64) -> String {
     json!({"overflow": overflow, "grid": grid, "history": history, "first_visible": first_visible}).to_string()
@@ -114,6 +114,39 @@ pub fn wanted_grid(cols: i64, rows: i64, current_rows: i64, max_new_rows: i64) -
         height -= grow - max_new_rows;
     }
     (width, height)
+}
+
+/// Whether a session is buried as Session > Buried Sessions lists it: a tmux pane
+/// (`tmux_hidden` is Some) when its tmux window is hidden (iTerm2 buries a tmux client by
+/// hiding its window, `PS` `bury`), any other one when it is in the buried list.
+pub fn is_buried(buried: bool, tmux_hidden: Option<bool>) -> bool {
+    tmux_hidden.unwrap_or(buried)
+}
+
+/// What SetProperty `buried` does (`H:2823-2839`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuryStep {
+    /// Already in the state asked for.
+    Nothing,
+    /// Bury Session (a tmux pane hides its tmux window).
+    Bury,
+    /// Restore from the buried list.
+    Restore,
+    /// Show the hidden tmux window again, as Buried Sessions does.
+    ShowTmux,
+}
+
+/// The step that brings a session to `want`.
+pub fn bury_step(want: bool, buried: bool, tmux_hidden: Option<bool>) -> BuryStep {
+    if want == is_buried(buried, tmux_hidden) {
+        BuryStep::Nothing
+    } else if want {
+        BuryStep::Bury
+    } else if tmux_hidden.is_some() {
+        BuryStep::ShowTmux
+    } else {
+        BuryStep::Restore
+    }
 }
 
 #[cfg(test)]
@@ -173,5 +206,23 @@ mod tests {
         assert_eq!(wanted_grid(10, 1, 24, 100), (20, 2));
         assert_eq!(wanted_grid(100, 60, 24, 10), (100, 34));
         assert_eq!(wanted_grid(100, 30, 24, 10), (100, 30));
+    }
+
+    #[test]
+    fn buried_follows_the_bury_menu() {
+        // A session of its own: the buried list.
+        assert!(!is_buried(false, None));
+        assert!(is_buried(true, None));
+        assert_eq!(bury_step(true, false, None), BuryStep::Bury);
+        assert_eq!(bury_step(true, true, None), BuryStep::Nothing);
+        assert_eq!(bury_step(false, true, None), BuryStep::Restore);
+        assert_eq!(bury_step(false, false, None), BuryStep::Nothing);
+        // A tmux pane: its tmux window hidden or not; the buried list never holds it.
+        assert!(is_buried(false, Some(true)));
+        assert!(!is_buried(false, Some(false)));
+        assert_eq!(bury_step(true, false, Some(false)), BuryStep::Bury);
+        assert_eq!(bury_step(true, false, Some(true)), BuryStep::Nothing);
+        assert_eq!(bury_step(false, false, Some(true)), BuryStep::ShowTmux);
+        assert_eq!(bury_step(false, false, Some(false)), BuryStep::Nothing);
     }
 }
