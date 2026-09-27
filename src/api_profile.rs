@@ -102,11 +102,56 @@ fn json_text(j: &Json) -> String {
     }
 }
 
+/// A number or boolean as `[NSNumber coerceFrom:]` then `boolValue` reads it.
+fn coerced_bool(v: Option<&Value>) -> bool {
+    match v {
+        Some(Value::Boolean(b)) => *b,
+        Some(Value::Integer(i)) => *i != 0,
+        Some(Value::Float(f)) => *f != 0.0,
+        _ => false,
+    }
+}
+
+/// One trigger as `sanitizedTriggerDictionary:` answers it (`Trigger.m:62-97,521-533`): only
+/// the keys a Trigger keeps, an absent string as "", name, job, provenance and event
+/// parameters only when present; None (left out) when its action names no trigger.
+fn sanitized_trigger(t: &toml::Table) -> Option<Json> {
+    let action = t.get("action").and_then(Value::as_str)?;
+    crate::triggers::action_info(action)?;
+    let text = |k: &str| t.get(k).and_then(Value::as_str);
+    let match_type = match t.get("matchType") {
+        Some(Value::Integer(i)) => (*i).max(0),
+        Some(Value::Float(f)) => f.max(0.0) as i64,
+        Some(Value::Boolean(b)) => *b as i64,
+        _ => 0,
+    };
+    let mut o = Map::new();
+    o.insert("action".into(), json!(action));
+    o.insert("regex".into(), json!(text("regex").unwrap_or("")));
+    o.insert("contentregex".into(), json!(text("contentregex").unwrap_or("")));
+    o.insert("matchType".into(), json!(match_type));
+    o.insert("parameter".into(), t.get("parameter").map_or(Some(json!("")), to_json)?);
+    o.insert("partial".into(), json!(coerced_bool(t.get("partial"))));
+    o.insert("disabled".into(), json!(coerced_bool(t.get("disabled"))));
+    for k in ["name", "job", "provenance"] {
+        if let Some(s) = text(k) {
+            o.insert(k.into(), json!(s));
+        }
+    }
+    if let Some(p) = t.get("eventParams").filter(|v| v.is_table()) {
+        o.insert("eventParams".into(), to_json(p)?);
+    }
+    Some(Json::Object(o))
+}
+
 /// A profile value as the JSON iTerm2 answers with (`jsonEncodedValueForKey:inProfile:`):
-/// colors as their component dictionaries, other values as they are.
+/// colors as their component dictionaries, triggers sanitized, other values as they are.
 pub fn json_of(key: &str, v: &Value) -> Option<String> {
     let j = match setting_of(key) {
         Some((s, _)) if s.kind == Kind::Color => color_json(v).or_else(|| to_json(v))?,
+        _ if key == "Triggers" && v.is_array() => {
+            Json::Array(v.as_array().into_iter().flatten().filter_map(Value::as_table).filter_map(sanitized_trigger).collect())
+        }
         _ => to_json(v)?,
     };
     Some(json_text(&j))
@@ -178,13 +223,85 @@ fn has_null(j: &Json) -> bool {
 }
 
 /// A SetPreference value (`H:3847-3864`): BAD_JSON when it does not parse (fragments
-/// allowed), INVALID_VALUE when a null is anywhere in it.
+/// allowed), INVALID_VALUE when a null is anywhere in it; otherwise the value as written.
 pub fn preference_value(json: &str) -> Result<Value, PrefStatus> {
     let j: Json = serde_json::from_str(json).map_err(|_| PrefStatus::BadJson)?;
     if has_null(&j) {
         return Err(PrefStatus::InvalidValue);
     }
-    crate::import::from_json(&j).ok_or(PrefStatus::InvalidValue)
+    plain(&j).ok_or(PrefStatus::InvalidValue)
+}
+
+/// JSON with no null as a value, kept in its own shape (a color dictionary stays one), as
+/// iTerm2 stores the object it parsed.
+fn plain(j: &Json) -> Option<Value> {
+    Some(match j {
+        Json::Null => return None,
+        Json::Bool(b) => Value::Boolean(*b),
+        Json::Number(n) => n.as_i64().map(Value::Integer).or_else(|| n.as_f64().map(Value::Float))?,
+        Json::String(s) => Value::String(s.clone()),
+        Json::Array(a) => Value::Array(a.iter().map(plain).collect::<Option<_>>()?),
+        Json::Object(o) => Value::Table(o.iter().map(|(k, v)| Some((k.clone(), plain(v)?))).collect::<Option<_>>()?),
+    })
+}
+
+/// What a SetPreference does with a value that parsed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrefStep {
+    /// Stored and applied.
+    Store,
+    /// `setCookie` turned on: stored only on OK in the Confirm alert; the request still
+    /// answers OK.
+    Confirm,
+    /// Refused with INVALID_VALUE.
+    Refuse,
+}
+
+/// The setting that gives new sessions a cookie, which lets any program started in them
+/// connect without asking.
+pub const SET_COOKIE: &str = "setCookie";
+
+/// Settings a script may read but never write (a Windows safety addition over iTerm2, which
+/// stores any key): the stored answers to Tandem's consent questions, which would let a
+/// program's output (a remote host's too) read the clipboard, change profiles, open URLs,
+/// files and links, report variables or sync a tmux clipboard without asking, the silenced
+/// API warnings, and the paths of programs the password manager runs.
+const REFUSED: [&str; 12] = [
+    "NoSyncAllowPaste",
+    "NoSyncNeverAllowPaste",
+    "NoSyncDisableOpenURL",
+    "NoSyncVariablesToReport",
+    "NoSyncOpenURLFromMarkdownLink",
+    "NoSyncOpenFileFromMarkdownLink",
+    "TmuxSyncClipboard",
+    "NoSyncTmuxSyncClipboardAnswered",
+    crate::api_auth::ENABLE_ID,
+    crate::api_auth::RESET_ID,
+    "NoSyncPasswordManagerOnePasswordCLI",
+    "NoSyncPasswordManagerLastPassCLI",
+];
+
+/// The same, for keys made per profile key, host or password manager adapter.
+const REFUSED_PREFIXES: [&str; 4] = ["NoSyncSetProfileProperty_", "NoSyncAllowOpenURL_", "PathToExecutable_", "PathToDatabase_"];
+
+/// A setting SetPreference refuses to write.
+pub fn refused(key: &str) -> bool {
+    REFUSED.contains(&key) || REFUSED_PREFIXES.iter().any(|p| key.starts_with(p))
+}
+
+/// What SetPreference does with `value` for `key` while `setCookie` is `cookie_on`. A
+/// nonzero number turns `setCookie` on as NSNumber's boolValue reads it.
+pub fn preference_step(key: &str, value: &Value, cookie_on: bool) -> PrefStep {
+    if refused(key) {
+        return PrefStep::Refuse;
+    }
+    let on = match value {
+        Value::Boolean(b) => *b,
+        Value::Integer(i) => *i != 0,
+        Value::Float(f) => *f != 0.0,
+        _ => false,
+    };
+    if key == SET_COOKIE && on && !cookie_on { PrefStep::Confirm } else { PrefStep::Store }
 }
 
 #[cfg(test)]
@@ -333,5 +450,78 @@ mod tests {
         assert_eq!(preference_value("{\"a\": null}"), Err(PStatus::InvalidValue));
         assert_eq!(preference_value("true"), Ok(Value::Boolean(true)));
         assert_eq!(preference_value("[1, \"x\"]"), Ok(Value::Array(vec![Value::Integer(1), Value::String("x".into())])));
+    }
+
+    #[test]
+    fn preference_colors_read_back_as_written() {
+        // Stored as the dictionary given, a missing component too (iTerm2 stores any
+        // plist-safe object), and read back in that form.
+        let v = preference_value("{\"Red Component\": 1, \"Green Component\": 0.5, \"Color Space\": \"sRGB\"}").expect("stored");
+        let back: serde_json::Value = serde_json::from_str(&preference_json(Some(&v)).unwrap()).unwrap();
+        assert_eq!(back, json!({"Red Component": 1, "Green Component": 0.5, "Color Space": "sRGB"}));
+        assert_eq!(preference_value("{\"a\": [1, 2.5, \"x\", true]}").map(|v| preference_json(Some(&v))), Ok(Some("{\"a\":[1,2.5,\"x\",true]}".into())));
+    }
+
+    #[test]
+    fn preference_gates_follow_the_rulings() {
+        use PrefStep::*;
+        // setCookie turned on waits for the Confirm alert; already on, or off, is stored.
+        assert_eq!(preference_step(SET_COOKIE, &Value::Boolean(true), false), Confirm);
+        assert_eq!(preference_step(SET_COOKIE, &Value::Integer(1), false), Confirm);
+        assert_eq!(preference_step(SET_COOKIE, &Value::Float(0.5), false), Confirm);
+        assert_eq!(preference_step(SET_COOKIE, &Value::Boolean(true), true), Store);
+        assert_eq!(preference_step(SET_COOKIE, &Value::Boolean(false), false), Store);
+        assert_eq!(preference_step(SET_COOKIE, &Value::Boolean(false), true), Store);
+        assert_eq!(preference_step(SET_COOKIE, &Value::Integer(0), false), Store);
+        // Stored consents and program paths are refused whatever the value.
+        for k in [
+            "NoSyncSetProfileProperty_Columns",
+            "NoSyncAllowPaste",
+            "NoSyncNeverAllowPaste",
+            "NoSyncAllowOpenURL_host:example.com",
+            "NoSyncDisableOpenURL",
+            "NoSyncVariablesToReport",
+            "NoSyncOpenURLFromMarkdownLink",
+            "NoSyncOpenFileFromMarkdownLink",
+            "TmuxSyncClipboard",
+            "NoSyncTmuxSyncClipboardAnswered",
+            "NoSyncEnableAPIServer",
+            "NoSyncAppSupportMoved",
+            "NoSyncPasswordManagerOnePasswordCLI",
+            "NoSyncPasswordManagerLastPassCLI",
+            "PathToExecutable_KeePassXC",
+            "PathToDatabase_KeePassXC",
+        ] {
+            assert!(refused(k), "{k}");
+            assert_eq!(preference_step(k, &Value::Boolean(true), false), Refuse, "{k}");
+            assert_eq!(preference_step(k, &Value::String(String::new()), true), Refuse, "{k}");
+        }
+        for k in ["EnableAPIServer", "API Authentication Method", "NoSyncDoNotWarnBeforeMultilinePaste", "TmuxDashboardLimit", "NoSyncAllowPasteLater", "fileDropCoprocess"] {
+            assert!(!refused(k), "{k}");
+            assert_eq!(preference_step(k, &Value::Boolean(true), false), Store, "{k}");
+        }
+    }
+
+    #[test]
+    fn triggers_are_returned_sanitized() {
+        let v: toml::Table = toml::from_str(
+            r#"
+            Triggers = [
+                { action = "HighlightTrigger", regex = "a", parameter = 3, partial = true, disabled = false, job = "vim", junk = "y", performance = { x = 1 }, eventParams = { k = "v" } },
+                { action = "NotATrigger", regex = "b" },
+                { regex = "c" },
+                { action = "BellTrigger", matchType = 100, name = "n", partial = 1 },
+            ]
+            "#,
+        )
+        .unwrap();
+        let got: serde_json::Value = serde_json::from_str(&json_of("Triggers", &v["Triggers"]).unwrap()).unwrap();
+        assert_eq!(
+            got,
+            json!([
+                {"action": "HighlightTrigger", "regex": "a", "contentregex": "", "matchType": 0, "parameter": 3, "partial": true, "disabled": false, "job": "vim", "eventParams": {"k": "v"}},
+                {"action": "BellTrigger", "regex": "", "contentregex": "", "matchType": 100, "parameter": "", "partial": true, "disabled": false, "name": "n"},
+            ])
+        );
     }
 }

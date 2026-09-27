@@ -23,7 +23,7 @@ use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 /// The settings this module follows.
 pub(super) const ENABLE_KEY: &str = "EnableAPIServer";
 pub(super) const AUTH_KEY: &str = "API Authentication Method";
-pub(super) const SET_COOKIE_KEY: &str = "setCookie";
+pub(super) const SET_COOKIE_KEY: &str = crate::api_profile::SET_COOKIE;
 
 /// The alert when the server could not start (Tandem's own texts).
 pub const START_FAILED_HEADING: &str = "Could Not Start the Python API";
@@ -49,6 +49,8 @@ pub(super) enum Alert {
     Allow { conn: u64 },
     /// Always's "Confirm".
     ConfirmAlways { conn: u64 },
+    /// The same "Confirm" for a script's SetPreference of `setCookie` on.
+    ConfirmCookie,
     /// "Disable per-app authentication?".
     AllowAll,
     /// "Python API Permissions Reset" (silenceable under `RESET_ID`).
@@ -81,7 +83,7 @@ pub(super) fn form(alert: &Alert, set_cookie: bool) -> Form {
             Verdict::Ask { text, buttons } => f(ALLOW_HEADING, text, &buttons, false),
             _ => unreachable!("an undecided connection is always asked"),
         },
-        Alert::ConfirmAlways { .. } => f(CONFIRM_HEADING, CONFIRM_ALWAYS.into(), &[OK, CANCEL], false),
+        Alert::ConfirmAlways { .. } | Alert::ConfirmCookie => f(CONFIRM_HEADING, CONFIRM_ALWAYS.into(), &[OK, CANCEL], false),
         Alert::AllowAll => f(ALLOW_ALL_HEADING, ALLOW_ALL_TEXT.into(), &[OK, CANCEL, MORE_INFO], false),
         Alert::Reset => f(RESET_HEADING, RESET_TEXT.into(), &[OK, REVEAL_PREFERENCE], true),
         Alert::RemoveFailed(text) => f(CHANGE_FAILED_HEADING, text.clone(), &[OK, SHOW_IN_EXPLORER], false),
@@ -197,6 +199,8 @@ pub(super) fn effects(alert: &Alert, index: usize, suppress: bool) -> Vec<Effect
         Alert::ConfirmAlways { conn } => {
             if index == 0 { vec![SetCookie, verdict(*conn, true, api_auth::REASON_ALLOWED)] } else { vec![verdict(*conn, false, api_auth::REASON_DENIED)] }
         }
+        // Cancel leaves `setCookie` off; the script was already answered OK.
+        Alert::ConfirmCookie => if index == 0 { vec![SetCookie] } else { vec![] },
         Alert::AllowAll => match index {
             0 => vec![WriteAllowAll, Mirror],
             2 => vec![OpenUrl(api_auth::AUTH_URL), Mirror],
@@ -285,6 +289,9 @@ pub(super) trait Host {
     fn defer(&mut self, e: Event);
     /// Forgets a closed connection; the requests its transaction's end released.
     fn forget(&mut self, conn: u64) -> Work;
+    /// After answers were sent: acts on what the requests changed that may stop the server
+    /// ("Enable Python API" off), so a request's own answer goes out first.
+    fn settle(&mut self);
 }
 
 /// The app as the dispatch loop's host.
@@ -321,6 +328,10 @@ impl Host for AppHost<'_> {
     fn forget(&mut self, conn: u64) -> Work {
         self.app.api_forget(conn)
     }
+
+    fn settle(&mut self) {
+        self.app.api_settings_changed();
+    }
 }
 
 /// Offers `work` in order, then freezes while a transaction it began runs.
@@ -328,6 +339,7 @@ pub(super) fn serve(h: &mut impl Host, mut work: Work) {
     while let Some((conn, req)) = work.pop_front() {
         offer(h, conn, req, &mut work);
     }
+    h.settle();
     if h.tx().owner().is_some() {
         freeze(h);
     }
@@ -382,6 +394,7 @@ fn freeze(h: &mut impl Host) {
         while let Some((conn, req)) = work.pop_front() {
             offer(h, conn, req, &mut work);
         }
+        h.settle();
     }
 }
 
@@ -541,6 +554,12 @@ impl App {
         self.globals.set(ENABLE_KEY, toml::Value::Boolean(on));
         self.api_settings_seen.0 = on;
         self.save_globals();
+    }
+
+    /// SetPreference of `setCookie` on (`api_profile::PrefStep::Confirm`): the Confirm alert
+    /// asks, and only its OK turns it on.
+    pub(super) fn api_confirm_cookie(&mut self) {
+        self.queue_api_alert(Alert::ConfirmCookie);
     }
 
     /// Queues an alert unless the same one already waits.
@@ -1002,6 +1021,11 @@ mod tests {
         let confirm = Alert::ConfirmAlways { conn: 4 };
         assert_eq!(effects(&confirm, 0, false), [SetCookie, Verdict { conn: 4, allow: true, reason: REASON_ALLOWED }]);
         assert_eq!(closed(&confirm), [deny(4)]);
+        // A script's SetPreference of setCookie: the same Confirm text; only OK turns it on.
+        assert_eq!(form(&Alert::ConfirmCookie, false), form(&confirm, false));
+        assert_eq!(effects(&Alert::ConfirmCookie, 0, false), [SetCookie]);
+        assert_eq!(effects(&Alert::ConfirmCookie, 1, false), []);
+        assert_eq!(closed(&Alert::ConfirmCookie), []);
         // Allow all: OK writes the file, More Info opens the page; the popup mirrors after.
         assert_eq!(effects(&Alert::AllowAll, 0, false), [WriteAllowAll, Mirror]);
         assert_eq!(effects(&Alert::AllowAll, 2, false), [OpenUrl(AUTH_URL), Mirror]);
@@ -1046,7 +1070,7 @@ mod tests {
     /// The dispatch loop's host with a real server on an ephemeral loopback port, answering
     /// from the fixture model, and a log of every reply it sent.
     struct TestHost {
-        server: Server,
+        server: Option<Server>,
         subs: Subscriptions,
         tx: Transactions,
         model: api_model::Model,
@@ -1055,6 +1079,20 @@ mod tests {
         /// Told the connection of every message the loop takes, so a client can wait until
         /// its request was taken.
         seen: std::sync::mpsc::Sender<u64>,
+        /// The request whose answer turns the API off, as SetPreference of EnableAPIServer
+        /// false does; the stop comes when the loop settles.
+        stop_on: Option<i64>,
+        stop_wanted: bool,
+    }
+
+    impl TestHost {
+        fn new(server: Server, model: api_model::Model, seen: std::sync::mpsc::Sender<u64>) -> TestHost {
+            TestHost { server: Some(server), subs: Default::default(), tx: Default::default(), model, deferred: Vec::new(), replies: Vec::new(), seen, stop_on: None, stop_wanted: false }
+        }
+
+        fn srv(&self) -> &Server {
+            self.server.as_ref().expect("the server runs")
+        }
     }
 
     impl Host for TestHost {
@@ -1068,15 +1106,20 @@ mod tests {
 
         fn reply(&mut self, conn: u64, m: &pb::ServerOriginatedMessage) {
             self.replies.push((conn, m.id));
-            self.server.send(conn, crate::api_proto::encode(m));
+            if let Some(s) = &self.server {
+                s.send(conn, crate::api_proto::encode(m));
+            }
         }
 
         fn answer(&mut self, _conn: u64, req: &pb::ClientOriginatedMessage) -> Answer {
+            if req.id.is_some() && req.id == self.stop_on {
+                self.stop_wanted = true;
+            }
             answer_from(req, &self.model)
         }
 
         fn wait_event(&mut self) -> Option<Event> {
-            let e = self.server.wait_event();
+            let e = self.server.as_ref().and_then(Server::wait_event);
             if let Some(Event::Message { conn, .. }) = &e {
                 let _ = self.seen.send(*conn);
             }
@@ -1091,6 +1134,14 @@ mod tests {
             self.subs.drop_conn(conn);
             self.tx.closed(conn).into()
         }
+
+        fn settle(&mut self) {
+            if std::mem::take(&mut self.stop_wanted) {
+                if let Some(s) = self.server.take() {
+                    s.stop();
+                }
+            }
+        }
     }
 
     type Ws = tungstenite::WebSocket<std::net::TcpStream>;
@@ -1098,7 +1149,7 @@ mod tests {
     /// A websocket client with the stock package's headers, upgraded by the host.
     fn connect(h: &TestHost) -> (u64, Ws) {
         use tungstenite::client::IntoClientRequest;
-        let addr = h.server.addrs()[0];
+        let addr = h.srv().addrs()[0];
         let mut req = format!("ws://{addr}/").into_client_request().unwrap();
         let hd = req.headers_mut();
         hd.insert("Sec-WebSocket-Protocol", "api.iterm2.com".parse().unwrap());
@@ -1110,7 +1161,7 @@ mod tests {
             Event::Pending(p) => p.conn,
             e => panic!("{e:?}"),
         };
-        h.server.verdict(conn, true);
+        h.srv().verdict(conn, true);
         let (ws, _) = hs.join().unwrap().unwrap();
         ws.get_ref().set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
         (conn, ws)
@@ -1119,7 +1170,7 @@ mod tests {
     fn next_event(h: &TestHost) -> Event {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            if let Some(e) = h.server.try_event() {
+            if let Some(e) = h.srv().try_event() {
                 return e;
             }
             assert!(std::time::Instant::now() < deadline, "no event");
@@ -1152,7 +1203,7 @@ mod tests {
         let server = Server::start(0, Arc::new(|_: std::net::SocketAddr, _: std::net::SocketAddr| Ok::<u32, String>(1)), Arc::new(|_: &str| false), Arc::new(|| {})).unwrap();
         let model = api_model::fixture();
         let (seen, taken) = std::sync::mpsc::channel();
-        let mut h = TestHost { server, subs: Default::default(), tx: Default::default(), model: model.clone(), deferred: Vec::new(), replies: Vec::new(), seen };
+        let mut h = TestHost::new(server, model.clone(), seen);
         let (a, mut wa) = connect(&h);
         let (b, mut wb) = connect(&h);
         let list = || Req::ListSessionsRequest(pb::ListSessionsRequest {});
@@ -1216,10 +1267,50 @@ mod tests {
         .0;
         let notes = api_model::notifications(&api_model::changes(&model, &new), &new);
         assert!(notes.len() > 1, "a layout change as well, to nobody");
-        let server = &h.server;
+        let server = h.srv();
         post(&h.subs, notes, &mut |conn, m| server.send(conn, crate::api_proto::encode(m)));
         message(&mut h);
         script.join().unwrap();
         assert!(h.deferred.is_empty());
+    }
+
+    /// A request that turns the API off (SetPreference of EnableAPIServer false) is answered
+    /// first; the server stops when the loop settles, the script sees its answer and then
+    /// the connection end, and the loop returns. Inside a transaction too: the stop ends the
+    /// freeze.
+    #[test]
+    fn turning_the_api_off_answers_then_stops() {
+        use pb::client_originated_message::Submessage as Req;
+        for in_transaction in [false, true] {
+            let server = Server::start(0, Arc::new(|_: std::net::SocketAddr, _: std::net::SocketAddr| Ok::<u32, String>(1)), Arc::new(|_: &str| false), Arc::new(|| {})).unwrap();
+            let (seen, _taken) = std::sync::mpsc::channel();
+            let mut h = TestHost::new(server, api_model::fixture(), seen);
+            h.stop_on = Some(7);
+            let (a, mut wa) = connect(&h);
+            let script = std::thread::spawn(move || {
+                if in_transaction {
+                    send(&mut wa, 1, Req::TransactionRequest(pb::TransactionRequest { begin: Some(true) }));
+                    assert_eq!(read(&mut wa).id, Some(1));
+                }
+                send(&mut wa, 7, Req::FocusRequest(pb::FocusRequest {}));
+                assert_eq!(read(&mut wa).id, Some(7));
+                // Then the connection ends: a close frame or the socket closing.
+                loop {
+                    match wa.read() {
+                        Ok(tungstenite::Message::Close(_)) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+            });
+            let first = match next_event(&h) {
+                Event::Message { conn, bytes } => (conn, crate::api_proto::decode(&bytes).unwrap()),
+                e => panic!("{e:?}"),
+            };
+            serve(&mut h, VecDeque::from([first]));
+            assert!(h.server.is_none(), "stopped");
+            assert_eq!(h.tx.owner(), None);
+            assert_eq!(h.replies.last(), Some(&(a, Some(7))));
+            script.join().unwrap();
+        }
     }
 }

@@ -1215,16 +1215,7 @@ impl App {
             },
             Edit::Error(e) => self.banners.set("import", e),
             Edit::SnippetsChanged => self.save_snippets(),
-            Edit::GlobalsChanged => {
-                self.save_globals();
-                self.api_settings_changed();
-                // The Actions tool shows the actions.
-                self.tools_changed();
-                self.settle_action_undo();
-                self.menus_dirty = true;
-                self.sync_checks();
-                self.register_hotkeys();
-            }
+            Edit::GlobalsChanged => self.globals_changed(true),
             Edit::Changed(_) | Edit::Imported(_) => {
                 // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
                 for s in self.aps.values_mut() {
@@ -1246,6 +1237,22 @@ impl App {
         // A profile's bar or the bar settings changed: other windows' panes may have
         // gained or lost a bar (per pane, their room changes without the content area).
         self.relayout_changed_windows();
+    }
+
+    /// A global setting changed: saved and applied. With `api_now` false, "Enable Python API"
+    /// and the authentication popup wait for `api_settings_changed` (the dispatch loop's
+    /// settle, or the next pass), so a script's request that changed them is answered first.
+    pub(super) fn globals_changed(&mut self, api_now: bool) {
+        self.save_globals();
+        if api_now {
+            self.api_settings_changed();
+        }
+        // The Actions tool shows the actions.
+        self.tools_changed();
+        self.settle_action_undo();
+        self.menus_dirty = true;
+        self.sync_checks();
+        self.register_hotkeys();
     }
 
     /// Rebuilds every pane's colors and cursor from its profile and the system appearance.

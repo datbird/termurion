@@ -805,12 +805,18 @@ impl App {
         Status::Ok
     }
 
-    /// Preferences (`H:3802-3881`): one result per request, in order. A setting is stored and
-    /// applied as a Settings edit; the default profile must be a saved profile (BAD_GUID).
+    /// Preferences (`H:3802-3881`): one result per request, in order. Settings that changed
+    /// are saved and applied once, after the last request; "Enable Python API" is acted on
+    /// when the dispatch loop settles, after the answer went out. Stored consents and
+    /// program paths are refused and `setCookie` on waits for the Confirm alert
+    /// (`api_profile::preference_step`); the default profile must be a saved profile
+    /// (BAD_GUID).
     fn api_preferences(&mut self, r: &pb::PreferencesRequest) -> pb::PreferencesResponse {
+        use api_profile::PrefStep;
         use pb::preferences_request::request::Request as Q;
         use pb::preferences_response::result::{self as res, Result as A};
         let mut results = Vec::new();
+        let mut globals_changed = false;
         for q in &r.requests {
             let result = match &q.request {
                 None => A::UnrecognizedRequest(res::UnrecognizedResult {}),
@@ -819,13 +825,22 @@ impl App {
                     A::GetPreferenceResult(res::GetPreferenceResult { json_value: api_profile::preference_json(self.globals.get(key).as_ref()) })
                 }
                 Some(Q::SetPreferenceRequest(s)) => {
+                    use res::set_preference_result::Status;
+                    let key = s.key.as_deref().unwrap_or_default();
                     let status = match api_profile::preference_value(s.json_value.as_deref().unwrap_or_default()) {
-                        Ok(v) => {
-                            self.globals.set(s.key.as_deref().unwrap_or_default(), v);
-                            self.apply_edit(Edit::GlobalsChanged);
-                            res::set_preference_result::Status::Ok
-                        }
                         Err(status) => status,
+                        Ok(v) => match api_profile::preference_step(key, &v, self.globals.bool(super::api_ui::SET_COOKIE_KEY)) {
+                            PrefStep::Refuse => Status::InvalidValue,
+                            PrefStep::Confirm => {
+                                self.api_confirm_cookie();
+                                Status::Ok
+                            }
+                            PrefStep::Store => {
+                                self.globals.set(key, v);
+                                globals_changed = true;
+                                Status::Ok
+                            }
+                        },
                     };
                     A::SetPreferenceResult(res::SetPreferenceResult { status: Some(status as i32) })
                 }
@@ -844,6 +859,15 @@ impl App {
                 }
             };
             results.push(pb::preferences_response::Result { result: Some(result) });
+        }
+        if globals_changed {
+            // As `apply_edit(Edit::GlobalsChanged)`, with the API settings left to the settle.
+            if let Some(w) = self.last_window {
+                self.enter(w);
+            }
+            self.globals_changed(false);
+            self.relayout();
+            self.relayout_changed_windows();
         }
         self.redraw();
         pb::PreferencesResponse { results }
