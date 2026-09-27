@@ -1635,3 +1635,12 @@ label = "Set ITERM2_COOKIE environment variable, allowing Python scripts to be l
 type = "bool"
 default = false
 help = "Set ITERM2_COOKIE environment variable, allowing Python scripts to be launched without confirmation?\nThis will only affect sessions created after changing this setting."
+
+[[setting]]
+key = "laxNilPolicyInInterpolatedStrings"
+tab = "Advanced"
+section = "Scripting"
+label = "Should references to undefined variables in interpolated strings be converted to empty string?"
+type = "bool"
+default = true
+help = "Should references to undefined variables in interpolated strings be converted to empty string?\nWhen enabled, an expression in an interpolated string that references an undefined variable will be treated as an empty string. For example, \u201c\\(bogus)\u201d. References to undefined variables as arguments to function calls, such as \u201c\\(f(bogus))\u201d, are still errors."

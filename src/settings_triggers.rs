@@ -423,7 +423,7 @@ pub fn editor(ui: &mut egui::Ui, profile: &mut Profile) -> bool {
             }
             // An interpolated parameter that cannot be evaluated (iTerm2: Error in Trigger Parameter).
             if interpolated && t.parameter.contains("\\(") {
-                if let Err(e) = crate::interp::evaluate(&t.parameter, &|_| None, &[]) {
+                if let Err(e) = crate::interp::check(&t.parameter) {
                     ui.colored_label(egui::Color32::from_rgb(0xff, 0x6b, 0x6b), format!("Error in Trigger Parameter: {e}"));
                 }
             }

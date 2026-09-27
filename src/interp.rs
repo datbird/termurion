@@ -1,62 +1,32 @@
-//! iTerm2's interpolated strings, the part triggers and badges use: `\(path)` with dotted
-//! variable names, `matches[n]`, quoted strings, and `a ?? b`. Function calls are refused.
+//! iTerm2's interpolated strings (`EP:343-407`) on the expression language in `expr`, for
+//! the callers that refuse function calls: triggers, badges, APS rules, coprocess
+//! templates, Copy Interpolated String and status bar strings. Tandem keeps one extension
+//! of its own: `a ?? b` inside `\( )`, the first alternative whose text is not empty.
 
-/// The template split into text and the expressions inside `\( )`; an error names the
-/// column (1-based) of an unclosed `\(`.
-fn pieces(template: &str) -> Result<Vec<(bool, String)>, String> {
-    let chars: Vec<char> = template.chars().collect();
-    let mut out = Vec::new();
-    let mut text = String::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '\\' && i + 1 < chars.len() {
-            match chars[i + 1] {
-                '(' => {
-                    let start = i;
-                    let mut depth = 1;
-                    let mut j = i + 2;
-                    let mut quoted = false;
-                    while j < chars.len() && depth > 0 {
-                        match chars[j] {
-                            '\\' if quoted => j += 1,
-                            '"' => quoted = !quoted,
-                            '(' if !quoted => depth += 1,
-                            ')' if !quoted => depth -= 1,
-                            _ => {}
-                        }
-                        j += 1;
-                    }
-                    if depth > 0 {
-                        return Err(format!("Unclosed \\( at column {}.", start + 1));
-                    }
-                    out.push((false, std::mem::take(&mut text)));
-                    out.push((true, chars[i + 2..j - 1].iter().collect()));
-                    i = j;
-                    continue;
-                }
-                'n' => text.push('\n'),
-                't' => text.push('\t'),
-                'r' => text.push('\r'),
-                'e' => text.push('\x1b'),
-                'a' => text.push('\x07'),
-                '\\' => text.push('\\'),
-                other => {
-                    text.push('\\');
-                    text.push(other);
-                }
-            }
-            i += 2;
-            continue;
-        }
-        text.push(c);
-        i += 1;
-    }
-    out.push((false, text));
-    Ok(out)
+use crate::expr::{self, Ctx, NoCalls, Outcome, Part, Value};
+
+/// A scope over a string lookup and a trigger's captures: a dotless name also tries
+/// `session.<name>`; `matches` is the array of captures (a group that did not match is "");
+/// values are typed as the API types them (`api_vars::typed`), user variables stay text.
+pub struct StrScope<'a> {
+    pub lookup: &'a dyn Fn(&str) -> Option<String>,
+    pub matches: &'a [Option<&'a str>],
 }
 
-/// A name followed by `(` outside a string.
+impl expr::Scope for StrScope<'_> {
+    fn value(&self, path: &str) -> Option<Value> {
+        if path == "matches" {
+            return (!self.matches.is_empty()).then(|| Value::Array(self.matches.iter().map(|m| Value::from(m.unwrap_or(""))).collect()));
+        }
+        let text = (self.lookup)(path).or_else(|| (!path.contains('.')).then(|| (self.lookup)(&format!("session.{path}"))).flatten())?;
+        if path.starts_with("user.") || path.contains(".user.") {
+            return Some(Value::String(text));
+        }
+        Some(crate::api_vars::typed(path.rsplit('.').next().unwrap_or(path), &text))
+    }
+}
+
+/// A name followed by `(` outside a string: the call test for a body that does not parse.
 fn calls_in(expr: &str) -> bool {
     let mut quoted = false;
     let mut prev_ident = false;
@@ -86,53 +56,6 @@ fn calls_in(expr: &str) -> bool {
     false
 }
 
-/// True when an expression inside the template calls a function (SetBadgeFormat refuses).
-pub fn has_calls(template: &str) -> bool {
-    pieces(template).is_ok_and(|p| p.iter().any(|(expr, s)| *expr && calls_in(s)))
-}
-
-fn term(t: &str, lookup: &dyn Fn(&str) -> Option<String>, matches: &[Option<&str>]) -> Result<Option<String>, String> {
-    let t = t.trim();
-    if let Some(body) = t.strip_prefix('"').and_then(|b| b.strip_suffix('"')) {
-        return Ok(Some(body.replace("\\\"", "\"")));
-    }
-    if let Some(n) = t.strip_prefix("matches[").and_then(|r| r.strip_suffix(']')) {
-        let n: usize = n.trim().parse().map_err(|_| format!("Bad index in {t}."))?;
-        return Ok(matches.get(n).copied().flatten().map(str::to_string));
-    }
-    let name_ok = !t.is_empty() && t.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_alphanumeric() || c == '_'));
-    if !name_ok {
-        return Err(format!("Tandem cannot evaluate \"{t}\": use a variable name, matches[n], a quoted string, or ??."));
-    }
-    Ok(lookup(t).or_else(|| (!t.contains('.')).then(|| lookup(&format!("session.{t}"))).flatten()))
-}
-
-/// Evaluates an interpolated string. Unknown variables are empty.
-pub fn evaluate(template: &str, lookup: &dyn Fn(&str) -> Option<String>, matches: &[Option<&str>]) -> Result<String, String> {
-    let mut out = String::new();
-    for (is_expr, s) in pieces(template)? {
-        if !is_expr {
-            out.push_str(&s);
-            continue;
-        }
-        if calls_in(&s) {
-            return Err("Function calls are not allowed here.".into());
-        }
-        let mut value = None;
-        for alt in split_fallback(&s) {
-            match term(&alt, lookup, matches)? {
-                Some(v) if !v.is_empty() => {
-                    value = Some(v);
-                    break;
-                }
-                _ => {}
-            }
-        }
-        out.push_str(&value.unwrap_or_default());
-    }
-    Ok(out)
-}
-
 /// `a ?? b ?? c` into its parts (not inside strings).
 fn split_fallback(expr: &str) -> Vec<String> {
     let mut parts = Vec::new();
@@ -155,6 +78,97 @@ fn split_fallback(expr: &str) -> Vec<String> {
     }
     parts.push(cur);
     parts
+}
+
+/// True when a body's alternative calls a function.
+fn alt_calls(alt: &str) -> bool {
+    expr::parse_expression(alt).map_or_else(|_| calls_in(alt), |e| expr::contains_call(&e))
+}
+
+/// True when an expression inside the template calls a function (SetBadgeFormat refuses).
+pub fn has_calls(template: &str) -> bool {
+    expr::template_pieces(template).is_ok_and(|p| p.iter().any(|(is_expr, body)| *is_expr && split_fallback(body).iter().any(|a| alt_calls(a))))
+}
+
+enum Piece {
+    Text(String),
+    /// A body's alternatives (one unless it uses `??`).
+    Alts(Vec<expr::Expr>),
+}
+
+/// The template parsed: an unclosed `\(` first, then a function call anywhere, then the
+/// first syntax error.
+fn parse(template: &str) -> Result<Vec<Piece>, String> {
+    let raw = expr::template_pieces(template)?;
+    if raw.iter().any(|(is_expr, body)| *is_expr && split_fallback(body).iter().any(|a| alt_calls(a))) {
+        return Err(expr::CALLS_NOT_ALLOWED.into());
+    }
+    let mut out = Vec::new();
+    for (is_expr, text) in raw {
+        if !is_expr {
+            out.push(Piece::Text(text));
+            continue;
+        }
+        let alts = split_fallback(&text).iter().map(|a| expr::parse_expression(a)).collect::<Result<Vec<_>, _>>()?;
+        out.push(Piece::Alts(alts));
+    }
+    Ok(out)
+}
+
+/// Whether the template would evaluate: its syntax, and no function call.
+pub fn check(template: &str) -> Result<(), String> {
+    parse(template).map(|_| ())
+}
+
+fn text_of(parts: &[Part], scope: &StrScope, cx: &Ctx) -> Result<String, String> {
+    match expr::eval_template(parts, scope, &mut NoCalls, cx) {
+        Outcome::Done(v) => Ok(expr::to_text(&v)),
+        Outcome::Failed(f) => Err(f.reason),
+        Outcome::Pending => Err(expr::CALLS_NOT_ALLOWED.into()),
+    }
+}
+
+/// Evaluates an interpolated string with the lax policy on (an undefined bare reference is
+/// empty) and function calls refused.
+pub fn evaluate(template: &str, lookup: &dyn Fn(&str) -> Option<String>, matches: &[Option<&str>]) -> Result<String, String> {
+    evaluate_lax(template, lookup, matches, true)
+}
+
+/// Evaluates an interpolated string with function calls refused; `lax` is
+/// `laxNilPolicyInInterpolatedStrings`. In `a ?? b` an alternative that is an undefined
+/// reference counts as empty either way.
+pub fn evaluate_lax(template: &str, lookup: &dyn Fn(&str) -> Option<String>, matches: &[Option<&str>], lax: bool) -> Result<String, String> {
+    let pieces = parse(template)?;
+    let scope = StrScope { lookup, matches };
+    let cx = Ctx { invocation: template, lax };
+    if pieces.iter().all(|p| !matches!(p, Piece::Alts(a) if a.len() > 1)) {
+        let parts: Vec<Part> = pieces
+            .into_iter()
+            .map(|p| match p {
+                Piece::Text(t) => Part::Text(t),
+                Piece::Alts(mut a) => Part::Expr(a.remove(0)),
+            })
+            .collect();
+        return text_of(&parts, &scope, &cx);
+    }
+    let fallback = Ctx { invocation: template, lax: true };
+    let mut out = String::new();
+    for p in pieces {
+        match p {
+            Piece::Text(t) => out.push_str(&t),
+            Piece::Alts(alts) if alts.len() == 1 => out.push_str(&text_of(&[Part::Expr(alts[0].clone())], &scope, &cx)?),
+            Piece::Alts(alts) => {
+                for a in alts {
+                    let t = text_of(&[Part::Expr(a)], &scope, &fallback)?;
+                    if !t.is_empty() {
+                        out.push_str(&t);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -185,7 +199,7 @@ mod tests {
         assert!(e.contains("Function calls"), "{e}");
         let e = evaluate(r"a \(session.hostname", &vars, &[]).unwrap_err();
         assert!(e.contains("column 3"), "{e}");
-        assert!(evaluate(r"\(1 + 2)", &vars, &[]).is_err(), "only names, matches, strings, and ??");
+        assert_eq!(evaluate(r"\(1 + 2)", &vars, &[]).unwrap(), "3", "the full expression language");
         assert!(has_calls(r"x \(f(1))"));
         assert!(has_calls(r#"\(user.x ?? g())"#));
         assert!(!has_calls(r"\(user.x)"));
@@ -198,5 +212,30 @@ mod tests {
         assert_eq!(evaluate(r#"\(user.missing ?? "none")"#, &vars, &[]).unwrap(), "none");
         assert_eq!(evaluate(r#"\(user.x ?? "none")"#, &vars, &[]).unwrap(), "42");
         assert_eq!(evaluate(r"\(user.missing ?? hostname)", &vars, &[]).unwrap(), "box");
+    }
+
+    #[test]
+    fn lax_nil_follows_iterm2() {
+        let undefined = crate::expr::undefined("nope");
+        assert_eq!(evaluate_lax(r"a\(nope)b", &vars, &[], true).unwrap(), "ab");
+        assert_eq!(evaluate_lax(r"a\(nope)b", &vars, &[], false).unwrap_err(), undefined);
+        for lax in [true, false] {
+            let e = evaluate_lax(r"\(nope + 1)", &vars, &[], lax).unwrap_err();
+            assert_eq!(e, "Subexpression error: Nil operand in binary operation (+)", "not a bare reference");
+        }
+        assert_eq!(evaluate_lax(r"\(f(x: nope))", &vars, &[], true).unwrap_err(), crate::expr::CALLS_NOT_ALLOWED);
+        assert_eq!(evaluate_lax(r#"\(user.missing ?? "none")"#, &vars, &[], false).unwrap(), "none", "?? still works");
+    }
+
+    #[test]
+    fn interpolation_keeps_tandem_forms() {
+        let m = [Some("all"), Some("one")];
+        let e = evaluate_lax(r"\(matches[7])", &vars, &m, false).unwrap_err();
+        assert_eq!(e, "Index 7 out of range of \u{201c}matches\u{201d}, which has 2 values", "the Correction, with lax off");
+        assert_eq!(evaluate(r"\(matches[7])", &vars, &m).unwrap(), "", "lax: a bare indexed reference that fails is empty (EP:380-398)");
+        let cols = |n: &str| (n == "session.columns").then(|| "80".to_string());
+        assert_eq!(evaluate(r"\(columns + 1)", &cols, &[]).unwrap(), "81", "a numeric variable is a number");
+        assert_eq!(evaluate(r#"\(user.x)\"q\" \(1 / 2)"#, &vars, &[]).unwrap(), "42\"q\" 0.5");
+        assert!(check(r"\(f())").is_err() && check(r"\(1 +)").is_err() && check(r"\(user.x + 1)").is_ok());
     }
 }

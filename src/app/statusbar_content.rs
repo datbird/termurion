@@ -562,7 +562,7 @@ impl App {
     }
 
     /// An interpolated string evaluated in the session (`iTermSwiftyString` with no side
-    /// effects). The session's variables are gathered only when the string names one, and
+    /// effects), under `laxNilPolicyInInterpolatedStrings`. The session's variables are gathered only when the string names one, and
     /// the selection only when it names `selection` or `selectionLength`.
     fn evaluate_for(&self, pane: PaneId, expression: &str) -> Result<String, String> {
         let (light, full) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
@@ -571,7 +571,7 @@ impl App {
             let vars = if crate::prompted::names_selection(n) { full.get_or_init(|| self.variables_with(pane, true)) } else { light.get_or_init(|| self.variables_with(pane, false)) };
             crate::prompted::variable(n, vars)
         };
-        crate::interp::evaluate(expression, &lookup, &[])
+        crate::interp::evaluate_lax(expression, &lookup, &[], self.globals.bool("laxNilPolicyInInterpolatedStrings"))
     }
 
     /// How many triggers the session's profile has (`PS:23168-23170`).
