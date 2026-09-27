@@ -228,11 +228,16 @@ impl Client {
     /// Connects to the host at `pipe` and says hello. None when no host listens there. The
     /// host must run as this user.
     pub fn connect(pipe: &str, wait: Duration) -> Result<Option<(Client, Welcome)>, HostError> {
-        match Client::connect_as(pipe, wait, VERSION) {
-            // A host from an older Tandem refuses this version (and says so, not busy): speak
-            // its version on a new connection. Password prompts of its sessions read as unknown.
-            Err(HostError::Failed(_)) if VERSION > MIN_VERSION => Client::connect_as(pipe, wait, MIN_VERSION),
-            other => other,
+        let mut version = VERSION;
+        loop {
+            match Client::connect_as(pipe, wait, version) {
+                // A host from an older Tandem refuses this version (and says so, not busy): try
+                // the next lower one on a new connection, so a version 2 host keeps password
+                // prompts and signals. Only a version 3 host gives new sessions their environment;
+                // a version 1 host's password prompts read as unknown.
+                Err(HostError::Failed(_)) if version > MIN_VERSION => version -= 1,
+                other => return other,
+            }
         }
     }
 
@@ -283,12 +288,14 @@ impl Client {
         }
     }
 
-    pub fn launch(&self, cmdline: &str, cwd: Option<&Path>, cols: u16, rows: u16, notify: Notify) -> Result<HostedPty, String> {
+    /// Starts a session in the host. `env` goes over the host's environment; a host older than
+    /// version 3 ignores it (the field was always on the wire).
+    pub fn launch(&self, cmdline: &str, cwd: Option<&Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<HostedPty, String> {
         let tag = self.inner.next_tag.fetch_add(1, Ordering::Relaxed) as u64;
         let (tx, rx) = mpsc::channel();
         self.inner.launches.lock().unwrap().insert(tag, (tx, notify));
         let cwd = cwd.map(|d| d.display().to_string()).unwrap_or_default();
-        if let Err(e) = self.inner.send(&Msg::Launch { tag, cmdline: cmdline.into(), cwd, env: Vec::new(), cols, rows }) {
+        if let Err(e) = self.inner.send(&Msg::Launch { tag, cmdline: cmdline.into(), cwd, env: env.to_vec(), cols, rows }) {
             self.inner.launches.lock().unwrap().remove(&tag);
             return Err(e);
         }
@@ -512,7 +519,7 @@ mod tests {
     fn a_changed_watch_clears_hosted_prompts() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (client, _) = connect(&name);
-        let pty = client.launch("cmd.exe /d /k", None, 80, 24, quiet()).unwrap();
+        let pty = client.launch("cmd.exe /d /k", None, &[], 80, 24, quiet()).unwrap();
         client.watch_prompts(Some(0.2));
         pty.slot.lock().unwrap().password_input = true;
         assert!(pty.password_input());
@@ -526,14 +533,12 @@ mod tests {
         client.kill_all();
     }
 
-    /// A host from an older Tandem refuses version 2; the client speaks version 1 to it on a
-    /// new connection and never sends it a version 2 message.
-    #[test]
-    fn an_older_host_is_spoken_to_in_version_one() {
+    /// A host from an older Tandem that speaks up to `speaks`: it refuses each higher version
+    /// (not busy), welcomes the client at `speaks`, and returns the first message after that.
+    fn older_host(name: String, speaks: u32) -> std::thread::JoinHandle<Msg> {
         use crate::host_proto::Decoder;
-        let name = crate::winpipe::tests::test_name("oldhost");
         let mut listener = crate::winpipe::Listener::bind(&name).unwrap();
-        let old_host = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let hello = |p: &Pipe| {
                 let mut d = Decoder::default();
                 let mut buf = vec![0u8; 4096];
@@ -545,29 +550,51 @@ mod tests {
                     }
                 }
             };
-            let first = listener.accept(Duration::from_secs(10)).unwrap().expect("a first connection");
-            let (m, _, _) = hello(&first);
-            assert_eq!(m, Msg::Hello { version: VERSION });
-            first.write_all(&encode(&Msg::Refused { busy: false, reason: "the session host speaks version 1, not 2".into() })).unwrap();
-            first.shutdown();
-            let second = listener.accept(Duration::from_secs(10)).unwrap().expect("a second connection");
-            let (m, mut d, mut buf) = hello(&second);
-            assert_eq!(m, Msg::Hello { version: 1 });
-            second.write_all(&encode(&Msg::Welcome { version: 1, host_pid: 1, instance: "old".into(), sessions: vec![] })).unwrap();
-            // Whatever comes next must be a version 1 message (KillAll here), never WatchPrompts.
+            for refused in (speaks + 1..=VERSION).rev() {
+                let conn = listener.accept(Duration::from_secs(10)).unwrap().expect("a connection");
+                let (m, _, _) = hello(&conn);
+                assert_eq!(m, Msg::Hello { version: refused }, "one version lower each time");
+                conn.write_all(&encode(&Msg::Refused { busy: false, reason: format!("the session host speaks versions 1 to {speaks}, not {refused}") })).unwrap();
+                conn.shutdown();
+            }
+            let conn = listener.accept(Duration::from_secs(10)).unwrap().expect("the last connection");
+            let (m, mut d, mut buf) = hello(&conn);
+            assert_eq!(m, Msg::Hello { version: speaks });
+            conn.write_all(&encode(&Msg::Welcome { version: speaks, host_pid: 1, instance: "old".into(), sessions: vec![] })).unwrap();
             loop {
                 if let Some(m) = d.next() {
                     return m.unwrap();
                 }
-                let n = second.read(&mut buf).unwrap();
+                let n = conn.read(&mut buf).unwrap();
                 d.push(&buf[..n]);
             }
-        });
+        })
+    }
+
+    /// A version 1 host refuses versions 3 and 2; the client speaks version 1 to it and never
+    /// sends it a version 2 message.
+    #[test]
+    fn an_older_host_is_spoken_to_in_version_one() {
+        let name = crate::winpipe::tests::test_name("oldhost");
+        let old_host = older_host(name.clone(), 1);
         let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the old host answers");
         assert_eq!(welcome.version, 1);
         client.watch_prompts(Some(0.2));
         client.kill_all();
         assert_eq!(old_host.join().unwrap(), Msg::KillAll, "no version 2 message reached the old host");
+        client.close();
+    }
+
+    /// A version 2 host (milestone 10b) refuses version 3; the client speaks version 2 to it, so
+    /// password prompts still work there.
+    #[test]
+    fn a_version_two_host_keeps_version_two() {
+        let name = crate::winpipe::tests::test_name("v2host");
+        let old_host = older_host(name.clone(), 2);
+        let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the version 2 host answers");
+        assert_eq!(welcome.version, 2);
+        client.watch_prompts(Some(0.2));
+        assert_eq!(old_host.join().unwrap(), Msg::WatchPrompts { debounce_ms: Some(200) }, "a version 2 message reaches it");
         client.close();
     }
 
@@ -602,7 +629,7 @@ mod tests {
         assert!(w.sessions.is_empty() && !w.instance.is_empty());
         let woke = Arc::new(AtomicUsize::new(0));
         let w2 = woke.clone();
-        let p = c.launch("cmd.exe /d /c echo hosted-hi & ping -n 30 127.0.0.1 >nul", None, 80, 24, Arc::new(move || {
+        let p = c.launch("cmd.exe /d /c echo hosted-hi & ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, Arc::new(move || {
             w2.fetch_add(1, Ordering::Relaxed);
         })).unwrap();
         assert!(p.pid() > 0);
@@ -629,7 +656,7 @@ mod tests {
     fn an_attached_pane_sets_its_size() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (c, _) = connect(&name);
-        let mut p = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, 80, 24, quiet()).unwrap();
+        let mut p = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, quiet()).unwrap();
         let (id, pid) = (p.id(), p.pid());
         p.detach();
         drop(p);
@@ -653,7 +680,7 @@ mod tests {
     fn hosted_exit_code_arrives() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (c, _) = connect(&name);
-        let p = c.launch("cmd.exe /d /c exit 7", None, 80, 24, quiet()).unwrap();
+        let p = c.launch("cmd.exe /d /c exit 7", None, &[], 80, 24, quiet()).unwrap();
         let end = Instant::now() + Duration::from_secs(10);
         while p.exit_code().is_none() {
             assert!(Instant::now() < end, "no exit");
@@ -667,8 +694,8 @@ mod tests {
     fn drop_kills_the_session() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (c, _) = connect(&name);
-        let kept = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, 80, 24, quiet()).unwrap();
-        let gone = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, 80, 24, quiet()).unwrap();
+        let kept = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, quiet()).unwrap();
+        let gone = c.launch("cmd.exe /d /c ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, quiet()).unwrap();
         let (kept_id, gone_id) = (kept.id(), gone.id());
         drop(gone);
         let mut detached = kept;
@@ -687,7 +714,7 @@ mod tests {
     fn reattach_continues_the_output() {
         let (name, _host) = start_host(Duration::from_secs(1));
         let (c, _) = connect(&name);
-        let mut p = c.launch("cmd.exe /d /c echo first-part & ping -n 3 127.0.0.1 >nul & echo second-part & ping -n 30 127.0.0.1 >nul", None, 80, 24, quiet()).unwrap();
+        let mut p = c.launch("cmd.exe /d /c echo first-part & ping -n 3 127.0.0.1 >nul & echo second-part & ping -n 30 127.0.0.1 >nul", None, &[], 80, 24, quiet()).unwrap();
         let first = read_until(&p, "first-part");
         let (id, at) = (p.id(), p.offset());
         p.detach();

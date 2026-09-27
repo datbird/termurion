@@ -18,7 +18,7 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
     GetCurrentProcess, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
     STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
@@ -200,13 +200,14 @@ fn coord(cols: u16, rows: u16) -> COORD {
 }
 
 pub fn spawn(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<Pty, String> {
-    spawn_notify(api, cmdline, None, cols, rows, Arc::new(|| {}))
+    spawn_notify(api, cmdline, None, &[], cols, rows, Arc::new(|| {}))
 }
 
-/// Starts `cmdline` in a new pseudoconsole, in `cwd` when given.
-pub fn spawn_notify(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
+/// Starts `cmdline` in a new pseudoconsole, in `cwd` when given. `env`'s `NAME=value` entries
+/// go over the inherited environment; with none the child inherits it unchanged.
+pub fn spawn_notify(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
     check_size(cols, rows)?;
-    let (hpc, input, output, process) = unsafe { start(api, cmdline, cwd, cols, rows)? };
+    let (hpc, input, output, process) = unsafe { start(api, cmdline, cwd, env, cols, rows)? };
     let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (rx, reader_done, reader) = start_reader(output, notify.clone(), paused.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -240,7 +241,7 @@ fn watch_exit(process: HANDLE, notify: Notify) -> Result<(), String> {
 
 /// Creates the pseudoconsole and the child. Returns (pseudoconsole, our input
 /// write end, our output read end, child process).
-unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u16, rows: u16) -> Result<(HPCON, HANDLE, HANDLE, HANDLE), String> {
+unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16) -> Result<(HPCON, HANDLE, HANDLE, HANDLE), String> {
     unsafe {
         let (mut in_read, mut in_write): (HANDLE, HANDLE) = (null_mut(), null_mut());
         let (mut out_read, mut out_write): (HANDLE, HANDLE) = (null_mut(), null_mut());
@@ -301,14 +302,21 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, cols: u
         let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
         let mut cmd: Vec<u16> = OsStr::new(cmdline).encode_wide().chain(Some(0)).collect();
         let dir: Option<Vec<u16>> = cwd.map(|d| d.as_os_str().encode_wide().chain(Some(0)).collect());
+        // The null environment (inherit ours) unless there is something to add. Never logged:
+        // it can hold the session's API cookie.
+        let block: Option<Vec<u16>> = (!env.is_empty()).then(|| {
+            let ours = std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect();
+            crate::session_env::block(&crate::session_env::merge(ours, env))
+        });
+        let flags = if block.is_some() { EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT } else { EXTENDED_STARTUPINFO_PRESENT };
         let ok = CreateProcessW(
             null(),
             cmd.as_mut_ptr(),
             null(),
             null(),
             0,
-            EXTENDED_STARTUPINFO_PRESENT,
-            null(),
+            flags,
+            block.as_ref().map_or(null(), |b| b.as_ptr() as *const core::ffi::c_void),
             dir.as_ref().map_or(null(), |d| d.as_ptr()),
             &si.StartupInfo,
             &mut pi,
@@ -839,7 +847,7 @@ pub(crate) mod tests {
     fn notify_fires_on_output_and_exit() {
         let count = Arc::new(AtomicUsize::new(0));
         let c = count.clone();
-        let p = spawn_notify(&shipped(), "cmd.exe /c echo notify-me", None, 80, 24, Arc::new(move || {
+        let p = spawn_notify(&shipped(), "cmd.exe /c echo notify-me", None, &[], 80, 24, Arc::new(move || {
             c.fetch_add(1, Ordering::SeqCst);
         }))
         .unwrap();
@@ -892,9 +900,24 @@ pub(crate) mod tests {
     #[test]
     fn the_child_starts_in_the_given_directory() {
         let dir = std::env::temp_dir();
-        let p = spawn_notify(&shipped(), "cmd.exe /c cd", Some(&dir), 200, 24, Arc::new(|| {})).unwrap();
+        let p = spawn_notify(&shipped(), "cmd.exe /c cd", Some(&dir), &[], 200, 24, Arc::new(|| {})).unwrap();
         let want = dir.to_string_lossy().trim_end_matches('\\').to_string();
         p.read_until(want.as_bytes(), secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+    }
+
+    /// The session environment reaches the child over the inherited one (PATH survives the
+    /// merge: `where` finds cmd.exe); with nothing extra the child gets the inherited
+    /// environment, unchanged. The carets keep the console title (the command line) from
+    /// matching what the child prints.
+    #[test]
+    fn env_reaches_the_child() {
+        let cmd = "cmd.exe /c echo [%ITERM_SESSION_ID%^]&& where cmd >nul && echo env^-done";
+        let p = spawn_notify(&shipped(), cmd, None, &["ITERM_SESSION_ID=w0t0p0:5".into()], 200, 24, Arc::new(|| {})).unwrap();
+        let got = p.read_until(b"env-done", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+        assert!(text(&got).contains("[w0t0p0:5]"), "{:?}", text(&got));
+        let p = spawn_notify(&shipped(), cmd, None, &[], 200, 24, Arc::new(|| {})).unwrap();
+        let got = p.read_until(b"env-done", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+        assert!(text(&got).contains("[%ITERM_SESSION_ID%]"), "{:?}", text(&got));
     }
 
     #[test]

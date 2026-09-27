@@ -310,6 +310,9 @@ pub struct App {
     /// The command the next pane runs instead of its profile's (a git menu command's
     /// single-use window).
     start_command_override: Option<String>,
+    /// The tab the next pane goes into once started (a split), for its `ITERM_SESSION_ID`;
+    /// None is a new tab. Set and cleared around one start, so it is not per-window state.
+    start_tab: Option<usize>,
     /// Sessions opened for a git menu command, by pane (app-wide).
     single_use: HashMap<PaneId, git_ui::SingleUse>,
     /// Undo Close: closed things waiting, and the close being collected now.
@@ -742,6 +745,7 @@ pub fn run() {
         menus_dirty: false,
         start_dir_override: None,
         start_command_override: None,
+        start_tab: None,
         single_use: HashMap::new(),
         undo: Default::default(),
         undo_capture: None,
@@ -955,10 +959,45 @@ impl App {
         // Instant Replay closes first; the new shell starts live.
         self.end_replays(&[id]);
         let guid = self.panes.get(&id).map(|p| p.profile.clone());
-        if let Some(pid) = self.panes.remove(&id).and_then(|p| p.shell_pid()) {
-            self.jobs.forget(pid);
+        if let Some(old) = self.panes.remove(&id) {
+            if let Some(pid) = old.shell_pid() {
+                self.jobs.forget(pid);
+            }
+            // The old shell is gone for good; the new one gets its own cookie.
+            self.forget_cookie(&old);
         }
         self.start_pane_as(id, rect, guid.as_deref());
+    }
+
+    /// The session variables for pane `id`, about to start with profile `p` (`PS:3246-3350`),
+    /// and the cookie minted for it: a Session cookie in the jar, only while "Enable Python
+    /// API" and `setCookie` are both on and the server runs. The numbers are those at launch:
+    /// the window's number, the tab it goes into, and iTerm2's pane number (the tab's session
+    /// count less one once it is in the tab, `TAB:7435-7443`). The result holds a secret:
+    /// never log it.
+    fn session_env(&mut self, id: PaneId, p: &Profile) -> (Vec<String>, Option<String>) {
+        let window = self.window_number();
+        let (tab, pane) = match self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
+            Some(t) => (t, self.tabs[t].layout.panes().len() - 1),
+            None => match self.start_tab {
+                Some(t) => (t, self.tabs.get(t).map_or(0, |t| t.layout.panes().len())),
+                None => (self.tabs.len(), 0),
+            },
+        };
+        let cookie = (self.globals.bool(api_ui::ENABLE_KEY) && self.globals.bool(api_ui::SET_COOKIE_KEY) && self.api_server.is_some())
+            .then(|| self.api_jar.lock().unwrap().mint(crate::api_auth::CookieUse::Session));
+        let name = p.name();
+        let id = id.to_string();
+        let facts = crate::session_env::Facts { window, tab, pane, id: &id, profile_name: &name, cookie: cookie.as_deref() };
+        (crate::session_env::vars(&facts), cookie)
+    }
+
+    /// A pane dropped for good takes its cookie out of the jar (a pane stashed for Undo Close
+    /// keeps it).
+    fn forget_cookie(&self, pane: &Pane) {
+        if let Some(c) = &pane.cookie {
+            self.api_jar.lock().unwrap().remove(c);
+        }
     }
 
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
@@ -988,16 +1027,21 @@ impl App {
             self.host = None;
             self.banners.set("host", "The session host stopped. New shells run inside Tandem, so they end with it.");
         }
+        let (env, cookie) = self.session_env(id, &p);
         let started = match &self.host {
-            Some(h) => Pane::start_hosted(id, h, &cmd, Some(&cwd), cols, rows, self.notify.clone()),
-            None => Pane::start(id, &self.api, &cmd, Some(&cwd), cols, rows, self.notify.clone()),
+            Some(h) => Pane::start_hosted(id, h, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
+            None => Pane::start(id, &self.api, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
         };
         match started {
-            Ok(pane) => {
+            Ok(mut pane) => {
+                pane.cookie = cookie;
                 self.install_pane(id, pane, &p);
                 true
             }
             Err(e) => {
+                if let Some(c) = &cookie {
+                    self.api_jar.lock().unwrap().remove(c);
+                }
                 self.banners.set("start", format!("Could not start {cmd}: {e}"));
                 false
             }
@@ -1293,7 +1337,10 @@ impl App {
             Axis::Row => Rect { w: rect.w / 2.0, ..rect },
             Axis::Column => Rect { h: rect.h / 2.0, ..rect },
         };
-        if let Some(id) = self.start_pane(half, guid) {
+        self.start_tab = Some(self.active);
+        let started = self.start_pane(half, guid);
+        self.start_tab = None;
+        if let Some(id) = started {
             let tab = &mut self.tabs[self.active];
             tab.layout.split(target, axis, id);
             tab.focused = id;
@@ -1342,7 +1389,10 @@ impl App {
                     p.set_paused(true);
                     c.panes.push(p);
                 }
-                _ => self.forget_session_profile(&p.profile),
+                _ => {
+                    self.forget_cookie(&p);
+                    self.forget_session_profile(&p.profile);
+                }
             }
         }
         if self.shot.as_ref().is_some_and(|s| s.pane == id) {

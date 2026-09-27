@@ -6,8 +6,9 @@ use std::collections::VecDeque;
 /// The protocol this build speaks, and the oldest it still speaks. Version 2 adds password
 /// prompt detection (`WatchPrompts`, `PasswordInput`) and console signals (`Signal`); both ends speak the lower of their two
 /// versions, so a version 1 peer never sees those messages (an unknown message breaks the
-/// stream).
-pub const VERSION: u32 = 2;
+/// stream). Version 3 hosts honor Launch's `env` (the session environment); the field was
+/// always on the wire, and older hosts ignore it.
+pub const VERSION: u32 = 3;
 pub const MIN_VERSION: u32 = 1;
 /// A frame longer than this is refused (a broken or hostile peer).
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -319,6 +320,7 @@ mod tests {
             Msg::Welcome { version: 1, host_pid: 42, instance: "abc".into(), sessions: vec![live.clone(), Live { exited: None, ..live }] },
             Msg::Refused { busy: true, reason: "another Tandem is attached".into() },
             Msg::Launch { tag: 5, cmdline: "cmd.exe".into(), cwd: String::new(), env: vec!["A=1".into(), "B=".into()], cols: 100, rows: 30 },
+            Msg::Launch { tag: 6, cmdline: "pwsh.exe".into(), cwd: r"C:\src".into(), env: vec!["A=1".into(), "B=2".into()], cols: 80, rows: 24 },
             Msg::Launched { tag: 5, id: 9, pid: 77 },
             Msg::LaunchFailed { tag: 5, error: "no such file".into() },
             Msg::Attach { id: 9, since: 1 << 40 },
@@ -344,6 +346,8 @@ mod tests {
 
     #[test]
     fn messages_round_trip() {
+        // Version 3 hosts honor Launch's `env`; version 1 is still spoken.
+        assert_eq!((VERSION, MIN_VERSION), (3, 1));
         let mut d = Decoder::default();
         for m in all() {
             d.push(&encode(&m));

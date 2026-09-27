@@ -156,15 +156,22 @@ impl App {
     }
 
     /// Takes over a shell the host still runs, as a new pane. Its output from `since` follows
-    /// the restored contents; when the host dropped part of it, the pane is repainted.
-    pub(super) fn attach_pane(&mut self, rect: Rect, guid: Option<&str>, host_id: u64, pid: u32, since: u64) -> Result<PaneId, String> {
+    /// the restored contents; when the host dropped part of it, the pane is repainted. The
+    /// shell's saved `cookie` goes back in the jar as a Session cookie, so `ITERM2_COOKIE` in
+    /// its environment still works (`PS:2243-2245`).
+    pub(super) fn attach_pane(&mut self, rect: Rect, guid: Option<&str>, host_id: u64, pid: u32, since: u64, cookie: Option<String>) -> Result<PaneId, String> {
         let host = self.host.clone().ok_or("no session host is running")?;
         let (cols, rows) = self.grid_size(rect);
         let (pty, _from, dropped) = host.attach(host_id, pid, since, self.notify.clone())?;
         let id = self.next_id;
         self.next_id += 1;
         let p = self.profile(guid);
-        self.install_pane(id, Pane::attached(id, pty, cols, rows), &p);
+        let mut pane = Pane::attached(id, pty, cols, rows);
+        if let Some(c) = &cookie {
+            self.api_jar.lock().unwrap().add(c, crate::api_auth::CookieUse::Session);
+        }
+        pane.cookie = cookie;
+        self.install_pane(id, pane, &p);
         if dropped {
             if let Some(pane) = self.panes.get_mut(&id) {
                 // A visible mark where output is missing, then a repaint.
@@ -181,7 +188,7 @@ impl App {
     pub(super) fn adopt_orphans(&mut self, sessions: &[(u64, u32)]) {
         let area = self.content_area();
         for (host_id, pid) in sessions {
-            match self.attach_pane(area, None, *host_id, *pid, 0) {
+            match self.attach_pane(area, None, *host_id, *pid, 0, None) {
                 Ok(id) => {
                     if let Some(p) = self.panes.get_mut(&id) {
                         p.jiggle();
@@ -234,6 +241,12 @@ pub(super) fn host_key_value(id: u64, pid: u32, offset: u64) -> Value {
 fn parse_host_key(v: &Value) -> Option<crate::reattach::HostKey> {
     let n = |k: &str| v.get(k).and_then(|x| x.as_integer()).filter(|i| *i >= 0);
     Some(crate::reattach::HostKey { id: n("Id")? as u64, pid: u32::try_from(n("Pid")?).ok()?, offset: n("Offset")? as u64 })
+}
+
+/// A session's saved cookie ("Reusable Cookie", beside `HOST_KEY`), when it is one Tandem could
+/// have minted.
+pub(super) fn saved_cookie(session: &Value) -> Option<String> {
+    session.get(crate::session_env::REUSABLE_COOKIE_KEY).and_then(|v| v.as_str()).filter(|c| crate::session_env::is_cookie(c)).map(str::to_string)
 }
 
 /// A session marked to take its shell back: (host session id, pid, output offset).

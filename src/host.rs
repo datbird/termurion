@@ -310,7 +310,7 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
 
 fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
     match m {
-        Msg::Launch { tag, cmdline, cwd, env: _, cols, rows } => {
+        Msg::Launch { tag, cmdline, cwd, env, cols, rows } => {
             let id = {
                 let mut h = host.lock().unwrap();
                 h.next_id += 1;
@@ -321,7 +321,7 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
                 let _ = w.send(id);
             });
             let dir = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
-            match crate::pty::spawn_notify(api, &cmdline, dir.as_deref(), cols.max(1), rows.max(1), notify) {
+            match crate::pty::spawn_notify(api, &cmdline, dir.as_deref(), &env, cols.max(1), rows.max(1), notify) {
                 Ok(pty) => {
                     let pid = pty.pid();
                     let mut h = host.lock().unwrap();
@@ -515,7 +515,11 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn launch(&self, cmdline: &str) -> u64 {
-            self.send(&Msg::Launch { tag: 1, cmdline: cmdline.into(), cwd: String::new(), env: vec![], cols: 80, rows: 24 });
+            self.launch_with(cmdline, vec![])
+        }
+
+        pub(crate) fn launch_with(&self, cmdline: &str, env: Vec<String>) -> u64 {
+            self.send(&Msg::Launch { tag: 1, cmdline: cmdline.into(), cwd: String::new(), env, cols: 80, rows: 24 });
             self.wait(|m| match m {
                 Msg::Launched { id, .. } => Some(*id),
                 Msg::LaunchFailed { error, .. } => panic!("{error}"),
@@ -550,6 +554,16 @@ pub(crate) mod tests {
         let id = c.launch("cmd.exe /d /c echo hello-host");
         c.output_until(id, "hello-host");
         assert_eq!(c.wait(|m| matches!(m, Msg::Exited { id: i, .. } if *i == id).then_some(())), ());
+    }
+
+    /// Version 3: Launch's `env` reaches the session's shell.
+    #[test]
+    fn launch_env_reaches_the_session() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello();
+        let id = c.launch_with("cmd.exe /d /c echo [%ITERM_PROFILE%^]", vec!["ITERM_PROFILE=Hosted".into()]);
+        c.output_until(id, "[Hosted]");
     }
 
     #[test]
@@ -699,7 +713,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn versions_one_and_two_are_spoken() {
+    fn versions_one_to_three_are_spoken() {
         let (name, _host) = start_host(Duration::from_secs(1));
         // An older Tandem: version 1, and nothing it does not know ever comes back.
         let old = Conn::open(&name);
@@ -725,8 +739,16 @@ pub(crate) mod tests {
         new.send(&Msg::WatchPrompts { debounce_ms: None });
         new.close();
         std::thread::sleep(Duration::from_millis(300));
+        let three = Conn::open(&name);
+        three.send(&Msg::Hello { version: 3 });
+        assert_eq!(three.wait(|m| match m {
+            Msg::Welcome { version, .. } => Some(*version),
+            _ => None,
+        }), 3);
+        three.close();
+        std::thread::sleep(Duration::from_millis(300));
         let future = Conn::open(&name);
-        future.send(&Msg::Hello { version: 3 });
+        future.send(&Msg::Hello { version: crate::host_proto::VERSION + 1 });
         assert!(future.wait(|m| match m {
             Msg::Refused { busy, .. } => Some(!*busy),
             _ => None,

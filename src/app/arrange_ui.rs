@@ -68,6 +68,10 @@ impl App {
         // Session restoration: the host session, so a later launch can take the shell back.
         if let (Contents::Styled(_) | Contents::KeysOnly, Some((host_id, offset)), Some(pid), Some(t)) = (contents, p.host_session(), p.shell_pid(), v.as_table_mut()) {
             t.insert(crate::restore_state::HOST_KEY.into(), super::restore_ui::host_key_value(host_id, pid, offset));
+            // The shell's cookie, so it still works when the shell is taken back (`PS:7395-7396`).
+            if let Some(c) = &p.cookie {
+                t.insert(crate::session_env::REUSABLE_COOKIE_KEY.into(), Value::String(c.clone()));
+            }
         }
         v
     }
@@ -260,7 +264,7 @@ impl App {
             missing |= guid.is_none();
             self.start_dir_override = Some(arrangement::folder_for(&session));
             let id = match super::restore_ui::attach_key(&session) {
-                Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since) {
+                Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since, super::restore_ui::saved_cookie(&session)) {
                     Ok(id) => Some(id),
                     Err(e) => {
                         self.banners.set("reattach", format!("A running shell could not be taken back ({e}); a new shell started in its place."));
@@ -297,8 +301,11 @@ impl App {
             for id in started {
                 self.clips.remove(&id);
                 self.focus_order.remove(&id);
-                if let Some(pid) = self.panes.remove(&id).and_then(|p| p.shell_pid()) {
-                    self.jobs.forget(pid);
+                if let Some(p) = self.panes.remove(&id) {
+                    if let Some(pid) = p.shell_pid() {
+                        self.jobs.forget(pid);
+                    }
+                    self.forget_cookie(&p);
                 }
             }
             return Err(e);
