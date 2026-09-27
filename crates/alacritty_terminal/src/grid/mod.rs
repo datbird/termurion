@@ -139,6 +139,12 @@ pub struct Grid<T> {
     /// Tandem patch: rows that have scrolled up off the top of this grid's screen, ever.
     #[cfg_attr(feature = "serde", serde(default))]
     scrolled_off: u64,
+
+    /// Tandem patch: rows lost off the top of this grid's history, ever (a full history
+    /// scrolling, a smaller history limit, a reflow past the limit). Clearing the history does
+    /// not count, as in iTerm2's scrollback overflow.
+    #[cfg_attr(feature = "serde", serde(default))]
+    dropped: u64,
 }
 
 impl<T: GridCell + Default + PartialEq> Grid<T> {
@@ -147,6 +153,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             raw: Storage::with_capacity(lines, columns),
             max_scroll_limit,
             scrolled_off: 0,
+            dropped: 0,
             display_offset: 0,
             saved_cursor: Cursor::default(),
             cursor: Cursor::default(),
@@ -160,6 +167,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let current_history_size = self.history_size();
         if current_history_size > history_size {
             self.raw.shrink_lines(current_history_size - history_size);
+            // Tandem patch: the oldest rows past the new limit are lost.
+            self.dropped += (current_history_size - history_size) as u64;
         }
         self.display_offset = min(self.display_offset, history_size);
         self.max_scroll_limit = history_size;
@@ -279,7 +288,10 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             self.scrolled_off += positions as u64;
 
             // Create scrollback for the new lines.
+            let history = self.history_size();
             self.increase_scroll_limit(positions);
+            // Tandem patch: rows that found no room in the history are lost.
+            self.dropped += (positions - (self.history_size() - history)) as u64;
 
             // Swap the lines fixed at the top to their target positions after rotation.
             //
@@ -406,6 +418,20 @@ impl<T> Grid<T> {
     #[inline]
     pub fn scrolled_off(&self) -> u64 {
         self.scrolled_off
+    }
+
+    /// Tandem patch: rows lost off the top of the history, ever. With the history size it
+    /// numbers lines as iTerm2's API does: the oldest kept line is `dropped()`.
+    #[inline]
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+
+    /// Tandem patch: counts `count` rows lost off the top of the history (a reflow past the
+    /// history limit).
+    #[inline]
+    pub(crate) fn add_dropped(&mut self, count: usize) {
+        self.dropped += count as u64;
     }
 
     /// Tandem patch: how many lines of history the grid keeps at most.

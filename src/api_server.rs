@@ -204,7 +204,10 @@ struct Mail {
     /// The client closed its side, or the socket failed.
     eof: bool,
     outbound: VecDeque<Out>,
+    /// Bytes of notifications queued (the cap's count).
     outbound_bytes: usize,
+    /// Bytes of responses queued, counted apart (`refused`).
+    response_bytes: usize,
     verdict: Option<bool>,
     /// The server stops (close frame, then end).
     stop: bool,
@@ -220,7 +223,18 @@ struct Mail {
 
 enum Out {
     Frame(Vec<u8>),
+    /// A response to a request: it may pass the cap (`refused`).
+    Response(Vec<u8>),
     Close,
+}
+
+/// Whether a frame of `len` bytes cuts its client off, with `notes` bytes of notifications and
+/// `responses` bytes of responses queued. Notifications keep the cap: past `OUTBOUND_LIMIT`
+/// queued the client is not keeping up. A response is counted apart and always taken when no
+/// other response waits, so one answer larger than the cap (a long styled GetBuffer) is sent
+/// instead of dropping the connection (m11b ruling; the cost: that one answer's memory).
+fn refused(notes: usize, responses: usize, len: usize, response: bool) -> bool {
+    if response { responses > 0 && responses + len > OUTBOUND_LIMIT } else { notes + len > OUTBOUND_LIMIT }
 }
 
 impl Mail {
@@ -340,18 +354,32 @@ impl Server {
         }
     }
 
-    /// Sends a binary frame. A client that lets more than `OUTBOUND_LIMIT` bytes queue up is
-    /// cut off (its connection ends with `Closed`).
+    /// Sends a binary frame (a notification). A client that lets more than `OUTBOUND_LIMIT`
+    /// bytes queue up is cut off (its connection ends with `Closed`).
     pub fn send(&self, conn: u64, bytes: Vec<u8>) {
+        self.queue(conn, bytes, false);
+    }
+
+    /// Sends a response: like `send`, except that one response larger than the cap is still
+    /// sent (`refused`).
+    pub fn respond(&self, conn: u64, bytes: Vec<u8>) {
+        self.queue(conn, bytes, true);
+    }
+
+    fn queue(&self, conn: u64, bytes: Vec<u8>, response: bool) {
         let conns = self.shared.conns.lock().unwrap();
         let Some(c) = conns.get(&conn) else { return };
         let mut m = c.mailbox.mail.lock().unwrap();
-        if m.outbound_bytes + bytes.len() > OUTBOUND_LIMIT {
+        if refused(m.outbound_bytes, m.response_bytes, bytes.len(), response) {
             m.abort = true;
             m.outbound.clear();
             m.outbound_bytes = 0;
+            m.response_bytes = 0;
             // Unblocks a write stuck on a client that stopped reading.
             let _ = c.stream.shutdown(std::net::Shutdown::Both);
+        } else if response {
+            m.response_bytes += bytes.len();
+            m.outbound.push_back(Out::Response(bytes));
         } else {
             m.outbound_bytes += bytes.len();
             m.outbound.push_back(Out::Frame(bytes));
@@ -808,11 +836,14 @@ impl Connection {
     fn carry(&self, mut ws: WebSocket<Pipe>) {
         let would_block = |e: &tungstenite::Error| matches!(e, tungstenite::Error::Io(e) if e.kind() == std::io::ErrorKind::WouldBlock);
         let mut closing = false;
+        // The write buffer's cap while a response larger than usual is in it.
+        let mut raised = OUTBOUND_LIMIT;
         loop {
             let got = self.mailbox.wait_conn(None, |m| {
                 let any = !m.inbound.is_empty() || !m.outbound.is_empty() || m.eof || m.stop || m.abort || (m.want_write && m.writable);
                 any.then(|| {
                     m.outbound_bytes = 0;
+                    m.response_bytes = 0;
                     m.writable = false;
                     (std::mem::take(&mut m.inbound), std::mem::take(&mut m.outbound), m.eof, m.stop, m.abort)
                 })
@@ -830,6 +861,16 @@ impl Connection {
                 }
                 let queued = match out {
                     Out::Frame(bytes) => ws.write(Message::binary(bytes)),
+                    // tungstenite's buffer takes one response past its cap; the cap comes
+                    // back once the buffer is empty.
+                    Out::Response(bytes) => {
+                        let need = OUTBOUND_LIMIT + bytes.len();
+                        if need > raised {
+                            raised = need;
+                            ws.set_config(|c| c.max_write_buffer_size = need);
+                        }
+                        ws.write(Message::binary(bytes))
+                    }
                     Out::Close => {
                         closing = true;
                         ws.close(None)
@@ -864,7 +905,13 @@ impl Connection {
                 let _ = ws.close(None);
             }
             let want_write = match ws.flush() {
-                Ok(()) => false,
+                Ok(()) => {
+                    if raised != OUTBOUND_LIMIT {
+                        raised = OUTBOUND_LIMIT;
+                        ws.set_config(|c| c.max_write_buffer_size = OUTBOUND_LIMIT);
+                    }
+                    false
+                }
                 Err(e) if would_block(&e) => true,
                 Err(_) => return,
             };
@@ -1386,6 +1433,41 @@ mod tests {
         let t = Instant::now();
         s.stop();
         assert!(t.elapsed() < Duration::from_secs(5), "stop took {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn one_response_may_pass_the_cap() {
+        // Notifications keep the cap; a response is counted apart, one at a time.
+        assert!(refused(OUTBOUND_LIMIT, 0, 1, false));
+        assert!(!refused(OUTBOUND_LIMIT - 1, 0, 1, false));
+        assert!(!refused(0, 0, OUTBOUND_LIMIT + 1, true), "one answer larger than the cap is sent");
+        assert!(!refused(OUTBOUND_LIMIT, 0, 10, true), "queued notifications do not refuse an answer");
+        assert!(!refused(0, OUTBOUND_LIMIT + 1, 10, false), "a queued answer does not refuse a notification");
+        assert!(refused(0, OUTBOUND_LIMIT, 1, true), "answers waiting together share the cap");
+        assert!(!refused(0, 10, 10, true));
+
+        // A reading client gets the whole answer, and a notification after it.
+        let s = start_with(allow());
+        let c = client(s.addrs()[0]);
+        let p = pending(&s);
+        s.verdict(p.conn, true);
+        let (mut ws, _) = c.join().unwrap().unwrap();
+        ws.set_config(|c| {
+            c.max_message_size = None;
+            c.max_frame_size = None;
+        });
+        ws.get_ref().set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        s.respond(p.conn, vec![7u8; OUTBOUND_LIMIT + 1]);
+        s.send(p.conn, vec![1, 2]);
+        match ws.read() {
+            Ok(Message::Binary(b)) => assert_eq!((b.len(), b[0]), (OUTBOUND_LIMIT + 1, 7)),
+            m => panic!("{m:?}"),
+        }
+        match ws.read() {
+            Ok(Message::Binary(b)) => assert_eq!(&b[..], &[1, 2]),
+            m => panic!("{m:?}"),
+        }
+        assert_eq!(s.counts(), (1, 0), "still connected");
     }
 
     #[test]

@@ -69,4 +69,9 @@ test data) is left out. Changes:
     swaps whole rows with `slice::swap`; upstream copied four qwords, the size of an unpatched
     `Row`, so the Tandem row slots stayed behind and debug builds panicked on region scrolls.
 
+15. `grid/mod.rs`: each `Grid` also counts rows lost off the top of its history (`dropped`): a full
+    history scrolling, a smaller history limit, and the history limit cut in `resize.rs`'s
+    `shrink_columns` and `splice`. Clearing the history does not count. `Grid::dropped()` plus the
+    history size numbers lines as iTerm2's API does, which a reflow cannot move below zero.
+
 To update alacritty_terminal, copy the new version here and apply these changes again.

@@ -172,6 +172,37 @@ pub fn flags_changed(keycode: u16, pressed: bool, repeat: bool) -> bool {
     keycode != CAPS_LOCK || pressed
 }
 
+/// The modifiers held after a modifier key (by its macOS key code) is pressed or released.
+pub fn mods_after(mut mods: crate::mouse::Mods, keycode: u16, pressed: bool) -> crate::mouse::Mods {
+    match keycode {
+        0x38 | 0x3C => mods.shift = pressed,
+        0x3B | 0x3E => mods.ctrl = pressed,
+        0x3A | 0x3D => mods.alt = pressed,
+        0x37 | 0x36 => mods.cmd = pressed,
+        _ => {}
+    }
+    mods
+}
+
+/// Focus left the window while the modifiers `held` were down (Windows sends their releases
+/// to no one): the FLAGS_CHANGED their release implies, with no modifiers, keyed by a released
+/// one (Shift, Control, Option, Command, the first held), as AppKit sends flagsChanged when
+/// the key window changes. None when none was held.
+pub fn focus_lost(held: crate::mouse::Mods) -> Option<Key> {
+    let keycode = if held.shift {
+        0x38
+    } else if held.ctrl {
+        0x3B
+    } else if held.alt {
+        0x3A
+    } else if held.cmd {
+        0x37
+    } else {
+        return None;
+    };
+    Some(flags_key(crate::mouse::Mods::default(), keycode))
+}
+
 fn text_of(c: u32) -> Option<String> {
     char::from_u32(c).map(String::from)
 }
@@ -283,6 +314,23 @@ pub enum ApiEvent {
     Custom { id: Option<String>, payload: String },
 }
 
+/// The sessions of `now` (in its order) that `seen` did not have: each takes the kept "all"
+/// requests (`H:909-925`).
+pub fn new_sessions(seen: &std::collections::BTreeSet<u64>, now: &[u64]) -> Vec<u64> {
+    now.iter().copied().filter(|p| !seen.contains(p)).collect()
+}
+
+/// Notes panes whose screen changed in `dirty`, each once: however many output wakes a loop
+/// pass has, it posts at most one SCREEN_UPDATE per pane (iTerm2 posts from its refresh,
+/// `PS:13241-13254`).
+pub fn mark_dirty<T: PartialEq + Copy>(dirty: &mut Vec<T>, panes: &[T]) {
+    for p in panes {
+        if !dirty.contains(p) {
+            dirty.push(*p);
+        }
+    }
+}
+
 /// The ScreenUpdateNotification (`PS:13244-13246`).
 pub fn screen_update(session: &str) -> pb::Notification {
     pb::Notification { screen_update_notification: Some(pb::ScreenUpdateNotification { session: Some(session.to_string()) }), ..Default::default() }
@@ -325,6 +373,61 @@ mod tests {
 
     fn req(kind: N, subscribe: Option<bool>, session: Option<&str>) -> pb::NotificationRequest {
         pb::NotificationRequest { session: session.map(str::to_string), subscribe, notification_type: Some(kind as i32), arguments: None }
+    }
+
+    #[test]
+    fn focus_lost_releases_the_held_modifiers() {
+        use crate::mouse::Mods;
+        use pb::keystroke_notification::Action as A;
+        let held = mods_after(mods_after(Mods::default(), 0x38, true), 0x3D, true);
+        assert_eq!(held, Mods { shift: true, alt: true, ..Mods::default() });
+        assert_eq!(mods_after(held, 0x3C, false), Mods { alt: true, ..Mods::default() }, "either Shift releases Shift");
+        assert_eq!(mods_after(held, 0x39, true), held, "Caps Lock is no held modifier");
+        let k = focus_lost(held).unwrap();
+        assert_eq!((k.action, k.keycode, k.modifiers.is_empty()), (A::FlagsChanged as i32, 0x38, true));
+        assert_eq!(focus_lost(Mods { cmd: true, ..Mods::default() }).map(|k| k.keycode), Some(0x37));
+        assert_eq!(focus_lost(Mods::default()), None, "nothing held: nothing posted");
+    }
+
+    #[test]
+    fn new_sessions_are_found_by_set() {
+        let seen: std::collections::BTreeSet<u64> = [3, 7].into_iter().collect();
+        assert_eq!(new_sessions(&seen, &[7, 3]), Vec::<u64>::new(), "the same set, in another order");
+        assert_eq!(new_sessions(&seen, &[9, 7, 4]), vec![9, 4], "in window order; an ended one is not new");
+        assert_eq!(new_sessions(&Default::default(), &[1]), vec![1]);
+    }
+
+    #[test]
+    fn screen_updates_are_one_per_pane_per_pass() {
+        let mut dirty = Vec::new();
+        // Three output wakes in one pass, pane 2 in each.
+        mark_dirty(&mut dirty, &[2, 5]);
+        mark_dirty(&mut dirty, &[2]);
+        mark_dirty(&mut dirty, &[5, 2, 9]);
+        assert_eq!(std::mem::take(&mut dirty), vec![2, 5, 9], "the pass posts each pane once");
+        mark_dirty(&mut dirty, &[2]);
+        assert_eq!(dirty, vec![2], "the next pass starts again");
+    }
+
+    #[test]
+    fn undo_close_keeps_subscriptions_until_it_expires() {
+        let mut s = SessionSubs::default();
+        let own = req(N::NotifyOnKeystroke, Some(true), Some("5"));
+        let all = req(N::NotifyOnScreenUpdate, Some(true), Some("all"));
+        assert_eq!(s.request(1, &own, Some(5), &[]), Status::Ok);
+        assert_eq!(s.request(2, &all, None, &[5]), Status::Ok);
+        // Closed with Undo Close: nothing goes while the close can be undone (the app forgets
+        // a session only when its pane is dropped for good, `close_pane` or `end_undone`).
+        // Restored: the pane comes back as a new session and takes the "all" requests again,
+        // which it already holds, so nothing doubles.
+        s.new_session(5);
+        assert_eq!(s.subscribers(N::NotifyOnKeystroke, 5).len(), 1, "its own subscription is kept");
+        assert_eq!(s.subscribers(N::NotifyOnScreenUpdate, 5).len(), 1, "the all request once");
+        // The undo expired instead: every subscription of the session goes, "all" kept.
+        s.forget_session(5);
+        assert!(s.subscribers(N::NotifyOnKeystroke, 5).is_empty());
+        assert!(s.subscribers(N::NotifyOnScreenUpdate, 5).is_empty());
+        assert!(s.has_all(), "the all request still applies to future sessions");
     }
 
     #[test]

@@ -236,6 +236,21 @@ impl Broadcast {
         true
     }
 
+    /// Panes that left the window (their tab moved to another): they leave its domains and
+    /// sources; a domain of fewer than two goes, and custom mode with none left is off.
+    pub fn forget(&mut self, panes: &[PaneId]) {
+        for d in &mut self.domains {
+            for p in panes {
+                d.remove(p);
+            }
+        }
+        self.domains.retain(|d| d.len() >= 2);
+        self.sources.retain(|s| !panes.contains(s));
+        if self.raw == Mode::Custom && self.domains.is_empty() {
+            self.raw = Mode::Off;
+        }
+    }
+
     /// Current Session is Broadcast Source.
     pub fn toggle_source(&mut self, v: &View, p: PaneId) {
         let was = self.sources.contains(&p);
@@ -372,6 +387,18 @@ mod tests {
             true
         });
         assert_eq!((asked, b.mode(&v)), (0, Mode::AllTabs));
+    }
+
+    #[test]
+    fn panes_that_leave_the_window_leave_its_broadcast() {
+        let mut b = Broadcast { raw: Mode::Custom, domains: vec![BTreeSet::from([1, 2, 3]), BTreeSet::from([4, 5])], sources: BTreeSet::from([2, 4]) };
+        b.forget(&[3, 4]);
+        assert_eq!((b.raw, b.domains.clone(), b.sources.clone()), (Mode::Custom, vec![BTreeSet::from([1, 2])], BTreeSet::from([2])), "a domain of one goes");
+        b.forget(&[1]);
+        assert_eq!((b.raw, b.domains.is_empty()), (Mode::Off, true), "custom with no domain left is off");
+        let mut all = Broadcast { raw: Mode::AllTabs, ..Default::default() };
+        all.forget(&[7]);
+        assert_eq!(all.raw, Mode::AllTabs, "other modes follow the window's tabs");
     }
 
     #[test]

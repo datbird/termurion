@@ -25,7 +25,7 @@ impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
     pub(super) fn tmux_actions(&mut self, gw: PaneId, actions: Vec<Action>, event_loop: &ActiveEventLoop) -> bool {
         // Output and status lines change no pane or tab: no relayout for them.
-        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. } | Action::NewWindowReply { .. }));
+        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. } | Action::NewWindowReply { .. } | Action::Abandoned(..)));
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
@@ -104,6 +104,8 @@ impl App {
                         self.with_tab_of(id, |t| t.zoomed = if z { Some(t.focused) } else { None });
                     }
                 }
+                // Closed while still opening: a waiting CreateWindow gets no tab ("0").
+                Action::Abandoned(window) => self.api_tmux_window_opened(gw, window, None),
                 Action::Close(window) => {
                     // Closed before it opened: a waiting CreateWindow gets no tab ("0").
                     self.api_tmux_window_opened(gw, window, None);
@@ -157,7 +159,7 @@ impl App {
                     }
                     // Read now: nothing else wakes the loop for it.
                     p.pump();
-                    self.api_output_elsewhere(&[id]);
+                    self.api_output(&[id]);
                     let Some(p) = self.panes.get_mut(&id) else { continue };
                     let title_changed = p.own().title().map(str::to_string) != title;
                     let now_vars = (p.own().shell.vars != vars).then(|| p.own().shell.vars.iter().map(|(k, v)| (format!("user.{k}"), v.clone())).collect());

@@ -273,7 +273,8 @@ pub type Set = (Scope, String, String, serde_json::Value);
 /// (MISSING_SCOPE); tab and session "all" set on every object and refuse gets
 /// (MULTI_GET_DISALLOWED); window "all" is looked up like any id, as iTerm2 tests
 /// `session_id` for it (kept); an unknown object is TAB_, WINDOW_ or SESSION_NOT_FOUND;
-/// sets then gets, the status left unset except for the app (OK).
+/// sets then gets, the status left unset except for the app (OK). Tab and session "all"
+/// answer OK explicitly too (`H:3255-3267`), with no values.
 pub fn answer(r: &pb::VariableRequest, o: &dyn Objects) -> (pb::VariableResponse, Vec<Set>) {
     use pb::variable_request::Scope as S;
     use pb::variable_response::Status;
@@ -626,6 +627,36 @@ mod tests {
                 identifier: id.map(str::to_string),
             })),
         }
+    }
+
+    /// No objects at all (no window open).
+    struct Empty;
+
+    impl Objects for Empty {
+        fn id(&self, _: Scope, _: &str) -> Option<String> {
+            None
+        }
+
+        fn all(&self, _: Scope) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn values(&self, _: Scope, _: &str) -> Values {
+            Values::new()
+        }
+    }
+
+    #[test]
+    fn all_unsubscribe_with_no_sessions_is_ok() {
+        use pb::notification_response::Status as N;
+        // Tandem keeps "all" as one request, not per-object entries: made while no session
+        // exists, its unsubscribe finds it and answers OK. iTerm2 answers NOT_SUBSCRIBED here,
+        // as it looks for per-session entries (m11b Task 4 ruling; only with no window open).
+        let mut s = Subs::default();
+        assert_eq!(s.request(1, &nreq(Scope::Session, Some("all"), "rows", Some(true)), &Empty), N::Ok);
+        assert_eq!(s.request(1, &nreq(Scope::Session, Some("all"), "rows", Some(false)), &Empty), N::Ok);
+        assert_eq!(s.request(1, &nreq(Scope::Session, Some("all"), "rows", Some(false)), &Empty), N::NotSubscribed);
+        assert!(!s.any());
     }
 
     #[test]

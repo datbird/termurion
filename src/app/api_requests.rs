@@ -108,7 +108,7 @@ impl App {
                 reply(req, Resp::SetProfilePropertyResponse(pb::SetProfilePropertyResponse { status: Some(status as i32) }))
             }
             Some(Req::ListProfilesRequest(r)) => reply(req, Resp::ListProfilesResponse(api_profile::list_profiles(&self.store.profiles, &r.properties, &r.guids))),
-            Some(Req::PreferencesRequest(r)) => reply(req, Resp::PreferencesResponse(self.api_preferences(r))),
+            Some(Req::PreferencesRequest(r)) => reply(req, Resp::PreferencesResponse(self.api_preferences(conn, r))),
             Some(Req::SavedArrangementRequest(r)) => reply(req, Resp::SavedArrangementResponse(self.api_saved_arrangement(r))),
             Some(Req::RestartSessionRequest(r)) => {
                 let status = self.api_restart_session(r);
@@ -160,7 +160,7 @@ impl App {
         }
         for (scope, id, name, value) in sets {
             // `answer` passes only legal "user." names, which the store always takes.
-            let _ = self.api_vars.set_user(scope, &id, &name, value);
+            self.api_vars.set_user(scope, &id, &name, value).expect("answer passes only legal user. names");
         }
         // Titles and status bars may interpolate them.
         self.redraw();
@@ -200,8 +200,8 @@ impl App {
             let target = r.session.as_deref().and_then(|s| ids.pane(s));
             self.api_session_subs.request(conn, r, target, &[])
         };
-        if self.api_last.is_none() && self.api_session_subs.has_all() {
-            self.api_last = Some(self.api_model(false));
+        if self.api_all_seen.is_none() && self.api_session_subs.has_all() {
+            self.api_all_seen = Some(ids.all_panes().into_iter().collect());
         }
         self.api_sync_watch();
         status
@@ -241,7 +241,7 @@ impl App {
         }
         // The same step real output runs; its screen updates follow the response.
         self.after_output(&fed, std::time::Instant::now());
-        self.api_output_elsewhere(&fed);
+        self.api_output(&fed);
         resp
     }
 
@@ -456,13 +456,17 @@ impl App {
             self.forget_session_profile(&guid);
             return fail(Status::MissingSubstitution);
         };
-        // The tab's window is current now.
+        // The tab's window is current now. Not reached in practice: `api_start_tab` just made
+        // this tab there. No profile cleanup here: its session copy is in use by the started
+        // pane, and `forget_session_profile` keeps a copy in use anyway.
         let Some(index) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) else { return fail(Status::MissingSubstitution) };
         let tab_id = self.tabs[index].id;
         let landed = match r.tab_index {
             Some(i) if (i as usize) < self.tabs.len() => {
                 let to = i as usize;
-                if to != index && self.layout_allowed(LayoutOp::ReorderTab) {
+                // Placing the new tab is part of making it: no Lock Layout check, as iTerm2's
+                // API inserts it at the index (`H:2465-2588`).
+                if to != index {
                     let active = self.tabs.get(self.active).map(|t| t.id);
                     let tab = self.tabs.remove(index);
                     self.tabs.insert(to, tab);
@@ -496,13 +500,16 @@ impl App {
             }
             if !self.new_tab_opens_window(Some(guid)) {
                 let (front, count) = (self.active, self.tabs.len());
-                self.new_tab(Some(guid));
+                // Lock Layout guards the person's tab creation, not the API's (m11b ruling).
+                self.add_tab(Some(guid));
                 if self.tabs.len() == count {
                     return None;
                 }
                 let pane = self.tabs.last()?.focused;
                 if select {
-                    self.focus_terminal_window(w);
+                    // In front within Tandem, never activating it (iTerm2's CreateTab sets
+                    // canActivate NO and makes the window key only, `H:2489-2498`).
+                    self.order_front(w);
                 } else {
                     self.active = front;
                     self.relayout();
@@ -701,7 +708,7 @@ impl App {
                     Some(Prop::GridSize) => Some(api_props::grid_json(g.columns(), g.screen_lines())),
                     Some(Prop::Buried) => Some(api_props::is_buried(self.buried.contains(pane), self.api_tmux_hidden(pane)).to_string()),
                     Some(Prop::NumberOfLines) => {
-                        let (off, history) = (g.scrolled_off() as i64, g.history_size() as i64);
+                        let (off, history) = (api_buffer::above(g), g.history_size() as i64);
                         Some(api_props::lines_json(off - history, g.screen_lines() as i64, history, off - g.display_offset() as i64))
                     }
                     _ => None,
@@ -866,7 +873,7 @@ impl App {
     /// program paths are refused and `setCookie` on waits for the Confirm alert
     /// (`api_profile::preference_step`); the default profile must be a saved profile
     /// (BAD_GUID).
-    fn api_preferences(&mut self, r: &pb::PreferencesRequest) -> pb::PreferencesResponse {
+    fn api_preferences(&mut self, conn: u64, r: &pb::PreferencesRequest) -> pb::PreferencesResponse {
         use api_profile::PrefStep;
         use pb::preferences_request::request::Request as Q;
         use pb::preferences_response::result::{self as res, Result as A};
@@ -887,7 +894,7 @@ impl App {
                         Ok(v) => match api_profile::preference_step(key, &v, self.globals.bool(super::api_ui::SET_COOKIE_KEY)) {
                             PrefStep::Refuse => Status::InvalidValue,
                             PrefStep::Confirm => {
-                                self.api_confirm_cookie();
+                                self.api_confirm_cookie(conn);
                                 Status::Ok
                             }
                             PrefStep::Store => {
@@ -1041,9 +1048,13 @@ impl App {
     /// `moveTabAtIndex:toIndex:`, `PT:12296-12300`); one from another window leaves it (its
     /// replays end, the window closing when it has no tab left) and is inserted and selected
     /// (`insertTab:atIndex:` with `automaticallySelectNewTabs`). Every window touched then
-    /// sends its tabs' order to tmux and lays out again.
+    /// sends its tabs' order to tmux and lays out again, and a moved tab leaves the broadcast
+    /// settings of the window it left (`take_tab`).
     fn api_reorder_assignment(&mut self, dest: u64, tabs: &[u64]) {
         let mut touched = vec![dest];
+        // Gateways whose tmux tabs changed windows: their window assignment is saved even for
+        // a tab that moved alone (iTerm2's didDonateTab:).
+        let mut gateways: Vec<PaneId> = Vec::new();
         for (index, &tab) in tabs.iter().enumerate() {
             // A window emptied by an earlier move of this request is gone.
             let Some(dest_id) = self.window_id_of_key(dest) else { return };
@@ -1066,10 +1077,12 @@ impl App {
                 continue;
             }
             let Some(at) = self.tabs.iter().position(|t| t.id == tab) else { continue };
-            let panes = self.tabs[at].layout.panes();
-            self.end_replays(&panes);
-            let moving = self.tabs.remove(at);
-            self.mru.forget(moving.id);
+            let moving = self.take_tab(at);
+            if let Some((gw, _, _)) = self.tmux_of(moving.focused) {
+                if !gateways.contains(&gw) {
+                    gateways.push(gw);
+                }
+            }
             self.active = crate::close_rules::active_after_close(self.active, at, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
             if self.tabs.is_empty() {
                 self.drop_current_window();
@@ -1089,6 +1102,9 @@ impl App {
                 self.relayout();
                 self.redraw();
             }
+        }
+        for gw in gateways {
+            self.tmux_save_affinities(gw);
         }
     }
 
@@ -1132,7 +1148,7 @@ impl App {
                     .selection
                     .as_ref()
                     .and_then(|s| Some((s.ty, s.to_range(term)?)))
-                    .map(|(ty, range)| api_misc::from_sel(ty, at(range.start), at(range.end), f.scrolled_off - f.history, f.cols))
+                    .map(|(ty, range)| api_misc::from_sel(ty, at(range.start), at(range.end), f.lost(), f.cols))
                     .into_iter()
                     .collect();
                 let response = (!subs.is_empty()).then_some(Response::GetSelectionResponse(GetSelectionResponse { selection: Some(pb::Selection { sub_selections: subs }) }));
@@ -1143,7 +1159,7 @@ impl App {
                 let Some(p) = self.panes.get_mut(&pane) else { return answer(Status::RequestMalformed, None) };
                 let f = api_buffer::facts(p.own());
                 let subs = set.selection.as_ref().map_or(&[][..], |s| &s.sub_selections[..]);
-                let Some(sels) = subs.iter().map(|s| api_misc::to_sel(s, f.cols, f.scrolled_off - f.history)).collect::<Option<Vec<_>>>() else {
+                let Some(sels) = subs.iter().map(|s| api_misc::to_sel(s, f.cols, f.lost())).collect::<Option<Vec<_>>>() else {
                     return answer(Status::RequestMalformed, None);
                 };
                 if sels.len() > 1 {

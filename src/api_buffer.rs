@@ -12,11 +12,11 @@ use crate::api_proto::pb;
 /// The most lines `trailing_lines` returns (`PS:22405`).
 pub const MAX_TRAILING: i64 = 1_000_000;
 
-/// What absolute line numbers mean on a screen: rows that scrolled off the top of the main
-/// screen (kept in history or lost), the history kept, and the screen's size.
+/// What absolute line numbers mean on a screen: the lines above the main screen (lost off the
+/// top of its history, then the history kept), the history kept, and the screen's size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Facts {
-    pub scrolled_off: i64,
+    pub above: i64,
     pub history: i64,
     pub rows: i64,
     pub cols: i32,
@@ -50,9 +50,9 @@ pub fn line_range(r: Option<&pb::LineRange>, f: Facts) -> Option<Window> {
     let (first, count) = match r.trailing_lines {
         Some(t) => {
             let n = MAX_TRAILING.min((t as i64).min(f.history + f.rows));
-            (f.scrolled_off + f.rows - n, n)
+            (f.above + f.rows - n, n)
         }
-        None => (f.scrolled_off, f.rows),
+        None => (f.above, f.rows),
     };
     Some(Window { start: (0, first), end: (0, first + count), columns: (0, 0) })
 }
@@ -60,13 +60,13 @@ pub fn line_range(r: Option<&pb::LineRange>, f: Facts) -> Option<Window> {
 /// The grid line (negative is history) of absolute line `abs`; None once it was lost from
 /// the history or when it is below the screen.
 pub fn grid_line(abs: i64, f: Facts) -> Option<i32> {
-    let line = abs - f.scrolled_off;
+    let line = abs - f.above;
     (line >= -f.history && line < f.rows).then_some(line as i32)
 }
 
 /// The absolute line of grid line `line`.
 pub fn abs_line(line: i32, f: Facts) -> i64 {
-    f.scrolled_off + line as i64
+    f.above + line as i64
 }
 
 /// The cells of one row that a windowed range reads (`enumerateCharsInRange:`,
@@ -218,12 +218,29 @@ pub fn line_contents(row: &[Cell], from: usize, to: usize, wrapped: bool, styles
     pb::LineContents { text: Some(text), code_points_per_cell: cpps, continuation: Some(continuation as i32), style: runs }
 }
 
-/// The facts of a screen: absolute lines count the main screen's rows that scrolled off, the
+impl Facts {
+    /// The lines lost off the top of the history (iTerm2's scrollback overflow): the number
+    /// of the oldest line kept.
+    pub fn lost(&self) -> i64 {
+        self.above - self.history
+    }
+}
+
+/// The lines above a grid's screen as iTerm2 numbers them (`cumulativeScrollbackOverflow`
+/// plus the history): lost lines plus the history kept, so a reflow that moves rows in or out
+/// of the history never makes a number negative. The grid's running `scrolled_off`, which
+/// triggers and marks use, is not it.
+pub fn above(g: &alacritty_terminal::grid::Grid<Cell>) -> i64 {
+    use alacritty_terminal::grid::Dimensions;
+    g.dropped() as i64 + g.history_size() as i64
+}
+
+/// The facts of a screen: absolute lines count the main screen's lost and kept history, the
 /// history is the main screen's, the size the screen's.
 pub fn facts(screen: &crate::screen::Screen) -> Facts {
     use alacritty_terminal::grid::Dimensions;
     let (primary, shown) = (screen.term().primary_grid(), screen.term().grid());
-    Facts { scrolled_off: primary.scrolled_off() as i64, history: primary.history_size() as i64, rows: shown.screen_lines() as i64, cols: shown.columns() as i32 }
+    Facts { above: above(primary), history: primary.history_size() as i64, rows: shown.screen_lines() as i64, cols: shown.columns() as i32 }
 }
 
 /// GetBuffer's answer from `screen` (`PS:22416-22488`): each line of the range still kept,
@@ -344,7 +361,7 @@ mod tests {
     use alacritty_terminal::term::cell::Hyperlink;
     use alacritty_terminal::vte::ansi::Rgb;
 
-    const F: Facts = Facts { scrolled_off: 120, history: 100, rows: 24, cols: 80 };
+    const F: Facts = Facts { above: 120, history: 100, rows: 24, cols: 80 };
 
     fn range(r: pb::LineRange) -> Option<Window> {
         line_range(Some(&r), F)
@@ -551,6 +568,58 @@ mod tests {
         assert_eq!(cursor_of(&r), (3, 2));
         assert_eq!(texts(&get_buffer(&s, Some(&trailing), false).unwrap()), vec!["1", "2", "alt", "", ""]);
         assert_eq!(get_buffer(&s, None, false), None);
+    }
+
+    #[test]
+    fn a_reflow_never_numbers_a_line_below_zero() {
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::selection::SelectionType;
+        let all = pb::LineRange { trailing_lines: Some(100), ..Default::default() };
+        let mut s = crate::screen::Screen::new(10, 3);
+        s.feed(b"aaaaaaaa\r\nbbbbbbbb\r\ncccccccc\r\ndddddddd\r\neeee");
+        assert_eq!((super::facts(&s).lost(), super::facts(&s).history), (0, 2));
+        let before = s.term().primary_grid().scrolled_off();
+        // A split narrows the pane: each long line wraps onto two rows, which go into the
+        // history without scrolling.
+        s.resize(4, 3);
+        let g = s.term().primary_grid();
+        assert_eq!(g.scrolled_off(), before, "the running count triggers and marks use stays");
+        assert!((g.scrolled_off() as i64) < g.history_size() as i64, "the old base would be negative");
+        let f = super::facts(&s);
+        assert_eq!((f.lost(), f.history), (0, 6), "overflow is never negative");
+        let r = get_buffer(&s, Some(&all), false).unwrap();
+        assert_eq!(r.windowed_coord_range.and_then(|w| w.coord_range).and_then(|c| c.start).map(|c| c.y()), Some(0));
+        assert_eq!(texts(&r)[0], "aaaa");
+        // A selection of the oldest line, read back as GetSelection gives it, is one
+        // SetSelection accepts, on the same line.
+        let sub = crate::api_misc::from_sel(SelectionType::Simple, (0, 0), (0, 3), f.lost(), f.cols);
+        let sel = crate::api_misc::to_sel(&sub, f.cols, f.lost()).expect("SetSelection accepts it");
+        assert_eq!((sel.start, sel.end), ((0, 0), (0, 4)));
+        // Widening again merges the rows back; the numbers stay at or above zero.
+        s.resize(10, 3);
+        let f = super::facts(&s);
+        assert_eq!((f.lost(), f.history), (0, 2));
+        assert_eq!(s.term().primary_grid().scrolled_off(), before);
+    }
+
+    #[test]
+    fn lines_lost_off_the_history_count_as_overflow() {
+        // A full history drops its oldest line on each scroll.
+        let mut s = crate::screen::Screen::with_scrollback(10, 3, 2);
+        s.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\n6");
+        assert_eq!((super::facts(&s).lost(), super::facts(&s).history), (1, 2));
+        // A narrowing reflow past the history limit loses the oldest rows.
+        let mut s = crate::screen::Screen::with_scrollback(8, 2, 3);
+        s.feed(b"aaaaaa\r\nbbbbbb\r\ncccccc\r\ndddddd\r\ne");
+        assert_eq!((super::facts(&s).lost(), super::facts(&s).history), (0, 3));
+        s.resize(3, 2);
+        let f = super::facts(&s);
+        assert_eq!(f.history, 3);
+        assert_eq!(f.lost() + f.history + f.rows, 9, "every row ever made is numbered once");
+        // Clearing the history loses nothing (iTerm2 keeps its overflow and drops the lines).
+        s.feed(b"\x1b[3J");
+        assert_eq!((super::facts(&s).lost(), super::facts(&s).history), (f.lost(), 0));
+        assert_eq!(s.term().primary_grid().dropped(), f.lost() as u64);
     }
 
     #[test]

@@ -286,8 +286,15 @@ mod tests {
         assert!(by_identifier("Check For Updates\u{2026}").is_some());
         assert!(by_identifier("New Tab ").is_none());
         assert!(by_identifier("").is_none());
-        for i in items().iter().filter(|i| i.submenu && !i.identifier.is_empty()) {
-            assert!(by_identifier(&i.identifier).is_none_or(|found| !found.submenu), "{} is a submenu", i.identifier);
+        // A submenu's identifier names nothing a MenuItem request can run: the XIB's own
+        // submenu identifiers find no item unless a leaf shares the identifier.
+        assert!(by_identifier("View").is_none(), "the View menu itself");
+        assert!(by_identifier("Edit.Snippets").is_none(), "a submenu inside Edit");
+        let submenus: Vec<&Item> = items().iter().filter(|i| i.submenu && !i.identifier.is_empty()).collect();
+        assert!(submenus.len() > 5, "the XIB has named submenus");
+        for i in submenus {
+            let leaf = items().iter().any(|l| !l.submenu && !l.separator && l.identifier == i.identifier);
+            assert_eq!(by_identifier(&i.identifier).is_some(), leaf, "{} is a submenu", i.identifier);
         }
         let mut seen = std::collections::HashSet::new();
         for i in items().iter().filter(|i| !i.identifier.is_empty()) {

@@ -122,6 +122,9 @@ pub enum Action {
     /// `zoomed`: tmux's Z flag, when the notification or list carried flags.
     Relayout { window: u32, node: Node, added: Vec<PaneOpen>, removed: Vec<u32>, kept: Vec<u32>, zoomed: Option<bool> },
     Close(u32),
+    /// A window that closed before it finished opening (its display reply or captures were
+    /// still out): it will never open, so a CreateWindow waiting on it is answered.
+    Abandoned(u32),
     Rename(u32, String),
     /// The session changed: every tmux tab of this gateway closes.
     CloseAll,
@@ -1448,6 +1451,8 @@ impl Controller {
                 if self.windows.remove(&window).is_some() {
                     return vec![Action::Close(window)];
                 }
+                // Never opened (or never will): no tab to close, but the app may be waiting.
+                return vec![Action::Abandoned(window)];
             }
             Note::WindowRenamed { window, name } => {
                 self.windows_changed();
@@ -1775,6 +1780,31 @@ mod tests {
         }
         let a = r.answer(Some(""));
         assert!(matches!(&a[..], [Action::Open { place: Place::WithSibling(0), .. }]), "{a:?}");
+    }
+
+    #[test]
+    fn a_window_closed_while_it_opens_is_abandoned() {
+        let mut r = opened();
+        r.sent();
+        // Closed before its display reply: that reply is a tolerated error and opens nothing.
+        r.ctl.new_window(None, &crate::tmux_edits::Dir::Home, None, &mut r.gw);
+        assert!(matches!(&r.answer(Some("@7"))[..], [Action::NewWindowReply { window: Some(7), .. }]));
+        r.lines(&["%window-add @7"]);
+        assert_eq!(r.lines(&["%window-close @7"]), vec![Action::Abandoned(7)]);
+        assert!(r.answer(None).is_empty(), "the display reply for a gone window");
+        // Closed during its captures.
+        r.ctl.new_window(None, &crate::tmux_edits::Dir::Home, None, &mut r.gw);
+        r.answer(Some("@8"));
+        r.lines(&["%window-add @8"]);
+        assert!(r.answer(Some("main\t@8\tzsh\t80\t24\tb25d,80x24,0,0,9\t\t0\tb25d,80x24,0,0,9\toff")).is_empty());
+        r.answer(Some(""));
+        assert_eq!(r.lines(&["%window-close @8"]), vec![Action::Abandoned(8)]);
+        for _ in 0..4 {
+            assert!(r.answer(Some("")).is_empty(), "the rest of its captures open nothing");
+        }
+        assert!(!r.ctl.windows.contains_key(&8));
+        // A window Tandem shows still closes its tab.
+        assert_eq!(r.lines(&["%window-close @0"]), vec![Action::Close(0)]);
     }
 
     #[test]

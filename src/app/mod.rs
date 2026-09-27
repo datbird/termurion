@@ -585,12 +585,18 @@ pub struct App {
     /// The session notification subscriptions of upgraded connections (keystrokes and their
     /// filter, screen updates, prompts, custom escape sequences), and the "all" ones.
     api_session_subs: crate::api_notify::SessionSubs,
-    /// Panes fed outside the output loop (tmux integration output, Inject) since screen
-    /// updates were last posted.
+    /// Panes that got output (the output loop, tmux integration output, Inject) since screen
+    /// updates were last posted, each once.
     api_dirty: Vec<PaneId>,
     /// The snapshot notifications were last computed from, kept only while a connection
-    /// subscribes.
+    /// subscribes to an app-wide notification.
     api_last: Option<crate::api_model::Model>,
+    /// The sessions (panes in windows) when "all" session requests were last applied, kept
+    /// only while one is kept: a new one takes them.
+    api_all_seen: Option<std::collections::BTreeSet<PaneId>>,
+    /// The modifier keys held, from their presses and releases (`api_key_early`), for the
+    /// FLAGS_CHANGED a focus loss implies.
+    api_held: Mods,
     /// Tmux SendCommand requests waiting for their reply, by gateway and command tag: the
     /// connection and the request.
     api_tmux_commands: HashMap<(PaneId, crate::tmux_gateway::Tag), (u64, crate::api_proto::pb::ClientOriginatedMessage)>,
@@ -930,6 +936,8 @@ pub fn run() {
         api_session_subs: Default::default(),
         api_dirty: Vec::new(),
         api_last: None,
+        api_all_seen: None,
+        api_held: Mods::default(),
         api_tmux_commands: HashMap::new(),
         api_tmux_creates: HashMap::new(),
         api_tmux_windows: HashMap::new(),
@@ -1007,7 +1015,9 @@ impl App {
 
     /// Restart Session: a new shell in the same pane, with the same profile. The pane is in
     /// the current window (in any tab, shown or not) or buried; a buried one starts at the
-    /// content area's size and takes its tab's size when it comes back.
+    /// content area's size and takes its tab's size when it comes back. The menu always
+    /// passes the focused, shown pane (its rect); the tab and buried fallbacks are for the
+    /// API's RestartSession, which may name a background tab's or a buried session.
     fn restart_pane(&mut self, id: PaneId) {
         let in_tab = || {
             let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
@@ -1369,6 +1379,13 @@ impl App {
         if !self.tabs.is_empty() && !self.layout_allowed(crate::winmodel::LayoutOp::AddTab) {
             return;
         }
+        self.add_tab(guid);
+    }
+
+    /// A new tab in the current window without the Lock Layout check: the API's CreateTab
+    /// (iTerm2 guards user tab creation through menu validation, `PT:13832`, and its API
+    /// handler has no lock check, `H:2465-2588`).
+    fn add_tab(&mut self, guid: Option<&str>) {
         if self.new_tab_opens_window(guid) {
             self.pending_windows.push(windows_ui::NewWindow::Profile(guid.map(str::to_string)));
             return self.redraw();
@@ -2774,7 +2791,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         changed |= self.tmux_pump(event_loop);
-        self.api_screen_updates(&outputs);
+        self.api_output(&outputs);
         self.api_session_events();
         self.record_replay_frames();
         for id in exited {
@@ -2880,6 +2897,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // Keys held while the window loses focus send no release to Tandem.
                 if !f {
                     self.sent_keys.clear();
+                    self.api_focus_lost();
                 }
                 // iTerm2 drops a pending Leader when the app goes to the background.
                 if !f && self.leader_on {

@@ -49,8 +49,9 @@ pub(super) enum Alert {
     Allow { conn: u64 },
     /// Always's "Confirm".
     ConfirmAlways { conn: u64 },
-    /// The same "Confirm" for a script's SetPreference of `setCookie` on.
-    ConfirmCookie,
+    /// The same "Confirm" for a script's SetPreference of `setCookie` on: it goes with the
+    /// script that asked (its disconnect, the API turned off).
+    ConfirmCookie { conn: u64 },
     /// "Disable per-app authentication?".
     AllowAll,
     /// "Python API Permissions Reset" (silenceable under `RESET_ID`).
@@ -83,7 +84,7 @@ pub(super) fn form(alert: &Alert, set_cookie: bool) -> Form {
             Verdict::Ask { text, buttons } => f(ALLOW_HEADING, text, &buttons, false),
             _ => unreachable!("an undecided connection is always asked"),
         },
-        Alert::ConfirmAlways { .. } | Alert::ConfirmCookie => f(CONFIRM_HEADING, CONFIRM_ALWAYS.into(), &[OK, CANCEL], false),
+        Alert::ConfirmAlways { .. } | Alert::ConfirmCookie { .. } => f(CONFIRM_HEADING, CONFIRM_ALWAYS.into(), &[OK, CANCEL], false),
         Alert::AllowAll => f(ALLOW_ALL_HEADING, ALLOW_ALL_TEXT.into(), &[OK, CANCEL, MORE_INFO], false),
         Alert::Reset => f(RESET_HEADING, RESET_TEXT.into(), &[OK, REVEAL_PREFERENCE], true),
         Alert::RemoveFailed(text) => f(CHANGE_FAILED_HEADING, text.clone(), &[OK, SHOW_IN_EXPLORER], false),
@@ -121,9 +122,9 @@ pub(super) fn changes(seen: (bool, bool), now: (bool, bool)) -> (Option<bool>, O
     ((now.0 != seen.0).then_some(now.0), (now.1 != seen.1).then_some(now.1))
 }
 
-/// The alert holds a waiting connection.
+/// The alert belongs to a connection (waiting, or the script that asked).
 fn holds_connection(a: &Alert) -> bool {
-    matches!(a, Alert::Allow { .. } | Alert::ConfirmAlways { .. })
+    matches!(a, Alert::Allow { .. } | Alert::ConfirmAlways { .. } | Alert::ConfirmCookie { .. })
 }
 
 /// A stopped server closed every connection: none waits, and their alerts go.
@@ -133,9 +134,9 @@ pub(super) fn clear_on_stop<P, W>(pending: &mut std::collections::HashMap<u64, P
 }
 
 /// A connection that is gone: it waits no longer, its alerts go (dropping a showing one closes
-/// its window), and one still deferred for authorization is dropped. What it waited with.
+/// its window; a script's setCookie confirmation too), and one still deferred for authorization is dropped. What it waited with.
 pub(super) fn forget_waiting<W>(conn: u64, pending: &mut std::collections::HashMap<u64, Pending>, alerts: &mut Vec<(Option<W>, Alert)>, deferred: &mut VecDeque<Event>) -> Option<Pending> {
-    alerts.retain(|(_, a)| !matches!(a, Alert::Allow { conn: c } | Alert::ConfirmAlways { conn: c } if *c == conn));
+    alerts.retain(|(_, a)| !matches!(a, Alert::Allow { conn: c } | Alert::ConfirmAlways { conn: c } | Alert::ConfirmCookie { conn: c } if *c == conn));
     let mut gone = pending.remove(&conn);
     if let Some(i) = deferred.iter().position(|e| matches!(e, Event::Pending(p) if p.conn == conn))
         && let Some(Event::Pending(p)) = deferred.remove(i)
@@ -200,7 +201,7 @@ pub(super) fn effects(alert: &Alert, index: usize, suppress: bool) -> Vec<Effect
             if index == 0 { vec![SetCookie, verdict(*conn, true, api_auth::REASON_ALLOWED)] } else { vec![verdict(*conn, false, api_auth::REASON_DENIED)] }
         }
         // Cancel leaves `setCookie` off; the script was already answered OK.
-        Alert::ConfirmCookie => if index == 0 { vec![SetCookie] } else { vec![] },
+        Alert::ConfirmCookie { .. } => if index == 0 { vec![SetCookie] } else { vec![] },
         Alert::AllowAll => match index {
             0 => vec![WriteAllowAll, Mirror],
             2 => vec![OpenUrl(api_auth::AUTH_URL), Mirror],
@@ -564,9 +565,9 @@ impl App {
     }
 
     /// SetPreference of `setCookie` on (`api_profile::PrefStep::Confirm`): the Confirm alert
-    /// asks, and only its OK turns it on.
-    pub(super) fn api_confirm_cookie(&mut self) {
-        self.queue_api_alert(Alert::ConfirmCookie);
+    /// asks, and only its OK turns it on. It goes when `conn` disconnects or the API stops.
+    pub(super) fn api_confirm_cookie(&mut self, conn: u64) {
+        self.queue_api_alert(Alert::ConfirmCookie { conn });
     }
 
     /// Queues an alert unless the same one already waits.
@@ -677,10 +678,16 @@ impl App {
         }
     }
 
-    /// Sends a message to a connection.
+    /// Sends a message to a connection: a notification under the outbound cap, a response
+    /// even past it (`Server::respond`).
     pub(super) fn api_reply(&self, conn: u64, m: &crate::api_proto::pb::ServerOriginatedMessage) {
+        use crate::api_proto::pb::server_originated_message::Submessage;
         if let Some(s) = &self.api_server {
-            s.send(conn, crate::api_proto::encode(m));
+            if matches!(m.submessage, Some(Submessage::Notification(_))) {
+                s.send(conn, crate::api_proto::encode(m));
+            } else {
+                s.respond(conn, crate::api_proto::encode(m));
+            }
         }
     }
 
@@ -715,33 +722,43 @@ impl App {
     /// the baseline. The snapshots compared carry no titles (no change reads them); titles
     /// are built only for a layout change, whose ListSessions carries them.
     ///
-    /// A kept "all" session request keeps the snapshot too: a new session (or one an Undo
-    /// Close brings back) takes the "all" requests (`H:909-925`). A session's own
-    /// subscriptions go only when its pane is dropped for good (`close_pane`, `end_undone`),
-    /// so per-session subscriptions alone never snapshot the windows. Prompt and custom
-    /// escape sequence events, and screen updates for panes fed outside the output loop, are
-    /// posted first.
+    /// A kept "all" session request keeps the set of sessions (`api_all_seen`, read from the
+    /// window slots without entering any window): a new session (or one an Undo Close brings
+    /// back) takes the "all" requests (`H:909-925`). A session's own subscriptions go only
+    /// when its pane is dropped for good (`close_pane`, `end_undone`), so session
+    /// subscriptions never snapshot the windows. Prompt and custom
+    /// escape sequence events, and the pass's screen updates (one per pane), are posted first.
     pub(super) fn api_notify_tick(&mut self) {
         self.api_variable_tick();
         self.api_session_events();
-        self.api_screen_updates(&[]);
-        if !self.api_subs.any() && !self.api_session_subs.has_all() {
+        self.api_screen_updates();
+        if self.api_session_subs.has_all() {
+            let now = self.api_ids().all_panes();
+            match &self.api_all_seen {
+                Some(seen) if seen.len() == now.len() && now.iter().all(|p| seen.contains(p)) => {}
+                seen => {
+                    let fresh = seen.as_ref().map(|seen| crate::api_notify::new_sessions(seen, &now)).unwrap_or_default();
+                    for id in &fresh {
+                        self.api_session_subs.new_session(*id);
+                    }
+                    if !fresh.is_empty() {
+                        self.api_sync_watch();
+                    }
+                    self.api_all_seen = Some(now.into_iter().collect());
+                }
+            }
+        } else {
+            self.api_all_seen = None;
+        }
+        if !self.api_subs.any() {
             self.api_last = None;
             return;
         }
         let new = self.api_model(false);
         if let Some(old) = self.api_last.take() {
             let c = api_model::changes(&old, &new);
-            if self.api_session_subs.has_all() && !c.new_sessions.is_empty() {
-                for id in c.new_sessions.iter().filter_map(|s| s.parse::<u64>().ok()) {
-                    self.api_session_subs.new_session(id);
-                }
-                self.api_sync_watch();
-            }
-            if self.api_subs.any() {
-                let notes = if c.layout { api_model::notifications(&c, &self.api_model(true)) } else { api_model::notifications(&c, &new) };
-                post(&self.api_subs, notes, &mut |conn, m| self.api_reply(conn, m));
-            }
+            let notes = if c.layout { api_model::notifications(&c, &self.api_model(true)) } else { api_model::notifications(&c, &new) };
+            post(&self.api_subs, notes, &mut |conn, m| self.api_reply(conn, m));
         }
         self.api_last = Some(new);
     }
@@ -810,28 +827,21 @@ impl App {
         }
     }
 
-    /// Output reached these panes outside the output loop (tmux integration output, Inject):
-    /// their screen updates go with the next `api_screen_updates`.
-    pub(super) fn api_output_elsewhere(&mut self, panes: &[crate::layout::PaneId]) {
+    /// Output reached these panes (the output loop, tmux integration output, Inject): their
+    /// screen updates go with the loop pass's `api_screen_updates`, once per pane however
+    /// many output wakes the pass had.
+    pub(super) fn api_output(&mut self, panes: &[crate::layout::PaneId]) {
         if self.api_session_subs.watching(pb::NotificationType::NotifyOnScreenUpdate).is_empty() {
             return;
         }
-        for p in panes {
-            if !self.api_dirty.contains(p) {
-                self.api_dirty.push(*p);
-            }
-        }
+        crate::api_notify::mark_dirty(&mut self.api_dirty, panes);
     }
 
-    /// One SCREEN_UPDATE per pane that got output since the last call (`panes`, and those
-    /// `api_output_elsewhere` noted), to its subscribers (`PS:13241-13254`).
-    pub(super) fn api_screen_updates(&mut self, panes: &[crate::layout::PaneId]) {
-        let mut all = std::mem::take(&mut self.api_dirty);
-        for p in panes {
-            if !all.contains(p) {
-                all.push(*p);
-            }
-        }
+    /// One SCREEN_UPDATE per pane that got output since the last pass (those `api_output`
+    /// noted), to its subscribers (`PS:13241-13254`: iTerm2 posts from its refresh, not per
+    /// read). Called once per loop pass, from `api_notify_tick`.
+    fn api_screen_updates(&mut self) {
+        let all = std::mem::take(&mut self.api_dirty);
         for pane in all {
             let conns: Vec<u64> = self.api_session_subs.subscribers(pb::NotificationType::NotifyOnScreenUpdate, pane).into_iter().map(|(c, _)| c).collect();
             if conns.is_empty() {
@@ -870,7 +880,17 @@ impl App {
     pub(super) fn api_key_early(&mut self, ev: &winit::event::KeyEvent) {
         use crate::api_notify;
         use winit::event::ElementState;
-        use winit::keyboard::{KeyCode, PhysicalKey};
+        use winit::keyboard::PhysicalKey;
+        let code = match ev.physical_key {
+            PhysicalKey::Code(c) => Some(c),
+            _ => None,
+        };
+        let pressed = ev.state == ElementState::Pressed;
+        let modifier = code.and_then(crate::keystroke::mac_modifier_keycode);
+        // What is held, for the release a focus change implies (`api_focus_lost`).
+        if let Some(keycode) = modifier.filter(|_| !ev.repeat) {
+            self.api_held = api_notify::mods_after(self.api_held, keycode, pressed);
+        }
         if !self.api_session_subs.any() {
             return;
         }
@@ -878,32 +898,36 @@ impl App {
         if self.api_session_subs.subscribers(pb::NotificationType::NotifyOnKeystroke, pane).is_empty() || self.tmux_pane_paused() {
             return;
         }
-        let code = match ev.physical_key {
-            PhysicalKey::Code(c) => Some(c),
-            _ => None,
-        };
-        let pressed = ev.state == ElementState::Pressed;
-        let key = if let Some(keycode) = code.and_then(crate::keystroke::mac_modifier_keycode) {
+        let key = if let Some(keycode) = modifier {
             // One per modifier change: no auto-repeat, Caps Lock once per toggle.
             if !api_notify::flags_changed(keycode, pressed, ev.repeat) {
                 return;
             }
             // The modifiers held after this key, as a flags-changed event carries them.
-            let mut mods = self.mods;
-            match code {
-                Some(KeyCode::ShiftLeft | KeyCode::ShiftRight) => mods.shift = pressed,
-                Some(KeyCode::ControlLeft | KeyCode::ControlRight) => mods.ctrl = pressed,
-                Some(KeyCode::AltLeft | KeyCode::AltRight) => mods.alt = pressed,
-                Some(KeyCode::SuperLeft | KeyCode::SuperRight) => mods.cmd = pressed,
-                _ => {}
-            }
-            api_notify::flags_key(mods, keycode)
+            api_notify::flags_key(api_notify::mods_after(self.mods, keycode, pressed), keycode)
         } else if !pressed {
             let Some(stroke) = crate::keystroke::from_key_event(ev, self.mods) else { return };
             api_notify::key_from(&stroke, pb::keystroke_notification::Action::KeyUp)
         } else {
             return;
         };
+        self.api_post_key(pane, &key, true);
+    }
+
+    /// The current window lost focus: modifiers still held come up unseen (Windows sends their
+    /// releases elsewhere), so the focused pane's advanced keystroke subscribers get the
+    /// FLAGS_CHANGED that release implies (`api_notify::focus_lost`), as AppKit sends one
+    /// when the key window changes.
+    pub(super) fn api_focus_lost(&mut self) {
+        let held = std::mem::take(&mut self.api_held);
+        let Some(key) = crate::api_notify::focus_lost(held) else { return };
+        if !self.api_session_subs.any() {
+            return;
+        }
+        let Some(pane) = self.focused_id() else { return };
+        if self.tmux_pane_paused() {
+            return;
+        }
         self.api_post_key(pane, &key, true);
     }
 
@@ -1159,7 +1183,8 @@ mod tests {
     fn stop_clears_waiting_connections() {
         let mut pending: std::collections::HashMap<u64, ()> = [(1, ()), (2, ())].into_iter().collect();
         let mut alerts: Vec<(Option<()>, Alert)> =
-            vec![(Some(()), Alert::Allow { conn: 1 }), (None, Alert::Enable), (None, Alert::ConfirmAlways { conn: 2 }), (None, Alert::Reset)];
+            vec![(Some(()), Alert::Allow { conn: 1 }), (None, Alert::Enable), (None, Alert::ConfirmAlways { conn: 2 }), (None, Alert::Reset), (None, Alert::ConfirmCookie { conn: 3 })];
+        // A script's queued setCookie confirmation goes with the API too.
         clear_on_stop(&mut pending, &mut alerts);
         assert!(pending.is_empty());
         assert_eq!(alerts.into_iter().map(|(_, a)| a).collect::<Vec<_>>(), [Alert::Enable, Alert::Reset]);
@@ -1182,9 +1207,10 @@ mod tests {
     fn a_gone_connection_takes_its_question_with_it() {
         let mut pending: std::collections::HashMap<u64, Pending> = [(1, waiting(1)), (2, waiting(2))].into_iter().collect();
         let mut alerts: Vec<(Option<()>, Alert)> =
-            vec![(Some(()), Alert::Allow { conn: 1 }), (None, Alert::Enable), (None, Alert::ConfirmAlways { conn: 1 }), (None, Alert::Allow { conn: 2 })];
+            vec![(Some(()), Alert::Allow { conn: 1 }), (None, Alert::Enable), (None, Alert::ConfirmAlways { conn: 1 }), (None, Alert::Allow { conn: 2 }), (None, Alert::ConfirmCookie { conn: 1 })];
         let mut deferred: VecDeque<Event> = VecDeque::from([Event::Pending(waiting(3)), Event::Rejected { key: None, reason: "r".into() }]);
-        // The showing Allow alert and the queued confirmation go; the rest stay.
+        // The showing Allow alert, the queued confirmation and its setCookie confirmation go;
+        // the rest stay.
         assert_eq!(forget_waiting(1, &mut pending, &mut alerts, &mut deferred).map(|p| p.conn), Some(1));
         assert_eq!(alerts.iter().map(|(_, a)| a.clone()).collect::<Vec<_>>(), [Alert::Enable, Alert::Allow { conn: 2 }]);
         assert!(pending.contains_key(&2) && !pending.contains_key(&1));
@@ -1233,10 +1259,10 @@ mod tests {
         assert_eq!(effects(&confirm, 0, false), [SetCookie, Verdict { conn: 4, allow: true, reason: REASON_ALLOWED }]);
         assert_eq!(closed(&confirm), [deny(4)]);
         // A script's SetPreference of setCookie: the same Confirm text; only OK turns it on.
-        assert_eq!(form(&Alert::ConfirmCookie, false), form(&confirm, false));
-        assert_eq!(effects(&Alert::ConfirmCookie, 0, false), [SetCookie]);
-        assert_eq!(effects(&Alert::ConfirmCookie, 1, false), []);
-        assert_eq!(closed(&Alert::ConfirmCookie), []);
+        assert_eq!(form(&Alert::ConfirmCookie { conn: 5 }, false), form(&confirm, false));
+        assert_eq!(effects(&Alert::ConfirmCookie { conn: 5 }, 0, false), [SetCookie]);
+        assert_eq!(effects(&Alert::ConfirmCookie { conn: 5 }, 1, false), []);
+        assert_eq!(closed(&Alert::ConfirmCookie { conn: 5 }), []);
         // Allow all: OK writes the file, More Info opens the page; the popup mirrors after.
         assert_eq!(effects(&Alert::AllowAll, 0, false), [WriteAllowAll, Mirror]);
         assert_eq!(effects(&Alert::AllowAll, 2, false), [OpenUrl(AUTH_URL), Mirror]);

@@ -95,7 +95,27 @@ pub(super) fn key(id: WindowId) -> u64 {
     u64::from(id)
 }
 
+/// A tab that leaves a window for another: its id leaves the window's broadcasting tabs and
+/// its panes the window's broadcast domains and sources (ReorderTabs across windows, Move Tab
+/// to New Window, Merge All Windows).
+fn leave_broadcast(broadcast: &mut crate::broadcast::Broadcast, broadcast_tabs: &mut std::collections::BTreeSet<u64>, tab: &Tab) {
+    broadcast_tabs.remove(&tab.id);
+    broadcast.forget(&tab.layout.panes());
+}
+
 impl App {
+    /// Takes the tab at `at` out of the current window to move it to another: its replays
+    /// end, the window's MRU forgets it, and it leaves the window's broadcast settings. The
+    /// caller chooses the new active tab.
+    pub(super) fn take_tab(&mut self, at: usize) -> Tab {
+        let panes = self.tabs[at].layout.panes();
+        self.end_replays(&panes);
+        let tab = self.tabs.remove(at);
+        self.mru.forget(tab.id);
+        leave_broadcast(&mut self.broadcast, &mut self.broadcast_tabs, &tab);
+        tab
+    }
+
     /// Swaps a slot's fields with the live ones.
     fn swap_live(&mut self, s: &mut WinSlot) {
         use std::mem::swap;
@@ -663,11 +683,7 @@ impl App {
         if self.tabs.len() < 2 || self.tabs.get(self.active).is_some_and(|t| self.holds_recording(t)) {
             return;
         }
-        if let Some(panes) = self.tabs.get(self.active).map(|t| t.layout.panes()) {
-            self.end_replays(&panes);
-        }
-        let tab = self.tabs.remove(self.active);
-        self.mru.forget(tab.id);
+        let tab = self.take_tab(self.active);
         self.active = self.active.min(self.tabs.len() - 1);
         self.pending_windows.push(NewWindow::Tab(tab));
         self.relayout();
@@ -734,6 +750,9 @@ impl App {
             let Some(mut slot) = self.windows.remove(other) else { continue };
             let tabs = std::mem::take(&mut slot.tabs);
             let (mut moved, kept, active) = split_for_merge(tabs, slot.active, |t| self.holds_recording(t));
+            for t in &moved {
+                leave_broadcast(&mut slot.broadcast, &mut slot.broadcast_tabs, t);
+            }
             // The replays of the panes that move end; a panel stays only with its tab.
             let panes: Vec<PaneId> = moved.iter().flat_map(|t| t.layout.panes()).collect();
             for id in panes {

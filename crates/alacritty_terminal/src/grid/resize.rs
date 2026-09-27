@@ -159,6 +159,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         while rows.len() < lines {
             rows.push(Row::new(columns));
         }
+        // Tandem patch: rows past the history limit are lost.
+        self.add_dropped(rows.len().saturating_sub(self.max_scroll_limit + lines));
         rows.truncate(self.max_scroll_limit + lines);
         self.raw.replace_inner(rows);
         self.display_offset = min(self.display_offset, self.history_size());
@@ -444,6 +446,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Reverse iterator and use it as the new grid storage.
         let mut reversed: Vec<Row<T>> = new_raw.drain(..).rev().collect();
+        // Tandem patch: rows past the history limit are lost.
+        self.add_dropped(reversed.len().saturating_sub(self.max_scroll_limit + self.lines));
         reversed.truncate(self.max_scroll_limit + self.lines);
         self.raw.replace_inner(reversed);
 

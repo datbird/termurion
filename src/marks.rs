@@ -638,7 +638,8 @@ impl Screen {
             None => prompts.last()?,
         };
         let m = self.marks.records.get(&id)?;
-        let off = self.term.primary_grid().scrolled_off() as i64;
+        // The API's numbers: lost lines plus history, not the running count triggers use.
+        let off = crate::api_buffer::above(self.term.primary_grid());
         let abs = |p: Point| (p.column.0 as i32, off + p.line.0 as i64);
         let at = |a: Anchor| self.resolve(a).map(abs);
         let start = (0, off + line as i64);
