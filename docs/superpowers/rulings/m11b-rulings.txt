@@ -1,0 +1,321 @@
+Plan: Ruling: 11a's dispatcher already passes event_loop (api_tick, api_message, api_closed, api_answer, and AppHost for serve and the freeze) and answers through Answer::{Now, Later}, so requests can open windows, close panes and wait for tmux; 11b fills api_answer in through api_request and keeps per-connection cleanup in api_forget - cost if wrong: none.
+
+Plan: Ruling: ids: "active" is the current window's focused pane; "all" is every pane in a window by window number (buried excluded); decimal ids reach buried panes - cost if wrong: none.
+
+Plan: Ruling: SendText goes through user_write with Write::SendText or Write::SendTextLocal after entering the pane's window, so broadcast domains, gateways and tmux panes behave as typed text - cost if wrong: none.
+
+Plan: Ruling: activate_app calls bring_forward on the target window (or the current one); raise_all_windows and ignoring_other_apps have no Windows meaning and are ignored - cost if wrong: from a background script Windows may flash the taskbar button instead of bringing Tandem forward.
+
+Plan: Ruling: Close without force asks Tandem's own confirmations (confirm_close, modal), and every API close is undoable like the menu's - cost if wrong: none.
+
+Plan: Ruling: custom profile properties become a session copy of the profile (store.sessions) made before launch, so a Command or directory applies; Guid and the original-guid key are ignored; a JSON null removes the key - cost if wrong: a script setting "Guid" sees no effect.
+
+Plan: Ruling: CreateTab without a window (or a profile that never opens in a tab) opens a window that comes to the front even with select_tab false; in an existing window select_tab false keeps the active tab and does not raise - cost if wrong: a background new window takes focus.
+
+Plan: Ruling: CreateTab with a custom property whose JSON does not parse answers MISSING_SUBSTITUTION (iTerm2's status for no session) - cost if wrong: a script sees that status where iTerm2 may launch with an odd profile.
+
+Plan: Ruling: SplitPane before is a split followed by a swap of the two panes; each new pane gets its own session copy - cost if wrong: none.
+
+Plan: Ruling: GetBuffer treats trailing default blank cells as uninitialized; wide-character spacers have 0 code points; blink and guarded are false, since alacritty keeps neither (image handling is superseded by Task 3's ruling below) - cost if wrong: scripts cannot find blinking text through styles; trailing typed spaces with default colors are dropped.
+
+Plan: Ruling: prompt ids are the mark id in decimal (unique per session); excluded_subranges is always empty (Tandem does not track PS2 or right-prompt cells) - cost if wrong: scripts that subtract excluded subranges get the whole command range.
+
+Plan: Ruling: screenshot renders the pane's visible screen with the current window's renderer after entering the pane's window (a buried pane uses the current window and its font) - cost if wrong: a buried pane's picture may use another window's font size.
+
+Plan: Ruling: session-scope user variables set by the API live in 11a's store and win over SetUserVar values of the same name until the script sets null - cost if wrong: a shell's later SetUserVar of the same name is hidden (iTerm2's last writer wins).
+
+Plan: Ruling: "*" returns every name the scope resolves (scope_values) with string values - cost if wrong: the key set differs slightly from iTerm2's frame enumeration.
+
+Plan: Ruling: VARIABLE_CHANGE comes from a per-pass diff of scope values while any subscription exists (11a's approach for other notifications) - cost if wrong: a value set and reset within one pass posts nothing; watching "all" costs one variables build per session per pass.
+
+Plan: Ruling: SetProperty grid_size grows or shrinks the window by the cell difference so that the pane gets the size; IMPOSSIBLE in full screen, with Lock Size, for tmux panes and for buried sessions; never DEFERRED - cost if wrong: with splits, other panes change size too (as iTerm2's fitWindowToTab).
+
+Plan: Ruling: iTerm2's quirks are kept: grid_size get minus one, "all" setting one session, window "all" not found, repeated "all" variable subscriptions posting twice - cost if wrong: scripts see iTerm2's same behavior.
+
+Plan: Ruling: SetProfileProperty guid-list values must pass prompted::valid like session values (Tandem's profiles are typed; iTerm2 stores anything) - cost if wrong: an illegal value for a saved profile is refused where iTerm2 would store it.
+
+Plan: Ruling: NOTIFY_ON_PROFILE_CHANGE and NOTIFY_ON_LOCATION_CHANGE are routed exactly as iTerm2 routes them and are never posted - cost if wrong: none (the stock package cannot subscribe to profile changes).
+
+Plan: Ruling: Preferences store any key with a non-null JSON value in settings.toml and apply it as a Settings edit (the unknown-key read is superseded by Task 6's ruling below) - cost if wrong: a script can store keys Tandem never reads (as iTerm2).
+
+Plan: Ruling: SavedArrangement save replaces an existing name without asking (iTerm2's API path); restore with a window id restores as tabs in that window - cost if wrong: none.
+
+Plan: Ruling: RestartSession refuses tmux panes, gateways and loaded recordings (iTerm2's isRestartable: no program) - cost if wrong: none.
+
+Plan: Ruling: SetTabLayout sets split ratios from the requested grid sizes and leaves the window size alone (iTerm2 refits the window); a tmux tab answers OK and changes nothing - cost if wrong: scripts that relied on the window growing see ratios only; tmux layouts cannot be set through the API yet.
+
+Plan: Ruling: ReorderTabs refuses (INVALID_ASSIGNMENT) to move a tab holding a loaded recording to another window, keeping Tandem's rule - cost if wrong: none realistic.
+
+Plan: Ruling: MenuItem uses XIB identifiers verbatim (some still say "iTerm2"; they are identifiers, not user text); enabled is Tandem's static rule (not a later-milestone command, not in DISABLED_IN_SESSION), checked comes from the menu bar's check items - cost if wrong: items iTerm2 disables dynamically may report enabled; selecting one does what the command does now.
+
+Plan: Ruling: Selection handles one sub-selection (alacritty keeps one); a set with more is REQUEST_MALFORMED; column windows are validated and then ignored; connected is false (mode mapping is superseded by Task 9's fix round ruling below) - cost if wrong: multi-part selections cannot be set or read.
+
+Plan: Ruling: SendCommand answers on the reply, matched by the command's tag; a gateway that goes away answers it empty (CreateWindow's answer rule is superseded by Task 9's fix round ruling below, which always answers, not only when the new window's tab opens normally) - cost if wrong: none.
+
+Plan: Ruling: ColorPreset lists no presets and finds none until milestone 13 (iTerm2's own answers for a missing preset) - cost if wrong: scripts cannot read presets yet.
+
+Plan: Ruling: Keystroke notifications carry macOS key codes (mac_keycode, mac_modifier_keycode) and FUNCTION for keys whose character is in U+F700 to U+F8FF; KEY_DOWN and the filter run just before key routing, so keys taken earlier (Copy Mode, the completion list, a shortcut, the find bar) are neither posted nor filtered; FLAGS_CHANGED comes from modifier key events - cost if wrong: those consumed keys are invisible to monitors.
+
+Plan: Ruling: Screen updates are posted once per loop pass for each pane that got output - cost if wrong: a change without output (a resize, Clear Buffer) posts nothing.
+
+Plan: Ruling: COMMAND_START is posted only when a command really started (Tandem's C returns early otherwise), with its text or unset when empty - cost if wrong: a bare C with no command posts nothing.
+
+Plan: Ruling: the Custom escape sequence now needs its colon for both the API and the Custom Escape Sequence trigger event, as iTerm2 - cost if wrong: a program that omitted the colon no longer fires the trigger.
+
+Plan: Ruling: parity rows are found by title - cost if wrong: none.
+
+Scan: Ruling: App::api_ids takes &self (it reads through all_tab_panes); the Pitfall about entering windows applies to the request handlers that act, not to api_ids - cost if wrong: a later task switches it to &mut self.
+
+Scan: Ruling: Task 10 also consumes Screen::prompt_facts and api_buffer::{PromptFacts, prompt_response} (produced by Task 3, which runs first) - cost if wrong: none.
+
+Scan: Ruling: plan file:line references into src/app/mod.rs, src/app/windows_ui.rs and src/pane.rs drifted during 11a; implementers find code by symbol name - cost if wrong: none.
+
+Task 1: Ruling: Close without force on a tmux window or tab whose tmux question takes over (asynchronous in Tandem) answers OK at once; the close then follows however the person answers the question - cost if wrong: a script sees OK for a tmux window the person then keeps open (Cancel on the question).
+
+Task 1: Ruling: force on a tmux tab or window closes the Tandem panes with no tmux question, the same local close the menu makes after the question - cost if wrong: iTerm2's removeTab: for a tmux tab may also act on the tmux window; Tandem only closes the local tab.
+
+Task 1: Ruling: Activate reads a tab id with intValue (tabWithUniqueId:request.tabId.intValue), so "9x" or " 9" finds tab 9, while Close uses tabWithID (digits only); both match iTerm2 - cost if wrong: none for real scripts, which send decimal ids.
+
+Task 1: Ruling: session ids compare as strings, as iTerm2 compares GUID strings ("07" or "+7" name no session) - cost if wrong: none; the package sends the ids it was given.
+
+Task 1: Ruling: "active" is the focused pane of last_window while that window is open, the same window FocusResponse reports as current; with no such window "active" names nothing - cost if wrong: right after launch, before any Tandem window was focused, "active" is SESSION_NOT_FOUND where iTerm2 might have a current terminal.
+
+Task 1: Ruling: a Close id whose target an earlier id of the same request already closed is NOT_FOUND, by looking the target up again before each step - cost if wrong: none; iTerm2 no longer finds a closed target either.
+
+Task 1: Ruling: a buried session restored for Activate or Close whose restore needs a new window gets that window opened at once, so its tab exists for the next step; if it is still in no window, Activate answers BAD_IDENTIFIER and Close answers USER_DECLINED (the bool signature has no NOT_FOUND) - cost if wrong: an unlikely failed window open gives USER_DECLINED rather than NOT_FOUND.
+
+Task 1: Ruling: activate_app brings forward the target window, else last_window, else the current window; raise_all_windows and ignoring_other_apps are ignored, per the plan's ruling - cost if wrong: as the plan's ruling (a taskbar flash from a background script).
+
+Task 1: Ruling: SendText with empty or missing text writes nothing but answers OK; Inject with empty data feeds nothing but answers its statuses - cost if wrong: none (an empty write has no effect in iTerm2 either).
+
+Task 1: Ruling: api_request restores the window that was current before the request, like api_model; a raised window still becomes current through last_window - cost if wrong: none seen.
+
+Task 1: Ruling: NotificationRequests of the types 11a does not handle still answer malformed from route in this task; Tasks 4 and 10 route them - cost if wrong: none until those tasks.
+
+Task 1 fix round 1: Ruling: non-force Close of a tab or session is refused by Lock Layout and answers USER_DECLINED (PT:7598, PT:2739; source over the implementer's first Decision, which did not check Lock Layout there); force and window closes ignore the lock, as iTerm2 - supersedes the implementer's first Decision on this point - review verified - cost if wrong: none.
+
+Task 1 fix round 1: Ruling: Inject's after-output step runs through the shared App::after_output helper (find bars' output_changed, state_debounce.mark, automatic profile switching, take_downloads, take_requests, composer_output, check_marks, sync_checks, redraw), used by both the main output loop and Inject - cost if wrong: none.
+
+Task 1 fix round 1: Ruling: order_window_front enters the window, sets last_window, restores a minimized window (SW_SHOWNOACTIVATE) and brings it to the top without activating Tandem (SWP_NOACTIVATE); Activate's raise uses it instead of focus_terminal_window; a hidden hotkey window still rolls in as its hotkey shows it, which may activate Tandem, since a cloaked window cannot be ordered front otherwise - cost if wrong: raising a hidden hotkey window from a script takes focus.
+
+Task 1 fix round 1: Ruling: a non-force tmux window close answers OK once tmux's question appears, since Tandem's question is asynchronous where iTerm2's is modal and can give USER_DECLINED - cost if wrong: a later decline on the question is not reported to the script.
+
+Task 1: minor (deferred): api_requests.rs has no app-side unit test of its own; the live checklist covers it.
+
+Task 2: Ruling: SplitPane checks Lock Layout before tmux, not after as the brief's Step 3 says (source over brief): PT:11420-11429 refuses a locked split before looking at tmux, and the handler's newSession == nil && !session.isTmuxClient (H:2660-2664) keeps a refused tmux split from being CANNOT_SPLIT, so a locked tmux pane answers Tmux (OK, no id) and tmux is not asked; Instant Replay is checked after tmux, only on the non-tmux path - review verified - cost if wrong: under Lock Layout a tmux split sent through the API does nothing instead of splitting in tmux.
+
+Task 2: Ruling: CreateTab with select_tab unset or true in an existing window calls focus_terminal_window (brings Tandem forward, sets last_window), matching Task 1's Activate ruling for "raise"; iTerm2 uses makeKey with canActivate = NO (in-app raise only) - cost if wrong: from a background script Windows may flash the taskbar button, or Tandem comes forward where iTerm2 would only reorder its own windows.
+
+Task 2: Ruling: a new window opened by CreateTab sets last_window to itself, so "active" and later requests see it as the current window after api_request restores the prior window - cost if wrong: until the OS focus event arrives, "active" would otherwise name the old window's session.
+
+Task 2: Ruling: custom properties are applied only when the list is non-empty; an empty list starts from the saved profile directly, with no session copy - cost if wrong: none visible.
+
+Task 2: Ruling: split_axis treats any value other than VERTICAL as HORIZONTAL, as iTerm2 compares only == Vertical; unset is VERTICAL, the proto2 default - cost if wrong: none for valid values.
+
+Task 2: Ruling: a JSON value that nests nulls inside arrays or objects keeps iTerm2's parse success, and import::from_json drops the nested nulls; only a top-level null removes the key - cost if wrong: a nested null is silently dropped where iTerm2 would store NSNull.
+
+Task 2: Ruling: on a failed start, the session copy made for it is removed with forget_session_profile, so store.sessions never leaks - cost if wrong: none.
+
+Task 2: minor carried forward (unresolved in m11b): CreateTab raises an existing window with activation where iTerm2's canActivate is NO; it should use the same no-activate order-front as Task 1's fix round 1 - cost if wrong: as the CreateTab raise Ruling above (a background script's new tab can take focus). Also carried: comment the unreachable branch at api_requests.rs:287.
+
+Task 3: Ruling: image cells report ITERM2 with 0 code points and no fg or bg color (Cell::image() tiles written by images.rs for inline files, sixel and kitty); KITTY never appears since Tandem has no kitty Unicode placeholder cells - supersedes the plan's "image is NONE" - review verified - cost if wrong: a script that expected NONE everywhere sees ITERM2 on image cells.
+
+Task 3: Ruling: at C a mark gets output_start only when the trimmed command has text (MS:3359-3389 sets outputStart only inside "if (trimmedCommand.length)"), so an empty Enter stays EDITING until D, then becomes FINISHED - review verified - cost if wrong: an empty command reads EDITING rather than RUNNING while it runs.
+
+Task 3: Ruling: the command text is the mark's command, else the typed command, whatever mark is asked for, as mark.fullCommand ?: self.currentCommand; command is unset (not "") when there is neither, since PromptFacts.text is Option<String> - supersedes the first round's "command is always set, empty string when there is neither" - cost if wrong: an old prompt without a command reports the command being typed now (iTerm2 does the same); a script checking for an unset field would otherwise see "".
+
+Task 3: Ruling: the command range is empty at the prompt's end only at B, and stays empty while nothing but blanks is typed; once the typed text holds more than blanks it runs from the command start to the absolute cursor, exclusive; after C gives the command text it is the mark's own command_range - supersedes the first round's "empty from B until C gives it text" - review verified - cost if wrong: none found. Not handled: text typed and then erased back to blanks returns to the empty range, where iTerm2 keeps the last range it stored.
+
+Task 3: Ruling: screenshots render the lines the pane's own screen shows at its scroll position (rangeOfVisibleLines), not always the bottom screen, from a screenshot::slice of only that pane's rows plus its own background drawn offscreen - review verified - cost if wrong: a scrolled-back pane gives the scrolled-back view (as iTerm2).
+
+Task 3: Ruling: the API screenshot draws the cursor when the view is at the bottom and the cursor is visible, as a solid block undimmed as a focused pane's, whichever pane has focus - supersedes "screenshot does not draw the cursor" - review verified - cost if wrong: an unfocused pane's picture shows a solid cursor where iTerm2 might draw a hollow one.
+
+Task 3: Ruling: GetBuffer, GetPrompt, ListPrompts and Screenshot all read Pane::own(), the live session's screen, during Instant Replay, a filter or Zoom, because iTerm2 swaps a new session with a fresh uuid into the tab for those views (PTYTab.m:1737-1782, PTYSession.m:869) while Tandem's session id is the pane id, which cannot split that way - corrects the first round's reasoning, same behavior and cost - review verified - cost if wrong: a script reading a replaying pane gets the live text, not the frame shown.
+
+Task 3: Ruling: on the alternate screen, lines below the history come from the grid shown (the alternate one); history lines come from the main grid and absolute numbering uses the main grid's scrolled_off; the cursor is the shown grid's - cost if wrong: none found.
+
+Task 3: Ruling: uninitialized cells are alacritty's empty cells, trimmed at a line's end only; an interior blank is a space with 1 code point. iTerm2 gives an interior null 1 code point too (a U+0000 in the text), not 0 as first thought; the count matches, only the character differs (a space in Tandem, U+0000 in iTerm2) - corrects the first round's "iTerm2 gives interior nulls 0 code points" - cost if wrong: a script sees a space where iTerm2 sends U+0000.
+
+Task 3: Ruling: counts are Unicode code points (scalar values); iTerm2 counts UTF-16 units, so a character outside the BMP is 1 in Tandem and 2 in iTerm2, matching the Python str slicing the package needs - review verified - cost if wrong: a script that expects iTerm2's UTF-16 counts sees 1 where iTerm2 says 2.
+
+Task 3: Ruling: within a column window narrower than the width, trailing blanks of any style are also trimmed; the line end is HARD only when blanks were trimmed, else SOFT; the last line of a range stops at end.x, where end.x 0 gives no line and a line cut before its blanks is SOFT - cost if wrong: none found.
+
+Task 3: Ruling: a block id comes from the row's block number through blocks.by_id reversed, read directly from row.block() rather than block_at_line (which would be quadratic over a 1,000,000-line request); a number whose id was reused later has no id - cost if wrong: an old block whose id was reused reports no blockID.
+
+Task 3: Ruling: an underline color copies the color value's three fields as iTerm2 does: RGB as is, an indexed or named color puts its index in red with green and blue 0 - cost if wrong: an indexed underline color reads as a dark red RGB.
+
+Task 3: Ruling: Named Foreground, Background, Cursor, BrightForeground and DimForeground colors are alternate DEFAULT; Named 0-15 and Indexed are standard indices, dim forms are their base index, Spec is RGB; alacritty keeps no blink or guarded flag so both are always false - review verified.
+
+Task 3: Ruling: a hyperlink identifier that has the exact shape alacritty generates (digits followed by _alacritty) is dropped and sent as unset, whether alacritty generated it or a program happened to send that exact form - supersedes the first round's "a generated id is sent as a made-up identifier" - review verified - cost if wrong: such a link reports no identifier.
+
+Task 3: Ruling: prompt ids are strict decimal, as session ids are ("07" names nothing) - cost if wrong: none.
+
+Task 3: carried to the final review (pending, not yet fixed in m11b): absolute line numbers (scrolled_off) after a resize reflow are now visible to scripts.
+
+Task 4: Ruling: Objects has a required id(scope, id) -> Option<String> that returns the id the store keys by, with exists as a provided method on top of it (the brief listed only exists); resolution is needed so "active" and decimal ids store and watch the right object - review verified - cost if wrong: none for callers, because exists still exists.
+
+Task 4: Ruling: Subs::one stores the VariableMonitorRequest together with its resolved id, so a subscription to "active" or a decimal id stays on the object it named at subscribe time and reports the request's own identifier - cost if wrong: none visible.
+
+Task 4: Ruling: typed_users puts the store's JSON-typed user values back over the text copies in Vars, so a get of user.x set to 5 reads back as 5, not "5" - cost if wrong: none; it only restores iTerm2's types.
+
+Task 4: Ruling: when a VARIABLE_CHANGE subscribe answers OK, every watched object with no baseline yet takes one immediately, so a script that subscribes and sets a value in the same batch still sees the change; objects no longer watched drop their baseline on each tick, so a later subscription never posts changes that happened while nobody was watching - cost if wrong: one extra variables_with build per watched object when a subscription is made.
+
+Task 4: Ruling: single subscriptions to objects that no longer exist are skipped by watched, so a closed session posts no flood of nulls, matching iTerm2's weak reference going quiet - cost if wrong: a script sees no "null" change when its watched session closes, which is also iTerm2's behavior.
+
+Task 4: Ruling: session-scope user values set by the API stay in the store after the pane closes (Store::forget is not called for sessions), keeping them through Undo Close - cost if wrong: a few entries stay in memory per closed session that a script had set.
+
+Task 4: Ruling: after any API set, the current window and every parked window are asked to redraw, since tab titles and status bars interpolate user variables - cost if wrong: one redundant frame.
+
+Task 4: Ruling: API-set session user values win over SetUserVar values of the same name until the script sets null, which shows in variables_with so ReportVariable and interpolation see it too - cost if wrong: a shell's later SetUserVar of that name stays hidden.
+
+Task 4: Ruling: a monitor request that carries no VariableMonitorRequest is treated as the default one (name "", scope SESSION, identifier ""), answering INVALID_IDENTIFIER as iTerm2's ObjC default getters would produce - cost if wrong: none realistic.
+
+Task 4: Ruling: an "all" unsubscribe with no windows or sessions to match answers OK rather than NOT_SUBSCRIBED, since Tandem's list-based model has no per-object entry to check where iTerm2 would answer NOT_SUBSCRIBED; only reachable with no windows open - review verified - cost if wrong: none realistic.
+
+Task 4: minors carried forward (unresolved in m11b): answer's doc comment on the "all" OK case; replace `let _ = set_user(...)` with an expect on the unreachable error; add a test for the "all" unsubscribe edge.
+
+Task 5: Ruling: the source wins on grid clamping: safelySetSessionSize makes the grid at least 20 columns by 2 rows and caps row growth at what the window can grow by; Tandem's wanted_grid does the same, with the cap taken from the current monitor's full height less the window's outer height (winit has no work area); width growth is not capped, as in iTerm2 - review verified - cost if wrong: a script asking for fewer than 20 columns gets 20; a very tall request may overshoot the taskbar by a few rows.
+
+Task 5: Ruling: an exited session's grid_size set answers OK and changes nothing, as safelySetSessionSize: returns early for an exited session while sessionInitiatedResize: still returns YES - review verified - cost if wrong: none realistic.
+
+Task 5: Ruling: frame, grid and boolean values accept JSON numbers and booleans only (NSNumber); iTerm2 would also take a string's doubleValue/integerValue and crash on null or arrays, but Tandem answers INVALID_VALUE for any non-number - review verified - cost if wrong: a script sending "80" as a string gets INVALID_VALUE where iTerm2 would take 80.
+
+Task 5: Ruling: the buried property is read the same way the Bury menu decides it: for a tmux pane it is that tmux window's membership in the controller's hidden set (ctl.hidden()); for any other pane it is self.buried. A buried set that Tandem cannot carry out (the last session of the last window, or a replay view) still answers OK, as iTerm2's setBuried always answers OK after calling bury; a tmux pane's bury hides its tmux window through bury_pane - review verified - cost if wrong: a script sees OK while the session stays in its tab (the banner explains the last-session case).
+
+Task 5: Ruling: once a hidden tmux window's panes are closed by tmux_finish_close, the pane id no longer exists, so buried answers INVALID_TARGET rather than true, matching iTerm2's answer for a hidden tmux window's ended session - cost if wrong: a script cannot read back true for a tmux session it just buried, except within the same request pass.
+
+Task 5: Ruling: session "all" with no session in any window answers INVALID_TARGET, since iTerm2's loop never runs and control falls out of the switch to its final INVALID_TARGET - cost if wrong: none; Tandem always has a session while a window is open.
+
+Task 5: Ruling: Set frame and fullscreen ignore Lock Size, as iTerm2's setFrame:display: and toggleFullScreenMode: do; only grid_size honors Lock Size; fullscreen never answers FAILED since winit's set_fullscreen reports nothing - review verified - cost if wrong: a script can resize a size-locked window through its frame.
+
+Task 5: Ruling: grid_size set computes the cell difference against the pane's own grid even when its tab is not in front or another pane is maximized - cost if wrong: in those cases the resulting grid may differ from the one asked for.
+
+Task 6: Ruling: GetPreference for a key with no value answers json_value "null", not an unset field, since handleGetPreferenceRequestForKey: passes nil to it_jsonStringForObject:, which returns "null" for nil - source over brief - review verified - cost if wrong: a script checking for an unset field sees "null", which the package's json.loads reads as None either way.
+
+Task 6: Ruling: a top-level boolean is written "1"/"0", not "true"/"false", in both profile properties and preferences, since it_jsonStringForObject: sends a bare NSNumber to stringValue, which is "1"/"0" for a CFBoolean; booleans nested in arrays or dictionaries stay true/false - source over brief - review verified - cost if wrong: a script comparing "is True" sees 1; "== True" and truthiness still work.
+
+Task 6: Ruling: "all keys" includes the light and dark variant keys, plus Guid, Original Guid and the other keysWithoutDefaultValues the schema lacks, because iTerm2's allKeys is defaultValueMap plus those keys; without Guid the package's Profile.guid and PartialProfile could not work - source over brief - review verified (allKeys includes Guid) - cost if wrong: a longer property list than the brief pictured.
+
+Task 6: Ruling: whole floats are written without a fraction and slashes are escaped (\/), as NSJSONSerialization writes them; other number text is serde_json's shortest form - cost if wrong: none for JSON parsers.
+
+Task 6: Ruling: legality is checked only when at least one object is targeted (iTerm2 checks it per object inside the loop), so a guid list with no guids, or "all" with no sessions, answers OK even with illegal values; JSON parse errors are still checked first - cost if wrong: none realistic.
+
+Task 6: Ruling: guid-list values must pass prompted::valid like session values, the plan's ruling; saved profiles are changed only through the typed path and never for Guid or Original Guid - cost if wrong: an illegal value for a saved profile, or a list or dictionary key such as Triggers or Keyboard Map, is refused where iTerm2 would store it.
+
+Task 6: Ruling: a guid-list set runs one apply_edit(Edit::Changed(first guid)) after all profiles change, rather than one per guid, since the payload is unused by apply_edit - cost if wrong: none.
+
+Task 6: Ruling: GetDefaultProfile answers store.default_profile().guid() rather than the raw default_guid, so a stale default falls back to the first profile as everywhere else in Tandem - cost if wrong: none (they are equal whenever the default exists).
+
+Task 6: Ruling: preference_value keeps a parsed JSON value in its own shape ("plain") rather than running it through import::from_json's color conversion, so a color dictionary reads back exactly as written and a dictionary missing a component is stored and answers OK - supersedes the first round's "such a value is stored as a Tandem color table and reads back as an sRGB dictionary without its original extra keys," which review found wrong - re-review verified ("colors read back as written") - cost if wrong: none; no global setting is a color, so nothing in Tandem reads these values.
+
+Task 6 fix round 1: Ruling: SetPreference refuses stored consents, silenced API warnings and program paths with INVALID_VALUE, listed by exact key (NoSyncAllowPaste, NoSyncNeverAllowPaste, NoSyncDisableOpenURL, NoSyncVariablesToReport, NoSyncOpenURLFromMarkdownLink, NoSyncOpenFileFromMarkdownLink, TmuxSyncClipboard, NoSyncTmuxSyncClipboardAnswered, NoSyncEnableAPIServer, NoSyncAppSupportMoved, NoSyncPasswordManagerOnePasswordCLI, NoSyncPasswordManagerLastPassCLI) and by prefix (NoSyncSetProfileProperty_, NoSyncAllowOpenURL_, PathToExecutable_, PathToDatabase_); GetPreference still reads them all; this is a Windows safety addition over iTerm2, which stores any plist-safe key - review verified - cost if wrong: a script cannot pre-answer those prompts or point the password manager at an executable.
+
+Task 6 fix round 1: Ruling: setCookie turned on by a script queues the Confirm alert (the same heading, text and buttons as the Confirm-Always alert) and the request answers OK at once, before the person answers, without storing anything; setting it off, or on while already on, is stored with no alert - review verified - cost if wrong: a script's setCookie only takes effect after a click, and the script is not told whether it was accepted.
+
+Task 6 fix round 1: Ruling: Highlight triggers' sanitize step (normalizing the two colors' hex text) is not repeated when reading a trigger back through json_of; the parameter is returned as stored - cost if wrong: a highlight parameter written in a non-canonical form reads back as written.
+
+Task 6 fix round 1: Ruling: a trigger's class name is checked against Tandem's own trigger catalog (synonyms included) in place of NSClassFromString, and the stored action name is returned; a trigger whose action names no class Tandem has is left out of Triggers - cost if wrong: a class iTerm2 has and Tandem lacks is left out.
+
+Task 6 fix round 1: Ruling: the API settings (EnableAPIServer, allow-all) are acted on at the dispatch loop's settle, after every answer of that batch (in a freeze, after each batch of the owner's requests), so a script's own SetPreference answer goes out before the server stops - cost if wrong: another request queued in the same batch after the one that turned the API off is still answered before the stop.
+
+Task 7: Ruling: an action value SavedArrangementRequest.Action lacks (an out-of-range value) reads as RESTORE, not REQUEST_MALFORMED, because api.proto is proto2 and the Objective-C runtime keeps an out-of-range closed-enum value as an unknown field, so the accessor returns the default RESTORE; this matches the m11a Task 7 ruling on unknown notification_type - source over brief - review verified - cost if wrong: a script sending garbage actions gets a restore attempt (usually ARRANGEMENT_NOT_FOUND) instead of REQUEST_MALFORMED.
+
+Task 7: Ruling: an empty window_id counts as none for Save and Restore, as windowID.length reads it - cost if wrong: none; iTerm2 reads unset and empty the same way.
+
+Task 7: Ruling: a restore needs the saved arrangement to hold at least one window, since loadWindowArrangementWithName: sets ok only inside its per-window loop, so an empty saved list is ARRANGEMENT_NOT_FOUND - cost if wrong: a recordings-only arrangement (saved as empty) answers not found instead of OK.
+
+Task 7: Ruling: the API saves an arrangement under the name exactly as sent, including an empty name or one with line breaks, as iTerm2 stores it, with no clean_name and no blank refusal (those stay on the menu's path) - cost if wrong: an empty-named entry can show in the Restore menus.
+
+Task 7: Ruling: restart of a buried session starts the new shell at the current window's content-area size; for a pane in a background tab of its window, the size comes from the layout's rect without the pane-bar and clip trims, which relayout corrects when shown; before this, those sessions answered OK and restarted nothing - cost if wrong: the shell sees one resize when the pane is next shown.
+
+Task 7: Ruling: SetTabLayout does not check Lock Layout, since iTerm2's setSizesFromSplitTreeNode: has no lock check and Tandem's lock allows ResizePane anyway - cost if wrong: none.
+
+Task 7: Ruling: SetTabLayout on a tab with a maximized (zoomed) pane answers OK and changes nothing once the lone-pane tree matches, since the flattened tree then shows only that pane as iTerm2's does - review verified - cost if wrong: a script cannot set split sizes of a zoomed tab without unzooming it first.
+
+Task 7: Ruling: ratios ignore divider thickness, and a split whose sides request no cells is left alone; set_ratio still clamps to 0.1-0.9 - cost if wrong: extreme requested sizes are clamped; pixel-exact grid sizes are not guaranteed since the window is not refit.
+
+Task 7: Ruling: in ReorderTabs, Lock Layout refuses only moves within a window, silently with no beep, as moveTabAtIndex:toIndex: does; moves across windows ignore the lock, as removeTabViewItem: and insertTab:atIndex: do - review verified - cost if wrong: a locked window can gain or lose tabs through the API.
+
+Task 7: Ruling: a tab moved into another window becomes its selected tab, matching automaticallySelectNewTabs; a move within a window keeps the selected tab - review verified - cost if wrong: the destination window shows a different tab in front.
+
+Task 7: Ruling: the source window's new active tab after a tab leaves follows active_after_close (Tandem's close rule); an emptied source window closes through drop_current_window, as bury and close do - cost if wrong: a different tab is in front in the source window.
+
+Task 7: Ruling: if an earlier move in the same request closes a window and a later assignment targets it, that assignment is skipped and its tabs stay where they are; iTerm2 would assert, and in a release build drops the tab from its source - cost if wrong: none realistic.
+
+Task 7: Ruling: a tab counts as tmux for SetTabLayout when its focused pane is a tmux pane, as tmux_reorder decides - cost if wrong: none; tmux tabs hold only tmux panes.
+
+Task 7: Ruling: a tab holding a loaded recording never moves to another window through ReorderTabs (INVALID_ASSIGNMENT before anything moves), keeping Tandem's rule - review verified.
+
+Task 7: minors carried forward (unresolved in m11b): a moved tab leaves its ids in the source window's broadcast settings (move_tab_to_new_window and merge_all_windows share the same gap and should be fixed together); a tmux tab moved alone does not save its window assignment; the code that takes a tab out of its window should be one shared helper; restart_pane's doc comment needs updating.
+
+Task 8: Ruling: a separate qa function escapes the XIB identifier's non-ASCII characters as TOML \uXXXX escapes; the existing q function is left unchanged so it does not rewrite the existing key lines that hold raw private-use characters (arrow and function keys), keeping the "only identifier lines added" diff rule - cost if wrong: none at runtime; titles and keys keep their existing spelling.
+
+Task 8: Ruling: an empty or missing menu identifier finds nothing, since iTerm2 needs a non-nil item identifier and a missing proto field reads as "" - cost if wrong: none (no item has an empty identifier).
+
+Task 8: Ruling: MenuItem runs the item in last_window after sync_checks there, the same window a menu pick enters, so checked reflects that window's focused pane - review verified - cost if wrong: checked could describe another window's pane if the current and last windows differ.
+
+Task 8: Ruling: checked reads only the menu bar's checks map, keyed by label; dynamic check items (Toolbelt, Profiles, Buried Sessions) are not XIB leaves with identifiers of their own here, so they are not consulted - cost if wrong: such an item would report unchecked.
+
+Task 8: Ruling: enabled is Tandem's static rule (not Later, not in DISABLED_IN_SESSION), per the plan's ruling - cost if wrong: items iTerm2 disables dynamically report enabled.
+
+Task 8: Ruling: gen-menus.py decodes a base64 keyEquivalent child element and applies it only when the item's modifier mask has at least one modifier, so plain Esc (View > Zoom Out) is skipped while Dashboard (Win+Ctrl+Shift+Enter), Select Matches (Win+Alt+Enter) and Maximize Active Pane (Win+Shift+Enter) gain their chords; Tandem's menus have no per-state disabling, so a global plain Esc would take Esc from every shell, and the zoom view already ends on Esc on its own - controller ruling on the implementer's escalation (option 2) - review verified - cost if wrong: View > Zoom Out shows no Esc menu chord, though the zoom view's own Esc handling still covers the behavior.
+
+Task 8: Ruling: Dashboard's mods order follows the generator's order (ctrl, shift, cmd) rather than the old hand edit's (ctrl, cmd, shift); the chord is unchanged since Item::chord tests each modifier by name - cost if wrong: none (order is not significant).
+
+Task 8: minors carried forward (unresolved in m11b): the submenu-exclusion test in identifiers_follow_the_xib is structurally always true and should be strengthened or renamed; comment the difference between q() and qa() in gen-menus.py.
+
+Task 9: Ruling: BROADCAST_DOMAINS_NOT_DISJOINT is never answered, since H:4150-4159 checks sessionIDs but never adds to it, so iTerm2 never refuses overlapping domains - source over brief - review verified - cost if wrong: a script relying on the refusal gets OK and a sanitized result; set_domains sanitizes an overlap deterministically, a pane staying in the last domain naming it, so [{1,2},{2,3}] becomes [{2,3}].
+
+Task 9: Ruling: a domain led by a buried session is dropped; a buried session named after a window session in the same domain is SESSIONS_NOT_IN_SAME_WINDOW, since iTerm2's realParentWindow is nil for a buried session - cost if wrong: none realistic.
+
+Task 9: Ruling: an empty GetSelection answers OK with no get_selection_response; SetSelection answers no payload; ListConnections with no gateway and ColorPreset list answer no payload, since iTerm2 only marks a submessage set when a field under it is mutated - cost if wrong: none; scripts read the same empty values either way.
+
+Task 9: Ruling: Selection reads and sets the pane's own screen, including while a replay view shows (where a set selection is not visible until the view closes), per the brief - cost if wrong: a script setting a selection during Instant Replay sees no highlight.
+
+Task 9: Ruling: a start column at or past the width is taken as the right side of the last column, since iTerm2 does not check start.x against the width - cost if wrong: none realistic.
+
+Task 9: Ruling: more than one sub-selection is REQUEST_MALFORMED, since alacritty keeps only one, checked after every sub-selection passed validation - cost if wrong: none (per the brief).
+
+Task 9: Ruling: a tmux client name shared by two gateways names the one with the lowest pane id, and ListConnections lists each name once, matching iTerm2's registry keeping one controller per name - cost if wrong: the second gateway with the same name cannot be reached through the API.
+
+Task 9: Ruling: CreateWindow's size is the affinity window's last tab size when it has one, else the tmux profile's Columns and Rows (0 reads 80 by 25), and its directory is the tmux profile's; iTerm2 instead takes the smallest window among the affinity's saved siblings - cost if wrong: a tab created next to several differently sized siblings asks tmux for the affinity's size, not the smallest.
+
+Task 9: Ruling: a new-window reply that names no window (no @) answers the CreateWindow with nothing set, since iTerm2 never calls its completion there either; a failed new-window aborts the gateway, which then answers every waiting request empty through the disconnect path - cost if wrong: none.
+
+Task 9: Ruling: a SendCommand reply that failed answers send_command with output unset; in practice an error aborts the gateway first, and the disconnect then answers an empty TmuxResponse - cost if wrong: none.
+
+Task 9: Ruling: window ids for tmux SetWindowVisible are ASCII digits only and must fit in u32; iTerm2's decimalDigitCharacterSet also accepts other Unicode digits and intValue clamps - cost if wrong: a script passing non-ASCII digits or a huge id gets INVALID_WINDOW_ID instead of what iTerm2 would accept.
+
+Task 9 fix round 1: Ruling: a tmux CreateWindow is always answered rather than only when the new window's tab opens normally - supersedes the plan's narrower "CreateWindow answers when the new window's tab opens" and this task's own earlier concern about waiting forever: tab "0" is sent when tmux_open's layout cannot convert, when the window closes (Action::Close) before it opens, and (fix round 2) when the window opens and closes within one message batch; the tab id is sent once tmux_open finishes normally - review verified - cost if wrong: none.
+
+Task 9 fix round 1: Ruling: a GetSelection after setting a WORD, SMART, LINE or WHOLE_LINE selection reports CHARACTER, since the mode is not kept and alacritty's Simple selection holds only the exact range - supersedes the plan's "SMART maps to Semantic, WHOLE_LINE to Lines" (those modes map to Simple instead, so the exact range survives) - review verified - cost if wrong: a script reading back the mode it set sees CHARACTER for those modes.
+
+Task 9 fix round 2: Ruling: when a tmux window closes before it finishes opening, Action::Close also answers every pending api_tmux_tabs entry of that gateway whose waiting tab holds one of the closing window's panes, with tab "0", before the panes are forgotten and closed - review verified (controller re-review of the 42-line diff) - cost if wrong: a CreateWindow for a window opened and closed within one tmux message batch would otherwise wait forever.
+
+Task 9: Ruling (ledger, review verified): disjointness between broadcast domains is never checked (H:4150-4159); SendCommand's CR/LF desync with the tmux gateway's reply stream is kept as iTerm2 parity, since a script that embeds a newline in a tmux command desynchronizes replies exactly as it would against real iTerm2.
+
+Task 10: Ruling: unsubscribing "all" removes every kept "all" request equal to it whatever its connection, as iTerm2's removeObjectsPassingTest compares only the request, so one script's unsubscribe can answer OK and stop another script's "all" request from applying to future sessions (existing per-session subscriptions stay); subscribing "all" twice keeps two copies and answers OK both times; with no sessions at all, a PROFILE_CHANGE or LOCATION_CHANGE "all" subscribe answers OK and is kept, and every later session refuses it silently - cost if wrong: one script can shrink another's future "all" coverage (only ever fewer filters, never more).
+
+Task 10: Ruling: a key with no macOS key code (such as F21 to F24) reports key code 0x3F (kVK_Function, never delivered as a real key by Windows), not 0, since the stock package's Keycode enum raises on out-of-range values and a filter's key-code clause is only applied when the code is known; characters still match - supersedes the first round's "reports key code 0" (which would have collided with kVK_ANSI_A and been swallowed by an A filter) - review verified - cost if wrong: a monitor sees such keys as Keycode.FUNCTION.
+
+Task 10: Ruling: FLAGS_CHANGED carries the modifiers held after the key, computed from Tandem's tracked modifiers with the pressed or released modifier applied, posted once per modifier change and never for an auto-repeat; Caps Lock posts only on its press, one per toggle; other modifiers post on press and release - review verified - cost if wrong: releasing one Shift while the other is held reports no Shift; without the once-per-change fix, held keys would flood FLAGS_CHANGED on auto-repeat.
+
+Task 10: Ruling: a custom escape sequence with no id parameter leaves sender_identity unset (ApiEvent::Custom.id is Option<String>), not the empty string; the trigger event still gets "" - supersedes the first round's "posts sender_identity as an empty string" - cost if wrong: a script comparing the identity to None would otherwise see "" instead.
+
+Task 10: Ruling: screen updates come from the panes the user_event output loop pumped, plus the panes an Inject fed (queued through api_output_elsewhere and posted at the next flush, after the InjectResponse, not directly by Inject); tmux integration panes fed through the gateway's %output also post a screen update this way, once per pane per flush rather than once per output line - supersedes the first round's "tmux panes fed through the gateway post no screen update" - cost if wrong: without this a ScreenStreamer on a tmux integration pane would never fire.
+
+Task 10: Ruling: prompt and custom escape sequence events are drained both after the output loop and every pass in api_notify_tick, so events from Inject and tmux panes are posted too; the PROMPT answer is computed when drained, in the same pass, not at the instant of B - cost if wrong: a prompt's ranges can already include output that arrived in the same read.
+
+Task 10: Ruling: a PROMPT event with no current mark answers PROMPT_UNAVAILABLE in its prompt, as getPromptResponseForMark:nil does, never the last prompt - cost if wrong: none.
+
+Task 10: Ruling: iTerm2's special Ctrl+Tab path (reported at the application level before shortcuts) is not reproduced; a Ctrl+Tab a shortcut takes is not posted, per the plan's decision on keys consumed before routing - cost if wrong: a monitor misses Ctrl+Tab and Ctrl+Shift+Tab.
+
+Task 10: Ruling: per-session subscriptions of a pane waiting in Undo Close survive until the undo entry expires or is cleared at quit; forget_session runs only where a pane is dropped for good (close_pane's non-undo branch, end_undone, a failed arrangement restore), not on every terminated pane, and a restart keeps them as iTerm2's restart keeps the session; a pane brought back by undo takes the "all" requests again (ALREADY_SUBSCRIBED where it kept one) - review verified - cost if wrong: a script subscribed to a closed-but-undoable session gets nothing from it meanwhile (it has no output) and keeps its subscription on undo.
+
+Task 10: Ruling: keys typed at a password prompt still reach keystroke monitors, matching iTerm2, which does not hide keys under secure input from monitors either - review verified (parity, not a gap).
+
+Task 10: Ruling: the "all" unsubscribe quirk (H:2080-2090) is kept as ruled in the first round - review verified.
+
+Task 10: minor: SessionSubs gained an any() method beyond the plan's interface, used to keep the model snapshot and to skip key work when no session subscription exists - cost if wrong: none.
+
+Task 10: carried to the final review (pending, not yet fixed in m11b): no FLAGS_CHANGED is posted when focus leaves mid-hold, a pre-existing key-state handling gap; there is no end-to-end test of Undo Close then expiry versus restore for subscriptions.

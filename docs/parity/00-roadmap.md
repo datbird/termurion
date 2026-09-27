@@ -8,8 +8,8 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 171 | 123 | 20 |
 | `02-global-settings.md` | 823 | 262 | 72 | 489 |
-| `03-features-and-menus.md` | 643 | 457 | 47 | 139 |
-| Total | 1,780 | 890 | 242 | 648 |
+| `03-features-and-menus.md` | 643 | 470 | 45 | 128 |
+| Total | 1,780 | 903 | 240 | 637 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -163,8 +163,22 @@ ListSessions, Focus, and GetBroadcastDomains matching iTerm2's shapes, so the st
 package connects unmodified and lists Tandem's real windows, tabs and sessions; Enable Python
 API, Require "Automation" permission for Python API, and setCookie (02) are done. Session/window/
 tab control beyond ListSessions, setting the broadcast domain, and the variables API's own get/
-set/monitor requests wait for milestone 11b. Every kept quirk is listed in
+set/monitor requests were built next, in milestone 11b. Every kept quirk of 11a is listed in
 `docs/acceptance/m11a-checklist.md` and ruled on in `docs/superpowers/rulings/m11a-rulings.txt`.
+Milestone 11b closed the rest of the Python API's request surface (03): SendText, Inject, Activate
+and Close (each following iTerm2's checks, confirmations and Lock Layout rules); CreateTab and
+SplitPane with custom profile properties applied to a session copy, never the saved profile;
+GetBuffer, GetPrompt, ListPrompts and Screenshot (styles, code points, and the prompt's command
+range while typing); the variables API's own get, set and VARIABLE_CHANGE monitoring; GetProperty
+and SetProperty for window frame, fullscreen, session grid_size and buried, kept as iTerm2 reports
+them (grid_size minus one, session "all" sets only the first); GetProfileProperty,
+SetProfileProperty, ListProfiles and Preferences, with a fixed list of stored consents and program
+paths refused for Windows safety; SavedArrangement, RestartSession, SetTabLayout and ReorderTabs;
+MenuItem by XIB identifier; Selection, SetBroadcastDomains, tmux integration control (list, send,
+hide/show, create), and ColorPreset (empty until milestone 13); and per-session notifications for
+keystrokes (with a filter), screen updates, prompts and custom escape sequences. Every kept quirk
+is listed in `docs/acceptance/m11b-checklist.md` and ruled on in
+`docs/superpowers/rulings/m11b-rulings.txt`.
 
 ## Order
 
