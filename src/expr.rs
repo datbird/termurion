@@ -610,11 +610,23 @@ impl Parser<'_> {
         Ok(path)
     }
 
-    /// `expression ::= Subexpression | '[' ']' | '[' comma_delimited_expressions ']'`.
+    /// `expression ::= Subexpression | '[' ']' | '[' comma_delimited_expressions ']'`. An
+    /// array literal is a nesting of the parser too, counted as `conditional` counts one.
     fn expression(&mut self, closers: &[&'static str]) -> Result<Parsed, String> {
         if !self.eat("[") {
             return self.conditional(closers);
         }
+        self.b.nest += 1;
+        if self.b.nest > MAX_DEPTH {
+            return Err(too_deep());
+        }
+        let r = self.array();
+        self.b.nest -= 1;
+        r
+    }
+
+    /// The items of an array literal after its `[`.
+    fn array(&mut self) -> Result<Parsed, String> {
         let mut items = Vec::new();
         let mut d = 0;
         if !self.eat("]") {
@@ -1965,6 +1977,11 @@ mod tests {
             assert!(parse_expression(&wide).is_err(), "a wide tree is deep on its left");
             let wide = format!("[{}]", vec!["1"; MAX_TOKENS / 2 - 1].join(","));
             assert_eq!(ok(&wide).as_array().map(Vec::len), Some(MAX_TOKENS / 2 - 1));
+
+            // Nested array literals count toward the depth limit, closed or not.
+            assert_eq!(parse_expression(&"[".repeat(4000)).unwrap_err(), too_deep());
+            assert_eq!(parse_expression(&format!("{}1{}", "[".repeat(2000), "]".repeat(2000))).unwrap_err(), too_deep());
+            assert!(!crate::interp::has_calls(&format!("\\({})", "[".repeat(4000))));
         });
     }
 
