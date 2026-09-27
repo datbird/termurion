@@ -136,7 +136,8 @@ fn brief_summary(s: &ApiSession) -> pb::SessionSummary {
     pb::SessionSummary { unique_identifier: Some(s.id.clone()), frame: None, grid_size: None, title: Some(s.title.clone()) }
 }
 
-fn split_node(n: &ApiNode) -> pb::SplitTreeNode {
+/// A split view tree as the protocol's `SplitTreeNode` (a root is always a split view).
+pub fn split_node(n: &ApiNode) -> pb::SplitTreeNode {
     use pb::split_tree_node::split_tree_link::Child;
     use pb::split_tree_node::SplitTreeLink;
     match n {

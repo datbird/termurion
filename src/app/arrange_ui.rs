@@ -202,11 +202,17 @@ impl App {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
-        let mut store = self.arrangements();
-        if store.get(name).is_some() && !yes_no(self.hwnd(), "Replace Existing Saved Window Arrangement?", "There is an existing saved window arrangement with this name. Would you like to replace it with the current arrangement?") {
+        if self.arrangements().get(name).is_some() && !yes_no(self.hwnd(), "Replace Existing Saved Window Arrangement?", "There is an existing saved window arrangement with this name. Would you like to replace it with the current arrangement?") {
             return;
         }
+        self.store_arrangement(name, all);
+    }
+
+    /// Saves every window, or the current one, as arrangement `name`, replacing one of that
+    /// name without asking (the Python API's path, `IC:493-523`).
+    pub(super) fn store_arrangement(&mut self, name: &str, all: bool) {
         let windows = if all { self.snapshot_all(Contents::None) } else { self.snapshot_window(Contents::None).into_iter().collect() };
+        let mut store = self.arrangements();
         store.save(name, windows);
         self.put_arrangements(&store);
     }
@@ -360,15 +366,13 @@ impl App {
     }
 
     /// Window > Arrangements > Restore Window Arrangement (each saved window a new window)
-    /// or Restore Window Arrangement as Tabs (every saved tab in this window).
+    /// or Restore Window Arrangement as Tabs (every saved tab in the current window; callers
+    /// enter the window first).
     pub(super) fn restore_arrangement(&mut self, name: &str, as_tabs: bool) {
         let Some(windows) = self.arrangements().get(name).cloned() else { return };
         // A hotkey window belongs to its hotkey, not to a restored arrangement.
         let windows: Vec<Value> = windows.into_iter().filter(|w| arrangement::hotkey_guid(w).is_none()).collect();
         if as_tabs {
-            if let Some(w) = self.last_window {
-                self.enter(w);
-            }
             for w in &windows {
                 for t in w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
                     match self.build_tab(&t) {
@@ -387,6 +391,13 @@ impl App {
             }
         }
         self.redraw();
+    }
+
+    /// Makes the window used last current (where a menu pick restores as tabs).
+    pub(super) fn enter_last_window(&mut self) {
+        if let Some(w) = self.last_window {
+            self.enter(w);
+        }
     }
 
     /// The Restore submenus list every arrangement (the default marked).
@@ -422,6 +433,7 @@ impl App {
             return true;
         }
         if let Some(name) = id.strip_prefix(RESTORE_TABS_ID) {
+            self.enter_last_window();
             self.restore_arrangement(name, true);
             return true;
         }

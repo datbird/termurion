@@ -426,6 +426,9 @@ impl App {
                 }
             }
             ItemKind::Arrangement { name, in_tabs } => {
+                if *in_tabs {
+                    self.enter_last_window();
+                }
                 self.restore_arrangement(name, *in_tabs);
                 self.bring_forward();
             }

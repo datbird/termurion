@@ -984,9 +984,15 @@ impl App {
         started.then_some(id)
     }
 
-    /// Restart Session: a new shell in the same pane, with the same profile.
+    /// Restart Session: a new shell in the same pane, with the same profile. The pane is in
+    /// the current window (in any tab, shown or not) or buried; a buried one starts at the
+    /// content area's size and takes its tab's size when it comes back.
     fn restart_pane(&mut self, id: PaneId) {
-        let Some(rect) = self.pane_rect(id) else { return };
+        let in_tab = || {
+            let tab = self.tabs.iter().find(|t| t.layout.panes().contains(&id))?;
+            tab.layout.rects(self.content_area_for(tab), GAP).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+        };
+        let Some(rect) = self.pane_rect(id).or_else(in_tab).or_else(|| self.buried.contains(id).then(|| self.content_area())) else { return };
         // Instant Replay closes first; the new shell starts live.
         self.end_replays(&[id]);
         let guid = self.panes.get(&id).map(|p| p.profile.clone());

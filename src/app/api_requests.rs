@@ -8,7 +8,8 @@
 //! ids name (`api_vars`); GetProperty and SetProperty read and change a window's frame and
 //! full screen and a session's grid size and burial (`api_props`); GetProfileProperty,
 //! SetProfileProperty, ListProfiles and Preferences read and change profiles and settings
-//! (`api_profile`).
+//! (`api_profile`); SavedArrangement, RestartSession, SetTabLayout and ReorderTabs save and
+//! restore arrangements, start sessions again, set split sizes and move tabs (`api_layout`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -18,6 +19,7 @@ use super::close_ui::Closing;
 use super::{App, Rect, GAP};
 use crate::api_buffer;
 use crate::api_create::{self, SplitResult};
+use crate::api_layout::{self, Arrange};
 use crate::api_profile;
 use crate::api_props::{self, BuryStep, Prop};
 use crate::api_proto::{self, pb};
@@ -99,6 +101,19 @@ impl App {
             }
             Some(Req::ListProfilesRequest(r)) => reply(req, Resp::ListProfilesResponse(api_profile::list_profiles(&self.store.profiles, &r.properties, &r.guids))),
             Some(Req::PreferencesRequest(r)) => reply(req, Resp::PreferencesResponse(self.api_preferences(r))),
+            Some(Req::SavedArrangementRequest(r)) => reply(req, Resp::SavedArrangementResponse(self.api_saved_arrangement(r))),
+            Some(Req::RestartSessionRequest(r)) => {
+                let status = self.api_restart_session(r);
+                reply(req, Resp::RestartSessionResponse(pb::RestartSessionResponse { status: Some(status as i32) }))
+            }
+            Some(Req::SetTabLayoutRequest(r)) => {
+                let status = self.api_set_tab_layout(r);
+                reply(req, Resp::SetTabLayoutResponse(pb::SetTabLayoutResponse { status: Some(status as i32) }))
+            }
+            Some(Req::ReorderTabsRequest(r)) => {
+                let status = self.api_reorder_tabs(r);
+                reply(req, Resp::ReorderTabsResponse(pb::ReorderTabsResponse { status: Some(status as i32) }))
+            }
             Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => {
                 let status = self.api_variable_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
@@ -871,6 +886,170 @@ impl App {
         }
         self.redraw();
         pb::PreferencesResponse { results }
+    }
+
+    /// SavedArrangement (`H:3269-3336`): a save replaces without asking (`IC:493-523`), after
+    /// entering the window named (then only it is saved); a restore needs a saved arrangement
+    /// with at least one window (`IC:579-589`) and restores as tabs in the window named; a list
+    /// has the names in the store's order.
+    fn api_saved_arrangement(&mut self, r: &pb::SavedArrangementRequest) -> pb::SavedArrangementResponse {
+        use pb::saved_arrangement_response::Status;
+        let answer = |s: Status, names: Vec<String>| pb::SavedArrangementResponse { status: Some(s as i32), names };
+        let ids = self.api_ids();
+        let window = |id: &Option<String>| id.as_deref().and_then(|w| ids.window_key(w)).and_then(|k| self.window_id_of_key(k));
+        match api_layout::arrange(r, &|w| ids.window_key(w).is_some()) {
+            Err(s) => answer(s, Vec::new()),
+            Ok(Arrange::List) => answer(Status::Ok, self.arrangements().names().iter().map(|n| n.to_string()).collect()),
+            Ok(Arrange::Save { name, window: w }) => {
+                if let Some(id) = window(&w) {
+                    self.enter(id);
+                }
+                self.store_arrangement(&name, w.is_none());
+                answer(Status::Ok, Vec::new())
+            }
+            Ok(Arrange::Restore { name, window: w }) => {
+                if !self.arrangements().get(&name).is_some_and(|windows| !windows.is_empty()) {
+                    return answer(Status::ArrangementNotFound, Vec::new());
+                }
+                if let Some(id) = window(&w) {
+                    self.enter(id);
+                }
+                self.restore_arrangement(&name, w.is_some());
+                answer(Status::Ok, Vec::new())
+            }
+        }
+    }
+
+    /// RestartSession (`H:3497-3522`): buried sessions are found; tmux panes, gateways and
+    /// loaded recordings have no program to run again (`isRestartable`). The session's window
+    /// is entered first, so the new shell gets that window's numbers.
+    fn api_restart_session(&mut self, r: &pb::RestartSessionRequest) -> pb::restart_session_response::Status {
+        use pb::restart_session_response::Status;
+        let pane = self.api_session_pane(r.session_id.as_deref());
+        let (restartable, exited) = pane.and_then(|p| self.panes.get(&p)).map_or((false, false), |p| (p.tmux_io().is_none() && !p.gateway && !p.dvr.read_only, p.exited.is_some()));
+        let status = api_layout::restart_status(pane.is_some(), restartable, r.only_if_exited.unwrap_or(false), exited);
+        if let (Status::Ok, Some(p)) = (status, pane) {
+            self.enter_pane_window(p);
+            self.restart_pane(p);
+            self.redraw();
+        }
+        status
+    }
+
+    /// SetTabLayout (`H:3575-3596`): the tab's tree as `node_of` flattens it must be the
+    /// requested one's shape (WRONG_TREE); then the split ratios come from the requested grid
+    /// sizes and the window keeps its size. A tmux tab, and a tab with a maximized pane (whose
+    /// tree shows that pane alone), answer OK and change nothing.
+    fn api_set_tab_layout(&mut self, r: &pb::SetTabLayoutRequest) -> pb::set_tab_layout_response::Status {
+        use pb::set_tab_layout_response::Status;
+        let ids = self.api_ids();
+        let Some(tab) = r.tab_id.as_deref().and_then(|t| ids.tab_by_id(t)) else { return Status::BadTabId };
+        let Some(w) = ids.tab_window(tab).and_then(|k| self.window_id_of_key(k)) else { return Status::BadTabId };
+        if !self.enter(w) {
+            return Status::BadTabId;
+        }
+        let Some(index) = self.tabs.iter().position(|t| t.id == tab) else { return Status::BadTabId };
+        let t = &self.tabs[index];
+        let blank = |p: PaneId| crate::api_model::ApiSession { id: p.to_string(), frame: None, grid: None, title: String::new() };
+        let before = crate::api_model::split_node(&crate::api_model::node_of(&t.layout.tree(), t.zoomed, &blank).0);
+        let requested = r.root.clone().unwrap_or_default();
+        if !api_layout::isomorphic(&before, &requested) {
+            return Status::WrongTree;
+        }
+        if t.zoomed.is_some() || self.panes.get(&t.focused).is_some_and(|p| p.tmux_io().is_some()) {
+            return Status::Ok;
+        }
+        for (path, ratio) in api_layout::ratios(&requested, &t.layout.tree()) {
+            self.tabs[index].layout.set_ratio(&path, ratio);
+        }
+        self.relayout();
+        self.redraw();
+        Status::Ok
+    }
+
+    /// ReorderTabs (`H:3731-3800`): iTerm2's checks, then a tab holding a loaded recording that
+    /// would change windows refuses the whole request (INVALID_ASSIGNMENT: it never leaves
+    /// its window); then each assignment in order.
+    fn api_reorder_tabs(&mut self, r: &pb::ReorderTabsRequest) -> pb::reorder_tabs_response::Status {
+        use pb::reorder_tabs_response::Status;
+        let ids = self.api_ids();
+        let status = api_layout::reorder_status(r, &ids);
+        if status != Status::Ok {
+            return status;
+        }
+        let mut plan = Vec::new();
+        for a in &r.assignments {
+            let Some(dest) = ids.window_key(a.window_id.as_deref().unwrap_or_default()) else { return Status::InvalidWindowId };
+            let tabs: Vec<u64> = a.tab_ids.iter().filter_map(|t| ids.tab_by_id(t)).collect();
+            for &t in &tabs {
+                let Some(src) = ids.tab_window(t) else { continue };
+                let recording = self.window_tabs(src).and_then(|(all, _)| all.iter().find(|x| x.id == t)).is_some_and(|x| self.holds_recording(x));
+                if src != dest && recording {
+                    return Status::InvalidAssignment;
+                }
+            }
+            plan.push((dest, tabs));
+        }
+        for (dest, tabs) in plan {
+            self.api_reorder_assignment(dest, &tabs);
+        }
+        Status::Ok
+    }
+
+    /// `performReorderAssignment:` (`H:3759-3786`): the tabs go to index 0, 1, 2... of window
+    /// `dest` in order. A tab already there moves (refused silently under Lock Layout, as
+    /// `moveTabAtIndex:toIndex:`, `PT:12296-12300`); one from another window leaves it (its
+    /// replays end, the window closing when it has no tab left) and is inserted and selected
+    /// (`insertTab:atIndex:` with `automaticallySelectNewTabs`). Every window touched then
+    /// sends its tabs' order to tmux and lays out again.
+    fn api_reorder_assignment(&mut self, dest: u64, tabs: &[u64]) {
+        let mut touched = vec![dest];
+        for (index, &tab) in tabs.iter().enumerate() {
+            // A window emptied by an earlier move of this request is gone.
+            let Some(dest_id) = self.window_id_of_key(dest) else { return };
+            let Some(src) = self.registry.order().into_iter().find(|k| self.window_tabs(*k).is_some_and(|(all, _)| all.iter().any(|t| t.id == tab))) else { continue };
+            if src == dest {
+                if !self.enter(dest_id) || self.win_locks.forbids(LayoutOp::ReorderTab) {
+                    continue;
+                }
+                let Some(from) = self.tabs.iter().position(|t| t.id == tab) else { continue };
+                let active = self.tabs.get(self.active).map(|t| t.id);
+                let moving = self.tabs.remove(from);
+                self.tabs.insert(index.min(self.tabs.len()), moving);
+                if let Some(a) = active.and_then(|a| self.tabs.iter().position(|t| t.id == a)) {
+                    self.active = a;
+                }
+                continue;
+            }
+            let Some(src_id) = self.window_id_of_key(src) else { continue };
+            if !self.enter(src_id) {
+                continue;
+            }
+            let Some(at) = self.tabs.iter().position(|t| t.id == tab) else { continue };
+            let panes = self.tabs[at].layout.panes();
+            self.end_replays(&panes);
+            let moving = self.tabs.remove(at);
+            self.mru.forget(moving.id);
+            self.active = crate::close_rules::active_after_close(self.active, at, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+            if self.tabs.is_empty() {
+                self.drop_current_window();
+                touched.retain(|k| *k != src);
+            } else if !touched.contains(&src) {
+                touched.push(src);
+            }
+            // `dest` is known to exist, so the tab always lands there.
+            self.enter(dest_id);
+            let to = index.min(self.tabs.len());
+            self.tabs.insert(to, moving);
+            self.active = to;
+        }
+        for k in touched {
+            if self.window_id_of_key(k).is_some_and(|id| self.enter(id)) {
+                self.tmux_reorder();
+                self.relayout();
+                self.redraw();
+            }
+        }
     }
 
     /// For a tmux pane, whether its tmux window is hidden (how Tandem and iTerm2 bury a tmux
