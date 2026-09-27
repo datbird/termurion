@@ -141,6 +141,13 @@ impl App {
             match e {
                 Event::Print(line) => self.tmux_print(pane, &line),
                 Event::Reply { tag, ok, text, data } => {
+                    // A Python API SendCommand: its output answers the request (`H:3620-3623`).
+                    if let Some(waiting) = self.api_tmux_commands.remove(&(pane, tag)) {
+                        let output = ok.then_some(text);
+                        let payload = Some(crate::api_proto::pb::tmux_response::Payload::SendCommand(crate::api_proto::pb::tmux_response::SendCommand { output }));
+                        self.api_tmux_answer(waiting, crate::api_proto::pb::TmuxResponse { status: None, payload });
+                        continue;
+                    }
                     if let Some(ask) = tmux_handshake::ask_of(tag) {
                         let steps = t.hs.reply(ask, ok.then_some(text.as_str()), &mut t.gw);
                         for step in steps {
@@ -225,6 +232,7 @@ impl App {
         if !self.tmux.contains_key(&pane) {
             return;
         }
+        self.api_tmux_gone(pane);
         // A buried gateway comes back first (iTerm2 restores it before anything else).
         if self.buried.contains(pane) {
             self.disinter(pane);
@@ -343,6 +351,17 @@ impl App {
             }
         }
         true
+    }
+
+    /// A Python API SendCommand to the gateway `pane`: sent with a tag of its own, whose
+    /// output is not printed. The tag, or None when `pane` is no gateway.
+    pub(super) fn tmux_api_send(&mut self, pane: PaneId, command: &str) -> Option<Tag> {
+        let t = self.tmux.get_mut(&pane)?;
+        let tag = t.next_tag;
+        t.next_tag += 1;
+        t.gw.send(command, Some(tag), Default::default());
+        self.tmux_flush(pane);
+        Some(tag)
     }
 
     fn tmux_run_typed(&mut self, pane: PaneId, command: &str) {

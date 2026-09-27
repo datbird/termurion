@@ -205,6 +205,37 @@ impl Broadcast {
         }
     }
 
+    /// The Python API's SetBroadcastDomains for this window (iTerm2's setBroadcastDomains:,
+    /// `BI:154-194`): the domains sanitized (a pane stays in the last domain naming it, panes
+    /// the window does not have go, and so do domains of fewer than two). None left while off
+    /// changes nothing (false). Otherwise no tab broadcasts any more and the mode is custom
+    /// with those domains, or off when none are left.
+    pub fn set_domains(&mut self, v: &mut View, domains: Vec<BTreeSet<PaneId>>) -> bool {
+        let valid = v.all();
+        let mut index = std::collections::BTreeMap::new();
+        for (i, d) in domains.iter().enumerate() {
+            for p in d {
+                index.insert(*p, i);
+            }
+        }
+        let mut grouped: Vec<BTreeSet<PaneId>> = vec![BTreeSet::new(); domains.len()];
+        for (p, i) in index {
+            if valid.contains(&p) {
+                grouped[i].insert(p);
+            }
+        }
+        grouped.retain(|d| d.len() > 1);
+        if grouped.is_empty() && self.raw == Mode::Off {
+            return false;
+        }
+        for t in &mut v.tabs {
+            t.broadcasting = false;
+        }
+        self.raw = if grouped.is_empty() { Mode::Off } else { Mode::Custom };
+        self.domains = grouped;
+        true
+    }
+
     /// Current Session is Broadcast Source.
     pub fn toggle_source(&mut self, v: &View, p: PaneId) {
         let was = self.sources.contains(&p);
@@ -364,6 +395,38 @@ mod tests {
         b.toggle_session(&mut v, 3);
         assert_eq!((b.raw, v.tabs[0].broadcasting), (Mode::Custom, false));
         assert_eq!(b.domains, vec![BTreeSet::from([1, 2, 3])]);
+    }
+
+    #[test]
+    fn set_domains_apply_like_iterm2() {
+        let set = |ids: &[PaneId]| ids.iter().copied().collect::<BTreeSet<PaneId>>();
+        // Off, and nothing valid: nothing changes (`BI:180-184`).
+        let (mut b, mut v) = (Broadcast::default(), view());
+        v.tabs[1].broadcasting = true;
+        assert!(!b.set_domains(&mut v, vec![set(&[1])]));
+        assert!(!b.set_domains(&mut v, vec![]));
+        assert_eq!((b.raw, v.tabs[1].broadcasting), (Mode::Off, true));
+        // A domain: custom mode, and every tab stops broadcasting.
+        assert!(b.set_domains(&mut v, vec![set(&[1, 2])]));
+        assert_eq!((b.raw, b.domains.clone()), (Mode::Custom, vec![set(&[1, 2])]));
+        assert!(v.tabs.iter().all(|t| !t.broadcasting));
+        assert_eq!(b.targets(&v, 1), vec![1, 2]);
+        // One pane, or a pane the window does not have, leaves nothing: off.
+        assert!(b.set_domains(&mut v, vec![set(&[1])]));
+        assert_eq!((b.raw, b.domains.clone()), (Mode::Off, vec![]));
+        b.set_domains(&mut v, vec![set(&[1, 2])]);
+        assert!(b.set_domains(&mut v, vec![set(&[1, 99])]));
+        assert_eq!((b.raw, b.domains.clone()), (Mode::Off, vec![]));
+        // From All Panes the tab's flag is cleared too.
+        let (mut b, mut v) = (Broadcast::default(), view());
+        b.current_tab(&mut v, &mut yes());
+        assert!(b.set_domains(&mut v, vec![set(&[2, 3, 99])]));
+        assert_eq!((b.raw, b.domains.clone(), v.tabs[0].broadcasting), (Mode::Custom, vec![set(&[2, 3])], false));
+        // Overlapping domains: a pane stays in the last one naming it (`BI:161-168`).
+        assert!(b.set_domains(&mut v, vec![set(&[1, 2]), set(&[2, 3])]));
+        assert_eq!(b.domains, vec![set(&[2, 3])]);
+        assert!(b.set_domains(&mut v, vec![set(&[1, 2, 3]), set(&[3])]));
+        assert_eq!(b.domains, vec![set(&[1, 2])]);
     }
 
     #[test]

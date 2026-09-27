@@ -150,6 +150,9 @@ pub enum Action {
     PasteBuffer(String),
     /// A fetched paste buffer's text.
     Clipboard(String),
+    /// The reply to `new_window`'s command (tagged `tag`): the new tmux window, None when the
+    /// reply failed or named none.
+    NewWindowReply { tag: Tag, window: Option<u32> },
     /// `@tab_colors` held iTerm2's pure red: ask "Fix corrupted tab colors?".
     RedTabColors,
     /// A window's tmux status line, sanitized (`tmux_monitor::sanitize_status`).
@@ -458,7 +461,8 @@ impl Controller {
 
     /// New Tmux Tab (`affinity`: the tmux window whose Tandem window gets the tab) or New
     /// Tmux Window. With variable sizes the client first takes the new window's size.
-    pub fn new_window(&mut self, affinity: Option<u32>, dir: &crate::tmux_edits::Dir, size: Option<(u32, u32)>, gw: &mut Gateway) {
+    /// Returns the tag of the `new-window` command, whose reply comes as `NewWindowReply`.
+    pub fn new_window(&mut self, affinity: Option<u32>, dir: &crate::tmux_edits::Dir, size: Option<(u32, u32)>, gw: &mut Gateway) -> Tag {
         let mut list = Vec::new();
         if let Some((w, h)) = size.filter(|_| crate::tmux_sizes::variable(self.version, self.prefs.variable_sizes)) {
             self.window_sizes.clear();
@@ -469,6 +473,7 @@ impl Controller {
         let t = self.tag(Req::NewWindow(affinity));
         list.push((crate::tmux_edits::new_window(None, dir, recycling), Some(t), Flags::default()));
         gw.send_list(list, false);
+        t
     }
 
     /// Hide: the window stays in tmux, is saved in `@hidden`, and its tab closes.
@@ -1166,6 +1171,10 @@ impl Controller {
                         self.affinities.set_equal(&w.to_string(), &a.to_string());
                     }
                 }
+                // iTerm2 takes the new window only from a reply that starts with `@`
+                // (newWindowWithAffinityCreated:).
+                let window = (ok && text.trim().starts_with('@')).then(|| crate::tmux_windows::window_id(text.trim()));
+                out.push(Action::NewWindowReply { tag, window });
             }
             Req::SessionWindows(session) => {
                 let rows = tmux_windows::parse_windows(text, self.v(), self.tab_bug)
@@ -1755,10 +1764,10 @@ mod tests {
     fn new_tabs_join_their_window() {
         let mut r = opened();
         r.sent();
-        r.ctl.new_window(Some(0), &crate::tmux_edits::Dir::Home, Some((80, 25)), &mut r.gw);
+        let tag = r.ctl.new_window(Some(0), &crate::tmux_edits::Dir::Home, Some((80, 25)), &mut r.gw);
         assert_eq!(r.sent(), "refresh-client -C 80,25; new-window -PF '#{window_id}'\r");
         r.answer(Some(""));
-        r.answer(Some("@7"));
+        assert_eq!(r.answer(Some("@7")), vec![Action::NewWindowReply { tag, window: Some(7) }], "the API waits on this tag");
         r.lines(&["%window-add @7"]);
         r.answer(Some("main\t@7\tzsh\t80\t24\tb25d,80x24,0,0,9\t\t0\tb25d,80x24,0,0,9\toff"));
         for _ in 0..4 {
@@ -1766,6 +1775,17 @@ mod tests {
         }
         let a = r.answer(Some(""));
         assert!(matches!(&a[..], [Action::Open { place: Place::WithSibling(0), .. }]), "{a:?}");
+    }
+
+    #[test]
+    fn new_window_replies_name_the_window() {
+        let mut r = opened();
+        r.sent();
+        let tag = r.ctl.new_window(None, &crate::tmux_edits::Dir::Home, None, &mut r.gw);
+        assert_eq!(r.answer(Some("7")), vec![Action::NewWindowReply { tag, window: None }], "no `@`: no window (newWindowWithAffinityCreated:)");
+        let tag = r.ctl.new_window(None, &crate::tmux_edits::Dir::Home, None, &mut r.gw);
+        // A failed reply (the gateway aborts before one reaches the controller).
+        assert_eq!(r.ctl.reply(tag, false, "", &[], &mut r.gw), Some(vec![Action::NewWindowReply { tag, window: None }]), "a failed reply");
     }
 
     #[test]

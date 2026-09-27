@@ -25,10 +25,11 @@ impl App {
     /// Applies the controller's actions for the gateway `gw`. False when tmux mode ended.
     pub(super) fn tmux_actions(&mut self, gw: PaneId, actions: Vec<Action>, event_loop: &ActiveEventLoop) -> bool {
         // Output and status lines change no pane or tab: no relayout for them.
-        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. }));
+        let changes = actions.iter().any(|a| !matches!(a, Action::Output(..) | Action::StatusLine { .. } | Action::NewWindowReply { .. }));
         for a in actions {
             match a {
                 Action::Open { window, node, panes, place } => self.tmux_open(gw, window, node, panes, place),
+                Action::NewWindowReply { tag, window } => self.api_tmux_new_window_reply(gw, tag, window),
                 // %paste-buffer-changed: mirrored with TmuxSyncClipboard, else offered once.
                 Action::PasteBuffer(name) => {
                     if self.globals.bool("TmuxSyncClipboard") {
@@ -757,6 +758,7 @@ impl App {
     }
 
     fn tmux_open(&mut self, gw: PaneId, window: Window, node: Node, panes: Vec<PaneOpen>, place: Place) {
+        let window_id = window.id;
         let mut ids = HashMap::new();
         for p in &panes {
             ids.insert(p.pane, self.tmux_pane(gw, window.id, p));
@@ -830,6 +832,10 @@ impl App {
             }
         }
         self.tmux_save_tab_colors();
+        // A Python API CreateWindow waiting for this window answers with its tab.
+        if let Some(waiting) = self.api_tmux_windows.remove(&(gw, window_id)) {
+            self.api_tmux_created(waiting, Some(tab_id));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1004,13 +1010,7 @@ impl App {
 
     /// The profile's Initial Directory for tmux (Home, Reuse, or Custom).
     fn tmux_dir(&self, pane: PaneId) -> crate::tmux_edits::Dir {
-        use crate::tmux_edits::Dir;
-        let Some(p) = self.profile_of(pane) else { return Dir::Home };
-        match p.string("Custom Directory").as_str() {
-            "Yes" => Dir::Custom(p.string("Working Directory")),
-            "Recycle" => Dir::Recycle,
-            _ => Dir::Home,
-        }
+        tmux_dir_of(self.profile_of(pane))
     }
 
     /// Split Pane in a tmux tab: tmux splits, and its layout change shows the new pane.
@@ -1305,4 +1305,15 @@ fn window_geometry(w: &winit::window::Window) -> Option<((i32, i32), Option<crat
     }
     let s = w.outer_size().to_logical::<f64>(w.scale_factor());
     Some((origin, Some(crate::tmux_persist::WinSize::Size(s.width.round() as i64, s.height.round() as i64))))
+}
+
+/// A profile's Initial Directory for tmux (Home, Reuse, or Custom); Home without a profile.
+pub(super) fn tmux_dir_of(p: Option<&Profile>) -> crate::tmux_edits::Dir {
+    use crate::tmux_edits::Dir;
+    let Some(p) = p else { return Dir::Home };
+    match p.string("Custom Directory").as_str() {
+        "Yes" => Dir::Custom(p.string("Working Directory")),
+        "Recycle" => Dir::Recycle,
+        _ => Dir::Home,
+    }
 }

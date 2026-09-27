@@ -10,7 +10,11 @@
 //! SetProfileProperty, ListProfiles and Preferences read and change profiles and settings
 //! (`api_profile`); SavedArrangement, RestartSession, SetTabLayout and ReorderTabs save and
 //! restore arrangements, start sessions again, set split sizes and move tabs (`api_layout`);
-//! MenuItem finds a menu item by its XIB identifier and runs it as the menu does (`menus`).
+//! MenuItem finds a menu item by its XIB identifier and runs it as the menu does (`menus`);
+//! Selection reads and sets a session's selection, SetBroadcastDomains sets each window's
+//! custom domains, Tmux lists gateways and sends them commands, shows, hides and creates tmux
+//! windows (its command and create answers come later, from tmux), and ColorPreset finds no
+//! preset until milestone 13 (`api_misc`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -21,6 +25,7 @@ use super::{App, Rect, GAP};
 use crate::api_buffer;
 use crate::api_create::{self, SplitResult};
 use crate::api_layout::{self, Arrange};
+use crate::api_misc;
 use crate::api_profile;
 use crate::api_props::{self, BuryStep, Prop};
 use crate::api_proto::{self, pb};
@@ -37,7 +42,6 @@ use pb::server_originated_message::Submessage as Resp;
 /// A request's answer: sent now, or later by whatever finishes it (tmux replies).
 pub(super) enum Answer {
     Now(pb::ServerOriginatedMessage),
-    #[allow(dead_code)]
     Later,
 }
 
@@ -117,6 +121,13 @@ impl App {
                 reply(req, Resp::ReorderTabsResponse(pb::ReorderTabsResponse { status: Some(status as i32) }))
             }
             Some(Req::MenuItemRequest(r)) => reply(req, Resp::MenuItemResponse(self.api_menu_item(r, event_loop))),
+            Some(Req::SelectionRequest(r)) => reply(req, Resp::SelectionResponse(self.api_selection(r))),
+            Some(Req::SetBroadcastDomainsRequest(r)) => {
+                let status = self.api_set_broadcast_domains(r);
+                reply(req, Resp::SetBroadcastDomainsResponse(pb::SetBroadcastDomainsResponse { status: Some(status as i32) }))
+            }
+            Some(Req::TmuxRequest(r)) => self.api_tmux(conn, req, r, event_loop),
+            Some(Req::ColorPresetRequest(r)) => reply(req, Resp::ColorPresetResponse(api_misc::color_preset(r))),
             Some(Req::NotificationRequest(r)) if r.notification_type == Some(pb::NotificationType::NotifyOnVariableChange as i32) => {
                 let status = self.api_variable_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
@@ -1070,6 +1081,204 @@ impl App {
             self.run_command(item, event_loop);
         }
         answer
+    }
+
+    /// Selection (`H:3952-4099`) of a session's own screen. Get: the selection as one
+    /// sub-selection (none: no payload, as iTerm2 never touches it), OK. Set: every
+    /// sub-selection checked (`api_misc::to_sel`), then more than one refused (alacritty keeps
+    /// one); none clears the selection, one replaces it, OK. No session or an unset request is
+    /// REQUEST_MALFORMED.
+    fn api_selection(&mut self, r: &pb::SelectionRequest) -> pb::SelectionResponse {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::Selection;
+        use pb::selection_request::Request;
+        use pb::selection_response::{GetSelectionResponse, Response, Status};
+        let answer = |s: Status, response: Option<Response>| pb::SelectionResponse { status: Some(s as i32), response };
+        match &r.request {
+            None => answer(Status::RequestMalformed, None),
+            Some(Request::GetSelectionRequest(g)) => {
+                let Some(p) = self.api_session_pane(g.session_id.as_deref()).and_then(|id| self.panes.get(&id)) else { return answer(Status::RequestMalformed, None) };
+                let screen = p.own();
+                let f = api_buffer::facts(screen);
+                let term = screen.term();
+                let at = |pt: Point| (pt.line.0 as i64 + f.history, pt.column.0 as i32);
+                let subs: Vec<pb::SubSelection> = term
+                    .selection
+                    .as_ref()
+                    .and_then(|s| Some((s.ty, s.to_range(term)?)))
+                    .map(|(ty, range)| api_misc::from_sel(ty, at(range.start), at(range.end), f.scrolled_off - f.history, f.cols))
+                    .into_iter()
+                    .collect();
+                let response = (!subs.is_empty()).then_some(Response::GetSelectionResponse(GetSelectionResponse { selection: Some(pb::Selection { sub_selections: subs }) }));
+                answer(Status::Ok, response)
+            }
+            Some(Request::SetSelectionRequest(set)) => {
+                let Some(p) = self.api_session_pane(set.session_id.as_deref()).and_then(|id| self.panes.get_mut(&id)) else { return answer(Status::RequestMalformed, None) };
+                let f = api_buffer::facts(p.own());
+                let subs = set.selection.as_ref().map_or(&[][..], |s| &s.sub_selections[..]);
+                let Some(sels) = subs.iter().map(|s| api_misc::to_sel(s, f.cols, f.scrolled_off - f.history)).collect::<Option<Vec<_>>>() else {
+                    return answer(Status::RequestMalformed, None);
+                };
+                if sels.len() > 1 {
+                    return answer(Status::RequestMalformed, None);
+                }
+                // The API's end is exclusive: the left side of its column, or the right side of
+                // the last column when it is the width.
+                let point = |(index, x): (i64, i32)| {
+                    let line = Line((index - f.history).clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+                    if x >= f.cols { (Point::new(line, Column(f.cols.max(1) as usize - 1)), Side::Right) } else { (Point::new(line, Column(x.max(0) as usize)), Side::Left) }
+                };
+                p.own_mut().term_mut().selection = sels.first().map(|s| {
+                    let ((a, a_side), (b, b_side)) = (point(s.start), point(s.end));
+                    let mut sel = Selection::new(s.ty, a, a_side);
+                    sel.update(b, b_side);
+                    sel
+                });
+                self.redraw();
+                answer(Status::Ok, None)
+            }
+        }
+    }
+
+    /// SetBroadcastDomains (`H:4141-4187`): checked (`api_misc::domains`), then every window,
+    /// entered in turn, takes its own domains (none: an empty list, which turns a custom mode
+    /// off), as iTerm2's `setBroadcastingSessions:` for every terminal.
+    fn api_set_broadcast_domains(&mut self, r: &pb::SetBroadcastDomainsRequest) -> pb::set_broadcast_domains_response::Status {
+        let mut groups = match api_misc::domains(r, &self.api_ids()) {
+            Ok(g) => g,
+            Err(status) => return status,
+        };
+        for k in self.registry.order() {
+            let Some(id) = self.window_id_of_key(k) else { continue };
+            if !self.enter(id) {
+                continue;
+            }
+            let mut v = self.broadcast_view();
+            if self.broadcast.set_domains(&mut v, groups.remove(&k).unwrap_or_default()) {
+                self.keep_broadcast_flags(&v);
+            }
+        }
+        self.menus_dirty = true;
+        self.sync_checks();
+        self.redraw();
+        pb::set_broadcast_domains_response::Status::Ok
+    }
+
+    /// Each tmux client name with its gateway, by gateway (iTerm2's registry keeps one
+    /// controller per client name: a name two gateways share names the first).
+    fn api_tmux_clients(&self) -> Vec<(String, PaneId)> {
+        let mut list: Vec<(String, PaneId)> = self.tmux.iter().map(|(gw, t)| (t.client.clone(), *gw)).collect();
+        list.sort_by_key(|(_, gw)| *gw);
+        let mut seen = std::collections::HashSet::new();
+        list.retain(|(name, _)| seen.insert(name.clone()));
+        list
+    }
+
+    /// Tmux (`H:3610-3729`): an unset payload INVALID_REQUEST; ListConnections the gateways;
+    /// the rest name a gateway by client name (INVALID_CONNECTION_ID). SendCommand sends the
+    /// command to that gateway only and answers with its output when tmux replies;
+    /// SetWindowVisible shows or hides a tmux window by number (INVALID_WINDOW_ID for a
+    /// non-numeric id, or a window already so); CreateWindow makes a tmux window (a tab of
+    /// the affinity's window when it names one) and answers with its tab when that opens.
+    fn api_tmux(&mut self, conn: u64, req: &pb::ClientOriginatedMessage, r: &pb::TmuxRequest, event_loop: &ActiveEventLoop) -> Answer {
+        use pb::tmux_request::Payload;
+        use pb::tmux_response::Status;
+        let status = |s: Status| reply(req, Resp::TmuxResponse(pb::TmuxResponse { status: Some(s as i32), payload: None }));
+        let gateway = |app: &App, id: Option<&str>| app.api_tmux_clients().into_iter().find(|(name, _)| Some(name.as_str()) == id).map(|(_, gw)| gw);
+        match &r.payload {
+            None => status(Status::InvalidRequest),
+            Some(Payload::ListConnections(_)) => reply(req, Resp::TmuxResponse(api_misc::connections(&self.api_tmux_clients()))),
+            Some(Payload::SendCommand(c)) => {
+                let Some(gw) = gateway(self, c.connection_id.as_deref()) else { return status(Status::InvalidConnectionId) };
+                let Some(tag) = self.tmux_api_send(gw, c.command.as_deref().unwrap_or_default()) else { return status(Status::InvalidConnectionId) };
+                self.api_tmux_commands.insert((gw, tag), (conn, req.clone()));
+                Answer::Later
+            }
+            Some(Payload::SetWindowVisible(v)) => {
+                let Some(gw) = gateway(self, v.connection_id.as_deref()) else { return status(Status::InvalidConnectionId) };
+                let Some(window) = api_misc::window_number(v.window_id.as_deref().unwrap_or_default()) else { return status(Status::InvalidWindowId) };
+                let visible = v.visible.unwrap_or(false);
+                let hidden = self.tmux.get(&gw).is_some_and(|t| t.ctl.hidden().contains(&window));
+                if let Some(s) = api_misc::visibility_status(hidden, visible) {
+                    return status(s);
+                }
+                let mut actions = Vec::new();
+                if let Some(t) = self.tmux.get_mut(&gw) {
+                    if visible {
+                        t.ctl.open_windows(&[window], false, &mut t.gw);
+                    } else {
+                        actions = t.ctl.hide(window, &mut t.gw);
+                    }
+                }
+                self.tmux_flush(gw);
+                if !actions.is_empty() {
+                    self.tmux_actions(gw, actions, event_loop);
+                }
+                status(Status::Ok)
+            }
+            Some(Payload::CreateWindow(c)) => {
+                let Some(gw) = gateway(self, c.connection_id.as_deref()) else { return status(Status::InvalidConnectionId) };
+                // The tmux profile's directory and, for a new window, its size
+                // (`sizeForTmuxWindowWithAffinity:`); a tab takes its affinity's tab size.
+                let affinity = c.affinity.as_deref().and_then(api_misc::window_number);
+                let guid = self.tmux_profile_guid(gw);
+                let profile = self.profile(Some(&guid));
+                let dir = super::tmux_tabs_ui::tmux_dir_of(Some(&profile));
+                let cells = |key: &str, default: u32| u32::try_from(profile.int(key)).ok().filter(|n| *n > 0).unwrap_or(default);
+                let size = affinity.and_then(|a| self.tmux.get(&gw)?.tab_sizes.get(&a).copied()).unwrap_or_else(|| (cells("Columns", 80), cells("Rows", 25)));
+                let Some(t) = self.tmux.get_mut(&gw) else { return status(Status::InvalidConnectionId) };
+                let tag = t.ctl.new_window(affinity, &dir, Some(size), &mut t.gw);
+                self.tmux_flush(gw);
+                self.api_tmux_creates.insert((gw, tag), (conn, req.clone()));
+                Answer::Later
+            }
+        }
+    }
+
+    /// Answers a waiting Tmux request.
+    pub(super) fn api_tmux_answer(&self, (conn, req): (u64, pb::ClientOriginatedMessage), resp: pb::TmuxResponse) {
+        let mut m = api_proto::reply_to(&req);
+        m.submessage = Some(Resp::TmuxResponse(resp));
+        self.api_reply(conn, &m);
+    }
+
+    /// Answers a waiting CreateWindow: the new window's tab id, or nothing when the window was
+    /// not made; status unset either way (`H:3656-3662`).
+    pub(super) fn api_tmux_created(&self, waiting: (u64, pb::ClientOriginatedMessage), tab: Option<u64>) {
+        let payload = tab.map(|t| pb::tmux_response::Payload::CreateWindow(pb::tmux_response::CreateWindow { tab_id: Some(t.to_string()) }));
+        self.api_tmux_answer(waiting, pb::TmuxResponse { status: None, payload });
+    }
+
+    /// The `new-window` reply of a CreateWindow: it waits for the window's tab (answered at
+    /// once when that tab is already open), or answers nothing when no window was made.
+    pub(super) fn api_tmux_new_window_reply(&mut self, gw: PaneId, tag: crate::tmux_gateway::Tag, window: Option<u32>) {
+        let Some(waiting) = self.api_tmux_creates.remove(&(gw, tag)) else { return };
+        let Some(window) = window else { return self.api_tmux_created(waiting, None) };
+        let first = self.tmux.get(&gw).and_then(|t| t.panes.iter().filter(|(_, (_, w))| *w == window).map(|(p, (id, _))| (*p, *id)).min()).map(|(_, id)| id);
+        match first.and_then(|p| self.api_ids().pane_tab(p)) {
+            Some(tab) => self.api_tmux_created(waiting, Some(tab)),
+            None => {
+                self.api_tmux_windows.insert((gw, window), waiting);
+            }
+        }
+    }
+
+    /// The gateway `gw` went away: its waiting SendCommand and CreateWindow requests answer
+    /// with an empty response (the forwarder's failure, `H:3624-3626`).
+    pub(super) fn api_tmux_gone(&mut self, gw: PaneId) {
+        let mut waiting: Vec<(u64, pb::ClientOriginatedMessage)> = Vec::new();
+        let mut commands: Vec<_> = self.api_tmux_commands.keys().filter(|(g, _)| *g == gw).copied().collect();
+        commands.sort();
+        waiting.extend(commands.iter().filter_map(|k| self.api_tmux_commands.remove(k)));
+        let mut creates: Vec<_> = self.api_tmux_creates.keys().filter(|(g, _)| *g == gw).copied().collect();
+        creates.sort();
+        waiting.extend(creates.iter().filter_map(|k| self.api_tmux_creates.remove(k)));
+        let mut windows: Vec<_> = self.api_tmux_windows.keys().filter(|(g, _)| *g == gw).copied().collect();
+        windows.sort();
+        waiting.extend(windows.iter().filter_map(|k| self.api_tmux_windows.remove(k)));
+        for w in waiting {
+            self.api_tmux_answer(w, pb::TmuxResponse::default());
+        }
     }
 
     /// For a tmux pane, whether its tmux window is hidden (how Tandem and iTerm2 bury a tmux

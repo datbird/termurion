@@ -585,6 +585,13 @@ pub struct App {
     /// The snapshot notifications were last computed from, kept only while a connection
     /// subscribes.
     api_last: Option<crate::api_model::Model>,
+    /// Tmux SendCommand requests waiting for their reply, by gateway and command tag: the
+    /// connection and the request.
+    api_tmux_commands: HashMap<(PaneId, crate::tmux_gateway::Tag), (u64, crate::api_proto::pb::ClientOriginatedMessage)>,
+    /// Tmux CreateWindow requests waiting for the `new-window` reply, by gateway and tag.
+    api_tmux_creates: HashMap<(PaneId, crate::tmux_gateway::Tag), (u64, crate::api_proto::pb::ClientOriginatedMessage)>,
+    /// Tmux CreateWindow requests waiting for the new window's tab, by gateway and tmux window.
+    api_tmux_windows: HashMap<(PaneId, u32), (u64, crate::api_proto::pb::ClientOriginatedMessage)>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -913,6 +920,9 @@ pub fn run() {
         api_vars: Default::default(),
         api_var_subs: Default::default(),
         api_last: None,
+        api_tmux_commands: HashMap::new(),
+        api_tmux_creates: HashMap::new(),
+        api_tmux_windows: HashMap::new(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));

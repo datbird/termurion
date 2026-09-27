@@ -1,0 +1,258 @@
+//! The Python API's Selection (`H:3952-4099`), SetBroadcastDomains (`H:4141-4187`), Tmux
+//! (`H:3610-3729`) and ColorPreset (`H:3883-3950`) requests: their validation and answers,
+//! made from the request and a snapshot of the app, so the app only carries them out.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use alacritty_terminal::selection::SelectionType;
+
+use crate::api_proto::pb;
+use crate::api_session::Snapshot;
+
+/// One sub-selection in buffer terms: start and end as (buffer index counted from the oldest
+/// line still kept, column), the end exclusive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sel {
+    pub ty: SelectionType,
+    pub start: (i64, i32),
+    pub end: (i64, i32),
+}
+
+/// A sub-selection of a SetSelection request (`H:4050-4091`) on a screen `width` columns
+/// wide that lost `lost` lines off the top of its history. None for what iTerm2 refuses, in
+/// its order: an end past the width, a negative column window length, a column window
+/// beyond the width, a negative start column, window location, start line or end line. A
+/// line above the history is the first line kept (`MAX(0, ..)`). SMART selects words and
+/// WHOLE_LINE lines (alacritty has neither); an unknown mode reads as the default CHARACTER.
+pub fn to_sel(s: &pb::SubSelection, width: i32, lost: i64) -> Option<Sel> {
+    use pb::SelectionMode as M;
+    let w = s.windowed_coord_range.unwrap_or_default();
+    let cr = w.coord_range.unwrap_or_default();
+    let (start, end) = (cr.start.unwrap_or_default(), cr.end.unwrap_or_default());
+    let cols = w.columns.unwrap_or_default();
+    let width = width as i64;
+    if end.x() as i64 > width || cols.length() < 0 || cols.location() + cols.length() > width || start.x() < 0 || cols.location() < 0 || start.y() < 0 || end.y() < 0 {
+        return None;
+    }
+    let ty = match s.selection_mode.and_then(|m| M::try_from(m).ok()).unwrap_or(M::Character) {
+        M::Character => SelectionType::Simple,
+        M::Box => SelectionType::Block,
+        M::Word | M::Smart => SelectionType::Semantic,
+        M::Line | M::WholeLine => SelectionType::Lines,
+    };
+    Some(Sel { ty, start: ((start.y() - lost).max(0), start.x()), end: ((end.y() - lost).max(0), end.x()) })
+}
+
+/// A GetSelection sub-selection (`H:3970-4015`) from a selection of type `ty` whose start
+/// and inclusive end are (buffer index, column): lines numbered from the first line ever
+/// (`lost` added), the end one past its last column (at most the width), not connected, and
+/// no column window (Tandem keeps none).
+pub fn from_sel(ty: SelectionType, start: (i64, i32), end_inclusive: (i64, i32), lost: i64, width: i32) -> pb::SubSelection {
+    use pb::SelectionMode as M;
+    let coord = |x: i32, y: i64| Some(pb::Coord { x: Some(x), y: Some(lost + y) });
+    let mode = match ty {
+        SelectionType::Simple => M::Character,
+        SelectionType::Block => M::Box,
+        SelectionType::Semantic => M::Word,
+        SelectionType::Lines => M::Line,
+    };
+    let range = pb::CoordRange { start: coord(start.1, start.0), end: coord((end_inclusive.1 + 1).min(width), end_inclusive.0) };
+    pb::SubSelection { windowed_coord_range: Some(pb::WindowedCoordRange { coord_range: Some(range), columns: None }), selection_mode: Some(mode as i32), connected: Some(false) }
+}
+
+/// SetBroadcastDomains' check (`H:4146-4182`): each domain's sessions, by id as
+/// `sessionForAPIIdentifier` finds them (buried ones too), all in one window (a buried
+/// session is in none: first in a domain it leaves the window to the next one, later it
+/// differs from a window); an unknown one SESSION_NOT_FOUND, two windows
+/// SESSIONS_NOT_IN_SAME_WINDOW. iTerm2 never fills its set of seen ids, so overlapping
+/// domains are not refused (BROADCAST_DOMAINS_NOT_DISJOINT is never answered); the
+/// window's helper sorts them out (`Broadcast::set_domains`). The domains by the Registry
+/// key of their first session's window, in request order; empty ones and ones whose first
+/// session is buried are dropped.
+pub fn domains(r: &pb::SetBroadcastDomainsRequest, s: &Snapshot) -> Result<BTreeMap<u64, Vec<BTreeSet<u64>>>, pb::set_broadcast_domains_response::Status> {
+    use pb::set_broadcast_domains_response::Status;
+    let window_of = |p: u64| s.pane_tab(p).and_then(|t| s.tab_window(t));
+    let mut groups = Vec::new();
+    for d in &r.broadcast_domains {
+        let mut sessions = Vec::new();
+        let mut window: Option<u64> = None;
+        for id in &d.session_ids {
+            let p = s.pane(id).ok_or(Status::SessionNotFound)?;
+            let this = window_of(p);
+            if window.is_none() {
+                window = this;
+            } else if window != this {
+                return Err(Status::SessionsNotInSameWindow);
+            }
+            sessions.push(p);
+        }
+        if let Some(first) = sessions.first() {
+            groups.push((window_of(*first), sessions));
+        }
+    }
+    let mut out: BTreeMap<u64, Vec<BTreeSet<u64>>> = BTreeMap::new();
+    for (w, sessions) in groups {
+        if let Some(w) = w {
+            out.entry(w).or_default().push(sessions.into_iter().collect());
+        }
+    }
+    Ok(out)
+}
+
+/// A tmux window id as SetWindowVisible takes it (`isNumeric`, `NSStringITerm.m:2055-2062`):
+/// decimal digits only, not empty.
+pub fn window_number(s: &str) -> Option<u32> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+/// SetWindowVisible's refusal (`H:3680-3708`): showing a window that is not hidden, or
+/// hiding one that is, is INVALID_WINDOW_ID.
+pub fn visibility_status(hidden: bool, want_visible: bool) -> Option<pb::tmux_response::Status> {
+    (hidden != want_visible).then_some(pb::tmux_response::Status::InvalidWindowId)
+}
+
+/// ListConnections (`H:3629-3640`): each client name with its gateway session's id, OK. With
+/// no connection the list is never touched, so no payload is set.
+pub fn connections(list: &[(String, u64)]) -> pb::TmuxResponse {
+    use pb::tmux_response::list_connections::Connection;
+    let payload = (!list.is_empty()).then(|| {
+        let connections = list.iter().map(|(name, gw)| Connection { connection_id: Some(name.clone()), owning_session_id: Some(gw.to_string()) }).collect();
+        pb::tmux_response::Payload::ListConnections(pb::tmux_response::ListConnections { connections })
+    });
+    pb::TmuxResponse { status: Some(pb::tmux_response::Status::Ok as i32), payload }
+}
+
+/// ColorPreset (`H:3883-3950`) until milestone 13 brings presets: a list is OK with no names
+/// (so no payload), every name is PRESET_NOT_FOUND, an unset request REQUEST_MALFORMED.
+pub fn color_preset(r: &pb::ColorPresetRequest) -> pb::ColorPresetResponse {
+    use pb::color_preset_request::Request;
+    use pb::color_preset_response::Status;
+    let status = match r.request {
+        None => Status::RequestMalformed,
+        Some(Request::ListPresets(_)) => Status::Ok,
+        Some(Request::GetPreset(_)) => Status::PresetNotFound,
+    };
+    pb::ColorPresetResponse { status: Some(status as i32), response: None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pb::set_broadcast_domains_response::Status as DStatus;
+    use pb::tmux_response::Status as TStatus;
+
+    fn sub(start: (i32, i64), end: (i32, i64), columns: Option<(i64, i64)>, mode: pb::SelectionMode) -> pb::SubSelection {
+        let range = pb::CoordRange { start: Some(pb::Coord { x: Some(start.0), y: Some(start.1) }), end: Some(pb::Coord { x: Some(end.0), y: Some(end.1) }) };
+        let columns = columns.map(|(location, length)| pb::Range { location: Some(location), length: Some(length) });
+        pb::SubSelection { windowed_coord_range: Some(pb::WindowedCoordRange { coord_range: Some(range), columns }), selection_mode: Some(mode as i32), connected: None }
+    }
+
+    #[test]
+    fn selection_follows_iterm2() {
+        use pb::SelectionMode as M;
+        let c = |start, end| to_sel(&sub(start, end, None, M::Character), 80, 10);
+        assert_eq!(c((0, 12), (5, 13)), Some(Sel { ty: SelectionType::Simple, start: (2, 0), end: (3, 5) }));
+        // A line above the history is the first one kept (`H:4046-4049`).
+        assert_eq!(c((0, 5), (5, 13)).map(|s| s.start), Some((0, 0)));
+        assert_eq!(c((0, 12), (80, 13)).map(|s| s.end), Some((3, 80)), "the width itself is allowed");
+        assert_eq!(c((0, 12), (81, 13)), None);
+        assert_eq!(c((-1, 12), (5, 13)), None);
+        assert_eq!(c((0, -1), (5, 13)), None);
+        assert_eq!(c((0, 12), (5, -1)), None);
+        assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((0, -1)), M::Character), 80, 10), None);
+        assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((70, 20)), M::Character), 80, 10), None);
+        assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((-1, 5)), M::Character), 80, 10), None);
+        assert!(to_sel(&sub((0, 12), (5, 13), Some((70, 10)), M::Character), 80, 10).is_some(), "a window is checked, then ignored");
+        let ty = |m| to_sel(&sub((0, 12), (5, 13), None, m), 80, 10).map(|s| s.ty);
+        assert_eq!(ty(M::Box), Some(SelectionType::Block));
+        assert_eq!(ty(M::Word), Some(SelectionType::Semantic));
+        assert_eq!(ty(M::Smart), Some(SelectionType::Semantic));
+        assert_eq!(ty(M::Line), Some(SelectionType::Lines));
+        assert_eq!(ty(M::WholeLine), Some(SelectionType::Lines));
+        // Unset and unknown modes read as CHARACTER; unset coordinates as zero.
+        let mut s = sub((0, 12), (5, 13), None, M::Character);
+        s.selection_mode = Some(99);
+        assert_eq!(to_sel(&s, 80, 10).map(|s| s.ty), Some(SelectionType::Simple));
+        assert_eq!(to_sel(&pb::SubSelection::default(), 80, 10), Some(Sel { ty: SelectionType::Simple, start: (0, 0), end: (0, 0) }));
+
+        let got = from_sel(SelectionType::Simple, (2, 0), (3, 4), 10, 80);
+        let range = got.windowed_coord_range.unwrap();
+        let cr = range.coord_range.unwrap();
+        assert_eq!((cr.start.unwrap().x(), cr.start.unwrap().y(), cr.end.unwrap().x(), cr.end.unwrap().y()), (0, 12, 5, 13));
+        assert_eq!((got.selection_mode, got.connected, range.columns), (Some(M::Character as i32), Some(false), None));
+        let end = from_sel(SelectionType::Simple, (2, 0), (3, 79), 10, 80).windowed_coord_range.unwrap().coord_range.unwrap().end.unwrap();
+        assert_eq!(end.x(), 80);
+        let mode = |ty| from_sel(ty, (0, 0), (0, 0), 0, 80).selection_mode;
+        assert_eq!(mode(SelectionType::Block), Some(M::Box as i32));
+        assert_eq!(mode(SelectionType::Semantic), Some(M::Word as i32));
+        assert_eq!(mode(SelectionType::Lines), Some(M::Line as i32));
+    }
+
+    /// Window key 1 "pty-A" with tabs 5 (panes 1, 2) and 6 (pane 3), window key 2 "pty-B"
+    /// with tab 9 (pane 7); pane 8 buried; pane 3 exited; pane 2 active (Task 1's fixture).
+    fn fixture() -> Snapshot {
+        Snapshot {
+            windows: vec![(1, "pty-A".into(), vec![(5, vec![1, 2]), (6, vec![3])]), (2, "pty-B".into(), vec![(9, vec![7])])],
+            buried: vec![8],
+            exited: BTreeSet::from([3]),
+            active: Some(2),
+        }
+    }
+
+    fn req(domains: &[&[&str]]) -> pb::SetBroadcastDomainsRequest {
+        pb::SetBroadcastDomainsRequest { broadcast_domains: domains.iter().map(|d| pb::BroadcastDomain { session_ids: d.iter().map(|s| s.to_string()).collect() }).collect() }
+    }
+
+    #[test]
+    fn set_domains_follow_iterm2() {
+        let s = fixture();
+        let set = |ids: &[u64]| ids.iter().copied().collect::<BTreeSet<u64>>();
+        // iTerm2 never records the ids it saw (`H:4150-4159`): overlap is left to the helper.
+        assert_eq!(domains(&req(&[&["1", "2"], &["2", "3"]]), &s), Ok(BTreeMap::from([(1, vec![set(&[1, 2]), set(&[2, 3])])])));
+        assert_eq!(domains(&req(&[&["1", "99"]]), &s), Err(DStatus::SessionNotFound));
+        assert_eq!(domains(&req(&[&["1", "7"]]), &s), Err(DStatus::SessionsNotInSameWindow));
+        assert_eq!(domains(&req(&[&[]]), &s), Ok(BTreeMap::new()));
+        assert_eq!(domains(&req(&[]), &s), Ok(BTreeMap::new()));
+        assert_eq!(domains(&req(&[&["1", "2"], &["7"]]), &s), Ok(BTreeMap::from([(1, vec![set(&[1, 2])]), (2, vec![set(&[7])])])));
+        assert_eq!(domains(&req(&[&["active", "3"]]), &s), Ok(BTreeMap::from([(1, vec![set(&[2, 3])])])), "active and exited sessions count");
+        // A buried session is in no window: first it defers to the next, later it differs.
+        assert_eq!(domains(&req(&[&["8", "1"]]), &s), Ok(BTreeMap::new()), "led by a buried session: no window takes it");
+        assert_eq!(domains(&req(&[&["1", "8"]]), &s), Err(DStatus::SessionsNotInSameWindow));
+        // The first error wins, in request order.
+        assert_eq!(domains(&req(&[&["1", "7"], &["99"]]), &s), Err(DStatus::SessionsNotInSameWindow));
+    }
+
+    #[test]
+    fn tmux_follows_iterm2() {
+        assert_eq!(window_number("3"), Some(3));
+        assert_eq!(window_number("12"), Some(12));
+        for s in ["@3", "", "x", "-1", "+1", " 3", "3 "] {
+            assert_eq!(window_number(s), None, "{s:?}");
+        }
+        assert_eq!(visibility_status(false, true), Some(TStatus::InvalidWindowId), "showing a shown window");
+        assert_eq!(visibility_status(true, false), Some(TStatus::InvalidWindowId), "hiding a hidden window");
+        assert_eq!(visibility_status(true, true), None);
+        assert_eq!(visibility_status(false, false), None);
+        let r = connections(&[("gw1".into(), 12)]);
+        assert_eq!(r.status, Some(TStatus::Ok as i32));
+        let Some(pb::tmux_response::Payload::ListConnections(l)) = r.payload else { panic!("no list") };
+        assert_eq!(l.connections.len(), 1);
+        assert_eq!((l.connections[0].connection_id.as_deref(), l.connections[0].owning_session_id.as_deref()), (Some("gw1"), Some("12")));
+        assert_eq!(connections(&[]), pb::TmuxResponse { status: Some(TStatus::Ok as i32), payload: None });
+    }
+
+    #[test]
+    fn color_presets_refuse_until_milestone_13() {
+        use pb::color_preset_request::{GetPreset, ListPresets, Request};
+        use pb::color_preset_response::Status;
+        let answer = |r: Option<Request>| color_preset(&pb::ColorPresetRequest { request: r });
+        let list = answer(Some(Request::ListPresets(ListPresets {})));
+        assert_eq!((list.status, list.response), (Some(Status::Ok as i32), None));
+        let get = answer(Some(Request::GetPreset(GetPreset { name: Some("Solarized".into()) })));
+        assert_eq!((get.status, get.response), (Some(Status::PresetNotFound as i32), None));
+        assert_eq!(answer(None).status, Some(Status::RequestMalformed as i32));
+    }
+}
