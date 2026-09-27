@@ -11,8 +11,10 @@ use windows_sys::Win32::Foundation::{
     ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
     HLOCAL, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
 };
-use windows_sys::Win32::Security::Authorization::{ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-use windows_sys::Win32::Security::{GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
+};
+use windows_sys::Win32::Security::{GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
     SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
@@ -68,8 +70,15 @@ fn token_sid(token: HANDLE) -> Result<String, String> {
             return Err(last_error("GetTokenInformation"));
         }
         let user = &*(buf.as_ptr() as *const TOKEN_USER);
+        sid_text(user.User.Sid)
+    }
+}
+
+/// A SID as text ("S-1-5-21-...").
+unsafe fn sid_text(sid: PSID) -> Result<String, String> {
+    unsafe {
         let mut text: *mut u16 = null_mut();
-        if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
+        if ConvertSidToStringSidW(sid, &mut text) == 0 {
             return Err(last_error("ConvertSidToStringSidW"));
         }
         let mut n = 0;
@@ -79,6 +88,31 @@ fn token_sid(token: HANDLE) -> Result<String, String> {
         let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, n));
         LocalFree(text as HLOCAL);
         Ok(sid)
+    }
+}
+
+/// The owner SID of an open file or other kernel object, as text. The handle needs
+/// `READ_CONTROL`.
+pub fn file_owner_sid(handle: HANDLE) -> Result<String, String> {
+    unsafe {
+        let mut owner: PSID = null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+        let err = GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut sd,
+        );
+        if err != 0 {
+            return Err(format!("GetSecurityInfo failed: {}", std::io::Error::from_raw_os_error(err as i32)));
+        }
+        let text = sid_text(owner);
+        LocalFree(sd as HLOCAL);
+        text
     }
 }
 

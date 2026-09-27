@@ -87,8 +87,8 @@ fn same_secret(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
-    std::hint::black_box(diff) == 0
+    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| std::hint::black_box(acc | (x ^ y)));
+    diff == 0
 }
 
 /// A cookie's text: each byte as two lowercase hex digits (`%02x`, `J:68`).
@@ -123,25 +123,109 @@ pub fn noauth_contents(path: &str) -> String {
 /// What the allow-all file says (`iTermNoAuthStatus`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AllowAll {
-    /// No file (or unreadable): a cookie is required.
+    /// No file, or not a plain file owned by the user: a cookie is required.
     None,
     /// Exactly the expected contents: every program running as the user, at Tandem's elevation,
     /// may connect without a cookie.
     Valid,
-    /// Any other contents: a cookie is required, and the reset warning is due.
+    /// A plain file of the user's with any other size or contents, or one that cannot be read or
+    /// is not UTF-8: a cookie is required, and the reset warning is due.
     Corrupt,
 }
 
-/// The file's status from its contents (`None` when it could not be read), compared exactly as
-/// iTerm2 and the package do (`H:411-432`, `PY/auth.py:145-151`). A Valid file is a user-level
-/// trust grant: any program running as the user can write it (on macOS it must be root-owned;
-/// Windows has no such owner check, a Decision), so it is only ever read, never inferred.
-pub fn noauth_status(path: &str, contents: Option<&str>) -> AllowAll {
-    match contents {
-        None => AllowAll::None,
-        Some(c) if c == noauth_contents(path) => AllowAll::Valid,
-        Some(_) => AllowAll::Corrupt,
+/// What the path names, read without following it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    Regular,
+    Directory,
+    /// A symlink, a junction or any other reparse point.
+    Link,
+}
+
+/// The allow-all path as found on disk, never followed: its kind, size, whether its owner is the
+/// current user's SID, and its contents (`None` when unreadable or not UTF-8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoauthFile {
+    pub kind: FileKind,
+    pub size: u64,
+    pub owner_is_user: bool,
+    pub contents: Option<String>,
+}
+
+/// The file's status (`file` is `None` when nothing is at the path). A Valid file is a
+/// user-level trust grant, so it must be a plain file, owned by the user, of the magic's size,
+/// holding exactly the expected contents. A link or directory is never trusted: the package
+/// `lstat`s the path (`os.stat(.., follow_symlinks=False)`) and requires the size, and iTerm2
+/// reads the link's own attributes and requires its owner (`H:411-419`, `PY/auth.py:145-151`);
+/// both are None here, as is another account's file (iTerm2's owner check, with the user's SID
+/// for root). A plain owned file with the wrong size, unreadable or other contents is Corrupt
+/// (`H:420-431`).
+pub fn noauth_status(path: &str, file: Option<&NoauthFile>) -> AllowAll {
+    let Some(f) = file else { return AllowAll::None };
+    if f.kind != FileKind::Regular || !f.owner_is_user {
+        return AllowAll::None;
     }
+    let expected = noauth_contents(path);
+    if f.size != expected.len() as u64 {
+        return AllowAll::Corrupt;
+    }
+    match &f.contents {
+        Some(c) if *c == expected => AllowAll::Valid,
+        _ => AllowAll::Corrupt,
+    }
+}
+
+/// Reads the allow-all path for `noauth_status` without following a link: one handle opened with
+/// `FILE_FLAG_OPEN_REPARSE_POINT` (and `FILE_FLAG_BACKUP_SEMANTICS`, so a directory opens too)
+/// gives the attributes, size, owner and contents. `None` when nothing is at the path or its
+/// attributes cannot be read (iTerm2's None). Contents are read only from a plain file of the
+/// magic's size; a file that opens for its attributes but not for reading has no contents.
+#[cfg(windows)]
+pub fn read_noauth_file(path: &str) -> Option<NoauthFile> {
+    use std::io::Read;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+    };
+    let open = |access: u32| {
+        std::fs::OpenOptions::new()
+            .access_mode(access)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+    };
+    let (mut file, readable) = match open(FILE_READ_ATTRIBUTES | READ_CONTROL | FILE_READ_DATA) {
+        Ok(f) => (f, true),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => (open(FILE_READ_ATTRIBUTES | READ_CONTROL).ok()?, false),
+        Err(_) => return None,
+    };
+    let meta = file.metadata().ok()?;
+    let attrs = meta.file_attributes();
+    let kind = if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        FileKind::Link
+    } else if attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        FileKind::Directory
+    } else {
+        FileKind::Regular
+    };
+    let size = meta.file_size();
+    let owner_is_user = match (crate::winpipe::file_owner_sid(file.as_raw_handle()), crate::winpipe::user_sid()) {
+        (Ok(owner), Ok(user)) => owner == user,
+        _ => false,
+    };
+    let expected = noauth_contents(path).len() as u64;
+    let contents = if readable && kind == FileKind::Regular && size == expected {
+        let mut bytes = Vec::new();
+        match (&mut file).take(expected + 1).read_to_end(&mut bytes) {
+            Ok(_) => String::from_utf8(bytes).ok(),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    Some(NoauthFile { kind, size, owner_is_user, contents })
 }
 
 /// The name a connection shows in alerts and the Log: "\u{2248}" and the advisory name, or
@@ -398,11 +482,109 @@ mod tests {
         let u = noauth_path("C:\\Users\\J\u{f6}rg");
         assert!(noauth_contents(&u).contains("c3b6"));
         assert_eq!(noauth_status(&p, None), AllowAll::None);
-        assert_eq!(noauth_status(&p, Some(&c)), AllowAll::Valid);
-        assert_eq!(noauth_status(&p, Some(&format!("{c}\n"))), AllowAll::Corrupt);
-        assert_eq!(noauth_status(&p, Some(&format!("{} {NOAUTH_MAGIC}", hex.to_uppercase()))), AllowAll::Corrupt);
-        assert_eq!(noauth_status(&p, Some(&noauth_contents(&u))), AllowAll::Corrupt);
-        assert_eq!(noauth_status(&p, Some("")), AllowAll::Corrupt);
+        assert_eq!(noauth_status(&p, Some(&holding(&c))), AllowAll::Valid);
+        assert_eq!(noauth_status(&p, Some(&holding(&format!("{c}\n")))), AllowAll::Corrupt);
+        assert_eq!(noauth_status(&p, Some(&holding(&format!("{} {NOAUTH_MAGIC}", hex.to_uppercase())))), AllowAll::Corrupt);
+        assert_eq!(noauth_status(&p, Some(&holding(&noauth_contents(&u)))), AllowAll::Corrupt);
+        assert_eq!(noauth_status(&p, Some(&holding(""))), AllowAll::Corrupt);
+    }
+
+    /// A plain file owned by the user, holding `text`.
+    fn holding(text: &str) -> NoauthFile {
+        NoauthFile { kind: FileKind::Regular, size: text.len() as u64, owner_is_user: true, contents: Some(text.to_string()) }
+    }
+
+    #[test]
+    fn allow_all_file_must_be_plain_and_owned() {
+        let p = noauth_path("C:\\Users\\datbi");
+        let good = holding(&noauth_contents(&p));
+        assert_eq!(noauth_status(&p, Some(&good)), AllowAll::Valid);
+        // A symlink, a junction or any other reparse point is never trusted, whatever it points
+        // at (the package's lstat, iTerm2's owner check on the link itself).
+        let link = NoauthFile { kind: FileKind::Link, ..good.clone() };
+        assert_eq!(noauth_status(&p, Some(&link)), AllowAll::None);
+        let dir = NoauthFile { kind: FileKind::Directory, ..good.clone() };
+        assert_eq!(noauth_status(&p, Some(&dir)), AllowAll::None);
+        // Another account's file is not the user's grant.
+        let foreign = NoauthFile { owner_is_user: false, ..good.clone() };
+        assert_eq!(noauth_status(&p, Some(&foreign)), AllowAll::None);
+        // The size must be the magic's, even when the contents read match.
+        let longer = NoauthFile { size: good.size + 1, ..good.clone() };
+        assert_eq!(noauth_status(&p, Some(&longer)), AllowAll::Corrupt);
+        let shorter = NoauthFile { size: good.size - 1, ..good.clone() };
+        assert_eq!(noauth_status(&p, Some(&shorter)), AllowAll::Corrupt);
+        // An existing plain file that cannot be read, or is not UTF-8, is Corrupt (H:420-427).
+        let unreadable = NoauthFile { contents: None, ..good.clone() };
+        assert_eq!(noauth_status(&p, Some(&unreadable)), AllowAll::Corrupt);
+    }
+
+    /// The reader on a real disk: nothing followed, every kind told apart.
+    #[cfg(windows)]
+    #[test]
+    fn allow_all_reader_follows_windows() {
+        let dir = std::env::temp_dir().join(format!("tandem-noauth-{}", fresh_key()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
+
+        assert!(read_noauth_file(&at("missing")).is_none());
+
+        // Owners set with icacls: an elevated process's new files belong to Administrators.
+        let set_owner = |path: &str, who: &str| {
+            let out = std::process::Command::new("icacls").arg(path).arg("/setowner").arg(who).output().unwrap();
+            assert!(out.status.success(), "icacls /setowner {who}");
+        };
+        let me = std::env::var("USERNAME").unwrap();
+
+        let plain = at("plain");
+        std::fs::write(&plain, noauth_contents(&plain)).unwrap();
+        set_owner(&plain, &me);
+        let f = read_noauth_file(&plain).unwrap();
+        assert_eq!(f.kind, FileKind::Regular);
+        assert_eq!(f.size, noauth_contents(&plain).len() as u64);
+        assert!(f.owner_is_user);
+        assert_eq!(f.contents.as_deref(), Some(noauth_contents(&plain).as_str()));
+        assert_eq!(noauth_status(&plain, Some(&f)), AllowAll::Valid);
+
+        // Another owner (Administrators, which only an elevated process may assign).
+        if crate::winpipe::elevated().unwrap() {
+            let admins = at("admins");
+            std::fs::write(&admins, noauth_contents(&admins)).unwrap();
+            set_owner(&admins, "*S-1-5-32-544");
+            let f = read_noauth_file(&admins).unwrap();
+            assert!(!f.owner_is_user);
+            assert_eq!(noauth_status(&admins, Some(&f)), AllowAll::None);
+        }
+
+        // Right size, not UTF-8.
+        let bad = at("bad");
+        std::fs::write(&bad, vec![0xffu8; noauth_contents(&bad).len()]).unwrap();
+        set_owner(&bad, &me);
+        let f = read_noauth_file(&bad).unwrap();
+        assert_eq!(f.contents, None);
+        assert_eq!(noauth_status(&bad, Some(&f)), AllowAll::Corrupt);
+
+        let sub = at("sub");
+        std::fs::create_dir(&sub).unwrap();
+        assert_eq!(read_noauth_file(&sub).unwrap().kind, FileKind::Directory);
+
+        // A junction to the directory, made without privilege.
+        let junction = at("junction");
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&junction).arg(&sub).output().unwrap();
+        assert!(made.status.success());
+        let f = read_noauth_file(&junction).unwrap();
+        assert_eq!(f.kind, FileKind::Link);
+        assert_eq!(noauth_status(&junction, Some(&f)), AllowAll::None);
+
+        // A file symlink to a valid file, where this account may make one.
+        let link = at("link");
+        if std::os::windows::fs::symlink_file(&plain, &link).is_ok() {
+            let f = read_noauth_file(&link).unwrap();
+            assert_eq!(f.kind, FileKind::Link);
+            assert_eq!(noauth_status(&link, Some(&f)), AllowAll::None);
+        }
+
+        let _ = std::fs::remove_dir(&junction);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
