@@ -577,6 +577,8 @@ pub struct App {
     /// Connections to authorize and refusals that arrived while a transaction froze the UI
     /// thread; `api_tick` takes them first.
     api_deferred: VecDeque<crate::api_server::Event>,
+    /// User variables of tabs, windows and the app, and each scope's last observed values.
+    api_vars: crate::api_vars::Store,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -895,6 +897,7 @@ pub fn run() {
         api_subs: Default::default(),
         api_tx: Default::default(),
         api_deferred: VecDeque::new(),
+        api_vars: Default::default(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
@@ -1442,6 +1445,7 @@ impl App {
             } else {
                 let gone = self.tabs.remove(t);
                 self.mru.forget(gone.id);
+                self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
                 self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
             }
         }

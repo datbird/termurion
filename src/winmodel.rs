@@ -5,10 +5,12 @@
 
 use std::collections::BTreeMap;
 
-/// Window numbers: each open window has the lowest number free when it opened.
+/// Window numbers: each open window has the lowest number free when it opened. Each also
+/// has iTerm2's window id, `pty-` and an uppercase UUID (`PseudoTerminal.m:874`).
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
     numbers: BTreeMap<u64, usize>,
+    guids: BTreeMap<u64, String>,
 }
 
 impl Registry {
@@ -16,11 +18,23 @@ impl Registry {
         let used: std::collections::BTreeSet<usize> = self.numbers.values().copied().collect();
         let n = (0..).find(|n| !used.contains(n)).unwrap_or(0);
         self.numbers.insert(id, n);
+        self.guids.entry(id).or_insert_with(|| format!("pty-{}", uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase()));
         n
     }
 
     pub fn close(&mut self, id: u64) {
         self.numbers.remove(&id);
+        self.guids.remove(&id);
+    }
+
+    /// The window's id as the Python API names it.
+    pub fn guid(&self, id: u64) -> Option<&str> {
+        self.guids.get(&id).map(String::as_str)
+    }
+
+    /// The window whose API id is `guid`.
+    pub fn by_guid(&self, guid: &str) -> Option<u64> {
+        self.guids.iter().find(|(_, g)| g.as_str() == guid).map(|(k, _)| *k)
     }
 
     pub fn number(&self, id: u64) -> Option<usize> {
@@ -274,6 +288,25 @@ mod tests {
         assert_eq!(r.number(12), Some(2));
         assert_eq!(r.by_number(0), Some(13));
         assert_eq!(r.order(), vec![13, 11, 12]);
+    }
+
+    #[test]
+    fn window_ids_follow_iterm2() {
+        let mut r = Registry::default();
+        assert_eq!((r.open(5), r.open(6)), (0, 1));
+        let a = r.guid(5).unwrap().to_string();
+        let b = r.guid(6).unwrap().to_string();
+        assert!(a.starts_with("pty-"), "{a}");
+        assert_eq!(a.len(), 40, "pty- and a 36-character UUID: {a}");
+        assert_eq!(a[4..], a[4..].to_uppercase(), "uppercase, as NSUUID spells it");
+        assert_eq!(a.matches('-').count(), 5, "{a}");
+        assert_ne!(a, b, "two windows differ");
+        assert_eq!((r.by_guid(&a), r.by_guid(&b)), (Some(5), Some(6)));
+        r.close(5);
+        assert_eq!((r.guid(5), r.by_guid(&a)), (None, None));
+        assert_eq!((r.number(6), r.guid(6).map(str::to_string)), (Some(1), Some(b)), "numbers and the other id stay");
+        assert_eq!(r.open(7), 0, "numbers are unchanged by ids");
+        assert_eq!(r.by_guid("pty-nope"), None);
     }
 
     #[test]

@@ -197,6 +197,10 @@ pub struct Vars {
     pub tab: std::collections::BTreeMap<&'static str, String>,
     pub window: std::collections::BTreeMap<&'static str, String>,
     pub app: std::collections::BTreeMap<&'static str, String>,
+    /// User variables of the session's tab, window and the app (set through the API).
+    pub tab_user: std::collections::BTreeMap<String, String>,
+    pub window_user: std::collections::BTreeMap<String, String>,
+    pub app_user: std::collections::BTreeMap<String, String>,
 }
 
 /// Whether a name (as `variable` takes it) is one that copies the session's selection to
@@ -206,16 +210,26 @@ pub fn names_selection(name: &str) -> bool {
 }
 
 /// A variable by iTerm2's name in the session scope: bare session names, `user.`,
-/// `tab.`, `tab.window.`, `iterm2.`. Anything else (`session.name` too) is None.
+/// `tab.`, `tab.window.`, `iterm2.`, each scope with its own `user.`. Anything else
+/// (`session.name` too) is None.
 pub fn variable(name: &str, vars: &Vars) -> Option<String> {
     if let Some(n) = name.strip_prefix("user.") {
         return vars.user.get(n).cloned();
     }
+    if let Some(n) = name.strip_prefix("tab.window.user.") {
+        return vars.window_user.get(n).cloned();
+    }
     if let Some(n) = name.strip_prefix("tab.window.") {
         return vars.window.get(n).cloned();
     }
+    if let Some(n) = name.strip_prefix("tab.user.") {
+        return vars.tab_user.get(n).cloned();
+    }
     if let Some(n) = name.strip_prefix("tab.") {
         return vars.tab.get(n).cloned();
+    }
+    if let Some(n) = name.strip_prefix("iterm2.user.") {
+        return vars.app_user.get(n).cloned();
     }
     if let Some(n) = name.strip_prefix("iterm2.") {
         return vars.app.get(n).cloned();
@@ -377,6 +391,24 @@ mod tests {
         assert_eq!(variable("nope", &v), None);
         assert_eq!(variable_reply(Some("zsh")), b"\x1b]1337;ReportVariable=enNo\x07");
         assert_eq!(variable_reply(None), b"\x1b]1337;ReportVariable=\x07");
+    }
+
+    #[test]
+    fn scoped_names_resolve() {
+        let mut v = Vars::default();
+        v.tab.insert("id", "7".into());
+        v.tab_user.insert("a".into(), "1".into());
+        v.window.insert("id", "pty-X".into());
+        v.window.insert("number", "2".into());
+        v.window_user.insert("b".into(), "2".into());
+        v.app_user.insert("c".into(), "3".into());
+        assert_eq!(variable("tab.id", &v).as_deref(), Some("7"));
+        assert_eq!(variable("tab.user.a", &v).as_deref(), Some("1"));
+        assert_eq!(variable("tab.window.id", &v).as_deref(), Some("pty-X"));
+        assert_eq!(variable("tab.window.number", &v).as_deref(), Some("2"));
+        assert_eq!(variable("tab.window.user.b", &v).as_deref(), Some("2"));
+        assert_eq!(variable("iterm2.user.c", &v).as_deref(), Some("3"));
+        assert_eq!(variable("user.a", &v), None, "session user variables stay the session's own");
     }
 
     #[test]

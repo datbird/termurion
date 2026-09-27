@@ -302,22 +302,15 @@ impl App {
     /// since building them copies the whole selection.
     pub(super) fn variables_with(&self, pane: PaneId, selection: bool) -> prompted::Vars {
         let mut v = prompted::Vars::default();
-        let tab_index = self.tabs.iter().position(|t| t.layout.panes().contains(&pane));
         let Some(p) = self.panes.get(&pane) else { return v };
         let s = p.own();
         let title = s.title().unwrap_or("Shell").to_string();
         let grid = s.term().grid();
         use alacritty_terminal::grid::Dimensions;
         v.session.insert("name", title.clone());
-        v.session.insert("presentationName", title.clone());
+        v.session.insert("presentationName", title);
         v.session.insert("id", pane.to_string());
-        if let Some(t) = tab_index {
-            let index = self.tabs[t].layout.panes().iter().position(|x| *x == pane).unwrap_or(0);
-            v.session.insert("termid", format!("w0t{t}p{index}"));
-            v.tab.insert("id", t.to_string());
-            let focused = self.tabs[t].focused;
-            v.tab.insert("title", self.panes.get(&focused).and_then(|f| f.own().title()).unwrap_or("Shell").to_string());
-        }
+        self.scope_variables(pane, &mut v);
         v.session.insert("columns", grid.columns().to_string());
         v.session.insert("rows", grid.screen_lines().to_string());
         v.session.insert("showingAlternateScreen", if s.term().mode().contains(TermMode::ALT_SCREEN) { "1" } else { "0" }.to_string());
@@ -373,11 +366,56 @@ impl App {
         for (k, val) in &s.shell.vars {
             v.user.insert(k.clone(), val.clone());
         }
-        v.window.insert("id", "0".into());
-        v.window.insert("title", title);
         v.app.insert("pid", std::process::id().to_string());
+        v.app.insert("localhostName", local_host_name().to_string());
         v.app.insert("effectiveTheme", if self.dark() { "dark" } else { "light" }.to_string());
+        v.app_user = user_strings(self.api_vars.user(crate::api_vars::Scope::App, ""));
         v
+    }
+
+    /// The tab and window variables of the pane's window (iTerm2's tab and window scopes),
+    /// and the session's `termid`. A buried pane has neither.
+    fn scope_variables(&self, pane: PaneId, v: &mut prompted::Vars) {
+        use crate::api_vars::Scope;
+        let Some(w) = self.pane_window(pane) else { return };
+        let number = self.registry.number(w.key).unwrap_or(0);
+        let guid = self.registry.guid(w.key).unwrap_or_default().to_string();
+        if let Some(t) = w.tabs.iter().position(|t| t.layout.panes().contains(&pane)) {
+            let tab = &w.tabs[t];
+            let index = tab.layout.panes().iter().position(|x| *x == pane).unwrap_or(0);
+            v.session.insert("termid", format!("w{number}t{t}p{index}"));
+            v.tab.insert("id", tab.id.to_string());
+            v.tab.insert("title", self.tmux_tab_label(tab.focused).or_else(|| tab.title.clone()).unwrap_or_else(|| self.session_title(tab.focused)));
+            // A tmux tab's Edit Tab Title text is kept by the gateway (its `title` holds the
+            // tmux window's name).
+            let tmux = self.tmux_window_of(tab.focused);
+            let over = match tmux {
+                Some((gw, win)) => self.tmux.get(&gw).and_then(|g| g.tab_overrides.get(&win)).cloned(),
+                None => tab.title.clone(),
+            };
+            v.tab.insert("titleOverride", over.unwrap_or_default());
+            v.tab.insert("tmuxWindow", tmux.map_or_else(|| "-1".to_string(), |(_, win)| win.to_string()));
+            v.tab.insert("window", guid.clone());
+            v.tab_user = user_strings(self.api_vars.user(Scope::Tab, &tab.id.to_string()));
+        }
+        let title = match w.title {
+            Some(t) => t.to_string(),
+            None => w.front.map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused)),
+        };
+        v.window.insert("id", guid.clone());
+        // iTerm2's window number variable counts from 1 (`PseudoTerminal.m:866`).
+        v.window.insert("number", (number + 1).to_string());
+        v.window.insert("title", title);
+        v.window.insert("titleOverride", w.title.unwrap_or_default().to_string());
+        v.window.insert("isHotkeyWindow", if w.hotkey { "1" } else { "0" }.to_string());
+        v.window_user = user_strings(self.api_vars.user(Scope::Window, &guid));
+    }
+
+    /// The tmux gateway and tmux window id of a tmux pane.
+    fn tmux_window_of(&self, pane: PaneId) -> Option<(PaneId, u32)> {
+        let io = self.panes.get(&pane)?.tmux_io()?;
+        let window = self.tmux.get(&io.gateway)?.panes.get(&io.pane)?.1;
+        Some((io.gateway, window))
     }
 
     /// RequestUpload: pick files, answer, and send the archive.
@@ -459,4 +497,15 @@ impl App {
         self.ask(pane, ASK_ABORT_UPLOAD, "A file is being uploaded. Abort the upload?", &["OK", "Cancel"], true);
         true
     }
+}
+
+/// User variables as text: a string as it is, anything else as its JSON.
+fn user_strings(values: crate::api_vars::Values) -> std::collections::BTreeMap<String, String> {
+    values.into_iter().map(|(k, v)| (k, v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect()
+}
+
+/// This computer's name (iTerm2's `localhostName`, its fully qualified name), read once.
+fn local_host_name() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(super::aps_ui::local_host)
 }

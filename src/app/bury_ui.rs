@@ -43,6 +43,7 @@ impl App {
         } else {
             let gone = self.tabs.remove(t);
             self.mru.forget(gone.id);
+            self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
             self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
         }
         self.buried.bury(Buried { pane: id, window, tab, name });

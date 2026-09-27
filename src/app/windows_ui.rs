@@ -370,7 +370,7 @@ impl App {
     pub(super) fn drop_current_window(&mut self) -> bool {
         let Some(k) = self.windows.current() else { return false };
         self.save_window_frame();
-        self.registry.close(k);
+        self.forget_window(k);
         if let Some(h) = self.hwnd() {
             crate::winkeys::remove_window(h);
         }
@@ -423,6 +423,34 @@ impl App {
     pub(super) fn window_number(&self) -> usize {
         self.windows.current().and_then(|k| self.registry.number(k)).unwrap_or(0)
     }
+
+    /// A window closed: its number and id go, and so do its API variables.
+    fn forget_window(&mut self, k: u64) {
+        if let Some(g) = self.registry.guid(k) {
+            self.api_vars.forget(crate::api_vars::Scope::Window, g);
+        }
+        self.registry.close(k);
+    }
+
+    /// The window that shows `pane`, the current one or a parked one.
+    pub(super) fn pane_window(&self, pane: PaneId) -> Option<PaneWindow<'_>> {
+        let holds = |tabs: &[Tab]| tabs.iter().any(|t| t.layout.panes().contains(&pane));
+        if holds(&self.tabs) {
+            let key = self.windows.current()?;
+            return Some(PaneWindow { key, tabs: &self.tabs, front: self.tabs.get(self.active), title: self.win_title.as_deref(), hotkey: self.hotkey.is_some() });
+        }
+        self.windows.parked().find(|(_, s)| holds(&s.tabs)).map(|(k, s)| PaneWindow { key: *k, tabs: &s.tabs, front: s.active_tab(), title: s.win_title.as_deref(), hotkey: s.hotkey.is_some() })
+    }
+}
+
+/// What the variables need of a window: its registry key, its tabs and the one in front,
+/// its Edit Window Title text, and whether it is a hotkey window.
+pub(super) struct PaneWindow<'a> {
+    pub(super) key: u64,
+    pub(super) tabs: &'a [Tab],
+    pub(super) front: Option<&'a Tab>,
+    pub(super) title: Option<&'a str>,
+    pub(super) hotkey: bool,
 }
 
 impl WinSlot {
@@ -713,7 +741,7 @@ impl App {
             if let Some((guid, n)) = slot.win_slot.take() {
                 self.slots.give(&guid, n);
             }
-            self.registry.close(other);
+            self.forget_window(other);
             if let Some(g) = &slot.gpu {
                 if let Ok(RawWindowHandle::Win32(h)) = g.window.window_handle().map(|h| h.as_raw()) {
                     crate::winkeys::remove_window(h.hwnd.get());
