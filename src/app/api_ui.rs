@@ -10,6 +10,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
+use super::api_requests::Answer;
 use super::App;
 use crate::api_auth::{self, AllowAll, AllowAllStep, AskAnswer, LogEntry, Verdict};
 use crate::api_dispatch::{Route, Subscriptions, Transactions, Tx};
@@ -33,13 +34,6 @@ pub fn start_failed_text(error: &str, owner: Option<&str>) -> String {
         Some(o) => format!("The Python API could not start: {error}\n\nPort {} is in use by {o}.", crate::api_http::PORT),
         None => format!("The Python API could not start: {error}"),
     }
-}
-
-/// A request's answer: sent now, or later by whatever finishes it (11b's tmux replies).
-pub(super) enum Answer {
-    Now(pb::ServerOriginatedMessage),
-    #[allow(dead_code)]
-    Later,
 }
 
 /// Requests waiting to be offered to the transaction logic, in order.
@@ -633,11 +627,17 @@ impl App {
         self.api_tx.closed(conn).into()
     }
 
-    /// The app's answer to ListSessions, Focus and GetBroadcastDomains, from a snapshot taken
-    /// for the request.
-    pub(super) fn api_answer(&mut self, _conn: u64, req: &pb::ClientOriginatedMessage, _event_loop: &ActiveEventLoop) -> Answer {
-        let model = self.api_model(true);
-        answer_from(req, &model)
+    /// The app's answer to a request `route` gave it: ListSessions, Focus and
+    /// GetBroadcastDomains from a snapshot taken for the request, the rest from `api_request`.
+    pub(super) fn api_answer(&mut self, conn: u64, req: &pb::ClientOriginatedMessage, event_loop: &ActiveEventLoop) -> Answer {
+        use pb::client_originated_message::Submessage as Req;
+        match &req.submessage {
+            Some(Req::ListSessionsRequest(_) | Req::FocusRequest(_) | Req::GetBroadcastDomainsRequest(_)) => {
+                let model = self.api_model(true);
+                answer_from(req, &model)
+            }
+            _ => self.api_request(conn, req, event_loop),
+        }
     }
 
     /// Sends a message to a connection.

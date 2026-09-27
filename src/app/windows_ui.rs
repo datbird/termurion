@@ -398,12 +398,28 @@ impl App {
         if !self.enter(id) || !self.confirm_close(close_ui::Closing::Window) || self.tmux_close_window() {
             return;
         }
+        self.close_window_now(event_loop);
+    }
+
+    /// Closes the current window's sessions as one undoable close, asking nothing.
+    pub(super) fn close_window_now(&mut self, event_loop: &ActiveEventLoop) {
         let focused = self.focused_id();
         self.replay_event(crate::replay::ReplayEvent::WindowClosed, focused, event_loop);
         let panes: Vec<PaneId> = self.tabs.iter().flat_map(|t| t.layout.panes()).collect();
         self.begin_undo(crate::undo_close::Kind::Window, &panes);
         for p in panes {
             self.close_pane(p, event_loop);
+        }
+        self.end_undo();
+    }
+
+    /// Closes the current window's tab `index` and its sessions as one undoable close, asking
+    /// nothing.
+    pub(super) fn close_tab_now(&mut self, index: usize, event_loop: &ActiveEventLoop) {
+        let Some(panes) = self.tabs.get(index).map(|t| t.layout.panes()) else { return };
+        self.begin_undo(crate::undo_close::Kind::Tab, &panes);
+        for id in panes {
+            self.close_pane(id, event_loop);
         }
         self.end_undo();
     }
@@ -1068,6 +1084,14 @@ impl App {
 }
 
 impl App {
+    /// A window's tabs and the index of its selected tab, current or parked.
+    pub(super) fn window_tabs(&self, k: u64) -> Option<(&[Tab], usize)> {
+        if self.windows.current() == Some(k) {
+            return Some((&self.tabs, self.active));
+        }
+        self.windows.parked().find(|(kk, _)| **kk == k).map(|(_, s)| (&s.tabs[..], s.active))
+    }
+
     /// Every window's tabs, by window number: (window number, tab index, the tab's panes).
     pub(super) fn all_tab_panes(&self) -> Vec<(usize, usize, Vec<PaneId>)> {
         let mut out = Vec::new();

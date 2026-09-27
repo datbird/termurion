@@ -172,10 +172,11 @@ pub enum Route {
 }
 
 /// Routes a request outside of the transaction logic: NotificationRequests of the five handled
-/// types are answered from `subs`; ListSessions, Focus and GetBroadcastDomains go to the app;
-/// a TransactionRequest reaching dispatch (a begin inside a transaction) answers
-/// ALREADY_IN_TRANSACTION (`S:732-737`); everything else, an empty oneof included, answers
-/// iTerm2's malformed error (`S:1040-1044`) until a later milestone handles it.
+/// types are answered from `subs`; ListSessions, Focus, GetBroadcastDomains and every request
+/// of milestone 11b go to the app; a TransactionRequest reaching dispatch (a begin inside a
+/// transaction) answers ALREADY_IN_TRANSACTION (`S:732-737`); everything else (tools, status
+/// bar components, function calls, an empty oneof) answers iTerm2's malformed error
+/// (`S:1040-1044`) until a later milestone handles it.
 pub fn route(subs: &mut Subscriptions, conn: u64, req: pb::ClientOriginatedMessage) -> Route {
     match &req.submessage {
         Some(Req::NotificationRequest(r)) => match subs.request(conn, r) {
@@ -186,7 +187,37 @@ pub fn route(subs: &mut Subscriptions, conn: u64, req: pb::ClientOriginatedMessa
             }
             None => Route::Reply(api_proto::malformed(&req)),
         },
-        Some(Req::ListSessionsRequest(_) | Req::FocusRequest(_) | Req::GetBroadcastDomainsRequest(_)) => Route::App(req),
+        Some(
+            Req::ListSessionsRequest(_)
+            | Req::FocusRequest(_)
+            | Req::GetBroadcastDomainsRequest(_)
+            | Req::SendTextRequest(_)
+            | Req::CreateTabRequest(_)
+            | Req::GetBufferRequest(_)
+            | Req::GetPromptRequest(_)
+            | Req::SetProfilePropertyRequest(_)
+            | Req::SplitPaneRequest(_)
+            | Req::GetProfilePropertyRequest(_)
+            | Req::SetPropertyRequest(_)
+            | Req::GetPropertyRequest(_)
+            | Req::InjectRequest(_)
+            | Req::ActivateRequest(_)
+            | Req::VariableRequest(_)
+            | Req::SavedArrangementRequest(_)
+            | Req::ListProfilesRequest(_)
+            | Req::RestartSessionRequest(_)
+            | Req::MenuItemRequest(_)
+            | Req::SetTabLayoutRequest(_)
+            | Req::TmuxRequest(_)
+            | Req::ReorderTabsRequest(_)
+            | Req::PreferencesRequest(_)
+            | Req::ColorPresetRequest(_)
+            | Req::SelectionRequest(_)
+            | Req::SetBroadcastDomainsRequest(_)
+            | Req::CloseRequest(_)
+            | Req::ListPromptsRequest(_)
+            | Req::ScreenshotRequest(_),
+        ) => Route::App(req),
         Some(Req::TransactionRequest(_)) => Route::Reply(transaction_reply(&req, pb::transaction_response::Status::AlreadyInTransaction)),
         _ => Route::Reply(api_proto::malformed(&req)),
     }
@@ -379,8 +410,49 @@ mod tests {
         assert!(matches!(route(&mut s, 1, list(4)), Route::App(r) if r.id == Some(4)));
         assert!(matches!(route(&mut s, 1, msg(5, Req::FocusRequest(pb::FocusRequest {}))), Route::App(r) if r.id == Some(5)));
         assert!(matches!(route(&mut s, 1, msg(6, Req::GetBroadcastDomainsRequest(pb::GetBroadcastDomainsRequest {}))), Route::App(r) if r.id == Some(6)));
-        // An 11b request answers malformed for now.
-        let r = route(&mut s, 1, msg(7, Req::SendTextRequest(pb::SendTextRequest { session: Some("1".into()), text: Some("ls".into()), suppress_broadcast: None })));
-        assert!(is_malformed(&r, 7));
+        // Every 11b request goes to the app.
+        let app = [
+            Req::SendTextRequest(pb::SendTextRequest { session: Some("1".into()), text: Some("ls".into()), suppress_broadcast: None }),
+            Req::CreateTabRequest(Default::default()),
+            Req::GetBufferRequest(Default::default()),
+            Req::GetPromptRequest(Default::default()),
+            Req::SetProfilePropertyRequest(Default::default()),
+            Req::SplitPaneRequest(Default::default()),
+            Req::GetProfilePropertyRequest(Default::default()),
+            Req::SetPropertyRequest(Default::default()),
+            Req::GetPropertyRequest(Default::default()),
+            Req::InjectRequest(Default::default()),
+            Req::ActivateRequest(Default::default()),
+            Req::VariableRequest(Default::default()),
+            Req::SavedArrangementRequest(Default::default()),
+            Req::ListProfilesRequest(Default::default()),
+            Req::RestartSessionRequest(Default::default()),
+            Req::MenuItemRequest(Default::default()),
+            Req::SetTabLayoutRequest(Default::default()),
+            Req::TmuxRequest(Default::default()),
+            Req::ReorderTabsRequest(Default::default()),
+            Req::PreferencesRequest(Default::default()),
+            Req::ColorPresetRequest(Default::default()),
+            Req::SelectionRequest(Default::default()),
+            Req::SetBroadcastDomainsRequest(Default::default()),
+            Req::CloseRequest(Default::default()),
+            Req::ListPromptsRequest(Default::default()),
+            Req::ScreenshotRequest(Default::default()),
+        ];
+        for (i, sub) in app.into_iter().enumerate() {
+            let id = 100 + i as i64;
+            assert!(matches!(route(&mut s, 1, msg(id, sub)), Route::App(r) if r.id == Some(id)), "request {i}");
+        }
+        // Later milestones' requests still answer malformed.
+        let later = [
+            Req::RegisterToolRequest(Default::default()),
+            Req::ServerOriginatedRpcResultRequest(Default::default()),
+            Req::StatusBarComponentRequest(Default::default()),
+            Req::InvokeFunctionRequest(Default::default()),
+        ];
+        for (i, sub) in later.into_iter().enumerate() {
+            let id = 200 + i as i64;
+            assert!(is_malformed(&route(&mut s, 1, msg(id, sub)), id), "request {i}");
+        }
     }
 }

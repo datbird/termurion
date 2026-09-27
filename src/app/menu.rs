@@ -497,13 +497,8 @@ impl App {
             }
             "closeCurrentTab:" if self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) && self.tmux_close_tab(self.active) => {}
             "closeCurrentTab:" => {
-                if let Some(t) = self.tabs.get(self.active).filter(|_| self.layout_allowed(crate::winmodel::LayoutOp::CloseTab)).filter(|_| self.confirm_close(close_ui::Closing::Tab(self.active))) {
-                    let panes = t.layout.panes();
-                    self.begin_undo(crate::undo_close::Kind::Tab, &panes);
-                    for id in panes {
-                        self.close_pane(id, event_loop);
-                    }
-                    self.end_undo();
+                if self.tabs.get(self.active).is_some() && self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) && self.confirm_close(close_ui::Closing::Tab(self.active)) {
+                    self.close_tab_now(self.active, event_loop);
                 }
             }
             "undoCloseSession:" => self.undo_close(),

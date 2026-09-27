@@ -109,6 +109,7 @@ mod open_quickly_app;
 mod replay_ui;
 mod pwm_app;
 mod api_ui;
+mod api_requests;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
