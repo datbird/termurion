@@ -493,6 +493,48 @@ pub fn template_failed_text(template: &str, reason: &str) -> String {
     format!("Invocation of \u{201c}{template}\u{201d} failed with error:\n{reason}\n")
 }
 
+/// What a title shows while its Title Function names no registered provider, or when the
+/// provider's script is gone (`SNC:122-126`, `SNC:226`).
+pub const TITLE_UNREGISTERED: &str = "\u{2026}";
+/// What a failed evaluation shows (the status bar's too, `SNC:226`).
+pub const LADYBUG: &str = "\u{1F41E}";
+
+/// iTerm2's `whitespaceCharacterSet`: tab and the space separators (no line breaks).
+fn is_title_space(c: char) -> bool {
+    matches!(c, '\t' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}')
+}
+
+/// A title provider's result as the title (`SNC:215-228`): the value's text trimmed of
+/// spaces and tabs, blank as one space; an unregistered function's failure the ellipsis,
+/// any other failure the ladybug.
+pub fn provider_title(r: &Result<Value, Failure>) -> String {
+    match r {
+        Ok(v) => {
+            let text = expr::to_text(v);
+            let t = text.trim_matches(is_title_space);
+            if t.is_empty() { " ".to_string() } else { t.to_string() }
+        }
+        Err(f) if f.kind == FailKind::Unregistered => TITLE_UNREGISTERED.to_string(),
+        Err(_) => LADYBUG.to_string(),
+    }
+}
+
+/// A failed title evaluation, in the failing connection's log (`SNC:192-199`), with the
+/// script's traceback when it gave one.
+pub fn title_failed_text(invocation: &str, reason: &str, detail: Option<&str>) -> String {
+    let mut s = format!("Invoked \u{201c}{invocation}\u{201d} to compute name for session. Failed with error:\n{reason}\n");
+    if let Some(d) = detail {
+        s.push_str(&format!("{d}\n"));
+    }
+    s
+}
+
+/// An unregistered title provider, in the log of the connection that registered the
+/// invocation's signature, if any (`SNC:206-208`).
+pub fn title_unregistered_text(invocation: &str) -> String {
+    format!("Could not make a function call into a script. Either its unique identifier changed (in which case you should update your settings in Settings > Profiles > General > Title) or the script is not running. The failed invocation was:\n{invocation}")
+}
+
 /// A frame of temporary values (a trigger's, a component's `__knobs`) over a scope.
 pub struct Layered<'a> {
     pub frame: &'a Values,
@@ -1038,6 +1080,29 @@ mod tests {
         assert_eq!(expr::Scope::value(&l, "columns"), Some(json!(1)));
         assert_eq!(expr::Scope::value(&l, "user.x"), Some(json!("hi")));
         assert_eq!(expr::Scope::value(&l, "__knobs"), Some(json!("{}")));
+    }
+
+    /// A title provider's result (`SNC:215-228`): trimmed of spaces and tabs, blank as one
+    /// space, a value's text; an unregistered failure the ellipsis, any other the ladybug.
+    /// The console texts (`SNC:192-212`).
+    #[test]
+    fn title_providers_follow_iterm2() {
+        assert_eq!(provider_title(&Ok(json!("  hi  "))), "hi");
+        assert_eq!(provider_title(&Ok(json!(""))), " ");
+        assert_eq!(provider_title(&Ok(json!(3))), "3");
+        assert_eq!(provider_title(&Ok(Value::Null)), " ", "a synchronous pass answers nothing");
+        assert_eq!(provider_title(&Ok(json!("\ta b\u{3000}"))), "a b");
+        assert_eq!(provider_title(&Ok(json!("\nx\n"))), "\nx\n", "newlines are not in the whitespace set");
+        let unregistered = Failure { reason: "no".into(), detail: None, kind: FailKind::Unregistered, conn: None };
+        assert_eq!(provider_title(&Err(unregistered)), "\u{2026}");
+        assert_eq!(provider_title(&Err(Failure::plain("boom"))), "\u{1F41E}");
+        assert_eq!(TITLE_UNREGISTERED, "\u{2026}");
+        assert_eq!(title_failed_text("title.x.f()", "boom", None), "Invoked \u{201c}title.x.f()\u{201d} to compute name for session. Failed with error:\nboom\n");
+        assert_eq!(title_failed_text("title.x.f()", "boom", Some("tb")), "Invoked \u{201c}title.x.f()\u{201d} to compute name for session. Failed with error:\nboom\ntb\n");
+        assert_eq!(
+            title_unregistered_text("title.x.f()"),
+            "Could not make a function call into a script. Either its unique identifier changed (in which case you should update your settings in Settings > Profiles > General > Title) or the script is not running. The failed invocation was:\ntitle.x.f()"
+        );
     }
 
     /// A status bar string's value (`iTermGenericEvaluator.m`): a finished evaluation its

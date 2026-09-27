@@ -47,9 +47,9 @@ pub(super) enum Origin {
     },
     Report(String),
     OpenQuickly,
-    // Constructed by the callers of Tasks 8 and 9.
-    #[allow(dead_code)]
-    Title(PaneId),
+    /// A session title provider's evaluation: the session and the evaluation's number there
+    /// (`script_titles`).
+    Title { pane: PaneId, nth: u64 },
     /// A script status bar component's evaluation: its entry (`script_components`), the
     /// evaluation's number there, and the registration it ran (for the failure text).
     Component { pane: PaneId, id: String, nth: u64, reg: Box<pb::RpcRegistrationRequest> },
@@ -115,6 +115,79 @@ impl Template {
         changed
     }
 }
+
+/// A session's title from a script's title provider (`SNC:98-228`): the provider's unique id
+/// it evaluates, the value shown (a result as `provider_title` makes it; empty before the
+/// first), the newest evaluation running, the dependencies it last started with (the
+/// invocation and the values of the paths it names; empty: never started), the registry
+/// generation it last saw, and the newest evaluation whose value was applied (older ones
+/// finishing later are dropped, `_appliedCount`).
+#[derive(Clone, Debug, Default)]
+pub(super) struct TitleState {
+    pub unique_id: String,
+    pub value: String,
+    pub running: Option<u64>,
+    pub deps: String,
+    pub generation: u64,
+    pub applied: u64,
+}
+
+/// Whether a title evaluation starts now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TitleStart {
+    /// A synchronous pass first (it records the references and shows a script call's value as
+    /// blank), then the asynchronous one (`setNeedsUpdate`, `updateIfNeeded` with no cached
+    /// value): the first time and when the Title Function names another provider.
+    Fresh,
+    /// The asynchronous one alone (`setNeedsReevaluation`): a dependency changed or the
+    /// registered functions did (`didRegisterSessionTitleFunc:`).
+    Again,
+}
+
+impl TitleState {
+    /// Whether an evaluation starts now for `unique_id` with these dependencies at this
+    /// registry generation. A fresh start forgets the old value's evaluations.
+    fn needs_start(&mut self, unique_id: &str, deps: &str, generation: u64) -> Option<TitleStart> {
+        if self.deps.is_empty() || self.unique_id != unique_id {
+            let applied = self.applied;
+            *self = TitleState { unique_id: unique_id.to_string(), value: std::mem::take(&mut self.value), deps: deps.to_string(), generation, applied, running: None };
+            return Some(TitleStart::Fresh);
+        }
+        if self.deps != deps || self.generation != generation {
+            self.deps = deps.to_string();
+            self.generation = generation;
+            return Some(TitleStart::Again);
+        }
+        None
+    }
+
+    /// An evaluation starts: the newest running one; a fresh start's first evaluation is the
+    /// floor older results cannot pass.
+    fn start(&mut self, nth: u64, fresh: bool) {
+        self.running = Some(nth);
+        if fresh {
+            self.applied = nth;
+        }
+    }
+
+    /// An evaluation finished with the title `value`: dropped when a newer one's value was
+    /// applied. True when the title changed.
+    fn finish(&mut self, nth: u64, value: String) -> bool {
+        if nth < self.applied {
+            return false;
+        }
+        self.applied = nth;
+        if self.running == Some(nth) {
+            self.running = None;
+        }
+        let changed = self.value != value;
+        self.value = value;
+        changed
+    }
+}
+
+/// A title provider's evaluation times out after 30 s (`SNC:128`).
+const TITLE_TIMEOUT_SECS: f64 = 30.0;
 
 /// Drops `pane`'s entries not stamped with `pass`: its bar's layout no longer asks for them.
 fn sweep<T>(map: &mut HashMap<(PaneId, String), T>, pane: PaneId, pass: u64, pass_of: impl Fn(&T) -> u64) {
@@ -611,8 +684,9 @@ impl App {
                     self.script_log(f.conn, script_statusbar::onclick_error(&f.reason, f.detail.as_deref().unwrap_or_default()));
                 }
             }
-            // The callers of Tasks 8 and 9 take their results there.
-            Origin::Title(_) | Origin::Quiet => {}
+            Origin::Title { pane, nth } => self.title_finished(*pane, *nth, invocation, r),
+            // The callers of Task 9 take their results there.
+            Origin::Quiet => {}
         }
     }
 
@@ -795,6 +869,78 @@ impl App {
             self.redraw_all();
         }
         self.script_components.values().filter_map(|c| c.due).min()
+    }
+
+    /// The registered title providers as the settings window's Title Function popup lists
+    /// them: (display name, unique id).
+    pub(super) fn title_provider_items(&self) -> Vec<(String, String)> {
+        self.api_fns.title_providers().into_iter().map(|p| (p.display_name, p.unique_id)).collect()
+    }
+
+    /// Once per loop pass: each session whose Title Components is exactly Custom with a
+    /// Title Function naming a registered provider evaluates the provider's invocation when
+    /// `TitleState::needs_start` says so, in its scope, side effects off, with a 30 s timeout
+    /// (`SNC:98-170`); the others' entries go. The settings window's popup follows the
+    /// providers.
+    pub(super) fn tick_script_titles(&mut self) {
+        let providers = self.api_fns.title_providers();
+        if let Some(s) = self.settings.as_mut() {
+            let items: Vec<(String, String)> = providers.iter().map(|p| (p.display_name.clone(), p.unique_id.clone())).collect();
+            if s.title_providers != items {
+                s.title_providers = items;
+            }
+        }
+        let generation = self.api_fns.generation();
+        let panes: Vec<PaneId> = self.panes.keys().copied().collect();
+        for pane in panes {
+            let Some(Some(id)) = self.title_provider_id(pane) else {
+                self.script_titles.remove(&pane);
+                continue;
+            };
+            // No registered provider: the title shows the ellipsis (`session_title`); the
+            // entry waits for a registration.
+            let Some(provider) = providers.iter().find(|p| p.unique_id == id) else { continue };
+            let paths = script_statusbar::invocation_paths(&provider.invocation);
+            let selection = paths.iter().any(|p| crate::prompted::names_selection(p));
+            let values = self.session_values(pane, selection).unwrap_or_default();
+            let deps = format!("{}\n{}", provider.invocation, script_eval::deps_key(&paths, &values));
+            let Some(start) = self.script_titles.entry(pane).or_default().needs_start(&id, &deps, generation) else { continue };
+            if start == TitleStart::Fresh {
+                self.start_title(pane, &provider.invocation, Timeout::Sync, true);
+            }
+            self.start_title(pane, &provider.invocation, Timeout::from_secs(TITLE_TIMEOUT_SECS), false);
+        }
+    }
+
+    /// Starts one evaluation of a session's title provider, recorded as its entry's running
+    /// one.
+    fn start_title(&mut self, pane: PaneId, invocation: &str, timeout: Timeout, fresh: bool) {
+        let nth = self.script_next;
+        self.script_next += 1;
+        if let Some(t) = self.script_titles.get_mut(&pane) {
+            t.start(nth, fresh);
+        }
+        self.invoke(invocation, ScopeSpec::Session { pane, frame: Values::new() }, timeout, false, Origin::Title { pane, nth });
+    }
+
+    /// A title provider's evaluation finished (`SNC:131-146`, `SNC:188-228`): a failure is
+    /// logged to the failing connection ("Invoked ... to compute name for session") and to
+    /// the connection that registered the invocation's signature (the unregistered
+    /// explanation, else the reason); the entry takes the title (unless a newer evaluation's
+    /// came first) and the windows redraw when it changed. An entry gone takes nothing.
+    fn title_finished(&mut self, pane: PaneId, nth: u64, invocation: &str, r: Result<Value, Failure>) {
+        if let Err(f) = &r {
+            self.script_log(f.conn, script_eval::title_failed_text(invocation, &f.reason, f.detail.as_deref()));
+            let owner = expr::parse_calls(invocation).ok().and_then(|c| c.first().map(|c| self.api_fns.owner(&c.signature()))).flatten();
+            let text = if f.kind == FailKind::Unregistered { script_eval::title_unregistered_text(invocation) } else { f.reason.clone() };
+            self.script_log(owner, text);
+        }
+        let value = script_eval::provider_title(&r);
+        let Some(t) = self.script_titles.get_mut(&pane) else { return };
+        if t.finish(nth, value) {
+            self.redraw();
+            self.redraw_all();
+        }
     }
 
     /// Starts one evaluation of a status bar string, recorded as its entry's running one.
@@ -1141,6 +1287,38 @@ mod tests {
         assert!(c.texts.is_none());
         assert_eq!(script_statusbar::ERROR_HEADING, Alert::Component("x".into()).form().0);
         assert_eq!(CLICK_TIMEOUT_SECS, 30.0);
+    }
+
+    /// A title provider's entry (`SNC:98-170`, `SNC:419-455`): the first evaluation and one
+    /// for another unique id are a synchronous pass then an asynchronous one; a dependency or
+    /// a registration change the asynchronous one alone; an older result after a newer one
+    /// was applied is dropped, and results from before a fresh start never show.
+    #[test]
+    fn title_cache_follows_iterm2() {
+        let mut t = TitleState::default();
+        assert_eq!(t.needs_start("com.a", "d", 0), Some(TitleStart::Fresh));
+        t.start(1, true);
+        assert!(t.finish(1, " ".into()), "the synchronous pass shows a blank");
+        t.start(2, false);
+        assert_eq!(t.needs_start("com.a", "d", 0), None);
+        assert!(t.finish(2, "hi".into()));
+        assert_eq!((t.value.as_str(), t.running), ("hi", None));
+        assert_eq!(t.needs_start("com.a", "e", 0), Some(TitleStart::Again), "a dependency changed");
+        assert_eq!(t.needs_start("com.a", "e", 1), Some(TitleStart::Again), "the registrations changed");
+        assert_eq!(t.needs_start("com.a", "e", 1), None);
+        // Start 3 and 4; 4 finishes; 3 finishing later is dropped.
+        t.start(3, false);
+        t.start(4, false);
+        assert!(t.finish(4, "four".into()));
+        assert!(!t.finish(3, "three".into()));
+        // Another provider: a fresh start whose pass is the floor.
+        t.start(5, false);
+        assert_eq!(t.needs_start("com.b", "e", 1), Some(TitleStart::Fresh));
+        assert_eq!(t.unique_id, "com.b");
+        t.start(6, true);
+        assert!(!t.finish(5, "old provider".into()), "a result from before the fresh start");
+        assert!(t.finish(6, " ".into()));
+        assert_eq!(TITLE_TIMEOUT_SECS, 30.0);
     }
 
     /// Review finding 1: an Invoke Script Function trigger whose function is not registered

@@ -6,6 +6,8 @@ pub const SESSION_NAME: u32 = 1;
 pub const JOB: u32 = 1 << 1;
 pub const PWD: u32 = 1 << 2;
 pub const TTY: u32 = 1 << 3;
+/// Custom: the title comes from the profile's Title Function, a script's title provider.
+pub const CUSTOM: u32 = 1 << 4;
 pub const PROFILE_NAME: u32 = 1 << 5;
 pub const PROFILE_AND_SESSION: u32 = 1 << 6;
 pub const USER: u32 = 1 << 7;
@@ -47,15 +49,34 @@ fn pretty_path(path: &str, home: &str) -> String {
     path.to_string()
 }
 
+/// The profile's Title Function (`PS:22680-22692`, `iTermTuple fromPlistValue:`): the
+/// display name and the unique id of its title provider, when the array has both. Tandem
+/// writes `[display name, unique id]`; an imported iTerm2 profile has each element as
+/// `{value = ...}` (`iTermTuple plistValue`).
+pub fn title_function(v: Option<&toml::Value>) -> Option<(String, String)> {
+    let a = v?.as_array()?;
+    let item = |i: usize| match a.get(i)? {
+        toml::Value::String(s) => Some(s.clone()),
+        toml::Value::Table(t) => t.get("value")?.as_str().map(str::to_string),
+        _ => None,
+    };
+    Some((item(0)?, item(1)?))
+}
+
 /// The title for `components` (the profile's Title Components bits).
 pub fn title(components: u32, p: &TitleParts) -> String {
     let explicit = p.explicit.as_deref().filter(|e| !e.is_empty());
     if components == 0 {
         return explicit.unwrap_or("Shell").to_string();
     }
-    // A name set by a program or trigger turns on the temporary name, unless a name
-    // component already shows it (enableSessionNameTitleComponentIfPossible).
-    let c = if explicit.is_some() && components & (SESSION_NAME | PROFILE_AND_SESSION | TEMPORARY_NAME) == 0 { components | TEMPORARY_NAME } else { components };
+    // Custom alone has nothing built in to show (`iTermSessionTitleBuiltInFunction.m:274-277`).
+    if components == CUSTOM {
+        return String::new();
+    }
+    // A name set by a program or trigger turns on the temporary name, unless Custom is on or
+    // a name component already shows it (enableSessionNameTitleComponentIfPossible,
+    // `PS:16090-16107`).
+    let c = if explicit.is_some() && components & (CUSTOM | SESSION_NAME | PROFILE_AND_SESSION | TEMPORARY_NAME) == 0 { components | TEMPORARY_NAME } else { components };
     // A tmux pane's title is its session name (iTerm2's tmuxPaneTitle).
     let session = if p.tmux_pane_title.is_empty() { explicit.unwrap_or(&p.profile) } else { p.tmux_pane_title.as_str() };
     let mut out = String::new();
@@ -138,6 +159,22 @@ mod tests {
         assert_eq!(title(USER, &TitleParts { user: String::new(), ..parts() }), " ", "nothing to show: one space");
         assert_eq!(title(0, &p), "Shell");
         assert_eq!(title(0, &TitleParts { explicit: Some("t".into()), ..parts() }), "t");
+    }
+
+    /// `PS:22680-22692` reads the Title Function as a two-element array; `title` gives ""
+    /// for Custom alone (`iTermSessionTitleBuiltInFunction.m:274-277`).
+    #[test]
+    fn title_function_follows_iterm2() {
+        let arr = |items: &[&str]| toml::Value::Array(items.iter().map(|s| toml::Value::String(s.to_string())).collect());
+        assert_eq!(title_function(Some(&arr(&["Hello", "com.ex.t"]))), Some(("Hello".to_string(), "com.ex.t".to_string())));
+        assert_eq!(title_function(Some(&arr(&["Hello"]))), None, "one element");
+        assert_eq!(title_function(None), None);
+        assert_eq!(title_function(Some(&toml::Value::String("Hello".into()))), None, "not an array");
+        // iTerm2's own plist form (`iTermTuple plistValue`), as an imported profile has it.
+        let table = |v: &str| toml::Value::Table(toml::Table::from_iter([("value".to_string(), toml::Value::String(v.into()))]));
+        assert_eq!(title_function(Some(&toml::Value::Array(vec![table("Hello"), table("com.ex.t")]))), Some(("Hello".to_string(), "com.ex.t".to_string())));
+        assert_eq!(title(CUSTOM, &parts()), "");
+        assert_eq!(title(CUSTOM, &TitleParts { explicit: Some("t".into()), ..parts() }), "", "a program's title does not turn on the temporary name");
     }
 
     #[test]

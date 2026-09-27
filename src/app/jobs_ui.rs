@@ -30,8 +30,27 @@ impl App {
         self.redraw();
     }
 
-    /// A session's title from its profile's Title Components.
+    /// The Title Function's unique id when the session's Title Components is exactly Custom
+    /// (`PS:22680-22692`): None when it is not Custom, Some(None) with no Title Function.
+    pub(super) fn title_provider_id(&self, pane: PaneId) -> Option<Option<String>> {
+        let profile = self.store.get(&self.panes.get(&pane)?.profile)?;
+        (profile.int("Title Components") == i64::from(jobtitle::CUSTOM)).then(|| jobtitle::title_function(profile.get("Title Function").as_ref()).map(|(_, id)| id))
+    }
+
+    /// A session's title from its profile's Title Components; with Custom alone, its title
+    /// provider's (`SNC:98-170`): "" with no Title Function, the ellipsis while no registered
+    /// provider has its unique id, else the provider's last value (`script_titles`).
     pub(super) fn session_title(&self, pane: PaneId) -> String {
+        match self.title_provider_id(pane) {
+            Some(None) => return String::new(),
+            Some(Some(id)) => {
+                if !self.api_fns.title_providers().iter().any(|p| p.unique_id == id) {
+                    return crate::script_eval::TITLE_UNREGISTERED.to_string();
+                }
+                return self.script_titles.get(&pane).filter(|t| t.unique_id == id).map(|t| t.value.clone()).unwrap_or_default();
+            }
+            None => {}
+        }
         let Some(p) = self.panes.get(&pane) else { return "Shell".into() };
         let s = p.own();
         let profile = self.store.get(&p.profile);

@@ -636,6 +636,10 @@ pub struct App {
     /// Script status bar components by session and unique id: what they show and their
     /// evaluations (app-wide; a pane's entries go with the pane).
     script_components: HashMap<(PaneId, String), script_ui::Component>,
+    /// Session titles from a script's title provider (Title Components Custom with a Title
+    /// Function), by session: the value shown and its evaluations (app-wide; a pane's entry
+    /// goes with the pane).
+    script_titles: HashMap<PaneId, script_ui::TitleState>,
     /// Script component configurations parsed, by their saved registration's text (emptied
     /// whenever the registrations change).
     script_parsed: HashMap<String, std::rc::Rc<script_ui::Parsed>>,
@@ -998,6 +1002,7 @@ pub fn run() {
         unread_session_counts: HashMap::new(),
         script_components: HashMap::new(),
         script_parsed: HashMap::new(),
+        script_titles: HashMap::new(),
         text_popover: None,
         script_dialogs: VecDeque::new(),
         script_dialog: None,
@@ -1131,6 +1136,7 @@ impl App {
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
+        self.script_titles.remove(&id);
     }
 
     /// A cookie that will never be used takes itself out of the jar.
@@ -1298,6 +1304,7 @@ impl App {
             Ok(mut s) => {
                 // Hotkeys that failed to register show in the sheet.
                 s.hotkeys.errors = self.hotkey_errors.clone();
+                s.title_providers = self.title_provider_items();
                 match mode {
                     Mode::Settings => self.settings = Some(s),
                     Mode::Profiles => self.profiles_win = Some(s),
@@ -2771,6 +2778,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.api_tick(event_loop);
         self.api_notify_tick();
         self.open_api_alerts(event_loop);
+        self.tick_script_titles();
         let script_due = self.script_tick();
         self.open_script_alerts(event_loop);
         self.open_script_dialogs(event_loop);

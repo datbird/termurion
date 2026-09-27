@@ -103,6 +103,9 @@ pub struct SettingsWindow {
     tmux_session: bool,
     /// `show_shortcuts_editor`'s sheet, opened on the next frame.
     open_editor: Option<(crate::settings_shortcuts::Tab, Option<usize>)>,
+    /// The registered session title providers as (display name, unique id), for the Title
+    /// Function popup; the app sets them when the window opens and when they change.
+    pub title_providers: Vec<(String, String)>,
 }
 
 impl SettingsWindow {
@@ -173,6 +176,7 @@ impl SettingsWindow {
             configure_status_bar: None,
             tmux_session: false,
             open_editor: None,
+            title_providers: Vec::new(),
         })
     }
 
@@ -253,6 +257,7 @@ impl SettingsWindow {
         let hk = &mut self.hotkeys;
         let configure_status_bar = &mut self.configure_status_bar;
         let tmux_session = self.tmux_session;
+        let title_providers = &self.title_providers;
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -445,6 +450,12 @@ impl SettingsWindow {
                                 }
                                 continue;
                             }
+                            if s.key == "Title Function" {
+                                if title_function_row(ui, profile, s, title_providers) {
+                                    edit = Edit::Changed(selected.clone());
+                                }
+                                continue;
+                            }
                             if s.key == "Jobs to Ignore" {
                                 if crate::settings_lists::jobs_to_ignore(ui, profile) {
                                     edit = Edit::Changed(selected.clone());
@@ -483,6 +494,70 @@ impl SettingsWindow {
             self.selected = Some(g);
         }
         edit
+    }
+}
+
+/// The Title Function popup's first item: the Title Components choose the title.
+pub const BUILT_IN_COMPONENTS: &str = "Built-in components";
+
+/// The Title Function popup (`PGP:753-775`, `PGP:1507-1526`): the text it shows (with Custom
+/// on, the saved function's display name) and its items as (label, unique id): "Built-in
+/// components" first, then each registered provider, then the saved function when no
+/// registered provider has its unique id (iTerm2 keeps it, disabled).
+pub fn title_choice(components: i64, function: Option<(String, String)>, providers: &[(String, String)]) -> (String, Vec<(String, String)>) {
+    let mut items = vec![(BUILT_IN_COMPONENTS.to_string(), String::new())];
+    items.extend(providers.iter().cloned());
+    let text = match &function {
+        Some((name, _)) if components & i64::from(crate::jobtitle::CUSTOM) != 0 => name.clone(),
+        _ => BUILT_IN_COMPONENTS.to_string(),
+    };
+    if let Some(f) = function.filter(|(_, id)| !providers.iter().any(|(_, p)| p == id)) {
+        items.push(f);
+    }
+    (text, items)
+}
+
+/// The Title Function row: a popup of `title_choice`'s items in place of the list's "n
+/// item(s)". A provider writes Title Function `[display name, unique id]` and Title
+/// Components Custom (`PGP:1427-1437`); "Built-in components" writes Title Components Job
+/// and keeps the Title Function. A saved function with no registered provider shows
+/// disabled. True when the profile changed.
+fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, providers: &[(String, String)]) -> bool {
+    use crate::jobtitle::{CUSTOM, JOB};
+    let components = profile.int("Title Components");
+    let function = crate::jobtitle::title_function(profile.get("Title Function").as_ref());
+    let custom = components & i64::from(CUSTOM) != 0;
+    let current = function.as_ref().map(|(_, id)| id.clone());
+    let (text, items) = title_choice(components, function, providers);
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.label(&s.label);
+        egui::ComboBox::from_id_salt(&s.key).selected_text(text).show_ui(ui, |ui| {
+            for (i, (label, id)) in items.iter().enumerate() {
+                let (on, enabled) = if i == 0 { (!custom, true) } else { (custom && current.as_deref() == Some(id.as_str()), providers.iter().any(|(_, p)| p == id)) };
+                if ui.add_enabled(enabled, egui::Button::selectable(on, label.as_str())).clicked() {
+                    picked = Some(i);
+                }
+                if i == 0 && items.len() > 1 {
+                    ui.separator();
+                }
+            }
+        });
+    })
+    .response
+    .on_hover_text(&s.help);
+    match picked {
+        None => false,
+        Some(0) => {
+            profile.set("Title Components", Value::Integer(i64::from(JOB)));
+            true
+        }
+        Some(i) => {
+            let (name, id) = items[i].clone();
+            profile.set("Title Function", Value::Array(vec![Value::String(name), Value::String(id)]));
+            profile.set("Title Components", Value::Integer(i64::from(CUSTOM)));
+            true
+        }
     }
 }
 
@@ -643,6 +718,23 @@ mod tests {
     fn colors_convert_both_ways() {
         let v = value_of_rgb([255, 128, 0]);
         assert_eq!(rgb_of(&v), [255, 128, 0]);
+    }
+
+    /// `PGP:753-775`, `PGP:1507-1526`: the Title Function popup lists the built-in
+    /// components and then the providers; a saved function whose provider is not registered
+    /// stays an item; Custom shows the function's display name.
+    #[test]
+    fn title_choice_follows_iterm2() {
+        let providers = vec![("Hello".to_string(), "com.ex.t".to_string())];
+        let item = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(title_choice(2, None, &providers), ("Built-in components".to_string(), vec![item("Built-in components", ""), item("Hello", "com.ex.t")]));
+        assert_eq!(title_choice(16, Some(item("Hello", "com.ex.t")), &providers).0, "Hello");
+        assert_eq!(title_choice(16, Some(item("Hello", "com.ex.t")), &providers).1.len(), 2, "the registered one is not listed twice");
+        let (text, items) = title_choice(16, Some(item("Old", "com.old")), &providers);
+        assert_eq!(text, "Old");
+        assert_eq!(items, vec![item("Built-in components", ""), item("Hello", "com.ex.t"), item("Old", "com.old")]);
+        assert_eq!(title_choice(2, Some(item("Old", "com.old")), &[]).1, vec![item("Built-in components", ""), item("Old", "com.old")], "kept while not Custom too");
+        assert_eq!(title_choice(16, None, &providers).0, "Built-in components");
     }
 
     /// `PSV:569-573`: opened from a tmux session, both status bar controls are disabled.

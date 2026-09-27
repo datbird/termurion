@@ -36,7 +36,7 @@ pub(super) const BUTTON_PAD_PT: f32 = 12.0;
 /// `FN`: `statusBarComponentVerticalOffset`.
 pub(super) const BUTTON_DY_PT: f32 = 0.5;
 /// `SWS:130`: what an Interpolated String shows when its expression fails.
-pub(super) const LADYBUG: &str = "\u{1F41E}";
+pub(super) const LADYBUG: &str = crate::script_eval::LADYBUG;
 /// The fields' placeholders (the xibs' `placeholderString`, and the Composer's).
 const SEARCH_PLACEHOLDER: &str = "Search";
 const FILTER_PLACEHOLDER: &str = "Filter";
