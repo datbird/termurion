@@ -41,6 +41,22 @@ pub(super) enum Then {
     Rebuild(crate::script_launch::Request),
     /// "Error running script": OK only.
     ErrorRunning,
+    /// "Spaces Not Allowed": Use _ Instead of Space (0) goes on with the new name; Change Name
+    /// (1) opens the save dialog again.
+    Spaces(crate::script_new::Plan),
+    /// "Open new script in %@?": OK (0) opens the script with its editor; Show in Explorer (1)
+    /// reveals it and is never remembered.
+    OpenNewScript(std::path::PathBuf),
+    /// "Invalid Folder": OK opens the save dialog again (the panel stays open in iTerm2).
+    InvalidFolder(crate::script_new::Plan),
+}
+
+impl Then {
+    /// Whether choosing button `index` may be remembered when the alert is silenced
+    /// (`doNotRememberLabels`).
+    fn remembers(&self, index: usize) -> bool {
+        !matches!(self, Then::OpenNewScript(_) if index == 1)
+    }
 }
 
 /// The remembered-choice keys of a silenceable warning: the silence flag and the chosen
@@ -124,7 +140,7 @@ impl App {
             ConfirmResult::Ok { .. } | ConfirmResult::Cancel => return true,
         };
         let Some((_, ask)) = self.scripts_alert.take() else { return true };
-        if let (true, Some(id)) = (suppress, ask.silence) {
+        if let (true, Some(id)) = (suppress && ask.then.remembers(index), ask.silence) {
             let (flag, selection) = silence_keys(id);
             self.globals.set(&flag, toml::Value::Boolean(true));
             self.globals.set(&selection, toml::Value::Integer(index as i64));
@@ -151,6 +167,21 @@ impl App {
             Then::Consent(jobs) => {
                 if index == 0 {
                     self.provision_jobs(jobs);
+                }
+            }
+            Then::Spaces(plan) => {
+                if index == 0 {
+                    self.spaces_replaced(plan);
+                } else {
+                    self.new_script_save(plan);
+                }
+            }
+            Then::InvalidFolder(plan) => self.new_script_save(plan),
+            Then::OpenNewScript(path) => {
+                if index == 0 {
+                    self.edit_new_script(&path);
+                } else {
+                    self.reveal_path(&path);
                 }
             }
             Then::SlowScan => {
@@ -180,6 +211,14 @@ mod tests {
     #[test]
     fn silence_keys_follow_iterm2() {
         assert_eq!(silence_keys("NoSyncX"), ("NoSyncX".to_string(), "NoSyncX_selection".to_string()));
+    }
+
+    #[test]
+    fn show_in_explorer_is_never_remembered() {
+        let open = Then::OpenNewScript(std::path::PathBuf::from(r"C:\S\a.py"));
+        assert!(open.remembers(0));
+        assert!(!open.remembers(1));
+        assert!(Then::Nothing.remembers(1));
     }
 
     #[test]

@@ -32,6 +32,9 @@ pub(super) enum After {
     Import(PathBuf),
     #[allow(dead_code)]
     Deps(PathBuf),
+    /// New Python Script's full environment is built: its files are written; a failure shows
+    /// "Installation Failed" (`M:1180-1197`).
+    NewScript(crate::script_new::Plan),
 }
 
 /// Tandem's uv folder, `%APPDATA%\Tandem\uv`.
@@ -274,6 +277,7 @@ impl App {
                     }
                     After::CheckRuntime => self.runtime_alert(rt::UPDATE_FAILED_HEADING, e),
                     After::Rebuild(_) => self.runtime_alert(crate::script_launch::COULD_NOT_REBUILD, e),
+                    After::NewScript(_) => self.runtime_alert(crate::script_new::INSTALLATION_FAILED, crate::script_new::env_create_error(&e)),
                     _ => self.runtime_alert(rt::ENV_UNAVAILABLE_HEADING, rt::env_unavailable(&e)),
                 }
             }
@@ -304,6 +308,7 @@ impl App {
             After::Nothing | After::InstallRuntime | After::CheckRuntime => {}
             After::Launch(req) => self.script_environment_ready(req, python),
             After::Rebuild(req) => self.launch_script(req),
+            After::NewScript(plan) => self.finish_new_script(plan),
             // Their tasks (9 and 10) continue these with the interpreter.
             After::Repl | After::Import(_) | After::Deps(_) => {}
         }

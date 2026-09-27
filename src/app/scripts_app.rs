@@ -15,8 +15,13 @@ use super::App;
 use crate::script_history::{Entry, Relaunch};
 use crate::script_launch::{self as sl, Kind, LaunchGate, Request};
 use crate::script_proc::ScriptProcess;
-use crate::script_provision::Target;
+use crate::script_new::{self as sn, Env, Plan};
+use crate::script_new_ui::{PickerEvent, PickerWindow};
+use crate::script_provision::{Job, Outcome, RealRunner, Target};
 use crate::script_runtime as rt;
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::WindowId;
 
 /// The most of a first line read for its shebang.
 const FIRST_LINE_LIMIT: u64 = 4096;
@@ -489,6 +494,193 @@ impl App {
             self.refresh_scripts_menu();
         }
         Some(answer)
+    }
+}
+
+/// The display name of the app that edits `.py` files (the "edit" verb's,
+/// `AssocQueryStringW(ASSOCSTR_FRIENDLYAPPNAME)`); None when there is no such verb.
+fn edit_app_name() -> Option<String> {
+    use windows_sys::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_INIT_IGNOREUNKNOWN, ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYAPPNAME};
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (ext, verb) = (wide(".py"), wide("edit"));
+    let mut buf = vec![0u16; 1024];
+    let mut len = buf.len() as u32;
+    let hr = unsafe { AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN | ASSOCF_NOTRUNCATE, ASSOCSTR_FRIENDLYAPPNAME, ext.as_ptr(), verb.as_ptr(), buf.as_mut_ptr(), &mut len) };
+    if hr != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let name = String::from_utf16_lossy(&buf[..end]);
+    (!name.trim().is_empty()).then_some(name)
+}
+
+impl App {
+    /// Scripts > Manage > New Python Script (`M:1091-1127`): the picker. Its Python version
+    /// popup shows the default until the versions the backend can build arrive (a `Minors`
+    /// job off the UI thread; `M:1350-1375`).
+    pub(super) fn new_python_script(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(w) = &self.script_picker {
+            return w.focus();
+        }
+        let Some(g) = self.gpu.as_ref() else { return };
+        match PickerWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, Vec::new(), rt::DEFAULT_PYTHON) {
+            Ok(w) => self.script_picker = Some(w),
+            Err(e) => return self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notify = self.notify.clone();
+        std::thread::spawn(move || {
+            // Finding an installed Python runs it, so this is off the UI thread as well.
+            let minors = super::script_runtime_ui::find_backend().map_or_else(Vec::new, |backend| {
+                let mut runner = RealRunner { lines: std::sync::mpsc::channel().0, timeout: crate::script_provision::PROBE_TIMEOUT };
+                match crate::script_provision::run_job(&Job::Minors { backend }, &super::script_runtime_ui::uv_dir(), &mut runner) {
+                    Ok(Outcome::Minors(v)) => v,
+                    _ => Vec::new(),
+                }
+            });
+            let _ = tx.send(minors);
+            notify();
+        });
+        self.script_picker_minors = Some(rx);
+    }
+
+    /// The picker's versions arrived.
+    pub(super) fn script_picker_tick(&mut self) {
+        let Some(rx) = &self.script_picker_minors else { return };
+        match rx.try_recv() {
+            Ok(versions) => {
+                self.script_picker_minors = None;
+                if let Some(w) = self.script_picker.as_mut() {
+                    w.set_versions(versions);
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.script_picker_minors = None,
+        }
+    }
+
+    /// Events for the picker. False for other windows. Closing it is Cancel.
+    pub(super) fn script_picker_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
+        let Some(w) = self.script_picker.as_mut().filter(|w| w.id() == window) else { return false };
+        let answer = match event {
+            WindowEvent::CloseRequested => PickerEvent::Cancel,
+            WindowEvent::RedrawRequested => w.redraw(),
+            other => {
+                w.event(other);
+                PickerEvent::None
+            }
+        };
+        match answer {
+            PickerEvent::None => {}
+            PickerEvent::Cancel => {
+                self.script_picker = None;
+                self.script_picker_minors = None;
+            }
+            PickerEvent::Chosen { env, template, dependencies, python } => {
+                // The picker closes before the save dialog opens (`M:1129-1131`).
+                self.script_picker = None;
+                self.script_picker_minors = None;
+                self.new_script_save(Plan { env, template, dependencies, python, chosen: PathBuf::new() });
+            }
+        }
+        true
+    }
+
+    /// The save dialog (`runSavePanelForNewScriptWithPicker:`, `M:1439-1477`), opening in the
+    /// Scripts folder, a basic script's filtered to `.py`. A place outside the Scripts folder
+    /// is refused ("Invalid Folder", `M:1693-1709`), then a name with a space ("Spaces Not
+    /// Allowed"); each asks, then the dialog opens again or the script is made.
+    pub(super) fn new_script_save(&mut self, mut plan: Plan) {
+        let scripts = self.scripts_folder();
+        let _ = std::fs::create_dir_all(&scripts);
+        let mut dialog = rfd::FileDialog::new().set_directory(&scripts);
+        if plan.env == Env::Basic {
+            dialog = dialog.add_filter("Python script", &["py"]);
+        }
+        let Some(chosen) = dialog.save_file() else { return };
+        plan.chosen = chosen;
+        let ok = vec![crate::api_auth::OK.to_string()];
+        if !sn::under_scripts(&plan.chosen, &scripts) {
+            // Persistent in iTerm2 (`LOCATION_ID`): never silenced.
+            let ask = Ask { heading: sn::INVALID_FOLDER.to_string(), text: sn::location_restricted(&scripts), buttons: ok, silence: None, then: Then::InvalidFolder(plan) };
+            return self.ask_scripts(ask);
+        }
+        let name = plan.chosen.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if sn::spaceless(&name).is_some() {
+            let buttons = vec![sn::USE_UNDERSCORE.to_string(), sn::CHANGE_NAME.to_string()];
+            let ask = Ask { heading: sn::SPACES_HEADING.to_string(), text: sn::SPACES_TEXT.to_string(), buttons, silence: None, then: Then::Spaces(plan) };
+            return self.ask_scripts(ask);
+        }
+        self.create_new_script(plan);
+    }
+
+    /// "Use _ Instead of Space": the same place with every space in the name as "_".
+    pub(super) fn spaces_replaced(&mut self, mut plan: Plan) {
+        let name = plan.chosen.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Some(safe) = sn::spaceless(&name) {
+            plan.chosen.set_file_name(safe);
+        }
+        self.create_new_script(plan);
+    }
+
+    /// `reallyCreateNewPythonScriptAtURL:` (`M:1173-1226`): a basic script is written at once;
+    /// a full environment is built first (asking before any download), then written.
+    fn create_new_script(&mut self, plan: Plan) {
+        match plan.env {
+            Env::Basic => self.finish_new_script(plan),
+            Env::Full => {
+                let container = sn::container(&plan.chosen, &self.scripts_folder());
+                let (python, dependencies) = (plan.python.clone(), plan.dependencies.clone());
+                self.ensure_environment(Target::Container(container), &python, &dependencies, true, After::NewScript(plan));
+            }
+        }
+    }
+
+    /// `finishInstallingNewPythonScriptForPicker:url:` (`M:1228-1264`): the template is
+    /// written (a full environment's main with its `setup.cfg`), the Scripts folder scanned,
+    /// then "Open new script in %@?" names the `.py` edit verb's app; with no edit verb the
+    /// script is revealed.
+    pub(super) fn finish_new_script(&mut self, plan: Plan) {
+        let scripts = self.scripts_folder();
+        let dest = sn::destination(plan.env, &plan.chosen, &scripts);
+        // Under uv iTerm2 finds no runtime version, so the shebang names plain python3
+        // (`M:1542-1558`).
+        let text = sn::template(plan.env, plan.template, None);
+        let files = match plan.env {
+            Env::Basic => vec![(dest.clone(), text)],
+            Env::Full => {
+                let name = plan.chosen.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                sn::full_environment_files(&sn::container(&plan.chosen, &scripts), &name, &plan.dependencies, &plan.python, &text)
+            }
+        };
+        if let Err(e) = sn::write_files(&files) {
+            return self.banners.set("scripts", e);
+        }
+        if let Some(scanner) = &self.scripts_scan {
+            scanner.rescan();
+        }
+        match edit_app_name() {
+            Some(app) => {
+                let buttons = vec![crate::api_auth::OK.to_string(), sn::SHOW_IN_EXPLORER.to_string()];
+                let ask = Ask { heading: sn::WARNING.to_string(), text: sn::open_in(&app), buttons, silence: Some(sn::OPEN_IN_ID), then: Then::OpenNewScript(dest) };
+                self.ask_scripts(ask);
+            }
+            None => self.reveal_path(&dest),
+        }
+    }
+
+    /// Opens a new script in its editor with the "edit" verb, never "open" (which runs a
+    /// `.py`); when that fails the script is revealed.
+    pub(super) fn edit_new_script(&self, path: &Path) {
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (verb, file) = (wide("edit"), wide(&path.to_string_lossy()));
+        let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
+        // Values above 32 mean success.
+        if (r as isize) <= 32 {
+            self.reveal_path(path);
+        }
     }
 }
 

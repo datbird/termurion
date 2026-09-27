@@ -658,6 +658,10 @@ pub struct App {
     /// dropped when that ends (closing a job ends what is in it, so Tandem's quit ends them).
     script_jobs_left: Vec<crate::script_provision::KillJob>,
     script_after_enable: Vec<crate::script_launch::Request>,
+    /// New Python Script's picker (app-wide), and the Python versions its popup is waiting
+    /// for (a `Minors` job run off the UI thread).
+    script_picker: Option<crate::script_new_ui::PickerWindow>,
+    script_picker_minors: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     last_notified_script: Option<String>,
     /// Status bar strings with function calls, by session and string: their shown values
     /// and running evaluations (app-wide; a pane's entries go with the pane).
@@ -1054,6 +1058,8 @@ pub fn run() {
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
+        script_picker: None,
+        script_picker_minors: None,
         last_notified_script: None,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
@@ -2909,6 +2915,7 @@ impl ApplicationHandler<UserEvent> for App {
         let script_due = self.script_tick();
         let provision_due = self.provision_tick();
         self.scripts_tick();
+        self.script_picker_tick();
         self.scripts_scan_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
@@ -3026,7 +3033,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.script_picker_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

@@ -756,6 +756,12 @@ pub fn add_icon_font(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(icon_font_id(), true));
 }
 
+/// Whether `add_icon_font` found the icon font (without it the "icons" family is not defined
+/// and must not be drawn with).
+pub fn has_icon_font(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(icon_font_id())).unwrap_or(false)
+}
+
 /// Where a window's egui memory notes a custom scripts folder typed and not yet applied.
 fn folder_pending_id() -> egui::Id {
     egui::Id::new("tandem-scripts-folder-pending")
@@ -826,7 +832,7 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
                 valid
             }
         };
-        let have_font = ui.ctx().data(|d| d.get_temp::<bool>(icon_font_id())).unwrap_or(false);
+        let have_font = has_icon_font(ui.ctx());
         if let (Some((glyph, alpha)), true) = (crate::scripts::folder_glyph(on, &text, valid), have_font) {
             let color = ui.visuals().text_color().gamma_multiply(alpha);
             ui.label(egui::RichText::new(glyph.to_string()).family(icon_family()).color(color)).on_hover_text(setting.map_or("", |s| s.label.as_str()));

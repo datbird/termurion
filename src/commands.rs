@@ -56,7 +56,7 @@ pub const DONE: &[&str] = &[
     "toggleSizeLocked:", "toggleLayoutLocked:", "decreaseHeight:", "increaseHeight:", "decreaseWidth:", "increaseWidth:",
     "editWindowTitle:", "editTabTitle:", "arrangeHorizontally:", "undoCloseSession:",
     "saveWindowArrangement:", "saveCurrentWindowAsArrangement:", "importWindowArrangement:", "changeProfileInArrangement:",
-    "showBookmarkWindow:", "installShellIntegration:", "installPythonRuntime:", "revealScriptsInFinder:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
+    "showBookmarkWindow:", "installShellIntegration:", "installPythonRuntime:", "revealScriptsInFinder:", "newPythonScript:", "saveScrollPosition:", "addNamedMark:", "jumpToSavedScrollPosition:", "nextMark:",
     "previousMark:", "clearToLastMark:", "selectOutputOfLastCommand:", "selectCurrentCommand:",
     "toggleAlertOnNextMark:", "toggleAlertOnMarksInOffscreenSessions:", "enableMarkAlertShowsModalAlert:",
     "enableMarkAlertPostsNotification:", "enableMarkAlertRingsBell:", "performMiniaturize:", "performZoom:", "nextTab:", "previousTab:", "moveTabLeft:",
@@ -273,6 +273,7 @@ mod tests {
         assert_eq!(status(find("openPasswordManager:", "Password Manager")), Status::Done, "10b");
         assert_eq!(status(find("installPythonRuntime:", "Install Python Runtime")), Status::Done, "11d");
         assert_eq!(status(find("revealScriptsInFinder:", "Reveal Scripts in Finder")), Status::Done, "11d");
+        assert_eq!(status(find("newPythonScript:", "New Python Script")), Status::Done, "11d");
         assert!(DISABLED_UNDER_UV.contains(&"installAlreadyDownloadedPythonRuntime:"));
         for sel in DISABLED_UNDER_UV {
             assert!(items().iter().any(|i| i.selector == *sel), "{sel} is not in the menu");
