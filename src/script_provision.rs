@@ -227,6 +227,7 @@ fn provision(backend: &Backend, target: &Target, requested: &str, deps: &[String
         Target::Container(c) => (c.join(VENV_DIR), c.join(MARKER)),
     };
     r.log(&format!("Setting up the Python {minor} environment in {}", venv.display()));
+    recover_swap(&venv, r);
     let build = with_suffix(&venv, ".building");
     r.remove(&build);
     let (make, install) = match backend {
@@ -284,6 +285,21 @@ fn provision(backend: &Backend, target: &Target, requested: &str, deps: &[String
     Ok((venv_python(&venv), marker))
 }
 
+/// Tidies what an interrupted build or swap left: a `.old` with no environment beside it is
+/// the working one moved aside and is put back; a `.old` beside an environment is removed.
+/// (`.building` is removed by every build before it starts.)
+fn recover_swap(venv: &Path, r: &mut dyn Runner) {
+    let aside = with_suffix(venv, ".old");
+    if !r.exists(&aside) {
+        return;
+    }
+    if r.exists(venv) {
+        r.remove(&aside);
+    } else if let Err(e) = r.rename(&aside, venv) {
+        r.log(&e);
+    }
+}
+
 /// Check for Updated Runtime (`UV:1084-1131`, `UV:1141-1180`): a uv older than the pinned one
 /// (or unreadable) is replaced and the remap records dropped (a newer uv may provide a minor
 /// that was remapped); then, whatever happened, the packages of every shared environment with
@@ -301,7 +317,9 @@ fn check_for_update(arch: Arch, uv_dir: &Path, r: &mut dyn Runner) -> Result<Str
     }
     let packages: Vec<String> = PACKAGES.iter().map(|p| p.to_string()).collect();
     for venv in r.list_dirs(&venvs_dir(uv_dir)) {
-        if !r.exists(&venv.join(MARKER)) {
+        // Only `<minor>` folders: a `.old` left by an interrupted swap holds a marker too.
+        let minor = venv.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if !numeric_version(&minor) || !r.exists(&venv.join(MARKER)) {
             continue;
         }
         if let Err(e) = r.run(&uv_step(&uv, uv_pip_install_args(&venv_python(&venv), &packages, true), uv_dir, true)) {
@@ -336,16 +354,109 @@ pub fn is_py_launcher(program: &str) -> bool {
     Path::new(program).file_name().is_some_and(|n| n.eq_ignore_ascii_case("py.exe"))
 }
 
+/// How long a probe of an installed Python (`py -0p`, `python --version`) may take.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Runs provisioning for real: every program hidden (`CREATE_NO_WINDOW`), stdin empty, stdout
 /// and stderr on one pipe, Tandem's environment cleaned by `child_env` plus the step's
-/// variables, stopped past `BUILD_TIMEOUT`. Each output line goes to `lines`.
+/// variables. Each run is in its own Job Object that ends every process it started: when the
+/// program ends (so nothing it left behind holds the output pipe), when it runs past
+/// `timeout`, and when Tandem quits (the job closes with it). Each output line goes to `lines`.
 #[cfg(windows)]
 pub struct RealRunner {
     pub lines: std::sync::mpsc::Sender<String>,
+    pub timeout: Duration,
+}
+
+/// A Job Object whose processes all end when it is closed.
+#[cfg(windows)]
+struct KillJob(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl KillJob {
+    fn new() -> Result<KillJob, String> {
+        use windows_sys::Win32::System::JobObjects::{CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return Err(format!("CreateJobObjectW failed: {}", std::io::Error::last_os_error()));
+            }
+            let job = KillJob(job);
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+            if SetInformationJobObject(job.0, JobObjectExtendedLimitInformation, (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(), size) == 0 {
+                return Err(format!("SetInformationJobObject failed: {}", std::io::Error::last_os_error()));
+            }
+            Ok(job)
+        }
+    }
+
+    /// Puts a process started suspended in the job, then lets it run, so nothing it starts can
+    /// get out of the job first.
+    fn adopt(&self, child: &std::process::Child) -> Result<(), String> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+        if unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle()) } == 0 {
+            return Err(format!("AssignProcessToJobObject failed: {}", std::io::Error::last_os_error()));
+        }
+        resume_threads(child.id());
+        Ok(())
+    }
+
+    fn terminate(&self) {
+        unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) };
+    }
+}
+
+#[cfg(windows)]
+impl Drop for KillJob {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+/// Resumes the threads of a process started suspended (it has only its first one).
+#[cfg(windows)]
+fn resume_threads(pid: u32) {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut more = Thread32First(snap, &mut entry) != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    ResumeThread(thread);
+                    CloseHandle(thread);
+                }
+            }
+            more = Thread32Next(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+    }
+}
+
+/// "an hour" for `BUILD_TIMEOUT`, else the seconds.
+#[cfg(windows)]
+fn duration_text(d: Duration) -> String {
+    if d == BUILD_TIMEOUT { "an hour".to_string() } else { format!("{} seconds", d.as_secs()) }
 }
 
 #[cfg(windows)]
 impl RealRunner {
+    /// A runner with `BUILD_TIMEOUT`.
+    pub fn new(lines: std::sync::mpsc::Sender<String>) -> RealRunner {
+        RealRunner { lines, timeout: BUILD_TIMEOUT }
+    }
+
     /// A Windows tool from System32 (curl.exe, tar.exe), so a program of the same name on PATH
     /// is never run instead; the bare name when System32 is not found.
     fn system_tool(name: &str) -> PathBuf {
@@ -373,7 +484,9 @@ impl Runner for RealRunner {
         use std::os::windows::process::CommandExt;
         use std::process::{Command, Stdio};
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
         let label = Self::label(step);
+        let job = KillJob::new().map_err(|e| format!("Could not run {label}: {e}"))?;
         let (mut reader, writer) = std::io::pipe().map_err(|e| format!("Could not run {label}: {e}"))?;
         let err_writer = writer.try_clone().map_err(|e| format!("Could not run {label}: {e}"))?;
         let inherited = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
@@ -384,13 +497,19 @@ impl Runner for RealRunner {
             .stdin(Stdio::null())
             .stdout(writer)
             .stderr(err_writer)
-            .creation_flags(CREATE_NO_WINDOW);
+            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         let spawned = cmd.spawn();
         // The pipe's write ends go with the command, so the read ends when the program does.
         drop(cmd);
         let mut child = spawned.map_err(|e| format!("Could not run {label}: {e}"))?;
+        if let Err(e) = job.adopt(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Could not run {label}: {e}"));
+        }
         let lines = self.lines.clone();
-        let reading = std::thread::spawn(move || {
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let (mut all, mut line, mut buf) = (Vec::new(), Vec::new(), [0u8; 4096]);
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 {
@@ -410,22 +529,28 @@ impl Runner for RealRunner {
             if !line.is_empty() {
                 let _ = lines.send(String::from_utf8_lossy(&line).trim_end_matches('\r').to_string());
             }
-            String::from_utf8_lossy(&all).into_owned()
+            let _ = read_tx.send(String::from_utf8_lossy(&all).into_owned());
         });
-        let deadline = std::time::Instant::now() + BUILD_TIMEOUT;
+        let deadline = std::time::Instant::now() + self.timeout;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) if std::time::Instant::now() >= deadline => {
-                    let _ = child.kill();
+                    job.terminate();
                     let _ = child.wait();
-                    break Err(format!("{label} did not finish within an hour and was stopped."));
+                    break Err(format!("{label} did not finish within {} and was stopped.", duration_text(self.timeout)));
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                Err(e) => break Err(format!("Could not wait for {label}: {e}")),
+                Err(e) => {
+                    job.terminate();
+                    break Err(format!("Could not wait for {label}: {e}"));
+                }
             }
         };
-        let output = reading.join().unwrap_or_default();
+        // The program ended: whatever it left running would hold the pipe, so it ends too;
+        // the reader then sees the end of the output. It is not waited on for ever.
+        job.terminate();
+        let output = read_rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
         let status = status?;
         if status.success() {
             return Ok(output);
@@ -543,7 +668,7 @@ impl Provisioner {
         });
         let left = pending.clone();
         std::thread::spawn(move || {
-            let mut runner = RealRunner { lines: line_tx };
+            let mut runner = RealRunner::new(line_tx);
             for (id, job) in job_rx {
                 let result = run_job(&job, &uv_dir, &mut runner);
                 left.fetch_sub(1, SeqCst);
@@ -954,14 +1079,14 @@ mod tests {
     #[test]
     fn runner_runs_hidden() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut r = RealRunner { lines: tx };
+        let mut r = RealRunner::new(tx);
         let echo = Step { program: p("cmd.exe"), args: s(&["/c", "echo tandem"]), env: vec![] };
         assert_eq!(r.run(&echo), Ok("tandem\r\n".to_string()));
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), s(&["tandem"]));
         let fail = Step { program: p("cmd.exe"), args: s(&["/c", "exit 3"]), env: vec![] };
         let err = r.run(&fail).unwrap_err();
         assert!(err.contains("status 3"), "{err}");
-        // The step's variables reach the program; inherited PIP_* ones do not.
+        // The step's variables reach the program.
         let env = Step { program: p("cmd.exe"), args: s(&["/c", "echo %TANDEM_T%"]), env: vec![("TANDEM_T".into(), "yes".into())] };
         assert_eq!(r.run(&env), Ok("yes\r\n".to_string()));
         let tmp = std::env::temp_dir().join(format!("tandem-sha-{}.txt", std::process::id()));
@@ -969,5 +1094,52 @@ mod tests {
         let sum = r.sha256(&tmp);
         let _ = std::fs::remove_file(&tmp);
         assert_eq!(sum, Ok("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runner_ends_the_process_tree() {
+        let started = std::time::Instant::now();
+        let mut r = RealRunner { lines: std::sync::mpsc::channel().0, timeout: Duration::from_secs(2) };
+        // A grandchild that outlives its parent and holds the output pipe: the run still ends
+        // when cmd.exe does, and the grandchild with it.
+        let orphan = Step { program: p("cmd.exe"), args: s(&["/c", "start /b ping -n 30 127.0.0.1 & echo left"]), env: vec![] };
+        let out = r.run(&orphan);
+        assert!(out.as_deref().is_ok_and(|o| o.contains("left")), "{out:?}");
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        // A program that runs past the timeout is stopped with everything it started.
+        let started = std::time::Instant::now();
+        let hung = Step { program: p("cmd.exe"), args: s(&["/c", "ping -n 30 127.0.0.1"]), env: vec![] };
+        let err = r.run(&hung).unwrap_err();
+        assert!(err.contains("did not finish within 2 seconds and was stopped."), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert_eq!(RealRunner::new(std::sync::mpsc::channel().0).timeout, BUILD_TIMEOUT);
+    }
+
+    #[test]
+    fn interrupted_swap_is_recovered() {
+        let py = Backend::Python { argv: s(&[r"C:\Windows\py.exe", "-3.12"]), minor: "3.12".into() };
+        let job = Job::Provision { backend: py, target: Target::Container(p(r"C:\S\tool")), requested: "3.12".into(), dependencies: vec![], name: None };
+        let (venv, aside) = (p(r"C:\S\tool\.venv"), p(r"C:\S\tool\.venv.old"));
+        // The working environment was moved aside and the new one never moved in: it is put
+        // back before the build, so a failed build leaves it in place.
+        let mut r = FakeRunner::new(&[r"C:\S\tool\.venv.old\Scripts\python.exe", r"C:\S\tool\python-runtime.json"]).answer("pip install", Err("no wheel"));
+        assert!(run_job(&job, Path::new(r"C:\u"), &mut r).is_err());
+        assert_eq!(r.calls[0], Call::Rename(aside.clone(), venv.clone()));
+        assert!(r.has(r"C:\S\tool\.venv\Scripts\python.exe") && !r.has(r"C:\S\tool\.venv.old"));
+        // A .old beside a working environment is removed.
+        let mut r = FakeRunner::new(&[r"C:\S\tool\.venv\Scripts\python.exe", r"C:\S\tool\.venv.old\Scripts\python.exe"]).answer("pip install", Err("no wheel"));
+        assert!(run_job(&job, Path::new(r"C:\u"), &mut r).is_err());
+        assert_eq!(r.calls[0], Call::Remove(aside));
+        assert!(r.has(r"C:\S\tool\.venv\Scripts\python.exe") && !r.has(r"C:\S\tool\.venv.old"));
+
+        // The update check upgrades only `<minor>` folders, not a shared `.old` with a marker.
+        let current = format!("uv {UV_VERSION} (x)");
+        let files = [r"C:\u\bin\uv.exe", r"C:\u\venvs\3.12\python-runtime.json", r"C:\u\venvs\3.12.old\python-runtime.json"];
+        let mut r = FakeRunner::new(&files).answer("--version", Ok(current.as_str()));
+        assert!(run_job(&Job::CheckForUpdate { arch: Arch::X64 }, Path::new(r"C:\u"), &mut r).is_ok());
+        let upgrades: Vec<&Call> = r.calls.iter().filter(|c| matches!(c, Call::Run(st) if st.args.contains(&"install".to_string()))).collect();
+        assert_eq!(upgrades.len(), 1, "{:?}", r.calls);
+        assert!(matches!(upgrades[0], Call::Run(st) if st.args.iter().any(|a| a.contains(r"venvs\3.12\Scripts"))), "{upgrades:?}");
     }
 }

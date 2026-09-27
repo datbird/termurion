@@ -581,12 +581,15 @@ pub fn menu_title(uv_installed: bool) -> &'static str {
     if uv_installed { "Check for Updated Runtime" } else { "Install Python Runtime" }
 }
 
-/// Asks before uv and the first Python are downloaded (`UV:1436-1438`, naming the sources).
-pub fn uv_consent(megabytes: u32) -> (&'static str, String) {
+/// Asks before uv, the first Python and the packages of the environments it builds are
+/// downloaded (`UV:1436-1438`), naming every source: the pinned uv release on github.com, Python
+/// from python-build-standalone and each package from pypi.org (`packages_for`'s list).
+pub fn uv_consent(megabytes: u32, packages: &[String]) -> (&'static str, String) {
     (
         "Download Python Support?",
         format!(
-            "To run Python scripts, Tandem needs to download uv (about {megabytes} MB) from github.com/astral-sh/uv and a Python interpreter from github.com/astral-sh/python-build-standalone. OK to download it now?"
+            "To run Python scripts, Tandem needs to download uv {UV_VERSION} (about {megabytes} MB) from github.com/astral-sh/uv, a Python interpreter from github.com/astral-sh/python-build-standalone, and these Python packages from pypi.org: {}. OK to download them now?",
+            packages.join(", ")
         ),
     )
 }
@@ -810,14 +813,17 @@ mod tests {
 
     #[test]
     fn consent_names_the_source() {
+        let packages = s(&["iterm2", "certifi", "requests"]);
         assert_eq!(
-            uv_consent(12),
+            uv_consent(12, &packages),
             (
                 "Download Python Support?",
-                "To run Python scripts, Tandem needs to download uv (about 12 MB) from github.com/astral-sh/uv and a Python interpreter from github.com/astral-sh/python-build-standalone. OK to download it now?".to_string()
+                format!("To run Python scripts, Tandem needs to download uv {UV_VERSION} (about 12 MB) from github.com/astral-sh/uv, a Python interpreter from github.com/astral-sh/python-build-standalone, and these Python packages from pypi.org: iterm2, certifi, requests. OK to download them now?")
             )
         );
-        let packages = s(&["iterm2", "certifi", "requests"]);
+        // Install Python Runtime's list: the packages every environment gets.
+        let text = uv_consent(12, &packages_for(&[])).1;
+        assert!(text.contains("pypi.org: iterm2, certifi."), "{text}");
         assert_eq!(
             packages_consent(&packages, Some("3.12")),
             (
@@ -836,7 +842,7 @@ mod tests {
             env_missing_line("Full"),
             "The Python environment for \u{201c}Full\u{201d} is missing (the shared runtime may have been deleted). Launch it from the Scripts menu to rebuild it.\n"
         );
-        for t in [uv_consent(12).1, packages_consent(&packages, Some("3.12")).1, text] {
+        for t in [uv_consent(12, &packages).1, packages_consent(&packages, Some("3.12")).1, text] {
             assert!(!t.contains("automatically"), "{t}");
         }
     }

@@ -635,9 +635,13 @@ pub struct App {
     script_alerts: VecDeque<script_ui::Alert>,
     script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert)>,
     /// The provisioning worker (started on first use), what each submitted job continues
-    /// with, and whether Tandem's uv is installed (the runtime menu item's title).
+    /// with, the install each job queued behind one needs (dependent id to install id), the
+    /// installed-Python probes running off the UI thread, and whether Tandem's uv is installed
+    /// (the runtime menu item's title).
     provisioner: Option<crate::script_provision::Provisioner>,
     provision_after: HashMap<u64, script_runtime_ui::After>,
+    provision_needs: HashMap<u64, u64>,
+    backend_probes: Vec<script_runtime_ui::Probe>,
     uv_installed: bool,
     /// The Scripts features' alerts waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
@@ -1028,6 +1032,8 @@ pub fn run() {
         script_alert: None,
         provisioner: None,
         provision_after: HashMap::new(),
+        provision_needs: HashMap::new(),
+        backend_probes: Vec::new(),
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
@@ -1415,7 +1421,10 @@ impl App {
         let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
         let folder = crate::scripts::scripts_folder(keys.0, &keys.1, &appdata, &home, &crate::scripts::RealFs);
         // The old scanner's thread ends on its own; a scan it is in finishes first.
-        self.scripts_scan = Some(crate::scripts_scan::Scanner::start(folder, self.notify.clone()));
+        let mut scanner = crate::scripts_scan::Scanner::start(folder, self.notify.clone());
+        // A build under way keeps holding scans (its file events), as with the old scanner.
+        scanner.hold(self.provisioner.as_ref().is_some_and(|p| p.busy()));
+        self.scripts_scan = Some(scanner);
         self.scripts_keys = keys;
     }
 

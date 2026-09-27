@@ -53,10 +53,11 @@ fn env_name(target: &Target, after: &After) -> String {
 
 /// An installed Python as a backend: the py launcher with the version `resolve` picks from
 /// `py -0p` (never simply its first line), or a `python.exe` with the minor `--version` names.
+/// Each probe may take `PROBE_TIMEOUT`.
 fn python_backend(argv: &[String]) -> Option<Backend> {
     let program = argv.first()?;
     // Lines are not wanted here; the receiver goes at once.
-    let mut runner = RealRunner { lines: std::sync::mpsc::channel().0 };
+    let mut runner = RealRunner { lines: std::sync::mpsc::channel().0, timeout: script_provision::PROBE_TIMEOUT };
     if script_provision::is_py_launcher(program) {
         let out = runner.run(&Step { program: PathBuf::from(program), args: vec!["-0p".to_string()], env: Vec::new() }).ok()?;
         let minors: Vec<String> = rt::py_list(&out).into_iter().map(|(v, _)| v).collect();
@@ -71,20 +72,28 @@ fn python_backend(argv: &[String]) -> Option<Backend> {
     (minor.contains('.') && rt::numeric_version(&minor)).then(|| Backend::Python { argv: vec![program.clone()], minor })
 }
 
-impl App {
-    /// What builds environments: Tandem's uv when installed, else the first installed Python
-    /// by it2api's candidates (11e's `python_candidates`).
-    // Launching, New Python Script, the REPL, import and the dependency editor (Tasks 5, 7, 9
-    // and 10) call this and `ensure_environment`.
-    #[allow(dead_code)]
-    pub(super) fn backend(&self) -> Option<Backend> {
-        let uv = rt::uv_exe(&uv_dir());
-        if uv.is_file() {
-            return Some(Backend::Uv(uv));
-        }
-        let path = std::env::var("PATH").unwrap_or_default();
-        crate::util_api::python_candidates(&path, &|p: &Path| p.is_file()).iter().find_map(|argv| python_backend(argv))
+/// What builds environments: Tandem's uv when installed, else the first installed Python by
+/// it2api's candidates (11e's `python_candidates`). Probing a Python runs it, so off the UI
+/// thread only (`ensure_environment` probes on a thread of its own).
+pub(super) fn find_backend() -> Option<Backend> {
+    let uv = rt::uv_exe(&uv_dir());
+    if uv.is_file() {
+        return Some(Backend::Uv(uv));
     }
+    let path = std::env::var("PATH").unwrap_or_default();
+    crate::util_api::python_candidates(&path, &|p: &Path| p.is_file()).iter().find_map(|argv| python_backend(argv))
+}
+
+/// An `ensure_environment` waiting for its backend probe: the answer, then what it was asked.
+pub(super) struct Probe {
+    answer: std::sync::mpsc::Receiver<Option<Backend>>,
+    target: Target,
+    requested: String,
+    dependencies: Vec<String>,
+    after: After,
+}
+
+impl App {
 
     /// A line for the Script Console's app-wide entry.
     pub(super) fn script_log_app(&mut self, text: String) {
@@ -114,18 +123,34 @@ impl App {
             let line = rt::env_missing_line(&env_name(&target, &after));
             return self.script_log_app(line);
         }
-        match self.backend() {
+        // Tandem's uv answers at once; an installed Python is probed off the UI thread.
+        let uv = rt::uv_exe(&dir);
+        if uv.is_file() {
+            return self.ask_for_environment(Some(Backend::Uv(uv)), target, requested, dependencies, after);
+        }
+        let (tx, answer) = std::sync::mpsc::channel();
+        let notify = self.notify.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(find_backend());
+            notify();
+        });
+        self.backend_probes.push(Probe { answer, target, requested: requested.to_string(), dependencies: dependencies.to_vec(), after });
+    }
+
+    /// Asks before building `target` with `backend` (None: no Python at all).
+    fn ask_for_environment(&mut self, backend: Option<Backend>, target: Target, requested: &str, dependencies: &[String], after: After) {
+        match backend {
             // No Python at all: uv first. Installing uv builds the default shared environment,
-            // so that target needs nothing more.
+            // so that target needs nothing more. One question names everything downloaded.
             None => {
                 let install = Job::InstallUv { arch: arch() };
-                let jobs = if target == Target::Shared(rt::DEFAULT_PYTHON.to_string()) {
-                    vec![(install, after)]
+                let (jobs, packages) = if target == Target::Shared(rt::DEFAULT_PYTHON.to_string()) {
+                    (vec![(install, after)], rt::packages_for(&[]))
                 } else {
-                    let build = Job::Provision { backend: Backend::Uv(rt::uv_exe(&dir)), target, requested: requested.to_string(), dependencies: dependencies.to_vec(), name: None };
-                    vec![(install, After::InstallRuntime), (build, after)]
+                    let build = Job::Provision { backend: Backend::Uv(rt::uv_exe(&uv_dir())), target, requested: requested.to_string(), dependencies: dependencies.to_vec(), name: None };
+                    (vec![(install, After::InstallRuntime), (build, after)], rt::packages_for(dependencies))
                 };
-                self.consent(rt::uv_consent(rt::UV_MEGABYTES), jobs);
+                self.consent(rt::uv_consent(rt::UV_MEGABYTES, &packages), jobs);
             }
             Some(backend) => {
                 let packages = rt::packages_for(dependencies);
@@ -146,7 +171,7 @@ impl App {
         if self.uv_installed {
             self.consent(rt::update_consent(), vec![(Job::CheckForUpdate { arch: arch() }, After::CheckRuntime)]);
         } else {
-            self.consent(rt::uv_consent(rt::UV_MEGABYTES), vec![(Job::InstallUv { arch: arch() }, After::InstallRuntime)]);
+            self.consent(rt::uv_consent(rt::UV_MEGABYTES, &rt::packages_for(&[])), vec![(Job::InstallUv { arch: arch() }, After::InstallRuntime)]);
         }
     }
 
@@ -154,8 +179,18 @@ impl App {
     pub(super) fn provision_jobs(&mut self, jobs: Vec<(Job, After)>) {
         let notify = self.notify.clone();
         let provisioner = self.provisioner.get_or_insert_with(|| Provisioner::start(uv_dir(), notify));
-        let ids: Vec<(u64, After)> = jobs.into_iter().map(|(job, after)| (provisioner.submit(job), after)).collect();
-        self.provision_after.extend(ids);
+        // What follows an install in the same group needs its uv.
+        let mut install = None;
+        for (job, after) in jobs {
+            let is_install = matches!(job, Job::InstallUv { .. });
+            let id = provisioner.submit(job);
+            if is_install {
+                install = Some(id);
+            } else if let Some(i) = install {
+                self.provision_needs.insert(id, i);
+            }
+            self.provision_after.insert(id, after);
+        }
         self.provision_busy(true);
     }
 
@@ -175,6 +210,7 @@ impl App {
 
     /// Takes the provisioner's output lines (to the app-wide console entry) and results.
     pub(super) fn provision_tick(&mut self) -> Option<Instant> {
+        self.probes_tick();
         let p = self.provisioner.as_ref()?;
         let lines: Vec<String> = std::iter::from_fn(|| p.try_line()).collect();
         let done: Vec<(u64, Result<Outcome, String>)> = std::iter::from_fn(|| p.try_done()).collect();
@@ -186,6 +222,7 @@ impl App {
             return None;
         }
         for (id, result) in done {
+            self.provision_needs.remove(&id);
             if let Some(after) = self.provision_after.remove(&id) {
                 self.provision_done(id, after, result);
             }
@@ -217,10 +254,14 @@ impl App {
                 self.script_log_app(format!("{e}\n"));
                 match after {
                     After::InstallRuntime => {
-                        // What was queued behind the install needs uv; without it each would
-                        // only fail again, so one alert says why.
+                        // What was queued behind this install needs its uv; without it each
+                        // would only fail again, so one alert says why. Other jobs report.
                         if !self.uv_installed {
-                            self.provision_after.retain(|k, _| *k < id);
+                            let needing: Vec<u64> = self.provision_needs.iter().filter(|(_, i)| **i == id).map(|(k, _)| *k).collect();
+                            for k in needing {
+                                self.provision_needs.remove(&k);
+                                self.provision_after.remove(&k);
+                            }
                         }
                         self.runtime_alert(rt::INSTALL_FAILED_HEADING, rt::install_failed(&e));
                     }
@@ -228,6 +269,24 @@ impl App {
                     _ => self.runtime_alert(rt::ENV_UNAVAILABLE_HEADING, rt::env_unavailable(&e)),
                 }
             }
+        }
+    }
+
+    /// Finished backend probes go on to their question.
+    fn probes_tick(&mut self) {
+        let mut i = 0;
+        while i < self.backend_probes.len() {
+            let answer = match self.backend_probes[i].answer.try_recv() {
+                Ok(b) => b,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    i += 1;
+                    continue;
+                }
+                // The probe thread died: treated as no Python found.
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            };
+            let p = self.backend_probes.remove(i);
+            self.ask_for_environment(answer, p.target, &p.requested, &p.dependencies, p.after);
         }
     }
 

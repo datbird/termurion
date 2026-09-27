@@ -46,9 +46,13 @@ pub(super) fn silence_keys(id: &str) -> (String, String) {
 /// must not open windows forever).
 const LIMIT: usize = 16;
 
-fn push_capped(queue: &mut VecDeque<Ask>, ask: Ask) {
+/// Queues `ask`, or gives it back when the queue is full.
+fn push_capped(queue: &mut VecDeque<Ask>, ask: Ask) -> Option<Ask> {
     if queue.len() < LIMIT {
         queue.push_back(ask);
+        None
+    } else {
+        Some(ask)
     }
 }
 
@@ -62,7 +66,17 @@ impl App {
                 return self.scripts_answered(ask.then, index);
             }
         }
-        push_capped(&mut self.scripts_alerts, ask);
+        if let Some(dropped) = push_capped(&mut self.scripts_alerts, ask) {
+            self.scripts_dropped(dropped.then);
+        }
+    }
+
+    /// An ask that will never show: the slow-scan question answers Continue, so the scan
+    /// worker does not wait for ever; any other is dropped.
+    fn scripts_dropped(&mut self, then: Then) {
+        if then == Then::SlowScan {
+            self.scripts_answered(then, 1);
+        }
     }
 
     /// Opens the next queued alert when none shows.
@@ -75,7 +89,10 @@ impl App {
         let labels: Vec<&str> = ask.buttons.iter().map(String::as_str).collect();
         match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &ask.heading, &ask.text, &labels, ask.silence.is_some()) {
             Ok(w) => self.scripts_alert = Some((w, ask)),
-            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+            Err(e) => {
+                self.banners.set("window", format!("Could not open the window: {e}"));
+                self.scripts_dropped(ask.then);
+            }
         }
     }
 
@@ -146,5 +163,16 @@ mod tests {
     #[test]
     fn silence_keys_follow_iterm2() {
         assert_eq!(silence_keys("NoSyncX"), ("NoSyncX".to_string(), "NoSyncX_selection".to_string()));
+    }
+
+    #[test]
+    fn a_full_queue_gives_the_ask_back() {
+        let ask = |then| Ask { heading: String::new(), text: String::new(), buttons: Vec::new(), silence: None, then };
+        let mut q = VecDeque::new();
+        for _ in 0..LIMIT {
+            assert!(push_capped(&mut q, ask(Then::Nothing)).is_none());
+        }
+        assert_eq!(push_capped(&mut q, ask(Then::SlowScan)).map(|a| a.then), Some(Then::SlowScan));
+        assert_eq!(q.len(), LIMIT);
     }
 }
