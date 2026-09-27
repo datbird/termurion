@@ -225,3 +225,7 @@ pub mod notify;
 #[allow(clippy::all, dead_code, missing_docs)]
 pub mod api_pb;
 pub mod api_proto;
+pub mod api_http;
+pub mod api_auth;
+#[cfg(windows)]
+pub mod api_server;
