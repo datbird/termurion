@@ -223,6 +223,24 @@ pub fn mac_keycode(code: KeyCode) -> Option<u16> {
     })
 }
 
+/// The macOS virtual keycode (kVK_Shift and the rest) for a modifier key, which
+/// `mac_keycode` leaves out; None for any other key.
+pub fn mac_modifier_keycode(code: KeyCode) -> Option<u16> {
+    use KeyCode::*;
+    Some(match code {
+        SuperLeft => 0x37,
+        ShiftLeft => 0x38,
+        CapsLock => 0x39,
+        AltLeft => 0x3A,
+        ControlLeft => 0x3B,
+        ShiftRight => 0x3C,
+        AltRight => 0x3D,
+        ControlRight => 0x3E,
+        SuperRight => 0x36,
+        _ => return None,
+    })
+}
+
 /// The Tandem key for a winit key, with `text` for keys winit does not name.
 pub fn key_of(key: &WKey, text: Option<&str>) -> Option<Key> {
     Some(match key {
@@ -373,6 +391,15 @@ mod tests {
         assert_eq!(mac_char(&crate::keys::Key::Enter, false, true), 0x03);
         assert_eq!(mac_char(&crate::keys::Key::F(1), false, false), 0xF704);
         assert_eq!(mac_char(&crate::keys::Key::Text("A".into()), true, false), 0x41);
+    }
+
+    #[test]
+    fn modifier_keycodes_follow_macos() {
+        use winit::keyboard::KeyCode::*;
+        for (code, want) in [(ShiftLeft, 0x38), (ShiftRight, 0x3C), (ControlLeft, 0x3B), (ControlRight, 0x3E), (AltLeft, 0x3A), (AltRight, 0x3D), (SuperLeft, 0x37), (SuperRight, 0x36), (CapsLock, 0x39)] {
+            assert_eq!(mac_modifier_keycode(code), Some(want), "{code:?}");
+        }
+        assert_eq!(mac_modifier_keycode(KeyA), None);
     }
 
     #[test]

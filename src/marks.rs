@@ -776,6 +776,10 @@ impl Screen {
                     let events = self.prompt_state.captured(rows, text);
                     self.composer_events.extend(events);
                 }
+                // The API's PROMPT, at the prompt's end (`PS:16709-16726`).
+                if self.api_watch {
+                    self.api_events.push(crate::api_notify::ApiEvent::Prompt(self.marks.current));
+                }
             }
             Osc::OutputStart => {
                 let events = self.prompt_state.c();
@@ -807,6 +811,11 @@ impl Screen {
                     }
                 }
                 self.marks.last_command = Some(cur);
+                // The API's COMMAND_START, only for a command that started (`PS:18645-18656`).
+                if self.api_watch {
+                    let command = (!text.is_empty()).then(|| text.clone());
+                    self.api_events.push(crate::api_notify::ApiEvent::CommandStart { command, mark: Some(cur) });
+                }
                 let (cwd, host) = (self.shell.cwd.clone(), self.shell.host.clone());
                 self.shell.history.push(CommandRecord { command: text, cwd, host, start: now, end: None, code: None });
             }
@@ -838,6 +847,10 @@ impl Screen {
                     r.end = Some(now);
                 }
                 let c = code.unwrap_or(0);
+                // The API's COMMAND_END, 0 when no code came (`PS:18696-18722`).
+                if self.api_watch {
+                    self.api_events.push(crate::api_notify::ApiEvent::CommandEnd { code: c, mark: target });
+                }
                 self.fire_event(crate::trigger_events::EventKind::CommandFinished, &crate::trigger_events::EventFacts { exit_code: Some(c), ..Default::default() }, &[c.to_string()]);
             }
             Osc::Notify(text) => {
@@ -923,13 +936,18 @@ impl Screen {
                         self.requests.push(r);
                     }
                 }
-                // Custom=id=<sender>:<payload> (trusted): the Custom Escape Sequence event.
+                // Custom=id=<sender>:<payload> (trusted, and only with its colon,
+                // `VT:4492-4508`): the Custom Escape Sequence event and the API's notification.
                 "Custom" if self.trusted => {
-                    let (head, payload) = value.split_once(':').unwrap_or((value.as_str(), ""));
-                    let args = crate::blocks::parse(head);
-                    let id = crate::blocks::get(&args, "id").unwrap_or("").to_string();
-                    let facts = crate::trigger_events::EventFacts { name: id.clone(), ..Default::default() };
-                    self.fire_event(crate::trigger_events::EventKind::CustomEscapeSequence, &facts, &[id, payload.to_string()]);
+                    if let Some((head, payload)) = value.split_once(':') {
+                        let args = crate::blocks::parse(head);
+                        let id = crate::blocks::get(&args, "id").unwrap_or("").to_string();
+                        let facts = crate::trigger_events::EventFacts { name: id.clone(), ..Default::default() };
+                        self.fire_event(crate::trigger_events::EventKind::CustomEscapeSequence, &facts, &[id.clone(), payload.to_string()]);
+                        if self.api_watch {
+                            self.api_events.push(crate::api_notify::ApiEvent::Custom { id, payload: payload.to_string() });
+                        }
+                    }
                 }
                 "SetMark" => {
                     let line = self.cursor_point().line.0;
@@ -1662,5 +1680,41 @@ mod tests {
         // No command and none being typed: no text.
         assert_eq!(f.text, None);
         assert_eq!(f.command, Some(((2, 0), (2, 0))));
+    }
+
+    #[test]
+    fn api_events_follow_the_prompt() {
+        use crate::api_notify::ApiEvent;
+        use crate::trigger_events::EventKind;
+        let mut s = Screen::new(40, 10);
+        s.api_watch = true;
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;1\x07\x1b]1337;Custom=id=me:hi\x07");
+        let m = s.marks.last_command.expect("a command mark");
+        assert_eq!(
+            std::mem::take(&mut s.api_events),
+            vec![
+                ApiEvent::Prompt(Some(m)),
+                ApiEvent::CommandStart { command: Some("ls".into()), mark: Some(m) },
+                ApiEvent::CommandEnd { code: 1, mark: Some(m) },
+                ApiEvent::Custom { id: "me".into(), payload: "hi".into() },
+            ]
+        );
+        // Without its colon a custom sequence is nothing: no API event and no Custom Escape
+        // Sequence trigger event (`VT:4492-4508`).
+        let mut extra = toml::Table::new();
+        extra.insert("eventParams".into(), toml::Value::Table(toml::Table::new()));
+        let trigger = crate::triggers::Trigger { regex: String::new(), action: "AlertTrigger".into(), parameter: "custom".into(), instant: false, enabled: true, name: String::new(), job: String::new(), match_type: EventKind::CustomEscapeSequence.match_type(), extra };
+        s.set_triggers(vec![trigger], crate::trigger_eval::TriggerPrefs::default());
+        let alerts = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(crate::trigger_eval::TriggerRequest::Alert { .. }))).count();
+        s.feed(b"\x1b]1337;Custom=id=me\x07");
+        assert!(s.api_events.is_empty());
+        assert_eq!(alerts(&mut s), 0);
+        s.feed(b"\x1b]1337;Custom=id=me:\x07");
+        assert_eq!(std::mem::take(&mut s.api_events), vec![ApiEvent::Custom { id: "me".into(), payload: String::new() }]);
+        assert_eq!(alerts(&mut s), 1, "with its colon the trigger event fires");
+        // Unwatched, nothing is queued.
+        s.api_watch = false;
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07\x1b]133;D;0\x07\x1b]1337;Custom=id=me:hi\x07");
+        assert!(s.api_events.is_empty());
     }
 }

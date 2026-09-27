@@ -218,6 +218,11 @@ pub struct Screen {
     pub prompt_state: crate::prompt_state::PromptState,
     /// What the machine asked of the app, taken by it.
     pub(crate) composer_events: Vec<crate::prompt_state::Event>,
+    /// A Python API connection watches this screen's prompts or custom escape sequences:
+    /// `api_events` fills only then (screens outside panes never drain it).
+    pub api_watch: bool,
+    /// Prompt, command and custom escape sequence events for the API, taken by the app.
+    pub api_events: Vec<crate::api_notify::ApiEvent>,
     /// The cursor (absolute line, column) at the last accrue check; set at B.
     pub(crate) composer_from: Option<(i64, usize)>,
     /// Cells the accrue check has read (a test counter for its bound).
@@ -392,6 +397,8 @@ impl Screen {
             last_dark: true,
             prompt_state: Default::default(),
             composer_events: Vec::new(),
+            api_watch: false,
+            api_events: Vec::new(),
             composer_from: None,
             composer_scanned: 0,
             composer_alt: false,

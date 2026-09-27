@@ -461,6 +461,8 @@ impl App {
                 // (`api_server::NEXT_CONN`), but nothing of these connections is kept either.
                 self.api_subs = Default::default();
                 self.api_var_subs = Default::default();
+                self.api_session_subs = Default::default();
+                self.api_sync_watch();
                 self.api_tx = Default::default();
                 self.api_deferred.clear();
                 if self.api_consent {
@@ -643,6 +645,9 @@ impl App {
     fn api_forget(&mut self, conn: u64) -> Work {
         self.api_subs.drop_conn(conn);
         self.api_var_subs.drop_conn(conn);
+        // A dead script's keystroke filter never eats another key.
+        self.api_session_subs.drop_conn(conn);
+        self.api_sync_watch();
         if let Some(p) = forget_waiting(conn, &mut self.api_pending, &mut self.api_alerts, &mut self.api_deferred) {
             self.api_verdict(&p, false, api_auth::REASON_INTERNAL);
         }
@@ -699,19 +704,191 @@ impl App {
     /// snapshotted while no connection subscribes; the first pass with a subscriber only takes
     /// the baseline. The snapshots compared carry no titles (no change reads them); titles
     /// are built only for a layout change, whose ListSessions carries them.
+    ///
+    /// Session subscriptions keep the snapshot too: a new session takes the "all" requests
+    /// and an ended one's subscriptions go (`H:909-925`). Prompt and custom escape sequence
+    /// events are drained first (`api_session_events`).
     pub(super) fn api_notify_tick(&mut self) {
         self.api_variable_tick();
-        if !self.api_subs.any() {
+        self.api_session_events();
+        if !self.api_subs.any() && !self.api_session_subs.any() {
             self.api_last = None;
             return;
         }
         let new = self.api_model(false);
         if let Some(old) = self.api_last.take() {
             let c = api_model::changes(&old, &new);
-            let notes = if c.layout { api_model::notifications(&c, &self.api_model(true)) } else { api_model::notifications(&c, &new) };
-            post(&self.api_subs, notes, &mut |conn, m| self.api_reply(conn, m));
+            if self.api_session_subs.any() {
+                for id in c.terminated.iter().filter_map(|s| s.parse::<u64>().ok()) {
+                    self.api_session_subs.forget_session(id);
+                }
+                for id in c.new_sessions.iter().filter_map(|s| s.parse::<u64>().ok()) {
+                    self.api_session_subs.new_session(id);
+                }
+                self.api_sync_watch();
+            }
+            if self.api_subs.any() {
+                let notes = if c.layout { api_model::notifications(&c, &self.api_model(true)) } else { api_model::notifications(&c, &new) };
+                post(&self.api_subs, notes, &mut |conn, m| self.api_reply(conn, m));
+            }
         }
         self.api_last = Some(new);
+    }
+
+    /// Each pane's screen queues prompt and custom escape sequence events only while a
+    /// connection watches it; an unwatched screen drops what it held.
+    pub(super) fn api_sync_watch(&mut self) {
+        let mut watched = self.api_session_subs.watching(pb::NotificationType::NotifyOnPrompt);
+        watched.extend(self.api_session_subs.watching(pb::NotificationType::NotifyOnCustomEscapeSequence));
+        for (id, p) in self.panes.iter_mut() {
+            let s = p.own_mut();
+            s.api_watch = watched.contains(id);
+            if !s.api_watch {
+                s.api_events.clear();
+            }
+        }
+    }
+
+    /// Posts each watched pane's queued events: PROMPT with the GetPrompt answer for its mark
+    /// (`PS:16709-16726`), COMMAND_START and COMMAND_END (`PS:18645-18656`, `PS:18711-18722`)
+    /// to the prompt subscribers wanting that mode, custom escape sequences to theirs
+    /// (`PS:18266-18284`).
+    pub(super) fn api_session_events(&mut self) {
+        use crate::api_notify::{self, ApiEvent};
+        use pb::NotificationType as N;
+        if !self.api_session_subs.any() {
+            return;
+        }
+        // A restarted session's new screen is watched from here on.
+        self.api_sync_watch();
+        let panes: Vec<crate::layout::PaneId> = self.panes.iter().filter(|(_, p)| p.own().api_watch && !p.own().api_events.is_empty()).map(|(id, _)| *id).collect();
+        for pane in panes {
+            let Some(p) = self.panes.get_mut(&pane) else { continue };
+            let events = std::mem::take(&mut p.own_mut().api_events);
+            let session = pane.to_string();
+            for ev in events {
+                let (kind, mode, n) = match &ev {
+                    ApiEvent::Custom { id, payload } => (N::NotifyOnCustomEscapeSequence, None, api_notify::custom(&session, id, payload)),
+                    _ => {
+                        let prompt = match &ev {
+                            ApiEvent::Prompt(mark) => {
+                                let facts = mark.and_then(|m| self.panes.get(&pane).and_then(|p| p.own().prompt_facts(Some(m))));
+                                Some(crate::api_buffer::prompt_response(facts.as_ref()))
+                            }
+                            _ => None,
+                        };
+                        let Some((mode, n)) = api_notify::prompt_event(&session, &ev, prompt) else { continue };
+                        (N::NotifyOnPrompt, Some(mode), n)
+                    }
+                };
+                let conns: Vec<u64> = self
+                    .api_session_subs
+                    .subscribers(kind, pane)
+                    .into_iter()
+                    .filter(|(_, r)| mode.is_none_or(|m| api_notify::wants_prompt(r, m)))
+                    .map(|(c, _)| c)
+                    .collect();
+                if conns.is_empty() {
+                    continue;
+                }
+                let m = crate::api_proto::notification(n);
+                for conn in conns {
+                    self.api_reply(conn, &m);
+                }
+            }
+        }
+    }
+
+    /// One SCREEN_UPDATE per pane that got output this pass, to its subscribers
+    /// (`PS:13241-13254`).
+    pub(super) fn api_screen_updates(&mut self, panes: &[crate::layout::PaneId]) {
+        for &pane in panes {
+            let conns: Vec<u64> = self.api_session_subs.subscribers(pb::NotificationType::NotifyOnScreenUpdate, pane).into_iter().map(|(c, _)| c).collect();
+            if conns.is_empty() {
+                continue;
+            }
+            let m = crate::api_proto::notification(crate::api_notify::screen_update(&pane.to_string()));
+            for conn in conns {
+                self.api_reply(conn, &m);
+            }
+        }
+    }
+
+    /// Posts `key` to the focused pane's keystroke subscribers; an advanced event (key up,
+    /// flags changed) only to those asking for it (`PS:11617-11619`).
+    fn api_post_key(&self, pane: crate::layout::PaneId, key: &crate::api_notify::Key, advanced: bool) {
+        let conns: Vec<u64> = self
+            .api_session_subs
+            .subscribers(pb::NotificationType::NotifyOnKeystroke, pane)
+            .into_iter()
+            .filter(|(_, r)| crate::api_notify::wants_key(r, advanced))
+            .map(|(c, _)| c)
+            .collect();
+        if conns.is_empty() {
+            return;
+        }
+        let m = crate::api_proto::notification(crate::api_notify::keystroke(key, &pane.to_string()));
+        for conn in conns {
+            self.api_reply(conn, &m);
+        }
+    }
+
+    /// A key event before anything routes it (`PS:11502-11507`, `PS:12674-12677`): a modifier
+    /// key going down or up is FLAGS_CHANGED, any other key's release KEY_UP, both advanced,
+    /// for the current window's focused pane; nothing for a paused tmux pane
+    /// (`PS:11494-11501`).
+    pub(super) fn api_key_early(&mut self, ev: &winit::event::KeyEvent) {
+        use crate::api_notify;
+        use winit::event::ElementState;
+        use winit::keyboard::{KeyCode, PhysicalKey};
+        if !self.api_session_subs.any() {
+            return;
+        }
+        let Some(pane) = self.focused_id() else { return };
+        if self.api_session_subs.subscribers(pb::NotificationType::NotifyOnKeystroke, pane).is_empty() || self.tmux_pane_paused() {
+            return;
+        }
+        let code = match ev.physical_key {
+            PhysicalKey::Code(c) => Some(c),
+            _ => None,
+        };
+        let pressed = ev.state == ElementState::Pressed;
+        let key = if let Some(keycode) = code.and_then(crate::keystroke::mac_modifier_keycode) {
+            // The modifiers held after this key, as a flags-changed event carries them.
+            let mut mods = self.mods;
+            match code {
+                Some(KeyCode::ShiftLeft | KeyCode::ShiftRight) => mods.shift = pressed,
+                Some(KeyCode::ControlLeft | KeyCode::ControlRight) => mods.ctrl = pressed,
+                Some(KeyCode::AltLeft | KeyCode::AltRight) => mods.alt = pressed,
+                Some(KeyCode::SuperLeft | KeyCode::SuperRight) => mods.cmd = pressed,
+                _ => {}
+            }
+            api_notify::flags_key(mods, keycode)
+        } else if !pressed {
+            let Some(stroke) = crate::keystroke::from_key_event(ev, self.mods) else { return };
+            api_notify::key_from(&stroke, pb::keystroke_notification::Action::KeyUp)
+        } else {
+            return;
+        };
+        self.api_post_key(pane, &key, true);
+    }
+
+    /// A key down about to be routed (`PS:11515-11566`): posted to every keystroke subscriber
+    /// of the current window's focused pane, then true when that pane's KEYSTROKE_FILTER
+    /// requests filter it (the key goes no further). A paused tmux pane neither posts nor
+    /// filters (`PS:11494-11501`).
+    pub(super) fn api_key_down(&mut self, stroke: &crate::keystroke::Keystroke) -> bool {
+        use crate::api_notify;
+        if !self.api_session_subs.any() {
+            return false;
+        }
+        let Some(pane) = self.focused_id() else { return false };
+        if self.tmux_pane_paused() {
+            return false;
+        }
+        let key = api_notify::key_from(stroke, pb::keystroke_notification::Action::KeyDown);
+        self.api_post_key(pane, &key, false);
+        api_notify::filtered(self.api_session_subs.subscribers(pb::NotificationType::KeystrokeFilter, pane).into_iter().map(|(_, r)| r), &key)
     }
 
     /// The snapshot `async_get_app` reads: each window by number (entered to read its tabs,

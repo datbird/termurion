@@ -582,6 +582,9 @@ pub struct App {
     api_vars: crate::api_vars::Store,
     /// The VARIABLE_CHANGE subscriptions of upgraded connections.
     api_var_subs: crate::api_vars::Subs,
+    /// The session notification subscriptions of upgraded connections (keystrokes and their
+    /// filter, screen updates, prompts, custom escape sequences), and the "all" ones.
+    api_session_subs: crate::api_notify::SessionSubs,
     /// The snapshot notifications were last computed from, kept only while a connection
     /// subscribes.
     api_last: Option<crate::api_model::Model>,
@@ -919,6 +922,7 @@ pub fn run() {
         api_deferred: VecDeque::new(),
         api_vars: Default::default(),
         api_var_subs: Default::default(),
+        api_session_subs: Default::default(),
         api_last: None,
         api_tmux_commands: HashMap::new(),
         api_tmux_creates: HashMap::new(),
@@ -1784,6 +1788,8 @@ impl App {
         if self.composer_key(ev) {
             return;
         }
+        // The API's key up and flags changed notifications.
+        self.api_key_early(ev);
         if self.protocol_key_event(ev) || ev.state != ElementState::Pressed {
             return;
         }
@@ -1814,6 +1820,10 @@ impl App {
             }
         };
         let fallback = self.protocol_bytes(ev, &key, base.as_ref()).or_else(|| self.key_bytes(&key, base.as_ref(), ev.text.as_deref(), keypad));
+        // The API's key down notification; a key a script filters goes no further.
+        if self.api_key_down(&stroke) {
+            return;
+        }
         self.typing = Some(ev.physical_key);
         self.dispatch(keyroute::Press { stroke, digit }, fallback, Some((key, base)), None, event_loop);
         self.typing = None;
@@ -2753,6 +2763,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         changed |= self.tmux_pump(event_loop);
+        self.api_screen_updates(&outputs);
+        self.api_session_events();
         self.record_replay_frames();
         for id in exited {
             // A git command's short-lived window ends without an alert.

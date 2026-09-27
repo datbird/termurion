@@ -14,7 +14,9 @@
 //! Selection reads and sets a session's selection, SetBroadcastDomains sets each window's
 //! custom domains, Tmux lists gateways and sends them commands, shows, hides and creates tmux
 //! windows (its command and create answers come later, from tmux), and ColorPreset finds no
-//! preset until milestone 13 (`api_misc`).
+//! preset until milestone 13 (`api_misc`); session NotificationRequests subscribe sessions
+//! to keystrokes, the keystroke filter, screen updates, prompts and custom escape sequences
+//! (`api_notify`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -132,6 +134,10 @@ impl App {
                 let status = self.api_variable_subscribe(conn, r);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
             }
+            Some(Req::NotificationRequest(r)) if crate::api_notify::by_session(r) => {
+                let status = self.api_session_subscribe(conn, r);
+                reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
+            }
             _ => Answer::Now(api_proto::malformed(req)),
         };
         if let Some(b) = back {
@@ -182,6 +188,25 @@ impl App {
         status
     }
 
+    /// A NotificationRequest routed by session (`H:2137-2150`): "all" asks every session in a
+    /// window and keeps the request for future ones, else the session the id names. A kept
+    /// "all" request needs a baseline to find new sessions: taken now when none is kept, so a
+    /// session the script makes right after is subscribed too.
+    fn api_session_subscribe(&mut self, conn: u64, r: &pb::NotificationRequest) -> pb::notification_response::Status {
+        let ids = self.api_ids();
+        let status = if r.session.as_deref() == Some("all") {
+            self.api_session_subs.request(conn, r, None, &ids.all_panes())
+        } else {
+            let target = r.session.as_deref().and_then(|s| ids.pane(s));
+            self.api_session_subs.request(conn, r, target, &[])
+        };
+        if self.api_last.is_none() && self.api_session_subs.any() {
+            self.api_last = Some(self.api_model(false));
+        }
+        self.api_sync_watch();
+        status
+    }
+
     /// SendText: typed into each session through `user_write` from its own window, so
     /// broadcast domains, tmux panes and gateways take it as typing; a session whose program
     /// exited is skipped ("all" names it too).
@@ -214,8 +239,9 @@ impl App {
                 }
             }
         }
-        // The same step real output runs.
+        // The same step real output runs, screen updates included.
         self.after_output(&fed, std::time::Instant::now());
+        self.api_screen_updates(&fed);
         resp
     }
 

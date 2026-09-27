@@ -238,6 +238,7 @@ pub mod api_props;
 pub mod api_profile;
 pub mod api_layout;
 pub mod api_misc;
+pub mod api_notify;
 pub mod session_env;
 #[cfg(windows)]
 pub mod api_server;
