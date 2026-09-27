@@ -580,6 +580,11 @@ pub fn report_heading(origin: &str) -> String {
     format!("{origin} Function Call Failed")
 }
 
+/// A context menu provider's origin in the error alert (`PS:14863`).
+pub fn menu_origin(title: &str) -> String {
+    format!("Menu Item \u{201c}{title}\u{201d}")
+}
+
 /// The function call error alert's text (`H:567`).
 pub fn report_text(invocation: &str, reason: &str) -> String {
     format!("Error running \u{201c}{invocation}\u{201d}:\n{reason}")

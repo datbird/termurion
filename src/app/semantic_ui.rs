@@ -256,27 +256,33 @@ impl App {
                 let link = c.ctx.link.clone().or_else(|| semantic::url_like(&c.ctx.before, &c.ctx.after));
                 let cwd = c.ctx.cwd.as_ref().map(|d| d.to_string_lossy().to_string()).unwrap_or_default();
                 let actions = c.found.as_ref().map(|f| (c.rules[f.rule].actions.clone(), f.captures.clone())).unwrap_or_default();
-                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold });
+                pending = Some(CtxPending { pane: id, link, actions: actions.0, captures: actions.1, cwd, fold, providers: Vec::new() });
             } else if fold.is_some() {
-                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold });
+                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold, providers: Vec::new() });
             }
         }
         // Stop Coprocess shows only while one runs (iTerm2's context menu).
         if let Some((id, _)) = at.filter(|(id, _)| self.panes.get(id).is_some_and(|p| p.coprocess_command().is_some())) {
             extra.push(("Stop Coprocess".into(), CtxItem::StopCoprocess));
             if pending.is_none() {
-                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None });
+                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers: Vec::new() });
             }
         }
         // Toggle Broadcasting Input, for the pane that was clicked (always offered).
         if let Some((id, _)) = at {
             extra.push(("Toggle Broadcasting Input".into(), CtxItem::ToggleBroadcast));
             if pending.is_none() {
-                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None });
+                pending = Some(CtxPending { pane: id, link: None, actions: Vec::new(), captures: Vec::new(), cwd: String::new(), fold: None, providers: Vec::new() });
             }
         }
+        // The script providers' items (`CMH:898-914`), for the clicked session.
+        let mut providers: Vec<(String, CtxItem)> = Vec::new();
+        if let Some(p) = pending.as_mut() {
+            p.providers = crate::script_fn::context_rows(&self.api_fns.context_menu_items());
+            providers = p.providers.iter().map(|(title, id)| (title.clone(), CtxItem::Provider(id.clone()))).collect();
+        }
         self.ctx_pending = pending;
-        self.show_context_menu_with(&extra);
+        self.show_context_menu_with(&extra, &providers);
     }
 
     /// A pick from the right-click menu's own items. Returns false for other ids.
@@ -297,6 +303,9 @@ impl App {
                     self.banners.set("clipboard", format!("Copy failed: {e}"));
                 }
             }
+        } else if let Some(unique_id) = item.strip_prefix("provider.") {
+            let title = pend.providers.iter().find(|(_, id)| id == unique_id).map(|(t, _)| t.clone()).unwrap_or_default();
+            self.context_provider_picked(pend.pane, unique_id, &title);
         } else if let Some(a) = item.strip_prefix("action.").and_then(|n| n.parse::<usize>().ok()).and_then(|n| pend.actions.get(n).cloned()) {
             let cwd_path = (!pend.cwd.is_empty()).then(|| std::path::PathBuf::from(&pend.cwd));
             if let Some(run) = self.smart_action_run(pend.pane, &a, &pend.captures, &pend.cwd) {
@@ -344,6 +353,8 @@ pub(super) enum CtxItem {
     Unfold,
     StopCoprocess,
     ToggleBroadcast,
+    /// A script context menu provider's item, by its unique id.
+    Provider(String),
 }
 
 impl CtxItem {
@@ -354,6 +365,7 @@ impl CtxItem {
             CtxItem::Unfold => format!("{CTX_ID}unfold"),
             CtxItem::StopCoprocess => format!("{CTX_ID}stopcoprocess"),
             CtxItem::ToggleBroadcast => format!("{CTX_ID}togglebroadcast"),
+            CtxItem::Provider(id) => format!("{CTX_ID}provider.{id}"),
         }
     }
 }
@@ -366,6 +378,8 @@ pub(super) struct CtxPending {
     captures: Vec<String>,
     cwd: String,
     fold: Option<u32>,
+    /// The script providers' items shown (title, unique id).
+    providers: Vec<(String, String)>,
 }
 
 struct Clicked {

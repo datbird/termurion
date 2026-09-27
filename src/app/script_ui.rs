@@ -834,6 +834,20 @@ impl App {
         self.invoke(&invocation, scope, Timeout::from_secs(CLICK_TIMEOUT_SECS), true, Origin::Click);
     }
 
+    /// A pick of a script context menu provider's item (`CMH:1377-1398`): the registration
+    /// with that unique id now (none: nothing happens), its invocation from its defaults, in
+    /// the session's scope, with the registration's timeout else 30 s, side effects on; a
+    /// failure reported as the menu item's.
+    pub(super) fn context_provider_picked(&mut self, pane: PaneId, unique_id: &str, title: &str) {
+        let items = self.api_fns.context_menu_items();
+        let rows = script_fn::context_rows(&items);
+        let Some((reg, _)) = items.iter().zip(&rows).find(|(_, (_, id))| id == unique_id) else { return };
+        let invocation = script_fn::invocation(&script_fn::fq_name(reg), &script_fn::defaults(reg));
+        let timeout = reg.timeout.map_or(Timeout::from_secs(script_fn::CONTEXT_MENU_TIMEOUT.as_secs_f64()), |t| Timeout::from_secs(f64::from(t)));
+        let scope = ScopeSpec::Session { pane, frame: Values::new() };
+        self.invoke(&invocation, scope, timeout, true, Origin::Report(script_eval::menu_origin(title)));
+    }
+
     /// A failed script component's click: its error text under "Status Bar Script Error",
     /// through the one alert queue (never silenced; the same one merged).
     pub(super) fn script_component_error(&mut self, text: &str) {

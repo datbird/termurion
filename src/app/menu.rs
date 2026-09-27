@@ -180,24 +180,25 @@ impl App {
         self.sync_checks();
     }
 
-    /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator.
-    pub(super) fn show_context_menu_with(&mut self, extra: &[(String, super::semantic_ui::CtxItem)]) {
+    /// iTerm2's right-click menu, after `extra` items (label, what it does) and a separator,
+    /// with the script providers' items (label, what it does) before Split Pane.
+    pub(super) fn show_context_menu_with(&mut self, extra: &[(String, super::semantic_ui::CtxItem)], providers: &[(String, super::semantic_ui::CtxItem)]) {
         let Some(hwnd) = self.hwnd() else { return };
         let context = Menu::new();
         let mut results = Vec::new();
-        for (label, item) in extra {
-            results.push(context.append(&MenuItem::with_id(item.id(), label.replace('&', "&&"), true, None)));
-        }
-        if !extra.is_empty() {
-            results.push(context.append(&PredefinedMenuItem::separator()));
-        }
-        for id in commands::CONTEXT {
-            results.push(match menus::by_id(id) {
-                None => context.append(&PredefinedMenuItem::separator()),
-                Some(item) => {
-                    let enabled = !matches!(commands::status(item), Status::Later(_));
-                    context.append(&MenuItem::with_id(item.id(), menu_text(item), enabled, None))
-                }
+        let own = |(label, item): &(String, super::semantic_ui::CtxItem)| MenuItem::with_id(item.id(), label.replace('&', "&&"), true, None);
+        for slot in context_layout(extra.len(), providers.len()) {
+            results.push(match slot {
+                Slot::Separator => context.append(&PredefinedMenuItem::separator()),
+                Slot::Extra(i) => context.append(&own(&extra[i])),
+                Slot::Provider(i) => context.append(&own(&providers[i])),
+                Slot::Command(id) => match menus::by_id(id) {
+                    None => context.append(&PredefinedMenuItem::separator()),
+                    Some(item) => {
+                        let enabled = !matches!(commands::status(item), Status::Later(_));
+                        context.append(&MenuItem::with_id(item.id(), menu_text(item), enabled, None))
+                    }
+                },
             });
         }
         if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
@@ -773,6 +774,61 @@ impl App {
     /// Each shown pane's terminal rectangle (a Clippings panel takes the right of it).
     pub(super) fn visible(&self, tab: &Tab) -> Vec<(PaneId, Rect)> {
         visible_rects(&tab.layout, tab.zoomed, self.content_area_for(tab), GAP).into_iter().map(|(id, r)| (id, self.clip_split(id, self.pane_bar_split(tab, id, r).0).0)).collect()
+    }
+}
+
+/// One entry of the right-click menu: the nth extra item, the nth script provider item, a
+/// menu command by id, or a separator.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Slot {
+    Extra(usize),
+    Provider(usize),
+    Command(&'static str),
+    Separator,
+}
+
+/// The right-click menu's order: `extra` items and a separator, then `commands::CONTEXT` with
+/// the `providers` items and a separator after its first separator (iTerm2 puts them after
+/// its custom actions, before Split Pane, `CMH:572-580`).
+pub(super) fn context_layout(extra: usize, providers: usize) -> Vec<Slot> {
+    let mut slots: Vec<Slot> = (0..extra).map(Slot::Extra).collect();
+    if extra > 0 {
+        slots.push(Slot::Separator);
+    }
+    let mut placed = providers == 0;
+    for id in commands::CONTEXT {
+        if id.is_empty() {
+            slots.push(Slot::Separator);
+            if !placed {
+                slots.extend((0..providers).map(Slot::Provider));
+                slots.push(Slot::Separator);
+                placed = true;
+            }
+        } else {
+            slots.push(Slot::Command(id));
+        }
+    }
+    slots
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    #[test]
+    fn context_layout_places_providers_before_split_pane() {
+        use Slot::{Command, Extra, Provider, Separator};
+        let today: Vec<Slot> = commands::CONTEXT.iter().map(|id| if id.is_empty() { Separator } else { Command(id) }).collect();
+        // No providers: today's layout, the extra items and a separator first when there are some.
+        assert_eq!(context_layout(0, 0), today);
+        let mut with_extra = vec![Extra(0), Extra(1), Separator];
+        with_extra.extend(today.iter().cloned());
+        assert_eq!(context_layout(2, 0), with_extra);
+        // Providers go after Copy and Paste's separator, with a separator after them.
+        let mut want = vec![Extra(0), Separator, Command("Edit > Copy"), Command("Edit > Paste"), Separator, Provider(0), Provider(1), Separator];
+        want.extend(today[3..].iter().cloned());
+        assert_eq!(want[8], Command("Shell > Split Vertically with Current Profile"));
+        assert_eq!(context_layout(1, 2), want);
     }
 }
 

@@ -15,6 +15,9 @@ use pb::rpc_registration_request::{Role, RoleSpecificAttributes};
 
 /// How long a call waits for its script when the registration names no timeout (`H:1323`).
 pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+/// A context menu provider's invocation timeout when the registration names none
+/// (`CMH:1386`).
+pub const CONTEXT_MENU_TIMEOUT: Duration = Duration::from_secs(30);
 /// Names never sent to scripts (`H:1144`).
 pub const PRIVATE_PREFIX: &str = "iterm2.";
 
@@ -165,7 +168,7 @@ fn role(r: &pb::RpcRegistrationRequest) -> Role {
 }
 
 /// A registration's defaults as (name, path).
-fn defaults(r: &pb::RpcRegistrationRequest) -> Vec<(String, String)> {
+pub fn defaults(r: &pb::RpcRegistrationRequest) -> Vec<(String, String)> {
     r.defaults.iter().map(|d| (d.name.clone().unwrap_or_default(), d.path.clone().unwrap_or_default())).collect()
 }
 
@@ -419,6 +422,18 @@ impl Registry {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+}
+
+/// The right-click menu's provider rows (`CMH:898-914`): each registration's display name
+/// and unique id, in order.
+pub fn context_rows(items: &[pb::RpcRegistrationRequest]) -> Vec<(String, String)> {
+    items
+        .iter()
+        .map(|r| match &r.role_specific_attributes {
+            Some(RoleSpecificAttributes::ContextMenuAttributes(a)) => (a.display_name.clone().unwrap_or_default(), a.unique_identifier.clone().unwrap_or_default()),
+            _ => Default::default(),
+        })
+        .collect()
 }
 
 /// The longest a call waits (a registration's timeout beyond it is clamped).
@@ -714,5 +729,22 @@ mod tests {
         assert_eq!(not_encodable("x"), "Could not JSON encode value \u{201c}x\u{201d}");
         assert_eq!(undecodable_value("e"), "Undecodable value: e");
         assert_eq!(undecodable_exception("e"), "Undecodable exception: e");
+    }
+
+    #[test]
+    fn context_menu_providers_follow_iterm2() {
+        let mut fns = Registry::default();
+        for (name, display) in [("f1", "b"), ("f2", "A"), ("f3", "c")] {
+            subscribe(&mut fns, 1, menu(reg(name, &[]), display, &format!("id.{name}")));
+        }
+        subscribe(&mut fns, 1, reg("generic", &[]));
+        let rows = context_rows(&fns.context_menu_items());
+        let want: Vec<(String, String)> = [("A", "id.f2"), ("b", "id.f1"), ("c", "id.f3")].iter().map(|(d, u)| (d.to_string(), u.to_string())).collect();
+        assert_eq!(rows, want);
+        // The pick's invocation comes from the registration's defaults.
+        let r = menu(with_defaults(reg("g", &["session_id"]), &[("session_id", "id")]), "G", "com.x");
+        assert_eq!(invocation(&fq_name(&r), &defaults(&r)), "contextMenu.com.x.g(session_id:id)");
+        assert_eq!(CONTEXT_MENU_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(crate::script_eval::menu_origin("Copy it"), "Menu Item \u{201c}Copy it\u{201d}");
     }
 }
