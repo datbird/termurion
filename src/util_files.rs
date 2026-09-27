@@ -205,14 +205,14 @@ enum Found {
     Missing,
 }
 
-/// A path starting `\\` or `//` is never probed (it counts as missing).
+/// A network path, or one reached through a link to one, is never probed (it counts as
+/// missing).
 fn find(cwd: &Path, arg: &str) -> Found {
-    let unc = |s: &str| s.starts_with("\\\\") || s.starts_with("//");
-    if arg.is_empty() || unc(arg) {
+    if arg.is_empty() || crate::prompted::network_path(arg) {
         return Found::Missing;
     }
     let p = cwd.join(arg);
-    if unc(&p.to_string_lossy()) {
+    if !util_cli::may_open(&p) {
         return Found::Missing;
     }
     match std::fs::metadata(&p) {
@@ -529,6 +529,15 @@ mod tests {
         let mut h = harness(&dir);
         assert_eq!(h.run("imgcat", &["missing.png"]), 2);
         assert_eq!(text(&h.err), "ERROR: imgcat: missing.png: No such file or directory\n");
+        // A network path is never probed, in any spelling.
+        for p in ["\\\\host\\s\\a.png", "//host/s/a.png", "/\\host\\a.png", "\\/host/a.png", "\\\\?\\UNC\\host\\s", "\\\\.\\pipe\\x", "\\??\\UNC\\h\\s"] {
+            let mut h = harness(&dir);
+            assert_eq!(h.run("imgcat", &[p]), 2, "{p}");
+            assert_eq!(text(&h.err), format!("ERROR: imgcat: {p}: No such file or directory\n"));
+            let mut h = harness(&dir);
+            assert_eq!(h.run("it2dl", &[p]), 0, "{p}");
+            assert_eq!(text(&h.err), format!("File or directory {p} does not exist or is not readable.\n"));
+        }
 
         let mut h = harness(&dir);
         assert_eq!(h.run("imgcat", &["-W", "10x", "a.png"]), 1);

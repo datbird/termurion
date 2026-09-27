@@ -134,6 +134,14 @@ pub struct Io<'a> {
     pub have: &'a dyn Fn(&str) -> bool,
 }
 
+/// A path a utility may open (following links): not a network or device path in any
+/// spelling (`prompted::network_path`), and no link on the way to it, itself included,
+/// leading to one (`git_state::program_links_local`, which reads link targets without
+/// opening them). Nothing else is ever probed.
+pub fn may_open(path: &std::path::Path) -> bool {
+    !crate::prompted::network_path(&path.to_string_lossy()) && crate::git_state::program_links_local(path)
+}
+
 /// `$TERM`.
 pub fn term(io: &Io) -> Option<String> {
     (io.env)("TERM")
@@ -151,7 +159,7 @@ pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
         "it2dl" => util_files::it2dl(args, io),
         #[cfg(windows)]
         "imgls" => {
-            let fs = crate::util_imgls::WinFs { cwd: io.cwd.clone() };
+            let fs = crate::util_imgls::WinFs::new(io.cwd.clone());
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
             // `stamps::local` takes unsigned seconds: a time before 1970 reads as 1970.
             let local = |t: i64| crate::stamps::local(t.max(0) as u64);
@@ -383,6 +391,28 @@ mod tests {
         out.clear();
         k.flush(&mut out);
         assert!(out.is_empty(), "nothing left to flush");
+    }
+
+    #[test]
+    fn network_paths_are_never_opened() {
+        use std::path::Path;
+        for p in ["\\\\host\\s\\x", "//host/s/x", "/\\host\\s", "\\/host/s", "\\\\?\\UNC\\host\\s", "\\\\.\\pipe\\x", "\\??\\UNC\\host\\s"] {
+            assert!(!may_open(Path::new(p)), "{p}");
+        }
+        let dir = std::env::temp_dir().join(format!("tandem-util-cli-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(may_open(&dir.join("a.txt")), "a local path that is not there yet");
+        #[cfg(windows)]
+        match std::os::windows::fs::symlink_dir("\\\\nohost.invalid\\share", dir.join("net")) {
+            Ok(()) => {
+                assert!(!may_open(&dir.join("net")));
+                assert!(!may_open(&dir.join("net").join("x")));
+            }
+            Err(e) => eprintln!("MEASURED: no symbolic link to a network path made ({e}); git_state's link tests cover the rule"),
+        }
+        let _ = std::fs::remove_dir(dir.join("net"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

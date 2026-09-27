@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 #[cfg(windows)]
 use std::path::PathBuf;
 
+use crate::prompted::network_path;
 use crate::stamps::Parts;
 use crate::util_cli::Io;
 use crate::util_osc::b64;
@@ -66,16 +67,55 @@ fn truthy_opt(s: &Option<String>) -> bool {
 enum Kind {
     Neg,
     Str,
+    Flag,
 }
 
-const LONG: [(&str, Kind); 6] = [
+/// Every option `GetOptions` is given (`imgls:62-78`): `--` matches single letters too,
+/// as Getopt::Long does in bundling mode.
+const LONG: [(&str, Kind); 28] = [
     ("dimensions", Kind::Neg),
     ("height", Kind::Str),
     ("method", Kind::Str),
     ("preserve_ratio", Kind::Neg),
     ("unknown", Kind::Neg),
     ("width", Kind::Str),
+    ("D", Kind::Str),
+    ("t", Kind::Flag),
+    ("S", Kind::Flag),
+    ("A", Kind::Flag),
+    ("F", Kind::Flag),
+    ("R", Kind::Flag),
+    ("T", Kind::Flag),
+    ("a", Kind::Flag),
+    ("d", Kind::Flag),
+    ("h", Kind::Flag),
+    ("i", Kind::Flag),
+    ("k", Kind::Flag),
+    ("l", Kind::Flag),
+    ("n", Kind::Flag),
+    ("o", Kind::Flag),
+    ("p", Kind::Flag),
+    ("r", Kind::Flag),
+    ("s", Kind::Flag),
+    ("u", Kind::Flag),
+    ("y", Kind::Flag),
+    ("c", Kind::Flag),
+    ("U", Kind::Flag),
 ];
+
+/// A single-letter option: `-t` and `-S` exclude each other, `-U` is `-c`.
+fn set_flag(o: &mut Opts, c: char) {
+    match c {
+        't' => {
+            o.flags.remove(&'S');
+        }
+        'S' => {
+            o.flags.remove(&'t');
+        }
+        _ => {}
+    }
+    o.flags.insert(if c == 'U' { 'c' } else { c });
+}
 
 /// Getopt::Long's names: each option, and `no<name>` / `no-<name>` for a negatable one.
 /// Returns (name, option, negated), sorted by name.
@@ -145,6 +185,12 @@ pub fn parse(args: &[String]) -> Result<(Opts, Vec<String>), String> {
             };
             let (full, name, kind, negated) = hit;
             match kind {
+                Kind::Flag => {
+                    if optarg.is_some() {
+                        return Err(format!("Option {full} does not take an argument\n"));
+                    }
+                    set_flag(&mut o, name.chars().next().unwrap_or('?'));
+                }
                 Kind::Neg => {
                     if optarg.is_some() {
                         return Err(format!("Option {full} does not take an argument\n"));
@@ -161,7 +207,11 @@ pub fn parse(args: &[String]) -> Result<(Opts, Vec<String>), String> {
                         }
                         None => return Err(format!("Option {full} requires an argument\n")),
                     };
-                    set_long(&mut o, name, false, Some(value));
+                    if name == "D" {
+                        o.d_format = Some(value);
+                    } else {
+                        set_long(&mut o, name, false, Some(value));
+                    }
                 }
             }
             continue;
@@ -185,19 +235,8 @@ pub fn parse(args: &[String]) -> Result<(Opts, Vec<String>), String> {
                     o.d_format = Some(value);
                     break;
                 }
-                't' => {
-                    o.flags.remove(&'S');
-                    o.flags.insert('t');
-                }
-                'S' => {
-                    o.flags.remove(&'t');
-                    o.flags.insert('S');
-                }
-                'U' | 'c' => {
-                    o.flags.insert('c');
-                }
-                'A' | 'F' | 'R' | 'T' | 'a' | 'd' | 'h' | 'i' | 'k' | 'l' | 'n' | 'o' | 'p' | 'r' | 's' | 'u' | 'y' => {
-                    o.flags.insert(c);
+                't' | 'S' | 'U' | 'c' | 'A' | 'F' | 'R' | 'T' | 'a' | 'd' | 'h' | 'i' | 'k' | 'l' | 'n' | 'o' | 'p' | 'r' | 's' | 'u' | 'y' => {
+                    set_flag(&mut o, c);
                 }
                 _ => return Err(format!("Unknown option: {c}\n")),
             }
@@ -230,6 +269,11 @@ pub struct Entry {
     pub nlink: u64,
     pub ino: u64,
     pub blocks: u64,
+}
+
+/// A file's owner and group: account names and SID strings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Owners {
     pub owner: String,
     pub group: String,
     pub owner_id: String,
@@ -237,10 +281,14 @@ pub struct Entry {
 }
 
 /// What imgls asks of the file system. `list` gives a folder's names without "." and "..".
+/// `exists` is Perl's `-e` (links followed). `owners` is asked only for the long listing;
+/// `names` false leaves the account names unlooked-up (`-n` shows SIDs).
 pub trait Fs {
     fn lstat(&self, path: &str) -> Option<Entry>;
+    fn exists(&self, path: &str) -> bool;
+    fn owners(&self, path: &str, names: bool) -> Owners;
     fn list(&self, dir: &str) -> Result<Vec<String>, String>;
-    fn read(&self, path: &str) -> Option<Vec<u8>>;
+    fn open(&self, path: &str) -> Option<Box<dyn std::io::Read + '_>>;
     fn dims(&self, path: &str) -> Option<(u32, u32)>;
 }
 
@@ -371,10 +419,6 @@ fn last_field(path: &str) -> &str {
     path.trim_end_matches('/').rsplit('/').next().unwrap_or("")
 }
 
-fn unc(s: &str) -> bool {
-    s.starts_with("\\\\") || s.starts_with("//")
-}
-
 /// One listed entry (`%h` in `do_ls`).
 struct Row {
     file: String,
@@ -413,33 +457,44 @@ impl Ls<'_, '_> {
         let _ = self.io.err.write_all(format!("{s}\n").as_bytes());
     }
 
-    /// `_lstat`, cached; a UNC path is never probed.
-    fn lstat(&self, path: &str) -> Option<Entry> {
-        if unc(path) {
-            return None;
+    /// `f` of `_lstat`, cached; a network path is never probed.
+    fn with_stat<R>(&self, path: &str, f: impl FnOnce(Option<&Entry>) -> R) -> R {
+        if network_path(path) {
+            return f(None);
         }
-        self.cache.borrow_mut().entry(path.to_string()).or_insert_with(|| self.fs.lstat(path)).clone()
+        let mut cache = self.cache.borrow_mut();
+        f(cache.entry(path.to_string()).or_insert_with(|| self.fs.lstat(path)).as_ref())
+    }
+
+    fn lstat(&self, path: &str) -> Option<Entry> {
+        self.with_stat(path, |e| e.cloned())
     }
 
     fn st(&self, path: &str) -> Entry {
         self.lstat(path).unwrap_or_default()
     }
 
-    /// `ls_sort`.
+    /// `ls_sort`, each entry's key read once.
     fn sort(&self, mut v: Vec<String>) -> Vec<String> {
         let o = &self.o;
+        let keyed = |v: Vec<String>, key: fn(&Entry) -> i128| -> Vec<(i128, String)> {
+            v.into_iter().map(|p| (self.with_stat(&p, |e| e.map_or(0, key)), p)).collect()
+        };
         if o.has('t') {
             let same = o.has('y') || self.samesort;
-            v.sort_by(|a, b| {
-                let by = self.st(b).mtime.cmp(&self.st(a).mtime);
-                by.then_with(|| if same { b.cmp(a) } else { a.cmp(b) })
-            });
+            let mut k = keyed(v, |e| i128::from(e.mtime));
+            k.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| if same { b.1.cmp(&a.1) } else { a.1.cmp(&b.1) }));
+            v = k.into_iter().map(|(_, p)| p).collect();
         } else if o.has('c') {
             v.sort();
         } else if o.has('u') {
-            v.sort_by_key(|p| self.st(p).atime);
+            let mut k = keyed(v, |e| i128::from(e.atime));
+            k.sort_by_key(|a| a.0);
+            v = k.into_iter().map(|(_, p)| p).collect();
         } else if o.has('S') {
-            v.sort_by(|a, b| self.st(b).size.cmp(&self.st(a).size).then_with(|| a.cmp(b)));
+            let mut k = keyed(v, |e| i128::from(e.size));
+            k.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+            v = k.into_iter().map(|(_, p)| p).collect();
         } else {
             v.sort();
         }
@@ -464,24 +519,52 @@ impl Ls<'_, '_> {
         got
     }
 
-    /// `write_image`: the file's own bytes, or the black pixel for `None` or an unreadable
-    /// file. Parameters in a fixed order (the script's is a Perl hash's).
+    /// `write_image`: the file's own bytes, or the black pixel for `None` or a file that
+    /// cannot be read or reads empty. Parameters in a fixed order (the script's is a Perl
+    /// hash's). The file is streamed: `encode_base64`'s 76-column lines (57 bytes each, every
+    /// line ending "\n") written a block at a time.
     fn write_image(&mut self, file: Option<(&str, u64)>) {
-        let own = file.and_then(|(f, size)| {
-            let bytes = self.fs.read(f)?;
-            let mut enc = String::new();
-            for chunk in b64(&bytes).as_bytes().chunks(76) {
-                enc.push_str(std::str::from_utf8(chunk).unwrap_or(""));
-                enc.push('\n');
-            }
-            (!enc.is_empty()).then(|| (b64(f.as_bytes()), size, enc))
-        });
-        let (name, size, data) = own.unwrap_or_else(|| (b64(b"one_pixel_black"), BLACK_PIXEL.len() as u64, BLACK_PIXEL.to_string()));
+        const BLOCK: usize = 57 * 1024;
         let o = &self.o;
-        let s = format!(
-            "\x1b]1337;File=inline=1;height={};width={};preserveAspectRatio={};name={name};size={size}:{data}\x07",
-            o.height, o.width, o.preserve
-        );
+        let head = |name: &str, size: u64| {
+            format!("\x1b]1337;File=inline=1;height={};width={};preserveAspectRatio={};name={name};size={size}:", o.height, o.width, o.preserve)
+        };
+        // Reads until `buf` is full or the file ends (a read error ends it too).
+        let fill = |r: &mut dyn std::io::Read, buf: &mut [u8]| {
+            let mut n = 0;
+            while n < buf.len() {
+                match r.read(&mut buf[n..]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(k) => n += k,
+                }
+            }
+            n
+        };
+        let encode = |bytes: &[u8]| -> String { bytes.chunks(57).map(|c| format!("{}\n", b64(c))).collect() };
+        if let Some((f, size)) = file
+            && let Some(mut r) = self.fs.open(f)
+        {
+            let mut buf = vec![0u8; BLOCK];
+            let mut n = fill(&mut *r, &mut buf);
+            if n > 0 {
+                let mut s = head(&b64(f.as_bytes()), size);
+                loop {
+                    s.push_str(&encode(&buf[..n]));
+                    let _ = self.io.out.write_all(s.as_bytes());
+                    s.clear();
+                    if n < BLOCK {
+                        break;
+                    }
+                    n = fill(&mut *r, &mut buf);
+                    if n == 0 {
+                        break;
+                    }
+                }
+                let _ = self.io.out.write_all(b"\x07");
+                return;
+            }
+        }
+        let s = format!("{}{BLACK_PIXEL}\x07", head(&b64(b"one_pixel_black"), BLACK_PIXEL.len() as u64));
         self.put(&s);
     }
 
@@ -523,9 +606,11 @@ impl Ls<'_, '_> {
             }
             if o.has('l') {
                 r.lsmodes = Some(format_mode(st.mode));
-                r.owner = Some(if o.has('n') { st.owner_id.clone() } else { st.owner.clone() });
+                // Owners are looked up only here, names only when shown.
+                let who = self.fs.owners(&file, !o.has('n'));
+                r.owner = Some(if o.has('n') { who.owner_id.clone() } else { who.owner.clone() });
                 if !o.has('o') {
-                    r.group = Some(if o.has('n') { st.group_id.clone() } else { st.group.clone() });
+                    r.group = Some(if o.has('n') { who.group_id } else { who.group });
                 }
                 r.time = Some(format_time(if o.has('c') { st.ctime } else { st.mtime }, self.now, &o, self.local));
             }
@@ -642,20 +727,48 @@ impl Ls<'_, '_> {
 /// (folders 0o040777; files 0o100666, 0o100444 read-only, plus 0o111 for .exe, .bat, .cmd and
 /// .com; symbolic links and junctions 0o120777), link counts and file index from
 /// `GetFileInformationByHandle`, blocks of 512 bytes from the allocation size, owner and group
-/// as account names ("?" when a lookup fails) and SIDs. A UNC path is never probed.
+/// as account names ("?" when a lookup fails) and SIDs. A network path is never probed, and
+/// neither is a path reached through a link to one.
 #[cfg(windows)]
 pub struct WinFs {
-    pub cwd: PathBuf,
+    cwd: PathBuf,
+    /// Folders whose way from the root holds no link to a network path.
+    checked: RefCell<HashSet<PathBuf>>,
+    /// Account names by SID string, for this run.
+    names: RefCell<HashMap<String, String>>,
 }
 
 #[cfg(windows)]
 impl WinFs {
-    fn full(&self, path: &str) -> Option<PathBuf> {
-        if unc(path) {
+    pub fn new(cwd: PathBuf) -> WinFs {
+        WinFs { cwd, checked: RefCell::default(), names: RefCell::default() }
+    }
+
+    /// `path` against `cwd`, when it may be opened: not a network path (as given or joined),
+    /// no link on the way to its folder leading to one (each folder checked once), and with
+    /// `follow` (the open follows `path` itself) not a link to one either.
+    fn full(&self, path: &str, follow: bool) -> Option<PathBuf> {
+        if network_path(path) {
             return None;
         }
         let p = self.cwd.join(path);
-        (!unc(&p.to_string_lossy())).then_some(p)
+        if network_path(&p.to_string_lossy()) {
+            return None;
+        }
+        if let Some(parent) = p.parent() {
+            let known = self.checked.borrow().contains(parent);
+            if !known {
+                if !crate::git_state::program_links_local(parent) {
+                    return None;
+                }
+                self.checked.borrow_mut().insert(parent.to_path_buf());
+            }
+        }
+        let link = std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink());
+        if follow && link && !crate::git_state::program_links_local(&p) {
+            return None;
+        }
+        Some(p)
     }
 }
 
@@ -674,7 +787,10 @@ mod win {
         GetFileInformationByHandleEx,
     };
 
-    use super::Entry;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use super::{Entry, Owners};
 
     const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
     const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
@@ -701,9 +817,26 @@ mod win {
         }
     }
 
-    /// Owner and group names and SID strings of an open file ("?" each when unreadable).
-    fn owners(h: HANDLE) -> (String, String, String, String) {
-        let unknown = || ("?".to_string(), "?".to_string(), "?".to_string(), "?".to_string());
+    /// Owner and group SID strings of a file and, with `names`, their account names (looked
+    /// up once per SID in `cache`); "?" each when unreadable. The file is opened without
+    /// following a link.
+    pub fn owners(path: &std::path::Path, names: bool, cache: &RefCell<HashMap<String, String>>) -> Owners {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            READ_CONTROL,
+        };
+        let unknown = || Owners { owner: "?".into(), group: "?".into(), owner_id: "?".into(), group_id: "?".into() };
+        let Ok(file) = std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+        else {
+            return unknown();
+        };
+        let h = file.as_raw_handle() as HANDLE;
         unsafe {
             let (mut owner, mut group): (PSID, PSID) = (null_mut(), null_mut());
             let mut sd: PSECURITY_DESCRIPTOR = null_mut();
@@ -721,7 +854,19 @@ mod win {
                 return unknown();
             }
             let sid_of = |s: PSID| if s.is_null() { "?".to_string() } else { crate::winpipe::sid_text(s).unwrap_or_else(|_| "?".into()) };
-            let got = (account(owner), account(group), sid_of(owner), sid_of(group));
+            let name_of = |s: PSID, id: &str| {
+                if !names {
+                    return String::new();
+                }
+                if let Some(n) = cache.borrow().get(id) {
+                    return n.clone();
+                }
+                let n = account(s);
+                cache.borrow_mut().insert(id.to_string(), n.clone());
+                n
+            };
+            let (owner_id, group_id) = (sid_of(owner), sid_of(group));
+            let got = Owners { owner: name_of(owner, &owner_id), group: name_of(group, &group_id), owner_id, group_id };
             LocalFree(sd as HLOCAL);
             got
         }
@@ -733,19 +878,14 @@ mod win {
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-            FILE_SHARE_WRITE, READ_CONTROL,
+            FILE_SHARE_WRITE,
         };
-        let open = |access: u32| {
-            std::fs::OpenOptions::new()
-                .access_mode(access)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(path)
-        };
-        let (file, secured) = match open(FILE_READ_ATTRIBUTES | READ_CONTROL) {
-            Ok(f) => (f, true),
-            Err(_) => (open(FILE_READ_ATTRIBUTES).ok()?, false),
-        };
+        let file = std::fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .ok()?;
         let h = file.as_raw_handle() as HANDLE;
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
         if unsafe { GetFileInformationByHandle(h, &mut info) } == 0 {
@@ -780,8 +920,6 @@ mod win {
             let base = if attrs & FILE_ATTRIBUTE_READONLY != 0 { 0o100444 } else { 0o100666 };
             if exec { base | 0o111 } else { base }
         };
-        let (owner, group, owner_id, group_id) =
-            if secured { owners(h) } else { ("?".into(), "?".into(), "?".into(), "?".into()) };
         Some(Entry {
             is_dir: dir,
             is_file: !dir && !link,
@@ -795,10 +933,6 @@ mod win {
             nlink: u64::from(info.nNumberOfLinks),
             ino: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
             blocks: alloc / 512,
-            owner,
-            group,
-            owner_id,
-            group_id,
         })
     }
 }
@@ -818,18 +952,28 @@ fn errno_text(e: &std::io::Error) -> String {
 #[cfg(windows)]
 impl Fs for WinFs {
     fn lstat(&self, path: &str) -> Option<Entry> {
-        win::lstat(&self.full(path)?)
+        win::lstat(&self.full(path, false)?)
+    }
+    fn exists(&self, path: &str) -> bool {
+        self.full(path, true).is_some_and(|p| std::fs::metadata(p).is_ok())
+    }
+    fn owners(&self, path: &str, names: bool) -> Owners {
+        match self.full(path, false) {
+            Some(p) => win::owners(&p, names, &self.names),
+            None => Owners { owner: "?".into(), group: "?".into(), owner_id: "?".into(), group_id: "?".into() },
+        }
     }
     fn list(&self, dir: &str) -> Result<Vec<String>, String> {
-        let full = self.full(dir).ok_or_else(|| "No such file or directory".to_string())?;
+        let full = self.full(dir, true).ok_or_else(|| "No such file or directory".to_string())?;
         let rd = std::fs::read_dir(full).map_err(|e| errno_text(&e))?;
         Ok(rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
     }
-    fn read(&self, path: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.full(path)?).ok()
+    fn open(&self, path: &str) -> Option<Box<dyn std::io::Read + '_>> {
+        let f = std::fs::File::open(self.full(path, true)?).ok()?;
+        Some(Box::new(f))
     }
     fn dims(&self, path: &str) -> Option<(u32, u32)> {
-        image::image_dimensions(self.full(path)?).ok()
+        image::image_dimensions(self.full(path, true)?).ok()
     }
 }
 
@@ -894,6 +1038,11 @@ pub fn imgls(args: &[String], io: &mut Io, fs: &dyn Fs, now: i64, local: &dyn Fn
     };
     let mut queue: VecDeque<String> = dirs.into();
     while let Some(path) = queue.pop_front() {
+        // `! -e $path`: a dangling link (or one to a network path) is not there.
+        if !ls.fs.exists(&path) {
+            ls.say_err(&format!("imgls: {path}: No such file or directory"));
+            continue;
+        }
         let names = match ls.fs.list(&path) {
             Ok(n) => n,
             Err(e) => {
@@ -907,7 +1056,7 @@ pub fn imgls(args: &[String], io: &mut Io, fs: &dyn Fs, now: i64, local: &dyn Fn
                 continue;
             }
             let p = format!("{path}/{name}");
-            if ls.st(&p).is_dir {
+            if ls.with_stat(&p, |e| e.is_some_and(|e| e.is_dir)) {
                 d.push(p);
             } else {
                 f.push(p);
@@ -984,10 +1133,6 @@ mod tests {
             nlink: 1,
             ino,
             blocks: if size > 0 { 8 } else { 0 },
-            owner: "robert".into(),
-            group: "staff".into(),
-            owner_id: "S-1-5-21-7-1001".into(),
-            group_id: "S-1-5-21-7-513".into(),
             ..Default::default()
         }
     }
@@ -1002,10 +1147,6 @@ mod tests {
             mode: 0o040755,
             nlink: 3,
             ino,
-            owner: "robert".into(),
-            group: "wheel".into(),
-            owner_id: "S-1-5-21-7-1001".into(),
-            group_id: "S-1-5-21-7-513".into(),
             ..Default::default()
         }
     }
@@ -1016,7 +1157,11 @@ mod tests {
         dirs: BTreeMap<String, Vec<String>>,
         bytes: BTreeMap<String, Vec<u8>>,
         dims: BTreeMap<String, (u32, u32)>,
+        /// Links whose target is not there.
+        dangling: Vec<String>,
         probed: RefCell<Vec<String>>,
+        /// `owners` calls, with whether names were asked for.
+        owner_calls: RefCell<Vec<(String, bool)>>,
     }
 
     impl Fs for FakeFs {
@@ -1024,12 +1169,28 @@ mod tests {
             self.probed.borrow_mut().push(path.to_string());
             self.stats.get(path).cloned()
         }
+        fn exists(&self, path: &str) -> bool {
+            self.probed.borrow_mut().push(path.to_string());
+            self.stats.contains_key(path) && !self.dangling.iter().any(|d| d == path)
+        }
+        fn owners(&self, path: &str, names: bool) -> Owners {
+            self.owner_calls.borrow_mut().push((path.to_string(), names));
+            let dir = self.stats.get(path).is_some_and(|e| e.is_dir);
+            let group = if dir { "wheel" } else { "staff" };
+            Owners {
+                owner: if names { "robert".into() } else { String::new() },
+                group: if names { group.into() } else { String::new() },
+                owner_id: "S-1-5-21-7-1001".into(),
+                group_id: "S-1-5-21-7-513".into(),
+            }
+        }
         fn list(&self, dir: &str) -> Result<Vec<String>, String> {
             self.probed.borrow_mut().push(dir.to_string());
             self.dirs.get(dir).cloned().ok_or_else(|| "Not a directory".to_string())
         }
-        fn read(&self, path: &str) -> Option<Vec<u8>> {
-            self.bytes.get(path).cloned()
+        fn open(&self, path: &str) -> Option<Box<dyn std::io::Read + '_>> {
+            let b = self.bytes.get(path)?;
+            Some(Box::new(&b[..]))
         }
         fn dims(&self, path: &str) -> Option<(u32, u32)> {
             self.dims.get(path).copied()
@@ -1157,11 +1318,27 @@ mod tests {
         assert_eq!(out, format!("{} a.png\n", img(PARAMS, "YS5wbmc=", 7, "UE5HREFUQQ==\n")));
         assert_eq!(err, "imgls: missing: No such file or directory\n");
 
-        // A UNC path is never probed.
-        let (code, out, err) = run(&fs, &["\\\\host\\share", "//host/share"]);
+        // A network path is never probed, in any spelling.
+        let spellings = ["\\\\host\\share", "//host/share", "/\\host\\share", "\\/host/share", "\\\\?\\UNC\\host\\s", "\\\\.\\pipe\\x", "\\??\\UNC\\host\\s"];
+        let (code, out, err) = run(&fs, &spellings);
         assert_eq!((code, out.as_str()), (0, ""));
-        assert_eq!(err, "imgls: \\\\host\\share: No such file or directory\nimgls: //host/share: No such file or directory\n");
-        assert!(fs.probed.borrow().iter().all(|p| !p.starts_with("\\\\") && !p.starts_with("//")));
+        let want: String = spellings.iter().map(|p| format!("imgls: {p}: No such file or directory\n")).collect();
+        assert_eq!(err, want);
+        assert!(fs.probed.borrow().iter().all(|p| !network_path(p)), "{:?}", fs.probed.borrow());
+
+        // A link argument whose target is not there: the script's `-e` message.
+        let mut dangling = fake();
+        dangling.stats.insert("L".into(), Entry { is_link: true, mode: 0o120777, ..Default::default() });
+        dangling.dangling.push("L".into());
+        assert_eq!(run(&dangling, &["L"]), (0, String::new(), "imgls: L: No such file or directory\n".into()));
+
+        // Owners are asked for only by the long listing, names only when shown.
+        assert!(fs.owner_calls.borrow().is_empty());
+        run(&fs, &["-l"]);
+        assert!(!fs.owner_calls.borrow().is_empty() && fs.owner_calls.borrow().iter().all(|(_, names)| *names));
+        fs.owner_calls.borrow_mut().clear();
+        run(&fs, &["-ln"]);
+        assert!(!fs.owner_calls.borrow().is_empty() && fs.owner_calls.borrow().iter().all(|(_, names)| !*names));
 
         // --dimensions: " [%*d x %*d] " or the `%*s` blanks (" %*s   %*s   ", 9 columns here).
         let blank = " ".repeat(9);
@@ -1184,6 +1361,16 @@ mod tests {
         assert_eq!(run(&fs, &["-ty"]).1, rev);
         assert_eq!(run_env(&fs, &["-t"], &[("LS_SAMESORT", "1")]).1, rev);
         assert_eq!(run(&fs, &["-S"]).1, format!("{} sub\n{} a.png\n{} b.txt\n", black(), a_img(), black()));
+        // -u: access time, oldest first; -c without -l sorts by name; -p marks folders only.
+        let mut aged = fake();
+        for (p, t) in [("./a.png", 30), ("./b.txt", 10), ("./sub", 20)] {
+            aged.stats.get_mut(p).unwrap().atime = t;
+            aged.stats.get_mut(p).unwrap().mtime = 100 - t;
+        }
+        assert_eq!(run(&aged, &["-u"]).1, format!("{} b.txt\n{} sub\n{} a.png\n", black(), black(), a_img()));
+        assert_eq!(run(&aged, &["-c"]).1, plain());
+        assert_eq!(run(&aged, &["-t"]).1, format!("{} b.txt\n{} sub\n{} a.png\n", black(), black(), a_img()));
+        assert_eq!(run(&fs, &["-p"]).1, format!("{} a.png\n{} b.txt\n{} sub/\n", a_img(), black(), black()));
     }
 
     #[test]
@@ -1239,7 +1426,29 @@ mod tests {
         assert_eq!(parsed(&["--width="]), Err("Option width requires an argument\n".into()));
         assert_eq!(parsed(&["--dimensions=1"]), Err("Option dimensions does not take an argument\n".into()));
         assert_eq!(parsed(&["-lz"]), Err("Unknown option: z\n".into()));
-        assert!(parsed(&["--no"]).unwrap_err().starts_with("Option no is ambiguous ("));
+        assert_eq!(
+            parsed(&["--no"]),
+            Err("Option no is ambiguous (no-dimensions, no-preserve_ratio, no-unknown, nodimensions, nopreserve_ratio, nounknown)\n".into())
+        );
+        assert_eq!(run(&fs, &["--no"]).0, 1);
+        // `--<letter>` is the single-letter option, as Getopt::Long matches it.
+        assert_eq!(flags(&["--l"]), "l");
+        assert_eq!(flags(&["--n"]), "ln");
+        assert_eq!(flags(&["--d", "--R"]), "d");
+        assert_eq!(flags(&["--u", "--h", "--F"]), "Fhu");
+        assert_eq!(flags(&["--U"]), "c");
+        assert_eq!(flags(&["-t", "--S"]), "S");
+        let (o, rest) = parsed(&["--h", "x"]).unwrap();
+        assert_eq!((o.height.as_str(), rest), ("1", vec!["x".to_string()]), "--h is -h, not --height");
+        assert_eq!(parsed(&["--u"]).unwrap().0.unknown, None, "--u is -u, not --unknown");
+        assert_eq!(parsed(&["--d"]).unwrap().0.dimensions, None, "--d is -d, not --dimensions");
+        assert_eq!(parsed(&["--D", "%F", "--T"]).unwrap().0.d_format.as_deref(), Some("%F"));
+        assert_eq!(flags(&["--D=%F", "--T"]), "");
+        assert_eq!(parsed(&["--D"]), Err("Option D requires an argument\n".into()));
+        assert_eq!(parsed(&["--l=1"]), Err("Option l does not take an argument\n".into()));
+        assert_eq!(parsed(&["--di"]).unwrap().0.dimensions, Some(true));
+        assert_eq!(run(&fs, &["--l"]).1, run(&fs, &["-l"]).1);
+        assert_eq!(run(&fs, &["--d"]).1, format!("{} .\n", black()));
 
         // --dimensions --nounknown: a file without dimensions gets the black pixel.
         let mut fs = fake();
@@ -1325,6 +1534,7 @@ mod tests {
     #[test]
     fn win_fs_follows_perl_stat() {
         use crate::util_cli::Harness;
+        use std::io::Read;
         let dir = std::env::temp_dir().join(format!("tandem-imgls-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
@@ -1336,7 +1546,7 @@ mod tests {
         perm.set_readonly(true);
         std::fs::set_permissions(dir.join("ro.txt"), perm).unwrap();
 
-        let fs = WinFs { cwd: dir.clone() };
+        let fs = WinFs::new(dir.clone());
         let a = fs.lstat("./a.png").unwrap();
         assert!(a.is_file && !a.is_dir && !a.is_link && !a.is_exec);
         assert_eq!(a.mode, 0o100666);
@@ -1344,8 +1554,12 @@ mod tests {
         assert!(a.nlink >= 1 && a.ino != 0);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
         assert!((a.mtime - now).abs() < 600, "{} vs {now}", a.mtime);
-        assert!(a.owner != "?" && !a.owner.is_empty(), "{}", a.owner);
-        assert!(a.owner_id.starts_with("S-1-") && a.group_id.starts_with("S-1-"), "{} {}", a.owner_id, a.group_id);
+        let who = fs.owners("./a.png", true);
+        assert!(who.owner != "?" && !who.owner.is_empty(), "{}", who.owner);
+        assert!(who.owner_id.starts_with("S-1-") && who.group_id.starts_with("S-1-"), "{} {}", who.owner_id, who.group_id);
+        assert_eq!(fs.names.borrow().get(&who.owner_id), Some(&who.owner), "names are kept per SID");
+        let bare = fs.owners("./a.png", false);
+        assert_eq!((bare.owner.as_str(), bare.owner_id.as_str()), ("", who.owner_id.as_str()));
         assert_eq!(fs.lstat("run.CMD").unwrap().mode, 0o100777);
         assert!(fs.lstat("run.CMD").unwrap().is_exec);
         assert_eq!(fs.lstat("ro.txt").unwrap().mode, 0o100444);
@@ -1354,14 +1568,19 @@ mod tests {
         assert_eq!((sub.mode, sub.size), (0o040777, 0));
         assert!(fs.lstat(".").unwrap().is_dir && fs.lstat("./..").unwrap().is_dir);
         assert_eq!(fs.lstat("missing"), None);
-        assert_eq!(fs.lstat("\\\\nohost\\share"), None);
+        for p in ["\\\\nohost\\share", "/\\nohost\\share", "\\/nohost/share", "\\\\?\\UNC\\nohost\\s"] {
+            assert_eq!(fs.lstat(p), None, "{p}");
+            assert!(!fs.exists(p) && fs.list(p).is_err() && fs.open(p).is_none() && fs.dims(p).is_none(), "{p}");
+        }
         let mut names = fs.list(".").unwrap();
         names.sort();
         assert_eq!(names, ["a.png", "b.txt", "ro.txt", "run.CMD", "sub"]);
         assert_eq!(fs.list("b.txt").is_err(), true);
         assert_eq!(fs.dims("./a.png"), Some((2, 2)));
         assert_eq!(fs.dims("b.txt"), None);
-        assert_eq!(fs.read("ro.txt").as_deref(), Some(&b"x"[..]));
+        let mut x = Vec::new();
+        fs.open("ro.txt").unwrap().read_to_end(&mut x).unwrap();
+        assert_eq!(x, b"x");
 
         let mut h = Harness { cwd: dir.clone(), ..Default::default() };
         assert_eq!(h.run("imgls", &["-F", "--dimensions"]), 0);
@@ -1375,6 +1594,40 @@ mod tests {
         assert_eq!(h.run("imgls", &["-l", "b.txt"]), 0);
         let out = String::from_utf8(h.out.clone()).unwrap();
         assert!(out.contains(" -rw-rw-rw- 1 "), "{out:?}");
+
+        // A junction argument is followed (the script's `opendir`), and shows as a link.
+        let made = std::process::Command::new("cmd.exe")
+            .args(["/c", "mklink", "/J"])
+            .arg(dir.join("jn"))
+            .arg(dir.join("sub"))
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(made, "mklink /J needs no privilege");
+        std::fs::write(dir.join("sub").join("in.txt"), b"").unwrap();
+        let jn = fs.lstat("jn").unwrap();
+        assert!(jn.is_link && !jn.is_dir && !jn.is_file && jn.mode == 0o120777);
+        assert!(fs.exists("jn"));
+        let mut h = Harness { cwd: dir.clone(), ..Default::default() };
+        assert_eq!(h.run("imgls", &["jn"]), 0);
+        assert!(String::from_utf8(h.out.clone()).unwrap().ends_with(" in.txt\n"));
+        let mut h = Harness { cwd: dir.clone(), ..Default::default() };
+        assert_eq!(h.run("imgls", &["-F", "-d", "jn"]), 0);
+        assert!(String::from_utf8(h.out.clone()).unwrap().ends_with(" jn@\n"));
+        // A link to a network path is never followed (making one needs the symbolic link
+        // privilege or developer mode).
+        match std::os::windows::fs::symlink_dir("\\\\nohost.invalid\\share", dir.join("net")) {
+            Ok(()) => {
+                assert!(fs.lstat("net").is_some_and(|e| e.is_link));
+                assert!(!fs.exists("net") && fs.list("net").is_err() && fs.lstat("net/x").is_none() && fs.open("net").is_none());
+                let mut h = Harness { cwd: dir.clone(), ..Default::default() };
+                assert_eq!(h.run("imgls", &["net"]), 0);
+                assert_eq!(String::from_utf8(h.err.clone()).unwrap(), "imgls: net: No such file or directory\n");
+            }
+            Err(e) => eprintln!("MEASURED: no symbolic link to a network path made ({e}); util_cli's may_open test covers the rule"),
+        }
+        let _ = std::fs::remove_dir(dir.join("jn"));
+        let _ = std::fs::remove_dir(dir.join("net"));
 
         let mut perm = std::fs::metadata(dir.join("ro.txt")).unwrap().permissions();
         #[allow(clippy::permissions_set_readonly_false)]
