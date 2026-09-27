@@ -1483,6 +1483,27 @@ impl App {
         self.relayout();
     }
 
+    /// What follows new output in `outputs` (the panes that got some): find bars and saved
+    /// state notice it, then profile switching, downloads, requests, the composer, marks,
+    /// menu checks and a redraw. The output loop and the API's Inject both come here.
+    pub(super) fn after_output(&mut self, outputs: &[PaneId], now: Instant) {
+        for id in outputs {
+            if let Some(f) = self.finds.get_mut(id) {
+                f.output_changed(now);
+            }
+        }
+        if !outputs.is_empty() {
+            self.state_debounce.mark(now);
+        }
+        self.run_automatic_profile_switching();
+        self.take_downloads();
+        self.take_requests();
+        self.composer_output(outputs);
+        self.check_marks();
+        self.sync_checks();
+        self.redraw();
+    }
+
     fn relayout(&mut self) {
         self.mark_state_dirty();
         self.layout_toolbelt();
@@ -2699,14 +2720,8 @@ impl ApplicationHandler<UserEvent> for App {
             let got = p.pump();
             if got {
                 outputs.push(*id);
-                if let Some(f) = self.finds.get_mut(id) {
-                    f.output_changed(now);
-                }
             }
             changed |= got;
-            if got {
-                self.state_debounce.mark(now);
-            }
             if p.exited.is_some() {
                 exited.push(*id);
             }
@@ -2728,13 +2743,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         self.check_coprocesses();
         if changed {
-            self.run_automatic_profile_switching();
-            self.take_downloads();
-            self.take_requests();
-            self.composer_output(&outputs);
-            self.check_marks();
-            self.sync_checks();
-            self.redraw();
+            self.after_output(&outputs, now);
         }
     }
 

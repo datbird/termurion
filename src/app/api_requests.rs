@@ -102,14 +102,17 @@ impl App {
         if panes.is_empty() || data.is_empty() {
             return resp;
         }
+        let mut fed = Vec::new();
         for pane in panes {
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.feed_output(&data);
+                if !fed.contains(&pane) {
+                    fed.push(pane);
+                }
             }
         }
-        self.take_requests();
-        self.check_marks();
-        self.redraw();
+        // The same step real output runs.
+        self.after_output(&fed, std::time::Instant::now());
         resp
     }
 
@@ -153,7 +156,7 @@ impl App {
         }
         if plan.raise {
             if let Some(w) = window {
-                self.focus_terminal_window(w);
+                self.order_front(w);
             }
         }
         if plan.select_tab {
@@ -194,7 +197,13 @@ impl App {
             let done = match step {
                 CloseStep::Window(k) if now.windows.iter().any(|(w, _, _)| *w == k) => Some(self.api_close_window(k, force, event_loop)),
                 CloseStep::Tab(t) if now.tab_window(t).is_some() => Some(self.api_close_tab(t, force, event_loop)),
-                CloseStep::Session { pane, .. } if now.pane(&pane.to_string()).is_some() => Some(self.api_close_session(pane, force, event_loop)),
+                CloseStep::Session { pane, unbury } if now.pane(&pane.to_string()).is_some() => {
+                    // A buried session is restored before it closes (`H:4238-4240`).
+                    if unbury {
+                        self.api_disinter(pane, event_loop);
+                    }
+                    Some(self.api_close_session(pane, force, event_loop))
+                }
                 _ => None,
             };
             results.push(match done {
@@ -226,15 +235,18 @@ impl App {
         true
     }
 
-    /// Closes a tab by its id, undoable like Close Tab. Without `force`, tmux's question for a
-    /// tmux tab (which then carries the close out), else Tandem's confirmation; false when the
-    /// person declined.
+    /// Closes a tab by its id, undoable like Close Tab. Without `force`, Lock Layout refuses
+    /// it, then tmux's question for a tmux tab (which then carries the close out), else
+    /// Tandem's confirmation; false when refused or declined.
     pub(super) fn api_close_tab(&mut self, tab: u64, force: bool, event_loop: &ActiveEventLoop) -> bool {
         let Some(k) = self.registry.order().into_iter().find(|k| self.window_tabs(*k).is_some_and(|(tabs, _)| tabs.iter().any(|t| t.id == tab))) else { return false };
         if !self.window_id_of_key(k).is_some_and(|w| self.enter(w)) {
             return false;
         }
         let Some(index) = self.tabs.iter().position(|t| t.id == tab) else { return false };
+        if api_session::lock_refuses(CloseStep::Tab(tab), force, &self.win_locks) {
+            return false;
+        }
         if !force {
             if self.tmux_close_tab(index) {
                 return true;
@@ -247,14 +259,15 @@ impl App {
         true
     }
 
-    /// Closes a session, undoable like Close Session (alone in its tab it closes as the tab);
-    /// a buried one is restored first. Without `force`, Tandem's confirmation; false when the
-    /// person declined.
+    /// Closes a session, undoable like Close Session (alone in its tab it closes as the tab).
+    /// The caller restores a buried one first (`CloseStep::Session::unbury`); a session in no
+    /// window is not closed. Without `force`, Lock Layout refuses it, else Tandem's
+    /// confirmation; false when refused or declined.
     pub(super) fn api_close_session(&mut self, pane: PaneId, force: bool, event_loop: &ActiveEventLoop) -> bool {
-        if self.buried.contains(pane) {
-            self.api_disinter(pane, event_loop);
-        }
         if !self.enter_pane_window(pane) {
+            return false;
+        }
+        if api_session::lock_refuses(CloseStep::Session { pane, unbury: false }, force, &self.win_locks) {
             return false;
         }
         if !force && !self.confirm_close(Closing::Session(pane)) {

@@ -239,6 +239,21 @@ pub fn close_steps(r: &pb::CloseRequest, s: &Snapshot) -> Vec<CloseStep> {
     }
 }
 
+/// Whether Lock Layout refuses a close step, which then answers USER_DECLINED: a tab or
+/// session closed without `force` in a window whose layout is locked (`_layoutLocked` in
+/// `tabView:shouldCloseTabViewItem:`, `PT:7597-7600`, and `closeSessionWithConfirmation:`,
+/// `PT:2738-2742`). Windows and forced closes ignore the lock (`windowShouldClose:`,
+/// `removeTab:`, `closeSessionWithoutConfirmation:`). `locks` are the step's window's.
+pub fn lock_refuses(step: CloseStep, force: bool, locks: &crate::winmodel::Locks) -> bool {
+    use crate::winmodel::LayoutOp;
+    match step {
+        _ if force => false,
+        CloseStep::Tab(_) => locks.forbids(LayoutOp::CloseTab),
+        CloseStep::Session { .. } => locks.forbids(LayoutOp::ClosePane),
+        CloseStep::Window(_) | CloseStep::NotFound => false,
+    }
+}
+
 /// The CloseResponse carrying one status per step.
 pub fn close_response(results: &[pb::close_response::Status]) -> pb::CloseResponse {
     pb::CloseResponse { statuses: results.iter().map(|s| *s as i32).collect() }
@@ -382,5 +397,28 @@ mod tests {
         );
         assert!(close_steps(&pb::CloseRequest { force: Some(true), target: None }, &fixture()).is_empty());
         assert_eq!(close_response(&[CStatus::Ok, CStatus::NotFound, CStatus::UserDeclined]).statuses, [0, 1, 2]);
+    }
+
+    #[test]
+    fn lock_layout_refuses_like_iterm2() {
+        use crate::winmodel::Locks;
+        let locked = Locks { size: false, layout: true };
+        let open = Locks::default();
+        let sized = Locks { size: true, layout: false };
+        let tab = CloseStep::Tab(5);
+        let session = CloseStep::Session { pane: 1, unbury: false };
+        // Tabs and sessions without force are refused in a locked window.
+        assert!(lock_refuses(tab, false, &locked));
+        assert!(lock_refuses(session, false, &locked));
+        // Force ignores the lock; windows are never refused.
+        assert!(!lock_refuses(tab, true, &locked));
+        assert!(!lock_refuses(session, true, &locked));
+        assert!(!lock_refuses(CloseStep::Window(1), false, &locked));
+        assert!(!lock_refuses(CloseStep::NotFound, false, &locked));
+        // Unlocked, or only the size locked.
+        for l in [open, sized] {
+            assert!(!lock_refuses(tab, false, &l));
+            assert!(!lock_refuses(session, false, &l));
+        }
     }
 }

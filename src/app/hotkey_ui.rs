@@ -504,6 +504,27 @@ impl App {
         }
     }
 
+    /// Puts a window on top of Tandem's others and makes it the current one without
+    /// activating Tandem, as iTerm2's `makeKeyAndOrderFront:` orders a window front within the
+    /// app (Activate's `order_window_front`, `H:3072-3079`); a minimized window is restored
+    /// without activation. A hidden hotkey window shows the way its hotkey shows it.
+    pub(super) fn order_front(&mut self, id: WindowId) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_TOP, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos, ShowWindow};
+        if !self.enter(id) {
+            return;
+        }
+        self.last_window = Some(id);
+        if self.hotkey.as_ref().is_some_and(|h| !h.shown) {
+            self.roll_in();
+            return;
+        }
+        let Some(h) = self.hwnd() else { return };
+        if self.gpu.as_ref().is_some_and(|g| g.window.is_minimized() == Some(true)) {
+            unsafe { ShowWindow(h as _, SW_SHOWNOACTIVATE) };
+        }
+        unsafe { SetWindowPos(h as _, HWND_TOP, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE) };
+    }
+
     /// Whether the current window is a pinned hotkey window (the menu check).
     pub(super) fn hotkey_pinned(&self) -> bool {
         self.hotkey.as_ref().and_then(|h| self.store.get(&h.guid)).is_some_and(|p| !p.bool("HotKey Window AutoHides"))
