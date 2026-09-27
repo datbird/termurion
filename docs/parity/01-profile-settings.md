@@ -313,7 +313,7 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. A
 | Edit Triggers | n/a | Opens the Triggers editor for this profile's trigger list. | have | Milestone 6a. |
 | Edit Smart Selection | n/a | Opens the Smart Selection editor for this profile's rule list. | have | Profile Advanced tab. |
 | Edit Semantic History | Semantic History | Opens the Semantic History configuration for cmd/opt-click behavior on paths and URLs. | have | Profile Advanced tab. |
-| Automatic Profile Switching debug logging | n/a | Logs why and when automatic profile switching rules match, for debugging. | have | Milestone 6c: written to automatic-profile-switching.log beside the settings (the Script Console comes in milestone 11). |
+| Automatic Profile Switching debug logging | n/a | Logs why and when automatic profile switching rules match, for debugging. | have | Milestone 6c; since milestone 11d the lines go to the Script Console's "Automatic Profile Switching" entry (`automatic-profile-switching.log` is no longer written). |
 
 ## Triggers
 

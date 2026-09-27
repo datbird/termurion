@@ -27,4 +27,4 @@ line says WSL. Mark each line pass or fail.
 | 19 | Add the rule `&ping` to Build: `ping -n 5 127.0.0.1` switches to Build while ping runs, then back. | |
 | 20 | Add the same rule to a second profile: the editor warns `The profile "Build" is already bound to hostname ...` and takes it out of this profile. An empty or repeated rule beeps and goes. | |
 | 21 | Edit Session, turn on Prevent Automatic Profile Switching: item 18's `cd` no longer switches this session. | |
-| 22 | Settings > Advanced > "Write Automatic Profile Switching debug logs": after item 18, `automatic-profile-switching.log` beside Tandem's settings lists each decision. | |
+| 22 | Settings > Advanced > "Write Automatic Profile Switching debug logs": after item 18, the Script Console's "Automatic Profile Switching" entry (Scripts > Manage > Console, milestone 11d) lists each decision. | |

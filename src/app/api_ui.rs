@@ -290,6 +290,8 @@ pub(super) trait Host {
     fn defer(&mut self, e: Event);
     /// Forgets a closed connection; the requests its transaction's end released.
     fn forget(&mut self, conn: u64) -> Work;
+    /// A request arrived (the Script Console's Calls).
+    fn received(&mut self, conn: u64, req: &pb::ClientOriginatedMessage);
     /// After answers were sent: acts on what the requests changed that may stop the server
     /// ("Enable Python API" off), so a request's own answer goes out first.
     fn settle(&mut self);
@@ -328,6 +330,10 @@ impl Host for AppHost<'_> {
 
     fn forget(&mut self, conn: u64) -> Work {
         self.app.api_forget(conn)
+    }
+
+    fn received(&mut self, conn: u64, req: &pb::ClientOriginatedMessage) {
+        self.app.history_call(conn, crate::script_history::Dir::In, req);
     }
 
     fn settle(&mut self) {
@@ -384,6 +390,7 @@ fn freeze(h: &mut impl Host) {
         match h.wait_event() {
             Some(Event::Message { conn, bytes }) => {
                 if let Some(req) = crate::api_proto::decode(&bytes) {
+                    h.received(conn, &req);
                     work.push_back((conn, req));
                 }
             }
@@ -656,16 +663,16 @@ impl App {
         }
     }
 
-    /// A message to or from a connection, in its entry's Calls (`SH:143-179`); nothing for a
-    /// connection with no entry.
-    fn history_call(&mut self, conn: u64, dir: crate::script_history::Dir, text: &dyn Fn() -> String) {
+    /// A message to or from a connection, in its entry's Calls (`SH:143-179`), formatted only
+    /// as far as the Calls tab keeps it; nothing for a connection with no entry.
+    fn history_call(&mut self, conn: u64, dir: crate::script_history::Dir, message: &dyn std::fmt::Debug) {
         let Some((key, _)) = self.api_keys.get(&conn) else { return };
         if self.script_history.find(key).is_none() {
             return;
         }
         let key = key.clone();
         let stamp = self.history_stamp();
-        self.script_history.add_call(&key, dir, &format!("{}\n", text()), &stamp);
+        self.script_history.add_call(&key, dir, &crate::script_history::debug_text(message), &stamp);
     }
 
     /// A connection's functions go and its waiting calls fail (`H:2154-2214`).
@@ -688,7 +695,7 @@ impl App {
     /// a request goes through the transaction logic (`S:1397-1411`).
     pub(super) fn api_message(&mut self, conn: u64, bytes: Vec<u8>, event_loop: &ActiveEventLoop) {
         if let Some(req) = crate::api_proto::decode(&bytes) {
-            self.history_call(conn, crate::script_history::Dir::In, &|| format!("{req:#?}"));
+            self.history_call(conn, crate::script_history::Dir::In, &req);
             serve(&mut AppHost { app: self, event_loop }, VecDeque::from([(conn, req)]));
         }
     }
@@ -697,11 +704,6 @@ impl App {
     /// a verdict go, its waiting function calls fail, and a transaction it owned ends (`S:1418-1424`, `H:2154-2192`), running what it
     /// held.
     pub(super) fn api_closed(&mut self, conn: u64, event_loop: &ActiveEventLoop) {
-        if let Some((key, _)) = self.api_keys.get(&conn) {
-            let key = key.clone();
-            let stamp = self.history_stamp();
-            self.script_history.closed(&key, &stamp);
-        }
         let released = self.api_forget(conn);
         serve(&mut AppHost { app: self, event_loop }, released);
     }
@@ -712,6 +714,12 @@ impl App {
     /// reset). A connection gone before its verdict takes its Allow alert with it, answered
     /// Deny (logged as an internal error).
     fn api_forget(&mut self, conn: u64) -> Work {
+        // Its Script Console entry says so and stops (`SC:616-623`), before its key goes.
+        if let Some((key, _)) = self.api_keys.get(&conn) {
+            let key = key.clone();
+            let stamp = self.history_stamp();
+            self.script_history.closed(&key, &stamp);
+        }
         self.api_subs.drop_conn(conn);
         self.api_var_subs.drop_conn(conn);
         // A dead script's keystroke filter never eats another key.
@@ -746,7 +754,7 @@ impl App {
     /// even past it (`Server::respond`).
     pub(super) fn api_reply(&mut self, conn: u64, m: &crate::api_proto::pb::ServerOriginatedMessage) {
         use crate::api_proto::pb::server_originated_message::Submessage;
-        self.history_call(conn, crate::script_history::Dir::Out, &|| format!("{m:#?}"));
+        self.history_call(conn, crate::script_history::Dir::Out, m);
         if let Some(s) = &self.api_server {
             if matches!(m.submessage, Some(Submessage::Notification(_))) {
                 s.send(conn, crate::api_proto::encode(m));
@@ -1387,6 +1395,8 @@ mod tests {
         model: api_model::Model,
         deferred: Vec<Event>,
         replies: Vec<(u64, Option<i64>)>,
+        /// The requests the frozen loop took (the app's Calls entries).
+        received: Vec<(u64, Option<i64>)>,
         /// Told the connection of every message the loop takes, so a client can wait until
         /// its request was taken.
         seen: std::sync::mpsc::Sender<u64>,
@@ -1398,7 +1408,7 @@ mod tests {
 
     impl TestHost {
         fn new(server: Server, model: api_model::Model, seen: std::sync::mpsc::Sender<u64>) -> TestHost {
-            TestHost { server: Some(server), subs: Default::default(), tx: Default::default(), model, deferred: Vec::new(), replies: Vec::new(), seen, stop_on: None, stop_wanted: false }
+            TestHost { server: Some(server), subs: Default::default(), tx: Default::default(), model, deferred: Vec::new(), replies: Vec::new(), received: Vec::new(), seen, stop_on: None, stop_wanted: false }
         }
 
         fn srv(&self) -> &Server {
@@ -1444,6 +1454,10 @@ mod tests {
         fn forget(&mut self, conn: u64) -> Work {
             self.subs.drop_conn(conn);
             self.tx.closed(conn).into()
+        }
+
+        fn received(&mut self, conn: u64, req: &pb::ClientOriginatedMessage) {
+            self.received.push((conn, req.id));
         }
 
         fn settle(&mut self) {
@@ -1566,6 +1580,12 @@ mod tests {
         };
         message(&mut h);
         assert_eq!(h.replies, [(a, Some(1)), (a, Some(2)), (a, Some(3)), (b, Some(10))]);
+        // Every request the frozen loop took reaches the Calls log, the held one too.
+        let mut received = h.received.clone();
+        received.sort();
+        let mut want = vec![(a, Some(2)), (a, Some(3)), (b, Some(10))];
+        want.sort();
+        assert_eq!(received, want);
         assert_eq!(h.tx.owner(), None);
         message(&mut h);
         // A new session, posted as the app's notification tick posts it.

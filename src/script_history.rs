@@ -60,6 +60,35 @@ pub fn call_text(dir: Dir, stamp: &str, text: &str) -> String {
     format!("Script {arrow} Tandem {stamp}:\n{body}\n\n")
 }
 
+/// Keeps what is written up to `cap` bytes of whole characters, then refuses more, so a
+/// formatter writing into it stops early.
+struct Capped {
+    text: String,
+    cap: usize,
+}
+
+impl std::fmt::Write for Capped {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for c in s.chars() {
+            if self.text.len() + c.len_utf8() > self.cap {
+                return Err(std::fmt::Error);
+            }
+            self.text.push(c);
+        }
+        Ok(())
+    }
+}
+
+/// A message's pretty `Debug` text for the Calls tab, formatted only as far as `call_text`
+/// keeps: a few bytes past `MAX_CALL_BYTES`, so `call_text` sees it is longer and cuts it
+/// exactly as it would cut the whole text. A multi-megabyte message is never built in full.
+pub fn debug_text(value: &dyn std::fmt::Debug) -> String {
+    let mut out = Capped { text: String::new(), cap: MAX_CALL_BYTES + 4 };
+    // An error only means the cap was reached.
+    let _ = std::fmt::write(&mut out, format_args!("{value:#?}"));
+    out.text
+}
+
 /// A log line's timestamp, "M/d HH:mm:ss.SSS".
 pub fn stamp_log(p: &Parts, millis: u16) -> String {
     format!("{}/{} {:02}:{:02}:{:02}.{:03}", p.month, p.day, p.hour, p.minute, p.second, millis)
@@ -217,6 +246,9 @@ impl Entry {
 pub struct History {
     entries: Vec<Entry>,
     generation: u64,
+    /// The Automatic Profile Switching entry was added once (`_haveAddedAPSLoggingEntry`):
+    /// once cleared it is not added again.
+    aps_added: bool,
 }
 
 impl History {
@@ -228,7 +260,7 @@ impl History {
             entries.push(Entry::new(APS_ID, APS_NAME, now));
         }
         entries.push(Entry::new(GLOBAL_ID, GLOBAL_NAME, now));
-        History { entries, generation: 0 }
+        History { entries, generation: 0, aps_added: aps }
     }
 
     pub fn entries(&self) -> &[Entry] {
@@ -294,12 +326,12 @@ impl History {
         e.only_pid()
     }
 
-    /// The API stopped (`SH:182-188`): every running entry but the app-wide and Automatic
-    /// Profile Switching ones is terminated by the user and stops; the processes to end are
-    /// those of entries with exactly one.
+    /// The API stopped (`SH:182-188`): every running entry, the app-wide and Automatic Profile
+    /// Switching ones too (each observes the stop, `SH:131-134`), is terminated by the user and
+    /// stops; the processes to end are those of entries with exactly one.
     pub fn api_stopped(&mut self) -> Vec<u32> {
         let mut pids = Vec::new();
-        for e in self.entries.iter_mut().filter(|e| e.running && e.id != GLOBAL_ID && e.id != APS_ID) {
+        for e in self.entries.iter_mut().filter(|e| e.running) {
             e.terminated_by_user = true;
             e.running = false;
             pids.extend(e.only_pid());
@@ -327,10 +359,12 @@ impl History {
         self.entries.iter().find(|e| e.running && e.full_path.as_deref() == Some(p))
     }
 
-    /// Adds the Automatic Profile Switching entry at the end when it is missing (logging
-    /// turned on after start, `SH:353-366`).
+    /// Adds the Automatic Profile Switching entry at the end the first time it is needed
+    /// (logging turned on after start, `SH:353-366`); never again once added, even after
+    /// Clear Terminated removed it.
     pub fn ensure_aps(&mut self, now: u64) {
-        if self.find(APS_ID).is_none() {
+        if !self.aps_added {
+            self.aps_added = true;
             self.add(Entry::new(APS_ID, APS_NAME, now));
         }
     }
@@ -501,7 +535,7 @@ mod tests {
         let ids: Vec<&str> = h.entries().iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["iTerm2"]);
 
-        // API stop: one pid, two pids, none; the app-wide and APS entries keep running.
+        // API stop: one pid, two pids, none; the app-wide and APS entries stop too.
         let mut h = History::new(true, 0);
         launched(&mut h);
         let mut two = Entry::new("two", "two", 0);
@@ -520,10 +554,19 @@ mod tests {
             assert!(!e.running && e.terminated_by_user, "{id}");
         }
         assert!(!h.find("done").unwrap().terminated_by_user);
-        assert!(h.find(GLOBAL_ID).unwrap().running && h.find(APS_ID).unwrap().running);
+        for id in [GLOBAL_ID, APS_ID] {
+            let e = h.find(id).unwrap();
+            assert!(!e.running && e.terminated_by_user, "{id}");
+        }
         h.clear_terminated();
-        let ids: Vec<&str> = h.entries().iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["__APS", "iTerm2"]);
+        assert!(h.entries().is_empty());
+        // Cleared, the two are gone for good, as iTerm2's unlisted singletons.
+        h.ensure_aps(5);
+        let g = h.generation();
+        h.add_log(GLOBAL_ID, "x\n", "S");
+        h.add_log(APS_ID, "x\n", "S");
+        assert!(h.entries().is_empty());
+        assert_eq!(h.generation(), g);
 
         let mut h = History::new(false, 0);
         h.ensure_aps(3);
@@ -531,6 +574,45 @@ mod tests {
         let ids: Vec<&str> = h.entries().iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["iTerm2", "__APS"]);
         assert_eq!(h.entries()[1].started, 3);
+        h.find_mut(APS_ID).unwrap().running = false;
+        h.clear_terminated();
+        h.ensure_aps(5);
+        let ids: Vec<&str> = h.entries().iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["iTerm2"], "added once only");
+    }
+
+    #[test]
+    fn calls_are_formatted_only_as_far_as_kept() {
+        // The same stored call as formatting the whole message and cutting it.
+        let big = vec![7u8; 200_000];
+        let whole = format!("{big:#?}");
+        assert!(whole.len() > MAX_CALL_BYTES);
+        assert_eq!(call_text(Dir::Out, "S", &debug_text(&big)), call_text(Dir::Out, "S", &whole));
+        let small = vec![1u8, 2];
+        assert_eq!(debug_text(&small), format!("{small:#?}"));
+        // Three-byte characters around the cut.
+        let arrows = "\u{2192}".repeat(MAX_CALL_BYTES);
+        assert_eq!(call_text(Dir::In, "S", &debug_text(&arrows)), call_text(Dir::In, "S", &format!("{arrows:#?}")));
+
+        // A multi-megabyte screenshot reply stays bounded.
+        use crate::api_proto::pb;
+        let png = vec![0u8; 8 << 20];
+        let m = pb::ScreenshotResponse { png: Some(png), ..Default::default() };
+        let text = debug_text(&m);
+        assert!(text.len() <= MAX_CALL_BYTES + 4);
+        let stored = call_text(Dir::Out, "S", &text);
+        assert!(stored.len() <= MAX_CALL_BYTES + 64 && stored.ends_with("\u{2026}\n\n"));
+
+        // A formatter that would write for ever is stopped.
+        struct Endless;
+        impl std::fmt::Debug for Endless {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                loop {
+                    f.write_str("xxxxxxxx")?;
+                }
+            }
+        }
+        assert_eq!(debug_text(&Endless).len(), MAX_CALL_BYTES + 4);
     }
 
     #[test]

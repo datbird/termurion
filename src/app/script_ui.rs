@@ -1092,12 +1092,13 @@ impl App {
         script_eval::silenced(until, unix_now())
     }
 
-    /// A line for a connection's Script Console entry, else the app-wide entry
-    /// (`logToConnectionWithKey`, `H:1506-1516`).
+    /// A message for a connection's Script Console entry, else the app-wide entry, ending
+    /// its line (`logToConnectionWithKey`, `H:1506-1520`; the mark before it is dropped by the
+    /// no-emoji rule).
     pub(super) fn script_log(&mut self, conn: Option<u64>, text: String) {
         let key = self.history_key(conn);
         let stamp = self.history_stamp();
-        self.script_history.add_log(&key, &text, &stamp);
+        self.script_history.add_log(&key, &format!("{text}\n"), &stamp);
     }
 
     /// Opens the next queued alert when none shows.
