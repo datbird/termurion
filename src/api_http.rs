@@ -339,6 +339,8 @@ pub fn status_response(code: u16) -> String {
         400 => "Bad Request",
         401 => "Unauthorized",
         406 => "Unacceptable (upgrade Python library)",
+        // Tandem's own: a connection cap (iTerm2 has none).
+        503 => "Service Unavailable",
         _ => "Error",
     };
     format!("HTTP/1.1 {code} {reason}\r\n\r\n")
@@ -525,6 +527,7 @@ mod tests {
         assert_eq!(status_response(400), "HTTP/1.1 400 Bad Request\r\n\r\n");
         assert_eq!(status_response(401), "HTTP/1.1 401 Unauthorized\r\n\r\n");
         assert_eq!(status_response(406), "HTTP/1.1 406 Unacceptable (upgrade Python library)\r\n\r\n");
+        assert_eq!(status_response(503), "HTTP/1.1 503 Service Unavailable\r\n\r\n");
 
         assert_eq!(head_end(b"GET / HTTP/1.1\r\nHost: x\r\n"), None);
         assert_eq!(head_end(b"GET / HTTP/1.1\r\n\r\n"), Some(18));

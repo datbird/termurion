@@ -1,15 +1,16 @@
 //! The Python API's sockets: an exclusive listener on each loopback family (never any other
-//! address), a thread per connection that runs the peer check, reads and checks the request
-//! (`api_http`), waits for the UI thread's verdict and then carries binary WebSocket frames with
-//! tungstenite (framing only). Events reach the UI thread through a channel and the wake
-//! (`S:457-608`).
+//! address). The accept thread runs the peer check and the connection caps; a connection that
+//! passes gets a thread (and a blocking reader thread, as iTerm2's) that reads and checks the
+//! request (`api_http`), waits for the UI thread's verdict and then carries binary WebSocket
+//! frames with tungstenite (framing only). No socket ever has a receive timeout. Events reach the
+//! UI thread through a channel and the wake (`S:457-608`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -45,19 +46,41 @@ pub enum Event {
     Rejected { key: Option<String>, reason: String },
 }
 
-/// iTerm2 queues at most 16 read chunks per connection (`W:65-66`); Tandem bounds the events
-/// waiting for the UI thread the same way, so a flooding client meets TCP back pressure.
+/// Events waiting for the UI thread, bounded like iTerm2's 16 in-flight read chunks
+/// (`W:33-40`), so a flooding client meets TCP back pressure.
 const EVENT_QUEUE: usize = 16;
 
-/// How often an accept loop polls its listener and a waiting connection its verdict.
+/// Read chunks a connection's reader queues before it stops draining the socket (`W:40`).
+const INBOUND_CHUNKS: usize = 16;
+
+/// The reader's chunk size.
+const CHUNK: usize = 16 * 1024;
+
+/// Live connection threads (each with its reader) and, among them, those not yet authorized.
+/// iTerm2 has no cap; over one, a connection gets `503` and is closed on the accept thread.
+pub(crate) const MAX_CONNECTIONS: usize = 32;
+pub(crate) const MAX_UNAUTHORIZED: usize = 8;
+
+/// The reason logged when a cap refuses a connection (Tandem's own text).
+pub(crate) const TOO_MANY: &str = "Too many Python API connections";
+
+/// The largest message and frame a client may send. iTerm2 has no cap (`iTermWebSocketFrame.m:
+/// 101-150` takes any 64-bit length); 16 MiB is tungstenite's default frame cap, far above any
+/// request the protocol has.
+pub(crate) const MAX_MESSAGE: usize = 16 * 1024 * 1024;
+
+/// Bytes queued for one client past which it is cut off, and tungstenite's write buffer cap.
+pub(crate) const OUTBOUND_LIMIT: usize = 2 * MAX_MESSAGE;
+
+/// How often an accept loop polls its listener.
 const POLL: Duration = Duration::from_millis(50);
 
-/// How long an upgraded connection's read waits before it looks for frames to send.
-const FRAME_POLL: Duration = Duration::from_millis(10);
-
-/// How long a refused connection waits for the client to close after the answer, so the answer
-/// is not lost to a reset.
+/// How long a refused same-user connection waits for the client to close after the answer, so
+/// the answer is not lost to a reset. Also how long stop waits for close frames.
 const LINGER: Duration = Duration::from_secs(1);
+
+/// The least time between two logged accept errors.
+const ACCEPT_LOG_EVERY: Duration = Duration::from_secs(60);
 
 /// iTerm2's listen backlog (`S:159-169`).
 const BACKLOG: i32 = 5;
@@ -74,6 +97,11 @@ struct Shared {
     next_conn: AtomicU64,
     conns: Mutex<HashMap<u64, Control>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
+    /// Live connection threads and those among them not yet authorized.
+    live: AtomicUsize,
+    unauthorized: AtomicUsize,
+    /// Connection threads ever started (tests).
+    spawned: AtomicUsize,
     peer: PeerCheck,
     cookie: CookieCheck,
     wake: Notify,
@@ -81,10 +109,37 @@ struct Shared {
 
 /// The UI thread's handles on one connection.
 struct Control {
-    verdict: Option<Sender<bool>>,
-    out: Sender<Out>,
-    /// A second handle on the socket, to unblock the thread when the server stops.
+    mailbox: Arc<Mailbox>,
+    /// A second handle on the socket, to cut the connection off.
     stream: TcpStream,
+}
+
+/// What a connection thread waits on: its reader's chunks, the UI's frames and verdict, and the
+/// stop. One condition variable wakes the connection thread and its reader alike.
+#[derive(Default)]
+struct Mailbox {
+    mail: Mutex<Mail>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct Mail {
+    inbound: VecDeque<Vec<u8>>,
+    /// The client closed its side, or the socket failed.
+    eof: bool,
+    outbound: VecDeque<Out>,
+    outbound_bytes: usize,
+    verdict: Option<bool>,
+    /// The server stops (close frame, then end).
+    stop: bool,
+    /// Cut off at once: the outbound cap was passed.
+    abort: bool,
+    /// The connection thread is done; the reader ends.
+    done: bool,
+    /// tungstenite holds bytes the socket would not take; the reader watches for room.
+    want_write: bool,
+    /// The reader saw room to write.
+    writable: bool,
 }
 
 enum Out {
@@ -92,34 +147,76 @@ enum Out {
     Close,
 }
 
+impl Mailbox {
+    /// Waits until `f` yields, `until` passes (None) or forever; wakes everyone after each look,
+    /// since `f` may have made room for the reader.
+    fn wait<T>(&self, until: Option<Instant>, mut f: impl FnMut(&mut Mail) -> Option<T>) -> Option<T> {
+        let mut m = self.mail.lock().unwrap();
+        loop {
+            let got = f(&mut m);
+            self.ready.notify_all();
+            if got.is_some() {
+                return got;
+            }
+            m = match until {
+                None => self.ready.wait(m).unwrap(),
+                Some(t) => {
+                    let now = Instant::now();
+                    if now >= t {
+                        return None;
+                    }
+                    self.ready.wait_timeout(m, t - now).unwrap().0
+                }
+            };
+        }
+    }
+
+    fn update(&self, f: impl FnOnce(&mut Mail)) {
+        f(&mut self.mail.lock().unwrap());
+        self.ready.notify_all();
+    }
+}
+
+/// The socket as tungstenite sees it after the upgrade: reads come from the chunks the reader
+/// thread queued (`WouldBlock` when none are left), writes go straight to the socket, which is
+/// non-blocking from then on (`WouldBlock` when it has no room; tungstenite keeps the bytes).
+struct Pipe {
+    stream: TcpStream,
+    buf: Vec<u8>,
+    at: usize,
+}
+
+impl Read for Pipe {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.at == self.buf.len() {
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        let n = out.len().min(self.buf.len() - self.at);
+        out[..n].copy_from_slice(&self.buf[self.at..self.at + n]);
+        self.at += n;
+        if self.at == self.buf.len() {
+            self.buf.clear();
+            self.at = 0;
+        }
+        Ok(n)
+    }
+}
+
+impl Write for Pipe {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.stream.write(b)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
 impl Server {
     /// Listens on 127.0.0.1 and [::1] at `port` (port 0: V4 takes an ephemeral port and V6 the
     /// same one). A missing IPv6 stack leaves V4 alone; a port in use on either is an error.
     pub fn start(port: u16, peer: PeerCheck, cookie: CookieCheck, wake: Notify) -> Result<Server, String> {
-        let listeners = bind_pair(port)?;
-        let mut addrs = Vec::new();
-        for l in &listeners {
-            l.set_nonblocking(true).map_err(|e| format!("port {port}: {e}"))?;
-            addrs.push(l.local_addr().map_err(|e| format!("port {port}: {e}"))?);
-        }
-        let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE);
-        let shared = Arc::new(Shared {
-            stop: AtomicBool::new(false),
-            next_conn: AtomicU64::new(1),
-            conns: Mutex::new(HashMap::new()),
-            threads: Mutex::new(Vec::new()),
-            peer,
-            cookie,
-            wake,
-        });
-        let accepts = listeners
-            .into_iter()
-            .map(|l| {
-                let (shared, tx) = (shared.clone(), tx.clone());
-                std::thread::spawn(move || accept_loop(l, shared, tx))
-            })
-            .collect();
-        Ok(Server { addrs, events: Some(rx), shared, accepts })
+        serve_on(bind_pair(port)?, peer, cookie, wake)
     }
 
     pub fn addrs(&self) -> Vec<SocketAddr> {
@@ -135,32 +232,89 @@ impl Server {
         self.events.as_ref()?.recv().ok()
     }
 
-    /// Answers a `Pending` connection: allow upgrades it, deny answers 401.
+    /// Answers a `Pending` connection: allow upgrades it, deny answers 401. The first answer
+    /// counts.
     pub fn verdict(&self, conn: u64, allow: bool) {
-        let tx = self.shared.conns.lock().unwrap().get_mut(&conn).and_then(|c| c.verdict.take());
-        if let Some(tx) = tx {
-            let _ = tx.send(allow);
+        if let Some(m) = self.mailbox(conn) {
+            m.update(|m| {
+                m.verdict.get_or_insert(allow);
+            });
         }
     }
 
-    /// Sends a binary frame.
+    /// Sends a binary frame. A client that lets more than `OUTBOUND_LIMIT` bytes queue up is
+    /// cut off (its connection ends with `Closed`).
     pub fn send(&self, conn: u64, bytes: Vec<u8>) {
-        self.post(conn, Out::Frame(bytes));
+        let conns = self.shared.conns.lock().unwrap();
+        let Some(c) = conns.get(&conn) else { return };
+        let mut m = c.mailbox.mail.lock().unwrap();
+        if m.outbound_bytes + bytes.len() > OUTBOUND_LIMIT {
+            m.abort = true;
+            m.outbound.clear();
+            m.outbound_bytes = 0;
+            // Unblocks a write stuck on a client that stopped reading.
+            let _ = c.stream.shutdown(std::net::Shutdown::Both);
+        } else {
+            m.outbound_bytes += bytes.len();
+            m.outbound.push_back(Out::Frame(bytes));
+        }
+        c.mailbox.ready.notify_all();
     }
 
     /// Closes a connection with a close frame.
     pub fn close(&self, conn: u64) {
-        self.post(conn, Out::Close);
+        if let Some(m) = self.mailbox(conn) {
+            m.update(|m| m.outbound.push_back(Out::Close));
+        }
     }
 
-    fn post(&self, conn: u64, out: Out) {
-        if let Some(c) = self.shared.conns.lock().unwrap().get(&conn) {
-            let _ = c.out.send(out);
-        }
+    fn mailbox(&self, conn: u64) -> Option<Arc<Mailbox>> {
+        self.shared.conns.lock().unwrap().get(&conn).map(|c| c.mailbox.clone())
     }
 
     /// Stops listening and drops every connection (also on Drop).
     pub fn stop(self) {}
+
+    /// Live connection threads and those not yet authorized.
+    #[cfg(test)]
+    fn counts(&self) -> (usize, usize) {
+        (self.shared.live.load(Ordering::SeqCst), self.shared.unauthorized.load(Ordering::SeqCst))
+    }
+
+    #[cfg(test)]
+    fn spawned(&self) -> usize {
+        self.shared.spawned.load(Ordering::SeqCst)
+    }
+}
+
+/// Serves already bound listeners.
+fn serve_on(listeners: Vec<TcpListener>, peer: PeerCheck, cookie: CookieCheck, wake: Notify) -> Result<Server, String> {
+    let mut addrs = Vec::new();
+    for l in &listeners {
+        l.set_nonblocking(true).map_err(|e| e.to_string())?;
+        addrs.push(l.local_addr().map_err(|e| e.to_string())?);
+    }
+    let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE);
+    let shared = Arc::new(Shared {
+        stop: AtomicBool::new(false),
+        next_conn: AtomicU64::new(1),
+        conns: Mutex::new(HashMap::new()),
+        threads: Mutex::new(Vec::new()),
+        live: AtomicUsize::new(0),
+        unauthorized: AtomicUsize::new(0),
+        spawned: AtomicUsize::new(0),
+        peer,
+        cookie,
+        wake,
+    });
+    let accepts = listeners
+        .into_iter()
+        .map(|l| {
+            let (shared, tx) = (shared.clone(), tx.clone());
+            std::thread::spawn(move || accept_loop(l, shared, tx))
+        })
+        .collect();
+    Ok(Server { addrs, events: Some(rx), shared, accepts })
 }
 
 impl Drop for Server {
@@ -172,11 +326,15 @@ impl Drop for Server {
         for h in self.accepts.drain(..) {
             let _ = h.join();
         }
-        // Each connection sees the flag within a poll and sends its close frame; one stuck in a
-        // write to a client that stopped reading is cut off.
+        let mailboxes: Vec<Arc<Mailbox>> = self.shared.conns.lock().unwrap().values().map(|c| c.mailbox.clone()).collect();
+        for m in mailboxes {
+            m.update(|m| m.stop = true);
+        }
+        // Each connection sends its close frame; one stuck in a write to a client that stopped
+        // reading is cut off.
         let deadline = Instant::now() + LINGER;
         while !self.shared.conns.lock().unwrap().is_empty() && Instant::now() < deadline {
-            std::thread::sleep(FRAME_POLL);
+            std::thread::sleep(Duration::from_millis(10));
         }
         for c in self.shared.conns.lock().unwrap().values() {
             let _ = c.stream.shutdown(std::net::Shutdown::Both);
@@ -188,17 +346,24 @@ impl Drop for Server {
     }
 }
 
-/// Binds both loopback families at `port`, retrying a few ephemeral ports when V6 finds the one
-/// V4 took already in use.
+/// Binds both loopback families at `port`.
 fn bind_pair(port: u16) -> Result<Vec<TcpListener>, String> {
+    bind_pair_with(port, &mut bind_exclusive)
+}
+
+/// Binds 127.0.0.1 at `port`, then [::1] with `bind6` on the port V4 got. With port 0, a V6
+/// port already taken (in use, or held exclusively or reserved: `WSAEACCES`) retries a few
+/// ephemeral ports; with a fixed port it is fatal.
+fn bind_pair_with(port: u16, bind6: &mut dyn FnMut(SocketAddr) -> std::io::Result<TcpListener>) -> Result<Vec<TcpListener>, String> {
+    use std::io::ErrorKind::{AddrInUse, PermissionDenied};
     let attempts = if port == 0 { 8 } else { 1 };
     for _ in 0..attempts {
         let v4 = bind_exclusive(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).map_err(|e| format!("127.0.0.1 port {port}: {e}"))?;
         let taken = v4.local_addr().map_err(|e| format!("127.0.0.1 port {port}: {e}"))?.port();
-        match bind_exclusive(SocketAddr::from((Ipv6Addr::LOCALHOST, taken))) {
+        match bind6(SocketAddr::from((Ipv6Addr::LOCALHOST, taken))) {
             Ok(v6) => return Ok(vec![v4, v6]),
             Err(e) if v6_unavailable(&e) => return Ok(vec![v4]),
-            Err(e) if port == 0 && e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(e) if port == 0 && matches!(e.kind(), AddrInUse | PermissionDenied) => continue,
             Err(e) => return Err(format!("[::1] port {taken}: {e}")),
         }
     }
@@ -212,50 +377,185 @@ fn v6_unavailable(e: &std::io::Error) -> bool {
 }
 
 fn accept_loop(listener: TcpListener, shared: Arc<Shared>, tx: SyncSender<Event>) {
+    let mut last_log: Option<Instant> = None;
+    let mut unlogged = 0u32;
     while !shared.stop.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, peer)) => admit(stream, peer, &shared, &tx),
-            Err(_) => std::thread::sleep(POLL),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(POLL),
+            Err(e) => {
+                if last_log.is_none_or(|t| t.elapsed() >= ACCEPT_LOG_EVERY) {
+                    let more = if unlogged > 0 { format!(" ({unlogged} more since the last)") } else { String::new() };
+                    eprintln!("tandem: the Python API could not accept a connection: {e}{more}");
+                    last_log = Some(Instant::now());
+                    unlogged = 0;
+                } else {
+                    unlogged += 1;
+                }
+                std::thread::sleep(POLL);
+            }
         }
     }
 }
 
-/// Registers an accepted connection and starts its thread.
+/// Queues an event without ever blocking the accept thread; a full queue drops it.
+fn post_now(shared: &Shared, tx: &SyncSender<Event>, e: Event) {
+    if tx.try_send(e).is_ok() {
+        (shared.wake)();
+    }
+}
+
+/// Answers `code` on the accept thread with one non-blocking write (the socket is still in the
+/// listener's non-blocking mode) and closes; no thread, no linger.
+fn refuse_now(mut stream: TcpStream, code: u16) {
+    let _ = stream.write(api_http::status_response(code).as_bytes());
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+/// Runs the peer check and the caps on the accept thread, then starts the connection's thread.
 fn admit(stream: TcpStream, peer: SocketAddr, shared: &Arc<Shared>, tx: &SyncSender<Event>) {
+    let Ok(local) = stream.local_addr() else { return };
+    // iTerm2 checks the peer before reading anything (`S:457-472`); here also before any thread
+    // exists, so another user's process never gets one.
+    let peer_pid = match (shared.peer)(peer, local) {
+        Ok(pid) => pid,
+        Err(reason) => {
+            refuse_now(stream, 401);
+            post_now(shared, tx, Event::Rejected { key: None, reason });
+            return;
+        }
+    };
+    if shared.live.load(Ordering::SeqCst) >= MAX_CONNECTIONS || shared.unauthorized.load(Ordering::SeqCst) >= MAX_UNAUTHORIZED {
+        refuse_now(stream, 503);
+        post_now(shared, tx, Event::Rejected { key: None, reason: TOO_MANY.to_string() });
+        return;
+    }
     // An accepted socket inherits the listener's non-blocking mode.
     if stream.set_nonblocking(false).is_err() {
         return;
     }
     let _ = stream.set_nodelay(true);
-    let (Ok(local), Ok(handle)) = (stream.local_addr(), stream.try_clone()) else {
+    let (Ok(handle), Ok(reader_stream)) = (stream.try_clone(), stream.try_clone()) else {
         return;
     };
     let conn = shared.next_conn.fetch_add(1, Ordering::SeqCst);
-    let (verdict_tx, verdict_rx) = mpsc::channel();
-    let (out_tx, out_rx) = mpsc::channel();
-    shared.conns.lock().unwrap().insert(conn, Control { verdict: Some(verdict_tx), out: out_tx, stream: handle });
+    let mailbox = Arc::new(Mailbox::default());
+    shared.conns.lock().unwrap().insert(conn, Control { mailbox: mailbox.clone(), stream: handle });
+    // Only the accept thread raises the counts, so these checks and increments do not race.
+    shared.live.fetch_add(1, Ordering::SeqCst);
+    shared.unauthorized.fetch_add(1, Ordering::SeqCst);
+    shared.spawned.fetch_add(1, Ordering::SeqCst);
     let (thread_shared, tx) = (shared.clone(), tx.clone());
     let h = std::thread::spawn(move || {
-        let c = Connection { conn, shared: thread_shared, tx };
-        c.serve(stream, peer, local, verdict_rx, out_rx);
+        let reader_box = mailbox.clone();
+        let reader = std::thread::spawn(move || read_into(reader_stream, &reader_box));
+        let mut c = Connection { conn, shared: thread_shared, tx, mailbox, authorized: false };
+        let last = c.serve(&stream, peer_pid);
+        c.mailbox.update(|m| m.done = true);
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        let _ = reader.join();
         c.shared.conns.lock().unwrap().remove(&conn);
+        if !c.authorized {
+            c.shared.unauthorized.fetch_sub(1, Ordering::SeqCst);
+        }
+        c.shared.live.fetch_sub(1, Ordering::SeqCst);
+        if let Some(e) = last {
+            c.event(e);
+        }
     });
     let mut threads = shared.threads.lock().unwrap();
     threads.retain(|t| !t.is_finished());
     threads.push(h);
 }
 
+/// A connection's reader, as iTerm2's (`W:231-256`): blocking reads with no timeout, queued for
+/// the connection thread, stopping when `INBOUND_CHUNKS` wait so TCP flow control engages. It
+/// reads only once `WSAPoll` says the socket is readable (so the read returns at once), and
+/// between polls looks for the connection's end: on Windows neither `shutdown` nor the other
+/// handle's close wakes a blocking read, and a poll timing out consumes and cancels nothing.
+fn read_into(mut stream: TcpStream, mailbox: &Mailbox) {
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        let want_write = mailbox.mail.lock().unwrap().want_write;
+        let (read, write) = match ready(&stream, want_write) {
+            Ok(r) => r,
+            Err(_) => {
+                mailbox.update(|m| m.eof = true);
+                return;
+            }
+        };
+        if write {
+            // Hand the room over, then wait until the connection thread has used it.
+            mailbox.update(|m| m.writable = true);
+            let done = mailbox.wait(None, |m| {
+                if !m.want_write {
+                    // Flushed meanwhile: nobody will take the room.
+                    m.writable = false;
+                }
+                (m.done || !m.writable).then_some(m.done)
+            });
+            if done == Some(true) {
+                return;
+            }
+        }
+        if !read {
+            if mailbox.mail.lock().unwrap().done {
+                return;
+            }
+            continue;
+        }
+        let n = match stream.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock) => continue,
+            Err(_) => 0,
+        };
+        if n == 0 {
+            mailbox.update(|m| m.eof = true);
+            return;
+        }
+        let chunk = buf[..n].to_vec();
+        let queued = mailbox.wait(None, |m| {
+            if m.done {
+                Some(false)
+            } else if m.inbound.len() < INBOUND_CHUNKS {
+                Some(true)
+            } else {
+                None
+            }
+        });
+        if queued != Some(true) {
+            return;
+        }
+        mailbox.update(|m| m.inbound.push_back(chunk));
+    }
+}
+
+/// How long the reader's poll waits before it looks for the connection's end.
+const READER_POLL: i32 = 50;
+
+/// Waits up to `READER_POLL` ms for `stream` to have something to read (data, an end or an
+/// error: the read tells which) or, with `write`, room to write. Answers (read, write).
+fn ready(stream: &TcpStream, write: bool) -> std::io::Result<(bool, bool)> {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, POLLWRNORM, WSAPOLLFD, WSAPoll};
+    let events = if write { POLLRDNORM | POLLWRNORM } else { POLLRDNORM };
+    let mut fd = WSAPOLLFD { fd: stream.as_raw_socket() as _, events, revents: 0 };
+    match unsafe { WSAPoll(&mut fd, 1, READER_POLL) } {
+        n if n < 0 => Err(wsa_error()),
+        0 => Ok((false, false)),
+        _ => Ok((fd.revents & (POLLRDNORM | POLLHUP | POLLERR | POLLNVAL) != 0, fd.revents & POLLWRNORM != 0)),
+    }
+}
+
 struct Connection {
     conn: u64,
     shared: Arc<Shared>,
     tx: SyncSender<Event>,
+    mailbox: Arc<Mailbox>,
+    authorized: bool,
 }
 
 impl Connection {
-    fn stopping(&self) -> bool {
-        self.shared.stop.load(Ordering::SeqCst)
-    }
-
     /// Queues an event for the UI thread and wakes it; false once the server is gone.
     fn event(&self, e: Event) -> bool {
         let ok = self.tx.send(e).is_ok();
@@ -265,155 +565,179 @@ impl Connection {
         ok
     }
 
-    /// iTerm2's sequence (`S:457-608`): the peer check before reading, the request, the checks,
-    /// the verdict, then the upgrade.
-    fn serve(&self, mut stream: TcpStream, peer: SocketAddr, local: SocketAddr, verdict: Receiver<bool>, out: Receiver<Out>) {
-        let peer_pid = match (self.shared.peer)(peer, local) {
-            Ok(pid) => pid,
-            Err(reason) => {
-                refuse(&mut stream, 401);
-                self.event(Event::Rejected { key: None, reason });
-                return;
-            }
-        };
-        let Some((head, tail)) = self.read_head(&mut stream) else {
-            refuse(&mut stream, 400);
-            self.event(Event::Rejected { key: None, reason: api_http::READ_FAILED.to_string() });
-            return;
+    /// iTerm2's sequence after the peer check (`S:497-608`): the request, the checks, the
+    /// verdict, then the upgrade. Returns the connection's last event.
+    fn serve(&mut self, stream: &TcpStream, peer_pid: u32) -> Option<Event> {
+        let read_failed = || Some(Event::Rejected { key: None, reason: api_http::READ_FAILED.to_string() });
+        let Some((head, tail)) = self.read_head() else {
+            self.refuse(stream, 400);
+            return read_failed();
         };
         let Some(request) = api_http::parse(&head) else {
-            refuse(&mut stream, 400);
-            self.event(Event::Rejected { key: None, reason: api_http::READ_FAILED.to_string() });
-            return;
+            self.refuse(stream, 400);
+            return read_failed();
         };
         let cookie = self.shared.cookie.clone();
         let upgrade = match api_http::check(&request, &mut |c| cookie(c), &mut crate::api_auth::fresh_key) {
             Ok(u) => u,
             Err(refusal) => {
-                refuse(&mut stream, refusal.code());
+                self.refuse(stream, refusal.code());
                 // iTerm2 posts the client's key with an upgrade refusal, not with a bad path
                 // (`S:513-526`, `S:596-601`).
                 let key = if api_http::url_path(&request.path) == "/" { request.headers.get("x-iterm2-key").cloned() } else { None };
-                self.event(Event::Rejected { key, reason: refusal.reason().to_string() });
-                return;
+                return Some(Event::Rejected { key, reason: refusal.reason().to_string() });
             }
         };
         let (ws_key, ws_version) = (upgrade.ws_key.clone(), upgrade.ws_version);
         if !self.event(Event::Pending(Pending { conn: self.conn, upgrade, peer_pid })) {
-            refuse(&mut stream, 401);
-            return;
+            self.refuse(stream, 401);
+            return None;
         }
-        let allowed = loop {
-            match verdict.recv_timeout(POLL) {
-                Ok(allow) => break allow,
-                Err(RecvTimeoutError::Timeout) if !self.stopping() => {}
-                Err(_) => break false,
-            }
-        };
+        let allowed = self.mailbox.wait(None, |m| m.verdict.or(m.stop.then_some(false))).unwrap_or(false);
         if !allowed {
-            refuse(&mut stream, 401);
-            return;
+            self.refuse(stream, 401);
+            return None;
         }
-        if stream.write_all(api_http::accept_response(&ws_key, ws_version).as_bytes()).is_err() || stream.set_read_timeout(Some(FRAME_POLL)).is_err() {
-            self.event(Event::Closed { conn: self.conn });
-            return;
+        self.authorized = true;
+        self.shared.unauthorized.fetch_sub(1, Ordering::SeqCst);
+        let mut writer = stream;
+        if writer.write_all(api_http::accept_response(&ws_key, ws_version).as_bytes()).is_err() {
+            return Some(Event::Closed { conn: self.conn });
         }
-        let ws = WebSocket::from_partially_read(stream, tail, Role::Server, None);
-        self.carry(ws, out);
-        self.event(Event::Closed { conn: self.conn });
+        let Ok(write_half) = stream.try_clone() else {
+            return Some(Event::Closed { conn: self.conn });
+        };
+        // From here no write blocks, so a client that stops reading cannot hold the thread (or
+        // the stop) hostage; the reader only reads what `WSAPoll` says is there.
+        if write_half.set_nonblocking(true).is_err() {
+            return Some(Event::Closed { conn: self.conn });
+        }
+        let config = tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(MAX_MESSAGE))
+            .max_frame_size(Some(MAX_MESSAGE))
+            .max_write_buffer_size(OUTBOUND_LIMIT);
+        let pipe = Pipe { stream: write_half, buf: tail, at: 0 };
+        self.carry(WebSocket::from_raw_socket(pipe, Role::Server, Some(config)));
+        Some(Event::Closed { conn: self.conn })
     }
 
-    /// Reads until the end of the request head, `MAX_REQUEST` bytes or `REQUEST_DEADLINE`;
-    /// returns the head and whatever followed it.
-    fn read_head(&self, stream: &mut TcpStream) -> Option<(Vec<u8>, Vec<u8>)> {
+    /// Collects the reader's chunks until the end of the request head, `MAX_REQUEST` bytes,
+    /// `REQUEST_DEADLINE`, the client's close or the stop; returns the head and whatever
+    /// followed it. Each search resumes where the last one ended.
+    fn read_head(&self) -> Option<(Vec<u8>, Vec<u8>)> {
         let deadline = Instant::now() + api_http::REQUEST_DEADLINE;
-        stream.set_read_timeout(Some(POLL)).ok()?;
         let mut buf = Vec::new();
-        let mut chunk = [0u8; 4096];
         loop {
-            if let Some(end) = api_http::head_end(&buf) {
-                let tail = buf.split_off(end);
-                return Some((buf, tail));
+            let (chunks, eof, stop) = self.mailbox.wait(Some(deadline), |m| {
+                (!m.inbound.is_empty() || m.eof || m.stop).then(|| (std::mem::take(&mut m.inbound), m.eof, m.stop))
+            })?;
+            for chunk in chunks {
+                let from = buf.len().saturating_sub(3);
+                buf.extend_from_slice(&chunk);
+                if let Some(end) = api_http::head_end(&buf[from..]).map(|e| from + e) {
+                    if end > api_http::MAX_REQUEST {
+                        return None;
+                    }
+                    let tail = buf.split_off(end);
+                    return Some((buf, tail));
+                }
+                if buf.len() >= api_http::MAX_REQUEST {
+                    return None;
+                }
             }
-            if buf.len() >= api_http::MAX_REQUEST || Instant::now() >= deadline || self.stopping() {
+            if eof || stop {
                 return None;
             }
-            let room = chunk.len().min(api_http::MAX_REQUEST - buf.len());
-            match stream.read(&mut chunk[..room]) {
-                Ok(0) => return None,
-                Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                Err(e) if retry(&e) => {}
-                Err(_) => return None,
-            }
         }
     }
 
-    /// Carries frames until either side closes, an error, or the server stops: queued frames
-    /// go out between reads; binary frames come in as events, text frames are ignored
-    /// (`S:1436-1447`), pings are answered by tungstenite on the next flush.
-    fn carry(&self, mut ws: WebSocket<TcpStream>, out: Receiver<Out>) {
+    /// Answers `code` and closes, as iTerm2's `sendResponseWithCode` does (`HC:85-120`), letting
+    /// the client read the answer before the socket goes: the write side is shut and whatever the
+    /// client still sends is discarded for up to `LINGER`.
+    fn refuse(&self, mut stream: &TcpStream, code: u16) {
+        if stream.write_all(api_http::status_response(code).as_bytes()).is_err() {
+            return;
+        }
+        let _ = stream.shutdown(std::net::Shutdown::Write);
+        self.mailbox.wait(Some(Instant::now() + LINGER), |m| {
+            m.inbound.clear();
+            (m.eof || m.stop).then_some(())
+        });
+    }
+
+    /// Carries frames until either side closes, an error, the outbound cap or the stop: the
+    /// thread sleeps until the reader or the UI has something, feeds the reader's bytes to
+    /// tungstenite, queues the UI's frames, flushes what the socket takes (the rest waits for the
+    /// reader to see room), and posts binary frames (text frames are ignored, `S:1436-1447`;
+    /// pings are answered by tungstenite).
+    fn carry(&self, mut ws: WebSocket<Pipe>) {
+        let would_block = |e: &tungstenite::Error| matches!(e, tungstenite::Error::Io(e) if e.kind() == std::io::ErrorKind::WouldBlock);
+        let mut closing = false;
         loop {
-            if self.stopping() {
-                let _ = ws.close(None);
-                let _ = ws.flush();
+            let got = self.mailbox.wait(None, |m| {
+                let any = !m.inbound.is_empty() || !m.outbound.is_empty() || m.eof || m.stop || m.abort || (m.want_write && m.writable);
+                any.then(|| {
+                    m.outbound_bytes = 0;
+                    m.writable = false;
+                    (std::mem::take(&mut m.inbound), std::mem::take(&mut m.outbound), m.eof, m.stop, m.abort)
+                })
+            });
+            let Some((chunks, outs, eof, stop, abort)) = got else { return };
+            if abort {
                 return;
             }
+            for chunk in chunks {
+                ws.get_mut().buf.extend_from_slice(&chunk);
+            }
+            for out in outs {
+                if closing {
+                    break;
+                }
+                let queued = match out {
+                    Out::Frame(bytes) => ws.write(Message::binary(bytes)),
+                    Out::Close => {
+                        closing = true;
+                        ws.close(None)
+                    }
+                };
+                match queued {
+                    Ok(()) => {}
+                    Err(e) if would_block(&e) => {}
+                    // WriteBufferFull included: the client is not keeping up.
+                    Err(_) => return,
+                }
+            }
             loop {
-                match out.try_recv() {
-                    Ok(Out::Frame(bytes)) => {
-                        if ws.send(Message::binary(bytes)).is_err() {
+                match ws.read() {
+                    Ok(Message::Binary(bytes)) => {
+                        if !self.event(Event::Message { conn: self.conn, bytes: bytes.to_vec() }) {
                             return;
                         }
                     }
-                    Ok(Out::Close) => {
-                        let _ = ws.close(None);
-                        let _ = ws.flush();
-                        return;
+                    Ok(Message::Close(_)) => {
+                        // tungstenite has queued the close reply; send it once the socket takes it.
+                        closing = true;
+                        break;
                     }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => return,
+                    Ok(_) => {}
+                    Err(e) if would_block(&e) => break,
+                    Err(_) => return,
                 }
             }
-            match ws.read() {
-                Ok(Message::Binary(bytes)) => {
-                    if !self.event(Event::Message { conn: self.conn, bytes: bytes.to_vec() }) {
-                        return;
-                    }
-                }
-                Ok(Message::Close(_)) => {
-                    // tungstenite has queued the close reply; send it.
-                    let _ = ws.flush();
-                    return;
-                }
-                Ok(_) => {}
-                Err(tungstenite::Error::Io(e)) if retry(&e) => {}
+            if stop && !closing {
+                closing = true;
+                let _ = ws.close(None);
+            }
+            let want_write = match ws.flush() {
+                Ok(()) => false,
+                Err(e) if would_block(&e) => true,
                 Err(_) => return,
+            };
+            // A close waits for its frame to go out, except when the server stops.
+            if (closing && !want_write) || stop || eof {
+                return;
             }
-        }
-    }
-}
-
-/// A read that only timed out.
-fn retry(e: &std::io::Error) -> bool {
-    matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted)
-}
-
-/// Answers `code` and closes, as iTerm2's `sendResponseWithCode` does (`HC:85-120`), letting the
-/// client read the answer before the socket goes.
-fn refuse(stream: &mut TcpStream, code: u16) {
-    if stream.write_all(api_http::status_response(code).as_bytes()).is_err() {
-        return;
-    }
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-    let _ = stream.set_read_timeout(Some(POLL));
-    let deadline = Instant::now() + LINGER;
-    let mut sink = [0u8; 4096];
-    while Instant::now() < deadline {
-        match stream.read(&mut sink) {
-            Ok(0) => return,
-            Ok(_) => {}
-            Err(e) if retry(&e) => {}
-            Err(_) => return,
+            self.mailbox.update(|m| m.want_write = want_write);
         }
     }
 }
@@ -690,6 +1014,180 @@ mod tests {
             Some(Event::Rejected { key: None, reason }) => assert_eq!(reason, "nope"),
             e => panic!("{e:?}"),
         }
+        // Refused on the accept thread: no connection thread ever existed.
+        assert_eq!(refusing.counts(), (0, 0));
+        assert_eq!(refusing.spawned(), 0);
+    }
+
+    fn rejected(s: &Server) -> String {
+        match next(s) {
+            Event::Rejected { reason, .. } => reason,
+            e => panic!("expected Rejected, got {e:?}"),
+        }
+    }
+
+    fn settle(s: &Server, counts: (usize, usize)) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while s.counts() != counts {
+            assert!(Instant::now() < deadline, "counts {:?}, want {counts:?}", s.counts());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn connection_caps_refuse_the_excess() {
+        let s = start_with(allow());
+        let addr = s.addrs()[0];
+        // Connections still before authorization are capped first.
+        let idle: Vec<TcpStream> = (0..MAX_UNAUTHORIZED).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        settle(&s, (MAX_UNAUTHORIZED, MAX_UNAUTHORIZED));
+        let mut t = TcpStream::connect(addr).unwrap();
+        assert_eq!(read_all(&mut t), "HTTP/1.1 503 Service Unavailable\r\n\r\n");
+        assert_eq!(rejected(&s), TOO_MANY);
+        drop(idle);
+        for _ in 0..MAX_UNAUTHORIZED {
+            assert_eq!(rejected(&s), api_http::READ_FAILED);
+        }
+        settle(&s, (0, 0));
+
+        // Then every live connection, with room left before authorization.
+        let mut open = Vec::new();
+        for _ in 0..MAX_CONNECTIONS - MAX_UNAUTHORIZED + 1 {
+            let c = client(addr);
+            let p = pending(&s);
+            s.verdict(p.conn, true);
+            open.push(c.join().unwrap().unwrap().0);
+        }
+        let idle: Vec<TcpStream> = (0..MAX_UNAUTHORIZED - 1).map(|_| TcpStream::connect(addr).unwrap()).collect();
+        settle(&s, (MAX_CONNECTIONS, MAX_UNAUTHORIZED - 1));
+        let mut t = TcpStream::connect(addr).unwrap();
+        assert_eq!(read_all(&mut t), "HTTP/1.1 503 Service Unavailable\r\n\r\n");
+        assert_eq!(rejected(&s), TOO_MANY);
+        // Under the cap again, a valid client still gets through.
+        drop(open.pop());
+        assert!(matches!(next(&s), Event::Closed { .. }));
+        let c = client(addr);
+        let p = pending(&s);
+        s.verdict(p.conn, true);
+        c.join().unwrap().unwrap();
+        drop(idle);
+        drop(open);
+    }
+
+    #[test]
+    fn v4_serves_alone_without_ipv6() {
+        use windows_sys::Win32::Networking::WinSock::{WSAEACCES, WSAEADDRINUSE, WSAEAFNOSUPPORT};
+        let err = |c| std::io::Error::from_raw_os_error(c);
+        assert!(v6_unavailable(&err(WSAEAFNOSUPPORT)));
+        assert!(!v6_unavailable(&err(WSAEADDRINUSE)));
+        assert!(!v6_unavailable(&err(WSAEACCES)));
+
+        let listeners = bind_pair_with(0, &mut |_| Err(err(WSAEAFNOSUPPORT))).unwrap();
+        let s = serve_on(listeners, allow(), Arc::new(|_: &str| false), Arc::new(|| {})).unwrap();
+        let a = s.addrs();
+        assert_eq!(a.len(), 1);
+        assert!(a[0].is_ipv4() && a[0].ip().is_loopback());
+        let c = client(a[0]);
+        let p = pending(&s);
+        s.verdict(p.conn, true);
+        c.join().unwrap().unwrap();
+
+        // A fixed port in use (or held exclusively) on V6 is fatal; port 0 retries both.
+        assert!(bind_pair_with(0, &mut |_| Err(err(WSAEADDRINUSE))).is_err());
+        for code in [WSAEADDRINUSE, WSAEACCES] {
+            let mut tries = 0;
+            let pair = bind_pair_with(0, &mut |addr| {
+                tries += 1;
+                if tries == 1 { Err(err(code)) } else { bind_exclusive(addr) }
+            })
+            .unwrap();
+            assert_eq!(pair.len(), 2);
+            assert_eq!(tries, 2);
+        }
+    }
+
+    #[test]
+    fn frames_arrive_whole_and_in_order() {
+        let s = start_with(allow());
+        let c = client(s.addrs()[1]);
+        let p = pending(&s);
+        s.verdict(p.conn, true);
+        let (mut ws, _) = c.join().unwrap().unwrap();
+        let big: Vec<u8> = (0..1 << 20).map(|i| i as u8).collect();
+        ws.send(Message::binary(big.clone())).unwrap();
+        for i in 0..500u32 {
+            ws.send(Message::binary(i.to_le_bytes().to_vec())).unwrap();
+        }
+        match next(&s) {
+            Event::Message { bytes, .. } => assert!(bytes == big),
+            e => panic!("{e:?}"),
+        }
+        for i in 0..500u32 {
+            match next(&s) {
+                Event::Message { bytes, .. } => assert_eq!(bytes, i.to_le_bytes()),
+                e => panic!("{e:?}"),
+            }
+        }
+
+        // Frames larger than the socket takes at once go out as the client makes room.
+        let frame = |k: u8| vec![k; MAX_MESSAGE / 2];
+        for k in 1..=3 {
+            s.send(p.conn, frame(k));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        ws.get_ref().set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        for k in 1..=3 {
+            match ws.read().unwrap() {
+                Message::Binary(b) => assert!(b[..] == frame(k)[..], "frame {k}"),
+                m => panic!("{m:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stop_cuts_off_a_client_that_never_reads() {
+        let s = start_with(allow());
+        let c = client(s.addrs()[0]);
+        let p = pending(&s);
+        s.verdict(p.conn, true);
+        let (_ws, _) = c.join().unwrap().unwrap();
+        // More than any socket buffer, less than the outbound cap: the writer blocks.
+        s.send(p.conn, vec![0u8; MAX_MESSAGE]);
+        s.send(p.conn, vec![0u8; MAX_MESSAGE / 2]);
+        std::thread::sleep(Duration::from_millis(300));
+        let t = Instant::now();
+        s.stop();
+        assert!(t.elapsed() < Duration::from_secs(5), "stop took {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn limits_close_the_connection() {
+        let s = start_with(allow());
+        let addr = s.addrs()[0];
+        // A message over the cap ends the connection; nothing reaches the UI.
+        let c = client(addr);
+        let p = pending(&s);
+        s.verdict(p.conn, true);
+        let (mut ws, _) = c.join().unwrap().unwrap();
+        let _ = ws.send(Message::binary(vec![0u8; MAX_MESSAGE + 1]));
+        match next(&s) {
+            Event::Closed { conn } => assert_eq!(conn, p.conn),
+            e => panic!("{e:?}"),
+        }
+
+        // A client that stops reading while more than the outbound cap is queued is cut off.
+        let c = client(addr);
+        let p = pending(&s);
+        s.verdict(p.conn, true);
+        let (_ws, _) = c.join().unwrap().unwrap();
+        for _ in 0..(OUTBOUND_LIMIT / MAX_MESSAGE) + 2 {
+            s.send(p.conn, vec![0u8; MAX_MESSAGE]);
+        }
+        match next(&s) {
+            Event::Closed { conn } => assert_eq!(conn, p.conn),
+            e => panic!("{e:?}"),
+        }
+        settle(&s, (0, 0));
     }
 
     #[test]
