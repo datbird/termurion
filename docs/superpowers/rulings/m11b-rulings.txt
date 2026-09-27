@@ -341,3 +341,11 @@ Final: Ruling: when a window loses focus while modifier keys are held, the focus
 Final: Ruling: the Undo Close then expiry or restore path for session subscriptions is covered by a SessionSubs test (undo_close_keeps_subscriptions_until_it_expires): kept through the undo, the "all" requests not doubled on restore, all of the session's gone on expiry - cost if wrong: none.
 
 Final: Ruling: a tab that leaves a window (ReorderTabs across windows, Move Tab to New Window, Merge All Windows) leaves that window's broadcasting tabs, domains and sources (Broadcast::forget; custom mode with no domain left turns off); a tmux tab that ReorderTabs moves to another window saves its gateway's window assignment even when it moved alone - cost if wrong: none.
+
+Final re-review: minor (deferred): a pane made taller by more rows than its history limit (for example a 0-line scrollback profile) raises Grid::dropped though no line leaves history (grow_lines calls scroll_up); API numbers stay at zero or above but jump after that resize.
+
+Final re-review: minor (deferred): a small response queued behind an oversized one, before the connection picks the first up, closes the connection (responses waiting together share the cap); a script that sends a large styled GetBuffer at the same time as another request can hit this.
+
+Final re-review: minor (deferred): api_held is not updated when the toolbelt or composer takes a key first, so a modifier released there can post a spurious FLAGS_CHANGED on the next focus loss.
+
+Final re-review: minor (deferred, older than 11b): number_of_lines on the alternate screen counts from the alternate grid while GetBuffer counts from the main grid.
