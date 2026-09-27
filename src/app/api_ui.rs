@@ -462,6 +462,10 @@ impl App {
                 self.api_subs = Default::default();
                 self.api_var_subs = Default::default();
                 self.api_session_subs = Default::default();
+                self.api_tmux_commands.clear();
+                self.api_tmux_creates.clear();
+                self.api_tmux_windows.clear();
+                self.api_tmux_tabs.clear();
                 self.api_sync_watch();
                 self.api_tx = Default::default();
                 self.api_deferred.clear();
@@ -647,6 +651,11 @@ impl App {
         self.api_var_subs.drop_conn(conn);
         // A dead script's keystroke filter never eats another key.
         self.api_session_subs.drop_conn(conn);
+        // Its waiting tmux requests are answered to no one.
+        self.api_tmux_commands.retain(|_, (c, _)| *c != conn);
+        self.api_tmux_creates.retain(|_, (c, _)| *c != conn);
+        self.api_tmux_windows.retain(|_, (c, _)| *c != conn);
+        self.api_tmux_tabs.retain(|(_, _, (c, _))| *c != conn);
         self.api_sync_watch();
         if let Some(p) = forget_waiting(conn, &mut self.api_pending, &mut self.api_alerts, &mut self.api_deferred) {
             self.api_verdict(&p, false, api_auth::REASON_INTERNAL);

@@ -105,6 +105,8 @@ impl App {
                     }
                 }
                 Action::Close(window) => {
+                    // Closed before it opened: a waiting CreateWindow gets no tab ("0").
+                    self.api_tmux_window_opened(gw, window, None);
                     if let Some(t) = self.tmux.get_mut(&gw) {
                         t.window_titles.remove(&window);
                         t.tab_overrides.remove(&window);
@@ -763,7 +765,10 @@ impl App {
         for p in &panes {
             ids.insert(p.pane, self.tmux_pane(gw, window.id, p));
         }
-        let Some(layout) = tmux_layout::to_layout(&node, &ids) else { return };
+        let Some(layout) = tmux_layout::to_layout(&node, &ids) else {
+            // iTerm2's opener completes even so: a waiting CreateWindow gets no tab ("0").
+            return self.api_tmux_window_opened(gw, window_id, None);
+        };
         let focused = ids.get(&panes.first().map_or(0, |p| p.pane)).copied().unwrap_or(0);
         let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: Some(self.tmux_title(&window.name)) };
         self.next_tab_id += 1;
@@ -832,10 +837,9 @@ impl App {
             }
         }
         self.tmux_save_tab_colors();
-        // A Python API CreateWindow waiting for this window answers with its tab.
-        if let Some(waiting) = self.api_tmux_windows.remove(&(gw, window_id)) {
-            self.api_tmux_created(waiting, Some(tab_id));
-        }
+        // A Python API CreateWindow waiting for this window answers with its tab (once the
+        // tab's window exists, when it opens as a new window).
+        self.api_tmux_window_opened(gw, window_id, Some(tab_id));
     }
 
     #[allow(clippy::too_many_arguments)]

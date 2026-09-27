@@ -595,6 +595,8 @@ pub struct App {
     api_tmux_creates: HashMap<(PaneId, crate::tmux_gateway::Tag), (u64, crate::api_proto::pb::ClientOriginatedMessage)>,
     /// Tmux CreateWindow requests waiting for the new window's tab, by gateway and tmux window.
     api_tmux_windows: HashMap<(PaneId, u32), (u64, crate::api_proto::pb::ClientOriginatedMessage)>,
+    /// Tmux CreateWindow requests whose tab (gateway, tab id) waits to become a window.
+    api_tmux_tabs: Vec<(PaneId, u64, (u64, crate::api_proto::pb::ClientOriginatedMessage))>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -927,6 +929,7 @@ pub fn run() {
         api_tmux_commands: HashMap::new(),
         api_tmux_creates: HashMap::new(),
         api_tmux_windows: HashMap::new(),
+        api_tmux_tabs: Vec::new(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
@@ -2616,6 +2619,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.open_pending(event_loop, w);
             self.tmux_apply_geometry();
         }
+        self.api_tmux_tabs_opened();
         self.tmux_auto_bury();
         if self.save_due.is_some_and(|t| Instant::now() >= t) {
             self.save_now();

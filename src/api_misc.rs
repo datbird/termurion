@@ -22,8 +22,10 @@ pub struct Sel {
 /// wide that lost `lost` lines off the top of its history. None for what iTerm2 refuses, in
 /// its order: an end past the width, a negative column window length, a column window
 /// beyond the width, a negative start column, window location, start line or end line. A
-/// line above the history is the first line kept (`MAX(0, ..)`). SMART selects words and
-/// WHOLE_LINE lines (alacritty has neither); an unknown mode reads as the default CHARACTER.
+/// line above the history is the first line kept (`MAX(0, ..)`). iTerm2 keeps the range as
+/// sent for every mode (`iTermSelection.m:1082-1093`), so only BOX is a block and the word
+/// and line modes are the exact range (alacritty's would widen it); an unknown mode reads as
+/// the default CHARACTER.
 pub fn to_sel(s: &pb::SubSelection, width: i32, lost: i64) -> Option<Sel> {
     use pb::SelectionMode as M;
     let w = s.windowed_coord_range.unwrap_or_default();
@@ -35,10 +37,8 @@ pub fn to_sel(s: &pb::SubSelection, width: i32, lost: i64) -> Option<Sel> {
         return None;
     }
     let ty = match s.selection_mode.and_then(|m| M::try_from(m).ok()).unwrap_or(M::Character) {
-        M::Character => SelectionType::Simple,
         M::Box => SelectionType::Block,
-        M::Word | M::Smart => SelectionType::Semantic,
-        M::Line | M::WholeLine => SelectionType::Lines,
+        M::Character | M::Word | M::Smart | M::Line | M::WholeLine => SelectionType::Simple,
     };
     Some(Sel { ty, start: ((start.y() - lost).max(0), start.x()), end: ((end.y() - lost).max(0), end.x()) })
 }
@@ -125,6 +125,14 @@ pub fn connections(list: &[(String, u64)]) -> pb::TmuxResponse {
     pb::TmuxResponse { status: Some(pb::tmux_response::Status::Ok as i32), payload }
 }
 
+/// CreateWindow's answer (`H:3651-3663`, status unset): nothing when no window was made
+/// (iTerm2's completion gets a negative id); else the window's tab id, "0" when the window
+/// has no tab (it never opened or closed first: `tab.uniqueId` of a nil tab).
+pub fn create_window_answer(made: bool, tab: Option<u64>) -> pb::TmuxResponse {
+    let payload = made.then(|| pb::tmux_response::Payload::CreateWindow(pb::tmux_response::CreateWindow { tab_id: Some(tab.unwrap_or(0).to_string()) }));
+    pb::TmuxResponse { status: None, payload }
+}
+
 /// ColorPreset (`H:3883-3950`) until milestone 13 brings presets: a list is OK with no names
 /// (so no payload), every name is PRESET_NOT_FOUND, an unset request REQUEST_MALFORMED.
 pub fn color_preset(r: &pb::ColorPresetRequest) -> pb::ColorPresetResponse {
@@ -166,12 +174,13 @@ mod tests {
         assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((70, 20)), M::Character), 80, 10), None);
         assert_eq!(to_sel(&sub((0, 12), (5, 13), Some((-1, 5)), M::Character), 80, 10), None);
         assert!(to_sel(&sub((0, 12), (5, 13), Some((70, 10)), M::Character), 80, 10).is_some(), "a window is checked, then ignored");
+        // iTerm2 keeps the range as sent for every mode (`iTermSelection.m:1082-1093`): only a
+        // box stays a box; the others are the exact range, never widened to words or lines.
         let ty = |m| to_sel(&sub((0, 12), (5, 13), None, m), 80, 10).map(|s| s.ty);
         assert_eq!(ty(M::Box), Some(SelectionType::Block));
-        assert_eq!(ty(M::Word), Some(SelectionType::Semantic));
-        assert_eq!(ty(M::Smart), Some(SelectionType::Semantic));
-        assert_eq!(ty(M::Line), Some(SelectionType::Lines));
-        assert_eq!(ty(M::WholeLine), Some(SelectionType::Lines));
+        for m in [M::Word, M::Smart, M::Line, M::WholeLine] {
+            assert_eq!(ty(m), Some(SelectionType::Simple), "{m:?}");
+        }
         // Unset and unknown modes read as CHARACTER; unset coordinates as zero.
         let mut s = sub((0, 12), (5, 13), None, M::Character);
         s.selection_mode = Some(99);
@@ -242,6 +251,22 @@ mod tests {
         assert_eq!(l.connections.len(), 1);
         assert_eq!((l.connections[0].connection_id.as_deref(), l.connections[0].owning_session_id.as_deref()), (Some("gw1"), Some("12")));
         assert_eq!(connections(&[]), pb::TmuxResponse { status: Some(TStatus::Ok as i32), payload: None });
+    }
+
+    #[test]
+    fn create_window_always_answers() {
+        use pb::tmux_response::{CreateWindow, Payload};
+        let tab = |r: pb::TmuxResponse| match r.payload {
+            Some(Payload::CreateWindow(CreateWindow { tab_id })) => tab_id,
+            _ => None,
+        };
+        // Status unset in every case (`H:3651-3663`).
+        assert_eq!(create_window_answer(true, Some(12)).status, None);
+        assert_eq!(tab(create_window_answer(true, Some(12))).as_deref(), Some("12"));
+        // The window was made but its tab is missing (it never opened, or closed first): a nil
+        // tab's uniqueId.
+        assert_eq!(tab(create_window_answer(true, None)).as_deref(), Some("0"));
+        assert_eq!(create_window_answer(false, None), pb::TmuxResponse::default(), "no window made: nothing set");
     }
 
     #[test]

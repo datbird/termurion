@@ -1139,7 +1139,8 @@ impl App {
                 answer(Status::Ok, response)
             }
             Some(Request::SetSelectionRequest(set)) => {
-                let Some(p) = self.api_session_pane(set.session_id.as_deref()).and_then(|id| self.panes.get_mut(&id)) else { return answer(Status::RequestMalformed, None) };
+                let Some(pane) = self.api_session_pane(set.session_id.as_deref()) else { return answer(Status::RequestMalformed, None) };
+                let Some(p) = self.panes.get_mut(&pane) else { return answer(Status::RequestMalformed, None) };
                 let f = api_buffer::facts(p.own());
                 let subs = set.selection.as_ref().map_or(&[][..], |s| &s.sub_selections[..]);
                 let Some(sels) = subs.iter().map(|s| api_misc::to_sel(s, f.cols, f.scrolled_off - f.history)).collect::<Option<Vec<_>>>() else {
@@ -1160,6 +1161,8 @@ impl App {
                     sel.update(b, b_side);
                     sel
                 });
+                // The window that shows the pane redraws (the current one for a buried pane).
+                self.enter_pane_window(pane);
                 self.redraw();
                 answer(Status::Ok, None)
             }
@@ -1268,24 +1271,59 @@ impl App {
         self.api_reply(conn, &m);
     }
 
-    /// Answers a waiting CreateWindow: the new window's tab id, or nothing when the window was
-    /// not made; status unset either way (`H:3656-3662`).
-    pub(super) fn api_tmux_created(&self, waiting: (u64, pb::ClientOriginatedMessage), tab: Option<u64>) {
-        let payload = tab.map(|t| pb::tmux_response::Payload::CreateWindow(pb::tmux_response::CreateWindow { tab_id: Some(t.to_string()) }));
-        self.api_tmux_answer(waiting, pb::TmuxResponse { status: None, payload });
+    /// Answers a waiting CreateWindow (`api_misc::create_window_answer`): `made` says whether
+    /// tmux made a window, `tab` is its tab when it has one.
+    pub(super) fn api_tmux_created(&self, waiting: (u64, pb::ClientOriginatedMessage), made: bool, tab: Option<u64>) {
+        self.api_tmux_answer(waiting, api_misc::create_window_answer(made, tab));
     }
 
     /// The `new-window` reply of a CreateWindow: it waits for the window's tab (answered at
     /// once when that tab is already open), or answers nothing when no window was made.
     pub(super) fn api_tmux_new_window_reply(&mut self, gw: PaneId, tag: crate::tmux_gateway::Tag, window: Option<u32>) {
         let Some(waiting) = self.api_tmux_creates.remove(&(gw, tag)) else { return };
-        let Some(window) = window else { return self.api_tmux_created(waiting, None) };
+        let Some(window) = window else { return self.api_tmux_created(waiting, false, None) };
         let first = self.tmux.get(&gw).and_then(|t| t.panes.iter().filter(|(_, (_, w))| *w == window).map(|(p, (id, _))| (*p, *id)).min()).map(|(_, id)| id);
         match first.and_then(|p| self.api_ids().pane_tab(p)) {
-            Some(tab) => self.api_tmux_created(waiting, Some(tab)),
+            Some(tab) => self.api_tmux_created(waiting, true, Some(tab)),
             None => {
                 self.api_tmux_windows.insert((gw, window), waiting);
             }
+        }
+    }
+
+    /// The tmux window `window` of `gw` got its tab `tab` (None: it never will, as when its
+    /// layout could not be read or it closed first, answered with tab "0" as iTerm2's opener
+    /// always completes). A tab still waiting to become a window is answered once that window
+    /// exists (`api_tmux_tabs_opened`).
+    pub(super) fn api_tmux_window_opened(&mut self, gw: PaneId, window: u32, tab: Option<u64>) {
+        let Some(waiting) = self.api_tmux_windows.remove(&(gw, window)) else { return };
+        match tab {
+            Some(t) if self.api_ids().tab_window(t).is_none() => self.api_tmux_tabs.push((gw, t, waiting)),
+            _ => self.api_tmux_created(waiting, true, tab),
+        }
+    }
+
+    /// Answers the CreateWindow requests whose tab waited for its new window, once that
+    /// window is open (or the tab is gone, as tab "0").
+    pub(super) fn api_tmux_tabs_opened(&mut self) {
+        if self.api_tmux_tabs.is_empty() {
+            return;
+        }
+        let pending: std::collections::HashSet<u64> = self
+            .pending_windows
+            .iter()
+            .flat_map(|w| match w {
+                super::windows_ui::NewWindow::Tab(t) => std::slice::from_ref(t),
+                super::windows_ui::NewWindow::Tabs(ts) => ts.as_slice(),
+                _ => &[],
+            })
+            .map(|t| t.id)
+            .collect();
+        let ids = self.api_ids();
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.api_tmux_tabs).into_iter().partition(|(_, t, _)| !pending.contains(t));
+        self.api_tmux_tabs = waiting;
+        for (_, t, w) in ready {
+            self.api_tmux_created(w, true, ids.tab_window(t).map(|_| t));
         }
     }
 
@@ -1302,6 +1340,9 @@ impl App {
         let mut windows: Vec<_> = self.api_tmux_windows.keys().filter(|(g, _)| *g == gw).copied().collect();
         windows.sort();
         waiting.extend(windows.iter().filter_map(|k| self.api_tmux_windows.remove(k)));
+        let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.api_tmux_tabs).into_iter().partition(|(g, _, _)| *g == gw);
+        self.api_tmux_tabs = kept;
+        waiting.extend(gone.into_iter().map(|(_, _, w)| w));
         for w in waiting {
             self.api_tmux_answer(w, pb::TmuxResponse::default());
         }
