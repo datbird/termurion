@@ -1,7 +1,8 @@
 //! iTerm2's interpolated strings (`EP:343-407`) on the expression language in `expr`, for
 //! the callers that refuse function calls: triggers, badges, APS rules, coprocess
-//! templates, Copy Interpolated String and status bar strings. Tandem keeps one extension
-//! of its own: `a ?? b` inside `\( )`, the first alternative whose text is not empty.
+//! templates, Copy Interpolated String, and status bar strings without calls (those with
+//! calls run through `script_eval`). Tandem keeps one extension of its own: `a ?? b` inside
+//! `\( )`, the first alternative whose text is not empty.
 
 use crate::expr::{self, Ctx, NoCalls, Outcome, Part, Value};
 

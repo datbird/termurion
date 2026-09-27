@@ -417,6 +417,40 @@ pub fn deps_key(paths: &BTreeSet<String>, scope: &dyn expr::Scope) -> String {
     serde_json::to_string(&now).unwrap_or_default()
 }
 
+/// Answers every call as still running: an evaluation that only reads paths.
+struct Waits;
+
+impl expr::Calls for Waits {
+    fn call(&mut self, _call: &Call, _args: &BTreeMap<String, Value>) -> Outcome {
+        Outcome::Pending
+    }
+}
+
+/// An interpolated string's dependencies now (`iTermGenericEvaluator.m`'s recorded
+/// references): the paths it reads, calls answering nothing, and their values as one text.
+pub fn template_deps(parts: &[Part], text: &str, scope: &dyn expr::Scope, lax: bool) -> String {
+    let rec = Recorder { inner: scope, read: RefCell::default() };
+    let _ = expr::eval_template(parts, &rec, &mut Waits, &expr::Ctx { invocation: text, lax });
+    deps_key(&rec.read.into_inner(), scope)
+}
+
+/// What a status bar string shows after an evaluation (`iTermGenericEvaluator.m`
+/// `setEvaluatedResult:error:`): the text of its value, or its error; None while it waits
+/// (the previous value stays).
+pub fn template_outcome(value: &Outcome) -> Option<Result<String, String>> {
+    match value {
+        Outcome::Done(v) => Some(Ok(expr::to_text(v))),
+        Outcome::Failed(f) => Some(Err(f.reason.clone())),
+        Outcome::Pending => None,
+    }
+}
+
+/// "Invocation of ... failed with error" (`iTermGenericEvaluator.m`): a failed status bar
+/// string, in the failing connection's log.
+pub fn template_failed_text(template: &str, reason: &str) -> String {
+    format!("Invocation of \u{201c}{template}\u{201d} failed with error:\n{reason}")
+}
+
 /// A frame of temporary values (a trigger's, a component's `__knobs`) over a scope.
 pub struct Layered<'a> {
     pub frame: &'a Values,
@@ -889,5 +923,27 @@ mod tests {
         assert_eq!(expr::Scope::value(&l, "columns"), Some(json!(1)));
         assert_eq!(expr::Scope::value(&l, "user.x"), Some(json!("hi")));
         assert_eq!(expr::Scope::value(&l, "__knobs"), Some(json!("{}")));
+    }
+
+    /// A status bar string's value (`iTermGenericEvaluator.m`): a finished evaluation its
+    /// text or its error; a pending one keeps the previous value. Its dependencies are the
+    /// paths the string reads, the arguments of calls still waiting included.
+    #[test]
+    fn templates_follow_iterm2() {
+        assert_eq!(template_outcome(&Outcome::Done(json!("x"))), Some(Ok("x".to_string())));
+        assert_eq!(template_outcome(&Outcome::Done(json!(3))), Some(Ok("3".to_string())));
+        assert_eq!(template_outcome(&Outcome::Failed(Failure::plain("boom"))), Some(Err("boom".to_string())));
+        assert_eq!(template_outcome(&Outcome::Pending), None);
+
+        let mut v = scope();
+        let parts = expr::parse_template("a\\(f(n: columns))\\(user.x)").unwrap();
+        let before = template_deps(&parts, "t", &v, true);
+        v.insert("user.other".into(), json!(1));
+        assert_eq!(template_deps(&parts, "t", &v, true), before, "an unread path");
+        v.insert("columns".into(), json!(81));
+        let after = template_deps(&parts, "t", &v, true);
+        assert_ne!(after, before, "a call's argument");
+        v.insert("user.x".into(), json!("changed"));
+        assert_ne!(template_deps(&parts, "t", &v, true), after, "a part after a waiting call");
     }
 }

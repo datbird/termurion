@@ -371,6 +371,19 @@ pub fn knobs(kind: Kind, algorithm: Algorithm) -> Vec<Knob> {
     }
 }
 
+/// Call Script Function's timeout (`FN:178`, `doubleValue` of the knob): a number as it is,
+/// a text parsed (0 when it is not a number), none the default 5.
+pub fn button_timeout(knobs: &toml::Table) -> f64 {
+    match knobs.get(TIMEOUT_KEY) {
+        None => 5.0,
+        Some(Value::Float(f)) => *f,
+        Some(Value::Integer(i)) => *i as f64,
+        Some(Value::Boolean(b)) => f64::from(u8::from(*b)),
+        Some(Value::String(s)) => s.trim().parse().unwrap_or(0.0),
+        Some(_) => 0.0,
+    }
+}
+
 /// `statusBarComponentDefaultKnobs`'s own additions for `kind`, on top of the base knobs
 /// (`"base: compression resistance"`, `"base: priority"`) `statusbar::default_knobs`
 /// already adds for every class.

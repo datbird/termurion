@@ -3,7 +3,7 @@
 //! `statusbar_ui` measures, lays out and draws. Text components here: Clock, Host Name,
 //! User Name, Job Name, Current Directory (and its click menu), Interpolated String; the
 //! menu and button components: Custom Action, Actions Menu, Snippets Menu, Triggers Menu
-//! (and their menus), Call Script Function; the field components: Search Tool, Filter
+//! (and their menus), Call Script Function (its click invokes the function); the field components: Search Tool, Filter
 //! Tool (both bound to the pane's find bar), the Composer (the pane's composer as a one-line
 //! field), and the paste Progress Indicator.
 //!
@@ -29,8 +29,7 @@ const ABBREVIATE_LOCALHOST_KEY: &str = "abbreviate-localhost";
 const EXPRESSION_KEY: &str = "expression";
 const ACTION_KEY: &str = "action";
 const LABEL_KEY: &str = "label";
-/// Call Script Function's click until milestone 11 brings the Python API.
-pub(super) const SCRIPT_REFUSAL: &str = "Script functions need the Python API, which arrives in milestone 11.";
+const FUNCTION_INVOCATION_KEY: &str = "function invocation";
 /// A button's face is its label plus this many points (6 on each side).
 pub(super) const BUTTON_PAD_PT: f32 = 12.0;
 /// `FN`: `statusBarComponentVerticalOffset`.
@@ -271,6 +270,15 @@ pub(super) fn dir_title(path: &str, starred: bool) -> String {
     if starred { format!("\u{2605} {path}") } else { path.to_string() }
 }
 
+/// `FN:127-194`: Call Script Function's button, its label (none is "") on a rounded box; a
+/// click invokes the function call with the timeout knob, the label naming the error.
+pub(super) fn script_button(knobs: &toml::Table) -> Content {
+    let text = |key: &str| knobs.get(key).and_then(toml::Value::as_str).unwrap_or_default().to_string();
+    let label = text(LABEL_KEY);
+    let click = Click::Invoke { invocation: text(FUNCTION_INVOCATION_KEY), timeout: sbc::button_timeout(knobs), label: label.clone() };
+    Content { empty: false, button: true, uncopyable: true, click, ..Content::text(vec![label]) }
+}
+
 /// `SWS:132`: the message a click on a failed Interpolated String shows.
 pub(super) fn evaluation_error(expression: &str, error: &str) -> String {
     format!("Error while evaluating \u{201C}{expression}\u{201D}:\n{error}")
@@ -399,8 +407,9 @@ pub(super) fn next_whole_second(now: Instant) -> Instant {
 }
 
 impl App {
-    /// What a content component shows for a session now.
-    pub(super) fn content(&self, pane: PaneId, kind: Kind, c: &Component) -> Content {
+    /// What a content component shows for a session now (a string with function calls
+    /// starts or reads its evaluation, `template`).
+    pub(super) fn content(&mut self, pane: PaneId, kind: Kind, c: &Component) -> Content {
         // The session's `hostname`, `username` and `path` as `variables` reports them, read
         // directly: this runs every frame, and `variables` copies the selection.
         let shell = self.panes.get(&pane).map(|p| &p.own().shell);
@@ -446,10 +455,10 @@ impl App {
                 }
             }
             // `SWS`: one variant, the value; a failed expression shows the ladybug and a
-            // click shows why.
+            // click shows why. Function calls run through the template cache.
             Kind::InterpolatedString => {
                 let expression = knob_str(c, kind, EXPRESSION_KEY).unwrap_or_default();
-                match self.evaluate_for(pane, &expression) {
+                match self.template(pane, &expression) {
                     Ok(value) => Content::text(vec![value]),
                     Err(e) => Content { click: Click::Error(evaluation_error(&expression, &e)), ..Content::text(vec![LADYBUG.to_string()]) },
                 }
@@ -460,7 +469,7 @@ impl App {
             Kind::CustomAction => {
                 let action = c.knobs.get(ACTION_KEY).and_then(crate::user_actions::UserAction::from_value);
                 let title = action.as_ref().map(|a| a.title.clone()).unwrap_or_default();
-                let variants = match self.evaluate_for(pane, &title) {
+                let variants = match self.template(pane, &title) {
                     Ok(value) => sbt::action_variants(&value),
                     Err(e) => vec![custom_action_error(&e)],
                 };
@@ -483,12 +492,8 @@ impl App {
                 };
                 Content { empty, uncopyable: true, click: Click::Menu(kind), ..Content::text(vec![text.to_string()]) }
             }
-            // `FN`: a button sized to its label; a click would call the function (milestone
-            // 11), so it says why it does not.
-            Kind::CallScriptFunction => {
-                let label = c.knobs.get(LABEL_KEY).and_then(toml::Value::as_str).unwrap_or_default().to_string();
-                Content { empty: false, button: true, uncopyable: true, click: Click::Refuse(SCRIPT_REFUSAL), ..Content::text(vec![label]) }
-            }
+            // `FN`: a button sized to its label; a click calls the function.
+            Kind::CallScriptFunction => script_button(&c.knobs),
             // `SRCH`, `FILT`: minimum 125, preferred 200; the pane's query, bound to its
             // find bar. The Search Tool shows the query Find keeps between opens, its match
             // count while find is open, and the chevrons; a temporary one closes. The
@@ -561,11 +566,12 @@ impl App {
         }
     }
 
-    /// An interpolated string evaluated in the session (`iTermSwiftyString` with no side
-    /// effects), under `laxNilPolicyInInterpolatedStrings`. The session's variables are
-    /// gathered only when the string names one, and the selection only when it names
-    /// `selection` or `selectionLength`.
-    fn evaluate_for(&self, pane: PaneId, expression: &str) -> Result<String, String> {
+    /// An interpolated string with no function calls evaluated in the session
+    /// (`iTermSwiftyString` with no side effects), under
+    /// `laxNilPolicyInInterpolatedStrings`. The session's variables are gathered only when the
+    /// string names one, and the selection only when it names `selection` or
+    /// `selectionLength`.
+    pub(super) fn evaluate_for(&self, pane: PaneId, expression: &str) -> Result<String, String> {
         let (light, full) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
         let lookup = |n: &str| {
             let n = n.strip_prefix("session.").unwrap_or(n);
@@ -923,7 +929,26 @@ mod tests {
         assert_eq!(trigger_items(&list), vec![(0, "Highlight Text \u{2014} err".to_string(), true), (3, "Ring Bell \u{2014} y".to_string(), false)]);
         assert!(trigger_items(&[]).is_empty());
         assert_eq!(custom_action_error("bad"), "\u{1F41E} bad");
-        assert_eq!(SCRIPT_REFUSAL, "Script functions need the Python API, which arrives in milestone 11.");
+    }
+
+    /// `FN:127-194`: a button with the label (none is ""), whose click invokes the function
+    /// call with the timeout knob (default 5), the label as the error's origin.
+    #[test]
+    fn call_script_function_follows_iterm2() {
+        let mut knobs = toml::Table::new();
+        knobs.insert("label".into(), toml::Value::String("Go".into()));
+        knobs.insert("function invocation".into(), toml::Value::String("f()".into()));
+        knobs.insert("timeout".into(), toml::Value::Float(2.0));
+        let click = Click::Invoke { invocation: "f()".into(), timeout: 2.0, label: "Go".into() };
+        assert_eq!(script_button(&knobs), Content { empty: false, button: true, uncopyable: true, click, ..Content::text(vec!["Go".into()]) });
+        knobs.remove("label");
+        let c = script_button(&knobs);
+        assert_eq!(c.variants, vec![String::new()]);
+        assert_eq!(c.click, Click::Invoke { invocation: "f()".into(), timeout: 2.0, label: String::new() });
+        assert!(!c.empty && c.button);
+        assert_eq!(sbc::button_timeout(&toml::Table::new()), 5.0);
+        knobs.insert("timeout".into(), toml::Value::Integer(0));
+        assert_eq!(sbc::button_timeout(&knobs), 0.0, "0 is synchronous");
     }
 
     #[test]

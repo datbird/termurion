@@ -623,6 +623,9 @@ pub struct App {
     /// "Function Call Failed" alerts (and results) waiting to show, and the one showing.
     script_alerts: VecDeque<script_ui::Alert>,
     script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert)>,
+    /// Status bar strings with function calls, by session and string: their shown values
+    /// and running evaluations (app-wide; a pane's entries go with the pane).
+    script_templates: HashMap<(PaneId, String), script_ui::Template>,
     /// Status bar component unread counts set by scripts: by component identifier, and per
     /// session (which wins when set, `iTermStatusBarUnreadCountController.m:51-60`). Read by
     /// the script components (Task 7).
@@ -980,6 +983,7 @@ pub fn run() {
         script_next: 1,
         script_tokens: HashMap::new(),
         script_alerts: VecDeque::new(),
+        script_templates: HashMap::new(),
         script_alert: None,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
@@ -1518,10 +1522,11 @@ impl App {
                 _ => {
                     self.forget_cookie(&p);
                     self.forget_session_profile(&p.profile);
-                    // Gone for good: its API subscriptions and unread counts go (a pane kept
-                    // for Undo Close keeps them).
+                    // Gone for good: its API subscriptions, unread counts and status bar
+                    // strings go (a pane kept for Undo Close keeps them).
                     self.api_session_subs.forget_session(id);
                     self.unread_session_counts.retain(|(p, _), _| *p != id);
+                    self.script_templates.retain(|(p, _), _| *p != id);
                 }
             }
         }

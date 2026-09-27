@@ -45,18 +45,64 @@ pub(super) enum Origin {
     },
     Report(String),
     OpenQuickly,
-    // Constructed by the callers of Tasks 6 to 9.
+    // Constructed by the callers of Tasks 7 to 9.
     #[allow(dead_code)]
     Title(PaneId),
     #[allow(dead_code)]
     Component { pane: PaneId, id: String },
     #[allow(dead_code)]
     Click,
-    #[allow(dead_code)]
-    Template { pane: PaneId, key: String },
+    /// A status bar string's evaluation: its cache entry (`script_templates`) and the
+    /// evaluation's number there, so an older one never replaces a newer one's value.
+    Template { pane: PaneId, key: String, nth: u64 },
     #[allow(dead_code)]
     Quiet,
 }
+
+/// A status bar string with function calls (`iTermGenericEvaluator.m`): the value shown
+/// (empty before the first evaluation finishes), the evaluation still running, the
+/// dependencies it started with, the newest evaluation whose value was applied, and the
+/// functions it found unregistered (their registration starts it again).
+#[derive(Clone, Debug, Default)]
+pub(super) struct Template {
+    pub value: Option<Result<String, String>>,
+    pub running: Option<u64>,
+    pub deps: String,
+    pub applied: u64,
+    pub missing: BTreeSet<String>,
+}
+
+impl Template {
+    /// Whether an evaluation starts now (`reevaluateIfNeeded`, `dependencyDidChange`,
+    /// `registeredFunctionsDidChange:`): nothing ran yet, the dependencies changed since the
+    /// last start, or a function it missed is registered now. Never while its own
+    /// evaluation runs with the same dependencies.
+    fn needs_start(&self, deps: &str, registered: impl Fn(&str) -> bool) -> bool {
+        (self.value.is_none() && self.running.is_none()) || self.deps != deps || self.missing.iter().any(|s| registered(s))
+    }
+
+    /// An evaluation finished (`evaluateSynchronously:sideEffectsAllowed:`): dropped when a
+    /// newer one's value was applied, else its value replaces the shown one. True when the
+    /// shown value changed.
+    fn finish(&mut self, nth: u64, missing: &BTreeSet<String>, out: &expr::Outcome) -> bool {
+        if nth < self.applied {
+            return false;
+        }
+        self.applied = nth;
+        if self.running == Some(nth) {
+            self.running = None;
+        }
+        self.missing.extend(missing.iter().cloned());
+        let Some(value) = script_eval::template_outcome(out) else { return false };
+        let changed = self.value.as_ref() != Some(&value);
+        self.value = Some(value);
+        changed
+    }
+}
+
+/// Status bar strings have iTerm2's interpolated string timeout (`iTermGenericEvaluator.m`,
+/// 30 s asynchronously).
+const TEMPLATE_TIMEOUT_SECS: f64 = 30.0;
 
 /// A running invocation, with the values its scope had when it started: iTerm2 reads every
 /// variable once, when it parses the invocation (`SFC:211-212`, `EP:425`).
@@ -250,10 +296,17 @@ impl App {
     /// its origin), including a syntax error or a receiver that names no object.
     pub(super) fn invoke(&mut self, invocation: &str, scope: ScopeSpec, timeout: Timeout, side_effects: bool, origin: Origin) -> Option<u64> {
         let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
-        let inv = match Invocation::new(invocation, timeout, side_effects, lax, Instant::now()) {
+        let inv = Invocation::new(invocation, timeout, side_effects, lax, Instant::now());
+        self.start_run(invocation, inv, scope, origin)
+    }
+
+    /// Starts an invocation already parsed (a call sequence, or an interpolated string);
+    /// as `invoke`.
+    fn start_run(&mut self, invocation: &str, inv: Result<Invocation, Failure>, scope: ScopeSpec, origin: Origin) -> Option<u64> {
+        let inv = match inv {
             Ok(inv) => inv,
             Err(f) => {
-                self.script_answer(&origin, invocation, Err(f));
+                self.script_answer(&origin, invocation, Err(f), &BTreeSet::new());
                 return None;
             }
         };
@@ -263,7 +316,7 @@ impl App {
             ScopeSpec::Receiver(id) => {
                 let sig = inv.calls().first().map(|c| c.signature()).unwrap_or_default();
                 let Some((on, key)) = self.receiver(&id, &sig) else {
-                    self.script_answer(&origin, invocation, Err(Failure::plain(script_eval::object_not_found(&id))));
+                    self.script_answer(&origin, invocation, Err(Failure::plain(script_eval::object_not_found(&id))), &BTreeSet::new());
                     return None;
                 };
                 (receiver_scope(on, key), Some(id))
@@ -293,18 +346,18 @@ impl App {
             api_vars::typed_users(&self.api_vars, &vars, Scope::Session, &pane.to_string(), &mut out);
             Some(out)
         };
-        let objects = self.api_objects();
-        let ids = self.api_ids();
+        // The object catalog only for the scopes that read it (a status bar string reads a
+        // session's scope every frame).
         let window = |k: u64| -> Option<Values> {
-            let guid = ids.windows.iter().find(|(w, _, _)| *w == k).map(|(_, g, _)| g.clone())?;
-            Some(objects.values(Scope::Window, &guid))
+            let guid = self.api_ids().windows.iter().find(|(w, _, _)| *w == k).map(|(_, g, _)| g.clone())?;
+            Some(self.api_objects().values(Scope::Window, &guid))
         };
-        let tab = |t: u64| -> Option<Values> { ids.tab_window(t).map(|_| objects.values(Scope::Tab, &t.to_string())) };
+        let tab = |t: u64| -> Option<Values> { self.api_ids().tab_window(t).map(|_| self.api_objects().values(Scope::Tab, &t.to_string())) };
         match spec {
             ScopeSpec::Session { pane, .. } => session(*pane),
             ScopeSpec::Tab(t) => tab(*t),
             ScopeSpec::Window(k) => window(*k),
-            ScopeSpec::App => Some(objects.values(Scope::App, "")),
+            ScopeSpec::App => Some(self.api_objects().values(Scope::App, "")),
             ScopeSpec::Receiver(id) => match self.receiver(id, "")? {
                 (builtin_fns::On::Session, p) => session(p),
                 (builtin_fns::On::Tab, t) => tab(t),
@@ -368,12 +421,13 @@ impl App {
         for token in run.inv.tokens() {
             self.script_tokens.remove(&token);
         }
-        self.script_answer(&run.origin, run.inv.text(), r);
+        self.script_answer(&run.origin, run.inv.text(), r, run.inv.missing());
     }
 
     /// Where a result goes: an InvokeFunctionResponse (`H:4376-4394`), the error alert with
-    /// the origin's name, or nowhere.
-    fn script_answer(&mut self, origin: &Origin, invocation: &str, r: Result<Value, Failure>) {
+    /// the origin's name, a status bar string's cache (with the functions it missed), or
+    /// nowhere.
+    fn script_answer(&mut self, origin: &Origin, invocation: &str, r: Result<Value, Failure>, missing: &BTreeSet<String>) {
         match origin {
             Origin::Api { conn, req } => {
                 let mut m = api_proto::reply_to(req);
@@ -390,8 +444,70 @@ impl App {
                 Ok(v) => self.script_alerts.push_back(Alert::Result(script_eval::result_text(invocation, &v))),
                 Err(f) => self.report_function_error(OPEN_QUICKLY, invocation, &f),
             },
-            // The callers of Tasks 6 to 9 take their results there.
-            Origin::Title(_) | Origin::Component { .. } | Origin::Click | Origin::Template { .. } | Origin::Quiet => {}
+            Origin::Template { pane, key, nth } => self.template_finished(*pane, key, *nth, missing, r),
+            // The callers of Tasks 7 to 9 take their results there.
+            Origin::Title(_) | Origin::Component { .. } | Origin::Click | Origin::Quiet => {}
+        }
+    }
+
+    /// A status bar string's value (Interpolated String, a Custom Action's title): one with no
+    /// function call evaluates at once, as before; one with calls shows its cached value
+    /// (empty before the first) and starts an evaluation when `Template::needs_start` says
+    /// so. The first evaluation is preceded by a synchronous one, script calls answering
+    /// nothing (`reevaluateIfNeeded`); evaluations have no side effects
+    /// (`SWS:117-119`, `ACT:72-74`) and time out after 30 s.
+    pub(super) fn template(&mut self, pane: PaneId, template: &str) -> Result<String, String> {
+        if !crate::interp::has_calls(template) {
+            return self.evaluate_for(pane, template);
+        }
+        let parts = expr::parse_template(template)?;
+        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let spec = ScopeSpec::Session { pane, frame: Values::new() };
+        let deps = script_eval::template_deps(&parts, template, &self.script_values(&spec).unwrap_or_default(), lax);
+        let key = (pane, template.to_string());
+        let fns = &self.api_fns;
+        let entry = self.script_templates.entry(key.clone()).or_default();
+        if entry.needs_start(&deps, |sig| fns.has_signature(sig)) {
+            let first = entry.value.is_none();
+            entry.deps = deps;
+            entry.missing.clear();
+            if first {
+                self.start_template(pane, template, Timeout::Sync);
+            }
+            self.start_template(pane, template, Timeout::from_secs(TEMPLATE_TIMEOUT_SECS));
+        }
+        self.script_templates.get(&key).and_then(|t| t.value.clone()).unwrap_or(Ok(String::new()))
+    }
+
+    /// Starts one evaluation of a status bar string, recorded as its entry's running one.
+    fn start_template(&mut self, pane: PaneId, template: &str, timeout: Timeout) {
+        let nth = self.script_next;
+        self.script_next += 1;
+        if let Some(t) = self.script_templates.get_mut(&(pane, template.to_string())) {
+            t.running = Some(nth);
+        }
+        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let inv = Invocation::for_template(template, timeout, false, lax, Instant::now());
+        let origin = Origin::Template { pane, key: template.to_string(), nth };
+        self.start_run(template, inv, ScopeSpec::Session { pane, frame: Values::new() }, origin);
+    }
+
+    /// A status bar string's evaluation finished: its entry takes the value (unless a newer
+    /// evaluation's came first) and the bars redraw when it changed. A failure goes to the
+    /// failing connection's log (`iTermGenericEvaluator.m`). An entry gone with its pane
+    /// takes nothing.
+    fn template_finished(&mut self, pane: PaneId, key: &str, nth: u64, missing: &BTreeSet<String>, r: Result<Value, Failure>) {
+        if let Err(f) = &r {
+            self.script_log(f.conn, script_eval::template_failed_text(key, &f.reason));
+        }
+        let out = match r {
+            Ok(v) => expr::Outcome::Done(v),
+            Err(f) => expr::Outcome::Failed(f),
+        };
+        let Some(t) = self.script_templates.get_mut(&(pane, key.to_string())) else { return };
+        if t.finish(nth, missing, &out) {
+            self.redraw();
+            self.redraw_all();
         }
     }
 
@@ -558,6 +674,38 @@ mod tests {
         assert_eq!(timeout_conn(&r, |t| (t == 41).then_some(5)), Some(5), "the serving connection first");
         r.receiver = None;
         assert_eq!(timeout_conn(&r, |_| None), None, "an InvokeFunction that is not a method");
+    }
+
+    /// The status bar string cache (`iTermGenericEvaluator.m`): the first evaluation, a
+    /// dependency change, a missed function registered; never a second start with the same
+    /// dependencies; an older evaluation's value never replaces a newer one's.
+    #[test]
+    fn template_cache_follows_iterm2() {
+        let none = |_: &str| false;
+        let mut t = Template::default();
+        assert!(t.needs_start("d", none), "nothing ran yet");
+        t.deps = "d".into();
+        t.running = Some(5);
+        assert!(!t.needs_start("d", none), "its evaluation runs");
+        assert!(t.needs_start("e", none), "a dependency changed");
+        // The synchronous pass (4) then the asynchronous one (5).
+        assert!(t.finish(4, &BTreeSet::new(), &expr::Outcome::Done(json!("sync"))));
+        assert_eq!((t.value.clone(), t.running), (Some(Ok("sync".into())), Some(5)));
+        assert!(t.finish(5, &BTreeSet::from(["f()".to_string()]), &expr::Outcome::Failed(Failure::plain("No function"))));
+        assert_eq!((t.value.clone(), t.running), (Some(Err("No function".into())), None));
+        assert!(!t.needs_start("d", none));
+        assert!(t.needs_start("d", |s| s == "f()"), "the missed function is registered now");
+        // Two running: the newer finishes first, then the older is dropped.
+        t.running = Some(8);
+        assert!(t.finish(8, &BTreeSet::new(), &expr::Outcome::Done(json!("new"))));
+        assert!(!t.finish(7, &BTreeSet::new(), &expr::Outcome::Done(json!("old"))));
+        assert_eq!(t.value, Some(Ok("new".into())));
+        // An older one finishing while a newer runs is shown until the newer's comes.
+        t.running = Some(10);
+        assert!(t.finish(9, &BTreeSet::new(), &expr::Outcome::Done(json!("nine"))));
+        assert_eq!((t.value.clone(), t.running), (Some(Ok("nine".into())), Some(10)));
+        assert!(!t.finish(10, &BTreeSet::new(), &expr::Outcome::Done(json!("nine"))), "the same value");
+        assert_eq!(t.running, None);
     }
 
     #[test]

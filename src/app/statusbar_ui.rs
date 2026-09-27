@@ -26,8 +26,6 @@ const LAYOUT_KEY: &str = "Status Bar Layout";
 const SHOW_KEY: &str = "Show Status Bar";
 /// The info bar a failed Interpolated String's click shows.
 const STATUS_ERROR_BAR: &str = "statusbar:error";
-/// The info bar a click that does nothing yet shows.
-const STATUS_REFUSE_BAR: &str = "statusbar:refuse";
 /// The Composer's history menu items: `statusbar:composer-history:<n>`.
 const COMPOSER_HISTORY_ID: &str = "composer-history:";
 /// A button face's corner radius, and its inset from the bar's top and bottom, in points.
@@ -55,7 +53,7 @@ pub(super) enum Piece {
 }
 
 /// What a left click on a component does.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Click {
     None,
     /// Opens the profile's status bar settings (the placeholder's click).
@@ -71,8 +69,9 @@ pub(super) enum Click {
     Field,
     /// The Progress Indicator: its cancel glyph cancels the paste.
     Cancel,
-    /// Says why the click does nothing yet, in an info bar with OK.
-    Refuse(&'static str),
+    /// Call Script Function (`FN:170-194`): invokes the function call in the bar's session
+    /// with the timeout, side effects on; an error is reported with the label as origin.
+    Invoke { invocation: String, timeout: f64, label: String },
 }
 
 /// The placeholder's content: its one text, and a click that opens the settings.
@@ -658,8 +657,9 @@ impl App {
                     Click::Error(message) => {
                         self.ask(bar.pane, STATUS_ERROR_BAR, &message.replace('\n', " "), &["OK"], false);
                     }
-                    Click::Refuse(why) => {
-                        self.ask(bar.pane, STATUS_REFUSE_BAR, why, &["OK"], false);
+                    Click::Invoke { invocation, timeout, label } => {
+                        let scope = super::script_ui::ScopeSpec::Session { pane: bar.pane, frame: crate::api_vars::Values::new() };
+                        self.invoke(&invocation, scope, crate::script_eval::Timeout::from_secs(timeout), true, super::script_ui::Origin::Report(label));
                     }
                     Click::Field => {
                         let Some((i, pl)) = hit.and_then(|i| p.placed.iter().find(|pl| pl.index == i).map(|pl| (i, *pl))) else { return true };
@@ -1246,7 +1246,8 @@ mod tests {
         ] {
             assert_eq!(Piece::of(class), Some(Piece::Content(kind)), "{class}");
         }
-        let button = Content { button: true, uncopyable: true, click: Click::Refuse(super::super::statusbar_content::SCRIPT_REFUSAL), ..Content::text(vec!["Reload".into()]) };
+        let click = Click::Invoke { invocation: "reload()".into(), timeout: 5.0, label: "Reload".into() };
+        let button = Content { button: true, uncopyable: true, click, ..Content::text(vec!["Reload".into()]) };
         let item = Piece::Content(Kind::CallScriptFunction).item(&component(CALL_SCRIPT_FUNCTION_CLASS, &[]), Algorithm::Stable, &button, &widths(&[("Reload", 40.0)]), None);
         assert_eq!((item.min, item.preferred, item.stretch), (52.0, 52.0, false));
         let menu = Content { uncopyable: true, click: Click::Menu(Kind::ActionsMenu), ..Content::text(vec!["Perform Action\u{2026}".into()]) };
