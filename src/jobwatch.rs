@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
-use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, GenerateConsoleCtrlEvent};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess};
@@ -444,19 +443,16 @@ pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay) -> Result<
     }
 }
 
+/// How long a console event's sender stays attached waiting for its own copy of the event.
+const OWN_EVENT_WAIT: Duration = Duration::from_millis(500);
+
 /// Ctrl+C (or Ctrl+Break) to the whole console `pid` runs on, from its own thread, never
 /// joined by the caller: attached under `pty::CONSOLE`, and not at all once `stop` is set
-/// (a session paused for Undo Close).
+/// (a session paused for Undo Close). It stays attached, holding the lock, until this
+/// process's own handler has seen the event (at most `OWN_EVENT_WAIT`), so the copy Windows
+/// delivers to the sender never lands after a later attach reset the handler list.
 pub fn console_event(pid: u32, ctrl_break: bool, stop: Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<Result<(), String>> {
-    let event = if ctrl_break { CTRL_BREAK_EVENT } else { CTRL_C_EVENT };
-    std::thread::spawn(move || {
-        crate::pty::attached_unless(pid, &stop, || {
-            if unsafe { GenerateConsoleCtrlEvent(event, 0) } == 0 {
-                return Err(os_err("GenerateConsoleCtrlEvent"));
-            }
-            Ok(())
-        })
-    })
+    std::thread::spawn(move || crate::pty::attached_unless(pid, &stop, || crate::pty::send_ctrl_event_attached(ctrl_break, OWN_EVENT_WAIT).map(|_| ())))
 }
 
 /// Every process under a shell now (for the close prompt), with its name.

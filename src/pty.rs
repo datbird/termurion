@@ -43,8 +43,43 @@ static ATTACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// ignore flag would be inherited by every shell started after it, and removing a handler
 /// before the event's thread runs here would let the default handler exit).
 unsafe extern "system" fn ignore_ctrl(kind: u32) -> BOOL {
-    let attached_close = kind == CTRL_CLOSE_EVENT && ATTACHED.load(std::sync::atomic::Ordering::SeqCst);
-    (kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT || attached_close) as BOOL
+    let (handled, seen) = ctrl_answer(kind, ATTACHED.load(std::sync::atomic::Ordering::SeqCst));
+    if seen {
+        SEEN.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    handled as BOOL
+}
+
+/// `ignore_ctrl`'s answer to an event while attached or not: whether it is handled, and
+/// whether it counts as this process's own Ctrl+C or Ctrl+Break seen while attached.
+fn ctrl_answer(kind: u32, attached: bool) -> (bool, bool) {
+    let ctrl = kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT;
+    (ctrl || (kind == CTRL_CLOSE_EVENT && attached), ctrl && attached)
+}
+
+/// Set by `ignore_ctrl` when a Ctrl+C or Ctrl+Break reaches this process while attached.
+static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Sends Ctrl+C (or Ctrl+Break) to the whole console this process is attached to (inside
+/// `attached_unless`), then stays attached until `ignore_ctrl` has seen its own copy, at most
+/// `wait`. Windows delivers that copy on a thread it starts a little later; were it to land
+/// after the detach and a next attach (which starts the handler list over), only the default
+/// handler would answer, and Ctrl+Break would end this process. True when it was seen (a
+/// process that ignores Ctrl+C never sees it and waits out `wait`).
+pub(crate) fn send_ctrl_event_attached(ctrl_break: bool, wait: Duration) -> Result<bool, String> {
+    SEEN.store(false, std::sync::atomic::Ordering::SeqCst);
+    let event = if ctrl_break { CTRL_BREAK_EVENT } else { CTRL_C_EVENT };
+    if unsafe { windows_sys::Win32::System::Console::GenerateConsoleCtrlEvent(event, 0) } == 0 {
+        return Err(format!("GenerateConsoleCtrlEvent failed: {}", std::io::Error::last_os_error()));
+    }
+    let end = Instant::now() + wait;
+    while !SEEN.load(std::sync::atomic::Ordering::SeqCst) {
+        if Instant::now() >= end {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    Ok(true)
 }
 
 /// Runs `f` attached to the console `pid` runs on, under `CONSOLE`, with the ignore-Ctrl
@@ -672,6 +707,15 @@ pub(crate) mod tests {
             println!("{line}");
         }
         assert!(status.is_some_and(|s| s.success()), "the measuring process failed or hung: {status:?}\n{got}");
+    }
+
+    #[test]
+    fn our_own_ctrl_event_is_seen_only_while_attached() {
+        assert_eq!(ctrl_answer(CTRL_BREAK_EVENT, true), (true, true));
+        assert_eq!(ctrl_answer(CTRL_C_EVENT, true), (true, true));
+        assert_eq!(ctrl_answer(CTRL_BREAK_EVENT, false), (true, false), "handled, but not counted after the detach");
+        assert_eq!(ctrl_answer(CTRL_CLOSE_EVENT, true), (true, false));
+        assert_eq!(ctrl_answer(CTRL_CLOSE_EVENT, false), (false, false));
     }
 
     #[test]
