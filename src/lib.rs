@@ -76,6 +76,7 @@ pub mod scripts_scan;
 pub mod util_api;
 pub mod util_osc;
 pub mod util_cli;
+pub mod util_files;
 #[cfg(windows)]
 pub mod util_console;
 pub mod builtin_fns;

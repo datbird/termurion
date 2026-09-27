@@ -566,6 +566,35 @@ mod tests {
         assert_eq!(seen, wanted);
     }
 
+    #[test]
+    fn imgcat_through_conpty() {
+        // 200x200 pseudo-random pixels: the PNG cannot compress below 100 KB.
+        let mut seed = 0x2545_F491_u32;
+        let img = image::RgbImage::from_fn(200, 200, |_, _| {
+            let mut px = [0u8; 3];
+            for c in &mut px {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                *c = seed as u8;
+            }
+            image::Rgb(px)
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png = png.into_inner();
+        assert!(png.len() > 100 * 1024, "{} bytes", png.len());
+        let path = std::env::temp_dir().join(format!("tandem-imgcat-conpty-{}.png", std::process::id()));
+        std::fs::write(&path, &png).unwrap();
+        let (code, _, screen) = run_in_conpty(&["imgcat", &path.to_string_lossy()], &mut |_, _| {});
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(code, Some(0));
+        assert_eq!(screen.images.by_id.len(), 1);
+        let shown = screen.images.by_id.values().next().unwrap();
+        assert_eq!((shown.width_px, shown.height_px), (200, 200));
+        assert!(!shown.broken);
+    }
+
     /// A measurement (pre-flight ruling): run by hand with
     /// `cargo test --lib util_console::tests::conpty_carries_replies -- --ignored --nocapture`.
     #[test]

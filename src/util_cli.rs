@@ -142,9 +142,16 @@ pub fn term(io: &Io) -> Option<String> {
 /// Runs utility `name` with `args`; returns its exit code. Each utility's task adds its arm
 /// here; a name not built yet prints the usage.
 pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
-    let _ = (name, args);
-    let _ = io.err.write_all(multi_usage().as_bytes());
-    2
+    use crate::util_files;
+    match name {
+        "imgcat" => util_files::imgcat(args, io),
+        "it2cat" => util_files::it2cat(args, io),
+        "it2dl" => util_files::it2dl(args, io),
+        _ => {
+            let _ = io.err.write_all(multi_usage().as_bytes());
+            2
+        }
+    }
 }
 
 /// What a console focus-in record reads as while a reply is awaited: ConPTY's input parser
