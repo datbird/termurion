@@ -5,6 +5,7 @@
 //! `api_rpc_done` and `script_tick` steps the runs they finish. Failures reported to the
 //! person show iTerm2's "Function Call Failed" alert (`H:566-591`), one at a time.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::time::Instant;
 
 use winit::event::WindowEvent;
@@ -57,10 +58,12 @@ pub(super) enum Origin {
     Quiet,
 }
 
-/// A running invocation.
+/// A running invocation, with the values its scope had when it started: iTerm2 reads every
+/// variable once, when it parses the invocation (`SFC:211-212`, `EP:425`).
 pub(super) struct Run {
     pub inv: Invocation,
     pub scope: ScopeSpec,
+    pub base: Values,
     pub origin: Origin,
 }
 
@@ -76,6 +79,48 @@ pub(super) enum Alert {
     Result(String),
 }
 
+impl Alert {
+    /// The alert's heading and text.
+    fn form(&self) -> (&str, &str) {
+        match self {
+            Alert::Failed { heading, text } => (heading.as_str(), text.as_str()),
+            Alert::Result(text) => (script_eval::RESULT_HEADING, text.as_str()),
+        }
+    }
+}
+
+/// What a script call answers before any script is asked (`SFC:527-545`): a synchronous
+/// evaluation null, and with the API off iTerm2's undefined function text.
+fn script_gate(sig: &str, sync: bool, api_on: bool) -> Option<HostOutcome> {
+    if sync {
+        return Some(HostOutcome::Done(Value::Null));
+    }
+    (!api_on).then(|| HostOutcome::Failed(Failure { reason: script_fn::disabled_text(sig), detail: None, kind: FailKind::Disabled, conn: None }))
+}
+
+/// Script results reach the runs waiting on them; the runs that got one. A result whose run
+/// finished is dropped.
+fn deliver_results(runs: &mut BTreeMap<u64, Run>, tokens: &mut HashMap<u64, u64>, done: &mut VecDeque<(u64, Result<Value, Failure>)>) -> BTreeSet<u64> {
+    let mut touched = BTreeSet::new();
+    while let Some((token, r)) = done.pop_front() {
+        let Some(id) = tokens.remove(&token) else { continue };
+        if runs.get_mut(&id).is_some_and(|run| run.inv.deliver(token, r)) {
+            touched.insert(id);
+        }
+    }
+    touched
+}
+
+/// The runs whose timer fired by `now`.
+fn late_runs(runs: &BTreeMap<u64, Run>, now: Instant) -> Vec<u64> {
+    runs.iter().filter(|(_, r)| r.inv.deadline().is_some_and(|d| d <= now)).map(|(id, _)| *id).collect()
+}
+
+/// When the next timer fires: a run's, or the registry's for a call it waits on.
+fn next_wake(runs: &BTreeMap<u64, Run>, registry: Option<Instant>) -> Option<Instant> {
+    runs.values().filter_map(|r| r.inv.deadline()).chain(registry).min()
+}
+
 /// The host of one run's calls: built-ins first (Task 4), then scripts (`SFC:510-560`).
 struct ScriptHost<'a> {
     app: &'a mut App,
@@ -84,14 +129,10 @@ struct ScriptHost<'a> {
 }
 
 impl Host for ScriptHost<'_> {
-    fn call(&mut self, call: &Call, args: &std::collections::BTreeMap<String, Value>, sync: bool, _side_effects: bool) -> HostOutcome {
-        // A synchronous evaluation never runs a script (`SFC:527-532`).
-        if sync {
-            return HostOutcome::Done(Value::Null);
-        }
+    fn call(&mut self, call: &Call, args: &BTreeMap<String, Value>, sync: bool, _side_effects: bool) -> HostOutcome {
         let sig = call.signature();
-        if !self.app.api_on {
-            return HostOutcome::Failed(Failure { reason: script_fn::disabled_text(&sig), detail: None, kind: FailKind::Disabled, conn: None });
+        if let Some(answer) = script_gate(&sig, sync, self.app.api_on) {
+            return answer;
         }
         let fq = call.fq_name();
         let Some((conn, params)) = self.app.api_fns.resolve(&fq, args, self.scope) else {
@@ -116,22 +157,26 @@ impl App {
     /// run's id while it waits; None when it finished at once (its result already went to
     /// its origin), including a syntax error or a receiver that names no object.
     pub(super) fn invoke(&mut self, invocation: &str, scope: ScopeSpec, timeout: Timeout, side_effects: bool, origin: Origin) -> Option<u64> {
-        let inv = match Invocation::new(invocation, timeout, side_effects, Instant::now()) {
+        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        let inv = match Invocation::new(invocation, timeout, side_effects, lax, Instant::now()) {
             Ok(inv) => inv,
             Err(f) => {
                 self.script_answer(&origin, invocation, Err(f));
                 return None;
             }
         };
-        if let ScopeSpec::Receiver(id) = &scope {
-            if self.script_values(&scope).is_none() {
+        let base = match (self.script_values(&scope), &scope) {
+            (Some(values), _) => values,
+            (None, ScopeSpec::Receiver(id)) => {
                 self.script_answer(&origin, invocation, Err(Failure::plain(script_eval::object_not_found(id))));
                 return None;
             }
-        }
+            // An object already gone reads as an empty scope.
+            (None, _) => Values::new(),
+        };
         let id = self.script_next;
         self.script_next += 1;
-        self.script_runs.insert(id, Run { inv, scope, origin });
+        self.script_runs.insert(id, Run { inv, scope, base, origin });
         self.script_step(id);
         self.script_runs.contains_key(&id).then_some(id)
     }
@@ -171,19 +216,18 @@ impl App {
         }
     }
 
-    /// Steps a run with its scope as it is now; a finished run goes to its origin. The run is
-    /// out of `script_runs` while it steps (the host borrows the App).
+    /// Steps a run against the values its scope had when it started; a finished run goes to
+    /// its origin. The run is out of `script_runs` while it steps (the host borrows the App).
     fn script_step(&mut self, id: u64) {
         let Some(mut run) = self.script_runs.remove(&id) else { return };
-        // An object gone since the start reads as an empty scope.
-        let base = self.script_values(&run.scope).unwrap_or_default();
-        let empty = Values::new();
+        let base = std::mem::take(&mut run.base);
         let frame = match &run.scope {
             ScopeSpec::Session { frame, .. } => frame.clone(),
-            _ => empty,
+            _ => Values::new(),
         };
         let scope = Layered { frame: &frame, base: &base };
         let step = run.inv.step(&scope, &mut ScriptHost { app: self, run: id, scope: &scope });
+        run.base = base;
         match step {
             Step::Waiting => {
                 self.script_runs.insert(id, run);
@@ -202,25 +246,17 @@ impl App {
         for (token, f) in self.api_fns.expire(now) {
             self.api_rpc_done.push_back((token, Err(f)));
         }
-        let mut touched = std::collections::BTreeSet::new();
-        while let Some((token, r)) = self.api_rpc_done.pop_front() {
-            let Some(id) = self.script_tokens.remove(&token) else { continue };
-            if self.script_runs.get_mut(&id).is_some_and(|run| run.inv.deliver(token, r)) {
-                touched.insert(id);
-            }
-        }
-        for id in touched {
+        for id in deliver_results(&mut self.script_runs, &mut self.script_tokens, &mut self.api_rpc_done) {
             self.script_step(id);
         }
-        let late: Vec<u64> = self.script_runs.iter().filter(|(_, r)| r.inv.deadline().is_some_and(|d| d <= now)).map(|(id, _)| *id).collect();
-        for id in late {
+        for id in late_runs(&self.script_runs, now) {
             let Some(run) = self.script_runs.remove(&id) else { continue };
             let mut f = run.inv.timed_out();
             f.conn = run.inv.returning().and_then(|t| self.api_fns.conn_of(t));
             self.script_log(f.conn, f.reason.clone());
             self.script_finished(run, Err(f));
         }
-        self.script_runs.values().filter_map(|r| r.inv.deadline()).chain(self.api_fns.next_deadline()).min()
+        next_wake(&self.script_runs, self.api_fns.next_deadline())
     }
 
     /// A finished run: its calls still running are forgotten (their results are dropped),
@@ -273,10 +309,7 @@ impl App {
         }
         let Some(alert) = self.script_alerts.front() else { return };
         let Some(g) = self.gpu.as_ref() else { return };
-        let (heading, text) = match alert {
-            Alert::Failed { heading, text } => (heading.as_str(), text.as_str()),
-            Alert::Result(text) => (script_eval::RESULT_HEADING, text.as_str()),
-        };
+        let (heading, text) = alert.form();
         let opened = ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &[crate::api_auth::OK], false);
         let Some(alert) = self.script_alerts.pop_front() else { return };
         match opened {
@@ -300,5 +333,73 @@ impl App {
             self.script_alert = None;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::Duration;
+
+    fn run(text: &str, timeout: Timeout, now: Instant) -> Run {
+        Run { inv: Invocation::new(text, timeout, true, true, now).unwrap(), scope: ScopeSpec::App, base: Values::new(), origin: Origin::Quiet }
+    }
+
+    /// Starts every script call with the next token.
+    struct Starter(u64);
+
+    impl Host for Starter {
+        fn call(&mut self, _call: &Call, _args: &BTreeMap<String, Value>, _sync: bool, _side_effects: bool) -> HostOutcome {
+            self.0 += 1;
+            HostOutcome::Started(self.0)
+        }
+    }
+
+    #[test]
+    fn script_tick_follows_iterm2() {
+        let t0 = Instant::now();
+        let mut runs = BTreeMap::new();
+        let mut a = run("f()", Timeout::After(Duration::from_secs(5)), t0);
+        let mut b = run("g()", Timeout::Never, t0);
+        let empty = Values::new();
+        assert_eq!(a.inv.step(&empty, &mut Starter(10)), Step::Waiting);
+        assert_eq!(b.inv.step(&empty, &mut Starter(20)), Step::Waiting);
+        runs.insert(1, a);
+        runs.insert(2, b);
+        let mut tokens = HashMap::from([(11, 1), (21, 2)]);
+
+        // A result reaches its run; a result for a forgotten token or a finished run is dropped.
+        let mut done = VecDeque::from([(99, Ok(json!(0))), (21, Ok(json!("g"))), (21, Ok(json!("again")))]);
+        assert_eq!(deliver_results(&mut runs, &mut tokens, &mut done), BTreeSet::from([2]));
+        assert!(done.is_empty() && !tokens.contains_key(&21));
+        assert_eq!(runs.get_mut(&2).unwrap().inv.step(&empty, &mut Starter(30)), Step::Done(json!("g")));
+
+        // The run with a timer is late at its deadline, not before; the untimed one never.
+        assert!(late_runs(&runs, t0 + Duration::from_secs(4)).is_empty());
+        assert_eq!(late_runs(&runs, t0 + Duration::from_secs(5)), [1]);
+        // The next wake is the earliest of the run timers and the registry's.
+        let five = t0 + Duration::from_secs(5);
+        assert_eq!(next_wake(&runs, None), Some(five));
+        assert_eq!(next_wake(&runs, Some(t0 + Duration::from_secs(1))), Some(t0 + Duration::from_secs(1)));
+        assert_eq!(next_wake(&BTreeMap::new(), None), None);
+    }
+
+    #[test]
+    fn script_host_follows_iterm2() {
+        assert_eq!(script_gate("f()", true, true), Some(HostOutcome::Done(Value::Null)), "a synchronous evaluation runs no script");
+        assert_eq!(script_gate("f()", true, false), Some(HostOutcome::Done(Value::Null)));
+        assert_eq!(
+            script_gate("f(a)", false, false),
+            Some(HostOutcome::Failed(Failure { reason: "Undefined function with signature \u{201c}f(a)\u{201d}".into(), detail: None, kind: FailKind::Disabled, conn: None }))
+        );
+        assert_eq!(script_gate("f()", false, true), None, "the registry is asked");
+    }
+
+    #[test]
+    fn script_alerts_follow_iterm2() {
+        let failed = Alert::Failed { heading: script_eval::report_heading("Trigger"), text: script_eval::report_text("f()", "boom") };
+        assert_eq!(failed.form(), ("Trigger Function Call Failed", "Error running \u{201c}f()\u{201d}:\nboom"));
+        assert_eq!(Alert::Result("f() returned:\n3".into()).form(), ("Function Call Result", "f() returned:\n3"));
     }
 }

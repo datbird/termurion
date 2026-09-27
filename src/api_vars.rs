@@ -32,6 +32,13 @@ impl Scope {
 /// A scope's values by name.
 pub type Values = BTreeMap<String, serde_json::Value>;
 
+/// A scope's values as the expression language reads them (a path is a key).
+impl crate::expr::Scope for Values {
+    fn value(&self, path: &str) -> Option<serde_json::Value> {
+        self.get(path).cloned()
+    }
+}
+
 /// A value that changed since the scope was last observed: its JSON, "null" when gone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {

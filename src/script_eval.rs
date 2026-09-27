@@ -80,8 +80,9 @@ enum Progress {
     Return { name: String, site: usize },
 }
 
-/// A memo key: a call's site and the JSON of its arguments.
-type Key = (usize, String);
+/// A memo key: a call's site. The language has no loops, so each site runs at most once
+/// per invocation (iTerm2 evaluates each parsed call once, `SFC:211-212`).
+type Key = usize;
 
 /// One invocation being evaluated.
 #[derive(Clone, Debug)]
@@ -110,10 +111,10 @@ pub struct Invocation {
 
 impl Invocation {
     /// A call or call sequence (iTerm2's call parser); a syntax error is the failure.
-    /// Interpolated strings inside the arguments use iTerm2's default lax policy.
-    pub fn new(text: &str, timeout: Timeout, side_effects: bool, now: Instant) -> Result<Invocation, Failure> {
+    /// `lax` is `laxNilPolicyInInterpolatedStrings`, for strings inside the arguments.
+    pub fn new(text: &str, timeout: Timeout, side_effects: bool, lax: bool, now: Instant) -> Result<Invocation, Failure> {
         let calls = expr::parse_calls(text).map_err(Failure::plain)?;
-        Ok(Invocation::with(text, Body::Calls(calls.into_iter().map(Expr::Call).collect()), true, timeout, side_effects, now))
+        Ok(Invocation::with(text, Body::Calls(calls.into_iter().map(Expr::Call).collect()), lax, timeout, side_effects, now))
     }
 
     /// An interpolated string whose result is its text; `lax` is
@@ -211,14 +212,14 @@ impl Invocation {
             Ok(v) => Outcome::Done(v),
             Err(f) => {
                 if f.kind == FailKind::Unregistered {
-                    if let Some(sig) = self.signatures.get(&key.0) {
+                    if let Some(sig) = self.signatures.get(&key) {
                         self.missing.insert(sig.clone());
                     }
                 }
                 Outcome::Failed(f)
             }
         };
-        self.waited.insert(key.clone());
+        self.waited.insert(key);
         self.memo.insert(key, outcome);
         true
     }
@@ -267,7 +268,7 @@ impl Invocation {
     /// connection is the one a timeout is logged to).
     pub fn returning(&self) -> Option<u64> {
         let Some(Progress::Return { site, .. }) = &self.progress else { return None };
-        self.waiting.iter().find(|(_, (s, _))| s == site).map(|(t, _)| *t)
+        self.waiting.iter().find(|(_, s)| *s == site).map(|(t, _)| *t)
     }
 
     /// Signatures of calls that found no registered function (`SFC:552-556`).
@@ -286,7 +287,8 @@ impl Invocation {
 }
 
 /// The evaluator's calls: a finished call from the memo, a started one pending, any other
-/// asked of the host once.
+/// asked of the host once. A call is known by its site alone, so a value that changes
+/// between steps never runs a call again.
 struct Replay<'a> {
     memo: &'a mut BTreeMap<Key, Outcome>,
     waited: &'a mut BTreeSet<Key>,
@@ -304,7 +306,7 @@ struct Replay<'a> {
 
 impl expr::Calls for Replay<'_> {
     fn call(&mut self, call: &Call, args: &BTreeMap<String, Value>) -> Outcome {
-        let key: Key = (call.site, serde_json::to_string(args).unwrap_or_default());
+        let key: Key = call.site;
         self.last_waited = false;
         if let Some(o) = self.memo.get(&key) {
             self.last_waited = self.waited.contains(&key);
@@ -381,13 +383,6 @@ fn progress_of(c: &Call, sites: &BTreeSet<usize>) -> Progress {
     let mut names: Vec<String> = c.args.iter().filter(|(_, a)| matches!(a, Arg::Value(x) if has_site(x, sites))).map(|(n, _)| n.clone()).collect();
     names.sort();
     Progress::Args { fq: c.fq_name(), names }
-}
-
-/// A map of values as a scope (a path is a key).
-impl expr::Scope for Values {
-    fn value(&self, path: &str) -> Option<Value> {
-        self.get(path).cloned()
-    }
 }
 
 /// A scope that records the paths an evaluation read, for its dependencies.
@@ -571,7 +566,7 @@ mod tests {
     }
 
     fn inv(text: &str, timeout: Timeout) -> Invocation {
-        Invocation::new(text, timeout, true, Instant::now()).unwrap_or_else(|f| panic!("{text}: {f:?}"))
+        Invocation::new(text, timeout, true, true, Instant::now()).unwrap_or_else(|f| panic!("{text}: {f:?}"))
     }
 
     const FOREVER: Timeout = Timeout::Never;
@@ -619,6 +614,22 @@ mod tests {
         assert_eq!(host.names(), ["f", "g"]);
         assert!(i.deliver(2, Ok(json!("gv"))));
         assert_eq!(i.step(&s, &mut host), Step::Done(json!("gv")));
+
+        // A value that changes while a call waits never runs a call again: each site runs
+        // once (iTerm2 reads every variable once, when it parses, `SFC:211-212`).
+        let mut host = Fake::default();
+        let mut i = inv("f(a: g(x: columns), b: h())", FOREVER);
+        assert_eq!(i.step(&s, &mut host), Step::Waiting);
+        assert_eq!(host.names(), ["g", "h"]);
+        assert!(i.deliver(2, Ok(json!("hv"))));
+        let mut changed = scope();
+        changed.insert("columns".into(), json!(81));
+        assert_eq!(i.step(&changed, &mut host), Step::Waiting);
+        assert_eq!(host.names(), ["g", "h"], "g is not asked again with the new value");
+        assert!(i.deliver(1, Ok(json!("gv"))));
+        assert_eq!(i.step(&changed, &mut host), Step::Waiting);
+        assert_eq!(host.names(), ["g", "h", "f"]);
+        assert_eq!(host.asked[2].1, BTreeMap::from([("a".to_string(), json!("gv")), ("b".to_string(), json!("hv"))]));
 
         // A failed dependency: "In call to", its traceback and connection kept.
         let mut host = Fake::default();
@@ -677,8 +688,15 @@ mod tests {
         assert!(i.deliver(1, Ok(json!(3))));
         assert_eq!(i.step(&s, &mut host), Step::Done(json!("a3z")));
 
+        // Strings inside call arguments follow `laxNilPolicyInInterpolatedStrings`.
+        let mut host = Fake::default();
+        let mut i = Invocation::new("b(x: \"a\\(bogus)z\")", FOREVER, true, true, Instant::now()).unwrap();
+        assert_eq!(i.step(&s, &mut host), Step::Done(json!("az")));
+        let mut i = Invocation::new("b(x: \"a\\(bogus)z\")", FOREVER, true, false, Instant::now()).unwrap();
+        assert_eq!(i.step(&s, &mut host), Step::Failed(Failure::plain(expr::undefined("bogus"))));
+
         // Syntax errors are the call parser's.
-        assert_eq!(Invocation::new("x", FOREVER, true, Instant::now()).unwrap_err(), Failure::plain(expr::parse_calls("x").unwrap_err()));
+        assert_eq!(Invocation::new("x", FOREVER, true, true, Instant::now()).unwrap_err(), Failure::plain(expr::parse_calls("x").unwrap_err()));
     }
 
     #[test]
@@ -688,7 +706,7 @@ mod tests {
         let thirty = Timeout::After(Duration::from_secs(30));
 
         let mut host = Fake::default();
-        let mut i = Invocation::new("f(a: g())", thirty, true, t0).unwrap();
+        let mut i = Invocation::new("f(a: g())", thirty, true, true, t0).unwrap();
         assert_eq!(i.deadline(), Some(t0 + Duration::from_secs(30)));
         assert_eq!(i.step(&s, &mut host), Step::Waiting);
         let f = i.timed_out();
@@ -697,7 +715,7 @@ mod tests {
         assert_eq!(i.returning(), None);
 
         let mut host = Fake::default();
-        let mut i = Invocation::new("f(a: 1)", thirty, true, t0).unwrap();
+        let mut i = Invocation::new("f(a: 1)", thirty, true, true, t0).unwrap();
         assert_eq!(i.step(&s, &mut host), Step::Waiting);
         assert_eq!(i.timed_out().reason, "Timeout (30 sec) while evaluating invocation \u{201c}f(a: 1)\u{201d}. The timeout occurred while waiting for f to return.");
         assert_eq!(i.returning(), Some(1));
@@ -707,7 +725,7 @@ mod tests {
 
         // Only the arguments still evaluating are named, the fully qualified name first.
         let mut host = Fake::default();
-        let mut i = Invocation::new("ns.f(z: g(), a: h(), m: 1)", Timeout::After(Duration::from_millis(2500)), true, t0).unwrap();
+        let mut i = Invocation::new("ns.f(z: g(), a: h(), m: 1)", Timeout::After(Duration::from_millis(2500)), true, true, t0).unwrap();
         assert_eq!(i.step(&s, &mut host), Step::Waiting);
         assert!(i.deliver(1, Ok(json!(1))));
         assert_eq!(i.step(&s, &mut host), Step::Waiting);
@@ -720,17 +738,17 @@ mod tests {
         // Synchronous: built-ins run, script calls answer null without running, and nothing
         // is missing (`SFC:527-532` passes only the arguments' missing set).
         let mut host = Fake::default();
-        let mut i = Invocation::new("f(a: 1)", Timeout::Sync, true, t0).unwrap();
+        let mut i = Invocation::new("f(a: 1)", Timeout::Sync, true, true, t0).unwrap();
         assert_eq!(i.step(&s, &mut host), Step::Done(Value::Null));
         assert!(i.missing().is_empty());
         assert!(i.tokens().is_empty());
         assert_eq!(i.deadline(), None);
         let mut host = Fake::default();
-        let mut i = Invocation::new("b(x: 4)", Timeout::Sync, true, t0).unwrap();
+        let mut i = Invocation::new("b(x: 4)", Timeout::Sync, true, true, t0).unwrap();
         assert_eq!(i.step(&s, &mut host), Step::Done(json!(4)));
         assert!(host.asked.iter().all(|a| a.2), "asked synchronously");
 
-        let i = Invocation::new("f()", Timeout::Never, true, t0).unwrap();
+        let i = Invocation::new("f()", Timeout::Never, true, true, t0).unwrap();
         assert_eq!(i.deadline(), None);
         assert_eq!(Timeout::from_secs(0.0), Timeout::Sync);
         assert_eq!(Timeout::from_secs(5.0), Timeout::After(Duration::from_secs(5)));
@@ -787,6 +805,8 @@ mod tests {
         assert_eq!(object_not_found("pty-X"), "Object with identifier \u{201c}pty-X\u{201d} not found");
         assert_eq!((ERROR_ID, REVEAL_IN_CONSOLE, RESULT_HEADING), ("NoSyncFunctionCallError", "Reveal in Script Console", "Function Call Result"));
         assert_eq!(invoke_response(&Ok(json!(3))), pb::InvokeFunctionResponse { disposition: Some(Disposition::Success(Success { json_result: Some("3".into()) })) });
+        // A synchronous InvokeFunction's script call answers null: "null" (`H:4376-4394`).
+        assert_eq!(invoke_response(&Ok(Value::Null)).disposition, Some(Disposition::Success(Success { json_result: Some("null".into()) })));
         assert_eq!(invoke_response(&Ok(json!(["a", 1]))).disposition, Some(Disposition::Success(Success { json_result: Some(r#"["a",1]"#.into()) })));
         let timeout = Failure { reason: "Timeout (30 sec) ...".into(), detail: None, kind: FailKind::Timeout, conn: None };
         assert_eq!(invoke_response(&Err(timeout)), pb::InvokeFunctionResponse { disposition: Some(Disposition::Error(Error { status: Some(Status::Timeout as i32), error_reason: None })) });
