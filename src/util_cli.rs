@@ -140,7 +140,9 @@ pub fn term(io: &Io) -> Option<String> {
 }
 
 /// Runs utility `name` with `args`; returns its exit code. Each utility's task adds its arm
-/// here; a name not built yet prints the usage.
+/// here; a name not built yet prints the usage. A utility returns its exit code and never
+/// calls `std::process::exit`: the console's restore (`Drop`, then `real_main`'s restore of
+/// every saved mode) runs only when it returns.
 pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
     use crate::util_files;
     match name {
@@ -157,6 +159,23 @@ pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
 /// What a console focus-in record reads as while a reply is awaited: ConPTY's input parser
 /// takes a reply's `ESC [ I` (as in `ESC [ ITERM2 ...`) for a focus report.
 pub const FOCUS_IN: &[u8] = b"\x1b[I";
+
+/// How Tandem's `CSI 1337 n` answer starts once ConPTY has swallowed its `ESC [ I`.
+pub const SWALLOWED_REPLY: &[u8] = b"TERM2 ";
+
+/// The shipped ConPTY asks the terminal for focus reports in its own start-up handshake and
+/// takes every `ESC [ I` in its input for one, so `ESC [ ITERM2 3.7.0 n` reaches the program
+/// as `TERM2 3.7.0 n` (measured, `conpty_carries_replies`). After `CSI 1337 n`, a reply
+/// starting "TERM2 " gets its `ESC [ I` back; anything else is unchanged. it2check's reader
+/// applies this on Windows; the version bytes are still compared by the script's rule.
+pub fn restore_reply_prefix(reply: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(reply.len() + FOCUS_IN.len());
+    if reply.starts_with(SWALLOWED_REPLY) {
+        out.extend_from_slice(FOCUS_IN);
+    }
+    out.extend_from_slice(reply);
+    out
+}
 
 /// Console key characters (UTF-16 units) to UTF-8: a surrogate pair is joined, a lone
 /// surrogate is U+FFFD.
@@ -190,6 +209,13 @@ impl KeyText {
                 }
                 put(char::from_u32(u32::from(unit)).unwrap_or('\u{FFFD}'));
             }
+        }
+    }
+
+    /// A high surrogate still waiting for its pair (input ended) becomes U+FFFD.
+    pub fn flush(&mut self, out: &mut Vec<u8>) {
+        if self.high.take().is_some() {
+            out.extend_from_slice("\u{FFFD}".as_bytes());
         }
     }
 }
@@ -342,5 +368,21 @@ mod tests {
         out.clear();
         k.push(0xE9, &mut out);
         assert_eq!(out, [0xC3, 0xA9]);
+        out.clear();
+        k.push(0xD83D, &mut out);
+        k.flush(&mut out);
+        assert_eq!(out, [0xEF, 0xBF, 0xBD], "a trailing lone high surrogate");
+        out.clear();
+        k.flush(&mut out);
+        assert!(out.is_empty(), "nothing left to flush");
+    }
+
+    #[test]
+    fn swallowed_reply_prefix_is_restored() {
+        assert_eq!(restore_reply_prefix(b"TERM2 3.7.0n"), b"\x1b[ITERM2 3.7.0n");
+        assert_eq!(restore_reply_prefix(b"TERM2 3.7.0n\x1b[0n"), b"\x1b[ITERM2 3.7.0n\x1b[0n");
+        for kept in [&b"\x1b[ITERM2 3.7.0n"[..], b"\x1b[0n", b"TERM2", b"", b"ITERM2 3.7.0n"] {
+            assert_eq!(restore_reply_prefix(kept), kept, "{:?}", String::from_utf8_lossy(kept));
+        }
     }
 }

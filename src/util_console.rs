@@ -23,17 +23,6 @@ use crate::util_cli::{self, Cmd, FOCUS_IN, Io, KeyText, Mode, Output, Tty};
 /// Ctrl+C handler and the panic hook can put them back. Handles are kept as integers.
 static SAVED: Mutex<Vec<(usize, u32)>> = Mutex::new(Vec::new());
 
-/// The `CONOUT$` handle that asked ConPTY for focus reports (`Mode::Raw`), so every exit
-/// path can ask it to stop.
-static FOCUS_REPORTS: Mutex<Option<usize>> = Mutex::new(None);
-
-/// Focus reports on and off (DECSET 1004). ConPTY takes a reply's `ESC [ I` (as in
-/// `ESC [ ITERM2 3.7.0 n`) for a focus-in report; while the program has asked for focus
-/// reports it passes that on as the three bytes, else it drops them (measured with
-/// `conpty_carries_replies`).
-const FOCUS_ON: &[u8] = b"\x1b[?1004h";
-const FOCUS_OFF: &[u8] = b"\x1b[?1004l";
-
 fn write_handle(h: HANDLE, bytes: &[u8]) {
     let mut rest = bytes;
     while !rest.is_empty() {
@@ -43,13 +32,6 @@ fn write_handle(h: HANDLE, bytes: &[u8]) {
             return;
         }
         rest = &rest[n as usize..];
-    }
-}
-
-/// Asks ConPTY to stop the focus reports, when they were asked for.
-fn focus_reports_off() {
-    if let Some(h) = FOCUS_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).take() {
-        write_handle(h as HANDLE, FOCUS_OFF);
     }
 }
 
@@ -73,10 +55,9 @@ fn restore_one(h: HANDLE) {
     }
 }
 
-/// Stops the focus reports, then puts back every saved mode, newest first (two handles on
-/// one console restore to the oldest mode).
+/// Puts back every saved mode, newest first (two handles on one console restore to the
+/// oldest mode).
 fn restore_all() {
-    focus_reports_off();
     let mut saved = SAVED.lock().unwrap_or_else(|e| e.into_inner());
     for (h, mode) in saved.drain(..).rev() {
         unsafe { SetConsoleMode(h as HANDLE, mode) };
@@ -106,10 +87,11 @@ pub fn set_pending_st(s: Option<&'static str>) {
 }
 
 unsafe extern "system" fn ctrl_restore(_event: u32) -> BOOL {
-    restore_all();
+    // The ST first, while VT output is still on, so it closes the OSC as a sequence.
     if let Some(st) = *PENDING_ST.lock().unwrap_or_else(|e| e.into_inner()) {
         write_handle(unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }, st.as_bytes());
     }
+    restore_all();
     // Not handled: the default handler still ends the process, as SIGINT ends the script.
     FALSE
 }
@@ -165,6 +147,15 @@ impl Console {
         }
         self.queue.extend(bytes);
     }
+
+    /// Input ended (the wait ran out or reading failed): a high surrogate still waiting for
+    /// its pair becomes U+FFFD, else nothing was read.
+    fn ran_out(&mut self) -> Option<u8> {
+        let mut bytes = Vec::new();
+        self.keys.flush(&mut bytes);
+        self.queue.extend(bytes);
+        self.queue.pop_front()
+    }
 }
 
 impl Tty for Console {
@@ -193,16 +184,16 @@ impl Tty for Console {
                 Some(end) => end.saturating_duration_since(Instant::now()).as_millis().min(u128::from(INFINITE - 1)) as u32,
             };
             if unsafe { WaitForSingleObject(self.conin, ms) } != WAIT_OBJECT_0 {
-                return None;
+                return self.ran_out();
             }
             let mut records: [INPUT_RECORD; 64] = unsafe { std::mem::zeroed() };
             let mut n = 0u32;
             if unsafe { ReadConsoleInputW(self.conin, records.as_mut_ptr(), records.len() as u32, &mut n) } == 0 {
-                return None;
+                return self.ran_out();
             }
             self.take_records(&records[..n as usize]);
             if self.queue.is_empty() && end.is_some_and(|e| Instant::now() >= e) {
-                return None;
+                return self.ran_out();
             }
         }
     }
@@ -222,13 +213,6 @@ impl Tty for Console {
         };
         unsafe { SetConsoleMode(self.conin, util_cli::input_mode(m, before)) };
         self.awaiting = true;
-        // Raw mode reads CSI replies (it2check), whose `ESC [ I` ConPTY keeps only while focus
-        // reports are on. Cbreak reads OSC replies and lines (it2getvar, it2ul), which a focus
-        // report (a file dialog taking focus) would spoil.
-        if m == Mode::Raw && !self.conout.is_null() && FOCUS_REPORTS.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
-            self.write(FOCUS_ON);
-            *FOCUS_REPORTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(self.conout as usize);
-        }
     }
 
     fn discard_input(&mut self) {
@@ -239,7 +223,6 @@ impl Tty for Console {
     }
 
     fn restore(&mut self) {
-        focus_reports_off();
         if self.saved.take().is_some() {
             restore_one(self.conin);
         }
@@ -295,7 +278,8 @@ pub fn run_command(c: &Cmd) -> Result<Output, String> {
 }
 
 /// `builtin command -V <program>`: a path naming a file, or a file of that name (with a
-/// PATHEXT extension or none) in a PATH folder. Network folders are never probed.
+/// PATHEXT extension or none) in a PATH folder. Network folders and PATH entries that are
+/// not absolute (the current folder) are never probed.
 pub fn on_path(program: &str) -> bool {
     let local = |p: &Path| {
         let s = p.to_string_lossy();
@@ -306,7 +290,7 @@ pub fn on_path(program: &str) -> bool {
     }
     let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let path = std::env::var("PATH").unwrap_or_default();
-    path.split(';').map(str::trim).filter(|d| !d.is_empty()).any(|dir| {
+    path.split(';').map(str::trim).filter(|d| Path::new(d).is_absolute()).any(|dir| {
         let base = Path::new(dir).join(program);
         local(&base) || exts.split(';').filter(|e| !e.is_empty()).any(|e| local(&PathBuf::from(format!("{}{e}", base.display()))))
     })
@@ -458,15 +442,16 @@ mod tests {
         0
     }
 
-    /// The child half of the ConPTY tests: `TANDEM_UTILITY_CHILD` holds a name and its
-    /// arguments separated by U+001F; runs that probe or utility over the real console and
+    /// The child half of the ConPTY tests: `TANDEM_UTILITY_CHILD` holds, in hex, a name and
+    /// its arguments separated by U+001F; runs that probe or utility over the real console and
     /// exits with its code (so libtest's summary never decides it).
     #[test]
     #[ignore]
     fn utility_child() {
-        let Ok(value) = std::env::var("TANDEM_UTILITY_CHILD") else {
+        let Ok(hexed) = std::env::var("TANDEM_UTILITY_CHILD") else {
             return;
         };
+        let value = String::from_utf8(unhex(&hexed)).unwrap();
         let mut parts = value.split('\u{1f}').map(str::to_string);
         let name = parts.next().unwrap_or_default();
         let args: Vec<String> = parts.collect();
@@ -482,7 +467,9 @@ mod tests {
     /// Runs `child` (a name and arguments for `utility_child`) in the shipped ConPTY, feeding
     /// its output to a `Screen` until it exits (60 s cap). With `replies` the screen's answers
     /// go back to the child; `answer` may add bytes for each request, `watch` for the screen
-    /// after each chunk. Returns the exit code, every byte read, and the screen.
+    /// after each chunk. Returns the exit code, every byte read, and the screen. The child's
+    /// words travel in hex inside cmd's quoted `set "NAME=value"`, so `&`, `^`, `%` and `"`
+    /// pass untouched.
     fn drive(
         child: &[&str],
         replies: bool,
@@ -491,8 +478,8 @@ mod tests {
     ) -> (Option<u32>, Vec<u8>, Screen) {
         let exe = std::env::current_exe().unwrap();
         let cmdline = format!(
-            "cmd.exe /c set TANDEM_UTILITY_CHILD={}&& \"{}\" --exact util_console::tests::utility_child --ignored --nocapture --test-threads=1",
-            child.join("\u{1f}"),
+            "cmd.exe /c set \"TANDEM_UTILITY_CHILD={}\"&& \"{}\" --exact util_console::tests::utility_child --ignored --nocapture --test-threads=1",
+            hex(child.join("\u{1f}").as_bytes()),
             exe.display()
         );
         let pty = pty::spawn(&shipped(), &cmdline, 200, 50).unwrap();
@@ -584,7 +571,8 @@ mod tests {
         img.write_to(&mut png, image::ImageFormat::Png).unwrap();
         let png = png.into_inner();
         assert!(png.len() > 100 * 1024, "{} bytes", png.len());
-        let path = std::env::temp_dir().join(format!("tandem-imgcat-conpty-{}.png", std::process::id()));
+        // cmd's special characters in the path (review: the child's words are carried in hex).
+        let path = std::env::temp_dir().join(format!("tandem imgcat 100% & ^ (conpty) {}.png", std::process::id()));
         std::fs::write(&path, &png).unwrap();
         let (code, _, screen) = run_in_conpty(&["imgcat", &path.to_string_lossy()], &mut |_, _| {});
         let _ = std::fs::remove_file(&path);
@@ -614,9 +602,9 @@ mod tests {
         let after = u32::from_str_radix(&field(&screen, "AFTER").expect("AFTER"), 16).unwrap();
         let got = unhex(&field(&screen, "GOT").unwrap_or_default());
         println!("MEASURED probe:in modes before {before:#x}, raw {mode:#x}, after {after:#x}, got {:?}", String::from_utf8_lossy(&got));
-        assert_eq!(got, REPLY, "the reply arrives byte for byte (ESC [ I kept by the focus reports)");
-        let on = bytes.windows(FOCUS_ON.len()).position(|w| w == FOCUS_ON).expect("raw mode asks for focus reports");
-        assert!(contains(&bytes[on..], FOCUS_OFF), "the restore stops them");
+        assert_eq!(util_cli::restore_reply_prefix(&got), REPLY, "the reply, its swallowed ESC [ I put back");
+        println!("MEASURED child wrote ?1004l: {}", contains(&bytes, b"\x1b[?1004l"));
+        assert!(!contains(&bytes, b"\x1b[?1004l"), "raw mode leaves the pane's focus reporting alone");
         assert_eq!(mode, util_cli::input_mode(Mode::Raw, before));
         assert_eq!(after, before);
 
