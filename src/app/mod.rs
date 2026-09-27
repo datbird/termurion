@@ -1,6 +1,6 @@
 //! The Tandem window: tabs of split panes, drawn with wgpu.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -570,6 +570,13 @@ pub struct App {
     api_settings_seen: (bool, bool),
     /// "Enable Python API?" was confirmed (its marker file exists): the server may start.
     api_consent: bool,
+    /// The notification subscriptions of upgraded connections.
+    api_subs: crate::api_dispatch::Subscriptions,
+    /// The transaction, if one runs, and the requests held behind it.
+    api_tx: crate::api_dispatch::Transactions,
+    /// Connections to authorize and refusals that arrived while a transaction froze the UI
+    /// thread; `api_tick` takes them first.
+    api_deferred: VecDeque<crate::api_server::Event>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -885,6 +892,9 @@ pub fn run() {
         api_reset_seen: None,
         api_settings_seen: (false, false),
         api_consent: false,
+        api_subs: Default::default(),
+        api_tx: Default::default(),
+        api_deferred: VecDeque::new(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));

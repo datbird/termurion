@@ -3,6 +3,7 @@
 //! API Usage?" and the allow-all warnings) are shown one at a time. Events from the server are
 //! pumped on each pass (`H:629-656`, `H:782-795`, `H:388-560`, `H:1541-1619`).
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use winit::event::WindowEvent;
@@ -11,6 +12,8 @@ use winit::window::WindowId;
 
 use super::App;
 use crate::api_auth::{self, AllowAll, AllowAllStep, AskAnswer, LogEntry, Verdict};
+use crate::api_dispatch::{Route, Tx};
+use crate::api_proto::pb;
 use crate::api_server::{Event, Pending, Server};
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 
@@ -30,6 +33,16 @@ pub fn start_failed_text(error: &str, owner: Option<&str>) -> String {
         None => format!("The Python API could not start: {error}"),
     }
 }
+
+/// A request's answer: sent now, or later by whatever finishes it (11b's tmux replies).
+pub(super) enum Answer {
+    Now(pb::ServerOriginatedMessage),
+    #[allow(dead_code)]
+    Later,
+}
+
+/// Requests waiting to be offered to the transaction logic, in order.
+type Work = VecDeque<(u64, pb::ClientOriginatedMessage)>;
 
 /// An alert waiting its turn or showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -274,6 +287,11 @@ impl App {
                     std::thread::spawn(move || drop(s));
                 }
                 clear_on_stop(&mut self.api_pending, &mut self.api_alerts);
+                // No Closed event comes from a dropped server, and a new one numbers its
+                // connections from the start again.
+                self.api_subs = Default::default();
+                self.api_tx = Default::default();
+                self.api_deferred.clear();
                 if self.api_consent {
                     self.api_consent = false;
                     let _ = std::fs::remove_file(consent_path());
@@ -378,11 +396,12 @@ impl App {
     pub(super) fn api_tick(&mut self, event_loop: &ActiveEventLoop) {
         // A setting written by any path (an import, a key action) is acted on here.
         self.api_settings_changed();
-        while let Some(event) = self.api_server.as_ref().and_then(Server::try_event) {
+        // What a transaction deferred comes first.
+        while let Some(event) = self.api_deferred.pop_front().or_else(|| self.api_server.as_ref().and_then(Server::try_event)) {
             match event {
                 Event::Pending(p) => self.api_authorize(p),
                 Event::Message { conn, bytes } => self.api_message(conn, bytes, event_loop),
-                Event::Closed { conn } => self.api_closed(conn),
+                Event::Closed { conn } => self.api_closed(conn, event_loop),
                 Event::Rejected { key, reason } => self.api_log.push(LogEntry { key, name: api_auth::display_name(None), text: reason }),
             }
         }
@@ -418,16 +437,95 @@ impl App {
     }
 
     /// A message from an upgraded connection. Undecodable frames are dropped (`S:1436-1447`);
-    /// every request answers iTerm2's malformed error until the dispatcher (Task 7).
-    pub(super) fn api_message(&mut self, conn: u64, bytes: Vec<u8>, _event_loop: &ActiveEventLoop) {
+    /// a request goes through the transaction logic (`S:1397-1411`).
+    pub(super) fn api_message(&mut self, conn: u64, bytes: Vec<u8>, event_loop: &ActiveEventLoop) {
         if let Some(req) = crate::api_proto::decode(&bytes) {
-            self.api_reply(conn, &crate::api_proto::malformed(&req));
+            self.api_serve(VecDeque::from([(conn, req)]), event_loop);
         }
     }
 
-    /// An upgraded connection ended.
-    pub(super) fn api_closed(&mut self, conn: u64) {
+    /// An upgraded connection ended: its subscriptions, held requests and wait for a verdict
+    /// go, and a transaction it owned ends (`S:1418-1424`, `H:2154-2192`), running what it
+    /// held.
+    pub(super) fn api_closed(&mut self, conn: u64, event_loop: &ActiveEventLoop) {
+        let released = self.api_forget(conn);
+        self.api_serve(released, event_loop);
+    }
+
+    /// Forgets a closed connection; the requests its transaction's end released.
+    fn api_forget(&mut self, conn: u64) -> Work {
+        self.api_subs.drop_conn(conn);
         self.api_pending.remove(&conn);
+        self.api_tx.closed(conn).into()
+    }
+
+    /// Offers `work` in order, then freezes while a transaction it began runs.
+    fn api_serve(&mut self, mut work: Work, event_loop: &ActiveEventLoop) {
+        while let Some((conn, req)) = work.pop_front() {
+            self.api_offer(conn, req, &mut work, event_loop);
+        }
+        if let Some(owner) = self.api_tx.owner() {
+            self.api_freeze(owner, event_loop);
+        }
+    }
+
+    /// One request through the transaction logic. An end's released requests join `work`, so
+    /// they are offered again in order (`S:703-714`): a held begin starts the next transaction
+    /// and the requests after it are held behind that one.
+    fn api_offer(&mut self, conn: u64, req: pb::ClientOriginatedMessage, work: &mut Work, event_loop: &ActiveEventLoop) {
+        match self.api_tx.offer(conn, req) {
+            Tx::Run(req) => self.api_run(conn, req, event_loop),
+            Tx::Held => {}
+            Tx::Began(m) | Tx::Reply(m) => self.api_reply(conn, &m),
+            Tx::Ended(m) => {
+                self.api_reply(conn, &m);
+                work.extend(self.api_tx.release());
+            }
+        }
+    }
+
+    /// Dispatches a request: answered here, or by the app.
+    pub(super) fn api_run(&mut self, conn: u64, req: pb::ClientOriginatedMessage, event_loop: &ActiveEventLoop) {
+        match crate::api_dispatch::route(&mut self.api_subs, conn, req) {
+            Route::Reply(m) => self.api_reply(conn, &m),
+            Route::App(req) => match self.api_answer(conn, &req, event_loop) {
+                Answer::Now(m) => self.api_reply(conn, &m),
+                Answer::Later => {}
+            },
+        }
+    }
+
+    /// The app's answer to ListSessions, Focus and GetBroadcastDomains (Task 9); malformed
+    /// until then.
+    pub(super) fn api_answer(&mut self, _conn: u64, req: &pb::ClientOriginatedMessage, _event_loop: &ActiveEventLoop) -> Answer {
+        Answer::Now(crate::api_proto::malformed(req))
+    }
+
+    /// Blocks the UI thread while a transaction runs, as iTerm2's `drainTransaction` blocks its
+    /// main queue (`S:675-715`): nothing is drawn and no input is handled. Only the server's
+    /// events are taken: the owner's requests run, the others' are held, and connections to
+    /// authorize and refusals wait in `api_deferred`. It ends when the owner ends the
+    /// transaction or its connection closes (a script that dies mid-transaction always closes
+    /// it); a released begin from another connection freezes on in the same loop.
+    pub(super) fn api_freeze(&mut self, owner: u64, event_loop: &ActiveEventLoop) {
+        debug_assert_eq!(self.api_tx.owner(), Some(owner));
+        let mut work = Work::new();
+        while let Some(owner) = self.api_tx.owner() {
+            match self.api_server.as_ref().and_then(Server::wait_event) {
+                Some(Event::Message { conn, bytes }) => {
+                    if let Some(req) = crate::api_proto::decode(&bytes) {
+                        work.push_back((conn, req));
+                    }
+                }
+                Some(Event::Closed { conn }) => work.extend(self.api_forget(conn)),
+                Some(e @ (Event::Pending(_) | Event::Rejected { .. })) => self.api_deferred.push_back(e),
+                // The server is gone, and every connection with it.
+                None => work.extend(self.api_forget(owner)),
+            }
+            while let Some((conn, req)) = work.pop_front() {
+                self.api_offer(conn, req, &mut work, event_loop);
+            }
+        }
     }
 
     /// Sends a message to a connection.
