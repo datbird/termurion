@@ -348,6 +348,9 @@ mod tests {
             name: name.map(str::to_string),
             command_range: None,
             captured: Vec::new(),
+            prompt_end: None,
+            output_start: None,
+            directory: None,
             clear_count: 0,
         };
         let marks = vec![(5, mark(1, Some("b"))), (-3, mark(2, Some(""))), (0, mark(3, None)), (2, mark(4, Some("a")))];

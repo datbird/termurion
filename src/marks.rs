@@ -49,11 +49,18 @@ pub struct Mark {
     /// Bumped by OSC 1337 ClearCapturedOutput; a Clear against a newer generation than the
     /// tool's own view shows nothing until it catches up (`captured::visible`).
     pub clear_count: u32,
+    /// Where the prompt ends (133;B), for the API's prompt range.
+    pub prompt_end: Option<Anchor>,
+    /// Where the command's output begins, set at 133;C for a command with text (iTerm2's
+    /// `outputStart`, `MS:3359-3389`).
+    pub output_start: Option<Anchor>,
+    /// The directory at the prompt's end.
+    pub directory: Option<String>,
 }
 
 impl Mark {
     pub fn new(id: u32, kind: Kind) -> Mark {
-        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0 }
+        Mark { id, kind, command: String::new(), code: None, start: None, end: None, aid: None, name: None, command_range: None, captured: Vec::new(), clear_count: 0, prompt_end: None, output_start: None, directory: None }
     }
 }
 
@@ -213,6 +220,11 @@ impl Screen {
                 let m = &mut self.marks;
                 for a in [&mut m.command_start, &mut m.output_start, &mut m.prompt_anchors.0, &mut m.prompt_anchors.1].into_iter().flatten() {
                     a.lines = a.lines.saturating_sub(skipped);
+                }
+                if let Some(r) = m.records.get_mut(&cur) {
+                    for a in [&mut r.prompt_end, &mut r.output_start].into_iter().flatten() {
+                        a.lines = a.lines.saturating_sub(skipped);
+                    }
                 }
                 let _ = ml;
                 saved.set_mark(cur);
@@ -611,6 +623,47 @@ impl Screen {
         Some((self.resolve(a)?, self.before(self.resolve(b)?)))
     }
 
+    /// Prompt mark `id` (the newest one when None) as the API reads it
+    /// (`getPromptResponseForMark:`, `PS:22532-22574`), in (x, absolute line) points: the
+    /// prompt from its row's start to its end (empty before 133;B), the command once it has
+    /// text (empty at the prompt's end before that, `MS:4827-4845`), where output began, the
+    /// cursor of the screen shown, the command's text (else the one being typed, as
+    /// `currentCommand`), the directory at the prompt's end (else the shell's) and the code.
+    /// None when no such prompt mark is in the buffer.
+    pub fn prompt_facts(&self, id: Option<u32>) -> Option<crate::api_buffer::PromptFacts> {
+        let mut prompts = self.row_marks().into_iter().filter(|(_, m)| self.marks.records.get(m).is_some_and(|r| r.kind == Kind::Prompt));
+        let (line, id) = match id {
+            Some(id) => prompts.find(|(_, m)| *m == id)?,
+            None => prompts.last()?,
+        };
+        let m = self.marks.records.get(&id)?;
+        let off = self.term.primary_grid().scrolled_off() as i64;
+        let abs = |p: Point| (p.column.0 as i32, off + p.line.0 as i64);
+        let at = |a: Anchor| self.resolve(a).map(abs);
+        let start = (0, off + line as i64);
+        let end = m.prompt_end.and_then(at);
+        let command = match m.command_range.filter(|_| !m.command.is_empty()) {
+            Some((a, b)) => at(a).zip(at(b)),
+            None => end.map(|e| (e, e)),
+        };
+        let text = if m.command.is_empty() { self.typed_command().unwrap_or_default() } else { m.command.clone() };
+        Some(crate::api_buffer::PromptFacts {
+            id,
+            prompt: Some((start, end.unwrap_or(start))),
+            command,
+            output_start: m.output_start.and_then(at),
+            cursor: abs(self.cursor_point()),
+            text,
+            directory: m.directory.clone().or_else(|| self.shell.cwd.clone()),
+            code: m.code,
+        })
+    }
+
+    /// The prompt marks still in the buffer, oldest first.
+    pub fn prompt_ids(&mut self) -> Vec<u32> {
+        self.marks_in_order().into_iter().filter(|(_, m)| m.kind == Kind::Prompt).map(|(_, m)| m.id).collect()
+    }
+
     pub(crate) fn prompt_start(&mut self, kind: PromptKind, aid: Option<String>, fresh_line: bool) {
         if !matches!(kind, PromptKind::Initial | PromptKind::Unknown) {
             return;
@@ -702,6 +755,11 @@ impl Screen {
                 self.composer_events.extend(events);
                 self.marks.in_command = true;
                 self.marks.command_start = self.marks.current.and_then(|c| self.anchor_here(c));
+                let (end, cwd) = (self.marks.command_start, self.shell.cwd.clone());
+                if let Some(m) = self.marks.current.and_then(|c| self.marks.records.get_mut(&c)) {
+                    m.prompt_end = end;
+                    m.directory = cwd;
+                }
                 self.composer_from = Some(self.abs_cursor());
                 // The prompt is captured unless its range did not change (`MS:4749-4777`).
                 let range = crate::prompt_state::prompt_range(self.marks.prompt_range.0, self.abs_cursor());
@@ -732,10 +790,15 @@ impl Screen {
                 let start_at = if p.column.0 > 0 { Point::new(p.line + 1, Column(0)) } else { Point::new(p.line, Column(0)) };
                 self.marks.output_start = self.anchor_at(cur, start_at);
                 let now = SystemTime::now();
+                let output_start = self.marks.output_start;
                 if let Some(m) = self.marks.records.get_mut(&cur) {
                     m.command = text.clone();
                     m.start = Some(now);
                     m.command_range = start.zip(end);
+                    // iTerm2 marks output only for a command with text (`MS:3359-3389`).
+                    if !text.is_empty() {
+                        m.output_start = output_start;
+                    }
                 }
                 self.marks.last_command = Some(cur);
                 let (cwd, host) = (self.shell.cwd.clone(), self.shell.host.clone());
@@ -1551,5 +1614,27 @@ mod tests {
         s.resize(30, 14);
         s.feed(b"\x1b[?1049l");
         assert_eq!(s.prompt_rows().1, vec!["$ ".to_string()]);
+    }
+
+    #[test]
+    fn prompt_facts_follow_the_marks() {
+        let mut s = Screen::new(20, 5);
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;2\x07");
+        let ids = s.prompt_ids();
+        assert_eq!(ids.len(), 1);
+        let first = ids[0];
+        let f = s.prompt_facts(None).unwrap();
+        assert_eq!(f.id, first);
+        assert_eq!(f.prompt, Some(((0, 0), (2, 0))));
+        assert_eq!(f.command.map(|c| c.0), Some((2, 0)));
+        assert_eq!(f.output_start, Some((0, 1)));
+        assert_eq!(f.text, "ls");
+        assert_eq!(f.code, Some(2));
+        s.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        let g = s.prompt_facts(None).unwrap();
+        assert_ne!(g.id, first);
+        assert_eq!((g.code, g.output_start), (None, None));
+        assert_eq!(s.prompt_ids(), vec![first, g.id]);
+        assert_eq!(s.prompt_facts(Some(first)), Some(crate::api_buffer::PromptFacts { cursor: g.cursor, ..f }));
     }
 }

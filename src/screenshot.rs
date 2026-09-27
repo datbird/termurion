@@ -209,9 +209,28 @@ pub fn part_name(base: &str, i: usize, n: usize) -> String {
     format!("{base}-part-{i}-of-{n}.png")
 }
 
+/// A `w` by `h` RGBA image as PNG bytes; Err when `rgba` is not that size.
+pub fn png(w: u32, h: u32, rgba: Vec<u8>) -> Result<Vec<u8>, String> {
+    let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("the image had the wrong size")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn png_encodes_rgba() {
+        let px = vec![255, 0, 0, 255, 0, 255, 0, 255];
+        let bytes = png(2, 1, px.clone()).unwrap();
+        assert_eq!(bytes[..4], [0x89, b'P', b'N', b'G']);
+        let back = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(back.dimensions(), (2, 1));
+        assert_eq!(back.into_raw(), px);
+        assert!(png(2, 2, vec![0; 8]).is_err());
+    }
 
     #[test]
     fn range_clamps() {

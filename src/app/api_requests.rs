@@ -2,7 +2,9 @@
 //! each carried out from a pure module's plan. Ids resolve through `api_ids` (`H:1615-1644`);
 //! SendText types through `user_write`, Inject feeds output, Activate and Close follow
 //! iTerm2's order (`api_session`); CreateTab and SplitPane start sessions from a
-//! request's profile and custom properties (`api_create`).
+//! request's profile and custom properties (`api_create`); GetBuffer, GetPrompt and
+//! ListPrompts read a session's own screen, Screenshot renders its visible lines
+//! (`api_buffer`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -10,6 +12,7 @@ use winit::window::WindowId;
 
 use super::close_ui::Closing;
 use super::{App, Rect, GAP};
+use crate::api_buffer::{self, Facts};
 use crate::api_create::{self, SplitResult};
 use crate::api_proto::{self, pb};
 use crate::api_session::{self, CloseStep, Snapshot};
@@ -71,6 +74,10 @@ impl App {
             Some(Req::CloseRequest(r)) => reply(req, Resp::CloseResponse(self.api_close(r, event_loop))),
             Some(Req::CreateTabRequest(r)) => reply(req, Resp::CreateTabResponse(self.api_create_tab(r, event_loop))),
             Some(Req::SplitPaneRequest(r)) => reply(req, Resp::SplitPaneResponse(self.api_split_pane(r))),
+            Some(Req::GetBufferRequest(r)) => self.api_get_buffer(req, r),
+            Some(Req::GetPromptRequest(r)) => reply(req, Resp::GetPromptResponse(self.api_get_prompt(r))),
+            Some(Req::ListPromptsRequest(r)) => reply(req, Resp::ListPromptsResponse(self.api_list_prompts(r))),
+            Some(Req::ScreenshotRequest(r)) => reply(req, Resp::ScreenshotResponse(self.api_screenshot(r))),
             _ => Answer::Now(api_proto::malformed(req)),
         };
         if let Some(b) = back {
@@ -472,5 +479,89 @@ impl App {
         tab.zoomed = None;
         self.relayout();
         SplitResult::Made(id)
+    }
+
+    /// The session a request names ("all" names none), buried ones too.
+    fn api_session_pane(&self, session: Option<&str>) -> Option<PaneId> {
+        self.api_ids().pane(session.unwrap_or_default()).filter(|p| self.panes.contains_key(p))
+    }
+
+    /// GetBuffer (`PS:22416-22488`) from the session's own screen (also while a view or
+    /// Instant Replay shows): each line of the range still kept, history from the main screen
+    /// and the screen shown below it, as iTerm2 reads the alternate screen under the main
+    /// history. An invalid range answers with no GetBuffer response (`S:739-751`).
+    fn api_get_buffer(&mut self, req: &pb::ClientOriginatedMessage, r: &pb::GetBufferRequest) -> Answer {
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::term::cell::Flags;
+        let Some(p) = self.api_session_pane(r.session.as_deref()).and_then(|id| self.panes.get(&id)) else {
+            let status = Some(pb::get_buffer_response::Status::SessionNotFound as i32);
+            return reply(req, Resp::GetBufferResponse(pb::GetBufferResponse { status, ..Default::default() }));
+        };
+        let screen = p.own();
+        let (primary, shown) = (screen.term().primary_grid(), screen.term().grid());
+        let f = Facts { scrolled_off: primary.scrolled_off() as i64, history: primary.history_size() as i64, rows: shown.screen_lines() as i64, cols: shown.columns() as i32 };
+        let Some(w) = api_buffer::line_range(r.line_range.as_ref(), f) else { return Answer::Now(api_proto::reply_to(req)) };
+        // Block ids by number (a number whose id was reused since has none).
+        let blocks: std::collections::HashMap<u32, &str> = screen.blocks.by_id.iter().map(|(id, n)| (*n, id.as_str())).collect();
+        let styles = r.include_styles.unwrap_or(false);
+        let first = w.start.1.max(api_buffer::abs_line(-(f.history as i32), f));
+        let last = w.end.1.min(api_buffer::abs_line(f.rows as i32 - 1, f));
+        let mut lines = Vec::new();
+        for y in first..=last {
+            let Some(line) = api_buffer::grid_line(y, f) else { continue };
+            let row = if line < 0 { &primary[Line(line)] } else { &shown[Line(line)] };
+            let cells = &row[Column(0)..];
+            let wrapped = cells.last().is_some_and(|c| c.flags.contains(Flags::WRAPLINE));
+            let Some((from, to, soft)) = api_buffer::span(cells, y == first, y == w.end.1, wrapped, w) else { continue };
+            let block = blocks.get(&row.block()).copied();
+            lines.push(api_buffer::line_contents(cells, from, to, soft, styles, block));
+        }
+        let cursor = shown.cursor.point;
+        let cursor = (cursor.column.0 as i32, api_buffer::abs_line(cursor.line.0, f));
+        reply(req, Resp::GetBufferResponse(api_buffer::buffer_response(lines, w, cursor)))
+    }
+
+    /// GetPrompt (`PS:22500-22574`): the prompt mark with the given id, else the newest one;
+    /// an id that names no prompt mark is PROMPT_UNAVAILABLE.
+    fn api_get_prompt(&self, r: &pb::GetPromptRequest) -> pb::GetPromptResponse {
+        let Some(p) = self.api_session_pane(r.session.as_deref()).and_then(|id| self.panes.get(&id)) else {
+            return pb::GetPromptResponse { status: Some(pb::get_prompt_response::Status::SessionNotFound as i32), ..Default::default() };
+        };
+        let screen = p.own();
+        let facts = match r.unique_prompt_id.as_deref() {
+            Some(s) => s.parse::<u32>().ok().filter(|id| id.to_string() == s).and_then(|id| screen.prompt_facts(Some(id))),
+            None => screen.prompt_facts(None),
+        };
+        api_buffer::prompt_response(facts.as_ref())
+    }
+
+    /// ListPrompts (`PS:22490-22498`): the prompt ids, status left unset as iTerm2 leaves it.
+    fn api_list_prompts(&mut self, r: &pb::ListPromptsRequest) -> pb::ListPromptsResponse {
+        let Some(p) = self.api_session_pane(r.session.as_deref()).and_then(|id| self.panes.get_mut(&id)) else {
+            return pb::ListPromptsResponse { status: Some(pb::list_prompts_response::Status::SessionNotFound as i32), ..Default::default() };
+        };
+        let ids = p.own_mut().prompt_ids();
+        pb::ListPromptsResponse { status: None, unique_prompt_id: api_buffer::prompt_ids(&ids, r.first_unique_id.as_deref(), r.last_unique_id.as_deref()) }
+    }
+
+    /// Screenshot (`H:1658-1676`, `PS:9118-9124`): the lines the session's own screen shows
+    /// (`rangeOfVisibleLines`), rendered alone by its window (a buried session by the current
+    /// one) as PNG; INTERNAL_ERROR when there is no window or rendering fails.
+    fn api_screenshot(&mut self, r: &pb::ScreenshotRequest) -> pb::ScreenshotResponse {
+        use alacritty_terminal::grid::Dimensions;
+        use pb::screenshot_response::Status;
+        let answer = |s: Status, png: Option<Vec<u8>>| pb::ScreenshotResponse { status: Some(s as i32), png };
+        let Some(pane) = self.api_session_pane(r.session.as_deref()) else { return answer(Status::SessionNotFound, None) };
+        self.enter_pane_window(pane);
+        let Some(p) = self.panes.get(&pane) else { return answer(Status::SessionNotFound, None) };
+        let own = p.own();
+        let g = own.term().grid();
+        let rows = g.screen_lines();
+        let visible = crate::screenshot::slice(own, -(g.display_offset() as i32), rows);
+        match self.render_lines(pane, &visible, 0, rows.max(1) - 1).and_then(|(w, h, px)| crate::screenshot::png(w, h, px)) {
+            Ok(png) => answer(Status::Ok, Some(png)),
+            Err(_) => answer(Status::InternalError, None),
+        }
     }
 }

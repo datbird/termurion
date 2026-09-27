@@ -235,8 +235,8 @@ impl App {
         let mut first_path = None;
         for (part, path) in parts.into_iter().zip(paths) {
             let (w, h, px) = self.render_annotated(start + part.start, start + part.end - 1).ok_or("no screenshot")??;
-            let img = image::RgbaImage::from_raw(w, h, px).ok_or("the image had the wrong size")?;
-            img.save_with_format(&path, image::ImageFormat::Png).map_err(|e| format!("{}: {e}", path.display()))?;
+            let bytes = screenshot::png(w, h, px)?;
+            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
             first_path.get_or_insert(path);
         }
         first_path.ok_or_else(|| "nothing to save".to_string())
