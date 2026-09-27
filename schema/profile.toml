@@ -2511,7 +2511,7 @@ section = ""
 label = "Open Password Manager Automatically"
 type = "bool"
 default = false
-help = "Automatically opens the password manager when a new session starts."
+help = "Opens the password manager when the session reaches a password prompt."
 light_dark = false
 macos_only = false
 

@@ -276,6 +276,22 @@ fn parameter(ui: &mut egui::Ui, info: &ActionInfo, value: &mut String) -> bool {
             }
             changed
         }
+        Kind::Accounts => {
+            // The password manager's cached display strings, never fetched here (iTerm2's
+            // pop-up of `cachedCombinedAccountNames`). The placeholder stands for no account.
+            let choices = crate::pwm_prompt::trigger_choices(&crate::pwm_prompt::cached_names(), value);
+            let shown = crate::pwm_prompt::trigger_param(value).unwrap_or_else(|| crate::pwm_prompt::UNLOCK.to_string());
+            let mut changed = false;
+            egui::ComboBox::from_id_salt("trigger-accounts").selected_text(shown.clone()).width(360.0).show_ui(ui, |ui| {
+                for name in choices {
+                    if ui.selectable_label(name == shown, &name).clicked() {
+                        *value = name;
+                        changed = true;
+                    }
+                }
+            });
+            changed
+        }
         Kind::Setting => {
             let (mut key, mut on) = split_setting(value);
             let mut changed = false;

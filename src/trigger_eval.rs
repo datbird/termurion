@@ -40,6 +40,9 @@ pub enum TriggerRequest {
     Captured { needs_shell_integration: bool },
     /// OSC 1337 ClearCapturedOutput: the Captured Output tool refreshes, with no warning.
     CapturedCleared,
+    /// Open Password Manager: the parameter after backreferences and interpolation (the
+    /// placeholder or an empty one opens without an account, `pwm_prompt::trigger_param`).
+    OpenPasswordManager(String),
     Unavailable { trigger: usize, title: String, milestone: u8 },
     /// An interpolated parameter that cannot be evaluated (shown once).
     ParameterError { trigger: usize, text: String },
@@ -642,6 +645,7 @@ impl Screen {
             "SendTextTrigger" => ask(self, TriggerRequest::SendText(value.to_string())),
             "ScriptTrigger" => ask(self, TriggerRequest::RunCommand(value.to_string())),
             "iTermSetTitleTrigger" => ask(self, TriggerRequest::SetTitle(value.to_string())),
+            "PasswordTrigger" => ask(self, TriggerRequest::OpenPasswordManager(value.to_string())),
             "iTermSetTabStatusTrigger" => {
                 let mut parts = value.splitn(3, '\u{1}');
                 let (dot, text, status) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
@@ -1029,6 +1033,8 @@ mod tests {
             ("iTermUserNotificationTrigger", "done", TriggerRequest::Notify("done".into())),
             ("GrowlTrigger", "done", TriggerRequest::Notify("done".into())),
             ("CaptureTrigger", "", TriggerRequest::Captured { needs_shell_integration: true }),
+            ("PasswordTrigger", "github", TriggerRequest::OpenPasswordManager("github".into())),
+            ("PasswordTrigger", "Open Password Manager to Unlock", TriggerRequest::OpenPasswordManager("Open Password Manager to Unlock".into())),
         ];
         for (action, param, want) in cases {
             let mut s = one("go", action, param, b"go\r\n");
@@ -1074,6 +1080,16 @@ mod tests {
         s.feed(format!("\x1b[?1049h{alt}\x1b[?1049lx3\r\n").as_bytes());
         assert_eq!(s.triggers.lines_checked, 5, "the alternate screen's scrolling does not renumber the main screen");
         assert_eq!(alerts(&mut s), 1);
+    }
+
+    #[test]
+    fn password_trigger_takes_backreferences() {
+        let mut s = one(r"password for (\w+):", "PasswordTrigger", "\\1", b"password for github:\r\n");
+        let got: Vec<TriggerRequest> = s.take_requests().into_iter().filter_map(|r| match r {
+            Request::Trigger(t) => Some(t),
+            _ => None,
+        }).collect();
+        assert_eq!(got, vec![TriggerRequest::OpenPasswordManager("github".into())]);
     }
 
     #[test]

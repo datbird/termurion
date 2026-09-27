@@ -87,6 +87,9 @@ impl App {
             }
             TriggerRequest::Coprocess { cmd, silent } => self.start_coprocess(pane, &cmd, silent, crate::coprocess::Entry::Trigger),
             TriggerRequest::Captured { needs_shell_integration } => self.capture_fired(pane, needs_shell_integration),
+            // `triggerSideEffectOpenPasswordManagerToAccountName:`: opened on the next pass,
+            // over the window of the session it matched in.
+            TriggerRequest::OpenPasswordManager(value) => self.open_password_manager(crate::pwm_prompt::trigger_param(&value), Some(pane)),
             TriggerRequest::CapturedCleared => {
                 self.tools_changed();
                 self.redraw();

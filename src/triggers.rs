@@ -89,6 +89,9 @@ pub enum Kind {
     TabStatus,
     /// `key<U+1>1|0`, a profile check box.
     Setting,
+    /// A password manager account's display string, from a pop-up of the cached names
+    /// (`PasswordTrigger`'s `paramIsPopupButton`).
+    Accounts,
 }
 
 /// An action as iTerm2's Triggers editor lists it.
@@ -129,7 +132,7 @@ pub const CATALOG: &[ActionInfo] = &[
     act("iTermInjectTrigger", "Inject Data\u{2026}", Kind::Text, "Use \\e for esc, \\a for ^G.", false),
     ActionInfo { later: Some(11), ..act("iTermRPCTrigger", "Invoke Script Function", Kind::Text, "Function call", false) },
     act("iTermHyperlinkTrigger", "Make Hyperlink\u{2026}", Kind::Text, "https://\\0", true),
-    ActionInfo { later: Some(10), ..act("PasswordTrigger", "Open Password Manager\u{2026}", Kind::Text, "Open Password Manager to Unlock", false) },
+    act("PasswordTrigger", "Open Password Manager\u{2026}", Kind::Accounts, "", false),
     act("iTermUserNotificationTrigger", "Post Notification\u{2026}", Kind::Text, "Enter Message", false),
     act("iTermShellPromptTrigger", "Prompt Detected", Kind::None, "", true),
     act("SetDirectoryTrigger", "Report Directory", Kind::Text, "Directory", true),
@@ -346,7 +349,8 @@ mod tests {
         assert_eq!(action_info("iTermSGRTrigger").map(|a| a.kind), Some(Kind::Text));
         assert_eq!(action_info("CaptureTrigger").and_then(|a| a.later), None);
         assert_eq!(action_info("iTermRPCTrigger").and_then(|a| a.later), Some(11));
-        assert_eq!(action_info("PasswordTrigger").and_then(|a| a.later), Some(10));
+        assert_eq!(action_info("PasswordTrigger").and_then(|a| a.later), None);
+        assert_eq!(action_info("PasswordTrigger").map(|a| (a.kind, a.idempotent)), Some((Kind::Accounts, false)));
         assert!(action_info("HighlightTrigger").is_some_and(|a| a.idempotent && a.multi_fire));
         assert!(action_info("BounceTrigger").is_some_and(|a| matches!(a.kind, Kind::Popup(p) if p[0] == ("Bounce Until Activated", 0))));
         assert_eq!(action_info("NoSuchTrigger"), None);

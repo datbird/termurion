@@ -1845,6 +1845,10 @@ impl App {
                 let count = self.clicks.press(Instant::now(), col, row);
                 let point = self.grid_point(id, col, row);
                 let plain = !mods.shift && !mods.alt && !mods.ctrl && !mods.cmd;
+                // A click on the key cursor opens the password manager (`PTYMouseHandler.m:644-659`).
+                if count == 1 && !mods.shift && self.clicked_password_prompt(id, point, mods) {
+                    self.open_password_manager(None, Some(id));
+                }
                 if count == 1 && plain && (self.click_unfold(id, point) || self.click_note(id, point, event_loop)) {
                     return;
                 }
@@ -2114,7 +2118,7 @@ impl App {
                     let matches = if labeled.is_empty() { self.finds.get(&id).filter(|f| f.open).map(|f| f.results.matches.as_slice()).unwrap_or_default() } else { labeled.as_slice() };
                     let hover = self.hover.filter(|(h, _)| *h == id).map(|(_, m)| m);
                     let notes: Vec<(crate::find::Match, Option<String>)> = self.note_cells(id).into_iter().map(|(m, _, t)| (m, t)).collect();
-                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: (!self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(&bview, tab.focused, Some(tab.focused))) };
+                    let hl = scene::Highlights { matches, color: p.screen.palette.match_bg, hover, link: p.screen.palette.link, labels: &labels, notes: &notes, undimmed: (!self.focused && id == tab.focused && !self.globals.bool("DimBackgroundWindows")) || (self.focused && receives && self.broadcast.should_broadcast_to(&bview, tab.focused, Some(tab.focused))), key_cursor: self.focused && id == tab.focused && p.at_password_prompt() };
                     // An Auto Composer hides the terminal cursor and the rows it covers.
                     let cover = self.auto_composer_cover(id, rect);
                     let overlay_from = frame.overlay.len();

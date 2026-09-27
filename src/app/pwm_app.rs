@@ -23,6 +23,7 @@ use crate::echo_probe::{self, Finish, Out, Probe, Round};
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::{self, Account, AccountPanel, Alert, Auth, Busy, GearItem, Secret};
 use crate::pwm_cli::{self, OpNotUsable};
+use crate::pwm_prompt;
 use crate::pwm_source::{self, Caps, Field, Kind, Source};
 use crate::pwm_ui::{PwmAct, PwmView, PwmWindow};
 
@@ -141,8 +142,6 @@ pub(super) struct PwmState {
     serial: u64,
     /// The last manager instance handed out.
     instances: u64,
-    /// The display strings of the last list, for the trigger's pop-up (`cachedCombinedAccountNames`).
-    pub(super) cached_names: Vec<String>,
     /// An adapter's secret settings, for the run only.
     secret_settings: HashMap<String, Secret>,
     /// LastPass's Open Terminal Window: the email to log in, then the session watched for
@@ -915,7 +914,51 @@ impl App {
             self.pwm.entries.remove(&id);
         }
         self.check_rounds();
-        self.panes.values().filter_map(|p| p.echo_probe.as_ref().and_then(Probe::due)).min()
+        let prompt_due = self.tick_password_input();
+        self.panes.values().filter_map(|p| p.echo_probe.as_ref().and_then(Probe::due)).chain(prompt_due).min()
+    }
+
+    /// Password prompt detection (`PTYSession.m:7657-7682`): each session takes the watcher's
+    /// last reading of its shell's console through its debounce, and a change goes to
+    /// `password_input_changed`. Returns when a held reading next turns into a prompt
+    /// (`scheduleRecheck:`).
+    fn tick_password_input(&mut self) -> Option<Instant> {
+        let detect = self.globals.bool(pwm_prompt::DETECT_KEY);
+        self.jobs.set_read_modes(detect);
+        let debounce = self.globals.number(pwm_prompt::DEBOUNCE_KEY).unwrap_or(pwm_prompt::DEFAULT_DEBOUNCE);
+        let now = Instant::now();
+        let mut changes = Vec::new();
+        for (id, p) in self.panes.iter_mut() {
+            let raw = p.exited.is_none() && p.shell_pid().is_some_and(|pid| self.jobs.password_input(pid));
+            if let Some(on) = p.password_input.update(detect, raw, debounce, now) {
+                changes.push((*id, on));
+            }
+        }
+        for (id, on) in changes {
+            self.password_input_changed(id, on);
+        }
+        self.panes.values().filter_map(|p| p.password_input.recheck_at(debounce)).min()
+    }
+
+    /// A session reached or left a password prompt: the key cursor follows, and reaching one
+    /// opens the manager when its profile says so (`didBeginPasswordInput`). A session showing
+    /// Instant Replay drops input, so it does not open one by itself.
+    pub(super) fn password_input_changed(&mut self, pane: PaneId, on: bool) {
+        self.redraw();
+        let Some(p) = self.panes.get(&pane).filter(|_| on) else { return };
+        if p.replay.is_none() && self.store.get(&p.profile).is_some_and(|pr| pr.bool(pwm_prompt::AUTO_OPEN_KEY)) {
+            self.open_password_manager(None, Some(pane));
+        }
+    }
+
+    /// A plain click at `point` of `pane` lands on its cursor while it is at a password prompt
+    /// (`mouseHandlerAtPasswordPrompt:`, `mouseHandlerCursorCoord:`).
+    pub(super) fn clicked_password_prompt(&self, pane: PaneId, point: Point, mods: Mods) -> bool {
+        let Some(p) = self.panes.get(&pane) else { return false };
+        let Ok(line) = usize::try_from(point.line.0) else { return false };
+        let cursor = p.screen.term().grid().cursor.point;
+        let cursor = (cursor.column.0, cursor.line.0.max(0) as usize);
+        pwm_prompt::opens_on_click(p.at_password_prompt(), mods.alt, mods.cmd, (point.column.0, line), cursor)
     }
 
     /// The screen locked (`staticScreenDidLock:`, `instanceScreenDidLock:`).
@@ -1004,7 +1047,8 @@ impl App {
                         Vec::new()
                     }
                 };
-                self.pwm.cached_names = result.iter().map(|a| a.display.clone()).collect();
+                // As a side effect, the trigger's pop-up gets the names (`setCachedCombinedAccountNames:`).
+                pwm_prompt::set_cached_names(result.iter().map(|a| a.display.clone()).collect());
                 let Some(w) = self.pwm_window.as_mut() else { return };
                 let kept = w.selected_account().map(|a| a.id.clone());
                 w.accounts = result;

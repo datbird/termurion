@@ -202,6 +202,7 @@ pub mod notes;
 pub mod open_quickly;
 pub mod pwm;
 pub mod echo_probe;
+pub mod pwm_prompt;
 pub mod pwm_source;
 pub mod pwm_run;
 pub mod pwm_cli;
