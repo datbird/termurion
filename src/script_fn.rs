@@ -341,6 +341,11 @@ impl Registry {
         due.into_iter().map(|(_, p)| (p.token, failed(TIMEOUT.into(), None, p.conn))).collect()
     }
 
+    /// The connection a waiting call went to, by the caller's token.
+    pub fn conn_of(&self, token: u64) -> Option<u64> {
+        self.pending.values().find(|p| p.token == token).map(|p| p.conn)
+    }
+
     /// When the next waiting call times out.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.pending.values().map(|p| p.deadline).min()
@@ -658,6 +663,7 @@ mod tests {
         // A closed connection fails its waiting calls as unregistered; others wait on.
         subscribe(&mut fns, 2, reg("other", &[]));
         fns.start(2, "other", &args(&[]), 21, t0).unwrap();
+        assert_eq!((fns.conn_of(20), fns.conn_of(21), fns.conn_of(99)), (Some(1), Some(2), None));
         assert_eq!(fns.drop_conn(1), [(20, Failure { reason: "Script terminated during function call".into(), detail: None, kind: FailKind::Unregistered, conn: Some(1) })]);
         assert_eq!(fns.next_deadline(), Some(t0 + DEFAULT_RPC_TIMEOUT));
         assert!(fns.drop_conn(1).is_empty());

@@ -1,6 +1,6 @@
 //! The Tandem window: tabs of split panes, drawn with wgpu.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -110,6 +110,7 @@ mod replay_ui;
 mod pwm_app;
 mod api_ui;
 mod api_requests;
+mod script_ui;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.
@@ -613,6 +614,14 @@ pub struct App {
     api_rpc_done: VecDeque<(u64, Result<crate::expr::Value, crate::expr::Failure>)>,
     /// Each allowed connection's `x-iterm2-key` and display name, for its log lines.
     api_keys: HashMap<u64, (String, String)>,
+    /// Running invocations by id (app-wide, as every script field is), the next run id and
+    /// call token, and the run each started call's token belongs to.
+    script_runs: BTreeMap<u64, script_ui::Run>,
+    script_next: u64,
+    script_tokens: HashMap<u64, u64>,
+    /// "Function Call Failed" alerts (and results) waiting to show, and the one showing.
+    script_alerts: VecDeque<script_ui::Alert>,
+    script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert)>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -952,6 +961,11 @@ pub fn run() {
         api_fns: Default::default(),
         api_rpc_done: VecDeque::new(),
         api_keys: HashMap::new(),
+        script_runs: BTreeMap::new(),
+        script_next: 1,
+        script_tokens: HashMap::new(),
+        script_alerts: VecDeque::new(),
+        script_alert: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
@@ -2711,6 +2725,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.api_tick(event_loop);
         self.api_notify_tick();
         self.open_api_alerts(event_loop);
+        let script_due = self.script_tick();
+        self.open_script_alerts(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
             self.redraw();
@@ -2728,7 +2744,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -2824,7 +2840,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

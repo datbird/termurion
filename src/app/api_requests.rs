@@ -17,7 +17,7 @@
 //! preset until milestone 13 (`api_misc`); session NotificationRequests subscribe sessions
 //! to keystrokes, the keystroke filter, screen updates, prompts and custom escape sequences
 //! (`api_notify`); function registrations and the scripts' results to calls go to the
-//! function registry (`script_fn`).
+//! function registry (`script_fn`); InvokeFunction runs an invocation (`script_ui`).
 
 use winit::event_loop::ActiveEventLoop;
 
@@ -153,6 +153,7 @@ impl App {
                 }
                 reply(req, Resp::ServerOriginatedRpcResultResponse(pb::ServerOriginatedRpcResultResponse {}))
             }
+            Some(Req::InvokeFunctionRequest(r)) => self.api_invoke_function(conn, req, r),
             _ => Answer::Now(api_proto::malformed(req)),
         };
         if let Some(b) = back {
@@ -1293,6 +1294,27 @@ impl App {
                 Answer::Later
             }
         }
+    }
+
+    /// InvokeFunction (`H:4257-4394`): a context naming no object answers at once; otherwise
+    /// the invocation runs with side effects on and answers when it finishes (at once when
+    /// it needs no script).
+    fn api_invoke_function(&mut self, conn: u64, req: &pb::ClientOriginatedMessage, r: &pb::InvokeFunctionRequest) -> Answer {
+        use super::script_ui::{Origin, ScopeSpec};
+        use crate::script_eval::Target;
+        let (target, timeout) = match crate::script_eval::invoke_target(r, &self.api_ids()) {
+            Ok(t) => t,
+            Err(resp) => return reply(req, Resp::InvokeFunctionResponse(resp)),
+        };
+        let scope = match target {
+            Target::App => ScopeSpec::App,
+            Target::Tab(t) => ScopeSpec::Tab(t),
+            Target::Window(k) => ScopeSpec::Window(k),
+            Target::Session(pane) => ScopeSpec::Session { pane, frame: Values::new() },
+            Target::Method(receiver) => ScopeSpec::Receiver(receiver),
+        };
+        self.invoke(r.invocation.as_deref().unwrap_or_default(), scope, timeout, true, Origin::Api { conn, req: req.clone() });
+        Answer::Later
     }
 
     /// Answers a waiting Tmux request.
