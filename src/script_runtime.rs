@@ -71,8 +71,15 @@ pub fn two_part(v: &str) -> String {
     if parts.len() >= 2 { format!("{}.{}", parts[0], parts[1]) } else { v.to_string() }
 }
 
+/// Whether a Python version is plain digits and dots ("3", "3.12", "3.10.2"): the only form
+/// Tandem passes to uv or resolves, so a request such as "pypy" or
+/// "cpython@3.12+freethreaded" never reaches uv's `--python`.
+pub fn numeric_version(v: &str) -> bool {
+    v.split('.').all(numeric)
+}
+
 /// Compares dotted versions part by part as numbers, a missing part reading as 0.
-fn dotted(a: &str, b: &str) -> Ordering {
+pub fn dotted(a: &str, b: &str) -> Ordering {
     let nums = |v: &str| v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
     let (a, b) = (nums(a), nums(b));
     for i in 0..a.len().max(b.len()) {
@@ -87,23 +94,26 @@ fn dotted(a: &str, b: &str) -> Ordering {
 /// The Python minor a script runs under and, when it is not the one asked for, the version
 /// asked for (`UP:63-89`): the pin when available; else 3.9 when that is not older than the
 /// pin; else the nearest minor above the pin; else the newest. With nothing known available
-/// the pin is kept.
-pub fn resolve(requested: &str, available: &[String]) -> (String, Option<String>) {
+/// the pin is kept. None when the request is not a `numeric_version`.
+pub fn resolve(requested: &str, available: &[String]) -> Option<(String, Option<String>)> {
+    if !numeric_version(requested) {
+        return None;
+    }
     let minor = two_part(requested);
     if available.is_empty() || available.contains(&minor) {
-        return (minor, None);
+        return Some((minor, None));
     }
     let remapped = Some(requested.to_string());
     if available.iter().any(|a| a == SAFE_FALLBACK) && dotted(SAFE_FALLBACK, &minor) != Ordering::Less {
-        return (SAFE_FALLBACK.to_string(), remapped);
+        return Some((SAFE_FALLBACK.to_string(), remapped));
     }
     let mut forward: Vec<&String> = available.iter().filter(|a| dotted(a, &minor) != Ordering::Less).collect();
     forward.sort_by(|a, b| dotted(a, b));
     if let Some(nearest) = forward.first() {
-        return (nearest.to_string(), remapped);
+        return Some((nearest.to_string(), remapped));
     }
     let newest = available.iter().max_by(|a, b| dotted(a, b)).cloned().unwrap_or(minor);
-    (newest, remapped)
+    Some((newest, remapped))
 }
 
 fn numeric(part: &str) -> bool {
@@ -380,10 +390,30 @@ pub fn set_dependency(deps: &[String], dep: &str) -> Vec<String> {
     out
 }
 
-/// What to install for a script: its dependencies, then each of `PACKAGES` it does not name.
+/// Whether a dependency is a plain PyPI requirement Tandem passes to uv or pip: a package
+/// name with at most one version comparison (`python_package`), with no run of spaces.
+/// Anything else (an option such as "--index-url=...", a direct reference such as
+/// "pkg @ https://...") could download from a host other than pypi.org, which the consent
+/// names, so it is refused.
+pub fn plain_dependency(dep: &str) -> bool {
+    python_package(dep).is_some() && !dep.contains("  ")
+}
+
+/// The dependencies `plain_dependency` refuses, in order, for the log.
+pub fn refused_dependencies(deps: &[String]) -> Vec<String> {
+    deps.iter().filter(|d| !plain_dependency(d)).cloned().collect()
+}
+
+/// The log line for a refused dependency.
+pub fn refused_dependency_line(dep: &str) -> String {
+    format!("Skipped the dependency \u{201c}{dep}\u{201d}: it is not a plain PyPI package name.\n")
+}
+
+/// What to install for a script: its plain dependencies (`plain_dependency`), then each of
+/// `PACKAGES` it does not name.
 pub fn packages_for(deps: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for d in deps {
+    for d in deps.iter().filter(|d| plain_dependency(d)) {
         if !out.contains(d) {
             out.push(d.clone());
         }
@@ -424,15 +454,37 @@ pub fn uv_env(uv_dir: &Path, downloads: bool) -> Vec<(String, String)> {
     .collect()
 }
 
+/// The environment a uv, pip or venv run gets: Tandem's own with every inherited `UV_*` and
+/// `PIP_*` variable and `PYTHONPATH` removed (names compared ignoring case, as Windows does),
+/// then `extra` added. iTerm2 replaces the whole environment (`iTermCommandRunner.m:211-212`);
+/// Windows programs need `SystemRoot`, `TEMP` and the like, so only the variables that could
+/// point uv or pip at another index or Python are dropped.
+pub fn child_env(inherited: impl IntoIterator<Item = (String, String)>, extra: &[(String, String)]) -> Vec<(String, String)> {
+    let dropped = |k: &str| {
+        let k = k.to_ascii_uppercase();
+        k.starts_with("UV_") || k.starts_with("PIP_") || k == "PYTHONPATH"
+    };
+    let mut out: Vec<(String, String)> = inherited.into_iter().filter(|(k, _)| !dropped(k)).collect();
+    for (k, v) in extra {
+        out.retain(|(o, _)| !o.eq_ignore_ascii_case(k));
+        out.push((k.clone(), v.clone()));
+    }
+    out
+}
+
 fn strings(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
-/// `uv venv --relocatable --python <minor> <venv>` (`UC:48-50`).
-pub fn uv_venv_args(minor: &str, venv: &Path) -> Vec<String> {
+/// `uv venv --relocatable --python <minor> <venv>` (`UC:48-50`); None when the minor is not
+/// a `numeric_version`.
+pub fn uv_venv_args(minor: &str, venv: &Path) -> Option<Vec<String>> {
+    if !numeric_version(minor) {
+        return None;
+    }
     let mut args = strings(&["venv", "--relocatable", "--python", minor]);
     args.push(text(venv));
-    args
+    Some(args)
 }
 
 /// `uv pip install --python <python> --only-binary :all: [--upgrade] <packages>` (`UC:55-61`).
@@ -443,7 +495,7 @@ pub fn uv_pip_install_args(venv_python: &Path, packages: &[String], upgrade: boo
     if upgrade {
         args.push("--upgrade".to_string());
     }
-    args.extend(packages.iter().cloned());
+    args.extend(packages.iter().filter(|p| plain_dependency(p)).cloned());
     args
 }
 
@@ -477,7 +529,7 @@ pub fn pip_install_args(packages: &[String], upgrade: bool) -> Vec<String> {
     if upgrade {
         args.push("--upgrade".to_string());
     }
-    args.extend(packages.iter().cloned());
+    args.extend(packages.iter().filter(|p| plain_dependency(p)).cloned());
     args
 }
 
@@ -597,11 +649,17 @@ mod tests {
     #[test]
     fn versions_follow_iterm2() {
         assert_eq!(two_part("3.12.4"), "3.12");
-        assert_eq!(resolve("3.12", &s(&["3.10", "3.12"])), ("3.12".to_string(), None));
-        assert_eq!(resolve("3.7", &s(&["3.9", "3.12"])), ("3.9".to_string(), Some("3.7".to_string())));
-        assert_eq!(resolve("3.8", &s(&["3.10", "3.12"])), ("3.10".to_string(), Some("3.8".to_string())));
-        assert_eq!(resolve("3.14", &s(&["3.10", "3.12"])), ("3.12".to_string(), Some("3.14".to_string())));
-        assert_eq!(resolve("3.11", &[]), ("3.11".to_string(), None));
+        assert_eq!(resolve("3.12", &s(&["3.10", "3.12"])), Some(("3.12".to_string(), None)));
+        assert_eq!(resolve("3.7", &s(&["3.9", "3.12"])), Some(("3.9".to_string(), Some("3.7".to_string()))));
+        assert_eq!(resolve("3.8", &s(&["3.10", "3.12"])), Some(("3.10".to_string(), Some("3.8".to_string()))));
+        assert_eq!(resolve("3.14", &s(&["3.10", "3.12"])), Some(("3.12".to_string(), Some("3.14".to_string()))));
+        assert_eq!(resolve("3.11", &[]), Some(("3.11".to_string(), None)));
+        assert_eq!(resolve("3", &[]), Some(("3".to_string(), None)));
+        // Only digits and dots reach uv.
+        for bad in ["pypy", "cpython@3.12+freethreaded", "3.12t", "", "3..1", "--python"] {
+            assert_eq!(resolve(bad, &s(&["3.12"])), None, "{bad}");
+            assert!(!numeric_version(bad), "{bad}");
+        }
         assert_eq!(shebang_version("#!/usr/bin/env python3.10\n"), Some("3.10".to_string()));
         assert_eq!(shebang_version("#!/usr/bin/env python3"), None);
         assert_eq!(shebang_version("#!/usr/bin/python3.10"), None);
@@ -675,6 +733,19 @@ mod tests {
         assert_eq!(set_dependency(&s(&["aiohttp", "x"]), "aiohttp>=3.1"), s(&["aiohttp>=3.1", "x"]));
         assert_eq!(set_dependency(&s(&["x"]), "aiohttp>=3.1"), s(&["x", "aiohttp>=3.1"]));
         assert_eq!(packages_for(&s(&["requests", "certifi"])), s(&["requests", "certifi", "iterm2"]));
+        // A dependency that could download from another host is refused everywhere.
+        let hostile = s(&["--index-url=https://h/simple", "a @ https://h/a.whl", "requests", "b   >= 1", "-e", "c://d"]);
+        assert_eq!(refused_dependencies(&hostile), s(&["--index-url=https://h/simple", "a @ https://h/a.whl", "b   >= 1", "-e", "c://d"]));
+        assert_eq!(packages_for(&hostile), s(&["requests", "iterm2", "certifi"]));
+        assert!(plain_dependency("requests >= 2.0") && plain_dependency("x==1"));
+        let py = Path::new(r"C:\v\Scripts\python.exe");
+        let pys = py.to_string_lossy().to_string();
+        assert_eq!(uv_pip_install_args(py, &hostile, false), s(&["pip", "install", "--python", &pys, "--only-binary", ":all:", "requests"]));
+        assert_eq!(pip_install_args(&hostile, false), s(&["-m", "pip", "install", "--only-binary", ":all:", "requests"]));
+        assert_eq!(
+            refused_dependency_line("a @ https://h/a.whl"),
+            "Skipped the dependency \u{201c}a @ https://h/a.whl\u{201d}: it is not a plain PyPI package name.\n"
+        );
     }
 
     #[test]
@@ -695,7 +766,8 @@ mod tests {
         let p = Path::new(r"C:\v\Scripts\python.exe");
         let vs = v.to_string_lossy().to_string();
         let ps = p.to_string_lossy().to_string();
-        assert_eq!(uv_venv_args("3.12", v), s(&["venv", "--relocatable", "--python", "3.12", &vs]));
+        assert_eq!(uv_venv_args("3.12", v), Some(s(&["venv", "--relocatable", "--python", "3.12", &vs])));
+        assert_eq!(uv_venv_args("pypy", v), None);
         let packages: Vec<String> = vec!["iterm2".into(), "certifi".into()];
         assert_eq!(uv_pip_install_args(p, &packages, false), s(&["pip", "install", "--python", &ps, "--only-binary", ":all:", "iterm2", "certifi"]));
         assert_eq!(
@@ -710,6 +782,23 @@ mod tests {
         assert_eq!(pip_install_args(&s(&["iterm2"]), true), s(&["-m", "pip", "install", "--only-binary", ":all:", "--upgrade", "iterm2"]));
         assert_eq!(pip_passthrough(&s(&["install", "x"])), s(&["-m", "pip", "install", "x", "--only-binary", ":all:"]));
         assert_eq!(pip_passthrough(&s(&["show", "x"])), s(&["-m", "pip", "show", "x"]));
+        // The child environment drops what could point uv or pip elsewhere, then adds uv's.
+        let inherited = vec![
+            ("SystemRoot".to_string(), r"C:\Windows".to_string()),
+            ("uv_index_url".to_string(), "https://h".to_string()),
+            ("PIP_INDEX_URL".to_string(), "https://h".to_string()),
+            ("PythonPath".to_string(), r"C:\x".to_string()),
+            ("UV_PYTHON_DOWNLOADS".to_string(), "automatic".to_string()),
+            ("PATH".to_string(), r"C:\bin".to_string()),
+        ];
+        assert_eq!(
+            child_env(inherited, &[("UV_PYTHON_DOWNLOADS".to_string(), "never".to_string())]),
+            vec![
+                ("SystemRoot".to_string(), r"C:\Windows".to_string()),
+                ("PATH".to_string(), r"C:\bin".to_string()),
+                ("UV_PYTHON_DOWNLOADS".to_string(), "never".to_string()),
+            ]
+        );
         let b = Backend::Python { argv: s(&[r"C:\Windows\py.exe", "-3"]), minor: "3.12".into() };
         assert_ne!(b, Backend::Uv(PathBuf::from(r"C:\u\bin\uv.exe")));
     }
@@ -752,6 +841,8 @@ mod tests {
             assert!(sum.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)), "{sum}");
         }
         assert_eq!((uv_sha256(Arch::X64), uv_sha256(Arch::Arm64)), (UV_SHA256_X64, UV_SHA256_ARM64));
+        // A digest pasted into both constants would pass the checks above.
+        assert_ne!(UV_SHA256_X64, UV_SHA256_ARM64);
         let parts: Vec<&str> = UV_VERSION.split('.').collect();
         assert_eq!(parts.len(), 3);
         assert!(parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())));
