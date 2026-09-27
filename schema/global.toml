@@ -706,6 +706,33 @@ default = false
 help = "Disable animations for showing/hiding password manager."
 
 [[setting]]
+key = "RequireAuthenticationToOpenPasswordManager"
+tab = "Advanced"
+section = "Password Manager"
+label = "Require authentication to open the password manager"
+type = "bool"
+default = true
+help = "Asks for Windows Hello (or your Windows password) before the password manager opens. The same setting is in the password manager's gear menu; it is here too so a failed prompt can never lock you out."
+
+[[setting]]
+key = "RequireAuthenticationAfterScreenLocks"
+tab = "Advanced"
+section = "Password Manager"
+label = "Require authentication after the screen locks"
+type = "bool"
+default = false
+help = "Locking the screen ends the password manager's authentication, and closes any open password manager while authentication is required."
+
+[[setting]]
+key = "RequireAuthenticationOnEveryPasswordManagerOpen"
+tab = "Advanced"
+section = "Password Manager"
+label = "Require authentication on every open"
+type = "bool"
+default = false
+help = "Asks again each time the password manager opens, instead of once until Tandem quits or the screen locks."
+
+[[setting]]
 key = "restoreWindowContents"
 tab = "Advanced"
 section = "Terminal"

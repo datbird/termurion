@@ -3425,6 +3425,8 @@ dependencies = [
  "unicode-width",
  "uuid",
  "wgpu",
+ "windows",
+ "windows-future",
  "windows-sys 0.59.0",
  "winit",
 ]

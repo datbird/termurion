@@ -34,6 +34,10 @@ wgpu = "30"
 winit = "0.30"
 
 [target.'cfg(windows)'.dependencies]
+# Windows Hello for the password manager's gate (UserConsentVerifier); both are already in the
+# tree (through wgpu), only these features are new.
+windows = { version = "0.62", features = ["Security_Credentials_UI", "Win32_Foundation", "Win32_System_WinRT"] }
+windows-future = "0.3"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Globalization",

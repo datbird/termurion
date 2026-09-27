@@ -448,6 +448,14 @@ impl Busy {
     }
 }
 
+/// Whether a worker reply still belongs to the manager that asked: the same window instance
+/// (a closed manager's replies never reach one reopened in its place; iTerm2's completions hold
+/// the closed controller weakly), and for a request under the scrim, not canceled since
+/// (`ifCancelCountUnchanged:`). `open` is the open manager's instance, if any.
+pub fn reply_current(open: Option<u64>, instance: u64, scrim: bool, token: u32, busy: &Busy) -> bool {
+    open == Some(instance) && (!scrim || busy.current(token))
+}
+
 pub const BUSY_WORKING: &str = "Working\u{2026}";
 
 pub const TITLE_NEW_ACCOUNT: &str = "New Account";
@@ -1327,5 +1335,20 @@ mod tests {
         assert_eq!(REQUIRE_EVERY_KEY, "RequireAuthenticationOnEveryPasswordManagerOpen");
         assert_eq!(PROBE_KEY, "ProbeForPassword");
         assert_eq!(SEND_RETURN_KEY, "ShouldSendReturnAfterPassword");
+    }
+
+    #[test]
+    fn stale_replies_are_dropped() {
+        let mut b = Busy::default();
+        let t = b.incr();
+        assert!(reply_current(Some(7), 7, true, t, &b), "the manager that asked, not canceled");
+        assert!(!reply_current(Some(8), 7, true, t, &b), "a reopened manager never takes the old one's reply, token or not");
+        assert!(!reply_current(Some(8), 7, false, 0, &Busy::default()), "nor a reply without the scrim");
+        assert!(!reply_current(None, 7, true, t, &b), "no manager open");
+        b.cancel();
+        assert!(!reply_current(Some(7), 7, true, t, &b), "Cancel drops a scrim reply");
+        assert!(reply_current(Some(7), 7, false, t, &b), "but not the Edit panel's prefetch");
+        let fresh = Busy::default();
+        assert!(!reply_current(Some(2), 1, true, 0, &fresh), "a fresh window's token 0 does not match an old instance");
     }
 }

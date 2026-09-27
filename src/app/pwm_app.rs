@@ -48,6 +48,9 @@ const PROMPT_PASSWORD: &str = "password";
 /// A password manager window and what it shows.
 pub(super) struct PwmWin {
     window: PwmWindow,
+    /// This manager's instance, unique for the run: the worker's replies carry it, so a closed
+    /// manager's replies never act in one reopened in its place.
+    instance: u64,
     /// The session whose focus reports are held while it is open (iTerm2's effective session).
     hold: Option<PaneId>,
     /// Every account, sorted by display string.
@@ -125,7 +128,10 @@ pub(super) struct PwmState {
     /// The source as the worker last reported it: kind, name, capabilities.
     info: Option<(Kind, String, Caps)>,
     /// Passwords waiting for a session's echo probe (`iTermEchoProbe`'s `_password`).
-    entries: HashMap<PaneId, Secret>,
+    /// Keyed by session, with the entry's own number so a question answers only its entry.
+    entries: HashMap<PaneId, (u64, Secret)>,
+    /// The last entry number handed out.
+    entry_ids: u64,
     rounds: Vec<BroadcastRound>,
     confirms: Vec<Confirm>,
     /// Opens asked for, done on the next pass (a window needs the event loop).
@@ -133,6 +139,8 @@ pub(super) struct PwmState {
     /// Sessions whose focus reports stay held until their window next gains focus.
     holds: Vec<PaneId>,
     serial: u64,
+    /// The last manager instance handed out.
+    instances: u64,
     /// The display strings of the last list, for the trigger's pop-up (`cachedCombinedAccountNames`).
     pub(super) cached_names: Vec<String>,
     /// An adapter's secret settings, for the run only.
@@ -160,7 +168,7 @@ struct Confirm {
 
 enum ConfirmKind {
     /// "Are you really at a password prompt?" for a session whose probe failed.
-    Check(PaneId),
+    Check(PaneId, u64),
     /// "Not all sessions at password prompt": Cancel, or enter it in the sessions at a prompt.
     Broadcast(Vec<PaneId>, Secret),
     /// OK only.
@@ -190,7 +198,7 @@ impl App {
         let mut failed = None;
         for c in self.pwm.confirms.iter_mut().filter(|c| c.window.is_none()) {
             let opened = match &c.kind {
-                ConfirmKind::Check(_) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, pwm::TITLE_ENTER_PASSWORD),
+                ConfirmKind::Check(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, pwm::TITLE_ENTER_PASSWORD),
                 ConfirmKind::Broadcast(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, BROADCAST_ENTER),
                 ConfirmKind::Warning => ConfirmWindow::warning(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text),
                 ConfirmKind::Notice(_) => ConfirmWindow::notice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text),
@@ -276,8 +284,10 @@ impl App {
             crate::winkeys::add_pwm_window(h);
         }
         lock::watch(owner_hwnd, self.notify.clone());
+        self.pwm.instances += 1;
         self.pwm_window = Some(PwmWin {
             window,
+            instance: self.pwm.instances,
             hold,
             accounts: Vec::new(),
             filter: String::new(),
@@ -297,10 +307,13 @@ impl App {
         self.pwm_job(Work::Load, true);
     }
 
-    /// The Windows credential prompt for the signed-in user, checked with `LogonUserW`
+    /// Windows Hello for the signed-in user when it is available (iTerm2's `LAContext`
+    /// `deviceOwnerAuthentication`), else the Windows credential prompt checked with `LogonUserW`
     /// (`requestAuthenticationIfNeeded`). A failure or a cancel shows iTerm2's alert.
     pub(super) fn authenticate(&mut self) -> bool {
-        let answer = win_auth::prompt(self.hwnd().unwrap_or(0));
+        let owner = self.hwnd().unwrap_or(0);
+        // Windows Hello (PIN, fingerprint, face) where it is set up, else the password prompt.
+        let answer = win_auth::hello(owner).unwrap_or_else(|| win_auth::prompt(owner));
         let reason = match answer {
             win_auth::Answer::Granted => {
                 self.pwm.auth.granted(true);
@@ -454,7 +467,8 @@ impl App {
         if !crate::winkeys::pwm_chord(c) {
             return false;
         }
-        let Some(owner) = self.pwm_of_hwnd(super::hotkey_ui::foreground()) else { return false };
+        // The window in front when the hook took the chord, not now.
+        let Some(owner) = self.pwm_of_hwnd(crate::winkeys::chord_foreground()) else { return false };
         if !self.enter(owner) {
             return false;
         }
@@ -843,10 +857,11 @@ impl App {
         let config = self.pwm_config();
         let Some(w) = self.pwm_window.as_mut() else { return };
         let token = if busy { w.busy.incr() } else { w.busy.cancels };
+        let instance = w.instance;
         w.window.request_redraw();
         let notify = self.notify.clone();
         let worker = self.pwm.worker.get_or_insert_with(|| Worker::start(notify));
-        if worker.tx.send(Job { owner, token, busy, config, work }).is_err() {
+        if worker.tx.send(Job { owner, instance, token, busy, config, work }).is_err() {
             self.pwm.worker = None;
             if busy {
                 w.busy.decr();
@@ -921,7 +936,7 @@ impl App {
     }
 
     fn pwm_reply(&mut self, r: Reply) {
-        let Reply { owner, token, busy, info, done } = r;
+        let Reply { owner, instance, token, busy, info, done } = r;
         if let Some(i) = info {
             self.pwm.info = Some(i);
         }
@@ -930,6 +945,11 @@ impl App {
             return; // The window closed: a prompt's sender drops, which answers Cancel.
         }
         let Some(w) = self.pwm_window.as_mut() else { return self.restore_window(here) };
+        // A prompt is never under a scrim of its own; a stale one drops its sender (Cancel).
+        let scrim = busy && !matches!(done, Done::Prompt { .. } | Done::Pick { .. });
+        if !pwm::reply_current(Some(w.instance), instance, scrim, token, &w.busy) {
+            return self.restore_window(here);
+        }
         match done {
             Done::Prompt { heading, user, answer } => {
                 let mut fields = Vec::new();
@@ -952,12 +972,7 @@ impl App {
                 w.push_alert(alert, AlertFor::Pick(choices.into_iter().map(|(_, id)| id).collect(), answer));
             }
             done => {
-                // A canceled request's reply is dropped; one without the scrim (the Edit
-                // panel's prefetch) is not canceled by it.
                 if busy {
-                    if !w.busy.current(token) {
-                        return self.restore_window(here);
-                    }
                     w.busy.decr();
                 }
                 self.pwm_done(done);
@@ -1201,7 +1216,8 @@ impl App {
             p.no_focus_reports += 1;
             p.echo_probe = Some(probe);
         }
-        self.pwm.entries.insert(pane, password);
+        self.pwm.entry_ids += 1;
+        self.pwm.entries.insert(pane, (self.pwm.entry_ids, password));
         self.probe_outs(pane, outs);
     }
 
@@ -1272,12 +1288,13 @@ impl App {
                     }
                     self.user_write(pane, &bytes, Write::SendTextLocal);
                     if single && bytes == b" " {
-                        self.password_toast();
+                        self.password_toast(pane);
                     }
                 }
                 Out::SendPassword if single => self.send_entry(pane),
                 Out::Failed if single => {
-                    self.pwm.confirms.push(Confirm { window: None, heading: WARNING_HEADING.to_string(), text: echo_probe::CHECK_TEXT.to_string(), kind: ConfirmKind::Check(pane) });
+                    let id = self.pwm.entries.get(&pane).map_or(0, |(id, _)| *id);
+                    self.pwm.confirms.push(Confirm { window: None, heading: WARNING_HEADING.to_string(), text: echo_probe::CHECK_TEXT.to_string(), kind: ConfirmKind::Check(pane, id) });
                 }
                 Out::SendPassword | Out::Failed => {
                     let ok = matches!(o, Out::SendPassword);
@@ -1289,14 +1306,19 @@ impl App {
         }
     }
 
-    fn password_toast(&mut self) {
+    /// "Password sent." (or "...press Return"), unless the session dropped the write: a
+    /// replaying pane takes no input (`Pane::input`), so nothing is said.
+    fn password_toast(&mut self, pane: PaneId) {
+        if self.panes.get(&pane).is_none_or(|p| p.replay.is_some()) {
+            return;
+        }
         let text = if self.pwm_setting(pwm::SEND_RETURN_KEY) { echo_probe::SENT } else { echo_probe::SENT_PRESS_RETURN };
         self.show_toast(text);
     }
 
     /// `-[iTermEchoProbe enterPassword]` for a session's own entry.
     fn send_entry(&mut self, pane: PaneId) {
-        let Some(password) = self.pwm.entries.remove(&pane) else { return };
+        let Some((_, password)) = self.pwm.entries.remove(&pane) else { return };
         self.write_password(pane, &password);
         if let Some(p) = self.panes.get_mut(&pane) {
             p.no_focus_reports = p.no_focus_reports.saturating_sub(1);
@@ -1311,7 +1333,7 @@ impl App {
         }
         let bytes = echo_probe::password_bytes(password, self.pwm_setting(pwm::SEND_RETURN_KEY));
         self.user_write(pane, bytes.expose().as_bytes(), Write::SendTextLocal);
-        self.password_toast();
+        self.password_toast(pane);
     }
 
     /// Finished rounds decide (`checkIfFinished`): a session gone counts as indeterminate.
@@ -1378,7 +1400,9 @@ impl App {
         let ok = matches!(answer, ConfirmResult::Ok { .. });
         match kind {
             // `sendPasswordAfterGettingPermission`.
-            ConfirmKind::Check(pane) => {
+            // A newer entry on the session since the question is not its to answer.
+            ConfirmKind::Check(pane, id) if self.pwm.entries.get(&pane).is_none_or(|(e, _)| *e != id) => {}
+            ConfirmKind::Check(pane, _) => {
                 if ok {
                     self.send_entry(pane);
                 } else {
@@ -1536,8 +1560,8 @@ struct Config {
     /// The remembered CLI for 1Password or LastPass, else empty (searched for).
     cli: String,
     groups: String,
-    /// `onePasswordAccount`: used when the source is built, not compared (the picker sets it
-    /// on a source that already uses the new account).
+    /// `onePasswordAccount`: a change in Settings rebuilds the source; the picker's own choice
+    /// is written back into the built source's config, so it does not.
     account: String,
     adapter: AdapterConfig,
 }
@@ -1552,12 +1576,13 @@ struct AdapterConfig {
 
 impl Config {
     fn same_source(&self, o: &Config) -> bool {
-        self.kind == o.kind && self.cli == o.cli && self.groups == o.groups && self.adapter == o.adapter
+        self.kind == o.kind && self.cli == o.cli && self.groups == o.groups && self.account == o.account && self.adapter == o.adapter
     }
 }
 
 struct Job {
     owner: WindowId,
+    instance: u64,
     token: u32,
     busy: bool,
     config: Config,
@@ -1621,6 +1646,7 @@ enum Done {
 
 struct Reply {
     owner: WindowId,
+    instance: u64,
     token: u32,
     busy: bool,
     info: Option<(Kind, String, Caps)>,
@@ -1637,13 +1663,16 @@ struct Worker {
 struct Ctx {
     out: Sender<Reply>,
     notify: Notify,
-    current: Arc<Mutex<Option<WindowId>>>,
+    /// The window and manager instance of the request being run.
+    current: Arc<Mutex<Option<(WindowId, u64)>>>,
+    /// An account the 1Password picker chose during the request.
+    picked: Arc<Mutex<Option<String>>>,
 }
 
 impl Ctx {
     fn send(&self, done: Done) -> bool {
-        let Some(owner) = *self.current.lock().unwrap() else { return false };
-        let sent = self.out.send(Reply { owner, token: 0, busy: false, info: None, done }).is_ok();
+        let Some((owner, instance)) = *self.current.lock().unwrap() else { return false };
+        let sent = self.out.send(Reply { owner, instance, token: 0, busy: false, info: None, done }).is_ok();
         (self.notify)();
         sent
     }
@@ -1678,7 +1707,11 @@ impl Ctx {
             if !ctx.send(Done::Pick { choices: choices.to_vec(), answer: tx }) {
                 return None;
             }
-            rx.recv().ok().flatten()
+            let id = rx.recv().ok().flatten();
+            if let Some(id) = &id {
+                *ctx.picked.lock().unwrap() = Some(id.clone());
+            }
+            id
         })
     }
 }
@@ -1689,14 +1722,18 @@ impl Worker {
         let (tx, jobs) = mpsc::channel::<Job>();
         let (out, rx) = mpsc::channel::<Reply>();
         let _ = std::thread::Builder::new().name("tandem-pwm".into()).spawn(move || {
-            let ctx = Ctx { out: out.clone(), notify: notify.clone(), current: Arc::new(Mutex::new(None)) };
+            let ctx = Ctx { out: out.clone(), notify: notify.clone(), current: Arc::new(Mutex::new(None)), picked: Arc::new(Mutex::new(None)) };
             let mut slot: Option<(Config, Box<dyn Source>)> = None;
             for job in jobs {
-                *ctx.current.lock().unwrap() = Some(job.owner);
-                let (owner, token, busy) = (job.owner, job.token, job.busy);
+                *ctx.current.lock().unwrap() = Some((job.owner, job.instance));
+                let (owner, instance, token, busy) = (job.owner, job.instance, job.token, job.busy);
                 let done = run(&mut slot, job, &ctx);
                 let info = slot.as_ref().map(|(_, s)| (s.kind(), s.name(), s.caps()));
-                if out.send(Reply { owner, token, busy, info, done }).is_err() {
+                // The picked account is the one the built source now uses.
+                if let (Some(a), Some((c, _))) = (ctx.picked.lock().unwrap().take(), slot.as_mut()) {
+                    c.account = a;
+                }
+                if out.send(Reply { owner, instance, token, busy, info, done }).is_err() {
                     break;
                 }
                 notify();
@@ -1875,7 +1912,8 @@ mod lock {
 
 // --- Authentication ---
 
-/// The Windows credential prompt for the signed-in user, checked with `LogonUserW`. The typed
+/// Windows Hello through `UserConsentVerifier` (for this window, `IUserConsentVerifierInterop`),
+/// or the Windows credential prompt for the signed-in user, checked with `LogonUserW`. The typed
 /// password is unpacked into a stack buffer, used once and wiped with the packed buffer.
 mod win_auth {
     use std::sync::atomic::{compiler_fence, Ordering};
@@ -1930,6 +1968,52 @@ mod win_auth {
             Some(i) => (z(&user[i + 1..]), Some(z(&user[..i]))),
             None => (z(user), None),
         }
+    }
+
+    /// Windows Hello's answer (`UserConsentVerificationResult`): None where the device or its
+    /// setup is missing, so the password prompt is used instead.
+    pub(super) fn hello_answer(code: i32) -> Option<Answer> {
+        Some(match code {
+            0 => Answer::Granted,
+            6 => Answer::Canceled,
+            1 | 2 => return None,
+            3 => Answer::Failed("authentication is disabled by policy.".to_string()),
+            4 => Answer::Failed("the authentication device is busy.".to_string()),
+            5 => Answer::Failed("there were too many failed attempts.".to_string()),
+            _ => Answer::Failed("Windows Hello reported an error.".to_string()),
+        })
+    }
+
+    /// Waits for a Windows Runtime operation, handling this thread's messages meanwhile (the
+    /// Hello dialog and Tandem's windows keep working, as in any modal loop).
+    fn wait<T: windows::core::RuntimeType + 'static>(op: &windows_future::IAsyncOperation<T>) -> Option<T> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, MsgWaitForMultipleObjects, PeekMessageW, TranslateMessage, MSG, PM_REMOVE, QS_ALLINPUT};
+        while op.Status().ok()? == windows_future::AsyncStatus::Started {
+            let mut msg: MSG = unsafe { std::mem::zeroed() };
+            if unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+                unsafe {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            } else {
+                unsafe { MsgWaitForMultipleObjects(0, std::ptr::null(), 0, 50, QS_ALLINPUT) };
+            }
+        }
+        op.GetResults().ok()
+    }
+
+    /// Windows Hello over `owner`; None when it is not available (or could not be asked).
+    pub(super) fn hello(owner: isize) -> Option<Answer> {
+        use windows::Security::Credentials::UI::{UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability};
+        use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
+        let available = wait(&UserConsentVerifier::CheckAvailabilityAsync().ok()?)?;
+        if available != UserConsentVerifierAvailability::Available {
+            return None;
+        }
+        let interop = windows::core::factory::<UserConsentVerifier, IUserConsentVerifierInterop>().ok()?;
+        let hwnd = windows::Win32::Foundation::HWND(owner as _);
+        let op: windows_future::IAsyncOperation<UserConsentVerificationResult> = unsafe { interop.RequestVerificationForWindowAsync(hwnd, &windows::core::HSTRING::from(MESSAGE)) }.ok()?;
+        hello_answer(wait(&op)?.0)
     }
 
     pub(super) fn prompt(owner: isize) -> Answer {
@@ -2034,6 +2118,11 @@ mod tests {
         assert_eq!(win_auth::split_user(&w("BOX\\bob"), &w("")), (w("bob"), Some(w("BOX"))));
         assert_eq!(win_auth::split_user(&w("bob@example.com"), &w("")), (w("bob@example.com"), None));
         assert_eq!(win_auth::split_user(&w("bob"), &w("CORP")), (w("bob"), Some(w("CORP"))));
+        // Windows Hello: verified, canceled, and a missing device or setup falls back.
+        assert!(matches!(win_auth::hello_answer(0), Some(win_auth::Answer::Granted)));
+        assert!(matches!(win_auth::hello_answer(6), Some(win_auth::Answer::Canceled)));
+        assert!(win_auth::hello_answer(1).is_none() && win_auth::hello_answer(2).is_none());
+        assert!(matches!(win_auth::hello_answer(5), Some(win_auth::Answer::Failed(r)) if r == "there were too many failed attempts."));
     }
 
     #[test]
@@ -2052,7 +2141,7 @@ mod tests {
     fn a_changed_source_is_rebuilt() {
         let c = Config { kind: Kind::OnePassword, cli: String::new(), groups: String::new(), account: String::new(), adapter: AdapterConfig::default() };
         let picked = Config { account: "AB".into(), ..c.clone() };
-        assert!(c.same_source(&picked), "a picked account keeps the signed-in source");
+        assert!(!c.same_source(&picked), "an account changed in Settings rebuilds the 1Password source");
         assert!(!c.same_source(&Config { cli: "C:\\op.exe".into(), ..c.clone() }));
         assert!(!c.same_source(&Config { kind: Kind::LastPass, ..c.clone() }));
     }

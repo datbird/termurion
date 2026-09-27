@@ -163,6 +163,14 @@ pub fn remove_pwm_window(hwnd: isize) {
     }
 }
 
+/// The window in front when the hook last took a chord, read by the app when the chord arrives
+/// (the focus may have moved by then).
+static CHORD_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
+
+pub fn chord_foreground() -> isize {
+    CHORD_FOREGROUND.load(Ordering::Acquire)
+}
+
 fn is_pwm(hwnd: isize) -> bool {
     PWM_WINDOWS.lock().is_ok_and(|w| w.contains(&hwnd))
 }
@@ -293,6 +301,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 if let Verdict::Take(chord) = verdict {
                     if let Some(c) = chord {
                         mask_start_menu();
+                        CHORD_FOREGROUND.store(fg, Ordering::Release);
                         (h.send)(c);
                     }
                     return 1;
