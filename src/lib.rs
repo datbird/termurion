@@ -74,6 +74,10 @@ pub mod scripts;
 #[cfg(windows)]
 pub mod scripts_scan;
 pub mod util_api;
+pub mod util_osc;
+pub mod util_cli;
+#[cfg(windows)]
+pub mod util_console;
 pub mod builtin_fns;
 pub mod activity;
 pub mod alerts;
