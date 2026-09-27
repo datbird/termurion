@@ -7,6 +7,7 @@
 //! person show iTerm2's "Function Call Failed" alert (`H:566-591`), one at a time.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::rc::Rc;
 use std::time::Instant;
 
 use winit::event::WindowEvent;
@@ -121,21 +122,39 @@ fn sweep<T>(map: &mut HashMap<(PaneId, String), T>, pane: PaneId, pass: u64, pas
 }
 
 /// A script status bar component in one session (`RPC:145-155`): the variants shown (none
-/// before the first evaluation, the ladybug after an error), the error text a click shows,
-/// the evaluation running, the dependencies (the invocation's paths with `__knobs`) it last
-/// started with (empty: evaluate again), when its cadence comes due, the functions it found
-/// unregistered, the registry generation it last checked them against, and the last bar
-/// layout that asked for it.
+/// before the first evaluation, the ladybug after an error), an HTML component's variants as
+/// text (made once per result), the error text a click shows, the evaluation running, the
+/// newest evaluation whose result was applied, the dependencies (the invocation's paths with
+/// `__knobs`) it last started with (empty: evaluate again), when its cadence comes due, a
+/// beat that came while an evaluation ran (it evaluates again when that one finishes), the
+/// functions it found unregistered, the registry generation it last checked them against,
+/// and the last bar layout that asked for it.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Component {
     pub variants: Vec<String>,
+    pub texts: Option<Vec<String>>,
     pub error: Option<String>,
     pub running: Option<u64>,
+    pub applied: u64,
     pub deps: String,
     pub due: Option<Instant>,
+    pub beat: bool,
     pub missing: BTreeSet<String>,
     pub generation: u64,
     pub pass: u64,
+}
+
+/// What a script component's saved configuration gives, parsed once (the cache empties
+/// whenever the registrations change, `script_registry_changed`): its identifier, the
+/// registration it runs (the newest of its unique id), the invocation, the paths it names and
+/// whether they name the selection.
+#[derive(Clone, Debug)]
+pub(super) struct Parsed {
+    pub id: String,
+    pub reg: pb::RpcRegistrationRequest,
+    pub invocation: String,
+    pub paths: BTreeSet<String>,
+    pub selection: bool,
 }
 
 impl Component {
@@ -154,14 +173,31 @@ impl Component {
         start
     }
 
-    /// An evaluation finished: dropped when a newer one already finished, else it replaces
-    /// what shows (`RPC:413-449`). True when that changed.
+    /// An evaluation starts: its number is the newest running one, and the first one also
+    /// becomes the floor older results (of an entry swept and made again) cannot pass.
+    fn start(&mut self, nth: u64) {
+        self.running = Some(nth);
+        if self.applied == 0 {
+            self.applied = nth;
+        }
+    }
+
+    /// An evaluation finished: dropped when a newer one's result was already applied (Task
+    /// 6's rule), else it replaces what shows (`RPC:413-449`). A beat that came while it ran
+    /// empties the dependencies, so the next frame evaluates again. True when what shows
+    /// changed or an evaluation is due.
     fn finish(&mut self, nth: u64, shown: Result<Vec<String>, String>, missing: Option<&BTreeSet<String>>) -> bool {
-        if self.running.is_none_or(|r| nth > r) {
+        if nth < self.applied {
             return false;
         }
+        self.applied = nth;
+        let mut due = false;
         if self.running == Some(nth) {
             self.running = None;
+            if std::mem::take(&mut self.beat) {
+                self.deps.clear();
+                due = true;
+            }
         }
         let (variants, error) = match shown {
             Ok(v) => (v, None),
@@ -172,9 +208,27 @@ impl Component {
             self.missing = m.clone();
         }
         let changed = self.variants != variants || self.error != error;
+        if self.variants != variants {
+            self.texts = None;
+        }
         self.variants = variants;
         self.error = error;
-        changed
+        changed || due
+    }
+
+    /// A cadence beat (`RPC:475-481`; iTerm2's timer fires whatever runs,
+    /// `iTermStatusBarContainerView.m:57`): the dependencies empty so the next frame that
+    /// draws it evaluates again; while an evaluation runs, the beat waits for it to finish.
+    /// The beat is used up either way (the next start sets the next one). True when the
+    /// bars should redraw now.
+    fn beat(&mut self) -> bool {
+        self.due = None;
+        if self.running.is_some() {
+            self.beat = true;
+            return false;
+        }
+        self.deps.clear();
+        true
     }
 }
 
@@ -620,18 +674,14 @@ impl App {
     /// the newest registration of its unique id) runs in the session's scope with `__knobs`
     /// (the knob values' JSON) in a frame, side effects on, with the registration's timeout
     /// else none. None when the configuration holds no registration (iTerm2 makes no
-    /// component, `RPC:172-183`). With the entry, the component's identifier.
-    pub(super) fn script_component(&mut self, pane: PaneId, c: &crate::statusbar::Component) -> Option<(String, Component)> {
-        let saved = script_statusbar::request_of(&c.config)?;
-        // The component's identifier is the saved registration's (`RPC:241-244`).
-        let id = script_statusbar::unique_id(&saved).unwrap_or_default().to_string();
-        let reg = self.api_fns.status_bar_component(&id).cloned().unwrap_or(saved);
-        let invocation = script_statusbar::invocation(&reg);
+    /// component, `RPC:172-183`). With it, the component's identifier, the texts it shows (an
+    /// HTML component's variants as text, `html`) and its error.
+    pub(super) fn script_component(&mut self, pane: PaneId, c: &crate::statusbar::Component, html: bool) -> Option<(String, Vec<String>, Option<String>)> {
+        let parsed = self.parsed_component(&c.config)?;
+        let id = parsed.id.clone();
         let frame = Values::from([(script_statusbar::KNOBS_PATH.to_string(), Value::String(script_statusbar::knobs_json(&c.knobs)))]);
-        let paths = script_statusbar::invocation_paths(&invocation);
-        let selection = paths.iter().any(|p| crate::prompted::names_selection(p));
-        let base = self.session_values(pane, selection).unwrap_or_default();
-        let deps = script_eval::deps_key(&paths, &Layered { frame: &frame, base: &base });
+        let base = self.session_values(pane, parsed.selection).unwrap_or_default();
+        let deps = script_eval::deps_key(&parsed.paths, &Layered { frame: &frame, base: &base });
         let (pass, now) = (self.script_pass, Instant::now());
         let fns = &self.api_fns;
         let entry = self.script_components.entry((pane, id.clone())).or_default();
@@ -640,15 +690,45 @@ impl App {
             let nth = self.script_next;
             self.script_next += 1;
             entry.deps = deps;
-            entry.running = Some(nth);
+            entry.start(nth);
+            let reg = parsed.reg.clone();
             entry.due = script_statusbar::cadence(&reg).map(|d| now + d);
             // `timeout ?: distantFuture` (`RPC:372`): none or 0 waits forever.
             let timeout = reg.timeout.filter(|t| *t != 0.0).map_or(Timeout::Never, |t| Timeout::from_secs(f64::from(t)));
             let origin = Origin::Component { pane, id: id.clone(), nth, reg: Box::new(reg) };
-            self.invoke(&invocation, ScopeSpec::Session { pane, frame }, timeout, true, origin);
+            self.invoke(&parsed.invocation, ScopeSpec::Session { pane, frame }, timeout, true, origin);
         }
-        let entry = self.script_components.get(&(pane, id.clone())).cloned()?;
-        Some((id, entry))
+        let entry = self.script_components.get_mut(&(pane, id.clone()))?;
+        let texts = if html { entry.texts.get_or_insert_with(|| entry.variants.iter().map(|v| script_statusbar::html_text(v)).collect()).clone() } else { entry.variants.clone() };
+        Some((id, texts, entry.error.clone()))
+    }
+
+    /// A script component's configuration parsed (`Parsed`), from the cache until the
+    /// registrations change: the saved registration decoded once, its identifier the saved
+    /// one's (`RPC:241-244`), the registration it runs the newest of that unique id. None when
+    /// the configuration holds no registration.
+    fn parsed_component(&mut self, config: &toml::Table) -> Option<Rc<Parsed>> {
+        let key = config.get(script_statusbar::REQUEST_KEY)?.as_str()?;
+        if let Some(p) = self.script_parsed.get(key) {
+            return Some(p.clone());
+        }
+        let saved = script_statusbar::request_of(config)?;
+        let id = script_statusbar::unique_id(&saved).unwrap_or_default().to_string();
+        let reg = self.api_fns.status_bar_component(&id).cloned().unwrap_or(saved);
+        let invocation = script_statusbar::invocation(&reg);
+        let paths = script_statusbar::invocation_paths(&invocation);
+        let selection = paths.iter().any(|p| crate::prompted::names_selection(p));
+        let parsed = Rc::new(Parsed { id, reg, invocation, paths, selection });
+        self.script_parsed.insert(key.to_string(), parsed.clone());
+        Some(parsed)
+    }
+
+    /// The registrations changed (a subscribe or unsubscribe, a connection's go): the one
+    /// place the status bar's copy of the live component registrations
+    /// (`script_statusbar::set_live`) and the parsed configurations follow the registry.
+    pub(super) fn script_registry_changed(&mut self) {
+        script_statusbar::set_live(self.api_fns.status_bar_components());
+        self.script_parsed.clear();
     }
 
     /// A script component's evaluation finished (`RPC:413-449`): a string or a list of strings
@@ -680,12 +760,11 @@ impl App {
         self.invoke(&invocation, scope, Timeout::from_secs(CLICK_TIMEOUT_SECS), true, Origin::Click);
     }
 
-    /// A failed script component's click: its error text under "Status Bar Script Error".
+    /// A failed script component's click: its error text under "Status Bar Script Error",
+    /// through the one alert queue (never silenced; the same one merged).
     pub(super) fn script_component_error(&mut self, text: &str) {
-        let alert = Alert::Component(text.to_string());
-        if !self.script_alerts.contains(&alert) && self.script_alert.as_ref().map(|(_, a)| a) != Some(&alert) {
-            self.script_alerts.push_back(alert);
-        }
+        let showing = self.script_alert.as_ref().map(|(_, a)| a);
+        queue_alert(&mut self.script_alerts, showing, Alert::Component(text.to_string()), false);
     }
 
     /// A status bar component registration (`didRegisterStatusBarComponent:`, `RPC:456-462`):
@@ -702,17 +781,13 @@ impl App {
     }
 
     /// The cadences (`RPC:475-481`, `CV:57`): a component whose beat came evaluates again on
-    /// the next frame that draws it (a beat while it still runs is skipped). When the next
-    /// beat comes.
+    /// the next frame that draws it (a beat while it still runs waits for it to finish,
+    /// `Component::beat`). When the next beat comes.
     pub(super) fn tick_script_components(&mut self, now: Instant) -> Option<Instant> {
         let mut fired = false;
         for c in self.script_components.values_mut() {
             if c.due.is_some_and(|d| d <= now) {
-                c.due = None;
-                if c.running.is_none() {
-                    c.deps.clear();
-                    fired = true;
-                }
+                fired |= c.beat();
             }
         }
         if fired {
@@ -1028,6 +1103,42 @@ mod tests {
         assert_eq!(c.running, Some(9));
         assert!(!c.finish(9, Ok(vec!["a".into(), "b".into()]), None), "the same variants");
         assert_eq!(c.running, None);
+        // Review finding 2 (Task 6's applied rule): start 20 and 21, 21 finishes, start 22;
+        // 20 finishing then is older than what shows.
+        c.start(20);
+        c.start(21);
+        assert!(c.finish(21, Ok(vec!["21".into()]), None));
+        c.start(22);
+        assert!(!c.finish(20, Ok(vec!["20".into()]), None));
+        assert_eq!(c.variants, ["21"]);
+        assert!(c.finish(22, Ok(vec!["22".into()]), None));
+        // An entry made again after a sweep: its first start is the floor.
+        let mut fresh = Component::default();
+        fresh.start(40);
+        assert!(!fresh.finish(39, Ok(vec!["late".into()]), None), "a result for the swept entry");
+        // Review finding 1: a beat while an evaluation runs waits for it; when it finishes the
+        // dependencies empty, so the next frame starts one (which sets the next beat).
+        c.start(30);
+        c.deps = "x".into();
+        c.due = Some(Instant::now());
+        assert!(!c.beat(), "nothing to redraw while it runs");
+        assert_eq!((c.due, c.beat, c.deps.as_str()), (None, true, "x"));
+        assert!(!c.needs_start("x", 1, none));
+        assert!(c.finish(30, Ok(vec!["22".into()]), None), "the same variants, but a beat is due");
+        assert!(!c.beat && c.deps.is_empty());
+        assert!(c.needs_start("x", 1, none));
+        // A beat with nothing running evaluates on the next frame.
+        c.deps = "x".into();
+        assert!(c.beat());
+        assert!(c.needs_start("x", 1, none));
+        // An HTML component's texts are made again only for new variants.
+        c.texts = Some(vec!["t".into()]);
+        c.start(31);
+        c.finish(31, Ok(vec!["22".into()]), None);
+        assert!(c.texts.is_some());
+        c.start(32);
+        c.finish(32, Ok(vec!["new".into()]), None);
+        assert!(c.texts.is_none());
         assert_eq!(script_statusbar::ERROR_HEADING, Alert::Component("x".into()).form().0);
         assert_eq!(CLICK_TIMEOUT_SECS, 30.0);
     }

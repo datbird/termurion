@@ -636,6 +636,9 @@ pub struct App {
     /// Script status bar components by session and unique id: what they show and their
     /// evaluations (app-wide; a pane's entries go with the pane).
     script_components: HashMap<(PaneId, String), script_ui::Component>,
+    /// Script component configurations parsed, by their saved registration's text (emptied
+    /// whenever the registrations change).
+    script_parsed: HashMap<String, std::rc::Rc<script_ui::Parsed>>,
     /// The popover a StatusBarComponentRequest opened (one at a time).
     text_popover: Option<crate::status_popover_ui::TextPopover>,
     /// `alert` and `get_string` dialogs waiting to open, and the one showing.
@@ -994,6 +997,7 @@ pub fn run() {
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
         script_components: HashMap::new(),
+        script_parsed: HashMap::new(),
         text_popover: None,
         script_dialogs: VecDeque::new(),
         script_dialog: None,

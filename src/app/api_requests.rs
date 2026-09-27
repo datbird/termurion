@@ -1323,7 +1323,7 @@ impl App {
     /// follows, and a status bar component registered now makes that unique id's components
     /// evaluate again (`iTermAPIDidRegisterStatusBarComponentNotification`, `RPC:456-462`).
     fn api_fns_changed(&mut self, r: &pb::NotificationRequest, status: pb::notification_response::Status) {
-        crate::script_statusbar::set_live(self.api_fns.status_bar_components());
+        self.script_registry_changed();
         let Some(pb::notification_request::Arguments::RpcRegistrationRequest(reg)) = &r.arguments else { return };
         if status == pb::notification_response::Status::Ok && r.subscribe == Some(true) {
             if let Some(id) = crate::script_statusbar::unique_id(reg).filter(|_| crate::script_statusbar::registration_is_component(reg)) {

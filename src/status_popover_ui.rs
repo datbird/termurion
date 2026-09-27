@@ -58,6 +58,18 @@ fn popover_window(event_loop: &ActiveEventLoop, instance: &wgpu::Instance, adapt
     Ok(host)
 }
 
+/// The content size of a script's popover in points: the size asked for, at least one,
+/// kept inside `work` (the monitor's work area, screen pixels) and the largest surface the
+/// device draws (`max_px`), at `scale` pixels per point. A script gives any 32-bit size.
+pub fn popover_size(size: (f64, f64), work: Option<Rect>, scale: f64, max_px: f64) -> (f64, f64) {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let cap = |v: f64, room: Option<f32>| {
+        let most = room.map_or(max_px, |r| f64::from(r).min(max_px)) / scale;
+        v.min(most).max(1.0)
+    };
+    (cap(size.0, work.map(|r| r.w)), cap(size.1, work.map(|r| r.h)))
+}
+
 /// Where a popover of `pw` by `ph` pixels goes: its bottom centered on `at`, moved inside
 /// `work` (the monitor's work area, screen pixels; its top-left edge wins when it is too
 /// small), or kept off negative coordinates without one.
@@ -381,5 +393,18 @@ mod tests {
         assert_eq!(place((2000.0, 100.0), 4000.0, 300.0, work), (1920.0, 0.0));
         // No monitor known: only kept off negative coordinates.
         assert_eq!(place((50.0, 100.0), 200.0, 300.0, None), (0.0, 0.0));
+    }
+
+    /// Review finding 4: a script's popover size is kept inside the work area and the
+    /// device's largest surface, and at least one point.
+    #[test]
+    fn popover_size_is_bounded() {
+        let work = Some(Rect { x: 0.0, y: 0.0, w: 1920.0, h: 1040.0 });
+        assert_eq!(popover_size((300.0, 200.0), work, 1.0, 8192.0), (300.0, 200.0));
+        assert_eq!(popover_size((2147483647.0, 2147483647.0), work, 1.0, 8192.0), (1920.0, 1040.0));
+        assert_eq!(popover_size((5000.0, 5000.0), work, 2.0, 8192.0), (960.0, 520.0), "points at 2 pixels each");
+        assert_eq!(popover_size((0.0, -5.0), work, 1.0, 8192.0), (1.0, 1.0));
+        assert_eq!(popover_size((f64::NAN, 1e12), None, 1.0, 8192.0), (8192.0, 8192.0), "no monitor: the device limit");
+        assert_eq!(popover_size((100.0, 100.0), work, 0.0, 8192.0), (100.0, 100.0), "a bad scale reads as 1");
     }
 }

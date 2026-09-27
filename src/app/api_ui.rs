@@ -646,7 +646,7 @@ impl App {
         for (token, failure) in self.api_fns.drop_conn(conn) {
             self.api_rpc_done.push_back((token, Err(failure)));
         }
-        crate::script_statusbar::set_live(self.api_fns.status_bar_components());
+        self.script_registry_changed();
     }
 
     /// Answers a waiting connection, if it still waits.

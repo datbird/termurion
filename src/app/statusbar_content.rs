@@ -587,9 +587,8 @@ impl App {
     /// attributed HTML); a click shows the error, else runs the script's click handler. None
     /// when its configuration holds no registration.
     pub(super) fn script_content(&mut self, pane: PaneId, c: &Component) -> Option<Content> {
-        let (id, state) = self.script_component(pane, c)?;
-        let variants = if c.class == crate::script_statusbar::HTML_CLASS { state.variants.iter().map(|v| crate::script_statusbar::html_text(v)).collect() } else { state.variants };
-        let click = match state.error {
+        let (id, variants, error) = self.script_component(pane, c, c.class == crate::script_statusbar::HTML_CLASS)?;
+        let click = match error {
             Some(text) => Click::ScriptError(text),
             None => Click::ScriptClick(id),
         };

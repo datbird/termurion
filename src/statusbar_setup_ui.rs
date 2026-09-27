@@ -284,7 +284,7 @@ impl StatusBarSetupWindow {
                             ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
                             // The built-in classes, then each registered script component
                             // (`SVC:154-158`), whose configuration carries its registration.
-                            let scripts = crate::script_statusbar::live().into_iter().map(|r| (crate::script_statusbar::class_of(&r), crate::script_statusbar::config_for(&r)));
+                            let scripts = crate::script_statusbar::live_palette();
                             let entries: Vec<(&'static str, toml::Table)> = statusbar::PALETTE.iter().map(|&c| (c, toml::Table::new())).chain(scripts).collect();
                             for (n, (class, config)) in entries.into_iter().enumerate() {
                                 let Some(info) = statusbar::info_for(class, &config, algorithm) else { continue };

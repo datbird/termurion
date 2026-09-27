@@ -215,6 +215,14 @@ pub fn identifier(class: &str, config: &toml::Table) -> String {
     }
 }
 
+/// Whether a component answers to an identifier (`componentWithIdentifier:`, `VC:310-314`):
+/// no identifier matches nothing (iTerm2 compares with nil), so a script component whose
+/// configuration holds no registration (identifier "", never made, `RPC:172-183`) matches
+/// no request.
+pub fn has_identifier(class: &str, config: &toml::Table, id: &str) -> bool {
+    !id.is_empty() && identifier(class, config) == id
+}
+
 /// An unread count as the badge writes it (`NSNumberFormatterDecimalStyle`): thousands
 /// grouped with commas.
 pub fn count_text(n: i64) -> String {
@@ -315,7 +323,9 @@ pub fn html_text(html: &str) -> String {
         }
         space = false;
         if c == '&' {
-            if let Some(semi) = rest.find(';').filter(|&i| i <= 10) {
+            // An entity's name is short: only its first characters are searched, so a long
+            // run of `&` stays linear.
+            if let Some(semi) = rest.char_indices().take(11).find(|&(_, ch)| ch == ';').map(|(i, _)| i).filter(|&i| i <= 10) {
                 if let Some(ch) = entity(&rest[..semi]) {
                     out.push(ch);
                     rest = &rest[semi + 1..];
@@ -328,26 +338,36 @@ pub fn html_text(html: &str) -> String {
     out.trim_end_matches('\n').to_string()
 }
 
-/// The live STATUS_BAR_COMPONENT registrations, as the app last set them.
-static LIVE: RwLock<Vec<pb::RpcRegistrationRequest>> = RwLock::new(Vec::new());
+/// A copy of the app registry's live STATUS_BAR_COMPONENT registrations, each with its class
+/// and a new component's configuration (the setup window's palette entry): the pure
+/// `statusbar` functions and the setup window cannot reach the App. Its only writer is
+/// `App::script_registry_changed`, which every registry change calls.
+static LIVE: RwLock<Vec<(pb::RpcRegistrationRequest, &'static str, toml::Table)>> = RwLock::new(Vec::new());
 
 /// The app's registrations changed: the live status bar components now.
 pub fn set_live(regs: Vec<pb::RpcRegistrationRequest>) {
+    let entries = regs.into_iter().map(|r| (class_of(&r), config_for(&r), r)).map(|(class, config, r)| (r, class, config)).collect();
     if let Ok(mut live) = LIVE.write() {
-        *live = regs;
+        *live = entries;
     }
 }
 
-/// The live status bar component registrations (the setup window's palette).
+/// The live status bar component registrations (the tests read them back).
+#[cfg(test)]
 pub fn live() -> Vec<pb::RpcRegistrationRequest> {
-    LIVE.read().map(|l| l.clone()).unwrap_or_default()
+    LIVE.read().map(|l| l.iter().map(|(r, _, _)| r.clone()).collect()).unwrap_or_default()
+}
+
+/// The setup window's palette entries for the live registrations: class and configuration.
+pub fn live_palette() -> Vec<(&'static str, toml::Table)> {
+    LIVE.read().map(|l| l.iter().map(|(_, class, config)| (*class, config.clone())).collect()).unwrap_or_default()
 }
 
 /// `latestStatusBarRequest` (`RPC:54-57`): the live registration with the same unique id,
 /// else the saved one.
 pub fn latest(r: &pb::RpcRegistrationRequest) -> pb::RpcRegistrationRequest {
     let Some(id) = unique_id(r) else { return r.clone() };
-    LIVE.read().ok().and_then(|l| l.iter().find(|x| unique_id(x) == Some(id)).cloned()).unwrap_or_else(|| r.clone())
+    LIVE.read().ok().and_then(|l| l.iter().map(|(x, _, _)| x).find(|x| unique_id(x) == Some(id)).cloned()).unwrap_or_else(|| r.clone())
 }
 
 /// The registration a component of a script class uses: the saved one's latest; None for
@@ -500,10 +520,15 @@ mod tests {
         assert_eq!(latest(&older), older);
         let mut others = live();
         others.retain(|x| unique_id(x) != Some("com.ex.live-test"));
+        let before = others.clone();
         others.push(newer.clone());
         set_live(others);
         assert_eq!(latest(&older), newer);
         assert_eq!(&*statusbar::info_for(TEXT_CLASS, &config_for(&older), algorithm).unwrap().short, "Clock 2");
+        assert!(live_palette().contains(&(TEXT_CLASS, config_for(&newer))), "the palette entry");
+        // The test leaves the process-wide list as it found it.
+        set_live(before);
+        assert_eq!(latest(&older), older);
     }
 
     #[test]
@@ -522,6 +547,14 @@ mod tests {
         assert_eq!(onclick_error("boom", "tb"), "Error in onclick handler: boom\ntb");
         assert_eq!(html_text("<b>a</b> &amp; b<br>c"), "a & b\nc");
         assert_eq!(html_text("<html><head><style>p{}</style></head><body><p>one</p>\n  <p>two&#33;</p></body></html>"), "one\ntwo!");
+        // Review finding 5: a 1 MB run of `&` (a `;` only at its end) or of `<` stays linear.
+        let amps = format!("{};", "&".repeat(1 << 20));
+        let t = std::time::Instant::now();
+        assert_eq!(html_text(&amps), amps);
+        assert_eq!(html_text(&"<".repeat(1 << 20)), "");
+        assert_eq!(html_text(&"<a".repeat(1 << 19)), "");
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(html_text("&#x41;&amp;&unknown;&"), "A&&unknown;&");
         assert_eq!(ERROR_HEADING, "Status Bar Script Error");
     }
 
@@ -535,5 +568,12 @@ mod tests {
         assert_eq!(popover_status(&open, false, false), Status::SessionNotFound);
         assert_eq!(popover_status(&open, true, false), Status::InvalidIdentifier);
         assert_eq!(popover_status(&open, true, true), Status::Ok);
+        // Review finding 6: no identifier matches no component, not even one whose
+        // configuration holds no registration.
+        let broken = toml::Table::new();
+        assert_eq!(identifier(TEXT_CLASS, &broken), "");
+        assert!(!has_identifier(TEXT_CLASS, &broken, ""));
+        assert!(has_identifier(TEXT_CLASS, &config_for(&fixture()), "com.ex.clock-1"));
+        assert!(has_identifier("iTermStatusBarClockComponent", &broken, "com.iterm2.iTermStatusBarClockComponent"));
     }
 }

@@ -769,9 +769,9 @@ impl App {
     }
 
     /// Whether the session's status bar has a component with the identifier
-    /// (`componentWithIdentifier:`, `VC:310-314`; `script_statusbar::identifier`).
+    /// (`componentWithIdentifier:`, `VC:310-314`; `script_statusbar::has_identifier`).
     pub(super) fn bar_has_component(&self, pane: PaneId, id: &str) -> bool {
-        self.shows_status_bar(pane) && self.bar_layout(pane).0.components.iter().any(|c| crate::script_statusbar::identifier(&c.class, &c.config) == id)
+        self.shows_status_bar(pane) && self.bar_layout(pane).0.components.iter().any(|c| crate::script_statusbar::has_identifier(&c.class, &c.config, id))
     }
 
     /// Where a component's popover points, in window pixels: the middle of the component's
@@ -780,7 +780,7 @@ impl App {
         let tab = self.tabs.get(self.active)?;
         let bar = self.status_bars(tab).into_iter().find(|b| b.pane == pane)?;
         let p = self.place_bar(&bar);
-        let pl = p.placed.iter().find(|pl| crate::script_statusbar::identifier(&p.shown[pl.index].component.class, &p.shown[pl.index].component.config) == id)?;
+        let pl = p.placed.iter().find(|pl| crate::script_statusbar::has_identifier(&p.shown[pl.index].component.class, &p.shown[pl.index].component.config, id))?;
         Some((bar.rect.x + (pl.x + pl.width / 2.0) * self.scale(), bar.rect.y))
     }
 
@@ -793,7 +793,9 @@ impl App {
             (a.x + a.w / 2.0, a.y)
         });
         let work = self.monitor_rects().map(|(w, _)| w);
+        let scale = f64::from(self.scale());
         let Some(g) = self.gpu.as_ref() else { return };
+        let size = crate::status_popover_ui::popover_size(size, work, scale, f64::from(g.device.limits().max_texture_dimension_2d));
         let origin = g.window.inner_position().unwrap_or_default();
         let at = (origin.x as f64 + f64::from(anchor.0), origin.y as f64 + f64::from(anchor.1));
         self.text_popover = None;
