@@ -541,15 +541,28 @@ mod tests {
     fn a_close_never_happens_while_attached() {
         use std::os::windows::process::CommandExt;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "pty::tests::close_while_reading_child", "--ignored", "--test-threads=1"])
             .env("TANDEM_CLOSE_CHILD", "1")
             .creation_flags(DETACHED_PROCESS)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status()
+            .spawn()
             .unwrap();
+        // A hang fails the suite instead of holding it.
+        let end = Instant::now() + secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= end {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("the reading process did not finish within 60 s");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
         assert!(status.success(), "the reading process survived every close: {status:?}");
     }
 

@@ -79,11 +79,22 @@ impl Host {
     }
 
     /// Password prompt readings start over (a new request, or no Tandem to tell).
-    fn watch_prompts(&mut self, debounce: Option<f64>) {
+    /// Returns a "not at a prompt" for each session that was at one, so a Tandem that keeps
+    /// listening never holds a stale "at a prompt".
+    fn watch_prompts(&mut self, debounce: Option<f64>) -> Vec<Msg> {
         self.prompt_debounce = debounce;
-        for s in self.sessions.values_mut() {
+        let mut off = Vec::new();
+        for (id, s) in self.sessions.iter_mut() {
+            if s.prompt.on {
+                off.push(Msg::PasswordInput { id: *id, on: false });
+            }
             s.prompt = Default::default();
         }
+        off.sort_by_key(|m| match m {
+            Msg::PasswordInput { id, .. } => *id,
+            _ => 0,
+        });
+        off
     }
 }
 
@@ -256,6 +267,7 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
                     break 'read;
                 }
                 h.client = Some(Client { conn, out: out.clone(), version });
+                // A new Tandem starts with nothing at a prompt: nothing to tell it.
                 h.watch_prompts(None);
                 let welcome = Msg::Welcome { version, host_pid: std::process::id(), instance: h.instance.clone(), sessions: h.live() };
                 h.send(&welcome);
@@ -265,6 +277,7 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
         let mut h = host.lock().unwrap();
         if h.client.as_ref().is_some_and(|c| c.conn == conn) {
             h.client = None;
+            // No Tandem to tell.
             h.watch_prompts(None);
             for s in h.sessions.values_mut() {
                 s.attached = false;
@@ -348,7 +361,9 @@ fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
         Msg::WatchPrompts { debounce_ms } => {
             let mut h = host.lock().unwrap();
             if h.client.as_ref().is_some_and(|c| c.version >= 2) {
-                h.watch_prompts(debounce_ms.map(|ms| ms as f64 / 1000.0));
+                for m in h.watch_prompts(debounce_ms.map(|ms| ms as f64 / 1000.0)) {
+                    h.send(&m);
+                }
             }
         }
         Msg::KillAll => {
@@ -540,6 +555,25 @@ pub(crate) mod tests {
         c.send(&Msg::Attach { id, since: 0 });
         c.output_until(id, "after-pause");
         c.send(&Msg::KillAll);
+    }
+
+    #[test]
+    fn a_watch_reset_turns_an_on_session_off() {
+        let session = |on: bool| {
+            let mut prompt = crate::pwm_prompt::Debounce::default();
+            if on {
+                prompt.sample(true, Instant::now(), 0.0);
+            }
+            Session { pty: None, ring: Ring::new(16), pid: 1, cmdline: String::new(), cwd: String::new(), cols: 80, rows: 24, exited: None, attached: true, pending: 0, prompt }
+        };
+        let mut h = Host { sessions: HashMap::new(), next_id: 3, client: None, instance: "t".into(), prompt_debounce: Some(0.2) };
+        h.sessions.insert(1, session(true));
+        h.sessions.insert(2, session(false));
+        let told = h.watch_prompts(Some(0.5));
+        assert_eq!(told, vec![Msg::PasswordInput { id: 1, on: false }], "only the session that was on is told it is off");
+        assert!(h.sessions.values().all(|s| !s.prompt.on));
+        assert_eq!(h.prompt_debounce, Some(0.5));
+        assert!(h.watch_prompts(None).is_empty(), "nothing was on any more");
     }
 
     #[test]

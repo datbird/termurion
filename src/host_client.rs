@@ -326,9 +326,9 @@ impl Client {
         }
     }
 
-    /// An ended session nobody claimed: the host drops it.
     /// Asks the host to read its sessions' consoles for password prompts with this debounce
-    /// (seconds), or to stop (None). Sent when it changes, and only to a version 2 host.
+    /// (seconds), or to stop (None). Sent when it changes, and only to a version 2 host; a
+    /// change clears every session's prompt state until the host reads again.
     pub fn watch_prompts(&self, debounce: Option<f64>) {
         if self.inner.version.load(Ordering::Acquire) < 2 {
             return;
@@ -337,9 +337,19 @@ impl Client {
         let mut last = self.inner.watching.lock().unwrap();
         if *last != Some(ms) && self.inner.send(&Msg::WatchPrompts { debounce_ms: ms }).is_ok() {
             *last = Some(ms);
+            // The host starts its readings over: what it said before no longer holds (it
+            // also says so for each session that was on, and an older host would not).
+            for slot in self.inner.sessions.lock().unwrap().values() {
+                let mut s = slot.lock().unwrap();
+                if s.password_input {
+                    s.password_input = false;
+                    wake(&s);
+                }
+            }
         }
     }
 
+    /// An ended session nobody claimed: the host drops it.
     pub fn forget(&self, id: u64) {
         let _ = self.inner.send(&Msg::Forget { id });
     }
@@ -487,6 +497,24 @@ mod tests {
 
     fn quiet() -> Notify {
         Arc::new(|| {})
+    }
+
+    #[test]
+    fn a_changed_watch_clears_hosted_prompts() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let (client, _) = connect(&name);
+        let pty = client.launch("cmd.exe /d /k", None, 80, 24, quiet()).unwrap();
+        client.watch_prompts(Some(0.2));
+        pty.slot.lock().unwrap().password_input = true;
+        assert!(pty.password_input());
+        client.watch_prompts(Some(0.2));
+        assert!(pty.password_input(), "the same request again changes nothing");
+        client.watch_prompts(Some(0.5));
+        assert!(!pty.password_input(), "a changed request clears what the host said before");
+        pty.slot.lock().unwrap().password_input = true;
+        client.watch_prompts(None);
+        assert!(!pty.password_input(), "turning detection off clears it too");
+        client.kill_all();
     }
 
     /// A host from an older Tandem refuses version 2; the client speaks version 1 to it on a
