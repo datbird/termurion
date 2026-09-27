@@ -21,6 +21,7 @@ glyphon = "0.12"
 muda = "0.20"
 plist = "1"
 pollster = "0.4"
+prost = "0.14"
 rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"

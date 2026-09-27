@@ -221,3 +221,7 @@ pub mod pwm_ui;
 
 #[cfg(windows)]
 pub mod notify;
+
+#[allow(clippy::all, dead_code, missing_docs)]
+pub mod api_pb;
+pub mod api_proto;
