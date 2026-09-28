@@ -1351,6 +1351,24 @@ type = "bool"
 help = "Always turn off paste bracketing when host changes?"
 
 [[setting]]
+key = "NoSyncNeverAskAboutMouseReportingFrustration"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Win+C when mouse reporting is on?"
+type = "bool"
+default = false
+help = "Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Win+C when mouse reporting is on?"
+
+[[setting]]
+key = "NoSyncNeverAskAboutDEC2048Frustration"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress the notification asking if you want to disable resize reporting"
+type = "bool"
+default = false
+help = "Suppress the notification asking if you want to disable resize reporting"
+
+[[setting]]
 key = "NoSyncSuppressDownloadConfirmation"
 tab = "Advanced"
 section = "General"

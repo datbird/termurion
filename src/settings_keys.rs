@@ -2205,4 +2205,19 @@ mod tests {
             assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
         }
     }
+
+    /// The frustration offers' rows (`ASM:782-783`), Cmd-C read as Win+C.
+    #[test]
+    fn frustration_rows_follow_iterm2() {
+        let rows = [
+            ("NoSyncNeverAskAboutMouseReportingFrustration", "Suppress the notification asking if you want to disable mouse reporting that is shown after a drag followed by Win+C when mouse reporting is on?"),
+            ("NoSyncNeverAskAboutDEC2048Frustration", "Suppress the notification asking if you want to disable resize reporting"),
+        ];
+        for (key, text) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Warnings", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(false)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (text, text), "{key}");
+        }
+    }
 }

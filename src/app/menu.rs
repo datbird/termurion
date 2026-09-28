@@ -575,6 +575,8 @@ impl App {
                 }
                 if let Some(id) = self.focused_id() {
                     self.copy_selection(id);
+                    // Copy after a drag a program took as mouse reports (iTerm2's Cmd-C).
+                    self.frustration_copy(id);
                 }
             }
             "print:" => {

@@ -116,6 +116,7 @@ mod scripts_alerts;
 mod warnings_app;
 mod suppressed_app;
 mod host_offers_ui;
+mod frustration_ui;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
@@ -163,7 +164,9 @@ enum Drag {
     None,
     Select { pane: PaneId },
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
-    App { pane: PaneId, button: Button },
+    /// A press the program took as a mouse report: its click count and when it came, for
+    /// the frustration detector's release.
+    App { pane: PaneId, button: Button, clicks: u8, at: Instant },
     /// Selecting text in a porthole (its frame when the drag began).
     Porthole { pane: PaneId, id: u32, frame: Rect },
     /// A Clippings panel's width or one of its rows.
@@ -2481,6 +2484,12 @@ impl App {
             self.pointer_down = Some(PointerDown { button: b, clicks, pane: id, cell: (col, row) });
             return self.redraw();
         }
+        // The frustration detector watches left presses; other buttons end its episode.
+        if b == 0 {
+            self.frustration(id, |d| d.mouse_down(clicks, reportable));
+        } else {
+            self.frustration(id, |d| d.other_mouse());
+        }
         // Win-click opens the file or URL under the pointer (Semantic History). Windows
         // would open the Start menu when Win comes up, so that is masked.
         if b == 0 && mods.cmd && !mods.ctrl && self.globals.bool("CommandSelection") {
@@ -2496,7 +2505,7 @@ impl App {
             if let Some(bytes) = mouse::encode(modes, ev) {
                 self.panes.get_mut(&id).unwrap().input(&bytes);
             }
-            self.drag = Drag::App { pane: id, button: mb };
+            self.drag = Drag::App { pane: id, button: mb, clicks, at: Instant::now() };
             return self.redraw();
         }
         match b {
@@ -2600,7 +2609,15 @@ impl App {
                     self.copy_selection(pane);
                 }
             }
-            Drag::App { pane, button } => {
+            Drag::App { pane, button, clicks, at } => {
+                // macOS counts a release as no click once the multi-click time has passed.
+                let reported = mouse::app_owns_mouse(self.modes(pane), self.mods);
+                if button == Button::Left {
+                    let clicks = if at.elapsed() > input::MULTI_CLICK { 0 } else { clicks };
+                    self.frustration(pane, |d| d.mouse_up(clicks, reported));
+                } else {
+                    self.frustration(pane, |d| d.other_mouse());
+                }
                 let (x, y) = self.cursor;
                 // Look the pane up by id: the button may come up outside it, and the app
                 // must still get the release (cell_at clamps to the pane's edge).
@@ -2657,8 +2674,16 @@ impl App {
                 self.tabs[self.active].layout.set_ratio(&path, ratio);
                 self.relayout();
             }
-            Drag::App { pane, button } => {
+            Drag::App { pane, button, .. } => {
                 let (pane, button) = (*pane, *button);
+                // A drag counts as reported where the program asked for any clicks (iTerm2's
+                // test for drag reports), even when only motion with a button is sent.
+                let reported = mouse::app_owns_mouse(self.modes(pane), self.mods);
+                if button == Button::Left {
+                    self.frustration(pane, |d| d.mouse_dragged(reported));
+                } else {
+                    self.frustration(pane, |d| d.other_mouse());
+                }
                 self.send_motion(pane, Some(button), x, y);
             }
             Drag::None => {
@@ -3450,8 +3475,14 @@ impl ApplicationHandler<UserEvent> for App {
                 // A key that ends find typing, a tool's focus, Copy Mode, the completion list
                 // or the labels gives the terminal the keyboard back (`notifyActive`).
                 let elsewhere = self.focused_keys_elsewhere();
+                let focused = self.focused_id();
                 self.key(&event, event_loop);
                 self.composer_take_back(elsewhere);
+                // Any key ends a drag-then-Copy episode; Copy itself has already looked at it
+                // (modifiers alone are no key press, as in iTerm2's keyDown:).
+                if let Some(id) = focused.filter(|_| event.state == ElementState::Pressed && !labels_ui::is_modifier_key(&event.logical_key)) {
+                    self.frustration(id, |d| d.key());
+                }
             }
             // The pointer left the window: no Help tooltip stays up.
             WindowEvent::CursorLeft { .. } => {
