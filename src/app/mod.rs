@@ -2216,8 +2216,14 @@ impl App {
     fn window_room(&self) -> Rect {
         let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
-        let top = if self.division_visible() { crate::chrome::DIVISION_HEIGHT } else { 0.0 };
+        let top = self.division_height();
         Rect { x: 0.0, y: top, w, h: (h - bottom - top).max(1.0) }
+    }
+
+    /// The line under the title bar's height in the current window's pixels: one point, or
+    /// none when it does not show (`chrome::division_height`).
+    fn division_height(&self) -> f32 {
+        crate::chrome::division_height(self.division_visible(), self.scale())
     }
 
     /// The line under the title bar shows in the current window (`chrome::division_visible`).
@@ -2797,7 +2803,7 @@ impl App {
         let (cw, ch) = self.cell();
         let pad = 2.0 * PAD * self.scale();
         // The line under the title bar is part of the window's decoration (`PT:13235-13237`).
-        let line = if self.division_visible() { crate::chrome::DIVISION_HEIGHT } else { 0.0 };
+        let line = self.division_height();
         let (w, h) = (p.int("Columns").max(10) as f32 * cw + pad, p.int("Rows").max(4) as f32 * ch + pad + line);
         if let Some(g) = self.gpu.as_ref() {
             let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new(w.ceil() as u32, h.ceil() as u32));
@@ -3967,8 +3973,9 @@ impl App {
         self.draw_toolbelt(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
         let (ww, wh) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        if self.division_visible() {
-            scene::division_line(&mut frame, ww, crate::chrome::division_color(self.resolved_style(), self.focused));
+        let line = self.division_height();
+        if line > 0.0 {
+            scene::division_line(&mut frame, ww, line, crate::chrome::division_color(self.resolved_style(), self.focused));
         }
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {

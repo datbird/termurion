@@ -1314,9 +1314,9 @@ pub fn dividers(frame: &mut Frame, dividers: &[Divider]) {
 }
 
 /// The line under the title bar (`chrome::division_visible`): across the window's full
-/// width at its top, `chrome::DIVISION_HEIGHT` tall, above a top status bar.
-pub fn division_line(frame: &mut Frame, width: f32, color: Rgb) {
-    let rect = Rect { x: 0.0, y: 0.0, w: width, h: crate::chrome::DIVISION_HEIGHT };
+/// width at its top, `height` pixels tall (`chrome::division_height`), above a top status bar.
+pub fn division_line(frame: &mut Frame, width: f32, height: f32, color: Rgb) {
+    let rect = Rect { x: 0.0, y: 0.0, w: width, h: height };
     frame.quads.push(Quad { rect, color: rgba(color, 1.0) });
 }
 

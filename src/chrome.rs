@@ -92,8 +92,14 @@ pub fn is_dark_style(resolved: TabStyle) -> bool {
     matches!(resolved, TabStyle::Dark | TabStyle::DarkHighContrast)
 }
 
-/// The line under the title bar is one pixel tall (`kDivisionViewHeight`, `RTV:47`).
+/// The line under the title bar is one point tall (`kDivisionViewHeight`, `RTV:47`).
 pub const DIVISION_HEIGHT: f32 = 1.0;
+
+/// The line's height in the window's pixels: one point at the window's scale, in whole
+/// pixels so the panes below it start on a pixel; none when it does not show.
+pub fn division_height(visible: bool, scale: f32) -> f32 {
+    if visible { (DIVISION_HEIGHT * scale).round().max(1.0) } else { 0.0 }
+}
 
 /// Whether the line under the title bar shows (`divisionViewShouldBeVisible`, `PT:1168-1181`):
 /// with `EnableDivisionView`, a Theme other than Minimal, a title bar (`decorated`) that is
@@ -257,6 +263,11 @@ mod tests {
         assert_eq!(division_color(Dark, true), rgb(26, 26, 26));
         assert_eq!(division_color(Dark, false), rgb(18, 18, 18));
         assert_eq!(DIVISION_HEIGHT, 1.0);
+        // One point at the window's scale.
+        assert_eq!(division_height(true, 1.0), 1.0);
+        assert_eq!(division_height(true, 2.0), 2.0);
+        assert_eq!(division_height(true, 1.25), 1.0);
+        assert_eq!(division_height(false, 2.0), 0.0);
     }
 
     #[test]
