@@ -329,6 +329,12 @@ impl App {
         // Whether the session is on this computer (no reported host yet counts).
         let local = super::statusbar_content::is_localhost(s.shell.host.as_deref());
         v.session.insert("isLocalhost", if local { "1" } else { "0" }.to_string());
+        // Ruling I-1: the one detector of the session's shell. The launch program is the
+        // shell's own process once the window has seen it, else the pane's command line.
+        let launch = s.shell.job_root.clone().or_else(|| Some(crate::proctree::argv0_title(&p.command).to_string()).filter(|n| !n.is_empty()));
+        if let Some(shell) = crate::ai_terminal::detected_shell(s.shell.shell.as_deref(), launch.as_deref(), local) {
+            v.session.insert("shell", shell);
+        }
         if let Some(u) = &s.shell.user {
             v.session.insert("username", u.clone());
         }

@@ -132,6 +132,7 @@ mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
 mod chat_app;
+mod ai_tools_app;
 mod scripts_app;
 mod script_console_app;
 mod script_deps_app;
