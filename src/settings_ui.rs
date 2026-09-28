@@ -389,6 +389,7 @@ impl SettingsWindow {
                                         for (k, v) in values {
                                             globals.set(&k, v);
                                         }
+                                        crate::ai_models::migrate_after_import(globals);
                                         Edit::Imported(n)
                                     }
                                     None => Edit::Imported(n),

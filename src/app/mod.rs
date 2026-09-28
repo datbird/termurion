@@ -762,7 +762,7 @@ pub fn run() {
         }
     };
     let gpath = globals::default_path();
-    let globals = match Globals::load(&gpath) {
+    let mut globals = match Globals::load(&gpath) {
         Ok(g) => g,
         Err(e) => {
             let side = gpath.with_extension("toml.recovered");
@@ -770,6 +770,12 @@ pub fn run() {
             Globals::load(&side).unwrap_or_else(|_| Globals::empty(&side))
         }
     };
+    // The legacy global AI headers move into each manual model once (`iTermMigrationHelper.m:458`).
+    if crate::ai_models::migrate_legacy_headers(&mut globals) {
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
+        }
+    }
     // The Script Console starts with the Automatic Profile Switching entry while its logging
     // is on (`SH:340-351`).
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
