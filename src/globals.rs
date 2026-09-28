@@ -56,6 +56,11 @@ pub fn default_path() -> PathBuf {
     base.join("Tandem").join("settings.toml")
 }
 
+/// Keys whose presence means something even at the default: "AI Safety Check" chosen by the
+/// person, on or off, ends its one-time question (`RemoteCommand+Mac.swift:36-38`,
+/// `object(forKey:) != nil`).
+const KEPT_WHEN_DEFAULT: [&str; 1] = [crate::ai_settings::SAFETY_CHECK];
+
 /// What iTerm2 reads for a key that is not set. The AI prompts' defaults live in their
 /// resource files, not the schema.
 fn default_of(key: &str) -> Option<Value> {
@@ -101,9 +106,10 @@ impl Globals {
         self.values.get(key).cloned().or_else(|| default_of(key))
     }
 
-    /// Stores a value. A value equal to the default is removed, so the file keeps only changes.
+    /// Stores a value. A value equal to the default is removed, so the file keeps only changes,
+    /// except for a key whose having been set at all is read (`KEPT_WHEN_DEFAULT`).
     pub fn set(&mut self, key: &str, value: Value) {
-        if default_of(key).as_ref() == Some(&value) {
+        if default_of(key).as_ref() == Some(&value) && !KEPT_WHEN_DEFAULT.contains(&key) {
             self.values.remove(key);
         } else {
             self.values.insert(key.to_string(), value);

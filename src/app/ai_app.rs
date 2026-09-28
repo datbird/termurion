@@ -16,14 +16,18 @@ use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::Secret;
 use crate::settings_ai::{AiRequest, SubTab};
 
-/// What a given or refused key continues (ruling 12e-1). 12c adds `Turn(String)`, 12e
-/// `Run(u64)`, `Codecierge(String)` and `Explain`, each with its arm in `App::ai_key_given`.
+/// What a given or refused key continues (ruling 12e-1). 12e adds `Run(u64)`,
+/// `Codecierge(String)` and `Explain`, each with its arm in `App::ai_key_given`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum KeyThen {
     #[allow(dead_code)] // Later callers that only store the key.
     Nothing,
     /// The settings window's model editor runs Test Connection.
     TestConnection,
+    /// A chat turn (the chat id) continues with the key (minor m4).
+    Turn(String),
+    /// A chat's vector-store job (the chat id) starts again with the key (minor m4).
+    Files(String),
 }
 
 impl App {
@@ -89,7 +93,11 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let Some(alert) = self.ai_asks.pop_front() else { return };
         match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &alert.heading, &alert.text, &alert.buttons, alert.silence.is_some().then_some(ConfirmWindow::SUPPRESS), &[], false, false) {
-            Ok(w) => self.ai_alert = Some((w, alert)),
+            Ok(mut w) => {
+                // An alert that names its refusing button makes a close and Escape answer it.
+                w.close_with(alert.close);
+                self.ai_alert = Some((w, alert));
+            }
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
     }
@@ -188,6 +196,8 @@ impl App {
                     s.request_redraw();
                 }
             }
+            KeyThen::Turn(chat) => self.ai_turn_key(&chat, key),
+            KeyThen::Files(chat) => self.ai_files_key(&chat, key),
         }
     }
 
@@ -294,6 +304,14 @@ impl App {
                     self.ai_reveal = Some(SubTab::General);
                 }
             }
+            // Turn On writes Granted; Not Now (also a close or Escape) writes Denied, as iTerm2.
+            Then::AutoProvide => {
+                let consent = crate::ai_context::consent_answer(index);
+                self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
+                self.save_globals();
+            }
+            // OK turns the check on; either answer ends the question for good.
+            Then::SafetyNag => self.ai_nag_answered(index),
             Then::Grant(host) => {
                 if index == 0 {
                     ai_gate::grant(&mut self.globals, &host);

@@ -137,6 +137,11 @@ mod shell_version_ui;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
+mod chat_app;
+mod chat_engine;
+mod ai_tools_app;
+mod ai_exec_app;
+mod ai_safety_app;
 mod scripts_app;
 mod script_console_app;
 mod script_deps_app;
@@ -855,6 +860,42 @@ pub struct App {
     ai_discovery: crate::ai_discovery::Cache,
     ai_transport: Arc<dyn crate::ai_transport::Transport>,
     ai_probe: Option<crate::ai_discovery::Ticket>,
+    /// The AI chats (app-wide, never swapped): the chat database, opened on first use, whether
+    /// opening it failed (then it is not tried again), and the broker.
+    chat_db: Option<crate::chat_store::Store>,
+    chat_db_failed: bool,
+    chat_broker: crate::chat_broker::Broker,
+    /// The chats' permission overrides (app-wide, never swapped); every chat's stored
+    /// permissions are merged in when the database opens.
+    ai_overrides: crate::ai_permissions::Overrides,
+    /// The text an AI typed onto each pane's prompt line without submitting it (ruling
+    /// R12cd-2), app-wide, the one accumulator 12f's orchestration typing shares.
+    ai_staged: HashMap<PaneId, crate::ai_actions::Staged>,
+    /// The "Share Terminal Contents Automatically?" question was asked this launch (once per
+    /// launch, `didAskAutoProvideConsentThisSession`), app-wide.
+    ai_consent_asked: bool,
+    /// Each chat's last screen a request really carried (`lastAutoProvidedScreen`), keyed by
+    /// chat id, app-wide.
+    ai_watermarks: HashMap<String, crate::ai_context::Watermark>,
+    /// The command the model is running on each pane; `ai_exec_tick` finds its end.
+    ai_execs: HashMap<PaneId, crate::ai_exec::Running>,
+    /// (chat, request id) of commands a newer command replaced, answered by `ai_exec_tick`.
+    ai_exec_canceled: Vec<(String, String)>,
+    /// Each pane's Get-Help running on a worker; `ai_help_tick` collects the answer.
+    ai_helps: HashMap<PaneId, std::sync::mpsc::Receiver<String>>,
+    /// The commands' safety checks by id (Task 10); `ai_check_tick` hands the finished ones on.
+    ai_checks: HashMap<u64, ai_safety_app::Check>,
+    ai_next_check: u64,
+    /// The commands held behind the one-time safety question (ruling R12cd-3).
+    ai_nag: crate::ai_classifier::NagGate,
+    /// Each chat's agent by chat id (app-wide, never swapped): its turn, parks and vector-store
+    /// flow (12d reads it by name).
+    chat_agents: HashMap<String, crate::chat_agent::Agent>,
+    /// (chat, request id) of the Get-Help running on each pane (minor m1), app-wide.
+    ai_pending_tools: HashMap<PaneId, (String, String)>,
+    /// 12b's wire log file for the chat turns' requests (app-wide).
+    #[cfg(windows)]
+    ai_wire_log: Arc<Mutex<crate::ai_wire_log::WireLog>>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -1428,6 +1469,23 @@ pub fn run() {
         ai_discovery,
         ai_transport,
         ai_probe: None,
+        chat_db: None,
+        chat_db_failed: false,
+        chat_broker: crate::chat_broker::Broker::new(),
+        ai_overrides: crate::ai_permissions::Overrides::default(),
+        ai_staged: HashMap::new(),
+        ai_consent_asked: false,
+        ai_watermarks: HashMap::new(),
+        ai_execs: HashMap::new(),
+        ai_exec_canceled: Vec::new(),
+        ai_helps: HashMap::new(),
+        ai_checks: HashMap::new(),
+        ai_next_check: 0,
+        ai_nag: crate::ai_classifier::NagGate::default(),
+        chat_agents: HashMap::new(),
+        ai_pending_tools: HashMap::new(),
+        #[cfg(windows)]
+        ai_wire_log: Arc::new(Mutex::new(crate::ai_wire_log::WireLog::new())),
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
@@ -4609,6 +4667,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_ai_reveal(event_loop);
         self.ai_discovery_tick();
         let ai_due = self.ai_discovery_due();
+        let chat_due = self.chat_tick();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -4633,7 +4692,7 @@ impl ApplicationHandler<UserEvent> for App {
         let tip_due = self.tick_tab_tip();
         let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due, chat_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)

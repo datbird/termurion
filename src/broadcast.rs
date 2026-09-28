@@ -300,6 +300,8 @@ pub enum Write {
     Trigger,
     Upload,
     BufferRelease,
+    /// An AI chat's tool typing into its linked session (iTerm2's writeTaskNoBroadcast).
+    Agent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,7 +316,7 @@ pub enum Route {
 pub fn route(w: Write) -> Route {
     match w {
         Write::Key | Write::KeyRelease | Write::Paste | Write::Drop | Write::SendText | Write::AltClickArrows => Route::Broadcast,
-        Write::SendTextLocal | Write::MouseReport | Write::FocusReport | Write::Trigger | Write::Upload | Write::BufferRelease => Route::Local,
+        Write::SendTextLocal | Write::MouseReport | Write::FocusReport | Write::Trigger | Write::Upload | Write::BufferRelease | Write::Agent => Route::Local,
     }
 }
 
@@ -327,10 +329,21 @@ pub fn without_gateways(targets: Vec<u64>, sender: u64, gateways: &BTreeSet<u64>
     targets.into_iter().filter(|t| !gateways.contains(t)).collect()
 }
 
+/// Where a write from `sender` goes: the rule of `route`, then the sender's domain or the sender
+/// alone, then `without_gateways` (`App::user_write`'s own target rule, here so it is testable
+/// without an App).
+pub fn write_targets(b: &Broadcast, v: &View, sender: PaneId, what: Write, gateways: &BTreeSet<u64>) -> Vec<PaneId> {
+    let targets = match route(what) {
+        Route::Broadcast => b.targets(v, sender),
+        Route::Local => vec![sender],
+    };
+    without_gateways(targets, sender, gateways)
+}
+
 /// Writes that are typing (iTerm2's writeTask): a tmux gateway reads them as its Command
 /// Menu's keys. The rest never reach a gateway.
 pub fn typed(w: Write) -> bool {
-    matches!(w, Write::Key | Write::Paste | Write::Drop | Write::SendText | Write::SendTextLocal | Write::AltClickArrows)
+    matches!(w, Write::Key | Write::Paste | Write::Drop | Write::SendText | Write::SendTextLocal | Write::AltClickArrows | Write::Agent)
 }
 
 /// Clear Buffer with two or more broadcast sessions: (heading, text, buttons).
@@ -575,6 +588,23 @@ mod tests {
         assert_eq!(without_gateways(vec![1, 2, 3], 1, &gateways), vec![1, 3], "no typing reaches a gateway");
         assert_eq!(without_gateways(vec![1, 2, 3], 2, &gateways), vec![2], "a gateway's keys stay in it");
         assert_eq!(without_gateways(vec![2], 2, &gateways), vec![2]);
+    }
+
+    #[test]
+    fn agent_writes_are_local_and_typed() {
+        assert_eq!(route(Write::Agent), Route::Local, "an AI's typing never broadcasts");
+        assert!(typed(Write::Agent), "a tmux pane gets it as send-keys");
+    }
+
+    #[test]
+    fn agent_writes_reach_only_the_sender() {
+        let b = Broadcast { raw: Mode::AllPanes, ..Default::default() };
+        let v = View { tabs: vec![TabView { broadcasting: true, panes: vec![7, 8] }], current_tab: 0, current: 7, exited: BTreeSet::new() };
+        let none = BTreeSet::new();
+        assert_eq!(write_targets(&b, &v, 7, Write::Key, &none), vec![7, 8], "the control: broadcasting is on");
+        assert_eq!(write_targets(&b, &v, 7, Write::Agent, &none), vec![7]);
+        let gateways: BTreeSet<u64> = [7].into();
+        assert_eq!(write_targets(&b, &v, 7, Write::Agent, &gateways), vec![7], "without_gateways keeps the sender");
     }
 
     #[test]

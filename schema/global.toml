@@ -3235,3 +3235,12 @@ label = "Use the running command's first letter as the tab's default icon if the
 type = "bool"
 default = true
 help = "Use the running command's first letter as the tab's default icon if there isn't a built in one.\nThis takes effect when tabs are configured to use built-in icons."
+
+[[setting]]
+key = "NoSyncAutoProvideConsent"
+tab = "Stored"
+section = "AI"
+label = "Share terminal contents with AI chats automatically"
+type = "int"
+default = 0
+help = "0 asks the first time a chat wants the terminal shared automatically, 1 is Turn On, 2 is refused. Kept out of imports and Toggle Setting."

@@ -201,6 +201,20 @@ pub fn close_index(labels: &[&str]) -> usize {
     action_keys(labels).1.unwrap_or(0)
 }
 
+/// The button Escape presses when the caller names its own close answer (`close`, a label):
+/// that button, else `action_keys`' Cancel. A caller whose alert has no "Cancel" button, and
+/// whose safe answer is another (a consent question's "Not Now"), names it here.
+pub fn escape_index(labels: &[&str], close: Option<&str>) -> Option<usize> {
+    close.and_then(|c| labels.iter().position(|l| *l == c)).or(action_keys(labels).1)
+}
+
+/// The button a closed window answers, given the caller's own close label: `escape_index`,
+/// else the first. Only a caller that passes a close label changes it; `close_index` is the
+/// answer for every other caller.
+pub fn close_index_with(labels: &[&str], close: Option<&str>) -> usize {
+    escape_index(labels, close).unwrap_or(0)
+}
+
 /// An `actions` window's buttons, left to right: the labels, then with `forget` "Permanently
 /// Forget Saved Selection" (`iTermWarning.m:368-371`, the remembered mode's extra button).
 pub fn button_labels(labels: &[&str], forget: bool) -> Vec<String> {
@@ -256,6 +270,9 @@ pub struct ConfirmWindow {
     shortcuts: Vec<Option<(usize, char)>>,
     underline: bool,
     forget: bool,
+    /// The label of the button a close (X, Alt+F4) and Escape answer, when the caller names one
+    /// (`escape_index`); None keeps `action_keys`' Cancel.
+    close: Option<String>,
 }
 
 impl ConfirmWindow {
@@ -273,7 +290,7 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 420.0, 130.0)?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false })
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false, close: None })
     }
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
@@ -356,7 +373,13 @@ impl ConfirmWindow {
             return ConfirmResult::Cancel;
         }
         let labels: Vec<&str> = self.actions.iter().map(String::as_str).collect();
-        ConfirmResult::Action { index: close_index(&labels), suppress: false }
+        ConfirmResult::Action { index: close_index_with(&labels, self.close.as_deref()), suppress: false }
+    }
+
+    /// Names the button a close and Escape answer (`escape_index`), for an `actions` window
+    /// whose refusing button is not labeled "Cancel".
+    pub fn close_with(&mut self, label: Option<&str>) {
+        self.close = label.map(str::to_string);
     }
 
     pub fn id(&self) -> WindowId {
@@ -374,7 +397,7 @@ impl ConfirmWindow {
     pub fn redraw(&mut self) -> ConfirmResult {
         let mut result = ConfirmResult::Open;
         let (text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, self.checkbox_label, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
-        let (shortcuts, underline, forget) = (&self.shortcuts, self.underline, self.forget);
+        let (shortcuts, underline, forget, close) = (&self.shortcuts, self.underline, self.forget, &self.close);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(text.as_str());
@@ -387,7 +410,8 @@ impl ConfirmWindow {
                 ui.horizontal(|ui| {
                     if !actions.is_empty() {
                         let labels: Vec<&str> = actions.iter().map(String::as_str).collect();
-                        let (enter_index, escape_index) = action_keys(&labels);
+                        let enter_index = action_keys(&labels).0;
+                        let escape_index = escape_index(&labels, close.as_deref());
                         for (index, label) in button_labels(&labels, forget).iter().enumerate() {
                             let clicked = match shortcuts.get(index).copied().flatten() {
                                 Some((at, _)) if underline => ui.button(underlined(ui, label, at)).clicked(),
@@ -465,6 +489,23 @@ mod tests {
         assert_eq!(close_index(&["OK", "Reveal Preference"]), 0);
         assert_eq!(close_index(&["OK", "Show in Explorer"]), 0);
         assert_eq!(close_index(&["OK"]), 0);
+    }
+
+    #[test]
+    fn close_answer_is_named_by_the_caller() {
+        // No close label: every existing caller keeps its answer (Cancel, else the first).
+        for labels in [&["OK", "Cancel", "More Info", "Always"][..], &["OK", "Reveal Preference"], &["OK"], &["Allow", "Cancel"], &["Close", "Cancel"]] {
+            assert_eq!(close_index_with(labels, None), close_index(labels), "{labels:?}");
+            assert_eq!(escape_index(labels, None), action_keys(labels).1, "{labels:?}");
+        }
+        // A close label picks that button, whatever the labels are called.
+        let consent = ["Turn On", "Not Now"];
+        assert_eq!(close_index(&consent), 0, "without a close label the first button answers, which grants");
+        assert_eq!(close_index_with(&consent, Some("Not Now")), 1);
+        assert_eq!(escape_index(&consent, Some("Not Now")), Some(1));
+        // The label wins over a button named Cancel, and a label not present falls back.
+        assert_eq!(close_index_with(&["Yes", "Cancel", "No"], Some("No")), 2);
+        assert_eq!(close_index_with(&consent, Some("Missing")), close_index(&consent));
     }
 
     #[test]

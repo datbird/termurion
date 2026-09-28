@@ -9,6 +9,8 @@ alacritty_terminal = "=0.26.0"
 arboard = "3"
 base64 = "0.22"
 regex = "1"
+# AI chat history in iTerm2's chatdb.sqlite schema (m12 ruling 5).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 flate2 = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff", "ico"] }
 unicode-width = "0.2"

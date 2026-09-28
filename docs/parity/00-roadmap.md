@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 190 | 108 | 16 |
-| `02-global-settings.md` | 823 | 433 | 76 | 314 |
-| `03-features-and-menus.md` | 647 | 527 | 48 | 72 |
-| Total | 1,784 | 1,150 | 232 | 402 |
+| `02-global-settings.md` | 823 | 435 | 74 | 314 |
+| `03-features-and-menus.md` | 647 | 532 | 47 | 68 |
+| Total | 1,784 | 1,157 | 229 | 398 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -264,8 +264,26 @@ Ollama discovery fills the Regular and Budget pickers and expands auto-discover 
 Model popup; Manage AI Models… gains Fetch Models, Refresh Models and Test Connection. OpenAI file
 uploads and vector stores are built for 12c, only for models at api.openai.com. The chat itself,
 which is the first to send a conversation, comes with 12c, so Streaming responses and the two AI
-logging rows read partial until then. Every kept quirk is listed in
+logging rows read partial until then (12c made them have). Every kept quirk is listed in
 `docs/acceptance/m12b-checklist.md` and ruled on in `docs/superpowers/rulings/m12b-rulings.txt`.
+Milestone 12c built the chat engine (03: Command safety checker, Terminal hard rules, Agentic
+tool calling, Chat history persistence's storage half, and Streaming responses; 02: AISafetyCheck,
+the eight AI permissions and the chat prompts as the agent uses them, and the two AI logging rows,
+which now have a writer). It has no window of its own: the chat window is 12d, so its checklist is
+run with 12d's. Chats and messages live in `%APPDATA%\Tandem\chatdb.sqlite` in iTerm2's schema (an
+iTerm2 database copied there opens and migrates; a second Tandem shows the database error), and a
+chat linked to a session reads it (state, screen, history, output), types into it, runs commands in
+cmd, PowerShell or a POSIX shell with the output found by the prompt marks or a per-shell marker,
+sets the clipboard, creates a file shown in Explorer and restarts the session, each only through
+the permission a person chose (Ask parks, Always runs, Never refuses, the grant kept per chat and
+session). The optional safety check flags a dangerous command, which then parks even at Always
+Allow; iTerm2's hard rules are ported byte for byte with a Windows set beside them (a floor the
+classifier backs up). Every request the engine sends passes 12a's AI gate for its own host, and
+turning the gate off cancels what is running. Where Tandem closes a hole iTerm2 leaves (a line
+typed in pieces is checked whole, the typing tools refuse line breaks and control keys, every
+model-written field in a request is escaped) it is ruled and listed. The five browser tools wait
+for milestone 13. Every kept quirk is listed in `docs/acceptance/m12c-checklist.md` and ruled on
+in `docs/superpowers/rulings/m12c-rulings.txt`.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited
