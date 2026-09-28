@@ -164,6 +164,16 @@ pub fn transport_error(text: &str) -> String {
     format!("HTTP request failed with {text}")
 }
 
+/// The largest body one call keeps; a longer answer ends the call with `TOO_LARGE` (final
+/// review ruling: chat, discovery and Test Connection alike).
+pub const MAX_BODY: usize = 64 * 1024 * 1024;
+
+/// NSURLError's text for a body over the limit (`NSURLErrorDataLengthExceedsMaximum`).
+pub const TOO_LARGE: &str = "resource exceeds maximum size";
+
+/// How many events a call holds for its reader before its worker waits.
+pub const EVENT_QUEUE: usize = 64;
+
 /// Turns bytes into text across chunk boundaries: a character split between two reads comes out
 /// whole with the second (iTerm2 drops such a chunk, ruling 12b-2).
 #[derive(Default)]
@@ -219,32 +229,43 @@ impl Utf8Carry {
 
 /// The delivery rules every transport follows (`JF:35-64`): each read is appended to the body
 /// and, for a streaming request answered 200, passed on as text at once; the end is a transport
-/// failure, a status other than 200, or success.
+/// failure, a status other than 200, or success. A body over `MAX_BODY` is a failure.
 pub struct Delivery {
     stream: bool,
     status: u32,
     carry: Utf8Carry,
     body: Vec<u8>,
+    limit: usize,
 }
 
 impl Delivery {
     /// `status` is 0 until a response arrives.
     pub fn new(status: u32, stream: bool) -> Delivery {
-        Delivery { stream, status, carry: Utf8Carry::new(), body: Vec::new() }
+        Delivery { stream, status, carry: Utf8Carry::new(), body: Vec::new(), limit: MAX_BODY }
+    }
+
+    /// The same with a smaller limit, for tests.
+    #[cfg(test)]
+    pub fn limited(status: u32, stream: bool, limit: usize) -> Delivery {
+        Delivery { limit, ..Delivery::new(status, stream) }
     }
 
     fn streams(&self) -> bool {
         self.stream && self.status == 200
     }
 
-    /// One read; a `Chunk` when it completes any characters of a streamed answer.
-    pub fn read(&mut self, bytes: &[u8]) -> Option<HttpEvent> {
+    /// One read; a `Chunk` when it completes any characters of a streamed answer. Err(TOO_LARGE)
+    /// when the body would pass the limit: the read is dropped and the call must end with it.
+    pub fn read(&mut self, bytes: &[u8]) -> Result<Option<HttpEvent>, String> {
+        if bytes.len() > self.limit - self.body.len() {
+            return Err(TOO_LARGE.to_string());
+        }
         self.body.extend_from_slice(bytes);
         if !self.streams() {
-            return None;
+            return Ok(None);
         }
         let text = self.carry.push(bytes);
-        (!text.is_empty()).then_some(HttpEvent::Chunk(text))
+        Ok((!text.is_empty()).then_some(HttpEvent::Chunk(text)))
     }
 
     /// The end: an incomplete character left in the carry is streamed lossy, then `Done`.
@@ -256,7 +277,8 @@ impl Delivery {
                 out.push(HttpEvent::Chunk(rest));
             }
         }
-        let body = String::from_utf8_lossy(&self.body).into_owned();
+        // Valid UTF-8, the usual case, is not copied again.
+        let body = String::from_utf8(self.body).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
         let error = match failure {
             Some(text) => Some(transport_error(text)),
             None if self.status != 200 => Some(status_error(self.status)),
@@ -269,8 +291,21 @@ impl Delivery {
 
 /// Every event of a call that received `chunks` with `status`, then ended in `failure` or not.
 pub fn events_for(status: u32, chunks: &[Vec<u8>], stream: bool, failure: Option<&str>) -> Vec<HttpEvent> {
-    let mut d = Delivery::new(status, stream);
-    let mut out: Vec<HttpEvent> = chunks.iter().filter_map(|c| d.read(c)).collect();
+    events_through(Delivery::new(status, stream), chunks, failure)
+}
+
+/// The same through `d`: a read over its limit ends the call.
+fn events_through(mut d: Delivery, chunks: &[Vec<u8>], failure: Option<&str>) -> Vec<HttpEvent> {
+    let mut out = Vec::new();
+    for c in chunks {
+        match d.read(c) {
+            Ok(event) => out.extend(event),
+            Err(text) => {
+                out.extend(d.done(Some(&text)));
+                return out;
+            }
+        }
+    }
     out.extend(d.done(failure));
     out
 }
@@ -532,6 +567,18 @@ mod tests {
         // A body that ends inside a character: the rest is streamed lossy before Done.
         assert_eq!(events_for(200, &chunks(&[b"a\xe2\x82"]), true, None), [chunk("a"), chunk("\u{FFFD}"), done("a\u{FFFD}", None)]);
         assert_eq!(events_for(0, &[], true, Some("Could not connect to the server.")), [done("", Some("HTTP request failed with Could not connect to the server."))]);
+    }
+
+    #[test]
+    fn a_body_over_the_limit_ends_the_call() {
+        let limited = |status, stream| events_through(Delivery::limited(status, stream, 8), &chunks(&[b"data: ", b"ab", b"c"]), None);
+        let too_large = Some("HTTP request failed with resource exceeds maximum size");
+        assert_eq!(limited(200, true), [chunk("data: "), chunk("ab"), done("data: ab", too_large)], "the read that passes the limit is dropped");
+        assert_eq!(limited(200, false), [done("data: ab", too_large)]);
+        assert_eq!(limited(500, true), [done("data: ab", too_large)], "an error body too");
+        let exact = events_through(Delivery::limited(200, false, 8), &chunks(&[b"data: ", b"ab"]), None);
+        assert_eq!(exact, [done("data: ab", None)], "exactly the limit is kept");
+        assert_eq!(MAX_BODY, 64 << 20);
     }
 
     #[test]

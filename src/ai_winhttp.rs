@@ -7,10 +7,10 @@
 //! idle timeout between bytes. A redirect is followed only to the host the consent gate checked.
 //! Ports `AITerm/JSFetch.swift` (`JF:35-173`).
 
-use crate::ai_transport::{invalid_url_events, parse_url, Call, Delivery, HttpEvent, HttpRequest, Notify, Options, Proxy, Target, Transport};
+use crate::ai_transport::{invalid_url_events, parse_url, Call, Delivery, HttpEvent, HttpRequest, Notify, Options, Proxy, Target, Transport, EVENT_QUEUE};
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{channel, sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -27,6 +27,8 @@ const MAX_REDIRECTS: usize = 10;
 /// How long the worker waits for WinHTTP to confirm a closed request handle before it closes the
 /// connection and the session anyway.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
+/// How long the worker sleeps before it offers an event to a full queue again.
+const POST_WAIT: Duration = Duration::from_millis(5);
 /// The notifications the worker waits for; `HANDLE_CLOSING` releases the handle's context.
 const NOTIFICATIONS: u32 = WINHTTP_CALLBACK_FLAG_SENDREQUEST_COMPLETE
     | WINHTTP_CALLBACK_FLAG_HEADERS_AVAILABLE
@@ -137,7 +139,8 @@ fn new_slot() -> Mutex<Slot> {
 
 fn start_call(request: HttpRequest, options: Options, notify: Notify, shared: Shared) -> Box<dyn Call> {
     let shared = Arc::new(shared);
-    let (tx, rx) = channel();
+    // Bounded: a reader that falls behind makes the worker wait instead of queueing the stream.
+    let (tx, rx) = sync_channel(EVENT_QUEUE);
     let thread = match parse_url(&request.url) {
         Err(_) => {
             for e in invalid_url_events() {
@@ -246,7 +249,7 @@ enum HopEnd {
 
 struct Worker {
     shared: Arc<Shared>,
-    tx: Sender<HttpEvent>,
+    tx: SyncSender<HttpEvent>,
     notify: Notify,
     idle: Duration,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -254,9 +257,23 @@ struct Worker {
 }
 
 impl Worker {
-    fn post(&self, event: HttpEvent) {
-        if !self.shared.cancelled() && self.tx.send(event).is_ok() {
-            (self.notify)();
+    /// Queues `event` for the reader; while the queue is full it waits, until a cancel.
+    fn post(&self, mut event: HttpEvent) {
+        loop {
+            if self.shared.cancelled() {
+                return;
+            }
+            match self.tx.try_send(event) {
+                Ok(()) => {
+                    (self.notify)();
+                    return;
+                }
+                Err(TrySendError::Full(back)) => {
+                    event = back;
+                    std::thread::sleep(POST_WAIT);
+                }
+                Err(TrySendError::Disconnected(_)) => return,
+            }
         }
     }
 
@@ -483,7 +500,7 @@ impl Worker {
                 return Ok(HopEnd::Done);
             }
             let bytes = unsafe { &(&*buf)[..read as usize] };
-            if let Some(event) = delivery.read(bytes) {
+            if let Some(event) = delivery.read(bytes).map_err(Fail::Text)? {
                 self.post(event);
             }
         }
@@ -856,6 +873,58 @@ mod tests {
         assert!(first.finished(), "the worker thread ended");
         assert!(!second.finished());
         second.cancel();
+    }
+
+    #[test]
+    fn winhttp_ends_a_body_over_the_limit() {
+        // A stream that never ends on its own: 1 MiB chunks until the client goes.
+        let base = serve(|mut s| {
+            read_request(&mut s);
+            s.write_all(STREAM_HEAD).unwrap();
+            let block = "a".repeat(1 << 20);
+            for _ in 0..80 {
+                if send_chunk(&mut s, &block).is_err() {
+                    return;
+                }
+            }
+            end_chunks(&mut s);
+        });
+        let mut call = WinHttp.start(post(format!("{base}/x"), true), off(Duration::from_secs(10)), no_notify());
+        let events = collect(&mut call, Duration::from_secs(60));
+        let streamed: usize = events.iter().map(|e| if let HttpEvent::Chunk(c) = e { c.len() } else { 0 }).sum();
+        let Some(HttpEvent::Done { body, error }) = events.last() else { panic!("no Done in {} events", events.len()) };
+        assert_eq!(error.as_deref(), Some(transport_error(crate::ai_transport::TOO_LARGE).as_str()));
+        assert!(body.len() <= crate::ai_transport::MAX_BODY && body.len() > crate::ai_transport::MAX_BODY - (64 << 10), "{}", body.len());
+        assert_eq!(streamed, body.len(), "every kept byte was streamed, nothing past the limit");
+    }
+
+    #[test]
+    fn winhttp_cancel_ends_a_worker_waiting_on_a_full_queue() {
+        let (closed_tx, closed) = mpsc::channel();
+        let base = serve(move |mut s| {
+            read_request(&mut s);
+            s.write_all(STREAM_HEAD).unwrap();
+            let block = "b".repeat(64 << 10);
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(10) {
+                if send_chunk(&mut s, &block).is_err() {
+                    break;
+                }
+            }
+            let _ = closed_tx.send(());
+        });
+        let mut call = WinHttp.start(post(format!("{base}/x"), true), off(Duration::from_secs(10)), no_notify());
+        // Nobody reads: the queue fills and the worker waits.
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(!call.finished());
+        call.cancel();
+        let start = Instant::now();
+        while !call.finished() && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(call.finished(), "the worker ended");
+        assert_eq!(call.try_event(), None, "nothing after a cancel");
+        assert!(closed.recv_timeout(Duration::from_secs(5)).is_ok(), "the server saw the connection close");
     }
 
     #[test]
