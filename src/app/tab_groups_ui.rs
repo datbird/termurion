@@ -47,12 +47,7 @@ impl App {
         for &i in &members {
             self.tabs[i].pinned = pinned;
         }
-        let active = self.tabs.get(self.active).map(|t| t.id);
-        let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
-        self.tabs = order.into_iter().filter_map(|i| old.get_mut(i).and_then(Option::take)).collect();
-        if let Some(a) = active.and_then(|a| self.tabs.iter().position(|t| t.id == a)) {
-            self.active = a;
-        }
+        self.apply_order(&order);
         self.settle_tabs();
         self.tmux_reorder();
         self.relayout();
@@ -93,10 +88,7 @@ impl App {
         if step.changes_membership {
             self.set_tab_group(self.active, step.new_group);
         } else {
-            let id = self.tabs[self.active].id;
-            let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
-            self.tabs = step.order.iter().filter_map(|&i| old.get_mut(i).and_then(Option::take)).collect();
-            self.active = self.tabs.iter().position(|t| t.id == id).unwrap_or(0);
+            self.apply_order(&step.order);
         }
         self.settle_tabs();
         self.tmux_reorder();
@@ -116,8 +108,7 @@ impl App {
         };
         let moved = order.iter().enumerate().any(|(k, i)| k != *i);
         if moved {
-            let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
-            self.tabs = order.into_iter().filter_map(|i| old.get_mut(i).and_then(Option::take)).collect();
+            self.apply_order(&order);
         }
         if !self.tabs.is_empty() {
             self.active = active;
@@ -128,6 +119,17 @@ impl App {
             }
         }
         moved
+    }
+
+    /// The tabs take `order` (indices of the tabs as they are, each once), the selected tab
+    /// kept by id.
+    pub(super) fn apply_order(&mut self, order: &[usize]) {
+        let active = self.tabs.get(self.active).map(|t| t.id);
+        let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
+        self.tabs = order.iter().filter_map(|&i| old.get_mut(i).and_then(Option::take)).collect();
+        if let Some(a) = active.and_then(|a| self.tabs.iter().position(|t| t.id == a)) {
+            self.active = a;
+        }
     }
 
     /// Each tab's group id, in tab order (None when ungrouped).
@@ -224,6 +226,8 @@ impl App {
                                         g.name = name.clone();
                                     }
                                 }
+                                // Saved with the session, like every other group change.
+                                self.mark_state_dirty();
                                 self.redraw();
                             }
                         }
@@ -288,6 +292,7 @@ impl App {
                 g.color = color;
             }
         }
+        self.mark_state_dirty();
         self.redraw();
     }
 
@@ -410,16 +415,9 @@ impl App {
         if members.is_empty() || members.len() == self.tabs.len() || members.iter().any(|&i| self.holds_recording(&self.tabs[i])) || !self.layout_allowed(LayoutOp::MoveTab) {
             return;
         }
-        // The selection stays, or goes to the nearest tab outside the group.
-        let stay = if members.contains(&self.active) { tab_groups::nearest_outside(&self.group_order(), &[], group) } else { Some(self.active) };
-        let stay = stay.and_then(|i| self.tabs.get(i)).map(|t| t.id);
-        let mut moving = Vec::new();
-        for id in self.tab_ids(&members) {
-            if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
-                moving.push(self.take_tab(i));
-            }
-        }
-        self.active = stay.and_then(|a| self.tabs.iter().position(|t| t.id == a)).unwrap_or(0);
+        // Lock Layout beeps here; `take_group` keeps the selection, or moves it to the nearest
+        // tab outside the group.
+        let Some((moving, _)) = self.take_group(group) else { return };
         self.pending_windows.push(windows_ui::NewWindow::Tabs(moving));
         self.group_changed();
     }

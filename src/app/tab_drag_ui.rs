@@ -13,7 +13,6 @@ use super::*;
 use crate::tab_drag::{Drop, Target};
 use crate::tab_groups;
 use crate::winmodel::LayoutOp;
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 impl App {
     /// A left press on the tab bar may start a drag: on a tab unless Lock Layout forbids
@@ -186,7 +185,7 @@ impl App {
             return None;
         }
         self.windows.parked().find_map(|(k, s)| {
-            let hwnd = s.gpu.as_ref().and_then(|g| hwnd_of(&g.window)).filter(|h| *h == under)?;
+            let hwnd = s.gpu.as_ref().and_then(|g| super::menu::hwnd_of(&g.window)).filter(|h| *h == under)?;
             let (bar, _, _) = s.tab_bar_drawn.as_ref()?;
             let mut p = POINT { x: screen.0, y: screen.1 };
             if unsafe { ScreenToClient(hwnd as HWND, &mut p) } == 0 {
@@ -469,10 +468,7 @@ impl App {
         if order.iter().enumerate().all(|(k, i)| k == *i) {
             return;
         }
-        let active = self.tabs.get(self.active).map(|t| t.id);
-        let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
-        self.tabs = order.into_iter().filter_map(|i| old.get_mut(i).and_then(Option::take)).collect();
-        self.active = active.and_then(|a| self.tabs.iter().position(|t| t.id == a)).unwrap_or(0);
+        self.apply_order(&order);
         self.settle_tabs();
         self.tmux_reorder();
         self.relayout();
@@ -483,7 +479,7 @@ impl App {
     /// selection stays, or goes to the nearest tab outside the group. None when a tab holds a
     /// loaded recording or Lock Layout forbids it (`PT:7781`, `:7813`). Also answers each tmux
     /// session the tabs belong to.
-    fn take_group(&mut self, group: &str) -> Option<(Vec<Tab>, Vec<PaneId>)> {
+    pub(super) fn take_group(&mut self, group: &str) -> Option<(Vec<Tab>, Vec<PaneId>)> {
         let members = self.members(group);
         if members.is_empty() || members.iter().any(|&i| self.holds_recording(&self.tabs[i])) || !self.layout_allowed_quiet(LayoutOp::MoveTab) {
             return None;
@@ -678,12 +674,4 @@ impl App {
 fn cursor_screen() -> Option<(i32, i32)> {
     let mut p = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
     (unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))
-}
-
-/// A window's Win32 handle.
-fn hwnd_of(window: &Window) -> Option<isize> {
-    match window.window_handle().ok()?.as_raw() {
-        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
-        _ => None,
-    }
 }

@@ -99,13 +99,18 @@ pub(super) struct MenuBar {
 /// Menu ids of the Profiles menu's profile entries.
 pub(super) const PROFILE_ID: &str = "profile-open:";
 
+/// A window's Win32 handle.
+pub(super) fn hwnd_of(window: &Window) -> Option<isize> {
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
+}
+
 impl App {
+    /// This window's Win32 handle.
     pub(super) fn hwnd(&self) -> Option<isize> {
-        let g = self.gpu.as_ref()?;
-        match g.window.window_handle().ok()?.as_raw() {
-            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
-            _ => None,
-        }
+        hwnd_of(&self.gpu.as_ref()?.window)
     }
 
     /// Builds the menu bar from iTerm2's menus, the right-click menu, and the Win chord hook.

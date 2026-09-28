@@ -1713,16 +1713,6 @@ impl App {
         }
     }
 
-    /// The tab under the window point (`x`, `y`) in pixels, on either bar (its close button
-    /// included); None off the tabs.
-    #[allow(dead_code)]
-    pub(super) fn bar_tab_at(&self, x: f32, y: f32) -> Option<usize> {
-        match self.tab_bar_hit(x, y)? {
-            tab_layout::Hit::Tab(i) | tab_layout::Hit::Close(i) => Some(i),
-            _ => None,
-        }
-    }
-
     /// The tabs as the bar lays them out: each look, with its group's chip on the first tab of
     /// each run (a run's members counted for a collapsed chip) and a collapsed group's tabs
     /// hidden.
@@ -1785,7 +1775,7 @@ impl App {
     fn tab_viewport(&self) -> f32 {
         // The bar stops at the toolbelt.
         let w = self.horizontal_bar_rect().map_or(0.0, |r| r.w);
-        w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))
+        (w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))).max(0.0)
     }
 
     /// What the window point (`x`, `y`) in pixels is over on the tab bar (either bar, at its
