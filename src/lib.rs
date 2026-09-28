@@ -227,6 +227,7 @@ pub mod conductor_parser;
 pub mod ssh_hook;
 pub mod ssh_args;
 pub mod ssh_inject;
+pub mod conductor;
 pub mod tmux_proto;
 pub mod tmux_gateway;
 pub mod tmux_handshake;
