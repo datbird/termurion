@@ -21,6 +21,18 @@ pub(super) enum Contents {
     KeysOnly,
 }
 
+/// What a Save Window Arrangement window saves.
+#[derive(Clone, Debug)]
+pub(super) enum SaveWhat {
+    /// Every window.
+    All,
+    /// The window used last.
+    Window,
+    /// Only these tabs (ids) of a window: Save Group as Window Arrangement
+    /// (`PT saveTabGroupAsWindowArrangement:`, `PT:9782-9796`).
+    Tabs(WindowId, Vec<u64>),
+}
+
 impl App {
     pub(super) fn arrangements(&self) -> Arrangements {
         Arrangements::from_values(self.globals.get(arrangements::ARRANGEMENTS_KEY).as_ref(), self.globals.get(arrangements::DEFAULT_KEY).as_ref())
@@ -83,28 +95,48 @@ impl App {
     /// recording's pane is left out (iTerm2 never restores one); a tab or window with
     /// nothing else is left out whole (None).
     pub(super) fn snapshot_window(&self, contents: Contents) -> Option<Value> {
+        self.snapshot_tabs(contents, None)
+    }
+
+    /// A tab's panes without a loaded recording's (None when nothing else is left).
+    fn kept_tree(&self, t: &Tab) -> Option<crate::layout::Tree<PaneId>> {
+        t.layout.tree().retain(&mut |id| !self.panes.get(id).is_some_and(|p| p.dvr.read_only))
+    }
+
+    /// One tab's table: its panes' sessions laid out in the content area.
+    fn tab_value(&self, t: &Tab, tree: &crate::layout::Tree<PaneId>, contents: Contents, selected: bool) -> Value {
         let area = self.content_area();
+        let active = tree.leaves().iter().position(|p| **p == t.focused);
+        let tree = tree.clone().map(&mut |id| self.session_value(id, contents));
+        // "Title Override" is the format, unevaluated (`PTYTab.m:3916`).
+        arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), selected, t.title.as_deref(), t.pinned, t.group.as_ref())
+    }
+
+    /// The tab at `at` as an arrangement tab table without its contents, as Duplicate Tab
+    /// copies it (`PTYTab arrangementForDuplication`); None when it holds only a loaded
+    /// recording.
+    pub(super) fn snapshot_tab(&self, at: usize) -> Option<Value> {
+        let t = self.tabs.get(at)?;
+        let tree = self.kept_tree(t)?;
+        Some(self.tab_value(t, &tree, Contents::None, false))
+    }
+
+    /// The current window as an arrangement window table holding only the tabs `only` names
+    /// (ids; None: every tab).
+    fn snapshot_tabs(&self, contents: Contents, only: Option<&[u64]>) -> Option<Value> {
         let kept: Vec<(usize, &Tab, crate::layout::Tree<PaneId>)> = self
             .tabs
             .iter()
             .enumerate()
-            .filter_map(|(i, t)| t.layout.tree().retain(&mut |id| !self.panes.get(id).is_some_and(|p| p.dvr.read_only)).map(|tree| (i, t, tree)))
+            .filter(|(_, t)| only.is_none_or(|ids| ids.contains(&t.id)))
+            .filter_map(|(i, t)| self.kept_tree(t).map(|tree| (i, t, tree)))
             .collect();
         if kept.is_empty() {
             return None;
         }
         // The selected tab, or the first kept one when it was a recording's.
         let selected = kept.iter().position(|(i, _, _)| *i == self.active).unwrap_or(0);
-        let tabs: Vec<Value> = kept
-            .iter()
-            .enumerate()
-            .map(|(n, (_, t, tree))| {
-                let active = tree.leaves().iter().position(|p| **p == t.focused);
-                let tree = tree.clone().map(&mut |id| self.session_value(id, contents));
-                // "Title Override" is the format, unevaluated (`PTYTab.m:3916`).
-                arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), n == selected, t.title.as_deref())
-            })
-            .collect();
+        let tabs: Vec<Value> = kept.iter().enumerate().map(|(n, (_, t, tree))| self.tab_value(t, tree, contents, n == selected)).collect();
         let (x, y, w, h) = self.gpu.as_ref().map_or((0.0, 0.0, 0.0, 0.0), |g| {
             let p = g.window.outer_position().unwrap_or_default();
             let s = g.window.outer_size();
@@ -156,6 +188,11 @@ impl App {
     /// Window > Arrangements > Save Window Arrangement (all windows) or Save Current Window
     /// as Arrangement.
     pub(super) fn open_save_arrangement(&mut self, event_loop: &ActiveEventLoop, all: bool) {
+        self.open_save_arrangement_for(event_loop, if all { SaveWhat::All } else { SaveWhat::Window });
+    }
+
+    /// The arrangement name window, saving `what` on OK.
+    pub(super) fn open_save_arrangement_for(&mut self, event_loop: &ActiveEventLoop, what: SaveWhat) {
         if let Some((w, _)) = &self.arrange_prompt {
             return w.focus();
         }
@@ -164,18 +201,18 @@ impl App {
         let name = arrangements::unique_name(&date, &time, &secs, &taken);
         let Some(g) = self.gpu.as_ref() else { return };
         match PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, "Save Window Arrangement", "Name for saved window arrangement:", &name) {
-            Ok(w) => self.arrange_prompt = Some((w.with_extra("Save to File with Contents...").refuse_blank(), all)),
+            Ok(w) => self.arrange_prompt = Some((w.with_extra("Save to File with Contents...").refuse_blank(), what)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
     }
 
     /// Events for the save window. False when `window` is not it.
     pub(super) fn arrange_prompt_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
-        let Some((w, all)) = self.arrange_prompt.as_mut() else { return false };
+        let Some((w, what)) = self.arrange_prompt.as_mut() else { return false };
         if w.id() != window {
             return false;
         }
-        let all = *all;
+        let what = what.clone();
         match event {
             WindowEvent::CloseRequested => self.arrange_prompt = None,
             WindowEvent::RedrawRequested => match w.redraw() {
@@ -183,11 +220,11 @@ impl App {
                 PromptResult::Cancel => self.arrange_prompt = None,
                 PromptResult::Ok(name) => {
                     self.arrange_prompt = None;
-                    self.save_arrangement(&arrangements::clean_name(&name), all);
+                    self.save_arrangement(&arrangements::clean_name(&name), &what);
                 }
                 PromptResult::Extra(name) => {
                     self.arrange_prompt = None;
-                    self.save_arrangement_file(&arrangements::clean_name(&name), all);
+                    self.save_arrangement_file(&arrangements::clean_name(&name), &what);
                 }
             },
             other => {
@@ -197,7 +234,7 @@ impl App {
         true
     }
 
-    fn save_arrangement(&mut self, name: &str, all: bool) {
+    fn save_arrangement(&mut self, name: &str, what: &SaveWhat) {
         if name.is_empty() {
             return;
         }
@@ -207,23 +244,43 @@ impl App {
         if self.arrangements().get(name).is_some() && !yes_no(self.hwnd(), "Replace Existing Saved Window Arrangement?", "There is an existing saved window arrangement with this name. Would you like to replace it with the current arrangement?") {
             return;
         }
-        self.store_arrangement(name, all);
+        self.store_what(name, what);
+    }
+
+    /// The window tables `what` names (`save_arrangement` has entered the window used last).
+    fn snapshots(&mut self, what: &SaveWhat, contents: Contents) -> Vec<Value> {
+        match what {
+            SaveWhat::All => self.snapshot_all(contents),
+            SaveWhat::Window => self.snapshot_window(contents).into_iter().collect(),
+            SaveWhat::Tabs(window, ids) => {
+                if self.enter(*window) {
+                    self.snapshot_tabs(contents, Some(ids)).into_iter().collect()
+                } else {
+                    Vec::new()
+                }
+            }
+        }
     }
 
     /// Saves every window, or the current one, as arrangement `name`, replacing one of that
     /// name without asking (the Python API's path, `IC:493-523`).
     pub(super) fn store_arrangement(&mut self, name: &str, all: bool) {
-        let windows = if all { self.snapshot_all(Contents::None) } else { self.snapshot_window(Contents::None).into_iter().collect() };
+        self.store_what(name, if all { &SaveWhat::All } else { &SaveWhat::Window });
+    }
+
+    /// Saves `what` as arrangement `name`, replacing one of that name.
+    fn store_what(&mut self, name: &str, what: &SaveWhat) {
+        let windows = self.snapshots(what, Contents::None);
         let mut store = self.arrangements();
         store.save(name, windows);
         self.put_arrangements(&store);
     }
 
-    fn save_arrangement_file(&mut self, name: &str, all: bool) {
+    fn save_arrangement_file(&mut self, name: &str, what: &SaveWhat) {
         if let Some(w) = self.last_window {
             self.enter(w);
         }
-        let windows = if all { self.snapshot_all(Contents::Plain) } else { self.snapshot_window(Contents::Plain).into_iter().collect() };
+        let windows = self.snapshots(what, Contents::Plain);
         let Some(path) = rfd::FileDialog::new().set_title("Save Arrangement with Contents").set_file_name(format!("{name}.itermarrangement")).add_filter("Arrangement", &["itermarrangement", "iterm2arrangement"]).save_file() else { return };
         match arrangement::to_plist(&windows).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
             Ok(()) => self.banners.clear("arrangement"),
@@ -354,8 +411,9 @@ impl App {
     }
 
     /// Builds one tab of an arrangement in the current window: a pane per session. `name`
-    /// is the saved arrangement's (None for window restoration, a file, or Duplicate Window).
-    fn build_tab(&mut self, t: &Value, name: Option<&str>) -> Result<Tab, String> {
+    /// is the saved arrangement's (None for window restoration, a file, Duplicate Window or
+    /// Duplicate Tab).
+    pub(super) fn build_tab(&mut self, t: &Value, name: Option<&str>) -> Result<Tab, String> {
         let root = t.get("Root").ok_or("a tab in the arrangement has no panes")?;
         let tree = arrangement::tree_of(root)?;
         let profiles = self.profile_list();
@@ -446,7 +504,9 @@ impl App {
         let layout = Layout::from_tree(ids);
         let panes = layout.panes();
         let focused = arrangement::active_leaf(root).and_then(|i| panes.get(i).copied()).unwrap_or(panes[0]);
-        let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: t.get("Title Override").and_then(|v| v.as_str()).map(str::to_string) };
+        let mut tab = Tab::new(self.next_tab_id, layout, focused);
+        tab.title = t.get("Title Override").and_then(|v| v.as_str()).map(str::to_string);
+        (tab.pinned, tab.group) = arrangement::tab_pin_group(t);
         self.next_tab_id += 1;
         Ok(tab)
     }
@@ -539,6 +599,8 @@ impl App {
         }
         let f = arrangement::window_facts(w);
         self.active = f.selected_tab.min(self.tabs.len().saturating_sub(1));
+        // A file from elsewhere may break the order: pinned tabs first, groups together.
+        self.settle_tabs();
         self.win_title = f.title;
         self.win_locks = crate::winmodel::Locks { size: f.size_locked, layout: f.layout_locked && !f.size_locked };
         // restoreWindowsWithinScreens: a normal window moves back onto the displays of today.
@@ -583,6 +645,7 @@ impl App {
                     }
                 }
             }
+            self.settle_tabs();
             self.relayout();
         } else {
             for w in windows {
@@ -670,6 +733,22 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arrangement::{self, Value};
+    use crate::tab_groups::{self, TabGroup};
+
+    #[test]
+    fn arrangement_keeps_pins_and_groups() {
+        let g = TabGroup { id: "G-1".into(), name: "Build".into(), color: tab_groups::PALETTE[1], collapsed: false };
+        let root = || Value::Table(Default::default());
+        // Saved in the order grouped, plain, pinned (an order Tandem never keeps, as a file
+        // from elsewhere may hold).
+        let saved = [arrangement::tab(root(), false, None, false, Some(&g)), arrangement::tab(root(), true, None, false, None), arrangement::tab(root(), false, None, true, None)];
+        let back: Vec<(bool, Option<TabGroup>)> = saved.iter().map(arrangement::tab_pin_group).collect();
+        assert_eq!(back, vec![(false, Some(g.clone())), (false, None), (true, None)]);
+        let groups: Vec<Option<&str>> = back.iter().map(|(_, g)| g.as_ref().map(|g| g.id.as_str())).collect();
+        let pinned: Vec<bool> = back.iter().map(|(p, _)| *p).collect();
+        assert_eq!(tab_groups::canonical_order(&groups, &pinned), vec![2, 0, 1], "settled, the pinned tab comes first");
+    }
 
     /// The arrangement announcements' texts, buttons and ids (`NC:115-129`, `NC:266-298`,
     /// `PS:24071`) and when a folder is checked (`PS:3561-3570`).

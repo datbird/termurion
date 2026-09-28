@@ -77,7 +77,7 @@ impl App {
                     if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
                         // The tab may still wait to become a window.
                         let mut pending = self.pending_windows.iter_mut().flat_map(|w| match w {
-                            windows_ui::NewWindow::Tab(t) => std::slice::from_mut(t),
+                            windows_ui::NewWindow::Tab(t) | windows_ui::NewWindow::TornOff(t, _) => std::slice::from_mut(t),
                             windows_ui::NewWindow::Tabs(ts) => ts.as_mut_slice(),
                             _ => &mut [],
                         });
@@ -250,7 +250,7 @@ impl App {
                     if let Some(first) = self.tmux_window_panes(gw, window).first().copied() {
                         if self.enter_pane_window(first) {
                             if let Some(i) = self.tabs.iter().position(|t| t.layout.panes().contains(&first)) {
-                                self.active = i;
+                                self.select_tab(i);
                             }
                         }
                     }
@@ -781,7 +781,8 @@ impl App {
             return self.api_tmux_window_opened(gw, window_id, None);
         };
         let focused = ids.get(&panes.first().map_or(0, |p| p.pane)).copied().unwrap_or(0);
-        let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: Some(self.tmux_title(&window.name)) };
+        let mut tab = Tab::new(self.next_tab_id, layout, focused);
+        tab.title = Some(self.tmux_title(&window.name));
         self.next_tab_id += 1;
         // What was saved about this window: the tab's title and colors, its place, and the
         // Tandem window's size and origin.
@@ -826,6 +827,8 @@ impl App {
                 let at = tab_index.map_or(self.tabs.len(), |i| i.min(self.tabs.len()));
                 self.tabs.insert(at, tab);
                 self.active = at;
+                // A tmux tab never pins: it goes after any pinned tabs.
+                self.settle_tabs();
                 self.relayout();
             }
             // The sibling's window is still waiting to open (every window of one attach
@@ -880,7 +883,7 @@ impl App {
                 // Tandem shows none of this window's panes any more: it opens as a new tab.
                 None => {
                     let focused = layout.panes()[0];
-                    let tab = Tab { id: self.next_tab_id, layout, focused, zoomed: None, title: None };
+                    let tab = Tab::new(self.next_tab_id, layout, focused);
                     self.next_tab_id += 1;
                     self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
                 }
@@ -1109,20 +1112,27 @@ impl App {
     /// one, makes the tmux one, a tab or window with the default profile, or nothing:
     /// `tmux_new_answered`).
     pub(super) fn tmux_new(&mut self, window: bool, ask: bool) -> Option<()> {
+        self.tmux_new_beside(window, ask, None)
+    }
+
+    /// `tmux_new` for New Tab to the Right of the tab `beside` (its id): Use Default Profile
+    /// opens the tab after it.
+    pub(super) fn tmux_new_beside(&mut self, window: bool, ask: bool, beside: Option<u64>) -> Option<()> {
         let pane = self.focused_id()?;
         self.tmux_of(pane)?;
         if ask {
             let legacy = crate::warnings::is_silenced(&self.globals, crate::tmux_edits::new_kind_key(window, true), super::warnings_app::unix_now());
-            self.ask_scripts(tmux_new_ask(pane, window, legacy));
+            self.ask_scripts(tmux_new_ask(pane, window, legacy, beside));
             return Some(());
         }
         self.tmux_new_at(pane, window)
     }
 
     /// The question answered for the tmux pane `anchor`: a new tmux window or tab (0), or a
-    /// window or tab with the default profile (1), in the window it was asked from; Cancel
+    /// window or tab with the default profile (1), in the window it was asked from (after the
+    /// tab `beside` for New Tab to the Right, at the end when it has closed since); Cancel
     /// does nothing.
-    pub(super) fn tmux_new_answered(&mut self, anchor: PaneId, window: bool, index: usize) {
+    pub(super) fn tmux_new_answered(&mut self, anchor: PaneId, window: bool, beside: Option<u64>, index: usize) {
         if index > 1 || !self.enter_pane_window(anchor) {
             return;
         }
@@ -1134,7 +1144,10 @@ impl App {
                 self.pending_windows.push(super::windows_ui::NewWindow::Profile(None));
                 self.redraw();
             }
-            (_, false) => self.new_tab(None),
+            (_, false) => match beside.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
+                Some(at) => self.tab_beside(at),
+                None => self.new_tab(None),
+            },
         }
     }
 
@@ -1346,10 +1359,10 @@ pub(super) fn tmux_close_window_ask(anchor: PaneId, gw: PaneId, whole: bool, n: 
 /// "What kind of tab (or window) do you want to open?" from the tmux pane `anchor`, under the
 /// legacy key while it is silenced (`legacy`), else the window's or the tab's key; permanently
 /// silenceable (`possiblyTmuxValueForWindow:cancel:`, `AD:3788-3825`).
-pub(super) fn tmux_new_ask(anchor: PaneId, window: bool, legacy: bool) -> super::scripts_alerts::Ask {
+pub(super) fn tmux_new_ask(anchor: PaneId, window: bool, legacy: bool, beside: Option<u64>) -> super::scripts_alerts::Ask {
     let (heading, text, buttons) = crate::tmux_edits::new_kind_question(window);
     let id = crate::tmux_edits::new_kind_key(window, legacy);
-    super::scripts_alerts::ask(heading, text, &buttons, Some(id), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxNew { anchor, window })
+    super::scripts_alerts::ask(heading, text, &buttons, Some(id), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxNew { anchor, window, beside })
 }
 
 /// A window's outer origin (screen pixels) and its size for `@per_window_settings`: the
@@ -1404,14 +1417,17 @@ mod tests {
     /// silenced, else the window's or the tab's; permanently silenceable, Cancel last.
     #[test]
     fn tmux_new_question_follows_iterm2() {
-        let a = tmux_new_ask(5, false, false);
+        let a = tmux_new_ask(5, false, false, None);
         let (heading, text, buttons) = crate::tmux_edits::new_kind_question(false);
         assert_eq!((a.spec.heading.as_str(), a.spec.text.as_str(), a.spec.labels.clone()), (heading, text, buttons.map(String::from).to_vec()));
         assert_eq!(a.spec.id.as_deref(), Some("NoSyncNewTabFromTmuxOpensTmux"));
         assert_eq!((a.spec.kind, a.spec.cancel), (Kind::Permanent, Some(2)));
-        assert_eq!(a.then, super::super::scripts_alerts::Then::TmuxNew { anchor: 5, window: false });
-        assert_eq!(tmux_new_ask(5, true, false).spec.id.as_deref(), Some("NoSyncNewWindowFromTmuxOpensTmux"));
-        assert_eq!(tmux_new_ask(5, true, true).spec.id.as_deref(), Some("NoSyncNewWindowOrTabFromTmuxOpensTmux"));
-        assert_eq!(tmux_new_ask(5, false, true).spec.id.as_deref(), Some("NoSyncNewWindowOrTabFromTmuxOpensTmux"));
+        assert_eq!(a.then, super::super::scripts_alerts::Then::TmuxNew { anchor: 5, window: false, beside: None });
+        assert_eq!(tmux_new_ask(5, true, false, None).spec.id.as_deref(), Some("NoSyncNewWindowFromTmuxOpensTmux"));
+        assert_eq!(tmux_new_ask(5, true, true, None).spec.id.as_deref(), Some("NoSyncNewWindowOrTabFromTmuxOpensTmux"));
+        assert_eq!(tmux_new_ask(5, false, true, None).spec.id.as_deref(), Some("NoSyncNewWindowOrTabFromTmuxOpensTmux"));
+        // New Tab to the Right asks the same question, carrying its tab for the answer.
+        let right = tmux_new_ask(5, false, false, Some(9));
+        assert_eq!((right.spec.id, right.then), (a.spec.id, super::super::scripts_alerts::Then::TmuxNew { anchor: 5, window: false, beside: Some(9) }));
     }
 }

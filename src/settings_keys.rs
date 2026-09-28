@@ -1058,6 +1058,9 @@ pub fn row_enabled(g: &Globals, key: &str) -> bool {
         "API Authentication Method" => g.bool("EnableAPIServer"),
         "CustomScriptsFolder" => g.bool("UseCustomScriptsFolder"),
         crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
+        // The bar can hide in full screen: Show off, or hidden with one tab (`APV:436-441`).
+        "FlashTabBarInFullscreen" => !g.bool("ShowFullScreenTabBar") || g.bool("HideTab"),
+        "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges" => g.bool("PreserveWindowSizeWhenTabBarVisibilityChanges"),
         _ => true,
     }
 }
@@ -1987,6 +1990,138 @@ mod tests {
         assert!(!checkbox_shows(false, false));
         assert!(!checkbox_shows(true, true));
         assert!(checkbox_shows(false, true));
+    }
+
+    #[test]
+    fn tab_position_rows_follow_iterm2() {
+        let row = schema::find_global("TabViewType").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));
+        assert_eq!(row.kind, Kind::Enum);
+        assert_eq!(row.default, Some(Value::Integer(0)));
+        assert_eq!(row.label, "Tab bar location:");
+        let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        // iTerm2's "Right" carries a zero-width space (`PreferencePanel.xib`, tag 3).
+        assert_eq!(choices, [(Value::Integer(0), "Top"), (Value::Integer(1), "Bottom"), (Value::Integer(2), "Left"), (Value::Integer(3), "Right\u{200b}")]);
+        let row = schema::find_global("LeftTabBarWidth").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Tabs"));
+        assert_eq!(row.kind, Kind::Float);
+        assert_eq!(row.default, Some(Value::Float(150.0)));
+        assert_eq!(row.label, "Left (side) tab bar width");
+    }
+
+    #[test]
+    fn full_screen_rows_follow_iterm2() {
+        for (key, default, label) in [
+            ("ShowFullScreenTabBar", true, "Show tab bar in fullscreen"),
+            ("FlashTabBarInFullscreen", false, "Flash tab bar when switching tabs in fullscreen"),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
+            assert!(!row.inverted, "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+        for (key, default, label, help) in [
+            (
+                "TabAutoShowHoldTime",
+                1.0,
+                "How long in seconds to show tabs in fullscreen.",
+                "How long in seconds to show tabs in fullscreen.\nThe tab bar appears briefly in fullscreen when the number of tabs changes or you switch tabs. This setting gives the time in seconds for it to remain visible.",
+            ),
+            (
+                "TabFlashAnimationDuration",
+                0.25,
+                "Animation duration for fade in/out animation of tabs in full screen, in seconds.",
+                "Animation duration for fade in/out animation of tabs in full screen, in seconds.",
+            ),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Float, "{key}");
+            assert_eq!(row.default, Some(Value::Float(default)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help), "{key}");
+        }
+        // The flash box is enabled when the bar can hide in full screen: Show off, or the bar
+        // hidden with one tab (`APV:436-441`). The defaults have HideTab on.
+        let mut g = Globals::empty(std::path::Path::new("full-screen-rows-test.toml"));
+        assert!(row_enabled(&g, "FlashTabBarInFullscreen"));
+        g.set("HideTab", Value::Boolean(false));
+        assert!(!row_enabled(&g, "FlashTabBarInFullscreen"), "Show on and HideTab off");
+        g.set("ShowFullScreenTabBar", Value::Boolean(false));
+        assert!(row_enabled(&g, "FlashTabBarInFullscreen"), "Show off");
+        assert!(row_enabled(&g, "ShowFullScreenTabBar"));
+    }
+
+    #[test]
+    fn drag_rows_follow_iterm2() {
+        for (key, label) in [
+            ("AllowDragOfTabIntoNewWindow", "Allow a tab to be dragged and dropped outside any existing tab bar to create a new window."),
+            ("AllowDragOnAddTabButton", "Allow dragging window by the Add Tab button in the tab bar?"),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert!(!row.inverted, "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, label), "{key}");
+        }
+        let row = schema::find_global("MinimumTabDragDistance").expect("MinimumTabDragDistance");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Int);
+        assert_eq!(row.default, Some(Value::Integer(10)));
+        assert_eq!(row.label, "How far must the mouse move before a tab drag is initiated?");
+        assert!(row.help.ends_with("You must restart Tandem after changing this setting for it to take effect."), "{}", row.help);
+    }
+
+    #[test]
+    fn pinned_width_row_follows_iterm2() {
+        let row = schema::find_global("PinnedTabWidth").expect("PinnedTabWidth");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Int);
+        assert_eq!(row.default, Some(Value::Integer(64)));
+        assert_eq!((row.label.as_str(), row.help.as_str()), ("Width of pinned tabs in pixels.", "Width of pinned tabs in pixels."));
+    }
+
+    #[test]
+    fn icon_row_follows_iterm2() {
+        let row = schema::find_global("DefaultIconsUsingLetters").expect("DefaultIconsUsingLetters");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Use the running command's first letter as the tab's default icon if there isn't a built in one.");
+        assert_eq!(row.help, "Use the running command's first letter as the tab's default icon if there isn't a built in one.\nThis takes effect when tabs are configured to use built-in icons.");
+    }
+
+    #[test]
+    fn duplicate_row_follows_iterm2() {
+        let row = schema::find_global("DuplicatedTabsOpenAdjacentToOriginal").expect("DuplicatedTabsOpenAdjacentToOriginal");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "When you duplicate a tab, should the copy open immediately to the right of the original tab?");
+        assert_eq!(row.help, "When you duplicate a tab, should the copy open immediately to the right of the original tab?\nWhen disabled, duplicated tabs follow the general \u{201c}New tabs are added\u{201d} placement setting instead.");
+    }
+
+    #[test]
+    fn preserve_rows_follow_iterm2() {
+        for (key, label) in [
+            ("PreserveWindowSizeWhenTabBarVisibilityChanges", "Preserve window size when tab bar shows or hides"),
+            ("PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges", "\u{2026}but only if it would cause the window to go off-screen"),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(false)), "{key}");
+            assert!(!row.inverted, "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+        // The second box is enabled by the first (`APV:184-192`).
+        let mut g = Globals::empty(std::path::Path::new("preserve-rows-test.toml"));
+        assert!(!row_enabled(&g, "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"));
+        g.set("PreserveWindowSizeWhenTabBarVisibilityChanges", Value::Boolean(true));
+        assert!(row_enabled(&g, "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"));
+        assert!(row_enabled(&g, "PreserveWindowSizeWhenTabBarVisibilityChanges"));
     }
 
     #[test]

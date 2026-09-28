@@ -62,6 +62,14 @@ pub fn ignore_list(p: &crate::profile::Profile) -> Vec<String> {
     p.get("Jobs to Ignore").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())).unwrap_or_default()
 }
 
+/// A pinned tab's reason's priority among a quit's reasons (`POC:241-244`).
+pub const PINNED_PRIORITY: u32 = 70;
+
+/// A tab, window or quit close names each pinned tab (`POC:241-244`); `number` counts from 1.
+pub fn pinned_reason(number: usize) -> String {
+    format!("Tab #{number} is pinned.")
+}
+
 pub fn session_title(name: &str) -> String {
     format!("Close session \u{201c}{name}\u{201d}?")
 }
@@ -95,6 +103,11 @@ mod tests {
         assert_eq!(session_title("build"), "Close session \u{201c}build\u{201d}?");
         assert_eq!(tab_title(2), "Close tab #2?");
         assert_eq!(window_title(1), "Close Window #1?");
+    }
+
+    #[test]
+    fn pinned_close_follows_iterm2() {
+        assert_eq!(pinned_reason(2), "Tab #2 is pinned.");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Point, Side};
@@ -23,7 +23,10 @@ use crate::input::{self, Clicks, Wheel};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
 use crate::keystroke;
+use crate::tab_drag;
+use crate::tab_flash;
 use crate::tab_layout;
+use crate::tab_position::{self, TabPosition};
 use crate::mru::Mru;
 use crate::pointer::{self, Down, Up};
 use crate::layout::{Axis, Layout, PaneId, Rect};
@@ -44,6 +47,8 @@ const FONT_PX: f32 = 16.0;
 /// Space between a pane's edge and its text, and the divider width, in pixels at 100%.
 const PAD: f32 = 4.0;
 const GAP: f32 = 1.0;
+/// How often a fading tab bar draws while it fades (60 frames a second).
+const FLASH_FRAME: Duration = Duration::from_millis(16);
 /// How far below the pointer a tab tooltip starts, in points (the arrow pointer's height).
 const TIP_POINTER_PT: f32 = 20.0;
 /// Lines scrolled per wheel notch.
@@ -92,6 +97,8 @@ mod close_ui;
 mod coprocess_ui;
 mod aps_ui;
 mod windows_ui;
+mod tab_drag_ui;
+mod tab_groups_ui;
 mod undo_ui;
 mod arrange_ui;
 mod restore_ui;
@@ -155,6 +162,17 @@ struct Tab {
     zoomed: Option<PaneId>,
     /// Edit Tab Title's text, instead of the session title.
     title: Option<String>,
+    /// Pinned tabs stay at the front of the bar (`PTS:355-416`).
+    pinned: bool,
+    /// The tab's group; its definition rides every member (`TABH:99-115`).
+    group: Option<crate::tab_groups::TabGroup>,
+}
+
+impl Tab {
+    /// A tab with no title, not pinned and in no group.
+    pub(super) fn new(id: u64, layout: Layout, focused: PaneId) -> Tab {
+        Tab { id, layout, focused, zoomed: None, title: None, pinned: false, group: None }
+    }
 }
 
 /// A press whose pointer binding runs when the button comes up.
@@ -180,6 +198,21 @@ enum Drag {
     Belt(toolbelt_ui::BeltDrag),
     /// A composer's text selection, drag handle, or border.
     Composer { pane: PaneId, kind: composer_ui::ComposerDrag },
+    /// A side tab bar's drag handle: where the press was (pixels) and the bar's width then
+    /// (points).
+    SideBar { start_x: f32, start_width: f32 },
+    /// A left press on a tab (`tab_drag_ui`): the tab's index, where the press was (pixels),
+    /// whether the pointer has moved far enough to drag it, and the window's selected tab
+    /// before the press selected this one (`preDragSelectedTabViewItem`, recorded in
+    /// `PSMTabBarControl mouseDown:` before `tabClick:`, `PSMTabBarControl.m:3683-3703`).
+    Tab { from: usize, start: (f32, f32), began: bool, before: Option<u64> },
+    /// A left press on a group chip (`tab_drag_ui`): the group, where the press was (pixels),
+    /// and whether the pointer has moved far enough to drag the whole group
+    /// (`PSM:3763-3786`).
+    Chip { group: String, start: (f32, f32), began: bool },
+    /// A left press on the "+" button, where it was (pixels): moving far enough drags the
+    /// window.
+    AddButton { start: (f32, f32) },
 }
 
 struct Gpu {
@@ -272,6 +305,9 @@ pub struct App {
     /// A tmux close question's answer, waiting for the event loop: gateway, actions, and
     /// whether the whole window closes.
     tmux_pending_close: Vec<(PaneId, Vec<crate::tmux_controller::Action>, bool)>,
+    /// A Close Tabs answer (group close commands), waiting for the event loop: the window it
+    /// was asked from and the tabs to close.
+    pending_tab_closes: Vec<(WindowId, Vec<u64>)>,
     /// A divider drag in a tmux tab: window key, gateway, pane before the divider,
     /// horizontal, start.
     tmux_drag: Option<(u64, PaneId, u32, bool, f32)>,
@@ -337,9 +373,9 @@ pub struct App {
     /// What the current window's terminals were laid out for: the content area and every
     /// pane's terminal rectangle, per-pane bars included.
     laid_out: Option<crate::statusbar_layout::Room>,
-    /// The save-arrangement window (true: all windows), and menus to rebuild (arrangements
+    /// The save-arrangement window and what it saves, and menus to rebuild (arrangements
     /// changed).
-    arrange_prompt: Option<(crate::prompt_ui::PromptWindow, bool)>,
+    arrange_prompt: Option<(crate::prompt_ui::PromptWindow, arrange_ui::SaveWhat)>,
     menus_dirty: bool,
     /// The folder the next pane starts in, for a restored arrangement's session.
     start_dir_override: Option<crate::arrangement::Folder>,
@@ -359,6 +395,9 @@ pub struct App {
     undo_capture: Option<undo_ui::Capture>,
     /// The Edit Window Title or Edit Tab Title window, and what it names.
     title_prompt: Option<(crate::prompt_ui::PromptWindow, windows_ui::TitleEdit)>,
+    /// The New Tab Group or Rename Tab Group window, and what it names (app-wide, like the
+    /// title window).
+    group_prompt: Option<(crate::prompt_ui::PromptWindow, tab_groups_ui::GroupPrompt)>,
     /// Windows to open at the next turn of the event loop (new windows need it).
     pending_windows: Vec<windows_ui::NewWindow>,
     /// Automatic Profile Switching: each session's stack, and this computer's name.
@@ -587,6 +626,49 @@ pub struct App {
     /// `SelectsTabsOnMouseDown` as it was when this window opened (iTerm2 copies it into each
     /// tab bar it makes, `iTermTabBarControlView.m:58`; a change affects new windows only).
     tab_selects_on_down: bool,
+    /// `MinimumTabDragDistance` in pixels, read once at startup (iTerm2 reads it when it makes
+    /// a tab bar, `iTermTabBarControlView.m:44`; its help asks for a restart).
+    min_tab_drag: f32,
+    /// The slot a dragged tab would drop at in this window's bar, while a tab drag is under
+    /// way over it (the drop marker).
+    tab_drop_marker: Option<usize>,
+    /// The tab bar, each tab's rect and each collapsed group's chip as last drawn, pixels,
+    /// window coordinates (None without a bar): where a tab dragged from another window drops
+    /// (`window_bar_hit`, `window_bar_drop`).
+    tab_bar_drawn: Option<(Rect, Vec<Rect>, Vec<crate::tab_drag::Pill>)>,
+    /// The collapsed group a dragged tab would join if dropped now, and its window: that
+    /// window's bar frames it in the accent color (`PSM collapsedTabGroupDropTargetIdentifier`).
+    /// App-wide: one pointer drags.
+    tab_join: Option<(WindowId, String)>,
+    /// A side tab bar's preferred width in points: `LeftTabBarWidth` when the window opened,
+    /// then the width its drag handle sets.
+    side_bar_preferred: f32,
+    /// A side tab bar's scroll offset in points (`PSM _scrollOffset` on the y axis).
+    side_bar_scroll: f32,
+    /// The tab bar's flash in full screen (`tab_flash`).
+    tab_flash: crate::tab_flash::Flash,
+    /// The window kept its size when the tab bar showed, to stay on screen, so it keeps it
+    /// when the bar hides again (`PT _excursionPrevented`).
+    excursion_prevented: bool,
+    /// The tab bar took room from the sessions at the last layout, full screen aside: a
+    /// change fits the window to the bar (`fit_window_to_bar`).
+    bar_was_visible: bool,
+    /// How much the window grew (pixels, width and height) when the tab bar last showed:
+    /// the bar hiding shrinks it by exactly that (`tab_position::bar_growth`).
+    bar_grown: (f32, f32),
+    /// A side tab bar's group chips as last drawn (`scene::tab_bar_vertical`), pixels, window
+    /// coordinates, with their group ids.
+    side_chips: Vec<(Rect, String)>,
+    /// The pointer is on a side bar's drag handle, so the resize pointer shows.
+    side_handle_hover: bool,
+    /// The tab icon maps, bundled with the user's copies merged over (`tab_icons::load_maps`),
+    /// loaded at startup and by `reload_tab_icon_maps`.
+    tab_icon_maps: crate::tab_icons::Maps,
+    /// Each pane's tab icon and what it was worked out from (`tab_icon_for`), by pane id.
+    tab_icon_cache: std::cell::RefCell<HashMap<PaneId, (tab_groups_ui::IconKey, Option<scene::TabImage>)>>,
+    /// Decoded icon pictures: tinted bundled icons, the user's PNGs and custom icons, each
+    /// loaded once (None: nothing could be read).
+    tab_icon_images: std::cell::RefCell<HashMap<tab_groups_ui::ImageId, Option<scene::TabImage>>>,
     /// The tab whose tooltip the pointer is waiting on or showing, and when the pointer
     /// settled on it; the tip shows `TIP_DELAY` later.
     tab_tip: Option<(usize, Instant)>,
@@ -960,6 +1042,8 @@ pub fn run() {
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
     // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
     let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
+    let side_bar_preferred = side_bar_default(&globals);
+    let min_tab_drag = globals.int("MinimumTabDragDistance") as f32;
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
     // a change needs a restart, as in iTerm2).
     // A second Tandem (the host serves the first) neither restores nor saves windows: the
@@ -1038,6 +1122,7 @@ pub fn run() {
         co_prompt: None,
         tmux_drag: None,
         tmux_pending_close: Vec::new(),
+        pending_tab_closes: Vec::new(),
         tmux_held_events: Vec::new(),
         tmux_dash: None,
         tmux_dash_gw: None,
@@ -1073,6 +1158,7 @@ pub fn run() {
         action_edit_undo: None,
         laid_out: None,
         title_prompt: None,
+        group_prompt: None,
         arrange_prompt: None,
         menus_dirty: false,
         start_dir_override: None,
@@ -1201,6 +1287,21 @@ pub fn run() {
         tab_seen: None,
         tab_press: None,
         tab_selects_on_down,
+        min_tab_drag,
+        tab_drop_marker: None,
+        tab_bar_drawn: None,
+        tab_join: None,
+        side_bar_preferred,
+        side_bar_scroll: 0.0,
+        tab_flash: crate::tab_flash::Flash::new(),
+        excursion_prevented: false,
+        bar_was_visible: false,
+        bar_grown: (0.0, 0.0),
+        side_chips: Vec::new(),
+        side_handle_hover: false,
+        tab_icon_maps: tab_groups_ui::user_tab_icon_maps(None),
+        tab_icon_cache: Default::default(),
+        tab_icon_images: Default::default(),
         tab_tip: None,
         tab_tip_wake: None,
         tab_clicks: (Instant::now(), None, 0),
@@ -1340,61 +1441,393 @@ impl App {
         self.gpu.as_ref().map_or((8.0, 16.0), |g| g.renderer.cell)
     }
 
-    /// The tab bar shows: more than one tab, or always with `HideTab` off.
-    fn tab_bar_shown(&self) -> bool {
-        tab_layout::bar_shown(self.tabs.len(), self.globals.bool("HideTab"))
+    /// The edge the tab bar sits on (`TabViewType`).
+    pub(super) fn tab_position(&self) -> TabPosition {
+        tab_position::from_value(self.globals.int("TabViewType"))
     }
 
-    /// Whether the window shows its tab bar (13d's name; 13d replaces this body).
+    /// The tab bar shows (`tab_position::bar_visible`): while it flashes; in full screen only
+    /// with Show tab bar in fullscreen; then always with `HideTab` off, else with more than
+    /// one tab. The one place that decides it.
     pub(super) fn tab_bar_visible(&self) -> bool {
-        self.tabs.len() > 1
+        self.bar_visible_with(self.tab_flash.flashing())
     }
 
-    /// The tab bar's height in pixels: `DefaultTabBarHeight` points while the bar shows.
-    fn tab_height(&self) -> f32 {
-        if self.tab_bar_shown() {
-            (tab_layout::Settings::from_globals(&self.globals).height * self.scale()).round()
-        } else {
-            0.0
+    /// The tab bar takes room from the sessions: it shows, not only by flashing (a flashing
+    /// bar lies over the sessions, `PT windowDecorationSize`, `PT:13214-13215`).
+    fn tab_bar_takes_room(&self) -> bool {
+        self.bar_visible_with(false)
+    }
+
+    /// Whether the window may change size to fit what it shows (the toolbelt, the tab bar):
+    /// a Normal or No Title Bar window that is not maximized, snapped, full screen, minimized
+    /// or size-locked. A hotkey window never changes (`winmodel::can_fit`).
+    pub(super) fn window_can_fit(&self) -> bool {
+        let Some(g) = self.gpu.as_ref() else { return false };
+        let style = crate::frames::unthemed(self.win_style);
+        crate::winmodel::can_fit(crate::winmodel::FitState {
+            normal_style: style == crate::frames::NORMAL || style == crate::frames::NO_TITLE_BAR,
+            maximized: g.window.is_maximized(),
+            full_screen: g.window.fullscreen().is_some(),
+            minimized: g.window.is_minimized() == Some(true),
+            snapped: self.hwnd().is_some_and(window_arranged),
+            size_locked: self.win_locks.size,
+            hotkey: self.hotkey.is_some(),
+        })
+    }
+
+    /// The tab bar showed (`showing`) or hid: the window grows by the bar's thickness `delta`
+    /// (pixels, width and height) or shrinks by `delta` (what it grew when the bar showed), or
+    /// keeps its size, as `tab_position::bar_change_fit` rules (R3, `PT:8070-8145`). What a
+    /// show grew is kept in `bar_grown`. The new size is requested for the inner area (the fit
+    /// is of the outer frame, less the borders) and its Resized event lays the window out, so
+    /// tmux hears the final size once. True when the size changed (a size Windows refuses, or
+    /// the same size, sends no Resized event).
+    fn fit_window_to_bar(&mut self, showing: bool, delta: (f32, f32)) -> bool {
+        self.bar_grown = (0.0, 0.0);
+        if !self.window_can_fit() {
+            return false;
+        }
+        let Some((work, _)) = self.monitor_rects() else { return false };
+        let Some(g) = self.gpu.as_ref() else { return false };
+        let outer = Self::outer_rect(g);
+        let preserve = self.globals.bool("PreserveWindowSizeWhenTabBarVisibilityChanges");
+        let only_if_off_screen = self.globals.bool("PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges");
+        match tab_position::bar_change_fit(outer, work, delta, showing, preserve, only_if_off_screen, self.excursion_prevented) {
+            tab_position::Fit::Keep { excursion_prevented } => {
+                self.excursion_prevented = excursion_prevented;
+                false
+            }
+            tab_position::Fit::Resize(r) => {
+                let (outer_size, inner) = (g.window.outer_size(), g.window.inner_size());
+                let (dw, dh) = (outer_size.width.saturating_sub(inner.width), outer_size.height.saturating_sub(inner.height));
+                let size = winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1));
+                if size == inner {
+                    return false;
+                }
+                let _ = g.window.request_inner_size(size);
+                // Windows resizes at once; what it granted is what a hide takes back.
+                let now = g.window.inner_size();
+                if showing {
+                    self.bar_grown = tab_position::bar_growth((inner.width as f32, inner.height as f32), (now.width as f32, now.height as f32));
+                }
+                now != inner
+            }
         }
     }
 
-    /// Lays out the tab bar `width` pixels wide, scrolled by `offset` points, measuring labels
-    /// in the prose font.
-    fn layout_tab_bar(&mut self, looks: &[scene::TabLook], width: f32, offset: f32) -> tab_layout::Bar {
-        let s = tab_layout::Settings::from_globals(&self.globals);
-        let inputs: Vec<tab_layout::TabInput> = looks
+    /// When the tab bar starts or stops taking room (a tab opened or closed, `HideTab`
+    /// changed), the window fits it (`fit_window_to_bar`): showing, by the bar's thickness
+    /// then; hiding, by what the show grew. Full screen is left aside, so leaving it never
+    /// refits, and a flashing bar takes no room. A window's first layout only notes the bar.
+    /// True when the window resized.
+    fn fit_bar_change(&mut self) -> bool {
+        let visible = self.bar_visible_ignoring_full_screen();
+        let first = self.laid_out.is_none() || self.gpu.is_none();
+        if visible == self.bar_was_visible || first {
+            self.bar_was_visible = visible;
+            return false;
+        }
+        self.bar_was_visible = visible;
+        let delta = match (visible, tab_position::vertical(self.tab_position())) {
+            (false, _) => self.bar_grown,
+            (true, true) => (self.side_bar_width().round(), 0.0),
+            (true, false) => (0.0, self.tab_height().round()),
+        };
+        self.fit_window_to_bar(visible, delta)
+    }
+
+    /// `tab_bar_takes_room` as if the window were not full screen.
+    fn bar_visible_ignoring_full_screen(&self) -> bool {
+        let always = tab_position::always_visible(self.globals.bool("HideTab"));
+        tab_position::bar_visible(false, true, false, always, self.tabs.len())
+    }
+
+    fn bar_visible_with(&self, flashing: bool) -> bool {
+        let always = tab_position::always_visible(self.globals.bool("HideTab"));
+        tab_position::bar_visible(self.full_screen(), self.globals.bool("ShowFullScreenTabBar"), flashing, always, self.tabs.len())
+    }
+
+    /// The window is full screen (Toggle Full Screen: borderless).
+    fn full_screen(&self) -> bool {
+        self.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some())
+    }
+
+    /// A flash may start in this window (`tab_flash::eligible`).
+    fn tab_flash_eligible(&self) -> bool {
+        tab_flash::eligible(self.full_screen(), self.globals.bool("ShowFullScreenTabBar"), self.globals.bool("FlashTabBarInFullscreen"), self.find_cursor_until.is_some())
+    }
+
+    /// `TabAutoShowHoldTime` and `TabFlashAnimationDuration`, each 0 to 60 seconds.
+    fn tab_flash_times(&self) -> (Duration, Duration) {
+        let secs = |key: &str, default: f64| Duration::from_secs_f64(self.globals.number(key).unwrap_or(default).clamp(0.0, 60.0));
+        (secs("TabAutoShowHoldTime", 1.0), secs("TabFlashAnimationDuration", 0.25))
+    }
+
+    /// Flashes the tab bar (`PT` `[tabBarControl setFlashing:YES]`): a tab switch, a change in
+    /// the number of tabs, entering full screen. Nothing happens unless the window may flash.
+    pub(super) fn flash_tab_bar(&mut self) {
+        let (hold, fade) = self.tab_flash_times();
+        let eligible = self.tab_flash_eligible();
+        let was = self.tab_flash.state();
+        self.tab_flash.set_flashing(true, eligible, Instant::now(), hold, fade);
+        if was != self.tab_flash.state() || self.tab_flash.flashing() {
+            self.redraw();
+        }
+    }
+
+    /// Stops the flash (`setFlashing:NO`): a hold fades out, a fade ends at once.
+    fn stop_tab_flash(&mut self) {
+        let (hold, fade) = self.tab_flash_times();
+        let was = self.tab_flash.state();
+        self.tab_flash.set_flashing(false, true, Instant::now(), hold, fade);
+        if was != self.tab_flash.state() {
+            self.redraw();
+        }
+    }
+
+    /// Moves every window's flash along: in this window a flash it may no longer show fades
+    /// out (`TBV updateFlashing`); a window whose flash changed, or is fading, draws. Answers
+    /// when to look again.
+    fn tick_tab_flash(&mut self) -> Option<Instant> {
+        if matches!(self.tab_flash.state(), tab_flash::State::Holding | tab_flash::State::Extending) && !self.tab_flash_eligible() {
+            self.stop_tab_flash();
+        }
+        let now = Instant::now();
+        if tick_flash(&mut self.tab_flash, now) {
+            self.redraw();
+        }
+        let mut wake = flash_wake(&self.tab_flash, now);
+        for (_, s) in self.windows.parked_mut() {
+            if tick_flash(&mut s.tab_flash, now) {
+                if let Some(g) = &s.gpu {
+                    g.window.request_redraw();
+                }
+            }
+            wake = wake.into_iter().chain(flash_wake(&s.tab_flash, now)).min();
+        }
+        wake
+    }
+
+    /// Makes tab `i` the selected tab, as a click, a key or a command does: a collapsed group
+    /// it is hidden in expands, the bar flashes in full screen and brings the tab into view
+    /// (`PT tabView:didSelectTabViewItem:`).
+    pub(super) fn select_tab(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        let changed = i != self.active;
+        self.active = i;
+        self.expand_selected_group();
+        if changed {
+            self.flash_tab_bar();
+        }
+        self.scroll_active_tab_into_view();
+    }
+
+    /// View > Show Tabs in Fullscreen (`AD toggleFullScreenTabBar:`): flips
+    /// `ShowFullScreenTabBar`, saves it, and every window lays out again.
+    pub(super) fn toggle_full_screen_tab_bar(&mut self) {
+        let on = !self.globals.bool("ShowFullScreenTabBar");
+        self.globals.set("ShowFullScreenTabBar", toml::Value::Boolean(on));
+        self.save_globals();
+        self.relayout_changed_windows();
+        self.redraw_all();
+        self.sync_checks();
+    }
+
+    /// A horizontal tab bar's height in pixels (`DefaultTabBarHeight` points), whether or not
+    /// the bar shows; `tab_bar_rect` says whether there is a bar.
+    fn tab_height(&self) -> f32 {
+        (tab_layout::Settings::from_globals(&self.globals).height * self.scale()).round()
+    }
+
+    /// A side bar's narrowest width in points (`RTV minimumTabBarWidth`).
+    pub(super) fn side_bar_minimum(&self) -> f32 {
+        tab_position::MIN_SIDE_WIDTH
+    }
+
+    /// A side tab bar's width in pixels: the window's preferred width (`LeftTabBarWidth` when
+    /// it opened) clamped to the window (`tab_position::side_width`), with Tandem's side
+    /// padding as the side margin.
+    pub(super) fn side_bar_width(&self) -> f32 {
+        let scale = self.scale();
+        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
+        (tab_position::side_width(self.side_bar_preferred, w / scale, PAD, self.side_bar_minimum()) * scale).round()
+    }
+
+    /// The window shared out (`tab_position::window_split`): the tab bar's rect, the sessions'
+    /// room and the toolbelt's rect, in pixels, window coordinates. The toolbelt takes the far
+    /// right of the room above any banner first; the bar then takes its thickness
+    /// (`tab_height` on the top or bottom, `side_bar_width` on a side) from its edge of the
+    /// rest. No bar rect while the bar hides, no toolbelt rect while it hides.
+    pub(super) fn window_layout(&self) -> (Option<Rect>, Rect, Option<Rect>) {
+        let room = self.window_room();
+        let scale = self.scale();
+        let belt = self.belt.visible.then(|| crate::toolbelt::clamp_width(self.belt.width, room.w / scale) * scale);
+        let bar = self.tab_bar_visible().then(|| {
+            let position = self.tab_position();
+            (position, if tab_position::vertical(position) { self.side_bar_width() } else { self.tab_height() })
+        });
+        let (rect, sessions, belt_rect) = tab_position::window_split(room, belt, bar);
+        if bar.is_some() && !self.tab_bar_takes_room() {
+            // A flashing bar lies over the sessions: they keep the room they had.
+            return (rect, tab_position::window_split(room, belt, None).1, belt_rect);
+        }
+        (rect, sessions, belt_rect)
+    }
+
+    /// The tab bar's rect in pixels, window coordinates; None while it hides.
+    pub(super) fn tab_bar_rect(&self) -> Option<Rect> {
+        self.window_layout().0
+    }
+
+    /// The horizontal tab bar's rect: the bar's, on the top or bottom edge.
+    fn horizontal_bar_rect(&self) -> Option<Rect> {
+        self.tab_bar_rect().filter(|_| !tab_position::vertical(self.tab_position()))
+    }
+
+    /// A side tab bar's rect in pixels; None without a side bar.
+    fn side_bar_rect(&self) -> Option<Rect> {
+        self.tab_bar_rect().filter(|_| tab_position::vertical(self.tab_position()))
+    }
+
+    /// The shown bar's scroll offset in points: along a horizontal bar, down a side bar.
+    fn bar_offset(&self) -> f32 {
+        if self.side_bar_rect().is_some() {
+            self.side_bar_scroll
+        } else {
+            self.tab_scroll
+        }
+    }
+
+    /// `ScrollableSideTabBar`: rows that do not fit scroll (`PSM tabBarIsScrollable`).
+    fn side_bar_scrollable(&self) -> bool {
+        self.globals.bool("ScrollableSideTabBar")
+    }
+
+    /// A side bar's scroll offset brought within its rows as last laid out
+    /// (`PSM clampScrollOffset`), in points.
+    fn clamp_side_scroll(&mut self) {
+        let Some(bar) = self.side_bar_rect() else { return };
+        self.side_bar_scroll = tab_layout::clamp_scroll(self.side_bar_scroll, self.tab_bar.content, bar.h / self.scale());
+    }
+
+    /// A side bar's drag handle in pixels, window coordinates (`tab_position::drag_handle`,
+    /// 3 points wide on the bar's inner edge); None without a side bar.
+    fn side_handle(&self) -> Option<Rect> {
+        let bar = self.tab_bar_rect()?;
+        let scale = self.scale();
+        let points = Rect { x: bar.x / scale, y: bar.y / scale, w: bar.w / scale, h: bar.h / scale };
+        tab_position::drag_handle(points, self.tab_position()).map(|r| tab_layout::to_px(r, scale))
+    }
+
+    /// Each tab's rect in pixels, window coordinates, in `tabs` order: its cell (a side bar's
+    /// row) scrolled and placed (`tab_position::rects_from_cells`). A tab not shown (in the
+    /// overflow menu, collapsed, or with no bar) is zero-size. 13d's drags and 13h's pane drop
+    /// read the tabs' places here.
+    pub(super) fn bar_tab_rects(&self) -> Vec<Rect> {
+        let n = self.tabs.len();
+        let Some(bar) = self.tab_bar_rect() else { return vec![Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }; n] };
+        let cells: Vec<(usize, Rect)> = self.tab_bar.cells.iter().map(|(i, _, r)| (*i, *r)).collect();
+        tab_position::rects_from_cells(&cells, n, (bar.x, bar.y), self.bar_offset(), self.scale(), self.tab_bar.vertical)
+    }
+
+    /// Each collapsed group's chip as drawn, pixels, window coordinates, for a tab dropped on
+    /// it (`tab_drag::pills`): the laid-out chips scrolled and placed as the tabs are.
+    pub(super) fn bar_pills(&self, dragged: Option<usize>) -> Vec<crate::tab_drag::Pill> {
+        let Some(bar) = self.tab_bar_rect() else { return Vec::new() };
+        let cells: Vec<(usize, Rect)> = self.tab_bar.chips.iter().enumerate().map(|(k, (_, r))| (k, *r)).collect();
+        let rects = tab_position::rects_from_cells(&cells, cells.len(), (bar.x, bar.y), self.bar_offset(), self.scale(), self.tab_bar.vertical);
+        let chips: Vec<(Rect, String, std::ops::Range<usize>, bool)> =
+            self.tab_bar.chips.iter().zip(&self.tab_bar.chip_texts).zip(rects).map(|(((id, _), t), r)| (r, id.clone(), t.run.clone(), t.collapsed)).collect();
+        let hidden: Vec<bool> = self.tabs.iter().map(|t| t.group.as_ref().is_some_and(|g| g.collapsed)).collect();
+        crate::tab_drag::pills(&chips, &hidden, dragged)
+    }
+
+    /// The group whose chip is under the window point (`x`, `y`) in pixels: on a horizontal
+    /// bar the chip `tab_layout::hit` finds, on a side bar a chip as last drawn.
+    pub(super) fn bar_chip_at(&self, x: f32, y: f32) -> Option<String> {
+        if self.side_bar_rect().is_some() {
+            return self.side_chips.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| id.clone());
+        }
+        match self.tab_bar_hit(x, y)? {
+            tab_layout::Hit::Chip(k) => self.tab_bar.chips.get(k).map(|(id, _)| id.clone()),
+            _ => None,
+        }
+    }
+
+    /// The tabs as the bar lays them out: each look, with its group's chip on the first tab of
+    /// each run (a run's members counted for a collapsed chip) and a collapsed group's tabs
+    /// hidden.
+    fn tab_inputs(&self, looks: &[scene::TabLook]) -> Vec<tab_layout::TabInput> {
+        let ids: Vec<Option<&str>> = self.tabs.iter().map(|t| t.group.as_ref().map(|g| g.id.as_str()).filter(|g| !g.is_empty())).collect();
+        looks
             .iter()
-            .map(|l| tab_layout::TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number })
-            .collect();
+            .enumerate()
+            .map(|(i, l)| {
+                let group = self.tabs.get(i).and_then(|t| t.group.as_ref()).filter(|g| !g.id.is_empty()).map(|g| {
+                    let first = i == 0 || ids[i - 1] != ids[i];
+                    let count = ids[i..].iter().take_while(|x| **x == ids[i]).count() + ids[..i].iter().rev().take_while(|x| **x == ids[i]).count();
+                    tab_layout::ChipInput { id: g.id.clone(), name: g.name.clone(), collapsed: g.collapsed, count, first }
+                });
+                tab_layout::TabInput {
+                    title: l.title.clone(),
+                    subtitle: l.subtitle.clone(),
+                    icon: l.dot.is_some() || l.icon.is_some(),
+                    processing: l.processing,
+                    number: l.number,
+                    pinned: l.pinned,
+                    hidden: group.as_ref().is_some_and(|g| g.collapsed),
+                    group,
+                    graphic: l.icon_image.is_some(),
+                    letter: match &l.icon_image {
+                        Some(scene::TabImage::Letter { letter, .. }) => letter.clone(),
+                        _ => String::new(),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Lays out the tab bar in `area` (pixels): a horizontal bar scrolled along by `offset`
+    /// points, a side bar down, measuring labels in the prose font.
+    fn layout_tab_bar(&mut self, looks: &[scene::TabLook], area: Rect, offset: f32) -> tab_layout::Bar {
+        let s = tab_layout::Settings::from_globals(&self.globals);
+        let inputs = self.tab_inputs(looks);
+        let vertical = tab_position::vertical(self.tab_position());
         let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
         let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(&mut g.renderer));
         // Points to pixels and back: a text of `pt` points is drawn at `pt * scale` pixels.
-        let measure = |text: &str, pt: f32| match &renderer {
+        let measure = |text: &str, pt: f32, bold: bool| match &renderer {
             Some(r) => {
                 let mut r = r.borrow_mut();
                 let row_scale = pt * scale / r.font_px().max(1.0);
-                r.text_width(text, true, row_scale) / scale
+                r.prose_width(text, bold, row_scale) / scale
             }
             None => text.chars().count() as f32 * pt * 0.5,
         };
-        tab_layout::build(&inputs, active, width / scale, offset, hovered, &s, &measure)
+        if vertical {
+            tab_layout::build_vertical(&inputs, area.w / scale, area.h / scale, offset, hovered, &s, &measure)
+        } else {
+            tab_layout::build(&inputs, active, area.w / scale, offset, hovered, &s, &measure)
+        }
     }
 
     /// The part of the tab bar the tabs scroll in, in points: left of the right margin, where
     /// the "+" is pinned (`PSM scrollViewportLength`).
     fn tab_viewport(&self) -> f32 {
-        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
-        w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))
+        // The bar stops at the toolbelt.
+        let w = self.horizontal_bar_rect().map_or(0.0, |r| r.w);
+        (w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))).max(0.0)
     }
 
-    /// What the window point (`x`, `y`) in pixels is over on the tab bar; None off the bar.
+    /// What the window point (`x`, `y`) in pixels is over on the tab bar (either bar, at its
+    /// scroll); None off the bar.
     pub(super) fn tab_bar_hit(&self, x: f32, y: f32) -> Option<tab_layout::Hit> {
-        if !self.tab_bar_shown() {
-            return None;
-        }
+        let bar = self.tab_bar_rect().filter(|b| b.contains(x, y))?;
         let scale = self.scale();
-        live_tab_hit(tab_layout::hit(&self.tab_bar, self.tab_scroll, x / scale, y / scale), self.tabs.len())
+        live_tab_hit(tab_layout::hit(&self.tab_bar, self.bar_offset(), (x - bar.x) / scale, (y - bar.y) / scale), self.tabs.len())
     }
 
     /// Brings the selected tab fully into view on a bar that scrolls, and keeps it there at
@@ -1402,27 +1835,42 @@ impl App {
     pub(super) fn scroll_active_tab_into_view(&mut self) {
         self.tab_keep_selected = true;
         let Some((_, _, r)) = self.tab_bar.cells.iter().find(|(i, _, _)| *i == self.active) else { return };
+        if let Some(bar) = self.side_bar_rect() {
+            self.side_bar_scroll = tab_layout::scroll_into_view(self.side_bar_scroll, r.y, r.h, bar.h / self.scale(), self.tab_bar.content);
+            return;
+        }
         self.tab_scroll = tab_layout::scroll_into_view(self.tab_scroll, r.x, r.w, self.tab_viewport(), self.tab_bar.content);
     }
 
-    /// At each layout: a newly selected tab, or a tab added or closed, is brought into view
-    /// again (`PSM tabView:didSelectTabViewItem:`, `tabViewDidChangeNumberOfTabViewItems:`),
-    /// and the offset stays within the tabs.
-    fn follow_active_tab(&mut self) {
+    /// Every frame, shown bar or not: a newly selected tab, or a tab added or closed, is to be
+    /// brought into view (`PSM tabView:didSelectTabViewItem:`,
+    /// `tabViewDidChangeNumberOfTabViewItems:`), and a tab added or closed flashes the bar in
+    /// full screen (`TabAutoShowHoldTime`'s help: "when the number of tabs changes or you
+    /// switch tabs"; a switch flashes in `select_tab`). A window's first frame is no change.
+    fn note_tab_changes(&mut self) {
         let seen = self.tabs.get(self.active).map(|t| (t.id, self.tabs.len()));
-        if seen != self.tab_seen {
-            self.tab_seen = seen;
-            self.tab_keep_selected = true;
+        if seen == self.tab_seen {
+            return;
         }
-        // A tab closed or moved under a held press: the press goes, so its release (or the
-        // held close button drawn) never lands on another tab.
-        if self.tab_press_moved() {
-            self.tab_press = None;
+        let count_changed = self.tab_seen.zip(seen).is_some_and(|((_, was), (_, now))| was != now);
+        self.tab_seen = seen;
+        self.tab_keep_selected = true;
+        if count_changed {
+            self.flash_tab_bar();
         }
+    }
+
+    /// At each layout: the selected tab is brought into view again while it is kept there
+    /// (`note_tab_changes`), and the offset stays within the tabs.
+    fn follow_active_tab(&mut self) {
         if self.tab_keep_selected {
             self.scroll_active_tab_into_view();
         }
-        self.tab_scroll = tab_layout::clamp_scroll(self.tab_scroll, self.tab_bar.content, self.tab_viewport());
+        if self.side_bar_rect().is_some() {
+            self.clamp_side_scroll();
+        } else {
+            self.tab_scroll = tab_layout::clamp_scroll(self.tab_scroll, self.tab_bar.content, self.tab_viewport());
+        }
     }
 
     /// The held press is on a tab that is no longer at the pressed index.
@@ -1432,12 +1880,9 @@ impl App {
 
     /// The "+" button in pixels, window coordinates; None while the bar hides or with
     /// `RemoveAddTabButton`. 13d drags the window by it.
-    #[allow(dead_code)]
     pub(super) fn new_tab_button_rect(&self) -> Option<Rect> {
-        if !self.tab_bar_shown() {
-            return None;
-        }
-        tab_layout::add_rect_px(&self.tab_bar, self.tab_scroll, (0.0, 0.0), self.scale())
+        let bar = self.horizontal_bar_rect()?;
+        tab_layout::add_rect_px(&self.tab_bar, self.tab_scroll, (bar.x, bar.y), self.scale())
     }
 
     /// The tab under the pointer follows it; a change redraws (the close button shows on hover).
@@ -1501,10 +1946,11 @@ impl App {
         None
     }
 
-    /// A press on the tab bar (`PSM mouseDown:`, `otherMouseDown:`): the left button keeps the
-    /// press and its click count, and selects the tab at once when `press_selects` says so (a
-    /// press on a close button shows it pressed instead); the middle button keeps its hit for
-    /// the release; other buttons do nothing on the bar.
+    /// A press on the tab bar (`PSM mouseDown:`, `otherMouseDown:`, `menuForEvent:`): the left
+    /// button keeps the press and its click count, and selects the tab at once when
+    /// `press_selects` says so (a press on a close button shows it pressed instead); the middle
+    /// button keeps its hit for the release; the right button opens the tab's menu on a tab
+    /// and the group's on a chip; other buttons do nothing on the bar.
     fn tab_bar_press(&mut self, button: MouseButton, hit: tab_layout::Hit) {
         use tab_layout::Hit;
         let alt = self.mods.alt;
@@ -1525,14 +1971,29 @@ impl App {
             MouseButton::Left => {
                 let clicks = self.count_tab_click(hit);
                 self.tab_press = Some((hit, clicks, alt, id));
+                self.tab_drag_press(hit);
                 if let Hit::Tab(i) = hit {
                     if tab_layout::press_selects(self.tab_selects_on_down, alt, clicks) {
-                        self.active = i;
+                        self.select_tab(i);
                     }
                 }
                 self.redraw();
             }
             MouseButton::Middle => self.tab_press = Some((hit, 0, alt, id)),
+            MouseButton::Right => match hit {
+                Hit::Tab(_) | Hit::Close(_) => {
+                    if let Some(tab) = id {
+                        self.show_tab_menu(tab);
+                    }
+                }
+                Hit::Chip(_) => {
+                    let (x, y) = self.cursor;
+                    if let Some(group) = self.bar_chip_at(x, y) {
+                        self.show_group_menu(&group);
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -1562,8 +2023,10 @@ impl App {
         }
         let moved = self.tab_press_moved();
         self.tab_press = None;
+        let began = self.tab_drag_began();
         // The pressed tab is no longer where it was pressed: the release acts on no tab.
         if moved {
+            self.end_tab_drag();
             self.redraw();
             return true;
         }
@@ -1581,12 +2044,29 @@ impl App {
         if down == Hit::Add && up == Some(Hit::Add) {
             self.add_tab_button();
         }
+        // A plain click on a group chip toggles its collapse (`PSM mouseUp:`, `PT:9731-9734`);
+        // a chip dragged is no click.
+        if let (Hit::Chip(k), Some(Hit::Chip(j)), 1, false) = (down, up, clicks, began) {
+            let group = self.bar_chip_at(x, y);
+            if k == j {
+                if let Some(g) = group {
+                    self.toggle_group_collapsed(&g);
+                }
+            }
+        }
+        let clicked = tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible"));
+        // A drag that began drops the tab; one that never began leaves the click.
+        if began {
+            self.tab_drag_release(event_loop);
+        } else {
+            self.end_tab_drag();
+        }
         let n = self.tabs.len();
-        match tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible")) {
+        match tab_drag::after_drag(began, clicked) {
             Release::Close(i) => self.close_tab_at(i, event_loop),
-            Release::Select(i) if live(i, n) => self.active = i,
+            Release::Select(i) if live(i, n) => self.select_tab(i),
             Release::EditTitle(i) if live(i, n) => {
-                self.active = i;
+                self.select_tab(i);
                 self.open_title_prompt(event_loop, true);
             }
             // iTerm2's New Tab (`PT tabViewDoubleClickTabBar:`), a tmux tab when tmux makes it.
@@ -1632,6 +2112,10 @@ impl App {
         if self.tab_bar_hit(x, y).is_none() {
             return false;
         }
+        if self.side_bar_rect().is_some() {
+            self.side_bar_wheel(delta);
+            return true;
+        }
         let optimum = tab_layout::Settings::from_globals(&self.globals).prefs.optimum;
         // A notched wheel moves in lines; precise deltas are already a distance (pixels here).
         let (dx, dy) = match delta {
@@ -1651,19 +2135,80 @@ impl App {
         true
     }
 
-    /// The window's room below the tab bar and above any banner, the toolbelt's included.
-    fn window_room(&self) -> Rect {
-        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        let top = self.tab_height();
-        let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
-        Rect { x: 0.0, y: top, w, h: (h - top - bottom).max(1.0) }
+    /// The wheel over a side bar (`PSM scrollWheel:`): with `ScrollableSideTabBar` and rows
+    /// that do not fit, the vertical wheel scrolls the rows (a notched wheel a row a line),
+    /// within the rows as last laid out, and stops keeping the selected tab in view. Otherwise
+    /// nothing.
+    fn side_bar_wheel(&mut self, delta: MouseScrollDelta) {
+        let Some(bar) = self.side_bar_rect() else { return };
+        let (scale, content) = (self.scale(), self.tab_bar.content);
+        if !self.side_bar_scrollable() || content <= bar.h / scale {
+            return;
+        }
+        let row = tab_layout::Settings::from_globals(&self.globals).height;
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => y * row,
+            MouseScrollDelta::PixelDelta(p) => p.y as f32 / scale,
+        };
+        let to = tab_layout::clamp_scroll(self.side_bar_scroll - dy, content, bar.h / scale);
+        if to != self.side_bar_scroll {
+            self.side_bar_scroll = to;
+            self.tab_keep_selected = false;
+            self.redraw();
+            // The rows moved under a still pointer.
+            self.update_tab_hover();
+        }
     }
 
-    /// The window's room for tabs: below the tab bar, above any banner, left of the toolbelt.
+    /// Dragging a side bar's handle (`RTV:2264-2277`): the bar's width follows the pointer from
+    /// `start_width` points (a right bar grows leftward), clamped by `side_width` and rounded;
+    /// the sessions follow.
+    fn side_bar_drag(&mut self, start_x: f32, start_width: f32, x: f32) {
+        let scale = self.scale();
+        let dx = (x - start_x) / scale;
+        let dx = if self.tab_position() == TabPosition::Right { -dx } else { dx };
+        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32) / scale;
+        let preferred = tab_position::side_width(start_width + dx, w, PAD, self.side_bar_minimum()).round();
+        if preferred != self.side_bar_preferred {
+            self.side_bar_preferred = preferred;
+            self.relayout();
+        }
+    }
+
+    /// The horizontal resize pointer shows while the pointer is on a side bar's drag handle or
+    /// drags it (`RTV:1886`).
+    fn update_side_handle_hover(&mut self) {
+        let (x, y) = self.cursor;
+        let on = matches!(self.drag, Drag::SideBar { .. }) || self.side_handle().is_some_and(|h| h.contains(x, y));
+        if on == self.side_handle_hover {
+            return;
+        }
+        self.side_handle_hover = on;
+        if let Some(g) = &self.gpu {
+            use winit::window::CursorIcon;
+            g.window.set_cursor(if on {
+                CursorIcon::EwResize
+            } else if self.hover.is_some() {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            });
+        }
+    }
+
+    /// The window's room above any banner, which the toolbelt, the tab bar and the sessions
+    /// share (`window_layout`).
+    fn window_room(&self) -> Rect {
+        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
+        Rect { x: 0.0, y: 0.0, w, h: (h - bottom).max(1.0) }
+    }
+
+    /// The window's room for tabs: beside the tab bar, above any banner, left of the toolbelt.
     /// Every pane rectangle and tmux's size report come from here, so tmux is told the size
-    /// without the toolbelt.
+    /// without the toolbelt and the bar.
     fn window_area(&self) -> Rect {
-        self.belt_split().0
+        self.window_layout().1
     }
 
     /// The area the active tab's panes share (less the window's status bar, when it shows).
@@ -2248,7 +2793,7 @@ impl App {
                 let profile = self.store.get(&p.profile)?;
                 crate::wintitle::custom_tab_format(profile.bool("Use Custom Tab Title"), &profile.string("Custom Tab Title"), p.tmux_io().is_some())
             });
-            self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title });
+            self.tabs.push(Tab { title, ..Tab::new(self.next_tab_id, Layout::new(id), id) });
             self.next_tab_id += 1;
             self.active = self.tabs.len() - 1;
             self.relayout();
@@ -2372,6 +2917,8 @@ impl App {
                 self.mru.forget(gone.id);
                 self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
                 self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+                // The neighbor selected may be hidden in a collapsed group.
+                self.expand_selected_group();
             }
         }
         if self.tabs.is_empty() {
@@ -2428,6 +2975,11 @@ impl App {
 
     fn relayout(&mut self) {
         self.mark_state_dirty();
+        if self.fit_bar_change() {
+            // The Resized event lays the window out at its new size.
+            self.redraw();
+            return;
+        }
         self.layout_toolbelt();
         self.laid_out = Some(self.room());
         if let Some(t) = self.tabs.get(self.active) {
@@ -2557,9 +3109,9 @@ impl App {
                     }
                 }
             }
-            Action::NextTab if n > 0 => self.active = (self.active + 1) % n,
-            Action::PrevTab if n > 0 => self.active = (self.active + n - 1) % n,
-            Action::SelectTab(i) if i < n => self.active = i,
+            Action::NextTab if n > 0 => self.select_tab((self.active + 1) % n),
+            Action::PrevTab if n > 0 => self.select_tab((self.active + n - 1) % n),
+            Action::SelectTab(i) if i < n => self.select_tab(i),
             Action::Copy => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
                     self.copy_selection(id);
@@ -2762,7 +3314,7 @@ impl App {
             Route::SelectTab(d) => {
                 let i = if d == 9 { self.tabs.len().saturating_sub(1) } else { d as usize - 1 };
                 if i < self.tabs.len() {
-                    self.active = i;
+                    self.select_tab(i);
                 }
             }
             Route::Binding(b) => self.run_key_action(&b, fallback, chord, event_loop),
@@ -2839,6 +3391,11 @@ impl App {
         }
         // A press on a shown composer is its own; anywhere else takes the keyboard from it.
         if self.composer_press(button, x, y) {
+            return;
+        }
+        // The side bar's drag handle, on its inner edge, before its rows (`RTV:1860-1895`).
+        if button == MouseButton::Left && self.side_handle().is_some_and(|h| h.contains(x, y)) {
+            self.drag = Drag::SideBar { start_x: x, start_width: self.side_bar_width() / self.scale() };
             return;
         }
         if let Some(hit) = self.tab_bar_hit(x, y) {
@@ -3016,6 +3573,14 @@ impl App {
             Drag::Belt(d) => self.toolbelt_release(d),
             Drag::Composer { pane, kind } => self.composer_release(pane, kind),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
+            // The width becomes every new window's (iTerm2 writes it at each move, `RTV:2264-2277`).
+            Drag::SideBar { .. } => {
+                self.globals.set("LeftTabBarWidth", toml::Value::Float(self.side_bar_preferred as f64));
+                self.save_globals();
+                self.update_side_handle_hover();
+            }
+            // Its press went (the tab moved away under it): the drag ends with nothing dropped.
+            Drag::Tab { .. } | Drag::Chip { .. } | Drag::AddButton { .. } => self.end_tab_drag(),
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
@@ -3065,6 +3630,7 @@ impl App {
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
         self.update_tab_hover();
+        self.update_side_handle_hover();
         self.toolbelt_move(x, y);
         self.composer_move(x, y);
         self.clip_move(x, y);
@@ -3082,6 +3648,15 @@ impl App {
                 self.porthole_drag(pane, id, frame, x, y);
             }
             Drag::Clip { .. } | Drag::Belt(_) | Drag::Composer { .. } => {}
+            Drag::SideBar { start_x, start_width } => {
+                let (start_x, start_width) = (*start_x, *start_width);
+                self.side_bar_drag(start_x, start_width, x);
+            }
+            Drag::Tab { .. } | Drag::Chip { .. } => self.tab_drag_move(x, y),
+            Drag::AddButton { start } => {
+                let start = *start;
+                self.add_button_drag(start, x, y);
+            }
             Drag::Select { pane } => {
                 let pane = *pane;
                 let Some(rect) = self.pane_rect(pane) else { return };
@@ -3201,28 +3776,58 @@ impl App {
         let cell = self.cell();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
-        let (w, _) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        if self.tab_bar_shown() {
+        self.note_tab_changes();
+        // A flashing bar is drawn apart, then laid over the sessions at its alpha.
+        let flash_over = self.tab_flash.flashing() && !self.tab_bar_takes_room();
+        let mut bar_layer = Frame::default();
+        let bar_frame = if flash_over { &mut bar_layer } else { &mut frame };
+        // A tab closed or moved under a held press: the press goes before the looks are made,
+        // so no other tab draws its close button held for a frame.
+        if self.tab_press_moved() {
+            self.tab_press = None;
+        }
+        if let Some(area) = self.tab_bar_rect() {
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
             if let Some(i) = held_close(self.tab_press) {
                 if let Some(l) = looks.get_mut(i) {
                     l.close_pressed = true;
                 }
             }
-            let area = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
             // Kept unscrolled for hits; the scroll offset applies at each use.
-            self.tab_bar = self.layout_tab_bar(&looks, w, 0.0);
+            self.tab_bar = self.layout_tab_bar(&looks, area, 0.0);
+            let vertical = self.tab_bar.vertical;
+            if vertical {
+                self.tab_scroll = 0.0;
+            }
             self.follow_active_tab();
-            let scrolled = (self.tab_scroll > 0.0).then(|| self.layout_tab_bar(&looks, w, self.tab_scroll));
+            let offset = self.bar_offset();
+            let scrolled = (offset > 0.0).then(|| self.layout_tab_bar(&looks, area, offset));
             let scale = self.scale();
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
-            scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
+            // A dragged tab follows the pointer along the bar, drawn over the others.
+            let dragged = self.dragged_bar(scrolled.as_ref().unwrap_or(&self.tab_bar), &mut looks, area);
+            let drawn = dragged.as_ref().or(scrolled.as_ref()).unwrap_or(&self.tab_bar);
+            // A dragged tab poised to join a collapsed group of this window frames it.
+            let join = self.tab_join.as_ref().filter(|(w, _)| Some(*w) == self.current_window()).map(|(_, g)| g.clone());
+            let joining = join.map(|join| tab_layout::Bar { join: Some(join), ..drawn.clone() });
+            let drawn = joining.as_ref().unwrap_or(drawn);
+            let (key, overflow_down) = (self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
+            if vertical {
+                let (_, chips) = scene::tab_bar_vertical(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
+                self.side_chips = chips;
+            } else {
+                scene::tab_bar(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
+                self.side_chips.clear();
+            }
         } else {
             self.tab_bar = tab_layout::Bar::default();
             self.tab_scroll = 0.0;
+            self.side_chips.clear();
             self.tab_hover = None;
             self.tab_tip = None;
         }
+        self.tab_bar_drawn = self.tab_bar_rect().map(|bar| (bar, self.bar_tab_rects(), self.bar_pills(None)));
+        self.draw_drop_marker(bar_frame);
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
         let mut block_buttons = Vec::new();
@@ -3315,6 +3920,9 @@ impl App {
                 self.find_bar_rect = frame.quads.last().map(|q| q.rect);
                 self.find_mode_rect = Some(mode_rect);
             }
+        }
+        if let Some(r) = self.tab_bar_rect().filter(|_| flash_over) {
+            scene::lay_over(&mut frame, bar_layer, r, self.tab_flash.alpha(Instant::now()), palette_bg, cell.1);
         }
         self.draw_toolbelt(&mut frame, cell);
         self.draw_status_bars(&mut frame, cell);
@@ -3699,13 +4307,15 @@ impl ApplicationHandler<UserEvent> for App {
         self.tmux_send_input();
         self.tmux_focus_tick();
         self.tmux_finish_close(event_loop);
+        self.finish_tab_closes(event_loop);
         self.tmux_dashboard_tick();
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
         let tip_due = self.tick_tab_tip();
+        let flash_due = self.tick_tab_flash();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, ai_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, flash_due, ai_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -3812,7 +4422,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -3906,6 +4516,13 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     // And the tab tooltip goes, as a macOS tooltip does when the app deactivates.
                     self.hide_tab_tip();
+                    // And the tab bar's flash stops (`PT windowDidResignKey:`, `PT:5470-5471`):
+                    // it fades, and in full screen a second stop ends it at once (`PT:5484`).
+                    self.stop_tab_flash();
+                    self.tab_flash.set_win_held(false, Instant::now());
+                    if self.full_screen() {
+                        self.stop_tab_flash();
+                    }
                     self.belt_keys.clear();
                     self.replay_keys.clear();
                     self.composer_keys.clear();
@@ -3948,6 +4565,12 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::ModifiersChanged(m) => {
                 let s = m.state();
                 self.mods = Mods { shift: s.shift_key(), alt: s.alt_key(), ctrl: s.control_key(), cmd: s.super_key() };
+                // A held Win key keeps a flashing tab bar up (`PT flagsChanged:`, `PT:13278`).
+                let was = self.tab_flash.state();
+                self.tab_flash.set_win_held(s.super_key(), Instant::now());
+                if was != self.tab_flash.state() {
+                    self.redraw();
+                }
                 self.update_hover();
                 if s.alt_key() {
                     self.alt_side = if m.ralt_state() == ModifiersKeyState::Pressed { AltSide::Right } else { AltSide::Left };
@@ -4051,6 +4674,11 @@ fn usable_size(w: u32, h: u32) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
+/// A new window's side tab bar width in points: `LeftTabBarWidth`.
+fn side_bar_default(globals: &Globals) -> f32 {
+    globals.number("LeftTabBarWidth").map_or(tab_position::DEFAULT_SIDE_WIDTH, |v| v as f32)
+}
+
 /// Moves the tab `new_tab` just added (the last one) to just after `active`, and returns
 /// its new index. None when the tab count did not grow past `before`: nothing opened.
 fn move_new_tab<T>(tabs: &mut Vec<T>, before: usize, active: usize) -> Option<usize> {
@@ -4074,6 +4702,23 @@ enum AddTab {
     CurrentProfile,
 }
 
+/// Moves a window's flash along to `now`; true when the window should draw (its flash
+/// changed state or is fading).
+fn tick_flash(flash: &mut tab_flash::Flash, now: Instant) -> bool {
+    let was = flash.state();
+    flash.tick(now);
+    flash.state() != was || flash.state() == tab_flash::State::FadingOut
+}
+
+/// When a window's flash next needs a look: its next change, and the next frame while it fades.
+fn flash_wake(flash: &tab_flash::Flash, now: Instant) -> Option<Instant> {
+    let next = flash.next_change();
+    if flash.state() == tab_flash::State::FadingOut {
+        return next.map(|t| t.min(now + FLASH_FRAME));
+    }
+    next
+}
+
 fn add_tab_choice(tmux_client: bool, use_current: bool) -> AddTab {
     if tmux_client {
         AddTab::TmuxTab
@@ -4082,6 +4727,20 @@ fn add_tab_choice(tmux_client: bool, use_current: bool) -> AddTab {
     } else {
         AddTab::Default
     }
+}
+
+/// The window is snapped to a half or a quarter of the screen (`IsWindowArranged`, user32 on
+/// Windows 10 and later; looked up at run time, so an older Windows says no).
+fn window_arranged(hwnd: isize) -> bool {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    type Arranged = unsafe extern "system" fn(windows_sys::Win32::Foundation::HWND) -> i32;
+    static ARRANGED: std::sync::OnceLock<Option<Arranged>> = std::sync::OnceLock::new();
+    let f = ARRANGED.get_or_init(|| {
+        let user32: Vec<u16> = "user32.dll".encode_utf16().chain(Some(0)).collect();
+        let p = unsafe { GetProcAddress(GetModuleHandleW(user32.as_ptr()), c"IsWindowArranged".as_ptr().cast())? };
+        Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, Arranged>(p) })
+    });
+    f.is_some_and(|f| unsafe { f(hwnd as windows_sys::Win32::Foundation::HWND) } != 0)
 }
 
 /// A hit on the tab bar, unless it names a tab that no longer exists.

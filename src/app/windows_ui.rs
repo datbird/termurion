@@ -33,6 +33,27 @@ pub(super) struct WinSlot {
     tab_press: Option<super::TabPress>,
     /// `SelectsTabsOnMouseDown` as it was when the window opened.
     tab_selects_on_down: bool,
+    /// A side tab bar's preferred width in points.
+    side_bar_preferred: f32,
+    /// A side tab bar's scroll offset in points.
+    side_bar_scroll: f32,
+    /// The tab bar's flash in full screen.
+    pub(super) tab_flash: crate::tab_flash::Flash,
+    /// The window kept its size when the tab bar showed, to stay on screen (`PT _excursionPrevented`).
+    excursion_prevented: bool,
+    /// The tab bar took room from the sessions at the last layout, full screen aside.
+    bar_was_visible: bool,
+    /// How much the window grew for the tab bar when it last showed (pixels).
+    bar_grown: (f32, f32),
+    /// A side tab bar's group chips as last drawn (pixels, window coordinates) and their ids.
+    side_chips: Vec<(Rect, String)>,
+    /// The slot a dragged tab would drop at in this window's bar (the drop marker).
+    tab_drop_marker: Option<usize>,
+    /// The tab bar and each tab's rect as last drawn (pixels, window coordinates): where a
+    /// tab dragged from another window drops (`window_bar_hit`).
+    pub(super) tab_bar_drawn: Option<(Rect, Vec<Rect>, Vec<crate::tab_drag::Pill>)>,
+    /// The pointer is on a side bar's drag handle (the resize pointer shows).
+    side_handle_hover: bool,
     /// The tab whose tooltip the pointer is waiting on or showing, and when it settled there.
     tab_tip: Option<(usize, Instant)>,
     block_buttons: Vec<blocks_ui::BlockButton>,
@@ -62,6 +83,11 @@ pub(super) struct WinSlot {
 }
 
 impl WinSlot {
+    /// Its Lock Size and Lock Layout.
+    pub(super) fn locks(&self) -> crate::winmodel::Locks {
+        self.win_locks
+    }
+
     /// The tab it has in front.
     pub(super) fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active)
@@ -86,6 +112,16 @@ impl WinSlot {
             tab_seen: None,
             tab_press: None,
             tab_selects_on_down: true,
+            side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
+            side_bar_scroll: 0.0,
+            tab_flash: crate::tab_flash::Flash::new(),
+            excursion_prevented: false,
+            bar_was_visible: false,
+            bar_grown: (0.0, 0.0),
+            side_chips: Vec::new(),
+            tab_drop_marker: None,
+            tab_bar_drawn: None,
+            side_handle_hover: false,
             tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
@@ -158,6 +194,16 @@ impl App {
         swap(&mut self.tab_seen, &mut s.tab_seen);
         swap(&mut self.tab_press, &mut s.tab_press);
         swap(&mut self.tab_selects_on_down, &mut s.tab_selects_on_down);
+        swap(&mut self.side_bar_preferred, &mut s.side_bar_preferred);
+        swap(&mut self.side_bar_scroll, &mut s.side_bar_scroll);
+        swap(&mut self.tab_flash, &mut s.tab_flash);
+        swap(&mut self.excursion_prevented, &mut s.excursion_prevented);
+        swap(&mut self.bar_was_visible, &mut s.bar_was_visible);
+        swap(&mut self.bar_grown, &mut s.bar_grown);
+        swap(&mut self.side_chips, &mut s.side_chips);
+        swap(&mut self.tab_drop_marker, &mut s.tab_drop_marker);
+        swap(&mut self.tab_bar_drawn, &mut s.tab_bar_drawn);
+        swap(&mut self.side_handle_hover, &mut s.side_handle_hover);
         swap(&mut self.tab_tip, &mut s.tab_tip);
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
@@ -335,9 +381,14 @@ impl App {
             Err(e) => {
                 // A tab on its way to the new window stays where it was.
                 match first {
-                    NewWindow::Tab(tab) => self.tabs.push(tab),
+                    NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => self.tabs.push(tab),
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
                     NewWindow::Profile(_) | NewWindow::Arrangement(..) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
+                }
+                // Pinned or grouped tabs coming back keep the order's rules, and tmux hears
+                // a changed order.
+                if self.settle_tabs() {
+                    self.tmux_reorder();
                 }
                 self.relayout();
                 return Err(e);
@@ -349,6 +400,8 @@ impl App {
         self.swap_live(&mut slot);
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
+        // A new window's side bar starts at `LeftTabBarWidth`.
+        self.side_bar_preferred = super::side_bar_default(&self.globals);
         if let Some(old) = self.windows.current() {
             self.windows.park(old, slot);
         }
@@ -356,7 +409,7 @@ impl App {
         self.registry.open(key(id));
         let first_guid = match &first {
             NewWindow::Profile(g) => g.clone(),
-            NewWindow::Tab(t) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
+            NewWindow::Tab(t) | NewWindow::TornOff(t, _) => self.panes.get(&t.focused).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Tabs(ts) => ts.first().and_then(|t| self.panes.get(&t.focused)).map(|p| self.store.shared_guid(&p.profile)),
             NewWindow::Arrangement(w, _) => self.first_arrangement_guid(w),
             NewWindow::Orphans(_) => None,
@@ -369,9 +422,13 @@ impl App {
         // `openSingleUseWindowWithCommand:` uses the default window type instead).
         let style = if self.start_command_override.is_some() && style == crate::frames::FULL_SCREEN { crate::frames::NORMAL } else { style };
         let arranged = matches!(first, NewWindow::Arrangement(..) | NewWindow::HotkeyRestored(..));
+        let torn_at = match &first {
+            NewWindow::TornOff(_, at) => Some(*at),
+            _ => None,
+        };
         match first {
             NewWindow::Profile(guid) => self.new_tab(guid.as_deref()),
-            NewWindow::Tab(tab) => {
+            NewWindow::Tab(tab) | NewWindow::TornOff(tab, _) => {
                 self.tabs.push(tab);
                 self.active = 0;
                 self.relayout();
@@ -379,6 +436,7 @@ impl App {
             NewWindow::Tabs(tabs) => {
                 self.tabs.extend(tabs);
                 self.active = 0;
+                self.settle_tabs();
                 self.relayout();
             }
             NewWindow::Arrangement(w, name) => {
@@ -410,7 +468,13 @@ impl App {
         // frame is its style's (it is not placed like a new window).
         let restored_hotkey = hotkey && arranged;
         let steps = crate::winmodel::open_steps(arranged || restored_hotkey);
-        if steps.place && !hotkey {
+        if let Some((x, y)) = torn_at {
+            // A torn-off tab's window has its top-left corner where the tab was dropped.
+            self.claim_slot();
+            if let Some(g) = &self.gpu {
+                g.window.set_outer_position(PhysicalPosition::new(x, y));
+            }
+        } else if steps.place && !hotkey {
             self.place_window();
         } else {
             self.claim_slot();
@@ -585,6 +649,16 @@ impl WinSlot {
             tab_seen: None,
             tab_press: None,
             tab_selects_on_down: true,
+            side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
+            side_bar_scroll: 0.0,
+            tab_flash: crate::tab_flash::Flash::new(),
+            excursion_prevented: false,
+            bar_was_visible: false,
+            bar_grown: (0.0, 0.0),
+            side_chips: Vec::new(),
+            tab_drop_marker: None,
+            tab_bar_drawn: None,
+            side_handle_hover: false,
             tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
@@ -684,6 +758,9 @@ pub(super) enum NewWindow {
     Profile(Option<String>),
     /// A tab moved from another window.
     Tab(Tab),
+    /// A tab dragged out of every tab bar, and the screen point it was dropped at (the new
+    /// window's top-left corner).
+    TornOff(Tab, (i32, i32)),
     /// Tabs brought back by Undo Close.
     Tabs(Vec<Tab>),
     /// A window table from an arrangement, and the saved arrangement's name (None for
@@ -760,11 +837,22 @@ impl App {
 
     /// Window > Move Tab to New Window (not the window's only tab).
     pub(super) fn move_tab_to_new_window(&mut self) {
-        if self.tabs.len() < 2 || self.tabs.get(self.active).is_some_and(|t| self.holds_recording(t)) {
+        self.move_tab_at_to_new_window(self.active);
+    }
+
+    /// Moves the tab at `at` to a new window (`PT it_moveTabToNewWindow:`, `PT:14593-14620`):
+    /// not the window's only tab, nor one holding a loaded recording; it leaves its group, as
+    /// a torn-off tab does (`ungroup:YES`). The selected tab stays selected, or its neighbor
+    /// is, its group expanded.
+    pub(super) fn move_tab_at_to_new_window(&mut self, at: usize) {
+        if self.tabs.len() < 2 || self.tabs.get(at).is_none_or(|t| self.holds_recording(t)) {
             return;
         }
-        let tab = self.take_tab(self.active);
-        self.active = self.active.min(self.tabs.len() - 1);
+        let selected = self.tabs.get(self.active).map(|t| t.id);
+        let mut tab = self.take_tab(at);
+        tab.group = None;
+        self.active = selected.and_then(|s| self.tabs.iter().position(|t| t.id == s)).unwrap_or(self.active.min(self.tabs.len() - 1));
+        self.expand_selected_group();
         self.pending_windows.push(NewWindow::Tab(tab));
         self.relayout();
         self.redraw();
@@ -788,7 +876,7 @@ impl App {
             t.focused = t.layout.panes()[0];
             t.zoomed = None;
         }
-        let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None };
+        let tab = Tab::new(self.next_tab_id, Layout::new(pane), pane);
         self.next_tab_id += 1;
         self.pending_windows.push(NewWindow::Tab(tab));
         self.relayout();
@@ -808,7 +896,7 @@ impl App {
         }
         t.focused = t.layout.panes()[0];
         t.zoomed = None;
-        let tab = Tab { id: self.next_tab_id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None };
+        let tab = Tab::new(self.next_tab_id, Layout::new(pane), pane);
         self.next_tab_id += 1;
         self.tabs.push(tab);
         self.active = self.tabs.len() - 1;
@@ -829,7 +917,7 @@ impl App {
         for other in self.registry.merge_order(k) {
             let Some(mut slot) = self.windows.remove(other) else { continue };
             let tabs = std::mem::take(&mut slot.tabs);
-            let (mut moved, kept, active) = split_for_merge(tabs, slot.active, |t| self.holds_recording(t));
+            let (mut moved, mut kept, active) = split_for_merge(tabs, slot.active, |t| self.holds_recording(t));
             for t in &moved {
                 leave_broadcast(&mut slot.broadcast, &mut slot.broadcast_tabs, t);
             }
@@ -850,6 +938,8 @@ impl App {
                     slot.replay_window = None;
                 }
                 slot.active = active.unwrap_or(0);
+                // A new selection there may be hidden in a collapsed group.
+                super::tab_groups_ui::expand_selected(&mut kept, slot.active);
                 slot.tabs = kept;
                 if let Some(g) = &slot.gpu {
                     g.window.request_redraw();
@@ -867,6 +957,10 @@ impl App {
                 }
             }
             drop(slot);
+        }
+        // Merged pinned tabs go to the front, and groups stay together.
+        if self.settle_tabs() {
+            self.tmux_reorder();
         }
         self.relayout();
         self.redraw();
@@ -1055,11 +1149,17 @@ impl App {
 
     /// False (with a beep) when Lock Layout forbids the change.
     pub(super) fn layout_allowed(&self, op: crate::winmodel::LayoutOp) -> bool {
-        if self.win_locks.forbids(op) {
+        if !self.layout_allowed_quiet(op) {
             unsafe { windows_sys::Win32::System::Diagnostics::Debug::MessageBeep(windows_sys::Win32::UI::WindowsAndMessaging::MB_OK) };
             return false;
         }
         true
+    }
+
+    /// False, without a beep, when Lock Layout forbids the change (a tab drag that never
+    /// begins, `PT:7610-7616`).
+    pub(super) fn layout_allowed_quiet(&self, op: crate::winmodel::LayoutOp) -> bool {
+        !self.win_locks.forbids(op)
     }
 
     pub(super) fn toggle_lock(&mut self, layout: bool) {
@@ -1248,7 +1348,7 @@ mod tests {
     use super::*;
 
     fn tab(id: u64, pane: PaneId) -> Tab {
-        Tab { id, layout: Layout::new(pane), focused: pane, zoomed: None, title: None }
+        Tab::new(id, Layout::new(pane), pane)
     }
 
     #[test]

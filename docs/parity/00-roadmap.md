@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 174 | 121 | 19 |
-| `02-global-settings.md` | 823 | 382 | 80 | 361 |
-| `03-features-and-menus.md` | 645 | 520 | 48 | 77 |
-| Total | 1,782 | 1,076 | 249 | 457 |
+| `01-profile-settings.md` | 314 | 176 | 119 | 19 |
+| `02-global-settings.md` | 823 | 398 | 77 | 348 |
+| `03-features-and-menus.md` | 647 | 527 | 48 | 72 |
+| Total | 1,784 | 1,101 | 244 | 439 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -348,6 +348,29 @@ noSyncSuppressMissingProfileInArrangementWarning and noSyncNeverAskAboutDEC2048F
 stored and shown with nothing reading them; the Replace Profile warning waits for 13t's Copy to
 Profile and DEC mode 2048 (a new 03 row) for 13o. Every kept quirk is listed in
 `docs/acceptance/m13b-checklist.md` and ruled on in `docs/superpowers/rulings/m13b-rulings.txt`.
+Milestone 13d built tab dragging, pinned tabs, tab groups and tab icons (01: 2 rows to have;
+02: 16 rows to have; 03: 5 rows to have, 2 rows added as have, and the Duplicate Tab row
+corrected). A tab drags to reorder in its bar (inside the pinned or unpinned zone), into another
+window's bar, or out onto the desktop into a new window at the drop point, after
+`minimumTabDragDistance`; Lock Layout refuses; the "+" button drags the window. The bar goes on
+any edge (`TabViewType`: Top, Bottom, Left, Right); a side bar is rows `LeftTabBarWidth` wide,
+resized by its inner edge, scrolling with the wheel or, with `ScrollableSideTabBar` off, sending
+the rest to an overflow button. In full screen the bar hides unless Show tab bar in fullscreen
+(View > Show Tabs in Fullscreen, Win+Shift+U), and with Flash tab bar on it shows for a second on
+a tab switch, kept while Win is held. The window grows by the bar as it appears and shrinks back
+as it hides, unless Preserve window size (R3). Pinned tabs sit first, 64 points wide with the pin
+glyph, always ask before closing and are named in a window or quit question ("Tab #N is
+pinned."). Groups (the Window > Tab items, the tab menu's Add Tab to Group, and a right-click
+menu on the group's chip) carry a name and a palette color on a chip before their tabs, collapse
+by a click on the chip, take a tab dropped onto a collapsed chip, move whole by a drag of the
+chip, and are kept with pins in arrangements; Select Next and Previous Tab Group and Move Tab
+Left and Right follow iTerm2's group rules. The tab's right-click menu is iTerm2's, with Tab
+Color and Group Color opening 13c's picker. The profile icon shows iTerm2's MIT icon set for the
+job or its ancestors (merged with the user's `graphic_icons.json`, `graphic_colors.json` and
+`graphic_<name>.png` in `%APPDATA%\Tandem`, read at launch), a first-letter circle, or a custom
+image. Duplicate Tab copies every pane next to the original. Nothing of 13d was checked on
+screen during the build. Every kept quirk is listed in `docs/acceptance/m13d-checklist.md` and
+ruled on in `docs/superpowers/rulings/m13d-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

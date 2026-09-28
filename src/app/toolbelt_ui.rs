@@ -158,17 +158,9 @@ fn split_total(panel_h: f32, tools: usize, scale: f32) -> f32 {
 }
 
 impl App {
-    /// The window's room split into the terminal part and the toolbelt's (pixels).
-    pub(super) fn belt_split(&self) -> (Rect, Option<Rect>) {
-        let room = self.window_room();
-        let scale = self.scale();
-        let w = toolbelt::clamp_width(self.belt.width, room.w / scale) * scale;
-        tbl::split_window(room, self.belt.visible, w)
-    }
-
     /// The toolbelt's rectangle, while it shows.
     pub(super) fn toolbelt_panel(&self) -> Option<Rect> {
-        self.belt_split().1
+        self.window_layout().2
     }
 
     /// `ToolbeltTools` as stored (names of tools 9j does not show included).
@@ -216,15 +208,9 @@ impl App {
         self.toolbelt_panel().map(|panel| tbl::layout(panel, &self.belt.split, self.scale()))
     }
 
-    /// Whether showing the toolbelt may grow the window: a Normal or No Title Bar window that
-    /// is not maximized, full screen, minimized or size-locked. A hotkey window never grows.
+    /// Whether showing the toolbelt may grow the window (`window_can_fit`).
     fn belt_can_grow(&self) -> bool {
-        let Some(g) = self.gpu.as_ref() else { return false };
-        if self.hotkey.is_some() {
-            return false;
-        }
-        let style = crate::frames::unthemed(self.win_style);
-        (style == crate::frames::NORMAL || style == crate::frames::NO_TITLE_BAR) && !g.window.is_maximized() && g.window.fullscreen().is_none() && g.window.is_minimized() != Some(true) && !self.win_locks.size
+        self.window_can_fit()
     }
 
     /// The window's inner width grows (or shrinks, negative) by `points`. True when the size

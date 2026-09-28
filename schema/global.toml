@@ -472,6 +472,51 @@ default = true
 help = "When the tabs do not fit, the tab bar scrolls; off, the tabs that do not fit go in a menu at the bar's end."
 
 [[setting]]
+key = "LeftTabBarWidth"
+tab = "Appearance"
+section = "Tabs"
+label = "Left (side) tab bar width"
+type = "float"
+default = 150.0
+help = "Width in points of a tab bar on the left or right side of the window. Dragging the bar's inner edge records the width."
+
+[[setting]]
+key = "ShowFullScreenTabBar"
+tab = "Appearance"
+section = "Tabs"
+label = "Show tab bar in fullscreen"
+type = "bool"
+default = true
+help = "In full screen the tab bar shows as it does in a window; off, it hides (View > Show Tabs in Fullscreen)."
+
+[[setting]]
+key = "FlashTabBarInFullscreen"
+tab = "Appearance"
+section = "Tabs"
+label = "Flash tab bar when switching tabs in fullscreen"
+type = "bool"
+default = false
+help = "With the tab bar hidden in full screen, switching tabs shows it briefly over the top of the sessions. Hold Win to keep it up."
+
+[[setting]]
+key = "PreserveWindowSizeWhenTabBarVisibilityChanges"
+tab = "Appearance"
+section = "Tabs"
+label = "Preserve window size when tab bar shows or hides"
+type = "bool"
+default = false
+help = "When the tab bar appears or goes away the window keeps its size and the sessions give up or take the room; off, the window grows or shrinks by the bar."
+
+[[setting]]
+key = "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"
+tab = "Appearance"
+section = "Tabs"
+label = "\u2026but only if it would cause the window to go off-screen"
+type = "bool"
+default = false
+help = "The window keeps its size only when growing for the tab bar would take it past the edge of the screen; it then also keeps its size when the bar goes away again."
+
+[[setting]]
 key = "PerPaneBackgroundImage"
 tab = "Appearance"
 section = "Panes"
@@ -2289,6 +2334,16 @@ default = false
 help = "Set after the first automatic burial of a tmux gateway; the notification shows once."
 
 [[setting]]
+key = "TabViewType"
+tab = "Appearance"
+section = "General"
+label = "Tab bar location:"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Top" }, { value = 1, label = "Bottom" }, { value = 2, label = "Left" }, { value = 3, label = "Right\u200b" } ]
+help = "The window edge the tab bar sits on: the top or bottom, or a column of tabs down the left or right side."
+
+[[setting]]
 key = "StatusBarPosition"
 tab = "Appearance"
 section = "General"
@@ -2809,3 +2864,75 @@ label = "Should tab close buttons always remain visible?"
 type = "bool"
 default = false
 help = "Should tab close buttons always remain visible?"
+
+[[setting]]
+key = "TabAutoShowHoldTime"
+tab = "Advanced"
+section = "Tabs"
+label = "How long in seconds to show tabs in fullscreen."
+type = "float"
+default = 1.0
+help = "How long in seconds to show tabs in fullscreen.\nThe tab bar appears briefly in fullscreen when the number of tabs changes or you switch tabs. This setting gives the time in seconds for it to remain visible."
+
+[[setting]]
+key = "TabFlashAnimationDuration"
+tab = "Advanced"
+section = "Tabs"
+label = "Animation duration for fade in/out animation of tabs in full screen, in seconds."
+type = "float"
+default = 0.25
+help = "Animation duration for fade in/out animation of tabs in full screen, in seconds."
+
+[[setting]]
+key = "AllowDragOfTabIntoNewWindow"
+tab = "Advanced"
+section = "Tabs"
+label = "Allow a tab to be dragged and dropped outside any existing tab bar to create a new window."
+type = "bool"
+default = true
+help = "Allow a tab to be dragged and dropped outside any existing tab bar to create a new window."
+
+[[setting]]
+key = "AllowDragOnAddTabButton"
+tab = "Advanced"
+section = "Tabs"
+label = "Allow dragging window by the Add Tab button in the tab bar?"
+type = "bool"
+default = true
+help = "Allow dragging window by the Add Tab button in the tab bar?"
+
+[[setting]]
+key = "MinimumTabDragDistance"
+tab = "Advanced"
+section = "Tabs"
+label = "How far must the mouse move before a tab drag is initiated?"
+type = "int"
+default = 10
+help = "How far must the mouse move before a tab drag is initiated?\nYou must restart Tandem after changing this setting for it to take effect."
+
+[[setting]]
+key = "DuplicatedTabsOpenAdjacentToOriginal"
+tab = "Advanced"
+section = "Tabs"
+label = "When you duplicate a tab, should the copy open immediately to the right of the original tab?"
+type = "bool"
+default = true
+help = "When you duplicate a tab, should the copy open immediately to the right of the original tab?\nWhen disabled, duplicated tabs follow the general \u201cNew tabs are added\u201d placement setting instead."
+
+[[setting]]
+key = "PinnedTabWidth"
+tab = "Advanced"
+section = "Tabs"
+label = "Width of pinned tabs in pixels."
+type = "int"
+default = 64
+help = "Width of pinned tabs in pixels."
+
+[[setting]]
+key = "DefaultIconsUsingLetters"
+tab = "Advanced"
+section = "Tabs"
+label = "Use the running command's first letter as the tab's default icon if there isn't a built in one."
+type = "bool"
+default = true
+help = "Use the running command's first letter as the tab's default icon if there isn't a built in one.\nThis takes effect when tabs are configured to use built-in icons."

@@ -70,10 +70,17 @@ impl App {
             Closing::Session(id) if tab_of(id).is_some_and(|i| self.tabs[i].layout.panes().len() == 1) => Closing::Tab(tab_of(id).unwrap_or(0)),
             w => w,
         };
-        let (kind, title, panes) = match what {
-            Closing::Session(id) => (Kind::Session, close_prompt::session_title(&self.session_title(id)), vec![id]),
-            Closing::Tab(i) => (Kind::Tab, close_prompt::tab_title(i + 1), self.tabs.get(i).map(|t| t.layout.panes()).unwrap_or_default()),
-            Closing::Window => (Kind::Window, close_prompt::window_title(self.window_number() + 1), self.tabs.iter().flat_map(|t| t.layout.panes()).collect()),
+        // A pinned tab always asks, and a window names each of its pinned tabs
+        // (`PT:2366-2369`, `PT:4739-4741`).
+        let (kind, title, panes, pinned) = match what {
+            Closing::Session(id) => (Kind::Session, close_prompt::session_title(&self.session_title(id)), vec![id], Vec::new()),
+            Closing::Tab(i) => {
+                let pinned = if self.tabs.get(i).is_some_and(|t| t.pinned) { vec![close_prompt::pinned_reason(i + 1)] } else { Vec::new() };
+                (Kind::Tab, close_prompt::tab_title(i + 1), self.tabs.get(i).map(|t| t.layout.panes()).unwrap_or_default(), pinned)
+            }
+            Closing::Window => {
+                (Kind::Window, close_prompt::window_title(self.window_number() + 1), self.tabs.iter().flat_map(|t| t.layout.panes()).collect(), pinned_reasons(&self.tabs))
+            }
             Closing::App => {
                 let panes: Vec<PaneId> = self.panes.keys().copied().collect();
                 let prefs = close_rules::QuitPrefs {
@@ -81,7 +88,9 @@ impl App {
                     even_if_no_windows: self.globals.bool("PromptOnQuitEvenIfThereAreNoWindows"),
                     confirm_multiple: self.globals.bool("OnlyWhenMoreTabs"),
                 };
-                let reasons = close_rules::quit_reasons(&self.close_reasons(&panes), self.registry.order().len(), panes.len(), prefs, false);
+                let mut reasons = close_rules::quit_reasons(&self.close_reasons(&panes), self.registry.order().len(), panes.len(), prefs, false);
+                // Every window's pinned tabs, window by window in tab order (`POC:241-244`).
+                reasons.extend(self.pinned_reasons_everywhere().into_iter().map(|text| close_rules::Reason { priority: close_prompt::PINNED_PRIORITY, kind: close_rules::ReasonKind::Message, text }));
                 if reasons.is_empty() {
                     return true;
                 }
@@ -90,13 +99,35 @@ impl App {
         };
         let running = panes.iter().filter(|id| self.panes.get(id).is_some_and(|p| p.exited.is_none())).count();
         let has_reason = !self.close_reasons(&panes).is_empty();
-        if !close_rules::must_ask(kind, running, has_reason, self.globals.bool("OnlyWhenMoreTabs")) {
+        if !close_rules::must_ask(kind, running, has_reason, self.globals.bool("OnlyWhenMoreTabs")) && pinned.is_empty() {
             return true;
         }
         let (names, notes) = self.job_names(&panes);
+        let notes: Vec<String> = pinned.into_iter().chain(notes).collect();
         let body = close_rules::with_notes(close_rules::body(close_rules::subject(kind, panes.len()), &close_rules::counted(&names)), &notes);
         confirm(self.hwnd(), &title, &body)
     }
+
+    /// "Tab #N is pinned." for each pinned tab of every window, the windows in number order.
+    fn pinned_reasons_everywhere(&self) -> Vec<String> {
+        let current = self.windows.current();
+        self.registry
+            .order()
+            .into_iter()
+            .flat_map(|k| {
+                if Some(k) == current {
+                    pinned_reasons(&self.tabs)
+                } else {
+                    self.windows.parked().find(|(p, _)| **p == k).map(|(_, s)| pinned_reasons(&s.tabs)).unwrap_or_default()
+                }
+            })
+            .collect()
+    }
+}
+
+/// "Tab #N is pinned." for each pinned tab, in tab order.
+fn pinned_reasons(tabs: &[Tab]) -> Vec<String> {
+    tabs.iter().enumerate().filter(|(_, t)| t.pinned).map(|(i, _)| close_prompt::pinned_reason(i + 1)).collect()
 }
 
 /// An OK and Cancel question; true for OK.

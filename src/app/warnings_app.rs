@@ -190,6 +190,7 @@ mod tests {
             (super::super::pwm_app::adapter_warning_spec("op", "t"), "NoSyncAdapterListWarning_op", Permanent),
             (super::super::api_ui::reset_spec(), "NoSyncAppSupportMoved", Permanent),
             (crate::settings_hotkey::create_warning_spec(&["Quake".to_string()]), "NoSyncSuppressAddAnotherHotkeyProfileWarning", Persistent),
+            (super::super::tab_groups_ui::close_tabs_ask(winit::window::WindowId::from(1), crate::tab_groups::CloseTabs::Group, false, vec![2]).spec, "NoSyncCloseTabGroup", Persistent),
         ];
         for (spec, id, kind) in &sites {
             assert_eq!((spec.id.as_deref(), spec.kind), (Some(*id), *kind), "{id}");

@@ -6,6 +6,7 @@
 pub use toml::{Table, Value};
 
 use crate::layout::{Axis, Tree};
+use crate::palette::Rgb;
 
 /// iTerm2's frame dictionary.
 pub fn frame(x: f64, y: f64, w: f64, h: f64) -> Value {
@@ -213,15 +214,65 @@ pub fn to_plist(windows: &[Value]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// A tab table: its `Root`, whether it is the selected tab, and its Edit Tab Title text.
-pub fn tab(root: Value, active: bool, title: Option<&str>) -> Value {
+/// A tab's pinned flag (`TAB:99`).
+pub const PINNED: &str = "Pinned";
+/// A tab's group definition (`TAB:100-103`); only a grouped tab writes them.
+pub const GROUP_ID: &str = "Tab Group ID";
+pub const GROUP_NAME: &str = "Tab Group Name";
+pub const GROUP_COLOR: &str = "Tab Group Color";
+pub const GROUP_COLLAPSED: &str = "Tab Group Collapsed";
+
+/// A tab table: its `Root`, whether it is the selected tab, its Edit Tab Title text, and
+/// whether it is pinned and its group (`TAB:3973-3984`).
+pub fn tab(root: Value, active: bool, title: Option<&str>, pinned: bool, group: Option<&crate::tab_groups::TabGroup>) -> Value {
     let mut t = Table::new();
     t.insert("Root".into(), root);
     t.insert("Is Active".into(), Value::Boolean(active));
     if let Some(x) = title {
         t.insert("Title Override".into(), Value::String(x.into()));
     }
+    t.insert(PINNED.into(), Value::Boolean(pinned));
+    if let Some(g) = group {
+        t.insert(GROUP_ID.into(), Value::String(g.id.clone()));
+        t.insert(GROUP_NAME.into(), Value::String(g.name.clone()));
+        t.insert(GROUP_COLOR.into(), color_dict(g.color));
+        t.insert(GROUP_COLLAPSED.into(), Value::Boolean(g.collapsed));
+    }
     Value::Table(t)
+}
+
+/// A tab table's pinned flag and group (`TAB:3631-3638`). A group with no name reads "" and
+/// one with no color the palette's blue, iTerm2's `tabGroupsInWindow` fallbacks
+/// (`PT:9036-9038`); an empty id is no group.
+pub fn tab_pin_group(t: &Value) -> (bool, Option<crate::tab_groups::TabGroup>) {
+    let pinned = t.get(PINNED).and_then(|v| v.as_bool()).unwrap_or(false);
+    let group = t.get(GROUP_ID).and_then(|v| v.as_str()).filter(|id| !id.is_empty()).map(|id| crate::tab_groups::TabGroup {
+        id: id.to_string(),
+        name: t.get(GROUP_NAME).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        color: t.get(GROUP_COLOR).and_then(color_of_dict).unwrap_or(crate::tab_groups::PALETTE[0]),
+        collapsed: t.get(GROUP_COLLAPSED).and_then(|v| v.as_bool()).unwrap_or(false),
+    });
+    (pinned, group)
+}
+
+/// iTerm2's color dictionary (`dictionaryValue`, `NSColor+iTerm.m:826-838`), in sRGB.
+pub fn color_dict(c: Rgb) -> Value {
+    let mut t = Table::new();
+    t.insert("Color Space".into(), Value::String("sRGB".into()));
+    for (k, v) in [("Red Component", c.r), ("Green Component", c.g), ("Blue Component", c.b)] {
+        t.insert(k.into(), Value::Float(v as f64 / 255.0));
+    }
+    t.insert("Alpha Component".into(), Value::Float(1.0));
+    Value::Table(t)
+}
+
+/// A color dictionary's color, or None when a component is missing. Reading an arrangement
+/// file turns iTerm2's dictionary into Tandem's r, g, b table (`import::from_plist`, which
+/// also converts Display P3), so both forms are read.
+pub fn color_of_dict(v: &Value) -> Option<Rgb> {
+    let comp = |long: &str, short: &str| num(v.get(long).or_else(|| v.get(short)));
+    let byte = |f: f64| (f.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Some(crate::palette::rgb(byte(comp("Red Component", "r")?), byte(comp("Green Component", "g")?), byte(comp("Blue Component", "b")?)))
 }
 
 /// What a window table records.
@@ -596,7 +647,7 @@ mod tests {
     #[test]
     fn snapshot_keys_follow_iterm2() {
         let root = node(&Tree::Leaf(s("a")), 800.0, 600.0);
-        let t = tab(root, true, Some("build"));
+        let t = tab(root, true, Some("build"), false, None);
         assert_eq!(t.get("Is Active").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(t.get("Title Override").and_then(|v| v.as_str()), Some("build"));
         assert!(t.get("Root").is_some());
@@ -642,7 +693,7 @@ mod tests {
         let facts = WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) };
         let s = |g: &str| session(80, 24, profile(&[("Guid", "P"), ("Name", "Plain")]), g, Some(r"C:\old"));
         let split = Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(s("S1"))), b: Box::new(Tree::Leaf(s("S2"))) };
-        vec![window(facts.clone(), vec![tab(node(&split, 800.0, 600.0), true, None)]), window(facts, vec![tab(node(&Tree::Leaf(s("S1")), 800.0, 600.0), true, None)])]
+        vec![window(facts.clone(), vec![tab(node(&split, 800.0, 600.0), true, None, false, None)]), window(facts, vec![tab(node(&Tree::Leaf(s("S1")), 800.0, 600.0), true, None, false, None)])]
     }
 
     fn sessions_of(windows: &[Value]) -> Vec<Value> {
@@ -707,7 +758,7 @@ mod tests {
 
     fn one_window(profile: Table) -> Vec<Value> {
         let tree = Tree::Leaf(session(80, 24, profile, "s", Some("C:\\")));
-        vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![tab(node(&tree, 800.0, 600.0), true, None)])]
+        vec![window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![tab(node(&tree, 800.0, 600.0), true, None, false, None)])]
     }
 
     #[test]
@@ -810,5 +861,44 @@ mod tests {
         assert_eq!(active_leaf(&root), Some(1));
         let subs = root.get("Subviews").and_then(|v| v.as_array()).unwrap();
         assert_eq!(subs[1].get("Is Active").and_then(|v| v.as_bool()), Some(true), "iTerm2 marks the SessionView");
+    }
+
+    #[test]
+    fn tab_keeps_pin_and_group() {
+        use crate::tab_groups::{TabGroup, PALETTE};
+        let root = || node(&Tree::Leaf(s("a")), 800.0, 600.0);
+        let g = TabGroup { id: "G-1".into(), name: "Build".into(), color: PALETTE[0], collapsed: true };
+        let t = tab(root(), true, None, true, Some(&g));
+        assert_eq!(t.get(PINNED).and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(t.get(GROUP_ID).and_then(|v| v.as_str()), Some("G-1"));
+        assert_eq!(t.get(GROUP_NAME).and_then(|v| v.as_str()), Some("Build"));
+        assert_eq!(t.get(GROUP_COLLAPSED).and_then(|v| v.as_bool()), Some(true));
+        let c = t.get(GROUP_COLOR).expect("a color dictionary");
+        let comp = |k: &str| c.get(k).and_then(|v| v.as_float());
+        assert_eq!(comp("Red Component"), Some(0.0));
+        assert_eq!(comp("Green Component"), Some(122.0 / 255.0));
+        assert_eq!(comp("Blue Component"), Some(1.0));
+        assert_eq!(comp("Alpha Component"), Some(1.0));
+        assert_eq!(c.get("Color Space").and_then(|v| v.as_str()), Some("sRGB"));
+        assert_eq!(tab_pin_group(&t), (true, Some(g.clone())));
+        // An arrangement file holds it as a plist; reading one converts color dictionaries.
+        let w = window(WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) }, vec![t]);
+        let back = from_plist(&to_plist(&[w]).unwrap()).unwrap();
+        let t2 = &back[0].get("Tabs").and_then(|v| v.as_array()).unwrap()[0];
+        assert_eq!(tab_pin_group(t2), (true, Some(g)), "through an arrangement file");
+
+        let plain = tab(root(), false, None, false, None);
+        assert_eq!(plain.get(PINNED).and_then(|v| v.as_bool()), Some(false));
+        for k in [GROUP_ID, GROUP_NAME, GROUP_COLOR, GROUP_COLLAPSED] {
+            assert!(plain.get(k).is_none(), "{k}");
+        }
+        assert_eq!(tab_pin_group(&plain), (false, None));
+
+        // iTerm2's `tabGroupsInWindow` fallback: no name reads "", no color systemBlueColor.
+        let mut bare = Table::new();
+        bare.insert(GROUP_ID.into(), Value::String("G-2".into()));
+        let want = TabGroup { id: "G-2".into(), name: String::new(), color: PALETTE[0], collapsed: false };
+        assert_eq!(tab_pin_group(&Value::Table(bare)), (false, Some(want)));
+        assert_eq!(color_of_dict(&color_dict(crate::palette::rgb(0x50, 0xaf, 0xbc))), Some(crate::palette::rgb(0x50, 0xaf, 0xbc)));
     }
 }

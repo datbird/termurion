@@ -28,7 +28,8 @@ pub const DONE: &[&str] = &[
     "openSplitHorizontallySheet:", "openSplitVerticallySheet:", "saveContents:", "saveDocumentAs:",
     "closeCurrentSession:", "closeTerminalWindow:", "closeCurrentTab:", "copy:", "paste:|Paste",
     "detachTmux:", "forceDetachTmux:", "newTmuxWindow:", "newTmuxTab:", "toggleTmuxPausePane:", "openDashboard:", "bury:",
-    "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:",
+    "pasteSelection:", "selectAll:", "clearBuffer:", "clearScrollbackBuffer:", "toggleFullScreenMode:", "toggleFullScreenTabBar:",
+    "nextTabGroup:", "previousTabGroup:", "addTabToNewGroupAction:", "removeTabFromGroupAction:",
     "biggerFont:", "smallerFont:", "returnToDefaultSize:|Make Text Normal Size",
     "returnToDefaultSize:|Restore Text and Session Size", "maximizePane:",
     "editCurrentSession:", "reset:", "resetCharset:", "terminalStateReset:",
@@ -294,5 +295,25 @@ mod tests {
         for sel in DISABLED_UNDER_UV {
             assert!(items().iter().any(|i| i.selector == *sel), "{sel} is not in the menu");
         }
+    }
+
+    #[test]
+    fn tab_group_commands_work() {
+        use crate::menus::{Chord, ChordKey};
+        for sel in ["nextTabGroup:", "previousTabGroup:", "addTabToNewGroupAction:", "removeTabFromGroupAction:"] {
+            let item = items().iter().find(|i| i.selector == sel).unwrap_or_else(|| panic!("{sel}"));
+            assert_eq!(status(item), Status::Done, "{sel}");
+        }
+        let chord = |c: char| Chord { key: ChordKey::Char(c), cmd: true, alt: false, shift: true, ctrl: true };
+        assert_eq!(command_for_chord(&chord(']')).unwrap().selector, "nextTabGroup:", "Ctrl+Shift+Win+]");
+        assert_eq!(command_for_chord(&chord('[')).unwrap().selector, "previousTabGroup:", "Ctrl+Shift+Win+[");
+        let dup = items().iter().find(|i| i.selector == "duplicateTab:").unwrap();
+        assert_eq!(status(dup), Status::Done);
+    }
+
+    #[test]
+    fn show_tabs_in_fullscreen_works() {
+        let item = items().iter().find(|i| i.selector == "toggleFullScreenTabBar:" && i.label() == "Show Tabs in Fullscreen").unwrap();
+        assert_eq!(status(item), Status::Done);
     }
 }

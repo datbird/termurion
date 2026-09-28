@@ -90,13 +90,18 @@ pub(super) struct MenuBar {
 /// Menu ids of the Profiles menu's profile entries.
 pub(super) const PROFILE_ID: &str = "profile-open:";
 
+/// A window's Win32 handle.
+pub(super) fn hwnd_of(window: &Window) -> Option<isize> {
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
+}
+
 impl App {
+    /// This window's Win32 handle.
     pub(super) fn hwnd(&self) -> Option<isize> {
-        let g = self.gpu.as_ref()?;
-        match g.window.window_handle().ok()?.as_raw() {
-            RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
-            _ => None,
-        }
+        hwnd_of(&self.gpu.as_ref()?.window)
     }
 
     /// Builds the menu bar from iTerm2's menus, the right-click menu, and the Win chord hook.
@@ -227,6 +232,36 @@ impl App {
         self.popup_menu = Some(context);
     }
 
+    /// Edit Session for the session `pane` (`PT editSession:makeKey:`): Settings opened at the
+    /// profile it uses; Settings alone without a session.
+    pub(super) fn edit_session(&mut self, pane: Option<PaneId>, event_loop: &ActiveEventLoop) {
+        let guid = pane.and_then(|id| self.panes.get(&id)).map(|p| self.store.shared_guid(&p.profile));
+        let tmux = pane.is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
+        self.open_settings(event_loop, Mode::Settings);
+        if let (Some(s), Some(g)) = (self.settings.as_mut(), guid) {
+            s.select(&g);
+            // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
+            s.set_tmux_session(tmux);
+        }
+    }
+
+    /// A context menu built from `entries` (`tab_menu::Entry`) as a popup at the pointer;
+    /// `what` names it in an error banner. A label's "&" is doubled so Windows shows it.
+    pub(super) fn show_entries(&mut self, entries: &[crate::tab_menu::Entry], what: &str) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let menu = Menu::new();
+        let mut results = Vec::new();
+        for e in entries {
+            let item = entry_item(e, &mut results);
+            results.push(menu.append(item.as_ref()));
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("{what}: {e}"));
+        }
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        self.popup_menu = Some(menu);
+    }
+
     /// A porthole's language list as a popup: `items` in order, None for a separator. The
     /// picks come back as `porthole-lang:<index>`.
     pub(super) fn show_porthole_languages(&mut self, items: &[Option<String>]) {
@@ -280,7 +315,6 @@ impl App {
     /// then a 16 by 16 swatch per color labeled "#rrggbb", then "Choose Color\u{2026}"; a group
     /// always has a color, so it has no "Default". The picks come back as `color-pick:<n>`.
     /// 13d's tab and tab group menus open it.
-    #[allow(dead_code)]
     pub(super) fn open_color_picker(&mut self, target: ColorTarget, swatches: Vec<crate::palette::Rgb>) {
         let Some(hwnd) = self.hwnd() else { return };
         let menu = Menu::new();
@@ -312,7 +346,7 @@ impl App {
             PickKind::Choose => {
                 let current = match &target {
                     ColorTarget::Tab(id) => self.tabs.iter().find(|t| t.id == *id).and_then(|t| self.tab_look(t).color),
-                    ColorTarget::Group(_) => None,
+                    ColorTarget::Group(g) => self.tabs.iter().find_map(|t| t.group.as_ref().filter(|x| x.id == *g)).map(|x| x.color),
                 };
                 if let Some(c) = self.hwnd().and_then(|h| choose_color(h, current, &swatches)) {
                     self.apply_picked_color(target, Some(c));
@@ -331,8 +365,12 @@ impl App {
                     self.set_tab_color_for(tab, color);
                 }
             }
-            // Tab groups arrive in 13d, whose Task 9 calls its `set_group_color` here.
-            ColorTarget::Group(_) => {}
+            // A group always has a color: the picker offers no "Default" for it.
+            ColorTarget::Group(g) => {
+                if let Some(c) = color {
+                    self.set_group_color(&g, c);
+                }
+            }
         }
     }
 
@@ -340,7 +378,7 @@ impl App {
     fn tab_overflow_picked(&mut self, id: &str) -> bool {
         let Some(i) = id.strip_prefix("tab-overflow:").and_then(|i| i.parse::<usize>().ok()) else { return false };
         if i < self.tabs.len() {
-            self.active = i;
+            self.select_tab(i);
             self.redraw();
         }
         true
@@ -435,6 +473,9 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
+        if self.tab_menu_picked(id, event_loop) {
+            return;
+        }
         if self.buried_picked(id) || self.script_picked(id) {
             return;
         }
@@ -513,16 +554,7 @@ impl App {
             "openDependencyEditor:" => self.open_dependency_editor(event_loop),
             "openScriptConsole:" => self.open_script_console(event_loop),
             "showSuppressedAlerts:" => self.show_suppressed_alerts(event_loop),
-            "editCurrentSession:" => {
-                let guid = self.focused_guid();
-                let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
-                self.open_settings(event_loop, Mode::Settings);
-                if let (Some(s), Some(g)) = (self.settings.as_mut(), guid) {
-                    s.select(&g);
-                    // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
-                    s.set_tmux_session(tmux);
-                }
-            }
+            "editCurrentSession:" => self.edit_session(self.focused_id(), event_loop),
             "showBookmarkWindow:" | "openSplitHorizontallySheet:" | "openSplitVerticallySheet:" => {
                 self.open_settings(event_loop, Mode::Profiles)
             }
@@ -563,7 +595,15 @@ impl App {
                     w.set_maximized(!w.is_maximized());
                 }
             }
-            "toggleFullScreenMode:" => toggle_fullscreen(window.as_deref()),
+            "toggleFullScreenMode:" => {
+                let entering = window.as_ref().is_some_and(|w| w.fullscreen().is_none());
+                toggle_fullscreen(window.as_deref());
+                // Entering full screen flashes the tab bar (`PseudoTerminal+WindowStyle.m:857`).
+                if entering {
+                    self.flash_tab_bar();
+                }
+            }
+            "toggleFullScreenTabBar:" => self.toggle_full_screen_tab_bar(),
             "setWindowStyle:" => {
                 if let Some((id, _)) = crate::frames::MENU.iter().find(|(_, n)| *n == label) {
                     self.apply_window_style(*id, true);
@@ -574,7 +614,15 @@ impl App {
                     w.focus_window();
                 }
             }
-            "newSession:" => self.new_tab(None),
+            // New Tab appends; from a group's last tab it joins that group (`AD newTabAtIndex:`).
+            "newSession:" => {
+                let (before, active) = (self.tabs.len(), self.active);
+                let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
+                self.new_tab(None);
+                if self.tabs.len() > before {
+                    self.new_tab_joins_group(self.tabs.len() - 1, active, group);
+                }
+            }
             "newWindow:" => {
                 if self.tmux_new(true, true).is_none() {
                     self.new_window(event_loop, None);
@@ -599,16 +647,19 @@ impl App {
             }
             "newSessionAlternate:" => {
                 let (before, active) = (self.tabs.len(), self.active);
+                let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
                 self.new_tab(None);
                 if let Some(at) = super::move_new_tab(&mut self.tabs, before, active) {
                     self.active = at;
+                    self.new_tab_joins_group(at, active, group);
                 }
             }
             "newWindowWithSameProfile:" => {
                 let g = self.focused_guid();
                 self.new_window(event_loop, g.as_deref());
             }
-            "newSessionWithSameProfile:" | "duplicateTab:" | "duplicateSession:" => {
+            "duplicateTab:" => self.duplicate_tab(self.active),
+            "newSessionWithSameProfile:" | "duplicateSession:" => {
                 let g = self.focused_guid();
                 self.new_tab(g.as_deref());
             }
@@ -791,17 +842,21 @@ impl App {
             "nextTab:" | "previousTab:" => {
                 let n = self.tabs.len();
                 if n > 0 {
-                    self.active = if item.selector == "nextTab:" { (self.active + 1) % n } else { (self.active + n - 1) % n };
+                    self.select_tab(if item.selector == "nextTab:" { (self.active + 1) % n } else { (self.active + n - 1) % n });
                 }
             }
-            "moveTabLeft:" | "moveTabRight:" if !self.layout_allowed(crate::winmodel::LayoutOp::ReorderTab) => {}
-            "moveTabLeft:" | "moveTabRight:" => {
-                let n = self.tabs.len();
-                if n > 1 {
-                    let to = if item.selector == "moveTabRight:" { (self.active + 1) % n } else { (self.active + n - 1) % n };
-                    self.tabs.swap(self.active, to);
-                    self.active = to;
-                    self.tmux_reorder();
+            "moveTabLeft:" => self.move_active_tab(-1),
+            "moveTabRight:" => self.move_active_tab(1),
+            "nextTabGroup:" => self.select_tab_group(1),
+            "previousTabGroup:" => self.select_tab_group(-1),
+            "addTabToNewGroupAction:" => {
+                if let Some(id) = self.tabs.get(self.active).map(|t| t.id) {
+                    self.add_tab_to_new_group(event_loop, id);
+                }
+            }
+            "removeTabFromGroupAction:" => {
+                if let Some(id) = self.tabs.get(self.active).map(|t| t.id) {
+                    self.remove_tab_from_group(id);
                 }
             }
             "selectPaneUp:" | "selectPaneDown:" | "selectPaneLeft:" | "selectPaneRight:" => {
@@ -956,11 +1011,29 @@ pub(super) fn context_layout(extra: usize, providers: usize) -> Vec<Slot> {
 
 /// What the Tab Color picker colors: a tab by its stable `Tab.id`, or a tab group by its id.
 /// 13d's menus build them.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ColorTarget {
     Tab(u64),
     Group(String),
+}
+
+/// A context menu entry as a muda item: a check item when it has a check mark, a submenu with
+/// its entries (their append results go to `results`), or a separator.
+fn entry_item(e: &crate::tab_menu::Entry, results: &mut Vec<muda::Result<()>>) -> Box<dyn IsMenuItem> {
+    use crate::tab_menu::Entry;
+    match e {
+        Entry::Item { id, label, enabled, checked: Some(on) } => Box::new(CheckMenuItem::with_id(id.as_str(), label.replace('&', "&&"), *enabled, *on, None)),
+        Entry::Item { id, label, enabled, checked: None } => Box::new(MenuItem::with_id(id.as_str(), label.replace('&', "&&"), *enabled, None)),
+        Entry::Submenu { label, entries } => {
+            let sub = Submenu::new(label.replace('&', "&&"), true);
+            for child in entries {
+                let item = entry_item(child, results);
+                results.push(sub.append(item.as_ref()));
+            }
+            Box::new(sub)
+        }
+        Entry::Separator => Box::new(PredefinedMenuItem::separator()),
+    }
 }
 
 /// What a Tab Color picker entry does.

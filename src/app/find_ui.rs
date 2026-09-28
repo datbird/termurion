@@ -766,7 +766,7 @@ impl App {
                         self.last_window = Some(w);
                     }
                     if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&id)) {
-                        self.active = t;
+                        self.select_tab(t);
                         self.tabs[t].focused = id;
                         self.tabs[t].zoomed = None;
                     }

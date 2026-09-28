@@ -194,7 +194,7 @@ impl App {
     /// to the front (Windows may only flash its taskbar button instead).
     fn reveal(&mut self, pane: PaneId) {
         if let Some(t) = self.tabs.iter().position(|t| t.layout.panes().contains(&pane)) {
-            self.active = t;
+            self.select_tab(t);
             self.tabs[t].focused = pane;
         }
         self.bring_forward();
@@ -246,8 +246,8 @@ impl App {
         let _ = g.window.request_inner_size(PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
     }
 
-    /// A tab's title, subtitle (the status joined in), colors, icon, spinner and number for the
-    /// tab bar.
+    /// A tab's title, subtitle (the status joined in), colors, icon, spinner, number, pin,
+    /// group and its focused session's icon picture for the tab bar.
     pub(super) fn tab_look(&self, t: &Tab) -> scene::TabLook {
         use crate::tabstatus::{self, xterm_color};
         // Edit Tab Title's (or the profile's) title evaluated; an empty one shows the session's.
@@ -276,7 +276,7 @@ impl App {
         let index = self.tabs.iter().position(|x| x.id == t.id);
         let foreground = index == Some(self.active);
         let processing = activity_ui::tab_processing(self.any_processing(&panes), foreground, self.globals.bool("HideActivityIndicator"));
-        scene::TabLook { title, subtitle, dot, color, icon, processing, number: index.map_or(0, |i| i + 1), close_pressed: false }
+        scene::TabLook { title, subtitle, dot, color, icon, processing, number: index.map_or(0, |i| i + 1), close_pressed: false, dragged: false, pinned: t.pinned, group: t.group.as_ref().map(|g| (g.name.clone(), g.color)), hidden: t.group.as_ref().is_some_and(|g| g.collapsed), icon_image: self.tab_icon_for(t.focused) }
     }
 
     /// Colors every pane of the tab (None: no color), as iTerm2's Tab Color does for each

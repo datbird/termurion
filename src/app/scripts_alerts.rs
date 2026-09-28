@@ -176,8 +176,12 @@ pub(super) enum Then {
     /// sessions `targets`: Clear All (0), Current Session Only (1) or Cancel (2).
     Broadcast { clear: bool, me: crate::layout::PaneId, targets: Vec<crate::layout::PaneId> },
     /// New Tab or New Window (`window`) from the tmux pane `anchor`: New tmux Tab or Window
-    /// (0), Use Default Profile (1) or Cancel (2).
-    TmuxNew { anchor: crate::layout::PaneId, window: bool },
+    /// (0), Use Default Profile (1) or Cancel (2). `beside`: New Tab to the Right's tab (its
+    /// id), which Use Default Profile's tab opens after.
+    TmuxNew { anchor: crate::layout::PaneId, window: bool, beside: Option<u64> },
+    /// The group close commands' "Close Tabs" for the tabs `ids` of `window`: Close (0) or
+    /// Cancel (1).
+    CloseTabs { window: winit::window::WindowId, ids: Vec<u64> },
     /// Upgrade's "It looks like you're not at a command prompt." for the pane: Run Installer
     /// Anyway (0) runs the installer there; Cancel (1) does nothing.
     InstallShellIntegration(crate::layout::PaneId),
@@ -350,7 +354,8 @@ impl App {
                 }
             }
             Then::Broadcast { clear, me, targets } => self.clear_or_reset_answered(clear, me, super::broadcast_ui::broadcast_targets(index, me, targets)),
-            Then::TmuxNew { anchor, window } => self.tmux_new_answered(anchor, window, index),
+            Then::TmuxNew { anchor, window, beside } => self.tmux_new_answered(anchor, window, beside, index),
+            Then::CloseTabs { window, ids } => self.close_tabs_answered(window, ids, index),
             Then::InstallShellIntegration(pane) => {
                 if index == 0 {
                     self.install_shell_integration_in(pane);
@@ -543,10 +548,10 @@ mod tests {
             assert!(push_capped(&mut q, ask(d(pane))).is_none());
         }
         assert!(push_capped(&mut q, ask(d(99))).is_some(), "one download too many");
-        for then in [Then::Paste(1), Then::Restart(1), Then::PrefsQuit, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false }, Then::SlowScan] {
+        for then in [Then::Paste(1), Then::Restart(1), Then::PrefsQuit, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false, beside: Some(3) }, Then::SlowScan, Then::CloseTabs { window: winit::window::WindowId::from(1), ids: vec![2] }] {
             assert!(push_capped(&mut q, ask(then.clone())).is_none(), "{then:?}");
         }
-        assert_eq!(q.len(), LIMIT + 6);
+        assert_eq!(q.len(), LIMIT + 7);
         assert!(push_capped(&mut q, ask(Then::Archive(std::path::PathBuf::from(r"C:\a.zip")))).is_some(), "a scan's asks are capped");
     }
 }

@@ -41,7 +41,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Shell > New Tab Next to Current Tab | Opt+Cmd+T | Opens a new tab immediately to the right of the current one. | have |
 | Shell > New Tab with Current Profile | Opt+Cmd+T | Opens a new tab reusing the current session's profile. | have |
 | Shell > Duplicate Window | no shortcut | Opens a new window cloning the current window's layout. (milestone 7) | have, milestone 7c: the window snapshotted and restored, splits and folders included |
-| Shell > Duplicate Tab | no shortcut | Opens a new tab cloning the current tab's split layout. | have |
+| Shell > Duplicate Tab | no shortcut | Opens a new tab cloning the current tab's panes, splits, profiles and folders. | have, milestone 13d (correction: before 13d it opened a plain new tab): every pane with new sessions, opened right after the original in its group (duplicatedTabsOpenAdjacentToOriginal), or alone with no group where a new tab would open a window; a tmux tab's copy is a local tab added at the end, as iTerm2's; Lock Layout refuses |
 | Shell > Split Horizontally with Current Profile | Cmd+D | Splits the current pane into top and bottom using the current profile. | have |
 | Shell > Split Vertically with Current Profile | Cmd+D | Splits the current pane into left and right using the current profile. | have |
 | Shell > Split Horizontally... | Opt+Cmd+H | Splits the pane top and bottom, prompting for which profile to use. | have |
@@ -150,7 +150,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 ### View menu
 | Menu > Item | Default shortcut | What it does | Tandem status |
 |---|---|---|---|
-| View > Show Tabs in Fullscreen | Cmd+U | Toggles whether the tab bar is shown while in full screen mode. (milestone 7) | missing |
+| View > Show Tabs in Fullscreen | Shift+Cmd+U | Toggles whether the tab bar is shown while in full screen mode. | have, milestone 13d: Win+Shift+U flips Show tab bar in fullscreen (02:228) and its check follows |
 | View > Toggle Full Screen | Ctrl+Cmd+F | Toggles native full screen mode for the window. | have |
 | View > Toolbelt > Show Toolbelt | Shift+Cmd+B | Shows or hides the Toolbelt sidebar of utility panels. (milestone 9) | have |
 | View > Toolbelt > Set Default Width | no shortcut | Sets the current Toolbelt width as the default for new windows. (milestone 9) | have |
@@ -271,13 +271,15 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Tab > Edit Tab Title | no shortcut | Opens an editor to set a custom tab title override. (milestone 7) | have, milestone 7a |
 | Window > Tab > Select Tab > Select Next Tab | Shift+Cmd+] | Switches focus to the next tab. | have |
 | Window > Tab > Select Tab > Select Previous Tab | Shift+Cmd+[ | Switches focus to the previous tab. | have |
-| Window > Tab > Select Tab > Select Next Tab Group | Ctrl+Shift+Cmd+] | Switches focus to the next tab group. (milestone 7) | missing |
-| Window > Tab > Select Tab > Select Previous Tab Group | Ctrl+Shift+Cmd+[ | Switches focus to the previous tab group. (milestone 7) | missing |
+| Window > Tab > Select Tab > Select Next Tab Group | Ctrl+Shift+Cmd+] | Switches focus to the next tab group. | have, milestone 13d: Ctrl+Shift+Win+]; from a grouped tab it selects the first tab after its group, from an ungrouped tab the next tab; wraps, and a collapsed group reached expands |
+| Window > Tab > Select Tab > Select Previous Tab Group | Ctrl+Shift+Cmd+[ | Switches focus to the previous tab group. | have, milestone 13d: Ctrl+Shift+Win+[, as Select Next Tab Group in the other direction |
 | Window > Tab > Move Tab > Move Tab to New Window | no shortcut | Pulls the current tab out into its own new window. (milestone 7) | have, milestone 7a |
 | Window > Tab > Move Tab > Move Tab Left | Opt+Shift+Cmd+[ | Reorders the current tab one position to the left. | have |
 | Window > Tab > Move Tab > Move Tab Right | Opt+Shift+Cmd+] | Reorders the current tab one position to the right. | have |
-| Window > Tab > Add Tab to New Group... | no shortcut | Creates a new tab group containing the current tab. (milestone 7) | missing |
-| Window > Tab > Remove Tab from Group | no shortcut | Removes the current tab from its tab group. (milestone 7) | missing |
+| Window > Tab > Add Tab to New Group... | no shortcut | Creates a new tab group containing the current tab. | have, milestone 13d: "New Tab Group" asks "Enter a name for this tab group." seeded with the tab's trimmed label ("Group" when the label is empty); the group takes the next palette color and shows a colored chip before its tabs; the tab menu's Add Tab to Group submenu also joins existing groups |
+| Window > Tab > Remove Tab from Group | no shortcut | Removes the current tab from its tab group. | have, milestone 13d: the tab leaves the group and moves just after it |
+| Tab bar > tab context menu | right-click a tab | Select, Edit Session..., New Tab to the Right, Duplicate Tab, Close Tab, Close Other Tabs, Close Tabs to the Right, Move to New Window, Pin Tab or Unpin Tab, Add Tab to Group (New Group... and each group), Rename Group..., Remove Tab from Group, Save Tab as Window Arrangement, and Tab Color. | have, milestone 13d: iTerm2's sections and texts ("Below" on a side bar); a tmux tab has no Duplicate Tab or Pin Tab; Lock Layout disables the items that change the tabs; Tab Color opens milestone 13c's picker |
+| Tab bar > tab group chip menu | right-click a group's chip | New Tab in Group, Collapse or Expand Group, Rename Group..., Group Color, Duplicate Group, Move Group to New Window, Save Group as Window Arrangement..., Remove All Tabs from Group, Close Group, Close Other Tabs, and Close Tabs to the Right. | have, milestone 13d: Collapse Group is disabled when the group is the whole window; a click on the chip collapses or expands it; a drag by the chip moves the whole group; Group Color opens milestone 13c's picker |
 | Window > Split Pane > Select Split Pane > Select Pane Above | Opt+Cmd+Up | Moves focus to the pane directly above. | have |
 | Window > Split Pane > Select Split Pane > Select Pane Below | Opt+Cmd+Down | Moves focus to the pane directly below. | have |
 | Window > Split Pane > Select Split Pane > Select Pane Left | Opt+Cmd+Left | Moves focus to the pane to the left. | have |

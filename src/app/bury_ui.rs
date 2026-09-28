@@ -45,6 +45,8 @@ impl App {
             self.mru.forget(gone.id);
             self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
             self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+            // The neighbor selected may be hidden in a collapsed group.
+            self.expand_selected_group();
         }
         self.buried.bury(Buried { pane: id, window, tab, name });
         self.menus_dirty = true;
@@ -72,18 +74,18 @@ impl App {
                     let f = t.focused;
                     t.layout.split(f, Axis::Row, id);
                     t.focused = id;
-                    self.active = i;
+                    self.select_tab(i);
                 }
                 self.relayout();
             }
             Restore::NewTab(_) => {
-                self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+                self.tabs.push(Tab::new(self.next_tab_id, Layout::new(id), id));
                 self.next_tab_id += 1;
                 self.active = self.tabs.len() - 1;
                 self.relayout();
             }
             Restore::NewWindow => {
-                let tab = Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None };
+                let tab = Tab::new(self.next_tab_id, Layout::new(id), id);
                 self.next_tab_id += 1;
                 self.pending_windows.push(windows_ui::NewWindow::Tabs(vec![tab]));
             }
@@ -96,7 +98,7 @@ impl App {
         self.buried.take(id);
         self.menus_dirty = true;
         self.refresh_buried_menu();
-        self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+        self.tabs.push(Tab::new(self.next_tab_id, Layout::new(id), id));
         self.next_tab_id += 1;
         self.active = self.tabs.len() - 1;
         self.relayout();

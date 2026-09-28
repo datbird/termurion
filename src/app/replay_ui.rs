@@ -264,7 +264,7 @@ impl App {
         let inner = g.window.inner_position().ok()?;
         let (work, _) = self.monitor_rects()?;
         let window = Rect { x: pos.x as f32, y: pos.y as f32, w: outer.width as f32, h: outer.height as f32 };
-        let tabs_bottom = inner.y as f32 + self.window_room().y;
+        let tabs_bottom = inner.y as f32 + self.window_area().y;
         Some(replay_panel::origin(size, window, work, tabs_bottom))
     }
 
@@ -457,9 +457,11 @@ impl App {
         if let Some(p) = self.panes.get_mut(&id) {
             p.dvr = dvr;
         }
-        self.tabs.insert(0, Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+        self.tabs.insert(0, Tab::new(self.next_tab_id, Layout::new(id), id));
         self.next_tab_id += 1;
         self.active = 0;
+        // After any pinned tabs.
+        self.settle_tabs();
         self.relayout();
         self.recording_replay = Some(id);
     }

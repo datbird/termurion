@@ -152,14 +152,21 @@ pub fn scripts_folder_not_local(folder: &Path) -> String {
     format!("Scripts folder skipped: {} is reached through a link to a network path.\n", folder.display())
 }
 
-/// A path Tandem never touches as a file: a network path (`\\host`, `//host`, `\\?\UNC\`) or a
-/// device path (`\\.\`). The local long-path form `\\?\C:\` is an ordinary path.
+/// A path Tandem never touches as a file: a network path or a device path. `/` and `\` are
+/// alike, as Windows reads them: any two leading separators (`\\host`, `//host`, `\/host`,
+/// `/\host`) name a share or a device (`\\?\UNC\`, `\\.\`), and the NT prefix `\??\`
+/// reaches the same. Only the long-path forms of a drive, `\\?\C:\` and `\??\C:\`, are
+/// ordinary paths.
 pub fn is_network_path(text: &str) -> bool {
-    if let Some(rest) = text.strip_prefix(r"\\?\") {
-        let b = rest.as_bytes();
-        return !(b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':');
+    let sep = |c: u8| c == b'\\' || c == b'/';
+    let b = text.as_bytes();
+    let drive_follows = |at: usize| b.len() >= at + 2 && b[at].is_ascii_alphabetic() && b[at + 1] == b':';
+    // `\\?\` or `\??\` (either separator): local only before a drive letter.
+    let long = b.len() >= 4 && sep(b[0]) && sep(b[3]) && b[2] == b'?' && (sep(b[1]) || b[1] == b'?');
+    if long {
+        return !drive_follows(4);
     }
-    text.starts_with(r"\\") || text.starts_with("//")
+    b.len() >= 2 && sep(b[0]) && sep(b[1])
 }
 
 /// `%APPDATA%\Tandem\Scripts`, iTerm2's `<Application Support>/iTerm2/Scripts`.
@@ -469,8 +476,9 @@ mod tests {
         assert!(custom_folder_valid("~/s", home, &fs));
         assert_eq!(expand_tilde("~", home), home);
         assert_eq!(expand_tilde(r"D:\~s", home), PathBuf::from(r"D:\~s"));
-        // A network or device path is never probed; the local long-path form is a path.
-        for p in [r"\\host\s", "//host/s", r"\\?\UNC\host\s", r"\\.\D:\s"] {
+        // A network or device path is never probed, whichever separators spell it; the local
+        // long-path forms are paths.
+        for p in [r"\\host\s", "//host/s", r"\\?\UNC\host\s", r"\\.\D:\s", r"\/host/s", r"/\host\s", r"\??\UNC\host\s", r"\\.\UNC\host\s", r"//?/UNC/host/s", r"\\?\Volume{0}\s", r"\??\"] {
             fs.dirs.insert(PathBuf::from(p));
             assert!(!custom_folder_valid(p, home, &fs), "{p}");
             assert!(is_network_path(p), "{p}");
@@ -478,6 +486,7 @@ mod tests {
         fs.dirs.insert(PathBuf::from(r"\\?\D:\s"));
         assert!(custom_folder_valid(r"\\?\D:\s", home, &fs));
         assert!(!is_network_path(r"\\?\D:\s") && !is_network_path(r"D:\s"));
+        assert!(!is_network_path(r"\??\D:\s") && !is_network_path(r"\s") && !is_network_path("s") && !is_network_path(""));
         assert_eq!(scripts_folder(true, r"D:\s", appdata, home, &fs), PathBuf::from(r"D:\s"));
         assert_eq!(scripts_folder(true, r"~\s", appdata, home, &fs), PathBuf::from(r"C:\Users\u\s"));
         assert_eq!(scripts_folder(false, r"D:\s", appdata, home, &fs), default);
