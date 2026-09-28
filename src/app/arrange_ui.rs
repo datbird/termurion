@@ -251,18 +251,54 @@ pub(super) const BAD_FOLDER_KEY: &str = "NoSyncSuppressBadPWDInArrangementWarnin
 pub(super) const BROKEN_PROFILE: &str = "This arrangement\u{2019}s profile is missing. This could be due to a bug in iTerm2 version 3.5.7, which caused profiles to be corrupted in saved arrangements.";
 pub(super) const BROKEN_PROFILE_BAR: &str = "ArrangementMissingProfile";
 pub(super) const ASSIGN_PROFILE: &str = "Assign Profile";
-pub(super) const BROKEN_PROFILE_BUTTONS: [&str; 1] = [ASSIGN_PROFILE];
+/// The broken profile announcement's buttons: Assign Profile only when there is a named
+/// arrangement to write the choice back to (iTerm2's would write under a nil name).
+pub(super) fn broken_profile_buttons(named: bool) -> &'static [&'static str] {
+    if named { &[ASSIGN_PROFILE] } else { &[] }
+}
 pub(super) const SELECT_PROFILE: &str = "Select a profile to use for this session. Your selection will be saved back to the arrangement.";
 
 pub(super) fn bad_folder_text(arrangement: &str, folder: &str) -> String {
     format!("The saved arrangement \u{201c}{arrangement}\u{201d} has a bad initial directory of \u{201c}{folder}\u{201d} for this session.")
 }
 
-/// Whether a restored session's folder is announced as bad: only for a named arrangement
-/// (there is one to repair), never for a UNC folder (never probed), and only when it is
-/// not a folder.
-pub(super) fn check_folder(named: bool, folder: &str, is_dir: &dyn Fn(&std::path::Path) -> bool) -> bool {
-    named && !folder.trim().is_empty() && !crate::remote_prefs::is_unc(folder) && !is_dir(std::path::Path::new(folder))
+/// The banner line a local session whose folder is missing starts with (`PS:3612-3629`).
+pub(super) fn unavailable_text(folder: &str) -> String {
+    format!("The directory \u{201c}{folder}\u{201d} is unavailable. Started in home directory instead.")
+}
+
+/// How a restored session starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Launch {
+    /// A new shell (not one taken back).
+    pub launched: bool,
+    /// From a saved arrangement with a name (there is one to repair).
+    pub named: bool,
+    /// The profile's command type is SSH: the folder is the remote host's.
+    pub ssh: bool,
+}
+
+/// What a restored session's missing folder brings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FolderNotice {
+    Nothing,
+    /// Starts in home with `unavailable_text` (`iTermSessionFactory.m:340-358`).
+    Unavailable,
+    /// The bad folder bar with Repair (`PS:3561-3570`): only ssh skips the home fallback.
+    Repair,
+}
+
+/// A restored session's folder: nothing for a shell taken back, an empty folder, a UNC
+/// folder (never probed) or one that exists.
+pub(super) fn folder_notice(launch: Launch, folder: &str, is_dir: &dyn Fn(&std::path::Path) -> bool) -> FolderNotice {
+    if !launch.launched || folder.trim().is_empty() || crate::remote_prefs::is_unc(folder) || is_dir(std::path::Path::new(folder)) {
+        return FolderNotice::Nothing;
+    }
+    match (launch.ssh, launch.named) {
+        (false, _) => FolderNotice::Unavailable,
+        (true, true) => FolderNotice::Repair,
+        (true, false) => FolderNotice::Nothing,
+    }
 }
 
 /// Menu ids of the Restore Window Arrangement submenus' entries.
@@ -326,10 +362,21 @@ impl App {
                 ProfileChoice::Default => None,
             };
             let copied = guid.clone().filter(|_| !matches!(choice, ProfileChoice::Saved(_)));
-            self.start_dir_override = Some(arrangement::folder_for(&session));
+            // A local launch whose folder is missing starts in home (`iTermSessionFactory.m:340-358`).
+            let ssh = self.profile(guid.as_deref()).string("Custom Command") == "SSH";
+            let folder = session.get("Working Directory").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let notice = folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| p.is_dir());
+            self.start_dir_override = Some(match notice {
+                FolderNotice::Unavailable => arrangement::Folder::Forced(crate::profile::home().to_string_lossy().into_owned()),
+                _ => arrangement::folder_for(&session),
+            });
+            let mut launched = true;
             let id = match super::restore_ui::attach_key(&session) {
                 Some((host_id, pid, since)) => match self.attach_pane(area, guid.as_deref(), host_id, pid, since, super::restore_ui::saved_cookie(&session)) {
-                    Ok(id) => Some(id),
+                    Ok(id) => {
+                        launched = false;
+                        Some(id)
+                    }
                     Err(e) => {
                         self.banners.set("reattach", format!("A running shell could not be taken back ({e}); a new shell started in its place."));
                         self.start_pane(area, guid.as_deref())
@@ -352,7 +399,8 @@ impl App {
                         }
                     }
                     self.restore_clippings(id, &session);
-                    self.arrangement_announcements(id, &session, &choice, name);
+                    let notice = if launched { notice } else { FolderNotice::Nothing };
+                    self.arrangement_announcements(id, &session, &choice, name, notice, &folder);
                     started.push(id);
                     id
                 }
@@ -389,21 +437,31 @@ impl App {
         Ok(tab)
     }
 
-    /// A restored pane's announcements: a broken profile offers Assign Profile
-    /// (`PS:1960-1969`); a named arrangement's session remembers where it came from and
-    /// offers Repair when its folder is gone (`PS:3561-3570`).
-    fn arrangement_announcements(&mut self, pane: PaneId, session: &Value, choice: &ProfileChoice, name: Option<&str>) {
+    /// A restored pane's announcements: a broken profile offers Assign Profile when there is a
+    /// named arrangement to save it to (`PS:1960-1969`); a named arrangement's session remembers
+    /// where it came from; a missing folder shows the unavailable banner in the pane
+    /// (`PS:3612-3629`) or, for an ssh session, offers Repair (`PS:3561-3570`).
+    fn arrangement_announcements(&mut self, pane: PaneId, session: &Value, choice: &ProfileChoice, name: Option<&str>, notice: FolderNotice, folder: &str) {
         let from = name.zip(arrangement::session_guid(session)).map(|(n, g)| (n.to_string(), g));
         if let Some(p) = self.panes.get_mut(&pane) {
             p.arrangement = from.clone();
         }
         if *choice == ProfileChoice::Broken {
-            self.ask(pane, BROKEN_PROFILE_BAR, BROKEN_PROFILE, &BROKEN_PROFILE_BUTTONS, true);
+            self.ask(pane, BROKEN_PROFILE_BAR, BROKEN_PROFILE, broken_profile_buttons(from.is_some()), true);
         }
-        let Some((name, _)) = from else { return };
-        let folder = session.get("Working Directory").and_then(|v| v.as_str()).unwrap_or_default();
-        if !self.globals.bool(BAD_FOLDER_KEY) && check_folder(true, folder, &|p| p.is_dir()) {
-            self.ask(pane, BAD_FOLDER_BAR, &bad_folder_text(&name, folder), &BAD_FOLDER_BUTTONS, false);
+        match notice {
+            FolderNotice::Unavailable => {
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    let grays = crate::restore_state::banner_grays(p.screen.palette.bg);
+                    p.screen.feed_restored("", None, Some((&unavailable_text(folder), grays)));
+                }
+            }
+            FolderNotice::Repair => {
+                if let Some((name, _)) = from.filter(|_| !self.globals.bool(BAD_FOLDER_KEY)) {
+                    self.ask(pane, BAD_FOLDER_BAR, &bad_folder_text(&name, folder), &BAD_FOLDER_BUTTONS, false);
+                }
+            }
+            FolderNotice::Nothing => {}
         }
     }
 
@@ -609,21 +667,38 @@ mod tests {
         assert_eq!(BAD_FOLDER_BAR, "ThisProfileNoLongerExists", "iTerm2 reuses the missing-profile identifier");
         assert_eq!(BROKEN_PROFILE, "This arrangement\u{2019}s profile is missing. This could be due to a bug in iTerm2 version 3.5.7, which caused profiles to be corrupted in saved arrangements.");
         assert_eq!(BROKEN_PROFILE_BAR, "ArrangementMissingProfile");
-        assert_eq!(BROKEN_PROFILE_BUTTONS, [ASSIGN_PROFILE]);
+        assert_eq!(broken_profile_buttons(true), [ASSIGN_PROFILE]);
+        assert!(broken_profile_buttons(false).is_empty(), "no named arrangement to write back to");
         assert_eq!(ASSIGN_PROFILE, "Assign Profile");
         assert_eq!(SELECT_PROFILE, "Select a profile to use for this session. Your selection will be saved back to the arrangement.");
         assert_eq!(BAD_FOLDER_KEY, "NoSyncSuppressBadPWDInArrangementWarning");
+    }
+
+    /// A missing folder (`iTermSessionFactory.m:340-358`, `PS:3561-3570`, `PS:3612-3629`): a
+    /// local launch starts in home with the unavailable banner; only an ssh session keeps the
+    /// saved folder and, in a named arrangement, offers Repair; a shell taken back was never
+    /// launched.
+    #[test]
+    fn missing_folder_follows_iterm2() {
+        use FolderNotice::*;
+        assert_eq!(unavailable_text(r"D:\gone"), "The directory \u{201c}D:\\gone\u{201d} is unavailable. Started in home directory instead.");
         let none = |_: &std::path::Path| false;
         let probed = std::cell::Cell::new(false);
         let watch = |_: &std::path::Path| {
             probed.set(true);
             false
         };
-        assert!(check_folder(true, r"D:\gone", &none), "a named arrangement whose folder is missing");
-        assert!(!check_folder(true, r"C:\here", &|_: &std::path::Path| true), "a folder that exists");
-        assert!(!check_folder(false, r"D:\gone", &none), "window restoration has no arrangement to repair");
-        assert!(!check_folder(true, "", &none), "no folder");
-        assert!(!check_folder(true, r"\\host\share\x", &watch) && !probed.get(), "a UNC folder is never probed");
-        assert!(!check_folder(true, "//host/share", &watch) && !probed.get());
+        let local = |named| Launch { launched: true, named, ssh: false };
+        let ssh = |named| Launch { launched: true, named, ssh: true };
+        assert_eq!(folder_notice(local(true), r"D:\gone", &none), Unavailable, "a local launch: home and the banner, no Repair");
+        assert_eq!(folder_notice(local(false), r"D:\gone", &none), Unavailable, "window restoration too");
+        assert_eq!(folder_notice(ssh(true), r"D:\gone", &none), Repair, "an ssh session in a named arrangement");
+        assert_eq!(folder_notice(ssh(false), r"D:\gone", &none), Nothing, "window restoration has no arrangement to repair");
+        assert_eq!(folder_notice(Launch { launched: false, named: true, ssh: false }, r"D:\gone", &none), Nothing, "a shell taken back");
+        assert_eq!(folder_notice(local(true), r"C:\here", &|_: &std::path::Path| true), Nothing, "a folder that exists");
+        assert_eq!(folder_notice(local(true), "", &none), Nothing, "no folder");
+        assert_eq!(folder_notice(local(true), r"\\host\share\x", &watch), Nothing);
+        assert_eq!(folder_notice(ssh(true), "//host/share", &watch), Nothing);
+        assert!(!probed.get(), "a UNC folder is never probed");
     }
 }

@@ -200,10 +200,15 @@ pub fn local_path(reported: &str) -> Option<std::path::PathBuf> {
     (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':').then(|| std::path::PathBuf::from(s.replace('/', "\\")))
 }
 
+/// The home folder a session starts in: %USERPROFILE%.
+pub fn home() -> std::path::PathBuf {
+    std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir)
+}
+
 /// `start_dir`, with the directory of the session a new one comes from ("Reuse previous
 /// session's directory"). A missing or unusable directory falls back to home.
 pub fn start_dir_with(p: &Profile, previous: Option<&std::path::Path>) -> (std::path::PathBuf, Option<String>) {
-    let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let home = home();
     if p.string("Custom Directory") == "Recycle" {
         return (previous.filter(|d| d.is_dir()).map(|d| d.to_path_buf()).unwrap_or(home), None);
     }
