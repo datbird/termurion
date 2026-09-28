@@ -109,7 +109,10 @@ impl PaneSsh {
     /// EndSSH (`PS:20253-20275`): connecting ends and its queue is dropped; when hops ended,
     /// the banner to show, and the caller writes `END_WRITE` first.
     pub fn end_ssh(&mut self, unique_id: &str) -> Option<String> {
-        // 14a drops the queue even when no hop matches; iTerm2 keeps it for a later conductor.
+        // iTerm2 ends connecting even when no hop matches and never sends the queue: it drops
+        // it when a hop ends (`PS:20270-20273`) and otherwise the next
+        // screenWillBeginSSHIntegration replaces it (`PS:20277-20281`), so dropping it here is
+        // the same.
         self.connecting = None;
         match self.chain.end(unique_id) {
             0 => None,

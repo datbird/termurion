@@ -637,29 +637,26 @@ impl Pane {
     /// screenEndSSH (`PS:20253-20275`) for the pane: the hops end through the innermost one
     /// with `unique_id`, then one conductor per ended hop is popped, innermost first, so the
     /// outermost popped one's saved state is what remains. The count comes before the end,
-    /// which removes the hops it counts. The banner to show when any hop ended; the caller
-    /// writes `END_WRITE` first.
+    /// which removes the hops it counts. When any hop ended, `END_WRITE` is written and the
+    /// banner to show is returned. What was typed while connecting is dropped (14a's
+    /// `PaneSsh::end_ssh`, `PS:20270-20273`); so are the writes a popped setup held, unless a
+    /// remaining conductor still sets up (controller rulings: dropped as iTerm2 drops them,
+    /// never sent to the local shell after ssh exited).
     pub fn end_ssh(&mut self, unique_id: &str) -> Option<String> {
         let n = self.ssh.chain.count_to(unique_id);
-        // 14a's end_ssh ends connecting and drops its queue: typed keys must never vanish.
-        let connecting = self.ssh.connecting.take().unwrap_or_default();
         let banner = self.ssh.end_ssh(unique_id);
         for _ in 0..n {
             self.pop_conductor();
         }
         if banner.is_some() {
-            self.write_no_broadcast(crate::ssh_session::END_WRITE);
-        }
-        // Controller ruling: what setup kept (the connecting queue, then the held writes, in
-        // the order typed) goes out once nothing holds writes, after END_WRITE's ^C; while a
-        // conductor still holds, it waits for that one's unhook (iTerm2 drops the queue and
-        // keeps the held writes for a later unhook).
-        let mut kept = connecting;
-        kept.append(&mut self.ssh_held);
-        if self.conductor.as_ref().is_some_and(|c| c.queue_writes()) {
-            self.ssh_held = kept;
-        } else {
-            self.write_no_broadcast(&kept);
+            // Keys typed for a remote shell that is gone. A remaining conductor that still sets
+            // up keeps them for its own unhook, as iTerm2 keeps `_sshWriteQueue` for
+            // `screenDidUnhookSSHConductor` (`PS:20176-20180`): they are for that remote.
+            if !self.conductor.as_ref().is_some_and(|c| c.queue_writes()) {
+                self.ssh_held.clear();
+            }
+            // writeTaskNoBroadcast (`PS:20269`): held behind them while a conductor sets up.
+            self.reply(crate::ssh_session::END_WRITE);
         }
         banner
     }
@@ -677,8 +674,9 @@ impl Pane {
     /// conductor and its hop go. Then Tandem's part: the DCS hook lets go, so later output
     /// shows (ruling 14b-3, iTerm2 bugs B4 and B13); the held writes (the raw
     /// `exec_login_shell` line among them) are dropped (iTerm2 strands them); connecting ends
-    /// and what was typed meanwhile goes to the pty, since typed keys never vanish (controller
-    /// ruling). Typing after this goes straight to the pty.
+    /// and what was typed meanwhile is dropped (controller ruling: those keys were for the
+    /// remote shell, and conductor.sh may still be reading command lines). Typing after this
+    /// goes straight to the pty.
     pub fn abort_ssh(&mut self, reason: &str) {
         let location = self.conductor.as_ref().and_then(|c| c.parent.as_ref()).map(|p| p.identity().compact(&crate::ssh_args::local_user()));
         let screen = self.own_mut();
@@ -688,9 +686,8 @@ impl Pane {
         self.ssh_unhook_conductor();
         self.unhook_ssh();
         self.ssh_held.clear();
-        // Controller ruling: typing made while connecting is never lost; nothing holds now.
-        let queued = self.ssh.stop_queueing();
-        self.write_no_broadcast(&queued);
+        // Connecting ends so later typing is not queued behind a dead conductor; its queue goes.
+        self.ssh.stop_queueing();
     }
 
     /// Applies what the pane's conductors asked for, until they ask nothing more. True when
@@ -703,7 +700,7 @@ impl Pane {
             if effects.is_empty() {
                 break;
             }
-            for effect in effects {
+            'batch: for effect in effects {
                 match effect {
                     Effect::Write(bytes) => self.write_no_broadcast(&bytes),
                     Effect::SessionWrite(bytes) => self.write_unless_held(&bytes),
@@ -730,11 +727,14 @@ impl Pane {
                         self.own_mut().append_banner(&text);
                         redraw = true;
                     }
-                    // Keys already taken in this batch are applied after the abort, to the
-                    // pty; only effects left on the popped conductor go with it.
+                    // The rest of the batch came from the failed setup (keys for its remote,
+                    // its writes) and goes with it: after the pop the route is Direct, so
+                    // applying it would send those bytes to whatever runs now. A remaining
+                    // parent's own later effects come in the next pass.
                     Effect::Abort(reason) => {
                         self.abort_ssh(&reason);
                         redraw = true;
+                        break 'batch;
                     }
                 }
             }
@@ -1500,7 +1500,7 @@ mod tests {
         assert_eq!(p.ssh_deadline(), Some(t0 + secs(30)));
 
         assert!(p.tick_ssh(t0 + secs(31)));
-        assert_eq!(p.tmux_io().unwrap().take_input(), b"early", "typing made while connecting arrives; the raw exec_login_shell does not");
+        assert!(p.tmux_io().unwrap().take_input().is_empty(), "neither the raw exec_login_shell nor the typing (dropped, as iTerm2)");
         assert_eq!(p.ssh.connecting, None, "connecting ended");
         assert!(p.ssh_held.is_empty());
         assert!(p.conductor.is_none());
@@ -1541,17 +1541,18 @@ mod tests {
     }
 
     #[test]
-    fn end_ssh_releases_held_typing() {
-        // Controller ruling: EndSSH ending a conductor that still sets up sends what it held.
+    fn end_ssh_drops_held_typing() {
+        // Controller ruling: EndSSH ending a conductor that still sets up drops what it held;
+        // only END_WRITE goes out, never the keys meant for the remote shell.
         let mut p = hooked_setup(std::time::Instant::now(), false);
         p.ssh.stop_queueing();
         p.write_session(b"ls\r");
         assert_eq!(p.ssh_held, b"ls\r");
         assert_eq!(p.end_ssh("a").as_deref(), Some("ssh exited."));
-        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\nls\r", "after END_WRITE, so its ^C does not eat them");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\n");
         assert!(p.ssh_held.is_empty());
 
-        // An id no hop has: the conductor still sets up, so they stay held.
+        // An id no hop has: nothing ends (`PS:20255-20259`), so they stay held.
         let mut p = hooked_setup(std::time::Instant::now(), false);
         p.ssh.stop_queueing();
         p.write_session(b"ls\r");
@@ -1561,18 +1562,21 @@ mod tests {
     }
 
     #[test]
-    fn end_ssh_while_connecting_releases_typing() {
-        // Controller ruling (b): the connecting queue goes out too, ahead of held typing.
+    fn end_ssh_while_connecting_drops_typing() {
+        // The connecting queue and the held writes both go; only END_WRITE is written.
         let mut p = hooked_setup(std::time::Instant::now(), false);
         p.write_session(b"early");
         assert_eq!(p.ssh.connecting.as_deref(), Some(&b"early"[..]));
         p.ssh_held.extend_from_slice(b"held");
         assert_eq!(p.end_ssh("a").as_deref(), Some("ssh exited."));
-        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\nearlyheld", "after END_WRITE, the connecting queue first");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\n");
         assert_eq!(p.ssh.connecting, None);
         assert!(p.ssh_held.is_empty());
 
-        // A remaining conductor still holds writes: both wait for its unhook, in order.
+        // A remaining conductor still sets up (nested case, controller ruling): the connecting
+        // queue goes, while what it held stays for its own unhook, with END_WRITE held behind
+        // it (writeTaskNoBroadcast, `PS:20176-20180`, `PS:20269`). Nothing reaches the pty,
+        // where conductor.sh reads command lines.
         let mut p = hooked_setup(std::time::Instant::now(), false);
         let inner = crate::conductor::Conductor::new(crate::conductor::Setup { client_unique_id: "b".into(), ..Default::default() }, p.conductor.take(), "V");
         p.conductor = Some(Box::new(inner));
@@ -1580,9 +1584,24 @@ mod tests {
         p.write_session(b"early");
         p.ssh_held.extend_from_slice(b"held");
         assert_eq!(p.end_ssh("b").as_deref(), Some("ssh exited \u{2014} now at a.example."));
-        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\n", "only END_WRITE");
+        assert!(p.tmux_io().unwrap().take_input().is_empty());
         assert_eq!(p.ssh.connecting, None);
-        assert_eq!(p.ssh_held, b"earlyheld");
+        assert_eq!(p.ssh_held, b"held\x03\n");
+    }
+
+    #[test]
+    fn keys_after_an_abort_in_one_batch_are_dropped() {
+        // A coprocess (or StopQueueingInput) handed keys to the conductor after it failed:
+        // the batch is SessionWrite, Abort, Keys.
+        let mut p = hooked_setup(std::time::Instant::now(), false);
+        p.ssh.stop_queueing();
+        let c = p.conductor.as_mut().unwrap();
+        c.fail("boom");
+        c.send_keys(b"typed");
+        assert!(p.apply_ssh_effects());
+        assert!(p.conductor.is_none());
+        assert!(p.tmux_io().unwrap().take_input().is_empty(), "the failed setup's keys and writes never reach the pty");
+        assert!(p.screen.all_text().contains("boom"));
     }
 
     #[test]
