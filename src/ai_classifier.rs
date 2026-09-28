@@ -35,7 +35,10 @@ pub const MAX_ENTRIES: usize = 40;
 pub const MAX_CHARS: usize = 4000;
 /// `CommandSafetyChecker.makeClassifier`'s `maxEntries`: the trailing entries the check keeps.
 pub const SAFETY_TRANSCRIPT_CAP: usize = 15;
-pub const MAX_TOKENS: u32 = 512;
+/// The room the check's one-shot reserves for its answer when it cuts the transcript to the
+/// model's context (`Wire.response_limit`). Not a cap: no `max_tokens` is sent for it, as
+/// iTerm2's `maxTokens: 512` reaches a backend that ignores it.
+pub const HISTORY_RESPONSE_ROOM: u32 = 512;
 pub const TUI_REASON: &str = "Interactive terminal application \u{2014} review the intended action before allowing input.";
 pub const NAG_HEADING: &str = "Enable Command Safety Checking?";
 pub const NAG_TEXT: &str = "Tandem can use AI to check the safety of commands suggested by your AI agent. Would you like to enable safety checking?\n\nWhen enabled, each proposed command will be sent to your configured AI provider for a safety check.";
@@ -515,7 +518,7 @@ mod tests {
         assert_eq!(pre_check(&tool("ls"), true, Posix), Some(Decision::NeedsManualApproval(TUI_REASON.to_string())));
         assert_eq!(TUI_REASON, "Interactive terminal application \u{2014} review the intended action before allowing input.");
         assert_eq!(pre_check(&user("rm -rf /"), false, Posix), None, "a user turn defers");
-        assert_eq!(pre_check(&tool("del /s /q C:\\"), false, ShellKind::Cmd).is_some(), true, "the Windows set applies to cmd");
+        assert!(pre_check(&tool("del /s /q C:\\"), false, ShellKind::Cmd).is_some(), "the Windows set applies to cmd");
     }
 
     fn msg(author: Participant, content: Content) -> Message {
@@ -559,7 +562,7 @@ mod tests {
         assert_eq!(NO_MODEL, "No AI model is configured to classify command safety.");
         assert_eq!(NO_CONSENT, "The AI safety check could not run because requests to this model's host are not allowed.");
         assert_eq!(NAG_KEY, "NoSyncAISafetyCheckNagComplete");
-        assert_eq!((MAX_ENTRIES, MAX_CHARS, MAX_TOKENS), (40, 4000, 512));
+        assert_eq!((MAX_ENTRIES, MAX_CHARS, HISTORY_RESPONSE_ROOM), (40, 4000, 512));
     }
 
     #[test]

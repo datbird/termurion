@@ -107,11 +107,12 @@ pub(super) fn messages(entries: &[Entry], line: &str) -> Vec<WireMessage> {
     vec![WireMessage::text(Role::System, &ai_classifier::system_prompt()), WireMessage::text(Role::User, &ai_classifier::render(&recent, &action))]
 }
 
-/// Starts the one-shot: non-streaming, no tools, the classifier's 512-token cap as
-/// `Wire.response_limit` (iTerm2 passes `maxTokens` to a backend that ignores it, so the wire's
-/// own response cap stays the model's; Decision). A reply or failure at once is Done.
+/// Starts the one-shot: non-streaming, no tools. No response cap is sent: iTerm2 passes
+/// `maxTokens: 512` to a backend that ignores it, so the request's `max_tokens` stays the model's
+/// own; the 512 only sizes the history cut as `Wire.response_limit`. A reply or failure at once
+/// is Done.
 pub(super) fn start_run(model: Model, endpoint: Endpoint, msgs: Vec<WireMessage>, wire: Wire, transport: Arc<dyn Transport>, options: Options, notify: Notify, key: Option<&Secret>) -> CheckState {
-    let wire = Wire { response_limit: i64::from(ai_classifier::MAX_TOKENS), ..wire };
+    let wire = Wire { response_limit: i64::from(ai_classifier::HISTORY_RESPONSE_ROOM), ..wire };
     let turn = ai_turn::one_shot(model, msgs, wire, String::new());
     let mut runner = Runner::new(turn, transport, options, notify);
     let outs = runner.start(key);
@@ -139,7 +140,7 @@ impl super::App {
     /// "AI Safety Check" as stored: None when the globals file has no value for it (the nag's
     /// "never set"; `Globals::set` drops a value equal to the default).
     fn ai_safety_setting(&self) -> Option<bool> {
-        self.globals.values.get(crate::ai_settings::SAFETY_CHECK).and_then(toml::Value::as_bool)
+        self.globals.optional_bool(crate::ai_settings::SAFETY_CHECK)
     }
 
     fn ai_nag_step(&self) -> ai_classifier::NagStep {
@@ -275,11 +276,10 @@ mod tests {
     use crate::ai_settings::{Api, ENABLE_AI};
     use crate::chat_gate::endpoint_of;
     use crate::globals::Globals;
-    use std::path::Path;
     use toml::Value;
 
     fn globals() -> Globals {
-        let mut g = Globals::empty(Path::new("ai-safety-test.toml"));
+        let mut g = Globals::empty(&std::env::temp_dir().join("tandem-ai-safety-test.toml"));
         g.set(ENABLE_AI, Value::Boolean(true));
         g
     }
@@ -412,5 +412,17 @@ mod tests {
         let user = m[1].body.content().unwrap();
         assert!(user.contains("User: turn19") && user.contains("User: turn05") && !user.contains("turn04"), "the last 15 only: {user}");
         assert!(user.ends_with("then emit\nyour <block> tag."));
+    }
+
+    #[test]
+    fn a_touched_setting_ends_the_nag() {
+        // Turned on, then off, before any command: the setting was chosen, so the one-time
+        // question never shows (iTerm2's `object(forKey:) != nil`, `RCM:36-38`).
+        let mut g = globals();
+        g.set(crate::ai_settings::SAFETY_CHECK, Value::Boolean(true));
+        g.set(crate::ai_settings::SAFETY_CHECK, Value::Boolean(false));
+        assert_eq!(g.optional_bool(crate::ai_settings::SAFETY_CHECK), Some(false));
+        assert_eq!(ai_classifier::nag_step(g.optional_bool(crate::ai_settings::SAFETY_CHECK), false, true), ai_classifier::NagStep::Skip);
+        assert_eq!(ai_classifier::nag_step(globals().optional_bool(crate::ai_settings::SAFETY_CHECK), false, true), ai_classifier::NagStep::Ask, "never set still asks");
     }
 }
