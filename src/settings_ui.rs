@@ -567,9 +567,10 @@ fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, pro
     let current = function.as_ref().map(|(_, id)| id.clone());
     let (text, items) = title_choice(components, function, providers);
     let mut picked = None;
+    let mut popup_rect = None;
     ui.horizontal(|ui| {
         ui.label(&s.label);
-        egui::ComboBox::from_id_salt(&s.key).selected_text(text).show_ui(ui, |ui| {
+        let r = egui::ComboBox::from_id_salt(&s.key).selected_text(text).show_ui(ui, |ui| {
             for (i, (label, id)) in items.iter().enumerate() {
                 let (on, enabled) = if i == 0 { (!custom, true) } else { (custom && current.as_deref() == Some(id.as_str()), providers.iter().any(|(_, p)| p == id)) };
                 if ui.add_enabled(enabled, egui::Button::selectable(on, label.as_str())).clicked() {
@@ -580,9 +581,13 @@ fn title_function_row(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, pro
                 }
             }
         });
+        popup_rect = Some(r.response.rect);
     })
     .response
     .on_hover_text(&s.help);
+    if let Some(rect) = popup_rect.filter(|_| settings_keys::indicate_non_default() && !profile_is_default(profile, s, &s.key)) {
+        settings_keys::non_default_bar(ui, rect, ui.is_enabled());
+    }
     match picked {
         None => false,
         Some(0) => {
@@ -620,9 +625,27 @@ pub fn edit_key(profile: &Profile, s: &Setting, dark: bool) -> String {
 /// DefaultBookmark.plist's (the schema's seed) or else iTerm2's default, within 0.001. The
 /// fonts compare with Tandem's new-profile font, which stands in for Monaco 12; the Guid has no
 /// control and is never marked.
+///
+/// The controls iTerm2 gives a `hasDefaultValue` of their own follow it: the working directory
+/// (`working_directory_is_default`), Unicode version 9 (`ProfilesTextPreferencesViewController.m:296-299`,
+/// a missing value reading 9 as `iTermProfilePreferences.m:1553-1564`), and the Title Function
+/// popup, which is iTerm2's title popup keyed by Title Components
+/// (`ProfilesGeneralPreferencesViewController.m:397-398`). Has Hotkey's override (default while
+/// off, `ProfilesKeysPreferencesViewController.m:196-198`) is the ordinary rule.
 pub fn profile_is_default(profile: &Profile, s: &Setting, key: &str) -> bool {
-    if key == profile::GUID {
-        return true;
+    match key {
+        profile::GUID => return true,
+        "Working Directory" => {
+            let home = std::env::var("USERPROFILE").unwrap_or_default();
+            return working_directory_is_default(profile.values.get(key), &home);
+        }
+        "Unicode Version" => return profile.values.get(key).map_or(9, |v| v.as_integer().unwrap_or(0)) == 9,
+        "Title Function" => {
+            if let Some(components) = schema::find("Title Components") {
+                return profile_is_default(profile, components, "Title Components");
+            }
+        }
+        _ => {}
     }
     let (value, preset) = if let Some(variant) = key.strip_prefix(s.key.as_str()).filter(|v| !v.is_empty()) {
         let (seed, default) = if variant == " (Dark)" { (&s.seed_dark, &s.default_dark) } else { (&s.seed_light, &s.default_light) };
@@ -634,6 +657,14 @@ pub fn profile_is_default(profile: &Profile, s: &Setting, key: &str) -> bool {
         (profile.get(key), s.seed.clone().or_else(|| s.default.clone()))
     };
     settings_keys::nullably_equal(value.as_ref(), preset.as_ref())
+}
+
+/// The working directory field's rule (`ProfilesGeneralPreferencesViewController.m:356-359`,
+/// "Because new profiles are initialized with NSHomeDirectory here"): default when the text is
+/// the home folder. Tandem's new profiles store an empty path, which is default too.
+pub fn working_directory_is_default(value: Option<&Value>, home: &str) -> bool {
+    let text = value.and_then(Value::as_str).unwrap_or("");
+    text.is_empty() || text == home
 }
 
 /// Font settings follow the default profile until each pane can have its own renderer.
@@ -865,6 +896,53 @@ mod tests {
         assert!(profile_is_default(&f, font, "Normal Font"));
         f.set("Normal Font", Value::String("Monaco 12".into()));
         assert!(!profile_is_default(&f, font, "Normal Font"));
+    }
+
+    /// iTerm2's `hasDefaultValue` overrides for the profile controls that have one.
+    #[test]
+    fn profile_custom_indicators_follow_iterm2() {
+        // `ProfilesGeneralPreferencesViewController.m:356-359`: the working directory is default
+        // when it is the home folder (iTerm2 seeds new profiles with it); Tandem seeds new
+        // profiles with an empty path, so that is default too.
+        let home = "C:\\Users\\rob";
+        let wd = |s: &str| Some(Value::String(s.into()));
+        assert!(working_directory_is_default(wd(home).as_ref(), home));
+        assert!(working_directory_is_default(wd("").as_ref(), home));
+        assert!(working_directory_is_default(None, home));
+        assert!(!working_directory_is_default(wd("C:\\src").as_ref(), home));
+        assert!(!working_directory_is_default(wd("~").as_ref(), home), "iTerm2 compares the text");
+        let dir = crate::schema::find("Working Directory").unwrap();
+        let mut p = Profile::new("Default");
+        assert!(profile_is_default(&p, dir, "Working Directory"));
+        let user = std::env::var("USERPROFILE").unwrap_or_default();
+        p.set("Working Directory", Value::String(user));
+        assert!(profile_is_default(&p, dir, "Working Directory"));
+        p.set("Working Directory", Value::String("C:\\definitely-not-home".into()));
+        assert!(!profile_is_default(&p, dir, "Working Directory"));
+        // `ProfilesTextPreferencesViewController.m:296-299`: Unicode version 9 is default, and a
+        // missing value reads 9 (`iTermProfilePreferences.m:1553-1564`).
+        let uv = crate::schema::find("Unicode Version").unwrap();
+        let mut p = Profile::default();
+        assert!(profile_is_default(&p, uv, "Unicode Version"));
+        p.set("Unicode Version", Value::Integer(8));
+        assert!(!profile_is_default(&p, uv, "Unicode Version"));
+        p.set("Unicode Version", Value::Integer(9));
+        assert!(profile_is_default(&p, uv, "Unicode Version"));
+        // `ProfilesKeysPreferencesViewController.m:196-198`: Has Hotkey is default while off.
+        let hk = crate::schema::find("Has Hotkey").unwrap();
+        let mut p = Profile::new("Default");
+        assert!(profile_is_default(&p, hk, "Has Hotkey"));
+        p.set("Has Hotkey", Value::Boolean(true));
+        assert!(!profile_is_default(&p, hk, "Has Hotkey"));
+        // `ProfilesGeneralPreferencesViewController.m:397-398`: the title popup's key is Title
+        // Components, so the Title Function popup is marked by it.
+        let tf = crate::schema::find("Title Function").unwrap();
+        let mut p = Profile::new("Default");
+        assert!(profile_is_default(&p, tf, "Title Function"));
+        p.set("Title Function", crate::jobtitle::title_function_value("Hello", "com.ex.t"));
+        assert!(profile_is_default(&p, tf, "Title Function"), "the function alone is not the popup's key");
+        p.set("Title Components", Value::Integer(i64::from(crate::jobtitle::CUSTOM)));
+        assert!(!profile_is_default(&p, tf, "Title Function"));
     }
 
     /// `PSV:569-573`: opened from a tmux session, both status bar controls are disabled.

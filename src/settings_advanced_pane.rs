@@ -138,6 +138,21 @@ fn value_cell(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState, row: &
     }
 }
 
+/// The header pinned at the top of the list (NSTableView floats group rows, and iTerm2's pane is
+/// one with a group row per category, `ASVC:709-713`): `headers` are each header's top and
+/// height, `top` the visible top, in the same coordinates. The last header scrolled above the
+/// top is pinned there, and the next header pushes it up as it arrives; None while a header is
+/// in its own place at the top or none is above it. Returns the header's index and top.
+pub fn pinned_header(headers: &[(f32, f32)], top: f32) -> Option<(usize, f32)> {
+    let i = headers.iter().rposition(|&(y, _)| y <= top)?;
+    let (y, height) = headers[i];
+    if y == top {
+        return None;
+    }
+    let pushed = headers.get(i + 1).map_or(top, |&(next, _)| next - height);
+    Some((i, top.min(pushed)))
+}
+
 /// The Advanced pane: the search field and "Show only non-default values" above a list of
 /// every Advanced setting under its category (`ASVC`, `XIB:10672-10767`). Returns true when a
 /// change should be saved.
@@ -150,19 +165,22 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool 
     let rows = all_rows();
     let keep = st.editing.as_ref().map(|(k, _)| k.clone());
     let items = advanced_pane::filtered(rows, &st.query, st.only_non_default, &|k| g.values.get(k).cloned(), keep.as_deref());
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        let label_width = (ui.available_width() * 0.65).max(200.0);
-        let setting_row = |ui: &mut egui::Ui, label: &mut dyn FnMut(&mut egui::Ui), value: &mut dyn FnMut(&mut egui::Ui)| {
-            ui.horizontal(|ui| {
-                ui.set_min_height(30.0);
-                ui.allocate_ui_with_layout(egui::vec2(label_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.set_width(label_width);
-                    label(ui);
-                });
-                value(ui);
+    let label_width = (ui.available_width() * 0.65).max(200.0);
+    let setting_row = |ui: &mut egui::Ui, label: &mut dyn FnMut(&mut egui::Ui), value: &mut dyn FnMut(&mut egui::Ui)| {
+        ui.horizontal(|ui| {
+            ui.set_min_height(30.0);
+            ui.allocate_ui_with_layout(egui::vec2(label_width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(label_width);
+                label(ui);
             });
-        };
-        setting_row(ui, &mut |ui| _ = ui.strong(advanced_pane::SETTING_COLUMN), &mut |ui| _ = ui.strong(advanced_pane::VALUE_COLUMN));
+            value(ui);
+        });
+    };
+    // The table's column headers stay above the scrolling rows, as NSTableView's header view.
+    setting_row(ui, &mut |ui| _ = ui.strong(advanced_pane::SETTING_COLUMN), &mut |ui| _ = ui.strong(advanced_pane::VALUE_COLUMN));
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        // Each header's category, top and height, for the pinned header.
+        let mut headers: Vec<(&str, f32, f32)> = Vec::new();
         for (n, item) in items.into_iter().enumerate() {
             // Striped as the table's rows; the stripe goes under the row once its height is known.
             let stripe = ui.painter().add(egui::Shape::Noop);
@@ -170,11 +188,8 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool 
             match item {
                 // A group row (`ASVC:709-713`): the header spans the whole row.
                 Item::Header(category) => {
-                    ui.vertical(|ui| {
-                        ui.set_min_height(30.0);
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new(category).strong().size(20.0));
-                    });
+                    let r = ui.vertical(|ui| header_row(ui, category)).response;
+                    headers.push((category, r.rect.top(), r.rect.height()));
                 }
                 Item::Setting(i) => {
                     let row = &rows[i];
@@ -202,8 +217,27 @@ pub fn page(ui: &mut egui::Ui, g: &mut Globals, st: &mut AdvancedState) -> bool 
                 ui.painter().set(stripe, egui::Shape::rect_filled(rect, 0.0, ui.visuals().faint_bg_color));
             }
         }
+        let tops: Vec<(f32, f32)> = headers.iter().map(|&(_, y, h)| (y, h)).collect();
+        let visible = ui.clip_rect();
+        if let Some((i, y)) = pinned_header(&tops, visible.top()) {
+            let (category, _, height) = headers[i];
+            let rect = egui::Rect::from_x_y_ranges(visible.x_range(), y..=y + height);
+            // The pinned header covers the rows under it and takes their clicks.
+            ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
+            ui.interact(rect, ui.id().with("advanced-pinned-header"), egui::Sense::click());
+            let mut pinned = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+            header_row(&mut pinned, category);
+        }
     });
     changed
+}
+
+/// A group row (`ASVC:174-176`, `:709-713`): the category in bold 20 points after an 8-point
+/// space, the row at least 30 points tall.
+fn header_row(ui: &mut egui::Ui, category: &str) {
+    ui.set_min_height(30.0);
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(category).strong().size(20.0));
 }
 
 #[cfg(test)]
@@ -251,6 +285,24 @@ mod tests {
         let default = prefix.default.as_ref().and_then(Value::as_str).unwrap().to_string();
         text_write(&mut g, &prefix, &default);
         assert!(!g.values.contains_key("tmuxTitlePrefix"));
+    }
+
+    /// NSTableView floats group rows (iTerm2's pane is an NSTableView with group rows,
+    /// `ASVC:709-713`): the last header scrolled above the top stays pinned there, and the next
+    /// header pushes it up as it arrives.
+    #[test]
+    fn pinned_header_follows_iterm2() {
+        // Headers at 0, 100 and 300, each 30 tall.
+        let headers = [(0.0, 30.0), (100.0, 30.0), (300.0, 30.0)];
+        assert_eq!(pinned_header(&headers, 0.0), None, "the first header is in place");
+        assert_eq!(pinned_header(&headers, -10.0), None);
+        assert_eq!(pinned_header(&headers, 10.0), Some((0, 10.0)));
+        assert_eq!(pinned_header(&headers, 50.0), Some((0, 50.0)));
+        assert_eq!(pinned_header(&headers, 80.0), Some((0, 70.0)), "the next header pushes it up");
+        assert_eq!(pinned_header(&headers, 100.0), None, "the next header is in place");
+        assert_eq!(pinned_header(&headers, 150.0), Some((1, 150.0)));
+        assert_eq!(pinned_header(&headers, 500.0), Some((2, 500.0)));
+        assert_eq!(pinned_header(&[], 50.0), None);
     }
 
     #[test]
