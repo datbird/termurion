@@ -9,9 +9,16 @@ pub const SECRET_BYTES: usize = 16;
 pub const MAX_SECRETS: usize = 256;
 
 /// The secrets handed out and not yet used.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Secrets {
     live: VecDeque<String>,
+}
+
+/// Only how many are live: a secret is never printed.
+impl std::fmt::Debug for Secrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Secrets").field("live_len", &self.live.len()).finish()
+    }
 }
 
 impl Secrets {
@@ -72,5 +79,14 @@ mod tests {
         assert!(!valid(&"a".repeat(31)));
         assert!(valid(&minted[1]));
         assert!(hex(&[0, 15, 255]) == "000fff");
+    }
+
+    #[test]
+    fn secrets_debug_hides_the_secrets() {
+        let mut s = Secrets::default();
+        let ab = s.mint([0xab; SECRET_BYTES]);
+        let text = format!("{s:?}");
+        assert!(!text.contains(&ab) && !text.contains("abab"));
+        assert!(text.contains("live_len: 1"));
     }
 }

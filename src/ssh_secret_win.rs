@@ -38,12 +38,11 @@ impl Server {
                     match listener.accept(ACCEPT_WAIT) {
                         Ok(Some(pipe)) => serve(&pipe, &secrets),
                         Ok(None) => {}
-                        // The waiting instance broke: make a new one, and wait a beat when
-                        // that fails too, so the loop never spins.
+                        // The waiting instance broke: make a new one and wait a beat, so an
+                        // accept that keeps failing never spins the loop.
                         Err(_) => {
-                            if listener.renew().is_err() {
-                                std::thread::sleep(ACCEPT_WAIT);
-                            }
+                            let _ = listener.renew();
+                            std::thread::sleep(ACCEPT_WAIT);
                         }
                     }
                 }
@@ -116,8 +115,8 @@ mod tests {
     fn secret_pipe_round_trip() {
         let pid = std::process::id();
         let s = Arc::new(Mutex::new(Secrets::default()));
-        let server = Server::start_on(&format!(r"\\.\pipe\tandem-ssh-secrets-test-{pid}"), s.clone()).unwrap();
         let name = format!(r"\\.\pipe\tandem-ssh-secrets-test-{pid}");
+        let server = Server::start_on(&name, s.clone()).unwrap();
         let first = fetch_from(&name, Duration::from_secs(2)).expect("a secret");
         let second = fetch_from(&name, Duration::from_secs(2)).expect("a second secret");
         assert!(valid(&first) && valid(&second));
@@ -128,5 +127,44 @@ mod tests {
         assert!(fetch_from(&format!(r"\\.\pipe\tandem-ssh-secrets-missing-{pid}"), Duration::from_millis(100)).is_none());
         drop(server);
         assert!(fetch_from(&name, Duration::from_millis(100)).is_none(), "nothing serves after the drop");
+    }
+
+    /// A server that answers `reply` to one client and holds the pipe open until `release`.
+    fn fake_server(name: &str, reply: &'static [u8], release: std::sync::mpsc::Receiver<()>) -> JoinHandle<()> {
+        let mut listener = Listener::bind(name).unwrap();
+        std::thread::spawn(move || {
+            if let Ok(Some(pipe)) = listener.accept(Duration::from_secs(5)) {
+                let _ = pipe.write_all(reply);
+                let _ = release.recv();
+                pipe.shutdown();
+            }
+        })
+    }
+
+    #[test]
+    fn fetch_refuses_what_is_not_a_secret() {
+        let pid = std::process::id();
+        let replies: [&'static [u8]; 3] = [b"0123456789abcdef0123456789abcdef0", b"0123456789ABCDEF0123456789ABCDEF", b""];
+        for (i, reply) in replies.into_iter().enumerate() {
+            let name = format!(r"\\.\pipe\tandem-ssh-secrets-refuse-{pid}-{i}");
+            let (release, held) = std::sync::mpsc::channel();
+            let server = fake_server(&name, reply, held);
+            drop(release);
+            assert!(fetch_from(&name, Duration::from_secs(2)).is_none(), "reply {i}");
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn fetch_gives_up_on_a_server_that_never_closes() {
+        let name = format!(r"\\.\pipe\tandem-ssh-secrets-silent-{}", std::process::id());
+        let (release, held) = std::sync::mpsc::channel();
+        let server = fake_server(&name, b"", held);
+        let start = std::time::Instant::now();
+        assert!(fetch_from(&name, Duration::from_millis(300)).is_none());
+        let took = start.elapsed();
+        assert!(took >= Duration::from_millis(250) && took < Duration::from_secs(3), "{took:?}");
+        release.send(()).unwrap();
+        server.join().unwrap();
     }
 }
