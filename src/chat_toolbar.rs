@@ -45,6 +45,12 @@ pub enum Rebuild {
     Chunk,
 }
 
+/// What the discovery branch of `ai_discovery_tick` does to the toolbar: a finished discovery
+/// that found something new marks it for a rebuild; nothing else clears the mark.
+pub fn mark_after_discovery(changed: bool, dirty: &mut bool) {
+    *dirty |= changed && rebuilds(Rebuild::Discovery);
+}
+
 /// Whether `e` rebuilds the toolbar.
 pub fn rebuilds(e: Rebuild) -> bool {
     !matches!(e, Rebuild::Chunk)
@@ -53,8 +59,12 @@ pub fn rebuilds(e: Rebuild) -> bool {
 /// The title of a chat opened from a session (`CWC:646-662`). A pane's title is set by any
 /// program, so control characters and line breaks are dropped (ruling F20).
 pub fn chat_about_title(name: &str) -> String {
-    let clean: String = name.chars().filter(|c| !c.is_control() && !title_unsafe(*c)).collect();
-    format!("Chat about {}", clean.trim())
+    format!("Chat about {}", drop_unsafe(name).trim())
+}
+
+/// `s` without control characters, line and paragraph separators and bidi controls.
+pub fn drop_unsafe(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control() && !title_unsafe(*c)).collect()
 }
 
 /// Line and paragraph separators and the bidi controls: they split a title or reorder the text
@@ -285,6 +295,20 @@ mod tests {
         assert_eq!(chat_about_title("a\r\nb\u{1b}[31mc"), "Chat about ab[31mc");
         // Line and paragraph separators and the bidi controls can reorder or split a title.
         assert_eq!(chat_about_title("a\u{2028}b\u{2029}c\u{202e}d\u{2066}e\u{2069}f\u{200f}g"), "Chat about abcdefg");
+    }
+
+    #[test]
+    fn discovery_marks_the_toolbar_and_the_app_calls_it() {
+        let mut dirty = false;
+        mark_after_discovery(false, &mut dirty);
+        assert!(!dirty, "nothing found, nothing to rebuild");
+        mark_after_discovery(true, &mut dirty);
+        assert!(dirty);
+        mark_after_discovery(false, &mut dirty);
+        assert!(dirty, "a later empty pass does not clear the mark");
+        // The wiring: the discovery tick hands its result to this function (no App in unit tests).
+        let tick = include_str!("app/ai_app.rs");
+        assert!(tick.contains("crate::chat_toolbar::mark_after_discovery(changed, &mut self.chat_toolbar_dirty)"));
     }
 
     #[test]

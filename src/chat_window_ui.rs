@@ -314,9 +314,8 @@ fn screen_pixels(ui: &egui::Ui, p: egui::Pos2) -> (f32, f32) {
 const ROW_HEIGHT: f32 = 56.0;
 /// The search field's hint (`CL:509-514`).
 const SEARCH_HINT: &str = "Search";
-/// Icons of a stored PNG above this many pixels a side draw as the default icon: a hostile
-/// database must not make a huge texture for a 32-point circle.
-const MAX_ICON_SIDE: u32 = 512;
+/// The most a stored icon may cost to decode (all frames): it is drawn 32 points wide.
+const ICON_BUDGET: usize = 8 << 20;
 
 /// The chat list: the header (the search field and the new chat button), then the
 /// rows in a scroll area (`ChatListViewController`). Keys count only while the list has focus.
@@ -475,7 +474,7 @@ fn icon_texture<'a>(ctx: &egui::Context, textures: &'a mut HashMap<u64, Option<e
     textures
         .entry(key)
         .or_insert_with(|| {
-            let decoded = crate::images::decode(bytes).ok().filter(|d| d.width <= MAX_ICON_SIDE && d.height <= MAX_ICON_SIDE)?;
+            let decoded = chat_list::icon_fits(bytes).then(|| crate::images::decode_within(bytes, ICON_BUDGET).ok()).flatten()?;
             let frame = decoded.frames.first()?;
             let image = egui::ColorImage::from_rgba_unmultiplied([decoded.width as usize, decoded.height as usize], &frame.rgba);
             Some(ctx.load_texture(format!("chat-icon-{key:x}"), image, egui::TextureOptions::LINEAR))

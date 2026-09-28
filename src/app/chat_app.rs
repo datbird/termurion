@@ -240,6 +240,20 @@ pub(super) fn create_in(
     Ok(id)
 }
 
+/// The app-wide subscription that hears every chat (titles, list snippets, ruling F14): opened
+/// once, at the store's open, so nothing published right after it is missed.
+pub(super) fn ensure_mint_sub(broker: &mut crate::chat_broker::Broker, sub: &mut Option<crate::chat_broker::SubId>) {
+    if sub.is_none() {
+        *sub = Some(broker.subscribe(None));
+    }
+}
+
+/// What Session > Open AI Chat says when the earlier run's links could not be cleared, so no
+/// chat binds to a terminal this run; None while links work.
+pub(super) fn links_off_text(off: bool) -> Option<&'static str> {
+    off.then_some("Chats cannot be linked to terminal sessions in this run: an earlier run's links could not all be cleared. Restart Tandem to try again.")
+}
+
 impl App {
     /// The chat database, opened on first use at `chat_store::default_path()` with its lock
     /// beside it. Opening merges the chats' stored permissions into the overrides
@@ -259,6 +273,7 @@ impl App {
                     }
                     load_overrides(&store, &mut self.ai_overrides);
                     self.chat_db = Some(store);
+                    ensure_mint_sub(&mut self.chat_broker, &mut self.chat_mint_sub);
                 }
                 Err(_) => {
                     self.chat_db_failed = true;
@@ -774,6 +789,24 @@ mod tests {
     use super::*;
     use crate::ai_permissions::{allowed_of, defaults, Category, Key, Overrides, Permission};
     use crate::chat_broker::Broker;
+
+    #[test]
+    fn the_hearing_subscription_opens_once_at_the_store_open() {
+        let mut broker = Broker::new();
+        let mut sub = None;
+        ensure_mint_sub(&mut broker, &mut sub);
+        let first = sub.expect("opened");
+        ensure_mint_sub(&mut broker, &mut sub);
+        assert_eq!(sub, Some(first), "a second call keeps the one subscription");
+        assert!(broker.drain(first).is_empty());
+    }
+
+    #[test]
+    fn links_off_says_so() {
+        assert_eq!(links_off_text(false), None);
+        let text = links_off_text(true).expect("a message");
+        assert!(text.contains("cannot be linked") && text.contains("Restart Tandem"), "{text}");
+    }
 
     fn ask(_: Category) -> i64 {
         0

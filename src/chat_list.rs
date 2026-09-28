@@ -178,8 +178,35 @@ pub fn needs_title(log: &[Message]) -> bool {
 
 /// The title a model's reply gives: trimmed, None when blank (`ChatAgent.swift:1895-1900`).
 pub fn minted_title(reply: &str) -> Option<String> {
-    let t = reply.trim();
-    (!t.is_empty()).then(|| t.to_string())
+    // A model can be steered by terminal text, so its reply is cleaned like a pane title:
+    // line breaks become spaces, controls and bidi marks go, the length is capped.
+    let one_line: String = reply.chars().map(|c| if matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}') { ' ' } else { c }).collect();
+    let clean = crate::chat_toolbar::drop_unsafe(&one_line);
+    let t: String = clean.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(MAX_TITLE).collect();
+    let t = t.trim().to_string();
+    (!t.is_empty()).then_some(t)
+}
+
+/// A minted title is at most this many characters.
+pub const MAX_TITLE: usize = 100;
+/// A stored icon draws only when both sides are at most this many pixels (ruling 12d-2).
+pub const ICON_MAX_SIDE: u32 = 512;
+
+/// Whether a stored icon's header says it is small enough to decode: read from the header alone,
+/// so a hostile database cannot cost a large decode.
+pub fn icon_fits(bytes: &[u8]) -> bool {
+    let dimensions = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok());
+    dimensions.is_some_and(|(w, h)| w <= ICON_MAX_SIDE && h <= ICON_MAX_SIDE)
+}
+
+/// A chat's row snippet from the cache, read from the store once (`read`) and kept.
+pub fn cached_snippet(cache: &mut std::collections::HashMap<String, String>, chat: &str, read: &dyn Fn(&str) -> String) -> String {
+    if let Some(s) = cache.get(chat) {
+        return s.clone();
+    }
+    let s = read(chat);
+    cache.insert(chat.to_string(), s.clone());
+    s
 }
 
 /// The delete question (`CWC:844-872`): Cancel, then the destructive Delete, persistent. Its
@@ -404,6 +431,55 @@ mod tests {
         assert!(needs_title(&[notice, q, a]), "a notice is not a message the model reads");
         assert_eq!(minted_title("  Rust help \n"), Some("Rust help".to_string()));
         assert_eq!(minted_title("  "), None);
+    }
+
+    #[test]
+    fn a_minted_title_is_clean_and_short() {
+        // The model can be steered by terminal text: line breaks, controls and bidi marks go.
+        assert_eq!(minted_title("Name\nMore").as_deref(), Some("Name More"));
+        assert_eq!(minted_title("a\u{1b}[31mb\u{202e}c\u{2028}d").as_deref(), Some("a[31mbc d"));
+        assert_eq!(minted_title("\u{202e}\u{1b}"), None, "nothing readable left");
+        let long = "x".repeat(300);
+        assert_eq!(minted_title(&long).map(|t| t.chars().count()), Some(MAX_TITLE));
+        let wide = "\u{e9}".repeat(150);
+        assert_eq!(minted_title(&wide), Some("\u{e9}".repeat(MAX_TITLE)), "cut on a character, not a byte");
+    }
+
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::new(w, h).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn icons_are_sized_from_the_header() {
+        assert!(icon_fits(&png(32, 32)));
+        assert!(icon_fits(&png(ICON_MAX_SIDE, ICON_MAX_SIDE)));
+        assert!(!icon_fits(&png(ICON_MAX_SIDE + 1, 4)));
+        assert!(!icon_fits(&png(4, ICON_MAX_SIDE + 1)));
+        assert!(!icon_fits(b"not an image"));
+        // A header that claims a huge picture is refused without decoding its (missing) pixels.
+        let mut big = png(8, 8);
+        big[16..20].copy_from_slice(&60_000u32.to_be_bytes());
+        big[20..24].copy_from_slice(&60_000u32.to_be_bytes());
+        assert!(!icon_fits(&big));
+    }
+
+    #[test]
+    fn snippets_are_read_once_per_chat() {
+        let reads = std::cell::Cell::new(0);
+        let read = |id: &str| {
+            reads.set(reads.get() + 1);
+            format!("snippet of {id}")
+        };
+        let mut cache = std::collections::HashMap::new();
+        assert_eq!(cached_snippet(&mut cache, "a", &read), "snippet of a");
+        assert_eq!(cached_snippet(&mut cache, "a", &read), "snippet of a");
+        assert_eq!(cached_snippet(&mut cache, "b", &read), "snippet of b");
+        assert_eq!(reads.get(), 2, "the second ask for a chat reads nothing");
+        cache.remove("a");
+        cached_snippet(&mut cache, "a", &read);
+        assert_eq!(reads.get(), 3, "a changed chat is read again");
     }
 
     #[test]

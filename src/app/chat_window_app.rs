@@ -75,7 +75,6 @@ impl App {
             self.chat_sub = Some(self.chat_broker.subscribe(None));
         }
         self.chat_toolbar_dirty = true;
-        self.chat_snippets.clear();
         self.chat_rows_dirty = true;
         self.chat_window_refresh();
         true
@@ -117,7 +116,12 @@ impl App {
             return;
         }
         let Some(pane) = self.chat_focused_pane() else { return };
-        let Some(reference) = self.session_ref(pane) else { return };
+        let Some(reference) = self.session_ref(pane) else {
+            if let Some(text) = super::chat_app::links_off_text(self.chat_links_off) {
+                self.banners.set("chat_links", text.to_string());
+            }
+            return;
+        };
         let last = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.into_iter().find(|c| c.terminal_session_guid.as_deref() == Some(reference.as_str())));
         let id = match last {
             Some(c) => Some(c.id),
@@ -361,14 +365,8 @@ impl App {
         };
         let chats = db.chats().unwrap_or_default();
         let cache = std::cell::RefCell::new(std::mem::take(&mut self.chat_snippets));
-        let snippet = |id: &str| -> String {
-            if let Some(s) = cache.borrow().get(id) {
-                return s.clone();
-            }
-            let s = db.messages(id).map(|m| chat_list::row_snippet(&m)).unwrap_or_default();
-            cache.borrow_mut().insert(id.to_string(), s.clone());
-            s
-        };
+        let read = |id: &str| db.messages(id).map(|m| chat_list::row_snippet(&m)).unwrap_or_default();
+        let snippet = |id: &str| chat_list::cached_snippet(&mut cache.borrow_mut(), id, &read);
         let broker = &self.chat_broker;
         let rows: Vec<Row> = chat_list::rows(&chats, &snippet, &|id| broker.is_typing(id, Participant::Agent), super::warnings_app::unix_now());
         self.chat_rows = rows;
@@ -397,9 +395,6 @@ impl App {
     /// removal in the shown chat (a streamed chunk cannot change it). Answers the next wake-up:
     /// the ages' minute, and soon again while a title run is going.
     pub(super) fn chat_window_tick(&mut self) -> Option<Instant> {
-        if self.chat_db.is_some() && self.chat_mint_sub.is_none() {
-            self.chat_mint_sub = Some(self.chat_broker.subscribe(None));
-        }
         let mut changed = false;
         if let Some(sub) = self.chat_mint_sub {
             let updates = self.chat_broker.drain(sub);
