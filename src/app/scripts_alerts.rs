@@ -129,14 +129,26 @@ pub(super) enum Then {
     EraseExportFirst,
     /// "Erase Everything?" or "Dry-Run Erase?": Cancel (0) or the action (1).
     EraseConfirm { dry_run: bool },
+    /// A paste's question for the pane: the button runs what the paste's bar did (Paste, Paste
+    /// Without Newline, Convert tabs to spaces, Advanced..., Cancel); dropped, the paste stops.
+    Paste(crate::layout::PaneId),
+    /// Closing tmux tabs or a window with them: the pane the question is about (its window is
+    /// the one closed) and the question's identifier (`CLOSE_TAB`, `tmux_persist::close_win_id`);
+    /// Hide, Kill, Detach tmux Session or Cancel.
+    TmuxClose(crate::layout::PaneId, String),
+    /// Turning broadcast input on, the menu selector: OK (0) turns it on; Cancel (1) does
+    /// nothing.
+    BroadcastInput(&'static str),
 }
 
 impl Then {
     /// The buttons never remembered when the alert is silenced (`doNotRememberLabels`): Show in
-    /// Explorer after a new script, and Lose Changes at quit (`RP:1688`).
+    /// Explorer after a new script, Lose Changes at quit (`RP:1688`), a malformed script's
+    /// Reveal and a found archive's Cancel and Move to Trash (`iTermScriptsMenuController.m:567,964`).
     pub(super) fn never_remember(&self) -> Vec<usize> {
         match self {
-            Then::OpenNewScript(_) | Then::PrefsQuit => vec![1],
+            Then::OpenNewScript(_) | Then::PrefsQuit | Then::Malformed(_) => vec![1],
+            Then::Archive(_) => vec![1, 2],
             _ => Vec::new(),
         }
     }
@@ -184,6 +196,7 @@ impl App {
             // Canceled: what waits on a consent or on the replace question hears so.
             Then::Consent(jobs) => self.consent_declined(jobs),
             Then::AlreadyInstalled(_) => self.scripts_answered(then, 1),
+            Then::Paste(pane) => self.paste_answered(pane, None),
             _ => {}
         }
     }
@@ -268,6 +281,13 @@ impl App {
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed => {}
+            Then::Paste(pane) => self.paste_answered(pane, Some(index)),
+            Then::TmuxClose(anchor, id) => self.tmux_close_answered(anchor, &id, index),
+            Then::BroadcastInput(selector) => {
+                if index == 0 {
+                    self.broadcast_run(selector, true);
+                }
+            }
             Then::Malformed(path) => {
                 if index == 1 {
                     self.reveal_path(&path);

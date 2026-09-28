@@ -62,13 +62,23 @@ impl App {
 
     /// Shell > Broadcast Input's items. False for other selectors.
     pub(super) fn broadcast_command(&mut self, selector: &str) -> bool {
+        self.broadcast_run(selector, false)
+    }
+
+    /// Shell > Broadcast Input's items; `granted`: the warning before turning broadcasting on
+    /// was answered OK. Without it, turning it on asks the warning (`BroadcastInput`), which
+    /// runs the item again when answered OK.
+    pub(super) fn broadcast_run(&mut self, selector: &str, granted: bool) -> bool {
         let mut v = self.broadcast_view();
         let current = v.current;
-        let suppressed = self.globals.bool("NoSyncSuppressBroadcastInputWarning");
-        let owner = self.hwnd();
-        // The warning (going from off to on). Windows' message box has no checkbox: the
-        // Advanced setting "Suppress warning about broadcasting input" silences it.
-        let mut confirm = |title: &str| suppressed || super::close_ui::confirm(owner, "Broadcast Input", title);
+        // The warning (going from off to on), whose text the model gives.
+        let mut asked = None;
+        let mut confirm = |title: &str| {
+            if !granted {
+                asked = Some(title.to_string());
+            }
+            granted
+        };
         match selector {
             "disableBroadcasting:" => {
                 self.broadcast.disable(&mut v);
@@ -102,6 +112,11 @@ impl App {
         self.menus_dirty = true;
         self.sync_checks();
         self.redraw();
+        // After the state is kept: a silenced warning answers at once and runs the item again.
+        if let Some(text) = asked {
+            let selector = if selector == "enableSendInputToAllTabs:" { "enableSendInputToAllTabs:" } else { "enableSendInputToAllPanes:" };
+            self.ask_scripts(broadcast_input_ask(&text, selector));
+        }
         true
     }
 
@@ -167,6 +182,14 @@ impl App {
         }
         self.redraw();
     }
+}
+
+/// The warning before broadcasting input, `text` from the model (`warning_title`), for the
+/// menu item `selector`: no heading, OK and Cancel, permanently silenceable
+/// (`iTermBroadcastInputHelper.m:218-222`).
+pub(super) fn broadcast_input_ask(text: &str, selector: &'static str) -> super::scripts_alerts::Ask {
+    use crate::api_auth::{CANCEL, OK};
+    super::scripts_alerts::ask("", text, &[OK, CANCEL], Some("NoSyncSuppressBroadcastInputWarning"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::BroadcastInput(selector))
 }
 
 /// Yes, No, or Cancel (None).

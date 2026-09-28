@@ -26,6 +26,7 @@ use crate::pwm_cli::{self, OpNotUsable};
 use crate::pwm_prompt;
 use crate::pwm_source::{self, Caps, Field, Kind, Source};
 use crate::pwm_ui::{PwmAct, PwmView, PwmWindow};
+use crate::warnings::Preempt;
 
 /// Where the CLIs picked with Locate are remembered (menu-only globals, no settings rows; iTerm2
 /// keeps the picked path for the run only).
@@ -167,6 +168,8 @@ struct Confirm {
     heading: String,
     text: String,
     kind: ConfirmKind,
+    /// A notice shown in the remembered mode: the saved answer's label.
+    remembered: Option<String>,
 }
 
 enum ConfirmKind {
@@ -176,8 +179,8 @@ enum ConfirmKind {
     Broadcast(Vec<PaneId>, Secret),
     /// OK only.
     Warning,
-    /// OK with "Suppress this message permanently", remembered under the key.
-    Notice(String),
+    /// An adapter's notice, OK with iTerm2's checkbox (`adapter_warning_spec`).
+    Notice(crate::warnings::Spec),
 }
 
 impl App {
@@ -201,13 +204,14 @@ impl App {
         }
         self.watch_lp_login(event_loop);
         let Some(g) = self.gpu.as_ref() else { return };
+        let underline = self.globals.bool("AlertsIndicateShortcuts");
         let mut failed = None;
         for c in self.pwm.confirms.iter_mut().filter(|c| c.window.is_none()) {
             let opened = match &c.kind {
                 ConfirmKind::Check(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, pwm::TITLE_ENTER_PASSWORD),
                 ConfirmKind::Broadcast(..) => ConfirmWindow::choice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text, pwm::TITLE_CANCEL, BROADCAST_ENTER),
                 ConfirmKind::Warning => ConfirmWindow::warning(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text),
-                ConfirmKind::Notice(_) => ConfirmWindow::notice(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &c.heading, &c.text),
+                ConfirmKind::Notice(spec) => super::warnings_app::open_warning(event_loop, (&g.instance, &g.adapter, &g.device, &g.queue), spec, c.remembered.as_deref(), underline),
             };
             match opened {
                 Ok(w) => c.window = Some(w),
@@ -339,7 +343,7 @@ impl App {
     }
 
     fn pwm_warning(&mut self, heading: &str, text: &str) {
-        self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text: text.to_string(), kind: ConfirmKind::Warning });
+        self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text: text.to_string(), kind: ConfirmKind::Warning, remembered: None });
     }
 
     /// A gear setting's value (stored, else iTerm2's default).
@@ -1103,9 +1107,15 @@ impl App {
                     }
                 }
                 if let (Some(text), Some(id)) = (warning, adapter_identifier(kind)) {
-                    let key = format!("NoSyncAdapterListWarning_{id}");
-                    if !self.globals.bool(&key) {
-                        self.pwm.confirms.push(Confirm { window: None, heading: ADAPTER_WARNING_HEADING.to_string(), text, kind: ConfirmKind::Notice(key) });
+                    let spec = adapter_warning_spec(id, &text);
+                    let remembered = match self.warning_preempt(&spec) {
+                        // OK, the only button, does nothing.
+                        Preempt::Answer(_) => None,
+                        Preempt::Show => Some(None),
+                        Preempt::ShowRemembered { saved_label } => Some(Some(saved_label)),
+                    };
+                    if let Some(remembered) = remembered {
+                        self.pwm.confirms.push(Confirm { window: None, heading: spec.heading.clone(), text, kind: ConfirmKind::Notice(spec), remembered });
                     }
                 }
             }
@@ -1375,7 +1385,7 @@ impl App {
                 Out::SendPassword if single => self.send_entry(pane),
                 Out::Failed if single => {
                     let id = self.pwm.entries.get(&pane).map_or(0, |(id, _)| *id);
-                    self.pwm.confirms.push(Confirm { window: None, heading: WARNING_HEADING.to_string(), text: echo_probe::CHECK_TEXT.to_string(), kind: ConfirmKind::Check(pane, id) });
+                    self.pwm.confirms.push(Confirm { window: None, heading: WARNING_HEADING.to_string(), text: echo_probe::CHECK_TEXT.to_string(), kind: ConfirmKind::Check(pane, id), remembered: None });
                 }
                 Out::SendPassword | Out::Failed => {
                     let ok = matches!(o, Out::SendPassword);
@@ -1446,7 +1456,7 @@ impl App {
                 }
                 Finish::Ask { heading, text, ok, .. } => {
                     let kind = if ok.is_empty() { ConfirmKind::Warning } else { ConfirmKind::Broadcast(ok, r.password) };
-                    self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text, kind });
+                    self.pwm.confirms.push(Confirm { window: None, heading: heading.to_string(), text, kind, remembered: None });
                 }
             }
         }
@@ -1472,6 +1482,14 @@ impl App {
         };
         if !matches!(answer, ConfirmResult::Open) {
             let c = self.pwm.confirms.remove(i);
+            if let (ConfirmKind::Notice(spec), ConfirmResult::Action { index, suppress }) = (&c.kind, &answer) {
+                let spec = spec.clone();
+                if self.warning_window_answered(&spec, c.remembered.is_some(), *index, *suppress) {
+                    // Forgotten: the notice again, without the remembered mode.
+                    self.pwm.confirms.push(Confirm { window: None, remembered: None, ..c });
+                }
+                return true;
+            }
             self.pwm_confirmed(c.kind, answer);
         }
         true
@@ -1497,13 +1515,8 @@ impl App {
                     }
                 }
             }
-            ConfirmKind::Warning => {}
-            ConfirmKind::Notice(key) => {
-                if let ConfirmResult::Ok { suppress: true } = answer {
-                    self.globals.set(&key, toml::Value::Boolean(true));
-                    self.save_globals();
-                }
-            }
+            // A notice's answer is remembered in `pwm_confirm_event`; closed, nothing.
+            ConfirmKind::Warning | ConfirmKind::Notice(_) => {}
         }
     }
 
@@ -1547,6 +1560,20 @@ fn field(key: &str, label: &str, secret: bool) -> Field {
 }
 
 /// The name an adapter keeps its settings under (iTerm2's adapter identifiers, `P:52-66`).
+/// An adapter's warning from its account list (`AdapterPasswordDataSource.swift:622`,
+/// `:688-696`): per adapter, OK only, permanently silenceable.
+pub(super) fn adapter_warning_spec(id: &str, text: &str) -> crate::warnings::Spec {
+    crate::warnings::Spec {
+        id: Some(format!("NoSyncAdapterListWarning_{id}")),
+        kind: crate::warnings::Kind::Permanent,
+        heading: ADAPTER_WARNING_HEADING.to_string(),
+        text: text.to_string(),
+        labels: vec![crate::api_auth::OK.to_string()],
+        cancel: None,
+        never_remember: Vec::new(),
+    }
+}
+
 fn adapter_identifier(kind: Kind) -> Option<&'static str> {
     match kind {
         Kind::KeePassXC => Some("KeePassXC"),

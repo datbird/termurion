@@ -399,12 +399,7 @@ impl App {
         let Some((gw, _, window)) = self.tmux_of(focused) else { return false };
         let same = self.tabs.iter().filter(|t| self.tmux_of(t.focused).is_some_and(|(g, _, _)| g == gw)).count();
         if same > 1 {
-            if self.globals.bool("ClosingTmuxTabKillsTmuxWindows") {
-                self.tmux_close_answer(&[(gw, vec![window])], "Hide", false);
-                return true;
-            }
-            let (text, buttons) = crate::tmux_persist::close_tab_question();
-            self.ask(focused, &format!("{CLOSE_TAB}{gw}:{window}"), text, &buttons, true);
+            self.ask_scripts(tmux_close_tab_ask(focused, gw, window));
             return true;
         }
         self.tmux_close_window_question(focused, Some(gw), false)
@@ -413,15 +408,33 @@ impl App {
     /// iTerm2's four-way question for the tmux tabs of `gw` (every session when None) in
     /// this window; `whole`: the window closes after the answer.
     fn tmux_close_window_question(&mut self, anchor: PaneId, gw: Option<PaneId>, whole: bool) -> bool {
-        let scope = self.tmux_scope(gw);
-        let n: usize = scope.iter().map(|(_, ws)| ws.len()).sum();
-        let Some((text, buttons)) = crate::tmux_persist::close_window_question(n) else { return false };
-        if self.globals.bool("ClosingTmuxWindowKillsTmuxWindows") {
-            self.tmux_close_answer(&scope, "Hide", whole);
-            return true;
-        }
-        self.ask(anchor, &crate::tmux_persist::close_win_id(gw.unwrap_or(0), whole), text, &buttons, true);
+        let n: usize = self.tmux_scope(gw).iter().map(|(_, ws)| ws.len()).sum();
+        let Some(ask) = tmux_close_window_ask(anchor, gw.unwrap_or(0), whole, n) else { return false };
+        self.ask_scripts(ask);
         true
+    }
+
+    /// A tmux close question answered with button `index` (`Then::TmuxClose`), in the window of
+    /// `anchor` (gone with it: nothing happens). Its tmux work finishes on the loop's next pass.
+    pub(super) fn tmux_close_answered(&mut self, anchor: PaneId, id: &str, index: usize) {
+        if !self.enter_pane_window(anchor) {
+            return;
+        }
+        if let Some(rest) = id.strip_prefix(CLOSE_TAB) {
+            let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
+            if let (Some(Some(gw)), Some(Some(w))) = (it.next(), it.next()) {
+                let (_, buttons) = crate::tmux_persist::close_tab_question();
+                if let Some(b) = buttons.get(index) {
+                    self.tmux_close_answer(&[(gw, vec![w as u32])], b, false);
+                }
+            }
+        } else if let Some((gw, whole)) = crate::tmux_persist::parse_close_win(id) {
+            let scope = self.tmux_scope((gw != 0).then_some(gw));
+            let n: usize = scope.iter().map(|(_, ws)| ws.len()).sum();
+            if let Some(b) = crate::tmux_persist::close_window_question(n.max(1)).and_then(|(_, buttons)| buttons.get(index).copied()) {
+                self.tmux_close_answer(&scope, b, whole);
+            }
+        }
     }
 
     /// Close Window with tmux tabs, after Tandem's own confirmation: the question first.
@@ -637,7 +650,7 @@ impl App {
         false
     }
 
-    /// The close questions' answers. True when the bar was one of these.
+    /// The "Cannot Attach" bars' answers. True when the bar was one of these.
     pub(super) fn tmux_close_bar(&mut self, id: &str, button: Option<&str>) -> bool {
         if let Some(rest) = id.strip_prefix(DOUBLE) {
             let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
@@ -671,22 +684,6 @@ impl App {
                         self.tmux_disconnected(gw, true);
                     }
                 }
-            }
-            return true;
-        }
-        if let Some(rest) = id.strip_prefix(CLOSE_TAB) {
-            let mut it = rest.split(':').map(|s| s.parse::<u64>().ok());
-            if let (Some(Some(gw)), Some(Some(w))) = (it.next(), it.next()) {
-                if let Some(b) = button {
-                    self.tmux_close_answer(&[(gw, vec![w as u32])], b, false);
-                }
-            }
-            return true;
-        }
-        if let Some((gw, whole)) = crate::tmux_persist::parse_close_win(id) {
-            if let Some(b) = button {
-                let scope = self.tmux_scope((gw != 0).then_some(gw));
-                self.tmux_close_answer(&scope, b, whole);
             }
             return true;
         }
@@ -1300,6 +1297,24 @@ impl App {
             }
         }
     }
+}
+
+/// "Kill tmux window, terminating its jobs, or hide it?" for tmux window `window` of gateway
+/// `gw`, shown as the tab of `anchor` closes (`killOrHideTmuxTab:`, `PT:2475-2485`: no heading,
+/// permanently silenceable).
+pub(super) fn tmux_close_tab_ask(anchor: PaneId, gw: PaneId, window: u32) -> super::scripts_alerts::Ask {
+    let (text, buttons) = crate::tmux_persist::close_tab_question();
+    let id = format!("{CLOSE_TAB}{gw}:{window}");
+    super::scripts_alerts::ask("", text, &buttons, Some("ClosingTmuxTabKillsTmuxWindows"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxClose(anchor, id))
+}
+
+/// The four-way question for `n` tmux tabs of gateway `gw` (0: every session) in the window
+/// of `anchor`; `whole`: the window closes after the answer (`killOrHideTmuxWindowForController:`,
+/// `PT:4820-4824`). None for no tabs.
+pub(super) fn tmux_close_window_ask(anchor: PaneId, gw: PaneId, whole: bool, n: usize) -> Option<super::scripts_alerts::Ask> {
+    let (text, buttons) = crate::tmux_persist::close_window_question(n)?;
+    let id = crate::tmux_persist::close_win_id(gw, whole);
+    Some(super::scripts_alerts::ask("", text, &buttons, Some("ClosingTmuxWindowKillsTmuxWindows"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::TmuxClose(anchor, id)))
 }
 
 /// A window's outer origin (screen pixels) and its size for `@per_window_settings`: the

@@ -2405,3 +2405,12 @@ label = "Suppressed alerts"
 type = "dict"
 default = {}
 help = "The warnings answered automatically with a remembered choice, listed in Tandem > Suppressed Alerts."
+
+[[setting]]
+key = "NoSyncAppSupportMoved"
+tab = "Stored"
+section = "Warnings"
+label = "Suppress the Python API permissions reset warning"
+type = "bool"
+default = false
+help = "Suppress the \"Python API Permissions Reset\" warning shown when the allow-all file's contents change unexpectedly."

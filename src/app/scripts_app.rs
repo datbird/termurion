@@ -201,8 +201,8 @@ impl App {
             Kind::NotAScript(_) => return,
             Kind::Malformed(p) => {
                 let buttons = [crate::api_auth::OK, sl::REVEAL];
-                // Temporarily silenceable in iTerm2: no checkbox (Decision); Reveal is never remembered.
-                let ask = ask(sl::MALFORMED_HEADING, &sl::malformed(&sl::entry_name(&kind)), &buttons, None, warnings::Kind::Persistent, Then::Malformed(p.clone()));
+                // Temporarily silenceable; Reveal is never remembered.
+                let ask = ask(sl::MALFORMED_HEADING, &sl::malformed(&sl::entry_name(&kind)), &buttons, Some(sl::MALFORMED_ID), warnings::Kind::Temporary, Then::Malformed(p.clone()));
                 return self.ask_scripts(ask);
             }
             Kind::NeedsRebuild { .. } => {
@@ -212,7 +212,7 @@ impl App {
                 }
                 // `REBUILD_ID` is persistent in iTerm2: never silenced.
                 let buttons = [sl::REBUILD, crate::api_auth::CANCEL];
-                let ask = ask(sl::REBUILD_HEADING, &sl::rebuild_text(&name), &buttons, None, warnings::Kind::Persistent, Then::Rebuild(req));
+                let ask = ask(sl::REBUILD_HEADING, &sl::rebuild_text(&name), &buttons, Some(sl::REBUILD_ID), warnings::Kind::Persistent, Then::Rebuild(req));
                 return self.ask_scripts(ask);
             }
             Kind::Basic { version, .. } => {
@@ -1309,7 +1309,7 @@ impl App {
     }
 
     /// `didFindScriptArchive:autolaunch:` (`M:547-607`): each archive the scan finds asks
-    /// "Install Script Archive?" once per run (temporarily silenceable: no checkbox).
+    /// "Install Script Archive?" once per run (temporarily silenceable; only OK is remembered).
     pub(super) fn archives_found(&mut self, archives: &[(PathBuf, bool)]) {
         for (path, _) in archives {
             if !self.archives_asked.insert(path.clone()) {
@@ -1317,7 +1317,7 @@ impl App {
             }
             let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let buttons = [crate::api_auth::OK, crate::api_auth::CANCEL, crate::scripts::MOVE_TO_TRASH];
-            let ask = ask(crate::scripts::ARCHIVE_HEADING, &crate::scripts::archive_text(&file), &buttons, None, warnings::Kind::Persistent, Then::Archive(path.clone()));
+            let ask = ask(crate::scripts::ARCHIVE_HEADING, &crate::scripts::archive_text(&file), &buttons, Some(crate::scripts::ARCHIVE_ID), warnings::Kind::Temporary, Then::Archive(path.clone()));
             self.ask_scripts(ask);
         }
     }

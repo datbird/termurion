@@ -484,10 +484,11 @@ pub struct App {
     jobs_tree_seen: u64,
     jobs_watch_at: Option<Instant>,
     /// Jobs' Inspect popover (and when it last closed), and the signal question with what it
-    /// will send (the window opens on the next loop turn).
+    /// will send (the window opens on the next loop turn) and, in the remembered mode, the
+    /// saved answer.
     jobs_popover: Option<crate::status_popover_ui::InfoPopover>,
     jobs_popover_closed: Option<Instant>,
-    jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest)>,
+    jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest, Option<String>)>,
     /// Send Signal's console events on their way from a local pane (app-wide): each result is
     /// collected when its thread ends, so a close in progress never holds the window up.
     signal_waits: Vec<std::thread::JoinHandle<Result<(), String>>>,
@@ -645,9 +646,10 @@ pub struct App {
     script_runs: BTreeMap<u64, script_ui::Run>,
     script_next: u64,
     script_tokens: HashMap<u64, u64>,
-    /// "Function Call Failed" alerts (and results) waiting to show, and the one showing.
+    /// "Function Call Failed" alerts (and results) waiting to show, and the one showing (true:
+    /// in the remembered mode).
     script_alerts: VecDeque<script_ui::Alert>,
-    script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert)>,
+    script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert, bool)>,
     /// The provisioning worker (started on first use), what each submitted job continues
     /// with, the install each job queued behind one needs (dependent id to install id), the
     /// installed-Python probes running off the UI thread, and whether Tandem's uv is installed
