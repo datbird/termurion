@@ -1346,13 +1346,11 @@ impl App {
                 let id = id.to_string();
                 self.script_component_registered(&id);
                 let full = self.api_keys.get(&conn).and_then(|(key, _)| self.script_history.find(key)).and_then(|e| e.full_path.clone());
-                if let Some(full) = full {
-                    let key = crate::script_statusbar::script_path_key(&id);
-                    let text = full.to_string_lossy().into_owned();
-                    if self.globals.get(&key).and_then(|v| v.as_str().map(str::to_string)).as_deref() != Some(text.as_str()) {
-                        self.globals.set(&key, toml::Value::String(text));
-                        self.save_globals();
-                    }
+                let key = crate::script_statusbar::script_path_key(&id);
+                let stored = self.globals.get(&key).and_then(|v| v.as_str().map(str::to_string));
+                if let Some(text) = crate::script_statusbar::path_to_store(full.as_deref(), stored.as_deref()) {
+                    self.globals.set(&key, toml::Value::String(text));
+                    self.save_globals();
                 }
             }
         }

@@ -63,12 +63,24 @@ pub struct Scanner {
 
 impl Scanner {
     /// Makes `folder` when it is missing (`M:131-132`), scans it at once and watches it.
-    /// `notify` wakes the app when an event is ready.
+    /// `notify` wakes the app when an event is ready. A folder reached through a link to a
+    /// network path (`scripts::ancestors_stay_local`) is not made, watched or polled: the
+    /// scanner gives one empty result and nothing more.
     pub fn start(folder: PathBuf, notify: Notify) -> Scanner {
-        let _ = std::fs::create_dir_all(&folder);
-        let (commands, command_rx) = mpsc::channel();
+        Scanner::start_with(folder, notify, &scripts::read_link)
+    }
+
+    /// `start`, reading links with `read_link`.
+    fn start_with(folder: PathBuf, notify: Notify, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> Scanner {
         let (event_tx, events) = mpsc::channel();
         let wake = Arc::new(Wake(unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) }));
+        if !scripts::ancestors_stay_local(&folder, read_link) {
+            let _ = event_tx.send(ScanEvent::Done(ScanResult::default()));
+            notify();
+            return Scanner { folder, commands: None, events, wake, held: false, worker: None };
+        }
+        let _ = std::fs::create_dir_all(&folder);
+        let (commands, command_rx) = mpsc::channel();
         let worker = Worker { folder: folder.clone(), commands: command_rx, events: event_tx, notify, wake: wake.clone(), disabled: false, held: false };
         let worker = std::thread::spawn(move || worker.run());
         Scanner { folder, commands: Some(commands), events, wake, held: false, worker: Some(worker) }
@@ -318,6 +330,28 @@ mod tests {
         std::fs::write(dir.join("b.py"), "").unwrap();
         assert_eq!(wait_for_done(&s, &["a.py", "b.py"]), ["a.py", "b.py"]);
         assert!(ends(s), "the worker thread did not end");
+    }
+
+    #[test]
+    fn scanner_refuses_a_folder_through_a_network_link() {
+        let tmp = TempDir::new("unc");
+        let dir = tmp.0.join("Scripts");
+        // The folder above the Scripts folder is a link to a share.
+        let above = tmp.0.clone();
+        let read_link = move |p: &Path| (p == above).then(|| PathBuf::from(r"\\h\share"));
+        let mut s = Scanner::start_with(dir.clone(), Arc::new(|| {}), &read_link);
+        // Nothing is made, watched or polled: no worker, one empty result.
+        assert!(s.worker.take().is_none(), "a worker started");
+        assert!(!dir.exists(), "the folder was made");
+        match s.try_event() {
+            Some(ScanEvent::Done(r)) => assert_eq!(r, ScanResult::default()),
+            other => panic!("{other:?}"),
+        }
+        assert!(s.try_event().is_none());
+        // Its commands go nowhere.
+        s.rescan();
+        s.hold(true);
+        assert!(s.try_event().is_none());
     }
 
     #[test]

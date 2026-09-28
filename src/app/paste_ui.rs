@@ -33,11 +33,10 @@ impl App {
     }
 
     /// The speed from the settings (0 means iTerm2's default).
-    fn paste_speed(&self, slow: bool) -> Speed {
+    pub(super) fn paste_speed(&self, slow: bool) -> Speed {
         let (units, delay, d) = if slow { ("SlowPasteBytesPerCall", "SlowPasteDelayBetweenCalls", paste::SLOW) } else { ("QuickPasteBytesPerCall", "QuickPasteDelayBetweenCalls", paste::QUICK) };
-        let u = self.globals.int(units);
-        let t = self.globals.get(delay).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64))).unwrap_or(0.0);
-        Speed { units: if u > 0 { u as usize } else { d.units }, delay: if t > 0.0 { t } else { d.delay } }
+        let t = self.globals.get(delay).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+        paste::speed_from(self.globals.int(units), t, d)
     }
 
     fn warn_prefs(&self) -> paste::WarnPrefs {

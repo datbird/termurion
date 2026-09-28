@@ -779,6 +779,11 @@ pub fn take_folder_pending(ctx: &egui::Context) -> bool {
     ctx.data_mut(|d| d.remove_temp::<bool>(folder_pending_id())).unwrap_or(false)
 }
 
+/// Notes the custom scripts folder's text as typed and not yet applied.
+pub fn note_folder_pending(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(folder_pending_id(), true));
+}
+
 /// `chooseCustomScriptsFolder`: the folder picker; a picked folder becomes the text, which is
 /// returned.
 fn choose_scripts_folder(g: &mut Globals) -> Option<String> {
@@ -821,7 +826,7 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
         if ended {
             ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
         } else if changed {
-            ui.ctx().data_mut(|d| d.insert_temp(folder_pending_id(), true));
+            note_folder_pending(ui.ctx());
         }
         let cached = ui.ctx().data(|d| d.get_temp::<(String, bool)>(folder_valid_id()));
         let valid = match cached {
@@ -1140,6 +1145,33 @@ mod tests {
             assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
             assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
         }
+    }
+
+    #[test]
+    fn utilities_rows_follow_iterm2() {
+        let lc = "Set LC_TERMINAL=iTerm2.";
+        for (key, label, help) in [
+            ("addUtilitiesToPATH", "Add path to Tandem utilities to $PATH for new sessions?", "Add path to Tandem utilities to $PATH for new sessions?".to_string()),
+            ("shouldSetLCTerminal", lc, format!("{lc}\nopenssh and mosh pass this to hosts you connect to. It communicates the current terminal emulator. This is useful for enabling terminal emulator-specific features.")),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert!(Globals::empty(std::path::Path::new("utilities-row-test.toml")).bool(key), "{key} on until turned off");
+        }
+    }
+
+    #[test]
+    fn upload_row_follows_iterm2() {
+        let row = schema::find_global("accelerateUploads").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Make uploads with it2ul really fast.");
+        assert_eq!(row.help, "Make uploads with it2ul really fast.");
+        assert!(Globals::empty(std::path::Path::new("upload-row-test.toml")).bool("accelerateUploads"), "on until turned off");
     }
 
     #[test]

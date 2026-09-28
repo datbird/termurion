@@ -213,6 +213,17 @@ impl App {
         entered
     }
 
+    /// Leaves no window current (after walking the windows from a state with none current):
+    /// the current one's state is parked and the live fields are empty again.
+    pub(super) fn leave_windows(&mut self) {
+        if self.windows.current().is_none() {
+            return;
+        }
+        let mut live = WinSlot::new_empty();
+        self.swap_live(&mut live);
+        self.windows.leave(live);
+    }
+
     /// Makes the window that shows `pane` current. False when no window shows it.
     pub(super) fn enter_pane_window(&mut self, pane: PaneId) -> bool {
         if self.tabs.iter().any(|t| t.layout.panes().contains(&pane)) {

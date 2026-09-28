@@ -219,6 +219,14 @@ impl<S> Parked<S> {
         true
     }
 
+    /// No window is current any more: the current one's state (`state`, taken from live)
+    /// is parked. Nothing happens when none is current.
+    pub fn leave(&mut self, state: S) {
+        if let Some(old) = self.current.take() {
+            self.parked.insert(old, state);
+        }
+    }
+
     /// The current window closed: another becomes current (its state swapped into `live`),
     /// or None when it was the last.
     pub fn close_current(&mut self, live: &mut S) -> Option<u64> {
@@ -345,6 +353,23 @@ mod tests {
         assert!(p.enter(200, &mut live), "entering the current window is a no-op");
         assert!(!p.enter(999, &mut live), "an unknown window is refused");
         assert_eq!(live, vec![2, 22]);
+    }
+
+    #[test]
+    fn leaving_parks_the_current_window() {
+        let mut p: Parked<Vec<u32>> = Parked::default();
+        let mut live = Vec::new();
+        p.park(1, vec![1]);
+        // Entered from none current, then left: none is current again, 1 keeps its state.
+        assert!(p.enter(1, &mut live));
+        live.push(11);
+        p.leave(std::mem::take(&mut live));
+        assert_eq!(p.current(), None);
+        assert!(p.enter(1, &mut live));
+        assert_eq!(live, vec![1, 11]);
+        let mut q: Parked<Vec<u32>> = Parked::default();
+        q.leave(vec![9]);
+        assert_eq!((q.current(), q.ids()), (None, Vec::new()), "leaving with none current keeps nothing");
     }
 
     #[test]

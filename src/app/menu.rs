@@ -416,6 +416,10 @@ impl App {
             "installPythonRuntime:" => self.install_python_runtime(),
             "revealScriptsInFinder:" => self.reveal_scripts_folder(),
             "newPythonScript:" => self.new_python_script(event_loop),
+            "openREPL:" => self.open_repl(),
+            "importScript:" => self.import_scripts(),
+            "exportScript:" => self.export_scripts(event_loop),
+            "openDependencyEditor:" => self.open_dependency_editor(event_loop),
             "openScriptConsole:" => self.open_script_console(event_loop),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
@@ -891,6 +895,13 @@ mod install_tests {
     }
 
     #[test]
+    fn install_command_follows_iterm2() {
+        assert_eq!(curl_command(true), "curl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\r");
+        assert_eq!(curl_command(false), "curl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash\r");
+        assert_eq!(INSTALL_UTILITIES_KEY, "NoSyncInstallUtilities");
+    }
+
+    #[test]
     fn install_command_depends_on_the_shell() {
         assert_eq!(install_plan("pwsh.exe -NoLogo"), Plan::Pwsh);
         assert_eq!(install_plan("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"), Plan::Pwsh);
@@ -909,6 +920,35 @@ pub(super) enum Plan {
     Curl,
     /// cmd.exe and others have no prompt hooks.
     Unsupported,
+}
+
+/// Where "Also install iTerm2 Utilities" is remembered (`iTermShellIntegrationFirstPageViewController.m:19`).
+pub(super) const INSTALL_UTILITIES_KEY: &str = "NoSyncInstallUtilities";
+
+/// The one-liner typed for `Plan::Curl`: with the utilities, iTerm2's
+/// `install_shell_integration_and_utilities.sh` (`iTermShellIntegrationDownloadAndRunViewController.m:28-33`).
+pub(super) fn curl_command(utilities: bool) -> &'static str {
+    if utilities {
+        "curl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\r"
+    } else {
+        "curl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash\r"
+    }
+}
+
+/// Tandem's box for `Plan::Curl`: "Also install iTerm2 Utilities?" as Yes/No/Cancel.
+const CURL_TEXT: &str = "Tandem will type iTerm2's installer into this session. It adds iTerm2's script to your shell's startup file.\n\nAlso install iTerm2 Utilities? Utilities include scripts to download files, display images inline, and more.\n\nYes types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration_and_utilities.sh | bash\n\nNo types:\ncurl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash";
+
+/// Yes, No or Cancel for `text`, the default button Yes when `yes_first`, else No: Some(true),
+/// Some(false), None.
+fn ask_utilities(text: &str, yes_first: bool) -> Option<bool> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONQUESTION, MB_YESNOCANCEL, MessageBoxW};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    let default = if yes_first { MB_DEFBUTTON1 } else { MB_DEFBUTTON2 };
+    match unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Install Shell Integration").as_ptr(), MB_YESNOCANCEL | MB_ICONQUESTION | default) } {
+        IDYES => Some(true),
+        IDNO => Some(false),
+        _ => None,
+    }
 }
 
 pub(super) fn install_plan(cmdline: &str) -> Plan {
@@ -952,10 +992,11 @@ impl App {
                 return info_box("This shell has no prompt hooks, so it cannot have shell integration. Use PowerShell (pwsh), or bash, zsh, or fish in WSL.");
             }
             Plan::Curl => {
-                if !ask("Tandem will type iTerm2's installer into this session:\n\ncurl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash\n\nIt adds iTerm2's script to your shell's startup file. Continue?") {
-                    return;
-                }
-                "curl -L https://iterm2.com/shell_integration/install_shell_integration.sh | bash\r".to_string()
+                let yes_first = self.globals.get(INSTALL_UTILITIES_KEY).and_then(|v| v.as_bool()).unwrap_or(true);
+                let Some(utilities) = ask_utilities(CURL_TEXT, yes_first) else { return };
+                self.globals.set(INSTALL_UTILITIES_KEY, toml::Value::Boolean(utilities));
+                self.save_globals();
+                curl_command(utilities).to_string()
             }
             Plan::Pwsh => {
                 let dir = std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem").join("shell_integration");

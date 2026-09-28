@@ -55,6 +55,13 @@ pub mod script_runtime;
 pub mod script_history;
 pub mod script_launch;
 pub mod script_new;
+pub mod script_archive;
+pub mod script_deps;
+pub mod zip_check;
+#[cfg(windows)]
+pub mod script_deps_ui;
+#[cfg(windows)]
+pub mod script_export_ui;
 #[cfg(windows)]
 pub mod script_new_ui;
 #[cfg(windows)]
@@ -67,6 +74,17 @@ pub mod scripts;
 #[cfg(windows)]
 pub mod scripts_scan;
 pub mod util_api;
+pub mod util_osc;
+pub mod util_cli;
+pub mod util_files;
+pub mod util_imgls;
+pub mod util_simple;
+pub mod util_git;
+pub mod util_tip;
+pub mod util_query;
+#[cfg(windows)]
+pub mod util_console;
+pub mod utilities;
 pub mod builtin_fns;
 pub mod activity;
 pub mod alerts;

@@ -44,6 +44,14 @@ pub fn script_path_key(unique_id: &str) -> String {
     format!("NoSyncScriptNameForStatusBarComponent_{unique_id}")
 }
 
+/// The path to store under `script_path_key` when a component registers (`H:1880-1896`):
+/// the registering script's full path, when there is one and it differs from what is
+/// stored (the settings file is written only on a change).
+pub fn path_to_store(full: Option<&std::path::Path>, stored: Option<&str>) -> Option<String> {
+    let text = full?.to_string_lossy().into_owned();
+    (stored != Some(text.as_str())).then_some(text)
+}
+
 /// A failed component's click (`RPC:533-555`): when its script is known, not running and
 /// could launch, the text gains `NOT_RUNNING_SUFFIX` and the alert Launch Script and Reveal in
 /// Explorer; else the text alone with OK.
@@ -629,6 +637,11 @@ mod tests {
         assert_eq!(recovery("boom\n\n", false, false, true), ("boom\n\n".to_string(), vec!["OK"]));
         assert_eq!(recovery("boom\n\n", true, false, false), ("boom\n\n".to_string(), vec!["OK"]));
         assert_eq!(script_path_key("com.x"), "NoSyncScriptNameForStatusBarComponent_com.x");
+        let p = std::path::Path::new(r"C:\S\tool.py");
+        assert_eq!(path_to_store(Some(p), None), Some(r"C:\S\tool.py".to_string()));
+        assert_eq!(path_to_store(Some(p), Some(r"C:\S\old.py")), Some(r"C:\S\tool.py".to_string()));
+        assert_eq!(path_to_store(Some(p), Some(r"C:\S\tool.py")), None, "unchanged: not written again");
+        assert_eq!(path_to_store(None, Some("x")), None, "a connection with no script stores nothing");
         assert_eq!((LAUNCH_SCRIPT, REVEAL_IN_EXPLORER), ("Launch Script", "Reveal in Explorer"));
     }
 

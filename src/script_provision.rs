@@ -132,6 +132,22 @@ pub fn ready_python(target: &Target, uv_dir: &Path, exists: &dyn Fn(&Path) -> bo
     }
 }
 
+/// The newest provisioned shared environment's interpreter
+/// (`newestProvisionedSharedVenvInterpreter`, `UV:1278-1293`, `UV:896-902`): among the venvs
+/// folder's entries (`names`), only `<minor>` folders holding an interpreter and a marker
+/// count (a `.building` or `.old` folder or `.remaps` never does), the highest version wins.
+pub fn newest_shared_python(uv_dir: &Path, names: &[String], exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    names
+        .iter()
+        .filter(|n| numeric_version(n))
+        .filter(|n| {
+            let venv = shared_venv(uv_dir, n);
+            exists(&venv_python(&venv)) && exists(&venv.join(MARKER))
+        })
+        .max_by(|a, b| dotted(a, b))
+        .map(|n| venv_python(&shared_venv(uv_dir, n)))
+}
+
 /// Runs one job to its end.
 pub fn run_job(job: &Job, uv_dir: &Path, r: &mut dyn Runner) -> Result<Outcome, String> {
     match job {
@@ -374,6 +390,14 @@ pub fn is_py_launcher(program: &str) -> bool {
     Path::new(program).file_name().is_some_and(|n| n.eq_ignore_ascii_case("py.exe"))
 }
 
+/// A Windows tool (curl.exe, tar.exe) in the System32 folder `system`: never a program of
+/// the same name from PATH. An error naming it when System32 is unknown or lacks it.
+pub fn system_tool_in(system: Option<&Path>, name: &str, is_file: &dyn Fn(&Path) -> bool) -> Result<PathBuf, String> {
+    let system = system.ok_or_else(|| format!("{name} was not found: the System32 folder is unknown."))?;
+    let tool = system.join(name);
+    if is_file(&tool) { Ok(tool) } else { Err(format!("{name} was not found in {}.", system.display())) }
+}
+
 /// How long a probe of an installed Python (`py -0p`, `python --version`) may take.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -438,14 +462,15 @@ impl KillJob {
         unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, code) };
     }
 
-    /// How many processes in the job are still running (0 when that cannot be read).
+    /// How many processes in the job are still running; `u32::MAX` when that cannot be read,
+    /// so a job is never let go (ending what it holds) on a failed query.
     pub(crate) fn active_processes(&self) -> u32 {
         use windows_sys::Win32::System::JobObjects::{JobObjectBasicAccountingInformation, QueryInformationJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION};
         unsafe {
             let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = std::mem::zeroed();
             let size = std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32;
             if QueryInformationJobObject(self.0, JobObjectBasicAccountingInformation, (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(), size, std::ptr::null_mut()) == 0 {
-                return 0;
+                return u32::MAX;
             }
             info.ActiveProcesses
         }
@@ -492,6 +517,24 @@ fn resume_threads(pid: u32) -> u32 {
     }
 }
 
+/// How long a timed-out run is waited for once it is stopped.
+const STOP_WAIT: Duration = Duration::from_secs(5);
+
+/// `poll` until it gives a value or `limit` passes (None then), so a process that does not
+/// end when stopped never holds the worker for ever.
+fn wait_limited<T>(mut poll: impl FnMut() -> Option<T>, limit: Duration) -> Option<T> {
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        if let Some(v) = poll() {
+            return Some(v);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// "an hour" for `BUILD_TIMEOUT`, else the seconds.
 #[cfg(windows)]
 fn duration_text(d: Duration) -> String {
@@ -505,10 +548,15 @@ impl RealRunner {
         RealRunner { lines, timeout: BUILD_TIMEOUT }
     }
 
-    /// A Windows tool from System32 (curl.exe, tar.exe), so a program of the same name on PATH
-    /// is never run instead; the bare name when System32 is not found.
-    fn system_tool(name: &str) -> PathBuf {
-        std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("System32").join(name)).filter(|p| p.is_file()).unwrap_or_else(|| PathBuf::from(name))
+    /// A Windows tool from System32 (curl.exe, tar.exe), found with `GetSystemDirectoryW`
+    /// (not Tandem's environment), so a program of the same name on PATH is never run
+    /// instead; an error naming it when System32 lacks it (`system_tool_in`).
+    pub(crate) fn system_tool(name: &str) -> Result<PathBuf, String> {
+        use std::os::windows::ffi::OsStringExt;
+        let mut buf = [0u16; 520];
+        let n = unsafe { windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        let system = (n > 0 && n < buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])));
+        system_tool_in(system.as_deref(), name, &|p: &Path| p.is_file())
     }
 
     /// How a failure names the run: the program's name and the arguments up to the first that
@@ -585,8 +633,14 @@ impl Runner for RealRunner {
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) if std::time::Instant::now() >= deadline => {
                     job.terminate();
-                    let _ = child.wait();
-                    break Err(format!("{label} did not finish within {} and was stopped.", duration_text(self.timeout)));
+                    let _ = child.kill();
+                    let within = duration_text(self.timeout);
+                    // Waited for a while only: a process that will not end must not hold the
+                    // worker (and the Scripts folder's scans) for ever.
+                    break match wait_limited(|| child.try_wait().ok().flatten(), STOP_WAIT) {
+                        Some(_) => Err(format!("{label} did not finish within {within} and was stopped.")),
+                        None => Err(format!("{label} did not finish within {within} and could not be stopped.")),
+                    };
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(50)),
                 Err(e) => {
@@ -619,7 +673,7 @@ impl Runner for RealRunner {
             std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
         }
         let args = ["--fail", "--location", "--silent", "--show-error", "--proto", "=https", "--output"].iter().map(|a| a.to_string()).chain([to.to_string_lossy().into_owned(), url.to_string()]).collect();
-        self.run(&Step { program: Self::system_tool("curl.exe"), args, env: Vec::new() }).map(|_| ())
+        self.run(&Step { program: Self::system_tool("curl.exe")?, args, env: Vec::new() }).map(|_| ())
     }
 
     fn sha256(&mut self, file: &Path) -> Result<String, String> {
@@ -641,7 +695,7 @@ impl Runner for RealRunner {
         std::fs::create_dir_all(to).map_err(|e| format!("Could not create {}: {e}", to.display()))?;
         // bsdtar refuses absolute paths and ".." in an archive unless -P is passed; it is not.
         let args = vec!["-xf".to_string(), zip.to_string_lossy().into_owned(), "-C".to_string(), to.to_string_lossy().into_owned()];
-        self.run(&Step { program: Self::system_tool("tar.exe"), args, env: Vec::new() }).map(|_| ())
+        self.run(&Step { program: Self::system_tool("tar.exe")?, args, env: Vec::new() }).map(|_| ())
     }
 
     fn exists(&self, p: &Path) -> bool {
@@ -760,6 +814,41 @@ mod tests {
     use crate::script_runtime::*;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn stopped_runs_are_waited_for_a_while_only() {
+        // A run that ends soon after it is stopped is waited for.
+        let mut polls = 0;
+        assert_eq!(wait_limited(|| { polls += 1; (polls >= 3).then_some(7) }, Duration::from_secs(5)), Some(7));
+        // One that never ends is given up on once the limit passes.
+        let start = std::time::Instant::now();
+        assert_eq!(wait_limited(|| None::<u32>, Duration::from_millis(200)), None);
+        let took = start.elapsed();
+        assert!(took >= Duration::from_millis(200) && took < Duration::from_secs(2), "{took:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unreadable_job_counts_as_active() {
+        // A job whose count cannot be read is kept (dropping it would end what still runs):
+        // here the handle is an event's, not a job's.
+        let event = unsafe { windows_sys::Win32::System::Threading::CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
+        assert!(!event.is_null());
+        let job = KillJob(event);
+        assert_eq!(job.active_processes(), u32::MAX);
+    }
+
+    #[test]
+    fn system_tools_never_come_from_path() {
+        let system = Path::new(r"C:\Windows\System32");
+        let there = |p: &Path| p == Path::new(r"C:\Windows\System32\tar.exe");
+        assert_eq!(system_tool_in(Some(system), "tar.exe", &there), Ok(PathBuf::from(r"C:\Windows\System32\tar.exe")));
+        // Missing from System32, or System32 unknown: an error naming the tool, never the bare
+        // name (which would search PATH).
+        let missing = system_tool_in(Some(system), "curl.exe", &there).unwrap_err();
+        assert!(missing.contains("curl.exe") && missing.contains(r"C:\Windows\System32"), "{missing}");
+        assert!(system_tool_in(None, "tar.exe", &there).unwrap_err().contains("tar.exe"));
+    }
 
     /// One thing a `FakeRunner` was asked to do (queries such as `exists` are not recorded).
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -889,6 +978,23 @@ mod tests {
     }
 
     const LIST: &str = r#"[{"version":"3.12.5","implementation":"cpython","variant":"default"},{"version":"3.9.20"}]"#;
+
+    #[test]
+    fn newest_shared_python_follows_iterm2() {
+        let u = Path::new(r"C:\u");
+        let ready: BTreeSet<PathBuf> = ["3.9", "3.12", "3.10", "3.13.building", "3.14"]
+            .iter()
+            .flat_map(|m| {
+                let venv = shared_venv(u, m);
+                [venv_python(&venv), venv.join(MARKER)]
+            })
+            .filter(|p| !p.starts_with(shared_venv(u, "3.14")) || p.ends_with(MARKER))
+            .collect();
+        let names: Vec<String> = ["3.9", "3.12", "3.10", "3.13.building", "3.14", ".remaps", "3.12.old"].iter().map(|s| s.to_string()).collect();
+        // 3.14 has a marker but no interpreter; 3.12 beats 3.10 by number, not by text.
+        assert_eq!(newest_shared_python(u, &names, &|p| ready.contains(p)), Some(venv_python(&shared_venv(u, "3.12"))));
+        assert_eq!(newest_shared_python(u, &[], &|_| true), None);
+    }
 
     #[test]
     fn install_uv_follows_iterm2() {

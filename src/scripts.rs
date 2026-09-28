@@ -146,6 +146,12 @@ pub fn autolaunch_not_local(folder: &Path) -> String {
     format!("AutoLaunch skipped: {} is reached through a link to a network path.\n", folder.display())
 }
 
+/// Logged in the app-wide entry when the Scripts folder is reached through a link to a
+/// network path: it is not made, watched, scanned or cleaned up (Tandem's).
+pub fn scripts_folder_not_local(folder: &Path) -> String {
+    format!("Scripts folder skipped: {} is reached through a link to a network path.\n", folder.display())
+}
+
 /// A path Tandem never touches as a file: a network path (`\\host`, `//host`, `\\?\UNC\`) or a
 /// device path (`\\.\`). The local long-path form `\\?\C:\` is an ordinary path.
 pub fn is_network_path(text: &str) -> bool {
@@ -173,13 +179,14 @@ pub fn expand_tilde(text: &str, home: &Path) -> PathBuf {
 }
 
 /// `customScriptsFolderIsValid:` (`FM:228-234`): tilde-expanded, no space, an existing folder.
-/// A network or device path (`is_network_path`) is never probed and never valid.
+/// A network or device path (`is_network_path`), or one reached through a link to one
+/// (`ancestors_stay_local`), is never probed and never valid.
 pub fn custom_folder_valid(text: &str, home: &Path, fs: &dyn Fs) -> bool {
     if text.is_empty() || is_network_path(text) {
         return false;
     }
     let candidate = expand_tilde(text, home);
-    !candidate.to_string_lossy().contains(' ') && fs.is_dir(&candidate)
+    !candidate.to_string_lossy().contains(' ') && ancestors_stay_local(&candidate, &|p: &Path| fs.read_link(p)) && fs.is_dir(&candidate)
 }
 
 /// `scriptsPath` (`FM:236-252`): the custom folder when it is on and valid, else the default.
@@ -477,6 +484,26 @@ mod tests {
         assert_eq!(scripts_folder(true, r"D:\my s", appdata, home, &fs), default);
         assert_eq!(scripts_folder(true, r"D:\missing", appdata, home, &fs), default);
         assert_eq!(autolaunch_folder(Path::new(r"D:\s")), PathBuf::from(r"D:\s\AutoLaunch"));
+    }
+
+    #[test]
+    fn custom_folder_through_a_network_link_is_never_probed() {
+        let home = Path::new(r"C:\Users\u");
+        let mut fs = FakeFs::default();
+        // The folder itself, or a folder above it, is a link to a share the fake would list.
+        fs.links.insert(PathBuf::from(r"D:\s"), PathBuf::from(r"\\h\share"));
+        fs.links.insert(PathBuf::from(r"D:\l"), PathBuf::from(r"\\h\x"));
+        fs.dirs.insert(PathBuf::from(r"\\h\share"));
+        fs.dirs.insert(PathBuf::from(r"\\h\x\sub"));
+        assert!(!custom_folder_valid(r"D:\s", home, &fs));
+        assert!(!custom_folder_valid(r"D:\l\sub", home, &fs));
+        let appdata = Path::new(r"C:\A");
+        assert_eq!(scripts_folder(true, r"D:\s", appdata, home, &fs), default_folder(appdata));
+        // A link to a local folder stays valid.
+        fs.links.insert(PathBuf::from(r"D:\ok"), PathBuf::from(r"E:\real"));
+        fs.dirs.insert(PathBuf::from(r"E:\real"));
+        assert!(custom_folder_valid(r"D:\ok", home, &fs));
+        assert_eq!(scripts_folder_not_local(Path::new(r"C:\S")), "Scripts folder skipped: C:\\S is reached through a link to a network path.\n");
     }
 
     fn tree_fs(root: &Path, with_marker: bool) -> FakeFs {

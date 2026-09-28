@@ -108,10 +108,21 @@ pub struct SettingsWindow {
     pub title_providers: Vec<(String, String)>,
 }
 
+/// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
+/// (iTerm2's `willDeselectTab`, `GP:3432-3434`), taking the note; staying on a page keeps it.
+fn page_turn_applies(ctx: &egui::Context, from: Page, to: Page) -> bool {
+    from != to && settings_keys::take_folder_pending(ctx)
+}
+
 impl SettingsWindow {
-    /// Turns to one pane of the settings.
-    pub fn show_page(&mut self, page: Page) {
+    /// Turns to one pane of the settings. True when a custom scripts folder typed on the
+    /// page left is to be applied (`page_turn_applies`): the caller applies
+    /// `Edit::GlobalsChanged`.
+    #[must_use]
+    pub fn show_page(&mut self, page: Page) -> bool {
+        let apply = page_turn_applies(self.host.ctx(), self.page, page);
         self.page = page;
+        apply
     }
 
     /// Whether a custom scripts folder was typed and not yet applied, clearing the note
@@ -497,7 +508,7 @@ impl SettingsWindow {
         self.tab = tab;
         // Leaving a page applies a custom scripts folder typed there (iTerm2's
         // `willDeselectTab`, `GP:3432-3434`); the field is no longer drawn to lose the focus.
-        if page != self.page && matches!(edit, Edit::None) && self.take_folder_pending() {
+        if matches!(edit, Edit::None) && page_turn_applies(self.host.ctx(), self.page, page) {
             edit = Edit::GlobalsChanged;
         }
         self.page = page;
@@ -700,6 +711,18 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turning_the_page_applies_the_typed_folder() {
+        let ctx = egui::Context::default();
+        settings_keys::note_folder_pending(&ctx);
+        // Staying on the page keeps the note for the page change or close that follows.
+        assert!(!page_turn_applies(&ctx, Page::General, Page::General));
+        assert!(page_turn_applies(&ctx, Page::General, Page::Keys));
+        // Taken: once only.
+        assert!(!page_turn_applies(&ctx, Page::Keys, Page::General));
+        assert!(!settings_keys::take_folder_pending(&ctx));
+    }
 
     #[test]
     fn every_tab_has_sections_in_schema_order() {

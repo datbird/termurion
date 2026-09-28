@@ -208,6 +208,9 @@ pub struct Screen {
     pub exec_failed: bool,
     /// UnicodeVersion and the Touch Bar key labels.
     pub unicode: crate::osc1337::Unicode,
+    /// The profile's "Unicode Version" (`osc1337::profile_unicode`), the session's version
+    /// until a UnicodeVersion sequence sets one.
+    pub profile_unicode: u8,
     pub key_labels: crate::osc1337::KeyLabels,
     /// SetColors changes, reapplied over a new profile palette.
     pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
@@ -396,6 +399,7 @@ impl Screen {
             ssh_flags: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
+            profile_unicode: 9,
             key_labels: crate::osc1337::KeyLabels::default(),
             color_sets: Vec::new(),
             clipboard_allowed: false,

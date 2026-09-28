@@ -181,11 +181,24 @@ impl KeyLabels {
 }
 
 /// What Tandem can do, for the Capabilities report.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Features {
     pub clipboard_writable: bool,
     pub ambiguous_wide: bool,
     pub unicode_version: u8,
+}
+
+/// A profile's "Unicode Version" as a session starts with it: 8, else 9.
+pub fn profile_unicode(value: Option<i64>) -> u8 {
+    if value == Some(8) { 8 } else { 9 }
+}
+
+/// A session's features, iTerm2's one `capabilities` behind both `TERM_FEATURES` and the
+/// `Capabilities` reply (`PS:3349`, `:18361-18386`): the clipboard setting, ambiguous width
+/// narrow, and the session's Unicode version (the one a `UnicodeVersion` sequence set, else
+/// the profile's).
+pub fn session_features(clipboard_writable: bool, set_version: u8, profile_version: u8) -> Features {
+    Features { clipboard_writable, ambiguous_wide: false, unicode_version: if set_version == 0 { profile_version } else { set_version } }
 }
 
 /// `Capabilities=` codes in iTerm2's order, for Tandem's features.
@@ -347,6 +360,18 @@ mod tests {
     }
 
     #[test]
+    fn one_unicode_version_per_session() {
+        assert_eq!(profile_unicode(None), 9);
+        assert_eq!(profile_unicode(Some(8)), 8);
+        assert_eq!(profile_unicode(Some(9)), 9);
+        assert_eq!(profile_unicode(Some(12)), 9, "only iTerm2's two versions");
+        assert_eq!(session_features(true, 0, 8), Features { clipboard_writable: true, ambiguous_wide: false, unicode_version: 8 }, "the profile's until a sequence sets one");
+        assert_eq!(session_features(false, 9, 8).unicode_version, 9, "a set version wins");
+        assert_eq!(session_features(false, 8, 9).unicode_version, 8);
+        assert_eq!(session_features(false, 0, 9).unicode_version, 9);
+    }
+
+    #[test]
     fn capabilities_follow_features() {
         let f = Features { clipboard_writable: true, ambiguous_wide: false, unicode_version: 9 };
         assert_eq!(capabilities(f), "T3CwMSc7UUw9Ts3BFGsSyHSxF");
@@ -354,6 +379,14 @@ mod tests {
         assert_eq!(capabilities(f), "T3MSc7UAwUw8Ts3BFGsSyHSxF");
         let mut s = Screen::new(10, 3);
         assert!(String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap().starts_with("\x1b]1337;Capabilities=T3"));
+        // The reply and TERM_FEATURES agree: the profile's version until a sequence sets one.
+        s.profile_unicode = 8;
+        s.clipboard_allowed = true;
+        let want = |v: u8| format!("\x1b]1337;Capabilities={}\x07", capabilities(session_features(true, v, 8)));
+        assert_eq!(String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap(), want(0));
+        assert!(want(0).contains("Uw8"));
+        s.feed(b"\x1b]1337;UnicodeVersion=9\x07");
+        assert_eq!(String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap(), want(9));
         s.trusted = false;
         assert!(s.feed(b"\x1b]1337;Capabilities\x07").is_empty(), "needs trust");
     }

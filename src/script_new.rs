@@ -121,7 +121,7 @@ pub fn container(chosen: &Path, scripts: &Path) -> PathBuf {
 }
 
 /// A full environment's main script, `<container>\<name>\<name>.py`.
-fn full_main(container: &Path, name: &str) -> PathBuf {
+pub fn full_main(container: &Path, name: &str) -> PathBuf {
     container.join(name).join(format!("{name}.py"))
 }
 

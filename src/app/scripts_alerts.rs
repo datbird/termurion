@@ -30,7 +30,8 @@ pub(super) struct Ask {
 pub(super) enum Then {
     Nothing,
     /// A download consent: the first button (OK) submits the jobs in order, each with what
-    /// follows it; any other answer drops them silently (iTerm2's canceled download).
+    /// follows it; any other answer (or the ask dropped) cancels them: silent, but what waited
+    /// on them hears so (an import restores what it replaced).
     Consent(Vec<(Job, After)>),
     /// "Performance Issue": Stop (0) or Continue (1).
     SlowScan,
@@ -49,6 +50,22 @@ pub(super) enum Then {
     OpenNewScript(std::path::PathBuf),
     /// "Invalid Folder": OK opens the save dialog again (the panel stays open in iTerm2).
     InvalidFolder(crate::script_new::Plan),
+    /// "Install Script Archive?" for an archive the scan found: OK (0) imports it and recycles
+    /// it once installed; Cancel (1) does nothing; Move to Trash (2) recycles it.
+    Archive(std::path::PathBuf),
+    /// "Script Already Exists" for the import under way (the script's name): Replace Script
+    /// (0) moves the old one aside and installs; Cancel (1) ends the import quietly.
+    AlreadyInstalled(String),
+    /// "Script Imported Successfully": OK (0), or Launch (1) the installed path.
+    ImportDone(std::path::PathBuf),
+    /// "Could Not Install Script": OK (0), or Try Again (1) with the same file.
+    ImportFailed(std::path::PathBuf),
+    /// Manage Dependencies' "Run this Command?": OK (0) runs the pip command in a window on
+    /// the next loop pass; Cancel (1) does nothing.
+    RunPip(Box<super::script_deps_app::RunPip>),
+    /// "Confirm Python Downgrade" / "Confirm Python Upgrade" for a container and the version
+    /// picked: OK (0) asks the download consent, then rebuilds; Cancel (1) keeps the version.
+    VersionChange(std::path::PathBuf, String),
 }
 
 impl Then {
@@ -97,8 +114,12 @@ impl App {
     /// An ask that will never show: the slow-scan question answers Continue, so the scan
     /// worker does not wait for ever; any other is dropped.
     fn scripts_dropped(&mut self, then: Then) {
-        if then == Then::SlowScan {
-            self.scripts_answered(then, 1);
+        match then {
+            Then::SlowScan => self.scripts_answered(then, 1),
+            // Canceled: what waits on a consent or on the replace question hears so.
+            Then::Consent(jobs) => self.consent_declined(jobs),
+            Then::AlreadyInstalled(_) => self.scripts_answered(then, 1),
+            _ => {}
         }
     }
 
@@ -167,6 +188,30 @@ impl App {
             Then::Consent(jobs) => {
                 if index == 0 {
                     self.provision_jobs(jobs);
+                } else {
+                    self.consent_declined(jobs);
+                }
+            }
+            Then::Archive(path) => match index {
+                0 => self.import_path(path, true),
+                2 => super::scripts_app::recycle(&path),
+                _ => {}
+            },
+            Then::AlreadyInstalled(name) => {
+                if index == 0 {
+                    self.import_replace(&name);
+                } else {
+                    self.import_finish(Ok(None));
+                }
+            }
+            Then::ImportDone(path) => {
+                if index == 1 {
+                    self.launch_script(crate::script_launch::Request { path, args: Vec::new(), explicit: true });
+                }
+            }
+            Then::ImportFailed(path) => {
+                if index == 1 {
+                    self.import_path(path, false);
                 }
             }
             Then::Spaces(plan) => {
@@ -177,6 +222,18 @@ impl App {
                 }
             }
             Then::InvalidFolder(plan) => self.new_script_save(plan),
+            Then::RunPip(run) => {
+                if index == 0 {
+                    self.deps_run_confirmed(*run);
+                }
+            }
+            Then::VersionChange(container, version) => {
+                if index == 0 {
+                    self.deps_version_confirmed(container, version);
+                } else {
+                    self.deps_push();
+                }
+            }
             Then::OpenNewScript(path) => {
                 if index == 0 {
                     self.edit_new_script(&path);

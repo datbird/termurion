@@ -205,6 +205,30 @@ pub trait GitRun: Send + Sync {
     fn run(&self, git: &Path, dir: &Path, args: &[String], timeout: Duration, cap: Option<usize>) -> RunResult;
 }
 
+/// The hardening every git line here starts with (`STATUS_ARGS` and the others begin with
+/// it), for a git run outside the poller that must be as safe: it2git, run by the prompt.
+pub const HARDENED: &[&str] = &[
+    "--no-optional-locks",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.useBuiltinFSMonitor=false",
+    "-c",
+    "safe.bareRepository=explicit",
+    "-c",
+    "core.quotepath=false",
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "core.virtualFilesystem=",
+];
+
+/// `args` as a guarded git line: `HARDENED`, the filter overrides `vet_repo` found, then
+/// `args` (the subcommand and its arguments).
+pub fn guarded_args(vet: &Vetted, args: &[&str]) -> Vec<String> {
+    HARDENED.iter().map(|a| a.to_string()).chain(vet.args.iter().cloned()).chain(args.iter().map(|a| a.to_string())).collect()
+}
+
 /// The branch, counts and entries (`GCL:590-630` with the CLI). Every git line starts
 /// with `--no-optional-locks` and the same `-c` hardening: no fsmonitor hook, no implicit
 /// bare repository (a folder of repository files git would find on its own), paths printed
@@ -332,14 +356,16 @@ pub fn program_links_local(program: &Path) -> bool {
     links_local(program, 0)
 }
 
-/// `git.exe` in the first local PATH folder that has it. Network and relative folders, and
-/// folders reached through a link to a network path, are skipped without being looked in
-/// (a UNC entry probed on every poll would leak).
+/// `git.exe` in the first `util_cli::path_dirs` folder that has it, with no link on the way
+/// to a network path. Network and relative folders, and folders reached through a link to a
+/// network path, are skipped without being looked in (a UNC entry probed on every poll would
+/// leak).
 pub fn find_git(path_var: &str, is_file: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
-    path_var.split(';').map(unquote).filter(|d| local_path_ok(d)).map(exe_in).find(|p| links_local(p, 0) && is_file(p))
+    crate::util_cli::path_dirs(path_var).map(|d| d.join("git.exe")).find(|p| links_local(p, 0) && is_file(p))
 }
 
-fn unquote(s: &str) -> &str {
+/// A PATH entry trimmed, its surrounding double quotes removed.
+pub(crate) fn unquote(s: &str) -> &str {
     let s = s.trim();
     s.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(s)
 }
@@ -1541,6 +1567,17 @@ mod tests {
         assert_eq!(case("bisect", &|g| file(g, "BISECT_LOG")), RepoState::Bisect);
         assert_eq!(case("both", &|g| { dir(g, "rebase-merge"); file(g, "MERGE_HEAD") }), RepoState::Rebase, "rebase wins");
         assert_eq!(case("mdir", &|g| dir(g, "MERGE_HEAD")), RepoState::None, "MERGE_HEAD must be a file");
+    }
+
+    #[test]
+    fn guarded_lines_share_the_hardening() {
+        for base in [STATUS_ARGS, GIT_DIR_ARGS, BRANCHES_ARGS, LOG_ARGS] {
+            assert_eq!(&base[..HARDENED.len()], HARDENED);
+        }
+        let vet = Vetted { args: vec!["-c".into(), "filter.x.clean=".into()], partial_clone: false };
+        let line = guarded_args(&vet, &["status", "--porcelain"]);
+        assert_eq!(&line[..HARDENED.len()], HARDENED);
+        assert_eq!(&line[HARDENED.len()..], ["-c", "filter.x.clean=", "status", "--porcelain"]);
     }
 
     #[test]
