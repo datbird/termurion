@@ -1,10 +1,12 @@
-//! Manual AI models, the default model's endpoint, the default-model popup's writes and the
-//! one-time migration of the legacy global custom headers. Pure; ports
+//! Manual AI models, the default model's endpoint, the default-model popup's writes, the Manual
+//! AI Models sheet's actions, the model editor's form, presets and Save rules, and the one-time
+//! migration of the legacy global custom headers. Pure; ports
 //! `Settings/GeneralPreferencesViewController.m` (the manual model dictionary, `G:43-64`,
-//! `G:3634-3781`, `G:2917-2995`, `G:3188-3236`), `AITerm/LLMMetadata.swift` (`LM:78-218`,
-//! `LM:491-718`) and `AppLaunch/iTermMigrationHelper.m:458-509`.
+//! `G:3634-3781`, `G:2917-2995`, `G:3188-3236`, the sheet and editor `G:282-1640`,
+//! `G:3811-4020`), `AITerm/LLMMetadata.swift` (`LM:78-218`, `LM:491-718`),
+//! `AITerm/AIProviderPreset.swift` and `AppLaunch/iTermMigrationHelper.m:458-509`.
 
-use crate::ai_catalog::{Catalog, Feature};
+use crate::ai_catalog::{Catalog, Feature, Model, VectorStore};
 use crate::ai_policy;
 use crate::ai_settings::{self as ai, Api, Vendor};
 use crate::globals::Globals;
@@ -556,6 +558,456 @@ pub fn migrate_after_import(g: &mut Globals) -> bool {
     migrate_legacy_headers(g)
 }
 
+// The Manual AI Models sheet (`G:282-560`) and the model editor (`G:645-1000`), their texts.
+pub const SHEET_TITLE: &str = "Manual AI Models";
+pub const COLUMN_MODEL: &str = "Model";
+pub const COLUMN_API: &str = "API";
+pub const COLUMN_ENDPOINT: &str = "Endpoint";
+pub const ADD: &str = "Add";
+pub const DELETE: &str = "Delete";
+pub const EDIT: &str = "Edit";
+pub const DUPLICATE: &str = "Duplicate";
+pub const TOGGLE_DEFAULT: &str = "Toggle Default";
+/// The economy toggle's text; iTerm2 shows a leaf symbol (Decision: no leaf glyph is assumed).
+pub const ECONOMY: &str = "Economy";
+pub const TOGGLE_ECONOMY: &str = "Toggle Economy Model. A cheaper model used for frequent background jobs like command-safety checks and screen-idle detection.";
+/// Marks the economy row, where iTerm2 draws a leaf described as "Economy model".
+pub const ECONOMY_MARK: &str = "Economy model";
+pub const UNTITLED: &str = "Untitled model";
+pub const MANUAL_MODEL: &str = "Manual model";
+pub const LEGACY_HEADING: &str = "Custom Headers Are Now Set Per Model";
+pub const LEGACY_TEXT: &str = "Your AI custom HTTP headers used to be a single global setting. They still apply to your current model, but adding or editing models here does not carry them over. Re-add the headers you need in each model\u{2019}s \u{201c}Custom headers\u{201d} section.";
+pub const ADD_TITLE: &str = "Add Manual AI Model";
+pub const EDIT_TITLE: &str = "Edit Manual AI Model";
+pub const PRESET_LABEL: &str = "Preset:";
+pub const CUSTOM: &str = "Custom";
+pub const EDITOR_MODEL_LABEL: &str = "Model:";
+pub const FETCH_MODELS: &str = "Fetch Models";
+pub const REFRESH_MODELS: &str = "Refresh Models";
+pub const URL_LABEL: &str = "URL:";
+pub const API_LABEL: &str = "API:";
+pub const DISCOVER: &str = "Discover installed models automatically (Ollama)";
+pub const CONTEXT_LABEL: &str = "Context tokens:";
+pub const RESPONSE_LABEL: &str = "Max response tokens:";
+pub const VECTOR_STORE_LABEL: &str = "Vector store:";
+pub const VECTOR_DISABLED: &str = "Disabled";
+pub const VECTOR_OPENAI: &str = "OpenAI";
+pub const THINKING: &str = "Configurable thinking";
+pub const THINKING_TIP: &str = "Enable for reasoning models with a thinking mode, such as GPT-5, o-series, or DeepSeek models, so the chat\u{2019}s Think toggle appears.";
+pub const TEMPERATURE: &str = "Supports temperature";
+pub const TEMPERATURE_TIP: &str = "Uncheck for models that reject a temperature parameter, such as Anthropic Opus 4.7 and later.";
+pub const HEADERS_LABEL: &str = "Custom headers:";
+pub const HEADER_COLUMN: &str = "Header";
+pub const VALUE_COLUMN: &str = "Value";
+pub const TEST_CONNECTION: &str = "Test Connection";
+pub const CANCEL: &str = "Cancel";
+pub const SAVE: &str = "Save";
+pub const INVALID_TITLE: &str = "Invalid Manual AI Model";
+pub const URL_REQUIRED: &str = "URL is required.";
+pub const MODEL_REQUIRED: &str = "Model is required.";
+pub const CONTEXT_POSITIVE: &str = "Context tokens must be greater than zero.";
+pub const RESPONSE_POSITIVE: &str = "Max response tokens must be greater than zero.";
+pub const NAMES_UNIQUE: &str = "Manual model names must be unique.";
+
+pub fn invalid_header_name(name: &str) -> String {
+    format!("Custom header name \u{201c}{name}\u{201d} is not valid. Use only RFC 7230 token characters (letters, digits, and any of !#$%&'*+-.^_`|~).")
+}
+
+pub fn invalid_header_value(name: &str) -> String {
+    format!("The value for custom header \u{201c}{name}\u{201d} must not contain newline or null characters.")
+}
+
+/// The name of the manual model that is the default for new chats; None while the vendor's
+/// recommended model is (`G:2688-2693`).
+pub fn default_manual_name(g: &Globals) -> Option<String> {
+    (!g.bool(ai::USE_RECOMMENDED)).then(|| g.string(ai::MODEL))
+}
+
+/// The economy model's name, "" when there is none (`G:2695-2702`).
+pub fn economy_name(g: &Globals) -> String {
+    g.string(ai::ECONOMY_MODEL)
+}
+
+/// The sheet's rows as (Model, API, Endpoint) (`G:388-420`): a star marks the default, the
+/// text "Economy model" the economy model; an out-of-range API reads Chat Completions.
+pub fn sheet_rows(models: &[ManualModel], default_name: Option<&str>, economy_name: &str) -> Vec<[String; 3]> {
+    models
+        .iter()
+        .map(|m| {
+            let shown = if m.name.is_empty() { UNTITLED } else { m.name.as_str() };
+            let name = if default_name == Some(m.name.as_str()) {
+                format!("\u{2605} {shown}")
+            } else if !economy_name.is_empty() && m.name == economy_name {
+                format!("{ECONOMY_MARK} {shown}")
+            } else {
+                shown.to_string()
+            };
+            [name, m.api().title().to_string(), m.endpoint_host()]
+        })
+        .collect()
+}
+
+/// Which of the sheet's buttons take input (`G:486-514`): Add, Delete, Edit, Duplicate, Toggle
+/// Default, Toggle Economy. The default cannot also be the economy model; a dynamic entry is a
+/// whole server, so it can be neither.
+pub fn segments_enabled(models: &[ManualModel], selected: Option<usize>, default_name: Option<&str>) -> [bool; 6] {
+    let Some(m) = selected.and_then(|i| models.get(i)) else {
+        return [true, false, false, false, false, false];
+    };
+    let is_default = default_name == Some(m.name.as_str());
+    [true, true, true, true, !m.dynamic_models, !m.dynamic_models && !is_default]
+}
+
+/// The vendor's recommended model becomes the default again (`G:3990-3997`). An out-of-range
+/// vendor only turns the recommended model on, as iTerm2 stores the raw value it read.
+fn select_stored_provider(g: &mut Globals, catalog: &Catalog) {
+    match Vendor::from_raw(g.int(ai::VENDOR)) {
+        Some(v) => select_provider(g, v, catalog),
+        None => g.set(ai::USE_RECOMMENDED, Value::Boolean(true)),
+    }
+}
+
+/// Delete (`G:3838-3862`): the default's deletion makes the row now at its index (else the
+/// last) the default, or the vendor's recommended model when none is left; the economy model's
+/// deletion clears it. Answers the row to select next.
+pub fn delete_row(g: &mut Globals, models: &mut Vec<ManualModel>, row: usize, catalog: &Catalog) -> Option<usize> {
+    if row >= models.len() {
+        return models.len().checked_sub(1).map(|last| row.min(last));
+    }
+    let deleted = models.remove(row).name;
+    let deleting_default = default_manual_name(g).as_deref() == Some(deleted.as_str());
+    let economy = economy_name(g);
+    let deleting_economy = !economy.is_empty() && economy == deleted;
+    let next = models.len().checked_sub(1).map(|last| row.min(last));
+    write(g, models);
+    if deleting_economy {
+        g.set(ai::ECONOMY_MODEL, Value::String(String::new()));
+    }
+    if deleting_default {
+        match next {
+            Some(i) => select_manual(g, &models[i]),
+            None => select_stored_provider(g, catalog),
+        }
+    }
+    next
+}
+
+/// Toggle Default (`G:3864-3884`): the default row falls back to the vendor's recommended
+/// model; another row becomes the default (and stops being the economy model).
+pub fn toggle_default(g: &mut Globals, models: &[ManualModel], row: usize, catalog: &Catalog) {
+    let Some(m) = models.get(row) else { return };
+    write(g, models);
+    if default_manual_name(g).as_deref() == Some(m.name.as_str()) {
+        select_stored_provider(g, catalog);
+    } else {
+        select_manual(g, m);
+    }
+}
+
+/// Toggle Economy (`G:3886-3910`): set or cleared; never on the default row or a nameless one.
+pub fn toggle_economy(g: &mut Globals, models: &[ManualModel], row: usize) {
+    let Some(m) = models.get(row) else { return };
+    write(g, models);
+    if m.name.is_empty() {
+        return;
+    }
+    if economy_name(g) == m.name {
+        g.set(ai::ECONOMY_MODEL, Value::String(String::new()));
+    } else if default_manual_name(g).as_deref() != Some(m.name.as_str()) {
+        g.set(ai::ECONOMY_MODEL, Value::String(m.name.clone()));
+    }
+}
+
+/// Duplicate's editor starts from a copy with a new id and the name "<name> copy"
+/// (`G:3826-3836`).
+pub fn duplicate_base(m: &ManualModel) -> ManualModel {
+    let name = if m.name.is_empty() { MANUAL_MODEL } else { m.name.as_str() };
+    ManualModel { id: new_id(), name: format!("{name} copy"), ..m.clone() }
+}
+
+/// Add's editor starts from the stored model settings (`G:3673-3698`): the current model name
+/// (never the Ollama placeholder), URL and API, the token limits (8192 when not positive), the
+/// feature switches and the vector store, with a fresh id.
+pub fn default_base(g: &Globals) -> ManualModel {
+    let positive = |key: &str| Some(g.int(key)).filter(|n| *n > 0).unwrap_or(FALLBACK_TOKENS);
+    let seed = g.string(ai::MODEL);
+    let name = if seed.is_empty() || seed == OLLAMA_PENDING { "gpt-4o-mini".to_string() } else { seed };
+    ManualModel {
+        id: new_id(),
+        name,
+        url: g.string(ai::URL),
+        api: g.int(ai::API),
+        context_window_tokens: positive(ai::TOKEN_LIMIT),
+        max_response_tokens: positive(ai::RESPONSE_TOKEN_LIMIT),
+        hosted_code_interpreter: g.bool(ai::FEATURE_CODE_INTERPRETER),
+        hosted_file_search: g.bool(ai::FEATURE_FILE_SEARCH),
+        hosted_web_search: g.bool(ai::FEATURE_WEB_SEARCH),
+        function_calling: g.bool(ai::FEATURE_FUNCTION_CALLING),
+        streaming: g.bool(ai::FEATURE_STREAMING),
+        vision: false,
+        vector_store: g.int(ai::VECTOR_STORE),
+        supports_temperature: None,
+        configurable_thinking: None,
+        dynamic_models: false,
+        dynamic_selected_model: None,
+        custom_headers: Vec::new(),
+        extra: Table::new(),
+    }
+}
+
+/// The editor saved (`G:3935-3982`): an edit replaces its row, carrying the economy name to a
+/// renamed economy model and reapplying a renamed or changed default; an add appends. Answers
+/// the row to select.
+pub fn save_edit(g: &mut Globals, models: &mut Vec<ManualModel>, editing: Option<usize>, result: ManualModel, _catalog: &Catalog) -> usize {
+    let Some(i) = editing.filter(|i| *i < models.len()) else {
+        models.push(result);
+        write(g, models);
+        return models.len() - 1;
+    };
+    let old = std::mem::replace(&mut models[i], result);
+    let editing_default = default_manual_name(g).as_deref() == Some(old.name.as_str());
+    let economy = economy_name(g);
+    let editing_economy = !economy.is_empty() && economy == old.name;
+    write(g, models);
+    if editing_economy {
+        g.set(ai::ECONOMY_MODEL, Value::String(models[i].name.clone()));
+    }
+    if editing_default {
+        select_manual(g, &models[i]);
+    }
+    i
+}
+
+/// The preset popup's "Custom" item (`G:699-700`).
+pub const CUSTOM_PRESET: i64 = -1;
+/// A provider preset's popup tag is this plus its index (`G:89`); a catalog preset's is its index.
+pub const PROVIDER_PRESET_BASE: i64 = 100_000;
+
+/// A third-party gateway to start a manual model from (`AITerm/AIProviderPreset.swift:18-66`):
+/// the endpoint, API and capabilities, with the model name left for the person.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProviderPreset {
+    pub name: &'static str,
+    pub url: &'static str,
+    pub api: Api,
+    pub context: i64,
+    pub response: i64,
+    pub function_calling: bool,
+    pub streaming: bool,
+    pub thinking: bool,
+    pub dynamic: bool,
+    pub vision: bool,
+    pub placeholder: &'static str,
+}
+
+const fn gateway(name: &'static str, url: &'static str, api: Api, thinking: bool, dynamic: bool, placeholder: &'static str) -> ProviderPreset {
+    ProviderPreset { name, url, api, context: 128_000, response: 16_384, function_calling: true, streaming: true, thinking, dynamic, vision: false, placeholder }
+}
+
+/// iTerm2's provider presets (`AITerm/AIProviderPreset.swift:73-125`).
+pub const PROVIDER_PRESETS: [ProviderPreset; 7] = [
+    gateway("Ollama (auto-discover)", "http://localhost:11434/api/chat", Api::Llama, true, true, "qwen3.5"),
+    gateway("Ollama (native)", "http://localhost:11434/api/chat", Api::Llama, true, false, "qwen3.5"),
+    gateway("Local OpenAI-compatible (LM Studio, vLLM, \u{2026})", "http://localhost:1234/v1/chat/completions", Api::ChatCompletions, false, false, "qwen2.5-7b-instruct"),
+    gateway("OpenRouter", "https://openrouter.ai/api/v1/chat/completions", Api::ChatCompletions, false, false, "openai/gpt-4o"),
+    gateway("z.ai (GLM)", "https://api.z.ai/api/paas/v4/chat/completions", Api::ChatCompletions, false, false, "glm-4.6"),
+    gateway("Qwen (DashScope)", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", Api::ChatCompletions, false, false, "qwen-plus"),
+    gateway("MiniMax", "https://api.minimax.io/v1/text/chatcompletion_v2", Api::ChatCompletions, false, false, "MiniMax-Text-01"),
+];
+
+/// The catalog models offered as presets: all but Apple's on-device classifier (`AM:371-373`).
+pub fn catalog_presets(catalog: &Catalog) -> Vec<&Model> {
+    catalog.models.iter().filter(|m| m.vendor != Vendor::Apple).collect()
+}
+
+/// The editor's six feature checkboxes in iTerm2's order (`G:826-833`), with their keys.
+pub const FEATURES: [(&str, &str); 6] = [
+    ("Function calling", FUNCTION_CALLING),
+    ("Streaming responses", STREAMING),
+    ("Vision (image input)", VISION),
+    ("Hosted web search", HOSTED_WEB_SEARCH),
+    ("Hosted file search", HOSTED_FILE_SEARCH),
+    ("Hosted code interpreter", HOSTED_CODE_INTERPRETER),
+];
+
+/// The model editor's fields as the person sees them (`G:645-1000`). The API, vector store and
+/// preset are popup tags; the token counts are the text fields' strings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorForm {
+    pub preset: i64,
+    pub name: String,
+    pub name_placeholder: String,
+    pub url: String,
+    pub api: i64,
+    pub context: String,
+    pub response: String,
+    pub vector_store: i64,
+    pub function_calling: bool,
+    pub streaming: bool,
+    pub vision: bool,
+    pub web_search: bool,
+    pub file_search: bool,
+    pub code_interpreter: bool,
+    pub thinking: bool,
+    pub temperature: bool,
+    pub dynamic: bool,
+    pub headers: Vec<(String, String)>,
+}
+
+impl EditorForm {
+    /// The form for a model (`G:645-1000`). An API the popup does not offer reads Chat
+    /// Completions, a vector store other than OpenAI reads Disabled; the thinking and
+    /// temperature boxes take a stored value, else the same-named catalog model's (`G:617-630`).
+    pub fn from_model(m: &ManualModel, catalog: &Catalog) -> EditorForm {
+        let api = Api::from_raw(m.api).filter(|a| Api::EDITOR_ORDER.contains(a)).unwrap_or(Api::ChatCompletions);
+        let twin = catalog.named(&m.name);
+        EditorForm {
+            preset: CUSTOM_PRESET,
+            name: m.name.clone(),
+            name_placeholder: String::new(),
+            url: m.url.clone(),
+            api: api.raw(),
+            context: m.context_window_tokens.to_string(),
+            response: m.max_response_tokens.to_string(),
+            vector_store: if m.vector_store == VectorStore::OpenAI.raw() { VectorStore::OpenAI.raw() } else { VectorStore::Disabled.raw() },
+            function_calling: m.function_calling,
+            streaming: m.streaming,
+            vision: m.vision,
+            web_search: m.hosted_web_search,
+            file_search: m.hosted_file_search,
+            code_interpreter: m.hosted_code_interpreter,
+            thinking: m.configurable_thinking.unwrap_or_else(|| twin.is_some_and(|t| t.features.contains(&Feature::ConfigurableThinking))),
+            temperature: m.supports_temperature.unwrap_or_else(|| twin.is_none_or(|t| t.supports_temperature)),
+            dynamic: m.dynamic_models,
+            headers: m.custom_headers.clone(),
+        }
+    }
+
+    /// The feature checkbox at `FEATURES[i]`.
+    pub fn feature_mut(&mut self, i: usize) -> &mut bool {
+        match i {
+            0 => &mut self.function_calling,
+            1 => &mut self.streaming,
+            2 => &mut self.vision,
+            3 => &mut self.web_search,
+            4 => &mut self.file_search,
+            _ => &mut self.code_interpreter,
+        }
+    }
+
+    /// Save (`G:1545-1640`, the non-dynamic path; saving a dynamic entry is 12b's): the checks in
+    /// iTerm2's order, then the model with the base's id (a new one when it has none), the
+    /// trimmed name and URL, the boxes' values, and the headers with a name (trimmed). Keys
+    /// Settings does not know are not carried, as iTerm2 builds a new dictionary.
+    pub fn validate(&self, base: &ManualModel, taken: &dyn Fn(&str) -> bool) -> Result<ManualModel, String> {
+        let name = self.name.trim();
+        let url = self.url.trim();
+        let context = ns_integer_value(&self.context);
+        let response = ns_integer_value(&self.response);
+        if url.is_empty() {
+            return Err(URL_REQUIRED.to_string());
+        }
+        if name.is_empty() {
+            return Err(MODEL_REQUIRED.to_string());
+        }
+        if context <= 0 {
+            return Err(CONTEXT_POSITIVE.to_string());
+        }
+        if response <= 0 {
+            return Err(RESPONSE_POSITIVE.to_string());
+        }
+        if taken(name) {
+            return Err(NAMES_UNIQUE.to_string());
+        }
+        let mut headers = Vec::new();
+        for (n, v) in &self.headers {
+            let n = n.trim();
+            if n.is_empty() {
+                continue;
+            }
+            if !ai_policy::header_name_valid(n) {
+                return Err(invalid_header_name(n));
+            }
+            if !ai_policy::header_value_valid(v) {
+                return Err(invalid_header_value(n));
+            }
+            headers.push((n.to_string(), v.clone()));
+        }
+        Ok(ManualModel {
+            id: if base.id.is_empty() { new_id() } else { base.id.clone() },
+            name: name.to_string(),
+            url: url.to_string(),
+            api: self.api,
+            context_window_tokens: context,
+            max_response_tokens: response,
+            hosted_code_interpreter: self.code_interpreter,
+            hosted_file_search: self.file_search,
+            hosted_web_search: self.web_search,
+            function_calling: self.function_calling,
+            streaming: self.streaming,
+            vision: self.vision,
+            vector_store: self.vector_store,
+            supports_temperature: Some(self.temperature),
+            configurable_thinking: Some(self.thinking),
+            dynamic_models: false,
+            dynamic_selected_model: None,
+            custom_headers: headers,
+            extra: Table::new(),
+        })
+    }
+}
+
+/// A catalog preset fills every field from the model, its name included (`G:1263-1292`).
+pub fn apply_catalog_preset(form: &mut EditorForm, m: &Model) {
+    form.name = m.name.clone();
+    form.url = m.url.clone();
+    form.api = m.api.raw();
+    form.context = m.context_window_tokens.to_string();
+    form.response = m.max_response_tokens.to_string();
+    form.vector_store = m.vector_store.raw();
+    form.function_calling = m.features.contains(&Feature::FunctionCalling);
+    form.streaming = m.features.contains(&Feature::Streaming);
+    form.vision = m.features.contains(&Feature::Vision);
+    form.web_search = m.features.contains(&Feature::HostedWebSearch);
+    form.file_search = m.features.contains(&Feature::HostedFileSearch);
+    form.code_interpreter = m.features.contains(&Feature::HostedCodeInterpreter);
+    form.thinking = m.features.contains(&Feature::ConfigurableThinking);
+    form.temperature = m.supports_temperature;
+    form.dynamic = false;
+}
+
+/// A provider preset fills the endpoint and capabilities and clears the model name, showing the
+/// host's example as its placeholder (`G:1299-1330`).
+pub fn apply_provider_preset(form: &mut EditorForm, p: &ProviderPreset) {
+    form.name.clear();
+    form.name_placeholder = p.placeholder.to_string();
+    form.url = p.url.to_string();
+    form.api = p.api.raw();
+    form.context = p.context.to_string();
+    form.response = p.response.to_string();
+    form.vector_store = VectorStore::Disabled.raw();
+    form.function_calling = p.function_calling;
+    form.streaming = p.streaming;
+    form.vision = p.vision;
+    form.web_search = false;
+    form.file_search = false;
+    form.code_interpreter = false;
+    form.thinking = p.thinking;
+    form.dynamic = p.dynamic;
+    form.temperature = true;
+}
+
+/// Set once the legacy headers notice was shown.
+pub const LEGACY_NOTICE_FLAG: &str = "NoSyncAILegacyGlobalHeadersWarningShown";
+
+/// Whether opening the sheet first shows the legacy headers notice (`G:4005-4020`): legacy
+/// global headers are on and set, and no manual model is configured, so they apply only
+/// through the legacy model, which the sheet's first edit replaces.
+pub fn legacy_notice_due(g: &Globals) -> bool {
+    let non_empty = |key: &str| matches!(g.get(key), Some(Value::Array(a)) if !a.is_empty());
+    !g.bool(LEGACY_NOTICE_FLAG) && g.bool(ai::CUSTOM_HEADERS_ENABLED) && non_empty(ai::CUSTOM_HEADERS) && !non_empty(ai::MANUAL_MODELS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,5 +1410,351 @@ mod tests {
         assert_eq!(after[1], Value::Integer(7));
         assert_eq!(after[2], value(r#"{name=7, url="u", extra="kept", customHeaders=[{name="X-Key", value="1"}]}"#));
         assert_eq!(named(&read(&odd), "a").custom_headers, [("X-Key".to_string(), "1".to_string())]);
+    }
+
+    fn model(name: &str, url: &str, api: i64) -> ManualModel {
+        let mut t = Table::new();
+        t.insert(NAME.into(), Value::String(name.into()));
+        t.insert(URL.into(), Value::String(url.into()));
+        t.insert(API.into(), Value::Integer(api));
+        ManualModel::from_table(&t).expect("a manual model")
+    }
+
+    const LOCAL: &str = "http://localhost:11434/api/chat";
+    const EXAMPLE: &str = "https://api.example.com/v1/responses";
+
+    fn row(a: &str, b: &str, c: &str) -> [String; 3] {
+        [a.to_string(), b.to_string(), c.to_string()]
+    }
+
+    #[test]
+    fn sheet_rows_follow_iterm2() {
+        let models = [model("llama3", LOCAL, 5), model("b", EXAMPLE, 2), model("n", "not a url", 99)];
+        assert_eq!(
+            sheet_rows(&models, Some("b"), "llama3"),
+            [row("Economy model llama3", "Ollama", "localhost"), row("\u{2605} b", "Responses", "api.example.com"), row("n", "Chat Completions", "not a url")]
+        );
+        let rows = sheet_rows(&models, None, "");
+        assert!(rows.iter().all(|r| !r[0].contains('\u{2605}')));
+        assert_eq!(rows[0][0], "llama3");
+        assert_eq!(sheet_rows(&[model("", "u", 1)], None, "")[0][0], "Untitled model");
+
+        let mut g = empty();
+        assert_eq!(default_manual_name(&g), None, "the recommended model is in use");
+        assert_eq!(economy_name(&g), "");
+        g.set(ai::USE_RECOMMENDED, Value::Boolean(false));
+        g.set(ai::MODEL, Value::String("b".into()));
+        g.set(ai::ECONOMY_MODEL, Value::String("llama3".into()));
+        assert_eq!(default_manual_name(&g).as_deref(), Some("b"));
+        assert_eq!(economy_name(&g), "llama3");
+    }
+
+    #[test]
+    fn segments_follow_iterm2() {
+        let mut dynamic = model("d", "http://h:11434/api/chat", 5);
+        dynamic.dynamic_models = true;
+        let models = [model("llama3", LOCAL, 5), model("b", EXAMPLE, 2), dynamic];
+        assert_eq!(segments_enabled(&models, None, Some("b")), [true, false, false, false, false, false]);
+        assert_eq!(segments_enabled(&models, Some(7), Some("b")), [true, false, false, false, false, false], "a stale selection is none");
+        assert_eq!(segments_enabled(&models, Some(1), Some("b")), [true, true, true, true, true, false]);
+        assert_eq!(segments_enabled(&models, Some(0), Some("b")), [true; 6]);
+        assert_eq!(segments_enabled(&models, Some(2), Some("b")), [true, true, true, true, false, false]);
+    }
+
+    #[test]
+    fn sheet_actions_follow_iterm2() {
+        let cat = bundled();
+        let setup = || {
+            let models = vec![model("b", EXAMPLE, 2), model("llama3", LOCAL, 5), model("n", "https://n.example.com/v1", 1)];
+            let mut g = empty();
+            write(&mut g, &models);
+            select_manual(&mut g, &models[0]);
+            g.set(ai::ECONOMY_MODEL, Value::String("llama3".into()));
+            (g, models)
+        };
+        let stored = |g: &Globals| read(g).iter().map(|m| m.name.clone()).collect::<Vec<_>>();
+
+        // Deleting the default makes the row now at its index the default, which also stops it
+        // being the economy model.
+        let (mut g, mut models) = setup();
+        assert_eq!(delete_row(&mut g, &mut models, 0, cat), Some(0));
+        assert_eq!(stored(&g), ["llama3", "n"], "write ran");
+        assert_eq!(default_manual_name(&g).as_deref(), Some("llama3"));
+        assert_eq!(g.string(ai::URL), LOCAL, "select_manual ran");
+        assert_eq!(economy_name(&g), "");
+
+        // Deleting the last row: the new last row becomes the default.
+        let (mut g, mut models) = setup();
+        let b = models.remove(0);
+        models.push(b);
+        write(&mut g, &models);
+        assert_eq!(delete_row(&mut g, &mut models, 2, cat), Some(1));
+        assert_eq!(default_manual_name(&g).as_deref(), Some("n"));
+        assert_eq!(economy_name(&g), "llama3");
+
+        // Deleting the economy model clears it; the default stays.
+        let (mut g, mut models) = setup();
+        assert_eq!(delete_row(&mut g, &mut models, 1, cat), Some(1));
+        assert_eq!(economy_name(&g), "");
+        assert_eq!(default_manual_name(&g).as_deref(), Some("b"));
+
+        // Deleting the only model falls back to the vendor's recommended model.
+        let mut g = empty();
+        g.set(ai::VENDOR, Value::Integer(Vendor::Anthropic.raw()));
+        let mut only = vec![model("b", EXAMPLE, 2)];
+        write(&mut g, &only);
+        select_manual(&mut g, &only[0]);
+        assert_eq!(delete_row(&mut g, &mut only, 0, cat), None);
+        assert!(g.bool(ai::USE_RECOMMENDED));
+        assert_eq!(g.string(ai::MODEL), "claude-opus-4-8", "select_provider(AIVendor) ran");
+        assert!(read(&g).is_empty());
+
+        // Toggle Default on the default row falls back to the provider.
+        let (mut g, models) = setup();
+        toggle_default(&mut g, &models, 0, cat);
+        assert!(g.bool(ai::USE_RECOMMENDED));
+        assert_eq!(default_manual_name(&g), None);
+        assert_eq!(g.string(ai::MODEL), "gpt-5.6-sol");
+        // On the economy row it makes it the default and clears the economy name.
+        let (mut g, models) = setup();
+        g.set(ai::MANUAL_MODELS, Value::Array(Vec::new()));
+        toggle_default(&mut g, &models, 1, cat);
+        assert_eq!(stored(&g), ["b", "llama3", "n"], "write ran");
+        assert_eq!(default_manual_name(&g).as_deref(), Some("llama3"));
+        assert_eq!(economy_name(&g), "");
+
+        // Toggle Economy: not on the default, set on another row, cleared by a second toggle.
+        let (mut g, models) = setup();
+        g.set(ai::MANUAL_MODELS, Value::Array(Vec::new()));
+        toggle_economy(&mut g, &models, 0);
+        assert_eq!(stored(&g), ["b", "llama3", "n"], "write ran");
+        assert_eq!(economy_name(&g), "llama3");
+        toggle_economy(&mut g, &models, 2);
+        assert_eq!(economy_name(&g), "n");
+        toggle_economy(&mut g, &models, 2);
+        assert_eq!(economy_name(&g), "");
+
+        // Save: renaming the economy model carries the name.
+        let (mut g, mut models) = setup();
+        let mut renamed = models[1].clone();
+        renamed.name = "llama3.1".into();
+        assert_eq!(save_edit(&mut g, &mut models, Some(1), renamed, cat), 1);
+        assert_eq!(stored(&g), ["b", "llama3.1", "n"]);
+        assert_eq!(economy_name(&g), "llama3.1");
+        // Renaming the default reapplies select_manual.
+        let mut renamed = models[0].clone();
+        renamed.name = "b2".into();
+        renamed.url = "https://b2.example.com/v1".into();
+        assert_eq!(save_edit(&mut g, &mut models, Some(0), renamed, cat), 0);
+        assert_eq!(default_manual_name(&g).as_deref(), Some("b2"));
+        assert_eq!(g.string(ai::URL), "https://b2.example.com/v1");
+        // Editing another row changes neither name.
+        let mut other = models[2].clone();
+        other.api = 2;
+        assert_eq!(save_edit(&mut g, &mut models, Some(2), other, cat), 2);
+        assert_eq!(read(&g)[2].api, 2);
+        assert_eq!((default_manual_name(&g).as_deref(), economy_name(&g).as_str()), (Some("b2"), "llama3.1"));
+        // Adding appends and answers the new index.
+        assert_eq!(save_edit(&mut g, &mut models, None, model("new", "https://x.example.com", 1), cat), 3);
+        assert_eq!(stored(&g), ["b2", "llama3.1", "n", "new"]);
+        assert_eq!(default_manual_name(&g).as_deref(), Some("b2"));
+    }
+
+    #[test]
+    fn editor_presets_follow_iterm2() {
+        let expected = [
+            ("Ollama (auto-discover)", "http://localhost:11434/api/chat", "qwen3.5"),
+            ("Ollama (native)", "http://localhost:11434/api/chat", "qwen3.5"),
+            ("Local OpenAI-compatible (LM Studio, vLLM, \u{2026})", "http://localhost:1234/v1/chat/completions", "qwen2.5-7b-instruct"),
+            ("OpenRouter", "https://openrouter.ai/api/v1/chat/completions", "openai/gpt-4o"),
+            ("z.ai (GLM)", "https://api.z.ai/api/paas/v4/chat/completions", "glm-4.6"),
+            ("Qwen (DashScope)", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen-plus"),
+            ("MiniMax", "https://api.minimax.io/v1/text/chatcompletion_v2", "MiniMax-Text-01"),
+        ];
+        assert_eq!(PROVIDER_PRESETS.map(|p| (p.name, p.url, p.placeholder)), expected);
+        for (i, p) in PROVIDER_PRESETS.iter().enumerate() {
+            let ollama = i < 2;
+            assert_eq!(p.api, if ollama { Api::Llama } else { Api::ChatCompletions }, "{}", p.name);
+            assert_eq!((p.context, p.response), (128000, 16384), "{}", p.name);
+            assert!(p.function_calling && p.streaming, "{}", p.name);
+            assert_eq!(p.thinking, ollama, "{}", p.name);
+            assert_eq!(p.dynamic, i == 0, "{}", p.name);
+            assert!(!p.vision, "{}", p.name);
+        }
+
+        let cat = bundled();
+        let presets = catalog_presets(cat);
+        assert_eq!(presets.len(), 39);
+        assert!(presets.iter().all(|m| m.vendor != Vendor::Apple));
+
+        let mut form = EditorForm::from_model(&model("x", "u", 5), cat);
+        form.vision = true;
+        form.temperature = true;
+        form.dynamic = true;
+        form.vector_store = 1;
+        let opus = cat.named("claude-opus-4-8").expect("claude-opus-4-8 is in the catalog");
+        apply_catalog_preset(&mut form, opus);
+        assert_eq!((form.name.as_str(), form.url.as_str(), form.api), ("claude-opus-4-8", "https://api.anthropic.com/v1/messages", 7));
+        assert_eq!((form.context.as_str(), form.response.as_str(), form.vector_store), ("200000", "128000", 0));
+        assert!(form.function_calling && form.streaming);
+        assert!(!form.vision && !form.web_search && !form.file_search && !form.code_interpreter);
+        assert!(!form.thinking && !form.temperature && !form.dynamic);
+
+        let open_router = &PROVIDER_PRESETS[3];
+        apply_provider_preset(&mut form, open_router);
+        assert_eq!((form.name.as_str(), form.name_placeholder.as_str()), ("", "openai/gpt-4o"));
+        assert_eq!((form.url.as_str(), form.api), ("https://openrouter.ai/api/v1/chat/completions", 1));
+        assert_eq!((form.context.as_str(), form.response.as_str(), form.vector_store), ("128000", "16384", 0));
+        assert!(form.function_calling && form.streaming && !form.vision);
+        assert!(!form.web_search && !form.file_search && !form.code_interpreter);
+        assert!(form.temperature && !form.thinking && !form.dynamic);
+        apply_provider_preset(&mut form, &PROVIDER_PRESETS[0]);
+        assert!(form.dynamic && form.thinking);
+        assert_eq!(form.api, Api::Llama.raw());
+
+        // The form reads the model; the quirk boxes fall back to the same-named catalog model.
+        let mut stored = model("claude-opus-4-8", "https://proxy.example.com/v1", 7);
+        stored.context_window_tokens = 1000;
+        stored.custom_headers = vec![("X-A".into(), "1".into())];
+        let f = EditorForm::from_model(&stored, cat);
+        assert_eq!((f.preset, f.name.as_str(), f.name_placeholder.as_str(), f.url.as_str(), f.api), (CUSTOM_PRESET, "claude-opus-4-8", "", "https://proxy.example.com/v1", 7));
+        assert_eq!((f.context.as_str(), f.response.as_str()), ("1000", "8192"));
+        assert!(!f.temperature, "the catalog's supportsTemperature");
+        assert_eq!(f.headers, stored.custom_headers);
+        stored.supports_temperature = Some(true);
+        stored.configurable_thinking = Some(true);
+        let f = EditorForm::from_model(&stored, cat);
+        assert!(f.temperature && f.thinking, "a stored value wins");
+        let f = EditorForm::from_model(&model("unknown", "u", 99), cat);
+        assert!(f.temperature && !f.thinking, "unknown names support temperature, not thinking");
+        assert_eq!(f.api, Api::ChatCompletions.raw(), "an API the popup does not offer reads Chat Completions");
+    }
+
+    #[test]
+    fn editor_save_follows_iterm2() {
+        let cat = bundled();
+        let base = default_base(&empty());
+        assert_eq!((base.name.as_str(), base.url.as_str(), base.api), ("gpt-4o-mini", "", 2));
+        assert_eq!((base.context_window_tokens, base.max_response_tokens), (128000, 8192));
+        assert!(!base.function_calling && !base.streaming && !base.hosted_web_search && !base.hosted_file_search && !base.hosted_code_interpreter);
+        assert_eq!(base.vector_store, 0);
+        assert!(!base.id.is_empty() && base.id != default_base(&empty()).id, "a fresh id");
+        let mut g = empty();
+        g.set(ai::MODEL, Value::String(OLLAMA_PENDING.into()));
+        g.set(ai::TOKEN_LIMIT, Value::Integer(0));
+        g.set(ai::FEATURE_STREAMING, Value::Boolean(true));
+        let seeded = default_base(&g);
+        assert_eq!((seeded.name.as_str(), seeded.context_window_tokens), ("gpt-4o-mini", 8192));
+        assert!(seeded.streaming);
+
+        let free = |_: &str| false;
+        let good = || {
+            let mut f = EditorForm::from_model(&base, cat);
+            f.url = " https://api.example.com/v1/chat/completions \n".into();
+            f.name = "  my-model ".into();
+            f
+        };
+        let fails = |f: &EditorForm, taken: &dyn Fn(&str) -> bool| f.validate(&base, taken).err().unwrap_or_default();
+        let mut f = good();
+        f.url = "  ".into();
+        assert_eq!(fails(&f, &free), "URL is required.");
+        let mut f = good();
+        f.name = String::new();
+        assert_eq!(fails(&f, &free), "Model is required.");
+        for bad in ["0", "x", "-5"] {
+            let mut f = good();
+            f.context = bad.into();
+            assert_eq!(fails(&f, &free), "Context tokens must be greater than zero.", "{bad}");
+        }
+        let mut f = good();
+        f.response = "0".into();
+        assert_eq!(fails(&f, &free), "Max response tokens must be greater than zero.");
+        assert_eq!(fails(&good(), &|n: &str| n == "my-model"), "Manual model names must be unique.", "the trimmed name is checked");
+        let mut f = good();
+        f.headers = vec![("Bad Name".into(), "v".into())];
+        assert_eq!(
+            fails(&f, &free),
+            "Custom header name \u{201c}Bad Name\u{201d} is not valid. Use only RFC 7230 token characters (letters, digits, and any of !#$%&'*+-.^_`|~)."
+        );
+        let mut f = good();
+        f.headers = vec![("X-A".into(), "a\nb".into())];
+        assert_eq!(fails(&f, &free), "The value for custom header \u{201c}X-A\u{201d} must not contain newline or null characters.");
+
+        let mut f = good();
+        f.headers = vec![(" ".into(), "dropped\n".into()), (" X-A ".into(), " 1".into()), (String::new(), String::new())];
+        f.context = "12abc".into();
+        f.thinking = true;
+        f.temperature = false;
+        f.dynamic = true;
+        f.vision = true;
+        f.vector_store = 1;
+        let m = f.validate(&base, &free).expect("valid");
+        assert_eq!(m.id, base.id);
+        assert_eq!((m.name.as_str(), m.url.as_str(), m.api), ("my-model", "https://api.example.com/v1/chat/completions", 2));
+        assert_eq!((m.context_window_tokens, m.max_response_tokens, m.vector_store), (12, 8192, 1));
+        assert_eq!((m.supports_temperature, m.configurable_thinking, m.dynamic_models, m.dynamic_selected_model.as_deref()), (Some(false), Some(true), false, None));
+        assert!(m.vision && !m.streaming);
+        assert_eq!(m.custom_headers, [("X-A".to_string(), " 1".to_string())], "blank names are dropped, names trimmed");
+        assert!(m.extra.is_empty());
+
+        let mut no_id = base.clone();
+        no_id.id = String::new();
+        let minted = good().validate(&no_id, &free).expect("valid").id;
+        assert!(!minted.is_empty(), "a model read without an id gets one");
+
+        let b = model("b", EXAMPLE, 2);
+        let copy = duplicate_base(&b);
+        assert_eq!(copy.name, "b copy");
+        assert!(!copy.id.is_empty() && copy.id != b.id);
+        assert_eq!((copy.url.as_str(), copy.api), (EXAMPLE, 2));
+        assert_eq!(duplicate_base(&model("", "u", 1)).name, "Manual model copy");
+    }
+
+    #[test]
+    fn legacy_notice_follows_iterm2() {
+        let due = || {
+            let mut g = empty();
+            g.set(ai::CUSTOM_HEADERS_ENABLED, Value::Boolean(true));
+            g.set(ai::CUSTOM_HEADERS, value(r#"[{name="X-Key", value="1"}]"#));
+            g
+        };
+        assert!(legacy_notice_due(&due()));
+        let mut g = due();
+        g.set(LEGACY_NOTICE_FLAG, Value::Boolean(true));
+        assert!(!legacy_notice_due(&g));
+        let mut g = due();
+        g.set(ai::MANUAL_MODELS, value(r#"[{name="a", url="u"}]"#));
+        assert!(!legacy_notice_due(&g));
+        let mut g = due();
+        g.set(ai::CUSTOM_HEADERS_ENABLED, Value::Boolean(false));
+        assert!(!legacy_notice_due(&g));
+        let mut g = due();
+        g.set(ai::CUSTOM_HEADERS, Value::Array(Vec::new()));
+        assert!(!legacy_notice_due(&g));
+        assert_eq!(LEGACY_NOTICE_FLAG, "NoSyncAILegacyGlobalHeadersWarningShown");
+    }
+
+    #[test]
+    fn sheet_and_editor_texts_follow_iterm2() {
+        assert_eq!([SHEET_TITLE, COLUMN_MODEL, COLUMN_API, COLUMN_ENDPOINT], ["Manual AI Models", "Model", "API", "Endpoint"]);
+        assert_eq!([ADD, DELETE, EDIT, DUPLICATE, TOGGLE_DEFAULT, ECONOMY], ["Add", "Delete", "Edit", "Duplicate", "Toggle Default", "Economy"]);
+        assert_eq!(TOGGLE_ECONOMY, "Toggle Economy Model. A cheaper model used for frequent background jobs like command-safety checks and screen-idle detection.");
+        assert_eq!([ECONOMY_MARK, UNTITLED, MANUAL_MODEL], ["Economy model", "Untitled model", "Manual model"]);
+        assert_eq!(LEGACY_HEADING, "Custom Headers Are Now Set Per Model");
+        assert_eq!(
+            LEGACY_TEXT,
+            "Your AI custom HTTP headers used to be a single global setting. They still apply to your current model, but adding or editing models here does not carry them over. Re-add the headers you need in each model\u{2019}s \u{201c}Custom headers\u{201d} section."
+        );
+        assert_eq!([ADD_TITLE, EDIT_TITLE, PRESET_LABEL, CUSTOM, EDITOR_MODEL_LABEL], ["Add Manual AI Model", "Edit Manual AI Model", "Preset:", "Custom", "Model:"]);
+        assert_eq!([FETCH_MODELS, REFRESH_MODELS, URL_LABEL, API_LABEL], ["Fetch Models", "Refresh Models", "URL:", "API:"]);
+        assert_eq!(DISCOVER, "Discover installed models automatically (Ollama)");
+        assert_eq!([CONTEXT_LABEL, RESPONSE_LABEL, VECTOR_STORE_LABEL, VECTOR_DISABLED, VECTOR_OPENAI], ["Context tokens:", "Max response tokens:", "Vector store:", "Disabled", "OpenAI"]);
+        assert_eq!(FEATURES.map(|(title, _)| title), ["Function calling", "Streaming responses", "Vision (image input)", "Hosted web search", "Hosted file search", "Hosted code interpreter"]);
+        assert_eq!(THINKING, "Configurable thinking");
+        assert_eq!(THINKING_TIP, "Enable for reasoning models with a thinking mode, such as GPT-5, o-series, or DeepSeek models, so the chat\u{2019}s Think toggle appears.");
+        assert_eq!(TEMPERATURE, "Supports temperature");
+        assert_eq!(TEMPERATURE_TIP, "Uncheck for models that reject a temperature parameter, such as Anthropic Opus 4.7 and later.");
+        assert_eq!([HEADERS_LABEL, HEADER_COLUMN, VALUE_COLUMN], ["Custom headers:", "Header", "Value"]);
+        assert_eq!([TEST_CONNECTION, CANCEL, SAVE, INVALID_TITLE], ["Test Connection", "Cancel", "Save", "Invalid Manual AI Model"]);
     }
 }

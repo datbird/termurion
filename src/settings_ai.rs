@@ -7,9 +7,9 @@ use toml::Value;
 use crate::ai_catalog::{self, Catalog};
 use crate::ai_gate;
 use crate::ai_keys::{self, KeyStore, Keys};
-use crate::ai_models::{self, default_endpoint, manual_vendor, ManualModel};
+use crate::ai_models::{self as am, default_endpoint, manual_vendor, EditorForm, ManualModel};
 use crate::ai_policy::{self, KeyPolicy};
-use crate::ai_settings::{self as ai, Vendor};
+use crate::ai_settings::{self as ai, Api, Vendor};
 use crate::globals::Globals;
 use crate::pwm::Secret;
 
@@ -36,6 +36,10 @@ pub struct State {
     /// The same text, marked with the warning glyph beside "Set API Key\u{2026}" until the
     /// dialog opens again.
     key_failure: Option<String>,
+    /// The Manual AI Models sheet while it is open.
+    sheet: Option<Sheet>,
+    /// The model editor, over the sheet, while it is open.
+    editor: Option<Editor>,
 }
 
 impl State {
@@ -52,6 +56,33 @@ struct KeyDialog {
     now: Vec<Secret>,
     /// The first field takes the focus on the dialog's first frame.
     focus: bool,
+}
+
+/// The Manual AI Models sheet (`G:282-560`): the rows it edits, the selected row, and whether
+/// the legacy headers notice is still showing in front of it (`G:4005-4030`).
+struct Sheet {
+    models: Vec<ManualModel>,
+    selected: Option<usize>,
+    notice: bool,
+}
+
+/// The model editor (`G:645-1640`): the form, the model it started from, the row it edits
+/// (None adds), the selected header row, and Save's refusal while it shows.
+struct Editor {
+    form: EditorForm,
+    base: ManualModel,
+    editing: Option<usize>,
+    header: Option<usize>,
+    failure: Option<String>,
+    /// The Model field takes the focus on the first frame; a new header row's name on the next.
+    focus_name: bool,
+    focus_header: Option<usize>,
+}
+
+impl Editor {
+    fn new(base: ManualModel, editing: Option<usize>, catalog: &Catalog) -> Editor {
+        Editor { form: EditorForm::from_model(&base, catalog), base, editing, header: None, failure: None, focus_name: true, focus_header: None }
+    }
 }
 
 // The General sub-tab's texts (`X:7171-7466`, `G:2859-3358`, `G:3547-3626`), Tandem's where
@@ -96,6 +127,33 @@ pub fn manual_title(model: &str, provider: &str) -> String {
     format!("Manual: {model} \u{2014} {provider}")
 }
 
+/// The model editor's key hint (`G:975-1008`), from the form as a request would read it: a local
+/// endpoint never receives a key; a vendor with an enterable key authorizes with it; else none.
+pub fn editor_key_hint(form: &EditorForm) -> String {
+    let api = Api::from_raw_or_chat(form.api);
+    let url = form.url.trim();
+    if ai_policy::key_policy(url, api) == KeyPolicy::LocalEndpoint {
+        return SELF_HOSTED.to_string();
+    }
+    let v = manual_vendor(api, url, &form.name);
+    if v.has_enterable_key() {
+        authorizes(v.provider_name())
+    } else {
+        NO_KEY_USED.to_string()
+    }
+}
+
+/// The preset popup's title for a tag (`G:696-717`): Custom, a catalog preset's name, or a
+/// provider preset's.
+pub fn preset_title(tag: i64, catalog: &Catalog) -> String {
+    if tag >= am::PROVIDER_PRESET_BASE {
+        let p = usize::try_from(tag - am::PROVIDER_PRESET_BASE).ok().and_then(|i| am::PROVIDER_PRESETS.get(i));
+        return p.map_or(am::CUSTOM, |p| p.name).to_string();
+    }
+    let m = usize::try_from(tag).ok().and_then(|i| am::catalog_presets(catalog).get(i).map(|m| m.name.clone()));
+    m.unwrap_or_else(|| am::CUSTOM.to_string())
+}
+
 /// The one-vendor key prompt's heading and its field's hint (ruling 12e-1).
 pub fn key_prompt(v: Vendor) -> (String, String) {
     (KEYS_HEADING.to_string(), key_placeholder(v.provider_name()))
@@ -109,7 +167,7 @@ pub const MANUAL_PREFIX: &str = "manual:";
 /// providers, then the manual models, which the popup lists beneath a separator.
 pub fn model_items(g: &Globals, _catalog: &Catalog) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let providers = Vendor::POPUP_ORDER.iter().map(|v| (format!("{PROVIDER_PREFIX}{}", v.raw()), v.provider_name().to_string())).collect();
-    let manuals = ai_models::settings_manual_models(g)
+    let manuals = am::settings_manual_models(g)
         .iter()
         .map(|m| (format!("{MANUAL_PREFIX}{}", m.name), manual_title(&m.name, manual_vendor(m.api(), &m.url, &m.name).provider_name())))
         .collect();
@@ -139,7 +197,7 @@ pub fn shown_identifier(g: &Globals, catalog: &Catalog) -> String {
 /// The manual model an identifier names, among the popup's.
 fn manual_named(g: &Globals, identifier: &str) -> Option<ManualModel> {
     let name = identifier.strip_prefix(MANUAL_PREFIX)?;
-    ai_models::settings_manual_models(g).into_iter().find(|m| m.name == name)
+    am::settings_manual_models(g).into_iter().find(|m| m.name == name)
 }
 
 /// A person picked an item (`G:3129-3160`): a provider becomes the default with its
@@ -148,10 +206,10 @@ fn manual_named(g: &Globals, identifier: &str) -> Option<ManualModel> {
 pub fn pick(g: &mut Globals, identifier: &str, catalog: &Catalog) {
     if let Some(raw) = identifier.strip_prefix(PROVIDER_PREFIX) {
         if let Some(v) = raw.parse().ok().and_then(Vendor::from_raw) {
-            ai_models::select_provider(g, v, catalog);
+            am::select_provider(g, v, catalog);
         }
     } else if let Some(m) = manual_named(g, identifier) {
-        ai_models::select_manual(g, &m);
+        am::select_manual(g, &m);
     }
 }
 
@@ -366,7 +424,12 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
                         }
                     });
                 });
-                ui.add_enabled(false, egui::Button::new(MANAGE_MODELS)).on_disabled_hover_text(LATER);
+                if ui.add_enabled(on.rest, egui::Button::new(MANAGE_MODELS)).clicked() {
+                    let (sheet, noted) = open_sheet(g);
+                    st.sheet = Some(sheet);
+                    st.editor = None;
+                    changed |= noted;
+                }
             });
             if let Some(id) = picked.filter(|id| *id != shown) {
                 pick(g, &id, catalog);
@@ -410,7 +473,368 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
             st.key_failure = st.error.clone();
         }
     }
+    if let Some(sh) = st.sheet.as_mut() {
+        let (closed, sheet_changed) = sheet_modal(ui.ctx(), g, sh, &mut st.editor, catalog);
+        changed |= sheet_changed;
+        if closed {
+            st.sheet = None;
+            st.editor = None;
+        }
+    }
     changed
+}
+
+/// "Manage AI Models\u{2026}" (`G:4032-4046`): the sheet over the configurations (else the
+/// legacy model), the first row selected; the legacy headers notice first when it is due, which
+/// sets its flag. True when the flag was set.
+fn open_sheet(g: &mut Globals) -> (Sheet, bool) {
+    let notice = am::legacy_notice_due(g);
+    if notice {
+        g.set(am::LEGACY_NOTICE_FLAG, Value::Boolean(true));
+    }
+    let models = am::sheet_models(g);
+    let selected = (!models.is_empty()).then_some(0);
+    (Sheet { models, selected, notice }, notice)
+}
+
+/// Return pressed without modifiers, and Escape pressed.
+fn enter_escape(ui: &egui::Ui) -> (bool, bool) {
+    ui.input(|i| (i.key_pressed(egui::Key::Enter) && i.modifiers.is_none(), i.key_pressed(egui::Key::Escape)))
+}
+
+/// An alert over the settings window: the heading, the text and OK (Return or Escape). True
+/// when it closed.
+fn notice_modal(ctx: &egui::Context, id: &str, heading: &str, text: &str, keys: bool) -> bool {
+    let mut done = false;
+    egui::Modal::new(egui::Id::new(id)).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.strong(heading);
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(text).wrap());
+        ui.add_space(10.0);
+        let (enter, escape) = enter_escape(ui);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || (keys && (enter || escape)) {
+                done = true;
+            }
+        });
+    });
+    done
+}
+
+/// One of the sheet's segment buttons: a Segoe Fluent Icons glyph (the tooltip's word when the
+/// icon font is missing) with iTerm2's tooltip.
+fn segment(ui: &mut egui::Ui, icons: bool, glyph: char, tip: &str, enabled: bool) -> bool {
+    let text = if icons { egui::RichText::new(glyph.to_string()).family(crate::settings_keys::icon_family()) } else { egui::RichText::new(tip) };
+    ui.add_enabled(enabled, egui::Button::new(text).min_size(egui::vec2(34.0, 24.0))).on_hover_text(tip).on_disabled_hover_text(tip).clicked()
+}
+
+/// What a sheet button asked for.
+enum SheetAct {
+    Add,
+    Delete(usize),
+    Edit(usize),
+    Duplicate(usize),
+    Default(usize),
+    Economy(usize),
+}
+
+/// The sheet's columns: Model, API, Endpoint (`G:316-320`).
+const COLUMNS: [f32; 3] = [260.0, 130.0, 150.0];
+
+/// The Manual AI Models sheet and, over it, the model editor. Answers (closed, changed).
+fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mut Option<Editor>, catalog: &Catalog) -> (bool, bool) {
+    if sh.notice {
+        if notice_modal(ctx, "ai-legacy-headers", am::LEGACY_HEADING, am::LEGACY_TEXT, true) {
+            sh.notice = false;
+        }
+        return (false, false);
+    }
+    let default_name = am::default_manual_name(g);
+    let rows = am::sheet_rows(&sh.models, default_name.as_deref(), &am::economy_name(g));
+    let enabled = am::segments_enabled(&sh.models, sh.selected, default_name.as_deref());
+    let mut act = None;
+    let mut done = false;
+    let editing = editor.is_some();
+    egui::Modal::new(egui::Id::new("ai-manual-models")).show(ctx, |ui| {
+        let width: f32 = COLUMNS.iter().sum();
+        ui.set_width(width);
+        ui.strong(am::SHEET_TITLE);
+        ui.add_space(8.0);
+        let (head, _) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::hover());
+        let strong = ui.visuals().strong_text_color();
+        let mut x = head.left() + 4.0;
+        for (title, w) in [am::COLUMN_MODEL, am::COLUMN_API, am::COLUMN_ENDPOINT].into_iter().zip(COLUMNS) {
+            ui.painter().text(egui::pos2(x, head.center().y), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(13.0), strong);
+            x += w;
+        }
+        egui::ScrollArea::vertical().id_salt("ai-manual-models-rows").max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+            for (i, row) in rows.iter().enumerate() {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 24.0), egui::Sense::click());
+                let painter = ui.painter_at(rect);
+                if sh.selected == Some(i) {
+                    painter.rect_filled(rect, 2.0, ui.visuals().selection.bg_fill);
+                } else if i % 2 == 1 {
+                    painter.rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+                }
+                let color = ui.visuals().text_color();
+                let mut x = rect.left() + 4.0;
+                for (text, w) in row.iter().zip(COLUMNS) {
+                    let cell = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(x + w - 8.0, rect.bottom()));
+                    ui.painter_at(cell).text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(13.0), color);
+                    x += w;
+                }
+                if resp.clicked() {
+                    sh.selected = Some(i);
+                }
+                if resp.double_clicked() {
+                    act = Some(SheetAct::Edit(i));
+                }
+            }
+        });
+        ui.add_space(8.0);
+        let (enter, _) = enter_escape(ui);
+        ui.horizontal(|ui| {
+            let icons = crate::settings_keys::has_icon_font(ui.ctx());
+            let row = sh.selected.unwrap_or(0);
+            if segment(ui, icons, '\u{E710}', am::ADD, enabled[0]) {
+                act = Some(SheetAct::Add);
+            }
+            if segment(ui, icons, '\u{E738}', am::DELETE, enabled[1]) {
+                act = Some(SheetAct::Delete(row));
+            }
+            ui.add_space(12.0);
+            if segment(ui, icons, '\u{E70F}', am::EDIT, enabled[2]) {
+                act = Some(SheetAct::Edit(row));
+            }
+            if segment(ui, icons, '\u{E8C8}', am::DUPLICATE, enabled[3]) {
+                act = Some(SheetAct::Duplicate(row));
+            }
+            if segment(ui, icons, '\u{E734}', am::TOGGLE_DEFAULT, enabled[4]) {
+                act = Some(SheetAct::Default(row));
+            }
+            let economy = egui::Button::new(am::ECONOMY).min_size(egui::vec2(34.0, 24.0));
+            if ui.add_enabled(enabled[5], economy).on_hover_text(am::TOGGLE_ECONOMY).on_disabled_hover_text(am::TOGGLE_ECONOMY).clicked() {
+                act = Some(SheetAct::Economy(row));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(egui::Button::new("OK").min_size(egui::vec2(90.0, 30.0))).clicked() || (enter && !editing) {
+                    done = true;
+                }
+            });
+        });
+    });
+    let mut changed = false;
+    match act {
+        Some(SheetAct::Add) => *editor = Some(Editor::new(am::default_base(g), None, catalog)),
+        Some(SheetAct::Edit(i)) if i < sh.models.len() => *editor = Some(Editor::new(sh.models[i].clone(), Some(i), catalog)),
+        Some(SheetAct::Duplicate(i)) if i < sh.models.len() => *editor = Some(Editor::new(am::duplicate_base(&sh.models[i]), None, catalog)),
+        Some(SheetAct::Delete(i)) => {
+            sh.selected = am::delete_row(g, &mut sh.models, i, catalog);
+            changed = true;
+        }
+        Some(SheetAct::Default(i)) => {
+            am::toggle_default(g, &sh.models, i, catalog);
+            changed = true;
+        }
+        Some(SheetAct::Economy(i)) => {
+            am::toggle_economy(g, &sh.models, i);
+            changed = true;
+        }
+        _ => {}
+    }
+    if let Some(e) = editor.as_mut() {
+        match editor_modal(ctx, e, &sh.models, catalog) {
+            Some(Some(m)) => {
+                sh.selected = Some(am::save_edit(g, &mut sh.models, e.editing, m, catalog));
+                *editor = None;
+                changed = true;
+            }
+            Some(None) => *editor = None,
+            None => {}
+        }
+    }
+    (done, changed)
+}
+
+/// A right-aligned label in the editor's first column (`G:672-677`).
+fn editor_label(ui: &mut egui::Ui, text: &str) {
+    ui.allocate_ui_with_layout(egui::vec2(150.0, 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(text));
+}
+
+/// The editor's field column width (`G:662-664`).
+const FIELD_WIDTH: f32 = 400.0;
+
+/// The model editor (`G:645-1640`). None while open; Some(None) on Cancel; Some(Some(model))
+/// when Save passed its checks. Fetch Models, discovery, Test Connection and saving a dynamic
+/// entry are 12b's, shown disabled.
+fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], catalog: &Catalog) -> Option<Option<ManualModel>> {
+    let mut out = None;
+    let blocked = e.failure.is_some();
+    let dynamic = e.form.dynamic;
+    egui::Modal::new(egui::Id::new("ai-model-editor")).show(ctx, |ui| {
+        ui.set_width(150.0 + 12.0 + FIELD_WIDTH);
+        ui.strong(if e.editing.is_some() { am::EDIT_TITLE } else { am::ADD_TITLE });
+        ui.add_space(10.0);
+        let form = &mut e.form;
+        egui::Grid::new("ai-model-editor-grid").num_columns(2).spacing(egui::vec2(12.0, 6.0)).show(ui, |ui| {
+            editor_label(ui, am::PRESET_LABEL);
+            let mut picked = None;
+            egui::ComboBox::from_id_salt("ai-model-preset").width(FIELD_WIDTH).selected_text(preset_title(form.preset, catalog)).show_ui(ui, |ui| {
+                if ui.selectable_label(form.preset == am::CUSTOM_PRESET, am::CUSTOM).clicked() {
+                    picked = Some(am::CUSTOM_PRESET);
+                }
+                ui.separator();
+                for (i, m) in am::catalog_presets(catalog).iter().enumerate() {
+                    let tag = i as i64;
+                    if ui.selectable_label(form.preset == tag, m.name.as_str()).clicked() {
+                        picked = Some(tag);
+                    }
+                }
+                ui.separator();
+                for (i, p) in am::PROVIDER_PRESETS.iter().enumerate() {
+                    let tag = am::PROVIDER_PRESET_BASE + i as i64;
+                    if ui.selectable_label(form.preset == tag, p.name).clicked() {
+                        picked = Some(tag);
+                    }
+                }
+            });
+            if let Some(tag) = picked {
+                form.preset = tag;
+                if tag >= am::PROVIDER_PRESET_BASE {
+                    if let Some(p) = usize::try_from(tag - am::PROVIDER_PRESET_BASE).ok().and_then(|i| am::PROVIDER_PRESETS.get(i)) {
+                        am::apply_provider_preset(form, p);
+                    }
+                } else if let Some(m) = usize::try_from(tag).ok().and_then(|i| am::catalog_presets(catalog).get(i).copied()) {
+                    am::apply_catalog_preset(form, m);
+                }
+            }
+            ui.end_row();
+
+            editor_label(ui, am::EDITOR_MODEL_LABEL);
+            ui.horizontal(|ui| {
+                let name = ui.add_enabled(!form.dynamic, egui::TextEdit::singleline(&mut form.name).hint_text(form.name_placeholder.as_str()).desired_width(FIELD_WIDTH - 136.0));
+                if std::mem::take(&mut e.focus_name) {
+                    name.request_focus();
+                }
+                let fetch = if form.dynamic { am::REFRESH_MODELS } else { am::FETCH_MODELS };
+                ui.add_enabled(false, egui::Button::new(fetch).min_size(egui::vec2(130.0, 0.0))).on_disabled_hover_text(LATER);
+            });
+            ui.end_row();
+
+            editor_label(ui, am::URL_LABEL);
+            ui.add(egui::TextEdit::singleline(&mut form.url).desired_width(FIELD_WIDTH));
+            ui.end_row();
+
+            editor_label(ui, am::API_LABEL);
+            ui.add_enabled_ui(!form.dynamic, |ui| {
+                egui::ComboBox::from_id_salt("ai-model-api").width(FIELD_WIDTH).selected_text(Api::from_raw_or_chat(form.api).title()).show_ui(ui, |ui| {
+                    for api in Api::EDITOR_ORDER {
+                        ui.selectable_value(&mut form.api, api.raw(), api.title());
+                    }
+                });
+            });
+            ui.end_row();
+
+            ui.label("");
+            ui.vertical(|ui| {
+                let mut discover = form.dynamic;
+                ui.add_enabled(false, egui::Checkbox::new(&mut discover, am::DISCOVER)).on_disabled_hover_text(LATER);
+                let hint = editor_key_hint(form);
+                ui.add(egui::Label::new(egui::RichText::new(hint.as_str()).small().weak()).wrap()).on_hover_text(hint);
+            });
+            ui.end_row();
+
+            editor_label(ui, am::CONTEXT_LABEL);
+            ui.add_enabled(!form.dynamic, egui::TextEdit::singleline(&mut form.context).desired_width(120.0));
+            ui.end_row();
+            editor_label(ui, am::RESPONSE_LABEL);
+            ui.add_enabled(!form.dynamic, egui::TextEdit::singleline(&mut form.response).desired_width(120.0));
+            ui.end_row();
+
+            editor_label(ui, am::VECTOR_STORE_LABEL);
+            let store = if form.vector_store == 1 { am::VECTOR_OPENAI } else { am::VECTOR_DISABLED };
+            egui::ComboBox::from_id_salt("ai-model-vector-store").width(FIELD_WIDTH).selected_text(store).show_ui(ui, |ui| {
+                ui.selectable_value(&mut form.vector_store, 0, am::VECTOR_DISABLED);
+                ui.selectable_value(&mut form.vector_store, 1, am::VECTOR_OPENAI);
+            });
+            ui.end_row();
+
+            ui.label("");
+            ui.vertical(|ui| {
+                for (i, (title, _)) in am::FEATURES.iter().enumerate() {
+                    ui.add_enabled(!form.dynamic, egui::Checkbox::new(form.feature_mut(i), *title));
+                }
+                ui.add_enabled(!form.dynamic, egui::Checkbox::new(&mut form.thinking, am::THINKING)).on_hover_text(am::THINKING_TIP).on_disabled_hover_text(am::THINKING_TIP);
+                ui.checkbox(&mut form.temperature, am::TEMPERATURE).on_hover_text(am::TEMPERATURE_TIP);
+            });
+            ui.end_row();
+
+            editor_label(ui, am::HEADERS_LABEL);
+            ui.vertical(|ui| {
+                egui::ScrollArea::vertical().id_salt("ai-model-headers").max_height(120.0).auto_shrink([false, true]).show(ui, |ui| {
+                    egui::Grid::new("ai-model-headers-grid").num_columns(2).striped(true).show(ui, |ui| {
+                        ui.strong(am::HEADER_COLUMN);
+                        ui.strong(am::VALUE_COLUMN);
+                        ui.end_row();
+                        let focus = e.focus_header.take();
+                        for (i, (n, v)) in form.headers.iter_mut().enumerate() {
+                            let rn = ui.add(egui::TextEdit::singleline(n).desired_width(170.0));
+                            let rv = ui.add(egui::TextEdit::singleline(v).desired_width(FIELD_WIDTH - 170.0 - 40.0));
+                            if focus == Some(i) {
+                                rn.request_focus();
+                            }
+                            if rn.has_focus() || rv.has_focus() {
+                                e.header = Some(i);
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new("+").min_size(egui::vec2(34.0, 22.0))).clicked() {
+                        form.headers.push((String::new(), String::new()));
+                        e.header = Some(form.headers.len() - 1);
+                        e.focus_header = e.header;
+                    }
+                    let selected = e.header.filter(|i| *i < form.headers.len());
+                    if ui.add_enabled(selected.is_some(), egui::Button::new("\u{2212}").min_size(egui::vec2(34.0, 22.0))).clicked() {
+                        if let Some(i) = selected {
+                            form.headers.remove(i);
+                            e.header = None;
+                        }
+                    }
+                });
+            });
+            ui.end_row();
+        });
+        ui.add_space(12.0);
+        let (enter, escape) = enter_escape(ui);
+        ui.horizontal(|ui| {
+            ui.add_enabled(false, egui::Button::new(am::TEST_CONNECTION).min_size(egui::vec2(150.0, 30.0))).on_disabled_hover_text(LATER);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // iTerm2 titles the button Add while adding (`G:927-929`).
+                let title = if e.editing.is_some() { am::SAVE } else { am::ADD };
+                let save = ui.add_enabled(!dynamic, egui::Button::new(title).min_size(egui::vec2(100.0, 30.0))).on_disabled_hover_text(LATER).clicked();
+                let cancel = ui.add(egui::Button::new(am::CANCEL).min_size(egui::vec2(100.0, 30.0))).clicked();
+                if cancel || (escape && !blocked) {
+                    out = Some(None);
+                } else if save || (enter && !blocked && !dynamic) {
+                    let taken = |name: &str| models.iter().enumerate().any(|(i, m)| Some(i) != e.editing && m.name == name);
+                    match e.form.validate(&e.base, &taken) {
+                        Ok(m) => out = Some(Some(m)),
+                        Err(msg) => e.failure = Some(msg),
+                    }
+                }
+            });
+        });
+    });
+    if let Some(msg) = e.failure.clone() {
+        if notice_modal(ctx, "ai-model-invalid", am::INVALID_TITLE, &msg, blocked) {
+            e.failure = None;
+        }
+    }
+    out
 }
 
 /// Settings > General > AI: the heading, the sub-tabs, and the chosen sub-tab. True when a
@@ -444,7 +868,7 @@ mod tests {
     use super::*;
     use crate::ai_catalog::bundled;
     use crate::ai_models::ManualModel;
-    use crate::ai_settings::{Vendor, ENABLE_AI, ADMIN, MODEL, URL, USE_RECOMMENDED, VENDOR};
+    use crate::ai_settings::{Api, Vendor, ENABLE_AI, ADMIN, MODEL, URL, USE_RECOMMENDED, VENDOR};
     use crate::globals::Globals;
     use crate::pwm::Secret;
     use std::path::Path;
@@ -582,6 +1006,50 @@ mod tests {
         assert!(cache.is_set(Vendor::OpenAI, &mut FailingStore), "the key stays for the session");
         let unchanged = KeyDialog { initial: secrets(&["a"]), now: secrets(&["a"]), focus: false };
         assert_eq!(save_keys(&unchanged, &mut cache, &mut FailingStore), None);
+    }
+
+    #[test]
+    fn editor_key_hint_follows_iterm2() {
+        let form = |url: &str, api: Api, name: &str| {
+            let mut f = EditorForm::from_model(&manual("m", "u", 1), bundled());
+            f.url = url.into();
+            f.api = api.raw();
+            f.name = name.into();
+            f
+        };
+        assert_eq!(editor_key_hint(&form(" http://localhost:1234/v1/chat/completions", Api::ChatCompletions, "m")), SELF_HOSTED, "the URL is trimmed first");
+        assert_eq!(editor_key_hint(&form("https://api.anthropic.com/v1/messages", Api::Anthropic, "m")), "Authorizes with your Anthropic API key.");
+        assert_eq!(editor_key_hint(&form("https://openrouter.ai/api/v1/chat/completions", Api::ChatCompletions, "gemini-pro")), "Authorizes with your Gemini API key.");
+        assert_eq!(editor_key_hint(&form("https://ollama.example.com/api/chat", Api::Llama, "m")), NO_KEY_USED);
+    }
+
+    #[test]
+    fn preset_titles_follow_iterm2() {
+        let cat = bundled();
+        assert_eq!(preset_title(crate::ai_models::CUSTOM_PRESET, cat), "Custom");
+        assert_eq!(preset_title(0, cat), crate::ai_models::catalog_presets(cat)[0].name);
+        assert_eq!(preset_title(crate::ai_models::PROVIDER_PRESET_BASE + 3, cat), "OpenRouter");
+        assert_eq!(preset_title(crate::ai_models::PROVIDER_PRESET_BASE + 7, cat), "Custom");
+        assert_eq!(preset_title(999, cat), "Custom");
+    }
+
+    #[test]
+    fn sheet_opens_like_iterm2() {
+        let mut g = with_models(&[]);
+        g.set(crate::ai_settings::CUSTOM_HEADERS_ENABLED, Value::Boolean(true));
+        g.set(crate::ai_settings::CUSTOM_HEADERS, Value::Array(vec![Value::Table(toml::toml! { name = "X-Key" value = "1" })]));
+        let (sheet, noted) = open_sheet(&mut g);
+        assert!(noted && sheet.notice, "the legacy headers notice comes first");
+        assert!(g.bool(crate::ai_models::LEGACY_NOTICE_FLAG));
+        assert_eq!((sheet.models.len(), sheet.selected), (0, None));
+        let (sheet, noted) = open_sheet(&mut g);
+        assert!(!noted && !sheet.notice, "once");
+
+        let mut g = with_models(&[manual("llama3", LLAMA3_URL, 5), manual("b", B_URL, 2)]);
+        let (sheet, noted) = open_sheet(&mut g);
+        assert!(!noted && !sheet.notice);
+        assert_eq!(sheet.models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["llama3", "b"]);
+        assert_eq!(sheet.selected, Some(0));
     }
 
     #[test]
