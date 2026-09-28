@@ -312,6 +312,12 @@ impl App {
             }
             // OK turns the check on; either answer ends the question for good.
             Then::SafetyNag => self.ai_nag_answered(index),
+            // Only the second button (Delete) deletes; Cancel, a close and Escape never do.
+            Then::DeleteChats(ids) => {
+                if index == 1 {
+                    self.delete_chats(ids);
+                }
+            }
             Then::Grant(host) => {
                 if index == 0 {
                     ai_gate::grant(&mut self.globals, &host);

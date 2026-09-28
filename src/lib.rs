@@ -358,6 +358,7 @@ pub mod chat_store;
 pub mod chat_broker;
 pub mod chat_gate;
 pub mod chat_agent;
+pub mod chat_list;
 pub mod chat_toolbar;
 #[cfg(windows)]
 pub mod chat_window_ui;

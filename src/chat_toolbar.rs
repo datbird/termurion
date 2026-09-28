@@ -9,6 +9,8 @@ use crate::chat_message::{locks_provider, Content, Message};
 
 pub const WINDOW_TITLE: &str = "AI Chat";
 pub const NEW_CHAT_TITLE: &str = "New Chat";
+/// The list header's "+" button tip.
+pub const NEW_CHAT_TIP: &str = "New chat";
 /// The window's first size and its smallest (`CWC:348-401`).
 pub const SIZE: (f64, f64) = (800.0, 600.0);
 pub const MIN_SIZE: (f64, f64) = (400.0, 300.0);

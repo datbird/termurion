@@ -874,6 +874,22 @@ pub struct App {
     chat_shown: Option<String>,
     chat_toolbar: crate::chat_window_ui::ToolbarData,
     chat_toolbar_dirty: bool,
+    /// The chat list: its rows as last built, whether they need building again, when they were
+    /// built (ages refresh every 60 s, `CCV:66-70`), each chat's row snippet until a message
+    /// of it changes, and the chats a right-click menu acts on (all app-wide).
+    chat_rows: Vec<crate::chat_list::Row>,
+    chat_rows_dirty: bool,
+    chat_rows_built: Option<Instant>,
+    chat_snippets: HashMap<String, String>,
+    chat_menu_ids: Vec<String>,
+    /// The subscription that hears every chat for as long as the store is open, so a minted
+    /// title needs no window (ruling F14).
+    chat_mint_sub: Option<crate::chat_broker::SubId>,
+    /// The rename prompt and its chat.
+    chat_prompt: Option<(crate::prompt_ui::PromptWindow, String)>,
+    /// The minted-title runs in flight, each with the endpoint its gate is re-checked for every
+    /// pass (ruling R12cd-1); app-wide.
+    title_runs: HashMap<String, (crate::ai_turn::Runner, crate::ai_models::Endpoint)>,
     /// The chats' permission overrides (app-wide, never swapped); every chat's stored
     /// permissions are merged in when the database opens.
     ai_overrides: crate::ai_permissions::Overrides,
@@ -1486,6 +1502,14 @@ pub fn run() {
         chat_shown: None,
         chat_toolbar: crate::chat_window_ui::ToolbarData::default(),
         chat_toolbar_dirty: false,
+        chat_rows: Vec::new(),
+        chat_rows_dirty: true,
+        chat_rows_built: None,
+        chat_snippets: HashMap::new(),
+        chat_menu_ids: Vec::new(),
+        chat_mint_sub: None,
+        chat_prompt: None,
+        title_runs: HashMap::new(),
         ai_overrides: crate::ai_permissions::Overrides::default(),
         ai_staged: HashMap::new(),
         ai_consent_asked: false,
@@ -4820,7 +4844,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.chat_window_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.chat_window_event(id, &event, event_loop) || self.chat_prompt_event(id, &event) || self.title_prompt_event(id, &event) || self.group_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {

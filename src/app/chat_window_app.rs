@@ -9,6 +9,7 @@ use crate::ai_settings::Vendor;
 use crate::chat_agent::{self, EFFORT_KEY, HIGH_EFFORT_KEY, TIER_KEY, WEB_SEARCH_KEY};
 use crate::chat_message::{ClientLocal, Content, Message, Participant};
 use crate::chat_store::{Chat, Store};
+use crate::chat_list::{self, Row};
 use crate::chat_toolbar::{self as tb, Reuse};
 use crate::chat_window_ui::{ChatData, ChatEvent, ChatWindow, ToolbarData};
 
@@ -20,6 +21,10 @@ pub(super) fn update_chat_in(store: &mut Store, id: &str, f: impl FnOnce(&mut Ch
     f(&mut row);
     store.update_chat(&row).is_ok()
 }
+
+/// The list menu's ids (picked through `run_menu_id`).
+const RENAME_ID: &str = "aichat:rename";
+const DELETE_ID: &str = "aichat:delete";
 
 /// What a chord does in the chat window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +81,8 @@ impl App {
             self.chat_sub = Some(self.chat_broker.subscribe(None));
         }
         self.chat_toolbar_dirty = true;
+        self.chat_snippets.clear();
+        self.chat_rows_dirty = true;
         self.chat_window_refresh();
         true
     }
@@ -149,6 +156,7 @@ impl App {
     pub(super) fn show_chat(&mut self, chat: Option<String>) {
         self.chat_shown = chat;
         self.chat_toolbar_dirty = true;
+        self.chat_rows_dirty = true;
         self.chat_window_refresh();
     }
 
@@ -167,9 +175,12 @@ impl App {
             let shown = self.chat_shown.clone();
             self.chat_toolbar = self.toolbar_data(shown.as_deref());
         }
+        if self.chat_rows_dirty || self.chat_rows_built.is_none() {
+            self.chat_rows_build();
+        }
         let title = self.chat_window_title();
         self.chat_toolbar.title = title.clone();
-        let data = ChatData { chat: self.chat_shown.clone(), toolbar: self.chat_toolbar.clone() };
+        let data = ChatData { chat: self.chat_shown.clone(), toolbar: self.chat_toolbar.clone(), rows: self.chat_rows.clone() };
         if let Some(w) = self.chat_window.as_mut() {
             w.set_title(&title);
             if w.data() != &data {
@@ -330,21 +341,89 @@ impl App {
         self.chat_window_refresh();
     }
 
-    /// Each pass: what the broker delivered to the window since the last one. The toolbar is
-    /// rebuilt only for a whole message or a removal in the shown chat (a streamed chunk cannot
-    /// change it). Answers the next wake-up (none yet).
+    /// The list's rows, most recent first (`ChatListModel`): each chat's snippet is read once and
+    /// kept until a message of it changes.
+    fn chat_rows_build(&mut self) {
+        self.chat_rows_dirty = false;
+        self.chat_rows_built = Some(Instant::now());
+        let Some(db) = self.chat_db.as_ref() else {
+            self.chat_rows.clear();
+            return;
+        };
+        let chats = db.chats().unwrap_or_default();
+        let cache = std::cell::RefCell::new(std::mem::take(&mut self.chat_snippets));
+        let snippet = |id: &str| -> String {
+            if let Some(s) = cache.borrow().get(id) {
+                return s.clone();
+            }
+            let s = db.messages(id).map(|m| chat_list::row_snippet(&m)).unwrap_or_default();
+            cache.borrow_mut().insert(id.to_string(), s.clone());
+            s
+        };
+        let broker = &self.chat_broker;
+        let rows: Vec<Row> = chat_list::rows(&chats, &snippet, &|id| broker.is_typing(id, Participant::Agent), super::warnings_app::unix_now());
+        self.chat_rows = rows;
+        self.chat_snippets = cache.into_inner();
+    }
+
+    /// What the broker delivered changes the list: a whole message or a removal drops that
+    /// chat's kept snippet, and any of them, or a typing or turn change, builds the rows again.
+    fn chat_note_updates(&mut self, updates: &[(String, crate::chat_broker::Update)]) {
+        use crate::chat_broker::Update;
+        for (chat, u) in updates {
+            match u {
+                Update::Delivery { partial: true, .. } => {}
+                Update::Delivery { .. } | Update::Removed { .. } => {
+                    self.chat_snippets.remove(chat);
+                    self.chat_rows_dirty = true;
+                }
+                Update::Typing { .. } | Update::Turn(_) => self.chat_rows_dirty = true,
+            }
+        }
+    }
+
+    /// Each pass, with or without the window: every subscription is drained (the one that
+    /// hears all chats mints titles, ruling F14), title runs are polled, and the window is
+    /// refreshed when something changed. The toolbar is rebuilt only for a whole message or a
+    /// removal in the shown chat (a streamed chunk cannot change it). Answers the next wake-up:
+    /// the ages' minute, and soon again while a title run is going.
     pub(super) fn chat_window_tick(&mut self) -> Option<Instant> {
-        let sub = self.chat_sub?;
-        let updates = self.chat_broker.drain(sub);
-        if updates.is_empty() || self.chat_window.is_none() {
-            return None;
+        if self.chat_db.is_some() && self.chat_mint_sub.is_none() {
+            self.chat_mint_sub = Some(self.chat_broker.subscribe(None));
         }
-        let shown = self.chat_shown.as_deref();
-        if updates.iter().any(|(chat, u)| Some(chat.as_str()) == shown && matches!(u, crate::chat_broker::Update::Delivery { partial: false, .. } | crate::chat_broker::Update::Removed { .. })) {
-            self.chat_toolbar_dirty = true;
+        let mut changed = false;
+        if let Some(sub) = self.chat_mint_sub {
+            let updates = self.chat_broker.drain(sub);
+            self.chat_note_updates(&updates);
+            let ended: Vec<String> = updates.iter().filter(|(_, u)| matches!(u, crate::chat_broker::Update::Turn(crate::chat_message::TurnEvent::Ended))).map(|(c, _)| c.clone()).collect();
+            for chat in ended {
+                self.mint_title(&chat);
+            }
         }
-        self.chat_window_refresh();
-        None
+        self.title_tick();
+        if let Some(sub) = self.chat_sub {
+            let updates = self.chat_broker.drain(sub);
+            if !updates.is_empty() {
+                changed = true;
+                let shown = self.chat_shown.as_deref();
+                if updates.iter().any(|(chat, u)| Some(chat.as_str()) == shown && matches!(u, crate::chat_broker::Update::Delivery { partial: false, .. } | crate::chat_broker::Update::Removed { .. })) {
+                    self.chat_toolbar_dirty = true;
+                }
+            }
+        }
+        let mut due = (!self.title_runs.is_empty()).then(|| Instant::now() + std::time::Duration::from_millis(250));
+        if self.chat_window.is_some() {
+            let minute = self.chat_rows_built.map(|b| b + std::time::Duration::from_secs(60));
+            if minute.is_some_and(|t| Instant::now() >= t) {
+                self.chat_rows_dirty = true;
+            }
+            if changed || self.chat_rows_dirty {
+                self.chat_window_refresh();
+            }
+            let minute = self.chat_rows_built.map(|b| b + std::time::Duration::from_secs(60));
+            due = [due, minute].into_iter().flatten().min();
+        }
+        due
     }
 
     /// Stops the chat's streaming bubble (filled by Task 6; ruling F24).
@@ -387,7 +466,7 @@ impl App {
     }
 
     /// Events for the chat window. False when `window` is not it.
-    pub(super) fn chat_window_event(&mut self, window: WindowId, event: &WindowEvent, _event_loop: &ActiveEventLoop) -> bool {
+    pub(super) fn chat_window_event(&mut self, window: WindowId, event: &WindowEvent, event_loop: &ActiveEventLoop) -> bool {
         let Some(w) = self.chat_window.as_mut() else { return false };
         if w.id() != window {
             return false;
@@ -403,7 +482,7 @@ impl App {
             WindowEvent::RedrawRequested => {
                 for e in w.redraw() {
                     if self.chat_window.is_some() {
-                        self.chat_window_act(e);
+                        self.chat_window_act(e, event_loop);
                     }
                 }
             }
@@ -414,7 +493,7 @@ impl App {
         true
     }
 
-    fn chat_window_act(&mut self, e: ChatEvent) {
+    fn chat_window_act(&mut self, e: ChatEvent, event_loop: &ActiveEventLoop) {
         match e {
             ChatEvent::Close => self.close_chat_window(),
             ChatEvent::Provider(id) => self.chat_pick_provider(&id),
@@ -422,6 +501,224 @@ impl App {
             ChatEvent::Effort(_) | ChatEvent::Tier(_) | ChatEvent::ToggleThinking | ChatEvent::ToggleWebSearch => self.chat_toolbar_pick(&e),
             // The Chat Info menu: Task 6.
             ChatEvent::SessionMenu(_) => {}
+            ChatEvent::Select(id) => self.show_chat(Some(id)),
+            ChatEvent::NewChat => self.create_window_chat(None),
+            ChatEvent::Rename(id) => self.rename_chat(&id, event_loop),
+            ChatEvent::Delete(ids) => self.ask_ai(chat_list::delete_alert(ids)),
+            ChatEvent::ListMenu { at, ids } => self.chat_list_menu(at, ids),
+        }
+    }
+
+    /// The list's right-click menu at `at` (screen pixels) for the selected chats (`CL:393-414`);
+    /// its picks come back through `run_menu_id` as `chat_list_picked`.
+    fn chat_list_menu(&mut self, at: (f32, f32), ids: Vec<String>) {
+        use muda::ContextMenu;
+        let Some(hwnd) = self.chat_window.as_ref().and_then(|w| w.hwnd()) else { return };
+        let menu = muda::Menu::new();
+        let mut results = Vec::new();
+        for entry in chat_list::context_menu(ids.len()) {
+            results.push(match entry {
+                None => menu.append(&muda::PredefinedMenuItem::separator()),
+                Some(title) => {
+                    let id = if title == chat_list::RENAME_TITLE { RENAME_ID } else { DELETE_ID };
+                    menu.append(&muda::MenuItem::with_id(id, title, true, None))
+                }
+            });
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Chat menu: {e}"));
+            return;
+        }
+        self.chat_menu_ids = ids;
+        let at = muda::dpi::Position::Physical(muda::dpi::PhysicalPosition::new(at.0 as i32, at.1 as i32));
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, Some(at)) };
+        // The pick arrives after the menu closes, so the menu lives until the next one.
+        self.popup_menu = Some(menu);
+    }
+
+    /// A pick from the list's menu. False for other menu ids.
+    pub(super) fn chat_list_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
+        match id {
+            RENAME_ID => {
+                if let Some(chat) = self.chat_menu_ids.first().cloned() {
+                    self.rename_chat(&chat, event_loop);
+                }
+                true
+            }
+            DELETE_ID => {
+                let ids = std::mem::take(&mut self.chat_menu_ids);
+                if !ids.is_empty() {
+                    self.ask_ai(chat_list::delete_alert(ids));
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The rename window (`CWC:774-817`): the current title selected, OK reads "Rename".
+    pub(super) fn rename_chat(&mut self, id: &str, event_loop: &ActiveEventLoop) {
+        if let Some((w, _)) = &self.chat_prompt {
+            return w.focus();
+        }
+        let Some(title) = self.chat_db.as_ref().and_then(|db| db.chat(id).ok().flatten()).map(|c| c.title) else { return };
+        let Some(g) = self.gpu.as_ref() else { return };
+        match crate::prompt_ui::PromptWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, chat_list::RENAME_TITLE, chat_list::RENAME_PROMPT, &title) {
+            Ok(w) => self.chat_prompt = Some((w.with_ok_label(chat_list::RENAME_BUTTON).with_selected(), id.to_string())),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+    }
+
+    /// Events for the rename window. False when `window` is not it.
+    pub(super) fn chat_prompt_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
+        use crate::prompt_ui::PromptResult;
+        let Some((w, _)) = self.chat_prompt.as_mut() else { return false };
+        if w.id() != window {
+            return false;
+        }
+        match event {
+            WindowEvent::CloseRequested => self.chat_prompt = None,
+            WindowEvent::RedrawRequested => match w.redraw() {
+                PromptResult::Open | PromptResult::Extra(_) => {}
+                PromptResult::Cancel => self.chat_prompt = None,
+                PromptResult::Ok(text) => {
+                    if let Some((_, chat)) = self.chat_prompt.take() {
+                        self.chat_renamed_to(&chat, &text);
+                    }
+                }
+            },
+            other => {
+                w.event(other);
+            }
+        }
+        true
+    }
+
+    /// OK in the rename window: a blank or unchanged name does nothing; else the rename is
+    /// published from the agent side (12c's broker turns it into `Store::rename`), and a title
+    /// that did not change asks `Rename Failed`.
+    fn chat_renamed_to(&mut self, chat: &str, typed: &str) {
+        let old = self.chat_db.as_ref().and_then(|db| db.chat(chat).ok().flatten()).map(|c| c.title);
+        let Some(old) = old else { return self.ask_ai(chat_list::rename_failed_alert()) };
+        let Some(title) = chat_list::rename_result(&old, typed) else { return };
+        let m = Message::new(chat, Participant::Agent, Content::RenameChat(title.clone()), super::warnings_app::unix_now());
+        let published = self.chat_publish(chat, m, false).is_ok();
+        let now = self.chat_db.as_ref().and_then(|db| db.chat(chat).ok().flatten()).map(|c| c.title);
+        if !published || now.as_deref() != Some(title.as_str()) {
+            self.ask_ai(chat_list::rename_failed_alert());
+        }
+        self.chat_rows_dirty = true;
+        self.chat_window_refresh();
+    }
+
+    /// Delete's answer (`CWC:844-872`): each chat once. A chat's title run is cancelled first
+    /// (ruling F16), then its rows go; the window then shows the first remaining chat when the
+    /// shown one went (`CWC:757-778`).
+    pub(super) fn delete_chats(&mut self, ids: Vec<String>) {
+        let mut seen = std::collections::HashSet::new();
+        let ids: Vec<String> = ids.into_iter().filter(|i| seen.insert(i.clone())).collect();
+        chat_list::cancel_runs(&mut self.title_runs, &ids, &mut |(mut runner, _)| {
+            let _ = runner.cancel();
+        });
+        for id in &ids {
+            self.chat_delete(id);
+            self.ai_watermarks.remove(id);
+            self.chat_snippets.remove(id);
+        }
+        let first = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.first().map(|c| c.id.clone()));
+        self.chat_rows_dirty = true;
+        match chat_list::after_delete(self.chat_shown.as_deref(), &ids, first.as_deref()) {
+            Some(next) => self.show_chat(next),
+            None => self.chat_window_refresh(),
+        }
+    }
+
+    /// After a chat's first turn: names it (`ChatAgent.requestRenaming`). The request is built
+    /// only with the gate open for the chat model's own endpoint (`title_request`, ruling
+    /// R12cd-1) and never asks for a key or shows an alert: the turn before it already did.
+    /// Runs on the app-wide subscription, so a chat used only in a panel is named too (F14).
+    pub(super) fn mint_title(&mut self, chat: &str) {
+        if self.title_runs.contains_key(chat) {
+            return;
+        }
+        let found = self.ai_found();
+        let catalog = crate::ai_catalog::bundled();
+        let Some(db) = self.chat_db.as_ref() else { return };
+        let (Ok(Some(row)), Ok(log)) = (db.chat(chat), db.messages(chat)) else { return };
+        let g = &self.globals;
+        let model = row.model_name.as_deref().and_then(|n| crate::ai_model::named(n, g, catalog, &found)).or_else(|| crate::ai_model::configured(g, catalog, &found));
+        let Some(model) = model else { return };
+        let Some((endpoint, messages)) = chat_list::title_request(g, &model, &log) else { return };
+        // The proof that the gate is open right now, before anything is sent (ruling F15).
+        if crate::chat_gate::pass(g, &endpoint).is_none() {
+            return;
+        }
+        let vendor = model.vendor;
+        let input = crate::ai_turn::TurnInput {
+            model,
+            messages,
+            tools: Vec::new(),
+            stream: false,
+            hosted: crate::ai_turn::Hosted::default(),
+            previous_response_id: None,
+            // `newConversation.shouldThink = false` (`ChatAgent.swift:1885`).
+            should_think: Some(false),
+            effort: None,
+            tier: None,
+            volatile: Box::new(|| None),
+            frozen: None,
+            wire: crate::ai_turn::Wire::from_globals(g),
+            legacy_url_pref: g.string(crate::ai_settings::URL),
+        };
+        let key = crate::ai_keys::shared().lock().unwrap_or_else(|e| e.into_inner()).get(vendor, &mut *crate::ai_keys::system_store());
+        let mut runner = crate::ai_turn::Runner::new(crate::ai_turn::Turn::new(input), self.ai_transport.clone(), crate::ai_transport::options_from(g), self.notify.clone());
+        let outs = runner.start(key.as_ref());
+        match chat_list::title_outcome(&outs) {
+            None => {
+                self.title_runs.insert(chat.to_string(), (runner, endpoint));
+            }
+            Some(title) => self.title_done(chat, title),
+        }
+    }
+
+    /// Polls the title runs: a run whose gate closed meanwhile (AI turned off, the admin
+    /// switch, that host's consent forgotten) is cancelled and dropped first; the rest read what
+    /// arrived, each send spending a fresh proof of the gate (ruling F15).
+    pub(super) fn title_tick(&mut self) {
+        if self.title_runs.is_empty() {
+            return;
+        }
+        let g = &self.globals;
+        let mut done: Vec<(String, Option<String>)> = Vec::new();
+        self.title_runs.retain(|chat, (runner, endpoint)| {
+            if !crate::chat_gate::gate_open(g, endpoint) {
+                let _ = runner.cancel();
+                return false;
+            }
+            let outs = runner.poll_with(&mut || crate::chat_gate::pass(g, endpoint));
+            match chat_list::title_outcome(&outs) {
+                None => true,
+                Some(title) => {
+                    done.push((chat.clone(), title));
+                    false
+                }
+            }
+        });
+        for (chat, title) in done {
+            self.title_done(&chat, title);
+        }
+    }
+
+    /// A title run ended: a usable title is published from the agent side to a chat that still
+    /// has its row; anything else leaves the chat's name (`ChatAgent.swift:1886-1906`).
+    fn title_done(&mut self, chat: &str, title: Option<String>) {
+        let Some(title) = title else { return };
+        if !self.chat_db.as_ref().is_some_and(|db| db.chat(chat).ok().flatten().is_some()) {
+            return;
+        }
+        let m = Message::new(chat, Participant::Agent, Content::RenameChat(title), super::warnings_app::unix_now());
+        if let Err(e) = self.chat_publish(chat, m, false) {
+            crate::ai_wire_log::console(self.globals.bool("aiChatVerboseConsoleLogging"), &format!("renameChat failed: {e}"));
         }
     }
 

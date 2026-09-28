@@ -106,6 +106,9 @@ pub enum Then {
     /// The first button turns on the command safety check, whose one-time question holds the
     /// command that raised it (Task 10, ruling R12cd-3).
     SafetyNag,
+    /// The second button deletes these chats (the list's Delete, `CWC:844-872`); the first is
+    /// Cancel, which a close and Escape press.
+    DeleteChats(Vec<String>),
 }
 
 /// One AI alert for `App::ask_ai`. `silence` is a permanent-silence key (the `scripts_alerts`
