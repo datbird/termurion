@@ -275,6 +275,23 @@ pub fn decode(text: &str) -> Option<BTreeMap<Key, Permission>> {
     Some(map)
 }
 
+/// Whether a session guid is a pane id: canonical decimal text (`PaneId` restarts at 1 every
+/// launch, so such a guid names a different session in the next run). An imported chat's UUID
+/// guid is not one.
+pub fn is_pane_guid(guid: &str) -> bool {
+    guid.parse::<u64>().is_ok_and(|n| n.to_string() == guid)
+}
+
+/// A stored text without the entries keyed by a pane id (a previous run's sessions); None when
+/// the text does not decode or holds none.
+pub fn without_pane_guids(text: &str) -> Option<String> {
+    let map = decode(text)?;
+    if !map.keys().any(|k| is_pane_guid(&k.guid)) {
+        return None;
+    }
+    Some(encode(map.iter().filter(|(k, _)| !is_pane_guid(&k.guid))))
+}
+
 /// A new chat's permissions from the globals (`defaultPermissions`, `RCE:132-155`): the
 /// terminal categories under the terminal session, the browser one under the browser session.
 pub fn defaults(chat: &str, terminal: Option<&str>, browser: Option<&str>, global: &dyn Fn(Category) -> i64) -> BTreeMap<Key, Permission> {

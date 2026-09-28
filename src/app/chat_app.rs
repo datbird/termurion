@@ -93,8 +93,34 @@ pub(super) fn publish_in(db: &mut Store, broker: &mut Broker, chat: &str, messag
 fn load_overrides(store: &Store, overrides: &mut Overrides) {
     for chat in store.chats().unwrap_or_default() {
         if !chat.permissions.is_empty() && !chat.orchestration_enabled {
-            overrides.merge_encoded(&chat.id, &chat.permissions);
+            // An entry keyed by a pane id belongs to a session of an earlier run (ruling F1).
+            let kept = ai_permissions::without_pane_guids(&chat.permissions).unwrap_or_else(|| chat.permissions.clone());
+            overrides.merge_encoded(&chat.id, &kept);
         }
+    }
+}
+
+/// The first open of a run (ruling F1): pane ids restart at 1 every launch, so a chat linked to
+/// a pane id, and any grant stored under one, names a session of an earlier run and would
+/// control an unrelated new pane. Each such chat is unlinked, and its stored entries keyed by a
+/// pane id are dropped (a fork or the overrides cannot carry them). Imported UUID guids stay.
+/// A row that cannot be written stays as it was; `load_overrides` skips its entries anyway.
+fn unlink_stale_panes(store: &mut Store) {
+    for chat in store.chats().unwrap_or_default() {
+        let linked = chat.terminal_session_guid.as_deref().is_some_and(ai_permissions::is_pane_guid);
+        let scrubbed = ai_permissions::without_pane_guids(&chat.permissions);
+        if !linked && scrubbed.is_none() {
+            continue;
+        }
+        // Re-read, so only this row's own fields change (ruling F6).
+        let Ok(Some(mut row)) = store.chat(&chat.id) else { continue };
+        if row.terminal_session_guid.as_deref().is_some_and(ai_permissions::is_pane_guid) {
+            row.terminal_session_guid = None;
+        }
+        if let Some(text) = ai_permissions::without_pane_guids(&row.permissions) {
+            row.permissions = text;
+        }
+        let _ = store.update_chat(&row);
     }
 }
 
@@ -163,14 +189,16 @@ pub(super) fn create_in(
 impl App {
     /// The chat database, opened on first use at `chat_store::default_path()` with its lock
     /// beside it. Opening merges the chats' stored permissions into the overrides
-    /// (`load_overrides`). A failure leaves no store for the rest of the
+    /// (`load_overrides`), after every chat linked to a pane id of an earlier run is unlinked
+    /// (`unlink_stale_panes`, ruling F1). A failure leaves no store for the rest of the
     /// run and says so once (`ChatWindowController.swift:169-185`); the store's own error
     /// text, which can name the path, is never shown.
     pub(crate) fn chat_db(&mut self) -> Option<&mut Store> {
         if self.chat_db.is_none() && !self.chat_db_failed {
             let path = chat_store::default_path();
             match Store::open(&path, &path.with_file_name(chat_store::LOCK_NAME)) {
-                Ok(store) => {
+                Ok(mut store) => {
+                    unlink_stale_panes(&mut store);
                     load_overrides(&store, &mut self.ai_overrides);
                     self.chat_db = Some(store);
                 }
@@ -764,17 +792,20 @@ mod tests {
         assert_eq!(store.chats().unwrap().len(), 6);
     }
 
+    /// A session guid that is not a pane id: a pane id stored in a row never loads (ruling F1).
+    const SESSION: &str = "S-7";
+
     fn key(chat: &str, c: Category) -> Key {
-        Key { chat: chat.to_string(), guid: "7".to_string(), category: c }
+        Key { chat: chat.to_string(), guid: SESSION.to_string(), category: c }
     }
 
     #[test]
     fn stored_permissions_stay_with_their_chat() {
         let (mut store, mut broker, mut overrides) = (Store::open_in_memory().unwrap(), Broker::new(), Overrides::default());
-        let source = create_in(&mut store, &mut broker, &mut overrides, "S", Some("7"), None, "", vec![], None, &ask, 1.0).unwrap();
+        let source = create_in(&mut store, &mut broker, &mut overrides, "S", Some(SESSION), None, "", vec![], None, &ask, 1.0).unwrap();
         assert!(set_permission_in(&mut store, &mut overrides, key(&source, Category::RunCommands), Permission::Always).unwrap().1);
         let text = store.chat(&source).unwrap().unwrap().permissions;
-        let fork = create_in(&mut store, &mut broker, &mut overrides, "F", Some("7"), None, &text, vec![], None, &ask, 2.0).unwrap();
+        let fork = create_in(&mut store, &mut broker, &mut overrides, "F", Some(SESSION), None, &text, vec![], None, &ask, 2.0).unwrap();
         // The source revokes and is used again, so it is newer than the fork.
         assert!(set_permission_in(&mut store, &mut overrides, key(&source, Category::RunCommands), Permission::Never).unwrap().1);
         store.bump(&source, 3.0).unwrap();
@@ -786,9 +817,58 @@ mod tests {
         // Relaunch: the source stays revoked, the fork keeps its own copy.
         let mut relaunched = Overrides::default();
         load_overrides(&store, &mut relaunched);
-        assert_eq!(relaunched.get(&source, "7", Category::RunCommands, &ask), Permission::Never);
-        assert_eq!(relaunched.get(&fork, "7", Category::RunCommands, &ask), Permission::Always);
+        assert_eq!(relaunched.get(&source, SESSION, Category::RunCommands, &ask), Permission::Never);
+        assert_eq!(relaunched.get(&fork, SESSION, Category::RunCommands, &ask), Permission::Always);
         assert_eq!(relaunched.encoded(&hostile.id), "[]", "a row grants nothing to another chat, itself included");
+    }
+
+    #[test]
+    fn a_restarted_pane_id_never_inherits_a_chat() {
+        for pane in ["0", "3", "18446744073709551615"] {
+            assert!(ai_permissions::is_pane_guid(pane), "{pane}");
+        }
+        for other in ["", "03", "+3", "-3", " 3", "3 ", "6F1C2A3B-0000-4000-8000-000000000001", "18446744073709551616"] {
+            assert!(!ai_permissions::is_pane_guid(other), "{other:?}");
+        }
+        let mut store = Store::open_in_memory().unwrap();
+        let mut stored = Overrides::default();
+        // A chat of the previous run, linked to pane 3 with Always Allow; one imported with a UUID guid.
+        let (mut old, mut imported) = (Chat::new("old", 1.0), Chat::new("imported", 2.0));
+        old.terminal_session_guid = Some("3".into());
+        imported.terminal_session_guid = Some("6F1C2A3B-0000-4000-8000-000000000001".into());
+        for c in [&mut old, &mut imported] {
+            let guid = c.terminal_session_guid.clone().unwrap();
+            stored.set(Key { chat: c.id.clone(), guid, category: Category::RunCommands }, Permission::Always);
+            c.permissions = stored.encoded(&c.id);
+        }
+        store.add_chat(&old).unwrap();
+        store.add_chat(&imported).unwrap();
+
+        // The next launch: the first open.
+        unlink_stale_panes(&mut store);
+        let mut overrides = Overrides::default();
+        load_overrides(&store, &mut overrides);
+
+        let row = store.chat(&old.id).unwrap().unwrap();
+        assert_eq!(row.terminal_session_guid, None, "the chat is unlinked");
+        // A new pane 3 owns nothing of it.
+        assert_eq!(overrides.get(&old.id, "3", Category::RunCommands, &ask), Permission::Ask);
+        assert_eq!(row.permissions, "[]", "the stored grant is gone too, so a fork cannot carry it");
+        let (mut broker, mut later) = (Broker::new(), Overrides::default());
+        let fork = create_in(&mut store, &mut broker, &mut later, "F", Some("3"), None, &row.permissions, vec![], None, &ask, 5.0).unwrap();
+        assert_eq!(later.get(&fork, "3", Category::RunCommands, &ask), Permission::Ask);
+        // An entry keyed by a decimal guid is skipped even when a row still holds it.
+        let mut held = Chat::new("held", 3.0);
+        held.permissions = stored.encoded(&old.id).replace(&old.id, &held.id);
+        assert!(held.permissions.contains("\"guid\":\"3\""));
+        store.add_chat(&held).unwrap();
+        let mut skipped = Overrides::default();
+        load_overrides(&store, &mut skipped);
+        assert_eq!(skipped.get(&held.id, "3", Category::RunCommands, &ask), Permission::Ask);
+        // The imported chat keeps its link and its grant.
+        let kept = store.chat(&imported.id).unwrap().unwrap();
+        assert_eq!(kept.terminal_session_guid, imported.terminal_session_guid);
+        assert_eq!(overrides.get(&imported.id, "6F1C2A3B-0000-4000-8000-000000000001", Category::RunCommands, &ask), Permission::Always);
     }
 
     #[test]
@@ -807,11 +887,11 @@ mod tests {
         load_overrides(&store, &mut overrides);
         let (row, saved) = set_permission_in(&mut store, &mut overrides, key(&chat.id, Category::RunCommands), Permission::Never).unwrap();
         assert!(saved);
-        assert_eq!(overrides.get(&chat.id, "7", Category::RunCommands, &ask), Permission::Never, "the change is not overwritten");
+        assert_eq!(overrides.get(&chat.id, SESSION, Category::RunCommands, &ask), Permission::Never, "the change is not overwritten");
         let mut back = Overrides::default();
         assert!(back.merge_encoded(&chat.id, &store.chat(&chat.id).unwrap().unwrap().permissions));
-        assert_eq!(back.get(&chat.id, "7", Category::RunCommands, &ask), Permission::Never);
-        assert_eq!(back.get(&chat.id, "7", Category::ViewContents, &ask), Permission::Always, "the chat's other entries are kept");
+        assert_eq!(back.get(&chat.id, SESSION, Category::RunCommands, &ask), Permission::Never);
+        assert_eq!(back.get(&chat.id, SESSION, Category::ViewContents, &ask), Permission::Always, "the chat's other entries are kept");
         assert_eq!(row.permissions, overrides.encoded(&chat.id));
         assert_eq!(set_permission_in(&mut store, &mut overrides, key("gone", Category::RunCommands), Permission::Never), None);
 
@@ -819,7 +899,7 @@ mod tests {
         store.refuse_chat_updates();
         let (_, saved) = set_permission_in(&mut store, &mut overrides, key(&chat.id, Category::ViewContents), Permission::Never).unwrap();
         assert!(!saved);
-        assert_eq!(overrides.get(&chat.id, "7", Category::ViewContents, &ask), Permission::Never);
+        assert_eq!(overrides.get(&chat.id, SESSION, Category::ViewContents, &ask), Permission::Never);
         assert_eq!(ai_permissions::NOT_SAVED, "The permission change could not be saved. It applies until Tandem quits.");
     }
 
