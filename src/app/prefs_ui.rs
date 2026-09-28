@@ -111,6 +111,14 @@ pub(super) fn overwrite_ask(text: &str) -> Ask {
     ask(crate::script_new::WARNING, &rp::remote_changed(text), &buttons, None, Kind::Persistent, Then::PrefsOverwrite)
 }
 
+/// "Settings have changed. Copy them to ...?" at quit (`RP:1682-1688`), silenced under the Save
+/// changes popup's key. Lose Changes is never remembered, so a saved Lose Changes (Manually)
+/// still asks, as in iTerm2.
+fn quit_ask(text: &str) -> Ask {
+    let buttons = [rp::COPY, rp::LOSE_CHANGES];
+    ask(crate::script_new::WARNING, &rp::settings_changed(text), &buttons, Some(rp::HAVE_SELECTION_KEY), Kind::Permanent, Then::PrefsQuit)
+}
+
 /// The URL's text as loaded: the snapshot, or the failure (an empty or malformed file falls
 /// back with the folder's alert, as iTerm2's empty dictionary does, `RP:293-311`).
 fn fetched(text: &str, url: &str, result: Fetched) -> Start {
@@ -406,11 +414,7 @@ impl App {
                 return true;
             }
             QuitStep::SaveSilently => self.prefs_save_now(false),
-            QuitStep::Ask => {
-                let buttons = [rp::COPY, rp::LOSE_CHANGES];
-                let ask = ask(crate::script_new::WARNING, &rp::settings_changed(&text), &buttons, Some(rp::HAVE_SELECTION_KEY), Kind::Permanent, Then::PrefsQuit);
-                self.ask_scripts(ask);
-            }
+            QuitStep::Ask => self.ask_scripts(quit_ask(&text)),
         }
         if self.prefs_quit_question_open() {
             self.prefs_exit_pending = true;
@@ -661,6 +665,22 @@ mod tests {
         assert!(exit_waits(Some(&failed()), &queued), "the failure to copy is seen before the exit");
         queued.push_back(failed());
         assert!(exit_waits(None, &queued));
+    }
+
+    /// Task 2 review finding 1 (ruling: the source wins): the Save changes popup's Manually
+    /// saves the quit question's answer as Lose Changes, which is never remembered, so the
+    /// question still shows at quit; When Quitting (Copy) answers it at once.
+    #[test]
+    fn a_silenced_quit_question_saved_as_lose_changes_is_shown() {
+        use crate::warnings::{preempt, Preempt};
+        let mut g = Globals::empty(Path::new("settings.toml"));
+        let q = quit_ask("C:\\T");
+        assert_eq!(q.spec.never_remember, [1]);
+        g.set(rp::HAVE_SELECTION_KEY, Value::Boolean(true));
+        g.set(rp::SELECTION_KEY, Value::Integer(1));
+        assert_eq!(preempt(&q.spec, &g, 0.0, false), Preempt::Show, "Manually asks at quit");
+        g.set(rp::SELECTION_KEY, Value::Integer(0));
+        assert_eq!(preempt(&q.spec, &g, 0.0, false), Preempt::Answer(0), "When Quitting copies without asking");
     }
 
     #[test]
