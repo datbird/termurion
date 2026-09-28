@@ -98,3 +98,13 @@ modal alerts indicate keyboard shortcuts." (General). Mark each line pass or fai
 | 46 | Session > Restart Session picked twice before answering asks once. | |
 | 47 | A file name the terminal sends with control or right-to-left characters, or over 200 characters, is shown without them (cut with an ellipsis) in the download and display questions. | |
 | 48 | An ordinary profile's arrangement folder `~/gone` (edited by hand) starts in home with the unavailable banner; an existing `~/x` is used as that folder under home. | |
+
+## Landing fixes
+
+| # | Check | Result |
+|---|---|---|
+| 49 | Settings folder: with a custom folder in use, edit its settings file in Notepad after Tandem starts, then Save Now: "Settings at <folder> changed since Tandem started. Overwrite it?" asks; closing it with the title bar X leaves the file as Notepad saved it (Discard Local Changes). | |
+| 50 | With Save changes set to Manually and a change made, quit: closing "Settings have changed. Copy them to <folder>?" with the title bar X copies them (the one question whose close does not refuse); Escape does nothing. | |
+| 51 | An SSH-profile session saved with contents and the folder `~/proj` in a named arrangement restores with the bad folder bar (Repair) and without the window banner "The folder ... from the arrangement does not exist"; it shows the same bar on every restore. | |
+| 52 | A file name the terminal sends with a line or paragraph separator (U+2028, U+2029) or a zero-width character (U+200B to U+200D, U+2060, U+FEFF) is shown on one line without them in the download and display questions. | |
+| 53 | In a tmux window with two tabs, click one tab's close button twice before answering: the "Kill tmux window, terminating its jobs, or hide it?" question asks once. | |

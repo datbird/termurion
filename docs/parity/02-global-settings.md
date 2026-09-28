@@ -1145,6 +1145,6 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 ## Row counts
 
-Total rows: 820.
+Total rows: 823.
 
-By status: have 7, partial 73, missing 740.
+By status: have 376, partial 86, missing 361 (the roadmap's table in 00-roadmap.md is the count of record).
