@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::conpty::Api;
 use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, Ring, VERSION, encode};
 use crate::pty::{Pty, Read};
+use crate::ssh_transport::Transport;
 use crate::winpipe::{Listener, Pipe};
 
 /// Output a session keeps for a reattach.
@@ -308,32 +309,41 @@ fn serve(host: Shared, pipe: Arc<Pipe>, conn: u64, api: Api, wake: mpsc::Sender<
     });
 }
 
+/// Starts a session on transport `t` and answers `Launched` or `LaunchFailed`.
+#[allow(clippy::too_many_arguments)]
+fn launch(host: &Shared, api: &Api, wake: &mpsc::Sender<u64>, t: Transport, tag: u64, cmdline: String, cwd: String, env: Vec<String>, cols: u16, rows: u16) {
+    let id = {
+        let mut h = host.lock().unwrap();
+        h.next_id += 1;
+        h.next_id - 1
+    };
+    let w = wake.clone();
+    let notify: crate::pty::Notify = Arc::new(move || {
+        let _ = w.send(id);
+    });
+    let dir = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
+    match crate::pty::spawn_transport(api, t, &cmdline, dir.as_deref(), &env, cols.max(1), rows.max(1), notify) {
+        Ok(pty) => {
+            let pid = pty.pid();
+            let mut h = host.lock().unwrap();
+            h.sessions.insert(id, Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline, cwd, cols, rows, exited: None, attached: true, pending: 0, prompt: Default::default() });
+            h.send(&Msg::Launched { tag, id, pid });
+            drop(h);
+            // Output that came before the session was in the table.
+            pump(host, id);
+        }
+        Err(error) => host.lock().unwrap().send(&Msg::LaunchFailed { tag, error }),
+    }
+}
+
 fn handle(host: &Shared, m: Msg, api: &Api, wake: &mpsc::Sender<u64>) {
     match m {
-        Msg::Launch { tag, cmdline, cwd, env, cols, rows } => {
-            let id = {
-                let mut h = host.lock().unwrap();
-                h.next_id += 1;
-                h.next_id - 1
-            };
-            let w = wake.clone();
-            let notify: crate::pty::Notify = Arc::new(move || {
-                let _ = w.send(id);
-            });
-            let dir = (!cwd.is_empty()).then(|| std::path::PathBuf::from(&cwd));
-            match crate::pty::spawn_notify(api, &cmdline, dir.as_deref(), &env, cols.max(1), rows.max(1), notify) {
-                Ok(pty) => {
-                    let pid = pty.pid();
-                    let mut h = host.lock().unwrap();
-                    h.sessions.insert(id, Session { pty: Some(pty), ring: Ring::new(RING), pid, cmdline, cwd, cols, rows, exited: None, attached: true, pending: 0, prompt: Default::default() });
-                    h.send(&Msg::Launched { tag, id, pid });
-                    drop(h);
-                    // Output that came before the session was in the table.
-                    pump(host, id);
-                }
-                Err(error) => host.lock().unwrap().send(&Msg::LaunchFailed { tag, error }),
-            }
-        }
+        Msg::Launch { tag, cmdline, cwd, env, cols, rows } => launch(host, api, wake, Transport::Conpty, tag, cmdline, cwd, env, cols, rows),
+        // Only a version 4 Tandem sends it (`host_client::launch_transport`).
+        Msg::LaunchWith { tag, cmdline, cwd, env, cols, rows, transport } => match crate::ssh_transport::from_wire(transport) {
+            Some(t) => launch(host, api, wake, t, tag, cmdline, cwd, env, cols, rows),
+            None => host.lock().unwrap().send(&Msg::LaunchFailed { tag, error: format!("unknown transport {transport}") }),
+        },
         Msg::Attach { id, since } => {
             let mut h = host.lock().unwrap();
             let Some(s) = h.sessions.get_mut(&id) else {
@@ -564,6 +574,25 @@ pub(crate) mod tests {
         c.hello();
         let id = c.launch_with("cmd.exe /d /c echo [%ITERM_PROFILE%^]", vec!["ITERM_PROFILE=Hosted".into()]);
         c.output_until(id, "[Hosted]");
+    }
+
+    /// Version 4: LaunchWith runs the session on the transport it names.
+    #[test]
+    fn launch_with_runs_the_transport() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let c = Conn::open(&name);
+        c.hello();
+        let launch = |tag: u64, transport: u8| {
+            c.send(&Msg::LaunchWith { tag, cmdline: "cmd.exe /d /c echo hosted-pipes".into(), cwd: String::new(), env: vec![], cols: 80, rows: 24, transport });
+            c.wait(|m| match m {
+                Msg::Launched { tag: t, id, .. } if *t == tag => Some(Ok(*id)),
+                Msg::LaunchFailed { tag: t, error } if *t == tag => Some(Err(error.clone())),
+                _ => None,
+            })
+        };
+        let id = launch(1, 2).expect("the pipes transport starts");
+        c.output_until(id, "hosted-pipes");
+        assert_eq!(launch(2, 9), Err("unknown transport 9".to_string()));
     }
 
     #[test]

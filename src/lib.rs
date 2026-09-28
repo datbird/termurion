@@ -23,6 +23,7 @@ pub mod smartsel;
 pub mod semantic;
 pub mod synthetic;
 pub mod tabstatus;
+pub mod tab_layout;
 pub mod status_tool;
 pub mod seltools;
 pub mod copymode;
@@ -86,6 +87,7 @@ pub mod util_simple;
 pub mod util_git;
 pub mod util_tip;
 pub mod util_query;
+pub mod util_it2ssh;
 #[cfg(windows)]
 pub mod util_console;
 pub mod utilities;
@@ -142,6 +144,16 @@ pub mod statusbar_sparkline;
 pub mod statusbar_text;
 pub mod git_state;
 pub mod git_wrapper;
+pub mod ssh_transport;
+pub mod ssh_probe;
+pub mod ssh_handshake;
+pub mod ssh_session;
+pub mod ssh_secret;
+pub mod ssh_config;
+#[cfg(windows)]
+pub mod ssh_probe_win;
+#[cfg(windows)]
+pub mod ssh_secret_win;
 
 #[cfg(windows)]
 pub mod conpty;
@@ -206,6 +218,7 @@ pub mod settings_lists;
 pub mod settings_arrangements;
 pub mod settings_shortcuts;
 pub mod settings_hotkey;
+pub mod settings_ssh;
 pub mod restore_state;
 pub mod host_proto;
 pub mod host;

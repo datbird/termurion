@@ -375,7 +375,7 @@ impl App {
             };
             let copied = guid.clone().filter(|_| !matches!(choice, ProfileChoice::Saved(_)));
             // A local launch whose folder is missing starts in home (`iTermSessionFactory.m:340-358`).
-            let ssh = self.profile(guid.as_deref()).string("Custom Command") == "SSH";
+            let ssh = crate::profile::is_ssh(&self.profile(guid.as_deref()));
             let folder = session.get("Working Directory").and_then(|v| v.as_str()).unwrap_or_default().to_string();
             let notice = folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| p.is_dir());
             self.start_dir_override = Some(match notice {

@@ -45,6 +45,12 @@ pub struct Facts<'a> {
     /// The PATH with the utilities folder appended (`utilities::path_with`), when the folder
     /// was made and `addUtilitiesToPATH` is on.
     pub path: Option<&'a str>,
+    /// The profile's Path to SSH (`ssh_config::SshConfig::path_to_ssh`), set as `SSH` for
+    /// it2ssh (`PS:3247-3252`, `PS:3548`).
+    pub ssh_path: Option<&'a str>,
+    /// The label of the SSH transport a pane started on other than ConPTY
+    /// (`ssh_transport::label`), set as `TANDEM_SSH_TRANSPORT` for it2ssh.
+    pub ssh_transport: Option<&'a str>,
 }
 
 /// iTerm2's `TERM_PROGRAM` (`PS:3357`).
@@ -56,11 +62,12 @@ pub const LC_TERMINAL: &str = "iTerm2";
 /// The session's variables as `NAME=value`, in iTerm2's order: `ITERM2_COOKIE` (only with a
 /// cookie), `ITERM_SESSION_ID`, `TERM_SESSION_ID`, `ITERM_PROFILE`, then iTerm2's own
 /// (`PS:3332-3359`): `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `COLORTERM`, `TERM_FEATURES`,
-/// `LC_TERMINAL` and `LC_TERMINAL_VERSION` with `lc_terminal`, and `PATH` when given.
+/// `LC_TERMINAL` and `LC_TERMINAL_VERSION` with `lc_terminal`, and `PATH` when given; then
+/// Tandem's `SSH` and `TANDEM_SSH_TRANSPORT` when given.
 pub fn vars(f: &Facts) -> Vec<String> {
     use crate::reports::ITERM2_VERSION;
     let id = session_id(f.window, f.tab, f.pane, f.id);
-    let mut v = Vec::with_capacity(11);
+    let mut v = Vec::with_capacity(13);
     if let Some(c) = f.cookie {
         v.push(format!("ITERM2_COOKIE={c}"));
     }
@@ -77,6 +84,12 @@ pub fn vars(f: &Facts) -> Vec<String> {
     }
     if let Some(p) = f.path {
         v.push(format!("PATH={p}"));
+    }
+    if let Some(p) = f.ssh_path {
+        v.push(format!("SSH={p}"));
+    }
+    if let Some(t) = f.ssh_transport {
+        v.push(format!("TANDEM_SSH_TRANSPORT={t}"));
     }
     v
 }
@@ -154,11 +167,24 @@ mod tests {
     }
 
     #[test]
+    fn ssh_vars_reach_the_environment() {
+        let features = "F";
+        let none = Facts { window: 0, tab: 0, pane: 0, id: "1", profile_name: "P", cookie: None, term_features: features, lc_terminal: false, path: None, ssh_path: None, ssh_transport: None };
+        let base = vars(&none);
+        assert!(!base.iter().any(|v| v.starts_with("SSH=") || v.starts_with("TANDEM_SSH_TRANSPORT=")), "neither without them");
+        let with_path = vars(&Facts { ssh_path: Some(r"C:\ssh\ssh.exe"), ..none });
+        assert_eq!(with_path[..base.len()], base[..]);
+        assert_eq!(with_path[base.len()..], ["SSH=C:\\ssh\\ssh.exe"]);
+        let with_transport = vars(&Facts { ssh_transport: Some("pipes"), ..none });
+        assert_eq!(with_transport[base.len()..], ["TANDEM_SSH_TRANSPORT=pipes"]);
+    }
+
+    #[test]
     fn session_env_follows_iterm2() {
         assert_eq!(session_id(0, 1, 2, "17"), "w0t1p2:17");
         let features = crate::osc1337::capabilities(crate::osc1337::Features { clipboard_writable: false, ambiguous_wide: false, unicode_version: 9 });
         assert_eq!(features, "T3MSc7UUw9Ts3BFGsSyHSxF");
-        let with = Facts { window: 0, tab: 1, pane: 2, id: "17", profile_name: "Default", cookie: Some("c"), term_features: &features, lc_terminal: true, path: Some("C:\\W;C:\\T\\utilities") };
+        let with = Facts { window: 0, tab: 1, pane: 2, id: "17", profile_name: "Default", cookie: Some("c"), term_features: &features, lc_terminal: true, path: Some("C:\\W;C:\\T\\utilities"), ssh_path: None, ssh_transport: None };
         let tail = [
             "TERM_PROGRAM=iTerm.app",
             "TERM_PROGRAM_VERSION=3.7.0",

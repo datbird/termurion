@@ -256,8 +256,8 @@ impl Drop for Console {
     }
 }
 
-/// Runs `c` and waits for it: its output captured (standard error shared) unless it
-/// inherits the utility's streams; with no `stdin` bytes it reads nothing; `env` applied
+/// Runs `c` and waits for it: its output captured (standard error shared, or joined to the
+/// captured output with `merge_stderr`) unless it inherits the utility's streams; with no `stdin` bytes it reads nothing; `env` applied
 /// to the utility's own environment.
 pub fn run_command(c: &Cmd) -> Result<Output, String> {
     use std::process::{Command, Stdio};
@@ -280,20 +280,44 @@ pub fn run_command(c: &Cmd) -> Result<Output, String> {
         let status = status.map_err(|e| e.to_string())?;
         return Ok(Output { code: status.code().unwrap_or(1), stdout: Vec::new() });
     }
-    cmd.stdout(Stdio::piped()).stderr(if c.quiet { Stdio::null() } else { Stdio::inherit() });
+    // `2>&1`: standard error gets a clone of the standard output pipe's writer.
+    let merged = if c.merge_stderr {
+        let (reader, writer) = std::io::pipe().map_err(|e| e.to_string())?;
+        let clone = writer.try_clone().map_err(|e| e.to_string())?;
+        cmd.stdout(writer).stderr(clone);
+        Some(reader)
+    } else {
+        cmd.stdout(Stdio::piped()).stderr(if c.quiet { Stdio::null() } else { Stdio::inherit() });
+        None
+    };
     cmd.stdin(if c.stdin.is_some() { Stdio::piped() } else { Stdio::null() });
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let spawned = cmd.spawn();
+    // The writers held by `cmd` must close, or the merged pipe never ends.
+    drop(cmd);
+    let mut child = spawned.map_err(|e| e.to_string())?;
     let feeder = match (c.stdin.clone(), child.stdin.take()) {
         (Some(bytes), Some(mut pipe)) => Some(std::thread::spawn(move || {
             let _ = pipe.write_all(&bytes);
         })),
         _ => None,
     };
-    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    let (status, stdout) = match merged {
+        Some(mut reader) => {
+            let mut stdout = Vec::new();
+            let read = std::io::Read::read_to_end(&mut reader, &mut stdout);
+            let status = child.wait().map_err(|e| e.to_string())?;
+            read.map_err(|e| e.to_string())?;
+            (status, stdout)
+        }
+        None => {
+            let out = child.wait_with_output().map_err(|e| e.to_string())?;
+            (out.status, out.stdout)
+        }
+    };
     if let Some(f) = feeder {
         let _ = f.join();
     }
-    Ok(Output { code: out.status.code().unwrap_or(1), stdout: out.stdout })
+    Ok(Output { code: status.code().unwrap_or(1), stdout })
 }
 
 /// `builtin command -V <program>` (`util_cli::found_on_path`) over the process's PATH,
@@ -336,6 +360,8 @@ fn with_console_io(f: &mut dyn FnMut(&mut Io) -> i32) -> i32 {
         let env = |k: &str| std::env::var(k).ok();
         let mut random = random_15;
         let mut run = run_command;
+        let mut secret = || crate::ssh_secret_win::fetch(Duration::from_millis(500));
+        let env_all = || std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect();
         let mut io = Io {
             out: &mut out,
             err: &mut err,
@@ -348,6 +374,8 @@ fn with_console_io(f: &mut dyn FnMut(&mut Io) -> i32) -> i32 {
             random: &mut random,
             run: &mut run,
             have: &on_path,
+            secret: &mut secret,
+            env_all: &env_all,
         };
         let code = f(&mut io);
         let _ = io.out.flush();
@@ -576,6 +604,26 @@ mod tests {
 
     fn unhex(s: &str) -> Vec<u8> {
         (0..s.len() / 2).filter_map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).ok()).collect()
+    }
+
+    #[test]
+    fn merged_stderr_joins_the_output() {
+        let c = |merge_stderr: bool| Cmd {
+            program: "cmd.exe".into(),
+            args: vec!["/d".into(), "/c".into(), "echo out& echo err 1>&2& exit 3".into()],
+            cwd: None,
+            stdin: None,
+            inherit: false,
+            quiet: true,
+            env: Vec::new(),
+            merge_stderr,
+        };
+        let merged = run_command(&c(true)).unwrap();
+        assert_eq!(merged.code, 3);
+        assert_eq!(String::from_utf8_lossy(&merged.stdout), "out\r\nerr \r\n");
+        let alone = run_command(&c(false)).unwrap();
+        assert_eq!(alone.code, 3);
+        assert_eq!(String::from_utf8_lossy(&alone.stdout), "out\r\n");
     }
 
     #[test]

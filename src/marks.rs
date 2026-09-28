@@ -1148,10 +1148,26 @@ impl Screen {
                 }
                 "ExecFailed" => self.exec_failed = true,
                 "Env" if self.trusted => {
-                    use base64::Engine;
-                    if let Some(b) = value.strip_prefix("report=all:").and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()) {
-                        self.env = Some(String::from_utf8_lossy(&b).into_owned());
+                    if let crate::osc1337::EnvUpdate::Set(v) = crate::osc1337::parse_env(&value) {
+                        self.env = v;
                     }
+                }
+                // Not trust-gated (`T:4524-4527`).
+                "it2ssh" => {
+                    if let Some(flags) = crate::ssh_handshake::parse_it2ssh(&value) {
+                        self.requests.push(Request::SshWillBegin);
+                        self.ssh_flags = Some(flags);
+                    }
+                }
+                "SendConductor" => match crate::ssh_handshake::send_conductor(&value, self.ssh_flags.take()) {
+                    crate::ssh_handshake::SendConductor::Ignore => {}
+                    crate::ssh_handshake::SendConductor::Banner(text) => self.append_banner(text),
+                    crate::ssh_handshake::SendConductor::Send(h) => self.requests.push(Request::SshSendConductor(h)),
+                },
+                // Trusted and non-empty only (`T:4528-4531`); the flags go (`TD:4033`).
+                "EndSSH" if self.trusted && !value.is_empty() => {
+                    self.ssh_flags = None;
+                    self.requests.push(Request::SshEnd(value));
                 }
                 "SetKeyLabel" => self.key_labels.set(&value),
                 "PushKeyLabels" => self.key_labels.push(&value),

@@ -672,16 +672,22 @@ pub fn pointer_editor(ctx: &egui::Context, e: &mut PointerEditor, profiles: &[(S
     out
 }
 
+/// What a bool row's checkbox shows for the stored value: the opposite for an
+/// inverted row. Storing the checkbox back applies the same rule.
+pub fn checkbox_shows(stored: bool, inverted: bool) -> bool {
+    stored != inverted
+}
+
 /// A control for one global setting (checkbox, menu, or text).
 pub fn global_control(ui: &mut egui::Ui, g: &mut Globals, s: &Setting, enabled: bool) -> bool {
     let mut changed = false;
     ui.add_enabled_ui(enabled && !s.macos_only, |ui| {
         let control = match s.kind {
             Kind::Bool => {
-                let mut b = g.bool(&s.key);
+                let mut b = checkbox_shows(g.bool(&s.key), s.inverted);
                 let r = ui.checkbox(&mut b, &s.label);
                 if r.changed() {
-                    g.set(&s.key, Value::Boolean(b));
+                    g.set(&s.key, Value::Boolean(checkbox_shows(b, s.inverted)));
                     changed = true;
                 }
                 Some(r.rect)
@@ -1951,6 +1957,125 @@ mod tests {
         assert_eq!(row.label, "Make uploads with it2ul really fast.");
         assert_eq!(row.help, "Make uploads with it2ul really fast.");
         assert!(Globals::empty(std::path::Path::new("upload-row-test.toml")).bool("accelerateUploads"), "on until turned off");
+    }
+
+    #[test]
+    fn tab_appearance_rows_follow_iterm2() {
+        for (key, default, inverted, label) in [
+            ("HideTab", true, true, "Show tab bar even when there is only one tab"),
+            ("HideTabNumber", false, true, "Show tab numbers"),
+            ("TabsHaveCloseButton", true, false, "Tabs have close buttons"),
+            ("HideActivityIndicator", false, true, "Show activity indicator"),
+            ("StretchTabsToFillBar", true, false, "Stretch tabs to fill bar"),
+            ("HTMLTabTitles", false, false, "Support basic HTML tags in tab titles"),
+            ("ScrollableSideTabBar", true, false, "Tab bar scrolls when tabs don\u{2019}t fit"),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!(row.inverted, inverted, "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+        // The one row with an iTerm2 tooltip (`PreferencePanel.xib`, "Support basic HTML tags") uses it verbatim.
+        assert_eq!(
+            schema::find_global("HTMLTabTitles").unwrap().help,
+            "The following tags are recognized: <u>, <i>, and <b>. You can also use &lt; and &amp;."
+        );
+        // An inverted checkbox shows the opposite of the stored bool (`kPreferenceInfoTypeInvertedCheckbox`).
+        assert!(checkbox_shows(true, false));
+        assert!(!checkbox_shows(false, false));
+        assert!(!checkbox_shows(true, true));
+        assert!(checkbox_shows(false, true));
+    }
+
+    #[test]
+    fn tab_advanced_rows_follow_iterm2() {
+        let b = Value::Boolean;
+        let i = Value::Integer;
+        let f = Value::Float;
+        let plain = |s: &str| (s.to_string(), s.to_string());
+        let more = |label: &str, rest: &str| (label.to_string(), format!("{label}\n{rest}"));
+        for (key, kind, default, (label, help)) in [
+            ("UseUnevenTabs", Kind::Bool, b(false), plain("Uneven tab widths allowed.")),
+            ("MinTabWidth", Kind::Int, i(75), plain("Minimum tab width when using uneven tab widths.")),
+            ("MinCompactTabWidth", Kind::Int, i(60), plain("Minimum tab width when using uneven tab widths for compact tabs.")),
+            ("OptimumTabWidth", Kind::Int, i(175), plain("Preferred tab width when tabs are equally sized.")),
+            (
+                "ScrollableTabWidth",
+                Kind::Int,
+                i(120),
+                more("Tab width when the tab bar is scrollable.", "Used as the fixed width when tabs are equally sized, and as the minimum width when uneven tab widths are allowed."),
+            ),
+            (
+                "TabTitlesUseSmartTruncation",
+                Kind::Bool,
+                b(true),
+                more(
+                    "Use \u{201c}smart truncation\u{201d} for tab titles.",
+                    "If a tab\u{2018}s title is too long to fit, ellipsize the start of the title if more tabs have unique suffixes than prefixes in a given window.",
+                ),
+            ),
+            ("MiddleClickClosesTab", Kind::Bool, b(true), plain("Should middle-click on a tab in the tab bar close the tab?")),
+            (
+                "DefaultTabBarHeight",
+                Kind::Float,
+                f(24.0),
+                more(
+                    "Default tab bar height",
+                    "This does not affect the minimal or compact themes. On macOS 26 Tahoe-style tabs, the top (horizontal) tab bar uses the system height and ignores this setting; left/right (vertical) tabs use max(26, this value) for each tab\u{2019}s height.",
+                ),
+            ),
+            ("DoubleClickTabToEdit", Kind::Bool, b(true), plain("Should double-clicking a tab open a window to edit its title?")),
+            (
+                "MinimumTabLabelWidth",
+                Kind::Float,
+                f(35.0),
+                more("Minimum width for tab labels.", "The activity/bell icon will be hidden when the space for the label drops below this size (in points)"),
+            ),
+            ("DrawBottomLineForHorizontalTabBar", Kind::Bool, b(true), plain("Draw bottom line for horizontal tabbar in Regular, Dark and Light theme?")),
+            ("DisableTabBarTooltips", Kind::Bool, b(false), plain("Disable tab bar tooltips?")),
+            (
+                "UseCustomTabBarFontSize",
+                Kind::Bool,
+                b(false),
+                more("Use custom font size for tab labels?", "See also advanced setting \u{201c}Custom tab label font size\u{201d}."),
+            ),
+            (
+                "CustomTabBarFontSize",
+                Kind::Float,
+                f(11.0),
+                more("Custom tab label font size", "For this to take effect, turn on \u{201c}Use custom font size for tab labels?\u{201d}."),
+            ),
+            ("SelectsTabsOnMouseDown", Kind::Bool, b(true), more("Select tabs on mouse-down?", "Changing this setting will not affect existing windows.")),
+            (
+                "TabColorMenuOptions",
+                Kind::String,
+                Value::String("#fb6b62 #f6ac47 #f0dc4f #b5d749 #5fa3f8 #c18ed9 #787878".into()),
+                more(
+                    "Colors for tab color menu item.",
+                    "Space delimited strings like #rrggbb or #rgb in sRGB color space. If the P3 color space is available, you can use strings like: color(p3 1 0.5 0.25)",
+                ),
+            ),
+            ("RemoveAddTabButton", Kind::Bool, b(false), plain("Remove the \u{201c}new tab\u{201d} button from horizontal tab bars?")),
+            (
+                "AddTabButtonUsesCurrentProfile",
+                Kind::Bool,
+                b(false),
+                more(
+                    "Should the \u{201c}new tab\u{201d} button in the tab bar use the current session\u{2019}s profile?",
+                    "When enabled, clicking the \u{201c}+\u{201d} button opens a new tab with the current session\u{2019}s profile instead of the default profile.",
+                ),
+            ),
+            ("TabCloseButtonsAlwaysVisible", Kind::Bool, b(false), plain("Should tab close buttons always remain visible?")),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert!(!row.inverted, "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label.as_str(), help.as_str()), "{key}");
+        }
     }
 
     #[test]

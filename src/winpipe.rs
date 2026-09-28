@@ -259,12 +259,31 @@ pub fn host_pipe_name() -> Result<String, String> {
     Ok(format!(r"\\.\pipe\tandem-host-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
+/// `\\.\pipe\tandem-ssh-secrets-<user SID>`, plus `-admin` when elevated: the origin secrets
+/// it2ssh fetches.
+pub fn secret_pipe_name() -> Result<String, String> {
+    // As the host pipe: an elevated Tandem's secrets are its own.
+    Ok(format!(r"\\.\pipe\tandem-ssh-secrets-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
+}
+
+/// The security descriptor of every pipe instance: a DACL that lets only `sid` in, and a
+/// mandatory label with no-read-up. Elevated: high, so a normal-integrity process cannot open
+/// it. Not elevated: medium, so a low-integrity process of this user (a sandboxed browser or
+/// document reader) cannot open it even to read, where an unlabeled object only refuses the
+/// write (the secret pipe hands a secret to every client that connects).
+fn pipe_sddl(sid: &str, elevated: bool) -> String {
+    let label = if elevated { "S:(ML;;NWNRNX;;;HI)" } else { "S:(ML;;NWNR;;;ME)" };
+    format!("D:P(A;;GA;;;{sid}){label}")
+}
+
 /// A pipe instance whose DACL lets only this user connect; no remote clients.
 fn create_instance(name: &str, first: bool) -> Result<HANDLE, String> {
+    create_instance_with(name, first, &pipe_sddl(&user_sid()?, elevated()?))
+}
+
+fn create_instance_with(name: &str, first: bool, sddl: &str) -> Result<HANDLE, String> {
     unsafe {
-        // Elevated: a high mandatory label, so a normal-integrity process cannot open it.
-        let label = if elevated()? { "S:(ML;;NWNRNX;;;HI)" } else { "" };
-        let sddl = wide(&format!("D:P(A;;GA;;;{}){label}", user_sid()?));
+        let sddl = wide(sddl);
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), SDDL_REVISION_1, &mut sd, null_mut()) == 0 {
             return Err(last_error("ConvertStringSecurityDescriptorToSecurityDescriptorW"));
@@ -593,6 +612,100 @@ pub(crate) mod tests {
         assert!(host_pipe_name().unwrap().starts_with(r"\\.\pipe\tandem-host-S-1-5-"));
         let (_server, client) = pair();
         client.server_is_this_user().unwrap();
+    }
+
+    #[test]
+    fn secret_pipe_name_follows_the_host_pipe() {
+        let name = secret_pipe_name().unwrap();
+        assert!(name.starts_with(r"\\.\pipe\tandem-ssh-secrets-S-1-"));
+        let sid = user_sid().unwrap();
+        let admin = elevated().unwrap();
+        let bare = name.strip_suffix("-admin").filter(|_| admin).unwrap_or(&name);
+        assert!(bare.ends_with(&sid), "the name ends with the user SID");
+        assert_eq!(name, format!(r"\\.\pipe\tandem-ssh-secrets-{sid}{}", if admin { "-admin" } else { "" }));
+    }
+
+    /// Every pipe carries a mandatory label: medium with no-read-up when not elevated (a
+    /// low-integrity process of this user must not read a secret or the host's output), high
+    /// when elevated.
+    #[test]
+    fn every_pipe_has_a_mandatory_label() {
+        assert_eq!(pipe_sddl("S-1-5-21-1", false), "D:P(A;;GA;;;S-1-5-21-1)S:(ML;;NWNR;;;ME)");
+        assert_eq!(pipe_sddl("S-1-5-21-1", true), "D:P(A;;GA;;;S-1-5-21-1)S:(ML;;NWNRNX;;;HI)");
+    }
+
+    /// The instance's label reads back from the kernel object as the SDDL asked for.
+    #[test]
+    fn the_pipe_label_reads_back() {
+        use windows_sys::Win32::Security::Authorization::{ConvertSecurityDescriptorToStringSecurityDescriptorW, SE_KERNEL_OBJECT};
+        use windows_sys::Win32::Security::LABEL_SECURITY_INFORMATION;
+        let h = Owned(create_instance(&test_name("label"), true).unwrap());
+        unsafe {
+            let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+            let got = GetSecurityInfo(h.0, SE_KERNEL_OBJECT, LABEL_SECURITY_INFORMATION, null_mut(), null_mut(), null_mut(), null_mut(), &mut sd);
+            assert_eq!(got, 0, "GetSecurityInfo failed with {got}");
+            let mut text: *mut u16 = null_mut();
+            let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, LABEL_SECURITY_INFORMATION, &mut text, null_mut());
+            LocalFree(sd as HLOCAL);
+            assert_ne!(ok, 0, "{}", last_error("ConvertSecurityDescriptorToStringSecurityDescriptorW"));
+            let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+            let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+            LocalFree(text as HLOCAL);
+            // The kernel adds its own flags (AI) after "S:"; the ACE is what was asked for.
+            let want = if elevated().unwrap() { "(ML;;NWNRNX;;;HI)" } else { "(ML;;NWNR;;;ME)" };
+            assert!(sddl.starts_with("S:") && sddl.ends_with(want), "{sddl}");
+        }
+    }
+
+    /// Opens `name` for reading only (the open a secret thief needs) on a thread that
+    /// impersonates this user's token lowered to Low integrity; the Win32 error, 0 when opened.
+    fn low_integrity_read_open(name: &str) -> u32 {
+        use windows_sys::Win32::Security::{
+            DuplicateTokenEx, RevertToSelf, SID_AND_ATTRIBUTES, SecurityImpersonation, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
+            TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TokenImpersonation,
+        };
+        use windows_sys::Win32::System::Threading::SetThreadToken;
+        const SE_GROUP_INTEGRITY: u32 = 0x20;
+        let name = name.to_string();
+        std::thread::spawn(move || unsafe {
+            let mut own: HANDLE = null_mut();
+            assert_ne!(OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut own), 0);
+            let own = Owned(own);
+            let mut dup: HANDLE = null_mut();
+            let access = TOKEN_QUERY | TOKEN_ADJUST_DEFAULT | TOKEN_IMPERSONATE;
+            assert_ne!(DuplicateTokenEx(own.0, access, null(), SecurityImpersonation, TokenImpersonation, &mut dup), 0);
+            let dup = Owned(dup);
+            let mut low: PSID = null_mut();
+            assert_ne!(ConvertStringSidToSidW(wide("S-1-16-4096").as_ptr(), &mut low), 0);
+            let label = TOKEN_MANDATORY_LABEL { Label: SID_AND_ATTRIBUTES { Sid: low, Attributes: SE_GROUP_INTEGRITY } };
+            let set = SetTokenInformation(dup.0, TokenIntegrityLevel, (&label as *const TOKEN_MANDATORY_LABEL).cast(), size_of::<TOKEN_MANDATORY_LABEL>() as u32);
+            LocalFree(low as HLOCAL);
+            assert_ne!(set, 0, "{}", last_error("SetTokenInformation"));
+            assert_ne!(SetThreadToken(null(), dup.0), 0, "{}", last_error("SetThreadToken"));
+            let h = CreateFileW(wide(&name).as_ptr(), GENERIC_READ, 0, null(), OPEN_EXISTING, 0, null_mut());
+            let err = if h == INVALID_HANDLE_VALUE { GetLastError() } else { 0 };
+            RevertToSelf();
+            if h != INVALID_HANDLE_VALUE {
+                CloseHandle(h);
+            }
+            err
+        })
+        .join()
+        .unwrap()
+    }
+
+    /// A low-integrity process of this user cannot open a pipe even to read; without the
+    /// label (the control) the same open succeeds, which is what the label closes.
+    #[test]
+    fn a_low_integrity_reader_is_refused() {
+        use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+        let sid = user_sid().unwrap();
+        let labeled = test_name("low");
+        let _h = Owned(create_instance_with(&labeled, true, &pipe_sddl(&sid, false)).unwrap());
+        assert_eq!(low_integrity_read_open(&labeled), ERROR_ACCESS_DENIED);
+        let bare = test_name("low-bare");
+        let _b = Owned(create_instance_with(&bare, true, &format!("D:P(A;;GA;;;{sid})")).unwrap());
+        assert_eq!(low_integrity_read_open(&bare), 0, "the control: no label lets a low reader in");
     }
 
     #[test]

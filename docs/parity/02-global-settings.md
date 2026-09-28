@@ -216,19 +216,19 @@ Tandem is a Windows terminal in Rust aiming for one-to-one parity with iTerm2. I
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| Show tab bar even when there is only one tab | HideTabBar (inverted) | Keeps the tab bar visible with a single tab instead of auto-hiding it. | have | Tandem's tab bar is currently always shown. |
-| Show tab numbers | HideTabNumber (inverted) | Shows each tab's number alongside its title. | missing |  |
+| Show tab bar even when there is only one tab | HideTab (inverted) | Keeps the tab bar visible with a single tab instead of auto-hiding it. | have | Milestone 13c: the key is HideTab (default on, so a window with one tab shows no tab bar); the checkbox is inverted. |
+| Show tab numbers | HideTabNumber (inverted) | Shows each tab's number alongside its title. | have | Milestone 13c: each tab shows the shortcut that selects it at its right end, in Windows words from "Shortcut to select a tab" (SwitchTabModifier: "Win+1" to "Win+8", "Win+9" on the last tab); on by default, as iTerm2 (R3). |
 | Preserve window size when tab bar shows or hides | PreserveWindowSizeWhenTabBarVisibilityChanges | Keeps the window's pixel size fixed as the tab bar appears/disappears, instead of growing/shrinking the content area. | missing |  |
 | ...but only if it would cause the window to go off-screen | PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges | Narrows size preservation to only kick in when the alternative would push the window off-screen. | missing |  |
-| Tabs have close buttons | TabsHaveCloseButton | Shows a close (x) button on each tab. | missing | Tandem tabs are closed via keyboard shortcut only, no close button. |
-| Show activity indicator | HideTabActivityIndicator (inverted) | Shows a spinner/indicator on a tab whose session has recent unseen output. | missing |  |
+| Tabs have close buttons | TabsHaveCloseButton | Shows a close (x) button on each tab. | have | Milestone 13c: the close button is at the left of each tab and shows on hover (tabCloseButtonsAlwaysVisible keeps it shown); it closes through Close Tab (tmux tabs, the close confirmation); on by default, as iTerm2 (R3). |
+| Show activity indicator | HideActivityIndicator (inverted) | Shows a spinner/indicator on a tab whose session has recent unseen output. | have | Milestone 13c: a background tab whose session is printing shows a spinner, apart from the new-output indicator; the key is HideActivityIndicator (the row named its constant). |
 | Show new-output indicator | ShowNewOutputIndicator | Shows a dot/badge on a tab that produced output while not focused. | have | Milestone 6b. |
 | Flash tab bar when switching tabs in fullscreen | FlashTabBarInFullscreen | Briefly reveals the tab bar overlay whenever the active tab changes in fullscreen. | missing |  |
 | New tabs open at end of tab bar | NewTabsOpenAtEndOfTabBar | Appends new tabs at the end instead of next to the current tab. | have | Tandem currently appends new tabs at the end. |
 | Show tab bar in fullscreen | ShowFullscreenTabBar | Keeps the tab bar visible while in fullscreen instead of auto-hiding it. | missing |  |
-| Stretch tabs to fill bar | StretchTabsToFillBar | Expands tabs to fill the full width of the tab bar instead of using a fixed/compact width. | missing |  |
-| Tab bar scrolls when tabs don't fit | ScrollableSideTabBar | Makes a vertical (side) tab bar scrollable instead of shrinking tabs to fit. | missing |  |
-| Support basic HTML tags in tab titles | HTMLTabTitles | Renders a small set of HTML formatting tags inside tab title text. | missing |  |
+| Stretch tabs to fill bar | StretchTabsToFillBar | Expands tabs to fill the full width of the tab bar instead of using a fixed/compact width. | have | Milestone 13c: on (the default), equal tabs share the whole bar; off, they keep the optimum width (optimumTabWidth, 175 points) when they fit. |
+| Tab bar scrolls when tabs don't fit | ScrollableSideTabBar | Makes the tab bar (top or side) scroll when its tabs do not fit, instead of shrinking them or moving them to a menu. | partial | Milestone 13c: the horizontal tab bar reads it too (iTerm2's PSMTabBarControl never checks the orientation), so by default tabs that do not fit scroll at scrollableTabWidth and, off, they go in an overflow menu at the bar's end; the side tab bar is milestone 13d's. |
+| Support basic HTML tags in tab titles | HTMLTabTitles | Renders a small set of HTML formatting tags inside tab title text. | have | Milestone 13c: `<b>`, `<i>` and `<u>` (lower case, as iTerm2 detects them) toggle bold, italic and underline; `&lt;` and `&amp;` are decoded; anything else is shown as written. |
 
 
 ### Panes
@@ -541,11 +541,11 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
 | openProfilesInNewWindow | openProfilesInNewWindow (bool, default NO) | Choosing a profile from the “Profiles” menu opens a new window. | have | Milestone 7a: Alt at the click is read when the item is picked. |
-| useUnevenTabs | useUnevenTabs (bool, default NO) | Uneven tab widths allowed. | missing |  |
-| minTabWidth | minTabWidth (int, default 75) | Minimum tab width when using uneven tab widths. | missing |  |
-| minCompactTabWidth | minCompactTabWidth (int, default 60) | Minimum tab width when using uneven tab widths for compact tabs. | missing |  |
-| optimumTabWidth | optimumTabWidth (int, default 175) | Preferred tab width when tabs are equally sized. | missing |  |
-| scrollableTabWidth | scrollableTabWidth (int, default 120) | Tab width when the tab bar is scrollable. | missing |  |
+| useUnevenTabs | useUnevenTabs (bool, default NO) | Uneven tab widths allowed. | have | Milestone 13c: tabs take their own content's width when every tab fits at it (clamped to the minimum and 280 points); otherwise the equal rule. |
+| minTabWidth | minTabWidth (int, default 75) | Minimum tab width when using uneven tab widths. | have | Milestone 13c: the minimum of every width rule while tab numbers show, not only uneven tabs. Edited in Settings > Advanced > Tabs (milestone 13a's controls). |
+| minCompactTabWidth | minCompactTabWidth (int, default 60) | Minimum tab width when using uneven tab widths for compact tabs. | have | Milestone 13c: the minimum of every width rule when tab numbers are hidden (iTerm2's iTermRootTerminalView), not only uneven tabs. Edited in Settings > Advanced > Tabs (milestone 13a's controls). |
+| optimumTabWidth | optimumTabWidth (int, default 175) | Preferred tab width when tabs are equally sized. | have | Milestone 13c: every tab's width when Stretch tabs to fill bar is off and the tabs fit; also one wheel line of tab bar scrolling. Edited in Settings > Advanced > Tabs (milestone 13a's controls). |
+| scrollableTabWidth | scrollableTabWidth (int, default 120) | Tab width when the tab bar is scrollable. | have | Milestone 13c: with "Tab bar scrolls when tabs don't fit" (on by default), tabs that do not fit keep this width and the bar scrolls (Shift+wheel or a horizontal wheel). Edited in Settings > Advanced > Tabs (milestone 13a's controls). |
 | moveLeftAfterClosingTab | moveLeftAfterClosingTab (bool, default NO) | Select the tab to the left when closing a tab? If disabled, the tab to the right of the closing tab will be selected. | have | Milestone 7b. |
 | navigatePanesInReadingOrder | navigatePanesInReadingOrder (bool, default YES) | Next Pane and Previous Pane commands use reading order, not the time of last use. | missing |  |
 | tabAutoShowHoldTime | tabAutoShowHoldTime (float, default 1.0) | How long in seconds to show tabs in fullscreen. | missing |  |
@@ -553,8 +553,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | allowDragOfTabIntoNewWindow | allowDragOfTabIntoNewWindow (bool, default YES) | Allow a tab to be dragged and dropped outside any existing tab bar to create a new window. | missing |  |
 | allowDragOnAddTabButton | allowDragOnAddTabButton (bool, default YES) | Allow dragging window by the Add Tab button in the tab bar? | missing |  |
 | minimumTabDragDistance | minimumTabDragDistance (int, default 10) | How far must the mouse move before a tab drag is initiated? You must restart iTerm2 after changing this setting for it to take effect. | missing |  |
-| tabTitlesUseSmartTruncation | tabTitlesUseSmartTruncation (bool, default YES) | Use “smart truncation” for tab titles. | missing |  |
-| middleClickClosesTab | middleClickClosesTab (bool, default YES) | Should middle-click on a tab in the tab bar close the tab? | missing |  |
+| tabTitlesUseSmartTruncation | tabTitlesUseSmartTruncation (bool, default YES) | Use “smart truncation” for tab titles. | have | Milestone 13c: a title that does not fit loses its start when more tabs have unique suffixes than prefixes, else its end. |
+| middleClickClosesTab | middleClickClosesTab (bool, default YES) | Should middle-click on a tab in the tab bar close the tab? | have | Milestone 13c: a middle press and release on the same tab closes it through Close Tab. |
 | coloredSelectedTabOutlineStrength | coloredSelectedTabOutlineStrength (float, default 0.5) | How prominent should the outline around the selected tab be drawn when there are colored tabs in a window? Takes a value in 0 to 3, where 0 means no outline and 3 means a very prominent outline. | missing |  |
 | minimalEdgeDragSize | minimalEdgeDragSize (float, default 12) | In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. | missing |  |
 | pinnedTabWidth | pinnedTabWidth (int, default 64) | Width of pinned tabs in pixels. | missing |  |
@@ -566,30 +566,30 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | minimalTextLegibilityAdjustment | minimalTextLegibilityAdjustment (float, default 1.0) | How much should contrast be increased for text in tabs in the Minimal theme? Choose a value larger than 1 to increase contrast. | missing |  |
 | minimalTabStyleTreatLeftInsetAsPartOfFirstTab | minimalTabStyleTreatLeftInsetAsPartOfFirstTab (bool, default NO) | In the Minimal theme, should the area left of the tab bar be treated as part of the first tab? | missing |  |
 | compactMinimalTabBarHeight | compactMinimalTabBarHeight (float, default 38) | Tab bar height (points) for the Minimal theme. | missing |  |
-| defaultTabBarHeight | defaultTabBarHeight (float, default 24) | Default tab bar height This does not affect the minimal or compact themes. | missing |  |
-| doubleClickTabToEdit | doubleClickTabToEdit (bool, default YES) | Should double-clicking a tab open a window to edit its title? | missing |  |
+| defaultTabBarHeight | defaultTabBarHeight (float, default 24) | Default tab bar height This does not affect the minimal or compact themes. | have | Milestone 13c: 24 points, as iTerm2 (R3; Tandem's bar was 1.6 cells); at 28 points or more a tab shows its subtitle line. Edited in Settings > Advanced > Tabs (milestone 13a's controls). |
+| doubleClickTabToEdit | doubleClickTabToEdit (bool, default YES) | Should double-clicking a tab open a window to edit its title? | have | Milestone 13c: a double click on a tab selects it and opens Edit Tab Title (iTerm2's Set Tab Title). |
 | duplicatedTabsOpenAdjacentToOriginal | duplicatedTabsOpenAdjacentToOriginal (bool, default YES) | When you duplicate a tab, should the copy open immediately to the right of the original tab? When disabled, duplicated tabs follow the general “New tabs are added” placement setting instead. | missing |  |
-| minimumTabLabelWidth | minimumTabLabelWidth (float, default 35) | Minimum width for tab labels. | missing |  |
+| minimumTabLabelWidth | minimumTabLabelWidth (float, default 35) | Minimum width for tab labels. | have | Milestone 13c: the tab's icon is dropped when its label would get this much room or less. Edited in Settings > Advanced > Tabs (milestone 13a's controls). |
 | disregardDockSettingToOpenTabsInsteadOfWindows | disregardDockSettingToOpenTabsInsteadOfWindows (bool, default YES) | Ignore System Settings > Dock > Prefer tabs when opening documents? When set to No, asking to open a window will open a tab instead when system settings is configured to prefer tabs over windows. | missing |  |
 | convertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme | convertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme (bool, default YES) | In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window? This also affects windows without titlebars in any theme. | missing |  |
 | highVisibility | highVisibility (bool, default YES) | High Contrast modes maximize visibility. | missing |  |
-| drawBottomLineForHorizontalTabBar | drawBottomLineForHorizontalTabBar (bool, default YES) | Draw bottom line for horizontal tabbar in Regular, Dark and Light theme? | missing |  |
-| disableTabBarTooltips | disableTabBarTooltips (bool, default NO) | Disable tab bar tooltips? | missing |  |
-| useCustomTabBarFontSize | useCustomTabBarFontSize (bool, default NO) | Use custom font size for tab labels? See also advanced setting “Custom tab label font size”. | missing |  |
-| customTabBarFontSize | customTabBarFontSize (float, default 11.0) | Custom tab label font size For this to take effect, turn on “Use custom font size for tab labels?”. | missing |  |
+| drawBottomLineForHorizontalTabBar | drawBottomLineForHorizontalTabBar (bool, default YES) | Draw bottom line for horizontal tabbar in Regular, Dark and Light theme? | have | Milestone 13c: stored and shown; iTerm2's tab styles never read it, so it does nothing (R2). |
+| disableTabBarTooltips | disableTabBarTooltips (bool, default NO) | Disable tab bar tooltips? | have | Milestone 13c: off, a tab's tooltip ("Name: ... Profile: ... Command: ...") shows after the pointer rests 500 ms. |
+| useCustomTabBarFontSize | useCustomTabBarFontSize (bool, default NO) | Use custom font size for tab labels? See also advanced setting “Custom tab label font size”. | have | Milestone 13c: tab labels use customTabBarFontSize instead of 11 points. |
+| customTabBarFontSize | customTabBarFontSize (float, default 11.0) | Custom tab label font size For this to take effect, turn on “Use custom font size for tab labels?”. | have | Milestone 13c: the label size in points (the subtitle at 0.8 of it). Edited in Settings > Advanced > Tabs (milestone 13a's controls). |
 | minimalSelectedTabUnderlineProminence | minimalSelectedTabUnderlineProminence (float, default 1) | Prominence of selected tab underline indicator in the Minimal theme when there is at least one colored tab. | missing |  |
 | allowInteractiveSwipeBetweenTabs | allowInteractiveSwipeBetweenTabs (bool, default YES) | Allow two-finger interactive swipe between tabs? The system preference Trackpad > More Gestures > Swipe between pages controls this globally. | missing |  |
-| selectsTabsOnMouseDown | selectsTabsOnMouseDown (bool, default YES) | Select tabs on mouse-down? Changing this setting will not affect existing windows. | missing |  |
+| selectsTabsOnMouseDown | selectsTabsOnMouseDown (bool, default YES) | Select tabs on mouse-down? Changing this setting will not affect existing windows. | have | Milestone 13c: on, a plain press selects; off (or with Alt), the release selects; read when a window opens, so a change affects new windows only, as in iTerm2. |
 | minimalDeslectedColoredTabAlpha | minimalDeslectedColoredTabAlpha (float, default 0.5) | Alpha value for tab color for non-selected colored tabs in the Minimal theme. | missing |  |
-| tabColorMenuOptions | tabColorMenuOptions (string, default @"#fb6b62 #f6ac47 #f0dc4f #b5d749 #5fa3f8 #c18ed9 #787878") | Colors for tab color menu item. | missing |  |
-| removeAddTabButton | removeAddTabButton (bool, default NO) | Remove the “new tab” button from horizontal tab bars? | missing |  |
-| addTabButtonUsesCurrentProfile | addTabButtonUsesCurrentProfile (bool, default NO) | Should the “new tab” button in the tab bar use the current session’s profile? When enabled, clicking the “+” button opens a new tab with the current session’s profile instead of the default profile. | missing |  |
+| tabColorMenuOptions | tabColorMenuOptions (string, default @"#fb6b62 #f6ac47 #f0dc4f #b5d749 #5fa3f8 #c18ed9 #787878") | Colors for tab color menu item. | partial | Milestone 13c: the Tab Color picker (Default, a swatch per color, then Choose Color... with Windows' color dialog) reads it as iTerm2 does (#rgb, #rrggbb, #rrrrggggbbbb and a p3 prefix; the help's color(p3 ...) form is not read by iTerm2's parser either). The picker opens only from milestone 13d's tab menu, which closes the row. Edited in Settings > Advanced > Tabs (milestone 13a's controls). |
+| removeAddTabButton | removeAddTabButton (bool, default NO) | Remove the “new tab” button from horizontal tab bars? | have | Milestone 13c: off, a "+" after the last tab (pinned at the bar's end while the bar scrolls) opens a tab; a tmux window gets a tmux tab. |
+| addTabButtonUsesCurrentProfile | addTabButtonUsesCurrentProfile (bool, default NO) | Should the “new tab” button in the tab bar use the current session’s profile? When enabled, clicking the “+” button opens a new tab with the current session’s profile instead of the default profile. | have | Milestone 13c: on, "+" opens the tab with the current session's profile (a new copy when the session has its own). |
 | lightModeInactiveTabDarkness | lightModeInactiveTabDarkness (float, default 0.07) | Darkness (in [0…1]) for non-selected tabs in non-Minimal theme in light mode. | missing |  |
 | darkModeInactiveTabDarkness | darkModeInactiveTabDarkness (float, default 0.5) | Darkness (in [0…1]) for non-selected tabs in non-Minimal theme in dark mode. | missing |  |
 | saveProfilesToRecentDocuments | saveProfilesToRecentDocuments (bool, default NO) | Add items to Recents (in the dock icon's menu) to reopen recently used profiles as tabs? | missing |  |
 | placeTabsInTitlebarAccessoryInFullScreen | placeTabsInTitlebarAccessoryInFullScreen (bool, default YES) | Place the tabbar in the window's titlebar in full screen mode (macOS 13+ only)? This can be disabled to work around a bug in macOS where tabs may not be visible in full screen. | missing |  |
 | defaultIconsUsingLetters | defaultIconsUsingLetters (bool, default YES) | Use the running command's first letter as the tab's default icon if there isn't a built in one. | missing |  |
-| tabCloseButtonsAlwaysVisible | tabCloseButtonsAlwaysVisible (bool, default NO) | Should tab close buttons always remain visible? | missing |  |
+| tabCloseButtonsAlwaysVisible | tabCloseButtonsAlwaysVisible (bool, default NO) | Should tab close buttons always remain visible? | have | Milestone 13c: on, close buttons always show and the title starts after them; off, they show on hover and the title stays centered. |
 | useSequoiaStyleTabs | useSequoiaStyleTabs (bool, default NO) | Use Sequoia-style tabs in Tahoe and later? | missing |  |
 | splitPaneSourceFillColor | splitPaneSourceFillColor (string, default @"#008000") | Color of source pane fill when moving/swapping a split pane. | partial |  |
 | splitPaneSourceBorderColor | splitPaneSourceBorderColor (string, default @"#ffffff") | Color of source pane outer border when moving/swapping a split pane. | partial |  |
@@ -663,7 +663,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | detectPasswordInput | detectPasswordInput (bool, default YES) | Show key at cursor at password prompt? | have | Milestone 10b: off turns off the console-mode watch entirely, so the key cursor never shows and nothing opens automatically. |
 | detectPasswordInputDebounce | detectPasswordInputDebounce (float, default 0.2) | How long (seconds) terminal echo must remain disabled before iTerm2 treats it as a password prompt. | have | Milestone 10b: a port of `iTermPasswordInputDebouncer`; 0 or negative turns on at once, and a reading that stops echoing off resets at once. |
 | tabsWrapAround | tabsWrapAround (bool, default NO) | Tabs wrap around to the next line. | missing |  |
-| sshSchemePath | sshSchemePath (string, default @"ssh") | Command to run when handling an ssh:// URL. | missing |  |
+| sshSchemePath | sshSchemePath (string, default @"ssh") | Command to run when handling an ssh:// URL. | missing | Milestone 14 (SSH integration, ruling 6): 14e handles ssh: URLs. |
 | defaultTabStopWidth | defaultTabStopWidth (int, default 8) | Default tab stop width for new sessions. | missing |  |
 | convertItalicsToReverseVideoForTmux | convertItalicsToReverseVideoForTmux (bool, default YES) | Convert italics to reverse video in tmux integration? This is effective when the default TERM reported by tmux matches *screen*. | have | Milestone 8f: SGR 3 and 23 become 7 and 27 in a pane whose TERM contains screen (a tmux pane takes tmux's default-terminal, else screen). |
 | convertItalicsToReverseVideoForTmuxBugwardsCompatible | convertItalicsToReverseVideoForTmuxBugwardsCompatible (bool, default NO) | Convert italics to reverse video in tmux integration, even when TERM matches *tmux*? This was the default behavior for a long time, but it was incorrect. | have | Milestone 8f: TERM containing tmux counts too. |
@@ -862,7 +862,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | aiChatVerboseConsoleLogging | aiChatVerboseConsoleLogging (bool, default NO) | Log AI chat traffic to the system console. | partial | Milestone 12a: stored; the AI chat (12c) uses it. |
 | aiChatRawWireLogging | aiChatRawWireLogging (bool, default NO) | Log raw AI API requests and responses to disk. | partial | Milestone 12a: stored; 12b writes the log, and the help says what the code does, keys replaced by fingerprints (ruling 10). |
 | logAITabTitleCorpus | logAITabTitleCorpus (bool, default NO) | Log AI tab-title generations to a corpus file. | missing | n/a: AI tab titles need Apple Intelligence, which Windows lacks (ruling 7); left out of Tandem's settings (rulings R12ab-1, 12e-4). |
-| alternateSSHIntegrationScript | alternateSSHIntegrationScript (string, default @"") | Alternate SSH integration python script. | missing |  |
+| alternateSSHIntegrationScript | alternateSSHIntegrationScript (string, default @"") | Alternate SSH integration python script. | missing | Milestone 14 (SSH integration, ruling 6); iTerm2 reads it only in debug builds (ruling 8). |
 
 ### Session
 
@@ -956,8 +956,8 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 
 | Setting (UI name) | Key | What it does | Tandem status | Windows note |
 |---|---|---|---|---|
-| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; 12e's Engage AI sets `uname` from it (ruling 12a-2), and a local session reports "Windows_NT" (ruling 9). |
-| validCharactersInSSHUserNames | validCharactersInSSHUserNames (string, default @"_-+.") | Valid characters in SSH user names Alphanumerics are always valid. | missing |  |
+| unameCommand | unameCommand (string, default @"uname -s") | Command used to set the `uname` variable. | partial | Milestone 12a: stored, not editable until the milestone 13 Advanced pane; 12e's Engage AI sets `uname` from it (ruling 12a-2), and a local session reports "Windows_NT" (ruling 9). Milestone 14 owns running it on an SSH host (ruling 6). |
+| validCharactersInSSHUserNames | validCharactersInSSHUserNames (string, default @"_-+.") | Valid characters in SSH user names Alphanumerics are always valid. | missing | Milestone 14 (SSH integration, ruling 6). |
 
 ### Warnings
 
@@ -1075,7 +1075,7 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | throttleMetalConcurrentFrames | throttleMetalConcurrentFrames (bool, default YES) | Reduce number of frames in flight when GPU can't produce drawables quickly. | missing |  |
 | metalSynchronizedDrawing | metalSynchronizedDrawing (bool, default NO) | Use synchronized Metal drawable presentation? Defers drawable acquisition until rendering completes, presents synchronously with Core Animation, and acquires drawables on the private render queue. | missing |  |
 | metalRowOutputCacheEnabled | metalRowOutputCacheEnabled (bool, default NO) | Cache per-row GPU build output? Skips rebuilding the glyph and color data for rows whose content and configuration have not changed since the last frame. | missing |  |
-| sshURLsSupportPath | sshURLsSupportPath (bool, default YES) | SSH URLs respect the path. | missing |  |
+| sshURLsSupportPath | sshURLsSupportPath (bool, default YES) | SSH URLs respect the path. | missing | Milestone 14 (SSH integration, ruling 6): 14e handles ssh: URLs. |
 | useDivorcedProfileToSplit | useDivorcedProfileToSplit (bool, default YES) | When splitting a pane, use the profile with local modifications, not the backing profile. | missing |  |
 | synergyModifierRemappingEnabled | synergyModifierRemappingEnabled (bool, default YES) | Support modifier remapping for keystrokes originated by Synergy. | missing |  |
 | shouldSetLCTerminal | shouldSetLCTerminal (bool, default YES) | Set LC_TERMINAL=iTerm2. | have | Milestone 11e: on by default, new sessions get `LC_TERMINAL=iTerm2` and `LC_TERMINAL_VERSION=3.7.0`; every new session also gets `TERM_PROGRAM=iTerm.app`, `TERM_PROGRAM_VERSION=3.7.0`, `COLORTERM=truecolor` and `TERM_FEATURES`, as iTerm2 sets them. |
@@ -1113,13 +1113,13 @@ The Advanced tab is a single long searchable list of hundreds of individually na
 | smartLoggingWithAutoComposer | smartLoggingWithAutoComposer (bool, default NO) | Enable more compact logging when using auto composer? This will avoid logging raw data in your prompt and your interactions with it. | partial | Milestone 9l: the setting is stored with its own help text and toggleable in Advanced settings, but has no effect: Tandem has no session logging yet for it to change. |
 | disclaimChildren | disclaimChildren (bool, default NO) | Disclaim ownership of children. | missing |  |
 | usePosixSpawn | usePosixSpawn (bool, default YES_IF_BETA_ELSE_NO) | Use posix_spawn instead of fork and exec to launch sessions? This is a newer launch mechanism that avoids a slow file-descriptor-closing step. | missing |  |
-| restoreKeyModeAutomaticallyOnHostChange | restoreKeyModeAutomaticallyOnHostChange (bool, default YES) | Automatically restore keyboard mode when an ssh session ends? | missing |  |
+| restoreKeyModeAutomaticallyOnHostChange | restoreKeyModeAutomaticallyOnHostChange (bool, default YES) | Automatically restore keyboard mode when an ssh session ends? | missing | Milestone 14 (SSH integration, ruling 6). |
 | chaseAnchoredScreen | chaseAnchoredScreen (bool, default NO) | Aggressively keep windows on the screen they were configured to be on. | missing |  |
 | codeciergeGhostRidingPrompt | codeciergeGhostRidingPrompt (string, default @"You operate a terminal emulator for me. My goal is $GOAL. $CONTEXT. Ask clarifying questions as needed and run commands using the execute function when you're ready. When I've reached my goal, remind me to click the End Task button.") | Prompt to send to LLM for Codecierge when it is able to execute commands automatically. | missing |  |
 | codeciergeCommandWarningCount | codeciergeCommandWarningCount (int, default 10) | After this many commands, make codecierge confirm that you intend to keep it enabled. | missing |  |
 | codeciergeRegularPrompt | codeciergeRegularPrompt (string, default @"You help a me in a terminal emulator. My goal is $GOAL. $CONTEXT. Start by suggesting a command. Don't overwhelm me with too much information: just go one step at a time. When I've reached my goal, remind me to click the End Task button.") | Prompt to send to LLM for Codecierge when it is NOT able to execute commands automatically. | missing |  |
 | aquaSKKBugfixEnabled | aquaSKKBugfixEnabled (bool, default NO) | Enable AquaSKK bugfix? | missing |  |
-| channelsEnabled | channelsEnabled (bool, default NO) | Enable Channels feature? | missing |  |
+| channelsEnabled | channelsEnabled (bool, default NO) | Enable Channels feature? | missing | Milestone 14 (SSH integration, ruling 6); wrap and Channels are experimental and off by default in iTerm2 (ruling 4). |
 | rightJustifyRTLLines | rightJustifyRTLLines (bool, default YES) | Right-justify lines in paragraphs with base writing direction of right-to-left? Requires BOTH “right-to-left text support” and “auto-detect paragraph writing detection” to be enabled. | missing |  |
 | detectParagraphDirection | detectParagraphDirection (bool, default NO) | Auto-detect paragraph writing direction based on the first strong directional character? Requires right-to-left text support to be enabled. | missing |  |
 | disableBidiInAlternateScreen | disableBidiInAlternateScreen (bool, default NO) | Do not reorder right-to-left text in the alternate screen? Full-screen apps (editors and some CLIs) position their own text and may already order it for display, so reordering it again fights their layout. | missing |  |

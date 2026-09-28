@@ -116,6 +116,11 @@ pub struct SettingsWindow {
     /// Profiles > Session's "Configure Status Bar" was pressed for this profile Guid: the
     /// status bar setup window opens for it (the app takes it after each frame).
     pub configure_status_bar: Option<String>,
+    /// Profiles > General's Configure SSH sheet.
+    ssh_sheet: Option<crate::settings_ssh::Sheet>,
+    /// A page to open in the browser (the Configure SSH help button); the app takes it after
+    /// each frame.
+    pub open_url: Option<String>,
     /// The window was opened from a tmux session (iTerm2's `_tmuxSession`, set by how the
     /// panel opened, `PreferencePanel.m:725-766`): its status bar controls are disabled.
     tmux_session: bool,
@@ -234,6 +239,8 @@ impl SettingsWindow {
             shortcuts: Default::default(),
             hotkeys: Default::default(),
             configure_status_bar: None,
+            ssh_sheet: None,
+            open_url: None,
             tmux_session: false,
             open_editor: None,
             title_providers: Vec::new(),
@@ -322,6 +329,9 @@ impl SettingsWindow {
         settings_keys::set_indicate_non_default(globals.bool("NoSyncHideDefaultValuedSettings"));
         let hk = &mut self.hotkeys;
         let configure_status_bar = &mut self.configure_status_bar;
+        let ssh_sheet = &mut self.ssh_sheet;
+        let open_url = &mut self.open_url;
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
         let advanced = &mut self.advanced;
@@ -585,6 +595,12 @@ impl SettingsWindow {
                                 let on = status_bar_controls(tmux_session, profile.bool("Show Status Bar")).1;
                                 if ui.add_enabled(on, egui::Button::new("Configure Status Bar")).on_hover_text(&s.help).clicked() {
                                     *configure_status_bar = Some(selected.clone());
+                                }
+                                continue;
+                            }
+                            if s.key == crate::ssh_config::KEY {
+                                if crate::settings_ssh::row(ui, &selected, profile, ssh_sheet, open_url, &home) {
+                                    edit = Edit::Changed(selected.clone());
                                 }
                                 continue;
                             }
@@ -1094,5 +1110,15 @@ mod tests {
         assert_eq!(status_bar_controls(false, false), (true, false), "Configure needs the bar on");
         assert_eq!(status_bar_controls(true, true), (false, false));
         assert_eq!(status_bar_controls(true, false), (false, false));
+    }
+
+    /// `PG:860-870`, `SC:10-55`: the `SSH` row is General's Configure SSH sheet.
+    #[test]
+    fn ssh_row_follows_iterm2() {
+        let s = crate::schema::find("SSH").unwrap();
+        assert_eq!(s.tab, "General");
+        assert_eq!(s.kind, Kind::Dict);
+        assert_eq!(s.label, "Configure SSH");
+        assert_eq!(s.help, "SSH Integration, the environment variables and files to copy to the remote host, and the path to ssh, for the SSH command type.");
     }
 }

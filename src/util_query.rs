@@ -310,7 +310,7 @@ pub fn it2ul(args: &[String], io: &mut Io) -> i32 {
     if console {
         io.tty.set_mode(Mode::Cbreak);
     }
-    let version = (io.run)(&Cmd { program: "tar".into(), args: vec!["--version".into()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new() });
+    let version = (io.run)(&Cmd { program: "tar".into(), args: vec!["--version".into()], cwd: Some(io.cwd.clone()), stdin: None, inherit: false, quiet: false, env: Vec::new(), merge_stderr: false });
     let version = version.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     let term = util_cli::term(io);
     put(io.out, &upload_request(term.as_deref(), &version));
@@ -339,7 +339,7 @@ pub fn it2ul(args: &[String], io: &mut Io) -> i32 {
         ("ok", Some(data)) => {
             let mut tar_args: Vec<String> = ["-x", "-z", "-C", &location, "-f", "-"].iter().map(|a| a.to_string()).collect();
             tar_args.extend(flags);
-            let tar = Cmd { program: "tar".into(), args: tar_args, cwd: Some(io.cwd.clone()), stdin: Some(unb64(&data)), inherit: false, quiet: false, env: Vec::new() };
+            let tar = Cmd { program: "tar".into(), args: tar_args, cwd: Some(io.cwd.clone()), stdin: Some(unb64(&data)), inherit: false, quiet: false, env: Vec::new(), merge_stderr: false };
             match (io.run)(&tar) {
                 Ok(out) => {
                     let _ = io.err.write_all(&out.stdout);
@@ -446,6 +446,8 @@ mod tests {
             random: &mut random,
             run: &mut run,
             have: &have,
+            secret: &mut || None,
+            env_all: &Vec::new,
         };
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         let code = crate::util_cli::run(name, &args, &mut io);
