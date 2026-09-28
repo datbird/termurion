@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 174 | 121 | 19 |
+| `01-profile-settings.md` | 314 | 173 | 122 | 19 |
 | `02-global-settings.md` | 823 | 275 | 72 | 476 |
 | `03-features-and-menus.md` | 643 | 516 | 47 | 80 |
-| Total | 1,780 | 965 | 240 | 575 |
+| Total | 1,780 | 964 | 241 | 575 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -238,13 +238,13 @@ the same ConPTY input, a kept ConPTY limitation; the native it2check restores th
 14; the Swift `it2` CLI is not ported. Every kept quirk is listed in
 `docs/acceptance/m11e-checklist.md` and ruled on in `docs/superpowers/rulings/m11e-rulings.txt`.
 Milestone 14a opened milestone 14 (SSH integration) with the transport, the SSH profile and the
-handshake (01, 03; 01: 1 row to have, 03: 2 rows to have and 4 to partial). A probe against a
+handshake (01, 03; 01: no row to have, 03: 2 rows to have and 4 to partial). A probe against a
 loopback sshd in WSL measured the transports; Robert chose the shipped ConPTY in passthrough mode
 (ruling 1), which carries iTerm2's protocol byte for byte except that invalid UTF-8 arrives as
 U+FFFD. The Command type SSH runs `ssh <command>`, or with SSH Integration on Tandem's own
 `it2ssh` (a `tandem-utils` command following iTerm2's script, with the origin secret from a
 per-user pipe); Configure… holds iTerm2's four settings (SSH Integration, variables and files to
-copy, Path to SSH); OSC 1337 `Env` (report=all), `it2ssh`, `SendConductor` and `EndSSH` are read
+copy, Path to SSH), partial until milestone 14b makes them act; OSC 1337 `Env` (report=all), `it2ssh`, `SendConductor` and `EndSSH` are read
 as iTerm2 reads them, with its version and end banners, the hop chain, and `\x03\n` releasing
 it2ssh's local read loop; the session host speaks protocol 4 so an SSH session can be hosted.
 Until milestone 14b's conductor hook exists (`CONDUCTOR_READY` false), it2ssh and SSH profiles
