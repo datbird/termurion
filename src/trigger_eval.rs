@@ -364,9 +364,10 @@ impl Screen {
         let cursor = self.cursor_row();
         let alt = self.term.mode().contains(TermMode::ALT_SCREEN);
         if alt != self.triggers.alt {
-            // Another grid, other row numbers.
+            // Another grid, other row numbers: the banner rows were the other grid's.
             self.triggers.alt = alt;
             self.triggers.next = cursor;
+            self.triggers.skip.clear();
             return;
         }
         if !self.triggers_active() {
@@ -813,6 +814,19 @@ mod tests {
         // Rows keep their numbers as the screen scrolls; a later line that matches is checked.
         s.feed(b"1\r\n2\r\n3\r\n4\r\n5\r\nexited\r\n");
         assert_eq!(alerts(&mut s), 1);
+    }
+
+    #[test]
+    fn banner_rows_stay_on_their_grid() {
+        // Each grid numbers its rows apart: a primary banner's row number does not keep the
+        // alternate screen's row of the same number from being checked.
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig("exited", "AlertTrigger", "x", false)], TriggerPrefs { interactive: true, interpolated: false });
+        s.feed(b"a\r\nb\r\n");
+        s.append_banner("ssh exited.");
+        s.feed(b"\x1b[?1049h\x1b[H");
+        s.feed(b"one\r\ntwo\r\nexited\r\n");
+        assert_eq!(alerts(&mut s), 1, "the alternate screen's third row is checked");
     }
 
     #[test]

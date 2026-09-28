@@ -53,8 +53,9 @@ impl Chain {
 /// A pane's SSH integration state.
 #[derive(Debug, Default)]
 pub struct PaneSsh {
-    /// While connecting (iTerm2's `_connectingSSH`): what the pane wrote meanwhile, keys and
-    /// reports alike, for the conductor to send (`_queuedConnectingSSH`).
+    /// While connecting (iTerm2's `_connectingSSH`): the typed input and pastes the pane wrote
+    /// meanwhile, for the conductor to send (`_queuedConnectingSSH`). Terminal reports and
+    /// other no-broadcast writes pass it (`Pane::reply`, `write_no_broadcast`).
     pub connecting: Option<Vec<u8>>,
     /// The conductors running in this pane (14b keeps it in step with them).
     pub chain: Chain,
