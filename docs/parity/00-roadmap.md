@@ -8,8 +8,8 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 173 | 122 | 19 |
 | `02-global-settings.md` | 823 | 275 | 72 | 476 |
-| `03-features-and-menus.md` | 643 | 516 | 42 | 85 |
-| Total | 1,780 | 964 | 236 | 580 |
+| `03-features-and-menus.md` | 643 | 514 | 44 | 85 |
+| Total | 1,780 | 962 | 238 | 580 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -229,12 +229,12 @@ tandem.exe at every start (16 hard links plus iTerm2's own `it2api.py`, refreshe
 failures shown in a banner) and appends it to each new session's PATH (`addUtilitiesToPATH`);
 sessions get iTerm2's variables (`TERM_PROGRAM=iTerm.app`, `TERM_PROGRAM_VERSION`, `COLORTERM`,
 `TERM_FEATURES`, and `LC_TERMINAL=iTerm2` under `shouldSetLCTerminal`); `CSI 1337 n` answers
-`ITERM2 3.7.0`, so it2check passes; RequestUpload takes files or folders (a Files/Folders bar
+`ITERM2 3.7.0`, so Tandem's it2check passes; RequestUpload takes files or folders (a Files/Folders bar
 first) at iTerm2's pace (`accelerateUploads`, else the quick-paste settings); and Install Shell
 Integration offers iTerm2 Utilities for bash-family shells. iTerm2's bash scripts still work in
 WSL, Git Bash and over ssh, except it2check: ConPTY takes its reply's leading `ESC [ I` for a
-focus report and drops it, so the script's check fails there (measured in WSL and Git Bash, a
-kept ConPTY limitation; the native it2check restores the prefix). it2setcolor's presets wait for milestone 13 and it2ssh for milestone
+focus report and drops it, so the script's check fails there (measured in WSL and Git Bash, inferred over ssh.exe from
+the same ConPTY input, a kept ConPTY limitation; the native it2check restores the prefix). it2setcolor's presets wait for milestone 13 and it2ssh for milestone
 14; the Swift `it2` CLI is not ported. Every kept quirk is listed in
 `docs/acceptance/m11e-checklist.md` and ruled on in `docs/superpowers/rulings/m11e-rulings.txt`.
 
