@@ -380,7 +380,7 @@ impl App {
             let notice = folder_notice(Launch { launched: true, named: name.is_some(), ssh }, &folder, &|p| p.is_dir());
             self.start_dir_override = Some(match notice {
                 FolderNotice::Unavailable => arrangement::Folder::Forced(crate::profile::home().to_string_lossy().into_owned()),
-                _ => arrangement::folder_for(&session),
+                _ => arrangement::folder_for(&session, ssh),
             });
             let mut launched = true;
             let id = match super::restore_ui::attach_key(&session) {

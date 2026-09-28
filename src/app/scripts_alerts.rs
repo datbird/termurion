@@ -63,13 +63,16 @@ pub(super) enum Answer {
 /// The answer when an alert is closed: `fallback` (the window's `close_answer`, which only
 /// dismisses), except that closing the slow-scan question goes on scanning rather than
 /// pressing Stop, and closing a consent question with no Cancel button (a terminal-initiated
-/// download or display, the large file question, copying settings to the custom folder)
-/// refuses it: its first button consents. iTerm2's alerts cannot be closed.
+/// download or display, the large file question, copying settings to the custom folder,
+/// overwriting settings that changed since launch) refuses it: its first button consents.
+/// The one exception is the quit question, whose close copies (`fallback`): losing the
+/// person's settings is worse. iTerm2's alerts cannot be closed, and neither of the quit
+/// question's buttons has Escape.
 pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
     match then {
         Then::SlowScan => Answer::Button(1),
-        // No, Deny and Don't Copy.
-        Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow => Answer::Button(1),
+        // No, Deny, Don't Copy and Discard Local Changes.
+        Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow | Then::PrefsOverwrite => Answer::Button(1),
         _ => Answer::Button(fallback),
     }
 }
@@ -205,6 +208,11 @@ impl Then {
 /// queue.
 const LIMIT: usize = 16;
 
+/// Whether an ask that `about` picks is showing or queued.
+pub(super) fn waits(showing: Option<&Ask>, queued: &VecDeque<Ask>, about: impl Fn(&Then) -> bool) -> bool {
+    queued.iter().any(|a| about(&a.then)) || showing.is_some_and(|a| about(&a.then))
+}
+
 /// Queues `ask`, or gives a capped one back when the queue holds `LIMIT` capped asks.
 fn push_capped(queue: &mut VecDeque<Ask>, ask: Ask) -> Option<Ask> {
     if ask.then.capped() && queue.iter().filter(|a| a.then.capped()).count() >= LIMIT {
@@ -251,7 +259,7 @@ impl App {
 
     /// Whether an ask that `about` picks is queued or showing.
     pub(super) fn alert_waits(&self, about: impl Fn(&Then) -> bool) -> bool {
-        self.scripts_alerts.iter().any(|a| about(&a.then)) || self.scripts_alert.as_ref().is_some_and(|(_, a)| about(&a.then))
+        waits(self.scripts_alert.as_ref().map(|(_, a)| a), &self.scripts_alerts, about)
     }
 
     /// Opens the next queued alert when none shows.
@@ -495,12 +503,22 @@ mod tests {
         let inline = ask("", "", &["Yes", "No"], None, Kind::Permanent, Then::Inline { pane: 3, serial: 1, name: "a.png".into(), size: 5, was_silenced: false });
         let big_inline = ask("", "", &["Allow", "Deny"], None, Kind::Permanent, Then::BigInline(3, 1));
         let copy = ask("", "", &[crate::remote_prefs::COPY, crate::remote_prefs::DONT_COPY], None, Kind::Persistent, Then::PrefsCopyNow);
-        for a in [download, big, inline, big_inline, copy] {
+        // Discard Local Changes leaves the changed settings file alone.
+        let overwrite = super::super::prefs_ui::overwrite_ask("C:\\s");
+        for a in [download, big, inline, big_inline, copy, overwrite] {
             let labels: Vec<&str> = a.spec.labels.iter().map(String::as_str).collect();
             // The window's own close answer is the first button, which consents.
             assert_eq!(close_index(&labels), 0);
             assert_eq!(on_close(&a.then, close_index(&labels)), Answer::Button(1), "{:?}", a.spec.labels);
         }
+    }
+
+    /// The one exception: closing the quit question copies, since Lose Changes loses the
+    /// person's settings.
+    #[test]
+    fn closing_the_quit_question_copies() {
+        let labels = [crate::remote_prefs::COPY, crate::remote_prefs::LOSE_CHANGES];
+        assert_eq!(on_close(&Then::PrefsQuit, crate::prompt_ui::close_index(&labels)), Answer::Button(0));
     }
 
     #[test]

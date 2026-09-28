@@ -57,11 +57,12 @@ fn yes_no_spec(id: &str, heading: &str, text: String, labels: [&str; 2]) -> crat
 }
 
 /// A name the terminal sent, as a question (and the Suppressed Alerts catalog, which keeps the
-/// text) shows it: control and bidirectional formatting characters dropped, and at most
-/// `SHOWN_NAME` characters, the rest an ellipsis.
+/// text) shows it: control, bidirectional formatting, line and paragraph separator and
+/// zero-width characters dropped, and at most `SHOWN_NAME` characters, the rest an ellipsis.
 pub(super) fn shown_name(name: &str) -> String {
     let bidi = |c: char| matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-    let clean: Vec<char> = name.chars().filter(|&c| !c.is_control() && !bidi(c)).collect();
+    let unseen = |c: char| matches!(c, '\u{2028}' | '\u{2029}' | '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}');
+    let clean: Vec<char> = name.chars().filter(|&c| !c.is_control() && !bidi(c) && !unseen(c)).collect();
     if clean.len() <= SHOWN_NAME {
         return clean.into_iter().collect();
     }
@@ -290,6 +291,8 @@ mod tests {
         assert_eq!(shown_name("a\nb\r\u{7}c.png"), "abc.png");
         assert_eq!(shown_name("evil\u{202e}gnp.exe"), "evilgnp.exe");
         assert_eq!(shown_name("\u{2066}x\u{2069}\u{200f}"), "x");
+        assert_eq!(shown_name("a\u{2028}b\u{2029}c.png"), "abc.png", "no new line in the question");
+        assert_eq!(shown_name("\u{feff}a\u{200b}b\u{200c}\u{200d}c\u{2060}.png"), "abc.png");
         let long = "x".repeat(5000);
         let shown = shown_name(&long);
         assert_eq!(shown.chars().count(), SHOWN_NAME + 1);

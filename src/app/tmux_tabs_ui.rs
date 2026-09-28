@@ -399,7 +399,7 @@ impl App {
         let Some((gw, _, window)) = self.tmux_of(focused) else { return false };
         let same = self.tabs.iter().filter(|t| self.tmux_of(t.focused).is_some_and(|(g, _, _)| g == gw)).count();
         if same > 1 {
-            self.ask_scripts(tmux_close_tab_ask(focused, gw, window));
+            self.ask_tmux_close(tmux_close_tab_ask(focused, gw, window));
             return true;
         }
         self.tmux_close_window_question(focused, Some(gw), false)
@@ -410,8 +410,16 @@ impl App {
     fn tmux_close_window_question(&mut self, anchor: PaneId, gw: Option<PaneId>, whole: bool) -> bool {
         let n: usize = self.tmux_scope(gw).iter().map(|(_, ws)| ws.len()).sum();
         let Some(ask) = tmux_close_window_ask(anchor, gw.unwrap_or(0), whole, n) else { return false };
-        self.ask_scripts(ask);
+        self.ask_tmux_close(ask);
         true
+    }
+
+    /// Asks a tmux close question once: iTerm2's is modal, so another click on the same tab's
+    /// close button (or Close Tab again) while it waits does nothing.
+    fn ask_tmux_close(&mut self, ask: super::scripts_alerts::Ask) {
+        if !self.alert_waits(|then| *then == ask.then) {
+            self.ask_scripts(ask);
+        }
     }
 
     /// A tmux close question answered with button `index` (`Then::TmuxClose`), in the window of
@@ -1374,6 +1382,23 @@ pub(super) fn tmux_dir_of(p: Option<&Profile>) -> crate::tmux_edits::Dir {
 mod tests {
     use super::*;
     use crate::warnings::Kind;
+
+    /// 13c's tab close buttons: another click on a tab whose close question waits (queued or
+    /// showing) asks nothing more; another tab or the window question still asks.
+    #[test]
+    fn a_waiting_tmux_close_question_is_not_asked_again() {
+        use super::super::scripts_alerts::{waits, Ask, Then};
+        fn same(ask: &Ask) -> impl Fn(&Then) -> bool + '_ {
+            move |t| *t == ask.then
+        }
+        let mut queued = std::collections::VecDeque::new();
+        queued.push_back(tmux_close_tab_ask(5, 2, 3));
+        assert!(waits(None, &queued, same(&tmux_close_tab_ask(5, 2, 3))));
+        assert!(!waits(None, &queued, same(&tmux_close_tab_ask(6, 2, 4))), "another tab asks");
+        let window = tmux_close_window_ask(5, 2, false, 1).unwrap();
+        assert!(!waits(None, &queued, same(&window)));
+        assert!(waits(Some(&window), &std::collections::VecDeque::new(), same(&tmux_close_window_ask(5, 2, false, 1).unwrap())), "a showing question counts");
+    }
 
     /// `possiblyTmuxValueForWindow:cancel:` (`AD:3788-3825`): the legacy key while it is
     /// silenced, else the window's or the tab's; permanently silenceable, Cancel last.
