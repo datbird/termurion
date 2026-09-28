@@ -819,6 +819,9 @@ pub struct App {
     chat_db: Option<crate::chat_store::Store>,
     chat_db_failed: bool,
     chat_broker: crate::chat_broker::Broker,
+    /// The chats' permission overrides (app-wide, never swapped); every chat's stored
+    /// permissions are merged in when the database opens.
+    ai_overrides: crate::ai_permissions::Overrides,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -1385,6 +1388,7 @@ pub fn run() {
         chat_db: None,
         chat_db_failed: false,
         chat_broker: crate::chat_broker::Broker::new(),
+        ai_overrides: crate::ai_permissions::Overrides::default(),
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
