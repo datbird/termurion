@@ -1456,6 +1456,19 @@ mod tests {
     }
 
     #[test]
+    fn warning_rows_follow_iterm2() {
+        let s = schema::find_global("AlertsIndicateShortcuts").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let label = "Buttons in modal alerts indicate keyboard shortcuts.";
+        assert_eq!(s.label, label);
+        assert_eq!(s.help, format!("{label}\nDo you miss Windows 95? I do."));
+        let c = schema::find_global(crate::warnings::CATALOG_KEY).expect("row");
+        assert_eq!((c.tab.as_str(), c.section.as_str(), c.kind), ("Stored", "Warnings", Kind::Dict));
+        assert_eq!(c.default, Some(Value::Table(toml::Table::new())));
+    }
+
+    #[test]
     fn erase_row_follows_iterm2() {
         let s = schema::find_global("DryRunEraseAllSettingsAndData").expect("row");
         assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));

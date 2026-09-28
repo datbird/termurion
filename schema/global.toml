@@ -2387,3 +2387,21 @@ label = "Use SSH integration for ssh: URLs"
 type = "bool"
 default = false
 help = "Use SSH integration for ssh: URLs"
+
+[[setting]]
+key = "AlertsIndicateShortcuts"
+tab = "Advanced"
+section = "General"
+label = "Buttons in modal alerts indicate keyboard shortcuts."
+type = "bool"
+default = false
+help = "Buttons in modal alerts indicate keyboard shortcuts.\nDo you miss Windows 95? I do."
+
+[[setting]]
+key = "NoSyncSuppressedAlertsCatalog"
+tab = "Stored"
+section = "Warnings"
+label = "Suppressed alerts"
+type = "dict"
+default = {}
+help = "The warnings answered automatically with a remembered choice, listed in Tandem > Suppressed Alerts."
