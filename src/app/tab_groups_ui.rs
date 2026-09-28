@@ -9,6 +9,7 @@ use crate::prompt_ui::{PromptResult, PromptWindow};
 use crate::tab_groups::{self, CloseTabs, TabGroup};
 use crate::tab_menu::{self, TabCtx};
 use crate::winmodel::LayoutOp;
+use std::path::Path;
 
 /// What the tab group name window names.
 #[derive(Clone, Debug)]
@@ -720,6 +721,173 @@ pub(super) fn duplicate_placement(source: usize, tabs: usize, adjacent: bool, tm
     (at, group.cloned())
 }
 
+/// What a pane's tab icon was worked out from (`PS tabGraphicForProfile:`): the profile's Icon
+/// and Custom Icon Path, the job's lookup chain and fallback name, and
+/// `DefaultIconsUsingLetters`. A change works the icon out again.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct IconKey {
+    setting: i64,
+    custom: String,
+    chain: Vec<Vec<String>>,
+    fallback: Option<String>,
+    letters: bool,
+}
+
+/// A decoded icon picture: a bundled icon under its tint, a user PNG or a custom icon file.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum ImageId {
+    Tinted(String, [u8; 3]),
+    File(PathBuf),
+}
+
+/// Pictures read from files are kept at most this many pixels square: 16 points at twice
+/// the size (`iTermCacheableImage imageAtPath:ofSize:`, 16 by 16).
+const ICON_FILE_PX: u32 = 32;
+
+/// `%APPDATA%\Tandem`, where the user's icon maps and PNGs live (iTerm2's Application Support).
+fn icon_dir() -> PathBuf {
+    std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem")
+}
+
+/// A user file's bytes; None when it is absent, unreadable or on the network (never probed).
+fn read_user_file(path: &Path) -> Option<Vec<u8>> {
+    crate::tab_icons::readable_path(path).then(|| std::fs::read(path).ok()).flatten()
+}
+
+/// The icon maps with the user's `graphic_icons.json` and `graphic_colors.json` merged over
+/// the bundled ones (`GS reloadGraphicMaps`); `previous` is kept for a file that no longer
+/// parses.
+pub(super) fn user_tab_icon_maps(previous: Option<&crate::tab_icons::Maps>) -> crate::tab_icons::Maps {
+    use crate::tab_icons::{COLORS_FILE, ICONS_FILE, load_maps};
+    let dir = icon_dir();
+    let icons = read_user_file(&dir.join(ICONS_FILE));
+    let colors = read_user_file(&dir.join(COLORS_FILE));
+    load_maps(icons.as_deref(), colors.as_deref(), previous)
+}
+
+/// A picture as the tab bar draws it, keyed for the texture cache apart from inline images
+/// (small counters) and background images (top bit set).
+fn picture(id: &ImageId, pixels: Vec<u8>, size: (u32, u32)) -> scene::TabImage {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    let key = (h.finish() >> 2) | (1 << 62);
+    scene::TabImage::Picture { key, pixels: std::sync::Arc::new(pixels), size }
+}
+
+/// An image file decoded to RGBA, shrunk to `ICON_FILE_PX` square when larger; None when it
+/// cannot be read or is on the network.
+fn decode_icon_file(path: &Path) -> Option<(Vec<u8>, (u32, u32))> {
+    let bytes = read_user_file(path)?;
+    let mut img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    if img.width() > ICON_FILE_PX || img.height() > ICON_FILE_PX {
+        img = image::imageops::resize(&img, ICON_FILE_PX, ICON_FILE_PX, image::imageops::FilterType::Triangle);
+    }
+    let size = img.dimensions();
+    Some((img.into_raw(), size))
+}
+
+impl App {
+    /// Reads the user's icon maps again (`GS reloadGraphicMaps`; 13y2 Task 9a calls it after it
+    /// pulls them): when the maps changed, every icon is worked out again and the bars redrawn.
+    #[allow(dead_code)] // 13y2 Task 9a is its caller.
+    pub(super) fn reload_tab_icon_maps(&mut self) {
+        let maps = user_tab_icon_maps(Some(&self.tab_icon_maps));
+        if maps == self.tab_icon_maps {
+            return;
+        }
+        self.tab_icon_maps = maps;
+        self.tab_icon_cache.get_mut().clear();
+        self.tab_icon_images.get_mut().clear();
+        self.redraw();
+    }
+
+    /// The icon picture a pane's tab shows (`PS tabGraphicForProfile:`): none, the job's
+    /// built-in icon or letter (`GS imageForProcessID:`; a tmux pane by tmux's job name,
+    /// `updateImageForJobName:`), or the custom image. Kept per pane until what it came from
+    /// changes; a pane whose program ended keeps its last icon.
+    pub(super) fn tab_icon_for(&self, pane: PaneId) -> Option<scene::TabImage> {
+        use crate::tab_icons::{ancestor_chain, candidates, fallback_name};
+        let p = self.panes.get(&pane)?;
+        let profile = self.store.get(&p.profile)?;
+        let (chain, fallback) = match p.tmux_io() {
+            Some(io) => {
+                let job = io.info.borrow().job.clone();
+                if job.is_empty() { (Vec::new(), None) } else { (vec![candidates(&job, None, None)], Some(fallback_name(&job, None, None))) }
+            }
+            None => {
+                let shell = &p.own().shell;
+                match &shell.job {
+                    Some(j) => {
+                        let mut chain = vec![candidates(&j.name, Some(&j.title), Some(&j.cmdline))];
+                        // The ancestors start with the job itself.
+                        chain.extend(ancestor_chain(shell.job_ancestors.get(1..).unwrap_or_default()));
+                        (chain, Some(fallback_name(&j.name, Some(&j.title), Some(&j.cmdline))))
+                    }
+                    None => (Vec::new(), None),
+                }
+            }
+        };
+        let key = IconKey { setting: profile.int("Icon"), custom: profile.string("Custom Icon Path"), chain, fallback, letters: self.globals.bool("DefaultIconsUsingLetters") };
+        if let Some((k, image)) = self.tab_icon_cache.borrow().get(&pane) {
+            if *k == key || p.exited.is_some() {
+                return image.clone();
+            }
+        }
+        let icon = crate::tab_icons::resolve(&self.tab_icon_maps, key.setting, &key.custom, &key.chain, key.fallback.as_deref(), key.letters, &|l| self.has_icon_picture(l));
+        let image = match icon {
+            crate::tab_icons::Icon::None => None,
+            crate::tab_icons::Icon::Picture(logical, tint) => self.icon_picture(&logical, tint),
+            crate::tab_icons::Icon::Letter(letter, color) => Some(scene::TabImage::Letter { letter, color }),
+            crate::tab_icons::Icon::Custom(path) => self.icon_file(&path),
+        };
+        let mut cache = self.tab_icon_cache.borrow_mut();
+        cache.insert(pane, (key, image.clone()));
+        if cache.len() > self.panes.len() + 16 {
+            cache.retain(|id, _| self.panes.contains_key(id));
+        }
+        image
+    }
+
+    /// Whether a logical name has a picture (`GS:380-388`): the bundled PNG, else the user's
+    /// `graphic_<name>.png`.
+    fn has_icon_picture(&self, logical: &str) -> bool {
+        crate::tab_icons::png(logical).is_some() || (crate::tab_icons::plain_logical(logical) && self.icon_file(&crate::tab_icons::user_png_path(&icon_dir(), logical)).is_some())
+    }
+
+    /// A logical name's picture painted `tint` (`GS:380-402`), made once per logical name and
+    /// tint; None when it has none.
+    fn icon_picture(&self, logical: &str, tint: crate::palette::Rgb) -> Option<scene::TabImage> {
+        let id = ImageId::Tinted(logical.to_string(), [tint.r, tint.g, tint.b]);
+        if let Some(found) = self.tab_icon_images.borrow().get(&id) {
+            return found.clone();
+        }
+        let source = match crate::tab_icons::png(logical) {
+            Some(bytes) => image::load_from_memory(bytes).ok().map(|i| i.to_rgba8()).map(|i| (i.dimensions(), i.into_raw())),
+            None if crate::tab_icons::plain_logical(logical) => match self.icon_file(&crate::tab_icons::user_png_path(&icon_dir(), logical)) {
+                Some(scene::TabImage::Picture { pixels, size, .. }) => Some((size, pixels.to_vec())),
+                _ => None,
+            },
+            None => None,
+        };
+        let image = source.map(|(size, pixels)| picture(&id, crate::tab_icons::tinted(&pixels, tint), size));
+        self.tab_icon_images.borrow_mut().insert(id, image.clone());
+        image
+    }
+
+    /// An image file as a picture (a custom icon, a user PNG), read once; None when it is
+    /// missing, unreadable or on the network (`iTermCacheableImage` gives nil).
+    fn icon_file(&self, path: &Path) -> Option<scene::TabImage> {
+        let id = ImageId::File(path.to_path_buf());
+        if let Some(found) = self.tab_icon_images.borrow().get(&id) {
+            return found.clone();
+        }
+        let image = decode_icon_file(path).map(|(pixels, size)| picture(&id, pixels, size));
+        self.tab_icon_images.borrow_mut().insert(id, image.clone());
+        image
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -762,6 +930,37 @@ mod tests {
         // A collapsed group holding the selected tab expands; another stays collapsed.
         let (_, flags, _) = settle_plan(&[A, A, B, B], &[false; 4], &[true, true, true, true], 0);
         assert_eq!(flags, vec![false, false, true, true]);
+    }
+
+    #[test]
+    fn tab_icon_files_follow_iterm2() {
+        let dir = std::env::temp_dir().join(format!("tandem-tab-icons-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = |name: &str, side: u32| {
+            let path = dir.join(name);
+            image::RgbaImage::from_pixel(side, side, image::Rgba([1, 2, 3, 200])).save(&path).unwrap();
+            path
+        };
+        // A large custom icon is shrunk to 16 points at twice the size; a small one is kept.
+        let (pixels, size) = decode_icon_file(&save("big.png", 64)).expect("big");
+        assert_eq!((size, pixels.len()), ((32, 32), 32 * 32 * 4));
+        assert_eq!(decode_icon_file(&save("small.png", 8)).expect("small").1, (8, 8));
+        // Missing, not a picture, or on the network: nothing (`iTermCacheableImage` gives nil).
+        assert_eq!(decode_icon_file(&dir.join("missing.png")), None);
+        std::fs::write(dir.join("text.png"), b"not a picture").unwrap();
+        assert_eq!(decode_icon_file(&dir.join("text.png")), None);
+        assert_eq!(decode_icon_file(Path::new(r"\\server\share\i.png")), None);
+        assert_eq!(read_user_file(Path::new(r"\\?\UNC\server\share\graphic_icons.json")), None);
+        // Tinted and file pictures are keyed apart from inline and background images.
+        let key = |id: &ImageId| match picture(id, vec![0; 4], (1, 1)) {
+            scene::TabImage::Picture { key, .. } => key,
+            _ => unreachable!(),
+        };
+        for id in [ImageId::Tinted("git".into(), [1, 2, 3]), ImageId::File(dir.join("big.png"))] {
+            assert_eq!(key(&id) >> 62, 1, "{id:?}");
+        }
+        assert_ne!(key(&ImageId::Tinted("git".into(), [1, 2, 3])), key(&ImageId::Tinted("git".into(), [1, 2, 4])));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

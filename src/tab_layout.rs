@@ -328,6 +328,10 @@ pub struct CellInput {
     pub min_label: f32,
     /// A pinned tab: no close button; its pin takes the close button's room (`YS:854-915`).
     pub pinned: bool,
+    /// The session's icon picture shows (`cachedTitle.inputs.graphic`, `YS:932-941`).
+    pub graphic: bool,
+    /// A side bar's row: the icon moves the label instead of reserving room.
+    pub vertical: bool,
 }
 
 /// Where one tab's parts go (`YS drawInteriorWithTabCell:inView:highlightAmount:`), in points.
@@ -345,8 +349,11 @@ pub struct CellLayout {
     /// The label is too long to center: it is drawn left-aligned and truncated. `build` also
     /// sets it for a pinned tab's single character, which iTerm2 draws left-aligned.
     pub truncate: bool,
-    /// Room on the left kept for a close button that shows only on hover.
+    /// Room on the left kept for a close button that shows only on hover, or for the icon
+    /// picture.
     pub reserved: f32,
+    /// The icon picture's box, over the close button's place (`YS drawGraphicWithCellFrame:`).
+    pub graphic: Option<Rect>,
 }
 
 /// Lays out one tab's inside.
@@ -370,6 +377,17 @@ pub fn cell(input: &CellInput) -> CellLayout {
             // run into it.
             reserved = CLOSE_SIZE + CELL_PADDING;
             close_alpha = if input.hovered { 1.0 } else { 0.0 };
+        }
+    }
+    // `YS:932-941`: the icon picture 6 points in, centered, 16 square; a horizontal label keeps
+    // clear of it when truncated, a side bar's label starts after it.
+    let graphic = input.graphic.then(|| Rect { x: x + CELL_MARGIN, y: (h - ICON_WIDTH) / 2.0, w: ICON_WIDTH, h: ICON_WIDTH });
+    if graphic.is_some() {
+        let width = ICON_WIDTH + CELL_PADDING + 2.0;
+        if input.vertical {
+            label_x = label_x.max(x + width + CELL_PADDING);
+        } else {
+            reserved = f32::max(reserved, width);
         }
     }
     let counter = input.counter.map(|cw| Rect {
@@ -415,7 +433,7 @@ pub fn cell(input: &CellInput) -> CellLayout {
     // A truncated label is drawn after the reserved room.
     let shift = if truncate { reserved } else { 0.0 };
     let label = Rect { x: label_x + shift, y: 0.0, w: lw.max(0.0), h };
-    CellLayout { close, close_alpha, icon, indicator, counter, label, truncate, reserved }
+    CellLayout { close, close_alpha, icon, indicator, counter, label, truncate, reserved, graphic }
 }
 
 /// Which end of a long title gives way.
@@ -704,6 +722,10 @@ pub struct TabInput {
     pub group: Option<ChipInput>,
     /// Hidden in a collapsed group: no cell, its index kept (`isCollapsedHidden`).
     pub hidden: bool,
+    /// The session's icon picture shows (`TabLook::icon_image`).
+    pub graphic: bool,
+    /// The letter icon's letter, measured for centering; "" for a picture or none.
+    pub letter: String,
 }
 
 /// A grouped tab's group, as its chip needs it (`PSM cellsByInsertingTabGroupChipsInto:`).
@@ -740,6 +762,8 @@ pub struct CellText {
     pub subtitle_truncate: bool,
     pub counter: String,
     pub counter_width: f32,
+    /// The letter icon's letter width at `scene::LETTER_PT`.
+    pub letter_width: f32,
 }
 
 impl CellText {
@@ -955,6 +979,8 @@ fn place(bar: &mut Bar, i: usize, rect: Rect, t: &TabInput, hovered: bool, s: &S
         title_width: x.widths[i],
         min_label: s.min_label,
         pinned: t.pinned,
+        graphic: t.graphic,
+        vertical: bar.vertical,
     });
     // A horizontal pinned tab's character is drawn whole and left-aligned (`YS:1018-1027`).
     let first_char = t.pinned && first_char_pins;
@@ -994,6 +1020,7 @@ fn place(bar: &mut Bar, i: usize, rect: Rect, t: &TabInput, hovered: bool, s: &S
         subtitle_truncate: sub_truncate,
         counter,
         counter_width: counter_w,
+        letter_width: if t.letter.is_empty() { 0.0 } else { measure(&t.letter, crate::scene::LETTER_PT) },
     });
 }
 
@@ -1579,6 +1606,8 @@ mod tests {
             title_width: 40.0,
             min_label: 35.0,
             pinned: false,
+            graphic: false,
+            vertical: false,
         }
     }
 
@@ -1759,7 +1788,7 @@ mod tests {
     }
 
     fn input(title: &str, number: usize) -> TabInput {
-        TabInput { title: title.into(), subtitle: String::new(), icon: false, processing: false, number, pinned: false, group: None, hidden: false }
+        TabInput { title: title.into(), subtitle: String::new(), icon: false, processing: false, number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }
     }
 
     #[test]

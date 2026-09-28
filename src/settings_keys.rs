@@ -1809,6 +1809,16 @@ mod tests {
     }
 
     #[test]
+    fn icon_row_follows_iterm2() {
+        let row = schema::find_global("DefaultIconsUsingLetters").expect("DefaultIconsUsingLetters");
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Use the running command's first letter as the tab's default icon if there isn't a built in one.");
+        assert_eq!(row.help, "Use the running command's first letter as the tab's default icon if there isn't a built in one.\nThis takes effect when tabs are configured to use built-in icons.");
+    }
+
+    #[test]
     fn duplicate_row_follows_iterm2() {
         let row = schema::find_global("DuplicatedTabsOpenAdjacentToOriginal").expect("DuplicatedTabsOpenAdjacentToOriginal");
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));

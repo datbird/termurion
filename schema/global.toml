@@ -2742,3 +2742,12 @@ label = "Width of pinned tabs in pixels."
 type = "int"
 default = 64
 help = "Width of pinned tabs in pixels."
+
+[[setting]]
+key = "DefaultIconsUsingLetters"
+tab = "Advanced"
+section = "Tabs"
+label = "Use the running command's first letter as the tab's default icon if there isn't a built in one."
+type = "bool"
+default = true
+help = "Use the running command's first letter as the tab's default icon if there isn't a built in one.\nThis takes effect when tabs are configured to use built-in icons."

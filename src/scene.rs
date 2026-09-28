@@ -814,7 +814,23 @@ pub struct TabLook {
     pub group: Option<(String, Rgb)>,
     /// Hidden in a collapsed group: no cell (`tab_layout::TabInput::hidden`).
     pub hidden: bool,
+    /// The session's icon (`PTYSession tabGraphic`), drawn 16 by 16 points at the tab's left.
+    pub icon_image: Option<TabImage>,
 }
+
+/// A tab's icon picture (`app::tab_groups_ui::tab_icon_for`): a decoded picture (a bundled icon
+/// already tinted, or a custom image; `key` names it for the texture cache), or the letter icon
+/// (`GS imageForLetter:`), the letter knocked out of a circle of the color.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TabImage {
+    Picture { key: u64, pixels: std::sync::Arc<Vec<u8>>, size: (u32, u32) },
+    Letter { letter: String, color: Rgb },
+}
+
+/// The letter icon's letter: bold at this size in points (`GS:442`).
+pub const LETTER_PT: f32 = 12.0;
+/// The letter icon's circle sits this far inside the 16-point box (`GS:455`).
+const LETTER_INSET: f32 = 1.0;
 
 /// A group run's name block: the padding at each side of the name (`kPSMSquaredGroupNamePad`,
 /// `YS:1352`).
@@ -1040,8 +1056,8 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             }
             glyph(frame, TAB_CLOSE_GLYPH, close, blend(back, color, alpha));
         }
-        // The pin at the cell's left margin (`YS:915-930`).
-        if tab.pinned {
+        // The pin at the cell's left margin, not under an icon (`YS:915-930`).
+        if tab.pinned && tab.icon_image.is_none() {
             let alpha = if key { PIN_ALPHA.0 } else { PIN_ALPHA.1 };
             let em = TAB_GLYPH_PT * scale;
             glyph(frame, PIN_GLYPH, Rect { x: cell.x + tab_layout::CELL_MARGIN * scale, w: em, ..cell }, blend(back, color, alpha));
@@ -1056,10 +1072,21 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
                 glyph(frame, tab_icon_glyph(icon), ir, color);
             }
         }
+        // The icon, over the close button's place and fading as the close button shows
+        // (`YS:932-941`: alpha 1 less the close button's).
+        if let (Some(g), Some(image)) = (c.graphic.map(at), tab.icon_image.as_ref()) {
+            let close = if key { c.close_alpha } else { c.close_alpha / 2.0 };
+            let letter_w = bar.texts.get(k).map_or(0.0, |t| t.letter_width);
+            tab_graphic(frame, image, g, 1.0 - close, back, clip, scale, font_scale, line, letter_w);
+        }
         if let Some(ind) = c.indicator.filter(|_| tab.processing) {
             spinner(frame, at(ind), turn, color, scale);
         }
         let Some(text) = bar.texts.get(k) else { continue };
+        // `YS:1000`: a pinned tab with an icon shows no title.
+        if tab.pinned && tab.icon_image.is_some() {
+            continue;
+        }
         // The number, centered in its box (`YS drawInteriorWithTabCell:...`).
         if let Some(cr) = c.counter.map(at).filter(|_| !text.counter.is_empty()) {
             let x = cr.x + ((cr.w - text.counter_width * scale) / 2.0).floor();
@@ -1198,6 +1225,41 @@ fn group_runs(frame: &mut Frame, tabs: &[TabLook], bar: &crate::tab_layout::Bar,
             Rect { x: b.x + b.w - stroke, w: stroke, ..b },
         ] {
             frame.quads.push(Quad { rect: edge, color: rgba(color, 1.0) });
+        }
+    }
+}
+
+/// Draws a tab's icon in its 16-point box `g` (pixels) at `alpha`, cut to `clip`: a picture as
+/// an image (faded pixels under a separate key when not opaque), or the letter icon as a circle
+/// 1 point inside the box with the letter bold in the tab's background `back` centered on it
+/// (`letter_w` its width in points at `LETTER_PT`).
+#[allow(clippy::too_many_arguments)]
+fn tab_graphic(frame: &mut Frame, image: &TabImage, g: Rect, alpha: f32, back: Rgb, clip: Rect, scale: f32, font_scale: f32, line: f32, letter_w: f32) {
+    if alpha <= 0.0 {
+        return;
+    }
+    let g = Rect { x: g.x.round(), y: g.y.round(), w: g.w.round(), h: g.h.round() };
+    match image {
+        TabImage::Picture { key, pixels, size } => {
+            let Some(rect) = cut(g, clip) else { return };
+            let uv = [(rect.x - g.x) / g.w, (rect.y - g.y) / g.h, (rect.x + rect.w - g.x) / g.w, (rect.y + rect.h - g.y) / g.h];
+            let level = 255 - (alpha.clamp(0.0, 1.0) * 255.0).round() as usize;
+            let pixels = if level == 0 {
+                pixels.clone()
+            } else {
+                std::sync::Arc::new(pixels.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2], (f32::from(p[3]) * alpha).round() as u8]).collect())
+            };
+            frame.images.push(ImageQuad { rect, uv, key: (*key, level), pixels, size: *size, repeat: false });
+        }
+        TabImage::Letter { letter, color } => {
+            let inset = (LETTER_INSET * scale).round();
+            let circle = Rect { x: g.x + inset, y: g.y + inset, w: g.w - 2.0 * inset, h: g.h - 2.0 * inset };
+            rounded_box(&mut frame.quads, circle, circle.w / 2.0, rgba(blend(back, *color, alpha), 1.0));
+            let s = LETTER_PT * font_scale;
+            let x = circle.x + (circle.w - letter_w * scale) / 2.0;
+            let y = circle.y + (circle.h - line * s) / 2.0;
+            let span = Span { text: letter.clone(), color: back, bold: true, italic: false, alt_font: false, icon: false, prose: true, badge: false, toolbelt: false };
+            frame.rows.push(TextRow { x, y, spans: vec![span], clip, scale: s });
         }
     }
 }
@@ -2823,7 +2885,7 @@ mod tests {
             TabLook { title: "two".into(), number: 2, ..TabLook::default() },
             TabLook { title: "a title far too long for the side bar".into(), number: 3, ..TabLook::default() },
         ];
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         let area = Rect { x: 0.0, y: 0.0, w: 150.0, h: 100.0 };
         let bar = tab_layout::build_vertical(&inputs, 150.0, 100.0, 0.0, None, &s, &six);
@@ -2903,6 +2965,8 @@ mod tests {
                     pinned: false,
                     group: (i < 2).then(|| ChipInput { id: "g".into(), name: "g".into(), collapsed, count: 2, first: i == 0 }),
                     hidden: l.hidden,
+                    graphic: false,
+                    letter: String::new(),
                 })
                 .collect()
         };
@@ -2968,7 +3032,7 @@ mod tests {
         ];
         let inputs: Vec<TabInput> = looks
             .iter()
-            .map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number, pinned: false, group: None, hidden: false })
+            .map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
             .collect();
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
@@ -3017,7 +3081,7 @@ mod tests {
         // HTML: an underlined run gets a one-pixel line under it.
         let html = tab_layout::Settings { html: true, ..s.clone() };
         let ul = vec![TabLook { title: "<u>ab</u>".into(), ..TabLook::default() }, TabLook::default()];
-        let uin: Vec<TabInput> = ul.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: 0, pinned: false, group: None, hidden: false }).collect();
+        let uin: Vec<TabInput> = ul.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: 0, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let bar = tab_layout::build(&uin, 0, 400.0, 0.0, None, &html, &six);
         let mut f = Frame::default();
         tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0, true, false);
@@ -3027,7 +3091,7 @@ mod tests {
         // A subtitle line on a tall bar: the title 5 points up, the subtitle under it at 9 points.
         let tall = tab_layout::Settings { height: 28.0, ..s.clone() };
         let st = vec![TabLook { title: "t".into(), subtitle: "sub".into(), ..TabLook::default() }, TabLook::default()];
-        let sin: Vec<TabInput> = st.iter().map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: false, processing: false, number: 0, pinned: false, group: None, hidden: false }).collect();
+        let sin: Vec<TabInput> = st.iter().map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: false, processing: false, number: 0, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let bar = tab_layout::build(&sin, 0, 400.0, 0.0, None, &tall, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 56.0 };
         let mut f = Frame::default();
@@ -3045,7 +3109,7 @@ mod tests {
         let base = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let s = tab_layout::Settings { prefs: tab_layout::Prefs { stretch: false, scrollable: true, ..base.prefs }, ..base };
         let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         // 120-point tabs scrolled by 100: tab 5 runs from 500 to 620, past the "+" at 576.
         let bar = tab_layout::build(&inputs, 5, 600.0, 100.0, None, &s, &six);
@@ -3072,7 +3136,7 @@ mod tests {
         let base = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let s = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..base.prefs }, ..base };
         let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
         let overflow = bar.overflow.expect("tabs overflow");
@@ -3097,7 +3161,7 @@ mod tests {
         use crate::tab_layout::{self, TabInput};
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         // Tab 1 hovered and not active: its close button over the bar's color.
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, Some(1), &s, &six);
@@ -3127,7 +3191,7 @@ mod tests {
         use crate::tab_layout::{self, TabInput};
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let looks = vec![TabLook { title: "vim".into(), number: 1, pinned: true, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: l.pinned, group: None, hidden: false }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: l.pinned, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         // Hovered, the pinned tab still has no close button.
         let bar = tab_layout::build(&inputs, 1, 400.0, 0.0, Some(0), &s, &six);
@@ -3159,6 +3223,112 @@ mod tests {
         assert_eq!(pin.x, rects[0].x + 6.0);
         let vim = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "vim")).expect("the whole title");
         assert!(rects[0].contains(vim.x, vim.y) && vim.x >= rects[0].x + 6.0 + 16.0 + 4.0);
+
+        // With an icon: the icon, and neither the pin nor the title (`YS:916`, `YS:1000`).
+        let letter = TabImage::Letter { letter: "V".into(), color: rgb(0xf7, 0x7b, 0x87) };
+        let iconed: Vec<TabLook> = looks.iter().cloned().enumerate().map(|(i, l)| TabLook { icon_image: (i == 0).then(|| letter.clone()), ..l }).collect();
+        let bar = tab_layout::build(&icon_inputs(&iconed), 1, 400.0, 0.0, None, &s, &six);
+        let cell = bar.cells[0].2;
+        let mut f = Frame::default();
+        tab_bar(&mut f, &iconed, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+        assert!(!f.rows.iter().any(|r| r.spans.iter().any(|s| s.text == PIN_GLYPH.to_string())), "no pin");
+        let texts: Vec<String> = f.rows.iter().filter(|r| cell.contains(r.x, r.y + 1.0)).map(|r| r.spans.iter().map(|s| s.text.as_str()).collect()).collect();
+        assert_eq!(texts, vec!["V".to_string()], "the icon's letter only, no title");
+    }
+
+    /// The tab bar inputs for looks, as `App::tab_inputs` makes them (no groups).
+    fn icon_inputs(looks: &[TabLook]) -> Vec<crate::tab_layout::TabInput> {
+        looks
+            .iter()
+            .map(|l| crate::tab_layout::TabInput {
+                title: l.title.clone(),
+                subtitle: String::new(),
+                icon: false,
+                processing: false,
+                number: l.number,
+                pinned: l.pinned,
+                group: None,
+                hidden: false,
+                graphic: l.icon_image.is_some(),
+                letter: match &l.icon_image {
+                    Some(TabImage::Letter { letter, .. }) => letter.clone(),
+                    _ => String::new(),
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tab_icon_draws() {
+        use crate::tab_layout;
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let c = rgb(0xf7, 0x7b, 0x87);
+        let pixels = std::sync::Arc::new(vec![9u8; 16]);
+        let picture = TabImage::Picture { key: 42, pixels: pixels.clone(), size: (2, 2) };
+        let looks = vec![
+            TabLook { title: "vim".into(), number: 1, icon_image: Some(TabImage::Letter { letter: "V".into(), color: c }), ..TabLook::default() },
+            TabLook { title: "git".into(), number: 2, icon_image: Some(picture.clone()), ..TabLook::default() },
+        ];
+        let bar = tab_layout::build(&icon_inputs(&looks), 1, 400.0, 0.0, None, &s, &six);
+        let (c0, c1) = (bar.cells[0].2, bar.cells[1].2);
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+        // The letter: a circle 1 point inside the 16-point box 6 points in (radius half its
+        // side), the letter bold in the bar's color centered on it.
+        let circle = Rect { x: c0.x + 7.0, y: 5.0, w: 14.0, h: 14.0 };
+        let dots: Vec<Rect> = f.quads.iter().filter(|q| q.color == rgba(c, 1.0)).map(|q| q.rect).collect();
+        let mut expect = Vec::new();
+        rounded_box(&mut expect, circle, 7.0, rgba(c, 1.0));
+        assert_eq!(dots, expect.iter().map(|q| q.rect).collect::<Vec<_>>());
+        assert_eq!(dots[0], Rect { x: circle.x + 4.0, y: circle.y, w: 6.0, h: 1.0 }, "round at the top");
+        let v = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "V")).expect("the letter");
+        assert!(v.spans[0].bold && v.spans[0].color == TAB_BAR);
+        assert_eq!(v.x, circle.x + (14.0 - 6.0) / 2.0, "centered");
+        assert_eq!(v.scale, LETTER_PT * 0.1);
+        // The picture: one image, 16 points square, 6 points in and centered down.
+        assert_eq!(f.images.len(), 1);
+        assert_eq!(f.images[0], ImageQuad { rect: Rect { x: c1.x + 6.0, y: 4.0, w: 16.0, h: 16.0 }, uv: [0.0, 0.0, 1.0, 1.0], key: (42, 0), pixels: pixels.clone(), size: (2, 2), repeat: false });
+        let title = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "git")).expect("the title");
+        assert!(title.x > c1.x + 6.0 + 16.0, "a short title stays centered, clear of the icon");
+        // At 2 pixels a point the picture is 32 pixels square.
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 1, &bar, Rect { x: 0.0, y: 0.0, w: 800.0, h: 48.0 }, 2.0, 0.2, 40.0, true, false);
+        assert_eq!(f.images[0].rect, Rect { x: 2.0 * c1.x + 12.0, y: 8.0, w: 32.0, h: 32.0 });
+
+        // A long title is truncated after the icon's room, 16 + 4 + 2 (`YS:1117`), not the
+        // close button's 16 + 4.
+        let long = "a title far too long for any tab in this bar at all, truly".to_string();
+        let title_x = |image: Option<TabImage>| {
+            let looks = vec![TabLook { title: long.clone(), number: 1, icon_image: image, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
+            let bar = tab_layout::build(&icon_inputs(&looks), 1, 400.0, 0.0, None, &s, &six);
+            let mut f = Frame::default();
+            tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false);
+            let row = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text.starts_with("a title"))).expect("the title");
+            row.x - bar.cells[0].2.x
+        };
+        assert_eq!(title_x(None), 6.0 + 20.0);
+        assert_eq!(title_x(Some(picture.clone())), 6.0 + 22.0);
+
+        // Hovered, the close button shows and the icon fades out (alpha 1 less the close
+        // button's); in a window that is not key the close button is half and so is the icon.
+        let hover = tab_layout::build(&icon_inputs(&looks), 1, 400.0, 0.0, Some(1), &s, &six);
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 1, &hover, area, 1.0, 0.1, 20.0, true, false);
+        assert!(f.images.is_empty());
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 1, &hover, area, 1.0, 0.1, 20.0, false, false);
+        assert_eq!(f.images[0].key, (42, 127));
+        assert_eq!(f.images[0].pixels[3], 5, "alpha 9 at half");
+
+        // A side bar's label starts after the icon.
+        let side = Rect { x: 0.0, y: 0.0, w: 150.0, h: 100.0 };
+        let vbar = tab_layout::build_vertical(&icon_inputs(&looks), 150.0, 100.0, 0.0, None, &s, &six);
+        let mut f = Frame::default();
+        let (rects, _) = tab_bar_vertical(&mut f, &looks, 1, &vbar, side, 1.0, 0.1, 20.0, true, false);
+        assert_eq!(f.images[0].rect, Rect { x: rects[1].x + 6.0, y: rects[1].y + 4.0, w: 16.0, h: 16.0 });
+        assert!(vbar.cells.iter().all(|(_, l, r)| l.label.x >= r.x + 26.0));
     }
 
     #[test]
@@ -3166,7 +3336,7 @@ mod tests {
         use crate::tab_layout::{self, TabInput};
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
         let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
-        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() }).collect();
         let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
         let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };

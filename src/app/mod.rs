@@ -639,6 +639,14 @@ pub struct App {
     side_chips: Vec<(Rect, String)>,
     /// The pointer is on a side bar's drag handle, so the resize pointer shows.
     side_handle_hover: bool,
+    /// The tab icon maps, bundled with the user's copies merged over (`tab_icons::load_maps`),
+    /// loaded at startup and by `reload_tab_icon_maps`.
+    tab_icon_maps: crate::tab_icons::Maps,
+    /// Each pane's tab icon and what it was worked out from (`tab_icon_for`), by pane id.
+    tab_icon_cache: std::cell::RefCell<HashMap<PaneId, (tab_groups_ui::IconKey, Option<scene::TabImage>)>>,
+    /// Decoded icon pictures: tinted bundled icons, the user's PNGs and custom icons, each
+    /// loaded once (None: nothing could be read).
+    tab_icon_images: std::cell::RefCell<HashMap<tab_groups_ui::ImageId, Option<scene::TabImage>>>,
     /// The tab whose tooltip the pointer is waiting on or showing, and when the pointer
     /// settled on it; the tip shows `TIP_DELAY` later.
     tab_tip: Option<(usize, Instant)>,
@@ -1244,6 +1252,9 @@ pub fn run() {
         bar_grown: (0.0, 0.0),
         side_chips: Vec::new(),
         side_handle_hover: false,
+        tab_icon_maps: tab_groups_ui::user_tab_icon_maps(None),
+        tab_icon_cache: Default::default(),
+        tab_icon_images: Default::default(),
         tab_tip: None,
         tab_tip_wake: None,
         tab_clicks: (Instant::now(), None, 0),
@@ -1711,6 +1722,11 @@ impl App {
                     pinned: l.pinned,
                     hidden: group.as_ref().is_some_and(|g| g.collapsed),
                     group,
+                    graphic: l.icon_image.is_some(),
+                    letter: match &l.icon_image {
+                        Some(scene::TabImage::Letter { letter, .. }) => letter.clone(),
+                        _ => String::new(),
+                    },
                 }
             })
             .collect()
