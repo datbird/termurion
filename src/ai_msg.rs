@@ -82,16 +82,27 @@ pub enum Attachment {
 
 impl Attachment {
     /// `Attachment.appending` (`LLM.swift:146-181`): status updates always merge (so the window
-    /// is not spammed with them) and code accumulates; files and file ids come whole.
-    fn appending(&self, other: &Attachment) -> Option<Attachment> {
+    /// is not spammed with them) and code accumulates; files and file ids come whole. Merges in
+    /// place: a status already merged extends its own parts vector instead of exploding both
+    /// sides into a fresh one, and code appends to the existing string, so a stream of many
+    /// parts costs its total length once, not once per part.
+    fn append(&mut self, other: &Attachment) -> bool {
         match (self, other) {
-            (Attachment::Status { id, inline, status }, Attachment::Status { status: more, .. }) => {
-                let mut parts = status.exploded();
+            (Attachment::Status { status, .. }, Attachment::Status { status: more, .. }) => {
+                if !matches!(status, Status::Multipart(_)) {
+                    let first = std::mem::replace(status, Status::Multipart(Vec::new()));
+                    let Status::Multipart(parts) = status else { unreachable!() };
+                    parts.push(first);
+                }
+                let Status::Multipart(parts) = status else { unreachable!() };
                 parts.extend(more.exploded());
-                Some(Attachment::Status { id: id.clone(), inline: *inline, status: Status::Multipart(parts) })
+                true
             }
-            (Attachment::Code(a), Attachment::Code(b)) => Some(Attachment::Code(format!("{a}{b}"))),
-            _ => None,
+            (Attachment::Code(a), Attachment::Code(b)) => {
+                a.push_str(b);
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -162,13 +173,7 @@ impl Body {
                 _ => false,
             },
             Body::Attachment(original) => match other {
-                Body::Attachment(more) => match original.appending(more) {
-                    Some(merged) => {
-                        *original = merged;
-                        true
-                    }
-                    None => false,
-                },
+                Body::Attachment(more) => original.append(more),
                 _ => false,
             },
             Body::Multipart(parts) => {
@@ -376,6 +381,65 @@ mod tests {
         assert_eq!(code, Body::Attachment(Attachment::Code("ab".into())));
         let mut file = Body::Attachment(Attachment::FileId { id: "f".into(), name: "n".into() });
         assert!(!file.try_append(&Body::Attachment(Attachment::FileId { id: "f".into(), name: "n".into() })));
+    }
+
+    /// A small merge, checked against exactly what the pre-fix rebuild-per-part algorithm
+    /// produced (final-rereview N1): five statuses still explode to the same five, in order.
+    #[test]
+    fn status_merge_matches_previous_result() {
+        let mut s = status(Status::ReasoningSummary("a".into()));
+        for text in ["b", "c", "d", "e"] {
+            assert!(s.try_append(&status(Status::ReasoningSummary(text.into()))));
+        }
+        let Body::Attachment(Attachment::Status { status: merged, .. }) = &s else { panic!("{s:?}") };
+        assert_eq!(
+            merged.exploded(),
+            [Status::ReasoningSummary("a".into()), Status::ReasoningSummary("b".into()), Status::ReasoningSummary("c".into()), Status::ReasoningSummary("d".into()), Status::ReasoningSummary("e".into())]
+        );
+    }
+
+    /// N1: Ollama streams one thinking token per NDJSON line, each becoming a status merge.
+    /// The pre-fix code exploded and rebuilt the whole list on every merge (O(k^2) clones for
+    /// k lines); merging in place keeps a realistic thinking stream well under a second.
+    #[test]
+    fn status_merge_of_30000_thinking_lines_is_fast() {
+        let mut s = status(Status::ReasoningSummary("0".into()));
+        let start = std::time::Instant::now();
+        for i in 1..30_000 {
+            assert!(s.try_append(&status(Status::ReasoningSummary(i.to_string()))));
+        }
+        let elapsed = start.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(2), "30,000 thinking lines took {elapsed:?}, the merge is quadratic again");
+        let Body::Attachment(Attachment::Status { status: merged, .. }) = &s else { panic!("{s:?}") };
+        let exploded = merged.exploded();
+        assert_eq!(exploded.len(), 30_000);
+        assert_eq!(exploded[0], Status::ReasoningSummary("0".into()));
+        assert_eq!(exploded[29_999], Status::ReasoningSummary("29999".into()));
+    }
+
+    /// A small merge, checked against exactly what the pre-fix `format!("{a}{b}")` concat
+    /// produced: the parts joined in order.
+    #[test]
+    fn code_merge_matches_previous_result() {
+        let mut c = Body::Attachment(Attachment::Code("a".into()));
+        for text in ["b", "c", "d", "e"] {
+            assert!(c.try_append(&Body::Attachment(Attachment::Code(text.into()))));
+        }
+        assert_eq!(c, Body::Attachment(Attachment::Code("abcde".into())));
+    }
+
+    /// The same rebuild shape as N1 (`format!("{a}{b}")` copies the whole accumulated string on
+    /// every code-interpreter delta); merging in place keeps it fast.
+    #[test]
+    fn code_merge_of_30000_deltas_is_fast() {
+        let mut c = Body::Attachment(Attachment::Code(String::new()));
+        let start = std::time::Instant::now();
+        for _ in 0..30_000 {
+            assert!(c.try_append(&Body::Attachment(Attachment::Code("x".into()))));
+        }
+        let elapsed = start.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(2), "30,000 code deltas took {elapsed:?}, the merge is quadratic again");
+        assert_eq!(c, Body::Attachment(Attachment::Code("x".repeat(30_000))));
     }
 
     #[test]
