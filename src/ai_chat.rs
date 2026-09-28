@@ -7,6 +7,7 @@
 use crate::ai_json::splice_at_key;
 use crate::ai_model::{dynamic_models_supported, mime_is_textual};
 use crate::ai_msg::{Attachment, Body, CallId, FunctionCall, Message, Role};
+use crate::ai_settings::Vendor;
 use crate::ai_sse;
 use crate::ai_turn::{max_tokens_for, Build, Dialect, Parsed, TOKEN_LIMIT};
 use base64::Engine;
@@ -297,7 +298,8 @@ fn to_bytes(body: Map<String, Value>) -> Vec<u8> {
 
 impl Dialect for ChatCompletions {
     /// `ModernBodyRequestBuilder.body()` (`CO:36-67`), plus `parallel_tool_calls: false` with
-    /// tools (m12b ruling: Tandem runs only the first call of an answer).
+    /// tools to the OpenAI vendor (m12b ruling: Tandem runs only the first call of an answer;
+    /// the field is OpenAI's, so every other server gets iTerm2's bytes).
     fn body(&self, b: &Build) -> Result<Vec<u8>, String> {
         let messages = with_volatile(b);
         let max = budget(max_tokens_for(&Build { messages: &messages, ..*b }))?;
@@ -314,7 +316,9 @@ impl Dialect for ChatCompletions {
             let tools: Vec<Value> = b.tools.iter().map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.parameters}})).collect();
             body.insert("tools".into(), Value::Array(tools));
             body.insert("tool_choice".into(), json!("auto"));
-            body.insert("parallel_tool_calls".into(), json!(false));
+            if b.model.vendor == Vendor::OpenAI {
+                body.insert("parallel_tool_calls".into(), json!(false));
+            }
         }
         body.insert("stream".into(), json!(b.stream));
         splice_at_key(&to_bytes(body), "messages", systems(&messages), b.frozen)
@@ -677,6 +681,23 @@ mod tests {
 
     fn header_names(b: &Build) -> Vec<String> {
         headers(b).into_iter().map(|(n, _)| n).collect()
+    }
+
+    #[test]
+    fn parallel_tool_calls_only_for_openai() {
+        let (w, none, tools) = (wire(), Hosted::default(), [tool()]);
+        let messages = sh();
+        let openai = chat_model();
+        assert_eq!(openai.vendor, Vendor::OpenAI);
+        assert_eq!(value(&ChatCompletions, &build(&openai, &messages, &tools, &none, &w))["parallel_tool_calls"], json!(false), "OpenAI runs one call at a time");
+        // Every other server gets iTerm2's bytes (the field is OpenAI's; m12b ruling).
+        for (name, url) in [("llama3.3", "http://localhost:8080/v1/chat/completions"), ("chat", "https://api.deepseek.com/chat/completions")] {
+            let other = fixture(name, url, Api::ChatCompletions);
+            assert_ne!(other.vendor, Vendor::OpenAI, "{name}");
+            let v = value(&ChatCompletions, &build(&other, &messages, &tools, &none, &w));
+            assert_eq!(v.get("parallel_tool_calls"), None, "{name}");
+            assert_eq!(v["tool_choice"], json!("auto"), "{name}");
+        }
     }
 
     #[test]
