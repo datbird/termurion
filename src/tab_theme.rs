@@ -718,6 +718,13 @@ mod tests {
             assert_eq!(auto, TabPalette { style, ..palette(TabStyle::Dark, &inputs(true)) });
             assert_eq!(auto.resolved, TabStyle::Dark);
         }
+        // Minimal keeps the resolved style's own parts: its `resolved` and label size.
+        for (system_dark, want, pt) in [(false, TabStyle::Light, 11.0), (true, TabStyle::Dark, 11.0)] {
+            let m = palette(TabStyle::Minimal, &Inputs { system_dark, ..inputs(true) });
+            assert_eq!((m.resolved, m.font_pt), (want, pt));
+        }
+        let hc = palette(TabStyle::Minimal, &Inputs { system_high_contrast: true, ..inputs(true) });
+        assert_eq!((hc.resolved, hc.font_pt), (resolved(TabStyle::Minimal, false, true), font_pt(resolved(TabStyle::Minimal, false, true))));
         assert_eq!(font_pt(TabStyle::LightHighContrast), 12.0);
         assert_eq!(font_pt(TabStyle::Dark), 11.0);
     }
