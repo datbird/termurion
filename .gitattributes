@@ -1,1 +1,2 @@
 resources/ssh/conductor.sh -text
+tests/fixtures/ssh/* binary

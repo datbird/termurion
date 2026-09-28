@@ -1,0 +1,10 @@
+P2000pnone 12345 NDZBYUNmR2dLa01ObnFzVHRWdlh4WXk= - ZXhhbXBsZS5jb20g
+]135;:begin 0.14444101664823118405\]135;:sh: 160: using_passwd: not found
+/bin/sh
+/home/user
+\]135;:end 0.14444101664823118405 0 r\]135;:begin 0.5425370111341430813\]135;:end 0.5425370111341430813 0 r\]135;:begin 0.367158611422397722\]135;:end 0.367158611422397722 0 r\]135;:begin 0.64083599072065119523\]135;:end 0.64083599072065119523 0 r\]135;:begin 0.395563336539219181\]135;:\]135;:end 0.395563336539219181 0 r\]135;:begin 0.35136600472455727324\]135;:end 0.35136600472455727324 0 r\]135;:unhook\sh: 160: using_passwd: not found
+/bin/sh: 12: id: not found
+/bin/sh: 12: [: Illegal number: 
+$ echo hi
+hi
+$ exit

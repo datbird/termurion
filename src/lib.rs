@@ -223,6 +223,8 @@ pub mod hotkey;
 pub mod broadcast;
 mod tmux_probe;
 pub mod tmux_hook;
+pub mod conductor_parser;
+pub mod ssh_hook;
 pub mod tmux_proto;
 pub mod tmux_gateway;
 pub mod tmux_handshake;
