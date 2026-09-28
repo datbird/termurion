@@ -173,10 +173,12 @@ pub fn headers(b: &Build) -> Vec<(String, String)> {
 }
 
 /// The response token budget for this request (`P:303-317`): the query is every message's
-/// content joined with "\n"; the functions count as their declarations' JSON only when the
-/// model has function calling (Swift escapes "/", so a length can differ by those bytes).
+/// content joined with "\n", a message without content (a call, a file) counting as "" with its
+/// separator (`Body.content`, `LLM.swift:220-222`); the functions count as their declarations'
+/// JSON only when the model has function calling (Swift escapes "/" and writes its own schema
+/// encoding, so a length can differ by those bytes).
 pub fn max_tokens_for(b: &Build) -> i64 {
-    let query = b.messages.iter().filter_map(Message::content).collect::<Vec<_>>().join("\n");
+    let query = b.messages.iter().map(|m| m.content().unwrap_or_default()).collect::<Vec<_>>().join("\n");
     let functions = if b.tools.is_empty() || !has(b.model, Feature::FunctionCalling) {
         String::new()
     } else {
@@ -1185,6 +1187,44 @@ mod tests {
 
     fn h(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn max_tokens_for_follows_iterm2() {
+        let (hosted, small) = (Hosted::default(), Wire { token_limit: 100, ..wire() });
+        let budget = |m: &Model, messages: &[Message], tools: &[ToolDecl]| {
+            max_tokens_for(&Build {
+                model: m,
+                key: "sk-a",
+                messages,
+                tools,
+                stream: false,
+                hosted: &hosted,
+                previous_response_id: None,
+                should_think: None,
+                effort: None,
+                tier: None,
+                volatile: None,
+                frozen: None,
+                wire: &small,
+            })
+        };
+        // A tool continuation: the call has no content but still counts as "" with its "\n",
+        // so the query is "ab\n\ncd", 6 bytes, 3 tokens.
+        let call = Message::new(Some(Role::Assistant), Body::FunctionCall(FunctionCall { name: Some("f".into()), arguments: Some("{}".into()), id: None, thought_signature: None }, None));
+        let output = Message::new(Some(Role::Function), Body::FunctionOutput { name: "f".into(), output: "cd".into(), id: None });
+        let continuation = [Message::text(Role::User, "ab"), call, output];
+        let m = openai();
+        assert_eq!(budget(&m, &continuation, &[]), 97);
+        // The declarations `[{"name":"f","description":"","parameters":{"type":"object"}}]`
+        // are 62 bytes, 31 tokens, counted only with function calling.
+        assert_eq!(budget(&m, &continuation, &[tool("f")]), 66);
+        let mut plain = openai();
+        plain.features.remove(&Feature::FunctionCalling);
+        assert_eq!(budget(&plain, &continuation, &[tool("f")]), 97);
+        let mut short = openai();
+        short.max_response_tokens = 50;
+        assert_eq!(budget(&short, &continuation, &[]), 50, "the model's own cap");
     }
 
     #[test]
