@@ -1198,6 +1198,11 @@ mod tests {
             assert_eq!(row.inverted, inverted, "{key}");
             assert_eq!(row.label, label, "{key}");
         }
+        // The one row with an iTerm2 tooltip (`PreferencePanel.xib`, "Support basic HTML tags") uses it verbatim.
+        assert_eq!(
+            schema::find_global("HTMLTabTitles").unwrap().help,
+            "The following tags are recognized: <u>, <i>, and <b>. You can also use &lt; and &amp;."
+        );
         // An inverted checkbox shows the opposite of the stored bool (`kPreferenceInfoTypeInvertedCheckbox`).
         assert!(checkbox_shows(true, false));
         assert!(!checkbox_shows(false, false));

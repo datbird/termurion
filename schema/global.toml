@@ -460,7 +460,7 @@ section = "Tabs"
 label = "Support basic HTML tags in tab titles"
 type = "bool"
 default = false
-help = "Tab titles may use <b>, <i> and <u>, with &lt; and &amp; for < and &."
+help = "The following tags are recognized: <u>, <i>, and <b>. You can also use &lt; and &amp;."
 
 [[setting]]
 key = "ScrollableSideTabBar"
