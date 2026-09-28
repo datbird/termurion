@@ -132,7 +132,7 @@ mod tests {
         assert_eq!(prompt_capture(&s, &r), None, "before the new prompt");
         s.feed(b"\x1b]133;D;0\x07\x1b]133;A\x07\x1b]133;B\x07");
         assert_eq!(prompt_capture(&s, &r), Some(ai_exec::output_outcome("dir", "dir\na\nb".to_string())));
-        // A start line that fell off the scrollback gives Some(None).
+        // A start line that fell off the scrollback answers the lost-output notice.
         let mut small = Screen::new(40, 3);
         small.feed(b"\x1b]133;A\x07\x1b]133;B\x07");
         let mut lost = running(Path::Prompt, &small);

@@ -361,7 +361,7 @@ const TOOLS: [Tool; 26] = {
             description: concat!(
                 "Inserts text into the terminal input at the cursor position, as if typed, ",
                 "without submitting it: the text may not contain a line break or a control key ",
-                "other than Tab and Ctrl+C (a refused text types nothing). To run a command, use ",
+                "other than Tab (a refused text types nothing). To run a command, use ",
                 "execute_command. Use this to interact with a running interactive or ",
                 "full-screen (TUI) program - choose a menu option, or send keystrokes to a ",
                 "running app - since unlike execute_command it does not wait for the program ",
@@ -369,7 +369,7 @@ const TOOLS: [Tool; 26] = {
             ),
             args: &[text(
                 "text",
-                "The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send special characters: \\\\ for a literal backslash, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Only Tab (\\t) and Ctrl+C (\\u0003) are typed among the control keys: a line break or any other control character (\\n, \\r, Escape, Ctrl-D, Ctrl-Z, arrow keys and the like) is refused and nothing is typed, because this tool never submits a line. Consider whether execute_command would be a better choice, especially when running a command at the shell prompt since insert_text_at_cursor does not return the output to you.",
+                "The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send special characters: \\\\ for a literal backslash, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Only Tab (\\t) is typed among the control keys: a line break or any other control character (\\n, \\r, Ctrl+C, Escape, Ctrl-D, Ctrl-Z, arrow keys and the like) is refused and nothing is typed, because this tool never submits a line. Consider whether execute_command would be a better choice, especially when running a command at the shell prompt since insert_text_at_cursor does not return the output to you.",
             )],
         },
         Tool { name: "delete_current_line", category: ControlTerminal, description: "Clears the current command line input (only at the prompt).", args: &[] },
@@ -724,7 +724,7 @@ mod tests {
         assert_eq!(
             description("insert_text_at_cursor"),
             Some(
-                "Inserts text into the terminal input at the cursor position, as if typed, without submitting it: the text may not contain a line break or a control key other than Tab and Ctrl+C (a refused text types nothing). To run a command, use execute_command. Use this to interact with a running interactive or full-screen (TUI) program - choose a menu option, or send keystrokes to a running app - since unlike execute_command it does not wait for the program to finish."
+                "Inserts text into the terminal input at the cursor position, as if typed, without submitting it: the text may not contain a line break or a control key other than Tab (a refused text types nothing). To run a command, use execute_command. Use this to interact with a running interactive or full-screen (TUI) program - choose a menu option, or send keystrokes to a running app - since unlike execute_command it does not wait for the program to finish."
             )
         );
         assert_eq!(description("create_file"), Some("Creates a file containing a specified string on the user's computer and then reveals it in Explorer."));
@@ -748,7 +748,7 @@ mod tests {
         assert_eq!(arg_descriptions("read_web_page_section"), [("startingLineNumber", "The line number to start reading at."), ("numberOfLines", "The number of lines to return.")]);
         assert_eq!(
             arg_descriptions("insert_text_at_cursor"),
-            [("text", "The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send special characters: \\\\ for a literal backslash, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Only Tab (\\t) and Ctrl+C (\\u0003) are typed among the control keys: a line break or any other control character (\\n, \\r, Escape, Ctrl-D, Ctrl-Z, arrow keys and the like) is refused and nothing is typed, because this tool never submits a line. Consider whether execute_command would be a better choice, especially when running a command at the shell prompt since insert_text_at_cursor does not return the output to you.")]
+            [("text", "The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send special characters: \\\\ for a literal backslash, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Only Tab (\\t) is typed among the control keys: a line break or any other control character (\\n, \\r, Ctrl+C, Escape, Ctrl-D, Ctrl-Z, arrow keys and the like) is refused and nothing is typed, because this tool never submits a line. Consider whether execute_command would be a better choice, especially when running a command at the shell prompt since insert_text_at_cursor does not return the output to you.")]
         );
         for name in ["execute_command", "insert_text_at_cursor"] {
             let d = description(name).unwrap();

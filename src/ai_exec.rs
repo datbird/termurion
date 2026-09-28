@@ -35,15 +35,15 @@ pub fn marker_suffix(kind: ShellKind, uuid: &str) -> String {
     }
 }
 
+pub const REFUSED_MODEL: &str = "Error: execute_command cannot run a command that holds a control character other than Tab and newlines. Send the command as plain text.";
+pub const REFUSED_NOTICE: &str = "AI tried to run a command holding a control character, so nothing was run.";
+
 /// The answer for an `execute_command` whose text holds a control key the allow-list refuses,
 /// None when it may go on to the check (Task 7 finding 1, ruling R12cd-2 widened). The same
 /// allow-list as `insert_text_at_cursor` (`ai_actions::has_refused_control`) plus CR and LF,
 /// so a multi-line command is checked whole; Ctrl+R, Ctrl+P, Ctrl+Y, Esc-prefixed keys and C1
 /// controls would make the shell run a history line the check never saw. Called before the
 /// check and again before any write (`App::ai_exec_start`).
-pub const REFUSED_MODEL: &str = "Error: execute_command cannot run a command that holds a control character other than Tab and newlines. Send the command as plain text.";
-pub const REFUSED_NOTICE: &str = "AI tried to run a command holding a control character, so nothing was run.";
-
 pub fn refusal(command: &str) -> Option<Outcome> {
     crate::ai_actions::has_refused_control(command, true)
         .then(|| Outcome { model: REFUSED_MODEL.to_string(), notice: Some(REFUSED_NOTICE.to_string()) })
