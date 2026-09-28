@@ -9,9 +9,9 @@ use crate::winmodel::LayoutOp;
 impl App {
     /// Pin Tab or Unpin Tab for the tab `tab` (its id). A tmux tab never pins. A grouped tab
     /// pins or unpins its whole group, refused whole when any member is a tmux tab, so the
-    /// group never straddles the pinned boundary; a tab alone moves to one past the last
-    /// pinned tab (`tab_groups::pin_target`). Then the order settles
-    /// (`tab_groups::canonical_order`).
+    /// group never straddles the pinned boundary. Each tab whose state changes moves as a
+    /// lone tab does, to one past the last pinned tab, and the order settles after each move
+    /// (`tab_groups::apply_pin`, `PTS:372-392`).
     #[allow(dead_code)] // Task 9's tab menu calls it.
     pub(super) fn toggle_pin(&mut self, tab: u64) {
         let Some(at) = self.tabs.iter().position(|t| t.id == tab) else { return };
@@ -19,26 +19,24 @@ impl App {
             return;
         }
         let pinned = !self.tabs[at].pinned;
-        let active = self.tabs.get(self.active).map(|t| t.id);
-        match self.tabs[at].group.as_ref().map(|g| g.id.clone()).filter(|g| !g.is_empty()) {
-            Some(gid) => {
-                let members: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].group.as_ref().is_some_and(|g| g.id == gid)).collect();
-                if members.iter().any(|&i| self.tmux_of(self.tabs[i].focused).is_some()) {
-                    return;
-                }
-                for i in members {
-                    self.tabs[i].pinned = pinned;
-                }
-            }
-            None => {
-                self.tabs[at].pinned = pinned;
-                let flags: Vec<bool> = self.tabs.iter().map(|t| t.pinned).collect();
-                // `moveTabAtIndex:toIndex:`: taken out, then put back at the target.
-                let to = tab_groups::pin_target(&flags, at).min(self.tabs.len() - 1);
-                let moving = self.tabs.remove(at);
-                self.tabs.insert(to, moving);
-            }
+        let members: Vec<usize> = match self.tabs[at].group.as_ref().map(|g| g.id.clone()).filter(|g| !g.is_empty()) {
+            Some(gid) => (0..self.tabs.len()).filter(|&i| self.tabs[i].group.as_ref().is_some_and(|g| g.id == gid)).collect(),
+            None => vec![at],
+        };
+        if members.iter().any(|&i| self.tmux_of(self.tabs[i].focused).is_some()) {
+            return;
         }
+        let order = {
+            let groups: Vec<Option<&str>> = self.tabs.iter().map(|t| t.group.as_ref().map(|g| g.id.as_str())).collect();
+            let flags: Vec<bool> = self.tabs.iter().map(|t| t.pinned).collect();
+            tab_groups::apply_pin(&groups, &flags, &members, pinned)
+        };
+        for &i in &members {
+            self.tabs[i].pinned = pinned;
+        }
+        let active = self.tabs.get(self.active).map(|t| t.id);
+        let mut old: Vec<Option<Tab>> = std::mem::take(&mut self.tabs).into_iter().map(Some).collect();
+        self.tabs = order.into_iter().filter_map(|i| old.get_mut(i).and_then(Option::take)).collect();
         if let Some(a) = active.and_then(|a| self.tabs.iter().position(|t| t.id == a)) {
             self.active = a;
         }

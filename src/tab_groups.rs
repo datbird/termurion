@@ -284,6 +284,32 @@ pub fn pin_target(pinned: &[bool], index: usize) -> usize {
     pinned.iter().enumerate().filter(|&(i, p)| *p && i != index).map(|(i, _)| i + 1).last().unwrap_or(0)
 }
 
+/// `togglePinTab` (`PTS:355-397`) applied to an order: the tabs `members` (input indices, in
+/// tab order) take the pin state `pin`. Each one whose state changes moves as
+/// `didChangePinnedState` moves it (`PTS:400-416`): taken out and put back at `pin_target`
+/// (`PT moveTabAtIndex:toIndex:`), and the order settles after each move (`PT tabsDidReorder`,
+/// `canonical_order`). A group so moves member by member, as a lone tab does. `result[k]` is
+/// the input index of the tab that belongs at position k.
+pub fn apply_pin(groups: &[Option<&str>], pinned: &[bool], members: &[usize], pin: bool) -> Vec<usize> {
+    let mut flags = pinned.to_vec();
+    let mut order: Vec<usize> = (0..groups.len()).collect();
+    for &m in members {
+        if flags.get(m).is_none_or(|p| *p == pin) {
+            continue;
+        }
+        flags[m] = pin;
+        let Some(at) = order.iter().position(|&i| i == m) else { continue };
+        let now: Vec<bool> = order.iter().map(|&i| flags[i]).collect();
+        let to = pin_target(&now, at).min(order.len() - 1);
+        order.remove(at);
+        order.insert(to, m);
+        let g: Vec<Option<&str>> = order.iter().map(|&i| groups[i]).collect();
+        let p: Vec<bool> = order.iter().map(|&i| flags[i]).collect();
+        order = canonical_order(&g, &p).into_iter().map(|k| order[k]).collect();
+    }
+    order
+}
+
 /// `nextTabGroupColor` (`PT:9149-9166`): a new group's color, cycling the palette by the
 /// number of groups already in the window so consecutive groups look distinct.
 pub fn next_color(groups_in_window: usize) -> Rgb {
@@ -414,6 +440,12 @@ mod tests {
         assert_eq!(pin_target(&[true, false, false], 2), 1, "pinning moves the tab right after the pinned zone");
         assert_eq!(pin_target(&[true, true, false], 0), 2, "unpinning tab 0: its own pin is excluded");
         assert_eq!(pin_target(&[false, false], 1), 0);
+        // Unpinning moves each member as a lone tab moves (`PTS:382-392`).
+        assert_eq!(apply_pin(&[A, N, N], &[true, true, false], &[0], false), vec![1, 2, 0], "[G1 P, X P, U1] unpinning G1 gives [X, U1, G1]");
+        assert_eq!(apply_pin(&[A, A, N, N], &[true, true, true, false], &[0, 1], false), vec![2, 3, 1, 0], "[G1 P, G2 P, X P, U1] gives [X, U1, G2, G1]");
+        assert_eq!(apply_pin(&[N, N, N, N], &[true, true, false, false], &[0], false), vec![1, 2, 0, 3], "a lone tab lands after the first unpinned tab");
+        assert_eq!(apply_pin(&[N, A, A], &[false, false, false], &[1, 2], true), vec![1, 2, 0], "pinning a group keeps its order in front");
+        assert_eq!(apply_pin(&[N, N], &[true, false], &[0], true), vec![0, 1], "no change, no move");
     }
 
     #[test]
