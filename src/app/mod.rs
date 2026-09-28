@@ -132,6 +132,7 @@ mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
 mod chat_app;
+mod chat_engine;
 mod ai_tools_app;
 mod ai_exec_app;
 mod ai_safety_app;
