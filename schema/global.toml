@@ -484,7 +484,7 @@ section = "Tabs"
 label = "Choosing a profile from the \u201cProfiles\u201d menu opens a new window."
 type = "bool"
 default = false
-help = "Choosing a profile from the \u201cProfiles\u201d menu opens a new window.\nYou must restart Tandem after changing this setting for it to take effect."
+help = "Choosing a profile from the \u201cProfiles\u201d menu opens a new window.\nWith Alt held, the profile opens in a new tab instead (the reverse of the usual). A change here takes effect at once."
 
 [[setting]]
 key = "WindowPlacement"
@@ -659,16 +659,16 @@ section = "Session"
 label = "Enable session restoration."
 type = "bool"
 default = true
-help = "Enable session restoration.\nSession restoration runs jobs in separate processes. They will survive crashes, force quits, and upgrades.\nYou must restart Tandem for this change to take effect."
+help = "Enable session restoration.\nSession restoration runs jobs in a separate process (tandem-host). They will survive crashes, force quits, and upgrades.\nYou must restart Tandem for this change to take effect."
 
 [[setting]]
 key = "killJobsInServersOnQuit"
 tab = "Advanced"
 section = "Session"
-label = "User-initiated Quit (\u2318Q) of Tandem will kill all running jobs."
+label = "User-initiated Quit (Win+Q) of Tandem will kill all running jobs."
 type = "bool"
 default = true
-help = "User-initiated Quit (\u2318Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on."
+help = "User-initiated Quit (Win+Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on."
 
 [[setting]]
 key = "showSessionRestoredBanner"
@@ -701,10 +701,10 @@ help = "Temporarily add a composer to the status bar instead of opening the larg
 key = "timeoutForDaemonAttachment"
 tab = "Advanced"
 section = "Session"
-label = "How long to wait when trying to attach to an iTerm daemon at startup when restoring windows (in seconds)?"
+label = "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
 type = "float"
 default = 10.0
-help = "How long to wait when trying to attach to an iTerm daemon at startup when restoring windows (in seconds)?"
+help = "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
 
 [[setting]]
 key = "translateScreenToXterm"
@@ -803,7 +803,7 @@ section = "Terminal"
 label = "Restore window contents at startup."
 type = "bool"
 default = true
-help = "Restore window contents at startup.\nThis requires \u201cSystem Settings > Desktop & Dock > Close windows when quitting an app\u201d to be off."
+help = "Restore window contents at startup."
 
 [[setting]]
 key = "maxHistoryLinesToRestore"
@@ -1001,7 +1001,7 @@ section = "Terminal"
 label = "Strip zero-width bidi/format characters when pasting?"
 type = "bool"
 default = false
-help = "Strip zero-width bidi/format characters when pasting?\nCharacters like the Zero-Width Non-Joiner (U+200C, the Persian half-space), ZWJ, LRM, and RLM are invisible but macOS classifies them as control characters, so line editors like zsh render them as a visible <200c> at the prompt. Turn this on to remove them from pasted text so the command line stays clean. Off by default because these characters are meaningful; enabling this changes the pasted text."
+help = "Strip zero-width bidi/format characters when pasting?\nCharacters like the Zero-Width Non-Joiner (U+200C, the Persian half-space), ZWJ, LRM, and RLM are invisible but line editors like zsh render them as a visible <200c> at the prompt. Turn this on to remove them from pasted text so the command line stays clean. Off by default because these characters are meaningful; enabling this changes the pasted text."
 
 [[setting]]
 key = "PasteTabToStringTabStopSize"
@@ -1571,7 +1571,7 @@ section = "General"
 label = "Height of the status bar in points."
 type = "float"
 default = 21.0
-help = "Height of the status bar in points.\nThis will also affect the height of per-pane title bars becuase the status bar may be embedded in it. You must restart Tandem after changing this setting for it to take effect."
+help = "Height of the status bar in points.\nThis will also affect the height of per-pane title bars becuase the status bar may be embedded in it. A change here takes effect at once."
 
 [[setting]]
 key = "UseTmuxStatusBar"
@@ -1586,10 +1586,10 @@ help = "In a tmux tab with the status bar on, the bar shows tmux's status-left a
 key = "gitSearchPath"
 tab = "Advanced"
 section = "General"
-label = "$PATH used when running git for the status bar component."
+label = "PATH used when running git for the status bar component."
 type = "string"
 default = ""
-help = "$PATH used when running git for the status bar component.\nChange this to use a custom install of git. You must restart Tandem for a change here to take effect."
+help = "PATH used when running git for the status bar component.\nChange this to use a custom install of git. The first folder in this ;-separated list holds the git.exe the status bar runs; empty runs git from PATH. A change here takes effect at once."
 
 [[setting]]
 key = "gitTimeout"
@@ -1604,10 +1604,10 @@ help = "Timeout in seconds when running git for the status bar component."
 key = "excludeUtunFromNetworkUtilization"
 tab = "Advanced"
 section = "General"
-label = "Exclude utun interfaces from network utilization?"
+label = "Exclude tunnel interfaces from network utilization?"
 type = "bool"
 default = true
-help = "Exclude utun interfaces from network utilization?\nThis is useful if you use a VPN and only want to see the traffic that goes over Wi-Fi or Ethernet."
+help = "Exclude tunnel interfaces from network utilization?\nThis is useful if you use a VPN and only want to see the traffic that goes over Wi-Fi or Ethernet."
 
 [[setting]]
 key = "lastpassGroups"
@@ -1625,7 +1625,7 @@ section = "Drawing"
 label = "Animate graph-based status bar components?"
 type = "bool"
 default = true
-help = "Animate graph-based status bar components?\nTurn this off to reduce CPU/GPU usage in WindowServer."
+help = "Animate graph-based status bar components?\nTurn this off to reduce CPU/GPU usage: the graphs jump once a second instead of sliding."
 
 [[setting]]
 key = "Default Toolbelt Width"
@@ -1643,7 +1643,7 @@ section = "Windows"
 label = "Toolbelt font family name"
 type = "string"
 default = "Menlo"
-help = "Toolbelt font family name"
+help = "Toolbelt font family name\nMenlo is not on Windows: a missing font draws in Consolas."
 
 [[setting]]
 key = "toolbeltFontSize"

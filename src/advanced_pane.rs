@@ -516,7 +516,7 @@ mod tests {
         };
         assert_eq!(
             text("statusBarHeight"),
-            ("Height of the status bar in points.", "Height of the status bar in points.\nThis will also affect the height of per-pane title bars becuase the status bar may be embedded in it. You must restart Tandem after changing this setting for it to take effect.")
+            ("Height of the status bar in points.", "Height of the status bar in points.\nThis will also affect the height of per-pane title bars becuase the status bar may be embedded in it. A change here takes effect at once.")
         );
         assert_eq!(
             text("anonymousTmuxWindowsOpenInCurrentWindow"),
@@ -527,7 +527,7 @@ mod tests {
         );
         assert_eq!(
             text("killJobsInServersOnQuit"),
-            ("User-initiated Quit (\u{2318}Q) of Tandem will kill all running jobs.", "User-initiated Quit (\u{2318}Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on.")
+            ("User-initiated Quit (Win+Q) of Tandem will kill all running jobs.", "User-initiated Quit (Win+Q) of Tandem will kill all running jobs.\nApplies only when session restoration is on.")
         );
         assert_eq!(
             text("fileDropCoprocess").1,
@@ -536,6 +536,18 @@ mod tests {
         assert_eq!(text("disableTmuxWindowResizing"), ("Don't automatically resize tmux windows", "Don't automatically resize tmux windows"));
         // iTerm2's description ends in a newline with nothing after it.
         assert_eq!(text("PasteHistoryMaxOptions").1, "Number of entries to save in Paste History.\n");
+        // Where Tandem behaves differently on Windows, the help says what Tandem does.
+        assert_eq!(
+            text("gitSearchPath"),
+            (
+                "PATH used when running git for the status bar component.",
+                "PATH used when running git for the status bar component.\nChange this to use a custom install of git. The first folder in this ;-separated list holds the git.exe the status bar runs; empty runs git from PATH. A change here takes effect at once."
+            )
+        );
+        assert_eq!(
+            text("timeoutForDaemonAttachment").1,
+            "How long to wait when trying to attach to the session host at startup when restoring windows (in seconds)?"
+        );
         // The Windows folder stands in for iTerm2's ~/.config/iterm2.
         assert_eq!(text("PreferredBaseDir").1, "Folder for config files. There must not be a space in the path.\nIf empty, then %APPDATA%\\Tandem will be the default location.");
     }
