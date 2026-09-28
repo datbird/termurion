@@ -789,7 +789,16 @@ pub fn run() {
         },
     };
     let utilities = match crate::utilities::ensure(&exe_dir) {
-        Ok(folder) => Some(folder),
+        Ok(done) => {
+            let entry = crate::utilities::path_entry(&done.folder.to_string_lossy());
+            if let Some(text) = crate::utilities::refresh_banner(&done.failed) {
+                crate::host::log(&format!("tandem: {text}"));
+                banners.set("utilities", text);
+            } else if entry.is_none() {
+                banners.set("utilities", format!("The utilities folder {} has a \";\" in its path, so it is not put on PATH.", done.folder.display()));
+            }
+            Some(done.folder)
+        }
         Err(e) => {
             banners.set("utilities", format!("The utilities folder could not be made: {e}"));
             None
@@ -1253,14 +1262,16 @@ impl App {
         });
         let name = p.name();
         let id = id.to_string();
-        let version = p.values.get("Unicode Version").and_then(|v| v.as_integer()).map_or(9, |v| v.clamp(0, 255) as u8);
-        let features = crate::osc1337::Features { clipboard_writable: self.globals.bool("AllowClipboardAccess"), ambiguous_wide: false, unicode_version: version };
-        let term_features = crate::osc1337::capabilities(features);
+        // The session starts with the profile's Unicode version, as its Capabilities reply does.
+        let version = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
+        let term_features = crate::osc1337::capabilities(crate::osc1337::session_features(self.globals.bool("AllowClipboardAccess"), 0, version));
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
         let path = self
             .utilities
             .as_ref()
             .filter(|_| self.globals.bool("addUtilitiesToPATH"))
-            .map(|folder| crate::utilities::path_with(&std::env::var("PATH").unwrap_or_default(), &folder.display().to_string()));
+            .and_then(|folder| crate::utilities::path_entry(&folder.to_string_lossy()))
+            .and_then(|entry| crate::utilities::session_path(std::env::var_os("PATH").as_deref(), &system_root, &entry));
         let facts = crate::session_env::Facts {
             window,
             tab,
@@ -1353,6 +1364,7 @@ impl App {
     fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
         pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+        pane.screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
         pane.screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
         let (list, prefs) = triggers_ui::triggers_of(p);
         pane.screen.set_triggers(list, prefs);

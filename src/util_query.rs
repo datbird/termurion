@@ -757,7 +757,7 @@ mod tests {
             let mut h = console(b"ok\nQUJD\r\r");
             h.answers = [ok(version), ok("")].into();
             assert_eq!(h.run("it2ul", &[refused]), 1, "{refused}");
-            assert!(h.out.is_empty() && h.runs.is_empty() && h.tty.modes.is_empty(), "{refused}");
+            assert!(h.out.is_empty() && h.runs.is_empty() && h.tty.modes.is_empty() && !h.tty.restored, "{refused}");
             assert_eq!(text(&h.err), format!("Fatal error: {refused}: network paths are not supported\n"));
         }
 
