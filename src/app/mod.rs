@@ -634,9 +634,9 @@ pub struct App {
     /// How much the window grew (pixels, width and height) when the tab bar last showed:
     /// the bar hiding shrinks it by exactly that (`tab_position::bar_growth`).
     bar_grown: (f32, f32),
-    /// A side tab bar's rows as last drawn (`scene::tab_bar_vertical`), one per tab in pixels,
-    /// window coordinates; a row outside the bar is zero-size.
-    side_rects: Vec<Rect>,
+    /// A side tab bar's group chips as last drawn (`scene::tab_bar_vertical`), pixels, window
+    /// coordinates, with their group ids.
+    side_chips: Vec<(Rect, String)>,
     /// The pointer is on a side bar's drag handle, so the resize pointer shows.
     side_handle_hover: bool,
     /// The tab whose tooltip the pointer is waiting on or showing, and when the pointer
@@ -1242,7 +1242,7 @@ pub fn run() {
         excursion_prevented: false,
         bar_was_visible: false,
         bar_grown: (0.0, 0.0),
-        side_rects: Vec::new(),
+        side_chips: Vec::new(),
         side_handle_hover: false,
         tab_tip: None,
         tab_tip_wake: None,
@@ -1620,12 +1620,18 @@ impl App {
         self.tab_bar_rect().filter(|_| !tab_position::vertical(self.tab_position()))
     }
 
-    /// A side tab bar's rect and its rows' height in pixels: the horizontal bar's height
-    /// (`PSM verticalCellHeight`), shrunk so every row fits when the bar does not scroll
-    /// (`tab_position::fit_rows`). None without a side bar.
-    fn side_rows(&self) -> Option<(Rect, f32)> {
-        let bar = self.tab_bar_rect().filter(|_| tab_position::vertical(self.tab_position()))?;
-        Some((bar, tab_position::fit_rows(self.tabs.len(), self.tab_height(), bar.h, self.side_bar_scrollable())))
+    /// A side tab bar's rect in pixels; None without a side bar.
+    fn side_bar_rect(&self) -> Option<Rect> {
+        self.tab_bar_rect().filter(|_| tab_position::vertical(self.tab_position()))
+    }
+
+    /// The shown bar's scroll offset in points: along a horizontal bar, down a side bar.
+    fn bar_offset(&self) -> f32 {
+        if self.side_bar_rect().is_some() {
+            self.side_bar_scroll
+        } else {
+            self.tab_scroll
+        }
     }
 
     /// `ScrollableSideTabBar`: rows that do not fit scroll (`PSM tabBarIsScrollable`).
@@ -1633,12 +1639,11 @@ impl App {
         self.globals.bool("ScrollableSideTabBar")
     }
 
-    /// A side bar's scroll offset brought within its rows (`PSM clampScrollOffset`), in points.
+    /// A side bar's scroll offset brought within its rows as last laid out
+    /// (`PSM clampScrollOffset`), in points.
     fn clamp_side_scroll(&mut self) {
-        let Some((bar, row)) = self.side_rows() else { return };
-        let scale = self.scale();
-        let max = if self.side_bar_scrollable() { tab_position::max_scroll(self.tabs.len(), row, bar.h) / scale } else { 0.0 };
-        self.side_bar_scroll = self.side_bar_scroll.clamp(0.0, max);
+        let Some(bar) = self.side_bar_rect() else { return };
+        self.side_bar_scroll = tab_layout::clamp_scroll(self.side_bar_scroll, self.tab_bar.content, bar.h / self.scale());
     }
 
     /// A side bar's drag handle in pixels, window coordinates (`tab_position::drag_handle`,
@@ -1650,21 +1655,27 @@ impl App {
         tab_position::drag_handle(points, self.tab_position()).map(|r| tab_layout::to_px(r, scale))
     }
 
-    /// Each tab's rect in pixels, window coordinates, in `tabs` order: on a horizontal bar its
-    /// cell scrolled and placed (`tab_position::rects_from_cells`), on a side bar its row as
-    /// last drawn. A tab not shown (in the overflow menu, collapsed, or with no bar) is
-    /// zero-size. 13d's drags and 13h's pane drop read the tabs' places here.
+    /// Each tab's rect in pixels, window coordinates, in `tabs` order: its cell (a side bar's
+    /// row) scrolled and placed (`tab_position::rects_from_cells`). A tab not shown (in the
+    /// overflow menu, collapsed, or with no bar) is zero-size. 13d's drags and 13h's pane drop
+    /// read the tabs' places here.
     pub(super) fn bar_tab_rects(&self) -> Vec<Rect> {
         let n = self.tabs.len();
-        let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
-        if tab_position::vertical(self.tab_position()) {
-            let mut rects = self.side_rects.clone();
-            rects.resize(n, zero);
-            return rects;
-        }
-        let Some(bar) = self.horizontal_bar_rect() else { return vec![zero; n] };
+        let Some(bar) = self.tab_bar_rect() else { return vec![Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }; n] };
         let cells: Vec<(usize, Rect)> = self.tab_bar.cells.iter().map(|(i, _, r)| (*i, *r)).collect();
-        tab_position::rects_from_cells(&cells, n, (bar.x, bar.y), self.tab_scroll, self.scale())
+        tab_position::rects_from_cells(&cells, n, (bar.x, bar.y), self.bar_offset(), self.scale(), self.tab_bar.vertical)
+    }
+
+    /// The group whose chip is under the window point (`x`, `y`) in pixels: on a horizontal
+    /// bar the chip `tab_layout::hit` finds, on a side bar a chip as last drawn.
+    pub(super) fn bar_chip_at(&self, x: f32, y: f32) -> Option<String> {
+        if self.side_bar_rect().is_some() {
+            return self.side_chips.iter().find(|(r, _)| r.contains(x, y)).map(|(_, id)| id.clone());
+        }
+        match self.tab_bar_hit(x, y)? {
+            tab_layout::Hit::Chip(k) => self.tab_bar.chips.get(k).map(|(id, _)| id.clone()),
+            _ => None,
+        }
     }
 
     /// The tab under the window point (`x`, `y`) in pixels, on either bar (its close button
@@ -1677,14 +1688,40 @@ impl App {
         }
     }
 
-    /// Lays out the tab bar `width` pixels wide, scrolled by `offset` points, measuring labels
-    /// in the prose font.
-    fn layout_tab_bar(&mut self, looks: &[scene::TabLook], width: f32, offset: f32) -> tab_layout::Bar {
-        let s = tab_layout::Settings::from_globals(&self.globals);
-        let inputs: Vec<tab_layout::TabInput> = looks
+    /// The tabs as the bar lays them out: each look, with its group's chip on the first tab of
+    /// each run (a run's members counted for a collapsed chip) and a collapsed group's tabs
+    /// hidden.
+    fn tab_inputs(&self, looks: &[scene::TabLook]) -> Vec<tab_layout::TabInput> {
+        let ids: Vec<Option<&str>> = self.tabs.iter().map(|t| t.group.as_ref().map(|g| g.id.as_str()).filter(|g| !g.is_empty())).collect();
+        looks
             .iter()
-            .map(|l| tab_layout::TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number, pinned: l.pinned })
-            .collect();
+            .enumerate()
+            .map(|(i, l)| {
+                let group = self.tabs.get(i).and_then(|t| t.group.as_ref()).filter(|g| !g.id.is_empty()).map(|g| {
+                    let first = i == 0 || ids[i - 1] != ids[i];
+                    let count = ids[i..].iter().take_while(|x| **x == ids[i]).count() + ids[..i].iter().rev().take_while(|x| **x == ids[i]).count();
+                    tab_layout::ChipInput { id: g.id.clone(), name: g.name.clone(), collapsed: g.collapsed, count, first }
+                });
+                tab_layout::TabInput {
+                    title: l.title.clone(),
+                    subtitle: l.subtitle.clone(),
+                    icon: l.dot.is_some() || l.icon.is_some(),
+                    processing: l.processing,
+                    number: l.number,
+                    pinned: l.pinned,
+                    hidden: group.as_ref().is_some_and(|g| g.collapsed),
+                    group,
+                }
+            })
+            .collect()
+    }
+
+    /// Lays out the tab bar in `area` (pixels): a horizontal bar scrolled along by `offset`
+    /// points, a side bar down, measuring labels in the prose font.
+    fn layout_tab_bar(&mut self, looks: &[scene::TabLook], area: Rect, offset: f32) -> tab_layout::Bar {
+        let s = tab_layout::Settings::from_globals(&self.globals);
+        let inputs = self.tab_inputs(looks);
+        let vertical = tab_position::vertical(self.tab_position());
         let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
         let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(&mut g.renderer));
         // Points to pixels and back: a text of `pt` points is drawn at `pt * scale` pixels.
@@ -1696,7 +1733,11 @@ impl App {
             }
             None => text.chars().count() as f32 * pt * 0.5,
         };
-        tab_layout::build(&inputs, active, width / scale, offset, hovered, &s, &measure)
+        if vertical {
+            tab_layout::build_vertical(&inputs, area.w / scale, area.h / scale, offset, hovered, &s, &measure)
+        } else {
+            tab_layout::build(&inputs, active, area.w / scale, offset, hovered, &s, &measure)
+        }
     }
 
     /// The part of the tab bar the tabs scroll in, in points: left of the right margin, where
@@ -1707,35 +1748,23 @@ impl App {
         w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))
     }
 
-    /// What the window point (`x`, `y`) in pixels is over on the tab bar; None off the bar. On
-    /// a side bar: the row under the point, else the bar.
+    /// What the window point (`x`, `y`) in pixels is over on the tab bar (either bar, at its
+    /// scroll); None off the bar.
     pub(super) fn tab_bar_hit(&self, x: f32, y: f32) -> Option<tab_layout::Hit> {
-        if let Some((bar, row)) = self.side_rows() {
-            if !bar.contains(x, y) {
-                return None;
-            }
-            // The rows as `tab_bar_vertical` places them, at the current scroll.
-            let i = ((y - bar.y + self.side_bar_scroll * self.scale()) / row).floor();
-            return Some(if i >= 0.0 && (i as usize) < self.tabs.len() { tab_layout::Hit::Tab(i as usize) } else { tab_layout::Hit::Bar });
-        }
-        let bar = self.horizontal_bar_rect()?;
+        let bar = self.tab_bar_rect().filter(|b| b.contains(x, y))?;
         let scale = self.scale();
-        live_tab_hit(tab_layout::hit(&self.tab_bar, self.tab_scroll, (x - bar.x) / scale, (y - bar.y) / scale), self.tabs.len())
+        live_tab_hit(tab_layout::hit(&self.tab_bar, self.bar_offset(), (x - bar.x) / scale, (y - bar.y) / scale), self.tabs.len())
     }
 
     /// Brings the selected tab fully into view on a bar that scrolls, and keeps it there at
     /// every layout until the bar is scrolled by hand (`PSM scrollSelectedTabIntoView`).
     pub(super) fn scroll_active_tab_into_view(&mut self) {
         self.tab_keep_selected = true;
-        if let Some((bar, row)) = self.side_rows() {
-            if self.side_bar_scrollable() {
-                let scale = self.scale();
-                self.side_bar_scroll = tab_position::scroll_to_show(self.active, row, bar.h, self.side_bar_scroll * scale) / scale;
-                self.clamp_side_scroll();
-            }
+        let Some((_, _, r)) = self.tab_bar.cells.iter().find(|(i, _, _)| *i == self.active) else { return };
+        if let Some(bar) = self.side_bar_rect() {
+            self.side_bar_scroll = tab_layout::scroll_into_view(self.side_bar_scroll, r.y, r.h, bar.h / self.scale(), self.tab_bar.content);
             return;
         }
-        let Some((_, _, r)) = self.tab_bar.cells.iter().find(|(i, _, _)| *i == self.active) else { return };
         self.tab_scroll = tab_layout::scroll_into_view(self.tab_scroll, r.x, r.w, self.tab_viewport(), self.tab_bar.content);
     }
 
@@ -1763,7 +1792,7 @@ impl App {
         if self.tab_keep_selected {
             self.scroll_active_tab_into_view();
         }
-        if self.side_rows().is_some() {
+        if self.side_bar_rect().is_some() {
             self.clamp_side_scroll();
         } else {
             self.tab_scroll = tab_layout::clamp_scroll(self.tab_scroll, self.tab_bar.content, self.tab_viewport());
@@ -1843,10 +1872,11 @@ impl App {
         None
     }
 
-    /// A press on the tab bar (`PSM mouseDown:`, `otherMouseDown:`): the left button keeps the
-    /// press and its click count, and selects the tab at once when `press_selects` says so (a
-    /// press on a close button shows it pressed instead); the middle button keeps its hit for
-    /// the release; other buttons do nothing on the bar.
+    /// A press on the tab bar (`PSM mouseDown:`, `otherMouseDown:`, `menuForEvent:`): the left
+    /// button keeps the press and its click count, and selects the tab at once when
+    /// `press_selects` says so (a press on a close button shows it pressed instead); the middle
+    /// button keeps its hit for the release; the right button opens the tab's menu on a tab
+    /// and the group's on a chip; other buttons do nothing on the bar.
     fn tab_bar_press(&mut self, button: MouseButton, hit: tab_layout::Hit) {
         use tab_layout::Hit;
         let alt = self.mods.alt;
@@ -1876,6 +1906,20 @@ impl App {
                 self.redraw();
             }
             MouseButton::Middle => self.tab_press = Some((hit, 0, alt, id)),
+            MouseButton::Right => match hit {
+                Hit::Tab(_) | Hit::Close(_) => {
+                    if let Some(tab) = id {
+                        self.show_tab_menu(tab);
+                    }
+                }
+                Hit::Chip(_) => {
+                    let (x, y) = self.cursor;
+                    if let Some(group) = self.bar_chip_at(x, y) {
+                        self.show_group_menu(&group);
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -1925,6 +1969,15 @@ impl App {
         // The "+" is a button of its own: it acts when released where it was pressed.
         if down == Hit::Add && up == Some(Hit::Add) {
             self.add_tab_button();
+        }
+        // A plain click on a group chip toggles its collapse (`PSM mouseUp:`, `PT:9731-9734`).
+        if let (Hit::Chip(k), Some(Hit::Chip(j)), 1) = (down, up, clicks) {
+            let group = self.bar_chip_at(x, y);
+            if k == j {
+                if let Some(g) = group {
+                    self.toggle_group_collapsed(&g);
+                }
+            }
         }
         let clicked = tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible"));
         // A drag that began drops the tab; one that never began leaves the click.
@@ -1984,7 +2037,7 @@ impl App {
         if self.tab_bar_hit(x, y).is_none() {
             return false;
         }
-        if self.side_rows().is_some() {
+        if self.side_bar_rect().is_some() {
             self.side_bar_wheel(delta);
             return true;
         }
@@ -2009,19 +2062,20 @@ impl App {
 
     /// The wheel over a side bar (`PSM scrollWheel:`): with `ScrollableSideTabBar` and rows
     /// that do not fit, the vertical wheel scrolls the rows (a notched wheel a row a line),
-    /// within `max_scroll`, and stops keeping the selected tab in view. Otherwise nothing.
+    /// within the rows as last laid out, and stops keeping the selected tab in view. Otherwise
+    /// nothing.
     fn side_bar_wheel(&mut self, delta: MouseScrollDelta) {
-        let Some((bar, row)) = self.side_rows() else { return };
-        let max = tab_position::max_scroll(self.tabs.len(), row, bar.h);
-        if !self.side_bar_scrollable() || max <= 0.0 {
+        let Some(bar) = self.side_bar_rect() else { return };
+        let (scale, content) = (self.scale(), self.tab_bar.content);
+        if !self.side_bar_scrollable() || content <= bar.h / scale {
             return;
         }
+        let row = tab_layout::Settings::from_globals(&self.globals).height;
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => y * row,
-            MouseScrollDelta::PixelDelta(p) => p.y as f32,
+            MouseScrollDelta::PixelDelta(p) => p.y as f32 / scale,
         };
-        let scale = self.scale();
-        let to = (self.side_bar_scroll * scale - dy).clamp(0.0, max) / scale;
+        let to = tab_layout::clamp_scroll(self.side_bar_scroll - dy, content, bar.h / scale);
         if to != self.side_bar_scroll {
             self.side_bar_scroll = to;
             self.tab_keep_selected = false;
@@ -3614,8 +3668,7 @@ impl App {
         if self.tab_press_moved() {
             self.tab_press = None;
         }
-        if let Some(area) = self.horizontal_bar_rect() {
-            let w = area.w;
+        if let Some(area) = self.tab_bar_rect() {
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
             if let Some(i) = held_close(self.tab_press) {
                 if let Some(l) = looks.get_mut(i) {
@@ -3623,26 +3676,31 @@ impl App {
                 }
             }
             // Kept unscrolled for hits; the scroll offset applies at each use.
-            self.tab_bar = self.layout_tab_bar(&looks, w, 0.0);
+            self.tab_bar = self.layout_tab_bar(&looks, area, 0.0);
+            let vertical = self.tab_bar.vertical;
+            if vertical {
+                self.tab_scroll = 0.0;
+            }
             self.follow_active_tab();
-            let scrolled = (self.tab_scroll > 0.0).then(|| self.layout_tab_bar(&looks, w, self.tab_scroll));
+            let offset = self.bar_offset();
+            let scrolled = (offset > 0.0).then(|| self.layout_tab_bar(&looks, area, offset));
             let scale = self.scale();
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
             // A dragged tab follows the pointer along the bar, drawn over the others.
             let dragged = self.dragged_bar(scrolled.as_ref().unwrap_or(&self.tab_bar), &mut looks, area);
-            scene::tab_bar(bar_frame, &looks, self.active, dragged.as_ref().or(scrolled.as_ref()).unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
-            self.side_rects.clear();
-        } else if let Some((area, row)) = self.side_rows() {
-            let looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
-            self.tab_bar = tab_layout::Bar::default();
-            self.tab_scroll = 0.0;
-            self.follow_active_tab();
-            let scroll = self.side_bar_scroll * self.scale();
-            self.side_rects = scene::tab_bar_vertical(bar_frame, &looks, self.active, area, cell, row, scroll);
+            let drawn = dragged.as_ref().or(scrolled.as_ref()).unwrap_or(&self.tab_bar);
+            let (key, overflow_down) = (self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
+            if vertical {
+                let (_, chips) = scene::tab_bar_vertical(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
+                self.side_chips = chips;
+            } else {
+                scene::tab_bar(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
+                self.side_chips.clear();
+            }
         } else {
             self.tab_bar = tab_layout::Bar::default();
             self.tab_scroll = 0.0;
-            self.side_rects.clear();
+            self.side_chips.clear();
             self.tab_hover = None;
             self.tab_tip = None;
         }

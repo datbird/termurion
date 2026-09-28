@@ -231,6 +231,36 @@ impl App {
         self.popup_menu = Some(context);
     }
 
+    /// Edit Session for the session `pane` (`PT editSession:makeKey:`): Settings opened at the
+    /// profile it uses; Settings alone without a session.
+    pub(super) fn edit_session(&mut self, pane: Option<PaneId>, event_loop: &ActiveEventLoop) {
+        let guid = pane.and_then(|id| self.panes.get(&id)).map(|p| self.store.shared_guid(&p.profile));
+        let tmux = pane.is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
+        self.open_settings(event_loop, Mode::Settings);
+        if let (Some(s), Some(g)) = (self.settings.as_mut(), guid) {
+            s.select(&g);
+            // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
+            s.set_tmux_session(tmux);
+        }
+    }
+
+    /// A context menu built from `entries` (`tab_menu::Entry`) as a popup at the pointer;
+    /// `what` names it in an error banner. A label's "&" is doubled so Windows shows it.
+    pub(super) fn show_entries(&mut self, entries: &[crate::tab_menu::Entry], what: &str) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let menu = Menu::new();
+        let mut results = Vec::new();
+        for e in entries {
+            let item = entry_item(e, &mut results);
+            results.push(menu.append(item.as_ref()));
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("{what}: {e}"));
+        }
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        self.popup_menu = Some(menu);
+    }
+
     /// A porthole's language list as a popup: `items` in order, None for a separator. The
     /// picks come back as `porthole-lang:<index>`.
     pub(super) fn show_porthole_languages(&mut self, items: &[Option<String>]) {
@@ -284,7 +314,6 @@ impl App {
     /// then a 16 by 16 swatch per color labeled "#rrggbb", then "Choose Color\u{2026}"; a group
     /// always has a color, so it has no "Default". The picks come back as `color-pick:<n>`.
     /// 13d's tab and tab group menus open it.
-    #[allow(dead_code)]
     pub(super) fn open_color_picker(&mut self, target: ColorTarget, swatches: Vec<crate::palette::Rgb>) {
         let Some(hwnd) = self.hwnd() else { return };
         let menu = Menu::new();
@@ -316,7 +345,7 @@ impl App {
             PickKind::Choose => {
                 let current = match &target {
                     ColorTarget::Tab(id) => self.tabs.iter().find(|t| t.id == *id).and_then(|t| self.tab_look(t).color),
-                    ColorTarget::Group(_) => None,
+                    ColorTarget::Group(g) => self.tabs.iter().find_map(|t| t.group.as_ref().filter(|x| x.id == *g)).map(|x| x.color),
                 };
                 if let Some(c) = self.hwnd().and_then(|h| choose_color(h, current, &swatches)) {
                     self.apply_picked_color(target, Some(c));
@@ -335,8 +364,12 @@ impl App {
                     self.set_tab_color_for(tab, color);
                 }
             }
-            // Tab groups arrive in 13d, whose Task 9 calls its `set_group_color` here.
-            ColorTarget::Group(_) => {}
+            // A group always has a color: the picker offers no "Default" for it.
+            ColorTarget::Group(g) => {
+                if let Some(c) = color {
+                    self.set_group_color(&g, c);
+                }
+            }
         }
     }
 
@@ -439,6 +472,9 @@ impl App {
     }
 
     pub(super) fn run_menu_id(&mut self, id: &str, event_loop: &ActiveEventLoop) {
+        if self.tab_menu_picked(id, event_loop) {
+            return;
+        }
         if self.buried_picked(id) || self.script_picked(id) {
             return;
         }
@@ -516,16 +552,7 @@ impl App {
             "exportScript:" => self.export_scripts(event_loop),
             "openDependencyEditor:" => self.open_dependency_editor(event_loop),
             "openScriptConsole:" => self.open_script_console(event_loop),
-            "editCurrentSession:" => {
-                let guid = self.focused_guid();
-                let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
-                self.open_settings(event_loop, Mode::Settings);
-                if let (Some(s), Some(g)) = (self.settings.as_mut(), guid) {
-                    s.select(&g);
-                    // iTerm2's `tmux:self.isTmuxClient` (PTYSession.m:12333-12338).
-                    s.set_tmux_session(tmux);
-                }
-            }
+            "editCurrentSession:" => self.edit_session(self.focused_id(), event_loop),
             "showBookmarkWindow:" | "openSplitHorizontallySheet:" | "openSplitVerticallySheet:" => {
                 self.open_settings(event_loop, Mode::Profiles)
             }
@@ -969,11 +996,29 @@ pub(super) fn context_layout(extra: usize, providers: usize) -> Vec<Slot> {
 
 /// What the Tab Color picker colors: a tab by its stable `Tab.id`, or a tab group by its id.
 /// 13d's menus build them.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ColorTarget {
     Tab(u64),
     Group(String),
+}
+
+/// A context menu entry as a muda item: a check item when it has a check mark, a submenu with
+/// its entries (their append results go to `results`), or a separator.
+fn entry_item(e: &crate::tab_menu::Entry, results: &mut Vec<muda::Result<()>>) -> Box<dyn IsMenuItem> {
+    use crate::tab_menu::Entry;
+    match e {
+        Entry::Item { id, label, enabled, checked: Some(on) } => Box::new(CheckMenuItem::with_id(id.as_str(), label.replace('&', "&&"), *enabled, *on, None)),
+        Entry::Item { id, label, enabled, checked: None } => Box::new(MenuItem::with_id(id.as_str(), label.replace('&', "&&"), *enabled, None)),
+        Entry::Submenu { label, entries } => {
+            let sub = Submenu::new(label.replace('&', "&&"), true);
+            for child in entries {
+                let item = entry_item(child, results);
+                results.push(sub.append(item.as_ref()));
+            }
+            Box::new(sub)
+        }
+        Entry::Separator => Box::new(PredefinedMenuItem::separator()),
+    }
 }
 
 /// What a Tab Color picker entry does.

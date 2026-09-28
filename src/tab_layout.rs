@@ -130,7 +130,7 @@ pub fn widths(desired: &[f32], pinned: &[bool], pinned_width: f32, bar_width: f3
     Widths { widths, overflow, content: 0.0 }
 }
 
-/// `PSM cellWidthsForHorizontalArrangementWithOverflow:` without group chips (Task 9) and with
+/// `PSM cellWidthsForHorizontalArrangementWithOverflow:` without group chips (`chip_widths`) and with
 /// iTerm2's Yosemite intercell spacing of 0. Pinned tabs are `pinned_width` wide and come off
 /// the room first; the unpinned tabs share the rest by the usual rule. The result is a prefix
 /// of the tabs: at the first tab that does not fit, it and the rest overflow.
@@ -700,6 +700,32 @@ pub struct TabInput {
     pub number: usize,
     /// Pinned: `Settings::pinned_width` wide, with its pin and only its first character.
     pub pinned: bool,
+    /// The tab's group; the run's first tab has the chip before it.
+    pub group: Option<ChipInput>,
+    /// Hidden in a collapsed group: no cell, its index kept (`isCollapsedHidden`).
+    pub hidden: bool,
+}
+
+/// A grouped tab's group, as its chip needs it (`PSM cellsByInsertingTabGroupChipsInto:`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChipInput {
+    pub id: String,
+    pub name: String,
+    pub collapsed: bool,
+    /// The members in the run (the collapsed chip's "Name  N").
+    pub count: usize,
+    /// The run's first tab: the chip goes before it.
+    pub first: bool,
+}
+
+/// A group chip's text as drawn: its run of tabs (hidden members included), its label (the
+/// name, or "Name  N" collapsed), truncated to the chip, and whether the group is collapsed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChipText {
+    pub run: std::ops::Range<usize>,
+    pub label: String,
+    pub label_width: f32,
+    pub collapsed: bool,
 }
 
 /// A tab's texts as drawn, measured in points: the title's styled runs with their widths, the
@@ -740,9 +766,16 @@ pub struct Bar {
     pub overflow: Option<Rect>,
     /// The scroll extent; 0 when nothing scrolls.
     pub content: f32,
+    /// A tab's height; a side bar's is its whole height (a row is `Settings::height`).
     pub height: f32,
     /// The label font's size.
     pub font: f32,
+    /// The group chips: group id and rectangle, one before each run.
+    pub chips: Vec<(String, Rect)>,
+    /// Per chip, its text.
+    pub chip_texts: Vec<ChipText>,
+    /// A side bar: the tabs are rows and scroll down, not along.
+    pub vertical: bool,
 }
 
 /// The tab bar's settings (`RTV:1984-1990`, `PT:10112-10124`).
@@ -844,22 +877,19 @@ fn cut_runs(runs: &[Run], truncated: &str, how: Truncation) -> Vec<Run> {
     out
 }
 
-/// Lays out the bar (`PSM update:` with the Yosemite style), `bar_width` points wide, scrolled by
-/// `offset`, `hovered` the tab under the pointer. `measure(text, font_points)` is a text's width
-/// in points. The tabs keep their order; iTerm2 moves no tab out of the overflow menu for the
-/// selection, so `_active` does not change the layout.
-pub fn build(
-    tabs: &[TabInput],
-    _active: usize,
-    bar_width: f32,
-    offset: f32,
-    hovered: Option<usize>,
-    s: &Settings,
-    measure: &dyn Fn(&str, f32) -> f32,
-) -> Bar {
+/// The measured texts every layout shares: each tab's styled title runs (a horizontal pinned
+/// tab keeps only its first character, `YS:1016-1027`), their plain text and width, its number
+/// and the bar-wide truncation.
+struct Texts {
+    runs: Vec<Vec<Run>>,
+    plains: Vec<String>,
+    widths: Vec<f32>,
+    counters: Vec<Option<(String, f32)>>,
+    how: Truncation,
+}
+
+fn texts(tabs: &[TabInput], s: &Settings, measure: &dyn Fn(&str, f32) -> f32, first_char_pins: bool) -> Texts {
     let n = tabs.len();
-    let font = s.font;
-    let sub_font = subtitle_size(font);
     let runs: Vec<Vec<Run>> = tabs
         .iter()
         .map(|t| {
@@ -877,12 +907,11 @@ pub fn build(
     // The bar-wide rule reads every tab's whole title.
     let whole: Vec<String> = runs.iter().map(|r| plain_of(r)).collect();
     let how = truncation(&whole.iter().map(String::as_str).collect::<Vec<_>>(), s.smart);
-    // `YS:1016-1027`: a pinned tab shows only its first character, in its style.
     let runs: Vec<Vec<Run>> = runs
         .into_iter()
         .zip(tabs)
         .map(|(r, t)| {
-            if !t.pinned {
+            if !(t.pinned && first_char_pins) {
                 return r;
             }
             r.iter()
@@ -892,7 +921,7 @@ pub fn build(
         })
         .collect();
     let plains: Vec<String> = runs.iter().map(|r| plain_of(r)).collect();
-    let title_widths: Vec<f32> = plains.iter().map(|t| measure(t, font)).collect();
+    let widths: Vec<f32> = plains.iter().map(|t| measure(t, s.font)).collect();
     let counters: Vec<Option<(String, f32)>> = tabs
         .iter()
         .enumerate()
@@ -900,88 +929,242 @@ pub fn build(
             // `TAB:1303-1305`: no count with `HideTabNumber`; a pinned tab has no room for one.
             (!s.hide_numbers && t.number > 0 && !t.pinned).then(|| {
                 let text = counter_text(t.number, i + 1 == n, s.modifier);
-                let w = measure(&text, font);
+                let w = measure(&text, s.font);
                 (text, w)
             })
         })
         .collect();
-    let desired: Vec<f32> = (0..n)
-        .map(|i| desired_width(title_widths[i], tabs[i].icon, counters[i].as_ref().map(|c| counter_width(c.1)), tabs[i].processing))
-        .collect();
-    // iTerm2 rounds equal shares to half points (`PSM:3205-3232`).
-    let pinned: Vec<bool> = tabs.iter().map(|t| t.pinned).collect();
-    let laid = widths(&desired, &pinned, s.pinned_width, bar_width, &s.prefs, 2.0);
+    Texts { runs, plains, widths, counters, how }
+}
 
-    let mut bar = Bar {
-        cells: Vec::new(),
-        titles: Vec::new(),
-        subtitles: Vec::new(),
-        texts: Vec::new(),
-        hidden: (laid.widths.len()..n).collect(),
-        add: None,
-        overflow: None,
-        content: laid.content,
-        height: s.height,
-        font,
+/// Lays out the tab `i` in the cell `rect` (points, the bar's coordinates; the inside's y is
+/// from the cell's top) and adds it to `bar`.
+#[allow(clippy::too_many_arguments)]
+fn place(bar: &mut Bar, i: usize, rect: Rect, t: &TabInput, hovered: bool, s: &Settings, x: &Texts, measure: &dyn Fn(&str, f32) -> f32, first_char_pins: bool) {
+    let (font, sub_font, how) = (s.font, subtitle_size(s.font), x.how);
+    let mut layout = cell(&CellInput {
+        x: rect.x,
+        width: rect.w,
+        height: rect.h,
+        close_buttons: s.close_buttons,
+        close_always: s.close_always,
+        hovered,
+        counter: x.counters[i].as_ref().map(|c| counter_width(c.1)),
+        icon: t.icon,
+        indicator: t.processing,
+        title_width: x.widths[i],
+        min_label: s.min_label,
+        pinned: t.pinned,
+    });
+    // A horizontal pinned tab's character is drawn whole and left-aligned (`YS:1018-1027`).
+    let first_char = t.pinned && first_char_pins;
+    layout.truncate |= first_char;
+    let title = if first_char { x.plains[i].clone() } else { truncate(&x.plains[i], layout.label.w, how, &|text| measure(text, font)) };
+    let placed: Vec<(Run, f32)> =
+        cut_runs(&x.runs[i], &title, how).into_iter().map(|r| { let w = measure(&r.text, font); (r, w) }).collect();
+    // The subtitle is measured on its own in the title's label room (`YS drawSubtitle:`).
+    let (full_x, full_w) = if layout.truncate {
+        (layout.label.x - layout.reserved, layout.label.w + layout.reserved)
+    } else {
+        (layout.label.x, layout.label.w)
     };
-    let mut x = -offset;
-    for (i, &w) in laid.widths.iter().enumerate() {
-        let t = &tabs[i];
-        let mut layout = cell(&CellInput {
-            x,
-            width: w,
-            height: s.height,
-            close_buttons: s.close_buttons,
-            close_always: s.close_always,
-            hovered: hovered == Some(i),
-            counter: counters[i].as_ref().map(|c| counter_width(c.1)),
-            icon: t.icon,
-            indicator: t.processing,
-            title_width: title_widths[i],
-            min_label: s.min_label,
-            pinned: t.pinned,
-        });
-        // A pinned tab's character is drawn whole and left-aligned (`YS:1018-1027`).
-        layout.truncate |= t.pinned;
-        let title = if t.pinned { plains[i].clone() } else { truncate(&plains[i], layout.label.w, how, &|text| measure(text, font)) };
-        let placed: Vec<(Run, f32)> =
-            cut_runs(&runs[i], &title, how).into_iter().map(|r| { let w = measure(&r.text, font); (r, w) }).collect();
-        // The subtitle is measured on its own in the title's label room (`YS drawSubtitle:`).
-        let (full_x, full_w) = if layout.truncate {
-            (layout.label.x - layout.reserved, layout.label.w + layout.reserved)
+    // `YS:1044`: no subtitle on a pinned tab.
+    let (subtitle, sub_w, sub_label, sub_truncate) = if !t.pinned && shows_subtitle(rect.h, &t.subtitle) {
+        let whole = measure(&t.subtitle, sub_font);
+        let cut = (full_w - whole) / 2.0 < layout.reserved;
+        let label = if cut {
+            Rect { x: full_x + layout.reserved, y: 0.0, w: (full_w - layout.reserved).max(0.0), h: rect.h }
         } else {
-            (layout.label.x, layout.label.w)
+            Rect { x: full_x, y: 0.0, w: full_w, h: rect.h }
         };
-        // `YS:1044`: no subtitle on a pinned tab.
-        let (subtitle, sub_w, sub_label, sub_truncate) = if !t.pinned && shows_subtitle(s.height, &t.subtitle) {
-            let whole = measure(&t.subtitle, sub_font);
-            let cut = (full_w - whole) / 2.0 < layout.reserved;
-            let label = if cut {
-                Rect { x: full_x + layout.reserved, y: 0.0, w: (full_w - layout.reserved).max(0.0), h: s.height }
-            } else {
-                Rect { x: full_x, y: 0.0, w: full_w, h: s.height }
-            };
-            let text = truncate(&t.subtitle, label.w, how, &|text| measure(text, sub_font));
-            let w = measure(&text, sub_font);
-            (text, w, label, cut)
-        } else {
-            (String::new(), 0.0, layout.label, false)
-        };
-        let (counter, counter_w) = counters[i].clone().unwrap_or_default();
-        bar.cells.push((i, layout, Rect { x, y: 0.0, w, h: s.height }));
-        bar.titles.push(title);
-        bar.subtitles.push(subtitle);
-        bar.texts.push(CellText {
-            runs: placed,
-            subtitle_width: sub_w,
-            subtitle_label: sub_label,
-            subtitle_truncate: sub_truncate,
-            counter,
-            counter_width: counter_w,
-        });
-        x += w;
+        let text = truncate(&t.subtitle, label.w, how, &|text| measure(text, sub_font));
+        let w = measure(&text, sub_font);
+        (text, w, label, cut)
+    } else {
+        (String::new(), 0.0, layout.label, false)
+    };
+    let (counter, counter_w) = x.counters[i].clone().unwrap_or_default();
+    bar.cells.push((i, layout, rect));
+    bar.titles.push(title);
+    bar.subtitles.push(subtitle);
+    bar.texts.push(CellText {
+        runs: placed,
+        subtitle_width: sub_w,
+        subtitle_label: sub_label,
+        subtitle_truncate: sub_truncate,
+        counter,
+        counter_width: counter_w,
+    });
+}
+
+/// One place in the bar: a group chip (the run's first tab, the chip's width) or a tab.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Slot {
+    Chip(usize, f32),
+    Tab(usize),
+}
+
+/// The chip's label: the name, or "Name  N" collapsed (`YS collapsedLabelForName:count:`).
+fn chip_label(g: &ChipInput) -> String {
+    if g.collapsed {
+        crate::scene::collapsed_label(&g.name, g.count)
+    } else {
+        g.name.clone()
     }
-    if laid.overflow {
+}
+
+/// The places in order: each tab, a chip before the first tab of each run
+/// (`PSM cellsByInsertingTabGroupChipsInto:`), the chip `scene::chip_width` wide.
+fn slots(tabs: &[TabInput], measure: &dyn Fn(&str, f32) -> f32) -> Vec<Slot> {
+    let mut out = Vec::with_capacity(tabs.len());
+    for (i, t) in tabs.iter().enumerate() {
+        if let Some(g) = t.group.as_ref().filter(|g| g.first) {
+            let w = crate::scene::chip_width(measure(&chip_label(g), crate::scene::GROUP_NAME_PT), g.collapsed);
+            out.push(Slot::Chip(i, w));
+        }
+        out.push(Slot::Tab(i));
+    }
+    out
+}
+
+/// The tabs of the run whose chip is before tab `first`: it and the following tabs of the same
+/// group up to the next run's chip.
+fn run_of(tabs: &[TabInput], first: usize) -> std::ops::Range<usize> {
+    let id = tabs[first].group.as_ref().map(|g| g.id.as_str());
+    let end = (first + 1..tabs.len())
+        .find(|&j| tabs[j].group.as_ref().is_none_or(|g| g.first || Some(g.id.as_str()) != id))
+        .unwrap_or(tabs.len());
+    first..end
+}
+
+/// Adds the chip before tab `first` at `rect`, its label cut to `room` points.
+fn place_chip(bar: &mut Bar, tabs: &[TabInput], first: usize, rect: Rect, room: f32, measure: &dyn Fn(&str, f32) -> f32) {
+    let Some(g) = tabs[first].group.as_ref() else { return };
+    let pt = crate::scene::GROUP_NAME_PT;
+    let label = truncate(&chip_label(g), room.max(0.0), Truncation::Tail, &|t| measure(t, pt));
+    let label_width = measure(&label, pt);
+    bar.chips.push((g.id.clone(), rect));
+    bar.chip_texts.push(ChipText { run: run_of(tabs, first), label, label_width, collapsed: g.collapsed });
+}
+
+/// `PSM cellWidthsForHorizontalArrangementWithChipsWithOverflow:` and, on a bar that scrolls,
+/// `naturalHorizontalCellWidths`, over `slots`: a chip and a pinned tab keep their widths, a
+/// hidden tab has none (and never ends the prefix), the other tabs share the rest, each at
+/// least the minimum and, unstretched, at most the optimum. The result is a prefix of the
+/// slots; the rest overflow.
+fn chip_widths(slots: &[Slot], tabs: &[TabInput], desired: &[f32], bar_width: f32, p: &Prefs, pinned_width: f32) -> Widths {
+    let fixed = |sl: &Slot| match *sl {
+        Slot::Chip(_, w) => Some(w),
+        Slot::Tab(i) if tabs[i].hidden => Some(0.0),
+        Slot::Tab(i) if tabs[i].pinned => Some(pinned_width),
+        Slot::Tab(_) => None,
+    };
+    let desired_of = |sl: &Slot| match *sl {
+        Slot::Tab(i) => desired[i],
+        Slot::Chip(_, w) => w,
+    };
+    let available = |overflow: bool| bar_width - right_margin(overflow, p.add_button);
+    if p.scrollable {
+        let natural: Vec<f32> = slots
+            .iter()
+            .map(|sl| fixed(sl).unwrap_or_else(|| if p.uneven { p.scrollable_width.max(MAX_WIDTH.min(desired_of(sl))) } else { p.scrollable_width }))
+            .collect();
+        let total: f32 = natural.iter().sum();
+        if total > available(false) {
+            return Widths { widths: natural, overflow: false, content: total };
+        }
+    }
+    let arrange = |room: f32| -> Vec<f32> {
+        if p.uneven {
+            // `PSM variableCellWidthsWithOverflow:`: every place at its clamped width, when all fit.
+            let clamped: Vec<f32> = slots.iter().map(|sl| fixed(sl).unwrap_or_else(|| p.min_width.max(desired_of(sl).min(MAX_WIDTH)))).collect();
+            if clamped.iter().sum::<f32>() <= room {
+                return clamped;
+            }
+        }
+        let reserved: f32 = slots.iter().filter_map(fixed).sum();
+        let count = slots.iter().filter(|sl| fixed(sl).is_none()).count();
+        let per_tab = if count > 0 {
+            let share = (room - reserved).max(0.0) / count as f32;
+            let share = if p.stretch { share } else { share.min(p.optimum) };
+            share.max(p.min_width)
+        } else {
+            0.0
+        };
+        let mut out = Vec::with_capacity(slots.len());
+        let (mut used, mut emitted) = (0.0, false);
+        for sl in slots {
+            if matches!(sl, Slot::Tab(i) if tabs[*i].hidden) {
+                out.push(0.0);
+                continue;
+            }
+            let w = fixed(sl).unwrap_or(per_tab);
+            // A half point of rounding never pushes the last tab out (`fitTolerance`).
+            if emitted && used + w > room + 0.5 {
+                break;
+            }
+            out.push(w);
+            used += w;
+            emitted = true;
+        }
+        out
+    };
+    let regular = arrange(available(false));
+    let widths = if p.add_button || regular.len() < slots.len() { arrange(available(true)) } else { regular };
+    let overflow = widths.len() < slots.len();
+    Widths { widths, overflow, content: 0.0 }
+}
+
+/// Lays out the bar (`PSM update:` with the Yosemite style), `bar_width` points wide, scrolled by
+/// `offset`, `hovered` the tab under the pointer. `measure(text, font_points)` is a text's width
+/// in points. The tabs keep their order; iTerm2 moves no tab out of the overflow menu for the
+/// selection, so `_active` does not change the layout. A group chip goes before each run of a
+/// group's tabs; a tab hidden in a collapsed group has no cell.
+pub fn build(
+    tabs: &[TabInput],
+    _active: usize,
+    bar_width: f32,
+    offset: f32,
+    hovered: Option<usize>,
+    s: &Settings,
+    measure: &dyn Fn(&str, f32) -> f32,
+) -> Bar {
+    let n = tabs.len();
+    let x = texts(tabs, s, measure, true);
+    let desired: Vec<f32> = (0..n)
+        .map(|i| desired_width(x.widths[i], tabs[i].icon, x.counters[i].as_ref().map(|c| counter_width(c.1)), tabs[i].processing))
+        .collect();
+    let slots = slots(tabs, measure);
+    let laid = if slots.len() > n {
+        chip_widths(&slots, tabs, &desired, bar_width, &s.prefs, s.pinned_width)
+    } else {
+        // iTerm2 rounds equal shares to half points (`PSM:3205-3232`).
+        let pinned: Vec<bool> = tabs.iter().map(|t| t.pinned).collect();
+        widths(&desired, &pinned, s.pinned_width, bar_width, &s.prefs, 2.0)
+    };
+    let mut bar = Bar { content: laid.content, height: s.height, font: s.font, ..Bar::default() };
+    let mut left = -offset;
+    for (k, &w) in laid.widths.iter().enumerate() {
+        match slots[k] {
+            // The name block: the chip less the name's padding (`YS:1586-1591`); a collapsed
+            // chip also keeps the chevron's room.
+            Slot::Chip(first, _) => {
+                let chevron = if tabs[first].group.as_ref().is_some_and(|g| g.collapsed) { crate::scene::GROUP_CHEVRON } else { 0.0 };
+                let room = w - 2.0 * crate::scene::GROUP_NAME_PAD - chevron;
+                place_chip(&mut bar, tabs, first, Rect { x: left, y: 0.0, w, h: s.height }, room, measure);
+            }
+            Slot::Tab(i) if tabs[i].hidden => {}
+            Slot::Tab(i) => place(&mut bar, i, Rect { x: left, y: 0.0, w, h: s.height }, &tabs[i], hovered == Some(i), s, &x, measure, true),
+        }
+        left += w;
+    }
+    // `PSM _setupCells:`: the tabs past the laid-out prefix go to the overflow menu, but a
+    // hidden tab never does.
+    bar.hidden = slots[laid.widths.len()..].iter().filter_map(|sl| match *sl {
+        Slot::Tab(i) if !tabs[i].hidden => Some(i),
+        _ => None,
+    }).collect();
+    if !bar.hidden.is_empty() {
         // `PSM setupButtons`: the overflow button fills the right margin but its first point.
         let m = right_margin(true, s.prefs.add_button);
         bar.overflow = Some(Rect { x: bar_width - m + 1.0, y: 0.0, w: m - 1.0, h: s.height });
@@ -997,6 +1180,87 @@ pub fn build(
     bar
 }
 
+/// Lays out a side bar (`PSM update:`, vertical orientation), `bar_width` by `bar_height`
+/// points, scrolled down by `offset`: a row `Settings::height` high per tab and per group chip
+/// (a chip is a one-row band, `PSM heightOfTabGroupChipCell:`), none for a hidden tab, each
+/// laid out as a horizontal tab is at the bar's width, the whole title kept on a pinned tab.
+/// With `ScrollableSideTabBar` every row is placed and the rows scroll; without it, the rows
+/// that fit keep their height and the rest go to the overflow menu, whose button takes the
+/// bottom row (`PSM:2105-2133`, `YS frameForOverflowButtonWithAddTabButton:`). A side bar has
+/// no "+" (`iTermTabBarControlView.m:283`).
+pub fn build_vertical(
+    tabs: &[TabInput],
+    bar_width: f32,
+    bar_height: f32,
+    offset: f32,
+    hovered: Option<usize>,
+    s: &Settings,
+    measure: &dyn Fn(&str, f32) -> f32,
+) -> Bar {
+    let x = texts(tabs, s, measure, false);
+    let slots = slots(tabs, measure);
+    let row = s.height;
+    let height = |sl: &Slot| match *sl {
+        Slot::Tab(i) if tabs[i].hidden => 0.0,
+        _ => row,
+    };
+    let mut bar = Bar { height: bar_height, font: s.font, vertical: true, ..Bar::default() };
+    // Each place's top, for a prefix of the places.
+    let mut tops: Vec<f32> = Vec::with_capacity(slots.len());
+    if s.prefs.scrollable {
+        let total: f32 = slots.iter().map(height).sum();
+        bar.content = if total > bar_height { total } else { 0.0 };
+        let mut y = -offset;
+        for sl in &slots {
+            tops.push(y);
+            y += height(sl);
+        }
+    } else {
+        let mut y = 0.0;
+        for sl in &slots {
+            let h = height(sl);
+            if h == 0.0 {
+                tops.push(y);
+                continue;
+            }
+            if y + h <= bar_height {
+                tops.push(y);
+                y += h;
+                continue;
+            }
+            // Out of room: the last row that fits gives its place to the overflow button,
+            // past any hidden tabs before it.
+            if !tops.is_empty() && bar_height - y < h {
+                while !tops.is_empty() && matches!(slots[tops.len() - 1], Slot::Tab(i) if tabs[i].hidden) {
+                    tops.pop();
+                }
+                tops.pop();
+            }
+            break;
+        }
+    }
+    let name_room = bar_width - 1.0 - 2.0 * crate::scene::GROUP_NAME_PAD;
+    for (k, &top) in tops.iter().enumerate() {
+        let rect = Rect { x: 0.0, y: top, w: bar_width, h: row };
+        match slots[k] {
+            Slot::Chip(first, _) => {
+                let chevron = if tabs[first].group.as_ref().is_some_and(|g| g.collapsed) { crate::scene::GROUP_CHEVRON } else { 0.0 };
+                place_chip(&mut bar, tabs, first, rect, name_room - chevron, measure);
+            }
+            Slot::Tab(i) if tabs[i].hidden => {}
+            Slot::Tab(i) => place(&mut bar, i, rect, &tabs[i], hovered == Some(i), s, &x, measure, false),
+        }
+    }
+    bar.hidden = slots[tops.len()..].iter().filter_map(|sl| match *sl {
+        Slot::Tab(i) if !tabs[i].hidden => Some(i),
+        _ => None,
+    }).collect();
+    if !bar.hidden.is_empty() {
+        bar.overflow = Some(Rect { x: 0.0, y: bar_height - row, w: bar_width, h: row });
+    }
+    bar
+}
+
 /// What a point on the bar is over (`PSM mouseDown:`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
@@ -1005,6 +1269,8 @@ pub enum Hit {
     Close(usize),
     Add,
     Overflow,
+    /// A group chip: an index into `Bar::chips`.
+    Chip(usize),
     /// The bar with nothing on it.
     Bar,
 }
@@ -1028,12 +1294,16 @@ pub fn hit(bar: &Bar, offset: f32, x: f32, y: f32) -> Option<Hit> {
     if add_rect(bar, offset).is_some_and(|r| r.contains(x, y)) {
         return Some(Hit::Add);
     }
-    let cx = x + offset;
-    let Some((i, layout, _)) = bar.cells.iter().find(|(_, _, r)| r.contains(cx, y)) else {
+    // A side bar scrolls down, a horizontal one along.
+    let (cx, cy) = if bar.vertical { (x, y + offset) } else { (x + offset, y) };
+    if let Some(k) = bar.chips.iter().position(|(_, r)| r.contains(cx, cy)) {
+        return Some(Hit::Chip(k));
+    }
+    let Some((i, layout, cell)) = bar.cells.iter().find(|(_, _, r)| r.contains(cx, cy)) else {
         return Some(Hit::Bar);
     };
-    // `closeButtonVisible`: the button is one only while drawn.
-    let on_close = layout.close_alpha > 0.0 && layout.close.is_some_and(|r| r.contains(cx, y));
+    // `closeButtonVisible`: the button is one only while drawn. Its y is from the tab's top.
+    let on_close = layout.close_alpha > 0.0 && layout.close.is_some_and(|r| r.contains(cx, cy - cell.y));
     Some(if on_close { Hit::Close(*i) } else { Hit::Tab(*i) })
 }
 
@@ -1489,7 +1759,80 @@ mod tests {
     }
 
     fn input(title: &str, number: usize) -> TabInput {
-        TabInput { title: title.into(), subtitle: String::new(), icon: false, processing: false, number, pinned: false }
+        TabInput { title: title.into(), subtitle: String::new(), icon: false, processing: false, number, pinned: false, group: None, hidden: false }
+    }
+
+    #[test]
+    fn build_places_group_chips() {
+        let forty = |_: &str, _: f32| 40.0;
+        let chip = |first: bool, collapsed: bool| Some(ChipInput { id: "g".into(), name: "g".into(), collapsed, count: 2, first });
+        let tabs = [TabInput { group: chip(true, false), ..input("a", 1) }, TabInput { group: chip(false, false), ..input("b", 2) }, input("c", 3)];
+        let bar = build(&tabs, 0, 600.0, 0.0, None, &defaults(), &forty);
+        assert_eq!(bar.chips.len(), 1);
+        let (id, r) = &bar.chips[0];
+        assert_eq!(id, "g");
+        assert_eq!(r.w, 66.0, "40 + 10 x 2 + 6");
+        assert_eq!(r.x + r.w, bar.cells[0].2.x, "ends where tab 0 starts");
+        assert_eq!(hit(&bar, 0.0, r.x + 5.0, 10.0), Some(Hit::Chip(0)));
+        assert_eq!(bar.chip_texts[0].run, 0..2);
+        // The tabs share what the chip leaves: (576 - 66) / 3.
+        assert_eq!(bar.cells.iter().map(|c| c.2.w).collect::<Vec<_>>(), vec![170.0; 3]);
+
+        // Collapsed: the members have no cells, the chip is 40 + 10 x 2 + 14, tab 2 after it.
+        let hidden = |t: TabInput| TabInput { hidden: true, ..t };
+        let tabs = [hidden(TabInput { group: chip(true, true), ..input("a", 1) }), hidden(TabInput { group: chip(false, true), ..input("b", 2) }), input("c", 3)];
+        let bar = build(&tabs, 2, 600.0, 0.0, None, &defaults(), &forty);
+        assert_eq!(bar.chips.len(), 1);
+        assert_eq!(bar.chips[0].1.w, 74.0);
+        assert_eq!(bar.cells.iter().map(|c| c.0).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(bar.cells[0].2.x, 74.0);
+        assert!(bar.hidden.is_empty(), "a collapsed tab is not in the overflow menu");
+        assert_eq!(bar.chip_texts[0].label, "g  2");
+
+        // No groups: 13c's layout.
+        let plain = [input("a", 1), input("b", 2), input("c", 3)];
+        let bar = build(&plain, 0, 600.0, 0.0, None, &defaults(), &forty);
+        assert!(bar.chips.is_empty());
+        assert_eq!(bar.cells.iter().map(|c| c.2).collect::<Vec<_>>(), [0.0, 192.0, 384.0].map(|x| Rect { x, y: 0.0, w: 192.0, h: 24.0 }));
+    }
+
+    #[test]
+    fn side_bar_overflows_like_iterm2() {
+        let base = defaults();
+        let fixed = Settings { prefs: Prefs { scrollable: false, ..base.prefs }, ..base.clone() };
+        let tabs: Vec<TabInput> = (0..10).map(|i| input("t", i + 1)).collect();
+        // 100 points: rows at 0, 24, 48, 72 fit, the fifth does not; the last that fit gives
+        // its row to the overflow button pinned at the bottom. Rows keep their height.
+        let bar = build_vertical(&tabs, 150.0, 100.0, 0.0, None, &fixed, &six_per_char);
+        assert!(bar.vertical);
+        assert_eq!(bar.cells.iter().map(|c| c.2).collect::<Vec<_>>(), [0.0, 24.0, 48.0].map(|y| Rect { x: 0.0, y, w: 150.0, h: 24.0 }));
+        assert_eq!(bar.hidden, (3..10).collect::<Vec<_>>());
+        assert_eq!(bar.overflow, Some(Rect { x: 0.0, y: 76.0, w: 150.0, h: 24.0 }));
+        assert_eq!(bar.add, None, "a side bar has no +");
+        assert_eq!(hit(&bar, 0.0, 10.0, 80.0), Some(Hit::Overflow));
+        // Scrolling: every row, the content their height, scrolled down by the offset.
+        let bar = build_vertical(&tabs, 150.0, 100.0, 30.0, None, &base, &six_per_char);
+        assert_eq!(bar.cells.len(), 10);
+        assert_eq!((bar.content, bar.cells[1].2.y, bar.overflow), (240.0, -6.0, None));
+        // A bar laid out unscrolled is hit at the scroll: row 2 starts at 48 - 30 = 18.
+        let flat = build_vertical(&tabs, 150.0, 100.0, 0.0, None, &base, &six_per_char);
+        assert_eq!(hit(&flat, 30.0, 10.0, 20.0), Some(Hit::Tab(2)));
+        // A side row is laid out as a tab: its number, a close button on hover, its title.
+        let bar = build_vertical(&tabs[..2], 150.0, 100.0, 0.0, Some(1), &base, &six_per_char);
+        let (_, c, r) = &bar.cells[1];
+        assert!(c.counter.is_some() && c.close_alpha == 1.0);
+        assert_eq!(hit(&bar, 0.0, 6.0 + 8.0, r.y + 12.0), Some(Hit::Close(1)));
+        // A group's chip is a row before its run; a collapsed group's tabs have none.
+        let g = |first: bool, collapsed: bool| Some(ChipInput { id: "g".into(), name: "g".into(), collapsed, count: 2, first });
+        let grouped = [TabInput { group: g(true, false), ..input("a", 1) }, TabInput { group: g(false, false), ..input("b", 2) }, input("c", 3)];
+        let bar = build_vertical(&grouped, 150.0, 200.0, 0.0, None, &base, &six_per_char);
+        assert_eq!(bar.chips, vec![("g".to_string(), Rect { x: 0.0, y: 0.0, w: 150.0, h: 24.0 })]);
+        assert_eq!(bar.cells.iter().map(|c| c.2.y).collect::<Vec<_>>(), vec![24.0, 48.0, 72.0]);
+        let hidden = |t: TabInput| TabInput { hidden: true, ..t };
+        let collapsed = [hidden(TabInput { group: g(true, true), ..input("a", 1) }), hidden(TabInput { group: g(false, true), ..input("b", 2) }), input("c", 3)];
+        let bar = build_vertical(&collapsed, 150.0, 200.0, 0.0, None, &base, &six_per_char);
+        assert_eq!(bar.cells.iter().map(|c| (c.0, c.2.y)).collect::<Vec<_>>(), vec![(2, 24.0)]);
+        assert_eq!(hit(&bar, 0.0, 10.0, 10.0), Some(Hit::Chip(0)));
     }
 
     #[test]

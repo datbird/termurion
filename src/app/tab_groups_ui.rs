@@ -1,11 +1,13 @@
 //! Pinned and grouped tabs in a window (milestone 13d): Pin Tab and Unpin Tab
 //! (`PTS togglePinTab`, `PTS:355-416`), a tab's group membership, Move Tab Left/Right
-//! (`PT moveCurrentTabByOffset:`, `PT:12242-12295`), the tab group commands (`PT:8953-9910`)
-//! and Duplicate Tab (`PT:14414-14535`). The rules are `crate::tab_groups`'s.
+//! (`PT moveCurrentTabByOffset:`, `PT:12242-12295`), the tab group commands (`PT:8953-9910`),
+//! Duplicate Tab (`PT:14414-14535`) and the tab and group context menus (`PT:8253-8500`,
+//! `PT:9427-9478`). The rules are `crate::tab_groups`'s and `crate::tab_menu`'s.
 
 use super::*;
 use crate::prompt_ui::{PromptResult, PromptWindow};
 use crate::tab_groups::{self, CloseTabs, TabGroup};
+use crate::tab_menu::{self, TabCtx};
 use crate::winmodel::LayoutOp;
 
 /// What the tab group name window names.
@@ -23,7 +25,6 @@ impl App {
     /// group never straddles the pinned boundary. Each tab whose state changes moves as a
     /// lone tab does, to one past the last pinned tab, and the order settles after each move
     /// (`tab_groups::apply_pin`, `PTS:372-392`).
-    #[allow(dead_code)] // Task 9's tab menu calls it.
     pub(super) fn toggle_pin(&mut self, tab: u64) {
         let Some(at) = self.tabs.iter().position(|t| t.id == tab) else { return };
         if self.tmux_of(self.tabs[at].focused).is_some() || !self.layout_allowed(LayoutOp::ReorderTab) {
@@ -175,7 +176,6 @@ impl App {
 
     /// Rename Group... (`PT renameTabGroupWithID:`, `PT:9742-9760`): the name window, seeded
     /// with the group's name; OK names every member.
-    #[allow(dead_code)] // Task 9's menus call it.
     pub(super) fn rename_group(&mut self, event_loop: &ActiveEventLoop, group: &str) {
         let Some(&first) = self.members(group).first() else { return };
         let name = self.tabs[first].group.as_ref().map(|g| g.name.clone()).unwrap_or_default();
@@ -248,7 +248,6 @@ impl App {
 
     /// Add Tab to Group > a group (`PT addTabToExistingGroup:`, `PT:8969-8984`): the tab
     /// joins it, taking its name, color, collapsed and pinned state, and moves into its run.
-    #[allow(dead_code)] // Task 9's tab menu calls it.
     pub(super) fn add_tab_to_group(&mut self, tab: u64, group: &str) {
         let Some(at) = self.tabs.iter().position(|t| t.id == tab) else { return };
         if self.members(group).is_empty() {
@@ -270,7 +269,6 @@ impl App {
     }
 
     /// Remove All Tabs from Group (`PT ungroupTabGroup:`, `PT:9762-9769`).
-    #[allow(dead_code)] // Task 9's group menu calls it.
     pub(super) fn ungroup(&mut self, group: &str) {
         let members = self.members(group);
         if members.is_empty() {
@@ -283,7 +281,6 @@ impl App {
     }
 
     /// Group Color (`PT setTabGroupColor:forGroupID:`, `PT:9511-9523`): every member.
-    #[allow(dead_code)] // Task 9's color picker calls it.
     pub(super) fn set_group_color(&mut self, group: &str, color: crate::palette::Rgb) {
         for i in self.members(group) {
             if let Some(g) = self.tabs[i].group.as_mut() {
@@ -334,7 +331,6 @@ impl App {
 
     /// A click on a group's chip (`PT toggleTabGroupCollapsed:`, `PT:9621-9637`): a collapsed
     /// group expands, an expanded one collapses unless it is the whole window.
-    #[allow(dead_code)] // Task 9's chip calls it.
     pub(super) fn toggle_group_collapsed(&mut self, group: &str) {
         let Some(&first) = self.members(group).first() else { return };
         if self.tabs[first].group.as_ref().is_some_and(|g| g.collapsed) {
@@ -353,7 +349,6 @@ impl App {
     }
 
     /// Close Group (`PT closeTabGroup:`, `PT:9845-9851`): every member, pinned ones too.
-    #[allow(dead_code)] // Task 9's group menu calls it.
     pub(super) fn close_group(&mut self, group: &str, event_loop: &ActiveEventLoop) {
         let ids = self.tab_ids(&self.members(group));
         self.close_tabs(ids, CloseTabs::Group, event_loop);
@@ -361,7 +356,6 @@ impl App {
 
     /// The group menu's Close Other Tabs (`PT closeTabsOutsideGroup:`, `PT:9853-9862`): every
     /// tab outside the group but the pinned ones.
-    #[allow(dead_code)] // Task 9's group menu calls it.
     pub(super) fn close_tabs_outside_group(&mut self, group: &str, event_loop: &ActiveEventLoop) {
         let outside: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].group.as_ref().is_none_or(|g| g.id != group) && !self.tabs[i].pinned).collect();
         let ids = self.tab_ids(&outside);
@@ -371,7 +365,6 @@ impl App {
     /// The group menu's Close Tabs to the Right, Close Tabs Below on a side bar
     /// (`PT closeTabsRightOfGroup:`, `PT:9864-9880`): every tab after the group's last member
     /// but the pinned ones.
-    #[allow(dead_code)] // Task 9's group menu calls it.
     pub(super) fn close_tabs_right_of_group(&mut self, group: &str, event_loop: &ActiveEventLoop) {
         let Some(&last) = self.members(group).last() else { return };
         let right: Vec<usize> = (last + 1..self.tabs.len()).filter(|&i| !self.tabs[i].pinned).collect();
@@ -390,6 +383,11 @@ impl App {
         if !close_ui::confirm(self.hwnd(), tab_groups::CLOSE_TABS_HEADING, &tab_groups::close_question(what, vertical, ids.len())) {
             return;
         }
+        self.close_each(ids, event_loop);
+    }
+
+    /// Closes the tabs `ids` as `closeTab:` does, asking nothing (a tmux tab asks tmux).
+    fn close_each(&mut self, ids: Vec<u64>, event_loop: &ActiveEventLoop) {
         let Some(window) = self.current_window() else { return };
         for id in ids {
             // The window goes with its last tab.
@@ -406,7 +404,6 @@ impl App {
     /// Move Group to New Window (`PT moveTabGroupToNewWindow:`, `PT:9771-9780`): the members
     /// go to a new window keeping their group; nothing happens when the group is the whole
     /// window. A tab holding a loaded recording never moves, so neither does its group.
-    #[allow(dead_code)] // Task 9's group menu calls it.
     pub(super) fn move_group_to_new_window(&mut self, group: &str) {
         let members = self.members(group);
         if members.is_empty() || members.len() == self.tabs.len() || members.iter().any(|&i| self.holds_recording(&self.tabs[i])) || !self.layout_allowed(LayoutOp::MoveTab) {
@@ -428,7 +425,6 @@ impl App {
 
     /// Save Group as Window Arrangement... (`PT saveTabGroupAsWindowArrangement:`,
     /// `PT:9782-9796`): the arrangement name window, saving only the members.
-    #[allow(dead_code)] // Task 9's group menu calls it.
     pub(super) fn save_group_arrangement(&mut self, event_loop: &ActiveEventLoop, group: &str) {
         let ids = self.tab_ids(&self.members(group));
         let Some(window) = self.current_window().filter(|_| !ids.is_empty()) else { return };
@@ -437,7 +433,6 @@ impl App {
 
     /// New Tab in Group (`PT newTabInGroup:`, `PT:14346-14357`): a new tab of the default
     /// profile just after the group's last member, joining the group.
-    #[allow(dead_code)] // Task 9's group menu calls it.
     pub(super) fn new_tab_in_group(&mut self, group: &str) {
         let Some(&last) = self.members(group).last() else { return };
         let before = self.tabs.len();
@@ -491,7 +486,6 @@ impl App {
     /// this window, the copies unpinned and in a new group named "<name> copy" with the
     /// group's color, expanded; the order then settles, the copies after the group. Lock
     /// Layout refuses.
-    #[allow(dead_code)] // Task 9's group menu calls it.
     pub(super) fn duplicate_group(&mut self, group: &str) {
         let members = self.members(group);
         let Some(first) = members.first().and_then(|&i| self.tabs[i].group.clone()) else { return };
@@ -537,6 +531,140 @@ impl App {
         self.tabs.insert(i, tab);
         self.set_tab_group(i, group.map(|g| g.id));
         Some(id)
+    }
+
+    /// The tab context menu for the tab `tab` (its id) at the pointer
+    /// (`PT tabView:menuForTabViewItem:`); the picks come back as `tab-menu:` ids.
+    pub(super) fn show_tab_menu(&mut self, tab: u64) {
+        let Some(index) = self.tabs.iter().position(|t| t.id == tab) else { return };
+        let html = self.globals.bool("HTMLTabTitles");
+        // Each tab's title as plain text (a menu item has one line).
+        let labels = self.tabs.iter().map(|t| tab_layout::plain_title(&tab_layout::limit_title(&self.tab_look(t).title), html)).collect();
+        let groups = tab_groups::groups_in_window(self.tabs.iter().map(|t| t.group.as_ref())).into_iter().map(|g| (g.id, g.name)).collect();
+        let t = &self.tabs[index];
+        let ctx = TabCtx {
+            tab,
+            labels,
+            ids: self.tabs.iter().map(|t| t.id).collect(),
+            index,
+            pinned: self.tabs.iter().map(|t| t.pinned).collect(),
+            tmux: self.tmux_of(t.focused).is_some(),
+            vertical: tab_position::vertical(self.tab_position()),
+            group: t.group.as_ref().map(|g| g.id.clone()).filter(|g| !g.is_empty()),
+            groups,
+            layout_locked: self.win_locks.layout,
+        };
+        self.show_entries(&tab_menu::tab_menu(&ctx), "Tab menu");
+    }
+
+    /// A group chip's context menu (`PT tabView:menuForTabGroup:`); the picks come back as
+    /// `tab-group-menu:` ids. Nothing for a group with no members.
+    pub(super) fn show_group_menu(&mut self, group: &str) {
+        let Some(&first) = self.members(group).first() else { return };
+        let collapsed = self.tabs[first].group.as_ref().is_some_and(|g| g.collapsed);
+        let whole = tab_groups::whole_window(&self.group_order(), group);
+        let vertical = tab_position::vertical(self.tab_position());
+        self.show_entries(&tab_menu::group_menu(group, collapsed, whole, vertical), "Tab group menu");
+    }
+
+    /// A pick from the tab or group context menu runs it (`PT:8253-8500`, `PT:9427-9478`).
+    /// False when `id` is neither menu's.
+    pub(super) fn tab_menu_picked(&mut self, id: &str, event_loop: &ActiveEventLoop) -> bool {
+        let Some((action, target)) = tab_menu::parse(id) else { return false };
+        if id.starts_with(tab_menu::GROUP_PREFIX) {
+            self.group_menu_action(&action, &target, event_loop);
+        } else {
+            let (tab, group) = target.split_once(':').map_or((target.as_str(), None), |(t, g)| (t, Some(g)));
+            if let Ok(tab) = tab.parse::<u64>() {
+                self.tab_menu_action(&action, tab, group, event_loop);
+            }
+        }
+        self.redraw();
+        true
+    }
+
+    /// Runs the tab menu's `action` for the tab `tab` (its id; nothing when it has closed
+    /// since); `group` is the group a join picked.
+    fn tab_menu_action(&mut self, action: &str, tab: u64, group: Option<&str>, event_loop: &ActiveEventLoop) {
+        let Some(at) = self.tabs.iter().position(|t| t.id == tab) else { return };
+        match action {
+            "select" => self.select_tab(at),
+            // `PT editSession:`: the tab's focused session.
+            "edit-session" => {
+                let pane = self.tabs[at].focused;
+                self.edit_session(Some(pane), event_loop);
+            }
+            "new-tab" => self.new_tab_beside(at),
+            "duplicate" => self.duplicate_tab(at),
+            "close" => self.close_tab_at(at, event_loop),
+            // `PT closeOtherTabs:` and `closeTabsToTheRight:`: the unpinned tabs, each closed
+            // as `closeTab:` does, asking nothing; Lock Layout refuses silently.
+            "close-others" | "close-right" if self.layout_allowed_quiet(LayoutOp::CloseTab) => {
+                let from = if action == "close-right" { at + 1 } else { 0 };
+                let close: Vec<usize> = (from..self.tabs.len()).filter(|&i| i != at && !self.tabs[i].pinned).collect();
+                let ids = self.tab_ids(&close);
+                self.close_each(ids, event_loop);
+            }
+            "move-window" if self.layout_allowed(LayoutOp::MoveTab) => self.move_tab_at_to_new_window(at),
+            "pin" => self.toggle_pin(tab),
+            "new-group" => self.add_tab_to_new_group(event_loop, tab),
+            "join" => {
+                if let Some(g) = group {
+                    self.add_tab_to_group(tab, g);
+                }
+            }
+            "rename-group" => {
+                if let Some(g) = self.tabs[at].group.as_ref().map(|g| g.id.clone()) {
+                    self.rename_group(event_loop, &g);
+                }
+            }
+            "remove-group" => self.remove_tab_from_group(tab),
+            // `PT saveTabAsWindowArrangement:`: the arrangement name window, saving this tab.
+            "save" => {
+                if let Some(window) = self.current_window() {
+                    self.open_save_arrangement_for(event_loop, arrange_ui::SaveWhat::Tabs(window, vec![tab]));
+                }
+            }
+            "color" => {
+                let swatches = tab_layout::tab_colors(&self.globals.string("TabColorMenuOptions"));
+                self.open_color_picker(menu::ColorTarget::Tab(tab), swatches);
+            }
+            _ => {}
+        }
+    }
+
+    /// Runs the group menu's `action` for the group `group`.
+    fn group_menu_action(&mut self, action: &str, group: &str, event_loop: &ActiveEventLoop) {
+        match action {
+            "new-tab" => self.new_tab_in_group(group),
+            "collapse" => self.collapse_group(group),
+            "expand" => self.expand_group(group),
+            "rename" => self.rename_group(event_loop, group),
+            "color" => self.open_color_picker(menu::ColorTarget::Group(group.to_string()), tab_groups::PALETTE.to_vec()),
+            "duplicate" => self.duplicate_group(group),
+            "move-window" => self.move_group_to_new_window(group),
+            "save" => self.save_group_arrangement(event_loop, group),
+            "ungroup" => self.ungroup(group),
+            "close" => self.close_group(group, event_loop),
+            "close-others" => self.close_tabs_outside_group(group, event_loop),
+            "close-right" => self.close_tabs_right_of_group(group, event_loop),
+            _ => {}
+        }
+    }
+
+    /// New Tab to the Right (Below on a side bar) for the tab at `at`
+    /// (`PT newTabToTheRight:`, `PT:14329-14343`): a tab of the default profile just after
+    /// it, joining its group; the order then settles.
+    fn new_tab_beside(&mut self, at: usize) {
+        let group = self.tabs.get(at).and_then(|t| t.group.as_ref()).map(|g| g.id.clone()).filter(|g| !g.is_empty());
+        let before = self.tabs.len();
+        self.new_tab(None);
+        let Some(new) = move_new_tab(&mut self.tabs, before, at) else { return };
+        self.active = new;
+        if group.is_some() {
+            self.set_tab_group(new, group);
+        }
+        self.group_changed();
     }
 }
 

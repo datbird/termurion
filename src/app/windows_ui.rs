@@ -45,8 +45,8 @@ pub(super) struct WinSlot {
     bar_was_visible: bool,
     /// How much the window grew for the tab bar when it last showed (pixels).
     bar_grown: (f32, f32),
-    /// A side tab bar's rows as last drawn, one per tab (pixels, window coordinates).
-    side_rects: Vec<Rect>,
+    /// A side tab bar's group chips as last drawn (pixels, window coordinates) and their ids.
+    side_chips: Vec<(Rect, String)>,
     /// The slot a dragged tab would drop at in this window's bar (the drop marker).
     tab_drop_marker: Option<usize>,
     /// The tab bar and each tab's rect as last drawn (pixels, window coordinates): where a
@@ -118,7 +118,7 @@ impl WinSlot {
             excursion_prevented: false,
             bar_was_visible: false,
             bar_grown: (0.0, 0.0),
-            side_rects: Vec::new(),
+            side_chips: Vec::new(),
             tab_drop_marker: None,
             tab_bar_drawn: None,
             side_handle_hover: false,
@@ -200,7 +200,7 @@ impl App {
         swap(&mut self.excursion_prevented, &mut s.excursion_prevented);
         swap(&mut self.bar_was_visible, &mut s.bar_was_visible);
         swap(&mut self.bar_grown, &mut s.bar_grown);
-        swap(&mut self.side_rects, &mut s.side_rects);
+        swap(&mut self.side_chips, &mut s.side_chips);
         swap(&mut self.tab_drop_marker, &mut s.tab_drop_marker);
         swap(&mut self.tab_bar_drawn, &mut s.tab_bar_drawn);
         swap(&mut self.side_handle_hover, &mut s.side_handle_hover);
@@ -633,7 +633,7 @@ impl WinSlot {
             excursion_prevented: false,
             bar_was_visible: false,
             bar_grown: (0.0, 0.0),
-            side_rects: Vec::new(),
+            side_chips: Vec::new(),
             tab_drop_marker: None,
             tab_bar_drawn: None,
             side_handle_hover: false,
@@ -814,11 +814,22 @@ impl App {
 
     /// Window > Move Tab to New Window (not the window's only tab).
     pub(super) fn move_tab_to_new_window(&mut self) {
-        if self.tabs.len() < 2 || self.tabs.get(self.active).is_some_and(|t| self.holds_recording(t)) {
+        self.move_tab_at_to_new_window(self.active);
+    }
+
+    /// Moves the tab at `at` to a new window (`PT it_moveTabToNewWindow:`, `PT:14593-14620`):
+    /// not the window's only tab, nor one holding a loaded recording; it leaves its group, as
+    /// a torn-off tab does (`ungroup:YES`). The selected tab stays selected, or its neighbor
+    /// is, its group expanded.
+    pub(super) fn move_tab_at_to_new_window(&mut self, at: usize) {
+        if self.tabs.len() < 2 || self.tabs.get(at).is_none_or(|t| self.holds_recording(t)) {
             return;
         }
-        let tab = self.take_tab(self.active);
-        self.active = self.active.min(self.tabs.len() - 1);
+        let selected = self.tabs.get(self.active).map(|t| t.id);
+        let mut tab = self.take_tab(at);
+        tab.group = None;
+        self.active = selected.and_then(|s| self.tabs.iter().position(|t| t.id == s)).unwrap_or(self.active.min(self.tabs.len() - 1));
+        self.expand_selected_group();
         self.pending_windows.push(NewWindow::Tab(tab));
         self.relayout();
         self.redraw();

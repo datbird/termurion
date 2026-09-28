@@ -254,29 +254,35 @@ impl App {
         }
     }
 
-    /// The horizontal bar `bar` with a dragged tab moved along it to follow the pointer and
-    /// drawn last, over the others (its look marked `dragged` so it has a background); None
-    /// while no tab drag is under way. The move stays inside the tabs' area.
+    /// The bar `bar` (`area` in pixels) with a dragged tab moved along it, or down a side bar,
+    /// to follow the pointer and drawn last, over the others (its look marked `dragged` so it
+    /// has a background); None while no tab drag is under way. The move stays inside the
+    /// tabs' area.
     pub(super) fn dragged_bar(&self, bar: &tab_layout::Bar, looks: &mut [scene::TabLook], area: Rect) -> Option<tab_layout::Bar> {
         let Drag::Tab { from, start, began: true } = self.drag else { return None };
         let k = bar.cells.iter().position(|(i, _, _)| *i == from)?;
         let scale = self.scale();
-        let r = bar.cells[k].2;
-        let room = tab_layout::tab_area_width(bar, area.w / scale);
-        let dx = ((self.cursor.0 - start.0) / scale).clamp(-r.x, (room - r.w - r.x).max(-r.x));
         let mut out = bar.clone();
         let (i, mut c, mut r) = out.cells.remove(k);
-        let shift = |o: &mut Option<Rect>| {
-            if let Some(q) = o.as_mut() {
-                q.x += dx;
-            }
-        };
-        shift(&mut c.close);
-        shift(&mut c.icon);
-        shift(&mut c.indicator);
-        shift(&mut c.counter);
-        c.label.x += dx;
-        r.x += dx;
+        if bar.vertical {
+            // A row's inside is placed from its top, so only the row moves.
+            let room = area.h / scale;
+            r.y += ((self.cursor.1 - start.1) / scale).clamp(-r.y, (room - r.h - r.y).max(-r.y));
+        } else {
+            let room = tab_layout::tab_area_width(bar, area.w / scale);
+            let dx = ((self.cursor.0 - start.0) / scale).clamp(-r.x, (room - r.w - r.x).max(-r.x));
+            let shift = |o: &mut Option<Rect>| {
+                if let Some(q) = o.as_mut() {
+                    q.x += dx;
+                }
+            };
+            shift(&mut c.close);
+            shift(&mut c.icon);
+            shift(&mut c.indicator);
+            shift(&mut c.counter);
+            c.label.x += dx;
+            r.x += dx;
+        }
         out.cells.push((i, c, r));
         // The per-cell texts go last with their cell.
         if k < out.titles.len() {
