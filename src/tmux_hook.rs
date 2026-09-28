@@ -2,7 +2,8 @@
 //! finds `ESC P 1000 p` in a pane's output (across reads), then splits everything after it
 //! into lines until `%exit`. Bytes before the start and after the exit go to the screen.
 
-const START: &[u8] = b"\x1bP1000p";
+/// The DCS that starts tmux control mode.
+pub const START: &[u8] = b"\x1bP1000p";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {

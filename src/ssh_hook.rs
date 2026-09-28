@@ -47,6 +47,12 @@ impl Hook {
         self.parser = None;
     }
 
+    /// The tail of the last read kept because it may begin `ESC P 2000 p`, handed back for
+    /// output that no longer goes through the hook (tmux control mode began before it).
+    pub fn take_held(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.held)
+    }
+
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Out> {
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);

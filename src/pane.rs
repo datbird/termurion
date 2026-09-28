@@ -387,12 +387,7 @@ impl Pane {
         let mut changed = !chunks.is_empty();
         // SSH integration, then tmux control mode, are found before anything can drop output.
         for chunk in chunks {
-            for out in self.ssh_hook.feed(&chunk) {
-                match out {
-                    crate::ssh_hook::Out::Screen(bytes) if self.ssh_q.is_empty() => self.route_output(bytes),
-                    other => self.ssh_q.push(other),
-                }
-            }
+            self.hook_output(&chunk);
         }
         if self.coprocess.is_some() {
             // Its output goes to the shell as typed, while the shell keeps up.
@@ -433,6 +428,35 @@ impl Pane {
             self.stop_coprocess();
         }
         changed
+    }
+
+    /// One read through the hooks. The SSH hook sees it first, unless tmux control mode is on:
+    /// iTerm2's DCS parser is hooked by the tmux parser for the whole control session, so a
+    /// `DCS 2000p` inside it (a reply line printing a user option) starts nothing
+    /// (`DP:513-538`). A read that starts control mode goes to the SSH hook only through the
+    /// tmux start; the rest is tmux's. While a conductor is hooked it takes everything, a
+    /// tmux start included, as iTerm2's conductor parser does.
+    fn hook_output(&mut self, chunk: &[u8]) {
+        let start = crate::tmux_hook::START;
+        let cut = match self.ssh_hook.active() || self.tmux_hook.active() {
+            true => chunk.len(),
+            false => chunk.windows(start.len()).position(|w| w == start).map_or(chunk.len(), |k| k + start.len()),
+        };
+        let (head, rest) = chunk.split_at(cut);
+        for part in [head, rest].into_iter().filter(|part| !part.is_empty()) {
+            if self.tmux_hook.active() && !self.ssh_hook.active() && self.ssh_q.is_empty() {
+                let mut bytes = self.ssh_hook.take_held();
+                bytes.extend_from_slice(part);
+                self.route_output(bytes);
+            } else {
+                for out in self.ssh_hook.feed(part) {
+                    match out {
+                        crate::ssh_hook::Out::Screen(bytes) if self.ssh_q.is_empty() => self.route_output(bytes),
+                        other => self.ssh_q.push(other),
+                    }
+                }
+            }
+        }
     }
 
     /// Output the SSH hook let through: tmux control mode is looked for, then the screen gets
@@ -1720,6 +1744,40 @@ mod tests {
         assert!(p.screen.all_text().contains("plainx"));
         assert!(p.tmux_output(b"\x1b]135;:unhook\x1b\\", false), "every later token too");
         assert_eq!(p.take_ssh(), [Out::Ssh(Token::Unhook, 0)]);
+    }
+
+    #[test]
+    fn a_dcs_2000p_inside_tmux_control_mode_starts_nothing() {
+        use crate::tmux_hook::Out;
+        let dcs = b"\x1bP2000pnone 1 YQ== - Yg==";
+        let line = |bytes: &[u8]| Out::Line(bytes.to_vec());
+        let reply = |p: &mut Pane, bytes: &[u8]| {
+            p.tmux_io().unwrap().push_output(bytes);
+            p.pump();
+        };
+        // The start and a reply block in one read: the reply line carries the raw DCS.
+        let mut p = Pane::tmux(5, 1, 3, 20, 4);
+        let mut read = b"sh\x1bP1000p%begin 1 1 0\n".to_vec();
+        read.extend_from_slice(dcs);
+        read.extend_from_slice(b"\n%end 1 1 0\n");
+        reply(&mut p, &read);
+        assert!(!p.has_ssh(), "no conductor over the tmux stream");
+        assert_eq!(p.take_tmux(), [Out::Enter, line(b"%begin 1 1 0"), line(dcs), line(b"%end 1 1 0")]);
+        assert!(p.screen.all_text().contains("sh"));
+
+        // In a later read, split across reads: the same.
+        reply(&mut p, b"%begin 2 2 0\n\x1bP20");
+        reply(&mut p, b"00pnone 1 YQ== - Yg==\n%end 2 2 0\n");
+        assert!(!p.has_ssh());
+        assert_eq!(p.take_tmux(), [line(b"%begin 2 2 0"), line(dcs), line(b"%end 2 2 0")]);
+
+        // After %exit the pane is a plain one again, and a DCS 2000p hooks.
+        reply(&mut p, b"%exit\n");
+        p.take_tmux();
+        let mut read = dcs.to_vec();
+        read.push(b'\n');
+        reply(&mut p, &read);
+        assert!(p.has_ssh());
     }
 
     #[test]
