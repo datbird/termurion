@@ -7,6 +7,7 @@
 use toml::Value;
 
 use crate::ai_catalog::Catalog;
+use crate::ai_model::Discovered;
 use crate::ai_models::{default_endpoint, Endpoint};
 use crate::ai_policy::host_of;
 use crate::ai_settings::{ADMIN, CONSENT, ENABLE_AI};
@@ -28,9 +29,10 @@ pub enum Check {
 }
 
 /// The gate's order for the default model: admin, EnableAI, endpoint, consent (Decision:
-/// consent follows EnableAI because the host it names depends on settings).
-pub fn check(g: &Globals, catalog: &Catalog) -> Check {
-    check_endpoint(g, default_endpoint(g, catalog).as_ref())
+/// consent follows EnableAI because the host it names depends on settings). `found` is the
+/// discovered Ollama models, so a dynamic default is gated on the host it is sent to.
+pub fn check(g: &Globals, catalog: &Catalog, found: &Discovered) -> Check {
+    check_endpoint(g, default_endpoint(g, catalog, found).as_ref())
 }
 
 /// The same order for an endpoint a feature chose itself (a pinned model, the economy model,
@@ -182,33 +184,33 @@ mod tests {
         let cat = bundled();
         let mut g = open();
         g.set(ADMIN, Value::Boolean(false));
-        assert_eq!(check(&g, cat), Check::AdminOff);
+        assert_eq!(check(&g, cat, &Discovered::default()), Check::AdminOff);
         grant(&mut g, "api.openai.com");
-        assert_eq!(check(&g, cat), Check::AdminOff, "the admin switch wins whatever else is set");
+        assert_eq!(check(&g, cat, &Discovered::default()), Check::AdminOff, "the admin switch wins whatever else is set");
         g.set(VENDOR, Value::Integer(5));
-        assert_eq!(check(&g, cat), Check::AdminOff);
+        assert_eq!(check(&g, cat, &Discovered::default()), Check::AdminOff);
 
         let mut g = open();
         g.set(ENABLE_AI, Value::Boolean(false));
-        assert_eq!(check(&g, cat), Check::AiOff);
+        assert_eq!(check(&g, cat, &Discovered::default()), Check::AiOff);
         g.set(VENDOR, Value::Integer(5));
-        assert_eq!(check(&g, cat), Check::AiOff);
+        assert_eq!(check(&g, cat, &Discovered::default()), Check::AiOff);
 
         let mut g = open();
         g.set(VENDOR, Value::Integer(5));
-        assert_eq!(check(&g, cat), Check::NoEndpoint, "Apple Intelligence has no endpoint on Windows");
+        assert_eq!(check(&g, cat, &Discovered::default()), Check::NoEndpoint, "Apple Intelligence has no endpoint on Windows");
         g.set(VENDOR, Value::Integer(2));
-        assert_eq!(check(&g, cat), needs("OpenAI", "api.openai.com"));
+        assert_eq!(check(&g, cat, &Discovered::default()), needs("OpenAI", "api.openai.com"));
         grant(&mut g, "api.openai.com");
-        assert_eq!(check(&g, cat), Check::Pass);
+        assert_eq!(check(&g, cat, &Discovered::default()), Check::Pass);
         select_provider(&mut g, Vendor::Anthropic, cat);
-        assert_eq!(check(&g, cat), needs("Anthropic", "api.anthropic.com"), "a new provider asks again");
+        assert_eq!(check(&g, cat, &Discovered::default()), needs("Anthropic", "api.anthropic.com"), "a new provider asks again");
 
         let t: toml::Table = r#"m = {name="llama3", url="http://localhost:11434/api/chat", api=5}"#.parse().expect("test TOML parses");
         let m = ManualModel::from_table(t["m"].as_table().expect("a table")).expect("a manual model");
         crate::ai_models::write(&mut g, std::slice::from_ref(&m));
         select_manual(&mut g, &m);
-        assert_eq!(check(&g, cat), needs("Ollama", "localhost"), "a localhost model asks too");
+        assert_eq!(check(&g, cat, &Discovered::default()), needs("Ollama", "localhost"), "a localhost model asks too");
 
         assert_eq!(check_endpoint(&g, None), Check::NoEndpoint);
         let mut closed = open();
@@ -232,7 +234,7 @@ mod tests {
 
         grant(&mut g, "api.anthropic.com");
         grant(&mut g, "localhost");
-        assert_eq!(check(&g, cat), needs("OpenAI", "api.openai.com"), "other hosts never let the endpoint's pass");
+        assert_eq!(check(&g, cat, &Discovered::default()), needs("OpenAI", "api.openai.com"), "other hosts never let the endpoint's pass");
     }
 
     #[test]

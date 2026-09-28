@@ -368,22 +368,20 @@ pub fn legacy_headers(g: &Globals) -> Vec<(String, String)> {
 }
 
 /// The default model for new chats (`LM:203-218`) as an endpoint: the model
-/// `ai_model::configured` picks (one pick for Settings, the gate and the request), with no
-/// discovered Ollama tags. None when there is nothing to send to (an Apple Intelligence vendor,
-/// a model without a URL), which the gate refuses with a reason. A request is gated on the
-/// endpoint of the model it actually sends (`ai_model::endpoint`), which can differ once
-/// discovery has found tags.
-pub fn default_endpoint(g: &Globals, catalog: &Catalog) -> Option<Endpoint> {
-    let m = crate::ai_model::configured(g, catalog, &crate::ai_model::Discovered::default())?;
+/// `ai_model::configured` picks with the discovered Ollama models `found`, the one pick for
+/// Settings, the gate and the request. None when there is nothing to send to (an Apple
+/// Intelligence vendor, a model without a URL), which the gate refuses with a reason.
+pub fn default_endpoint(g: &Globals, catalog: &Catalog, found: &crate::ai_model::Discovered) -> Option<Endpoint> {
+    let m = crate::ai_model::configured(g, catalog, found)?;
     (!m.url.is_empty()).then(|| crate::ai_model::endpoint(&m))
 }
 
 /// The vendor whose key a request uses (`LM:78-89`).
-pub fn effective_vendor(g: &Globals, catalog: &Catalog) -> Vendor {
+pub fn effective_vendor(g: &Globals, catalog: &Catalog, found: &crate::ai_model::Discovered) -> Vendor {
     if g.bool(ai::USE_RECOMMENDED) {
         return Vendor::from_raw(g.int(ai::VENDOR)).unwrap_or(Vendor::OpenAI);
     }
-    default_endpoint(g, catalog).map_or(Vendor::OpenAI, |e| e.vendor)
+    default_endpoint(g, catalog, found).map_or(Vendor::OpenAI, |e| e.vendor)
 }
 
 /// The default-model popup picked a provider (`G:2917-2922`): its recommended model's name is
@@ -391,7 +389,8 @@ pub fn effective_vendor(g: &Globals, catalog: &Catalog) -> Vendor {
 pub fn select_provider(g: &mut Globals, v: Vendor, catalog: &Catalog) {
     g.set(ai::USE_RECOMMENDED, Value::Boolean(true));
     g.set(ai::VENDOR, Value::Integer(v.raw()));
-    if let Some(e) = default_endpoint(g, catalog) {
+    // The recommended model's name, never a discovered tag's (`G:3188-3197`).
+    if let Some(e) = default_endpoint(g, catalog, &crate::ai_model::Discovered::default()) {
         if e.model != OLLAMA_PENDING {
             g.set(ai::MODEL, Value::String(e.model));
         }
@@ -1280,49 +1279,49 @@ mod tests {
         let cat = bundled();
         let mut g = empty();
         assert_eq!(
-            default_endpoint(&g, cat),
+            default_endpoint(&g, cat, &Default::default()),
             Some(Endpoint { vendor: Vendor::OpenAI, model: "gpt-5.6-sol".into(), url: "https://api.openai.com/v1/responses".into(), api: Api::Responses, custom_headers: vec![] })
         );
-        assert_eq!(effective_vendor(&g, cat), Vendor::OpenAI);
+        assert_eq!(effective_vendor(&g, cat, &Default::default()), Vendor::OpenAI);
 
         g.set(ai::VENDOR, Value::Integer(4));
-        let e = default_endpoint(&g, cat).unwrap();
+        let e = default_endpoint(&g, cat, &Default::default()).unwrap();
         assert_eq!((e.vendor, e.model.as_str(), e.url.as_str(), e.api), (Vendor::Anthropic, "claude-opus-4-8", "https://api.anthropic.com/v1/messages", Api::Anthropic));
-        assert_eq!(effective_vendor(&g, cat), Vendor::Anthropic);
+        assert_eq!(effective_vendor(&g, cat, &Default::default()), Vendor::Anthropic);
 
         g.set(ai::VENDOR, Value::Integer(3));
         assert_eq!(
-            default_endpoint(&g, cat),
+            default_endpoint(&g, cat, &Default::default()),
             Some(Endpoint { vendor: Vendor::Llama, model: OLLAMA_PENDING.into(), url: OLLAMA_ENDPOINT.into(), api: Api::Llama, custom_headers: vec![] })
         );
         // A Regular pick that discovery has not found waits on the placeholder (`LM:139-150`),
         // at the same endpoint.
         g.set(ai::OLLAMA_REGULAR, Value::String("qwen3".into()));
-        assert_eq!(default_endpoint(&g, cat).unwrap().model, OLLAMA_PENDING);
-        assert_eq!(default_endpoint(&g, cat).unwrap().url, OLLAMA_ENDPOINT);
-        assert_eq!(effective_vendor(&g, cat), Vendor::Llama);
+        assert_eq!(default_endpoint(&g, cat, &Default::default()).unwrap().model, OLLAMA_PENDING);
+        assert_eq!(default_endpoint(&g, cat, &Default::default()).unwrap().url, OLLAMA_ENDPOINT);
+        assert_eq!(effective_vendor(&g, cat, &Default::default()), Vendor::Llama);
 
         g.set(ai::VENDOR, Value::Integer(5));
-        assert_eq!(default_endpoint(&g, cat), None, "Apple Intelligence is not available on Windows");
-        assert_eq!(effective_vendor(&g, cat), Vendor::Apple);
+        assert_eq!(default_endpoint(&g, cat, &Default::default()), None, "Apple Intelligence is not available on Windows");
+        assert_eq!(effective_vendor(&g, cat, &Default::default()), Vendor::Apple);
         g.set(ai::VENDOR, Value::Integer(9));
-        assert_eq!(default_endpoint(&g, cat), None, "an out-of-range vendor falls to the manual path and finds nothing");
-        assert_eq!(effective_vendor(&g, cat), Vendor::OpenAI);
+        assert_eq!(default_endpoint(&g, cat, &Default::default()), None, "an out-of-range vendor falls to the manual path and finds nothing");
+        assert_eq!(effective_vendor(&g, cat, &Default::default()), Vendor::OpenAI);
 
         let mut m = globals_with(CONFIGS);
         m.set(ai::USE_RECOMMENDED, Value::Boolean(false));
         m.set(ai::MODEL, Value::String("b".into()));
-        let e = default_endpoint(&m, cat).unwrap();
+        let e = default_endpoint(&m, cat, &Default::default()).unwrap();
         assert_eq!((e.vendor, e.model.as_str(), e.url.as_str(), e.api), (Vendor::OpenAI, "b", "https://api.example.com/v1", Api::Responses));
         assert!(e.custom_headers.is_empty());
-        assert_eq!(effective_vendor(&m, cat), Vendor::OpenAI);
+        assert_eq!(effective_vendor(&m, cat, &Default::default()), Vendor::OpenAI);
         m.set(ai::MODEL, Value::String("missing".into()));
-        let e = default_endpoint(&m, cat).unwrap();
+        let e = default_endpoint(&m, cat, &Default::default()).unwrap();
         assert_eq!((e.vendor, e.model.as_str(), e.api), (Vendor::Llama, "llama3", Api::Llama));
         assert_eq!(e.custom_headers, [("Authorization".to_string(), "Bearer x".to_string())]);
-        assert_eq!(effective_vendor(&m, cat), Vendor::Llama);
+        assert_eq!(effective_vendor(&m, cat, &Default::default()), Vendor::Llama);
         m.set(ai::MODEL, Value::String("d".into()));
-        assert_eq!(default_endpoint(&m, cat).unwrap().model, "llama3", "a dynamic entry is not a default in 12a");
+        assert_eq!(default_endpoint(&m, cat, &Default::default()).unwrap().model, "llama3", "a dynamic entry is not a default in 12a");
 
         let mut legacy = empty();
         legacy.set(ai::USE_RECOMMENDED, Value::Boolean(false));
@@ -1332,7 +1331,7 @@ mod tests {
         legacy.set(ai::CUSTOM_HEADERS_ENABLED, Value::Boolean(true));
         legacy.set(ai::CUSTOM_HEADERS, value(r#"[{name="X-K", value="1"}]"#));
         assert_eq!(
-            default_endpoint(&legacy, cat),
+            default_endpoint(&legacy, cat, &Default::default()),
             Some(Endpoint {
                 vendor: Vendor::OpenAI,
                 model: "m".into(),
@@ -1342,10 +1341,10 @@ mod tests {
             })
         );
         legacy.set(ai::CUSTOM_HEADERS_ENABLED, Value::Boolean(false));
-        assert!(default_endpoint(&legacy, cat).unwrap().custom_headers.is_empty());
+        assert!(default_endpoint(&legacy, cat, &Default::default()).unwrap().custom_headers.is_empty());
         legacy.set(ai::URL, Value::String(String::new()));
-        assert_eq!(default_endpoint(&legacy, cat), None);
-        assert_eq!(effective_vendor(&legacy, cat), Vendor::OpenAI);
+        assert_eq!(default_endpoint(&legacy, cat, &Default::default()), None);
+        assert_eq!(effective_vendor(&legacy, cat, &Default::default()), Vendor::OpenAI);
     }
 
     #[test]

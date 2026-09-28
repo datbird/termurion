@@ -505,10 +505,10 @@ mod tests {
         cases.push(legacy);
         for (i, g) in cases.iter().enumerate() {
             let m = configured(g, c, &none);
-            let e = ai_models::default_endpoint(g, c);
+            let e = ai_models::default_endpoint(g, c, &none);
             assert_eq!(e, m.as_ref().filter(|m| !m.url.is_empty()).map(endpoint), "case {i}: one pick for 12a and the request");
             if let Some(e) = &e {
-                assert_eq!(e.vendor, ai_models::effective_vendor(g, c), "case {i}");
+                assert_eq!(e.vendor, ai_models::effective_vendor(g, c, &none), "case {i}");
                 assert_eq!(ai_policy::host_of(&e.url), ai_policy::host_of(&m.as_ref().unwrap().url), "case {i}");
             }
         }
@@ -517,13 +517,13 @@ mod tests {
         let n = cases.len();
         assert_eq!(configured(&cases[n - 3], c, &none).unwrap().custom_headers, [("X-A".to_string(), "1".to_string())]);
         assert_eq!(name_of(configured(&cases[n - 2], c, &none)).as_deref(), Some("a"));
-        let e = ai_models::default_endpoint(&cases[n - 4], c).unwrap();
+        let e = ai_models::default_endpoint(&cases[n - 4], c, &none).unwrap();
         assert_eq!((e.model.as_str(), e.url.as_str(), e.vendor), (OLLAMA_PENDING, OLLAMA_ENDPOINT, Vendor::Llama));
         // Apple Intelligence: the catalog entry, which has nowhere to send (the gate's NoEndpoint,
         // the turn's APPLE_UNAVAILABLE).
         let apple = configured(&cases[6], c, &none).unwrap();
         assert_eq!((apple.name.as_str(), apple.api, apple.url.as_str()), ("apple-on-device", Api::AppleIntelligence, ""));
-        assert_eq!(ai_models::default_endpoint(&cases[6], c), None);
+        assert_eq!(ai_models::default_endpoint(&cases[6], c, &none), None);
         assert_eq!(configured(&cases[7], c, &none), None, "an out-of-range vendor finds no manual model");
     }
 

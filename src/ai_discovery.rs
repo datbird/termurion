@@ -318,7 +318,7 @@ type Fetched = Result<Vec<Found>, Option<String>>;
 /// The discovered models of every server Tandem asked, by bucket (`OC:22-125`). At most one
 /// refresh runs per bucket; another request joins it. Refreshes run on the loop's ticks: a
 /// configured server is asked when first seen, 300 s after a healthy answer, and 5 s after a
-/// failure, up to `MAX_RETRIES` automatic retries.
+/// failure, up to `MAX_RETRIES` automatic retries; after those, a read of its models asks again.
 #[derive(Default)]
 pub struct Cache {
     entries: BTreeMap<String, Entry>,
@@ -496,17 +496,35 @@ impl Cache {
         changed
     }
 
-    /// When a server not being asked is due (`OC:144-156`): at once when never asked or only
-    /// restored, else after the healthy or retry interval; never once automatic retries ran
-    /// out.
+    /// A read of the models (`models(forEndpoint:)`, `OC:158-170`): every configured server
+    /// whose models are stale is asked again now, whatever the automatic retry count, so a
+    /// server that starts late is found at the next use. The App calls it wherever models are
+    /// read: model resolution and the settings window's frames.
+    pub fn wanted(&mut self, now: Instant, transport: &dyn Transport, configs: &[(String, Vec<(String, String)>)], notify: Notify) {
+        for (endpoint, headers) in configs {
+            let bucket = bucket_key(endpoint, headers);
+            if !self.running.contains_key(&bucket) && self.stale_at(&bucket, now) <= now {
+                self.start(endpoint, headers, None, transport, notify.clone(), Some(now));
+            }
+        }
+    }
+
+    /// When a server's models go stale (`shouldRefreshLocked`, `OC:144-156`): at once when never
+    /// asked or only restored, else after the healthy or retry interval.
+    fn stale_at(&self, bucket: &str, now: Instant) -> Instant {
+        let Some(e) = self.entries.get(bucket) else { return now };
+        let Some(last) = e.last_attempt else { return now };
+        let healthy = e.have_succeeded && e.failures == 0;
+        last + if healthy { HEALTHY_TTL } else { RETRY_TTL }
+    }
+
+    /// When a server not being asked is due by itself: when it goes stale, but never once the
+    /// automatic retries ran out (`OC:357-358`); a read (`wanted`) still asks it then.
     fn due_at(&self, bucket: &str, now: Instant) -> Option<Instant> {
-        let Some(e) = self.entries.get(bucket) else { return Some(now) };
-        if e.failures > MAX_RETRIES {
+        if self.entries.get(bucket).is_some_and(|e| e.failures > MAX_RETRIES) {
             return None;
         }
-        let Some(last) = e.last_attempt else { return Some(now) };
-        let healthy = e.have_succeeded && e.failures == 0;
-        Some(last + if healthy { HEALTHY_TTL } else { RETRY_TTL })
+        Some(self.stale_at(bucket, now))
     }
 
     /// Polls one running refresh; true when it finished and changed the models.
@@ -910,6 +928,23 @@ mod tests {
         assert_eq!(c.next_due(now), None);
         c.tick(now + Duration::from_secs(3600), &none, &cfg, noop());
         assert!(none.requests().is_empty(), "no automatic retry after {MAX_RETRIES} retries");
+        // A read still asks a stale server again (`OC:144-170`): once the retry interval has
+        // passed since the last attempt, whatever the retry count.
+        c.wanted(now + Duration::from_secs(4), &none, &cfg, noop());
+        assert!(none.requests().is_empty(), "not before the retry interval");
+        let late = now + RETRY_TTL;
+        let rec = Recorded::new(vec![Reply::failed("Could not connect to the server."), Reply::status(200, TAGS_FULL)]);
+        c.wanted(late, &rec, &cfg, noop());
+        c.wanted(late, &rec, &cfg, noop());
+        assert_eq!(rec.requests().len(), 1, "one request per read while one runs");
+        c.tick(late, &rec, &cfg, noop());
+        assert_eq!(c.next_due(late), None, "the automatic chain stays capped");
+        c.wanted(late + RETRY_TTL, &rec, &cfg, noop());
+        c.tick(late + RETRY_TTL, &rec, &cfg, noop());
+        assert_eq!(rec.requests().len(), 2);
+        assert_eq!(c.next_due(late + RETRY_TTL), Some(late + RETRY_TTL + HEALTHY_TTL), "healthy again");
+        c.wanted(late + RETRY_TTL + Duration::from_secs(299), &none, &cfg, noop());
+        assert!(none.requests().is_empty(), "a healthy server is read from the cache");
         let rec = Recorded::new(vec![Reply::status(200, TAGS_FULL)]);
         let t = c.refresh(e, &[], true, &rec, noop());
         assert_eq!(run(&mut c, &rec, t), Outcome { count: 2, failed: false, error: None });

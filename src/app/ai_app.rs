@@ -44,7 +44,8 @@ impl App {
     /// `silent` or a gate alert is already queued or showing, it says why (`GK:23-99`), and
     /// the person repeats the action after answering (Decision).
     pub(super) fn ai_check(&mut self, silent: bool) -> bool {
-        let check = ai_gate::check(&self.globals, crate::ai_catalog::bundled());
+        let found = self.ai_found();
+        let check = ai_gate::check(&self.globals, crate::ai_catalog::bundled(), &found);
         self.ai_gate_answer(&check, silent)
     }
 
@@ -213,15 +214,32 @@ impl App {
     }
 
     /// The discovered Ollama models of the configured servers, for model resolution
-    /// (`ai_model::configured`, `named`, `economy`).
+    /// (`ai_model::configured`, `named`, `economy`). Reading them asks stale servers again, as
+    /// iTerm2's reads do (`OC:158-170`).
     #[allow(dead_code)] // 12c's chat turn and 12e's features resolve models with it.
-    pub(crate) fn ai_found(&self) -> crate::ai_model::Discovered {
+    pub(crate) fn ai_found(&mut self) -> crate::ai_model::Discovered {
+        self.ai_discovery_read();
         self.ai_discovery.discovered(&crate::ai_discovery::configs(&self.globals))
     }
 
+    /// A read of the discovered models: stale configured servers are asked again, even after
+    /// the automatic retries ran out, while AI features are allowed.
+    fn ai_discovery_read(&mut self) {
+        if !crate::ai_settings::allowed(&self.globals) {
+            return;
+        }
+        let configs = crate::ai_discovery::configs(&self.globals);
+        self.ai_discovery.wanted(std::time::Instant::now(), &*self.ai_transport, &configs, self.notify.clone());
+    }
+
     /// Takes the settings window's AI request after its frame and starts it (ruling R12ab-3);
-    /// the answer reaches the same window through `ai_discovery_tick`.
+    /// the answer reaches the same window through `ai_discovery_tick`. The frame read the
+    /// discovered models (the model popup, the Regular and Budget pickers), which asks stale
+    /// servers again.
     pub(crate) fn drain_ai_requests(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.settings.is_some() {
+            self.ai_discovery_read();
+        }
         let Some(request) = self.settings.as_mut().and_then(|s| s.ai.pending.take()) else { return };
         match request {
             AiRequest::Discover { endpoint, headers, force } => {

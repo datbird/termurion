@@ -430,9 +430,10 @@ pub fn enabled(g: &Globals) -> Enabled {
     Enabled { enable: g.bool(ai::ADMIN), rest: ai::allowed(g) }
 }
 
-/// Where the default model's requests go and whether the person allowed them (ruling 1).
-pub fn requests_text(g: &Globals, catalog: &Catalog) -> String {
-    let Some(e) = default_endpoint(g, catalog) else { return ai_gate::NO_ENDPOINT.to_string() };
+/// Where the default model's requests go and whether the person allowed them (ruling 1), with
+/// the discovered Ollama models, as the request resolves it.
+pub fn requests_text(g: &Globals, catalog: &Catalog, found: &Discovered) -> String {
+    let Some(e) = default_endpoint(g, catalog, found) else { return ai_gate::NO_ENDPOINT.to_string() };
     let Some(host) = ai_policy::host_of(&e.url) else { return ai_gate::NO_ENDPOINT.to_string() };
     let provider = e.vendor.provider_name();
     if ai_gate::consented(g, &host) {
@@ -551,7 +552,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
     egui::Grid::new("ai-general").num_columns(2).spacing(egui::vec2(8.0, 10.0)).show(ui, |ui| {
         row_label(ui, REQUESTS_LABEL);
         ui.vertical(|ui| {
-            ui.label(requests_text(g, catalog));
+            ui.label(requests_text(g, catalog, &st.found));
             ui.weak(REQUESTS_NOTE);
             let any = matches!(g.values.get(ai::CONSENT), Some(Value::Array(a)) if !a.is_empty());
             if ui.add_enabled(any, egui::Button::new(FORGET_HOSTS)).clicked() {
@@ -1457,6 +1458,12 @@ mod tests {
         let resolved = crate::ai_model::configured(&g, cat, &found).expect("a model");
         assert_eq!((resolved.name.as_str(), resolved.url.as_str()), ("qwen3", server));
         assert_eq!(key_hint(&g, "manual:qwen3", cat, &found, &|_| false).as_deref(), Some("No API key is used."));
+        // Settings, the gate and the request name the same host for a dynamic default, even with
+        // other usable entries ahead of it.
+        assert_eq!(requests_text(&g, cat, &found), "Requests go to server.example (Ollama). Tandem asks before the first one.");
+        g.set(crate::ai_settings::ENABLE_AI, Value::Boolean(true));
+        assert_eq!(crate::ai_gate::check(&g, cat, &found), crate::ai_gate::Check::NeedsConsent { provider: "Ollama".into(), host: "server.example".into() });
+        assert_eq!(crate::ai_gate::check_endpoint(&g, Some(&crate::ai_model::endpoint(&resolved))), crate::ai_gate::check(&g, cat, &found));
     }
 
     #[test]
@@ -1746,11 +1753,11 @@ mod tests {
 
         let cat = bundled();
         let mut g = with_models(&[]);
-        assert_eq!(requests_text(&g, cat), "Requests go to api.openai.com (OpenAI). Tandem asks before the first one.");
+        assert_eq!(requests_text(&g, cat, &Discovered::default()), "Requests go to api.openai.com (OpenAI). Tandem asks before the first one.");
         crate::ai_gate::grant(&mut g, "api.openai.com");
-        assert_eq!(requests_text(&g, cat), "Requests go to api.openai.com (OpenAI). You allowed them.");
+        assert_eq!(requests_text(&g, cat, &Discovered::default()), "Requests go to api.openai.com (OpenAI). You allowed them.");
         g.set(VENDOR, Value::Integer(5));
-        assert_eq!(requests_text(&g, cat), crate::ai_gate::NO_ENDPOINT);
+        assert_eq!(requests_text(&g, cat, &Discovered::default()), crate::ai_gate::NO_ENDPOINT);
     }
 
     #[test]
