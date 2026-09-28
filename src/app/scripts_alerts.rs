@@ -1,7 +1,8 @@
-//! The Scripts features' alerts, one at a time: downloads to confirm, the slow-scan question
-//! and the notices after them (iTerm2's `iTermWarning`s from the scripts menu controller and
-//! the provisioner). An alert that is permanently silenceable remembers its answer under
-//! iTerm2's keys and is answered at once while silenced.
+//! The alert queue for iTerm2's `iTermWarning`s shown as windows, one at a time (first the
+//! Scripts features' downloads to confirm, the slow-scan question and the notices after them).
+//! A silenceable warning remembers its answer under iTerm2's keys and is answered at once while
+//! silenced (`warnings`, `warnings_app`); "Always show alerts with remembered selections" shows
+//! it instead, with the saved answer explained and "Permanently Forget Saved Selection".
 
 use std::collections::VecDeque;
 
@@ -13,16 +14,52 @@ use super::script_runtime_ui::After;
 use super::App;
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::script_provision::Job;
+use crate::warnings::{self, Kind, Preempt, Spec};
 
-/// One alert waiting to show.
+/// One alert waiting to show: the warning (its buttons left to right; Enter presses the first
+/// and Escape the one labeled "Cancel") and what an answer does.
 pub(super) struct Ask {
-    pub heading: String,
-    pub text: String,
-    /// Left to right; Enter presses the first and Escape the one labeled "Cancel".
-    pub buttons: Vec<String>,
-    /// iTerm2's identifier when the alert can be silenced for good.
-    pub silence: Option<&'static str>,
+    pub spec: Spec,
     pub then: Then,
+    /// Shown because "Always show alerts with remembered selections" is on: the saved button's
+    /// label (iTerm2's `savedSelectionLabel`); the text explains it and "Permanently Forget
+    /// Saved Selection" follows the buttons.
+    remembered: Option<String>,
+}
+
+/// An alert: iTerm2's heading, text, button labels, identifier (None when it is never
+/// silenced) and kind. The button labeled "Cancel" is never remembered, nor what `then` never
+/// remembers.
+pub(super) fn ask(heading: &str, text: &str, labels: &[&str], id: Option<&str>, kind: Kind, then: Then) -> Ask {
+    let spec = Spec {
+        id: id.map(str::to_string),
+        kind,
+        heading: heading.to_string(),
+        text: text.to_string(),
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+        cancel: labels.iter().position(|l| *l == crate::api_auth::CANCEL),
+        never_remember: then.never_remember(),
+    };
+    Ask { spec, then, remembered: None }
+}
+
+/// How a closed alert answers (ruling R13x67-1): a button, or closed with none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Answer {
+    Button(usize),
+    // 13x6's permission alert is the first to close with no button.
+    #[allow(dead_code)]
+    Closed,
+}
+
+/// The answer when an alert is closed: `fallback` (the window's `close_answer`, which only
+/// dismisses), except that closing the slow-scan question goes on scanning rather than
+/// pressing Stop. iTerm2's alerts cannot be closed.
+pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
+    match then {
+        Then::SlowScan => Answer::Button(1),
+        _ => Answer::Button(fallback),
+    }
 }
 
 /// What an answer does.
@@ -95,17 +132,14 @@ pub(super) enum Then {
 }
 
 impl Then {
-    /// Whether choosing button `index` may be remembered when the alert is silenced
-    /// (`doNotRememberLabels`).
-    fn remembers(&self, index: usize) -> bool {
-        !matches!(self, Then::OpenNewScript(_) | Then::PrefsQuit if index == 1)
+    /// The buttons never remembered when the alert is silenced (`doNotRememberLabels`): Show in
+    /// Explorer after a new script, and Lose Changes at quit (`RP:1688`).
+    pub(super) fn never_remember(&self) -> Vec<usize> {
+        match self {
+            Then::OpenNewScript(_) | Then::PrefsQuit => vec![1],
+            _ => Vec::new(),
+        }
     }
-}
-
-/// The remembered-choice keys of a silenceable warning: the silence flag and the chosen
-/// button (`iTermWarning.m`'s `identifier` and `identifier_selection`).
-pub(super) fn silence_keys(id: &str) -> (String, String) {
-    (id.to_string(), format!("{id}_selection"))
 }
 
 /// The queue holds at most this many; later asks are dropped (a flood of the same question
@@ -123,18 +157,23 @@ fn push_capped(queue: &mut VecDeque<Ask>, ask: Ask) -> Option<Ask> {
 }
 
 impl App {
-    /// Queues an alert; a silenced one answers its remembered choice at once.
-    pub(super) fn ask_scripts(&mut self, ask: Ask) {
-        if let Some(id) = ask.silence {
-            let (flag, selection) = silence_keys(id);
-            if self.globals.bool(&flag) {
-                let index = usize::try_from(self.globals.int(&selection)).unwrap_or(0);
-                return self.scripts_answered(ask.then, index);
-            }
+    /// Queues an alert; a silenced one answers its remembered choice at once (and is listed in
+    /// Suppressed Alerts), or shows with it explained in the remembered mode.
+    pub(super) fn ask_scripts(&mut self, mut ask: Ask) {
+        match self.warning_preempt(&ask.spec) {
+            Preempt::Answer(index) => return self.scripts_answered(ask.then, index),
+            Preempt::Show => {}
+            Preempt::ShowRemembered { saved_label } => ask.remembered = Some(saved_label),
         }
         if let Some(dropped) = push_capped(&mut self.scripts_alerts, ask) {
             self.scripts_dropped(dropped.then);
         }
+    }
+
+    /// An alert closed with no button (`Answer::Closed`): nothing is remembered or recorded, and
+    /// the ask counts as dropped.
+    pub(super) fn scripts_closed(&mut self, then: Then) {
+        self.scripts_dropped(then);
     }
 
     /// An ask that will never show: the slow-scan question answers Continue, so the scan
@@ -159,8 +198,16 @@ impl App {
         let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));
         let Some((instance, adapter, device, queue)) = gpu else { return };
         let Some(ask) = self.scripts_alerts.pop_front() else { return };
-        let labels: Vec<&str> = ask.buttons.iter().map(String::as_str).collect();
-        match ConfirmWindow::actions(event_loop, instance, adapter, device, queue, &ask.heading, &ask.text, &labels, ask.silence.is_some()) {
+        let spec = &ask.spec;
+        let labels: Vec<&str> = spec.labels.iter().map(String::as_str).collect();
+        let heading = if spec.heading.is_empty() { warnings::DEFAULT_HEADING } else { spec.heading.as_str() };
+        let text = match &ask.remembered {
+            Some(saved) => warnings::remembered_text(&spec.text, saved),
+            None => spec.text.clone(),
+        };
+        let (checkbox, shortcuts) = (warnings::checkbox_label(spec), warnings::shortcuts(&spec.labels));
+        let underline = self.globals.bool("AlertsIndicateShortcuts");
+        match ConfirmWindow::actions(event_loop, instance, adapter, device, queue, heading, &text, &labels, checkbox, &shortcuts, underline, ask.remembered.is_some()) {
             Ok(w) => self.scripts_alert = Some((w, ask)),
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));
@@ -173,10 +220,21 @@ impl App {
     pub(super) fn scripts_alert_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
         let Some((w, ask)) = self.scripts_alert.as_mut().filter(|(w, _)| w.id() == window) else { return false };
         let answer = match event {
-            // iTerm2's alerts cannot be closed; closing the slow-scan question goes on scanning
-            // rather than pressing Stop (the first button, which closing would otherwise mean).
-            WindowEvent::CloseRequested if ask.then == Then::SlowScan => ConfirmResult::Action { index: 1, suppress: false },
-            WindowEvent::CloseRequested => w.close_answer(),
+            WindowEvent::CloseRequested => {
+                let fallback = match w.close_answer() {
+                    ConfirmResult::Action { index, .. } => index,
+                    _ => 0,
+                };
+                match on_close(&ask.then, fallback) {
+                    Answer::Button(index) => ConfirmResult::Action { index, suppress: false },
+                    Answer::Closed => {
+                        if let Some((_, ask)) = self.scripts_alert.take() {
+                            self.scripts_closed(ask.then);
+                        }
+                        return true;
+                    }
+                }
+            }
             WindowEvent::RedrawRequested => w.redraw(),
             other => {
                 w.event(other);
@@ -189,13 +247,19 @@ impl App {
             // An `actions` window answers only with an action.
             ConfirmResult::Ok { .. } | ConfirmResult::Cancel => return true,
         };
-        let Some((_, ask)) = self.scripts_alert.take() else { return true };
-        if let (true, Some(id)) = (suppress && ask.then.remembers(index), ask.silence) {
-            let (flag, selection) = silence_keys(id);
-            self.globals.set(&flag, toml::Value::Boolean(true));
-            self.globals.set(&selection, toml::Value::Integer(index as i64));
-            self.save_globals();
+        let Some((_, mut ask)) = self.scripts_alert.take() else { return true };
+        // "Permanently Forget Saved Selection": the saved answer goes and the same alert shows
+        // again, next, without the remembered mode (`iTermWarning.m:526-541`).
+        if ask.remembered.is_some() && index == ask.spec.labels.len() {
+            if let Some(id) = ask.spec.id.as_deref() {
+                warnings::clear_saved(&mut self.globals, id);
+                self.save_globals();
+            }
+            ask.remembered = None;
+            self.scripts_alerts.push_front(ask);
+            return true;
         }
+        self.warning_answered(&ask.spec, index, suppress);
         self.scripts_answered(ask.then, index);
         true
     }
@@ -288,13 +352,7 @@ impl App {
                     scanner.answer_slow(go_on);
                 }
                 if !go_on {
-                    let ask = Ask {
-                        heading: crate::scripts::DISABLED_HEADING.to_string(),
-                        text: crate::scripts::DISABLED_TEXT.to_string(),
-                        buttons: vec![crate::api_auth::OK.to_string()],
-                        silence: None,
-                        then: Then::Nothing,
-                    };
+                    let ask = ask(crate::scripts::DISABLED_HEADING, crate::scripts::DISABLED_TEXT, &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing);
                     self.ask_scripts(ask);
                 }
             }
@@ -307,24 +365,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn silence_keys_follow_iterm2() {
-        assert_eq!(silence_keys("NoSyncX"), ("NoSyncX".to_string(), "NoSyncX_selection".to_string()));
+    fn asks_follow_iterm2() {
+        use crate::warnings::{selection_key, Kind};
+        let a = ask("H", "T", &["OK", "Cancel"], Some("NoSyncX"), Kind::Permanent, Then::Nothing);
+        assert_eq!(a.spec.cancel, Some(1));
+        assert_eq!(a.spec.labels, ["OK", "Cancel"]);
+        assert_eq!(a.spec.id.as_deref(), Some("NoSyncX"));
+        assert_eq!((a.spec.heading.as_str(), a.spec.text.as_str(), a.spec.kind), ("H", "T", Kind::Permanent));
+        assert!(a.spec.never_remember.is_empty());
+        let a = ask("H", "T", &["OK", "Reveal"], None, Kind::Persistent, Then::Nothing);
+        assert_eq!(a.spec.cancel, None);
+        assert!(a.spec.never_remember.is_empty());
+        assert_eq!(a.spec.id, None);
+        // 11d's OpenNewScript rule: "Show in Explorer" is never remembered.
+        let open = ask("H", "T", &["OK", "Show in Explorer"], Some("NoSyncX"), Kind::Permanent, Then::OpenNewScript(std::path::PathBuf::from(r"C:\S\a.py")));
+        assert_eq!(open.spec.never_remember, [1]);
+        assert!(open.spec.rememberable(0));
+        assert!(!open.spec.rememberable(1));
+        // "Lose Changes" is never remembered (`RP:1688`).
+        assert_eq!(Then::PrefsQuit.never_remember(), [1]);
+        assert!(Then::Nothing.never_remember().is_empty());
+        assert_eq!(selection_key("NoSyncX"), "NoSyncX_selection");
     }
 
     #[test]
-    fn show_in_explorer_is_never_remembered() {
-        let open = Then::OpenNewScript(std::path::PathBuf::from(r"C:\S\a.py"));
-        assert!(open.remembers(0));
-        assert!(!open.remembers(1));
-        assert!(Then::Nothing.remembers(1));
-        // "Lose Changes" is never remembered (`RP:1688`).
-        assert!(Then::PrefsQuit.remembers(0));
-        assert!(!Then::PrefsQuit.remembers(1));
+    fn close_result_follows_iterm2() {
+        assert_eq!(on_close(&Then::SlowScan, 0), Answer::Button(1));
+        assert_eq!(on_close(&Then::Nothing, 1), Answer::Button(1));
+        assert_eq!(on_close(&Then::Archive(std::path::PathBuf::from(r"C:\a.zip")), 0), Answer::Button(0));
+        assert_ne!(Answer::Closed, Answer::Button(0));
     }
 
     #[test]
     fn a_full_queue_gives_the_ask_back() {
-        let ask = |then| Ask { heading: String::new(), text: String::new(), buttons: Vec::new(), silence: None, then };
+        let ask = |then| ask("", "", &[], None, crate::warnings::Kind::Persistent, then);
         let mut q = VecDeque::new();
         for _ in 0..LIMIT {
             assert!(push_capped(&mut q, ask(Then::Nothing)).is_none());

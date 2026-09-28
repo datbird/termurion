@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use winit::event_loop::ActiveEventLoop;
 
 use super::App;
-use super::scripts_alerts::{Ask, Then};
+use super::scripts_alerts::{ask, Then};
+use crate::warnings::Kind;
 use crate::globals::Globals;
 use crate::remote_prefs::Snapshot;
 use crate::script_runtime as rt;
@@ -330,15 +331,15 @@ impl App {
 
     /// A persistent alert with OK alone.
     fn alert_ok(&mut self, heading: &str, text: String, then: Then) {
-        self.ask_scripts(Ask { heading: heading.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then });
+        self.ask_scripts(ask(heading, &text, &[crate::api_auth::OK], None, Kind::Persistent, then));
     }
 
     /// General > Settings' Import All Settings and Data (`importAll`, `IE:81-110`): the open
     /// panel (Cancel does nothing), then "Importing Settings and Data" (OK, Cancel; persistent).
     pub(super) fn import_all(&mut self) {
         let Some(file) = rfd::FileDialog::new().add_filter(se::FILTER_NAME, &[se::EXTENSION]).pick_file() else { return };
-        let buttons = vec![crate::api_auth::OK.to_string(), crate::api_auth::CANCEL.to_string()];
-        self.ask_scripts(Ask { heading: se::IMPORT_HEADING.to_string(), text: se::IMPORT_BODY.to_string(), buttons, silence: None, then: Then::ImportConfirm(file) });
+        let buttons = [crate::api_auth::OK, crate::api_auth::CANCEL];
+        self.ask_scripts(ask(se::IMPORT_HEADING, se::IMPORT_BODY, &buttons, None, Kind::Persistent, Then::ImportConfirm(file)));
     }
 
     /// OK in "Importing Settings and Data": the archive is extracted and named for the next
@@ -381,8 +382,8 @@ impl App {
     /// General > Settings' Erase All Settings and Data (`eraseAll`, `IE:122-222`): first the
     /// offer to export (Export First, Skip Export, Cancel; persistent).
     pub(super) fn erase_all(&mut self) {
-        let buttons = vec![se::EXPORT_FIRST.to_string(), se::SKIP_EXPORT.to_string(), crate::api_auth::CANCEL.to_string()];
-        self.ask_scripts(Ask { heading: se::ERASE_HEADING.to_string(), text: se::EXPORT_FIRST_BODY.to_string(), buttons, silence: None, then: Then::EraseExportFirst });
+        let buttons = [se::EXPORT_FIRST, se::SKIP_EXPORT, crate::api_auth::CANCEL];
+        self.ask_scripts(ask(se::ERASE_HEADING, se::EXPORT_FIRST_BODY, &buttons, None, Kind::Persistent, Then::EraseExportFirst));
     }
 
     /// The answer to the offer to export: Export First runs the export (canceled: the erase
@@ -400,8 +401,8 @@ impl App {
         } else {
             (se::ERASE_CONFIRM_HEADING, se::erase_confirm_body(), se::ERASE_ACTION)
         };
-        let buttons = vec![crate::api_auth::CANCEL.to_string(), action.to_string()];
-        self.ask_scripts(Ask { heading: heading.to_string(), text, buttons, silence: None, then: Then::EraseConfirm { dry_run } });
+        let buttons = [crate::api_auth::CANCEL, action];
+        self.ask_scripts(ask(heading, &text, &buttons, None, Kind::Persistent, Then::EraseConfirm { dry_run }));
     }
 
     /// The second button of the confirmation (`Eraser`, `IE:224-329`): the Scripts folder is

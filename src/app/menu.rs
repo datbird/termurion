@@ -809,6 +809,7 @@ impl App {
         self.panes.clear();
         self.focus_order.clear();
         if self.prefs_before_exit() {
+            self.catalog_flush();
             event_loop.exit();
         }
     }

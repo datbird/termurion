@@ -9,7 +9,8 @@ use toml::Value;
 use winit::event_loop::ActiveEventLoop;
 
 use super::App;
-use super::scripts_alerts::{Ask, Then};
+use super::scripts_alerts::{ask, Ask, Then};
+use crate::warnings::Kind;
 use crate::globals::Globals;
 use crate::profile::Profile;
 use crate::remote_prefs::{self as rp, QuitStep, Snapshot};
@@ -74,43 +75,40 @@ fn timeout(g: &Globals) -> f64 {
     g.number(rp::TIMEOUT_KEY).unwrap_or(5.0)
 }
 
-fn ok() -> Vec<String> {
-    vec![crate::api_auth::OK.to_string()]
-}
 
 /// "Failed to load settings from custom directory. ..." (`RP:304-310`): the detail names the
 /// location as typed.
 fn failed_folder(text: &str) -> Ask {
-    Ask { heading: rp::FAILED_FOLDER.to_string(), text: rp::missing_file(text), buttons: ok(), silence: None, then: Then::Nothing }
+    ask(rp::FAILED_FOLDER, &rp::missing_file(text), &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing)
 }
 
 /// "Error Loading Settings" (`RP:295-303`).
 fn location_not_set() -> Ask {
-    let buttons = vec![rp::DONT_LOAD.to_string(), crate::api_auth::CANCEL.to_string()];
-    Ask { heading: rp::ERROR_LOADING.to_string(), text: rp::LOCATION_NOT_SET.to_string(), buttons, silence: None, then: Then::PrefsLocationNotSet }
+    let buttons = [rp::DONT_LOAD, crate::api_auth::CANCEL];
+    ask(rp::ERROR_LOADING, rp::LOCATION_NOT_SET, &buttons, None, Kind::Persistent, Then::PrefsLocationNotSet)
 }
 
 /// The remembered URL's question (`RP:241-272`), an iTerm2 warning that cannot be silenced.
 fn url_prompt(url: &str) -> Ask {
-    let buttons = [rp::KEEP_LOCAL, rp::DISABLE_URL, rp::DISCARD_LOCAL].map(String::from).to_vec();
-    Ask { heading: crate::script_new::WARNING.to_string(), text: rp::URL_PROMPT.to_string(), buttons, silence: None, then: Then::PrefsUrlPrompt(url.to_string()) }
+    let buttons = [rp::KEEP_LOCAL, rp::DISABLE_URL, rp::DISCARD_LOCAL];
+    ask(crate::script_new::WARNING, rp::URL_PROMPT, &buttons, None, Kind::Persistent, Then::PrefsUrlPrompt(url.to_string()))
 }
 
 /// `didFailToLoadFromURL:withError:` (`RP:209-232`): curl's exit code 28 is the timeout.
 fn failed_url(url: &str, code: i32, error: &str) -> Ask {
     let timed_out = code == rp::CURL_TIMED_OUT;
-    let mut buttons = vec![crate::api_auth::OK.to_string(), rp::REVEAL_IN_SETTINGS.to_string()];
+    let mut buttons = vec![crate::api_auth::OK, rp::REVEAL_IN_SETTINGS];
     if timed_out {
-        buttons.push(rp::TRY_AGAIN.to_string());
+        buttons.push(rp::TRY_AGAIN);
     }
-    Ask { heading: rp::FAILED_URL.to_string(), text: rp::http_failed(error), buttons, silence: None, then: Then::PrefsFailedUrl { url: url.to_string(), timed_out } }
+    ask(rp::FAILED_URL, &rp::http_failed(error), &buttons, None, Kind::Persistent, Then::PrefsFailedUrl { url: url.to_string(), timed_out })
 }
 
 /// "Settings at ... changed since Tandem started. Overwrite it?" (`RP:338-347`), naming the
 /// location as typed; it cannot be silenced.
 pub(super) fn overwrite_ask(text: &str) -> Ask {
-    let buttons = vec![rp::OVERWRITE.to_string(), rp::DISCARD_LOCAL.to_string()];
-    Ask { heading: crate::script_new::WARNING.to_string(), text: rp::remote_changed(text), buttons, silence: None, then: Then::PrefsOverwrite }
+    let buttons = [rp::OVERWRITE, rp::DISCARD_LOCAL];
+    ask(crate::script_new::WARNING, &rp::remote_changed(text), &buttons, None, Kind::Persistent, Then::PrefsOverwrite)
 }
 
 /// The URL's text as loaded: the snapshot, or the failure (an empty or malformed file falls
@@ -277,7 +275,7 @@ impl App {
             }
         }
         let shown = file.map_or_else(|| self.prefs_location().1, |f| f.display().to_string());
-        self.ask_scripts(Ask { heading: rp::FAILED_COPY.to_string(), text: rp::tried_to_copy(&shown, &shown), buttons: ok(), silence: None, then: Then::Nothing });
+        self.ask_scripts(ask(rp::FAILED_COPY, &rp::tried_to_copy(&shown, &shown), &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing));
     }
 
     /// `remotePrefsHaveChanged` (`RP:1625-1644`): the folder's file no longer holds what was
@@ -296,7 +294,7 @@ impl App {
         let url = rp::is_url(&location);
         match save_plan(url, !url && self.prefs_remote_changed()) {
             SavePlan::CannotCopyToUrl => {
-                let ask = Ask { heading: rp::CANNOT_COPY_URL.to_string(), text: rp::CANNOT_COPY_URL_DETAIL.to_string(), buttons: ok(), silence: None, then: Then::Nothing };
+                let ask = ask(rp::CANNOT_COPY_URL, rp::CANNOT_COPY_URL_DETAIL, &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing);
                 self.ask_scripts(ask);
             }
             SavePlan::AskOverwrite => self.ask_scripts(overwrite_ask(&text)),
@@ -307,8 +305,8 @@ impl App {
     /// "Copy local settings to custom folder now?" (`GP:4276-4284`), after a usable folder was
     /// picked with the checkbox.
     pub(super) fn prefs_offer_copy(&mut self) {
-        let buttons = vec![rp::COPY.to_string(), rp::DONT_COPY.to_string()];
-        self.ask_scripts(Ask { heading: rp::COPY_NOW.to_string(), text: String::new(), buttons, silence: None, then: Then::PrefsCopyNow });
+        let buttons = [rp::COPY, rp::DONT_COPY];
+        self.ask_scripts(ask(rp::COPY_NOW, "", &buttons, None, Kind::Persistent, Then::PrefsCopyNow));
     }
 
     /// The location's settings replace the running ones, as an import does.
@@ -409,8 +407,8 @@ impl App {
             }
             QuitStep::SaveSilently => self.prefs_save_now(false),
             QuitStep::Ask => {
-                let buttons = vec![rp::COPY.to_string(), rp::LOSE_CHANGES.to_string()];
-                let ask = Ask { heading: crate::script_new::WARNING.to_string(), text: rp::settings_changed(&text), buttons, silence: Some(rp::HAVE_SELECTION_KEY), then: Then::PrefsQuit };
+                let buttons = [rp::COPY, rp::LOSE_CHANGES];
+                let ask = ask(crate::script_new::WARNING, &rp::settings_changed(&text), &buttons, Some(rp::HAVE_SELECTION_KEY), Kind::Permanent, Then::PrefsQuit);
                 self.ask_scripts(ask);
             }
         }
@@ -443,6 +441,7 @@ impl App {
         }
         if self.prefs_exit_pending && !self.prefs_quit_question_open() {
             self.prefs_exit_pending = false;
+            self.catalog_flush();
             event_loop.exit();
         }
     }
@@ -487,7 +486,7 @@ mod tests {
     }
 
     fn buttons(ask: &Ask) -> Vec<&str> {
-        ask.buttons.iter().map(String::as_str).collect()
+        ask.spec.labels.iter().map(String::as_str).collect()
     }
 
     fn never(_: &str, _: Option<f64>) -> Fetched {
@@ -573,7 +572,7 @@ mod tests {
         let (snap, asks) = load_at_start(&mut g, &mut store, &never);
         assert!(snap.is_none());
         assert_eq!(asks.len(), 1);
-        assert_eq!((asks[0].heading.as_str(), asks[0].text.as_str()), (rp::ERROR_LOADING, rp::LOCATION_NOT_SET));
+        assert_eq!((asks[0].spec.heading.as_str(), asks[0].spec.text.as_str()), (rp::ERROR_LOADING, rp::LOCATION_NOT_SET));
         assert_eq!(buttons(&asks[0]), ["Don\u{2019}t Load Remote Settings", "Cancel"]);
         assert_eq!(asks[0].then, Then::PrefsLocationNotSet);
         assert_untouched(&g, &store);
@@ -586,8 +585,8 @@ mod tests {
         let (snap, asks) = load_at_start(&mut g, &mut store, &never);
         assert!(snap.is_none());
         assert_eq!(asks.len(), 1);
-        assert_eq!(asks[0].heading, "Failed to load settings from custom directory. Falling back to local copy.");
-        assert_eq!(asks[0].text, format!("Missing or malformed file at \u{201c}{e}\u{201d}"));
+        assert_eq!(asks[0].spec.heading, "Failed to load settings from custom directory. Falling back to local copy.");
+        assert_eq!(asks[0].spec.text, format!("Missing or malformed file at \u{201c}{e}\u{201d}"));
         assert_eq!(buttons(&asks[0]), ["OK"]);
         assert_eq!(asks[0].then, Then::Nothing);
         assert_untouched(&g, &store);
@@ -611,7 +610,7 @@ mod tests {
         let (snap, asks) = load_at_start(&mut g, &mut store, &|_, _| Err((28, "timed out".into())));
         assert!(snap.is_none());
         assert_eq!(asks.len(), 1);
-        assert_eq!((asks[0].heading.as_str(), asks[0].text.as_str()), (rp::FAILED_URL, "HTTP request failed: timed out"));
+        assert_eq!((asks[0].spec.heading.as_str(), asks[0].spec.text.as_str()), (rp::FAILED_URL, "HTTP request failed: timed out"));
         assert_eq!(asks[0].then, Then::PrefsFailedUrl { url: url.into(), timed_out: true });
         assert_eq!(buttons(&asks[0]), ["OK", "Reveal in Settings", "Try Again Without Timeout"]);
         assert_untouched(&g, &store);
@@ -629,17 +628,17 @@ mod tests {
         let (snap, asks) = load_at_start(&mut g, &mut store, &never);
         assert!(snap.is_none());
         assert_eq!(asks.len(), 1);
-        assert_eq!(asks[0].text, rp::URL_PROMPT);
+        assert_eq!(asks[0].spec.text, rp::URL_PROMPT);
         assert_eq!(asks[0].then, Then::PrefsUrlPrompt(url.into()));
         assert_eq!(buttons(&asks[0]), ["Keep Local Changes", "Disable Loading from URL", "Discard Local Changes"]);
-        assert!(asks[0].silence.is_none());
+        assert!(asks[0].spec.id.is_none());
         assert_untouched(&g, &store);
 
         // A network folder is never read.
         let (mut g, mut store) = local(&dir, r"\\host\share");
         let (snap, asks) = load_at_start(&mut g, &mut store, &never);
         assert!(snap.is_none());
-        assert_eq!(asks[0].heading, rp::FAILED_FOLDER);
+        assert_eq!(asks[0].spec.heading, rp::FAILED_FOLDER);
         assert_untouched(&g, &store);
 
         std::fs::remove_dir_all(&dir).unwrap();
@@ -656,7 +655,7 @@ mod tests {
 
     #[test]
     fn exit_waits_for_any_alert() {
-        let failed = || Ask { heading: rp::FAILED_COPY.to_string(), text: rp::tried_to_copy("f", "f"), buttons: ok(), silence: None, then: Then::Nothing };
+        let failed = || ask(rp::FAILED_COPY, &rp::tried_to_copy("f", "f"), &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing);
         let mut queued = std::collections::VecDeque::new();
         assert!(!exit_waits(None, &queued));
         assert!(exit_waits(Some(&failed()), &queued), "the failure to copy is seen before the exit");
@@ -671,10 +670,10 @@ mod tests {
         assert_eq!(save_plan(false, true), SavePlan::AskOverwrite);
         assert_eq!(save_plan(false, false), SavePlan::Write);
         let ask = overwrite_ask(r"D:\s");
-        assert_eq!(ask.text, "Settings at D:\\s changed since Tandem started. Overwrite it?");
+        assert_eq!(ask.spec.text, "Settings at D:\\s changed since Tandem started. Overwrite it?");
         assert_eq!(buttons(&ask), ["Overwrite", "Discard Local Changes"]);
         assert_eq!(ask.then, Then::PrefsOverwrite);
-        assert!(ask.silence.is_none());
+        assert!(ask.spec.id.is_none());
     }
 
     #[test]
@@ -702,7 +701,7 @@ mod tests {
         let (g, _) = local(&dir, &t);
         match start(&g, Path::new(r"C:\Users\u"), &to_share, &never) {
             Start::Ask(ask) => {
-                assert_eq!((ask.heading.as_str(), ask.text.as_str()), (rp::FAILED_FOLDER, rp::missing_file(&t).as_str()));
+                assert_eq!((ask.spec.heading.as_str(), ask.spec.text.as_str()), (rp::FAILED_FOLDER, rp::missing_file(&t).as_str()));
                 assert_eq!(buttons(&ask), ["OK"]);
             }
             _ => panic!("a folder linked to a network path is never read"),

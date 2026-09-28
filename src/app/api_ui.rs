@@ -1118,7 +1118,7 @@ impl App {
         let Some((_, alert)) = self.api_alerts.first() else { return };
         let Some(g) = self.gpu.as_ref() else { return };
         let f = form(alert, self.globals.bool(SET_COOKIE_KEY));
-        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, f.heading, &f.text, &f.labels, f.silenceable) {
+        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, f.heading, &f.text, &f.labels, f.silenceable.then_some(ConfirmWindow::SUPPRESS), &[], false, false) {
             Ok(w) => self.api_alerts[0].0 = Some(w),
             Err(e) => {
                 let (_, alert) = self.api_alerts.remove(0);

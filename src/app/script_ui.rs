@@ -1143,12 +1143,8 @@ impl App {
         let (heading, text) = alert.form();
         let failed = matches!(alert, Alert::Failed { .. });
         let buttons = alert.buttons();
-        let opened = ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &buttons, false).map(|mut w| {
-            if failed {
-                w.set_checkbox_label(ConfirmWindow::SUPPRESS_TEN_MINUTES);
-            }
-            w
-        });
+        let checkbox = failed.then_some(ConfirmWindow::SUPPRESS_TEN_MINUTES);
+        let opened = ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &buttons, checkbox, &[], false, false);
         let Some(alert) = self.script_alerts.pop_front() else { return };
         match opened {
             Ok(w) => self.script_alert = Some((w, alert)),

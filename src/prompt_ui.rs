@@ -201,6 +201,37 @@ pub fn close_index(labels: &[&str]) -> usize {
     action_keys(labels).1.unwrap_or(0)
 }
 
+/// An `actions` window's buttons, left to right: the labels, then with `forget` "Permanently
+/// Forget Saved Selection" (`iTermWarning.m:368-371`, the remembered mode's extra button).
+pub fn button_labels(labels: &[&str], forget: bool) -> Vec<String> {
+    let mut out: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
+    if forget {
+        out.push(crate::warnings::FORGET.to_string());
+    }
+    out
+}
+
+/// The button Alt plus `letter` presses: the first whose shortcut is that letter, in either
+/// case (`iTermWarning.m:296-326` can give two buttons one letter; AppKit presses the first).
+pub fn shortcut_press(shortcuts: &[Option<(usize, char)>], letter: char) -> Option<usize> {
+    let letter = letter.to_ascii_lowercase();
+    shortcuts.iter().position(|s| s.is_some_and(|(_, c)| c == letter))
+}
+
+/// A button's label with the character at `at` (a char index) underlined, in the button font
+/// (`alertsIndicateShortcuts`).
+fn underlined(ui: &egui::Ui, label: &str, at: usize) -> egui::text::LayoutJob {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let color = ui.visuals().text_color();
+    let plain = egui::TextFormat::simple(font.clone(), color);
+    let marked = egui::TextFormat { underline: egui::Stroke::new(1.0, color), ..egui::TextFormat::simple(font, color) };
+    let mut job = egui::text::LayoutJob::default();
+    for (i, c) in label.chars().enumerate() {
+        job.append(&c.to_string(), 0.0, if i == at { marked.clone() } else { plain.clone() });
+    }
+    job
+}
+
 /// An OK and Cancel question with iTerm2's permanently silenceable checkbox
 /// (`iTermWarning.m:400-406,517-520`: "Suppress this message permanently", remembered only on
 /// OK). Enter is OK and Escape Cancel.
@@ -219,11 +250,19 @@ pub struct ConfirmWindow {
     enter_cancels: bool,
     /// An `actions` window's buttons, left to right.
     actions: Vec<String>,
+    /// Each action's Alt shortcut (its letter's char index and the letter), whether the letter
+    /// is drawn underlined, and whether "Permanently Forget Saved Selection" follows the
+    /// actions (it answers `Action { index: actions.len(), .. }`).
+    shortcuts: Vec<Option<(usize, char)>>,
+    underline: bool,
+    forget: bool,
 }
 
 impl ConfirmWindow {
     /// The checkbox's label (`iTermWarning.m:400-406`).
     pub const SUPPRESS: &'static str = "Suppress this message permanently";
+    /// A permanently silenceable warning's checkbox with several actions (`iTermWarning.m:403-404`).
+    pub const REMEMBER: &'static str = "Remember my choice";
     /// A temporarily silenceable warning's checkbox with one action (`iTermWarning.m:381-390`).
     pub const SUPPRESS_TEN_MINUTES: &'static str = "Suppress this message for ten minutes";
 
@@ -238,7 +277,7 @@ impl ConfirmWindow {
         text: &str,
     ) -> Result<ConfirmWindow, String> {
         let host = EguiHost::open(event_loop, instance, adapter, device, queue, heading, 420.0, 130.0)?;
-        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new() })
+        Ok(ConfirmWindow { host, text: text.into(), suppress: false, checkbox: true, checkbox_label: Self::SUPPRESS, ok: "OK".into(), cancel: Some("Cancel".into()), enter_cancels: false, actions: Vec::new(), shortcuts: Vec::new(), underline: false, forget: false })
     }
 
     /// A warning that cannot be silenced: the text and an OK button (Enter; Escape closes
@@ -300,9 +339,11 @@ impl ConfirmWindow {
     }
 
     /// An `iTermWarning` with any number of actions: the text, one button per label, left to
-    /// right in the labels' order (iTerm2's), and "Suppress this message permanently" only when
-    /// `silenceable`. A button answers `Action` with its index; Enter and Escape press the
-    /// buttons `action_keys` names.
+    /// right in the labels' order (iTerm2's), and the checkbox only when `checkbox` names its
+    /// label. A button answers `Action` with its index; Enter and Escape press the buttons
+    /// `action_keys` names, and Alt plus a letter the button `shortcut_press` names, its letter
+    /// underlined with `underline`. With `forget`, "Permanently Forget Saved Selection" follows
+    /// the labels and answers the index `labels.len()`.
     #[allow(clippy::too_many_arguments)]
     pub fn actions(
         event_loop: &ActiveEventLoop,
@@ -313,19 +354,20 @@ impl ConfirmWindow {
         heading: &str,
         text: &str,
         labels: &[&str],
-        silenceable: bool,
+        checkbox: Option<&'static str>,
+        shortcuts: &[Option<(usize, char)>],
+        underline: bool,
+        forget: bool,
     ) -> Result<ConfirmWindow, String> {
         let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
-        w.checkbox = silenceable;
+        w.checkbox = checkbox.is_some();
+        w.checkbox_label = checkbox.unwrap_or(Self::SUPPRESS);
         w.cancel = None;
         w.actions = labels.iter().map(|l| l.to_string()).collect();
+        w.shortcuts = shortcuts.to_vec();
+        w.underline = underline;
+        w.forget = forget;
         Ok(w)
-    }
-
-    /// Shows the checkbox with another label (a temporarily silenceable warning's).
-    pub fn set_checkbox_label(&mut self, label: &'static str) {
-        self.checkbox = true;
-        self.checkbox_label = label;
     }
 
     /// The answer when the window is closed: Cancel, or for an `actions` window `close_index`'s
@@ -353,6 +395,7 @@ impl ConfirmWindow {
     pub fn redraw(&mut self) -> ConfirmResult {
         let mut result = ConfirmResult::Open;
         let (text, suppress, checkbox, checkbox_label, ok, cancel, enter_cancels, actions) = (&self.text, &mut self.suppress, self.checkbox, self.checkbox_label, &self.ok, &self.cancel, self.enter_cancels, &self.actions);
+        let (shortcuts, underline, forget) = (&self.shortcuts, self.underline, self.forget);
         self.host.paint(|ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.label(text.as_str());
@@ -366,12 +409,32 @@ impl ConfirmWindow {
                     if !actions.is_empty() {
                         let labels: Vec<&str> = actions.iter().map(String::as_str).collect();
                         let (enter_index, escape_index) = action_keys(&labels);
-                        for (index, label) in labels.iter().enumerate() {
-                            if ui.button(*label).clicked() {
+                        for (index, label) in button_labels(&labels, forget).iter().enumerate() {
+                            let clicked = match shortcuts.get(index).copied().flatten() {
+                                Some((at, _)) if underline => ui.button(underlined(ui, label, at)).clicked(),
+                                _ => ui.button(label.as_str()).clicked(),
+                            };
+                            if clicked {
                                 result = ConfirmResult::Action { index, suppress: *suppress };
                             }
                         }
-                        if enter {
+                        // Alt plus a shortcut letter (iTerm2's Command plus the letter).
+                        let pressed = ui.input(|i| {
+                            i.events.iter().find_map(|e| match e {
+                                egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.alt && !modifiers.ctrl => {
+                                    let name = key.name();
+                                    let mut chars = name.chars();
+                                    match (chars.next(), chars.next()) {
+                                        (Some(c), None) if c.is_ascii_alphabetic() => shortcut_press(shortcuts, c),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            })
+                        });
+                        if let Some(index) = pressed {
+                            result = ConfirmResult::Action { index, suppress: *suppress };
+                        } else if enter {
                             result = ConfirmResult::Action { index: enter_index, suppress: *suppress };
                         } else if let (true, Some(index)) = (escape, escape_index) {
                             result = ConfirmResult::Action { index, suppress: *suppress };
@@ -423,6 +486,17 @@ mod tests {
         assert_eq!(close_index(&["OK", "Reveal Preference"]), 0);
         assert_eq!(close_index(&["OK", "Show in Explorer"]), 0);
         assert_eq!(close_index(&["OK"]), 0);
+    }
+
+    #[test]
+    fn confirm_buttons_follow_iterm2() {
+        assert_eq!(button_labels(&["OK", "Cancel"], true), ["OK", "Cancel", "Permanently Forget Saved Selection"]);
+        assert_eq!(button_labels(&["OK", "Cancel"], false), ["OK", "Cancel"]);
+        assert_eq!(shortcut_press(&[None, Some((0, 'c')), None], 'c'), Some(1));
+        assert_eq!(shortcut_press(&[None, Some((0, 'c')), None], 'C'), Some(1), "case-insensitive");
+        assert_eq!(shortcut_press(&[None, Some((0, 'c')), None], 'x'), None);
+        assert_eq!(shortcut_press(&[None, Some((0, 'c')), Some((2, 'c'))], 'c'), Some(1), "the first of two with one letter");
+        assert_eq!(ConfirmWindow::REMEMBER, "Remember my choice");
     }
 
     #[test]

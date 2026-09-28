@@ -113,6 +113,7 @@ mod api_requests;
 mod script_ui;
 mod script_runtime_ui;
 mod scripts_alerts;
+mod warnings_app;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
@@ -659,9 +660,15 @@ pub struct App {
     provision_waiting: Vec<script_runtime_ui::Waiting>,
     backend_probes: Vec<script_runtime_ui::Probe>,
     uv_installed: bool,
-    /// The Scripts features' alerts waiting to show, and the one showing.
+    /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// iTerm2's suppressed alerts (app-wide): the catalog of warnings answered automatically,
+    /// "Always show alerts with remembered selections" (not saved, as iTerm2's process global),
+    /// and when the catalog's write is due.
+    suppressed: crate::warnings::Catalog,
+    show_remembered: bool,
+    catalog_due: Option<Instant>,
     /// The AI alert queue (ruling 12c-7), the alert showing, and the Settings > General > AI
     /// sub-tab an answer asked to reveal.
     ai_asks: VecDeque<crate::ai_gate::Alert>,
@@ -877,6 +884,8 @@ pub fn run() {
     // ones before anything reads them; its questions and failures show with the first window.
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
+    // The warnings answered automatically in earlier runs (iTerm2 reads its catalog at start).
+    let suppressed = crate::warnings::Catalog::from_value(globals.get(crate::warnings::CATALOG_KEY).as_ref());
     if prefs_saved.is_some() {
         if let Err(e) = globals.save() {
             banners.set("globals", format!("Could not save settings: {e}"));
@@ -1181,6 +1190,9 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        suppressed,
+        show_remembered: false,
+        catalog_due: None,
         ai_asks: VecDeque::new(),
         ai_alert: None,
         ai_reveal: None,
@@ -1678,8 +1690,8 @@ impl App {
             match event {
                 crate::scripts_scan::ScanEvent::Slow => {
                     let text = crate::scripts::slow_text(&folder);
-                    let buttons = vec![crate::scripts::STOP.to_string(), crate::scripts::CONTINUE.to_string()];
-                    self.ask_scripts(scripts_alerts::Ask { heading: crate::scripts::SLOW_HEADING.to_string(), text, buttons, silence: None, then: scripts_alerts::Then::SlowScan });
+                    let buttons = [crate::scripts::STOP, crate::scripts::CONTINUE];
+                    self.ask_scripts(scripts_alerts::ask(crate::scripts::SLOW_HEADING, &text, &buttons, None, crate::warnings::Kind::Persistent, scripts_alerts::Then::SlowScan));
                 }
                 // An unchanged tree is left alone, so nothing built from it is rebuilt.
                 crate::scripts_scan::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
@@ -1938,6 +1950,7 @@ impl App {
                     self.save_now();
                 }
                 if self.prefs_before_exit() {
+                    self.catalog_flush();
                     event_loop.exit();
                 }
             } else {
@@ -3147,6 +3160,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.relaunch(event_loop);
         }
         self.prefs_tick(event_loop);
+        self.catalog_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
         self.open_ai_alert(event_loop);
@@ -3170,7 +3184,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
