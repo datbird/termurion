@@ -102,6 +102,8 @@ impl App {
                             let held = p.take_ssh_held();
                             p.write_no_broadcast(&held);
                         }
+                        // The parser already let go; the setup fails with the reason now.
+                        Token::Error(reason) => c.fail(&reason),
                         Token::Init(_) => {}
                     }
                 }

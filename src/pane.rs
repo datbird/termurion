@@ -681,7 +681,7 @@ impl Pane {
         let location = self.conductor.as_ref().and_then(|c| c.parent.as_ref()).map(|p| p.identity().compact(&crate::ssh_args::local_user()));
         let screen = self.own_mut();
         screen.print_message(crate::conductor::SETUP_ERROR);
-        screen.print_message(reason);
+        screen.print_message(&crate::conductor::shown(reason));
         screen.append_banner(&crate::ssh_handshake::end_banner(1, location.as_deref()));
         self.ssh_unhook_conductor();
         self.unhook_ssh();
@@ -1487,6 +1487,12 @@ mod tests {
         assert!(p.screen.all_text().contains("ssh exited \u{2014} now at o.example."));
         p.write_session(b"x");
         assert_eq!(p.tmux_io().unwrap().take_input(), b"x");
+
+        // A remote-sized reason (a command naming the remote's ssh args) is cut.
+        let mut p = hooked_setup(std::time::Instant::now(), false);
+        p.abort_ssh(&"r".repeat(1 << 20));
+        let shown = p.screen.all_text().matches('r').count();
+        assert!(shown <= crate::conductor::MAX_SHOWN + 16, "{shown}");
     }
 
     #[test]

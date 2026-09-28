@@ -354,15 +354,14 @@ pub enum Partial {
 }
 
 /// The failure text for a command that ended with an unexpected status (`CD:2115,2124`,
-/// iTerm2's typo kept). A setenv shows its name only: the value may be a secret.
+/// iTerm2's typo kept). A setenv shows its name only: the value may be a secret. A write
+/// shows its destination only, never the base64 tarball (up to about 85 MiB of the
+/// person's files, where iTerm2 prints it all).
 pub fn unexpected_status(cmd: &Command, status: u8) -> String {
     let shown = match cmd {
         Command::Setenv { key, .. } => format!("setenv {key}"),
-        Command::ExecLoginShell(args) if !args.is_empty() => {
-            let mut args = args.clone();
-            args[0] = last_component(&args[0]).to_string();
-            Command::ExecLoginShell(args).string_value()
-        }
+        Command::Write { dest, .. } => format!("write {dest}"),
+        Command::ExecLoginShell(args) if !args.is_empty() => Command::ExecLoginShell(shell_by_name(args)).string_value(),
         cmd => cmd.string_value(),
     };
     format!("{shown}: Unepected status {status}")
@@ -374,13 +373,18 @@ pub fn unexpected_status(cmd: &Command, status: u8) -> String {
 fn shown_description(cmd: &Command) -> String {
     match cmd {
         Command::Setenv { key, .. } => format!("setting {key}"),
-        Command::ExecLoginShell(args) if !args.is_empty() => {
-            let mut args = args.clone();
-            args[0] = last_component(&args[0]).to_string();
-            Command::ExecLoginShell(args).description()
-        }
+        Command::ExecLoginShell(args) if !args.is_empty() => Command::ExecLoginShell(shell_by_name(args)).description(),
         cmd => cmd.description(),
     }
+}
+
+/// A login shell's argv with argv[0] cut to the shell's name (its last path component).
+fn shell_by_name(args: &[String]) -> Vec<String> {
+    let mut args = args.to_vec();
+    if let Some(shell) = args.first_mut() {
+        *shell = last_component(shell).to_string();
+    }
+    args
 }
 
 /// The failure text for python code that did not run (`CD:2255`).
@@ -464,9 +468,21 @@ pub fn setup_for_hook(init: &Init, local: bool, env: &[(String, String)], env_na
     }
 }
 
-/// The banner a hook appends (`TD:3860`).
+/// The banner a hook appends (`TD:3860`), cut to `MAX_SHOWN` (the remote sends the args).
 pub fn hook_banner(sshargs: &str) -> String {
-    format!("ssh {sshargs}")
+    shown(&format!("ssh {sshargs}"))
+}
+
+/// The most characters of a remote-sized text (the hook banner, a failure reason naming the
+/// remote's ssh args) Tandem shows (Tandem's: iTerm2 shows it all, up to its 1 MiB DCS cap).
+pub const MAX_SHOWN: usize = 1024;
+
+/// `text` cut to `MAX_SHOWN` characters, with an ellipsis when cut.
+pub fn shown(text: &str) -> String {
+    match text.char_indices().nth(MAX_SHOWN) {
+        Some((at, _)) => format!("{}\u{2026}", &text[..at]),
+        None => text.to_string(),
+    }
 }
 
 /// Takes the pane's innermost conductor; its parent becomes current (`PS:20199`).
@@ -1843,7 +1859,7 @@ mod tests {
                     c.handle_end(&id, &kind, status, 0);
                     break;
                 }
-                Token::Init(_) | Token::Unhook => {}
+                Token::Init(_) | Token::Unhook | Token::Error(_) => {}
             }
         }
         assert_eq!(c.shell.as_deref(), Some("/bin/sh"));
@@ -2136,6 +2152,10 @@ mod tests {
         let twice = setup_for_hook(&init, true, &env, &s(&["A", "A"]), None, false, &Hosts);
         assert_eq!(twice.vars_to_send, env_pairs(&[("A", "4")]), "a name listed twice is sent once, as a dictionary");
         assert_eq!(hook_banner("example.com "), "ssh example.com ");
+        let long = hook_banner(&"\u{e9}".repeat(1 << 20));
+        assert_eq!(long.chars().count(), MAX_SHOWN + 1, "cut, with an ellipsis");
+        assert!(long.starts_with("ssh \u{e9}") && long.ends_with("\u{e9}\u{2026}"));
+        assert_eq!(shown(&"x".repeat(MAX_SHOWN)), "x".repeat(MAX_SHOWN), "not cut at the limit");
     }
 
     #[test]
@@ -2175,6 +2195,7 @@ mod tests {
                         Token::Line(line) => c.handle_line(&line, depth),
                         Token::End { id, status, kind } => c.handle_end(&id, &kind, status, depth),
                         Token::Unhook => c.handle_unhook(),
+                        Token::Error(reason) => c.fail(&reason),
                         Token::Init(_) => {}
                     }
                 }
@@ -2204,6 +2225,22 @@ mod tests {
         let text = String::from_utf8(bytes.to_vec()).unwrap();
         let body: String = text.lines().filter_map(|l| l.strip_prefix(prefix)).collect();
         String::from_utf8(base64::engine::general_purpose::STANDARD.decode(body).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_long_begin_id_fails_setup_at_once() {
+        // The hook, then a begin whose id is past conductor_parser::MAX_ID: the conductor
+        // fails with the reason now, not 30 seconds later, and the output after it shows.
+        let hook = |init: &Init, parent: Option<Box<Conductor>>| Conductor::new(setup_for_hook(init, false, &[], &[], None, false, &crate::ssh_args::NoConfig), parent, "U");
+        let mut ssh = crate::ssh_hook::Hook::with_ids(|| "D".into());
+        let mut current = None;
+        let mut bytes = b"\x1bP2000pnone a YQ== - Yg==\n".to_vec();
+        bytes.extend_from_slice(format!("\x1b]135;:begin {}\x1b\\$ ", "1".repeat(1 << 16)).as_bytes());
+        let outs = ssh.feed(&bytes);
+        assert!(matches!(outs.last(), Some(crate::ssh_hook::Out::Screen(b)) if b == b"$ "), "output again");
+        let effects = dispatch(&mut current, outs, &hook);
+        assert_eq!(effects.last(), Some(&Effect::Abort(crate::conductor_parser::ID_TOO_LONG.into())));
+        assert_eq!(current.as_deref().unwrap().deadline(), None);
     }
 
     #[test]
@@ -2524,5 +2561,8 @@ mod tests {
         assert_eq!(timeout_text(&Command::ExecLoginShell(vec![])), "starting login shell with args : No response after 30 seconds");
         assert_eq!(unexpected_status(&login, 1), "exec_login_shell\nbash\n--posix: Unepected status 1", "the status text trims the shell too");
         assert_eq!(unexpected_status(&Command::ExecLoginShell(vec![]), 1), "exec_login_shell: Unepected status 1");
+        // A write never puts its tarball on the screen, only where it goes.
+        let write = Command::Write { data: vec![7; 4096], dest: "/$HOME/.config".into() };
+        assert_eq!(unexpected_status(&write, 1), "write /$HOME/.config: Unepected status 1");
     }
 }

@@ -11,6 +11,15 @@ const ESC: u8 = 0x1b;
 /// parser unhooks and the input is output.
 pub const MAX_HELD: usize = 1024 * 1024;
 
+/// The longest command id a `begin` may carry (Tandem's: iTerm2 takes any length).
+/// conductor.sh's ids (`randomnumber`) are a counter and four random numbers, about 30
+/// bytes; framer.py's (`makeid`) about 25. Every reply line is matched against the id, so
+/// a remote-sent id of a megabyte would make each line cost a megabyte.
+pub const MAX_ID: usize = 64;
+
+/// Why a longer id ends the conductor (`Token::Error`).
+pub const ID_TOO_LONG: &str = "The remote sent a command id that is too long";
+
 /// The init line, checked (iTerm2's parseHookSSHConductorParameter plus the base64 decode of
 /// terminalDidHookSSHConductorWithParams).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +41,9 @@ pub enum Token {
     End { id: String, status: u8, kind: String },
     /// conductor.sh's `unhook`: what follows is output again.
     Unhook,
+    /// A protocol error (Tandem's): the parser unhooked, and the conductor fails with this
+    /// text rather than waiting for a reply that cannot come.
+    Error(String),
 }
 
 /// Checks the init line; the parser's id is appended as the last word first, as iTerm2 builds
@@ -268,7 +280,8 @@ impl Parser {
         let mut i = 0;
         loop {
             let rest = &data[i..];
-            match self.state.clone() {
+            // Matched in place: the body's id is compared, never copied, for each reply line.
+            match self.state {
                 State::Initial => {
                     let from = match std::mem::take(&mut resume) {
                         Resume::Line(n) => n,
@@ -311,17 +324,20 @@ impl Parser {
                         return self.unhook(fed, &data[i..]);
                     }
                 }
-                State::Body(id) => {
+                State::Body(ref id) => {
                     if rest.is_empty() {
                         break;
                     }
                     match scan_osc(rest, false, osc_resume(std::mem::take(&mut resume))) {
                         (Osc::Osc(134 | 135, payload), n, _) => {
                             i += n;
-                            match payload.strip_prefix(&format!("end {id} ")) {
+                            // iTerm2's `hasPrefix("end \(id) ")` (`P:436`), without building it.
+                            let tail = payload.strip_prefix("end ").and_then(|t| t.strip_prefix(id.as_str())).and_then(|t| t.strip_prefix(' '));
+                            match tail {
                                 Some(tail) => {
+                                    let end = parse_end(&format!("{id} {tail}"));
                                     self.state = State::Ground;
-                                    if let Some((id, status, kind)) = parse_end(&format!("{id} {tail}")) {
+                                    if let Some((id, status, kind)) = end {
                                         fed.tokens.push(Token::End { id, status, kind });
                                     }
                                 }
@@ -380,7 +396,13 @@ impl Parser {
 
     fn begin(&mut self, payload: &str, fed: &mut Fed) -> Step {
         // "begin " always splits into at least two words.
-        let id = payload.split(' ').nth(1).unwrap_or_default().to_string();
+        let id = payload.split(' ').nth(1).unwrap_or_default();
+        if id.len() > MAX_ID {
+            // No sane conductor sends it: a protocol error, so the conductor ends now.
+            fed.tokens.push(Token::Error(ID_TOO_LONG.into()));
+            return Step::Unhook;
+        }
+        let id = id.to_string();
         self.state = State::Body(id.clone());
         fed.tokens.push(Token::Begin(id));
         Step::Continue
@@ -413,5 +435,48 @@ mod tests {
         // An interrupted OSC blocked mid-way keeps the new one from its ESC.
         assert_eq!(next_osc(b"\x1b]135;:a\x1b]135;:b", true), (Osc::Blocked, 8));
         assert_eq!(next_osc(b"\x1b]135;:a\x1b\x1b]135;:b\x1b\\", true), (Osc::Osc(135, "b".into()), 19));
+    }
+
+    #[test]
+    fn a_long_begin_id_ends_the_conductor() {
+        let id = "7".repeat(MAX_ID);
+        let mut p = Parser::hooked("d");
+        let fed = p.feed(format!("\x1b]135;:begin {id}\x1b\\\x1b]135;:x\x1b\\\x1b]135;:end {id} 0 r\x1b\\").as_bytes());
+        assert_eq!(fed.tokens, [Token::Begin(id.clone()), Token::Line("x".into()), Token::End { id, status: 0, kind: "r".into() }]);
+        assert_eq!(fed.rest, None);
+
+        // One byte more: a protocol error, and what follows is output again.
+        let long = "7".repeat(MAX_ID + 1);
+        let fed = Parser::hooked("d").feed(format!("\x1b]135;:begin {long}\x1b\\$ ").as_bytes());
+        assert_eq!(fed.tokens, [Token::Error(ID_TOO_LONG.into())]);
+        assert_eq!(fed.rest.as_deref(), Some(&b"$ "[..]));
+        let fed = Parser::hooked("d").feed(format!("\x1b]134;:begin {long}\x1b\\").as_bytes());
+        assert_eq!(fed.tokens, [Token::Error(ID_TOO_LONG.into())], "the framer's begin too");
+
+        // A lookalike of the end is a line: the id must match in full, then a space.
+        let mut p = Parser::hooked("d");
+        let fed = p.feed(b"\x1b]135;:begin 12\x1b\\\x1b]135;:end 1 0 r\x1b\\\x1b]135;:end 123 0 r\x1b\\\x1b]135;:end 12\x1b\\");
+        assert_eq!(fed.tokens[1..], [Token::Line("end 1 0 r".into()), Token::Line("end 123 0 r".into()), Token::Line("end 12".into())]);
+    }
+
+    #[test]
+    fn reply_lines_are_linear_in_their_bytes() {
+        // A hostile remote's stream of tiny lines under the longest id: each line is matched
+        // against the id in place, so 4 MiB of lines in 64 KiB reads takes well under a second
+        // (a megabyte-long id copied twice per line took minutes).
+        let mut p = Parser::hooked("d");
+        let id = "9".repeat(MAX_ID);
+        assert_eq!(p.feed(format!("\x1b]135;:begin {id}\x1b\\").as_bytes()).tokens.len(), 1);
+        let line = b"\x1b]135;:a\x1b\\";
+        let read: Vec<u8> = line.iter().copied().cycle().take(line.len() * (64 * 1024 / line.len())).collect();
+        let started = std::time::Instant::now();
+        let mut lines = 0;
+        for _ in 0..64 {
+            let fed = p.feed(&read);
+            assert_eq!(fed.rest, None);
+            lines += fed.tokens.len();
+        }
+        assert_eq!(lines, 64 * (64 * 1024 / line.len()));
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "took {:?}", started.elapsed());
     }
 }
