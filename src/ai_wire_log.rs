@@ -9,10 +9,32 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 /// The `aiChatRawWireLogging` help (ruling 10: it says what the code does).
-pub const HELP: &str = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. API keys in Authorization, x-api-key, api-key and x-goog-api-key headers, and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.";
+pub const HELP: &str = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. Every header value except known non-secret ones (such as Content-Type, Accept, User-Agent and anthropic-version), and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.";
 
-/// Headers whose whole value is a credential (`WL:239-241`), lowercased.
-const CREDENTIAL_HEADERS: [&str; 4] = ["authorization", "x-api-key", "api-key", "x-goog-api-key"];
+/// Credential headers whose value may start with a scheme ("Bearer") the log keeps
+/// (`WL:239-241`, plus Proxy-Authorization), lowercased.
+const SCHEME_HEADERS: [&str; 5] = ["authorization", "proxy-authorization", "x-api-key", "api-key", "x-goog-api-key"];
+
+/// The headers whose values are logged, known to carry no secret; every other header's value is
+/// fingerprinted, since a custom header is usually a credential (final review ruling; iTerm2
+/// fingerprints only the four vendor key headers). Lowercased.
+const SAFE_HEADERS: [&str; 11] = [
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "anthropic-beta",
+    "anthropic-version",
+    "cache-control",
+    "content-encoding",
+    "content-length",
+    "content-type",
+    "openai-beta",
+    "user-agent",
+];
+
+fn is_safe(name: &str) -> bool {
+    SAFE_HEADERS.contains(&name.to_ascii_lowercase().as_str())
+}
 
 /// Key-shaped tokens (`WL:253-261`): OpenAI, Anthropic and DeepSeek `sk-` keys and Google's
 /// `AIza` keys, never inside a longer identifier.
@@ -107,18 +129,21 @@ pub fn url_line(url: &str, key: Option<&str>) -> String {
     clean(&format!("{head}{}{fragment}", params.join("&")), key)
 }
 
-/// A header value as logged (`WL:263-276`): a credential header is fingerprinted whole, keeping
-/// a scheme ("Bearer") that ends within the first 16 characters; any other is scrubbed.
+/// A header value as logged (`WL:263-276`): a known non-secret header is scrubbed; any other is
+/// fingerprinted whole, and a credential header keeps a scheme ("Bearer") that ends within the
+/// first 16 characters.
 pub fn header_value(name: &str, value: &str) -> String {
-    if CREDENTIAL_HEADERS.contains(&name.to_lowercase().as_str()) {
+    if is_safe(name) {
+        return scrub(value);
+    }
+    if SCHEME_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
         if let Some((at, _)) = value.char_indices().find(|(_, c)| *c == ' ') {
             if value[..at].chars().count() <= 16 {
                 return format!("{} {}", &value[..at], fingerprint(&value[at + 1..]));
             }
         }
-        return fingerprint(value);
     }
-    scrub(value)
+    fingerprint(value)
 }
 
 /// The per-launch file name, UTC to the second (`WL:209-218`).
@@ -146,8 +171,8 @@ pub fn request_record(id: &str, stamp: &str, r: &HttpRequest, key: Option<&str>)
     let mut headers: Vec<&(String, String)> = r.headers.iter().collect();
     headers.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
     for (name, value) in headers {
-        // A credential header is fingerprinted whole; any other hides the key inside it.
-        let value = if CREDENTIAL_HEADERS.contains(&name.to_lowercase().as_str()) { value.clone() } else { redact_key(value, key) };
+        // A logged value still hides the key inside it; any other is fingerprinted whole.
+        let value = if is_safe(name) { redact_key(value, key) } else { value.clone() };
         text.push_str(&format!("{name}: {}\n", header_value(name, &value)));
     }
     match std::str::from_utf8(&r.body) {
@@ -314,8 +339,9 @@ mod tests {
         assert_eq!(header_value("x-goog-api-key", &google), "AIzaBBBB\u{2026}BBBB [redacted 39 chars]");
         // A scheme longer than 16 characters is part of the credential.
         assert_eq!(header_value("Authorization", "AVeryLongSchemeName x"), "[redacted 21 chars]");
-        assert_eq!(header_value("X-Custom", "a sk-ABCDEFGHIJKLMNOPQRSTUV b"), "a [redacted 25 chars] b");
-        assert_eq!(header_value("X-Custom", "plain"), "plain");
+        assert_eq!(header_value("Content-Type", "a sk-ABCDEFGHIJKLMNOPQRSTUV b"), "a [redacted 25 chars] b", "a logged value is scrubbed");
+        assert_eq!(header_value("content-type", "application/json"), "application/json");
+        assert_eq!(header_value("X-Custom", "plain"), "[redacted 5 chars]", "an unknown header is fingerprinted");
         let url = format!("key={google}&alt=sse");
         assert_eq!(scrub(&url), "key=AIzaBBBB\u{2026}BBBB [redacted 39 chars]&alt=sse");
         assert_eq!(scrub("mask-ABCDEFGHIJKLMNOPQRSTUV"), "mask-ABCDEFGHIJKLMNOPQRSTUV");
@@ -340,7 +366,7 @@ mod tests {
             let url_line = text.lines().nth(1).unwrap_or_default();
             assert!(url_line.starts_with("POST https://g.test/v1/models/m:generateContent?alt=sse&key=[redacted "), "the key= value is fingerprinted");
             assert!(url_line.ends_with(" chars]#f"), "the fragment stays");
-            assert!(text.contains("X-Custom: token [redacted "), "a custom header hides the key");
+            assert!(text.contains("X-Custom: [redacted "), "a custom header is fingerprinted whole");
             // Without the key known, the key= value is still hidden.
             let unknown = request_record("U", "T", &r, None);
             assert!(!unknown.lines().nth(1).unwrap_or_default().contains(encoded), "any key= value is hidden");
@@ -355,6 +381,39 @@ mod tests {
         // Only a parameter named exactly "key" is a key.
         let r = HttpRequest { method: "GET", url: "https://h.test/x?monkey=1&keys=2&key=3".into(), headers: vec![], body: Vec::new(), stream: false };
         assert!(request_record("U", "T", &r, None).contains("GET https://h.test/x?monkey=1&keys=2&key=[redacted 1 chars]\n"));
+    }
+
+    /// Final review ruling: every header value is fingerprinted except known non-secret names.
+    #[test]
+    fn wire_log_fingerprints_every_header_but_the_safe_ones() {
+        let secret = "gateway-secret-0123456789";
+        let r = HttpRequest {
+            method: "POST",
+            url: "https://gw.test/v1/chat/completions".into(),
+            headers: vec![
+                ("X-Auth-Token".into(), secret.into()),
+                ("Proxy-Authorization".into(), format!("Basic {secret}")),
+                ("X-Access-Token".into(), secret.into()),
+                ("x-custom-thing".into(), format!("tok {secret}")),
+                ("Content-Type".into(), "application/json".into()),
+                ("Accept".into(), "text/event-stream".into()),
+                ("User-Agent".into(), "Tandem".into()),
+                ("anthropic-version".into(), "2023-06-01".into()),
+                ("OpenAI-Beta".into(), "assistants=v2".into()),
+                ("Content-Length".into(), "2".into()),
+            ],
+            body: b"{}".to_vec(),
+            stream: true,
+        };
+        let text = request_record("U", "T", &r, None);
+        assert!(!text.contains("secret-0123456789"), "{text}");
+        assert!(text.contains("X-Auth-Token: [redacted 25 chars]\n"), "{text}");
+        assert!(text.contains("Proxy-Authorization: Basic [redacted 25 chars]\n"), "the scheme stays: {text}");
+        assert!(text.contains("X-Access-Token: [redacted 25 chars]\n"));
+        assert!(text.contains("x-custom-thing: [redacted 29 chars]\n"), "an unknown header keeps no first word");
+        for line in ["Content-Type: application/json", "Accept: text/event-stream", "User-Agent: Tandem", "anthropic-version: 2023-06-01", "OpenAI-Beta: assistants=v2", "Content-Length: 2"] {
+            assert!(text.contains(&format!("{line}\n")), "{line} is logged");
+        }
     }
 
     #[test]
@@ -400,9 +459,10 @@ mod tests {
         assert_eq!(row.help, HELP);
         assert!(HELP.contains("fingerprints"));
         assert!(HELP.contains("%APPDATA%\\Tandem\\AIChatWire"));
-        let auth = HELP.find("Authorization").expect("names the header");
-        let near = &HELP[auth.saturating_sub(40)..(auth + 60).min(HELP.len())];
-        assert!(!near.contains("verbatim"), "the keys are not logged verbatim");
+        assert!(HELP.contains("Every header value except known non-secret ones"), "says every other header is hidden");
+        for name in ["Content-Type", "Accept", "User-Agent", "anthropic-version"] {
+            assert!(SAFE_HEADERS.contains(&name.to_ascii_lowercase().as_str()), "the help's examples are logged: {name}");
+        }
     }
 
     #[cfg(windows)]
