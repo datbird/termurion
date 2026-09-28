@@ -12,26 +12,47 @@ fn normalized(host: &str) -> String {
     host.to_lowercase().trim_end_matches('.').to_string()
 }
 
-/// The host of a URL as Foundation's `URL.host` reads it, normalized; None when the text has no
-/// `scheme://` authority, the authority names no host, or it holds a backslash, whitespace, a
-/// control character or `%`, which Foundation's `URL(string:)` rejects and other parsers read
-/// differently (`http://evil.example\@localhost/` must never name localhost).
-pub fn host_of(url: &str) -> Option<String> {
-    let (_, rest) = url.split_once("://")?;
-    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+/// A URL's `scheme://` authority split as Foundation's `URL(string:)` reads it; one parse feeds
+/// both the consent gate (`host_of`) and the transport (`ai_transport::parse_url`), so a request
+/// connects to the host the person allowed.
+pub struct UrlParts<'a> {
+    pub scheme: &'a str,
+    /// The host, normalized; without brackets for IPv6.
+    pub host: String,
+    /// What follows the host inside the authority: "" or ":port" (anything else is not a port).
+    pub after_host: &'a str,
+    /// Everything after the authority: the path, query and fragment ("" when none).
+    pub rest: &'a str,
+}
+
+/// None when the text has no `scheme://` authority, the authority names no host, or it holds a
+/// backslash, whitespace, a control character or `%`, which Foundation's `URL(string:)` rejects
+/// and other parsers read differently (`http://evil.example\@localhost/` must never name
+/// localhost).
+pub fn url_parts(url: &str) -> Option<UrlParts<'_>> {
+    let (scheme, rest) = url.split_once("://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, rest) = rest.split_at(end);
     if authority.chars().any(|c| c == '\\' || c == '%' || c.is_whitespace() || c.is_control()) {
         return None;
     }
     let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-    let host = if let Some(inner) = hostport.strip_prefix('[') {
-        &inner[..inner.find(']')?]
+    let (host, after_host) = if let Some(inner) = hostport.strip_prefix('[') {
+        let close = inner.find(']')?;
+        (&inner[..close], &inner[close + 1..])
     } else {
-        hostport.split_once(':').map_or(hostport, |(h, _)| h)
+        let colon = hostport.find(':').unwrap_or(hostport.len());
+        hostport.split_at(colon)
     };
     if host.is_empty() {
         return None;
     }
-    Some(normalized(host))
+    Some(UrlParts { scheme, host: normalized(host), after_host, rest })
+}
+
+/// The host of a URL as Foundation's `URL.host` reads it, normalized (see `url_parts`).
+pub fn host_of(url: &str) -> Option<String> {
+    url_parts(url).map(|p| p.host)
 }
 
 fn normalized_host(url: &str) -> String {

@@ -287,6 +287,10 @@ pub mod ai_catalog;
 pub mod ai_policy;
 pub mod ai_models;
 pub mod ai_model;
+pub mod ai_transport;
+#[cfg(windows)]
+pub mod ai_winhttp;
+pub mod ai_wire_log;
 pub mod ai_keys;
 pub mod ai_gate;
 pub mod ai_prompts;
