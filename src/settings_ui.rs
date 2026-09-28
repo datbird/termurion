@@ -277,6 +277,7 @@ impl SettingsWindow {
         let configure_status_bar = &mut self.configure_status_bar;
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
+        let ai = &mut self.ai;
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -309,7 +310,7 @@ impl SettingsWindow {
                                 }
                                 c
                             }
-                            Page::General => settings_keys::schema_page(ui, globals, "General"),
+                            Page::General => settings_keys::schema_page_with(ui, globals, "General", &mut |ui, g| crate::settings_ai::section(ui, g, ai)),
                             Page::Advanced => settings_keys::schema_page(ui, globals, "Advanced"),
                             Page::Appearance => settings_keys::schema_page(ui, globals, "Appearance"),
                             Page::Arrangements => crate::settings_arrangements::page(ui, globals, &profile_tables, arr),
@@ -507,6 +508,9 @@ impl SettingsWindow {
                 });
             });
         });
+        if let Some(e) = self.ai.take_error() {
+            edit = Edit::Error(e);
+        }
         self.tab = tab;
         // Leaving a page applies a custom scripts folder typed there (iTerm2's
         // `willDeselectTab`, `GP:3432-3434`); the field is no longer drawn to lose the focus.

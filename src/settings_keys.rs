@@ -744,7 +744,7 @@ fn icon_font_id() -> egui::Id {
     egui::Id::new("tandem-settings-icons")
 }
 
-fn icon_family() -> egui::FontFamily {
+pub(crate) fn icon_family() -> egui::FontFamily {
     egui::FontFamily::Name("icons".into())
 }
 
@@ -861,6 +861,12 @@ pub fn page_rows(tab: &str) -> Vec<&'static Setting> {
 /// A pane that shows only the global settings the schema has for it so far, by section
 /// (General and Advanced; the rest of each comes in milestone 13).
 pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
+    schema_page_with(ui, g, tab, &mut |_, _| false)
+}
+
+/// `schema_page` with more drawn after its last section (General's AI section): `extra`
+/// gets the globals the scroll area already holds, and its answer joins the result.
+pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &mut dyn FnMut(&mut egui::Ui, &mut Globals) -> bool) -> bool {
     let mut changed = false;
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
     let rows = page_rows(tab);
@@ -891,6 +897,7 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> bool {
             }
             ui.add_space(8.0);
         }
+        changed |= extra(ui, g);
         ui.weak("The rest of this pane comes in milestone 13.");
     });
     changed

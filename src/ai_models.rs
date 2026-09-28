@@ -292,6 +292,17 @@ pub fn sheet_models(g: &Globals) -> Vec<ManualModel> {
     legacy_model(g).into_iter().collect()
 }
 
+/// The default-model popup's manual models (`LM:163-184`, `settingsManualModels`): the usable
+/// configurations, else (when the recommended model is not in use) the legacy model. 12b adds
+/// the models a dynamic entry discovers.
+pub fn settings_manual_models(g: &Globals) -> Vec<ManualModel> {
+    let configured: Vec<ManualModel> = usable(&read(g)).into_iter().cloned().collect();
+    if !configured.is_empty() || g.bool(ai::USE_RECOMMENDED) {
+        return configured;
+    }
+    legacy_model(g).into_iter().collect()
+}
+
 /// The models a request can use (`LM:538-545`): not a dynamic entry, a name and URL that are not
 /// blank. 12b adds the models a dynamic entry discovers.
 pub fn usable(models: &[ManualModel]) -> Vec<&ManualModel> {

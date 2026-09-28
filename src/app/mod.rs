@@ -655,6 +655,9 @@ pub struct App {
     ai_asks: VecDeque<crate::ai_gate::Alert>,
     ai_alert: Option<(crate::prompt_ui::ConfirmWindow, crate::ai_gate::Alert)>,
     ai_reveal: Option<crate::settings_ai::SubTab>,
+    /// The one-vendor key prompts waiting to show (ruling 12e-1), and the one showing.
+    ai_key_asks: VecDeque<(crate::ai_settings::Vendor, ai_app::KeyThen)>,
+    ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -1070,6 +1073,8 @@ pub fn run() {
         ai_asks: VecDeque::new(),
         ai_alert: None,
         ai_reveal: None,
+        ai_key_asks: VecDeque::new(),
+        ai_key_window: None,
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
@@ -2935,6 +2940,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
         self.open_ai_alert(event_loop);
+        self.open_ai_key_window(event_loop);
         self.open_ai_reveal(event_loop);
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
@@ -3050,7 +3056,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.script_picker_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
