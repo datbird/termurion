@@ -6,10 +6,10 @@
 //! thread-local map it reads, and button hovers, presses and releases go back as user events.
 
 use super::*;
-use crate::caption::{self, Button, Event, Hit, KeyMenu, KeyMsg, Layout, StripMenu};
+use crate::caption::{self, Button, Event, Hit, HoverTrack, KeyMenu, KeyMsg, Layout, NcButton, StripMenu};
 use std::cell::RefCell;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, VK_CONTROL, VK_SHIFT};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
@@ -29,8 +29,10 @@ struct State {
     layout: Option<Layout>,
     /// The tab bar's tabs and buttons in the strip: the points that stay client.
     over: Vec<Rect>,
+    /// The tabs alone (no chips, no buttons of the bar): iTerm2's cells, for a double click.
+    cells: Vec<Rect>,
     /// The button the pointer is over (the app is told when it changes).
-    hover: Option<Button>,
+    hover: HoverTrack,
     /// Alt pressed alone, and F10 (the menu bar is detached, so Windows sends no `SC_KEYMENU`).
     keys: KeyMenu,
     /// The window's DPI, as of its last `WM_DPICHANGED`.
@@ -122,7 +124,9 @@ pub(super) fn request_inner_size(window: &winit::window::Window, size: impl Into
 /// handed back less the title bar the subclass removes (`caption::dpi_inner`). The old client was
 /// noted by the subclass before winit ran, so a buffered event (dispatched after winit's resize)
 /// gets the same answer. None leaves winit's size: no subclass, no title bar (full screen), or a
-/// maximized or minimized window (winit keeps its size then).
+/// maximized or minimized window. winit keeps a maximized window's client and frames it for the
+/// title bar, which leaves it too tall; changing the size here would un-maximize it (winit clears
+/// `MAXIMIZED` for a new size), so the subclass fits it to its monitor after (`fit_maximized`).
 pub(super) fn dpi_size(hwnd: isize) -> Option<winit::dpi::PhysicalSize<u32>> {
     let (old, from, to) = STATES.with(|s| s.borrow_mut().get_mut(&hwnd)?.dpi_from.take())?;
     let removed = removed_by_subclass(hwnd);
@@ -140,6 +144,28 @@ fn frame_thickness(hwnd: isize) -> f32 {
     unsafe {
         let dpi = GetDpiForWindow(hwnd as HWND);
         (GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)) as f32
+    }
+}
+
+/// A maximized caption window after winit's `WM_DPICHANGED`: winit kept its client and framed it
+/// for a style with a title bar, one title bar (less the frame's overhang) taller than the
+/// monitor, so it is set back to the work area overhung by the frame (`caption::maximized_outer`).
+/// It stays maximized: only its rect moves.
+fn fit_maximized(hwnd: HWND) {
+    // SAFETY: state and monitor queries of this live window, a MONITORINFO of ours, and a move of
+    // the window's own rect.
+    unsafe {
+        if IsZoomed(hwnd) == 0 || removed_by_subclass(hwnd as isize) == 0 {
+            return;
+        }
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) == 0 {
+            return;
+        }
+        let w = info.rcWork;
+        let (l, t, r, b) = caption::maximized_outer((w.left, w.top, w.right, w.bottom), frame_thickness(hwnd as isize).round() as i32);
+        SetWindowPos(hwnd, std::ptr::null_mut(), l, t, r - l, b - t, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 }
 
@@ -161,13 +187,14 @@ pub(super) fn remove(hwnd: isize) {
     unsafe { RemoveWindowSubclass(hwnd as HWND, Some(subclass), SUBCLASS_ID) };
 }
 
-/// The strip for the window's next hit tests: its layout in window pixels, and the rects of what
-/// stays client in it (None layout: the window has no strip now).
-pub(super) fn publish(hwnd: isize, layout: Option<Layout>, over: Vec<Rect>) {
+/// The strip for the window's next hit tests: its layout in window pixels, the rects of what
+/// stays client in it, and of its tabs among them (None layout: the window has no strip now).
+pub(super) fn publish(hwnd: isize, layout: Option<Layout>, over: Vec<Rect>, cells: Vec<Rect>) {
     STATES.with(|s| {
         if let Some(st) = s.borrow_mut().get_mut(&hwnd) {
             st.layout = layout;
             st.over = over;
+            st.cells = cells;
         }
     });
 }
@@ -194,9 +221,8 @@ fn button_of_code(code: u32) -> Option<Button> {
 
 /// The hover moved: the app is told once per change, and Windows tells us when the pointer leaves.
 fn hover_to(hwnd: HWND, now: Option<Button>) {
-    let changed = STATES.with(|s| s.borrow_mut().get_mut(&(hwnd as isize)).is_some_and(|st| std::mem::replace(&mut st.hover, now) != now));
-    if changed {
-        tell(hwnd as isize, Event::Hover(now));
+    if let Some(e) = STATES.with(|s| s.borrow_mut().get_mut(&(hwnd as isize)).and_then(|st| st.hover.to(now))) {
+        tell(hwnd as isize, e);
     }
     if now.is_some() {
         let mut track = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: hwnd, dwHoverTime: 0 };
@@ -225,10 +251,17 @@ fn client_point(hwnd: HWND, lparam: LPARAM) -> Option<(i32, i32)> {
     (unsafe { ScreenToClient(hwnd, &mut p) } != 0).then_some((p.x, p.y))
 }
 
-/// A double click at the screen point in lparam is on the window name (`caption::strip_double_click`).
-fn name_double_click(hwnd: HWND, lparam: LPARAM) -> bool {
-    let Some((x, y)) = client_point(hwnd, lparam) else { return false };
-    STATES.with(|s| s.borrow().get(&(hwnd as isize)).and_then(|st| st.layout.as_ref()).is_some_and(|l| caption::strip_double_click(l, x as f32, y as f32) == caption::StripDoubleClick::EditName))
+/// What a double click at the screen point in lparam does (`caption::strip_double_click`); the
+/// title bar's own without a strip.
+fn strip_double_click(hwnd: HWND, lparam: LPARAM) -> caption::StripDoubleClick {
+    let title_bar = caption::StripDoubleClick::TitleBar;
+    let Some((x, y)) = client_point(hwnd, lparam) else { return title_bar };
+    let (x, y) = (x as f32, y as f32);
+    STATES.with(|s| {
+        let s = s.borrow();
+        let Some(st) = s.get(&(hwnd as isize)) else { return title_bar };
+        st.layout.as_ref().map_or(title_bar, |l| caption::strip_double_click(l, x, y, st.cells.iter().any(|r| r.contains(x, y))))
+    })
 }
 
 unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
@@ -257,7 +290,9 @@ unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     st.dpi_from = (sized && from != to).then_some((old, from, to));
                 }
             });
-            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+            let answer = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+            fit_maximized(hwnd);
+            answer
         }
         // Without a title bar (full screen) there is nothing to take away.
         WM_NCCALCSIZE if unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) } as u32 & WS_CAPTION != WS_CAPTION => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
@@ -306,14 +341,16 @@ unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
         // The buttons are ours: the press and release are told to the app, and Windows' own
-        // handling (which would draw its buttons) is not run.
+        // handling (which would draw its buttons) is not run. A double click's second press is a
+        // press (`caption::button_event`).
         WM_NCLBUTTONDOWN | WM_NCLBUTTONUP | WM_NCLBUTTONDBLCLK if button_of_code(wparam as u32).is_some() => {
             let b = button_of_code(wparam as u32).unwrap();
-            match msg {
-                WM_NCLBUTTONDOWN => tell(hwnd as isize, Event::Down(b)),
-                WM_NCLBUTTONUP => tell(hwnd as isize, Event::Up(b)),
-                _ => {}
-            }
+            let m = match msg {
+                WM_NCLBUTTONDOWN => NcButton::Down,
+                WM_NCLBUTTONUP => NcButton::Up,
+                _ => NcButton::DoubleClick,
+            };
+            tell(hwnd as isize, caption::button_event(m, b));
             0
         }
         // Windows' own keyboard menu (Alt or F10 alone; with no menu bar, the system menu's
@@ -328,15 +365,22 @@ unsafe extern "system" fn subclass(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
-        // A double click on the window name edits the window title; elsewhere on the strip it stays
-        // the title bar's (`caption::strip_double_click`).
-        WM_NCLBUTTONDBLCLK if wparam as u32 == HTCAPTION && name_double_click(hwnd, lparam) => {
-            tell(hwnd as isize, Event::EditName);
-            0
-        }
+        // A double click on the window name edits the window title, over a tab (the edge strip)
+        // it does nothing, elsewhere on the strip it stays the title bar's
+        // (`caption::strip_double_click`).
+        WM_NCLBUTTONDBLCLK if wparam as u32 == HTCAPTION => match strip_double_click(hwnd, lparam) {
+            caption::StripDoubleClick::EditName => {
+                tell(hwnd as isize, Event::EditName);
+                0
+            }
+            caption::StripDoubleClick::Nothing => 0,
+            caption::StripDoubleClick::TitleBar => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
+        },
         WM_NCLBUTTONUP => {
-            // Let go elsewhere: a held button is let go.
-            tell(hwnd as isize, Event::Hover(None));
+            // Let go elsewhere: no hover, and a held button is let go.
+            if let Some(e) = STATES.with(|s| s.borrow_mut().get_mut(&(hwnd as isize)).map(|st| st.hover.release_elsewhere())) {
+                tell(hwnd as isize, e);
+            }
             unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
         WM_NCDESTROY => {
@@ -426,11 +470,12 @@ impl App {
     }
 
     /// The rects in the strip that stay client for hit tests: each shown tab, group chip and the
-    /// bar's "+" and overflow buttons, window pixels. Not the window name: its clicks are the
-    /// strip's (`caption::strip_part`).
-    fn caption_client_rects(&self) -> Vec<Rect> {
-        let Some(bar) = self.tab_bar_rect().filter(|_| self.tab_position() == TabPosition::Top) else { return Vec::new() };
+    /// bar's "+" and overflow buttons, window pixels; and the tabs' alone (the first `.1` of them).
+    /// Not the window name: its clicks are the strip's (`caption::strip_part`).
+    fn caption_client_rects(&self) -> (Vec<Rect>, usize) {
+        let Some(bar) = self.tab_bar_rect().filter(|_| self.tab_position() == TabPosition::Top) else { return (Vec::new(), 0) };
         let mut rects: Vec<Rect> = self.bar_tab_rects().into_iter().filter(|r| r.w > 0.0).collect();
+        let cells = rects.len();
         rects.extend(self.bar_pills(None).into_iter().map(|p| p.rect));
         let scale = self.scale();
         rects.extend(tab_layout::add_rect_px(&self.tab_bar, self.bar_offset(), (bar.x, bar.y), scale));
@@ -438,15 +483,16 @@ impl App {
             let px = tab_layout::to_px(r, scale);
             Rect { x: px.x + bar.x, y: px.y + bar.y, ..px }
         }));
-        rects
+        (rects, cells)
     }
 
     /// Hands the current window's strip to its subclass after a frame.
     pub(super) fn publish_caption(&self) {
         if let Some(hwnd) = self.hwnd() {
             let layout = self.caption_layout();
-            let over = if layout.is_some() { self.caption_client_rects() } else { Vec::new() };
-            publish(hwnd, layout, over);
+            let (over, cells) = if layout.is_some() { self.caption_client_rects() } else { (Vec::new(), 0) };
+            let tabs = over[..cells].to_vec();
+            publish(hwnd, layout, over, tabs);
         }
     }
 

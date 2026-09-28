@@ -165,15 +165,19 @@ pub enum StripDoubleClick {
     EditName,
     /// The title bar's own double click (maximize or restore).
     TitleBar,
+    /// Nothing: over a tab in the edge strip, where the press was the window's drag.
+    Nothing,
 }
 
-/// A double click at the client point (`x`, `y`): on the window name it edits the window title,
-/// elsewhere it is the title bar's (`iTermTabBarControlView.m:418-433`).
-pub fn strip_double_click(l: &Layout, x: f32, y: f32) -> StripDoubleClick {
-    if strip_part(l, x, y, false) == Some(StripPart::Name) {
-        StripDoubleClick::EditName
-    } else {
-        StripDoubleClick::TitleBar
+/// A double click at the client point (`x`, `y`): on the window name it edits the window title;
+/// over a tab (`in_cell`, only in the edge strip) nothing happens, as iTerm2 runs the title bar's
+/// double click only where `clickedInCell:` is false (`iTermTabBarControlView.m:418-433`; chips
+/// and the bar's buttons are no cells, `PSM:4666-4692`); elsewhere it is the title bar's.
+pub fn strip_double_click(l: &Layout, x: f32, y: f32, in_cell: bool) -> StripDoubleClick {
+    match strip_part(l, x, y, in_cell) {
+        Some(StripPart::Name) => StripDoubleClick::EditName,
+        Some(StripPart::Item) => StripDoubleClick::Nothing,
+        _ => StripDoubleClick::TitleBar,
     }
 }
 
@@ -220,14 +224,50 @@ pub fn clicked(pressed: Option<Button>, released: Button) -> Option<Button> {
     pressed.filter(|p| *p == released)
 }
 
-/// The button a non-client hit-test code is over.
-pub fn button_of(hit: Hit) -> Option<Button> {
-    match hit {
-        Hit::Min => Some(Button::Minimize),
-        Hit::Max => Some(Button::Maximize),
-        Hit::Close => Some(Button::Close),
-        _ => None,
+/// A left button message on a window button (`WM_NCLBUTTONDOWN`, `WM_NCLBUTTONUP`,
+/// `WM_NCLBUTTONDBLCLK`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NcButton {
+    Down,
+    Up,
+    DoubleClick,
+}
+
+/// What the app is told of a button message: a double click's second press is a press, so a
+/// fast double click clicks twice, as on Windows' own buttons.
+pub fn button_event(m: NcButton, b: Button) -> Event {
+    match m {
+        NcButton::Down | NcButton::DoubleClick => Event::Down(b),
+        NcButton::Up => Event::Up(b),
     }
+}
+
+/// The button under the pointer as the caption subclass tracks it; the app draws what it is
+/// told and never clears it on its own, so the two cannot disagree.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HoverTrack {
+    hover: Option<Button>,
+}
+
+impl HoverTrack {
+    /// The pointer is over `now`: the event to tell the app when that is a change.
+    pub fn to(&mut self, now: Option<Button>) -> Option<Event> {
+        (std::mem::replace(&mut self.hover, now) != now).then_some(Event::Hover(now))
+    }
+
+    /// The left button came up away from the buttons: no hover, and a held button is let go,
+    /// which the app is always told.
+    pub fn release_elsewhere(&mut self) -> Event {
+        self.hover = None;
+        Event::Hover(None)
+    }
+}
+
+/// The outer rect `(left, top, right, bottom)` of a maximized caption window on a monitor whose
+/// work area is `work`: the work area overhung by the frame `frame` on every side, so the client
+/// the subclass leaves (the top overhang added back, the bottom frame kept) is the work area.
+pub fn maximized_outer(work: (i32, i32, i32, i32), frame: i32) -> (i32, i32, i32, i32) {
+    (work.0 - frame, work.1 - frame, work.2 + frame, work.3 + frame)
 }
 
 /// The strip with the menu button at its left: the name and the tabs move right of it.
@@ -359,18 +399,12 @@ pub fn visible_tab_count(total: usize, first_overflow: Option<usize>) -> usize {
     first_overflow.map_or(total, |i| i.min(total))
 }
 
-/// When the pointer's drag is judged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DragPhase {
-    Press,
-    Move,
-}
-
-/// Whether a drag on the tab bar moves the window: never at the press (Alt+click still selects),
-/// never for a group chip (`PSM:3766-3795`), else `drag_to_window`.
-#[allow(clippy::too_many_arguments)]
-pub fn window_drag(phase: DragPhase, chip: bool, alt: bool, compact_theme: bool, no_title_bar: bool, visible_tabs: usize, in_strip: bool, convert_solitary: bool) -> bool {
-    phase == DragPhase::Move && !chip && drag_to_window(alt, compact_theme, no_title_bar, visible_tabs, in_strip, convert_solitary)
+/// Whether a converted drag moves the window (`performWindowDragWithEvent:` asks
+/// `ptyWindowIsDraggable:`, `iTermWindowImpl.m:163-167`, `PT:2106-2135`): a window type that can
+/// be dragged (not Centered, not docked to a screen edge) and not in full screen. Elsewhere the
+/// drag still converts and moves nothing (`PSM:3788-3794`).
+pub fn window_movable(style: i64, full_screen: bool) -> bool {
+    crate::frames::draggable(style) && !full_screen
 }
 
 /// The strip of a `client_w` wide window, `bar_h` tall, at `scale`. `setting` and `extra_space` are
@@ -717,17 +751,27 @@ mod tests {
 
     #[test]
     fn tab_drag_to_window_follows_iterm2() {
-        // Alt converts on DRAG only (PSM:3790): a press never does, so Alt+click still selects.
-        assert!(!window_drag(DragPhase::Press, false, true, false, false, 3, false, true));
-        assert!(window_drag(DragPhase::Move, false, true, false, false, 3, false, true));
-        // A group chip's drag never converts, in the strip or with Alt.
-        assert!(!window_drag(DragPhase::Move, true, true, true, false, 1, true, true));
         // Collapsed group members are tabs (numberOfVisibleTabs, PSM:4716-4731); only overflow stops it.
         assert_eq!(visible_tab_count(3, None), 3);
         assert_eq!(visible_tab_count(5, Some(3)), 3);
         assert_eq!(visible_tab_count(0, None), 0);
         // One open tab and a collapsed group of two is three tabs, not solitary.
-        assert!(!window_drag(DragPhase::Move, false, false, true, false, visible_tab_count(3, None), false, true));
+        assert!(!drag_to_window(false, true, false, visible_tab_count(3, None), false, true));
+    }
+
+    /// A converted drag moves the window only where `ptyWindowIsDraggable:` answers yes
+    /// (`iTermWindowImpl.m:163-167`, `PT:2106-2135`): never a Centered or screen-edge window, nor
+    /// one in full screen; the conversion still swallows the drag there (`PSM:3788-3794`).
+    #[test]
+    fn window_drag_needs_a_draggable_window() {
+        use crate::frames::{ACCESSORY, CENTERED, CENTERED_NO_TITLE_BAR, COMPACT, COMPACT_CENTERED, COMPACT_MAXIMIZED, MAXIMIZED, NORMAL, NO_TITLE_BAR, TOP_PERCENT};
+        for style in [NORMAL, MAXIMIZED, NO_TITLE_BAR, ACCESSORY, COMPACT, COMPACT_MAXIMIZED] {
+            assert!(window_movable(style, false), "{style}");
+            assert!(!window_movable(style, true), "{style} in full screen");
+        }
+        for style in [CENTERED, CENTERED_NO_TITLE_BAR, COMPACT_CENTERED, TOP_PERCENT] {
+            assert!(!window_movable(style, false), "{style}");
+        }
     }
 
     #[test]
@@ -750,8 +794,53 @@ mod tests {
         assert_eq!(clicked(Some(Button::Close), Button::Close), Some(Button::Close));
         assert_eq!(clicked(Some(Button::Close), Button::Maximize), None);
         assert_eq!(clicked(None, Button::Close), None);
-        assert_eq!((button_of(Hit::Min), button_of(Hit::Max), button_of(Hit::Close)), (Some(Button::Minimize), Some(Button::Maximize), Some(Button::Close)));
-        assert_eq!((button_of(Hit::Caption), button_of(Hit::Top), button_of(Hit::Client)), (None, None, None));
+    }
+
+    /// A button's non-client messages as told to the app: the second click of a double click is
+    /// a press, so a fast double click on Maximize toggles twice as Windows' own button does.
+    #[test]
+    fn caption_double_click_on_a_button_is_a_press() {
+        assert_eq!(button_event(NcButton::Down, Button::Maximize), Event::Down(Button::Maximize));
+        assert_eq!(button_event(NcButton::DoubleClick, Button::Maximize), Event::Down(Button::Maximize));
+        assert_eq!(button_event(NcButton::Up, Button::Close), Event::Up(Button::Close));
+        // Down, up, down (the double click), up: two clicks.
+        let mut pressed = None;
+        let mut clicks = 0;
+        for m in [NcButton::Down, NcButton::Up, NcButton::DoubleClick, NcButton::Up] {
+            match button_event(m, Button::Maximize) {
+                Event::Down(b) => pressed = Some(b),
+                Event::Up(b) => clicks += usize::from(clicked(pressed.take(), b).is_some()),
+                _ => {}
+            }
+        }
+        assert_eq!(clicks, 2);
+    }
+
+    /// The subclass owns the hover: the app hears each change once, a release away from the
+    /// buttons lets go of it, and the button the pointer comes back to lights again.
+    #[test]
+    fn caption_hover_is_told_once_per_change() {
+        let mut h = HoverTrack::default();
+        assert_eq!(h.to(Some(Button::Maximize)), Some(Event::Hover(Some(Button::Maximize))));
+        assert_eq!(h.to(Some(Button::Maximize)), None, "no change, nothing told");
+        assert_eq!(h.release_elsewhere(), Event::Hover(None));
+        assert_eq!(h.to(Some(Button::Maximize)), Some(Event::Hover(Some(Button::Maximize))), "lit again after the release");
+        assert_eq!(h.to(None), Some(Event::Hover(None)));
+        assert_eq!(h.to(None), None);
+        assert_eq!(h.release_elsewhere(), Event::Hover(None), "a release always lets go of a held button");
+    }
+
+    /// winit keeps a maximized window's client across a DPI change and frames it for a style
+    /// with a title bar (`event_loop.rs:2270-2280`, `allow_resize` false), so the subclass fits it
+    /// back to the monitor's work area overhung by the frame; writing a smaller size through
+    /// winit instead would un-maximize it (`MAXIMIZED` unset, `SW_RESTORE`).
+    #[test]
+    fn caption_maximized_dpi_change_fits_the_monitor() {
+        assert_eq!(maximized_outer((0, 0, 1920, 1040), 8), (-8, -8, 1928, 1048));
+        assert_eq!(maximized_outer((1920, 0, 4480, 1400), 12), (1908, -12, 4492, 1412));
+        // The subclass's client (the top overhang added back, the bottom frame kept) is the work area.
+        let (_, t, _, b) = maximized_outer((0, 40, 1920, 1080), 8);
+        assert_eq!((t + 8, b - 8), (40, 1080));
     }
 
     #[test]
@@ -816,12 +905,17 @@ mod tests {
         assert_eq!(strip_part(&l, n.x + 5.0, 20.0, false), Some(StripPart::Name));
         assert_eq!(hit(&l, n.x + 5.0, 20.0, false), Hit::Caption, "a press on the name drags the window");
         assert_eq!(hit(&l, n.x + 5.0, 20.0, true), Hit::Caption, "whatever the client rects say");
-        assert_eq!(strip_double_click(&l, n.x + 5.0, 20.0), StripDoubleClick::EditName);
-        assert_eq!(strip_double_click(&l, n.x + n.w + 1.0, 20.0), StripDoubleClick::TitleBar);
-        assert_eq!(strip_double_click(&l, 500.0, 20.0), StripDoubleClick::TitleBar);
-        assert_eq!(strip_double_click(&l, n.x + 5.0, 3.0), StripDoubleClick::TitleBar, "the resize edge above it");
+        assert_eq!(strip_double_click(&l, n.x + 5.0, 20.0, false), StripDoubleClick::EditName);
+        assert_eq!(strip_double_click(&l, n.x + 5.0, 10.0, false), StripDoubleClick::EditName, "in the edge strip too");
+        assert_eq!(strip_double_click(&l, n.x + n.w + 1.0, 20.0, false), StripDoubleClick::TitleBar);
+        assert_eq!(strip_double_click(&l, 500.0, 20.0, false), StripDoubleClick::TitleBar);
+        assert_eq!(strip_double_click(&l, n.x + 5.0, 3.0, false), StripDoubleClick::TitleBar, "the resize edge above it");
         let none = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 0.0, 0.0, 8.0, false);
-        assert_eq!(strip_double_click(&none, 10.0, 20.0), StripDoubleClick::TitleBar);
+        assert_eq!(strip_double_click(&none, 10.0, 20.0, false), StripDoubleClick::TitleBar);
+        // Over a tab (the edge strip) the title bar's double click does not run (`clickedInCell:`,
+        // `iTermTabBarControlView.m:418-421`); the press there was the window's drag.
+        assert_eq!(strip_double_click(&l, 500.0, 10.0, true), StripDoubleClick::Nothing);
+        assert_eq!(strip_double_click(&l, n.x + 5.0, 10.0, true), StripDoubleClick::EditName, "the name is painted over the bar");
         // One classification for the rest of the strip.
         assert_eq!(strip_part(&l, 500.0, 20.0, true), Some(StripPart::Item));
         assert_eq!(strip_part(&l, 500.0, 20.0, false), Some(StripPart::Empty));

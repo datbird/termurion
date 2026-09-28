@@ -3933,10 +3933,6 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
-        // The pointer is in the client area: it is not over a caption button.
-        if self.caption_hover.take().is_some() | self.caption_pressed.take().is_some() {
-            self.redraw();
-        }
         self.update_tab_hover();
         self.update_side_handle_hover();
         self.toolbelt_move(x, y);
@@ -4937,7 +4933,6 @@ impl ApplicationHandler<UserEvent> for App {
             }
             // The pointer left the window: no Help tooltip stays up.
             WindowEvent::CursorLeft { .. } => {
-                self.caption_hover = None;
                 let composer = self.composer_hover.take().is_some();
                 let tab = self.tab_hover.take().is_some();
                 self.tab_tip = None;
