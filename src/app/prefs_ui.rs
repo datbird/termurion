@@ -374,9 +374,11 @@ impl App {
     }
 
     /// `applicationWillTerminate` (`RP:1646-1744`), the last step before Tandem ends. True: end
-    /// now. False: an alert is showing or was queued, and `prefs_tick` ends Tandem once it and
-    /// any alert after it are answered. Skipped when the location was edited this session
-    /// (`iTermApplicationDelegate.m:1115-1117`).
+    /// now. False: the step saved (Automatically) or asked (When Quitting, Manually), and an
+    /// alert is showing or queued; `prefs_tick` ends Tandem once it and any alert after it are
+    /// answered. Only those two branches wait: the others (nothing to do, remembering or
+    /// clearing the URL) end at once, whatever alerts are queued. Skipped, ending at once, when
+    /// the location was edited this session (`iTermApplicationDelegate.m:1115-1117`).
     pub(super) fn prefs_before_exit(&mut self) -> bool {
         self.prefs_note_location();
         if self.prefs_launch_folder.is_none() {

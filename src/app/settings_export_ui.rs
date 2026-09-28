@@ -21,6 +21,19 @@ struct Sources<'a> {
     scripts: Option<&'a Path>,
     /// The syncable settings and the profiles.
     user_defaults: &'a Snapshot,
+    /// Whether a path in the Scripts folder is read: false for one that is, or is reached
+    /// through a link or junction to, a network path (`scripts::ancestors_stay_local`).
+    local: &'a dyn Fn(&Path) -> bool,
+}
+
+/// The entries of the Scripts folder and of its AutoLaunch folder that are read, AutoLaunch's
+/// flagged: an entry that is not `local`, or every entry of an AutoLaunch folder that is not,
+/// is skipped before anything probes it (as 11d's scan does).
+fn script_entries(scripts: &Path, local: &dyn Fn(&Path) -> bool) -> Vec<(String, PathBuf, bool)> {
+    let autolaunch = scripts.join("AutoLaunch");
+    let root = entries(scripts).into_iter().map(|(n, p)| (n, p, false));
+    let auto = if local(&autolaunch) { entries(&autolaunch) } else { Vec::new() };
+    root.chain(auto.into_iter().map(|(n, p)| (n, p, true))).filter(|(_, p, _)| local(p)).collect()
 }
 
 /// A folder's entries by name, sorted; none when it cannot be read.
@@ -57,9 +70,9 @@ fn copy_contents(src: &Path, dst: &Path, top: bool) -> std::io::Result<()> {
 /// `PythonRuntimesImporterExporter.export` (`IE:701-743`): the `setup.cfg` of every folder at
 /// the Scripts root and in AutoLaunch, each requirement once; a `.py` file at those levels is
 /// a basic script. A `setup.cfg` without `python_requires` needs the default version.
-fn runtime_requirements(scripts: &Path) -> (Vec<Requirement>, bool) {
+fn runtime_requirements(scripts: &Path, local: &dyn Fn(&Path) -> bool) -> (Vec<Requirement>, bool) {
     let (mut requirements, mut have_basic) = (Vec::<Requirement>::new(), false);
-    for (name, path) in entries(scripts).into_iter().chain(entries(&scripts.join("AutoLaunch"))) {
+    for (name, path, _) in script_entries(scripts, local) {
         if path.is_file() {
             have_basic |= name.ends_with(".py");
             continue;
@@ -76,10 +89,9 @@ fn runtime_requirements(scripts: &Path) -> (Vec<Requirement>, bool) {
 /// `ScriptsImporterExporter.export` (`IE:995-1053`): each script at the Scripts root but the
 /// hidden entries and AutoLaunch, then each in AutoLaunch, as an unsigned zip; anything that is
 /// not a script is skipped.
-fn export_scripts(scripts: &Path, dest: &Path) -> Result<(), String> {
-    let root = entries(scripts).into_iter().filter(|(n, _)| !n.starts_with('.') && !n.eq_ignore_ascii_case("autolaunch")).map(|(_, p)| (p, false));
-    let autolaunch = entries(&scripts.join("AutoLaunch")).into_iter().map(|(_, p)| (p, true));
-    for (path, autolaunch) in root.chain(autolaunch).collect::<Vec<_>>() {
+fn export_scripts(scripts: &Path, dest: &Path, local: &dyn Fn(&Path) -> bool) -> Result<(), String> {
+    let wanted = |(n, p, auto): (String, PathBuf, bool)| (auto || !(n.starts_with('.') || n.eq_ignore_ascii_case("autolaunch"))).then_some((p, auto));
+    for (path, autolaunch) in script_entries(scripts, local).into_iter().filter_map(wanted) {
         if !super::scripts_app::is_exportable_script(&path) {
             continue;
         }
@@ -96,7 +108,7 @@ fn export_entity(entity: Entity, temp: &Path, src: &Sources) -> Result<(), Expor
     let save = |file: &str, text: String| std::fs::write(dest.join(file), text).map_err(|e| ExportError::Save(e.to_string()));
     match entity {
         Entity::PythonRuntimes => {
-            let (requirements, have_basic) = src.scripts.map(runtime_requirements).unwrap_or_default();
+            let (requirements, have_basic) = src.scripts.map(|s| runtime_requirements(s, src.local)).unwrap_or_default();
             save(se::RUNTIMES_FILE, se::runtimes_json(&requirements, have_basic))
         }
         Entity::UserDefaults => save(se::USER_DEFAULTS_FILE, src.user_defaults.to_toml()),
@@ -107,7 +119,7 @@ fn export_entity(entity: Entity, temp: &Path, src: &Sources) -> Result<(), Expor
             }
             copy_contents(src.app_support, &dest, true).map_err(|e| ExportError::Copy(e.to_string()))
         }
-        Entity::Scripts => src.scripts.map_or(Ok(()), |s| export_scripts(s, &dest).map_err(ExportError::Script)),
+        Entity::Scripts => src.scripts.map_or(Ok(()), |s| export_scripts(s, &dest, src.local).map_err(ExportError::Script)),
     }
 }
 
@@ -159,7 +171,8 @@ impl App {
         let scripts = self.scripts_folder();
         let local = crate::scripts::ancestors_stay_local(&scripts, &crate::scripts::read_link) && !crate::remote_prefs::is_unc(&scripts.to_string_lossy());
         let user_defaults = Snapshot::from_local(&self.globals.values, &self.store.default_guid, &self.store.file_profiles());
-        export_into(out, &Sources { app_support: &app_support, scripts: local.then_some(scripts.as_path()), user_defaults: &user_defaults })
+        let entry_local = |p: &Path| crate::scripts::ancestors_stay_local(p, &crate::scripts::read_link);
+        export_into(out, &Sources { app_support: &app_support, scripts: local.then_some(scripts.as_path()), user_defaults: &user_defaults, local: &entry_local })
     }
 }
 
@@ -197,7 +210,7 @@ mod tests {
         let snap = user_defaults(&appdata);
         let out = root.join("Tandem State.tandemexport");
         let scripts = appdata.join("Scripts");
-        export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap }).unwrap();
+        export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap, local: &|_| true }).unwrap();
         assert!(out.is_file());
 
         let listing = tar(&["-tzf", &out.to_string_lossy()]);
@@ -243,7 +256,7 @@ mod tests {
         std::fs::write(full.join(r"Full\Full.py"), "print(4)\n").unwrap();
         let snap = user_defaults(&appdata);
         let out = root.join("out.tandemexport");
-        export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap }).unwrap();
+        export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap, local: &|_| true }).unwrap();
 
         let x = root.join("x");
         std::fs::create_dir_all(&x).unwrap();
@@ -259,6 +272,43 @@ mod tests {
         assert!(x.join(r"app-support\state\Scripts\keep.txt").is_file(), "a nested Scripts folder is kept");
         assert!(!x.join(r"app-support\.hidden").exists());
         assert!(!x.join(r"app-support\Scripts").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 9 review: an entry of the Scripts folder or an AutoLaunch folder that is not local
+    /// (a link or junction to a network path) is never read: neither zipped nor counted.
+    #[test]
+    fn export_skips_scripts_that_are_not_local() {
+        let root = temp("links");
+        let appdata = root.join("Tandem");
+        let scripts = appdata.join("Scripts");
+        std::fs::create_dir_all(scripts.join("AutoLaunch")).unwrap();
+        std::fs::write(scripts.join("kept.py"), "print(1)\n").unwrap();
+        std::fs::write(scripts.join("remote.py"), "print(2)\n").unwrap();
+        std::fs::write(scripts.join(r"AutoLaunch\auto.py"), "print(3)\n").unwrap();
+        let full = scripts.join("Far");
+        std::fs::create_dir_all(full.join("Far")).unwrap();
+        std::fs::write(full.join("setup.cfg"), rt::setup_cfg_text("Far", &[], true, "3.11", 3)).unwrap();
+        std::fs::write(full.join(rt::MARKER), "{}").unwrap();
+        std::fs::write(full.join(r"Far\Far.py"), "print(4)\n").unwrap();
+        let snap = user_defaults(&appdata);
+        let (remote, far, auto) = (scripts.join("remote.py"), full.clone(), scripts.join("AutoLaunch"));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let local = |p: &Path| {
+            asked.borrow_mut().push(p.to_path_buf());
+            p != remote && p != far && p != auto
+        };
+        let out = root.join("out.tandemexport");
+        export_into(&out, &Sources { app_support: &appdata, scripts: Some(&scripts), user_defaults: &snap, local: &local }).unwrap();
+        assert!(asked.borrow().contains(&auto), "AutoLaunch is checked before it is listed");
+
+        let x = root.join("x");
+        std::fs::create_dir_all(&x).unwrap();
+        tar(&["-xzf", &out.to_string_lossy(), "-C", &x.to_string_lossy()]);
+        let zips: Vec<String> = entries(&x.join("scripts")).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(zips.len(), 1, "only kept.py: {zips:?}");
+        assert!(zips[0].starts_with("script "), "{zips:?}");
+        assert_eq!(std::fs::read_to_string(x.join(r"python-runtimes\PythonRuntimes.json")).unwrap(), r#"{"requirements":[],"haveAnyBasicScripts":true}"#);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
