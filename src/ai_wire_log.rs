@@ -62,6 +62,51 @@ pub fn scrub(text: &str) -> String {
     result
 }
 
+/// `text` with the request's key replaced by its fingerprint wherever it appears, as typed,
+/// trimmed or percent-encoded (the Gemini URL form), whatever its shape (Task 7 review); None or
+/// a blank key changes nothing.
+pub fn redact_key(text: &str, key: Option<&str>) -> String {
+    let Some(key) = key.filter(|k| !k.trim().is_empty()) else {
+        return text.to_string();
+    };
+    let encoded = |k: &str| k.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect::<String>();
+    let mut forms = vec![key.to_string(), key.trim().to_string(), encoded(key), encoded(key.trim())];
+    // Longest first, so a form inside another is not replaced half.
+    forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
+    forms.dedup();
+    let mut out = text.to_string();
+    for form in forms {
+        out = out.replace(&form, &fingerprint(&form));
+    }
+    out
+}
+
+/// Every key-shaped token, and the request's own key, replaced by fingerprints.
+fn clean(text: &str, key: Option<&str>) -> String {
+    scrub(&redact_key(text, key))
+}
+
+/// The URL as logged: the value of every `key` query parameter fingerprinted whatever its shape
+/// (Gemini carries the key there), then cleaned.
+pub fn url_line(url: &str, key: Option<&str>) -> String {
+    let Some(q) = url.find('?') else {
+        return clean(url, key);
+    };
+    let (head, rest) = url.split_at(q + 1);
+    let (query, fragment) = match rest.find('#') {
+        Some(at) => rest.split_at(at),
+        None => (rest, ""),
+    };
+    let params: Vec<String> = query
+        .split('&')
+        .map(|p| match p.strip_prefix("key=") {
+            Some(value) if !value.is_empty() => format!("key={}", fingerprint(value)),
+            _ => p.to_string(),
+        })
+        .collect();
+    clean(&format!("{head}{}{fragment}", params.join("&")), key)
+}
+
 /// A header value as logged (`WL:263-276`): a credential header is fingerprinted whole, keeping
 /// a scheme ("Bearer") that ends within the first 16 characters; any other is scrubbed.
 pub fn header_value(name: &str, value: &str) -> String {
@@ -95,17 +140,20 @@ fn push_text(out: &mut String, text: &str) {
 }
 
 /// A request (`WL:63-93`): headers sorted by name, a UTF-8 body scrubbed, any other base64.
-pub fn request_record(id: &str, stamp: &str, r: &HttpRequest) -> String {
-    let mut text = format!("=== call {id} request {stamp} ===\n{} {}\nHeaders ({}):\n", r.method, scrub(&r.url), r.headers.len());
+/// `key` is the key the request carries, hidden wherever it appears.
+pub fn request_record(id: &str, stamp: &str, r: &HttpRequest, key: Option<&str>) -> String {
+    let mut text = format!("=== call {id} request {stamp} ===\n{} {}\nHeaders ({}):\n", r.method, url_line(&r.url, key), r.headers.len());
     let mut headers: Vec<&(String, String)> = r.headers.iter().collect();
     headers.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
     for (name, value) in headers {
-        text.push_str(&format!("{name}: {}\n", header_value(name, value)));
+        // A credential header is fingerprinted whole; any other hides the key inside it.
+        let value = if CREDENTIAL_HEADERS.contains(&name.to_lowercase().as_str()) { value.clone() } else { redact_key(value, key) };
+        text.push_str(&format!("{name}: {}\n", header_value(name, &value)));
     }
     match std::str::from_utf8(&r.body) {
         Ok(s) => {
             text.push_str(&format!("Body (string, {} bytes):\n", s.len()));
-            push_text(&mut text, &scrub(s));
+            push_text(&mut text, &clean(s, key));
         }
         Err(_) => {
             text.push_str(&format!("Body (binary, {} bytes, base64):\n", r.body.len()));
@@ -118,27 +166,27 @@ pub fn request_record(id: &str, stamp: &str, r: &HttpRequest) -> String {
 }
 
 /// One streamed chunk (`WL:99-110`).
-pub fn chunk_record(id: &str, stamp: &str, chunk: &str) -> String {
+pub fn chunk_record(id: &str, stamp: &str, chunk: &str, key: Option<&str>) -> String {
     let mut text = format!("=== call {id} stream chunk {stamp} ({} bytes) ===\n", chunk.len());
-    push_text(&mut text, &scrub(chunk));
+    push_text(&mut text, &clean(chunk, key));
     text.push_str(&format!("--- end chunk {id} ---\n\n"));
     text
 }
 
 /// The completed response, with an in-band error when there is one (`WL:112-128`).
-pub fn response_record(id: &str, stamp: &str, elapsed: Duration, body: &str, error: Option<&str>) -> String {
+pub fn response_record(id: &str, stamp: &str, elapsed: Duration, body: &str, error: Option<&str>, key: Option<&str>) -> String {
     let mut text = format!("=== call {id} response {stamp} elapsed={:.3}s ===\nBody ({} bytes):\n", elapsed.as_secs_f64(), body.len());
-    push_text(&mut text, &scrub(body));
+    push_text(&mut text, &clean(body, key));
     if let Some(e) = error.filter(|e| !e.is_empty()) {
-        text.push_str(&format!("Error (in-band): {}\n", scrub(e)));
+        text.push_str(&format!("Error (in-band): {}\n", clean(e, key)));
     }
     text.push_str(&format!("--- end response {id} ---\n\n"));
     text
 }
 
 /// A call that failed before a response (`WL:130-140`); the text is scrubbed too (Decision 7).
-pub fn failure_record(id: &str, stamp: &str, elapsed: Duration, text: &str) -> String {
-    format!("=== call {id} error {stamp} elapsed={:.3}s ===\n{}\n--- end error {id} ---\n\n", elapsed.as_secs_f64(), scrub(text))
+pub fn failure_record(id: &str, stamp: &str, elapsed: Duration, text: &str, key: Option<&str>) -> String {
+    format!("=== call {id} error {stamp} elapsed={:.3}s ===\n{}\n--- end error {id} ---\n\n", elapsed.as_secs_f64(), clean(text, key))
 }
 
 /// Year, month, day, hour, minute, second and millisecond of a Unix time in UTC.
@@ -275,6 +323,40 @@ mod tests {
         assert_eq!(scrub(&format!("{KEY40} and {KEY40}")), format!("{0} and {0}", fingerprint(KEY40)));
     }
 
+    /// Controller ruling (Task 7 review): the configured key and any `key=` query value are
+    /// redacted whatever their shape, not only when a key pattern matches.
+    #[test]
+    fn wire_log_redacts_any_key_shape() {
+        for (key, encoded) in [("AIzaK", "AIzaK"), ("not a google key!", "not%20a%20google%20key%21")] {
+            let r = HttpRequest {
+                method: "POST",
+                url: format!("https://g.test/v1/models/m:generateContent?alt=sse&key={encoded}#f"),
+                headers: vec![("X-Custom".into(), format!("token {key}")), ("Content-Type".into(), "application/json".into())],
+                body: format!("{{\"echo\":\"{key}\"}}").into_bytes(),
+                stream: true,
+            };
+            let text = request_record("U", "T", &r, Some(key));
+            assert!(!text.contains(key) && !text.contains(encoded), "the key is in no request line ({} chars)", key.len());
+            let url_line = text.lines().nth(1).unwrap_or_default();
+            assert!(url_line.starts_with("POST https://g.test/v1/models/m:generateContent?alt=sse&key=[redacted "), "the key= value is fingerprinted");
+            assert!(url_line.ends_with(" chars]#f"), "the fragment stays");
+            assert!(text.contains("X-Custom: token [redacted "), "a custom header hides the key");
+            // Without the key known, the key= value is still hidden.
+            let unknown = request_record("U", "T", &r, None);
+            assert!(!unknown.lines().nth(1).unwrap_or_default().contains(encoded), "any key= value is hidden");
+            for record in [
+                chunk_record("U", "T", &format!("data: {key}\n"), Some(key)),
+                response_record("U", "T", Duration::from_millis(1), &format!("body {key}"), Some(&format!("failed {key}")), Some(key)),
+                failure_record("U", "T", Duration::from_millis(1), &format!("bad {key}"), Some(key)),
+            ] {
+                assert!(!record.contains(key), "no key in a chunk, a response or an error");
+            }
+        }
+        // Only a parameter named exactly "key" is a key.
+        let r = HttpRequest { method: "GET", url: "https://h.test/x?monkey=1&keys=2&key=3".into(), headers: vec![], body: Vec::new(), stream: false };
+        assert!(request_record("U", "T", &r, None).contains("GET https://h.test/x?monkey=1&keys=2&key=[redacted 1 chars]\n"));
+    }
+
     #[test]
     fn wire_log_records_follow_iterm2() {
         assert_eq!(file_name((2026, 9, 27, 14, 30, 5), 4242), "aichat-wire-20260927T143005-pid4242.log");
@@ -287,24 +369,24 @@ mod tests {
             stream: true,
         };
         assert_eq!(
-            request_record("U", "T", &r),
+            request_record("U", "T", &r, None),
             "=== call U request T ===\nPOST https://h.test/x\nHeaders (2):\nContent-Type: application/json\nx-api-key: [redacted 1 chars]\nBody (string, 2 bytes):\n{}\n--- end request U ---\n\n"
         );
         let bin = HttpRequest { body: vec![0xff, 0x00, 0x01], headers: vec![], ..r.clone() };
-        assert_eq!(request_record("U", "T", &bin), "=== call U request T ===\nPOST https://h.test/x\nHeaders (0):\nBody (binary, 3 bytes, base64):\n/wAB\n--- end request U ---\n\n");
+        assert_eq!(request_record("U", "T", &bin, None), "=== call U request T ===\nPOST https://h.test/x\nHeaders (0):\nBody (binary, 3 bytes, base64):\n/wAB\n--- end request U ---\n\n");
         let keyed = HttpRequest { url: format!("https://h.test/x?key=AIza{}", "C".repeat(35)), body: format!("{{\"k\":\"{KEY40}\"}}\n").into_bytes(), headers: vec![], ..r };
-        let text = request_record("U", "T", &keyed);
+        let text = request_record("U", "T", &keyed, None);
         assert!(!text.contains(&"C".repeat(35)) && !text.contains(KEY40), "keys in the URL and body are scrubbed");
         assert!(text.contains("Body (string, 49 bytes):\n{\"k\":\"sk-proj-\u{2026}2345 [redacted 40 chars]\"}\n--- end"), "no second newline");
-        assert_eq!(chunk_record("U", "T", "data: x\n"), "=== call U stream chunk T (8 bytes) ===\ndata: x\n--- end chunk U ---\n\n");
-        assert_eq!(chunk_record("U", "T", "x"), "=== call U stream chunk T (1 bytes) ===\nx\n--- end chunk U ---\n\n");
+        assert_eq!(chunk_record("U", "T", "data: x\n", None), "=== call U stream chunk T (8 bytes) ===\ndata: x\n--- end chunk U ---\n\n");
+        assert_eq!(chunk_record("U", "T", "x", None), "=== call U stream chunk T (1 bytes) ===\nx\n--- end chunk U ---\n\n");
         assert_eq!(
-            response_record("U", "T", Duration::from_millis(1500), "{}", Some("HTTP request failed with status 500.")),
+            response_record("U", "T", Duration::from_millis(1500), "{}", Some("HTTP request failed with status 500."), None),
             "=== call U response T elapsed=1.500s ===\nBody (2 bytes):\n{}\nError (in-band): HTTP request failed with status 500.\n--- end response U ---\n\n"
         );
-        assert_eq!(response_record("U", "T", Duration::from_millis(2), "ok\n", Some("")), "=== call U response T elapsed=0.002s ===\nBody (3 bytes):\nok\n--- end response U ---\n\n");
+        assert_eq!(response_record("U", "T", Duration::from_millis(2), "ok\n", Some(""), None), "=== call U response T elapsed=0.002s ===\nBody (3 bytes):\nok\n--- end response U ---\n\n");
         assert_eq!(
-            failure_record("U", "T", Duration::from_millis(250), &format!("bad {KEY40}")),
+            failure_record("U", "T", Duration::from_millis(250), &format!("bad {KEY40}"), None),
             format!("=== call U error T elapsed=0.250s ===\nbad {}\n--- end error U ---\n\n", fingerprint(KEY40))
         );
         assert_eq!(iso_stamp(1790519405123), "2026-09-27T14:30:05.123Z");

@@ -669,10 +669,30 @@ mod tests {
         let b = Build { key: &long, ..build(&m, &messages, &[], &none, &w) };
         let req = request(&b, &Gemini).expect("builds");
         assert!(req.url.contains(&long), "the key rides in the URL");
-        let record = crate::ai_wire_log::request_record("c", "t", &req);
+        let record = crate::ai_wire_log::request_record("c", "t", &req, Some(&long));
         let url_line = record.lines().nth(1).unwrap_or_default().to_string();
         assert!(!url_line.contains(&long), "the URL line hides the key");
         assert!(url_line.contains("key=AIza0123\u{2026}-xyz [redacted 39 chars]&alt=sse"), "the key is fingerprinted");
         assert!(!format!("{req:?}").contains(&long), "Debug hides the query");
+
+        // A key of any other shape is hidden too (Task 7 review), known or not.
+        for odd in [KEY, "not-a-google-key"] {
+            let b = Build { key: odd, ..build(&m, &messages, &[], &none, &w) };
+            let req = request(&b, &Gemini).expect("builds");
+            for known in [Some(odd), None] {
+                let record = crate::ai_wire_log::request_record("c", "t", &req, known);
+                assert!(!record.contains(odd), "the record hides a {}-character key (known: {})", odd.len(), known.is_some());
+                assert!(record.contains("?key=[redacted "), "fingerprinted");
+            }
+        }
+
+        // The runner logs with the key the request carried.
+        let (mut r, _) = runner(Turn::new(turn_input()), vec![Reply::ok(&[])]);
+        r.start(Some(&key()));
+        assert!(r.turn().wire_key() == Some(KEY), "the turn names the key it sent");
+        let local = TurnInput { model: fixture("gemini-3.7-flash", "http://localhost:8080/v1beta/models/{{MODEL}}", Api::Gemini), ..turn_input() };
+        let (mut r, _) = runner(Turn::new(local), vec![Reply::ok(&[])]);
+        r.start(Some(&key()));
+        assert_eq!(r.turn().wire_key(), None, "the self-hosted placeholder is no secret");
     }
 }

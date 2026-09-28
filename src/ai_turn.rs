@@ -374,6 +374,15 @@ impl Turn {
         }
     }
 
+    /// The key the turn's requests carry, for the wire log to hide; None for the self-hosted
+    /// placeholder, which is no secret.
+    pub fn wire_key(&self) -> Option<&str> {
+        match self.key() {
+            Some(Key::Use(key)) if key != SELF_HOSTED_PLACEHOLDER => Some(key),
+            _ => None,
+        }
+    }
+
     /// The person's answer to `NeedKey`.
     pub fn key_given(&mut self, key: Option<Secret>) -> Vec<Out> {
         if !matches!(self.state, State::AwaitingKey { .. }) {
@@ -919,7 +928,8 @@ impl Runner {
         use crate::ai_wire_log::{iso_stamp, now_millis, request_record};
         if let Some((log, enabled)) = &self.log {
             let id = uuid::Uuid::new_v4().to_string().to_uppercase();
-            log.lock().unwrap_or_else(|e| e.into_inner()).log(*enabled, &request_record(&id, &iso_stamp(now_millis()), request));
+            let record = request_record(&id, &iso_stamp(now_millis()), request, self.turn.wire_key());
+            log.lock().unwrap_or_else(|e| e.into_inner()).log(*enabled, &record);
             self.logged = Some((id, std::time::Instant::now()));
         }
     }
@@ -935,8 +945,8 @@ impl Runner {
         };
         let stamp = iso_stamp(now_millis());
         let record = match event {
-            HttpEvent::Chunk(text) => chunk_record(id, &stamp, text),
-            HttpEvent::Done { body, error } => response_record(id, &stamp, started.elapsed(), body, error.as_deref()),
+            HttpEvent::Chunk(text) => chunk_record(id, &stamp, text, self.turn.wire_key()),
+            HttpEvent::Done { body, error } => response_record(id, &stamp, started.elapsed(), body, error.as_deref(), self.turn.wire_key()),
         };
         log.lock().unwrap_or_else(|e| e.into_inner()).log(*enabled, &record);
     }
