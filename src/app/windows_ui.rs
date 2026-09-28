@@ -32,6 +32,8 @@ pub(super) struct WinSlot {
     /// The press on the tab bar: what it hit, its click count (0 for the middle button) and
     /// whether Alt was held.
     tab_press: Option<(crate::tab_layout::Hit, u8, bool)>,
+    /// The tab whose tooltip the pointer is waiting on or showing, and when it settled there.
+    tab_tip: Option<(usize, Instant)>,
     block_buttons: Vec<blocks_ui::BlockButton>,
     block_hover: Option<(PaneId, u32, i32, i32)>,
     porthole_hits: Vec<porthole_ui::PortholeHit>,
@@ -82,6 +84,7 @@ impl WinSlot {
             tab_keep_selected: true,
             tab_seen: None,
             tab_press: None,
+            tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),
@@ -152,6 +155,7 @@ impl App {
         swap(&mut self.tab_keep_selected, &mut s.tab_keep_selected);
         swap(&mut self.tab_seen, &mut s.tab_seen);
         swap(&mut self.tab_press, &mut s.tab_press);
+        swap(&mut self.tab_tip, &mut s.tab_tip);
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
         swap(&mut self.porthole_hits, &mut s.porthole_hits);
@@ -556,6 +560,7 @@ impl WinSlot {
             tab_keep_selected: true,
             tab_seen: None,
             tab_press: None,
+            tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
             porthole_hits: Vec::new(),

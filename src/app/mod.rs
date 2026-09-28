@@ -44,6 +44,8 @@ const FONT_PX: f32 = 16.0;
 /// Space between a pane's edge and its text, and the divider width, in pixels at 100%.
 const PAD: f32 = 4.0;
 const GAP: f32 = 1.0;
+/// How far below the pointer a tab tooltip starts, in points (the arrow pointer's height).
+const TIP_POINTER_PT: f32 = 20.0;
 /// Lines scrolled per wheel notch.
 const WHEEL_LINES: f32 = 3.0;
 /// Half a cursor blink cycle.
@@ -567,6 +569,11 @@ pub struct App {
     /// The press on the tab bar: what it hit, its click count (0 for the middle button) and
     /// whether Alt was held.
     tab_press: Option<(tab_layout::Hit, u8, bool)>,
+    /// The tab whose tooltip the pointer is waiting on or showing, and when the pointer
+    /// settled on it; the tip shows `TIP_DELAY` later.
+    tab_tip: Option<(usize, Instant)>,
+    /// When a tab tooltip is next due to show, in any window (there is one pointer).
+    tab_tip_wake: Option<Instant>,
     /// The last left press on a tab bar (any window): when, on which tab (None off the tabs)
     /// and its click count.
     tab_clicks: (Instant, Option<usize>, u8),
@@ -1081,6 +1088,8 @@ pub fn run() {
         tab_keep_selected: true,
         tab_seen: None,
         tab_press: None,
+        tab_tip: None,
+        tab_tip_wake: None,
         tab_clicks: (Instant::now(), None, 0),
         banners,
         utilities,
@@ -1280,6 +1289,53 @@ impl App {
             self.tab_hover = hover;
             self.redraw();
         }
+        self.update_tab_tip();
+    }
+
+    /// The tab tooltip follows the pointer: resting on a tab (not its close button, with no
+    /// press on the bar) starts the wait again at each move until the tip shows; a shown tip
+    /// stays while the pointer is on its tab, under the pointer. Anything else hides it.
+    fn update_tab_tip(&mut self) {
+        let now = Instant::now();
+        let shown = self.tab_tip_shown().is_some();
+        self.tab_tip = match self.tab_hover {
+            Some((i, false)) if self.tab_press.is_none() => match self.tab_tip {
+                Some((j, since)) if j == i && shown => Some((i, since)),
+                _ => {
+                    self.tab_tip_wake = Some(now + requests_ui::TIP_DELAY);
+                    Some((i, now))
+                }
+            },
+            _ => None,
+        };
+        // A shown tip moves with the pointer or goes.
+        if shown {
+            self.redraw();
+        }
+    }
+
+    /// The tab whose tooltip shows now.
+    fn tab_tip_shown(&self) -> Option<usize> {
+        self.tab_tip.filter(|(_, since)| Instant::now() >= *since + requests_ui::TIP_DELAY).map(|(i, _)| i)
+    }
+
+    /// A press hides the tab tooltip until the pointer rests again.
+    fn hide_tab_tip(&mut self) {
+        if self.tab_tip_shown().is_some() {
+            self.redraw();
+        }
+        self.tab_tip = None;
+    }
+
+    /// The windows draw a tab tooltip that came due; says when the next one is due.
+    fn tick_tab_tip(&mut self) -> Option<Instant> {
+        let at = self.tab_tip_wake?;
+        if Instant::now() < at {
+            return Some(at);
+        }
+        self.tab_tip_wake = None;
+        self.redraw();
+        None
     }
 
     /// A press on the tab bar (`PSM mouseDown:`, `otherMouseDown:`): the left button keeps the
@@ -1609,6 +1665,7 @@ impl App {
         match started {
             Ok(mut pane) => {
                 pane.cookie = cookie;
+                pane.command = cmd;
                 self.install_pane(id, pane, &p);
                 true
             }
@@ -2520,6 +2577,7 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        self.hide_tab_tip();
         // A press starts over: a tmux drag whose release never came lets tmux go on.
         self.tmux_drag_cancel();
         let (x, y) = self.cursor;
@@ -2890,6 +2948,7 @@ impl App {
             self.tab_bar = tab_layout::Bar::default();
             self.tab_scroll = 0.0;
             self.tab_hover = None;
+            self.tab_tip = None;
         }
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
@@ -2990,6 +3049,12 @@ impl App {
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
             scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
+        }
+        // The tab tooltip over everything but the banner, under the pointer (a pointer's
+        // height below it).
+        if let Some(text) = self.tab_tip_shown().and_then(|i| self.tab_tip_text(i)) {
+            let (x, y) = self.cursor;
+            scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         }
         self.attention_due = attention;
         self.block_buttons = block_buttons;
@@ -3325,8 +3390,9 @@ impl ApplicationHandler<UserEvent> for App {
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
+        let tip_due = self.tick_tab_tip();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, tip_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -3566,6 +3632,7 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::CursorLeft { .. } => {
                 let composer = self.composer_hover.take().is_some();
                 let tab = self.tab_hover.take().is_some();
+                self.tab_tip = None;
                 if composer || tab {
                     self.redraw();
                 }

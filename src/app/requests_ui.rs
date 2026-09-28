@@ -8,6 +8,30 @@ use super::*;
 use crate::osc1337::{self, Attention};
 use crate::screen::Request;
 
+/// How long the pointer rests on a tab before its tooltip shows.
+pub(super) const TIP_DELAY: Duration = Duration::from_millis(500);
+
+/// The tooltip of a tab (`PT:8701-8723`): "Name", "Profile" and "Command" lines, the name
+/// without HTML when `html`, the profile the saved original's name for a session copy
+/// (`original_name`) else the profile's own, and "None" for no command. None when `disabled`.
+pub(super) fn tip_text(disabled: bool, title: &str, html: bool, profile_name: &str, original_name: Option<&str>, command: &str) -> Option<String> {
+    if disabled {
+        return None;
+    }
+    let name = crate::tab_layout::plain_title(title, html);
+    Some(crate::tab_layout::tooltip(&name, original_name.unwrap_or(profile_name), Some(command).filter(|c| !c.is_empty())))
+}
+
+/// A session profile's own name, and its saved original's name when it is a session copy
+/// whose original still exists (iTerm2 looks the Guid up in the saved profiles, then the
+/// copy's "Original Guid").
+fn tip_profile_names(store: &crate::store::Store, guid: &str) -> (String, Option<String>) {
+    let own = store.get(guid).map(|p| p.name()).unwrap_or_default();
+    let shared = store.shared_guid(guid);
+    let original = (shared != guid).then(|| store.get(&shared)).flatten().map(|p| p.name());
+    (own, original)
+}
+
 /// How long RequestAttention's pane flash and fireworks last.
 pub(super) const FLASH: Duration = Duration::from_millis(300);
 pub(super) const FIREWORKS: Duration = Duration::from_millis(1200);
@@ -193,6 +217,17 @@ impl App {
         scene::TabLook { title, subtitle, dot, color, icon, processing, number: index.map_or(0, |i| i + 1), close_pressed: false }
     }
 
+    /// A tab's tooltip text (`PT tabView:toolTipForTabViewItem:`): its title without HTML, its
+    /// focused session's profile and the command it started with. None with
+    /// `DisableTabBarTooltips` or no such tab.
+    pub(super) fn tab_tip_text(&self, tab: usize) -> Option<String> {
+        let t = self.tabs.get(tab)?;
+        let pane = self.panes.get(&t.focused)?;
+        let (own, original) = tip_profile_names(&self.store, &pane.profile);
+        let title = self.tab_look(t).title;
+        tip_text(self.globals.bool("DisableTabBarTooltips"), &title, self.globals.bool("HTMLTabTitles"), &own, original.as_deref(), &pane.command)
+    }
+
     /// A session's subtitle: its profile's Subtitle over the session's variables, as the badge.
     fn subtitle_text(&self, pane: PaneId) -> String {
         let Some(p) = self.panes.get(&pane) else { return String::new() };
@@ -254,4 +289,50 @@ pub(super) fn work_areas() -> Vec<(f64, f64, f64, f64)> {
     let mut out: Vec<(f64, f64, f64, f64)> = Vec::new();
     unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(each), &mut out as *mut _ as LPARAM) };
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tip_text;
+
+    #[test]
+    fn tooltips_follow_iterm2() {
+        // `DisableTabBarTooltips` shows none (`PT:8701-8703`).
+        assert_eq!(tip_text(true, "zsh", false, "Default", None, "zsh -l"), None);
+        // The name, the profile and the command, one per line.
+        assert_eq!(tip_text(false, "zsh", false, "Default", None, "zsh -l").as_deref(), Some("Name: zsh\nProfile: Default\nCommand: zsh -l"));
+        // The label's HTML is removed when HTML titles are on, kept as typed when off.
+        assert_eq!(tip_text(false, "Name: <b>x</b>", true, "Default", None, "cmd").as_deref(), Some("Name: Name: x\nProfile: Default\nCommand: cmd"));
+        assert_eq!(tip_text(false, "<b>x</b>", false, "Default", None, "cmd").as_deref(), Some("Name: <b>x</b>\nProfile: Default\nCommand: cmd"));
+        // A session copy names its saved original; a copy whose original is gone its own name.
+        assert_eq!(tip_text(false, "t", false, "Default (copy)", Some("Default"), "cmd").as_deref(), Some("Name: t\nProfile: Default\nCommand: cmd"));
+        assert_eq!(tip_text(false, "t", false, "Mine", None, "cmd").as_deref(), Some("Name: t\nProfile: Mine\nCommand: cmd"));
+        // No command reads "None".
+        assert_eq!(tip_text(false, "t", false, "Default", None, "").as_deref(), Some("Name: t\nProfile: Default\nCommand: None"));
+    }
+
+    #[test]
+    fn tooltip_profile_names_follow_iterm2() {
+        use crate::profile::Profile;
+        use crate::session_profile::{ORIGINAL_GUID, divorce};
+        let mut saved = Profile::default();
+        saved.set("Guid", toml::Value::String("saved".into()));
+        saved.set("Name", toml::Value::String("Work".into()));
+        let mut store = crate::store::Store::fresh(std::path::Path::new("profiles-test.toml"));
+        store.add(saved.clone());
+        // A saved profile: its own name.
+        assert_eq!(super::tip_profile_names(&store, "saved"), ("Work".to_string(), None));
+        // A session copy: its original's name.
+        let mut copy = divorce(&saved, "copy".into());
+        copy.profile.set("Name", toml::Value::String("Work edited".into()));
+        store.sessions.push(copy);
+        assert_eq!(super::tip_profile_names(&store, "copy"), ("Work edited".to_string(), Some("Work".to_string())));
+        // A copy whose original is gone: its own name.
+        let mut orphan = divorce(&saved, "orphan".into());
+        orphan.profile.set(ORIGINAL_GUID, toml::Value::String("gone".into()));
+        store.sessions.push(orphan);
+        assert_eq!(super::tip_profile_names(&store, "orphan"), ("Work".to_string(), None));
+        // An unknown Guid: no name.
+        assert_eq!(super::tip_profile_names(&store, "nothing"), (String::new(), None));
+    }
 }

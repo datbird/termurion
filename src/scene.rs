@@ -1233,6 +1233,24 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     }
 }
 
+/// A tab's tooltip (`PT tabView:toolTipForTabViewItem:`): a framed box at `at` (under the
+/// pointer) with one text row per line of `text`, moved left and up as far as it must to stay
+/// inside `area` (the window).
+pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, cell: (f32, f32)) {
+    let lines: Vec<&str> = text.lines().collect();
+    let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let (w, h) = ((widest + 2) as f32 * cell.0, lines.len() as f32 * cell.1 + 4.0);
+    let x = at.0.min(area.x + area.w - w).max(area.x);
+    let y = at.1.min(area.y + area.h - h).max(area.y);
+    let r = Rect { x, y, w, h };
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
+    frame_lines(&mut frame.popups, r, rgba(DIVIDER, 1.0));
+    for (i, line) in lines.iter().enumerate() {
+        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + i as f32 * cell.1, spans: vec![plain_span(line.to_string(), TAB_TEXT, false)], clip: r, scale: 1.0 });
+    }
+}
+
 /// One clipping as the panel draws it: its title and its detail's lines.
 pub struct ClipRow {
     pub title: String,
@@ -2250,6 +2268,37 @@ mod tests {
         assert_eq!(f.rows[0].clip, Rect { x: 0.0, y: 0.0, w: b.x, h: 16.0 });
         assert_eq!(f.rows[1].clip, Rect { x: b.x + b.w, y: 0.0, w: 400.0 - b.x - b.w, h: 16.0 });
         assert!(f.rows.iter().any(|r| r.spans[0].text == "one"));
+    }
+
+    #[test]
+    fn tab_tooltip_stays_in_the_window() {
+        let window = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        let cell = (8.0, 16.0);
+        // Terminal text under the tip is cut out; the tip is a popup box, not an overlay.
+        let mut f = Frame::default();
+        let span = plain_span("terminal".into(), LABEL_TEXT, false);
+        f.rows.push(TextRow { x: 0.0, y: 40.0, spans: vec![span], clip: Rect { x: 0.0, y: 40.0, w: 400.0, h: 16.0 }, scale: 1.0 });
+        tab_tooltip(&mut f, "Name: zsh\nProfile: Default\nCommand: None", (100.0, 40.0), window, cell);
+        assert!(f.overlay.is_empty() && f.quads.is_empty());
+        let b = f.popups[0].rect;
+        assert_eq!((b.x, b.y), (100.0, 40.0));
+        assert_eq!(f.rows[0].clip.w, b.x);
+        // Three lines, three text rows in the box, one per line.
+        let rows: Vec<&TextRow> = f.rows.iter().filter(|r| r.clip == b).collect();
+        assert_eq!(rows.iter().map(|r| r.spans[0].text.as_str()).collect::<Vec<_>>(), ["Name: zsh", "Profile: Default", "Command: None"]);
+        assert!(rows.windows(2).all(|w| w[1].y == w[0].y + cell.1));
+        // The widest line and a cell each side: "Profile: Default" is 16 characters.
+        assert_eq!(b.w, 18.0 * cell.0);
+        // A tip that would pass the right edge moves left to fit; past the bottom, up.
+        let mut f = Frame::default();
+        tab_tooltip(&mut f, "Name: zsh\nProfile: Default\nCommand: None", (390.0, 290.0), window, cell);
+        let b = f.popups[0].rect;
+        assert_eq!(b.x + b.w, window.w);
+        assert!(b.y + b.h <= window.h && b.y >= 0.0);
+        // A window too narrow for it keeps its left edge at the window's.
+        let mut f = Frame::default();
+        tab_tooltip(&mut f, "Name: a very long title indeed", (10.0, 0.0), Rect { w: 100.0, ..window }, cell);
+        assert_eq!(f.popups[0].rect.x, 0.0);
     }
 
     #[test]
