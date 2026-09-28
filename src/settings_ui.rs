@@ -400,15 +400,22 @@ impl SettingsWindow {
                 if ui.button("Import from iTerm2...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().add_filter("iTerm2 settings or Dynamic Profiles", &["plist", "json"]).pick_file() {
                         edit = match crate::import::from_file(&path) {
-                            Ok(list) => {
+                            Ok(mut list) => {
                                 let n = list.len();
+                                // A full settings plist also carries the global key and pointer
+                                // settings, and maybe iTerm2's legacy keys, which are migrated into
+                                // the imported values and profiles before they are stored.
+                                let is_plist = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"));
+                                let globals_read = is_plist.then(|| {
+                                    let mut values = crate::import::globals_from_file(&path)?;
+                                    crate::import::migrate_legacy(&mut values, &crate::import::legacy_from_file(&path)?, &mut list);
+                                    Ok::<_, String>(values)
+                                });
                                 for p in list {
                                     store.profiles.retain(|q| q.guid() != p.guid());
                                     store.add(p);
                                 }
-                                // A full settings plist also carries the global key and pointer settings.
-                                let is_plist = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("plist"));
-                                match is_plist.then(|| crate::import::globals_from_file(&path)) {
+                                match globals_read {
                                     Some(Err(e)) => Edit::Error(e),
                                     Some(Ok(values)) => {
                                         for (k, v) in values {

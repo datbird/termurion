@@ -1771,6 +1771,15 @@ default = false
 help = "Settings marks each control whose value is not the default with a bar at its left."
 
 [[setting]]
+key = "HotkeyMigratedFromSingleToMulti"
+tab = "Stored"
+section = "Hotkey"
+label = "Legacy hotkey window migrated"
+type = "bool"
+default = false
+help = "Set once the single hotkey window of an older iTerm2 settings file has moved to its profile, so the move happens only once."
+
+[[setting]]
 key = "Bidi"
 tab = "General"
 section = "Experimental"
