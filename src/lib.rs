@@ -339,6 +339,10 @@ pub mod ai_wire_log;
 pub mod ai_keys;
 pub mod ai_gate;
 pub mod ai_prompts;
+pub mod ai_permissions;
+pub mod ai_tools;
+pub mod chat_message;
+pub mod chat_store;
 pub mod settings_ai;
 pub mod secret_field;
 #[cfg(windows)]
