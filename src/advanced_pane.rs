@@ -157,13 +157,13 @@ fn number(v: &Value) -> Option<f64> {
 }
 
 /// True when "Show only non-default values" keeps the row: a key never set is hidden, a number
-/// within `EPSILON` of its default is hidden, and a value with no default (an optional bool set
+/// less than `EPSILON` from its default is hidden, and a value with no default (an optional bool set
 /// to No or Yes) is shown.
 pub fn is_non_default(stored: Option<&Value>, default: Option<&Value>) -> bool {
     let Some(stored) = stored else { return false };
     let Some(default) = default else { return true };
     match (number(stored), number(default)) {
-        (Some(a), Some(b)) => (a - b).abs() > EPSILON,
+        (Some(a), Some(b)) => (a - b).abs() >= EPSILON,
         _ => stored != default,
     }
 }
@@ -462,6 +462,8 @@ mod tests {
         assert!(is_non_default(Some(&b(true)), Some(&b(false))));
         assert!(!is_non_default(Some(&f(0.25005)), Some(&f(0.25))));
         assert!(is_non_default(Some(&f(0.251)), Some(&f(0.25))));
+        // A difference of exactly EPSILON is not approximately equal (`fabs(diff) < epsilon`).
+        assert!(is_non_default(Some(&f(EPSILON)), Some(&f(0.0))));
         assert!(!is_non_default(Some(&Value::Integer(5)), Some(&f(5.0))));
         assert!(is_non_default(Some(&Value::Integer(6)), Some(&Value::Integer(5))));
         assert!(is_non_default(Some(&b(false)), None));
