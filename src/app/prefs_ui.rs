@@ -510,6 +510,41 @@ mod tests {
         assert_eq!(names(store), ["Local"]);
     }
 
+    /// Controller ruling I5: the AI consent switches (`ai_settings::guards_consent`) keep their
+    /// local value when a custom folder or URL carries them, and the kept value is no local
+    /// change to save.
+    #[test]
+    fn load_keeps_the_ai_consent_switches() {
+        use crate::ai_settings as ai;
+        let dir = temp("ai");
+        let folder = dir.join("T");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut snap = remote();
+        for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
+            snap.settings.insert(key.into(), Value::Boolean(key != ai::ADMIN));
+        }
+        for (key, _) in ai::PERMISSIONS {
+            snap.settings.insert(key.into(), Value::Integer(1));
+        }
+        std::fs::write(folder.join(rp::PREFS_FILE), snap.to_toml()).unwrap();
+        let t = folder.display().to_string();
+        let (mut g, mut store) = local(&dir, &t);
+        g.values.insert(ai::PERMISSIONS[1].0.into(), Value::Integer(2));
+        let (loaded, asks) = load_at_start(&mut g, &mut store, &never);
+        assert!(asks.is_empty());
+        assert_applied(&g, &store, &t);
+        for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
+            assert!(!g.values.contains_key(key), "{key} came from the folder");
+        }
+        for (i, (key, _)) in ai::PERMISSIONS.iter().enumerate() {
+            let want = (i == 1).then_some(Value::Integer(2));
+            assert_eq!(g.values.get(*key), want.as_ref(), "{key}");
+        }
+        let now = Snapshot::from_local(&g.values, &store.default_guid, &store.profiles.iter().map(|p| p.values.clone()).collect::<Vec<_>>());
+        assert!(!rp::differs(&loaded.unwrap(), &now), "a kept switch is no local change");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn load_at_start_follows_iterm2() {
         let dir = temp("load");

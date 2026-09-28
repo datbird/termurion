@@ -640,6 +640,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Controller ruling I5: Import All's User Defaults never bring the AI consent switches
+    /// (`ai_settings::guards_consent`); the local values stay.
+    #[test]
+    fn finish_import_keeps_the_ai_consent_switches() {
+        use crate::ai_settings as ai;
+        let root = temp("ai");
+        let tandem = root.join("Tandem");
+        std::fs::create_dir_all(&tandem).unwrap();
+        let kept = ai::PERMISSIONS[1].0;
+        std::fs::write(tandem.join("settings.toml"), format!("[settings]\n{kept} = 2\n")).unwrap();
+        let staging = se::staging_dir(&root, "A");
+        std::fs::create_dir_all(staging.join("user-defaults")).unwrap();
+        let mut settings: std::collections::BTreeMap<String, toml::Value> = [("FocusFollowsMouse".to_string(), toml::Value::Boolean(true))].into();
+        for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
+            settings.insert(key.into(), toml::Value::Boolean(key != ai::ADMIN));
+        }
+        for (key, _) in ai::PERMISSIONS {
+            settings.insert(key.into(), toml::Value::Integer(1));
+        }
+        let snap = Snapshot { settings, ..Default::default() };
+        std::fs::write(staging.join(r"user-defaults\UserDefaults.toml"), snap.to_toml()).unwrap();
+        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        finish_import(&tandem);
+        let g = crate::globals::Globals::load(&tandem.join("settings.toml")).unwrap();
+        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)), "the import applied");
+        for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
+            assert!(!g.values.contains_key(key), "{key} came from the import");
+        }
+        for (key, _) in ai::PERMISSIONS {
+            let want = (key == kept).then_some(toml::Value::Integer(2));
+            assert_eq!(g.values.get(key), want.as_ref(), "{key}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Beyond the plan: the archive's app-support never replaces what Tandem keeps out of an
     /// export (the settings files, the Python API consent, the marker), nor a hidden entry.
     #[test]

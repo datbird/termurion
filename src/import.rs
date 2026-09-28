@@ -142,20 +142,18 @@ pub fn defaults_key(key: &str) -> String {
 }
 
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
-/// Settings that stand between a person and an AI request; a person opts in again on Windows,
-/// so import never brings them, even from a hand-edited plist (Review Focus 3).
-pub const NEVER_IMPORTED: [&str; 3] = ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"];
-
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
 /// keys Tandem's global schema knows. Other keys are left out. A schema key spelled with a
 /// lower-case first letter is also found under iTerm2's capitalized defaults key; the exact
-/// spelling wins when a file holds both.
+/// spelling wins when a file holds both. The settings that stand between a person and an AI
+/// request (`ai_settings::guards_consent`) never come, even from a hand-edited plist: a person
+/// opts in again on Windows (Review Focus 3, ruling I5).
 pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
     let root = plist::Value::from_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
     Ok(crate::schema::global()
         .iter()
-        .filter(|s| !NEVER_IMPORTED.contains(&s.key.as_str()))
+        .filter(|s| !crate::ai_settings::guards_consent(&s.key))
         .filter_map(|s| {
             let v = dict.get(&s.key).or_else(|| dict.get(&defaults_key(&s.key)))?;
             Some((s.key.clone(), from_plist(v)?))
@@ -446,6 +444,31 @@ mod tests {
         let _ = std::fs::remove_file(&both);
     }
 
+    /// Controller ruling I5: Import from iTerm2, with 13a's capitalized defaults keys and its
+    /// legacy key migration, brings none of the AI consent switches (`ai_settings::guards_consent`).
+    #[test]
+    fn legacy_import_never_brings_the_ai_consent_switches() {
+        use crate::ai_settings as ai;
+        let path = std::env::temp_dir().join(format!("tandem-import-ai-legacy-{}.plist", std::process::id()));
+        let mut body = String::from("<key>Control</key><integer>2</integer><key>FocusFollowsMouse</key><true/>");
+        for key in [ai::ADMIN, ai::ENABLE_AI, ai::AI_COMPLETIONS] {
+            body += &format!("<key>{}</key><{}/>", defaults_key(key), if key == ai::ADMIN { "false" } else { "true" });
+        }
+        for (key, _) in ai::PERMISSIONS {
+            body += &format!("<key>{}</key><integer>1</integer>", defaults_key(key));
+        }
+        std::fs::write(&path, format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>{body}</dict></plist>"#)).unwrap();
+        let mut values = globals_from_file(&path).unwrap();
+        migrate_legacy(&mut values, &legacy_from_file(&path).unwrap(), &mut []);
+        let _ = std::fs::remove_file(&path);
+        let keys: Vec<&str> = values.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(keys.contains(&"FocusFollowsMouse") && keys.contains(&"LeftControl"), "{keys:?}");
+        for key in keys {
+            assert!(!ai::guards_consent(key), "{key} was imported");
+        }
+    }
+
     #[test]
     fn ai_consent_is_never_imported() {
         let path = std::env::temp_dir().join(format!("tandem-import-ai-{}.plist", std::process::id()));
@@ -470,7 +493,9 @@ mod tests {
         let config = &got[0].1[0];
         assert_eq!(config["api"].as_integer(), Some(7));
         assert_eq!(config["streaming"].as_bool(), Some(true));
-        assert_eq!(NEVER_IMPORTED, ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"]);
+        for key in ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"] {
+            assert!(crate::ai_settings::guards_consent(key), "{key}");
+        }
     }
 
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

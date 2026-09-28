@@ -166,6 +166,8 @@ pub fn writable(dir: &Path) -> bool {
 }
 
 /// `iTermRemotePreferencesKeyIsSyncable` (`RP:144-175`): whether a key travels through the file.
+/// Tandem also keeps the AI consent switches (`ai_settings::guards_consent`) local, so a custom
+/// folder, a URL or Import All never enables AI or answers its consent questions (ruling I5).
 pub fn syncable(key: &str) -> bool {
     const EXEMPT: [&str; 12] = [
         LOAD_KEY,
@@ -181,7 +183,7 @@ pub fn syncable(key: &str) -> bool {
         "MetalCaptureEnabledDate",
         "Snippets",
     ];
-    !EXEMPT.contains(&key) && !["NS", "SU", "NoSync", "UK"].iter().any(|p| key.starts_with(p))
+    !EXEMPT.contains(&key) && !["NS", "SU", "NoSync", "UK"].iter().any(|p| key.starts_with(p)) && !crate::ai_settings::guards_consent(key)
 }
 
 /// The settings a custom folder or URL holds: iTerm2's remote plist.
