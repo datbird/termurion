@@ -512,8 +512,11 @@ mod tests {
             results.push((t, check(raw)));
         }
         assert_eq!(choose(&results[..3]), None, "ruling 1's three as the brief measured them");
-        assert_eq!(choose(&results), Some(crate::ssh_transport::CHOSEN));
-        assert_eq!(crate::ssh_transport::CHOSEN, Transport::NamedPipes);
+        assert_eq!(choose(&results), Some(Transport::NamedPipes), "the only byte-exact transport");
+        // Ruling 1 (Robert): passthrough, accepting U+FFFD for invalid UTF-8 (pinned below) over
+        // named pipes' 0x0 remote pty with no resize.
+        assert_eq!(crate::ssh_transport::CHOSEN, Transport::Passthrough);
+        assert!(results[0].1.dcs && results[0].1.side && results[0].1.order && results[0].1.ctrl_c && !results[0].1.output);
         // named-pipes: nothing but the remote's own bytes, from the first byte on.
         assert!(fixtures[3].1.starts_with(DCS_LINE));
         assert_eq!(fixtures[3].2, ARGV_SEEN);

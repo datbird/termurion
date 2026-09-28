@@ -1,7 +1,7 @@
 //! How ssh.exe is connected to a pane for SSH integration (milestone 14a, ruling 1): the shipped
 //! ConPTY in passthrough mode, then normal ConPTY, then plain pipes, in that order, then the pipes
 //! investigation's overlapped named pipes. Task 1's probe (`ssh_probe_win`) measured which one
-//! carries iTerm2's protocol intact; `CHOSEN` is its answer.
+//! carries iTerm2's protocol intact; `CHOSEN` is the transport ruled on those measurements.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Transport {
@@ -40,10 +40,11 @@ pub fn label(t: Transport) -> &'static str {
     }
 }
 
-/// The probe's choice (tests/fixtures/ssh, `ssh_probe` `probe_fixtures_follow_the_ruling`): both
-/// ConPTY modes turn invalid UTF-8 into U+FFFD, anonymous pipes stall ssh.exe, and overlapped named
-/// pipes carry everything byte for byte (no resize: the remote pty stays 0x0).
-pub const CHOSEN: Transport = Transport::NamedPipes;
+/// The transport SSH integration uses: the shipped ConPTY in passthrough mode (ruling 1, decided
+/// by Robert on the probe's fixtures). It carries everything byte for byte except invalid UTF-8,
+/// which arrives as U+FFFD (accepted); named pipes were byte-exact but leave the remote pty 0x0
+/// with no resize, so they are not used.
+pub const CHOSEN: Transport = Transport::Passthrough;
 
 #[cfg(test)]
 mod tests {
