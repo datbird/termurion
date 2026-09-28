@@ -883,6 +883,8 @@ pub struct App {
     chat_rows_dirty: bool,
     chat_rows_built: Option<Instant>,
     chat_snippets: HashMap<String, String>,
+    /// The chat window's search across chats: its query, debounce and streamed hits.
+    chat_search: crate::chat_search::State,
     chat_menu_ids: Vec<String>,
     /// The subscription that hears every chat for as long as the store is open, so a minted
     /// title needs no window (ruling F14).
@@ -1509,6 +1511,7 @@ pub fn run() {
         chat_rows_dirty: true,
         chat_rows_built: None,
         chat_snippets: HashMap::new(),
+        chat_search: Default::default(),
         chat_menu_ids: Vec::new(),
         chat_mint_sub: None,
         chat_prompt: None,

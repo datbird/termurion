@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::ai_catalog::{Effort, ServiceTier};
 use crate::chat_list::{self, Row, Selection};
+use crate::chat_search::{self, Hit};
 use crate::chat_toolbar::{self as tb, Popup, ProviderOption};
 use crate::egui_host::EguiHost;
 
@@ -43,6 +44,12 @@ pub struct ChatData {
     pub toolbar: ToolbarData,
     /// The chat list's rows, most recent first.
     pub rows: Vec<Row>,
+    /// The search query the app runs; the field follows it when the app clears it.
+    pub query: String,
+    /// The results so far, newest first (12c's order).
+    pub search: Vec<Hit>,
+    /// More results are still being found.
+    pub searching: bool,
 }
 
 /// What the person did (later tasks add variants).
@@ -61,6 +68,10 @@ pub enum ChatEvent {
     Select(String),
     /// The header's "+" button.
     NewChat,
+    /// The search field's text changed.
+    Search(String),
+    /// A result was clicked (its index in `ChatData::search`).
+    ChooseHit(usize),
     /// Enter in the list: rename this chat.
     Rename(String),
     /// Delete in the list: delete these chats (after the question).
@@ -74,6 +85,10 @@ pub enum ChatEvent {
 /// icons decoded once, keyed by their bytes' hash (None when they would not decode).
 #[derive(Default)]
 struct ListState {
+    /// The search field's text; results replace the list while it is not empty.
+    query: String,
+    /// The query the app last handed back, to notice when it clears the field.
+    seen_query: String,
     selection: Selection,
     last_shown: Option<String>,
     textures: HashMap<u64, Option<egui::TextureHandle>>,
@@ -297,11 +312,13 @@ fn screen_pixels(ui: &egui::Ui, p: egui::Pos2) -> (f32, f32) {
 }
 
 const ROW_HEIGHT: f32 = 56.0;
+/// The search field's hint (`CL:509-514`).
+const SEARCH_HINT: &str = "Search";
 /// Icons of a stored PNG above this many pixels a side draw as the default icon: a hostile
 /// database must not make a huge texture for a 32-point circle.
 const MAX_ICON_SIDE: u32 = 512;
 
-/// The chat list: the header (the new chat button; Task 3 adds the search field), then the
+/// The chat list: the header (the search field and the new chat button), then the
 /// rows in a scroll area (`ChatListViewController`). Keys count only while the list has focus.
 fn sidebar(ui: &mut egui::Ui, d: &ChatData, st: &mut ListState, icons: bool, out: &mut Vec<ChatEvent>) {
     // The list follows the shown chat when something else changed it.
@@ -314,14 +331,27 @@ fn sidebar(ui: &mut egui::Ui, d: &ChatData, st: &mut ListState, icons: bool, out
         }
     }
     st.selection.retain(&d.rows);
+    // The app clears the search when another chat is chosen (`CL:315-322`).
+    if d.query != st.seen_query {
+        st.seen_query = d.query.clone();
+        st.query = d.query.clone();
+    }
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if glyph_button(ui, icons, chat_list::NEW_CHAT_GLYPH, "+", tb::NEW_CHAT_TIP, true, false) {
                 out.push(ChatEvent::NewChat);
             }
+            let field = egui::TextEdit::singleline(&mut st.query).hint_text(SEARCH_HINT).desired_width(f32::INFINITY);
+            if ui.add(field).changed() {
+                out.push(ChatEvent::Search(st.query.clone()));
+            }
         });
     });
     ui.separator();
+    if !st.query.is_empty() {
+        results(ui, d, out);
+        return;
+    }
     let list_id = egui::Id::new("chat_list_focus");
     // Present every frame, or the focus is dropped; senses no click, so rows keep theirs.
     ui.interact(ui.available_rect_before_wrap(), list_id, egui::Sense::focusable_noninteractive());
@@ -360,6 +390,41 @@ fn sidebar(ui: &mut egui::Ui, d: &ChatData, st: &mut ListState, icons: bool, out
             }
         }
     }
+}
+
+/// The search results in the list's place: small bubbles, the person's in the accent color at
+/// the right, the agent's gray at the left, each snippet with its matches strong (`CSR`).
+fn results(ui: &mut egui::Ui, d: &ChatData, out: &mut Vec<ChatEvent>) {
+    let visuals = ui.visuals().clone();
+    let width = ui.available_width();
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        for (i, hit) in d.search.iter().enumerate() {
+            let (fill, text, strong) = if hit.user {
+                (visuals.selection.bg_fill, egui::Color32::WHITE, egui::Color32::WHITE)
+            } else {
+                (visuals.widgets.noninteractive.bg_fill, visuals.text_color(), visuals.strong_text_color())
+            };
+            let mut job = egui::text::LayoutJob::default();
+            job.wrap.max_width = (width * 0.85 - 16.0).max(20.0);
+            for (piece, bold) in chat_search::bold_runs(&hit.snippet) {
+                let mut f = egui::TextFormat::simple(egui::FontId::proportional(12.0), if bold { strong } else { text });
+                if bold {
+                    f.underline = egui::Stroke::new(1.0, strong);
+                }
+                job.append(&piece, 0.0, f);
+            }
+            let galley = ui.painter().layout_job(job);
+            let size = galley.size() + egui::vec2(16.0, 10.0);
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, size.y + 4.0), egui::Sense::click());
+            let x = if hit.user { rect.right() - size.x - 4.0 } else { rect.left() + 4.0 };
+            let bubble = egui::Rect::from_min_size(egui::pos2(x, rect.top() + 2.0), size);
+            ui.painter().rect_filled(bubble, 10.0, if resp.hovered() { fill.gamma_multiply(0.85) } else { fill });
+            ui.painter().galley(bubble.min + egui::vec2(8.0, 5.0), galley, text);
+            if resp.clicked() {
+                out.push(ChatEvent::ChooseHit(i));
+            }
+        }
+    });
 }
 
 /// One row (`ChatCellView`): the round icon, the title (with the orchestrator glyph), the

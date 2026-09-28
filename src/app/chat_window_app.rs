@@ -146,8 +146,16 @@ impl App {
         }
     }
 
-    /// Shows `chat` (or none): the title, the toolbar and the data follow.
+    /// Shows `chat` (or none) and ends the search: a chat chosen from the list, "+", or any
+    /// other selection clears it (`CL:315-322`).
     pub(super) fn show_chat(&mut self, chat: Option<String>) {
+        self.chat_search.set_query("", Instant::now());
+        self.show_chat_in_search(chat);
+    }
+
+    /// Shows `chat` and leaves the search as it is (a chosen result keeps search mode,
+    /// `CL:522-527`): the title, the toolbar and the data follow.
+    fn show_chat_in_search(&mut self, chat: Option<String>) {
         self.chat_shown = chat;
         self.chat_toolbar_dirty = true;
         self.chat_rows_dirty = true;
@@ -174,7 +182,14 @@ impl App {
         }
         let title = self.chat_window_title();
         self.chat_toolbar.title = title.clone();
-        let data = ChatData { chat: self.chat_shown.clone(), toolbar: self.chat_toolbar.clone(), rows: self.chat_rows.clone() };
+        let data = ChatData {
+            chat: self.chat_shown.clone(),
+            toolbar: self.chat_toolbar.clone(),
+            rows: self.chat_rows.clone(),
+            query: self.chat_search.query.clone(),
+            search: self.chat_search.hits().to_vec(),
+            searching: self.chat_search.searching(),
+        };
         if let Some(w) = self.chat_window.as_mut() {
             w.set_title(&title);
             if w.data() != &data {
@@ -407,6 +422,9 @@ impl App {
         }
         let mut due = (!self.title_runs.is_empty()).then(|| Instant::now() + std::time::Duration::from_millis(250));
         if self.chat_window.is_some() {
+            let (search_changed, search_due) = self.chat_search_tick();
+            changed |= search_changed;
+            due = [due, search_due].into_iter().flatten().min();
             let minute = self.chat_rows_built.map(|b| b + std::time::Duration::from_secs(60));
             if minute.is_some_and(|t| Instant::now() >= t) {
                 self.chat_rows_dirty = true;
@@ -418,6 +436,34 @@ impl App {
             due = [due, minute].into_iter().flatten().min();
         }
         due
+    }
+
+    /// The search's turn: the store is asked once the person paused typing (ruling F28), the
+    /// hits are made in slices of at most `SLICE`, and the next pass is asked for while any
+    /// remain. Returns whether the window's data changed and when to run again.
+    fn chat_search_tick(&mut self) -> (bool, Option<Instant>) {
+        let Some(db) = self.chat_db.as_ref() else { return (false, None) };
+        let mut search = |q: &str| db.search(q);
+        let mut messages = |chat: &str| db.messages(chat).unwrap_or_default();
+        let t = self.chat_search.tick(Instant::now(), &mut search, &mut messages);
+        if let Some(e) = t.error {
+            self.banners.set("chat_search", format!("Search failed: {e}"));
+        }
+        (t.changed, t.next)
+    }
+
+    /// The search field changed: a new query drops the old work (`CSR:24-31`).
+    fn chat_search_query(&mut self, query: &str) {
+        if self.chat_search.set_query(query, Instant::now()) {
+            self.chat_window_refresh();
+        }
+    }
+
+    /// A result was clicked: its chat shows, search mode stays (`CL:522-527`). Centering the
+    /// message is Task 4's `reveal`.
+    fn chat_choose_hit(&mut self, index: usize) {
+        let Some(chat) = self.chat_search.hits().get(index).map(|h| h.chat.clone()) else { return };
+        self.show_chat_in_search(Some(chat));
     }
 
     /// Stops the chat's streaming bubble (filled by Task 6; ruling F24).
@@ -437,6 +483,7 @@ impl App {
         }
         self.chat_window = None;
         self.chat_shown = None;
+        self.chat_search.set_query("", Instant::now());
     }
 
     /// Win+W and Shift+Win+Y from the key hook with the chat window in front. True when taken;
@@ -497,6 +544,8 @@ impl App {
             ChatEvent::SessionMenu(_) => {}
             ChatEvent::Select(id) => self.show_chat(Some(id)),
             ChatEvent::NewChat => self.create_window_chat(None),
+            ChatEvent::Search(q) => self.chat_search_query(&q),
+            ChatEvent::ChooseHit(i) => self.chat_choose_hit(i),
             ChatEvent::Rename(id) => self.rename_chat(&id, event_loop),
             ChatEvent::Delete(ids) => self.ask_ai(chat_list::delete_alert(ids)),
             ChatEvent::ListMenu { at, ids } => self.chat_list_menu(at, ids),
