@@ -421,12 +421,21 @@ pub fn resolve(maps: &Maps, setting: i64, custom_path: &str, chain: &[Vec<String
     }
 }
 
-/// Whether a path is read for an icon or a map: never a network path, however spelled
-/// (`scripts::is_network_path`), and never one reached through a symbolic link or junction to
+/// Whether a path is read for an icon or a map: never one naming a Windows device (`COM1`,
+/// `NUL`, `CON.png`, `C:\x\LPT1.txt`, `COM1:`; `device_path`), which opening can block on;
+/// never a network or device-namespace path, however spelled (`\\server`, `\\.\COM1`,
+/// `scripts::is_network_path`); and never one reached through a symbolic link or junction to
 /// one, at the file or any folder above it (`scripts::ancestors_stay_local`, reading each link
-/// with `read_link`).
+/// with `read_link`). The device check comes first, so no link is read on a device.
 pub fn readable_path(path: &Path, read_link: &dyn Fn(&Path) -> Option<PathBuf>) -> bool {
-    crate::scripts::ancestors_stay_local(path, read_link)
+    !device_path(path) && crate::scripts::ancestors_stay_local(path, read_link)
+}
+
+/// Whether any part of a path, between separators or a drive's or device's colon, is a
+/// Windows device name with or without an extension (`zip_check::device_name`): Windows opens
+/// the device for such a path, in any folder.
+pub fn device_path(path: &Path) -> bool {
+    path.to_string_lossy().split(['\\', '/', ':']).any(crate::zip_check::device_name)
 }
 
 /// The largest user icon or map file read, in bytes; a larger one is not read at all.
@@ -515,6 +524,14 @@ mod tests {
         }
         assert!(readable_path(Path::new(r"C:\i.png"), &links));
         assert!(readable_path(Path::new(r"C:\ok\i.png"), &links));
+        // Never a device, with or without an extension, in any folder or namespace: opening
+        // one can block (m13d ruling).
+        for p in ["COM1", "con", "NUL", "aux.png", "PRN.json", "LPT1", "lpt9.txt", "COM1:", r"C:COM1", r"C:\x\NUL.png", r"C:\icons\CON\i.png", "CONIN$", r"\\.\COM1", r"\\.\PhysicalDrive0", r"\\?\C:\COM1.png", "C:/Users/me/AppData/Roaming/Tandem/com3.png", "nul .png"] {
+            assert!(!readable_path(Path::new(p), &links), "{p}");
+        }
+        for p in [r"C:\icons\console.png", r"C:\icons\COM10.png", r"C:\icons\nully.png", r"C:\icons\my.con.png"] {
+            assert!(readable_path(Path::new(p), &links), "{p}");
+        }
         assert!(!plain_logical(r"..\x") && !plain_logical("a/b") && plain_logical("mytool"));
     }
 

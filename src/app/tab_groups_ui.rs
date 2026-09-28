@@ -767,17 +767,19 @@ fn icon_dir() -> PathBuf {
     std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Tandem")
 }
 
-/// A user file's bytes; None when it is absent, unreadable, larger than
-/// `tab_icons::MAX_FILE_BYTES`, or on the network or reached through a link to it (never
-/// probed, `tab_icons::readable_path`).
+/// A user file's bytes; None when it is absent, unreadable, not a regular file, larger than
+/// `tab_icons::MAX_FILE_BYTES`, a device, or on the network or reached through a link to it
+/// (never probed, `tab_icons::readable_path`). Only a regular file is opened, so a device or
+/// pipe never blocks the window.
 fn read_user_file(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
     use crate::tab_icons::MAX_FILE_BYTES;
-    if !crate::tab_icons::readable_path(path, &crate::scripts::read_link) {
+    if !crate::tab_icons::readable_path(path, &crate::scripts::read_link) || !std::fs::metadata(path).ok()?.is_file() {
         return None;
     }
     let file = std::fs::File::open(path).ok()?;
-    if file.metadata().ok()?.len() > MAX_FILE_BYTES {
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
         return None;
     }
     // The file may grow after the size was read: never read past the cap.
@@ -1011,6 +1013,12 @@ mod tests {
         assert_eq!(decode_icon_file(Path::new(r"\\server\share\i.png")), None);
         assert_eq!(read_user_file(Path::new(r"\\?\UNC\server\share\graphic_icons.json")), None);
         assert_eq!(read_user_file(Path::new(r"\/server/share/graphic_icons.json")), None);
+        // A device or a folder is never opened, only a regular file (m13d ruling).
+        for p in ["NUL", "nul.png", "CON", "COM1", "LPT1.png", r"\\.\NUL", r"\\.\COM1"] {
+            assert_eq!(read_user_file(Path::new(p)), None, "{p}");
+        }
+        assert_eq!(read_user_file(&dir.join("NUL.png")), None);
+        assert_eq!(read_user_file(&dir), None, "a folder");
         // A file past the size cap is not read; one at the cap is.
         let at_cap = dir.join("cap.bin");
         std::fs::write(&at_cap, vec![0u8; crate::tab_icons::MAX_FILE_BYTES as usize]).unwrap();
