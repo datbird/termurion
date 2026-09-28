@@ -45,13 +45,16 @@ fn browse_dir(path_text: &str) -> std::path::PathBuf {
     browse_dir_with(path_text, &std::path::Path::is_dir)
 }
 
-/// `browse_dir` with the folder test passed in. A network or device folder, or one reached
-/// through a link to a network path (`util_cli::may_open`), is never looked at: the field
-/// can come from an import or a settings folder, and probing `\\host` sends credentials.
+/// `browse_dir` with the folder test passed in. Only an absolute local folder is looked at
+/// (`prompted::local_path_ok`, a verbatim `\\?\C:\` path in its plain form): a relative, rooted
+/// or drive-relative one would resolve against Tandem's working directory, which can be a
+/// share. A network or device folder, or one reached through a link to a network path
+/// (`util_cli::may_open`), is never looked at either: the field can come from an import or a
+/// settings folder, and probing `\\host` sends credentials.
 fn browse_dir_with(path_text: &str, is_dir: &dyn Fn(&std::path::Path) -> bool) -> std::path::PathBuf {
     std::path::Path::new(path_text)
         .parent()
-        .filter(|d| !d.as_os_str().is_empty() && crate::util_cli::may_open(d) && is_dir(d))
+        .filter(|d| crate::prompted::local_path_ok(crate::util_cli::local_form(&d.to_string_lossy())) && crate::util_cli::may_open(d) && is_dir(d))
         .map_or_else(|| SSH_FOLDER.into(), std::path::Path::to_path_buf)
 }
 
@@ -221,5 +224,23 @@ mod tests {
         assert_eq!(browse_dir_with("C:\\Tools\\ssh.exe", &is_dir), std::path::PathBuf::from("C:\\Tools"));
         assert_eq!(*probed.borrow(), vec![std::path::PathBuf::from("C:\\Tools")]);
         assert_eq!(browse_dir_with("C:\\Tools\\ssh.exe", &|_| false), std::path::PathBuf::from(SSH_FOLDER));
+    }
+
+    /// A relative, rooted or drive-relative folder would be resolved against Tandem's working
+    /// directory (which can be a share), so only an absolute local folder is ever looked at.
+    #[test]
+    fn browse_looks_only_at_an_absolute_local_folder() {
+        let probed = std::cell::RefCell::new(Vec::new());
+        let is_dir = |d: &std::path::Path| {
+            probed.borrow_mut().push(d.to_path_buf());
+            true
+        };
+        for p in ["Tools\\ssh.exe", "..\\ssh.exe", ".\\bin\\ssh.exe", "\\Tools\\ssh.exe", "/Tools/ssh.exe", "C:Tools\\ssh.exe", "C:..\\ssh.exe"] {
+            assert_eq!(browse_dir_with(p, &is_dir), std::path::PathBuf::from(SSH_FOLDER), "{p}");
+        }
+        assert_eq!(*probed.borrow(), Vec::<std::path::PathBuf>::new());
+        assert_eq!(browse_dir_with("C:/Tools/ssh.exe", &is_dir), std::path::PathBuf::from("C:/Tools"));
+        assert_eq!(browse_dir_with("\\\\?\\C:\\Tools\\ssh.exe", &is_dir), std::path::PathBuf::from("\\\\?\\C:\\Tools"));
+        assert_eq!(*probed.borrow(), vec![std::path::PathBuf::from("C:/Tools"), std::path::PathBuf::from("\\\\?\\C:\\Tools")]);
     }
 }
