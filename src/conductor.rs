@@ -153,16 +153,34 @@ impl Command {
 }
 
 /// How long a timed command may go without a begin, a line or its end (Tandem's; iTerm2
-/// waits forever, ruling 2).
+/// waits forever, ruling 2), and how long a setup stalled in ground may wait.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Seconds added per square MiB of a command's encoded bytes. conductor.sh reads a command
+/// one 128-character line at a time and appends each to the text so far
+/// (`line="${line}${part}"`, `C:440-456`), so reading it costs the square of its size, and
+/// its begin comes only after the last line. Measured with conductor.sh's own loop: dash
+/// about 10 s and bash about 142 s per square MiB (a 1 MiB file is 1.78 MiB encoded: 29 s
+/// and 451 s; a 4 MiB file, 7.1 MiB: 549 s under dash); this is about twice bash's, for
+/// slower hosts.
+pub const WRITE_COST_SECS: f64 = 300.0;
+
+/// The timeout of a command `encoded_len` bytes long on the wire: `COMMAND_TIMEOUT` plus
+/// `WRITE_COST_SECS` per square MiB, whole seconds rounded down. Only Files to Copy's writes
+/// grow past a few KiB.
+pub fn command_timeout(encoded_len: usize) -> Duration {
+    let mib = encoded_len as f64 / (1024.0 * 1024.0);
+    COMMAND_TIMEOUT + Duration::from_secs((WRITE_COST_SECS * mib * mib) as u64)
+}
 
 /// The first line of the abort text (`PS:25594`).
 pub const SETUP_ERROR: &str = "An error occurred while setting up the SSH environment:";
 
-/// The failure text for a command the remote stopped answering (Tandem's), built from its
-/// description so a tarball never lands on the screen, and a setenv value never does.
-pub fn timeout_text(cmd: &Command) -> String {
-    format!("{}: No response after {} seconds", shown_description(cmd), COMMAND_TIMEOUT.as_secs())
+/// The failure text for a command the remote stopped answering for `timeout` (Tandem's),
+/// built from its description so a tarball never lands on the screen, and a setenv value
+/// never does.
+pub fn timeout_text(cmd: &Command, timeout: Duration) -> String {
+    format!("{}: No response after {} seconds", shown_description(cmd), timeout.as_secs())
 }
 
 /// Swift's description of a `[String]` (`["a", "b"]`): each element's debugDescription
@@ -315,6 +333,8 @@ pub struct Context {
     canceled: bool,
     /// Whether the conductor was framing when this command was written.
     framed_at_write: bool,
+    /// Its timeout (`command_timeout` of its size), set when it is written.
+    timeout: Duration,
 }
 
 impl Context {
@@ -764,9 +784,13 @@ impl Conductor {
 
     /// The command written and not yet ended, for the command timer (Task 9) and tests.
     pub fn in_flight(&self) -> Option<&Command> {
+        self.in_flight_context().map(|c| &c.command)
+    }
+
+    fn in_flight_context(&self) -> Option<&Context> {
         match &self.state {
-            State::WillExecute(contexts) => contexts.first().map(|c| &c.command),
-            State::Executing(context, _) => Some(&context.command),
+            State::WillExecute(contexts) => contexts.first(),
+            State::Executing(context, _) => Some(context),
             State::Ground | State::Unhooked => None,
         }
     }
@@ -804,7 +828,7 @@ impl Conductor {
     /// is written at once. During a transition it only enqueues. In flight, iTerm2 tops up
     /// a pipeline, which no 14b command joins (14c). Unhooked, it stays queued, unsent.
     pub fn send(&mut self, cmd: Command, handler: Handler, high_priority: bool) {
-        let context = Context { command: cmd, handler, canceled: false, framed_at_write: false };
+        let context = Context { command: cmd, handler, canceled: false, framed_at_write: false, timeout: COMMAND_TIMEOUT };
         if high_priority {
             self.queue.insert(0, context);
         } else {
@@ -840,8 +864,10 @@ impl Conductor {
             let mut context = self.queue.remove(0);
             context.framed_at_write = self.framing();
             self.last_activity = Some(self.now());
-            self.last_written = Some(timeout_text(&context.command));
+            // A stall in ground after it waits COMMAND_TIMEOUT, whatever its size.
+            self.last_written = Some(timeout_text(&context.command, COMMAND_TIMEOUT));
             let text = encode(&context.command, &self.line_prefix);
+            context.timeout = command_timeout(text.len());
             self.in_transition(|c| {
                 c.state = State::WillExecute(vec![context]);
                 c.write(&text);
@@ -975,21 +1001,19 @@ impl Conductor {
     }
 
     /// When `tick` fails the conductor if nothing happens first: the in-flight command's
-    /// last activity plus `COMMAND_TIMEOUT` when it is timed; in ground, the last activity
-    /// plus `COMMAND_TIMEOUT` while writes are held and the conductor does not frame (iTerm2
-    /// bugs B5 and B6: a setup stalled there holds typing forever); else none.
+    /// last activity plus its timeout (`command_timeout`) when it is timed; in ground, the
+    /// last activity plus `COMMAND_TIMEOUT` while the conductor does not frame (iTerm2 bugs B5
+    /// and B6: a setup stalled there holds typing, or its hook swallows output, forever);
+    /// else none.
     pub fn deadline(&self) -> Option<Instant> {
-        let timed = match &self.state {
-            State::WillExecute(contexts) => contexts[0].timed(),
-            State::Executing(context, _) => context.timed(),
-            State::Ground => self.queue_writes() && !self.framing(),
-            State::Unhooked => false,
+        let timeout = match &self.state {
+            State::WillExecute(_) | State::Executing(..) => self.in_flight_context().filter(|c| c.timed()).map(|c| c.timeout),
+            // A nested setup under an unhooked parent holds no writes, but the pane's DCS hook
+            // still takes its output (final review Minor 1): it is timed as well.
+            State::Ground => (!self.framing()).then_some(COMMAND_TIMEOUT),
+            State::Unhooked => None,
         };
-        if timed {
-            self.last_activity.map(|t| t + COMMAND_TIMEOUT)
-        } else {
-            None
-        }
+        self.last_activity.zip(timeout).map(|(t, timeout)| t + timeout)
     }
 
     /// The command timer: at or past the deadline, setup fails with the timeout text of the
@@ -999,8 +1023,8 @@ impl Conductor {
         if !self.deadline().is_some_and(|due| now >= due) {
             return;
         }
-        let reason = match self.in_flight() {
-            Some(cmd) => timeout_text(cmd),
+        let reason = match self.in_flight_context() {
+            Some(context) => timeout_text(&context.command, context.timeout),
             None => self.last_written.clone().unwrap_or_default(),
         };
         self.fail(&reason);
@@ -1713,10 +1737,10 @@ mod tests {
         assert_eq!(c.in_flight(), Some(&cd("/a")), "only queued commands are canceled");
         c.handle_end("1", "r", 0, 0);
         assert_eq!(wire(&mut c), sent(&Command::Run("x".into())), "the canceled command is dropped, the next written");
-        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false, framed_at_write: false }]);
+        let run_in_flight = State::WillExecute(vec![Context { command: Command::Run("x".into()), handler: Handler::FailIfNonzero, canceled: false, framed_at_write: false, timeout: COMMAND_TIMEOUT }]);
         assert_eq!(
             c.updates,
-            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false, framed_at_write: false }])), (cd("/b"), Partial::Canceled, run_in_flight)],
+            [(cd("/a"), Partial::End(0), State::WillExecute(vec![Context { command: cd("/a"), handler: Handler::FailIfNonzero, canceled: false, framed_at_write: false, timeout: COMMAND_TIMEOUT }])), (cd("/b"), Partial::Canceled, run_in_flight)],
             "the canceled handler runs once the state is consistent"
         );
     }
@@ -2468,7 +2492,7 @@ mod tests {
 
         // A silent unhook of the hook (garbage, an unknown word) leaves a command in flight:
         // it times out as a stalled command does. Ground stalls are only for a conductor
-        // that holds writes and does not frame.
+        // that does not frame.
         let mut framing = Conductor::new(setup("A"), None, "U");
         at(&mut framing, t0).start();
         reply(at(&mut framing, t0), &["/bin/sh\n/home/u"], 1);
@@ -2484,7 +2508,10 @@ mod tests {
         assert_eq!(child.deadline(), Some(t0 + SECS(30)), "its own command is timed");
         reply(at(&mut child, t0), &["/bin/sh\n/home/u"], 1);
         assert!(!child.queue_writes());
-        assert_eq!((child.state(), child.deadline()), (&State::Ground, None), "writes do not queue: nothing is held, nothing to end");
+        assert_eq!(child.state(), &State::Ground);
+        assert_eq!(child.deadline(), Some(t0 + SECS(30)), "nothing is held, but the pane's hook swallows output until it ends");
+        child.tick(t0 + SECS(30));
+        assert_eq!(child.take_effects().last(), Some(&Effect::Abort("getshell: No response after 30 seconds".into())));
     }
 
     #[test]
@@ -2515,6 +2542,33 @@ mod tests {
         c.take_effects();
         c.tick(t0 + SECS(31));
         assert_eq!(c.take_effects().last(), Some(&Effect::Abort("changing directory to /a: No response after 30 seconds".into())));
+    }
+
+    #[test]
+    fn a_write_has_time_for_its_size() {
+        assert_eq!(command_timeout(0), COMMAND_TIMEOUT);
+        assert_eq!(command_timeout(16 << 10), COMMAND_TIMEOUT, "every command but a large write: 30 s");
+        assert_eq!(command_timeout(1 << 20), SECS(330));
+        assert_eq!(command_timeout(4 << 20), SECS(30 + 4800));
+
+        // Files to Copy of 4 MiB of incompressible data (its gzip tarball is as large): about
+        // 7.5 MB on the wire, over four hours, where 30 s failed it (conductor.sh takes about
+        // 9 minutes under dash, 2 hours under bash).
+        let t0 = Instant::now();
+        let mut c = root();
+        let write = Command::Write { data: vec![0xa5; 4 << 20], dest: "/$HOME".into() };
+        at(&mut c, t0).send(write, Handler::FailIfNonzero, false);
+        let len = wire(&mut c).len();
+        let due = c.deadline().unwrap();
+        assert_eq!(due, t0 + command_timeout(len));
+        assert!(due > t0 + SECS(4 * 3600), "{:?}", due - t0);
+        c.tick(due - SECS(1));
+        assert!(c.take_effects().is_empty());
+        at(&mut c, t0 + SECS(60)).handle_begin("1", 0);
+        assert_eq!(c.deadline(), Some(t0 + SECS(60) + command_timeout(len)), "each restart gets the write's time");
+        c.tick(t0 + SECS(60) + command_timeout(len));
+        let text = format!("copying files to /$HOME: No response after {} seconds", command_timeout(len).as_secs());
+        assert_eq!(c.take_effects().last(), Some(&Effect::Abort(text)));
     }
 
     #[test]
@@ -2551,14 +2605,14 @@ mod tests {
         assert_eq!(SETUP_ERROR, "An error occurred while setting up the SSH environment:");
         assert_eq!(COMMAND_TIMEOUT, Duration::from_secs(30));
         assert_eq!(unexpected_status(&Cd("/a".into()), 1), "cd /a: Unepected status 1");
-        assert_eq!(timeout_text(&Command::Write { data: vec![0; 3], dest: "/$HOME/x".into() }), "copying files to /$HOME/x: No response after 30 seconds");
-        assert_eq!(timeout_text(&Command::GetShell), "getshell: No response after 30 seconds");
+        assert_eq!(timeout_text(&Command::Write { data: vec![0; 3], dest: "/$HOME/x".into() }, COMMAND_TIMEOUT), "copying files to /$HOME/x: No response after 30 seconds");
+        assert_eq!(timeout_text(&Command::GetShell, Duration::from_secs(331)), "getshell: No response after 331 seconds");
         // Never an environment value, and a shell by its name only.
         let secret = Command::Setenv { key: "TOKEN".into(), value: "s3cret".into() };
-        assert_eq!(timeout_text(&secret), "setting TOKEN: No response after 30 seconds");
+        assert_eq!(timeout_text(&secret, COMMAND_TIMEOUT), "setting TOKEN: No response after 30 seconds");
         let login = Command::ExecLoginShell(s(&["/opt/secret/bin/bash", "--posix"]));
-        assert_eq!(timeout_text(&login), "starting login shell with args bash --posix: No response after 30 seconds");
-        assert_eq!(timeout_text(&Command::ExecLoginShell(vec![])), "starting login shell with args : No response after 30 seconds");
+        assert_eq!(timeout_text(&login, COMMAND_TIMEOUT), "starting login shell with args bash --posix: No response after 30 seconds");
+        assert_eq!(timeout_text(&Command::ExecLoginShell(vec![]), COMMAND_TIMEOUT), "starting login shell with args : No response after 30 seconds");
         assert_eq!(unexpected_status(&login, 1), "exec_login_shell\nbash\n--posix: Unepected status 1", "the status text trims the shell too");
         assert_eq!(unexpected_status(&Command::ExecLoginShell(vec![]), 1), "exec_login_shell: Unepected status 1");
         // A write never puts its tarball on the screen, only where it goes.

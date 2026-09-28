@@ -11,17 +11,13 @@ use crate::ssh_hook::Out;
 use crate::ssh_session::{conductor_bytes, Hop, CONDUCTOR_READY};
 
 /// iTerm2's ssh_config search order in this user's folders (`ssh_args::config_paths`), from
-/// the environment only; a folder that is unset, relative or a network path is left out.
+/// the environment only; a path that is relative, a network path, or reached through a link
+/// or junction to one (`scripts::ancestors_stay_local`, which reads only the links) is left
+/// out: a remote can start a hook without a token, so the load must never probe the network.
 fn ssh_config_paths() -> Vec<std::path::PathBuf> {
     let var = |name: &str| std::env::var_os(name).map(std::path::PathBuf::from).unwrap_or_default();
     let paths = crate::ssh_args::config_paths(&var("APPDATA"), &var("USERPROFILE"), &var("ProgramData"));
-    paths.into_iter().filter(|p| p.is_absolute() && !is_network(p)).collect()
-}
-
-/// `\\host\share` or `//host/share`: never probed as a file.
-fn is_network(p: &std::path::Path) -> bool {
-    let s = p.to_string_lossy();
-    s.starts_with(r"\\") || s.starts_with("//")
+    paths.into_iter().filter(|p| p.is_absolute() && crate::scripts::ancestors_stay_local(p, &crate::scripts::read_link)).collect()
 }
 
 impl App {
