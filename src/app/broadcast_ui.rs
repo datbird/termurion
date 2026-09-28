@@ -61,23 +61,16 @@ impl App {
 
 
     /// Shell > Broadcast Input's items. False for other selectors.
+    /// Turning broadcasting on asks the warning (`BroadcastInput`) first, whose OK
+    /// (`broadcast_granted`) turns it on.
     pub(super) fn broadcast_command(&mut self, selector: &str) -> bool {
-        self.broadcast_run(selector, false)
-    }
-
-    /// Shell > Broadcast Input's items; `granted`: the warning before turning broadcasting on
-    /// was answered OK. Without it, turning it on asks the warning (`BroadcastInput`), which
-    /// runs the item again when answered OK.
-    pub(super) fn broadcast_run(&mut self, selector: &str, granted: bool) -> bool {
         let mut v = self.broadcast_view();
         let current = v.current;
         // The warning (going from off to on), whose text the model gives.
         let mut asked = None;
         let mut confirm = |title: &str| {
-            if !granted {
-                asked = Some(title.to_string());
-            }
-            granted
+            asked = Some(title.to_string());
+            false
         };
         match selector {
             "disableBroadcasting:" => {
@@ -108,16 +101,34 @@ impl App {
             }
             _ => return false,
         }
-        self.keep_broadcast_flags(&v);
+        self.broadcast_changed(&v);
+        // After the state is kept: a silenced warning answers at once.
+        if let Some(text) = asked {
+            let selector = if selector == "enableSendInputToAllTabs:" { "enableSendInputToAllTabs:" } else { "enableSendInputToAllPanes:" };
+            self.ask_scripts(broadcast_input_ask(&text, current, selector));
+        }
+        true
+    }
+
+    /// The broadcast warning answered OK: the item `selector` turns broadcasting on in the
+    /// window and tab of `anchor`, the pane it was asked from (gone: nothing happens), while
+    /// broadcasting there is still off.
+    pub(super) fn broadcast_granted(&mut self, anchor: PaneId, selector: &str) {
+        if !self.enter_pane_window(anchor) {
+            return;
+        }
+        let Some(mut v) = self.broadcast_view().at(anchor) else { return };
+        if self.broadcast.grant(&mut v, selector == "enableSendInputToAllTabs:") {
+            self.broadcast_changed(&v);
+        }
+    }
+
+    /// The model's state kept, and the menus and window follow it.
+    fn broadcast_changed(&mut self, v: &View) {
+        self.keep_broadcast_flags(v);
         self.menus_dirty = true;
         self.sync_checks();
         self.redraw();
-        // After the state is kept: a silenced warning answers at once and runs the item again.
-        if let Some(text) = asked {
-            let selector = if selector == "enableSendInputToAllTabs:" { "enableSendInputToAllTabs:" } else { "enableSendInputToAllPanes:" };
-            self.ask_scripts(broadcast_input_ask(&text, selector));
-        }
-        true
     }
 
     /// The context menu's Toggle Broadcasting Input, on the pane that was clicked.
@@ -184,12 +195,12 @@ impl App {
     }
 }
 
-/// The warning before broadcasting input, `text` from the model (`warning_title`), for the
-/// menu item `selector`: no heading, OK and Cancel, permanently silenceable
-/// (`iTermBroadcastInputHelper.m:218-222`).
-pub(super) fn broadcast_input_ask(text: &str, selector: &'static str) -> super::scripts_alerts::Ask {
+/// The warning before broadcasting input, `text` from the model (`warning_title`), asked from
+/// pane `anchor` for the menu item `selector`: no heading, OK and Cancel, permanently
+/// silenceable (`iTermBroadcastInputHelper.m:218-222`).
+pub(super) fn broadcast_input_ask(text: &str, anchor: PaneId, selector: &'static str) -> super::scripts_alerts::Ask {
     use crate::api_auth::{CANCEL, OK};
-    super::scripts_alerts::ask("", text, &[OK, CANCEL], Some("NoSyncSuppressBroadcastInputWarning"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::BroadcastInput(selector))
+    super::scripts_alerts::ask("", text, &[OK, CANCEL], Some("NoSyncSuppressBroadcastInputWarning"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::BroadcastInput(anchor, selector))
 }
 
 /// Yes, No, or Cancel (None).

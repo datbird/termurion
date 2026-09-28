@@ -136,9 +136,10 @@ pub(super) enum Then {
     /// the one closed) and the question's identifier (`CLOSE_TAB`, `tmux_persist::close_win_id`);
     /// Hide, Kill, Detach tmux Session or Cancel.
     TmuxClose(crate::layout::PaneId, String),
-    /// Turning broadcast input on, the menu selector: OK (0) turns it on; Cancel (1) does
+    /// Turning broadcast input on: the pane the question was asked from (its window and tab
+    /// are the ones turned on) and the menu selector; OK (0) turns it on; Cancel (1) does
     /// nothing.
-    BroadcastInput(&'static str),
+    BroadcastInput(crate::layout::PaneId, &'static str),
 }
 
 impl Then {
@@ -283,9 +284,9 @@ impl App {
             Then::Nothing | Then::ErrorRunning | Then::ExportFailed => {}
             Then::Paste(pane) => self.paste_answered(pane, Some(index)),
             Then::TmuxClose(anchor, id) => self.tmux_close_answered(anchor, &id, index),
-            Then::BroadcastInput(selector) => {
+            Then::BroadcastInput(anchor, selector) => {
                 if index == 0 {
-                    self.broadcast_run(selector, true);
+                    self.broadcast_granted(anchor, selector);
                 }
             }
             Then::Malformed(path) => {
@@ -406,6 +407,14 @@ mod tests {
         assert_eq!(Then::PrefsQuit.never_remember(), [1]);
         assert!(Then::Nothing.never_remember().is_empty());
         assert_eq!(selection_key("NoSyncX"), "NoSyncX_selection");
+    }
+
+    /// The broadcast input warning carries the pane it was asked from and the menu item, so
+    /// the answer acts in that window and tab.
+    #[test]
+    fn broadcast_input_ask_carries_its_anchor() {
+        let a = super::super::broadcast_ui::broadcast_input_ask("t", 7, "enableSendInputToAllPanes:");
+        assert_eq!(a.then, Then::BroadcastInput(7, "enableSendInputToAllPanes:"));
     }
 
     #[test]

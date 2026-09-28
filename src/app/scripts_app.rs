@@ -200,9 +200,7 @@ impl App {
         let environment = match &kind {
             Kind::NotAScript(_) => return,
             Kind::Malformed(p) => {
-                let buttons = [crate::api_auth::OK, sl::REVEAL];
-                // Temporarily silenceable; Reveal is never remembered.
-                let ask = ask(sl::MALFORMED_HEADING, &sl::malformed(&sl::entry_name(&kind)), &buttons, Some(sl::MALFORMED_ID), warnings::Kind::Temporary, Then::Malformed(p.clone()));
+                let ask = malformed_ask(p.clone(), &sl::entry_name(&kind));
                 return self.ask_scripts(ask);
             }
             Kind::NeedsRebuild { .. } => {
@@ -210,10 +208,7 @@ impl App {
                 if !req.explicit {
                     return self.script_log_app(sl::env_missing_line(&name));
                 }
-                // `REBUILD_ID` is persistent in iTerm2: never silenced.
-                let buttons = [sl::REBUILD, crate::api_auth::CANCEL];
-                let ask = ask(sl::REBUILD_HEADING, &sl::rebuild_text(&name), &buttons, Some(sl::REBUILD_ID), warnings::Kind::Persistent, Then::Rebuild(req));
-                return self.ask_scripts(ask);
+                return self.ask_scripts(rebuild_ask(req, &name));
             }
             Kind::Basic { version, .. } => {
                 let requested = version.clone().unwrap_or_else(|| rt::DEFAULT_PYTHON.to_string());
@@ -1315,10 +1310,7 @@ impl App {
             if !self.archives_asked.insert(path.clone()) {
                 continue;
             }
-            let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let buttons = [crate::api_auth::OK, crate::api_auth::CANCEL, crate::scripts::MOVE_TO_TRASH];
-            let ask = ask(crate::scripts::ARCHIVE_HEADING, &crate::scripts::archive_text(&file), &buttons, Some(crate::scripts::ARCHIVE_ID), warnings::Kind::Temporary, Then::Archive(path.clone()));
-            self.ask_scripts(ask);
+            self.ask_scripts(archive_ask(path));
         }
     }
 
@@ -1412,6 +1404,28 @@ fn fill_scripts(sub: &muda::Submenu, entries: &[MenuEntry], errors: &mut Vec<Str
             errors.push(e.to_string());
         }
     }
+}
+
+/// "Cannot Run Script" for the malformed script `name` at `path`: OK or Reveal, temporarily
+/// silenceable; Reveal is never remembered.
+pub(super) fn malformed_ask(path: PathBuf, name: &str) -> super::scripts_alerts::Ask {
+    let buttons = [crate::api_auth::OK, sl::REVEAL];
+    ask(sl::MALFORMED_HEADING, &sl::malformed(name), &buttons, Some(sl::MALFORMED_ID), warnings::Kind::Temporary, Then::Malformed(path))
+}
+
+/// "Rebuild Python Environment?" for the lost environment `name` of the launch `req`:
+/// Rebuild or Cancel; `REBUILD_ID` is persistent in iTerm2: never silenced.
+pub(super) fn rebuild_ask(req: Request, name: &str) -> super::scripts_alerts::Ask {
+    let buttons = [sl::REBUILD, crate::api_auth::CANCEL];
+    ask(sl::REBUILD_HEADING, &sl::rebuild_text(name), &buttons, Some(sl::REBUILD_ID), warnings::Kind::Persistent, Then::Rebuild(req))
+}
+
+/// "Install Script Archive?" for the archive the scan found at `path`: OK, Cancel or Move to
+/// Trash, temporarily silenceable; only OK is remembered.
+pub(super) fn archive_ask(path: &Path) -> super::scripts_alerts::Ask {
+    let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let buttons = [crate::api_auth::OK, crate::api_auth::CANCEL, crate::scripts::MOVE_TO_TRASH];
+    ask(crate::scripts::ARCHIVE_HEADING, &crate::scripts::archive_text(&file), &buttons, Some(crate::scripts::ARCHIVE_ID), warnings::Kind::Temporary, Then::Archive(path.to_path_buf()))
 }
 
 #[cfg(test)]

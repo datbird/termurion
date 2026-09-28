@@ -145,7 +145,8 @@ mod tests {
         use crate::warnings::Kind::{Permanent, Persistent, Temporary};
         let paste = |w: Warning| w.spec(w.heading(), &w.text());
         let failed = super::super::script_ui::Alert::Failed { heading: "h".into(), invocation: "f()".into(), text: "t".into(), reveal: None };
-        let archive = super::super::scripts_alerts::ask("h", "t", &["OK", "Cancel", "Move to Trash"], Some(crate::scripts::ARCHIVE_ID), Temporary, super::super::scripts_alerts::Then::Archive("a.zip".into()));
+        let archive = super::super::scripts_app::archive_ask(std::path::Path::new(r"C:\S\a.zip"));
+        let malformed = super::super::scripts_app::malformed_ask(std::path::PathBuf::from(r"C:\S\m"), "m");
         let sites: Vec<(Spec, &str, warnings::Kind)> = vec![
             (paste(Warning::Tabs), "AboutToPasteTabsWithCancel", Permanent),
             (paste(Warning::Lines { n: 2, at_prompt: false }), "NoSyncDoNotWarnBeforeMultilinePaste", Permanent),
@@ -155,8 +156,10 @@ mod tests {
             (super::super::tmux_tabs_ui::tmux_close_window_ask(1, 0, true, 2).unwrap().spec, "ClosingTmuxWindowKillsTmuxWindows", Permanent),
             (failed.spec().unwrap(), "NoSyncFunctionCallError", Temporary),
             (super::super::toolbelt_more_ui::signal_spec(2, false), "NoSyncSuppressSendSignal", Permanent),
-            (super::super::broadcast_ui::broadcast_input_ask("t", "enableSendInputToAllTabs:").spec, "NoSyncSuppressBroadcastInputWarning", Permanent),
-            (archive.spec, "NoSyncInstallScriptArchive", Temporary),
+            (super::super::broadcast_ui::broadcast_input_ask("t", 1, "enableSendInputToAllTabs:").spec, "NoSyncSuppressBroadcastInputWarning", Permanent),
+            (archive.spec.clone(), "NoSyncInstallScriptArchive", Temporary),
+            (malformed.spec.clone(), "NoSyncScriptMalformed", Temporary),
+            (rebuild_spec(), "NoSyncRebuildMissingUvEnv", Persistent),
             (super::super::pwm_app::adapter_warning_spec("op", "t"), "NoSyncAdapterListWarning_op", Permanent),
             (super::super::api_ui::reset_spec(), "NoSyncAppSupportMoved", Permanent),
         ];
@@ -165,7 +168,7 @@ mod tests {
         }
         assert_eq!((crate::script_launch::MALFORMED_ID, crate::script_launch::REBUILD_ID), ("NoSyncScriptMalformed", "NoSyncRebuildMissingUvEnv"));
         // Only OK of a found archive may be remembered; a malformed script's Reveal never is.
-        assert_eq!(archive_never(), (vec![1, 2], vec![1]));
+        assert_eq!((archive.spec.never_remember, malformed.spec.never_remember), (vec![1, 2], vec![1]));
         // A remembered Reveal Preference is never replayed.
         let reset = super::super::api_ui::reset_spec();
         assert_eq!(reset.never_remember, [1]);
@@ -180,15 +183,7 @@ mod tests {
     /// `persistent_is_never_silenced`: a stored flag still shows a persistent warning.
     #[test]
     fn persistent_is_never_silenced() {
-        let rebuild = Spec {
-            id: Some(crate::script_launch::REBUILD_ID.into()),
-            kind: warnings::Kind::Persistent,
-            heading: "Rebuild Python Environment?".into(),
-            text: "t".into(),
-            labels: vec!["Rebuild".into(), "Cancel".into()],
-            cancel: Some(1),
-            never_remember: vec![],
-        };
+        let rebuild = rebuild_spec();
         let mut s = MapStore::default();
         s.set(crate::script_launch::REBUILD_ID, Value::Boolean(true));
         assert_eq!(warnings::preempt(&rebuild, &s, NOW, false), Preempt::Show);
@@ -198,9 +193,10 @@ mod tests {
         assert_eq!(warnings::preempt(&size, &s, NOW, false), Preempt::Show);
     }
 
-    fn archive_never() -> (Vec<usize>, Vec<usize>) {
-        use super::super::scripts_alerts::Then;
-        (Then::Archive("a.zip".into()).never_remember(), Then::Malformed("m".into()).never_remember())
+    /// The rebuild question's spec as the launch site builds it.
+    fn rebuild_spec() -> Spec {
+        let req = crate::script_launch::Request { path: std::path::PathBuf::from(r"C:\S\env"), args: Vec::new(), explicit: true };
+        super::super::scripts_app::rebuild_ask(req, "env").spec
     }
 
     #[test]
