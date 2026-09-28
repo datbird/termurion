@@ -3291,6 +3291,7 @@ impl ApplicationHandler<UserEvent> for App {
         let mut outputs = Vec::new();
         let now = Instant::now();
         self.sync_output_policy();
+        self.sync_host_policy();
         // The prompt state machine follows View > Auto Composer before it reads output (the
         // Task 3 contract: every pane, new ones included).
         let auto_composer = self.globals.bool("AutoComposer");

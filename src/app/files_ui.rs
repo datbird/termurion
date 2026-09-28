@@ -87,6 +87,15 @@ fn saved_name(dir: &std::path::Path, name: &str) -> String {
     crate::inline_file::unique_path(dir, name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// The pane and inline file a question is about.
+fn inline_ask_of(then: &super::scripts_alerts::Then) -> Option<(PaneId, u64)> {
+    use super::scripts_alerts::Then;
+    match then {
+        Then::Inline { pane, serial, .. } | Then::BigInline(pane, serial) => Some((*pane, *serial)),
+        _ => None,
+    }
+}
+
 impl App {
     /// Asks about each file a pane was sent to save (through the alert queue); the allowed
     /// ones are saved (`download_answered`).
@@ -116,6 +125,7 @@ impl App {
         for p in self.panes.values_mut() {
             p.resume_after_inline();
         }
+        self.close_dropped_inline_questions();
         loop {
             let waiting: Vec<(PaneId, u64, String, usize)> = self
                 .panes
@@ -139,6 +149,26 @@ impl App {
             }
         }
         self.inline_asking = false;
+    }
+
+    /// Questions about inline files the screen dropped (too much output waited behind them)
+    /// close unanswered, as `Answer::Closed`: nothing is remembered or recorded, and the pane
+    /// already reads on. A closed pane's (Undo Close may bring it back) stay.
+    fn close_dropped_inline_questions(&mut self) {
+        let panes = &self.panes;
+        let dropped = |then: &super::scripts_alerts::Then| inline_ask_of(then).is_some_and(|(pane, serial)| panes.get(&pane).is_some_and(|p| p.own().inline_serial() != Some(serial)));
+        self.scripts_alerts.retain(|a| !dropped(&a.then));
+        if self.scripts_alert.as_ref().is_some_and(|(_, a)| dropped(&a.then)) {
+            // The window closes as it is dropped.
+            self.scripts_alert = None;
+        }
+    }
+
+    /// Whether a question about `pane`'s inline file `serial` (display or large file) is
+    /// queued or showing.
+    pub(super) fn inline_question_waits(&self, pane: PaneId, serial: u64) -> bool {
+        let about = |then: &super::scripts_alerts::Then| inline_ask_of(then) == Some((pane, serial));
+        self.scripts_alerts.iter().any(|a| about(&a.then)) || self.scripts_alert.as_ref().is_some_and(|(_, a)| about(&a.then))
     }
 
     /// The display question answered: Yes (0) shows the file, or first asks the large file
@@ -192,6 +222,15 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the inline file questions name a pane and file.
+    #[test]
+    fn inline_questions_name_their_file() {
+        use super::super::scripts_alerts::Then;
+        assert_eq!(inline_ask_of(&Then::Inline { pane: 3, serial: 7, name: "a.png".into(), size: 5, was_silenced: false }), Some((3, 7)));
+        assert_eq!(inline_ask_of(&Then::BigInline(3, 8)), Some((3, 8)));
+        assert_eq!(inline_ask_of(&Then::Nothing), None);
+    }
 
     #[test]
     fn sizes_read_like_iterm2() {

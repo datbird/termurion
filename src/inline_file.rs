@@ -214,6 +214,14 @@ impl Screen {
         Some((hold.args.name.clone(), hold.args.size.unwrap_or(0) as usize))
     }
 
+    /// The waiting inline file's question went unanswered (its pane was closed): it is
+    /// asked again.
+    pub fn ask_inline_again(&mut self) {
+        if let Some(h) = self.inline_hold.as_mut() {
+            h.asked = false;
+        }
+    }
+
     /// An inline file is waiting for the person.
     pub fn holding_inline(&self) -> bool {
         self.inline_hold.is_some()

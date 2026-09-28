@@ -9,7 +9,7 @@
 //! asks again. The Capture Output announcements are the same kind of exception.
 
 use super::*;
-use crate::screen::Screen;
+use crate::marks::{HostPolicy, LeftOn};
 
 /// A mode an offer turns off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,23 +57,6 @@ pub(super) fn offer_buttons(o: Offer) -> &'static [&'static str] {
     }
 }
 
-/// What a host change does with a mode left on, from its saved answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Step {
-    Off,
-    Offer,
-    Nothing,
-}
-
-/// True turns the mode off, unset offers, false leaves it (`PS:17953-17962`).
-pub(super) fn step(saved: Option<bool>) -> Step {
-    match saved {
-        Some(true) => Step::Off,
-        None => Step::Offer,
-        Some(false) => Step::Nothing,
-    }
-}
-
 /// An answer: the value to store (None stores nothing) and whether to turn the mode off now.
 /// Every offer answers alike; Help and a close do neither (`PS:18090-18108`, `NC:538-563`).
 pub(super) fn answer(_offer: Offer, button: Option<&str>) -> (Option<bool>, bool) {
@@ -82,15 +65,6 @@ pub(super) fn answer(_offer: Offer, button: Option<&str>) -> (Option<bool>, bool
         Some("Always") => (Some(true), true),
         Some("Never") => (Some(false), false),
         _ => (None, false),
-    }
-}
-
-/// Whether a mode is on in a screen.
-fn is_on(s: &Screen, o: Offer) -> bool {
-    match o {
-        Offer::Focus => s.term().mode().contains(TermMode::FOCUS_IN_OUT),
-        Offer::Mouse => s.mouse_modes().tracking != Tracking::Off,
-        Offer::Paste => s.term().mode().contains(TermMode::BRACKETED_PASTE),
     }
 }
 
@@ -104,30 +78,26 @@ fn toggle_label(o: Offer) -> &'static str {
 }
 
 impl App {
-    /// Shell integration reported another host (`maybeResetTerminalStateOnHostChange`,
-    /// `PS:17987-18008`): each mode left on is turned off, offered, or left alone.
-    pub(super) fn host_changed(&mut self, pane: PaneId, fish: bool) {
-        let Some(p) = self.panes.get(&pane) else { return };
-        let s = p.own();
-        // Mouse reporting counts only where the pane may report the mouse (iTerm2's "ever
-        // allowed"); fish handles paste bracketing itself.
-        let left_on: Vec<Offer> = [Offer::Mouse, Offer::Focus, Offer::Paste]
-            .into_iter()
-            .filter(|o| is_on(s, *o))
-            .filter(|o| *o != Offer::Mouse || self.mouse_allowed(pane))
-            .filter(|o| *o != Offer::Paste || !fish)
-            .collect();
-        // iTerm2 also turns DEC 2048 (resize reports) off outright here; Tandem has no resize
-        // reports yet. 13o Task 6 adds `if s.resize_reports() { s.set_resize_reports(false) }` at
-        // this site (R8).
-        for o in left_on {
-            match step(self.globals.optional_bool(offer_key(o))) {
-                Step::Off => self.turn_off(pane, o),
-                // A waiting offer with the same id is replaced, so one waits per mode.
-                Step::Offer => {
-                    self.ask(pane, bar_id(o), offer_text(o), offer_buttons(o), true);
-                }
-                Step::Nothing => {}
+    /// The pane's screen found modes the previous host left on at a host change and turned
+    /// off those whose answer is saved (`marks::Screen::reset_modes_on_host_change`); the rest
+    /// are offered here, in iTerm2's order.
+    pub(super) fn host_changed(&mut self, pane: PaneId, left_on: LeftOn) {
+        let asked = [(left_on.mouse, Offer::Mouse), (left_on.focus, Offer::Focus), (left_on.paste, Offer::Paste)];
+        for (_, o) in asked.into_iter().filter(|(on, _)| *on) {
+            // A waiting offer with the same id is replaced, so one waits per mode.
+            self.ask(pane, bar_id(o), offer_text(o), offer_buttons(o), true);
+        }
+    }
+
+    /// The saved answers and mouse permission each screen decides a host change with, pushed
+    /// before output is read.
+    pub(super) fn sync_host_policy(&mut self) {
+        let saved = |o| self.globals.optional_bool(offer_key(o));
+        let (focus, mouse, paste) = (saved(Offer::Focus), saved(Offer::Mouse), saved(Offer::Paste));
+        let allowed: Vec<(PaneId, bool)> = self.panes.keys().map(|id| (*id, self.mouse_allowed(*id))).collect();
+        for (id, mouse_allowed) in allowed {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.own_mut().host_policy = HostPolicy { focus, mouse, paste, mouse_allowed };
             }
         }
     }
@@ -169,9 +139,10 @@ mod tests {
     #[test]
     fn offers_follow_iterm2() {
         use Offer::*;
-        assert_eq!(step(Some(true)), Step::Off);
-        assert_eq!(step(None), Step::Offer);
-        assert_eq!(step(Some(false)), Step::Nothing);
+        use crate::marks::{HostStep, host_step};
+        assert_eq!(host_step(Some(true)), HostStep::Off);
+        assert_eq!(host_step(None), HostStep::Offer);
+        assert_eq!(host_step(Some(false)), HostStep::Nothing);
         let left_on = |what: &str| format!("Looks like {what} was left on when an ssh session ended unexpectedly or an app misbehaved. Turn it off?");
         assert_eq!(offer_text(Focus), left_on("focus reporting"));
         assert_eq!(offer_text(Mouse), left_on("mouse reporting"));

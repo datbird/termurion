@@ -223,6 +223,8 @@ pub struct Screen {
     pub(crate) color_sets: Vec<(String, crate::osc1337::Color)>,
     /// Whether programs may write the clipboard (for the Capabilities report).
     pub clipboard_allowed: bool,
+    /// What a host change does with modes left on (the app's settings for this pane).
+    pub host_policy: crate::marks::HostPolicy,
     /// Mode 2031 (color scheme reports) and the scheme last reported.
     color_reports: bool,
     last_dark: bool,
@@ -301,9 +303,9 @@ pub enum Request {
     SetBadge(String),
     /// SetBadgeFormat with a function call: refused.
     BadgeRefused,
-    /// Shell integration reported another host (`marks::host_changed`); `fish` when the
-    /// session's shell is fish, whose paste bracketing is left alone.
-    HostChanged { fish: bool },
+    /// Shell integration reported another host (`marks::host_changed`) and these modes, left
+    /// on by the previous host, are to be offered for turning off.
+    HostChanged(crate::marks::LeftOn),
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -409,6 +411,7 @@ impl Screen {
             key_labels: crate::osc1337::KeyLabels::default(),
             color_sets: Vec::new(),
             clipboard_allowed: false,
+            host_policy: Default::default(),
             requests: Vec::new(),
             copy: crate::clipboard_osc::Copy::default(),
             capture: None,

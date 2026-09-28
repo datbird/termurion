@@ -517,6 +517,20 @@ impl Pane {
         }
     }
 
+    /// Undo Close brought the pane back: reading resumes unless an inline file still waits.
+    /// `question_waits` is whether that file's question is still queued or showing; when it
+    /// is not, it went while the pane was closed, and the file is asked about again.
+    pub fn undo_close_resume(&mut self, question_waits: bool) {
+        if self.inline_paused && self.own().holding_inline() {
+            if !question_waits {
+                self.own_mut().ask_inline_again();
+            }
+            return;
+        }
+        self.inline_paused = false;
+        self.set_paused(false);
+    }
+
     /// Ends tmux control mode here without an `%exit`.
     pub fn unhook_tmux(&mut self) {
         self.tmux_hook.unhook();
@@ -1022,6 +1036,28 @@ mod tests {
         p.pump();
         p.feed_output(b"\x1b[c");
         assert!(p.tmux_io().unwrap().take_input().is_empty(), "tmux answers for its panes; a second answer would be typed");
+    }
+
+    /// Undo Close brings a pane back paused while its inline file waits, and asks about the
+    /// file again when its question went while the pane was closed.
+    #[test]
+    fn undo_close_keeps_a_waiting_inline_file_paused() {
+        let mut p = Pane::with(1, None, 20, 6);
+        p.feed_output(b"\x1b]1337;File=inline=1:aGVsbG8=\x07after");
+        assert!(p.own_mut().inline_waiting().is_some());
+        p.pause_for_inline();
+        p.undo_close_resume(true);
+        assert!(p.inline_paused, "the question still waits");
+        assert!(p.own_mut().inline_waiting().is_none(), "and is not asked twice");
+        p.undo_close_resume(false);
+        assert!(p.inline_paused, "the question went");
+        assert!(p.own_mut().inline_waiting().is_some(), "so it is asked again");
+        let serial = p.own().inline_serial().unwrap();
+        p.inline_answered(serial, false);
+        assert!(!p.inline_paused);
+        p.pause_for_inline();
+        p.undo_close_resume(false);
+        assert!(!p.inline_paused, "nothing waits: reading resumes");
     }
 
     #[test]

@@ -209,6 +209,47 @@ pub fn host_changed(previous: Option<&str>, new: &str, local: &str) -> bool {
     previous.is_some_and(|p| p != new && !(is_local(p) && is_local(new)))
 }
 
+/// What a host change does with a mode left on, from its saved answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostStep {
+    Off,
+    Offer,
+    Nothing,
+}
+
+/// True turns the mode off, unset offers, false leaves it (`PS:17953-17962`).
+pub fn host_step(saved: Option<bool>) -> HostStep {
+    match saved {
+        Some(true) => HostStep::Off,
+        None => HostStep::Offer,
+        Some(false) => HostStep::Nothing,
+    }
+}
+
+/// A host change's settings, pushed to each screen before its output is read: the saved
+/// answers (`NoSyncTurnOff...OnHostChange`) and whether the pane may report the mouse
+/// (iTerm2's "ever allowed").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostPolicy {
+    pub focus: Option<bool>,
+    pub mouse: Option<bool>,
+    pub paste: Option<bool>,
+    pub mouse_allowed: bool,
+}
+
+/// The modes a host change offers to turn off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeftOn {
+    pub mouse: bool,
+    pub focus: bool,
+    pub paste: bool,
+}
+
+/// Each mode's "off" sequence, as Session > Terminal State's toggles send.
+const FOCUS_OFF: &[u8] = b"\x1b[?1004l";
+const MOUSE_OFF: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l";
+const PASTE_OFF: &[u8] = b"\x1b[?2004l";
+
 impl Screen {
     /// Clears from grid line `line` to the end (iTerm2 clearFromAbsoluteLineToEnd). The
     /// cursor's row (the prompt) goes to the top of the screen, and the rows kept above move
@@ -722,13 +763,51 @@ impl Screen {
         // Modes a program on the previous host left on may be turned off (`PS:17929-17940`).
         if let Some(new) = after.1.as_deref().filter(|_| before.1 != after.1) {
             if host_changed(before.1.as_deref(), new, &std::env::var("COMPUTERNAME").unwrap_or_default()) {
-                self.requests.push(Request::HostChanged { fish: self.shell.shell.as_deref() == Some("fish") });
+                self.reset_modes_on_host_change();
             }
         }
         for (kind, old, new) in [(EventKind::DirectoryChanged, before.0, after.0), (EventKind::HostChanged, before.1, after.1), (EventKind::UserChanged, before.2, after.2)] {
             if let Some(v) = new.filter(|n| Some(n) != old.as_ref()) {
                 self.fire_event(kind, &EventFacts { value: v.clone(), ..Default::default() }, &[v]);
             }
+        }
+    }
+
+    /// `maybeResetTerminalStateOnHostChange` (`PS:17987-18008`), here in the output where the
+    /// host was reported, as iTerm2 stops reading until it is done: the modes as the previous
+    /// host left them are turned off, offered, or left alone, so the new host's own modes
+    /// that follow in the same read are never touched. The offers go to the app.
+    fn reset_modes_on_host_change(&mut self) {
+        let policy = self.host_policy;
+        let mode = *self.term().mode();
+        let fish = self.shell.shell.as_deref() == Some("fish");
+        // Mouse reporting counts only where the pane may report the mouse; fish handles
+        // paste bracketing itself. iTerm2's order: mouse, focus, paste.
+        let modes = [
+            (policy.mouse_allowed && self.mouse_modes().tracking != crate::mouse::Tracking::Off, policy.mouse, MOUSE_OFF),
+            (mode.contains(alacritty_terminal::term::TermMode::FOCUS_IN_OUT), policy.focus, FOCUS_OFF),
+            (!fish && mode.contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE), policy.paste, PASTE_OFF),
+        ];
+        let mut offers = [false; 3];
+        for (i, (on, saved, off)) in modes.into_iter().enumerate() {
+            if !on {
+                continue;
+            }
+            match host_step(saved) {
+                HostStep::Off => {
+                    let reply = self.feed_raw(off);
+                    self.replies.extend(reply);
+                }
+                HostStep::Offer => offers[i] = true,
+                HostStep::Nothing => {}
+            }
+        }
+        // iTerm2 also turns DEC 2048 (resize reports) off outright here; Tandem has no resize
+        // reports yet. 13o Task 6 adds `if self.resize_reports() { self.set_resize_reports(false) }`
+        // at this site (R8).
+        let [mouse, focus, paste] = offers;
+        if mouse || focus || paste {
+            self.requests.push(Request::HostChanged(LeftOn { mouse, focus, paste }));
         }
     }
 
@@ -1747,16 +1826,57 @@ mod tests {
         assert!(host_changed(Some("a"), "b", "PC"));
         assert!(!host_changed(Some("pc"), "PC", "PC"), "both this machine");
         assert!(host_changed(Some("PC"), "b", "PC"));
-        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged { .. })).collect::<Vec<_>>();
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(_))).collect::<Vec<_>>();
+        let offer = |mouse, focus, paste| vec![Request::HostChanged(LeftOn { mouse, focus, paste })];
         let mut s = Screen::new(40, 10);
-        s.feed(b"\x1b]1337;RemoteHost=u@a\x07");
+        s.host_policy.mouse_allowed = true;
+        s.feed(b"\x1b[?1000h\x1b[?1004h\x1b[?2004h\x1b]1337;RemoteHost=u@a\x07");
         assert!(changes(&mut s).is_empty(), "the first host is not a change");
         s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b]1337;RemoteHost=v@a\x07");
         assert!(changes(&mut s).is_empty(), "same host, another user");
         s.feed(b"\x1b]1337;RemoteHost=u@b\x07");
-        assert_eq!(changes(&mut s), vec![Request::HostChanged { fish: false }]);
+        assert_eq!(changes(&mut s), offer(true, true, true), "unset answers offer each mode left on");
+        // Mouse reporting counts only where the pane may report the mouse; nothing left on,
+        // nothing offered.
+        s.host_policy.mouse_allowed = false;
+        s.feed(b"\x1b]1337;RemoteHost=u@c\x07");
+        assert_eq!(changes(&mut s), offer(false, true, true));
+        s.feed(b"\x1b[?1000l\x1b[?1004l\x1b[?2004l\x1b]1337;RemoteHost=u@d\x07");
+        assert!(changes(&mut s).is_empty());
+        // fish handles paste bracketing itself.
         let mut f = Screen::new(40, 10);
-        f.feed(b"\x1b]1337;ShellIntegrationVersion=5;shell=fish\x07\x1b]1337;RemoteHost=u@a\x07\x1b]1337;RemoteHost=u@b\x07");
-        assert_eq!(changes(&mut f), vec![Request::HostChanged { fish: true }]);
+        f.feed(b"\x1b]1337;ShellIntegrationVersion=5;shell=fish\x07\x1b]1337;RemoteHost=u@a\x07\x1b[?2004h\x1b]1337;RemoteHost=u@b\x07");
+        assert!(changes(&mut f).is_empty());
+    }
+
+    /// The modes are judged where the host was reported, as iTerm2 stops reading there
+    /// (`VT100ScreenMutableState.m:4133`): the new shell turning paste bracketing on in the
+    /// same read is its own, never offered and never turned off.
+    #[test]
+    fn host_change_judges_modes_where_reported() {
+        let paste_on = |s: &Screen| s.term().mode().contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE);
+        let changes = |s: &mut Screen| s.take_requests().into_iter().filter(|r| matches!(r, Request::HostChanged(_))).collect::<Vec<_>>();
+        for saved in [None, Some(true), Some(false)] {
+            let mut s = Screen::new(40, 10);
+            s.host_policy.paste = saved;
+            s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b]1337;RemoteHost=u@b\x07\x1b[?2004h");
+            assert!(changes(&mut s).is_empty(), "{saved:?}");
+            assert!(paste_on(&s), "{saved:?}");
+        }
+        // Left on by the previous host: Always turns it off before the new shell's own
+        // output, which then turns it on again; Never leaves it; unset offers.
+        let mut s = Screen::new(40, 10);
+        s.host_policy.paste = Some(true);
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b[?2004h");
+        s.feed(b"\x1b]1337;RemoteHost=u@b\x07");
+        assert!(!paste_on(&s), "Always turns it off");
+        s.feed(b"\x1b[?2004h\x1b]1337;RemoteHost=u@c\x07\x1b[?2004h");
+        assert!(changes(&mut s).is_empty());
+        assert!(paste_on(&s), "the new shell's own paste bracketing stays");
+        let mut s = Screen::new(40, 10);
+        s.host_policy.paste = Some(false);
+        s.feed(b"\x1b]1337;RemoteHost=u@a\x07\x1b[?2004h\x1b]1337;RemoteHost=u@b\x07");
+        assert!(changes(&mut s).is_empty());
+        assert!(paste_on(&s), "Never leaves it");
     }
 }

@@ -1130,10 +1130,13 @@ impl App {
             }
             // A hosted pane's console belongs to tandem-host, which sends the event: Tandem
             // never attaches to it.
-            let hosted = if console { self.panes.values().find(|p| p.shell_pid() == Some(req.shell)).and_then(|p| p.hosted_signal(req.way == SignalWay::CtrlBreak)) } else { None };
+            let pane = self.panes.values().find(|p| p.shell_pid() == Some(req.shell));
+            let hosted = if console { pane.and_then(|p| p.hosted_signal(req.way == SignalWay::CtrlBreak)) } else { None };
+            // A local console paused for an inline file's question is never attached to.
+            let stop = pane.and_then(|p| p.console_pause_flag()).unwrap_or_default();
             let result = match hosted {
                 Some(r) => r,
-                None => crate::jobwatch::signal_process(pid, Some(created), req.way).map(|s| {
+                None => crate::jobwatch::signal_process(pid, Some(created), req.way, stop).map(|s| {
                     if let crate::jobwatch::Sent::Later(h) = s {
                         self.signal_waits.push(h);
                     }

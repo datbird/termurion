@@ -427,8 +427,10 @@ pub enum Sent {
 /// since): `Terminate(code)` opens the process for termination and ends it with that exit
 /// code; `CtrlC` and `CtrlBreak` are console events sent to the whole console `pid` runs on,
 /// from a thread that attaches to it for the moment. Only for a console this process owns
-/// the closes of (a local pane): a hosted pane's goes through tandem-host.
-pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay) -> Result<Sent, String> {
+/// the closes of (a local pane): a hosted pane's goes through tandem-host. `stop` is the
+/// pane's pause flag: a console paused (for an inline file's question or Undo Close) is
+/// never attached to.
+pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay, stop: Arc<std::sync::atomic::AtomicBool>) -> Result<Sent, String> {
     let access = match way {
         SignalWay::Terminate(_) => PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
         SignalWay::CtrlC | SignalWay::CtrlBreak => PROCESS_QUERY_LIMITED_INFORMATION,
@@ -448,7 +450,7 @@ pub fn signal_process(pid: u32, created: Option<u64>, way: SignalWay) -> Result<
             }
             Ok(Sent::Done)
         }
-        SignalWay::CtrlC | SignalWay::CtrlBreak => Ok(Sent::Later(console_event(pid, way == SignalWay::CtrlBreak, Arc::new(std::sync::atomic::AtomicBool::new(false))))),
+        SignalWay::CtrlC | SignalWay::CtrlBreak => Ok(Sent::Later(console_event(pid, way == SignalWay::CtrlBreak, stop))),
     }
 }
 
@@ -542,13 +544,20 @@ mod tests {
         assert!(tree[0].cmdline.as_deref().is_some_and(|c| c.to_lowercase().contains("cmd")), "{:?}", tree[0]);
         assert!(process_alive(ping.pid, ping.created));
         // A pid with another creation time is another process: never signalled.
-        assert!(signal_process(ping.pid, Some(ping.created.wrapping_add(1)), SignalWay::Terminate(137)).is_err());
-        assert!(signal_process(ping.pid, Some(ping.created.wrapping_add(1)), SignalWay::CtrlC).is_err(), "nor sent a console event");
+        let running = || Arc::new(std::sync::atomic::AtomicBool::new(false));
+        assert!(signal_process(ping.pid, Some(ping.created.wrapping_add(1)), SignalWay::Terminate(137), running()).is_err());
+        assert!(signal_process(ping.pid, Some(ping.created.wrapping_add(1)), SignalWay::CtrlC, running()).is_err(), "nor sent a console event");
+        // A paused console is never attached to: the event is refused.
+        let paused = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        match signal_process(ping.pid, Some(ping.created), SignalWay::CtrlC, paused) {
+            Ok(Sent::Later(h)) => assert_eq!(h.join().unwrap(), Err("the console is paused".to_string())),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
         assert!(process_alive(ping.pid, ping.created));
-        assert!(matches!(signal_process(root, Some(tree[0].created), SignalWay::Terminate(137)), Ok(Sent::Done)));
+        assert!(matches!(signal_process(root, Some(tree[0].created), SignalWay::Terminate(137), running()), Ok(Sent::Done)));
         let status = child.wait().unwrap();
         assert_eq!(status.code(), Some(137), "KILL ends with 128 + 9");
         assert!(!process_alive(root, tree[0].created));
-        let _ = signal_process(ping.pid, Some(ping.created), SignalWay::Terminate(143));
+        let _ = signal_process(ping.pid, Some(ping.created), SignalWay::Terminate(143), running());
     }
 }

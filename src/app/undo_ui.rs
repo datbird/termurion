@@ -104,7 +104,9 @@ impl App {
                 self.jobs.watch_console(pid, paused);
             }
         }
-        pane.set_paused(false);
+        // An inline file's question keeps it paused, asked again if it went meanwhile.
+        let waits = pane.own().inline_serial().is_some_and(|s| self.inline_question_waits(pane.id, s));
+        pane.undo_close_resume(waits);
         // Focus report holds dropped while it was stashed took nothing off its count.
         self.pwm_restored(&mut pane);
         self.panes.insert(pane.id, pane);
