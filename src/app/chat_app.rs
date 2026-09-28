@@ -9,7 +9,7 @@ use std::time::Instant;
 use super::App;
 use crate::ai_gate::{Alert, Then};
 use crate::ai_permissions::{self, Category, Key, Overrides, Permission};
-use crate::chat_broker::{Broker, Effect};
+use crate::chat_broker::{Broker, Effect, Step};
 use crate::chat_message::{Content, Message, Participant};
 use crate::chat_store::{self, Chat, Store, OPEN_FAILED, OPEN_FAILED_HEADING};
 
@@ -60,8 +60,17 @@ pub(super) fn publish_in(db: &mut Store, broker: &mut Broker, chat: &str, messag
         Content::Append { uuid, .. } | Content::AppendAttachment { uuid, .. } | Content::Commit(uuid) => db.message(&broker.append_target(chat, uuid)).ok().flatten().filter(|t| t.chat_id == chat),
         _ => None,
     };
-    // One publish's writes land together or not at all.
-    db.atomically(|db| broker.publish_with(chat, message, partial, target.as_ref(), &mut |e: &Effect| write_effect(db, e)))
+    // One publish's writes land together or not at all, and are settled before the broker
+    // delivers the message.
+    db.unit_begin()?;
+    let result = broker.publish_with(chat, message, partial, target.as_ref(), &mut |step: Step| match step {
+        Step::Write(e) => write_effect(db, e),
+        Step::Settle => db.unit_settle(),
+    });
+    if result.is_err() {
+        db.unit_abort();
+    }
+    result
 }
 
 /// Merges each chat row's stored permissions into the overrides, each for its own chat only
@@ -77,14 +86,16 @@ fn load_overrides(store: &Store, overrides: &mut Overrides) {
 
 /// `ChatListModel.setPermission` (`ChatListModel.swift:432-446`) over an open database: the
 /// override, then the chat's entries written to its row. Taking the open store means the
-/// open-time merge has already run and cannot overwrite the change. Answers the chat's row.
-fn set_permission_in(store: &mut Store, overrides: &mut Overrides, key: Key, p: Permission) -> Option<Chat> {
+/// open-time merge has already run and cannot overwrite the change. Answers the chat's row
+/// and whether it was saved; an unsaved change still holds for this run (a revoke keeps
+/// working), and the caller tells the person (iTerm2 only logs it).
+fn set_permission_in(store: &mut Store, overrides: &mut Overrides, key: Key, p: Permission) -> Option<(Chat, bool)> {
     let chat = key.chat.clone();
     overrides.set(key, p);
     let mut row = store.chat(&chat).ok().flatten()?;
     row.permissions = overrides.encoded(&chat);
-    let _ = store.update_chat(&row);
-    Some(row)
+    let saved = store.update_chat(&row).is_ok();
+    Some((row, saved))
 }
 
 /// `create(chatWithTitle:terminalSessionGuid:browserSessionGuid:permissions:initialMessages:)`
@@ -121,7 +132,16 @@ pub(super) fn create_in(
     // Preloaded straight into the list model, not published; a failure skips that message
     // (`ChatBroker.swift:102-110`).
     for m in initial {
-        let _ = store.atomically(|store| broker.preload(&id, Message { chat_id: id.clone(), ..m }, &mut |e: &Effect| write_effect(store, e)));
+        if store.unit_begin().is_err() {
+            continue;
+        }
+        let preloaded = broker.preload(&id, Message { chat_id: id.clone(), ..m }, &mut |step: Step| match step {
+            Step::Write(e) => write_effect(store, e),
+            Step::Settle => store.unit_settle(),
+        });
+        if preloaded.is_err() {
+            store.unit_abort();
+        }
     }
     Ok(id)
 }
@@ -207,7 +227,10 @@ impl App {
             return;
         }
         let Some(db) = self.chat_db.as_mut() else { return };
-        let Some(row) = set_permission_in(db, &mut self.ai_overrides, Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, p) else { return };
+        let Some((row, saved)) = set_permission_in(db, &mut self.ai_overrides, Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, p) else { return };
+        if !saved {
+            self.ask_ai(Alert { heading: OPEN_FAILED_HEADING.to_string(), text: ai_permissions::NOT_SAVED.to_string(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false });
+        }
         let allowed = self.ai_allowed(&row);
         // `shouldShareTerminalStateAutomatically`: a live linked terminal at Always.
         let global = |c: Category| self.ai_global_permission(c);
@@ -324,11 +347,11 @@ mod tests {
     fn stored_permissions_stay_with_their_chat() {
         let (mut store, mut broker, mut overrides) = (Store::open_in_memory().unwrap(), Broker::new(), Overrides::default());
         let source = create_in(&mut store, &mut broker, &mut overrides, "S", Some("7"), None, "", vec![], None, &ask, 1.0).unwrap();
-        set_permission_in(&mut store, &mut overrides, key(&source, Category::RunCommands), Permission::Always).unwrap();
+        assert!(set_permission_in(&mut store, &mut overrides, key(&source, Category::RunCommands), Permission::Always).unwrap().1);
         let text = store.chat(&source).unwrap().unwrap().permissions;
         let fork = create_in(&mut store, &mut broker, &mut overrides, "F", Some("7"), None, &text, vec![], None, &ask, 2.0).unwrap();
         // The source revokes and is used again, so it is newer than the fork.
-        set_permission_in(&mut store, &mut overrides, key(&source, Category::RunCommands), Permission::Never).unwrap();
+        assert!(set_permission_in(&mut store, &mut overrides, key(&source, Category::RunCommands), Permission::Never).unwrap().1);
         store.bump(&source, 3.0).unwrap();
         // A hostile or imported row naming the source.
         let mut hostile = Chat::new("H", 0.5);
@@ -357,7 +380,8 @@ mod tests {
         // `ai_set_permission`'s order: the open (and its merge), then the change.
         let mut overrides = Overrides::default();
         load_overrides(&store, &mut overrides);
-        let row = set_permission_in(&mut store, &mut overrides, key(&chat.id, Category::RunCommands), Permission::Never).unwrap();
+        let (row, saved) = set_permission_in(&mut store, &mut overrides, key(&chat.id, Category::RunCommands), Permission::Never).unwrap();
+        assert!(saved);
         assert_eq!(overrides.get(&chat.id, "7", Category::RunCommands, &ask), Permission::Never, "the change is not overwritten");
         let mut back = Overrides::default();
         assert!(back.merge_encoded(&chat.id, &store.chat(&chat.id).unwrap().unwrap().permissions));
@@ -365,6 +389,13 @@ mod tests {
         assert_eq!(back.get(&chat.id, "7", Category::ViewContents, &ask), Permission::Always, "the chat's other entries are kept");
         assert_eq!(row.permissions, overrides.encoded(&chat.id));
         assert_eq!(set_permission_in(&mut store, &mut overrides, key("gone", Category::RunCommands), Permission::Never), None);
+
+        // A row that cannot be written: the revoke holds for this run and is reported unsaved.
+        store.refuse_chat_updates();
+        let (_, saved) = set_permission_in(&mut store, &mut overrides, key(&chat.id, Category::ViewContents), Permission::Never).unwrap();
+        assert!(!saved);
+        assert_eq!(overrides.get(&chat.id, "7", Category::ViewContents, &ask), Permission::Never);
+        assert_eq!(ai_permissions::NOT_SAVED, "The permission change could not be saved. It applies until Tandem quits.");
     }
 
     #[test]

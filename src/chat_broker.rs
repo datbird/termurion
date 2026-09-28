@@ -26,6 +26,15 @@ pub enum Update {
     Removed { ids: Vec<String>, chat: String },
 }
 
+/// One step of a publish's writing: a database write, then, once every write succeeded,
+/// `Settle`, which makes them final (the App releases its savepoint). A failed step ends the
+/// publish before anything is delivered.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step<'a> {
+    Write(&'a Effect),
+    Settle,
+}
+
 /// What the App does after a publish: the database writes, then the hand-off to the chat's
 /// agent.
 #[derive(Clone, Debug, PartialEq)]
@@ -141,8 +150,10 @@ impl Broker {
     /// to through `append_target`, None for other contents or when that row is missing.
     pub fn publish(&mut self, chat: &str, message: Message, partial: bool, target: Option<&Message>) -> Vec<Effect> {
         let mut written = Vec::new();
-        let after = self.publish_with(chat, message, partial, target, &mut |e: &Effect| {
-            written.push(e.clone());
+        let after = self.publish_with(chat, message, partial, target, &mut |step: Step| {
+            if let Step::Write(e) = step {
+                written.push(e.clone());
+            }
             Ok(())
         });
         written.extend(after.unwrap_or_default());
@@ -154,7 +165,7 @@ impl Broker {
     /// failed write ends the publish with its error: the message is neither delivered nor
     /// queued nor handed to the service, and the chat's newest id stays. Otherwise the message
     /// is delivered, and the answer is the hand-off to the service (`Effect::ToService`), if any.
-    pub fn publish_with(&mut self, chat: &str, message: Message, partial: bool, target: Option<&Message>, write: &mut dyn FnMut(&Effect) -> Result<(), String>) -> Result<Vec<Effect>, String> {
+    pub fn publish_with(&mut self, chat: &str, message: Message, partial: bool, target: Option<&Message>, write: &mut dyn FnMut(Step) -> Result<(), String>) -> Result<Vec<Effect>, String> {
         let mut processed = message;
         for p in self.processors.iter_mut() {
             match p(processed, chat, partial) {
@@ -170,8 +181,10 @@ impl Broker {
         };
         let before = upstream.as_ref().map(|u| self.rewrite.get(chat).and_then(|t| t.get(u)).cloned());
         let decided = self.append(chat, processed, target);
-        for e in &decided.writes {
-            if let Err(error) = write(e) {
+        // The writes, then settled, all before the broker moves or anything is delivered.
+        let steps = decided.writes.iter().map(Step::Write).chain(std::iter::once(Step::Settle));
+        for step in steps {
+            if let Err(error) = write(step) {
                 if let (Some(u), Some(before)) = (upstream, before) {
                     let table = self.rewrite.entry(chat.to_string()).or_default();
                     match before {
@@ -266,11 +279,12 @@ impl Broker {
     /// A message stored through the list model alone, without processors, fan-out or the
     /// service: a new chat's preloaded messages (`ChatBroker.swift:102-110`). The chat's newest
     /// id moves only once every write succeeded.
-    pub fn preload(&mut self, chat: &str, m: Message, write: &mut dyn FnMut(&Effect) -> Result<(), String>) -> Result<(), String> {
+    pub fn preload(&mut self, chat: &str, m: Message, write: &mut dyn FnMut(Step) -> Result<(), String>) -> Result<(), String> {
         let id = m.unique_id.clone();
         for e in &stored(chat, m).writes {
-            write(e)?;
+            write(Step::Write(e))?;
         }
+        write(Step::Settle)?;
         self.newest.insert(chat.to_string(), Some(id));
         Ok(())
     }
@@ -686,7 +700,7 @@ mod tests {
         let s = b.subscribe(None);
         let a = agent_md("a");
         b.seed_newest("C", Some(a.unique_id.clone()));
-        let mut refuse = |_: &Effect| Err("full".to_string());
+        let mut refuse = |_: Step| Err("full".to_string());
         assert_eq!(b.publish_with("C", user("q"), false, None, &mut refuse), Err("full".to_string()));
         assert_eq!(b.drain(s), vec![], "an unstored message is not delivered");
         assert_eq!(b.next_turn("C"), None, "nor queued");
@@ -699,11 +713,14 @@ mod tests {
         // Written in order, then delivered; the answer is the hand-off.
         let mut seen = Vec::new();
         let q = user("q2");
-        let after = b.publish_with("C", q.clone(), false, None, &mut |e: &Effect| {
-            seen.push(e.clone());
+        let after = b.publish_with("C", q.clone(), false, None, &mut |step: Step| {
+            seen.push(match step {
+                Step::Write(e) => Some(e.clone()),
+                Step::Settle => None,
+            });
             Ok(())
         });
-        assert_eq!(seen, vec![Effect::Store(q.clone()), Effect::Bump("C".into())]);
+        assert_eq!(seen, vec![Some(Effect::Store(q.clone())), Some(Effect::Bump("C".into())), None], "settled after the writes");
         assert_eq!(after, Ok(vec![Effect::ToService(q.clone())]));
         assert_eq!(b.drain(s), vec![("C".to_string(), Update::Delivery { message: q.clone(), partial: false })]);
         assert_eq!(b.next_turn("C"), Some(q));
@@ -723,8 +740,23 @@ mod tests {
         let p = agent_md("p");
         assert!(b.preload("P", p.clone(), &mut refuse).is_err());
         assert!(!b.knows("P"));
-        assert_eq!(b.preload("P", p.clone(), &mut |_: &Effect| Ok(())), Ok(()));
+        let mut unsettled = |step: Step| if step == Step::Settle { Err("busy".to_string()) } else { Ok(()) };
+        assert!(b.preload("P", p.clone(), &mut unsettled).is_err());
+        assert!(!b.knows("P"), "nor before its writes are settled");
+        assert_eq!(b.preload("P", p.clone(), &mut |_: Step| Ok(())), Ok(()));
         assert_eq!(b.newest.get("P"), Some(&Some(p.unique_id)));
+
+        // Every write stored but not settled: nothing is delivered, queued or moved.
+        b.turn_done("C");
+        b.drain(s);
+        let before = b.newest.get("C").cloned();
+        let q3 = user("q3");
+        assert_eq!(b.publish_with("C", q3, false, None, &mut unsettled), Err("busy".to_string()));
+        assert_eq!(b.drain(s), vec![]);
+        assert_eq!(b.next_turn("C"), None);
+        assert_eq!(b.newest.get("C").cloned(), before);
+        assert!(b.publish_with("C", append("f", &a.unique_id), true, Some(&target_n), &mut unsettled).is_err());
+        assert_eq!(b.append_target("C", &a.unique_id), n, "an unsettled chunk keeps the rewrite it found");
     }
 
     #[test]

@@ -230,12 +230,15 @@ impl Call {
     }
 
     /// The text of a parked request (`permissionDescription`). Only the typed text is cut at 32;
-    /// a command or man page name is escaped and shown whole, a file name as given.
+    /// a command, man page name or file name is shown whole. Every model-written field goes
+    /// through `consent_field` (ruling, a deviation from iTerm2, which escapes only the
+    /// backticks of three fields): the model cannot end the code span, start a new line, or add
+    /// markdown of its own to the text the person answers.
     pub fn consent_description(&self) -> String {
         let prefix = "The AI Agent would like to";
         match self {
             Call::IsAtPrompt => format!("{prefix} check if you\u{2019}re at a shell prompt"),
-            Call::ExecuteCommand { command } => format!("{prefix} execute `{}`", escape_code(command)),
+            Call::ExecuteCommand { command } => format!("{prefix} execute {}", consent_field(command, Field::Code)),
             Call::GetLastExitStatus => format!("{prefix} check the exit status of the last command"),
             Call::GetCommandHistory { .. } => format!("{prefix} review the history of commands you have run in this session"),
             Call::GetLastCommand => format!("{prefix} view the last command you ran in this session"),
@@ -250,14 +253,14 @@ impl Call {
             Call::GetUserIdentity => format!("{prefix} check your username"),
             Call::GetCurrentDirectory => format!("{prefix} know your current directory"),
             Call::SetClipboard { .. } => format!("{prefix} paste to the clipboard"),
-            Call::InsertTextAtCursor { text } => format!("{prefix} type `{}` into the current session", truncate32(&escape_code(text))),
+            Call::InsertTextAtCursor { text } => format!("{prefix} type {} into the current session", consent_field(&truncate32(&shown(text)), Field::Code)),
             Call::DeleteCurrentLine => format!("{prefix} erase the current command line"),
-            Call::GetManPage { cmd } => format!("{prefix} check the manpage for `{}`", escape_code(cmd)),
-            Call::CreateFile { filename, .. } => format!("{prefix} create a file named `{filename}`"),
+            Call::GetManPage { cmd } => format!("{prefix} check the manpage for {}", consent_field(cmd, Field::Code)),
+            Call::CreateFile { filename, .. } => format!("{prefix} create a file named {}", consent_field(filename, Field::Code)),
             // The browser texts are iTerm2's as written, lower-case "agent" and "write to" included.
-            Call::FindOnPage { query } => format!("The AI agent would like to search the current web page for \u{201c}{query}\u{201d}"),
-            Call::LoadUrl { url } => format!("The AI agent would like to navigate to {url}"),
-            Call::WebSearch { query } => format!("The AI agent would like to write to search the web for \u{201c}{query}\u{201d}"),
+            Call::FindOnPage { query } => format!("The AI agent would like to search the current web page for \u{201c}{}\u{201d}", consent_field(query, Field::Text)),
+            Call::LoadUrl { url } => format!("The AI agent would like to navigate to {}", consent_field(url, Field::Text)),
+            Call::WebSearch { query } => format!("The AI agent would like to write to search the web for \u{201c}{}\u{201d}", consent_field(query, Field::Text)),
             Call::GetUrl => "The AI agent would like to write to get the current URL".to_string(),
             Call::ReadWebPage { .. } => "The AI agent would like to write to view the current web page".to_string(),
             Call::RestartSession => format!("{prefix} restart this session, which kills any running jobs"),
@@ -317,10 +320,11 @@ const TOOLS: [Tool; 26] = {
             category: RunCommands,
             description: concat!(
                 "Runs a shell command and returns its output once the command finishes. ",
-                "Do NOT use it for interactive or full-screen (TUI) programs (for example ",
-                "vim, less, top, an ssh session, a REPL, or claude): it blocks until the ",
-                "command exits, so an interactive or long-running program never returns. To ",
-                "launch or drive a TUI from the command line, use insert_text_at_cursor instead."
+                "It blocks until the command exits, so an interactive or full-screen (TUI) ",
+                "program (for example vim, less, top, an ssh session, a REPL, or claude) does ",
+                "not return until it exits or the user cancels it. It is the only tool that ",
+                "submits a command line, so start any program with it, an interactive one ",
+                "included, and then drive the running program with insert_text_at_cursor."
             ),
             args: &[text("command", "The command to run")],
         },
@@ -355,16 +359,17 @@ const TOOLS: [Tool; 26] = {
             name: "insert_text_at_cursor",
             category: ControlTerminal,
             description: concat!(
-                "Inserts text into the terminal input at the cursor position, as if typed; ",
-                "end with a newline to submit it. Use this to launch and interact with ",
-                "interactive or full-screen (TUI) programs - start one from the command ",
-                "prompt (type the command plus a newline), choose a menu option, or send ",
-                "keystrokes to a running app - since unlike execute_command it does not wait ",
-                "for the program to finish."
+                "Inserts text into the terminal input at the cursor position, as if typed, ",
+                "without submitting it: the text may not contain a line end (\\n, \\r and ",
+                "\\u000f are refused, and nothing is typed). To run a command, use ",
+                "execute_command. Use this to interact with a running interactive or ",
+                "full-screen (TUI) program - choose a menu option, or send keystrokes to a ",
+                "running app - since unlike execute_command it does not wait for the program ",
+                "to finish."
             ),
             args: &[text(
                 "text",
-                "The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send control keys and special characters: \\\\ for a literal backslash, \\n for newline, \\r for carriage return, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Examples: \\u0004 for Ctrl-D / EOF, \\u001a for Ctrl-Z, \\u000c for Ctrl-L, \\u001b for Escape. Consider whether execute_command would be a better choice, especially when running a command at the shell prompt since insert_text_at_cursor does not return the output to you.",
+                "The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send control keys and special characters: \\\\ for a literal backslash, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Examples: \\u0004 for Ctrl-D / EOF, \\u001a for Ctrl-Z, \\u000c for Ctrl-L, \\u001b for Escape. A line end (\\n, \\r, \\u000a, \\u000d or \\u000f) is refused: this tool never submits a line. Consider whether execute_command would be a better choice, especially when running a command at the shell prompt since insert_text_at_cursor does not return the output to you.",
             )],
         },
         Tool { name: "delete_current_line", category: ControlTerminal, description: "Clears the current command line input (only at the prompt).", args: &[] },
@@ -510,7 +515,9 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         "web_search_in_browser" => Call::WebSearch { query: s(0) },
         "get_current_url" => Call::GetUrl,
         "read_web_page_section" => Call::ReadWebPage { starting_line_number: n(0), number_of_lines: n(1) },
-        _ => Call::RestartSession,
+        "restart_session" => Call::RestartSession,
+        // A tool added to `TOOLS` without an arm here is unknown, never another tool.
+        _ => return Err(crate::ai_turn::UNKNOWN_FUNCTION.to_string()),
     })
 }
 
@@ -550,6 +557,63 @@ pub(crate) fn truncated(s: &str, max: usize) -> String {
 /// `escapedForMarkdownCode`: each backtick gains a backslash (`AITerm/TerminalCommand.swift`).
 pub fn escape_code(s: &str) -> String {
     s.replace('`', "\\`")
+}
+
+/// How a model-written field sits in a parked request's markdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Field {
+    /// A code span (a command, typed text, a man page or file name).
+    Code,
+    /// Running text (a query, a URL).
+    Text,
+}
+
+/// The one escaping rule for model-written text in a permission request (ruling, a deviation
+/// from iTerm2's backtick escape): line breaks and other control characters become visible
+/// escapes (`shown`), never a new line; a code span is fenced with one more backtick than the
+/// longest run inside it (a backslash does not escape in a code span), padded with a space when
+/// the text starts or ends with a backtick or a space; running text has every ASCII
+/// punctuation character backslash-escaped, so it can open no markdown of its own.
+pub fn consent_field(s: &str, field: Field) -> String {
+    let s = shown(s);
+    match field {
+        Field::Code => {
+            let (mut longest, mut run) = (0, 0);
+            for c in s.chars() {
+                run = if c == '`' { run + 1 } else { 0 };
+                longest = longest.max(run);
+            }
+            let fence = "`".repeat(longest + 1);
+            let pad = if s.starts_with(['`', ' ']) || s.ends_with(['`', ' ']) { " " } else { "" };
+            format!("{fence}{pad}{s}{pad}{fence}")
+        }
+        Field::Text => {
+            let mut out = String::with_capacity(s.len());
+            for c in s.chars() {
+                if c.is_ascii_punctuation() {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+            out
+        }
+    }
+}
+
+/// Control characters as visible escapes: CR `\r`, LF `\n`, tab `\t`, any other C0 or C1
+/// control, DEL and the line and paragraph separators as `\uXXXX`.
+fn shown(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -653,7 +717,14 @@ mod tests {
         assert_eq!(
             description("execute_command"),
             Some(
-                "Runs a shell command and returns its output once the command finishes. Do NOT use it for interactive or full-screen (TUI) programs (for example vim, less, top, an ssh session, a REPL, or claude): it blocks until the command exits, so an interactive or long-running program never returns. To launch or drive a TUI from the command line, use insert_text_at_cursor instead."
+                "Runs a shell command and returns its output once the command finishes. It blocks until the command exits, so an interactive or full-screen (TUI) program (for example vim, less, top, an ssh session, a REPL, or claude) does not return until it exits or the user cancels it. It is the only tool that submits a command line, so start any program with it, an interactive one included, and then drive the running program with insert_text_at_cursor."
+            )
+        );
+        // Ruling R12cd-2's wording: the insert tool never submits a line (a deviation from iTerm2).
+        assert_eq!(
+            description("insert_text_at_cursor"),
+            Some(
+                "Inserts text into the terminal input at the cursor position, as if typed, without submitting it: the text may not contain a line end (\\n, \\r and \\u000f are refused, and nothing is typed). To run a command, use execute_command. Use this to interact with a running interactive or full-screen (TUI) program - choose a menu option, or send keystrokes to a running app - since unlike execute_command it does not wait for the program to finish."
             )
         );
         assert_eq!(description("create_file"), Some("Creates a file containing a specified string on the user's computer and then reveals it in Explorer."));
@@ -675,7 +746,14 @@ mod tests {
             [("filename", "The name of the file you wish to create. It will be replaced if it already exists."), ("content", "The content that will be written to the file.")]
         );
         assert_eq!(arg_descriptions("read_web_page_section"), [("startingLineNumber", "The line number to start reading at."), ("numberOfLines", "The number of lines to return.")]);
-        assert!(arg_descriptions("insert_text_at_cursor")[0].1.starts_with("The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send control keys and special characters: \\\\ for a literal backslash, \\n for newline,"));
+        assert_eq!(
+            arg_descriptions("insert_text_at_cursor"),
+            [("text", "The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send control keys and special characters: \\\\ for a literal backslash, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Examples: \\u0004 for Ctrl-D / EOF, \\u001a for Ctrl-Z, \\u000c for Ctrl-L, \\u001b for Escape. A line end (\\n, \\r, \\u000a, \\u000d or \\u000f) is refused: this tool never submits a line. Consider whether execute_command would be a better choice, especially when running a command at the shell prompt since insert_text_at_cursor does not return the output to you.")]
+        );
+        for name in ["execute_command", "insert_text_at_cursor"] {
+            let d = description(name).unwrap();
+            assert!(!d.contains("newline to submit") && !d.contains("plus a newline") && !d.contains("insert_text_at_cursor instead"), "{name}");
+        }
         assert!(arg_descriptions("is_at_prompt").is_empty());
         assert!(arg_descriptions("nope").is_empty());
     }
@@ -763,12 +841,12 @@ mod tests {
         assert_eq!(Call::ExecuteCommand { command: "ls".into() }.consent_description(), "The AI Agent would like to execute `ls`");
         // `permissionDescription` escapes the command but never truncates it (`RemoteCommand.swift`).
         let long = "x".repeat(40);
-        assert_eq!(Call::ExecuteCommand { command: format!("{long}`") }.consent_description(), format!("The AI Agent would like to execute `{long}\\``"));
+        assert_eq!(Call::ExecuteCommand { command: format!("{long}`") }.consent_description(), format!("The AI Agent would like to execute `` {long}` ``"));
         assert_eq!(Call::InsertTextAtCursor { text: long.clone() }.consent_description(), format!("The AI Agent would like to type `{}\u{2026}` into the current session", "x".repeat(31)));
         assert_eq!(Call::RestartSession.consent_description(), "The AI Agent would like to restart this session, which kills any running jobs");
         assert_eq!(Call::IsAtPrompt.consent_description(), "The AI Agent would like to check if you\u{2019}re at a shell prompt");
-        assert_eq!(Call::GetManPage { cmd: "a`b".into() }.consent_description(), "The AI Agent would like to check the manpage for `a\\`b`");
-        assert_eq!(Call::CreateFile { filename: "f`.txt".into(), content: String::new() }.consent_description(), "The AI Agent would like to create a file named `f`.txt`");
+        assert_eq!(Call::GetManPage { cmd: "a`b".into() }.consent_description(), "The AI Agent would like to check the manpage for ``a`b``");
+        assert_eq!(Call::CreateFile { filename: "f`.txt".into(), content: String::new() }.consent_description(), "The AI Agent would like to create a file named ``f`.txt``");
         assert_eq!(Call::WebSearch { query: "q".into() }.consent_description(), "The AI agent would like to write to search the web for \u{201c}q\u{201d}");
         assert_eq!(Call::GetUrl.consent_description(), "The AI agent would like to write to get the current URL");
         assert_eq!(Call::GetCurrentDirectory.consent_description(), "The AI Agent would like to know your current directory");
@@ -778,6 +856,32 @@ mod tests {
         for call in prototypes() {
             assert!(call.consent_description().starts_with("The AI "), "{}", call.name());
             assert_eq!(call.status_notice().is_none(), matches!(call, Call::ExecuteCommand { .. }));
+        }
+    }
+
+    #[test]
+    fn consent_fields_are_escaped() {
+        // A line break never starts a new line, and the model's markdown stays inside the span.
+        let file = Call::CreateFile { filename: "a\n\n**Allow?**".into(), content: String::new() }.consent_description();
+        assert_eq!(file, "The AI Agent would like to create a file named `a\\n\\n**Allow?**`");
+        assert!(!file.contains('\n'));
+        // A fence longer than any backtick run inside; padded where the text ends with one.
+        let cmd = Call::ExecuteCommand { command: "echo ```x```".into() }.consent_description();
+        assert_eq!(cmd, "The AI Agent would like to execute ```` echo ```x``` ````");
+        assert_eq!(Call::ExecuteCommand { command: "ls\r\n\u{1b}[2J\u{2028}".into() }.consent_description(), "The AI Agent would like to execute `ls\\r\\n\\u001B[2J\\u2028`");
+        assert_eq!(Call::ExecuteCommand { command: " x".into() }.consent_description(), "The AI Agent would like to execute `  x `");
+        // The typed text is cut after its escapes are shown, so a cut never splits the fence.
+        let typed = Call::InsertTextAtCursor { text: format!("{}\n", "`".repeat(40)) }.consent_description();
+        assert_eq!(typed, format!("The AI Agent would like to type {f} {t}\u{2026} {f} into the current session", f = "`".repeat(32), t = "`".repeat(31)));
+        // Running text: every ASCII punctuation mark is escaped, so no markdown opens.
+        assert_eq!(
+            Call::WebSearch { query: "**x**\n\n[a](b)".into() }.consent_description(),
+            "The AI agent would like to write to search the web for \u{201c}\\*\\*x\\*\\*\\\\n\\\\n\\[a\\]\\(b\\)\u{201d}"
+        );
+        assert_eq!(Call::LoadUrl { url: "https://a.b/c".into() }.consent_description(), "The AI agent would like to navigate to https\\:\\/\\/a\\.b\\/c");
+        assert_eq!(consent_field("", Field::Code), "``");
+        for call in prototypes() {
+            assert!(!call.consent_description().contains('\n'), "{}", call.name());
         }
     }
 }

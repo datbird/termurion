@@ -361,6 +361,10 @@ pub const NOT_LINKED_USER_NOTICE: &str = "AI attempted to perform an action, but
 /// The session picker's text (`ChatViewController.swift:2746-2749`).
 pub const NEEDS_SESSION: &str = "The AI agent needs to run commands in a live terminal session, but none is attached to this chat.";
 /// A parked call's scope note (`ChatViewController.swift:2634`).
+/// A permission change whose chat row could not be written (Tandem's text; iTerm2 only logs
+/// it). The change still holds until Tandem quits.
+pub const NOT_SAVED: &str = "The permission change could not be saved. It applies until Tandem quits.";
+
 pub const GRANT_SCOPE: &str = "*If you grant or deny permission, it affects only this chat conversation while linked to this particular terminal session. You can change permissions in the chat Info menu.*";
 /// The flagged-command warning, without iTerm2's warning emoji (`ChatViewController.swift:2624-2629`).
 pub const FLAGGED: &str = "**The AI safety check flagged this command as potentially dangerous. Review it with care.**\n\n";

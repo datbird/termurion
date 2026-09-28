@@ -427,12 +427,28 @@ impl Store {
     /// Runs `f` as one unit: every write it makes lands, or none does (a savepoint, so the
     /// store's own multi-row writes nest inside it).
     pub fn atomically<T>(&mut self, f: impl FnOnce(&mut Store) -> Result<T, String>) -> Result<T, String> {
-        self.conn.execute_batch("savepoint atomically").map_err(err)?;
-        let result = f(self).and_then(|v| self.conn.execute_batch("release atomically").map(|()| v).map_err(err));
+        self.unit_begin()?;
+        let result = f(self).and_then(|v| self.unit_settle().map(|()| v));
         if result.is_err() {
-            let _ = self.conn.execute_batch("rollback to atomically; release atomically");
+            self.unit_abort();
         }
         result
+    }
+
+    /// Starts a unit of writes by hand (`atomically`'s savepoint), for a caller that settles
+    /// it before it acts on the writes (a publish settles before it delivers).
+    pub fn unit_begin(&mut self) -> Result<(), String> {
+        self.conn.execute_batch("savepoint atomically").map_err(err)
+    }
+
+    /// Makes the unit's writes final.
+    pub fn unit_settle(&mut self) -> Result<(), String> {
+        self.conn.execute_batch("release atomically").map_err(err)
+    }
+
+    /// Takes back every write of an unsettled unit.
+    pub fn unit_abort(&mut self) {
+        let _ = self.conn.execute_batch("rollback to atomically; release atomically");
     }
 
     /// Makes every later Chat update fail (tests only).
