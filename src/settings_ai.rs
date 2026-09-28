@@ -31,8 +31,11 @@ pub struct State {
     pub reveal: bool,
     /// The "Manage AI API Keys" dialog while it is open.
     keys: Option<KeyDialog>,
-    /// A failed key write's text, for the settings window to show.
+    /// A failed key write's text, for the settings window's banner.
     error: Option<String>,
+    /// The same text, marked with the warning glyph beside "Set API Key\u{2026}" until the
+    /// dialog opens again.
+    key_failure: Option<String>,
 }
 
 impl State {
@@ -224,17 +227,17 @@ fn open_key_dialog() -> KeyDialog {
 }
 
 /// OK: writes the changed fields. A failed write keeps the key for the session (`Keys::set`)
-/// and becomes the settings window's error text (Tandem's; iTerm2 only logs).
-fn save_keys(d: &KeyDialog, store: &mut dyn KeyStore) -> Option<String> {
-    let mut error = None;
-    let mut cache = keys();
-    for i in changed_fields(&d.initial, &d.now) {
-        let v = Vendor::KEY_ORDER[i];
-        if let Err(e) = cache.set(v, &d.now[i], store) {
-            error = Some(format!("Could not save the {} API key: {}", v.provider_name(), e));
-        }
-    }
-    error
+/// and becomes the settings window's error text, one line per failed vendor (Tandem's; iTerm2
+/// logs each failure, `KC:257-275`).
+fn save_keys(d: &KeyDialog, cache: &mut Keys, store: &mut dyn KeyStore) -> Option<String> {
+    let failures: Vec<String> = changed_fields(&d.initial, &d.now)
+        .into_iter()
+        .filter_map(|i| {
+            let v = Vendor::KEY_ORDER[i];
+            cache.set(v, &d.now[i], store).err().map(|e| format!("Could not save the {} API key: {}", v.provider_name(), e))
+        })
+        .collect();
+    (!failures.is_empty()).then(|| failures.join("\n"))
 }
 
 /// The key dialog (`G:3547-3626`): one masked field per vendor, OK (Enter) and Cancel (Escape).
@@ -266,7 +269,7 @@ fn key_dialog(ctx: &egui::Context, d: &mut KeyDialog, error: &mut Option<String>
             let ok = ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked();
             let cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked();
             if ok || enter {
-                *error = save_keys(d, &mut *ai_keys::system_store());
+                *error = save_keys(d, &mut keys(), &mut *ai_keys::system_store());
                 done = true;
             } else if cancel || escape {
                 done = true;
@@ -274,6 +277,16 @@ fn key_dialog(ctx: &egui::Context, d: &mut KeyDialog, error: &mut Option<String>
         });
     });
     done
+}
+
+/// A failed key write beside the button that opens the dialog: the warning glyph (when the icon
+/// font loaded) and the text, in the warning color.
+fn failure_mark(ui: &mut egui::Ui, text: &str) {
+    let color = ui.visuals().warn_fg_color;
+    if crate::settings_keys::has_icon_font(ui.ctx()) {
+        ui.label(egui::RichText::new(crate::scripts::WARNING_GLYPH.to_string()).family(crate::settings_keys::icon_family()).color(color));
+    }
+    ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
 }
 
 /// A right-aligned label in the General sub-tab's first column.
@@ -318,9 +331,15 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         ui.end_row();
 
         row_label(ui, API_KEY_LABEL);
-        if ui.add_enabled(on.rest, egui::Button::new(SET_API_KEY)).clicked() {
-            st.keys = Some(open_key_dialog());
-        }
+        ui.horizontal(|ui| {
+            if ui.add_enabled(on.rest, egui::Button::new(SET_API_KEY)).clicked() {
+                st.key_failure = None;
+                st.keys = Some(open_key_dialog());
+            }
+            if let Some(f) = &st.key_failure {
+                failure_mark(ui, f);
+            }
+        });
         ui.end_row();
 
         row_label(ui, MODEL_LABEL);
@@ -388,6 +407,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
     if let Some(d) = st.keys.as_mut() {
         if key_dialog(ui.ctx(), d, &mut st.error) {
             st.keys = None;
+            st.key_failure = st.error.clone();
         }
     }
     changed
@@ -533,6 +553,35 @@ mod tests {
         assert_eq!(changed_fields(&secrets(&["a", "", "c", ""]), &secrets(&["a", "", "d", "e"])), vec![2, 3]);
         assert_eq!(changed_fields(&secrets(&[""]), &secrets(&[""])), Vec::<usize>::new(), "a blank left blank after a failed read writes nothing");
         assert_eq!(changed_fields(&secrets(&["a"]), &secrets(&["a "])), vec![0], "a change, which Keys::set then trims");
+    }
+
+    /// A store whose writes fail, for `save_keys`.
+    struct FailingStore;
+
+    impl KeyStore for FailingStore {
+        fn read(&mut self, _target: &str) -> Result<Option<Secret>, String> {
+            Ok(None)
+        }
+        fn write(&mut self, target: &str, _user: &str, _key: &Secret) -> Result<(), String> {
+            Err(format!("denied {target}"))
+        }
+        fn delete(&mut self, target: &str) -> Result<(), String> {
+            Err(format!("denied {target}"))
+        }
+    }
+
+    #[test]
+    fn failed_key_writes_are_all_reported() {
+        let d = KeyDialog { initial: secrets(&["", "", "", ""]), now: secrets(&["sk-1", "", "sk-ant-1", ""]), focus: false };
+        let mut cache = Keys::default();
+        assert_eq!(
+            save_keys(&d, &mut cache, &mut FailingStore).as_deref(),
+            Some("Could not save the OpenAI API key: denied TandemAI/OpenAI\nCould not save the Gemini API key: denied TandemAI/Gemini"),
+            "every failed vendor is reported, not only the last"
+        );
+        assert!(cache.is_set(Vendor::OpenAI, &mut FailingStore), "the key stays for the session");
+        let unchanged = KeyDialog { initial: secrets(&["a"]), now: secrets(&["a"]), focus: false };
+        assert_eq!(save_keys(&unchanged, &mut cache, &mut FailingStore), None);
     }
 
     #[test]
