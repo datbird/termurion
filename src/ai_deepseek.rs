@@ -295,7 +295,7 @@ mod tests {
         let t = thinking_model();
         for (think, word) in [(Some(true), "enabled"), (Some(false), "disabled"), (None, "disabled")] {
             let b = Build { should_think: think, ..build(&t, &messages, &[], &none, &w) };
-            assert!(body(&b).ends_with(&format!(r#""stream":true,"thinking":{{"type":"{word}"}}}}"#)), "{think:?}: {}", body(&b));
+            assert!(body(&b).ends_with(&format!(r#""stream":true,"thinking":{{"type":"{word}"}}}}"#)), "{think:?}");
         }
         let b = Build { should_think: Some(true), ..build(&m, &messages, &[], &none, &w) };
         assert!(!body(&b).contains("thinking"), "without configurable thinking");

@@ -62,6 +62,8 @@ pub fn url_for(model_url: &str, model_name: &str, key: &str, stream: bool) -> St
     let Some(parts) = ai_policy::url_parts(model_url) else {
         return ABOUT_EMPTY.to_string();
     };
+    // `parts.rest` borrows the end of `model_url` itself, so what comes before it is the
+    // scheme and authority exactly as typed; an owned `rest` would break this.
     let origin = &model_url[..model_url.len() - parts.rest.len()];
     let (before_fragment, fragment) = match parts.rest.find('#') {
         Some(at) => parts.rest.split_at(at),

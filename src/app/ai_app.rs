@@ -59,10 +59,22 @@ impl App {
 
     fn ai_gate_answer(&mut self, check: &ai_gate::Check, silent: bool) -> bool {
         let Some(alert) = ai_gate::alert(check) else { return true };
-        if !silent && !self.ai_gate_pending() {
-            self.ask_ai(alert);
+        if !silent {
+            self.ask_gate(alert);
         }
         false
+    }
+
+    /// Queues a gate alert, unless one is queued or showing: then the showing alert comes to
+    /// the front, so the action visibly waits on it (iTerm2's alert is modal, so the action
+    /// cannot be repeated behind it).
+    fn ask_gate(&mut self, alert: Alert) {
+        if !self.ai_gate_pending() {
+            return self.ask_ai(alert);
+        }
+        if let Some((w, _)) = &self.ai_alert {
+            w.focus();
+        }
     }
 
     /// Whether a gate alert is queued or showing (at most one at a time).
@@ -258,11 +270,8 @@ impl App {
                 let t = self.ai_discovery.refresh(&endpoint, &headers, force, &*self.ai_transport, self.notify.clone());
                 self.ai_probe = Some(t);
             }
-            AiRequest::Alert(alert) => {
-                if !(ai_gate::is_gate(&alert) && self.ai_gate_pending()) {
-                    self.ask_ai(alert);
-                }
-            }
+            AiRequest::Alert(alert) if ai_gate::is_gate(&alert) => self.ask_gate(alert),
+            AiRequest::Alert(alert) => self.ask_ai(alert),
             AiRequest::BuildTester(probe) => {
                 let wire = crate::ai_turn::Wire::from_globals(&self.globals);
                 let options = crate::ai_transport::options_from(&self.globals);

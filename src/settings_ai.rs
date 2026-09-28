@@ -1667,6 +1667,35 @@ mod tests {
         assert!(!State::default().busy());
     }
 
+    /// Task 10 re-review: a running test keeps the window drawing, but not while it waits for
+    /// the key prompt, whose answer asks for a redraw.
+    #[test]
+    fn busy_while_a_test_runs_but_not_while_it_waits_for_a_key() {
+        use crate::ai_transport::{Options, Proxy, Recorded};
+        let probe = crate::ai_test_conn::Probe {
+            name: "gpt-5".into(),
+            url: "https://api.openai.com/v1/responses".into(),
+            api: Api::Responses,
+            function_calling: false,
+            supports_temperature: true,
+            headers: Vec::new(),
+        };
+        let wire = crate::ai_turn::Wire { token_limit: 128000, response_limit: 8192, zdr: false, ollama_num_ctx: 0, ollama_keep_alive: "30m".into() };
+        let options = Options { idle: std::time::Duration::from_secs(5), proxy: Proxy::Off };
+        let mut s = State::default();
+        s.tester = Some(Tester::new(probe, wire, std::sync::Arc::new(Recorded::new(Vec::new())), options, std::sync::Arc::new(|| {})));
+        assert!(s.busy(), "a built test draws until it answers");
+        assert_eq!(s.tester.as_mut().map(|t| t.start(None)), Some(None));
+        assert_eq!(s.tester.as_ref().and_then(Tester::needs_key), Some(Vendor::OpenAI));
+        assert!(!s.busy(), "waiting for the key does not repaint");
+        let mut e = Editor::new(manual("m", "https://api.openai.com/v1/responses", 0), None, bundled(), 0);
+        e.testing = true;
+        s.editor = Some(e);
+        assert!(!s.busy(), "the editor's testing flag waits for the key too");
+        s.tester = None;
+        assert!(s.busy(), "a test the App has not built yet draws");
+    }
+
     #[test]
     fn unmatched_default_writes_nothing() {
         let cat = bundled();

@@ -143,7 +143,7 @@ impl SettingsWindow {
     /// Whether Settings > General > AI > General shows, where the model popup, the Ollama
     /// pickers and Manage AI Models read the discovered models.
     pub fn shows_ai_models(&self) -> bool {
-        self.mode == Mode::Settings && self.page == Page::General && self.ai.sub == crate::settings_ai::SubTab::General
+        shows_ai_models_on(self.mode, self.page, self.ai.sub)
     }
 
     /// Whether a custom scripts folder was typed and not yet applied, clearing the note
@@ -745,9 +745,25 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     commit
 }
 
+/// Whether this mode, page and AI sub-tab show the discovered models.
+fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -> bool {
+    mode == Mode::Settings && page == Page::General && sub == crate::settings_ai::SubTab::General
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 10 re-review: stale Ollama servers are asked again only where the models show.
+    #[test]
+    fn discovery_reads_only_where_the_models_show() {
+        use crate::settings_ai::SubTab;
+        assert!(shows_ai_models_on(Mode::Settings, Page::General, SubTab::General));
+        assert!(!shows_ai_models_on(Mode::Settings, Page::General, SubTab::Prompts));
+        assert!(!shows_ai_models_on(Mode::Settings, Page::General, SubTab::Features));
+        assert!(!shows_ai_models_on(Mode::Settings, Page::Keys, SubTab::General));
+        assert!(!shows_ai_models_on(Mode::Profiles, Page::General, SubTab::General));
+    }
 
     #[test]
     fn turning_the_page_applies_the_typed_folder() {
