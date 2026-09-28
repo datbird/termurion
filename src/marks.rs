@@ -1038,9 +1038,8 @@ impl Screen {
                 }
                 "ExecFailed" => self.exec_failed = true,
                 "Env" if self.trusted => {
-                    use base64::Engine;
-                    if let Some(b) = value.strip_prefix("report=all:").and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok()) {
-                        self.env = Some(String::from_utf8_lossy(&b).into_owned());
+                    if let crate::osc1337::EnvUpdate::Set(v) = crate::osc1337::parse_env(&value) {
+                        self.env = v;
                     }
                 }
                 "SetKeyLabel" => self.key_labels.set(&value),

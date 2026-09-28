@@ -1,6 +1,6 @@
 //! Value grammars and replies for the OSC 1337 keys that are not files, marks, or the
 //! clipboard: CursorShape, HighlightCursorLine, RequestAttention, ReportCellSize, the window
-//! and screen frames, UnicodeVersion, SetColors, SetKeyLabel and its stack, Capabilities.
+//! and screen frames, UnicodeVersion, SetColors, SetKeyLabel and its stack, Capabilities, Env.
 
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 
@@ -218,6 +218,50 @@ pub fn from_points(x: f64, y: f64, w: f64, h: f64, primary_height_px: f64, scale
     (x * scale, primary_height_px - y * scale - h, w, h)
 }
 
+/// What `Env=` does to the screen's exfiltrated environment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EnvUpdate {
+    /// Not a `report=all` request: the stored environment stays.
+    Ignore,
+    /// Replaces the stored environment wholesale; None after a failed decode, as iTerm2
+    /// assigns nil.
+    Set(Option<Vec<(String, String)>>),
+}
+
+/// iTerm2's `keyValuePair`: split at the first `=`; without one, the value is empty.
+pub fn split_pair(s: &str) -> (String, String) {
+    match s.split_once('=') {
+        Some((k, v)) => (k.to_string(), v.to_string()),
+        None => (s.to_string(), String::new()),
+    }
+}
+
+/// `Env=<params>:<base64>`, as iTerm2's `terminalDidExfiltrateEnvironment` reads it: the
+/// params are split on `;` and must hold `report=all`; the payload is decoded (CR and LF
+/// dropped, padding optional) and split into `NAME=value` lines on every newline
+/// character, so `\r\n` gives an empty line between.
+pub fn parse_env(value: &str) -> EnvUpdate {
+    let Some((params, payload)) = value.split_once(':') else { return EnvUpdate::Ignore };
+    if !params.split(';').map(split_pair).any(|(k, v)| k == "report" && v == "all") {
+        return EnvUpdate::Ignore;
+    }
+    let Some(text) = decode_env(payload) else { return EnvUpdate::Set(None) };
+    let newline = |c: char| matches!(c, '\u{a}'..='\u{d}' | '\u{85}' | '\u{2028}' | '\u{2029}');
+    EnvUpdate::Set(Some(text.split(newline).map(split_pair).collect()))
+}
+
+/// The payload's text: None when it is empty, not base64, or not UTF-8.
+fn decode_env(payload: &str) -> Option<String> {
+    use base64::Engine;
+    let compact: String = payload.chars().filter(|c| !matches!(c, '\r' | '\n')).collect();
+    let e = &base64::engine::general_purpose::STANDARD;
+    let bytes = e.decode(&compact).ok().or_else(|| base64::engine::general_purpose::STANDARD_NO_PAD.decode(compact.trim_end_matches('=')).ok())?;
+    if bytes.is_empty() {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,12 +416,44 @@ mod tests {
         s.trusted = false;
         s.feed(b"\x1b]1337;StealFocus\x07\x1b]1337;ReportScreenFrames\x07\x1b]1337;Env=report=all:QT1i\x07");
         assert_eq!(s.take_requests(), vec![], "trusted only");
+        assert_eq!(s.env, None, "Env is trusted only");
         s.trusted = true;
         s.feed(b"\x1b]1337;Env=report=all:QT1i\x07\x1b]1337;ExecFailed\x07\x1b]1337;UnicodeVersion=8\x07\x1b]1337;SetKeyLabel=F1=Go\x07");
-        assert_eq!(s.env.as_deref(), Some("A=b"));
+        assert_eq!(s.env, Some(vec![("A".into(), "b".into())]));
         assert!(s.exec_failed);
         assert_eq!(s.unicode.version, 8);
         assert_eq!(s.key_labels.current.get("F1").map(String::as_str), Some("Go"));
+        s.feed(b"\x1b]1337;Env=report=all:!!!!\x07");
+        assert_eq!(s.env, None, "a failed decode assigns nil, as iTerm2 does");
+    }
+
+    fn set(pairs: &[(&str, &str)]) -> EnvUpdate {
+        EnvUpdate::Set(Some(pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
+    }
+
+    #[test]
+    fn env_follows_iterm2() {
+        assert_eq!(
+            parse_env("report=all:SE9NRT0vVXNlcnMveApBPWI9YwpOT0VRCg=="),
+            set(&[("HOME", "/Users/x"), ("A", "b=c"), ("NOEQ", ""), ("", "")])
+        );
+        assert_eq!(parse_env("report=all:QT0xDQpCPTI="), set(&[("A", "1"), ("", ""), ("B", "2")]));
+        assert_eq!(parse_env("report=all:QT0x4oCoQj0yC0M9Mw=="), set(&[("A", "1"), ("B", "2"), ("C", "3")]));
+        assert_eq!(parse_env("x=1;report=all;flag:QT0x"), set(&[("A", "1")]));
+        assert_eq!(parse_env("report=all:QT0\r\nx"), set(&[("A", "1")]));
+        for v in ["report=some:QT0x", "report:QT0x", "report=all", "QT0x"] {
+            assert_eq!(parse_env(v), EnvUpdate::Ignore, "{v}");
+        }
+        for v in ["report=all:", "report=all:!!!!", "report=all:/w=="] {
+            assert_eq!(parse_env(v), EnvUpdate::Set(None), "{v}");
+        }
+    }
+
+    #[test]
+    fn split_pair_follows_iterm2() {
+        assert_eq!(split_pair("a=b=c"), ("a".to_string(), "b=c".to_string()));
+        assert_eq!(split_pair("x"), ("x".to_string(), String::new()));
+        assert_eq!(split_pair("=v"), (String::new(), "v".to_string()));
     }
     #[test]
     fn stacks_and_labels_are_bounded() {

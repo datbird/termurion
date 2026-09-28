@@ -199,8 +199,9 @@ pub struct Screen {
     /// changes across panes (Session Status' "older first", its snooze, and the tool's
     /// refresh). 0 until the first change.
     pub tab_status_gen: u64,
-    /// The program's `Env=report=all` environment, kept for the SSH integration.
-    pub env: Option<String>,
+    /// The program's `Env=report=all` environment as `(name, value)` tuples in its order,
+    /// kept for the SSH integration (iTerm2's `exfiltratedEnvironment`).
+    pub env: Option<Vec<(String, String)>>,
     /// ExecFailed: the command could not start.
     pub exec_failed: bool,
     /// UnicodeVersion and the Touch Bar key labels.
@@ -889,6 +890,13 @@ impl Screen {
         Some((n, first, last))
     }
 
+    /// The exfiltrated tuples whose name is in `names`, in stored order; all of them for
+    /// None; none without an environment (iTerm2's `exfiltratedEnvironmentVariables:`).
+    pub fn exfiltrated(&self, names: Option<&[&str]>) -> Vec<(String, String)> {
+        let Some(env) = &self.env else { return Vec::new() };
+        env.iter().filter(|(k, _)| names.is_none_or(|n| n.contains(&k.as_str()))).cloned().collect()
+    }
+
     /// What output asked the window to do since the last call.
     pub fn take_requests(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.requests)
@@ -1303,6 +1311,17 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exfiltrated_follows_iterm2() {
+        let mut s = Screen::new(80, 24);
+        let p = |k: &str, v: &str| (k.to_string(), v.to_string());
+        assert_eq!(s.exfiltrated(None), vec![]);
+        s.env = Some(vec![p("A", "1"), p("B", "2"), p("A", "3")]);
+        assert_eq!(s.exfiltrated(Some(&["A"])), vec![p("A", "1"), p("A", "3")]);
+        assert_eq!(s.exfiltrated(None), vec![p("A", "1"), p("B", "2"), p("A", "3")]);
+        assert_eq!(s.exfiltrated(Some(&[])), vec![]);
+    }
 
     #[test]
     fn answers_background_color_query() {
