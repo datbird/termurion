@@ -296,6 +296,8 @@ pub mod ai_turn;
 pub mod ai_responses;
 pub mod ai_anthropic;
 pub mod ai_gemini;
+pub mod ai_deepseek;
+pub mod ai_ollama;
 #[cfg(windows)]
 pub mod ai_winhttp;
 pub mod ai_wire_log;

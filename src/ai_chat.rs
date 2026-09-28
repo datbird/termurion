@@ -247,7 +247,7 @@ fn data_url(s: &str) -> Option<(&str, &str)> {
 }
 
 /// `LLM.FunctionCall` as Swift encodes it: the fields that are present.
-fn function_json(call: &FunctionCall) -> Value {
+pub fn function_json(call: &FunctionCall) -> Value {
     let mut v = Map::new();
     for (key, field) in [("name", &call.name), ("arguments", &call.arguments), ("id", &call.id), ("thoughtSignature", &call.thought_signature)] {
         if let Some(s) = field {
@@ -268,9 +268,32 @@ pub fn chat_message_for(m: &Message, ollama: bool) -> Option<Value> {
     Chat::of(m).map(|c| c.encode(ollama))
 }
 
+/// The message's content as Ollama's builder counts it (`joinText`, `LL:430-457`): adjacent
+/// text parts merged with "\n", a lone text part as a string; None when it has no content.
+pub fn ollama_joined_content(m: &Message) -> Option<Value> {
+    match Chat::of(m)?.content? {
+        Content::Text(text) => Some(Value::String(text)),
+        Content::Parts(parts) => {
+            let mut combined: Vec<Value> = Vec::new();
+            for part in parts {
+                match combined.last_mut() {
+                    Some(last) if last["type"] == "text" && part["type"] == "text" => {
+                        *last = text_part(&format!("{}\n{}", last["text"].as_str().unwrap_or_default(), part["text"].as_str().unwrap_or_default()));
+                    }
+                    _ => combined.push(part),
+                }
+            }
+            match combined.as_slice() {
+                [only] if only["type"] == "text" => Some(only["text"].clone()),
+                _ => Some(Value::Array(combined)),
+            }
+        }
+    }
+}
+
 /// The messages a request sends: the volatile text, when there is some, as a last user message
 /// (`messagesWithVolatile`, `RB:41-46`).
-fn with_volatile(b: &Build) -> Vec<Message> {
+pub fn with_volatile(b: &Build) -> Vec<Message> {
     let mut messages = b.messages.to_vec();
     if let Some(v) = b.volatile.filter(|v| !v.is_empty()) {
         messages.push(Message::text(Role::User, v));
@@ -278,12 +301,13 @@ fn with_volatile(b: &Build) -> Vec<Message> {
     messages
 }
 
-fn systems(messages: &[Message]) -> usize {
+/// How many system messages lead the list; the frozen history is spliced after them.
+pub fn systems(messages: &[Message]) -> usize {
     messages.iter().filter(|m| m.role == Some(Role::System)).count()
 }
 
 /// A request that leaves the answer fewer than 2 tokens is refused (`CO:56-58`).
-fn budget(max: i64) -> Result<i64, String> {
+pub fn budget(max: i64) -> Result<i64, String> {
     if max < 2 {
         Err(TOKEN_LIMIT.to_string())
     } else {

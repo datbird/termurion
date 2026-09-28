@@ -167,7 +167,9 @@ pub fn dialect_for(api: Api) -> Option<Box<dyn Dialect>> {
         Api::Completions => Some(Box::new(crate::ai_chat::Completions)),
         Api::Anthropic => Some(Box::new(crate::ai_anthropic::Anthropic)),
         Api::Gemini => Some(Box::new(crate::ai_gemini::Gemini)),
-        Api::Llama | Api::DeepSeek | Api::AppleIntelligence => None,
+        Api::DeepSeek => Some(Box::new(crate::ai_deepseek::DeepSeek)),
+        Api::Llama => Some(Box::new(crate::ai_ollama::Ollama)),
+        Api::AppleIntelligence => None,
     }
 }
 
