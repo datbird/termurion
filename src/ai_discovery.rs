@@ -13,7 +13,7 @@ use crate::ai_policy;
 use crate::ai_transport::{self, Call, HttpEvent, HttpRequest, Notify, Options, Proxy, Transport};
 use crate::globals::Globals;
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,9 @@ pub const RETRY_TTL: Duration = Duration::from_secs(5);
 pub const MAX_RETRIES: u32 = 6;
 /// Empty lists in a row after which a server that had models is believed empty (`OC:120`).
 pub const EMPTY_STREAK: u32 = 3;
+/// The most `/api/show` calls one refresh has out at once; the rest wait their turn (final
+/// review ruling: a server listing thousands of models never gets thousands of connections).
+pub const SHOW_WORKERS: usize = 4;
 /// iTerm2's defaults key for the persisted models, the top-level key of the cache file.
 pub const PERSIST_KEY: &str = "NoSyncOllamaDiscoveredModels";
 
@@ -300,8 +303,9 @@ struct Entry {
 /// Where a running refresh is.
 enum Stage {
     Tags(Box<dyn Call>),
-    /// The tags answer, and the `/api/show` calls still out, by model index.
-    Show { found: Vec<Found>, calls: Vec<(usize, Box<dyn Call>)> },
+    /// The tags answer, the models still to ask about, and the `/api/show` calls out (at most
+    /// `SHOW_WORKERS`), by model index.
+    Show { found: Vec<Found>, waiting: VecDeque<usize>, calls: Vec<(usize, Box<dyn Call>)> },
 }
 
 /// A refresh in flight, and the tickets waiting on it (none for an automatic one).
@@ -358,6 +362,20 @@ fn poll(call: &mut dyn Call) -> Option<(String, Option<String>)> {
         }
     }
     None
+}
+
+/// Starts `/api/show` calls for waiting models until `SHOW_WORKERS` are out.
+fn ask_more(endpoint: &str, headers: &[(String, String)], found: &[Found], waiting: &mut VecDeque<usize>, calls: &mut Vec<(usize, Box<dyn Call>)>, transport: &dyn Transport, notify: &Notify) {
+    let Ok(url) = show_url(endpoint) else {
+        waiting.clear();
+        return;
+    };
+    while calls.len() < SHOW_WORKERS {
+        let Some(i) = waiting.pop_front() else { return };
+        let headers = ai_policy::merged_headers(&[("Content-Type".to_string(), "application/json".to_string())], headers);
+        let body = serde_json::json!({ "model": found[i].name }).to_string().into_bytes();
+        calls.push((i, transport.start(HttpRequest { method: "POST", url: url.clone(), headers, body, stream: false }, options(), notify.clone())));
+    }
 }
 
 impl Cache {
@@ -542,21 +560,17 @@ impl Cache {
                             Err(_) => Some(Err(None)),
                             Ok(found) => {
                                 let complete = fully_described(body.as_bytes());
-                                let calls = found
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(_, f)| !complete.contains(&f.name))
-                                    .filter_map(|(i, f)| {
-                                        let url = show_url(&run.endpoint).ok()?;
-                                        let headers = ai_policy::merged_headers(&[("Content-Type".to_string(), "application/json".to_string())], &run.headers);
-                                        let body = serde_json::json!({ "model": f.name }).to_string().into_bytes();
-                                        Some((i, transport.start(HttpRequest { method: "POST", url, headers, body, stream: false }, options(), notify.clone())))
-                                    })
-                                    .collect::<Vec<_>>();
-                                if calls.is_empty() {
+                                let waiting: VecDeque<usize> = if show_url(&run.endpoint).is_ok() {
+                                    found.iter().enumerate().filter(|(_, f)| !complete.contains(&f.name)).map(|(i, _)| i).collect()
+                                } else {
+                                    VecDeque::new()
+                                };
+                                if waiting.is_empty() {
                                     Some(Ok(found))
                                 } else {
-                                    run.stage = Stage::Show { found, calls };
+                                    let (mut waiting, mut calls) = (waiting, Vec::new());
+                                    ask_more(&run.endpoint, &run.headers, &found, &mut waiting, &mut calls, transport, notify);
+                                    run.stage = Stage::Show { found, waiting, calls };
                                     None
                                 }
                             }
@@ -564,7 +578,7 @@ impl Cache {
                     }
                 }
             },
-            Stage::Show { found, calls } => {
+            Stage::Show { found, waiting, calls } => {
                 // A failed /api/show keeps what the tags said (`OD:295-326`).
                 calls.retain_mut(|(i, call)| match poll(call.as_mut()) {
                     None => true,
@@ -581,6 +595,7 @@ impl Cache {
                         false
                     }
                 });
+                ask_more(&run.endpoint, &run.headers, found, waiting, calls, transport, notify);
                 calls.is_empty().then(|| Ok(std::mem::take(found)))
             }
         };
@@ -869,6 +884,76 @@ mod tests {
         assert_eq!(fetched_names(&Outcome { count: 0, failed: false, error: None }, &[]), Err(NO_MODELS.to_string()));
         assert_eq!(fetched_names(&Outcome { count: 0, failed: true, error: None }, &[]), Err(NO_MODELS.to_string()), "an unparseable body");
         assert_eq!(fetched_names(&Outcome { count: 0, failed: true, error: Some("E".into()) }, &[]), Err("E".to_string()));
+    }
+
+    /// Answers /api/tags with `models` names no model fully described, and each /api/show on
+    /// its second poll, counting the calls out at once.
+    struct Slow {
+        models: usize,
+        out: Arc<std::sync::atomic::AtomicUsize>,
+        most: Arc<std::sync::atomic::AtomicUsize>,
+        shown: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    struct SlowCall {
+        body: Option<String>,
+        polls: usize,
+        out: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Call for SlowCall {
+        fn try_event(&mut self) -> Option<HttpEvent> {
+            self.polls += 1;
+            if self.polls < 2 {
+                return None;
+            }
+            let body = self.body.take()?;
+            self.out.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            Some(HttpEvent::Done { body, error: None })
+        }
+        fn cancel(&mut self) {}
+        fn finished(&self) -> bool {
+            self.body.is_none()
+        }
+    }
+
+    impl Transport for Slow {
+        fn start(&self, request: HttpRequest, _: Options, _: Notify) -> Box<dyn Call> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let body = if request.url.ends_with("/api/tags") {
+                serde_json::json!({ "models": (0..self.models).map(|i| serde_json::json!({ "name": format!("m{i}") })).collect::<Vec<_>>() }).to_string()
+            } else {
+                let v: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                self.shown.lock().unwrap().push(v["model"].as_str().unwrap().to_string());
+                String::from_utf8(SHOW.to_vec()).unwrap()
+            };
+            let now = self.out.fetch_add(1, SeqCst) + 1;
+            self.most.fetch_max(now, SeqCst);
+            Box::new(SlowCall { body: Some(body), polls: 0, out: self.out.clone() })
+        }
+    }
+
+    #[test]
+    fn show_calls_run_four_at_a_time() {
+        let slow = Slow { models: 50, out: Arc::default(), most: Arc::default(), shown: Arc::default() };
+        let mut c = Cache::default();
+        let t = c.refresh(OLLAMA_ENDPOINT, &[], true, &slow, noop());
+        let mut outcome = None;
+        for _ in 0..1000 {
+            c.tick(Instant::now(), &slow, &[], noop());
+            outcome = c.finished(t);
+            if outcome.is_some() {
+                break;
+            }
+        }
+        assert_eq!(outcome, Some(Outcome { count: 50, failed: false, error: None }));
+        assert_eq!(slow.most.load(std::sync::atomic::Ordering::SeqCst), SHOW_WORKERS, "never more than four out, and four used");
+        assert_eq!(SHOW_WORKERS, 4);
+        let expected: Vec<String> = (0..50).map(|i| format!("m{i}")).collect();
+        assert_eq!(*slow.shown.lock().unwrap(), expected, "every model asked about, in order");
+        let ms = c.models(OLLAMA_ENDPOINT, &[]);
+        assert_eq!(ms.len(), 50);
+        assert!(ms.iter().all(|m| m.context_window_tokens == 40960), "every answer applied to its model");
     }
 
     #[test]

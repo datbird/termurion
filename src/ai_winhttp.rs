@@ -150,8 +150,17 @@ fn start_call(request: HttpRequest, options: Options, notify: Notify, shared: Sh
             None
         }
         Ok(target) => {
+            let (failed, notify_failed) = (tx.clone(), notify.clone());
             let worker = Worker { shared: shared.clone(), tx, notify, idle: options.idle, step: std::cell::Cell::new(0) };
-            Some(std::thread::spawn(move || worker.run(&request, &target, &options)))
+            match std::thread::Builder::new().name("ai-http".into()).spawn(move || worker.run(&request, &target, &options)) {
+                Ok(thread) => Some(thread),
+                // The system refused a thread: the call fails instead of the app.
+                Err(e) => {
+                    let _ = failed.send(HttpEvent::Done { body: String::new(), error: Some(crate::ai_transport::transport_error(&e.to_string())) });
+                    notify_failed();
+                    None
+                }
+            }
         }
     };
     Box::new(WinCall { events: rx, shared, thread })
