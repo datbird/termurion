@@ -10,7 +10,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | iTerm2 > About iTerm2 | no shortcut | Shows the About panel with version and build info. | have |
 | iTerm2 > Show Tip of the Day | no shortcut | Shows a tip of the day dialog on startup or on demand. (milestone 13) | missing |
 | iTerm2 > Companion Device Settings | no shortcut | Opens settings for pairing a companion mobile device with iTerm2. (milestone 13) | missing |
-| iTerm2 > Suppressed Alerts... | no shortcut | Lists alert dialogs the user chose to suppress and lets them re-enable. (milestone 13) | missing |
+| iTerm2 > Suppressed Alerts... | no shortcut | Lists alert dialogs the user chose to suppress and lets them re-enable. (milestone 13b: Tandem > Suppressed Alerts… in every window, titled as iTerm2's ("1 Alert Suppressed (< 1 min ago)…", "3 Alerts Suppressed (2 hrs ago)…", refreshed at each change and once a minute); the window lists each alert answered automatically with its Automatic Response and Last Suppressed, Un-suppress (or a double click) and Un-suppress All ask again, and "Always show alerts with remembered selections" shows them with the saved answer and "Permanently Forget Saved Selection" until Tandem quits) | have |
 | iTerm2 > Check for Updates... | no shortcut | Manually checks the Sparkle updater for a new iTerm2 build. (milestone 13) | missing |
 | iTerm2 > Toggle Debug Logging | no shortcut | Turns internal debug log capture on or off. (milestone 6) | missing |
 | iTerm2 > Save Retrospective Debug Logs | no shortcut | Dumps recent internal debug logs to a file for bug reports. (milestone 13) | missing |
@@ -406,6 +406,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | Kitty keyboard protocol (progressive enhancement, CSI u key reporting) | Disambiguated keyboard reporting mode used by some modern CLI apps. | have, all five flags, the stack per screen, and Session > Terminal State toggles; modifyOtherKeys 1 and 2, CSI u, and raw key reporting (Windows virtual key codes) too |
 | Synchronized output, DEC private mode 2026 (BSU/ESU) | Suppresses screen redraws between begin and end markers so a full-screen app can update atomically without tearing. | have, mode 2026 and the DCS form; an update that never ends is drawn after 150 ms |
 | DEC private mode 996/997 (dark-mode query) | Application asks the terminal whether the OS is in dark or light mode; terminal replies with mode 997. | have, judged from the pane's background; mode 2031 reports changes |
+| DEC private mode 2048 (in-band resize reports) | Application asks the terminal to report the window size in cells and pixels in-band whenever it changes, instead of relying on SIGWINCH. | missing, owned by 13o (R8); `NoSyncNeverAskAboutDEC2048Frustration` is stored in 13b |
 | CSI ? Ps c (DA1/DA2/DA3) with iTerm2 extensions | Extended device-attributes reporting including iTerm2's emulation level, up to VT400 class, and macro-space/checksum reports. | have, per emulation level as iTerm2 answers |
 | Kitty drag-and-drop file protocol | iTerm2-specific extension layered on drag-and-drop for transferring files over SSH sessions using a kitty-protocol-derived encoding. | missing |
 

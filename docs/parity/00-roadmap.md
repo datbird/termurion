@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 336 | 84 | 403 |
-| `03-features-and-menus.md` | 644 | 516 | 44 | 84 |
-| Total | 1,781 | 1,025 | 250 | 506 |
+| `02-global-settings.md` | 823 | 352 | 84 | 387 |
+| `03-features-and-menus.md` | 645 | 517 | 44 | 84 |
+| Total | 1,782 | 1,042 | 250 | 490 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -270,6 +270,29 @@ Import All stages an export and applies it at one restart, and Erase All empties
 and quits, or logs a dry run to the debug output. PreferredBaseDir and
 noSyncNeverRemindPrefsChangesLostForUrl are stored and inert. Every kept quirk is listed in
 `docs/acceptance/m13a-checklist.md` and ruled on in `docs/superpowers/rulings/m13a-rulings.txt`.
+Milestone 13b put every question Tandem remembers an answer to on iTerm2's warning model (02:
+the Warnings rows, 03: Suppressed Alerts): one checkbox rule ("Suppress this message
+permanently" for one button that may be remembered, "Remember my choice" for several, with the
+ten-minute and 30-day forms), Cancel and the do-not-remember buttons never remembered, a
+persistent warning never silenced, and each button answering to Alt plus its letter (underlined
+with "Buttons in modal alerts indicate keyboard shortcuts"). Every answer given automatically is
+listed in Tandem > Suppressed Alerts, whose menu title counts them with the newest one's age;
+Un-suppress asks again, and "Always show alerts with remembered selections" shows them with the
+saved answer and "Permanently Forget Saved Selection". The paste and tmux close questions moved
+from pane bars to alert windows, the broadcast input warning got its checkbox, and Clear and
+Reset with broadcast ask iTerm2's three-button warning (a stored No no longer answers "current
+only"). New: iTerm2's Restart Session, download and inline display (with the 1 GiB follow-up),
+annotation removal, Meta and key override confirmations; the offers to turn focus reporting,
+mouse reporting and paste bracketing off after a host change (Always and Never write the
+Advanced pane's Unspecified/No/Yes rows); the offer to disable mouse reporting after a drag then
+Copy; the arrangement announcements (a missing profile restores from the arrangement's own copy
+with no banner, a broken copy offers Assign Profile, a missing folder starts in home with iTerm2's
+banner or, for an SSH profile, offers Repair); and the out-of-date shell integration notice, read
+from iTerm2's version tables (Tandem's PowerShell script is in none).
+noSyncSuppressMissingProfileInArrangementWarning and noSyncNeverAskAboutDEC2048Frustration are
+stored and shown with nothing reading them; the Replace Profile warning waits for 13t's Copy to
+Profile and DEC mode 2048 (a new 03 row) for 13o. Every kept quirk is listed in
+`docs/acceptance/m13b-checklist.md` and ruled on in `docs/superpowers/rulings/m13b-rulings.txt`.
 
 ## Order
 
