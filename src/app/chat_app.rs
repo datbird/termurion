@@ -4,7 +4,6 @@
 //! R12cd-4): applying its effects, among them `ai_run_tool`, the one dispatcher of every tool
 //! call, and the live drivers over 12b's runners.
 
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;

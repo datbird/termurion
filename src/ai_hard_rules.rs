@@ -794,12 +794,22 @@ fn cmd_pieces(word: &str) -> Vec<String> {
     word.split([',', ';', '=']).filter(|p| !p.is_empty()).map(str::to_string).collect()
 }
 
+/// A head word without the `@` that silences echo and, in cmd, the `,` `;` `=` it skips before
+/// a command (`,format C:` is `format C:`).
+fn trim_head(word: &str, f: Flavor) -> &str {
+    if f == Flavor::Cmd {
+        word.trim_start_matches(['@', ',', ';', '='])
+    } else {
+        word.trim_start_matches('@')
+    }
+}
+
 /// The command named by `words[i]`, its arguments, and its arguments as written. cmd ends a
 /// command's name at `/`, `,`, `;` or `=` (`rd/s/q C:\` is `rd /s /q C:\`), and splits its
 /// arguments at the same delimiters; the words as written are what a wrapper hands on (a
 /// quoted PowerShell script keeps its `;`).
 fn split_head(words: &[String], i: usize, f: Flavor) -> (String, Vec<String>, Vec<String>) {
-    let w = words[i].trim_start_matches('@');
+    let w = trim_head(&words[i], f);
     let mut args: Vec<String> = Vec::new();
     let mut raw: Vec<String> = Vec::new();
     let mut name = w;
@@ -825,7 +835,7 @@ fn split_head(words: &[String], i: usize, f: Flavor) -> (String, Vec<String>, Ve
 /// The indexes where a command starts: the first word after `@`, `&`, `call` and `.` (dot
 /// source), and in cmd the word after an `if` clause, `do` or `else`.
 fn command_heads(words: &[String], f: Flavor) -> Vec<usize> {
-    let lower = |i: usize| words.get(i).map(|w| w.trim_start_matches('@').to_lowercase());
+    let lower = |i: usize| words.get(i).map(|w| trim_head(w, f).to_lowercase());
     let mut heads = Vec::new();
     let mut at_head = true;
     let mut i = 0;
@@ -949,23 +959,35 @@ fn windows_flavor(line: &str, f: Flavor, depth: usize) -> Option<String> {
         Err(()) => return Some(UNBALANCED.to_string()),
     };
     // A pipeline's earlier segments named a target (`Get-ChildItem C:\ | Remove-Item -Recurse`),
-    // across a bracketed filter stage (`| Where-Object { .. } |`).
+    // across the script block of a pipe stage (`| Where-Object { .. } |`), and only there: a
+    // condition's or grouping's own target does not carry into a later pipeline.
     let mut chain_target = false;
+    // Inside a pipe stage (or the block it opened), and whether that stage is ForEach-Object.
+    let (mut in_stage, mut foreach_stage) = (false, false);
     for (text, after_pipe, bracket) in &segs {
-        if !after_pipe && !bracket {
+        let words = tokenize_win(text, f);
+        let filter_block = !after_pipe && *bracket && in_stage;
+        if !after_pipe && !filter_block && !words.is_empty() {
             chain_target = false;
         }
-        let words = tokenize_win(text, f);
         let mut first = true;
         for h in command_heads(&words, f) {
             let (cmd, args, raw) = split_head(&words, h, f);
-            let piped = *after_pipe && first;
+            if *after_pipe && first {
+                foreach_stage = f == Flavor::Ps && matches!(cmd.as_str(), "foreach-object" | "foreach" | "%");
+            }
+            // A ForEach-Object block's command works on what the pipeline carried.
+            let piped = (*after_pipe || (filter_block && foreach_stage)) && first;
             first = false;
             if let Some(r) = windows_verdict(&cmd, &args, &raw, piped, chain_target, f, depth) {
                 return Some(r);
             }
         }
         chain_target |= words.iter().any(|w| arg_is_target(w));
+        in_stage = *after_pipe || filter_block;
+        if !in_stage {
+            foreach_stage = false;
+        }
     }
     // A delete anywhere in a segment, brackets read as spaces so the arguments flow across them
     // (`Remove-Item -Recurse (Get-Item C:\)`, `if exist x rd /s /q C:\`).
@@ -996,35 +1018,109 @@ fn windows_verdict(cmd: &str, args: &[String], raw: &[String], after_pipe: bool,
     if cmd == "diskpart" {
         return Some(WIN_DISKPART.to_string());
     }
-    if depth > 1 {
-        if let Some((inner, flavor)) = wrapped_line(cmd, raw) {
-            return windows_flavor(&inner, flavor, depth - 1);
+    for w in wrapped_lines(cmd, raw, f) {
+        match w {
+            // An encoded script cannot be read, whatever the depth.
+            Wrapped::Opaque => return Some(WIN_ENCODED.to_string()),
+            Wrapped::Line(inner, flavor) if depth > 1 => {
+                if let Some(r) = windows_flavor(&inner, flavor, depth - 1) {
+                    return Some(r);
+                }
+            }
+            Wrapped::Line(..) => {}
         }
     }
     None
 }
 
-/// The line a `cmd /c`, `cmd /k`, `powershell -Command` or `pwsh -c` wrapper runs, and the shell
-/// that runs it. cmd also takes the line glued to the switch (`/c"..."`).
-fn wrapped_line(cmd: &str, args: &[String]) -> Option<(String, Flavor)> {
+/// What a wrapper runs.
+enum Wrapped {
+    /// The line it hands to a shell.
+    Line(String, Flavor),
+    /// A script that cannot be read (`-EncodedCommand`).
+    Opaque,
+}
+
+/// PowerShell switches that take the next word as their value (a switch may be abbreviated to
+/// any prefix that is not another switch's).
+const PS_VALUE_SWITCHES: &[&str] = &["executionpolicy", "ep", "windowstyle", "inputformat", "outputformat", "configurationname", "workingdirectory", "wd", "version"];
+
+/// The lines a `cmd /c`, `cmd /k`, `powershell -Command` (or a positional command) or `pwsh -c`
+/// wrapper runs, or a `start` runs, and the shell that runs each. cmd also takes the line glued
+/// to the switch (`/c"..."`), and its delimiters `,` `;` `=` glue a switch to the word before it
+/// (`cmd,/c,format C:`); the script itself is handed on as written. `start` gives two lines
+/// under cmd, since its first word can be a title whose quotes are already gone.
+fn wrapped_lines(cmd: &str, args: &[String], f: Flavor) -> Vec<Wrapped> {
     match cmd {
         "cmd" => {
-            let at = args.iter().position(|a| {
-                let a = a.to_lowercase();
-                a.starts_with("/c") || a.starts_with("/k") || a.starts_with("/r")
-            })?;
-            let glued = &args[at][2..];
-            let rest = std::iter::once(glued).chain(args[at + 1..].iter().map(String::as_str)).collect::<Vec<_>>().join(" ");
-            Some((rest, Flavor::Cmd))
+            let text = args.join(" ");
+            let mut start = 0;
+            for (i, c) in text.char_indices().chain(std::iter::once((text.len(), ' '))) {
+                if !matches!(c, ' ' | '\t' | ',' | ';' | '=') {
+                    continue;
+                }
+                let lower = text[start..i].to_lowercase();
+                if lower.starts_with("/c") || lower.starts_with("/k") || lower.starts_with("/r") {
+                    let script = text[start + 2..].trim_start_matches([' ', '\t', ',', ';', '=']);
+                    return vec![Wrapped::Line(script.to_string(), Flavor::Cmd)];
+                }
+                start = i + c.len_utf8();
+            }
+            Vec::new()
         }
         "powershell" | "pwsh" => {
-            let at = args.iter().position(|a| {
-                let a = a.to_lowercase();
-                a.len() >= 2 && a.starts_with('-') && "-command".starts_with(&a)
-            })?;
-            Some((args[at + 1..].join(" "), Flavor::Ps))
+            let mut i = 0;
+            while i < args.len() {
+                let lower = args[i].to_lowercase();
+                let Some(name) = lower.strip_prefix('-') else {
+                    // The first word that is no switch is the command (Windows PowerShell's
+                    // default parameter is -Command).
+                    return vec![Wrapped::Line(args[i..].join(" "), Flavor::Ps)];
+                };
+                let name = name.split(':').next().unwrap_or("");
+                if name.is_empty() {
+                    i += 1;
+                    continue;
+                }
+                if "command".starts_with(name) {
+                    return vec![Wrapped::Line(args[i + 1..].join(" "), Flavor::Ps)];
+                }
+                if "encodedcommand".starts_with(name) || name == "ec" {
+                    return vec![Wrapped::Opaque];
+                }
+                // A script file is not a command line.
+                if "file".starts_with(name) {
+                    return Vec::new();
+                }
+                if PS_VALUE_SWITCHES.iter().any(|v| v.starts_with(name)) {
+                    i += 1;
+                }
+                i += 1;
+            }
+            Vec::new()
         }
-        _ => None,
+        "start" | "start-process" | "saps" => {
+            let mut lines = Vec::new();
+            let mut i = 0;
+            while i < args.len() {
+                let lower = args[i].to_lowercase();
+                let switch = (f == Flavor::Cmd && lower.starts_with('/')) || (f == Flavor::Ps && lower.starts_with('-'));
+                if switch {
+                    if matches!(lower.trim_start_matches(['/', '-']), "d" | "workingdirectory" | "windowstyle" | "verb") {
+                        i += 1;
+                    }
+                } else if !lower.is_empty() {
+                    lines.push(Wrapped::Line(args[i..].join(" "), f));
+                    // Under cmd the first word may be the window title.
+                    if f != Flavor::Cmd || lines.len() == 2 {
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            lines
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -1041,6 +1137,7 @@ pub const FIND_ROOT: &str = "the command deletes or runs a destructive command a
 pub const WIN_DELETE: &str = "the command recursively deletes a drive root or the home directory";
 pub const WIN_FORMAT: &str = "the command formats a drive (format)";
 pub const WIN_DISKPART: &str = "the command runs diskpart, which can erase disks";
+pub const WIN_ENCODED: &str = "the command runs an encoded PowerShell script, which can't be safety-checked";
 pub fn pipe_reason(cmd: &str) -> String {
     format!("the command pipes into a shell (`{cmd}`), whose input can't be safety-checked")
 }
@@ -1389,6 +1486,88 @@ mod tests {
         expect("ps", filtered, windows(filtered, PowerShell), s(WIN_DELETE));
         let build = "Get-ChildItem C:\\build | Where-Object { $_.Name } | Remove-Item -Recurse";
         expect("ps", build, windows(build, PowerShell), None);
+        assert!(miss.is_empty(), "{} forms missed:\n{}", miss.len(), miss.join("\n"));
+    }
+
+    #[test]
+    fn windows_floor_round_three() {
+        let mut miss: Vec<String> = Vec::new();
+        let mut expect = |label: &str, line: &str, got: Option<String>, want: Option<&str>| {
+            if got.as_deref() != want {
+                miss.push(format!("{label} {line:?}: got {got:?}, want {want:?}"));
+            }
+        };
+        // Item 7: cmd's own delimiters glue the switch and the script (both Cmd and Unknown).
+        let glued = [
+            ("cmd,/c,format C:", WIN_FORMAT),
+            ("cmd /c,format C:", WIN_FORMAT),
+            ("cmd;/c;diskpart", WIN_DISKPART),
+            ("cmd=/c format C:", WIN_FORMAT),
+            ("cmd /c;;format C:", WIN_FORMAT),
+            ("cmd.exe,/k,diskpart", WIN_DISKPART),
+        ];
+        for (line, why) in glued {
+            expect("cmd", line, windows(line, Cmd), Some(why));
+            expect("unknown", line, windows(line, Unknown), Some(why));
+        }
+        expect("cmd", "cmd /c echo hi", windows("cmd /c echo hi", Cmd), None);
+        expect("cmd", "cmd,/c,dir", windows("cmd,/c,dir", Cmd), None);
+        // Item 10: a leading delimiter before a cmd command.
+        for (line, why) in [(",format C:", WIN_FORMAT), (";diskpart", WIN_DISKPART), ("=format C:", WIN_FORMAT), (" , format C:", WIN_FORMAT), (",;rd /s /q C:\\", WIN_DELETE)] {
+            expect("cmd", line, windows(line, Cmd), Some(why));
+        }
+        // Item 10: a positional PowerShell command, and an encoded one always.
+        for (line, why) in [
+            ("powershell format C:", WIN_FORMAT),
+            ("powershell \"Get-Volume; format C:\"", WIN_FORMAT),
+            ("pwsh -NoProfile -ExecutionPolicy Bypass diskpart", WIN_DISKPART),
+            ("powershell.exe -NoLogo Remove-Item -Recurse C:\\", WIN_DELETE),
+            ("powershell -EncodedCommand ZgBvAHIAbQBhAHQA", WIN_ENCODED),
+            ("powershell -enc AAAA", WIN_ENCODED),
+            ("pwsh -e AAAA", WIN_ENCODED),
+            ("powershell -ec AAAA", WIN_ENCODED),
+            ("powershell -NoProfile -EncodedCommand AAAA", WIN_ENCODED),
+        ] {
+            for k in [Cmd, PowerShell, Unknown] {
+                expect(&format!("{k:?}"), line, windows(line, k), Some(why));
+            }
+        }
+        for line in ["powershell -File x.ps1", "powershell -NoProfile Get-Date", "pwsh -ExecutionPolicy Bypass -File a.ps1 format"] {
+            expect("cmd", line, windows(line, Cmd), None);
+        }
+        // Item 10: `start` runs its command.
+        for (line, why) in [
+            ("start diskpart", WIN_DISKPART),
+            ("start /b format C:", WIN_FORMAT),
+            ("start \"\" diskpart", WIN_DISKPART),
+            ("start \"title\" /min cmd /c format C:", WIN_FORMAT),
+            ("start /d C:\\x diskpart", WIN_DISKPART),
+            ("start /wait rd /s /q C:\\", WIN_DELETE),
+        ] {
+            expect("cmd", line, windows(line, Cmd), Some(why));
+        }
+        expect("cmd", "start notepad", windows("start notepad", Cmd), None);
+        expect("cmd", "start \"\" notepad C:\\x", windows("start \"\" notepad C:\\x", Cmd), None);
+        expect("ps", "start diskpart", windows("start diskpart", PowerShell), Some(WIN_DISKPART));
+        expect("ps", "Start-Process diskpart", windows("Start-Process diskpart", PowerShell), Some(WIN_DISKPART));
+        expect("ps", "start notepad", windows("start notepad", PowerShell), None);
+        // Item 10: ForEach-Object over a pipeline that named a target.
+        for (line, why) in [
+            ("Get-ChildItem C:\\ | ForEach-Object { Remove-Item $_ -Recurse }", Some(WIN_DELETE)),
+            ("Get-ChildItem C:\\ | % { Remove-Item $_ -Recurse }", Some(WIN_DELETE)),
+            ("Get-ChildItem C:\\ | foreach { rm $_ -r }", Some(WIN_DELETE)),
+            ("Get-ChildItem C:\\build | ForEach-Object { Remove-Item $_ -Recurse }", None),
+            ("Get-ChildItem C:\\ | ForEach-Object { Write-Host $_ }", None),
+        ] {
+            expect("ps", line, windows(line, PowerShell), why);
+        }
+        // Item 8: an `if` condition's target does not carry into a later pipeline.
+        let cond = "if (Test-Path C:\\) { Get-ChildItem .\\tmp | Remove-Item -Recurse }";
+        expect("ps", cond, windows(cond, PowerShell), None);
+        let group = "(Get-ChildItem C:\\) | Remove-Item -Recurse";
+        expect("ps", group, windows(group, PowerShell), Some(WIN_DELETE));
+        let filtered = "Get-ChildItem C:\\ | Where-Object { $_.Name } | Remove-Item -Recurse";
+        expect("ps", filtered, windows(filtered, PowerShell), Some(WIN_DELETE));
         assert!(miss.is_empty(), "{} forms missed:\n{}", miss.len(), miss.join("\n"));
     }
 

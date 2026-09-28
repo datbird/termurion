@@ -56,13 +56,13 @@ pub fn default_path() -> PathBuf {
     base.join("Tandem").join("settings.toml")
 }
 
-/// What iTerm2 reads for a key that is not set. The AI prompts' defaults live in their
-/// resource files, not the schema.
 /// Keys whose presence means something even at the default: "AI Safety Check" chosen by the
 /// person, on or off, ends its one-time question (`RemoteCommand+Mac.swift:36-38`,
 /// `object(forKey:) != nil`).
 const KEPT_WHEN_DEFAULT: [&str; 1] = [crate::ai_settings::SAFETY_CHECK];
 
+/// What iTerm2 reads for a key that is not set. The AI prompts' defaults live in their
+/// resource files, not the schema.
 fn default_of(key: &str) -> Option<Value> {
     match key {
         "GlobalKeyMap" => Some(Value::Table(keymaps::factory_global().clone())),
