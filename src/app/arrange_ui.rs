@@ -289,10 +289,16 @@ pub(super) enum FolderNotice {
 }
 
 /// A restored session's folder: nothing for a shell taken back, an empty folder, a UNC
-/// folder (never probed) or one that exists.
+/// folder (never probed), a folder that is not a Windows path (WSL, MSYS or a remote host's,
+/// which cannot be checked here, as iTerm2 skips such a path, `iTermSessionFactory.m:342-345`)
+/// or one that exists.
 pub(super) fn folder_notice(launch: Launch, folder: &str, is_dir: &dyn Fn(&std::path::Path) -> bool) -> FolderNotice {
-    if !launch.launched || folder.trim().is_empty() || crate::remote_prefs::is_unc(folder) || is_dir(std::path::Path::new(folder)) {
+    if !launch.launched || folder.trim().is_empty() || crate::remote_prefs::is_unc(folder) {
         return FolderNotice::Nothing;
+    }
+    match crate::profile::local_path(folder) {
+        Some(path) if !is_dir(&path) => {}
+        _ => return FolderNotice::Nothing,
     }
     match (launch.ssh, launch.named) {
         (false, _) => FolderNotice::Unavailable,
@@ -700,5 +706,18 @@ mod tests {
         assert_eq!(folder_notice(local(true), r"\\host\share\x", &watch), Nothing);
         assert_eq!(folder_notice(ssh(true), "//host/share", &watch), Nothing);
         assert!(!probed.get(), "a UNC folder is never probed");
+        // Not a Windows path (WSL, MSYS, a remote host's): nothing to check here, as iTerm2
+        // skips a path it cannot check against this machine (`iTermSessionFactory.m:342-345`).
+        assert_eq!(folder_notice(local(true), "/home/rob/src", &watch), Nothing, "a Unix path is not missing");
+        assert_eq!(folder_notice(ssh(true), "/home/rob/src", &watch), Nothing, "nor for ssh");
+        assert_eq!(folder_notice(local(true), "~/www", &watch), Nothing);
+        assert!(!probed.get(), "a path that is not a Windows path is never probed");
+        let seen = std::cell::RefCell::new(None);
+        let record = |p: &std::path::Path| {
+            *seen.borrow_mut() = Some(p.to_path_buf());
+            false
+        };
+        assert_eq!(folder_notice(local(true), "/D:/gone", &record), Unavailable, "the OSC 7 form of a Windows path");
+        assert_eq!(seen.borrow().as_deref(), Some(std::path::Path::new(r"D:\gone")), "probed as a Windows path");
     }
 }

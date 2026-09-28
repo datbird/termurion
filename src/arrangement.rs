@@ -400,9 +400,11 @@ pub enum Folder {
     None,
 }
 
+/// A restored session's folder rule. Contents force only a Windows path: another (WSL, MSYS,
+/// a remote host's) cannot be a Windows shell's folder, so the profile's rule decides.
 pub fn folder_for(session: &Value) -> Folder {
     match session.get("Working Directory").and_then(|v| v.as_str()) {
-        Some(d) if contents(session).is_some() || styled_contents(session).is_some() => Folder::Forced(d.into()),
+        Some(d) if (contents(session).is_some() || styled_contents(session).is_some()) && crate::profile::local_path(d).is_some() => Folder::Forced(d.into()),
         Some(d) => Folder::Previous(d.into()),
         None => Folder::None,
     }
@@ -667,6 +669,11 @@ mod tests {
         with.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
         assert_eq!(folder_for(&with), Folder::Forced(r"C:\src".into()), "contents force the folder");
         assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None)), Folder::None);
+        // A folder that is not a Windows path (WSL, MSYS, a remote host's) cannot be a Windows
+        // shell's folder: contents never force it, so no "does not exist" banner follows.
+        let mut unix = session(80, 24, Table::new(), "s", Some("/home/rob/src"));
+        unix.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&unix), Folder::Previous("/home/rob/src".into()));
         assert_eq!(contents(&with), Some("x"));
     }
 
