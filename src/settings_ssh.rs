@@ -42,7 +42,17 @@ impl Sheet {
 
 /// Browse starts in the path field's folder when it names one.
 fn browse_dir(path_text: &str) -> std::path::PathBuf {
-    std::path::Path::new(path_text).parent().filter(|d| !d.as_os_str().is_empty() && d.is_dir()).map_or_else(|| SSH_FOLDER.into(), std::path::Path::to_path_buf)
+    browse_dir_with(path_text, &std::path::Path::is_dir)
+}
+
+/// `browse_dir` with the folder test passed in. A network or device folder, or one reached
+/// through a link to a network path (`util_cli::may_open`), is never looked at: the field
+/// can come from an import or a settings folder, and probing `\\host` sends credentials.
+fn browse_dir_with(path_text: &str, is_dir: &dyn Fn(&std::path::Path) -> bool) -> std::path::PathBuf {
+    std::path::Path::new(path_text)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty() && crate::util_cli::may_open(d) && is_dir(d))
+        .map_or_else(|| SSH_FOLDER.into(), std::path::Path::to_path_buf)
 }
 
 fn show(ctx: &egui::Context, sh: &mut Sheet, open_url: &mut Option<String>, home: &str) -> Outcome {
@@ -190,5 +200,26 @@ mod tests {
         sh.env_text = "A, B".into();
         sh.path_text.clear();
         assert_eq!(sh.finish(), SshConfig { environment_variables_to_copy: vec!["A".into(), "B".into()], path_to_ssh: None, ..stored });
+    }
+
+    /// A network or device path in the field (typed, imported or loaded from a settings
+    /// folder) gives OpenSSH's folder without the path being looked at (invariant 5); a
+    /// local folder is looked at and used.
+    #[test]
+    fn browse_never_probes_a_network_path() {
+        let probed = std::cell::RefCell::new(Vec::new());
+        let is_dir = |d: &std::path::Path| {
+            probed.borrow_mut().push(d.to_path_buf());
+            true
+        };
+        for p in ["\\\\server\\share\\ssh.exe", "//server/share/ssh.exe", "\\\\?\\UNC\\server\\share\\ssh.exe", "\\\\.\\C:\\Windows\\ssh.exe", "\\??\\UNC\\server\\share\\ssh.exe", "/\\server\\share\\ssh.exe"] {
+            assert_eq!(browse_dir_with(p, &is_dir), std::path::PathBuf::from(SSH_FOLDER), "{p}");
+        }
+        assert_eq!(*probed.borrow(), Vec::<std::path::PathBuf>::new());
+        assert_eq!(browse_dir_with("", &is_dir), std::path::PathBuf::from(SSH_FOLDER));
+        assert_eq!(browse_dir_with("ssh.exe", &is_dir), std::path::PathBuf::from(SSH_FOLDER));
+        assert_eq!(browse_dir_with("C:\\Tools\\ssh.exe", &is_dir), std::path::PathBuf::from("C:\\Tools"));
+        assert_eq!(*probed.borrow(), vec![std::path::PathBuf::from("C:\\Tools")]);
+        assert_eq!(browse_dir_with("C:\\Tools\\ssh.exe", &|_| false), std::path::PathBuf::from(SSH_FOLDER));
     }
 }
