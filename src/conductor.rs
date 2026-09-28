@@ -3,9 +3,11 @@
 //! Pure: it talks to the app only through the `Effect`s it queues (the tmux gateway's
 //! `take_writes` pattern).
 
+use crate::conductor_framer::{Job, Purpose, TtyState};
 use crate::conductor_parser::Init;
 use crate::ssh_args::{HostnameFinder, Identity, ParsedArgs};
 use crate::ssh_inject::{expand_local_tilde, injection_payloads, last_component, modify_remote, shell_supports_injection, tarballs, tweak_destination, Payload, Source, INTEGRATION_SUBDIR};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use base64::Engine;
@@ -329,6 +331,9 @@ pub enum Handler {
     WriteOnSuccess(String),
     GetShell(Vec<String>),
     CheckForPython(Vec<String>),
+    /// A framer `run`: its reply line is the child's pid, which becomes a background job
+    /// (`CD:2259-2271`); the end, an abort and a cancel do nothing.
+    RunRemote(Purpose),
 }
 
 /// A command with its handler (ExecutionContext, `CD:1159-1164`).
@@ -566,12 +571,20 @@ pub struct Conductor {
     /// The `%it2` frames this conductor owns, the newest 16, each cut at `IT2_ENTRY_MAX`.
     /// Nothing reads them: the it2 proxy is n/a (ruling 3) and Tandem never sends `it2listen`.
     pub it2_inbox: Vec<String>,
-    /// What `handle_terminate` and `handle_side` heard, until Task 4 gives them bodies.
+    /// The remote's `uname` output, trimmed (`CD:1912-1917`).
+    pub uname: Option<String>,
+    /// The name `hostname -f` printed, trimmed (`CD:2198-2214`).
+    pub discovered_hostname: Option<String>,
+    /// The commands running in the background on the remote, by pid (`CD:471`); not restorable.
+    pub background_jobs: BTreeMap<i32, Job>,
+    /// The remote tty's echo and icanon, from `%notif tty` (`CD:672-679`).
+    pub tty: TtyState,
+    /// Every background job completion, for the tests.
     #[cfg(test)]
-    pub(crate) heard: Vec<String>,
+    pub(crate) completed: Vec<(Purpose, Vec<u8>, i32)>,
     line_prefix: String,
     depth: i32,
-    effects: Vec<Effect>,
+    pub(crate) effects: Vec<Effect>,
     state: State,
     queue: Vec<Context>,
     /// Set while a handler runs and while commands are written: `send` only enqueues, and
@@ -612,8 +625,12 @@ impl Conductor {
             python_ok: false,
             framer_version: None,
             it2_inbox: Vec::new(),
+            uname: None,
+            discovered_hostname: None,
+            background_jobs: BTreeMap::new(),
+            tty: TtyState::default(),
             #[cfg(test)]
-            heard: Vec::new(),
+            completed: Vec::new(),
             line_prefix: format!("\u{3}{prefix_uuid}"),
             depth,
             effects: Vec::new(),
@@ -797,6 +814,11 @@ impl Conductor {
 
     pub fn unhooked(&self) -> bool {
         self.state == State::Unhooked
+    }
+
+    /// Whether `pred` holds for the command in flight or one queued.
+    pub(crate) fn has_command(&self, pred: &dyn Fn(&Command) -> bool) -> bool {
+        self.in_flight().is_some_and(pred) || self.queue.iter().any(|c| pred(&c.command))
     }
 
     /// The command written and not yet ended, for the command timer (Task 9) and tests.
@@ -1051,6 +1073,11 @@ impl Conductor {
     /// is a reference), up to the handler's limit; past it the step fails.
     fn collect_line(&mut self, line: &str) {
         let State::Executing(context, _) = &mut self.state else { return };
+        if let Handler::RunRemote(purpose) = &context.handler {
+            let (purpose, command) = (purpose.clone(), context.command.clone());
+            self.add_background_job(line, command, purpose);
+            return;
+        }
         let (lines, (max_bytes, max_lines)) = match &mut context.handler {
             Handler::GetShell(lines) => (lines, GETSHELL_LIMIT),
             Handler::CheckForPython(lines) => (lines, PYTHON_LIMIT),
@@ -1109,6 +1136,7 @@ impl Conductor {
                 }
             }
             Handler::CheckForPython(lines) => self.did_check_for_python(lines, status),
+            Handler::RunRemote(_) => {}
         }
     }
 }

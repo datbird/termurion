@@ -722,6 +722,11 @@ impl Pane {
         self.ssh_hook.unhook();
     }
 
+    /// Whether the innermost conductor's remote tty is at a password prompt (`PS:7659`).
+    pub fn ssh_password_prompt(&self) -> bool {
+        self.conductor.as_ref().is_some_and(|c| c.at_password_prompt())
+    }
+
     /// The pane's SSH integration level (`conductor::level`).
     pub fn ssh_level(&self) -> u8 {
         crate::conductor::level(self.conductor.as_deref())

@@ -27,6 +27,12 @@ pub fn at_prompt(mode: u32) -> bool {
     mode & ENABLE_LINE_INPUT != 0 && mode & ENABLE_ECHO_INPUT == 0
 }
 
+/// A session's prompt state with the conductor's (`iTermPasswordInputDebouncer.swift:15-23`):
+/// the conductor's own report is authoritative and counts at once, without the debounce.
+pub fn with_conductor(local_debounced: bool, conductor: bool) -> bool {
+    conductor || local_debounced
+}
+
 /// One console's samples, debounced: a run of samples that say "prompt" counts once a
 /// sample at least the debounce after the run's first one still says so (so a script's brief
 /// echo off is not a prompt, however the samples fall); any other sample ends it at once.
@@ -176,5 +182,14 @@ mod tests {
         assert!(!opens_on_click(true, false, false, (3, 5), (3, 4)), "another row");
         assert!(!opens_on_click(false, false, false, (3, 4), (3, 4)), "off the prompt");
         assert_eq!(KEY_GLYPH as u32, 0xE8D7);
+    }
+
+    #[test]
+    fn conductor_prompt_follows_iterm2() {
+        // iTermPasswordInputDebouncer.swift:15-23: the conductor's prompt counts at once.
+        assert!(with_conductor(false, true));
+        assert!(with_conductor(true, false));
+        assert!(with_conductor(true, true));
+        assert!(!with_conductor(false, false));
     }
 }
