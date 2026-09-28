@@ -809,6 +809,9 @@ pub struct Bar {
     /// join if dropped now (`PSM collapsedTabGroupDropTargetIdentifier`), framed in the
     /// accent color.
     pub join: Option<String>,
+    /// Draw state, set by the app: the edge the bar sits on, so the line between the bar and
+    /// the content is drawn on the content's side.
+    pub position: crate::tab_position::TabPosition,
 }
 
 /// The tab bar's settings (`RTV:1984-1990`, `PT:10112-10124`).
@@ -864,6 +867,18 @@ impl Settings {
             modifier: modifier_string(g.int("SwitchTabModifier")),
             height: bar_height(num("DefaultTabBarHeight", 24.0)),
             pinned_width: num("PinnedTabWidth", crate::scene::PINNED_TAB_WIDTH),
+        }
+    }
+}
+
+impl Settings {
+    /// The label font taken from the theme (`font_pt`: 12 for the High Contrast styles), unless
+    /// `UseCustomTabBarFontSize` is on, when `CustomTabBarFontSize` stays.
+    pub fn with_theme_font(self, g: &crate::globals::Globals, font_pt: f32) -> Settings {
+        if g.bool("UseCustomTabBarFontSize") {
+            self
+        } else {
+            Settings { font: font_pt, ..self }
         }
     }
 }
@@ -1813,6 +1828,17 @@ mod tests {
         assert_eq!(tab_colors(""), DEFAULT_COLORS.to_vec());
         assert_eq!(tab_colors("nope #12"), DEFAULT_COLORS.to_vec());
         assert_eq!(tab_colors("nope  #123456 #zzzzzz #00ff00"), vec![rgb(0x12, 0x34, 0x56), rgb(0, 0xff, 0)]);
+    }
+
+    #[test]
+    fn theme_font_follows_iterm2() {
+        let empty = crate::globals::Globals::empty(std::path::Path::new("unused.toml"));
+        assert_eq!(Settings::from_globals(&empty).with_theme_font(&empty, 12.0).font, 12.0);
+        assert_eq!(Settings::from_globals(&empty).with_theme_font(&empty, 11.0).font, 11.0);
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("unused.toml"));
+        g.set("UseCustomTabBarFontSize", toml::Value::Boolean(true));
+        g.set("CustomTabBarFontSize", toml::Value::Integer(14));
+        assert_eq!(Settings::from_globals(&g).with_theme_font(&g, 12.0).font, 14.0);
     }
 
     fn six_per_char(s: &str, _font: f32, _bold: bool) -> f32 {

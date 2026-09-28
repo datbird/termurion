@@ -57,7 +57,7 @@ impl App {
     /// A pinned tab's width in pixels: `PinnedTabWidth` points at the window's scale.
     #[allow(dead_code)] // 13h reads it.
     pub(super) fn pinned_width(&self) -> f32 {
-        tab_layout::Settings::from_globals(&self.globals).pinned_width * self.scale()
+        self.tab_settings().pinned_width * self.scale()
     }
 
     /// The tab at `at` joins the group `id` (None: no group) and takes its definition and pin

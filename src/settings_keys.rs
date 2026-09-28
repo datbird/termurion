@@ -1993,6 +1993,21 @@ mod tests {
     }
 
     #[test]
+    fn darkness_rows_follow_iterm2() {
+        for (key, kind, default, label) in [
+            ("LightModeInactiveTabDarkness", Kind::Float, Value::Float(0.07), "Darkness (in [0\u{2026}1]) for non-selected tabs in non-Minimal theme in light mode."),
+            ("DarkModeInactiveTabDarkness", Kind::Float, Value::Float(0.5), "Darkness (in [0\u{2026}1]) for non-selected tabs in non-Minimal theme in dark mode."),
+            ("HighVisibility", Kind::Bool, Value::Boolean(true), "High Contrast modes maximize visibility."),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+    }
+
+    #[test]
     fn theme_row_follows_iterm2() {
         let row = schema::find_global("TabStyleWithAutomaticOption").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));

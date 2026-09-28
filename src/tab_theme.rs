@@ -2,6 +2,8 @@
 //! window draws, and the fixed style (Light, Dark or a High Contrast one) it resolves to.
 //! 13e extends this module (the forced appearance, the palettes, Minimal and Compact).
 
+use crate::palette::{Rgb, rgb};
+
 /// iTerm2's tab styles, in its stored order (`iTermPreferences.h:30-36`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TabStyle {
@@ -99,6 +101,216 @@ pub fn system_high_contrast() -> bool {
     ok != 0 && hc.dwFlags & HCF_HIGHCONTRASTON != 0
 }
 
+/// A color with its alpha (`NSColor` with alpha): laid over what is behind it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fill {
+    pub color: Rgb,
+    pub alpha: f32,
+}
+
+impl Fill {
+    const fn new(color: Rgb, alpha: f32) -> Fill {
+        Fill { color, alpha }
+    }
+}
+
+/// The macOS title bar material behind the Light tab bar (`PSMYosemiteTabStyle tabBarColor`,
+/// `YOS:1164-1169`).
+pub const LIGHT_MATERIAL: Rgb = rgb(225, 225, 225);
+/// Tandem's fixed color behind the Dark tab bar (its former active tab color).
+pub const DARK_MATERIAL: Rgb = rgb(0x3a, 0x3a, 0x3a);
+/// `windowBackgroundColor` in the light appearance (Light High Contrast's selected tab).
+const WINDOW_BACKGROUND: Rgb = rgb(236, 236, 236);
+/// The label size of the High Contrast styles in points (`LHC`, `DHC`); the others use 11.
+pub const HIGH_CONTRAST_FONT_PT: f32 = 12.0;
+/// The label size of the other styles in points (`YOS:557-563`).
+pub const REGULAR_FONT_PT: f32 = 11.0;
+
+/// The Minimal style's parts of a palette (Task 4 fills them; `None` for the other styles).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MinimalLook {
+    /// The outline drawn around the selected tab.
+    pub outline: Fill,
+    pub left_inset_is_first_tab: bool,
+    pub underline: f32,
+    pub deselected_colored_alpha: f32,
+}
+
+/// The Minimal style's Advanced settings, iTerm2's defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MinimalKnobs {
+    /// `MinimalTabStyleBackgroundColorDifference`.
+    pub difference: f32,
+    /// `MinimalTabStyleOutlineStrength`.
+    pub outline: f32,
+    /// `MinimalTextLegibilityAdjustment`.
+    pub legibility: f32,
+    /// `MinimalTabStyleTreatLeftInsetAsPartOfFirstTab`.
+    pub left_inset_is_first_tab: bool,
+    /// `MinimalSelectedTabUnderlineProminence`.
+    pub underline: f32,
+    /// `MinimalDeslectedColoredTabAlpha`.
+    pub deselected_colored_alpha: f32,
+}
+
+impl Default for MinimalKnobs {
+    fn default() -> MinimalKnobs {
+        MinimalKnobs { difference: 0.05, outline: 0.2, legibility: 1.0, left_inset_is_first_tab: false, underline: 1.0, deselected_colored_alpha: 0.5 }
+    }
+}
+
+/// Every color and size a tab bar draws with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TabPalette {
+    /// The Theme setting.
+    pub style: TabStyle,
+    /// The fixed style it draws as (`resolved`).
+    pub resolved: TabStyle,
+    /// The opaque material the fills are laid over.
+    pub bar: Rgb,
+    pub selected: Fill,
+    pub unselected: Fill,
+    /// The bar's room beyond the tabs.
+    pub margin: Fill,
+    pub text_selected: Fill,
+    pub text_unselected: Fill,
+    /// The line between two tabs.
+    pub between: Fill,
+    /// The line between the bar and the content.
+    pub edge: Fill,
+    /// The Dark styles draw the content-side line as a solid black one (iTerm2's one-point
+    /// gradient from black to black at 0.75, Decision).
+    pub dark_edge_gradient: bool,
+    /// The label size in points.
+    pub font_pt: f32,
+    /// Light glyphs (the bar is dark).
+    pub dark_controls: bool,
+    pub minimal: Option<MinimalLook>,
+}
+
+/// What a palette depends on.
+#[derive(Clone, Copy, Debug)]
+pub struct Inputs {
+    pub system_dark: bool,
+    pub system_high_contrast: bool,
+    /// The window is the key window of the active app.
+    pub focused: bool,
+    /// `LightModeInactiveTabDarkness`.
+    pub light_darkness: f32,
+    /// `DarkModeInactiveTabDarkness`.
+    pub dark_darkness: f32,
+    /// `HighVisibility`.
+    pub high_visibility: bool,
+    /// The focused pane's background (Minimal's bar).
+    pub session_bg: Rgb,
+    /// The dimming amount of a background window (Minimal).
+    pub dimming: f32,
+    pub minimal: MinimalKnobs,
+}
+
+/// The label size in points a resolved style draws (`font_pt` of its palette): 12 for the High
+/// Contrast styles, else 11. Pure, so hot paths need no palette.
+pub fn font_pt(resolved: TabStyle) -> f32 {
+    match resolved {
+        TabStyle::LightHighContrast | TabStyle::DarkHighContrast => HIGH_CONTRAST_FONT_PT,
+        _ => REGULAR_FONT_PT,
+    }
+}
+
+/// `f` laid over `base` (source-over), each component rounded half up.
+pub fn over(base: Rgb, f: Fill) -> Rgb {
+    let a = f.alpha.clamp(0.0, 1.0);
+    let mix = |b: u8, c: u8| (f32::from(b) * (1.0 - a) + f32::from(c) * a + 0.5).floor() as u8;
+    rgb(mix(base.r, f.color.r), mix(base.g, f.color.g), mix(base.b, f.color.b))
+}
+
+/// A grey of `w` in 0 to 1 as a color, rounded half up.
+fn grey(w: f32) -> Rgb {
+    let v = (w * 255.0 + 0.5).floor() as u8;
+    rgb(v, v, v)
+}
+
+const BLACK: Rgb = rgb(0, 0, 0);
+const WHITE: Rgb = rgb(255, 255, 255);
+
+/// The palette a style draws with (`PSMYosemiteTabStyle` and its Dark, Light High Contrast and
+/// Dark High Contrast subclasses). Automatic, Minimal and Compact draw as the style they
+/// resolve to; Task 4 adds the Minimal parts.
+pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
+    let resolved = resolved(style, i.system_dark, i.system_high_contrast);
+    let focused = i.focused;
+    let (light_bar, dark_bar) = (LIGHT_MATERIAL, DARK_MATERIAL);
+    let fill = |c: Rgb, a: f32| Fill::new(c, a);
+    let mut p = match resolved {
+        TabStyle::Dark | TabStyle::DarkHighContrast => {
+            let unselected = fill(BLACK, i.dark_darkness);
+            TabPalette {
+                style,
+                resolved,
+                bar: dark_bar,
+                selected: fill(BLACK, 0.0),
+                unselected,
+                margin: unselected,
+                text_selected: if focused { fill(WHITE, 1.0) } else { fill(grey(0.45), 1.0) },
+                text_unselected: if focused { fill(grey(0.65), 1.0) } else { fill(grey(0.37), 1.0) },
+                between: fill(WHITE, if focused { 0.18 } else { 0.15 }),
+                edge: fill(BLACK, 0.3),
+                dark_edge_gradient: true,
+                font_pt: REGULAR_FONT_PT,
+                dark_controls: true,
+                minimal: None,
+            }
+        }
+        _ => {
+            let unselected = fill(BLACK, i.light_darkness);
+            TabPalette {
+                style,
+                resolved,
+                bar: light_bar,
+                selected: fill(BLACK, 0.0),
+                unselected,
+                margin: unselected,
+                text_selected: if focused { fill(BLACK, 1.0) } else { fill(grey(189.0 / 255.0), 1.0) },
+                text_unselected: if focused { fill(BLACK, 1.0) } else { fill(grey(164.0 / 255.0), 1.0) },
+                between: fill(BLACK, 0.07),
+                edge: fill(rgb(230, 230, 230), 1.0),
+                dark_edge_gradient: false,
+                font_pt: REGULAR_FONT_PT,
+                dark_controls: false,
+                minimal: None,
+            }
+        }
+    };
+    match resolved {
+        TabStyle::LightHighContrast => {
+            let line = fill(rgb(140, 140, 140), 1.0);
+            p.selected = fill(WINDOW_BACKGROUND, 1.0);
+            p.unselected = fill(rgb(180, 180, 180), 1.0);
+            p.margin = p.unselected;
+            p.text_selected = fill(BLACK, 1.0);
+            p.text_unselected = fill(BLACK, 1.0);
+            p.between = line;
+            p.edge = line;
+        }
+        TabStyle::DarkHighContrast => {
+            // `HighVisibility` (Dark High Contrast only): a light selected tab with black text.
+            p.unselected = fill(grey(0.03), 1.0);
+            p.margin = p.unselected;
+            if i.high_visibility {
+                p.selected = fill(grey(0.80), 1.0);
+                p.text_selected = fill(BLACK, 1.0);
+            } else {
+                p.selected = fill(grey(0.2), 1.0);
+                p.text_selected = fill(WHITE, 1.0);
+            }
+            p.text_unselected = fill(WHITE, 1.0);
+        }
+        _ => {}
+    }
+    p.font_pt = font_pt(resolved);
+    p
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,5 +367,90 @@ mod tests {
         for style in [Light, Dark, LightHighContrast, DarkHighContrast, Automatic] {
             assert!(!compact_theme(style));
         }
+    }
+
+    fn inputs(focused: bool) -> Inputs {
+        Inputs {
+            system_dark: false,
+            system_high_contrast: false,
+            focused,
+            light_darkness: 0.07,
+            dark_darkness: 0.5,
+            high_visibility: true,
+            session_bg: rgb(0, 0, 0),
+            dimming: 0.0,
+            minimal: MinimalKnobs::default(),
+        }
+    }
+
+    fn fill(r: u8, g: u8, b: u8, alpha: f32) -> Fill {
+        Fill { color: rgb(r, g, b), alpha }
+    }
+
+    #[test]
+    fn light_palette_follows_iterm2() {
+        let p = palette(TabStyle::Light, &inputs(true));
+        assert_eq!(p.bar, LIGHT_MATERIAL);
+        assert_eq!(LIGHT_MATERIAL, rgb(225, 225, 225));
+        assert_eq!(p.selected.alpha, 0.0);
+        assert_eq!(p.unselected, fill(0, 0, 0, 0.07));
+        assert_eq!(over(p.bar, p.unselected), rgb(209, 209, 209));
+        assert_eq!(p.margin, p.unselected);
+        assert_eq!((p.text_selected, p.text_unselected), (fill(0, 0, 0, 1.0), fill(0, 0, 0, 1.0)));
+        assert_eq!(p.between, fill(0, 0, 0, 0.07));
+        assert_eq!(p.edge, fill(230, 230, 230, 1.0));
+        assert_eq!(p.font_pt, 11.0);
+        assert!(!p.dark_controls && !p.dark_edge_gradient);
+        assert_eq!((p.style, p.resolved), (TabStyle::Light, TabStyle::Light));
+        let off = palette(TabStyle::Light, &inputs(false));
+        assert_eq!((off.text_selected, off.text_unselected), (fill(189, 189, 189, 1.0), fill(164, 164, 164, 1.0)));
+        let more = palette(TabStyle::Light, &Inputs { light_darkness: 0.2, ..inputs(true) });
+        assert_eq!(more.unselected.alpha, 0.2);
+    }
+
+    #[test]
+    fn dark_palette_follows_iterm2() {
+        let p = palette(TabStyle::Dark, &inputs(true));
+        assert_eq!(p.bar, DARK_MATERIAL);
+        assert_eq!(DARK_MATERIAL, rgb(0x3a, 0x3a, 0x3a));
+        assert_eq!(p.selected.alpha, 0.0);
+        assert_eq!(p.unselected, fill(0, 0, 0, 0.5));
+        assert_eq!(over(p.bar, p.unselected), rgb(29, 29, 29));
+        assert_eq!((p.text_selected, p.text_unselected), (fill(255, 255, 255, 1.0), fill(166, 166, 166, 1.0)));
+        let off = palette(TabStyle::Dark, &inputs(false));
+        assert_eq!((off.text_selected, off.text_unselected), (fill(115, 115, 115, 1.0), fill(94, 94, 94, 1.0)));
+        assert_eq!(p.between, fill(255, 255, 255, 0.18));
+        assert_eq!(off.between.alpha, 0.15);
+        assert_eq!(p.edge, fill(0, 0, 0, 0.3));
+        assert!(p.dark_edge_gradient && p.dark_controls);
+        assert_eq!(p.font_pt, 11.0);
+    }
+
+    #[test]
+    fn high_contrast_follows_iterm2() {
+        let l = palette(TabStyle::LightHighContrast, &inputs(true));
+        assert_eq!(l.selected, fill(236, 236, 236, 1.0));
+        assert_eq!(l.unselected, fill(180, 180, 180, 1.0));
+        assert_eq!((l.between, l.edge), (fill(140, 140, 140, 1.0), fill(140, 140, 140, 1.0)));
+        assert_eq!((l.text_selected, l.text_unselected), (fill(0, 0, 0, 1.0), fill(0, 0, 0, 1.0)));
+        assert_eq!(l.font_pt, 12.0);
+        let d = palette(TabStyle::DarkHighContrast, &inputs(true));
+        assert_eq!(d.selected, fill(204, 204, 204, 1.0));
+        assert_eq!(d.unselected, fill(8, 8, 8, 1.0));
+        assert_eq!((d.text_selected, d.text_unselected), (fill(0, 0, 0, 1.0), fill(255, 255, 255, 1.0)));
+        assert_eq!(d.font_pt, 12.0);
+        let plain = palette(TabStyle::DarkHighContrast, &Inputs { high_visibility: false, ..inputs(true) });
+        assert_eq!(plain.selected, fill(51, 51, 51, 1.0));
+        assert_eq!((plain.text_selected, plain.text_unselected), (fill(255, 255, 255, 1.0), fill(255, 255, 255, 1.0)));
+        // Light High Contrast ignores HighVisibility.
+        assert_eq!(palette(TabStyle::LightHighContrast, &Inputs { high_visibility: false, ..inputs(true) }), l);
+        // Automatic, Minimal and Compact draw as what they resolve to.
+        for style in [TabStyle::Automatic, TabStyle::Minimal, TabStyle::Compact] {
+            let auto = palette(style, &Inputs { system_dark: true, ..inputs(true) });
+            assert_eq!(auto, TabPalette { style, ..palette(TabStyle::Dark, &inputs(true)) });
+            assert_eq!(auto.resolved, TabStyle::Dark);
+        }
+        assert_eq!(font_pt(TabStyle::LightHighContrast), 12.0);
+        assert_eq!(font_pt(TabStyle::Dark), 11.0);
     }
 }

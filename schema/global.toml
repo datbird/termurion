@@ -2912,6 +2912,33 @@ default = 35.0
 help = "Minimum width for tab labels.\nThe activity/bell icon will be hidden when the space for the label drops below this size (in points)"
 
 [[setting]]
+key = "LightModeInactiveTabDarkness"
+tab = "Advanced"
+section = "Tabs"
+label = "Darkness (in [0\u20261]) for non-selected tabs in non-Minimal theme in light mode."
+type = "float"
+default = 0.07
+help = "Darkness (in [0\u20261]) for non-selected tabs in non-Minimal theme in light mode."
+
+[[setting]]
+key = "DarkModeInactiveTabDarkness"
+tab = "Advanced"
+section = "Tabs"
+label = "Darkness (in [0\u20261]) for non-selected tabs in non-Minimal theme in dark mode."
+type = "float"
+default = 0.5
+help = "Darkness (in [0\u20261]) for non-selected tabs in non-Minimal theme in dark mode."
+
+[[setting]]
+key = "HighVisibility"
+tab = "Advanced"
+section = "Tabs"
+label = "High Contrast modes maximize visibility."
+type = "bool"
+default = true
+help = "High Contrast modes maximize visibility.\nWhen enabled, the dark high-contrast theme emphasizes visibility over beauty."
+
+[[setting]]
 key = "DrawBottomLineForHorizontalTabBar"
 tab = "Advanced"
 section = "Tabs"

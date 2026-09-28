@@ -1661,7 +1661,7 @@ impl App {
     /// A horizontal tab bar's height in pixels (`DefaultTabBarHeight` points), whether or not
     /// the bar shows; `tab_bar_rect` says whether there is a bar.
     fn tab_height(&self) -> f32 {
-        (tab_layout::Settings::from_globals(&self.globals).height * self.scale()).round()
+        (self.tab_settings().height * self.scale()).round()
     }
 
     /// A side bar's narrowest width in points (`RTV minimumTabBarWidth`).
@@ -1815,7 +1815,7 @@ impl App {
     /// Lays out the tab bar in `area` (pixels): a horizontal bar scrolled along by `offset`
     /// points, a side bar down, measuring labels in the prose font.
     fn layout_tab_bar(&mut self, looks: &[scene::TabLook], area: Rect, offset: f32) -> tab_layout::Bar {
-        let s = tab_layout::Settings::from_globals(&self.globals);
+        let s = self.tab_settings();
         let inputs = self.tab_inputs(looks);
         let vertical = tab_position::vertical(self.tab_position());
         let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
@@ -2138,7 +2138,7 @@ impl App {
             self.side_bar_wheel(delta);
             return true;
         }
-        let optimum = tab_layout::Settings::from_globals(&self.globals).prefs.optimum;
+        let optimum = self.tab_settings().prefs.optimum;
         // A notched wheel moves in lines; precise deltas are already a distance (pixels here).
         let (dx, dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (x, y),
@@ -2167,7 +2167,7 @@ impl App {
         if !self.side_bar_scrollable() || content <= bar.h / scale {
             return;
         }
-        let row = tab_layout::Settings::from_globals(&self.globals).height;
+        let row = self.tab_settings().height;
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => y * row,
             MouseScrollDelta::PixelDelta(p) => p.y as f32 / scale,
@@ -2280,6 +2280,37 @@ impl App {
     /// The window's own winit theme (Windows' mode when nothing is forced), dark when unknown.
     pub(super) fn system_dark(&self) -> bool {
         self.gpu.as_ref().and_then(|g| g.window.theme()).is_none_or(|t| t == winit::window::Theme::Dark)
+    }
+
+    /// The tab bar's settings for this window: the globals, with the label size the resolved
+    /// theme draws (`tab_theme::font_pt`) unless a custom size is on. The one place that builds
+    /// them, so layout, hits and drags agree.
+    pub(super) fn tab_settings(&self) -> tab_layout::Settings {
+        tab_layout::Settings::from_globals(&self.globals).with_theme_font(&self.globals, crate::tab_theme::font_pt(self.resolved_style()))
+    }
+
+    /// The colors the tab bar draws with (`tab_theme::palette`), from the Theme, Windows' modes,
+    /// the window being key, the three tab darkness keys and the focused pane's background.
+    pub(super) fn tab_palette(&self) -> crate::tab_theme::TabPalette {
+        use crate::tab_theme::{Inputs, MinimalKnobs};
+        let g = &self.globals;
+        let session_bg = self
+            .tabs
+            .get(self.active)
+            .and_then(|t| self.panes.get(&t.focused))
+            .map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
+        let inputs = Inputs {
+            system_dark: self.system_dark(),
+            system_high_contrast: crate::tab_theme::system_high_contrast(),
+            focused: self.focused && self.app_active,
+            light_darkness: g.number("LightModeInactiveTabDarkness").map_or(0.07, |v| v as f32),
+            dark_darkness: g.number("DarkModeInactiveTabDarkness").map_or(0.5, |v| v as f32),
+            high_visibility: g.bool("HighVisibility"),
+            session_bg,
+            dimming: 0.0,
+            minimal: MinimalKnobs::default(),
+        };
+        crate::tab_theme::palette(self.tab_style(), &inputs)
     }
 
     /// The Theme setting (`TabStyleWithAutomaticOption`), Automatic when unset.
@@ -3948,11 +3979,14 @@ impl App {
             let joining = join.map(|join| tab_layout::Bar { join: Some(join), ..drawn.clone() });
             let drawn = joining.as_ref().unwrap_or(drawn);
             let (key, overflow_down) = (self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
+            let pal = self.tab_palette();
+            let positioned = tab_layout::Bar { position: self.tab_position(), ..drawn.clone() };
+            let drawn = &positioned;
             if vertical {
-                let (_, chips) = scene::tab_bar_vertical(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
+                let (_, chips) = scene::tab_bar_vertical(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down, &pal);
                 self.side_chips = chips;
             } else {
-                scene::tab_bar(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down);
+                scene::tab_bar(bar_frame, &looks, self.active, drawn, area, scale, scale / font_px, cell.1, key, overflow_down, &pal);
                 self.side_chips.clear();
             }
         } else {
