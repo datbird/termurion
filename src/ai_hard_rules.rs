@@ -596,6 +596,17 @@ fn scan_win_marked(line: &str, f: Flavor) -> Result<Vec<(String, bool, bool)>, (
                 continue;
             }
         }
+        // A literal array `@('-enc','AAAA')` is its elements, so a command's argument list keeps
+        // them (`Start-Process powershell -ArgumentList @(..)`).
+        if f == Flavor::Ps && c == '@' && next == Some('(') {
+            if let Some(end) = literal_array_end(&chars, i) {
+                cur.push(' ');
+                cur.extend(&chars[i + 2..end - 1]);
+                cur.push(' ');
+                i = end;
+                continue;
+            }
+        }
         let mut split = |after_pipe: bool, bracket: bool, cur: &mut String, cur_pipe: &mut bool, cur_bracket: &mut bool| {
             segs.push((std::mem::take(cur), *cur_pipe, *cur_bracket));
             *cur_pipe = after_pipe;
@@ -753,6 +764,34 @@ fn normalize_win(line: &str, f: Flavor) -> String {
 fn braced_var_end(chars: &[char], i: usize) -> Option<usize> {
     let close = chars[i + 2..].iter().position(|&c| c == '}')?;
     Some(i + 2 + close + 1)
+}
+
+/// Where a PowerShell literal array `@('a', "b")` starting at `chars[i]` ends (past its `)`):
+/// only quoted elements, commas and whitespace, so nothing inside is a command.
+fn literal_array_end(chars: &[char], i: usize) -> Option<usize> {
+    let mut j = i + 2;
+    let mut element = false;
+    while j < chars.len() {
+        match chars[j] {
+            ')' if element => return Some(j + 1),
+            ' ' | '\t' => {}
+            ',' if element => element = false,
+            q @ ('\'' | '"') if !element => {
+                j += 1;
+                while j < chars.len() && chars[j] != q {
+                    // A backtick escapes the next character in double quotes.
+                    j += if q == '"' && chars[j] == '`' { 2 } else { 1 };
+                }
+                if j >= chars.len() {
+                    return None;
+                }
+                element = true;
+            }
+            _ => return None,
+        }
+        j += 1;
+    }
+    None
 }
 
 /// The line with grouping brackets read as spaces (a PowerShell `${name}` is kept).
@@ -1044,19 +1083,23 @@ enum Wrapped {
 }
 
 /// PowerShell switches that take the next word as their value (a switch may be abbreviated to
-/// any prefix that is not another switch's): Windows PowerShell 5.1's and pwsh's.
+/// any prefix that is not another switch's), with pwsh's short aliases that are no prefix
+/// (`-if`, `-of`, `-ea`): Windows PowerShell 5.1's and pwsh's.
 const PS_VALUE_SWITCHES: &[&str] = &[
     "executionpolicy",
     "ep",
     "windowstyle",
     "inputformat",
+    "if",
     "outputformat",
+    "of",
     "configurationname",
     "configurationfile",
     "custompipename",
     "settingsfile",
     "psconsolefile",
     "encodedarguments",
+    "ea",
     "workingdirectory",
     "wd",
     "version",
@@ -1148,15 +1191,15 @@ fn wrapped_lines(cmd: &str, args: &[String], f: Flavor) -> Vec<Wrapped> {
                     return lines;
                 };
                 let name = switch.split(':').next().unwrap_or("").to_string();
-                let value = args[i].split_once(':').map(|(_, v)| v.to_string());
+                // An empty value after `:` (`-ep: Bypass`) is the next word's, as no `:` is.
+                let value = args[i].split_once(':').map(|(_, v)| v.to_string()).filter(|v| !v.is_empty());
                 if name.is_empty() {
                     i += 1;
                     continue;
                 }
                 if "command".starts_with(name.as_str()) {
                     // `-Command:x` keeps its value as the line's first word.
-                    let glued = value.filter(|v| !v.is_empty());
-                    lines.push(Wrapped::Line(glued.into_iter().chain(args[i + 1..].iter().cloned()).collect::<Vec<_>>().join(" "), Flavor::Ps));
+                    lines.push(Wrapped::Line(value.into_iter().chain(args[i + 1..].iter().cloned()).collect::<Vec<_>>().join(" "), Flavor::Ps));
                     return lines;
                 }
                 if "encodedcommand".starts_with(name.as_str()) || name == "ec" {
@@ -1199,22 +1242,25 @@ fn wrapped_lines(cmd: &str, args: &[String], f: Flavor) -> Vec<Wrapped> {
             }
             lines
         }
-        "start" | "start-process" | "saps" => start_process_line(args).map_or_else(Vec::new, |line| vec![Wrapped::Line(line, f)]),
+        "start" | "start-process" | "saps" => start_process_lines(args).into_iter().map(|line| Wrapped::Line(line, f)).collect(),
         _ => Vec::new(),
     }
 }
 
-/// The line `Start-Process` runs: -FilePath (or the first positional word) then -ArgumentList
+/// The lines `Start-Process` runs: -FilePath (or the first positional word) then -ArgumentList
 /// (or the words after it), each named parameter wherever it stands, by any unique prefix,
-/// with its value after `:` or in the next word.
-fn start_process_line(args: &[String]) -> Option<String> {
+/// with its value after `:` or in the next word. An argument list given as an array
+/// (`'-enc','AAAA'`, its quotes already gone) is joined with spaces, as PowerShell does; since
+/// a `,` inside a quoted element looks the same, the line as written is checked too.
+fn start_process_lines(args: &[String]) -> Vec<String> {
     let (mut program, mut arguments): (Option<String>, Option<String>) = (None, None);
     let mut positional: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let word = &args[i];
-        // A quoted word with a space in its name (`'-enc AAAA'`) is a value, not a parameter.
-        let named = |s: &&str| !s.split(':').next().unwrap_or("").is_empty() && !s.split(':').next().unwrap_or("").contains([' ', '\t']);
+        // A quoted word with a space in its name (`'-enc AAAA'`) or an array (`'-c','x'`) is a
+        // value, not a parameter.
+        let named = |s: &&str| !s.split(':').next().unwrap_or("").is_empty() && !s.split(':').next().unwrap_or("").contains([' ', '\t', ',']);
         let Some(switch) = word.strip_prefix('-').filter(named) else {
             if !word.is_empty() {
                 positional.push(word.clone());
@@ -1224,7 +1270,8 @@ fn start_process_line(args: &[String]) -> Option<String> {
         };
         let lower = switch.to_lowercase();
         let name = lower.split(':').next().unwrap_or("").to_string();
-        let glued = switch.split_once(':').map(|(_, v)| v.to_string());
+        // An empty value after `:` (`-Verb: RunAs`) is the next word.
+        let glued = switch.split_once(':').map(|(_, v)| v.to_string()).filter(|v| !v.is_empty());
         let is = |full: &str| full.starts_with(name.as_str());
         // An exact name wins (`-Verb`, not `-Verbose`); a name that is only a switch's prefix
         // takes no value; any other (a value parameter, an ambiguous or unknown one) takes one.
@@ -1249,9 +1296,17 @@ fn start_process_line(args: &[String]) -> Option<String> {
         i += 1;
     }
     let mut positional = positional.into_iter();
-    let program = program.or_else(|| positional.next())?;
-    let rest: Vec<String> = arguments.into_iter().chain(positional).collect();
-    Some(std::iter::once(program).chain(rest).collect::<Vec<_>>().join(" "))
+    let Some(program) = program.or_else(|| positional.next()) else {
+        return Vec::new();
+    };
+    let line = std::iter::once(program).chain(arguments).chain(positional).collect::<Vec<_>>().join(" ");
+    let (name, rest) = line.split_once(' ').unwrap_or((&line, ""));
+    let joined = format!("{name} {}", rest.replace(',', " "));
+    if joined == line {
+        vec![line]
+    } else {
+        vec![joined, line]
+    }
 }
 
 pub const ESCAPE: &str = "the command contains a terminal escape sequence";
@@ -1776,6 +1831,63 @@ mod tests {
         expect("cmd", within, windows(within, Cmd), None);
         let within_bad = "cmd /c cmd /c cmd /c format C:";
         expect("cmd", within_bad, windows(within_bad, Cmd), Some(WIN_FORMAT));
+        assert!(miss.is_empty(), "{} forms missed:\n{}", miss.len(), miss.join("\n"));
+    }
+
+    #[test]
+    fn windows_floor_final_rereview() {
+        let mut miss: Vec<String> = Vec::new();
+        let mut expect = |label: &str, line: &str, got: Option<String>, want: Option<&str>| {
+            if got.as_deref() != want {
+                miss.push(format!("{label} {line:?}: got {got:?}, want {want:?}"));
+            }
+        };
+        // N1: an empty colon value takes the next word. N2: pwsh's short aliases -if, -of, -ea.
+        for (line, why) in [
+            ("powershell -ep: Bypass diskpart", WIN_DISKPART),
+            ("powershell -ExecutionPolicy: Bypass format C:", WIN_FORMAT),
+            ("powershell /WindowStyle: Hidden diskpart", WIN_DISKPART),
+            ("powershell -if text diskpart", WIN_DISKPART),
+            ("pwsh -of text diskpart", WIN_DISKPART),
+            ("pwsh -ea x diskpart", WIN_DISKPART),
+        ] {
+            for k in [Cmd, PowerShell, Unknown] {
+                expect(&format!("{k:?}"), line, windows(line, k), Some(why));
+            }
+        }
+        for line in ["powershell -ep: Bypass -File x.ps1", "pwsh -of text Get-Date", "pwsh -if text -NoProfile Get-Date"] {
+            for k in [Cmd, PowerShell] {
+                expect(&format!("{k:?}"), line, windows(line, k), None);
+            }
+        }
+        // N1 for Start-Process, and N3: an argument list given as an array is joined.
+        for (line, why) in [
+            ("Start-Process -Verb: RunAs diskpart", WIN_DISKPART),
+            ("Start-Process powershell -ArgumentList '-enc','AAAA'", WIN_ENCODED),
+            ("Start-Process powershell -ArgumentList '-enc', 'AAAA'", WIN_ENCODED),
+            ("Start-Process powershell -ArgumentList @('-enc','AAAA')", WIN_ENCODED),
+            ("Start-Process powershell -ArgumentList @( '-enc' , 'AAAA' )", WIN_ENCODED),
+            ("Start-Process powershell '-c','diskpart'", WIN_DISKPART),
+            ("Start-Process powershell -ArgumentList \"/c\",\"diskpart\"", WIN_DISKPART),
+            ("Start-Process pwsh -a '--enc','AAAA'", WIN_ENCODED),
+            ("Start-Process -ArgumentList '-c','format C:' -FilePath powershell", WIN_FORMAT),
+            ("Start-Process cmd -ArgumentList @('/c','format','C:')", WIN_FORMAT),
+            ("Start-Process cmd '/c','diskpart'", WIN_DISKPART),
+            ("Start-Process powershell -ArgumentList @(\"-c\", \"diskpart `\"x`\"\")", WIN_DISKPART),
+        ] {
+            for k in [PowerShell, Unknown] {
+                expect(&format!("{k:?}"), line, windows(line, k), Some(why));
+            }
+        }
+        for line in [
+            "Start-Process powershell -ArgumentList '-NoProfile','-File','x.ps1'",
+            "Start-Process powershell -ArgumentList @('-NoProfile','-File','x.ps1')",
+            "Start-Process notepad -ArgumentList 'a,b'",
+            "$x = @('a','b')",
+            "Start-Process -Verb: RunAs notepad",
+        ] {
+            expect("ps", line, windows(line, PowerShell), None);
+        }
         assert!(miss.is_empty(), "{} forms missed:\n{}", miss.len(), miss.join("\n"));
     }
 
