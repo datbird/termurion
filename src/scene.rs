@@ -882,6 +882,10 @@ fn tab_icon_glyph(i: TabIcon) -> char {
 
 /// Segoe Fluent Icons "ChromeClose": a tab's close button.
 pub const TAB_CLOSE_GLYPH: char = '\u{E8BB}';
+/// Segoe Fluent Icons "Add": the new tab button.
+pub const TAB_ADD_GLYPH: char = '\u{E710}';
+/// Segoe Fluent Icons "ChevronDown": the overflow button, a popup of the hidden tabs.
+pub const TAB_OVERFLOW_GLYPH: char = '\u{E70D}';
 /// Icon glyphs in a tab are drawn at this size in points (in the 16-point icon box).
 const TAB_GLYPH_PT: f32 = 12.0;
 /// The status dot's size in points.
@@ -891,11 +895,16 @@ const TAB_DOT_PT: f32 = 8.0;
 /// `font_scale` is a text row's scale for one point of type (the window scale over the terminal
 /// font's pixel size) and `line` the terminal font's line height in pixels, so a label of `p`
 /// points is a row of scale `p * font_scale`, `line * p * font_scale` pixels high.
+/// `key` is the window being the key window of the active app (`windowIsMainAndAppIsActive`):
+/// otherwise close buttons draw at half alpha. The tabs are cut to the room left of the "+"
+/// pinned on a bar that scrolls (`tab_layout::tab_area_width`).
 #[allow(clippy::too_many_arguments)]
-pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32) {
+pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool) {
     use crate::tab_layout::{self, SUBTITLE_OFFSET, TITLE_OFFSET_WITH_SUBTITLE};
     frame.quads.push(Quad { rect: area, color: rgba(TAB_BAR, 1.0) });
     let px = |r: Rect| Rect { x: area.x + r.x * scale, y: area.y + r.y * scale, w: r.w * scale, h: r.h * scale };
+    let tabs_area = Rect { w: (tab_layout::tab_area_width(bar, area.w / scale) * scale).min(area.w), ..area };
+    let first_quad = frame.quads.len();
     let title_scale = bar.font * font_scale;
     let sub_scale = tab_layout::subtitle_size(bar.font) * font_scale;
     let (title_h, sub_h) = (line * title_scale, line * sub_scale);
@@ -904,7 +913,12 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
     for (k, (i, c, r)) in bar.cells.iter().enumerate() {
         let Some(tab) = tabs.get(*i) else { continue };
         let cell = px(*r);
-        let clip = clip_rect(cell, area);
+        let clip = clip_rect(cell, tabs_area);
+        // Scrolled out of view.
+        if clip.w <= 0.0 {
+            continue;
+        }
+        let back = if *i == active { TAB_ACTIVE } else { TAB_BAR };
         if *i == active {
             frame.quads.push(Quad { rect: cell, color: rgba(TAB_ACTIVE, 1.0) });
         }
@@ -914,15 +928,18 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
         }
         let color = if *i == active { TAB_TEXT } else { TAB_TEXT_DIM };
         // A glyph from the icon font centered in `box_`.
-        let glyph = |frame: &mut Frame, ch: char, box_: Rect| {
+        let glyph = |frame: &mut Frame, ch: char, box_: Rect, color: Rgb| {
             let s = TAB_GLYPH_PT * font_scale;
             let em = TAB_GLYPH_PT * scale;
             let x = box_.x + ((box_.w - em) / 2.0).floor();
             let y = box_.y + ((box_.h - line * s) / 2.0).floor();
             frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip, scale: s });
         };
+        // `YS drawInteriorWithTabCell:`: the close button at its alpha, halved in a window that
+        // is not key.
         if let Some(close) = c.close.filter(|_| c.close_alpha > 0.0) {
-            glyph(frame, TAB_CLOSE_GLYPH, px(close));
+            let alpha = if key { c.close_alpha } else { c.close_alpha / 2.0 };
+            glyph(frame, TAB_CLOSE_GLYPH, px(close), blend(back, color, alpha));
         }
         // The status dot is the tab's icon (`tabStatusDotImage`), else the indicator glyph.
         if let Some(ir) = c.icon.map(px) {
@@ -931,7 +948,7 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
                 let rect = Rect { x: ir.x + ((ir.w - d) / 2.0).floor(), y: ir.y + ((ir.h - d) / 2.0).floor(), w: d, h: d };
                 frame.quads.push(Quad { rect, color: rgba(dot, 1.0) });
             } else if let Some(icon) = tab.icon {
-                glyph(frame, tab_icon_glyph(icon), ir);
+                glyph(frame, tab_icon_glyph(icon), ir, color);
             }
         }
         if let Some(ind) = c.indicator.filter(|_| tab.processing) {
@@ -971,6 +988,28 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
             let y = cell.y + ((cell.h - sub_h) / 2.0).floor() + offset + title_h + SUBTITLE_OFFSET * scale;
             frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale });
         }
+    }
+    // The tabs' quads (backgrounds, colors, dots, spinners, underlines) are cut like their text.
+    let mut k = first_quad;
+    while k < frame.quads.len() {
+        match cut(frame.quads[k].rect, tabs_area) {
+            Some(r) => {
+                frame.quads[k].rect = r;
+                k += 1;
+            }
+            None => {
+                frame.quads.remove(k);
+            }
+        }
+    }
+    // The "+" and the overflow button (`PSM setupButtons`), over the tabs' right margin.
+    let buttons = [(bar.add, TAB_ADD_GLYPH), (bar.overflow, TAB_OVERFLOW_GLYPH)];
+    for (rect, ch) in buttons.into_iter().filter_map(|(r, ch)| r.map(|r| (px(r), ch))) {
+        let s = TAB_GLYPH_PT * font_scale;
+        let em = TAB_GLYPH_PT * scale;
+        let x = rect.x + ((rect.w - em) / 2.0).floor();
+        let y = rect.y + ((rect.h - line * s) / 2.0).floor();
+        frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), TAB_TEXT_DIM, false, false, true)], clip: clip_rect(rect, area), scale: s });
     }
 }
 
@@ -2455,7 +2494,7 @@ mod tests {
         let area = Rect { x: 0.0, y: 10.0, w: 800.0, h: 48.0 };
         let px = |r: Rect| Rect { x: area.x + r.x * 2.0, y: area.y + r.y * 2.0, w: r.w * 2.0, h: r.h * 2.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &bar, area, 2.0, 0.1, 20.0);
+        tab_bar(&mut f, &looks, 1, &bar, area, 2.0, 0.1, 20.0, true);
 
         assert!(f.quads.iter().any(|q| q.rect == px(bar.cells[1].2) && q.color == rgba(TAB_ACTIVE, 1.0)), "the active tab's background");
         let glyph = |c: char| f.rows.iter().filter(move |r| r.spans.iter().any(|s| s.icon && s.text == c.to_string()));
@@ -2498,7 +2537,7 @@ mod tests {
         let uin: Vec<TabInput> = ul.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: 0 }).collect();
         let bar = tab_layout::build(&uin, 0, 400.0, 0.0, None, &html, &six);
         let mut f = Frame::default();
-        tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0);
+        tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0, true);
         let ab = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "ab")).expect("the run");
         assert!(f.quads.iter().any(|q| q.rect.h == 1.0 && q.rect.w == 24.0 && q.rect.x == ab.x), "{:?}", f.quads);
 
@@ -2509,12 +2548,59 @@ mod tests {
         let bar = tab_layout::build(&sin, 0, 400.0, 0.0, None, &tall, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 56.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &st, 0, &bar, area, 2.0, 0.1, 20.0);
+        tab_bar(&mut f, &st, 0, &bar, area, 2.0, 0.1, 20.0, true);
         let t = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "t")).unwrap();
         let sub = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "sub")).unwrap();
         assert_eq!(t.y, ((56.0 - 22.0_f32) / 2.0).floor() - 10.0);
         assert_eq!(sub.scale, 9.0 * 0.1);
         assert_eq!(sub.y, ((56.0 - 18.0_f32) / 2.0).floor() - 10.0 + 22.0 - 4.0);
+    }
+
+    #[test]
+    fn tab_bar_cuts_tabs_at_the_pinned_add_button() {
+        use crate::tab_layout::{self, TabInput};
+        let base = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let s = tab_layout::Settings { prefs: tab_layout::Prefs { stretch: false, scrollable: true, ..base.prefs }, ..base };
+        let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        // 120-point tabs scrolled by 100: tab 5 runs from 500 to 620, past the "+" at 576.
+        let bar = tab_layout::build(&inputs, 5, 600.0, 100.0, None, &s, &six);
+        assert_eq!(bar.cells[5].2.x, 500.0);
+        let area = Rect { x: 0.0, y: 0.0, w: 600.0, h: 24.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 5, &bar, area, 1.0, 0.1, 20.0, true);
+        let add = bar.add.unwrap();
+        assert_eq!(add.x, 576.0);
+        let active = f.quads.iter().find(|q| q.color == rgba(TAB_ACTIVE, 1.0)).expect("the active tab");
+        assert_eq!(active.rect, Rect { x: 500.0, y: 0.0, w: 76.0, h: 24.0 }, "cut at the pinned +");
+        let plus = TAB_ADD_GLYPH.to_string();
+        for r in f.rows.iter().filter(|r| r.spans.iter().all(|s| s.text != plus)) {
+            assert!(r.clip.x + r.clip.w <= 576.0, "{r:?}");
+            assert!(r.clip.x >= 0.0, "{r:?}");
+        }
+        let drawn = f.rows.iter().find(|r| r.spans.iter().any(|s| s.icon && s.text == plus)).expect("the + is drawn");
+        assert!(add.contains(drawn.x + 1.0, drawn.y + 1.0));
+    }
+
+    #[test]
+    fn tab_close_button_dims_in_an_inactive_window() {
+        use crate::tab_layout::{self, TabInput};
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        // Tab 1 hovered and not active: its close button over the bar's color.
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, Some(1), &s, &six);
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
+        let close_color = |key: bool| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, key);
+            let row = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == TAB_CLOSE_GLYPH.to_string())).expect("the close button");
+            row.spans[0].color
+        };
+        assert_eq!(close_color(true), TAB_TEXT_DIM, "full alpha in the key window");
+        assert_eq!(close_color(false), blend(TAB_BAR, TAB_TEXT_DIM, 0.5), "half alpha otherwise (YS drawInteriorWithTabCell:)");
     }
 
     #[test]

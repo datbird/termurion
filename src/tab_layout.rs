@@ -971,6 +971,17 @@ pub fn add_rect_px(bar: &Bar, offset: f32, origin: (f32, f32), scale: f32) -> Op
     })
 }
 
+/// The width in points the tabs draw in on a bar `bar_width` wide: left of the right margin on
+/// a bar that scrolls, so no tab draws under the pinned "+" (the tabs are a scroll view left of
+/// the margin, `PSM scrollViewportLength`); the whole bar otherwise.
+pub fn tab_area_width(bar: &Bar, bar_width: f32) -> f32 {
+    if bar.content > 0.0 {
+        (bar_width - right_margin(false, bar.add.is_some())).max(0.0)
+    } else {
+        bar_width
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1468,5 +1479,21 @@ mod tests {
         // `RemoveAddTabButton`.
         let bare = Settings { prefs: Prefs { add_button: false, ..s.prefs }, ..s.clone() };
         assert_eq!(add_rect_px(&build(&tabs, 0, 600.0, 0.0, None, &bare, &six_per_char), 0.0, (0.0, 30.0), 2.0), None);
+    }
+
+    #[test]
+    fn tabs_draw_left_of_the_pinned_add_button() {
+        let s = Settings { prefs: Prefs { stretch: false, scrollable: true, ..defaults().prefs }, ..defaults() };
+        let ten: Vec<TabInput> = (1..=10).map(|i| input(&format!("t{i}"), i)).collect();
+        // A bar that scrolls: the tabs stop at the right margin, where the "+" is pinned.
+        let scrolled = build(&ten, 0, 600.0, 0.0, None, &s, &six_per_char);
+        assert!(scrolled.content > 0.0);
+        assert_eq!(tab_area_width(&scrolled, 600.0), 576.0);
+        // Without the "+" nothing is pinned and the tabs have the whole bar.
+        let bare = Settings { prefs: Prefs { add_button: false, ..s.prefs }, ..s.clone() };
+        assert_eq!(tab_area_width(&build(&ten, 0, 600.0, 0.0, None, &bare, &six_per_char), 600.0), 600.0);
+        // A bar that fits: the "+" follows the last tab and nothing is cut.
+        let three = [input("a", 1), input("b", 2), input("c", 3)];
+        assert_eq!(tab_area_width(&build(&three, 0, 600.0, 0.0, None, &s, &six_per_char), 600.0), 600.0);
     }
 }
