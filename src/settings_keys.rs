@@ -2557,6 +2557,21 @@ mod tests {
         assert!(s.help.ends_with("You must restart Tandem after changing this setting for it to take effect."));
     }
 
+    /// The resize settings (`AS:692`, `:720`).
+    #[test]
+    fn resize_rows_follow_iterm2() {
+        let rows = [
+            ("DisableWindowSizeSnap", false, "Terminal windows resize smoothly.", "Terminal windows resize smoothly.\nDisables snapping to character grid. Holding Control will temporarily disable snap-to-grid."),
+            ("AllowLiveResize", true, "Allow window resizing by dragging edges and corners?", "Allow window resizing by dragging edges and corners?"),
+        ];
+        for (key, default, label, help) in rows {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Windows", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(default)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (label, help), "{key}");
+        }
+    }
+
     /// The full screen menu bar and the division line: Appearance's check boxes
     /// (`XIB:8785`, `:8986`), both on by default (`P:830`, `:843`).
     #[test]

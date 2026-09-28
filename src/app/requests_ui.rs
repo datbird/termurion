@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 
 use super::*;
+use crate::chrome::ResizePermission;
 use crate::osc1337::{self, Attention};
 use crate::screen::Request;
 
@@ -233,9 +234,14 @@ impl App {
     }
 
     fn set_window_frame(&mut self, pane: PaneId, x: f64, y: f64, w: f64, h: f64) {
-        let refused = self.profile_of(pane).is_some_and(|p| p.bool("Disable Window Resizing"));
+        // Only a pane the permission allows: the focused pane of the focused window when
+        // the profile refuses unfocused sessions (`PS:15717-15726`).
+        let focused = self.focused && self.focused_id() == Some(pane);
+        let permission = self.profile_of(pane).map_or(ResizePermission::Allowed, |p| {
+            crate::chrome::resize_permission(p.bool("Disable Window Resizing"), p.bool("Disable Window Resizing by Unfocused Sessions"), focused)
+        });
         let Some(g) = &self.gpu else { return };
-        if refused || g.window.fullscreen().is_some() {
+        if permission != ResizePermission::Allowed || g.window.fullscreen().is_some() {
             return;
         }
         let (x, y, w, h) = osc1337::from_points(x, y, w, h, primary_height(), g.window.scale_factor());

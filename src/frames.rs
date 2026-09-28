@@ -16,6 +16,8 @@ pub const LEFT_CELLS: i64 = 10;
 pub const RIGHT_CELLS: i64 = 11;
 pub const NO_TITLE_BAR: i64 = 12;
 pub const MAXIMIZED: i64 = 15;
+/// The Compact theme's Maximized.
+pub const COMPACT_MAXIMIZED: i64 = 16;
 pub const CENTERED: i64 = 17;
 pub const CENTERED_NO_TITLE_BAR: i64 = 19;
 
@@ -71,7 +73,7 @@ pub struct Frame {
 pub fn unthemed(style: i64) -> i64 {
     match style {
         13 => NORMAL,
-        16 => MAXIMIZED,
+        COMPACT_MAXIMIZED => MAXIMIZED,
         18 => CENTERED,
         s => s,
     }

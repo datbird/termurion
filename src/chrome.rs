@@ -1,5 +1,6 @@
 //! Window chrome rules: the border around a window (when it shows, its color), the corner
-//! preference and the line under the title bar, as iTerm2 decides them.
+//! preference, the line under the title bar, the snap to the cell grid while resizing and
+//! whether programs may resize the window, as iTerm2 decides them.
 
 use crate::palette::Rgb;
 use crate::tab_theme::TabStyle;
@@ -114,6 +115,91 @@ pub fn division_color(resolved: TabStyle, focused: bool) -> Rgb {
     crate::palette::rgb(v, v, v)
 }
 
+/// What a window snaps to while the user drags an edge, in the window's pixels: the focused
+/// pane's cell, the outer size less the tab's pane area (`decoration`), the padding on both
+/// sides of the text (`margins`), the smallest pane area (`min`) and the axes that snap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Snap {
+    pub cell: (f32, f32),
+    pub decoration: (f32, f32),
+    pub margins: (f32, f32),
+    pub min: (f32, f32),
+    pub snap_w: bool,
+    pub snap_h: bool,
+}
+
+/// The axes that snap (`windowWillResize:toSize:`, `PT:5784-5855`): none for a Maximized or
+/// Compact Maximized window, a maximized or full-screen one, a size-locked one, with
+/// `DisableWindowSizeSnap`, or while Ctrl alone is held; a left or right percentage window
+/// keeps its height free when the height does not change, a top or bottom one its width.
+#[allow(clippy::too_many_arguments)]
+pub fn snap_axes(style: i64, disabled: bool, ctrl_only: bool, maximized: bool, full_screen: bool, locked: bool, width_changed: bool, height_changed: bool) -> (bool, bool) {
+    use crate::frames::{BOTTOM_PERCENT, COMPACT_MAXIMIZED, LEFT_PERCENT, MAXIMIZED, RIGHT_PERCENT, TOP_PERCENT};
+    if matches!(style, MAXIMIZED | COMPACT_MAXIMIZED) || maximized || full_screen || locked || disabled || ctrl_only {
+        return (false, false);
+    }
+    let h = !(matches!(style, LEFT_PERCENT | RIGHT_PERCENT) && !height_changed);
+    let w = !(matches!(style, TOP_PERCENT | BOTTOM_PERCENT) && !width_changed);
+    (w, h)
+}
+
+/// The size a resize to `proposed` becomes (`PT:5856-5935`), per axis: the pane area (the
+/// size less the decoration) snapped to whole cells inside the margins, at least `min`; a
+/// snapped size less than half a cell from `current` keeps `current`.
+pub fn snap(s: &Snap, current: (f32, f32), proposed: (f32, f32)) -> (f32, f32) {
+    let axis = |on: bool, cell: f32, decoration: f32, margins: f32, min: f32, current: f32, proposed: f32| {
+        let mut content = proposed - decoration;
+        if on && cell > 0.0 {
+            content = ((content - margins) / cell).floor().max(0.0) * cell + margins;
+        }
+        let size = content.max(min) + decoration;
+        if on && (current - size).abs().floor() < (cell / 2.0).floor() {
+            return current;
+        }
+        size
+    };
+    (
+        axis(s.snap_w, s.cell.0, s.decoration.0, s.margins.0, s.min.0, current.0, proposed.0),
+        axis(s.snap_h, s.cell.1, s.decoration.1, s.margins.1, s.min.1, current.1, proposed.1),
+    )
+}
+
+/// A snapped size within a cell short of the screen fills the screen when the pointer asked
+/// for no more than half the gap it leaves (`PT:5937-5955`); `screen` is the monitor's work
+/// area along the axis.
+pub fn fill_screen(snapped_axis: bool, snapped: f32, proposed: f32, cell: f32, screen: f32) -> f32 {
+    if snapped_axis && snapped + cell > screen && snapped < screen && screen - proposed <= ((screen - snapped) / 2.0).ceil() {
+        return screen;
+    }
+    snapped
+}
+
+/// Whether the user may drag the window's edges (`PTWS:1063-1067`): not when its size is
+/// locked, nor with `AllowLiveResize` off.
+pub fn resizable(locked: bool, allow_live: bool) -> bool {
+    !locked && allow_live
+}
+
+/// Whether a program may resize or move its window (`screenShouldInitiateWindowResize`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizePermission {
+    Allowed,
+    Denied,
+    DeniedInactive,
+}
+
+/// `PS:15717-15726`: the profile's Disable Window Resizing denies it; Disable Window Resizing
+/// by Unfocused Sessions denies it to a session that is not the focused one.
+pub fn resize_permission(disable: bool, disable_unfocused: bool, focused: bool) -> ResizePermission {
+    if disable {
+        ResizePermission::Denied
+    } else if !focused && disable_unfocused {
+        ResizePermission::DeniedInactive
+    } else {
+        ResizePermission::Allowed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +276,54 @@ mod tests {
         assert_eq!(parse_border_color("#12ab3z"), None);
         assert_eq!(parse_border_color("#\u{e9}\u{e9}\u{e9}"), None);
         assert_eq!(parse_border_color("#abcde\u{e9}f"), None);
+    }
+
+    #[test]
+    fn snap_follows_iterm2() {
+        use crate::frames::{LEFT_PERCENT, MAXIMIZED, NORMAL, TOP_PERCENT};
+        let s = Snap { cell: (10.0, 20.0), decoration: (16.0, 60.0), margins: (8.0, 8.0), min: (0.0, 0.0), snap_w: true, snap_h: true };
+        // Width: content 827, 81 columns, 81 x 10 + 8 + 16; height: content 640, 31 rows.
+        assert_eq!(snap(&s, (816.0, 668.0), (843.0, 700.0)), (834.0, 688.0));
+        // The snapped width 814 is within the dead zone of 5 of 816: the width stays.
+        assert_eq!(snap(&s, (816.0, 668.0), (819.0, 668.0)), (816.0, 668.0));
+        let smooth_w = Snap { snap_w: false, ..s };
+        assert_eq!(snap(&smooth_w, (816.0, 668.0), (843.0, 700.0)), (843.0, 688.0));
+        // The minimum holds with or without snapping.
+        let small = Snap { min: (28.0, 28.0), snap_w: false, ..s };
+        assert_eq!(snap(&small, (816.0, 668.0), (20.0, 70.0)), (44.0, 88.0));
+        assert_eq!(snap_axes(NORMAL, false, false, false, false, false, true, true), (true, true));
+        // Ctrl alone held.
+        assert_eq!(snap_axes(NORMAL, false, true, false, false, false, true, true), (false, false));
+        assert_eq!(snap_axes(MAXIMIZED, false, false, false, false, false, true, true), (false, false));
+        assert_eq!(snap_axes(crate::frames::COMPACT_MAXIMIZED, false, false, false, false, false, true, true), (false, false));
+        assert_eq!(snap_axes(NORMAL, false, false, true, false, false, true, true), (false, false));
+        assert_eq!(snap_axes(NORMAL, false, false, false, true, false, true, true), (false, false));
+        // DisableWindowSizeSnap.
+        assert_eq!(snap_axes(NORMAL, true, false, false, false, false, true, true), (false, false));
+        assert_eq!(snap_axes(NORMAL, false, false, false, false, true, true, true), (false, false));
+        assert_eq!(snap_axes(LEFT_PERCENT, false, false, false, false, false, true, false), (true, false));
+        assert_eq!(snap_axes(TOP_PERCENT, false, false, false, false, false, false, true), (false, true));
+        assert_eq!(snap_axes(NORMAL, false, false, false, false, false, false, true), (true, true));
+        // A snapped size just short of the screen fills it when the pointer asked for more
+        // than half the gap (`PT:5937-5955`).
+        assert_eq!(fill_screen(true, 1915.0, 1918.0, 10.0, 1920.0), 1920.0);
+        assert_eq!(fill_screen(true, 1915.0, 1916.0, 10.0, 1920.0), 1915.0);
+        assert_eq!(fill_screen(false, 1915.0, 1918.0, 10.0, 1920.0), 1915.0);
+        assert_eq!(fill_screen(true, 1900.0, 1918.0, 10.0, 1920.0), 1900.0);
+    }
+
+    #[test]
+    fn live_resize_follows_iterm2() {
+        assert!(resizable(false, true));
+        assert!(!resizable(true, true));
+        assert!(!resizable(false, false));
+    }
+
+    #[test]
+    fn resize_permission_follows_iterm2() {
+        assert_eq!(resize_permission(true, false, true), ResizePermission::Denied);
+        assert_eq!(resize_permission(false, true, false), ResizePermission::DeniedInactive);
+        assert_eq!(resize_permission(false, true, true), ResizePermission::Allowed);
+        assert_eq!(resize_permission(false, false, false), ResizePermission::Allowed);
     }
 }

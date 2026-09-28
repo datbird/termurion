@@ -425,6 +425,10 @@ impl App {
         };
         let previous = self.current_window();
         let id = gpu.window.id();
+        // Edge drags snap to the cell grid.
+        if let Some(hwnd) = super::menu::hwnd_of(&gpu.window) {
+            super::sizing_ui::install(hwnd);
+        }
         let mut slot = WinSlot::new(gpu);
         self.swap_live(&mut slot);
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
@@ -1231,11 +1235,9 @@ impl App {
             self.win_locks.size = true;
             self.win_locks.layout = false;
         }
-        if let Some(g) = &self.gpu {
-            g.window.set_resizable(!self.win_locks.size);
-            if p.bool("Hide After Opening") {
-                g.window.set_minimized(true);
-            }
+        self.apply_resizable();
+        if let Some(g) = self.gpu.as_ref().filter(|_| p.bool("Hide After Opening")) {
+            g.window.set_minimized(true);
         }
     }
 
@@ -1260,9 +1262,7 @@ impl App {
         } else {
             self.win_locks.toggle_size();
         }
-        if let Some(g) = &self.gpu {
-            g.window.set_resizable(!self.win_locks.size);
-        }
+        self.apply_resizable();
     }
 
     /// Window > Resize Window: one cell narrower, wider, shorter, or taller.

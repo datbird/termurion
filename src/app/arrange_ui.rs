@@ -609,15 +609,13 @@ impl App {
             let monitors: Vec<crate::placement::Rect> = super::requests_ui::work_areas().into_iter().map(|(x, y, w, h)| crate::placement::Rect { x: x as f32, y: y as f32, w: w as f32, h: h as f32 }).collect();
             frame = crate::placement::within_screens(frame, &crate::placement::primary_first(monitors));
         }
-        if let Some(g) = &self.gpu {
-            if frame.w > 0.0 && frame.h > 0.0 {
-                g.window.set_outer_position(winit::dpi::PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32));
-                let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
-                let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
-                let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
-            }
-            g.window.set_resizable(!self.win_locks.size);
+        if let Some(g) = self.gpu.as_ref().filter(|_| frame.w > 0.0 && frame.h > 0.0) {
+            g.window.set_outer_position(winit::dpi::PhysicalPosition::new(frame.x.round() as i32, frame.y.round() as i32));
+            let (outer, inner) = (g.window.outer_size(), g.window.inner_size());
+            let (dw, dh) = (outer.width.saturating_sub(inner.width), outer.height.saturating_sub(inner.height));
+            let _ = g.window.request_inner_size(winit::dpi::PhysicalSize::new((frame.w as u32).saturating_sub(dw).max(1), (frame.h as u32).saturating_sub(dh).max(1)));
         }
+        self.apply_resizable();
         if f.style != crate::frames::NORMAL {
             self.apply_window_style(f.style, false);
         }

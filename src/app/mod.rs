@@ -99,6 +99,8 @@ mod aps_ui;
 mod windows_ui;
 #[cfg(windows)]
 mod chrome_ui;
+#[cfg(windows)]
+mod sizing_ui;
 mod tab_drag_ui;
 mod tab_groups_ui;
 mod undo_ui;
@@ -2662,6 +2664,8 @@ impl App {
         self.scripts_folder_changed();
         // The border settings, or the Theme, may have changed.
         self.apply_border_everywhere();
+        // AllowLiveResize may have changed.
+        self.apply_resizable_everywhere();
     }
 
     /// Starts watching and scanning the Scripts folder the settings name (`FM:236-252`).
@@ -3991,6 +3995,8 @@ impl App {
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
         self.sync_menu_hidden();
+        // The next edge drag snaps to what this frame shows.
+        self.publish_snap();
         let frame = self.build_frame();
         let (title, menu_text) = self.caption_text();
         if self.window_menu_text != menu_text {

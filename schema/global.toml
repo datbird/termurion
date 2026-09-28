@@ -962,6 +962,15 @@ default = 20000
 help = "Maximum number of lines of history to restore.\nWhen the app is relaunched, only the last N lines of history are restored to avoid making launch too slow. If you reduce this number, existing sessions won't be affected until their history is cleared."
 
 [[setting]]
+key = "DisableWindowSizeSnap"
+tab = "Advanced"
+section = "Windows"
+label = "Terminal windows resize smoothly."
+type = "bool"
+default = false
+help = "Terminal windows resize smoothly.\nDisables snapping to character grid. Holding Control will temporarily disable snap-to-grid."
+
+[[setting]]
 key = "restoreWindowsWithinScreens"
 tab = "Advanced"
 section = "Windows"
@@ -1032,6 +1041,15 @@ label = "Opaque windows have a border only in light mode."
 type = "bool"
 default = true
 help = "Opaque windows have a border only in light mode.\nThis setting modifies \u201cHeavy border around windows in light mode\u201d. Borders in opaque windows in dark mode are ugly and the OS draws one that is pretty serviceable. Enable this if you have trouble seeing them."
+
+[[setting]]
+key = "AllowLiveResize"
+tab = "Advanced"
+section = "Windows"
+label = "Allow window resizing by dragging edges and corners?"
+type = "bool"
+default = true
+help = "Allow window resizing by dragging edges and corners?"
 
 [[setting]]
 key = "Hotkey"
