@@ -350,12 +350,32 @@ pub fn python_version(output: &str) -> Option<(u32, u32)> {
     Some((groups[1].parse().unwrap_or(0), groups[2].parse().unwrap_or(0)))
 }
 
+/// What getshell and pythonversion keep of a reply, in bytes and lines (Tandem's: iTerm2 keeps
+/// it all). The remote is not trusted, and the shell and version sit in the first lines; past
+/// either limit the step fails.
+pub const GETSHELL_LIMIT: (usize, usize) = (64 * 1024, 256);
+pub const PYTHON_LIMIT: (usize, usize) = (4 * 1024, 64);
+
+/// The failure text for a reply past its limit (Tandem's).
+pub fn reply_too_long(cmd: &Command) -> String {
+    format!("{}: The reply is too long", cmd.string_value())
+}
+
+/// Whether getshell's `line` can be a shell: an absolute path or a bare command name, with no
+/// whitespace, quotes, control characters or `=` (controller ruling). A shell error from the
+/// real it2ssh starts with its `sh -c` script, which holds the origin token and the base64
+/// environment, so such a line is never taken; nor is the shell value shown or logged.
+fn plausible_shell(line: &str) -> bool {
+    let bad = |c: char| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '`' | '=');
+    !line.is_empty() && !line.chars().any(bad) && (line.starts_with('/') || !line.contains('/'))
+}
+
 /// Where getshell's reply starts (iTerm2 bug B15 guarded): conductor.sh's guess_login_shell
 /// can print a shell error ("sh: 160: using_passwd: not found") before the shell, so the
-/// first line that starts a pair of absolute paths (shell, then home) is taken; with no such
-/// pair, line 0 as iTerm2 (conductor.sh's fallback shell is the bare "sh").
+/// first line that starts a pair of absolute paths (a plausible shell, then home) is taken;
+/// with no such pair, line 0 as iTerm2 (conductor.sh's fallback shell is the bare "sh").
 fn shell_line(parts: &[&str]) -> usize {
-    parts.windows(2).position(|pair| pair[0].starts_with('/') && pair[1].starts_with('/')).unwrap_or(0)
+    parts.windows(2).position(|pair| pair[0].starts_with('/') && plausible_shell(pair[0]) && pair[1].starts_with('/')).unwrap_or(0)
 }
 
 /// One conductor.sh (or framer.py) on the other side of an ssh (`CD`).
@@ -436,7 +456,12 @@ impl Conductor {
         let all: Vec<&str> = joined.split('\n').map(|p| p.trim_matches([' ', '\t'])).collect();
         let parts = &all[shell_line(&all)..];
         let command_args = self.setup.parsed.command_args.clone();
-        let shell = command_args.first().cloned().unwrap_or_else(|| parts[0].to_string());
+        // A line that cannot be a shell leaves it unknown: nothing is injected.
+        let Some(shell) = command_args.first().cloned().or_else(|| plausible_shell(parts[0]).then(|| parts[0].to_string())) else {
+            self.effects.push(Effect::StateChanged);
+            self.did_finish_get_shell();
+            return;
+        };
         let home = parts.get(1).copied().unwrap_or("");
         let version = parts.get(2..).map(|v| v.join("\n")).unwrap_or_default();
         if !shell.is_empty() && !home.is_empty() && self.setup.inject && shell_supports_injection(last_component(&shell), &version) {
@@ -679,23 +704,23 @@ impl Conductor {
             self.via_parent(|parent| parent.handle_line(line, depth));
             return;
         }
-        let context = match std::mem::replace(&mut self.state, State::Ground) {
+        match std::mem::replace(&mut self.state, State::Ground) {
             State::WillExecute(mut contexts) => {
                 let first = contexts.remove(0);
-                self.state = State::Executing(first.clone(), contexts);
-                first
+                self.state = State::Executing(first, contexts);
             }
-            State::Executing(context, pending) => {
-                self.state = State::Executing(context.clone(), pending);
-                context
-            }
+            executing @ State::Executing(..) => self.state = executing,
             // Ground and unhooked tolerate stray input.
             other => {
                 self.state = other;
                 return;
             }
-        };
-        self.update(&context, Partial::Line(line.to_string()));
+        }
+        #[cfg(test)]
+        if let State::Executing(context, _) = &self.state {
+            self.updates.push((context.command.clone(), Partial::Line(line.to_string()), self.state.clone()));
+        }
+        self.collect_line(line);
     }
 
     /// handleCommandEnd (`CD:2475-2537`): `kind` is "f" for framer.py, "r" for conductor.sh.
@@ -766,14 +791,22 @@ impl Conductor {
         self.effects.push(Effect::Abort(reason.to_string()));
     }
 
-    /// The in-flight command's reply lines, kept by its handler (iTerm2's StringArray is a
-    /// reference; the context the handler is given is a copy).
-    fn collect_line(&mut self, line: String) {
-        if let State::Executing(context, _) = &mut self.state {
-            if let Handler::GetShell(lines) | Handler::CheckForPython(lines) = &mut context.handler {
-                lines.push(line);
-            }
+    /// The in-flight command's reply line, kept in place by its handler (iTerm2's StringArray
+    /// is a reference), up to the handler's limit; past it the step fails.
+    fn collect_line(&mut self, line: &str) {
+        let State::Executing(context, _) = &mut self.state else { return };
+        let (lines, (max_bytes, max_lines)) = match &mut context.handler {
+            Handler::GetShell(lines) => (lines, GETSHELL_LIMIT),
+            Handler::CheckForPython(lines) => (lines, PYTHON_LIMIT),
+            _ => return,
+        };
+        let kept: usize = lines.iter().map(String::len).sum();
+        if lines.len() < max_lines && kept + line.len() <= max_bytes {
+            lines.push(line.to_string());
+            return;
         }
+        let reason = reply_too_long(&context.command);
+        self.fail(&reason);
     }
 
     /// update(executionContext:result:) (`CD:2106-2396`) for the 14b handlers.
@@ -782,10 +815,8 @@ impl Conductor {
         self.updates.push((context.command.clone(), result.clone(), self.state.clone()));
         let status = match result {
             Partial::End(status) => status,
-            Partial::Line(line) => {
-                self.collect_line(line);
-                return;
-            }
+            // Lines are kept by `collect_line`, never through a copy of the context.
+            Partial::Line(_) => return,
             Partial::Abort | Partial::Canceled => {
                 if matches!(context.handler, Handler::CheckForPython(_)) {
                     self.exec_login_shell();
@@ -1576,10 +1607,11 @@ mod tests {
         let mut c = started(setup("A"));
         reply(&mut c, &["sh\n/home/u\nGNU bash, version 5.2"], 0);
         assert_eq!(c.shell.as_deref(), Some("sh"));
-        // With no pair, line 0 is the shell, as iTerm2.
+        // With no pair, line 0 is the shell as iTerm2, but only when it can be a shell: an
+        // error line leaves the shell unknown (controller ruling, Task 6 review).
         let mut c = started(setup("A"));
         reply(&mut c, &["sh: 160: using_passwd: not found\nsh\n/home/u"], 0);
-        assert_eq!(c.shell.as_deref(), Some("sh: 160: using_passwd: not found"));
+        assert_eq!(c.shell, None);
 
         // The real recording, through the parser.
         let recorded = include_bytes!("../tests/fixtures/ssh/level1-nopython.bin");
@@ -1602,6 +1634,65 @@ mod tests {
         assert_eq!(c.shell.as_deref(), Some("/bin/sh"));
         let foo = Command::Setenv { key: "FOO".into(), value: "bar".into() };
         assert_eq!(c.take_effects(), [Effect::StateChanged, Effect::Write(sent(&foo))]);
+    }
+
+    #[test]
+    fn getshell_never_takes_a_script_as_the_shell() {
+        for ok in ["/bin/sh", "/usr/local/bin/zsh", "sh", "bash", "-zsh"] {
+            assert!(plausible_shell(ok), "{ok}");
+        }
+        for bad in ["", "a b", "sh\t", "x=y", "bin/zsh", "'sh'", "\"sh\"", "`sh`", "sh\u{1b}", "/bin/sh\u{7}", "sh: 160: using_passwd: not found"] {
+            assert!(!plausible_shell(bad), "{bad:?}");
+        }
+        // The real it2ssh runs `sh -c <sanitized script>`, so a shell error starts with the
+        // script: the origin token and the base64 environment.
+        let script = "printf '\\033]1337;it2ssh=0123abcd\\007\\033]1337;Env=report=all:QUJDPTE=\\007'; exec sh -c 'main': 1: eval: using_passwd: not found";
+        let mut c = started(zsh_injected());
+        reply(&mut c, &[&format!("{script}\n/bin/zsh\n/home/user\n")], 0);
+        assert_eq!((c.shell.as_deref(), home_seen(&c).as_deref()), (Some("/bin/zsh"), Some("/home/user")));
+        let mut c = started(zsh_injected());
+        reply(&mut c, &[&format!("{script}\nsh\n/home/user\n")], 0);
+        assert_eq!(c.shell, None, "the script is never the shell");
+        assert_eq!(c.modified_vars, None, "an unknown shell is not injected");
+        let written: Vec<u8> = c.take_effects().into_iter().flat_map(|e| if let Effect::Write(b) = e { b } else { Vec::new() }).collect();
+        let written = String::from_utf8_lossy(&written);
+        assert!(!written.contains("0123abcd") && !written.contains("QUJD"), "{written}");
+        // A shell with a pair of absolute paths but no plausible name is skipped as well.
+        let mut c = started(setup("A"));
+        reply(&mut c, &["/bin/sh -c x\n/bin/zsh\n/home/u"], 0);
+        assert_eq!(c.shell.as_deref(), Some("/bin/zsh"));
+    }
+
+    #[test]
+    fn reply_lines_are_capped() {
+        let failed = |c: &mut Conductor| c.take_effects().into_iter().find_map(|e| if let Effect::Abort(r) = e { Some(r) } else { None });
+        // Up to the line limit a getshell reply is kept.
+        let mut c = started(setup("A"));
+        c.handle_begin("1", 0);
+        for _ in 0..GETSHELL_LIMIT.1 {
+            c.handle_line("x", 0);
+        }
+        assert_eq!(failed(&mut c), None);
+        c.handle_line("x", 0);
+        assert_eq!(failed(&mut c).as_deref(), Some("getshell: The reply is too long"));
+        assert_eq!(c.state(), &State::Ground);
+        c.handle_end("1", "r", 0, 0);
+        assert!(c.take_effects().is_empty(), "the end of a failed reply is ignored");
+        // The byte limit.
+        let mut c = started(setup("A"));
+        c.handle_line(&"y".repeat(GETSHELL_LIMIT.0), 0);
+        assert_eq!(failed(&mut c), None);
+        c.handle_line("y", 0);
+        assert_eq!(failed(&mut c).as_deref(), Some("getshell: The reply is too long"));
+        // pythonversion keeps less.
+        let mut c = started(setup("A"));
+        reply(&mut c, &["/bin/sh\n/home/u"], 0);
+        c.take_effects();
+        assert_eq!(c.in_flight(), Some(&Command::PythonVersion));
+        c.handle_line(&"z".repeat(PYTHON_LIMIT.0 + 1), 0);
+        assert_eq!(failed(&mut c).as_deref(), Some("pythonversion: The reply is too long"));
+        assert_eq!(c.state(), &State::Ground);
+        assert!(c.take_effects().is_empty(), "no login shell after the failure");
     }
 
     #[test]
