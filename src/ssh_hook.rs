@@ -149,9 +149,13 @@ impl Hook {
         let mut out = Vec::new();
         loop {
             if let Some(parser) = &mut self.parser {
+                let past_init = parser.past_init();
                 let fed = parser.feed(&data);
-                // A parser that unhooks with no word of its own gets one here (F28).
-                let silent = fed.rest.is_some() && !matches!(fed.tokens.last(), Some(Token::Unhook | Token::Error(_)));
+                // A parser that unhooks with no word of its own gets one here (F28), unless it
+                // never read its init line: it has no conductor, and the error would fail the
+                // pane's existing one (a cat'd file can hold a broken DCS 2000p).
+                let owned = past_init || fed.tokens.iter().any(|t| matches!(t, Token::Init(_)));
+                let silent = owned && fed.rest.is_some() && !matches!(fed.tokens.last(), Some(Token::Unhook | Token::Error(_)));
                 let mut capped = false;
                 for token in fed.tokens {
                     match token {
@@ -335,10 +339,10 @@ mod tests {
         assert_eq!(parse_init("t u YmE= -", "D").unwrap().sshargs, "", "the id counts as a word");
         assert_eq!(parse_init("none 1 YmE= - c3M=", "D").unwrap().token, "none");
         let mut h = hook();
-        assert_eq!(h.feed(b"\x1bP2000p\xff\xfe - Yg==\nls"), vec![lost(), s(b"\nls")], "a non-UTF-8 line is dropped");
+        assert_eq!(h.feed(b"\x1bP2000p\xff\xfe - Yg==\nls"), vec![s(b"\nls")], "a non-UTF-8 line is dropped, silently");
         assert!(!h.active());
         let mut h = hook();
-        assert_eq!(h.feed(b"\x1bP2000pbad\nls\r\n"), vec![lost(), s(b"\nls\r\n")], "a rejected line unhooks");
+        assert_eq!(h.feed(b"\x1bP2000pbad\nls\r\n"), vec![s(b"\nls\r\n")], "a rejected line unhooks, silently");
         assert!(!h.active());
     }
 
@@ -447,18 +451,18 @@ mod tests {
         assert_eq!(h.feed(START), vec![]);
         assert_eq!(trickle(&mut h, &flood, 4096), vec![], "up to the cap it waits");
         assert!(h.active());
-        assert_eq!(h.feed(b"a"), vec![lost(), s(&vec![b'a'; MAX_HELD + 1])]);
+        assert_eq!(h.feed(b"a"), vec![s(&vec![b'a'; MAX_HELD + 1])], "an init line over the cap is not a protocol error");
         assert!(!h.active());
         let mut h = hook();
         assert_eq!(h.feed(b"\x1bP2000p"), vec![]);
         let out = trickle(&mut h, &[&flood[..], b"a"].concat(), 4095);
-        assert_eq!(out, vec![lost(), s(&[&flood[..], b"a"].concat())]);
+        assert_eq!(out, vec![s(&[&flood[..], b"a"].concat())]);
         assert!(!h.active());
         assert_eq!(h.feed(b"\nls"), vec![s(b"\nls")], "the newline after it is output too");
         // A line that ends inside the read that passes the cap is a line (here a rejected one).
         let mut h = hook();
         assert_eq!(h.feed(START), vec![]);
-        assert_eq!(trickle(&mut h, &[&flood[..], b"a\nls"].concat(), MAX_HELD), vec![lost(), s(b"\nls")]);
+        assert_eq!(trickle(&mut h, &[&flood[..], b"a\nls"].concat(), MAX_HELD), vec![s(b"\nls")]);
         // An OSC that never ends, in ground and in a reply.
         for mut h in [hooked(), in_body()] {
             let osc = [&b"\x1b]135;:"[..], &flood[..]].concat();
@@ -596,8 +600,9 @@ mod tests {
         // A reply cut short by output that is not an OSC.
         let mut h = in_body();
         assert_eq!(h.feed(b"oops"), vec![lost(), s(b"oops")]);
-        // A rejected init line.
-        assert_eq!(hook().feed(b"\x1bP2000pbad\nls"), vec![lost(), s(b"\nls")]);
+        // A rejected init line has no conductor of its own to fail (see
+        // `a_bad_init_leaves_the_conductor_alone`).
+        assert_eq!(hook().feed(b"\x1bP2000pbad\nls"), vec![s(b"\nls")]);
         // A real unhook, and a parser error that already says why, add nothing.
         assert_eq!(hooked().feed(&[osc135("unhook"), b"$ ".to_vec()].concat()), vec![ssh(Token::Unhook), s(b"$ ")]);
         let long = "7".repeat(crate::conductor_parser::MAX_ID + 1);
@@ -607,6 +612,34 @@ mod tests {
         let mut h = hooked();
         let out = trickle(&mut h, &[osc134("nonsense"), b"z".to_vec()].concat(), 1);
         assert_eq!(out, vec![lost(), s(b"z")]);
+    }
+
+    /// Ordinary output (a cat'd file) holding a broken `DCS 2000p` never fails the conductor
+    /// the pane already has: the parser that unhooked never produced an `Init`, so it owns
+    /// nothing to fail (iTerm2 only logs a rejected init line).
+    #[test]
+    fn a_bad_init_leaves_the_conductor_alone() {
+        let bad: [&[u8]; 3] = [b"\x1bP2000pbad\nls", b"\x1bP2000p\xff\xfe - Yg==\nls", b"\x1bP2000pnone 1 Y*== - Yg==\nls"];
+        for bytes in bad {
+            // After a level 1 conductor let go, and while a nested hook is being read.
+            let mut h = hooked();
+            assert_eq!(h.feed(&osc135("unhook")), vec![ssh(Token::Unhook)]);
+            let out = h.feed(bytes);
+            assert!(out.iter().all(|o| matches!(o, Out::Screen(_))), "{out:?}");
+            assert!(!h.active());
+            let mut h = hooked();
+            let nested = crate::ssh_fixtures::output("1", 9, -1, 0, bytes);
+            let out = h.feed(&nested);
+            assert!(out.iter().all(|o| !matches!(o, Out::Ssh(Token::Error(_), _))), "{out:?}");
+            assert!(h.active(), "the parent stays hooked");
+            // Split at every byte, the same.
+            let mut h = hook();
+            let out = trickle(&mut h, bytes, 1);
+            assert!(out.iter().all(|o| matches!(o, Out::Screen(_))), "{out:?}");
+        }
+        // A parser that got past its init line still says so.
+        let mut h = hooked();
+        assert_eq!(h.feed(b"\x1b]135;:what\x1b\\"), vec![lost()]);
     }
 
     fn osc135(p: &str) -> Vec<u8> {

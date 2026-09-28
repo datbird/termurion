@@ -287,8 +287,7 @@ impl Builder {
                 if parts.len() < 5 {
                     return None;
                 }
-                let depth = parts[4].split(' ').next()?;
-                depth.parse::<i64>().ok()?;
+                parts[4].parse::<i64>().ok()?;
                 (Flavor::Output, parts[2].parse::<i32>().ok()?, i32::from(parts[3].parse::<i8>().ok()?))
             }
             "%autopoll" if parts.len() >= 2 => (Flavor::Autopoll, AUTOPOLL_PID, 1),
@@ -366,6 +365,12 @@ impl Parser {
     /// A parser whose init line was already read.
     pub fn hooked(dcs_id: &str) -> Parser {
         Parser { state: State::Ground, ..Parser::new(dcs_id) }
+    }
+
+    /// Whether the init line has been read: a parser still reading it owns no conductor, so
+    /// its unhooking is no protocol error (iTerm2 only logs a rejected init line).
+    pub fn past_init(&self) -> bool {
+        self.state != State::Initial
     }
 
     pub fn dcs_id(&self) -> &str {
@@ -488,7 +493,8 @@ impl Parser {
                         Act::Data(k) => {
                             if !builder.append(&rest[..k]) {
                                 fed.tokens.push(Token::Error(OUTPUT_TOO_LONG.into()));
-                                return self.unhook(fed, &rest[k..]);
+                                // The overflowing chunk is output too, as when the held cap ends it.
+                                return self.unhook(fed, rest);
                             }
                             i += k;
                         }
@@ -740,6 +746,7 @@ mod tests {
         bad.extend(osc134("%end 9"));
         assert_eq!(both(hooked, &bad).tokens, vec![out(AUTOPOLL_PID, 1, b"\nEOF\n")]);
         // A notification is complete at once, and the parser is back in ground.
+        assert_eq!(both(hooked, &notif("%notif tty -echo +icanon")).tokens, vec![out(NOTIF_PID, 1, b"%notif tty -echo +icanon")]);
         let mut p = hooked();
         let fed = p.feed(&notif("%notif tty -echo +icanon"));
         assert_eq!(fed.tokens, vec![out(NOTIF_PID, 1, b"%notif tty -echo +icanon")]);
@@ -757,13 +764,12 @@ mod tests {
         assert_eq!(both(hooked, &terminate(-3, -2)).tokens, vec![Token::Terminate { pid: -3, rc: -2 }]);
         assert_eq!(both(hooked, &osc134("%it2 3 data aGk=")).tokens, vec![Token::It2("3 data aGk=".into())]);
         let mut p = hooked();
-        assert_eq!(p.feed(&osc134("%it2 ")), Fed::default());
-        assert_eq!(p.feed(&osc134("%ping")), Fed::default());
-        assert_eq!(p.feed(&osc134("%wat 1")), Fed::default());
-        // Without the space after the word it is an unknown notification (iTerm2's hasPrefix).
-        assert_eq!(p.feed(&osc134("%autopoll")), Fed::default());
-        assert_eq!(p.feed(&osc134("%notif")), Fed::default());
-        assert_eq!(p.feed(&osc134("%output")), Fed::default());
+        // Without the space after the word a payload is an unknown notification (iTerm2's
+        // hasPrefix); each is ignored in one read and byte by byte.
+        for ignored in ["%it2 ", "%ping", "%wat 1", "%autopoll", "%notif", "%output"] {
+            assert_eq!(both(hooked, &osc134(ignored)), Fed::default(), "{ignored}");
+            assert_eq!(p.feed(&osc134(ignored)), Fed::default(), "{ignored}");
+        }
         // An id longer than the cap ends the conductor, as a begin's does.
         let long = format!("%autopoll {}", "7".repeat(MAX_ID + 1));
         assert_eq!(hooked().feed(&osc134(&long)).tokens, vec![Token::Error(ID_TOO_LONG.into())]);
