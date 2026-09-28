@@ -3,6 +3,7 @@
 //! sessions until 14b's conductor hook exists (ruling 14a-1).
 
 use crate::ssh_handshake::{bootstrap, end_banner, Handshake, CONDUCTOR_SH};
+use std::path::{Path, PathBuf};
 
 /// Whether the conductor hook exists. False in 14a: no pane enters the connecting state and
 /// no conductor is typed (14b Task 7 sets it true).
@@ -120,6 +121,16 @@ pub fn profile_banner(ssh: bool, integration_on: bool, ready: bool, it2ssh_prese
     }
 }
 
+/// The `it2ssh.exe` an SSH profile runs: in the utilities folder `utilities::ensure` made
+/// (None when it refused one, so its network and link checks hold), looked for only once the
+/// conductor hook exists; None when it is missing.
+pub fn profile_it2ssh(folder: Option<&Path>, ready: bool, is_file: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    if !ready {
+        return None;
+    }
+    folder.map(|f| f.join("it2ssh.exe")).filter(|exe| is_file(exe))
+}
+
 /// The bootstrap to type for a version 3 `SendConductor`, when the conductor hook exists.
 pub fn conductor_bytes(h: &Handshake, ready: bool) -> Option<Vec<u8>> {
     ready.then(|| bootstrap(CONDUCTOR_SH, h))
@@ -138,6 +149,23 @@ mod tests {
         assert_eq!(profile_banner(false, true, false, true), None);
         assert_eq!(PROFILE_NOT_READY, "SSH integration arrives in a later Tandem build; this SSH profile runs plain ssh.");
         assert_eq!(NO_IT2SSH, "The utilities folder has no it2ssh.exe, so this SSH profile runs plain ssh.");
+    }
+
+    #[test]
+    fn profile_it2ssh_follows_ensure() {
+        let asked = std::cell::Cell::new(0);
+        let yes = |_: &Path| {
+            asked.set(asked.get() + 1);
+            true
+        };
+        let folder = Path::new(r"C:\Tandem\utilities");
+        assert_eq!(profile_it2ssh(Some(folder), false, yes), None);
+        assert_eq!(asked.get(), 0, "nothing is looked at before the conductor hook exists");
+        assert_eq!(profile_it2ssh(None, true, yes), None, "a folder ensure refused is never probed");
+        assert_eq!(asked.get(), 0);
+        assert_eq!(profile_it2ssh(Some(folder), true, |_| false), None);
+        assert_eq!(profile_it2ssh(Some(folder), true, yes), Some(folder.join("it2ssh.exe")));
+        assert_eq!(asked.get(), 1);
     }
 
     #[test]

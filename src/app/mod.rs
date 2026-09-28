@@ -1391,15 +1391,14 @@ impl App {
     }
 
     /// The command profile `p` starts and its transport. An SSH profile runs `it2ssh.exe` from
-    /// the utilities folder, on the chosen SSH transport, only with SSH Integration on, the
-    /// conductor hook in place and the file there; otherwise plain ssh on ConPTY, with the
-    /// `ssh` banner saying why when SSH Integration is on.
+    /// the utilities folder `utilities::ensure` made, on the chosen SSH transport, only with SSH
+    /// Integration on, the conductor hook in place and the file there; otherwise plain ssh on
+    /// ConPTY, with the `ssh` banner saying why when SSH Integration is on.
     fn profile_command(&mut self, p: &Profile) -> (String, crate::ssh_transport::Transport) {
-        use crate::ssh_session::{profile_banner, CONDUCTOR_READY};
-        let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)).unwrap_or_default();
-        let exe = exe_dir.join(crate::utilities::FOLDER).join("it2ssh.exe");
-        let present = exe.is_file();
-        let it2ssh = (CONDUCTOR_READY && present).then_some(exe.as_path());
+        use crate::ssh_session::{profile_banner, profile_it2ssh, CONDUCTOR_READY};
+        let exe = profile_it2ssh(self.utilities.as_deref(), CONDUCTOR_READY, std::path::Path::is_file);
+        let present = exe.is_some();
+        let it2ssh = exe.as_deref();
         // A blank Command runs the shell, not ssh, so it gets no banner.
         let runs_ssh = profile::is_ssh(p) && !p.string("Command").trim().is_empty();
         match profile_banner(runs_ssh, crate::ssh_config::from_profile(p).ssh_integration, CONDUCTOR_READY, present) {
