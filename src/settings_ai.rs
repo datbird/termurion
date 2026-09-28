@@ -511,9 +511,15 @@ fn open_sheet(g: &mut Globals, opened: u64) -> (Sheet, bool) {
     (Sheet { models, selected, notice, opened }, notice)
 }
 
-/// Return pressed without modifiers, and Escape pressed.
+/// Return pressed without modifiers (`fresh_return`), and Escape pressed.
 fn enter_escape(ui: &egui::Ui) -> (bool, bool) {
-    ui.input(|i| (i.key_pressed(egui::Key::Enter) && i.modifiers.is_none(), i.key_pressed(egui::Key::Escape)))
+    ui.input(|i| (fresh_return(&i.events), i.key_pressed(egui::Key::Escape)))
+}
+
+/// A press of Return without modifiers that is not a key repeat, so a held Return acts on a
+/// modal once and never saves it again when the repeat starts.
+pub fn fresh_return(events: &[egui::Event]) -> bool {
+    events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if modifiers.is_none()))
 }
 
 /// Whether Return and Escape act as a modal's default buttons. Neither acts in the frame the
@@ -913,7 +919,7 @@ fn prompts(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
     let key = st.prompt.key();
     let mut text = g.string(key);
     egui::ScrollArea::vertical().id_salt("ai-prompt-text").max_height(320.0).show(ui, |ui| {
-        let mut edit = |buffer: &mut dyn egui::TextBuffer| egui::TextEdit::multiline(buffer).desired_width(f32::INFINITY).desired_rows(14).show(ui).response.changed();
+        let mut edit = |buffer: &mut dyn egui::TextBuffer| egui::TextEdit::multiline(buffer).id(prompt_text_id(key)).desired_width(f32::INFINITY).desired_rows(14).show(ui).response.changed();
         if allowed {
             if edit(&mut text) {
                 g.set(key, Value::String(text.clone()));
@@ -929,6 +935,12 @@ fn prompts(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
         }
     }
     changed
+}
+
+/// The prompt text box's id: one per prompt, so each keeps its own undo history and Undo never
+/// writes one prompt's text into another's setting.
+fn prompt_text_id(key: &str) -> egui::Id {
+    egui::Id::new(("ai-prompt-text", key))
 }
 
 /// The "?" button's help (`G:4173-4181`): the Markdown as plain text in a scrollable modal
@@ -1216,6 +1228,24 @@ mod tests {
         assert_eq!(default_keys(false, true, true, false), (true, true));
         assert_eq!(default_keys(false, true, false, true), (false, false), "Return clicks the focused button, not the default one");
         assert_eq!(default_keys(false, false, true, true), (false, true), "Escape still cancels");
+    }
+
+    #[test]
+    fn held_return_acts_once() {
+        let key = |repeat: bool, modifiers: egui::Modifiers| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat, modifiers };
+        assert!(fresh_return(&[key(false, egui::Modifiers::NONE)]));
+        assert!(!fresh_return(&[key(true, egui::Modifiers::NONE)]), "a key repeat of a held Return does not act");
+        assert!(!fresh_return(&[key(false, egui::Modifiers::SHIFT)]), "Shift+Return is not Return");
+        assert!(!fresh_return(&[egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::NONE }]), "a release is not a press");
+        assert!(fresh_return(&[key(true, egui::Modifiers::NONE), key(false, egui::Modifiers::NONE)]), "a fresh press in the same frame still acts");
+    }
+
+    #[test]
+    fn each_prompt_has_its_own_editor() {
+        let ids: Vec<egui::Id> = ap::SELECTOR.iter().flat_map(|group| group.iter()).map(|p| prompt_text_id(p.key())).chain([prompt_text_id(ap::CODE_REVIEW_KEY)]).collect();
+        for (i, a) in ids.iter().enumerate() {
+            assert!(ids[i + 1..].iter().all(|b| b != a), "prompt {i} shares its editor, and with it undo, with another prompt");
+        }
     }
 
     #[test]

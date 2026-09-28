@@ -65,7 +65,7 @@ impl KeyWindow {
                     ui.memory_mut(|m| m.request_focus(id));
                 }
                 ui.add_space(10.0);
-                let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter) && i.modifiers.is_none(), i.key_pressed(egui::Key::Escape)));
+                let (enter, escape) = ui.input(|i| (crate::settings_ai::fresh_return(&i.events), i.key_pressed(egui::Key::Escape)));
                 ui.horizontal(|ui| {
                     ok = ui.add(egui::Button::new("OK").min_size(egui::vec2(76.0, 24.0))).clicked() || enter;
                     cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 24.0))).clicked() || escape;
