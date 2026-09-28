@@ -597,12 +597,6 @@ pub fn console_text(invocation: &str, reason: &str, traceback: &str) -> String {
 
 /// The function call error alert's identifier (`H:580`).
 pub const ERROR_ID: &str = "NoSyncFunctionCallError";
-/// Where the alert's temporary silence ends (`iTermWarning.m:581-584`,
-/// `<identifier>_SilenceUntil`), in Unix seconds; the warning model keeps it
-/// (`warnings::until_key`).
-pub const SILENCE_UNTIL_KEY: &str = "NoSyncFunctionCallError_SilenceUntil";
-/// `kTemporarySilenceTime` (`iTermWarning.m:13`): ten minutes (`warnings::TEMPORARY_SECS`).
-pub const TEMPORARY_SILENCE_SECS: f64 = 600.0;
 /// The error alert's second button when there is a traceback (`H:570`); 11d.
 pub const REVEAL_IN_CONSOLE: &str = "Reveal in Script Console";
 /// The error alert's buttons (`H:568-571`): OK, and "Reveal in Script Console" when the

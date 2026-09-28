@@ -56,9 +56,25 @@ fn yes_no_spec(id: &str, heading: &str, text: String, labels: [&str; 2]) -> crat
     }
 }
 
+/// A name the terminal sent, as a question (and the Suppressed Alerts catalog, which keeps the
+/// text) shows it: control and bidirectional formatting characters dropped, and at most
+/// `SHOWN_NAME` characters, the rest an ellipsis.
+pub(super) fn shown_name(name: &str) -> String {
+    let bidi = |c: char| matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    let clean: Vec<char> = name.chars().filter(|&c| !c.is_control() && !bidi(c)).collect();
+    if clean.len() <= SHOWN_NAME {
+        return clean.into_iter().collect();
+    }
+    clean[..SHOWN_NAME].iter().chain(['\u{2026}'].iter()).collect()
+}
+
+/// The longest name a question shows.
+const SHOWN_NAME: usize = 200;
+
 /// "Allow Terminal-Initiated Download?" (or Display, for an `inline` file) for the file `name`
 /// of `size` bytes: Yes or No (`screenConfirmDownloadAllowed:`, `PS:19781-19811`).
 pub(super) fn download_spec(name: &str, size: usize, inline: bool) -> crate::warnings::Spec {
+    let name = shown_name(name);
     let size = size_text(size);
     let (heading, text) = if inline {
         ("Allow Terminal-Initiated Display?", format!("The terminal has initiated display of a file named \u{201c}{name}\u{201d} of size {size}. Allow it?"))
@@ -71,6 +87,7 @@ pub(super) fn download_spec(name: &str, size: usize, inline: bool) -> crate::war
 /// "Allow Large File Download?" for the file `name`: Allow or Deny
 /// (`screenConfirmDownloadNamed:canExceedSize:`, `PS:19772-19785`).
 pub(super) fn big_download_spec(name: &str) -> crate::warnings::Spec {
+    let name = shown_name(name);
     let text = format!("The download \u{201c}{name}\u{201d} is larger than {}. Continue?", size_text(BIG_DOWNLOAD));
     yes_no_spec("NoSyncAllowBigDownload", "Allow Large File Download?", text, ["Allow", "Deny"])
 }
@@ -96,12 +113,25 @@ fn inline_ask_of(then: &super::scripts_alerts::Then) -> Option<(PaneId, u64)> {
     }
 }
 
+/// The pane a download question (or its large file question) is about.
+fn download_ask_of(then: &super::scripts_alerts::Then) -> Option<PaneId> {
+    use super::scripts_alerts::Then;
+    match then {
+        Then::Download(pane, ..) | Then::BigDownload(pane, _) => Some(*pane),
+        _ => None,
+    }
+}
+
 impl App {
     /// Asks about each file a pane was sent to save (through the alert queue); the allowed
-    /// ones are saved (`download_answered`).
+    /// ones are saved (`download_answered`). A pane has one download question at a time: a
+    /// file sent while its question is queued or showing is refused, as No.
     pub(super) fn take_downloads(&mut self) {
-        let waiting: Vec<crate::inline_file::Download> = self.panes.values_mut().flat_map(|p| std::mem::take(&mut p.own_mut().downloads)).collect();
-        for d in waiting {
+        let waiting: Vec<(PaneId, crate::inline_file::Download)> = self.panes.iter_mut().flat_map(|(id, p)| std::mem::take(&mut p.own_mut().downloads).into_iter().map(move |d| (*id, d))).collect();
+        for (pane, d) in waiting {
+            if self.alert_waits(|then| download_ask_of(then) == Some(pane)) {
+                continue;
+            }
             let Some(dir) = downloads_dir() else {
                 self.banners.set("action", "No Downloads folder: USERPROFILE is not set.");
                 continue;
@@ -110,7 +140,7 @@ impl App {
             // question whose box is checked is not.
             let was_silenced = crate::warnings::is_silenced(&self.globals, DOWNLOAD_ID, super::warnings_app::unix_now());
             let spec = download_spec(&saved_name(&dir, &d.name), d.bytes.len(), false);
-            self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Download(d, was_silenced)));
+            self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Download(pane, d, was_silenced)));
         }
         self.take_inline_asks();
     }
@@ -167,8 +197,18 @@ impl App {
     /// Whether a question about `pane`'s inline file `serial` (display or large file) is
     /// queued or showing.
     pub(super) fn inline_question_waits(&self, pane: PaneId, serial: u64) -> bool {
-        let about = |then: &super::scripts_alerts::Then| inline_ask_of(then) == Some((pane, serial));
-        self.scripts_alerts.iter().any(|a| about(&a.then)) || self.scripts_alert.as_ref().is_some_and(|(_, a)| about(&a.then))
+        self.alert_waits(|then| inline_ask_of(then) == Some((pane, serial)))
+    }
+
+    /// A restarted pane's questions about its old screen's inline files close unanswered, as
+    /// `close_dropped_inline_questions` closes them: the new screen numbers its files from 1
+    /// again, so an old question could otherwise answer a new file.
+    pub(super) fn close_inline_questions_of(&mut self, pane: PaneId) {
+        let about = |then: &super::scripts_alerts::Then| inline_ask_of(then).is_some_and(|(p, _)| p == pane);
+        self.scripts_alerts.retain(|a| !about(&a.then));
+        if self.scripts_alert.as_ref().is_some_and(|(_, a)| about(&a.then)) {
+            self.scripts_alert = None;
+        }
     }
 
     /// The display question answered: Yes (0) shows the file, or first asks the large file
@@ -195,11 +235,11 @@ impl App {
 
     /// The download question answered: Yes (0) saves the file, or first asks the large file
     /// question when the answer was remembered and the file is large.
-    pub(super) fn download_answered(&mut self, d: crate::inline_file::Download, was_silenced: bool, index: usize) {
+    pub(super) fn download_answered(&mut self, pane: PaneId, d: crate::inline_file::Download, was_silenced: bool, index: usize) {
         let allowed = index == 0;
         if needs_big_question(was_silenced, allowed, d.bytes.len()) {
             let name = downloads_dir().map_or_else(|| d.name.clone(), |dir| saved_name(&dir, &d.name));
-            self.ask_scripts(super::scripts_alerts::Ask::new(big_download_spec(&name), super::scripts_alerts::Then::BigDownload(d)));
+            self.ask_scripts(super::scripts_alerts::Ask::new(big_download_spec(&name), super::scripts_alerts::Then::BigDownload(pane, d)));
         } else if allowed {
             self.save_download(d);
         }
@@ -230,6 +270,33 @@ mod tests {
         assert_eq!(inline_ask_of(&Then::Inline { pane: 3, serial: 7, name: "a.png".into(), size: 5, was_silenced: false }), Some((3, 7)));
         assert_eq!(inline_ask_of(&Then::BigInline(3, 8)), Some((3, 8)));
         assert_eq!(inline_ask_of(&Then::Nothing), None);
+    }
+
+    /// Only the download questions name a pane: its one question at a time.
+    #[test]
+    fn download_questions_name_their_pane() {
+        use super::super::scripts_alerts::Then;
+        let d = || crate::inline_file::Download { name: "a".into(), bytes: Vec::new() };
+        assert_eq!(download_ask_of(&Then::Download(4, d(), false)), Some(4));
+        assert_eq!(download_ask_of(&Then::BigDownload(5, d())), Some(5));
+        assert_eq!(download_ask_of(&Then::BigInline(3, 8)), None);
+        assert_eq!(download_ask_of(&Then::Nothing), None);
+    }
+
+    /// A name the terminal sent cannot break the question's text or flood it.
+    #[test]
+    fn sent_names_are_shown_safely() {
+        assert_eq!(shown_name("a.png"), "a.png");
+        assert_eq!(shown_name("a\nb\r\u{7}c.png"), "abc.png");
+        assert_eq!(shown_name("evil\u{202e}gnp.exe"), "evilgnp.exe");
+        assert_eq!(shown_name("\u{2066}x\u{2069}\u{200f}"), "x");
+        let long = "x".repeat(5000);
+        let shown = shown_name(&long);
+        assert_eq!(shown.chars().count(), SHOWN_NAME + 1);
+        assert!(shown.ends_with('\u{2026}'));
+        let s = download_spec("a\u{202e}b", 3, true);
+        assert!(s.text.contains("\u{201c}ab\u{201d}"), "{}", s.text);
+        assert!(big_download_spec("a\nb").text.contains("\u{201c}ab\u{201d}"));
     }
 
     #[test]

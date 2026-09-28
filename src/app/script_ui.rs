@@ -1549,10 +1549,11 @@ mod tests {
         let spec = failure("f()").spec().unwrap();
         assert_eq!((spec.id.as_deref(), spec.kind, spec.cancel), (Some("NoSyncFunctionCallError"), crate::warnings::Kind::Temporary, None));
         assert_eq!(crate::warnings::checkbox_label(&spec), Some("Suppress this message for ten minutes"));
-        assert_eq!(crate::warnings::until_key(script_eval::ERROR_ID), script_eval::SILENCE_UNTIL_KEY);
-        assert_eq!((script_eval::SILENCE_UNTIL_KEY, crate::warnings::TEMPORARY_SECS), ("NoSyncFunctionCallError_SilenceUntil", script_eval::TEMPORARY_SILENCE_SECS));
+        // `<identifier>_SilenceUntil` (`iTermWarning.m:581-584`) and `kTemporarySilenceTime`.
+        let until = crate::warnings::until_key(script_eval::ERROR_ID);
+        assert_eq!((until.as_str(), crate::warnings::TEMPORARY_SECS), ("NoSyncFunctionCallError_SilenceUntil", 600.0));
         let mut g = crate::globals::Globals::empty(std::path::Path::new("settings.toml"));
-        g.set(script_eval::SILENCE_UNTIL_KEY, toml::Value::Float(100.0));
+        g.set(&until, toml::Value::Float(100.0));
         assert!(crate::warnings::is_silenced(&g, script_eval::ERROR_ID, 99.0));
         assert!(!crate::warnings::is_silenced(&g, script_eval::ERROR_ID, 100.0));
         assert_eq!(crate::warnings::preempt(&spec, &g, 99.0, false), crate::warnings::Preempt::Answer(0), "OK remembered by default");

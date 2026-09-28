@@ -59,7 +59,7 @@ pub(super) fn offer_buttons(o: Offer) -> &'static [&'static str] {
 
 /// An answer: the value to store (None stores nothing) and whether to turn the mode off now.
 /// Every offer answers alike; Help and a close do neither (`PS:18090-18108`, `NC:538-563`).
-pub(super) fn answer(_offer: Offer, button: Option<&str>) -> (Option<bool>, bool) {
+pub(super) fn answer(button: Option<&str>) -> (Option<bool>, bool) {
     match button {
         Some("_Yes") => (None, true),
         Some("Always") => (Some(true), true),
@@ -108,7 +108,7 @@ impl App {
     /// An offer's answer. False for other bars.
     pub(super) fn host_offer_bar(&mut self, pane: PaneId, id: &str, button: Option<&str>) -> bool {
         let Some(o) = OFFERS.into_iter().find(|o| bar_id(*o) == id) else { return false };
-        let (store, off) = answer(o, button);
+        let (store, off) = answer(button);
         if let Some(v) = store {
             self.globals.set(offer_key(o), toml::Value::Boolean(v));
             self.save_globals();
@@ -159,13 +159,11 @@ mod tests {
         assert_eq!(bar_id(Focus), "TurnOffFocusReportingOnHostChange");
         assert_eq!(bar_id(Mouse), "TurnOffMouseReportingOnHostChange");
         assert_eq!(bar_id(Paste), "TurnOffBracketedPasteOnHostChange");
-        for o in [Focus, Mouse, Paste] {
-            assert_eq!(answer(o, Some("_Yes")), (None, true));
-            assert_eq!(answer(o, Some("Always")), (Some(true), true));
-            assert_eq!(answer(o, Some("Never")), (Some(false), false));
-            assert_eq!(answer(o, None), (None, false), "closed");
-        }
-        assert_eq!(answer(Paste, Some("Help")), (None, false));
+        assert_eq!(answer(Some("_Yes")), (None, true));
+        assert_eq!(answer(Some("Always")), (Some(true), true));
+        assert_eq!(answer(Some("Never")), (Some(false), false));
+        assert_eq!(answer(None), (None, false), "closed");
+        assert_eq!(answer(Some("Help")), (None, false));
         assert_eq!(PASTE_HELP_URL, "https://iterm2.com/paste_bracketing");
     }
 }

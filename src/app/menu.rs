@@ -548,11 +548,15 @@ impl App {
             "importWindowArrangement:" => self.load_arrangement_file(),
             "changeProfileInArrangement:" => self.open_settings_page(event_loop, crate::settings_ui::Page::Arrangements),
             // A session whose shell has exited restarts at once; a running one asks first
-            // (`restartSessionWithConfirmation:`). The API's RestartSession never asks.
+            // (`restartSessionWithConfirmation:`), once: iTerm2's question is modal, so a
+            // second pick while the pane's question waits does nothing. The API's
+            // RestartSession never asks.
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
                     if restart_asks(self.panes.get(&id).is_some_and(|p| p.exited.is_some())) {
-                        self.ask_scripts(super::scripts_alerts::Ask::new(restart_spec(), super::scripts_alerts::Then::Restart(id)));
+                        if !self.alert_waits(|then| *then == super::scripts_alerts::Then::Restart(id)) {
+                            self.ask_scripts(super::scripts_alerts::Ask::new(restart_spec(), super::scripts_alerts::Then::Restart(id)));
+                        }
                     } else {
                         self.restart_pane(id);
                     }

@@ -261,10 +261,6 @@ pub struct ConfirmWindow {
 impl ConfirmWindow {
     /// The checkbox's label (`iTermWarning.m:400-406`).
     pub const SUPPRESS: &'static str = "Suppress this message permanently";
-    /// A permanently silenceable warning's checkbox with several actions (`iTermWarning.m:403-404`).
-    pub const REMEMBER: &'static str = "Remember my choice";
-    /// A temporarily silenceable warning's checkbox with one action (`iTermWarning.m:381-390`).
-    pub const SUPPRESS_TEN_MINUTES: &'static str = "Suppress this message for ten minutes";
 
     #[allow(clippy::too_many_arguments)]
     pub fn open(
@@ -318,23 +314,6 @@ impl ConfirmWindow {
         w.ok = second.into();
         w.cancel = Some(first.into());
         w.enter_cancels = true;
-        Ok(w)
-    }
-
-    /// A notice with OK only that can be silenced for good (`kiTermWarningTypePermanentlySilenceable`
-    /// with one action): OK answers `Ok` with the checkbox's state; Escape or closing it `Cancel`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn notice(
-        event_loop: &ActiveEventLoop,
-        instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        heading: &str,
-        text: &str,
-    ) -> Result<ConfirmWindow, String> {
-        let mut w = ConfirmWindow::open(event_loop, instance, adapter, device, queue, heading, text)?;
-        w.cancel = None;
         Ok(w)
     }
 
@@ -496,7 +475,6 @@ mod tests {
         assert_eq!(shortcut_press(&[None, Some((0, 'c')), None], 'C'), Some(1), "case-insensitive");
         assert_eq!(shortcut_press(&[None, Some((0, 'c')), None], 'x'), None);
         assert_eq!(shortcut_press(&[None, Some((0, 'c')), Some((2, 'c'))], 'c'), Some(1), "the first of two with one letter");
-        assert_eq!(ConfirmWindow::REMEMBER, "Remember my choice");
     }
 
     #[test]

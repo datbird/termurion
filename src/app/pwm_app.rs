@@ -1559,7 +1559,6 @@ fn field(key: &str, label: &str, secret: bool) -> Field {
     Field { key: key.to_string(), label: label.to_string(), placeholder: None, is_secret: secret, note: None, persist_in_keychain: false }
 }
 
-/// The name an adapter keeps its settings under (iTerm2's adapter identifiers, `P:52-66`).
 /// An adapter's warning from its account list (`AdapterPasswordDataSource.swift:622`,
 /// `:688-696`): per adapter, OK only, permanently silenceable.
 pub(super) fn adapter_warning_spec(id: &str, text: &str) -> crate::warnings::Spec {
@@ -1574,6 +1573,7 @@ pub(super) fn adapter_warning_spec(id: &str, text: &str) -> crate::warnings::Spe
     }
 }
 
+/// The name an adapter keeps its settings under (iTerm2's adapter identifiers, `P:52-66`).
 fn adapter_identifier(kind: Kind) -> Option<&'static str> {
     match kind {
         Kind::KeePassXC => Some("KeePassXC"),

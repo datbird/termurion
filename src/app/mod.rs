@@ -1357,6 +1357,8 @@ impl App {
             // The old shell is gone for good; the new one gets its own cookie.
             self.forget_cookie(&old);
         }
+        // Its inline files went with its screen.
+        self.close_inline_questions_of(id);
         self.start_pane_as(id, rect, guid.as_deref());
     }
 

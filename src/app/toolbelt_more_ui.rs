@@ -79,8 +79,6 @@ pub(super) struct StatusShown {
     pub(super) wraps: RefCell<Wraps>,
 }
 
-/// What an OSC clear's empty view is keyed to: the mark's capture count and its last entry
-/// (a capture appends or grows the last one; nothing else changes the list while it is empty).
 /// "Confirmation Needed" before sending a signal to `count` processes (`JT:425-432`): OK and
 /// Cancel, permanently silenceable.
 pub(super) fn signal_spec(count: usize, any_children: bool) -> crate::warnings::Spec {
@@ -97,6 +95,8 @@ pub(super) fn signal_spec(count: usize, any_children: bool) -> crate::warnings::
     }
 }
 
+/// What an OSC clear's empty view is keyed to: the mark's capture count and its last entry
+/// (a capture appends or grows the last one; nothing else changes the list while it is empty).
 fn captured_fingerprint(list: &[Captured]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     list.len().hash(&mut h);

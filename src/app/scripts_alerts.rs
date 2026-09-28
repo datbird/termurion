@@ -12,9 +12,9 @@ use winit::window::WindowId;
 
 use super::script_runtime_ui::After;
 use super::App;
-use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
+use crate::prompt_ui::ConfirmResult;
 use crate::script_provision::Job;
-use crate::warnings::{self, Kind, Preempt, Spec};
+use crate::warnings::{Kind, Preempt, Spec};
 
 /// One alert waiting to show: the warning (its buttons left to right; Enter presses the first
 /// and Escape the one labeled "Cancel") and what an answer does.
@@ -62,10 +62,14 @@ pub(super) enum Answer {
 
 /// The answer when an alert is closed: `fallback` (the window's `close_answer`, which only
 /// dismisses), except that closing the slow-scan question goes on scanning rather than
-/// pressing Stop. iTerm2's alerts cannot be closed.
+/// pressing Stop, and closing a consent question with no Cancel button (a terminal-initiated
+/// download or display, the large file question, copying settings to the custom folder)
+/// refuses it: its first button consents. iTerm2's alerts cannot be closed.
 pub(super) fn on_close(then: &Then, fallback: usize) -> Answer {
     match then {
         Then::SlowScan => Answer::Button(1),
+        // No, Deny and Don't Copy.
+        Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::PrefsCopyNow => Answer::Button(1),
         _ => Answer::Button(fallback),
     }
 }
@@ -150,11 +154,13 @@ pub(super) enum Then {
     BroadcastInput(crate::layout::PaneId, &'static str),
     /// "Restart session?" for the pane: OK (0) restarts it; Cancel (1) does nothing.
     Restart(crate::layout::PaneId),
-    /// A terminal-initiated download and whether its question was silenced when asked: Yes
-    /// (0) saves it, after the large file question when that follows; No (1) drops it.
-    Download(crate::inline_file::Download, bool),
-    /// "Allow Large File Download?": Allow (0) saves it; Deny (1) drops it.
-    BigDownload(crate::inline_file::Download),
+    /// A terminal-initiated download from the pane, and whether its question was silenced
+    /// when asked: Yes (0) saves it, after the large file question when that follows; No (1)
+    /// drops it.
+    Download(crate::layout::PaneId, crate::inline_file::Download, bool),
+    /// "Allow Large File Download?" for the pane's download: Allow (0) saves it; Deny (1)
+    /// drops it.
+    BigDownload(crate::layout::PaneId, crate::inline_file::Download),
     /// "Allow Terminal-Initiated Display?" for the inline file the pane's output waits on (its
     /// number, `Screen::inline_serial`), its name and declared size, and whether the question
     /// was silenced when asked: Yes (0) shows it, after the large file question when that
@@ -185,20 +191,27 @@ impl Then {
             _ => Vec::new(),
         }
     }
+
+    /// An ask that output, a script or a folder scan raises, not the person's own action: only
+    /// these count against the queue's cap, so a flood of them never drops a question the
+    /// person asked for (a paste, Restart Session, Clear with broadcast, the quit question).
+    fn capped(&self) -> bool {
+        matches!(self, Then::Download(..) | Then::BigDownload(..) | Then::Inline { .. } | Then::BigInline(..) | Then::Nothing | Then::ErrorRunning | Then::Malformed(_) | Then::Archive(_))
+    }
 }
 
-/// The queue holds at most this many; later asks are dropped (a flood of the same question
-/// must not open windows forever).
+/// The queue holds at most this many capped asks (`Then::capped`); later ones are dropped (a
+/// flood of the same question must not open windows forever). The person's own asks always
+/// queue.
 const LIMIT: usize = 16;
 
-/// Queues `ask`, or gives it back when the queue is full.
+/// Queues `ask`, or gives a capped one back when the queue holds `LIMIT` capped asks.
 fn push_capped(queue: &mut VecDeque<Ask>, ask: Ask) -> Option<Ask> {
-    if queue.len() < LIMIT {
-        queue.push_back(ask);
-        None
-    } else {
-        Some(ask)
+    if ask.then.capped() && queue.iter().filter(|a| a.then.capped()).count() >= LIMIT {
+        return Some(ask);
     }
+    queue.push_back(ask);
+    None
 }
 
 impl App {
@@ -236,6 +249,11 @@ impl App {
         }
     }
 
+    /// Whether an ask that `about` picks is queued or showing.
+    pub(super) fn alert_waits(&self, about: impl Fn(&Then) -> bool) -> bool {
+        self.scripts_alerts.iter().any(|a| about(&a.then)) || self.scripts_alert.as_ref().is_some_and(|(_, a)| about(&a.then))
+    }
+
     /// Opens the next queued alert when none shows.
     pub(super) fn open_scripts_alerts(&mut self, event_loop: &ActiveEventLoop) {
         if self.scripts_alert.is_some() || self.scripts_alerts.is_empty() {
@@ -246,16 +264,8 @@ impl App {
         let gpu = self.gpu.as_ref().map(|g| (&g.instance, &g.adapter, &g.device, &g.queue)).or(self.prefs_gpu.as_ref().map(|(i, a, d, q)| (i, a, d, q)));
         let Some((instance, adapter, device, queue)) = gpu else { return };
         let Some(ask) = self.scripts_alerts.pop_front() else { return };
-        let spec = &ask.spec;
-        let labels: Vec<&str> = spec.labels.iter().map(String::as_str).collect();
-        let heading = spec.shown_heading();
-        let text = match &ask.remembered {
-            Some(saved) => warnings::remembered_text(&spec.text, saved),
-            None => spec.text.clone(),
-        };
-        let (checkbox, shortcuts) = (warnings::checkbox_label(spec), warnings::shortcuts(&spec.labels));
         let underline = self.globals.bool("AlertsIndicateShortcuts");
-        match ConfirmWindow::actions(event_loop, instance, adapter, device, queue, heading, &text, &labels, checkbox, &shortcuts, underline, ask.remembered.is_some()) {
+        match super::warnings_app::open_warning(event_loop, (instance, adapter, device, queue), &ask.spec, ask.remembered.as_deref(), underline) {
             Ok(w) => self.scripts_alert = Some((w, ask)),
             Err(e) => {
                 self.banners.set("window", format!("Could not open the window: {e}"));
@@ -298,16 +308,11 @@ impl App {
         let Some((_, mut ask)) = self.scripts_alert.take() else { return true };
         // "Permanently Forget Saved Selection": the saved answer goes and the same alert shows
         // again, next, without the remembered mode (`iTermWarning.m:526-541`).
-        if ask.remembered.is_some() && index == ask.spec.labels.len() {
-            if let Some(id) = ask.spec.id.as_deref() {
-                warnings::clear_saved(&mut self.globals, id);
-                self.save_globals();
-            }
+        if self.warning_window_answered(&ask.spec, ask.remembered.is_some(), index, suppress) {
             ask.remembered = None;
             self.scripts_alerts.push_front(ask);
             return true;
         }
-        self.warning_answered(&ask.spec, index, suppress);
         self.scripts_answered(ask.then, index);
         true
     }
@@ -328,10 +333,10 @@ impl App {
                     self.restart_answered(pane);
                 }
             }
-            Then::Download(d, was_silenced) => self.download_answered(d, was_silenced, index),
+            Then::Download(pane, d, was_silenced) => self.download_answered(pane, d, was_silenced, index),
             Then::Inline { pane, serial, name, size, was_silenced } => self.inline_answered(pane, serial, &name, size, was_silenced, index),
             Then::BigInline(pane, serial) => self.inline_released(pane, serial, index == 0),
-            Then::BigDownload(d) => {
+            Then::BigDownload(_, d) => {
                 if index == 0 {
                     self.save_download(d);
                 }
@@ -479,6 +484,25 @@ mod tests {
         assert_ne!(Answer::Closed, Answer::Button(0));
     }
 
+    /// Closing a consent question with no Cancel button refuses it: its first button (Yes,
+    /// Allow, Copy) would save a file the terminal sent, show one, or copy the settings.
+    #[test]
+    fn closing_a_consent_question_refuses_it() {
+        use crate::prompt_ui::close_index;
+        let d = || crate::inline_file::Download { name: "a.txt".into(), bytes: b"abc".to_vec() };
+        let download = ask("", "", &["Yes", "No"], None, Kind::Permanent, Then::Download(3, d(), false));
+        let big = ask("", "", &["Allow", "Deny"], None, Kind::Permanent, Then::BigDownload(3, d()));
+        let inline = ask("", "", &["Yes", "No"], None, Kind::Permanent, Then::Inline { pane: 3, serial: 1, name: "a.png".into(), size: 5, was_silenced: false });
+        let big_inline = ask("", "", &["Allow", "Deny"], None, Kind::Permanent, Then::BigInline(3, 1));
+        let copy = ask("", "", &[crate::remote_prefs::COPY, crate::remote_prefs::DONT_COPY], None, Kind::Persistent, Then::PrefsCopyNow);
+        for a in [download, big, inline, big_inline, copy] {
+            let labels: Vec<&str> = a.spec.labels.iter().map(String::as_str).collect();
+            // The window's own close answer is the first button, which consents.
+            assert_eq!(close_index(&labels), 0);
+            assert_eq!(on_close(&a.then, close_index(&labels)), Answer::Button(1), "{:?}", a.spec.labels);
+        }
+    }
+
     #[test]
     fn a_full_queue_gives_the_ask_back() {
         let ask = |then| ask("", "", &[], None, crate::warnings::Kind::Persistent, then);
@@ -486,7 +510,25 @@ mod tests {
         for _ in 0..LIMIT {
             assert!(push_capped(&mut q, ask(Then::Nothing)).is_none());
         }
-        assert_eq!(push_capped(&mut q, ask(Then::SlowScan)).map(|a| a.then), Some(Then::SlowScan));
+        assert_eq!(push_capped(&mut q, ask(Then::Nothing)).map(|a| a.then), Some(Then::Nothing));
         assert_eq!(q.len(), LIMIT);
+    }
+
+    /// Output-driven asks fill only their own share: the person's own questions still queue
+    /// behind a flood of downloads.
+    #[test]
+    fn the_persons_questions_are_never_dropped() {
+        let ask = |then| ask("", "", &[], None, crate::warnings::Kind::Persistent, then);
+        let d = |pane| Then::Download(pane, crate::inline_file::Download { name: "a".into(), bytes: Vec::new() }, false);
+        let mut q = VecDeque::new();
+        for pane in 0..LIMIT as u64 {
+            assert!(push_capped(&mut q, ask(d(pane))).is_none());
+        }
+        assert!(push_capped(&mut q, ask(d(99))).is_some(), "one download too many");
+        for then in [Then::Paste(1), Then::Restart(1), Then::PrefsQuit, Then::Broadcast { clear: true, me: 1, targets: vec![2] }, Then::TmuxNew { anchor: 1, window: false }, Then::SlowScan] {
+            assert!(push_capped(&mut q, ask(then.clone())).is_none(), "{then:?}");
+        }
+        assert_eq!(q.len(), LIMIT + 6);
+        assert!(push_capped(&mut q, ask(Then::Archive(std::path::PathBuf::from(r"C:\a.zip")))).is_some(), "a scan's asks are capped");
     }
 }
