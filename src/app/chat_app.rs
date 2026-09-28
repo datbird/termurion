@@ -4,7 +4,7 @@
 //! R12cd-4): applying its effects, among them `ai_run_tool`, the one dispatcher of every tool
 //! call, and the live drivers over 12b's runners.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -130,6 +130,15 @@ fn unlink_stale_panes(store: &mut Store) {
     }
 }
 
+/// The live pane a session reference names: the pane whose own `session_guid` it is, exactly.
+/// A decimal id, an empty text or a reference of an earlier launch names nothing.
+pub(super) fn pane_for_ref(panes: &HashMap<PaneId, crate::pane::Pane>, guid: &str) -> Option<PaneId> {
+    if guid.is_empty() {
+        return None;
+    }
+    panes.iter().find(|(_, p)| p.session_guid == guid).map(|(id, _)| *id)
+}
+
 /// `ChatListModel.setPermission` (`ChatListModel.swift:432-446`) over an open database: the
 /// override, then the chat's entries written to its row. Taking the open store means the
 /// open-time merge has already run and cannot overwrite the change. Answers the chat's row
@@ -215,6 +224,17 @@ impl App {
             }
         }
         self.chat_db.as_mut()
+    }
+
+    /// A pane's reference in a chat (its own `session_guid`, unique across panes and launches),
+    /// and the live pane a reference names. The only conversions: a reference read from a
+    /// stored row or message is trusted only when it names a live pane exactly.
+    pub(crate) fn session_ref(&self, pane: PaneId) -> Option<String> {
+        self.panes.get(&pane).map(|p| p.session_guid.clone())
+    }
+
+    pub(crate) fn ref_pane(&self, guid: &str) -> Option<PaneId> {
+        pane_for_ref(&self.panes, guid)
     }
 
     /// `ChatBroker.publish` with the list model behind it, and the hand-off to the chat's
@@ -312,7 +332,7 @@ impl App {
         let check_state_always = row
             .terminal_session_guid
             .as_deref()
-            .filter(|g| g.parse::<crate::layout::PaneId>().is_ok_and(|id| id.to_string() == *g && self.panes.contains_key(&id)))
+            .filter(|g| self.ref_pane(g).is_some())
             .is_some_and(|g| self.ai_overrides.get(chat, g, Category::CheckTerminalState, &global) == Permission::Always);
         let set = ai_permissions::published_set(&allowed, check_state_always);
         // iTerm2 logs a failure here (`ChatViewController.swift:1195-1203`).
@@ -337,7 +357,7 @@ impl App {
         }
         let guid = chat.terminal_session_guid.as_deref()?;
         // A guid that is not a live pane's id is no linked terminal (`ai_set_permission`).
-        let pane = guid.parse::<crate::layout::PaneId>().ok().filter(|id| id.to_string() == guid && self.panes.contains_key(id))?;
+        let pane = self.ref_pane(guid)?;
         let global = |c: Category| self.ai_global_permission(c);
         let wants = crate::ai_context::wants(self.ai_overrides.get(&chat.id, guid, Category::CheckTerminalState, &global), self.ai_overrides.get(&chat.id, guid, Category::ViewContents, &global), true);
         let consent = crate::ai_context::Consent::from_global(self.globals.int(crate::ai_context::CONSENT_KEY));
@@ -406,7 +426,7 @@ impl App {
         let globals = &self.globals;
         let panes = &self.panes;
         let model_for = |c: &Chat| c.model_name.as_deref().and_then(|n| crate::ai_model::named(n, globals, catalog, &found)).or_else(|| crate::ai_model::configured(globals, catalog, &found));
-        let pane_of = |g: &str| g.parse::<PaneId>().ok().filter(|id| id.to_string() == g && panes.contains_key(id));
+        let pane_of = |g: &str| pane_for_ref(panes, g);
         let (t, o, n) = (transport.clone(), options.clone(), notify.clone());
         let mut new_turn = move |_: &Model| -> Box<dyn TurnDriver> {
             Box::new(LiveTurn {
@@ -465,9 +485,10 @@ impl App {
                 EngineEffect::AskKey { vendor, endpoint, then } => self.ask_ai_key(vendor, Some(&endpoint), then),
                 // 12d Task 5 makes this its `link_chat` (minor m14).
                 EngineEffect::Link { chat, pane } => {
-                    if let Some(db) = self.chat_db.as_mut() {
+                    let reference = self.session_ref(pane);
+                    if let (Some(db), Some(reference)) = (self.chat_db.as_mut(), reference) {
                         if let Ok(Some(row)) = db.chat(&chat) {
-                            let _ = db.update_chat(&Chat { terminal_session_guid: Some(pane.to_string()), ..row });
+                            let _ = db.update_chat(&Chat { terminal_session_guid: Some(reference), ..row });
                         }
                     }
                 }
@@ -914,6 +935,20 @@ mod tests {
         let kept = store.chat(&imported.id).unwrap().unwrap();
         assert_eq!(kept.terminal_session_guid, imported.terminal_session_guid);
         assert_eq!(overrides.get(&imported.id, "6F1C2A3B-0000-4000-8000-000000000001", Category::RunCommands, &ask), Permission::Always);
+    }
+
+    #[test]
+    fn a_session_ref_is_unique_per_pane_and_launch() {
+        // "Two launches" each have a pane 3.
+        let (a, b) = (crate::pane::Pane::recording(3, 80, 24), crate::pane::Pane::recording(3, 80, 24));
+        assert_ne!(a.session_guid, b.session_guid, "a reused pane id gets a new reference");
+        assert!(!ai_permissions::is_pane_guid(&a.session_guid), "a reference is never a decimal pane id");
+        let (ra, rb) = (a.session_guid.clone(), b.session_guid.clone());
+        let panes = HashMap::from([(3, a)]);
+        assert_eq!(pane_for_ref(&panes, &ra), Some(3));
+        assert_eq!(pane_for_ref(&panes, "3"), None, "a decimal id of an earlier run names nothing");
+        assert_eq!(pane_for_ref(&panes, &rb), None, "another launch's reference names nothing");
+        assert_eq!(pane_for_ref(&panes, ""), None);
     }
 
     #[test]

@@ -43,12 +43,6 @@ pub(super) fn chat_chord(c: &crate::menus::Chord) -> Option<ChatChord> {
 }
 
 impl App {
-    /// A session's reference in a chat: the pane id as decimal text (Task 5's `session_ref`
-    /// takes this over).
-    fn window_session_ref(pane: PaneId) -> String {
-        pane.to_string()
-    }
-
     /// The focused pane, when it is a live one.
     fn chat_focused_pane(&self) -> Option<PaneId> {
         self.focused_id().filter(|id| self.panes.contains_key(id))
@@ -102,7 +96,7 @@ impl App {
             return;
         }
         let session = self.chat_focused_pane();
-        let session_ref = session.map(Self::window_session_ref);
+        let session_ref = session.and_then(|p| self.session_ref(p));
         let chats = self.chat_db.as_ref().and_then(|db| db.chats().ok()).unwrap_or_default();
         let linked = session_ref.as_deref().and_then(|r| chats.iter().find(|c| c.terminal_session_guid.as_deref() == Some(r)));
         // The shown chat, else the most recent one.
@@ -123,7 +117,7 @@ impl App {
             return;
         }
         let Some(pane) = self.chat_focused_pane() else { return };
-        let reference = Self::window_session_ref(pane);
+        let Some(reference) = self.session_ref(pane) else { return };
         let last = self.chat_db.as_ref().and_then(|db| db.chats().ok()).and_then(|chats| chats.into_iter().find(|c| c.terminal_session_guid.as_deref() == Some(reference.as_str())));
         let id = match last {
             Some(c) => Some(c.id),
@@ -143,10 +137,10 @@ impl App {
     pub(super) fn create_window_chat(&mut self, offer: Option<PaneId>) {
         let Some(id) = self.chat_create(tb::NEW_CHAT_TITLE, None, None, "", vec![]) else { return };
         self.show_chat(Some(id.clone()));
-        match offer.filter(|p| self.panes.contains_key(p)) {
-            Some(pane) => {
+        match offer.and_then(|p| self.session_ref(p).map(|guid| (p, guid))) {
+            Some((pane, guid)) => {
                 let name = Some(self.window_title(pane)).filter(|n| !n.trim().is_empty());
-                self.client_local(&id, ClientLocal::OfferLink { terminal: true, guid: Self::window_session_ref(pane), name });
+                self.client_local(&id, ClientLocal::OfferLink { terminal: true, guid, name });
             }
             None => self.client_local(&id, ClientLocal::OfferOrchestration),
         }
