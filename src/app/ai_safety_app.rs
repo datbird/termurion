@@ -10,7 +10,7 @@ use crate::ai_models::Endpoint;
 use crate::ai_msg::{Message as WireMessage, Role};
 use crate::ai_transport::{Notify, Options, Transport};
 use crate::ai_turn::{self, Out, Runner, Wire};
-use crate::chat_gate::{endpoint_of, gate_open};
+use crate::chat_gate::{endpoint_of, pass, Passed};
 use crate::globals::Globals;
 use crate::pwm::Secret;
 
@@ -41,7 +41,8 @@ pub(super) struct Check {
 /// Where the check's one-shot goes.
 #[derive(Debug, PartialEq)]
 pub(super) enum Backend {
-    Run(Model, Endpoint),
+    /// With the proof, spent on the check's first send, that the gate was open for it.
+    Run(Model, Endpoint, Passed),
     /// The gate refused the model's own endpoint (the admin switch, the AI setting or the
     /// host's consent): nothing is sent.
     Refused(Endpoint),
@@ -56,7 +57,10 @@ pub(super) fn backend(g: &Globals, economy: Option<Model>, configured: Option<Mo
         None => Backend::NoModel,
         Some(m) => {
             let e = endpoint_of(&m);
-            if gate_open(g, &e) { Backend::Run(m, e) } else { Backend::Refused(e) }
+            match pass(g, &e) {
+                Some(p) => Backend::Run(m, e, p),
+                None => Backend::Refused(e),
+            }
         }
     }
 }
@@ -110,8 +114,9 @@ pub(super) fn messages(entries: &[Entry], line: &str) -> Vec<WireMessage> {
 /// Starts the one-shot: non-streaming, no tools. No response cap is sent: iTerm2 passes
 /// `maxTokens: 512` to a backend that ignores it, so the request's `max_tokens` stays the model's
 /// own; the 512 only sizes the history cut as `Wire.response_limit`. A reply or failure at once
-/// is Done.
-pub(super) fn start_run(model: Model, endpoint: Endpoint, msgs: Vec<WireMessage>, wire: Wire, transport: Arc<dyn Transport>, options: Options, notify: Notify, key: Option<&Secret>) -> CheckState {
+/// is Done. The first send spends `_pass`, the proof `backend` took (ruling R12cd-1).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn start_run(model: Model, endpoint: Endpoint, _pass: Passed, msgs: Vec<WireMessage>, wire: Wire, transport: Arc<dyn Transport>, options: Options, notify: Notify, key: Option<&Secret>) -> CheckState {
     let wire = Wire { response_limit: i64::from(ai_classifier::HISTORY_RESPONSE_ROOM), ..wire };
     let turn = ai_turn::one_shot(model, msgs, wire, String::new());
     let mut runner = Runner::new(turn, transport, options, notify);
@@ -207,12 +212,12 @@ impl super::App {
         if let Some(done) = refusal(&chosen) {
             return CheckState::Done(done);
         }
-        let Backend::Run(model, endpoint) = chosen else { return CheckState::Done(Some(false)) };
+        let Backend::Run(model, endpoint, proof) = chosen else { return CheckState::Done(Some(false)) };
         let entries = self.chat_db.as_ref().and_then(|db| db.messages(chat).ok()).map(|m| ai_classifier::project(&m)).unwrap_or_default();
         let key = crate::ai_keys::shared().lock().unwrap_or_else(|e| e.into_inner()).get(model.vendor, &mut *crate::ai_keys::system_store());
         let wire = Wire::from_globals(&self.globals);
         let options = crate::ai_transport::options_from(&self.globals);
-        start_run(model, endpoint, messages(&entries, line), wire, self.ai_transport.clone(), options, self.notify.clone(), key.as_ref())
+        start_run(model, endpoint, proof, messages(&entries, line), wire, self.ai_transport.clone(), options, self.notify.clone(), key.as_ref())
     }
 
     /// Advances the running checks and hands on the finished: (chat, request message, `send`,
@@ -326,11 +331,11 @@ mod tests {
         assert_eq!(refusal(&refused), Some(Some(false)), "the check ends unsafe at once: the command parks");
         // Consent for the economy host lets the check run on the economy model.
         grant(&mut g, "economy.test");
-        assert_eq!(backend(&g, Some(cheap.clone()), Some(openai())), Backend::Run(cheap.clone(), endpoint_of(&cheap)));
+        assert_eq!(backend(&g, Some(cheap.clone()), Some(openai())), Backend::Run(cheap.clone(), endpoint_of(&cheap), crate::chat_gate::Passed::for_test()));
         assert_eq!(refusal(&backend(&g, Some(cheap.clone()), None)), None, "a running check has no refusal");
         // No economy model: the configured one.
         let conf = openai();
-        assert_eq!(backend(&g, None, Some(conf.clone())), Backend::Run(conf.clone(), endpoint_of(&conf)));
+        assert_eq!(backend(&g, None, Some(conf.clone())), Backend::Run(conf.clone(), endpoint_of(&conf), crate::chat_gate::Passed::for_test()));
         // No model at all.
         assert_eq!(backend(&g, None, None), Backend::NoModel);
         assert_eq!(refusal(&Backend::NoModel), Some(Some(false)));
@@ -364,7 +369,7 @@ mod tests {
         let wire = Wire { token_limit: 128000, response_limit: 8192, zdr: false, ollama_num_ctx: 0, ollama_keep_alive: "30m".into() };
         let msgs = messages(&[Entry::UserText("please list".into())], "rm x");
         let key = key.map(|k| Secret::new(k.to_string()));
-        let started = start_run(m.clone(), endpoint_of(&m), msgs, wire, rec.clone(), Options { idle: std::time::Duration::ZERO, proxy: Proxy::Off }, Arc::new(|| {}), key.as_ref());
+        let started = start_run(m.clone(), endpoint_of(&m), crate::chat_gate::Passed::for_test(), msgs, wire, rec.clone(), Options { idle: std::time::Duration::ZERO, proxy: Proxy::Off }, Arc::new(|| {}), key.as_ref());
         (advance(started, |_| gate.then(crate::chat_gate::Passed::for_test)), rec)
     }
 

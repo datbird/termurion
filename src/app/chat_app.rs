@@ -160,7 +160,6 @@ pub(super) fn create_in(
     Ok(id)
 }
 
-
 impl App {
     /// The chat database, opened on first use at `chat_store::default_path()` with its lock
     /// beside it. Opening merges the chats' stored permissions into the overrides
@@ -251,7 +250,7 @@ impl App {
         let Some(db) = self.chat_db.as_mut() else { return };
         let Some((row, saved)) = set_permission_in(db, &mut self.ai_overrides, Key { chat: chat.to_string(), guid: guid.to_string(), category: c }, p) else { return };
         if !saved {
-            self.ask_ai(Alert { heading: OPEN_FAILED_HEADING.to_string(), text: ai_permissions::NOT_SAVED.to_string(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false, close: None });
+            self.ai_permission_not_saved();
         }
         let allowed = self.ai_allowed(&row);
         // `shouldShareTerminalStateAutomatically`: a live linked terminal at Always.
@@ -264,6 +263,11 @@ impl App {
         let set = ai_permissions::published_set(&allowed, check_state_always);
         // iTerm2 logs a failure here (`ChatViewController.swift:1195-1203`).
         let _ = self.chat_publish(chat, Message::new(chat, Participant::User, Content::SetPermissions(set), unix_now()), false);
+    }
+
+    /// "The permission change could not be saved..." (Task 3 ruling; iTerm2 only logs it).
+    fn ai_permission_not_saved(&mut self) {
+        self.ask_ai(Alert { heading: OPEN_FAILED_HEADING.to_string(), text: ai_permissions::NOT_SAVED.to_string(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false, close: None });
     }
 
     /// The volatile context block for `chat`'s next request (`autoProvidedContext`,
@@ -418,6 +422,7 @@ impl App {
                     let fx = self.engine(|cx| Engine::republish(cx, &chat, &request_id)).unwrap_or_default();
                     self.chat_apply(fx);
                 }
+                EngineEffect::PermissionNotSaved => self.ai_permission_not_saved(),
                 EngineEffect::VolatileSent(chat) => {
                     if let Some(row) = self.chat_db.as_ref().and_then(|db| db.chat(&chat).ok().flatten()) {
                         self.ai_volatile_context(&row, true);

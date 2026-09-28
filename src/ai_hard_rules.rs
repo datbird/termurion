@@ -1027,6 +1027,8 @@ fn windows_verdict(cmd: &str, args: &[String], raw: &[String], after_pipe: bool,
                     return Some(r);
                 }
             }
+            // A wrapper still running a line past the last level read: flagged, never passed.
+            Wrapped::Line(inner, _) if !inner.trim().is_empty() => return Some(WIN_NESTED.to_string()),
             Wrapped::Line(..) => {}
         }
     }
@@ -1042,14 +1044,76 @@ enum Wrapped {
 }
 
 /// PowerShell switches that take the next word as their value (a switch may be abbreviated to
-/// any prefix that is not another switch's).
-const PS_VALUE_SWITCHES: &[&str] = &["executionpolicy", "ep", "windowstyle", "inputformat", "outputformat", "configurationname", "workingdirectory", "wd", "version"];
+/// any prefix that is not another switch's): Windows PowerShell 5.1's and pwsh's.
+const PS_VALUE_SWITCHES: &[&str] = &[
+    "executionpolicy",
+    "ep",
+    "windowstyle",
+    "inputformat",
+    "outputformat",
+    "configurationname",
+    "configurationfile",
+    "custompipename",
+    "settingsfile",
+    "psconsolefile",
+    "encodedarguments",
+    "workingdirectory",
+    "wd",
+    "version",
+];
+
+/// Start-Process parameters that take a value (with their aliases and the common parameters),
+/// other than -FilePath and -ArgumentList. Any parameter that is not one of `START_SWITCHES`
+/// is read as taking one.
+const START_SWITCHES: &[&str] = &["wait", "nonewwindow", "nnw", "passthru", "loaduserprofile", "lup", "usenewenvironment", "verbose", "vb", "debug", "db", "whatif", "wi", "confirm", "cf"];
+const START_VALUES: &[&str] = &[
+    "credential",
+    "workingdirectory",
+    "redirectstandarderror",
+    "redirectstandardinput",
+    "redirectstandardoutput",
+    "rse",
+    "rsi",
+    "rso",
+    "verb",
+    "windowstyle",
+    "environment",
+    "erroraction",
+    "warningaction",
+    "informationaction",
+    "errorvariable",
+    "warningvariable",
+    "informationvariable",
+    "outvariable",
+    "outbuffer",
+    "pipelinevariable",
+    "progressaction",
+];
+
+/// A PowerShell CLI switch's name, lowercased, without its prefix: the CLI takes `-`, `/` or a
+/// Unicode dash (U+2013 to U+2015), and a second dash (`--enc`). None for a word that is no
+/// switch.
+fn ps_cli_switch(word: &str) -> Option<String> {
+    let mut chars = word.chars();
+    let lead = chars.next()?;
+    let dash = |c: char| matches!(c, '-' | '\u{2013}' | '\u{2014}' | '\u{2015}');
+    if !dash(lead) && lead != '/' {
+        return None;
+    }
+    let rest = chars.as_str();
+    let rest = match rest.chars().next() {
+        Some(c) if dash(lead) && dash(c) => &rest[c.len_utf8()..],
+        _ => rest,
+    };
+    Some(rest.to_lowercase())
+}
 
 /// The lines a `cmd /c`, `cmd /k`, `powershell -Command` (or a positional command) or `pwsh -c`
 /// wrapper runs, or a `start` runs, and the shell that runs each. cmd also takes the line glued
-/// to the switch (`/c"..."`), and its delimiters `,` `;` `=` glue a switch to the word before it
-/// (`cmd,/c,format C:`); the script itself is handed on as written. `start` gives two lines
-/// under cmd, since its first word can be a title whose quotes are already gone.
+/// to the switch (`/c"..."`), a switch combined with others (`/q/c`, `/e:on/c`), and its
+/// delimiters `,` `;` `=` glue a switch to the word before it (`cmd,/c,format C:`); the script
+/// itself is handed on as written. `start` gives two lines under cmd, since its first word can
+/// be a title whose quotes are already gone.
 fn wrapped_lines(cmd: &str, args: &[String], f: Flavor) -> Vec<Wrapped> {
     match cmd {
         "cmd" => {
@@ -1059,60 +1123,75 @@ fn wrapped_lines(cmd: &str, args: &[String], f: Flavor) -> Vec<Wrapped> {
                 if !matches!(c, ' ' | '\t' | ',' | ';' | '=') {
                     continue;
                 }
-                let lower = text[start..i].to_lowercase();
-                if lower.starts_with("/c") || lower.starts_with("/k") || lower.starts_with("/r") {
-                    let script = text[start + 2..].trim_start_matches([' ', '\t', ',', ';', '=']);
-                    return vec![Wrapped::Line(script.to_string(), Flavor::Cmd)];
+                let word = text[start..i].to_ascii_lowercase();
+                if word.starts_with('/') {
+                    // Each `/` in a switch word starts a switch of its own (`/q/c`).
+                    for (at, _) in word.match_indices('/') {
+                        if matches!(word[at + 1..].chars().next(), Some('c' | 'k' | 'r')) {
+                            let script = text[start + at + 2..].trim_start_matches([' ', '\t', ',', ';', '=']);
+                            return vec![Wrapped::Line(script.to_string(), Flavor::Cmd)];
+                        }
+                    }
                 }
                 start = i + c.len_utf8();
             }
             Vec::new()
         }
         "powershell" | "pwsh" => {
+            let mut lines = Vec::new();
             let mut i = 0;
             while i < args.len() {
-                let lower = args[i].to_lowercase();
-                let Some(name) = lower.strip_prefix('-') else {
+                let Some(switch) = ps_cli_switch(&args[i]) else {
                     // The first word that is no switch is the command (Windows PowerShell's
                     // default parameter is -Command).
-                    return vec![Wrapped::Line(args[i..].join(" "), Flavor::Ps)];
+                    lines.push(Wrapped::Line(args[i..].join(" "), Flavor::Ps));
+                    return lines;
                 };
-                let name = name.split(':').next().unwrap_or("");
+                let name = switch.split(':').next().unwrap_or("").to_string();
+                let value = args[i].split_once(':').map(|(_, v)| v.to_string());
                 if name.is_empty() {
                     i += 1;
                     continue;
                 }
-                if "command".starts_with(name) {
-                    return vec![Wrapped::Line(args[i + 1..].join(" "), Flavor::Ps)];
+                if "command".starts_with(name.as_str()) {
+                    // `-Command:x` keeps its value as the line's first word.
+                    let glued = value.filter(|v| !v.is_empty());
+                    lines.push(Wrapped::Line(glued.into_iter().chain(args[i + 1..].iter().cloned()).collect::<Vec<_>>().join(" "), Flavor::Ps));
+                    return lines;
                 }
-                if "encodedcommand".starts_with(name) || name == "ec" {
+                if "encodedcommand".starts_with(name.as_str()) || name == "ec" {
                     return vec![Wrapped::Opaque];
                 }
                 // A script file is not a command line.
-                if "file".starts_with(name) {
-                    return Vec::new();
+                if "file".starts_with(name.as_str()) {
+                    return lines;
                 }
-                if PS_VALUE_SWITCHES.iter().any(|v| v.starts_with(name)) {
+                // A value switch takes the next word unless its value is bound with `:`. The
+                // word is also read as the command, in case PowerShell reads this abbreviation as
+                // a switch with no value.
+                if value.is_none() && PS_VALUE_SWITCHES.iter().any(|v| v.starts_with(name.as_str())) {
+                    if i + 1 < args.len() {
+                        lines.push(Wrapped::Line(args[i + 1..].join(" "), Flavor::Ps));
+                    }
                     i += 1;
                 }
                 i += 1;
             }
-            Vec::new()
+            lines
         }
-        "start" | "start-process" | "saps" => {
+        "start" if f == Flavor::Cmd => {
             let mut lines = Vec::new();
             let mut i = 0;
             while i < args.len() {
                 let lower = args[i].to_lowercase();
-                let switch = (f == Flavor::Cmd && lower.starts_with('/')) || (f == Flavor::Ps && lower.starts_with('-'));
-                if switch {
-                    if matches!(lower.trim_start_matches(['/', '-']), "d" | "workingdirectory" | "windowstyle" | "verb") {
+                if lower.starts_with('/') {
+                    if matches!(lower.trim_start_matches('/'), "d" | "node" | "affinity") {
                         i += 1;
                     }
                 } else if !lower.is_empty() {
                     lines.push(Wrapped::Line(args[i..].join(" "), f));
-                    // Under cmd the first word may be the window title.
-                    if f != Flavor::Cmd || lines.len() == 2 {
+                    // The first word may be the window title.
+                    if lines.len() == 2 {
                         break;
                     }
                 }
@@ -1120,8 +1199,59 @@ fn wrapped_lines(cmd: &str, args: &[String], f: Flavor) -> Vec<Wrapped> {
             }
             lines
         }
+        "start" | "start-process" | "saps" => start_process_line(args).map_or_else(Vec::new, |line| vec![Wrapped::Line(line, f)]),
         _ => Vec::new(),
     }
+}
+
+/// The line `Start-Process` runs: -FilePath (or the first positional word) then -ArgumentList
+/// (or the words after it), each named parameter wherever it stands, by any unique prefix,
+/// with its value after `:` or in the next word.
+fn start_process_line(args: &[String]) -> Option<String> {
+    let (mut program, mut arguments): (Option<String>, Option<String>) = (None, None);
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let word = &args[i];
+        // A quoted word with a space in its name (`'-enc AAAA'`) is a value, not a parameter.
+        let named = |s: &&str| !s.split(':').next().unwrap_or("").is_empty() && !s.split(':').next().unwrap_or("").contains([' ', '\t']);
+        let Some(switch) = word.strip_prefix('-').filter(named) else {
+            if !word.is_empty() {
+                positional.push(word.clone());
+            }
+            i += 1;
+            continue;
+        };
+        let lower = switch.to_lowercase();
+        let name = lower.split(':').next().unwrap_or("").to_string();
+        let glued = switch.split_once(':').map(|(_, v)| v.to_string());
+        let is = |full: &str| full.starts_with(name.as_str());
+        // An exact name wins (`-Verb`, not `-Verbose`); a name that is only a switch's prefix
+        // takes no value; any other (a value parameter, an ambiguous or unknown one) takes one.
+        let only_switch = START_SWITCHES.contains(&name.as_str()) || (START_SWITCHES.iter().any(|s| is(s)) && !START_VALUES.iter().any(|v| is(v)));
+        let takes_value = START_VALUES.contains(&name.as_str()) || !only_switch;
+        let target = if is("filepath") || name == "path" || name == "pspath" {
+            Some(&mut program)
+        } else if is("argumentlist") || name == "args" {
+            Some(&mut arguments)
+        } else {
+            None
+        };
+        match (target, glued) {
+            (Some(slot), Some(v)) => *slot = Some(v),
+            (Some(slot), None) => {
+                *slot = args.get(i + 1).cloned();
+                i += 1;
+            }
+            (None, None) if takes_value => i += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    let mut positional = positional.into_iter();
+    let program = program.or_else(|| positional.next())?;
+    let rest: Vec<String> = arguments.into_iter().chain(positional).collect();
+    Some(std::iter::once(program).chain(rest).collect::<Vec<_>>().join(" "))
 }
 
 pub const ESCAPE: &str = "the command contains a terminal escape sequence";
@@ -1138,6 +1268,7 @@ pub const WIN_DELETE: &str = "the command recursively deletes a drive root or th
 pub const WIN_FORMAT: &str = "the command formats a drive (format)";
 pub const WIN_DISKPART: &str = "the command runs diskpart, which can erase disks";
 pub const WIN_ENCODED: &str = "the command runs an encoded PowerShell script, which can't be safety-checked";
+pub const WIN_NESTED: &str = "the command nests shells more deeply than the safety check reads";
 pub fn pipe_reason(cmd: &str) -> String {
     format!("the command pipes into a shell (`{cmd}`), whose input can't be safety-checked")
 }
@@ -1568,6 +1699,83 @@ mod tests {
         expect("ps", group, windows(group, PowerShell), Some(WIN_DELETE));
         let filtered = "Get-ChildItem C:\\ | Where-Object { $_.Name } | Remove-Item -Recurse";
         expect("ps", filtered, windows(filtered, PowerShell), Some(WIN_DELETE));
+        assert!(miss.is_empty(), "{} forms missed:\n{}", miss.len(), miss.join("\n"));
+    }
+
+    #[test]
+    fn windows_floor_final_review() {
+        let mut miss: Vec<String> = Vec::new();
+        let mut expect = |label: &str, line: &str, got: Option<String>, want: Option<&str>| {
+            if got.as_deref() != want {
+                miss.push(format!("{label} {line:?}: got {got:?}, want {want:?}"));
+            }
+        };
+        // (a) The PowerShell CLI takes `/`, a Unicode dash and a doubled dash as a switch prefix.
+        // (b) A colon-bound value takes no next word, and `-Command:` keeps its value.
+        // (c) The value switches PowerShell 5.1 and pwsh name.
+        for (line, why) in [
+            ("powershell /c diskpart", WIN_DISKPART),
+            ("powershell /Command \"format C:\"", WIN_FORMAT),
+            ("powershell /enc AAAA", WIN_ENCODED),
+            ("powershell /NoProfile /EncodedCommand AAAA", WIN_ENCODED),
+            ("powershell \u{2013}enc AAAA", WIN_ENCODED),
+            ("powershell \u{2014}c diskpart", WIN_DISKPART),
+            ("powershell \u{2015}NoProfile \u{2013}c diskpart", WIN_DISKPART),
+            ("pwsh --enc AAAA", WIN_ENCODED),
+            ("pwsh --command diskpart", WIN_DISKPART),
+            ("powershell -ExecutionPolicy:Bypass format C:", WIN_FORMAT),
+            ("powershell -WindowStyle:Hidden diskpart", WIN_DISKPART),
+            ("powershell -Command:diskpart", WIN_DISKPART),
+            ("powershell -c:\"format C:\"", WIN_FORMAT),
+            ("powershell -PSConsoleFile x diskpart", WIN_DISKPART),
+            ("pwsh -SettingsFile x diskpart", WIN_DISKPART),
+            ("pwsh -ConfigurationFile x diskpart", WIN_DISKPART),
+            ("pwsh -CustomPipeName x diskpart", WIN_DISKPART),
+            ("pwsh -EncodedArguments x diskpart", WIN_DISKPART),
+        ] {
+            for k in [Cmd, PowerShell, Unknown] {
+                expect(&format!("{k:?}"), line, windows(line, k), Some(why));
+            }
+        }
+        for line in ["powershell /NoProfile /File x.ps1", "powershell -ExecutionPolicy:Bypass -File a.ps1", "pwsh -SettingsFile x.json -NoProfile Get-Date"] {
+            for k in [Cmd, PowerShell] {
+                expect(&format!("{k:?}"), line, windows(line, k), None);
+            }
+        }
+        // (c) Start-Process named parameters anywhere, by any unique prefix.
+        for (line, why) in [
+            ("Start-Process -ArgumentList '/c format C:' cmd", WIN_FORMAT),
+            ("Start-Process -ArgumentList '/c format C:' -FilePath cmd", WIN_FORMAT),
+            ("Start-Process -Args '/c diskpart' -Path cmd.exe", WIN_DISKPART),
+            ("Start-Process -wo C:\\ diskpart", WIN_DISKPART),
+            ("Start-Process -Credential $c diskpart", WIN_DISKPART),
+            ("Start-Process -RedirectStandardOutput x.txt diskpart", WIN_DISKPART),
+            ("Start-Process -rso x.txt -Wait -NoNewWindow diskpart", WIN_DISKPART),
+            ("saps -Verb RunAs -FilePath:powershell -ArgumentList:'-enc AAAA'", WIN_ENCODED),
+            ("start -WindowStyle Hidden cmd '/c format C:'", WIN_FORMAT),
+        ] {
+            expect("ps", line, windows(line, PowerShell), Some(why));
+        }
+        for line in ["Start-Process -Wait notepad", "Start-Process -ArgumentList C:\\x notepad", "Start-Process -wo C:\\ notepad"] {
+            expect("ps", line, windows(line, PowerShell), None);
+        }
+        // (d) cmd's combined switches.
+        for (line, why) in [("cmd /q/c format C:", WIN_FORMAT), ("cmd /d/q/c diskpart", WIN_DISKPART), ("cmd /e:on/c format C:", WIN_FORMAT), ("cmd /Q/K diskpart", WIN_DISKPART), ("cmd /v:on/r format C:", WIN_FORMAT)] {
+            expect("cmd", line, windows(line, Cmd), Some(why));
+            expect("unknown", line, windows(line, Unknown), Some(why));
+        }
+        expect("cmd", "cmd /q/c echo hi", windows("cmd /q/c echo hi", Cmd), None);
+        // (e) Past the nesting limit the line is flagged, never passed.
+        let deep = "cmd /c cmd /c cmd /c cmd /c format C:";
+        expect("cmd", deep, windows(deep, Cmd), Some(WIN_NESTED));
+        let deep_echo = "cmd /c cmd /c cmd /c cmd /c echo hi";
+        expect("cmd", deep_echo, windows(deep_echo, Cmd), Some(WIN_NESTED));
+        let deep_ps = "powershell -c powershell -c powershell -c powershell -c Get-Date";
+        expect("ps", deep_ps, windows(deep_ps, PowerShell), Some(WIN_NESTED));
+        let within = "cmd /c cmd /c cmd /c echo hi";
+        expect("cmd", within, windows(within, Cmd), None);
+        let within_bad = "cmd /c cmd /c cmd /c format C:";
+        expect("cmd", within_bad, windows(within_bad, Cmd), Some(WIN_FORMAT));
         assert!(miss.is_empty(), "{} forms missed:\n{}", miss.len(), miss.join("\n"));
     }
 

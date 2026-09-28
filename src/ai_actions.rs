@@ -218,10 +218,10 @@ pub fn file_target(filename: &str, cwd: Option<&str>, local: bool, home: &Path) 
 }
 
 /// The powershell.exe arguments that read `cmd`'s help, None when help is not available here:
-/// only in a PowerShell session, and only for a name of `[A-Za-z0-9_.:-]{1,64}`, so a model's
-/// argument can never become a command.
+/// only in a PowerShell session, and only for a name of `[A-Za-z0-9_.-]{1,64}`, so a model's
+/// argument can never become a command (no `:`, which would name a drive-relative script).
 pub fn man_page_plan(cmd: &str, kind: ShellKind) -> Option<Vec<String>> {
-    let ok = (1..=64).contains(&cmd.len()) && cmd.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b));
+    let ok = (1..=64).contains(&cmd.len()) && cmd.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b));
     if kind != ShellKind::PowerShell || !ok {
         return None;
     }
@@ -232,7 +232,13 @@ pub fn man_page_unavailable(cmd: &str) -> String {
     format!("The manpage for {cmd} is not available: Tandem reads help only through PowerShell's Get-Help, in a PowerShell session.")
 }
 
-/// Runs powershell.exe hidden with `args` and answers its output (stdout, then stderr), or
+/// Windows PowerShell in the System32 folder `system` (`GetSystemDirectoryW`): run by its full
+/// path, never found by the search order (Tandem's own folder first).
+pub fn powershell_in(system: &Path) -> PathBuf {
+    system.join(r"WindowsPowerShell\v1.0\powershell.exe")
+}
+
+/// Runs System32's powershell.exe hidden with `args` and answers its output (stdout, then stderr), or
 /// iTerm2's error form (`PS:940`). Ends the process after ten seconds. Blocking: call it only
 /// on a worker thread.
 #[cfg(windows)]
@@ -241,7 +247,8 @@ pub fn get_help(args: &[String]) -> String {
     use std::os::windows::process::CommandExt;
     use std::process::Stdio;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut child = match std::process::Command::new("powershell.exe").args(args).creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+    let Some(system) = crate::script_provision::system_directory() else { return "Error running Get-Help: the System32 folder is unknown.".to_string() };
+    let mut child = match std::process::Command::new(powershell_in(&system)).args(args).creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
         Ok(c) => c,
         Err(e) => return format!("Error running Get-Help: {e}"),
     };
@@ -376,7 +383,8 @@ mod tests {
         let plan = |c: &str| Some(["-NoProfile", "-NonInteractive", "-Command"].iter().map(|s| s.to_string()).chain([format!("Get-Help -Full -Name '{c}' | Out-String -Width 200")]).collect::<Vec<_>>());
         assert_eq!(man_page_plan("Get-ChildItem", ShellKind::PowerShell), plan("Get-ChildItem"));
         assert_eq!(man_page_plan("ls", ShellKind::PowerShell), plan("ls"));
-        for bad in ["rm; del C:\\", "a b", "x'y", "", "$(x)", "a|b", &"a".repeat(65)] {
+        // `:` would name a drive-relative script (`C:x.ps1`) resolved against the inherited folder.
+        for bad in ["rm; del C:\\", "a b", "x'y", "", "$(x)", "a|b", &"a".repeat(65), "C:x", "C:x.ps1", "Env:Path"] {
             assert_eq!(man_page_plan(bad, ShellKind::PowerShell), None, "{bad:?}");
         }
         assert_eq!(man_page_plan(&"a".repeat(64), ShellKind::PowerShell).is_some(), true);
@@ -384,6 +392,12 @@ mod tests {
             assert_eq!(man_page_plan("ls", k), None);
         }
         assert_eq!(man_page_unavailable("ls"), "The manpage for ls is not available: Tandem reads help only through PowerShell's Get-Help, in a PowerShell session.");
+    }
+
+    #[test]
+    fn get_help_runs_system_powershell() {
+        // Final review Minor 4: by its full path, never Tandem's folder or PATH first.
+        assert_eq!(powershell_in(Path::new(r"C:\Windows\System32")), PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"));
     }
 
     #[test]

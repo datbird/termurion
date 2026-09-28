@@ -358,6 +358,12 @@ pub struct Around<'a> {
     pub cwd: &'a str,
 }
 
+/// explorer.exe in the Windows folder, the parent of the System32 folder `system`
+/// (`GetSystemDirectoryW`): run by its full path, never found by the search order.
+pub fn explorer_in(system: &Path) -> Option<PathBuf> {
+    system.parent().map(|windows| windows.join("explorer.exe"))
+}
+
 /// Quotes a value for cmd.exe.
 pub fn cmd_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
@@ -427,6 +433,12 @@ pub fn plan(target: &Target, prefs: &Prefs, around: &Around, has_code: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explorer_runs_from_the_windows_folder() {
+        // Final review Minor 4: by its full path, never Tandem's folder or PATH first.
+        assert_eq!(explorer_in(Path::new(r"C:\Windows\System32")), Some(PathBuf::from(r"C:\Windows\explorer.exe")));
+    }
 
     /// A fresh folder with `files` in it (a trailing slash makes a folder).
     fn dir(name: &str, files: &[&str]) -> PathBuf {

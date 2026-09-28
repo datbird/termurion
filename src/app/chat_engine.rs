@@ -71,6 +71,9 @@ pub(super) enum EngineEffect {
     Republish { chat: String, request_id: String },
     /// A request carried the terminal context: commit its watermark (minor m2).
     VolatileSent(String),
+    /// An Always Allow or Always Deny holds for this run but its row was not written: tell the
+    /// person, as `ai_set_permission` does (Task 3 ruling).
+    PermissionNotSaved,
 }
 
 type Fx = Vec<EngineEffect>;
@@ -661,17 +664,22 @@ impl Engine {
             Choice::AlwaysDeny => Some(Permission::Never),
             _ => None,
         };
+        // A change that holds for this run but was not written is reported to the person.
+        let mut fx = Vec::new();
         if let Some(p) = always {
-            let _ = set_permission_in(cx.store, cx.overrides, Key { chat: chat.to_string(), guid: guid.clone(), category }, p);
+            if set_permission_in(cx.store, cx.overrides, Key { chat: chat.to_string(), guid: guid.clone(), category }, p).is_some_and(|(_, saved)| !saved) {
+                fx.push(EngineEffect::PermissionNotSaved);
+            }
         }
-        match c {
+        fx.extend(match c {
             Choice::AllowOnce | Choice::AlwaysAllow => {
                 let rc = cx.store.message(request_id).ok().flatten().and_then(|m| classic(&m).cloned());
                 let rc = RemoteCommand { call: park.call, ..rc.unwrap_or(RemoteCommand { llm_message: serde_json::json!({}), call: Call::IsAtPrompt }) };
                 Self::run(cx, chat, request_id, guid, pane, rc, park.send)
             }
             Choice::DenyOnce | Choice::AlwaysDeny => Self::answer(cx, chat, request_id, Outcome { model: ai_permissions::DECLINED_MODEL.to_string(), notice: None }, true),
-        }
+        });
+        fx
     }
 
     /// The session picker's answer (`CVC:1770-1805`). Linking is the App's (minor m14): the
@@ -1467,6 +1475,24 @@ mod tests {
         h.store.delete_chat(&chat).unwrap();
         assert_eq!(h.run(|cx| Engine::answer_request(cx, &chat, &rid, Choice::AllowOnce)), vec![]);
         assert_eq!(h.park_ids(&chat), vec![rid], "the park is still there to answer");
+    }
+
+    #[test]
+    fn a_failed_always_save_is_reported() {
+        // Final review Minor 3: Always from a request bubble tells the person an unsaved change.
+        for (choice, fail) in [(Choice::AlwaysDeny, true), (Choice::AlwaysAllow, true), (Choice::AlwaysDeny, false), (Choice::DenyOnce, true)] {
+            let mut h = H::new();
+            let chat = h.chat(Some("7"));
+            h.script(vec![screen("c1")]);
+            h.say(&chat, "hi");
+            let rid = h.park_ids(&chat)[0].clone();
+            if fail {
+                h.store.refuse_chat_updates();
+            }
+            let fx = h.run(|cx| Engine::answer_request(cx, &chat, &rid, choice));
+            let told = fx.contains(&EngineEffect::PermissionNotSaved);
+            assert_eq!(told, fail && choice != Choice::DenyOnce, "{choice:?} fail={fail}");
+        }
     }
 
     #[test]

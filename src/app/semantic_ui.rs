@@ -195,7 +195,15 @@ impl App {
     /// Shows `path` selected in Explorer; nothing runs it. Used by semantic history and the AI's
     /// `create_file`.
     pub(super) fn reveal_in_explorer(&mut self, path: &str) {
-        let mut cmd = std::process::Command::new("explorer.exe");
+        #[cfg(windows)]
+        let program = crate::script_provision::system_directory().and_then(|s| semantic::explorer_in(&s));
+        #[cfg(not(windows))]
+        let program: Option<std::path::PathBuf> = None;
+        let Some(program) = program else {
+            self.banners.set("action", format!("Could not show {path}: the Windows folder is unknown."));
+            return;
+        };
+        let mut cmd = std::process::Command::new(program);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

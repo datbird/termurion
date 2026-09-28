@@ -541,6 +541,16 @@ fn duration_text(d: Duration) -> String {
     if d == BUILD_TIMEOUT { "an hour".to_string() } else { format!("{} seconds", d.as_secs()) }
 }
 
+/// The System32 folder from `GetSystemDirectoryW` (not Tandem's environment), None when it
+/// cannot be read.
+#[cfg(windows)]
+pub fn system_directory() -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buf = [0u16; 520];
+    let n = unsafe { windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    (n > 0 && n < buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])))
+}
+
 #[cfg(windows)]
 impl RealRunner {
     /// A runner with `BUILD_TIMEOUT`.
@@ -552,11 +562,7 @@ impl RealRunner {
     /// (not Tandem's environment), so a program of the same name on PATH is never run
     /// instead; an error naming it when System32 lacks it (`system_tool_in`).
     pub(crate) fn system_tool(name: &str) -> Result<PathBuf, String> {
-        use std::os::windows::ffi::OsStringExt;
-        let mut buf = [0u16; 520];
-        let n = unsafe { windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
-        let system = (n > 0 && n < buf.len()).then(|| PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])));
-        system_tool_in(system.as_deref(), name, &|p: &Path| p.is_file())
+        system_tool_in(system_directory().as_deref(), name, &|p: &Path| p.is_file())
     }
 
     /// How a failure names the run: the program's name and the arguments up to the first that

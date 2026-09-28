@@ -29,7 +29,7 @@ pub fn gate_open(g: &Globals, e: &Endpoint) -> bool {
 
 /// Proof that the gate for a request's own endpoint was open just before it is sent (12b final
 /// Minor 2): each of the chat engine's sends takes one, and only `pass` makes one.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Passed(());
 
 impl Passed {
