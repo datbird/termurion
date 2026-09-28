@@ -50,20 +50,15 @@ impl App {
                     p.write_no_broadcast(&bytes);
                 }
             }
-            // `PS:20253-20275`: the hops end through the matching one, then one conductor
-            // per hop is popped, innermost first, so the outermost popped one's saved state
-            // is what remains; the write before the banner, as `PS:20269` then `TD:4043-4046`.
+            // `PS:20253-20275` (`Pane::end_ssh`); the write before the banner, as `PS:20269`
+            // then `TD:4043-4046`.
             Request::SshEnd(id) => {
-                let n = p.ssh.chain.count_to(&id);
-                let banner = p.ssh.end_ssh(&id);
-                for _ in 0..n {
-                    self.ssh_pop_conductor(pane);
-                }
-                let Some(p) = self.panes.get_mut(&pane) else { return };
+                let banner = p.end_ssh(&id);
                 debug_assert!(p.ssh_chain_in_step(), "the hops follow the conductors");
                 if let Some(banner) = banner {
                     p.write_no_broadcast(END_WRITE);
                     p.own_mut().append_banner(&banner);
+                    self.redraw();
                 }
             }
             _ => {}

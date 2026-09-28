@@ -600,6 +600,20 @@ impl Pane {
         true
     }
 
+    /// screenEndSSH (`PS:20253-20275`) for the pane: the hops end through the innermost one
+    /// with `unique_id`, then one conductor per ended hop is popped, innermost first, so the
+    /// outermost popped one's saved state is what remains. The count comes before the end,
+    /// which removes the hops it counts. The banner to show when any hop ended; the caller
+    /// writes `END_WRITE` first.
+    pub fn end_ssh(&mut self, unique_id: &str) -> Option<String> {
+        let n = self.ssh.chain.count_to(unique_id);
+        let banner = self.ssh.end_ssh(unique_id);
+        for _ in 0..n {
+            self.pop_conductor();
+        }
+        banner
+    }
+
     /// Whether the hop ids are the conductor chain's unique ids, outermost first.
     pub fn ssh_chain_in_step(&self) -> bool {
         let mut ids = Vec::new();
@@ -1206,6 +1220,66 @@ mod tests {
         assert_eq!(p.own().ssh_saved(), local);
         assert!(p.conductor.is_none());
         assert_eq!(p.ssh_level(), 0);
+    }
+
+    /// A pane running A, then B inside it, then C inside B, each conductor with its own saved
+    /// state and hop.
+    fn three_hops() -> Pane {
+        use crate::conductor::{Conductor, SavedState, Setup};
+        use crate::ssh_session::Hop;
+        let saved = |at: &str| SavedState { cwd: Some(format!("/{at}")), host: Some(at.into()), user: Some("u".into()) };
+        let mut p = Pane::with(5, None, 80, 24);
+        let mut chain = None;
+        for (id, at) in [("a", "local"), ("b", "alpha"), ("c", "beta")] {
+            let mut c = Conductor::new(Setup { client_unique_id: id.into(), ..Setup::default() }, chain.take(), "U");
+            c.saved = Some(saved(at));
+            c.handle_unhook();
+            chain = Some(Box::new(c));
+            p.ssh.chain.push(Hop { unique_id: id.into(), location: format!("{id}-host") });
+        }
+        p.conductor = chain;
+        p.own_mut().restore_ssh_saved(&saved("gamma"));
+        assert!(p.ssh_chain_in_step());
+        p
+    }
+
+    fn current_id(p: &Pane) -> Option<&str> {
+        p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str())
+    }
+
+    #[test]
+    fn end_ssh_pops_the_matching_conductors() {
+        let hops = |p: &Pane| p.ssh.chain.hops.iter().map(|h| h.unique_id.clone()).collect::<Vec<_>>();
+
+        // EndSSH for the middle hop: B and C go, innermost first, so B's saved state remains.
+        let mut p = three_hops();
+        assert_eq!(p.end_ssh("b").as_deref(), Some("2 ssh sessions ended. \u{2014} now at a-host."));
+        assert_eq!(current_id(&p), Some("a"));
+        assert_eq!(hops(&p), ["a"]);
+        assert_eq!(p.own().ssh_saved().host.as_deref(), Some("alpha"), "the outermost popped one's saved state");
+        assert!(p.ssh_chain_in_step());
+
+        // An id no hop has: nothing ends, nothing is popped.
+        let mut p = three_hops();
+        assert_eq!(p.end_ssh("zzz"), None);
+        assert_eq!(current_id(&p), Some("c"));
+        assert_eq!(hops(&p), ["a", "b", "c"]);
+        assert_eq!(p.own().ssh_saved().host.as_deref(), Some("gamma"));
+
+        // The innermost: one pop, C's saved state.
+        let mut p = three_hops();
+        assert_eq!(p.end_ssh("c").as_deref(), Some("ssh exited \u{2014} now at b-host."));
+        assert_eq!(current_id(&p), Some("b"));
+        assert_eq!(hops(&p), ["a", "b"]);
+        assert_eq!(p.own().ssh_saved().host.as_deref(), Some("beta"));
+        assert!(p.ssh_chain_in_step());
+
+        // The outermost: everything goes, the local state is back.
+        let mut p = three_hops();
+        assert_eq!(p.end_ssh("a").as_deref(), Some("3 ssh sessions ended.."), "iTerm2's text (VT100ScreenMutableState.m:7472-7483)");
+        assert_eq!(current_id(&p), None);
+        assert!(hops(&p).is_empty());
+        assert_eq!(p.own().ssh_saved().host.as_deref(), Some("local"));
     }
 
     #[test]
