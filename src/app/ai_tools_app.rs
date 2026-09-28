@@ -183,19 +183,9 @@ impl App {
         })
     }
 
-    /// Shows the new file selected in Explorer; nothing runs it.
+    /// Shows the new file selected in Explorer (the semantic history helper); nothing runs it.
     fn ai_reveal_file(&mut self, path: &std::path::Path) {
-        let mut cmd = std::process::Command::new("explorer.exe");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.raw_arg(format!("/select,{}", crate::semantic::cmd_quote(&path.to_string_lossy().replace('/', "\\"))));
-        }
-        #[cfg(not(windows))]
-        cmd.arg(path);
-        if let Err(e) = cmd.spawn() {
-            self.banners.set("action", format!("Could not show {}: {e}", path.display()));
-        }
+        self.reveal_in_explorer(&path.to_string_lossy().replace('/', "\\"));
     }
 
     /// Starts `get_help` on a worker thread (a first Get-Help can take seconds and must never

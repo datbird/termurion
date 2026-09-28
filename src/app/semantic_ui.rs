@@ -187,20 +187,23 @@ impl App {
             Run::Later(name, m) => self.banners.set("action", format!("{name} comes in milestone {m}.")),
             Run::Coprocess(command) => self.start_coprocess(id, &command, false, crate::coprocess::Entry::SemanticHistory),
             Run::Blocked(why) => self.banners.set("action", why),
-            Run::Reveal(path) => {
-                // Explorer shows the file selected; nothing runs it.
-                let mut cmd = std::process::Command::new("explorer.exe");
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    cmd.raw_arg(format!("/select,{}", semantic::cmd_quote(&path)));
-                }
-                if let Err(e) = cmd.spawn() {
-                    self.banners.set("action", format!("Could not show {path}: {e}"));
-                }
-            }
+            Run::Reveal(path) => self.reveal_in_explorer(&path),
         }
         self.redraw();
+    }
+
+    /// Shows `path` selected in Explorer; nothing runs it. Used by semantic history and the AI's
+    /// `create_file`.
+    pub(super) fn reveal_in_explorer(&mut self, path: &str) {
+        let mut cmd = std::process::Command::new("explorer.exe");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.raw_arg(format!("/select,{}", semantic::cmd_quote(path)));
+        }
+        if let Err(e) = cmd.spawn() {
+            self.banners.set("action", format!("Could not show {path}: {e}"));
+        }
     }
 
     /// Win held over a pane: underline the Win-click target under the pointer and show

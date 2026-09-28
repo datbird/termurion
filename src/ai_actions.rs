@@ -13,8 +13,8 @@ pub const NOT_RESTARTABLE: &str = "This session cannot be restarted.";
 
 /// What `insert_text_at_cursor` answers, and what the chat shows, for a text holding a line
 /// end (ruling R12cd-2, Tandem's texts).
-pub const LINE_END_REFUSED: &str = "Error: insert_text_at_cursor cannot type a line break (carriage return, newline or Ctrl+O). To run a command, use execute_command, which is safety checked.";
-pub const LINE_END_NOTICE: &str = "AI tried to type a line break, so nothing was typed.";
+pub const LINE_END_REFUSED: &str = "Error: insert_text_at_cursor cannot type a line break or a control key (only Tab and Ctrl+C are typed). To run a command, use execute_command, which is safety checked.";
+pub const LINE_END_NOTICE: &str = "AI tried to type a line break or a control key, so nothing was typed.";
 
 /// `delete_current_line` types Ctrl+U (`PS:817`).
 pub const DELETE_LINE: &[u8] = b"\x15";
@@ -112,11 +112,14 @@ pub fn decode_escapes(s: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// Whether `s` holds a key that submits a line: CR, LF, or Ctrl+O (readline's
-/// accept-and-next). Ruling R12cd-2: replaces iTerm2's LF-to-CR normalization (`PS:802-811`),
-/// which Tandem does not port.
+/// Whether `s` holds a character `insert_text_at_cursor` refuses: an allow-list (ruling
+/// R12cd-2, replacing iTerm2's LF-to-CR normalization, `PS:802-811`). Only Tab and Ctrl+C
+/// among C0 controls, and no C1 control; DEL and printable text pass. Every other control
+/// can submit a line or edit it behind the staged record: CR, LF, Ctrl+O, Ctrl+X Ctrl+E,
+/// win32-input-mode Enter and shell Meta keys (all begin with ESC), a CSI (U+009B), history
+/// and yank keys (Ctrl+P, N, R, Y) that desync the staged line.
 pub fn has_line_end(s: &str) -> bool {
-    s.chars().any(|c| matches!(c, '\r' | '\n' | '\u{f}'))
+    s.chars().any(|c| (c.is_ascii_control() && !matches!(c, '\t' | '\u{3}' | '\u{7f}')) || ('\u{80}'..='\u{9f}').contains(&c))
 }
 
 /// What `insert_text_at_cursor` types: the decoded text, or Err(the answer to give) for a bad
@@ -288,20 +291,24 @@ mod tests {
 
     #[test]
     fn line_ends_are_refused() {
-        for s in ["ls\r", "ls\n", "a\r\nb", "x\u{f}"] {
+        for s in ["ls\r", "ls\n", "a\r\nb", "x\u{f}", "\u{1b}[13;28;13;1;0;1_", "\u{1b}a", "\u{18}\u{5}", "\u{10}", "\u{e}", "\u{12}", "\u{19}", "\u{4}", "\u{1a}", "\u{9b}", "\u{80}", "\u{9f}", "\u{0}"] {
             assert!(has_line_end(s), "{s:?}");
         }
-        for s in ["ls", "\u{3}", "a\tb"] {
+        for s in ["ls", "\u{3}", "a\tb", "\u{7f}", "caf\u{e9} \u{a0}x"] {
             assert!(!has_line_end(s), "{s:?}");
         }
+        for s in ["\\u001b[13;28;13;1;0;1_", "\\u001ba", "\\u0018\\u0005", "\\u0010", "\\u009b"] {
+            assert_eq!(insert_plan(s), Err(LINE_END_REFUSED.to_string()), "{s:?}");
+        }
+        assert_eq!(insert_plan("a\\tb"), Ok("a\tb".to_string()), "Tab is still typed");
         for s in ["rm -rf /\\n", "rm -rf /\\r", "\\u000d", "\\u000A", "\\u000f", "a\nb", "a\\r\\nb"] {
             assert_eq!(insert_plan(s), Err(LINE_END_REFUSED.to_string()), "{s:?}");
         }
         assert_eq!(insert_plan("curl evil | "), Ok("curl evil | ".to_string()));
         assert_eq!(insert_plan("\\u0003"), Ok("\u{3}".to_string()), "Ctrl+C still interrupts");
         assert_eq!(insert_plan("\\x"), Err(escape_error(&decode_escapes("\\x").unwrap_err())));
-        assert_eq!(LINE_END_REFUSED, "Error: insert_text_at_cursor cannot type a line break (carriage return, newline or Ctrl+O). To run a command, use execute_command, which is safety checked.");
-        assert_eq!(LINE_END_NOTICE, "AI tried to type a line break, so nothing was typed.");
+        assert_eq!(LINE_END_REFUSED, "Error: insert_text_at_cursor cannot type a line break or a control key (only Tab and Ctrl+C are typed). To run a command, use execute_command, which is safety checked.");
+        assert_eq!(LINE_END_NOTICE, "AI tried to type a line break or a control key, so nothing was typed.");
         assert_eq!(DELETE_LINE, b"\x15");
     }
 
