@@ -49,9 +49,9 @@ Tandem opens with the item selected. Mark each line pass or fail.
 | 20 | Type `\\server\share` (or any UNC path): the glyph is the warning, "Save changes:" and Save Now are disabled, and nothing is read or written there. A folder that does not exist also shows the warning. Uncheck the box: the glyph fades to half. | |
 | 21 | Set "Save changes:" to Automatically and change any setting: `tandem-settings.toml` is rewritten within a second. | |
 | 22 | Set it to Manually, change a setting and Save Now: the file is rewritten. Edit the file by hand in Notepad, then Save Now: "Settings at ... changed since Tandem started. Overwrite it?" (Overwrite, Discard Local Changes). | |
-| 23 | Still on Manually, change a setting and quit: "Settings have changed. Copy them to <folder>?" (Copy, Lose Changes, and a "Do not ask again" box). Copy writes the file and Tandem exits. | |
+| 23 | Checks 21 and 22 picked from the popup, which silences the quit question, so first turn off "Suppress changed-setting warning when settings are loaded from a custom folder." (Advanced, Warnings; the same key as the popup's pick): the Save changes popup shows Manually. Change a setting and quit: "Settings have changed. Copy them to <folder>?" (Copy, Lose Changes, and a "Suppress this message permanently" box). Tick the box and Copy: the file is written and Tandem exits. Start again: the popup shows When Quitting (the remembered answer). | |
 | 24 | Set the popup to When Quitting, change a setting and quit: the file is written without asking (the popup is the question's remembered answer). Set it to Manually: the next quit after a change loses the changes without asking. | |
-| 25 | Quit, delete `tandem-settings.toml`, start Tandem: after the first window opens, "Failed to load settings from custom directory. Falling back to local copy." / "Missing or malformed file at "<folder>"" (OK, Reveal in Settings); Tandem runs on its local settings, and Reveal in Settings opens General. | |
+| 25 | Quit, delete `tandem-settings.toml`, start Tandem: after the first window opens, "Failed to load settings from custom directory. Falling back to local copy." / "Missing or malformed file at "<folder>"" (OK); Tandem runs on its local settings. | |
 | 26 | Put the file back, change `default` or a setting in it by hand and start Tandem: the file's values are in effect. | |
 | 27 | Type the GitHub raw URL: the check mark shows; "Save changes:" and Save Now are disabled (a URL is never written). Quit and start: the URL's settings are in effect (fetched with `curl.exe`). | |
 | 28 | Set "Timeout for downloading settings" (Advanced, General) to 0.001 and start Tandem: "Failed to load settings from URL. Falling back to local copy." with "HTTP request failed: ..." and the buttons OK, Reveal in Settings and "Try Again Without Timeout"; Try Again loads the URL. Set the timeout back. | |
@@ -82,7 +82,7 @@ Tandem opens with the item selected. Mark each line pass or fail.
 | 43 | "Show indicators for non-default values" is in a menu at the right of the page bar, not in a settings search field (Tandem has none). | |
 | 44 | The right-to-left checkbox's tooltip talks about buried sessions and tmux window sizes (iTerm2's copy-paste slip). | |
 | 45 | Twenty keys that are not iTerm2 Advanced settings (Advanced Paste memories, password manager defaults, warning silences, the APS log toggle, the Broadcast Input pattern toggle) are on no pane; those without a control elsewhere change only by editing `settings.toml`. | |
-| 46 | "Folder for config files." (PreferredBaseDir) is stored and moves nothing. | |
+| 46 | "Folder for config files. There must not be a space in the path." (PreferredBaseDir) is stored and moves nothing. | |
 | 47 | A legacy dynamic hotkey profile is not migrated by the plist import; set its hotkey by hand. | |
 | 48 | `tandem-settings.toml` is not interchangeable with iTerm2's plist; a named file must end in `.toml`; `https://` with no host shows the warning glyph. | |
 | 49 | Snippets, global notes and icon customizations stay on each machine (not synced through the folder). | |
@@ -94,3 +94,10 @@ Tandem opens with the item selected. Mark each line pass or fail.
 | 55 | Links and junctions inside `%APPDATA%\Tandem` are not exported. | |
 | 56 | Import restarts Tandem once (iTerm2 twice); a Tandem started by hand during the restart runs a second copy. Imported AutoLaunch scripts first run at the next start. The settings folder's quit question may ask before the restart. | |
 | 57 | The erase dry run's lines need DebugView; a running Python script's files may survive the erase (removal errors are ignored, as iTerm2's). | |
+
+## Final review fixes
+
+| # | Check | Result |
+|---|---|---|
+| 58 | With "Load settings from a custom folder or URL" checked and a folder set (any Save changes mode), Import All Settings and Data... with the export from check 34: after the restart the imported settings and profiles are in effect, the checkbox is unchecked and the field is empty (iTerm2 turns the setting off after an import, so the folder does not replace what was imported). | |
+| 59 | In an elevated prompt, `mklink /D C:\Temp\ShareLink \\server\share` (any share; it need not be reachable). Type `C:\Temp\ShareLink` as the settings location, and then `C:\Temp\ShareLink\sub`: the glyph is the warning, "Save changes:" and Save Now are disabled, and no `.testwritable.*` file appears on the share. With the box checked, restart: "Failed to load settings from custom directory. Falling back to local copy." (OK), and Tandem runs on its local settings. Remove the link afterwards. | |
