@@ -2,7 +2,7 @@
 //! protocol edge cases and reads the conductor bootstrap, the sshd it runs against, and the verdict
 //! on what came back. `ssh_probe_win` runs it; the fixtures are in tests/fixtures/ssh.
 
-use crate::ssh_transport::{ORDER, Transport};
+use crate::ssh_transport::{ORDER, Transport, conpty_flags};
 
 /// The probe's own sshd, inside WSL, on 127.0.0.1 only.
 pub const SSHD_PORT: u16 = 22990;
@@ -193,7 +193,7 @@ pub fn ssh_args(t: Transport, key: &str, user: &str, remote: &[String]) -> Vec<S
     ]
     .map(String::from)
     .to_vec();
-    if t == Transport::Pipes {
+    if conpty_flags(t).is_none() {
         args.push("-t".into());
     }
     args.push(format!("{user}@127.0.0.1"));
@@ -448,6 +448,7 @@ mod tests {
         .map(String::from)
         .to_vec();
         assert_eq!(ssh_args(Transport::Pipes, r"C:\T\k", "rob", &remote), want);
+        assert_eq!(ssh_args(Transport::NamedPipes, r"C:\T\k", "rob", &remote), want);
         for t in [Transport::Conpty, Transport::Passthrough] {
             let got = ssh_args(t, r"C:\T\k", "rob", &remote);
             assert_eq!(got.iter().filter(|a| *a == "-t").count(), 1, "{t:?}");
@@ -485,15 +486,24 @@ mod tests {
     /// The probe run on EXTREME (2026-09-27, shipped ConPTY 1.24.260710001, OpenSSH_for_Windows
     /// 9.5p2, sshd in WSL Ubuntu-Personal). Both ConPTY modes carry every piece but the main
     /// payload, whose invalid UTF-8 comes back as U+FFFD; pipes ends at once ("GetConsoleMode on
-    /// console input handle failed with 6"). No transport passes, so nothing is chosen.
+    /// console input handle failed with 6") and never forwards a byte on anonymous pipes. The pipes
+    /// investigation's named-pipes (overlapped named pipes both ways, a console with no window)
+    /// carries everything byte for byte; the remote pty is 0x0 and never resized (no console).
     #[test]
     fn probe_fixtures_follow_the_ruling() {
         let conpty_like = Verdict { dcs: true, output: false, side: true, order: true, ctrl_c: true, size_before: Some((40, 120)), size_after: Some((30, 100)) };
         type Fixture = (Transport, &'static [u8], &'static [u8], Verdict, bool);
-        let fixtures: [Fixture; 3] = [
+        let fixtures: [Fixture; 4] = [
             (Transport::Passthrough, include_bytes!("../tests/fixtures/ssh/passthrough.bin"), include_bytes!("../tests/fixtures/ssh/argv-passthrough.bin"), conpty_like.clone(), true),
             (Transport::Conpty, include_bytes!("../tests/fixtures/ssh/conpty.bin"), include_bytes!("../tests/fixtures/ssh/argv-conpty.bin"), conpty_like.clone(), true),
             (Transport::Pipes, include_bytes!("../tests/fixtures/ssh/pipes.bin"), include_bytes!("../tests/fixtures/ssh/argv-pipes.bin"), Verdict::default(), false),
+            (
+                Transport::NamedPipes,
+                include_bytes!("../tests/fixtures/ssh/named-pipes.bin"),
+                include_bytes!("../tests/fixtures/ssh/argv-named-pipes.bin"),
+                Verdict { dcs: true, output: true, side: true, order: true, ctrl_c: true, size_before: Some((0, 0)), size_after: Some((0, 0)) },
+                true,
+            ),
         ];
         let mut results = Vec::new();
         for (t, raw, argv, want, argv_want) in fixtures.clone() {
@@ -501,7 +511,12 @@ mod tests {
             assert_eq!(argv_ok(argv), argv_want, "{t:?}");
             results.push((t, check(raw)));
         }
-        assert_eq!(choose(&results), None);
+        assert_eq!(choose(&results[..3]), None, "ruling 1's three as the brief measured them");
+        assert_eq!(choose(&results), Some(crate::ssh_transport::CHOSEN));
+        assert_eq!(crate::ssh_transport::CHOSEN, Transport::NamedPipes);
+        // named-pipes: nothing but the remote's own bytes, from the first byte on.
+        assert!(fixtures[3].1.starts_with(DCS_LINE));
+        assert_eq!(fixtures[3].2, ARGV_SEEN);
         // What ConPTY changed: only the invalid UTF-8, each bad byte turned into U+FFFD.
         let bad = b"\xc3\x28\xff";
         let at = find(&main_payload(), bad);
