@@ -182,6 +182,32 @@ pub fn fill_screen(snapped_axis: bool, snapped: f32, proposed: f32, cell: f32, s
     snapped
 }
 
+/// The work area's size in outer-frame pixels: the outer frame (`GetWindowRect`, which
+/// `WM_SIZING` carries) is larger than the `visible` frame by DWM's invisible borders, so a
+/// window that visibly fills the work area measures that much more (iTerm2 compares one
+/// frame with the screen's visible frame, `PT:5921-5955`).
+pub fn outer_screen(work: (f32, f32), outer: (f32, f32), visible: (f32, f32)) -> (f32, f32) {
+    (work.0 + (outer.0 - visible.0).max(0.0), work.1 + (outer.1 - visible.1).max(0.0))
+}
+
+/// The drag rectangle (left, top, right, bottom) at `size`: a dragged left or top edge moves
+/// while the right or bottom stays; otherwise the left and top stay, as AppKit keeps the
+/// origin of an axis the drag only re-snaps.
+pub fn sized_rect(rect: (i32, i32, i32, i32), left: bool, top: bool, size: (i32, i32)) -> (i32, i32, i32, i32) {
+    let (mut l, mut t, mut r, mut b) = rect;
+    if left {
+        l = r - size.0;
+    } else {
+        r = l + size.0;
+    }
+    if top {
+        t = b - size.1;
+    } else {
+        b = t + size.1;
+    }
+    (l, t, r, b)
+}
+
 /// Whether the user may drag the window's edges (`PTWS:1063-1067`): not when its size is
 /// locked, nor with `AllowLiveResize` off.
 pub fn resizable(locked: bool, allow_live: bool) -> bool {
@@ -279,6 +305,8 @@ mod tests {
         assert_eq!(division_height(true, 1.0), 1.0);
         assert_eq!(division_height(true, 2.0), 2.0);
         assert_eq!(division_height(true, 1.25), 1.0);
+        assert_eq!(division_height(true, 1.5), 2.0);
+        assert_eq!(division_height(true, 1.75), 2.0);
         assert_eq!(division_height(false, 2.0), 0.0);
     }
 
@@ -327,8 +355,8 @@ mod tests {
         assert_eq!(snap_axes(LEFT_PERCENT, false, false, false, false, false, true, false), (true, false));
         assert_eq!(snap_axes(TOP_PERCENT, false, false, false, false, false, false, true), (false, true));
         assert_eq!(snap_axes(NORMAL, false, false, false, false, false, false, true), (true, true));
-        // A snapped size just short of the screen fills it when the pointer asked for more
-        // than half the gap (`PT:5937-5955`).
+        // A snapped size just short of the screen fills it when the pointer's margin to the
+        // screen edge is at most half the snapped margin, rounded up (`PT:5937-5955`).
         assert_eq!(fill_screen(true, 1915.0, 1918.0, 10.0, 1920.0), 1920.0);
         assert_eq!(fill_screen(true, 1915.0, 1916.0, 10.0, 1920.0), 1915.0);
         assert_eq!(fill_screen(false, 1915.0, 1918.0, 10.0, 1920.0), 1915.0);
@@ -346,6 +374,38 @@ mod tests {
         // Height 952 from y 500 would pass the bottom: y = 1040 - 952.
         let low = Rect { x: 100.0, y: 500.0, w: 900.0, h: 600.0 };
         assert_eq!(font_fit((80, 40), (11.0, 22.0), (24.0, 72.0), work, low), Rect { x: 100.0, y: 88.0, w: 904.0, h: 952.0 });
+    }
+
+    #[test]
+    fn unchanged_axis_snaps_like_iterm2() {
+        use crate::frames::{LEFT_PERCENT, NORMAL, TOP_PERCENT};
+        let s = Snap { cell: (10.0, 20.0), decoration: (16.0, 60.0), margins: (8.0, 8.0), min: (0.0, 0.0), snap_w: true, snap_h: true };
+        // A right-edge drag of a Normal window off the grid re-snaps its height too
+        // (`PT:5826-5835`, `:5913-5918`): 680 is 12 from 668, past the dead zone of 10.
+        let (w, h) = snap_axes(NORMAL, false, false, false, false, false, true, false);
+        assert_eq!(snap(&Snap { snap_w: w, snap_h: h, ..s }, (816.0, 680.0), (843.0, 680.0)), (834.0, 668.0));
+        // Within the dead zone the height stays.
+        assert_eq!(snap(&Snap { snap_w: w, snap_h: h, ..s }, (816.0, 675.0), (843.0, 675.0)), (834.0, 675.0));
+        // A left percentage window keeps its height free on a width drag (`PT:5837-5850`).
+        let (w, h) = snap_axes(LEFT_PERCENT, false, false, false, false, false, true, false);
+        assert_eq!(snap(&Snap { snap_w: w, snap_h: h, ..s }, (816.0, 680.0), (843.0, 680.0)), (834.0, 680.0));
+        let (w, h) = snap_axes(TOP_PERCENT, false, false, false, false, false, false, true);
+        assert_eq!(snap(&Snap { snap_w: w, snap_h: h, ..s }, (823.0, 668.0), (823.0, 700.0)), (823.0, 688.0));
+        // The dragged edges move; an axis only snapped moves its right or bottom side.
+        assert_eq!(sized_rect((100, 100, 943, 780), false, false, (834, 668)), (100, 100, 934, 768));
+        assert_eq!(sized_rect((109, 100, 943, 780), true, false, (834, 668)), (109, 100, 943, 768));
+        assert_eq!(sized_rect((100, 100, 943, 780), true, true, (834, 668)), (109, 112, 943, 780));
+    }
+
+    #[test]
+    fn fill_screen_uses_the_visible_frame() {
+        // DWM's invisible borders (7 on each side and the bottom) are outside the visible
+        // frame: the work area in outer pixels is that much larger.
+        assert_eq!(outer_screen((1920.0, 1040.0), (934.0, 768.0), (920.0, 761.0)), (1934.0, 1047.0));
+        // No invisible borders.
+        assert_eq!(outer_screen((1920.0, 1040.0), (934.0, 768.0), (934.0, 768.0)), (1920.0, 1040.0));
+        // An outer frame that fills it shows exactly the work area.
+        assert_eq!(fill_screen(true, 1929.0, 1932.0, 10.0, 1934.0), 1934.0);
     }
 
     #[test]

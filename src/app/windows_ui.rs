@@ -425,12 +425,10 @@ impl App {
         };
         let previous = self.current_window();
         let id = gpu.window.id();
-        // Edge drags snap to the cell grid.
-        if let Some(hwnd) = super::menu::hwnd_of(&gpu.window) {
-            super::sizing_ui::install(hwnd);
-        }
         let mut slot = WinSlot::new(gpu);
         self.swap_live(&mut slot);
+        // Edge drags snap to the cell grid, and follow AllowLiveResize.
+        self.install_sizing();
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
         // A new window's side bar starts at `LeftTabBarWidth`.
