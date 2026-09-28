@@ -1125,6 +1125,8 @@ impl App {
             }
         }
         self.win_style = s;
+        // The style may enter or leave full screen: the border follows at once.
+        self.apply_border();
         self.redraw();
     }
 }

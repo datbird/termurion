@@ -652,6 +652,8 @@ impl App {
             "toggleFullScreenMode:" => {
                 let entering = window.as_ref().is_some_and(|w| w.fullscreen().is_none());
                 toggle_fullscreen(window.as_deref());
+                // The border goes in full screen and comes back after it, size change or not.
+                self.apply_border();
                 // Entering full screen flashes the tab bar (`PseudoTerminal+WindowStyle.m:857`).
                 if entering {
                     self.flash_tab_bar();
