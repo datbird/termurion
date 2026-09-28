@@ -431,6 +431,48 @@ mod tests {
         EnvUpdate::Set(Some(pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
     }
 
+    fn rows(s: &Screen) -> Vec<String> {
+        let g = s.term().grid();
+        (0..g.screen_lines() as i32).map(|l| s.line_text(l)).collect()
+    }
+
+    #[test]
+    fn handshake_requests_follow_iterm2() {
+        use crate::ssh_handshake::{Handshake, FUTURE, OUT_OF_DATE};
+        let mut s = Screen::new(80, 24);
+        s.trusted = false;
+        s.feed(b"\x1b]1337;it2ssh=a b c d\x07");
+        assert_eq!(s.take_requests(), vec![Request::SshWillBegin]);
+        s.feed(b"\x1b]1337;SendConductor=v=3\x07");
+        let h = Handshake { token: "a".into(), unique_id: "b".into(), encoded_ba: "c".into(), ssh_args: "d".into() };
+        assert_eq!(s.take_requests(), vec![Request::SshSendConductor(h)]);
+        s.feed(b"\x1b]1337;SendConductor=v=3\x07");
+        assert!(s.take_requests().is_empty(), "the flags were taken");
+        s.feed(b"\x1b]1337;it2ssh=a b c\x07");
+        assert!(s.take_requests().is_empty(), "too few flags");
+        s.feed(b"\x1b]1337;SendConductor=v=3\x07");
+        assert!(s.take_requests().is_empty(), "no flags");
+        assert!(rows(&s).iter().all(|r| r.trim().is_empty()), "nothing shown so far");
+        s.feed(b"\x1b]1337;it2ssh=a b c d\x07\x1b]1337;SendConductor=v=2\x07");
+        assert_eq!(s.take_requests(), vec![Request::SshWillBegin]);
+        assert!(rows(&s)[..2].iter().any(|r| r.trim_end() == OUT_OF_DATE));
+        s.feed(b"\x1b]1337;SendConductor=v=3\x07");
+        assert!(s.take_requests().is_empty(), "a banner clears the flags");
+        s.feed(b"\x1b]1337;it2ssh=a b c d\x07\x1b]1337;SendConductor=v=4\x07");
+        assert_eq!(s.take_requests(), vec![Request::SshWillBegin]);
+        assert!(rows(&s).iter().any(|r| r.trim_end() == FUTURE));
+    }
+
+    #[test]
+    fn banner_inside_dispatch_is_safe() {
+        let mut s = Screen::new(80, 24);
+        s.feed(b"\x1b]1337;it2ssh=a b c d\x07\x1b]1337;SendConductor=v=2\x07\x1b]1337;CurrentDir=/tm");
+        s.feed(b"p\x07");
+        assert!(rows(&s).iter().any(|r| r.trim_end() == crate::ssh_handshake::OUT_OF_DATE));
+        assert_eq!(s.shell.cwd.as_deref(), Some("/tmp"), "the OSC split around the banner survived");
+        assert!(s.requests.contains(&Request::SshWillBegin));
+    }
+
     #[test]
     fn env_follows_iterm2() {
         assert_eq!(

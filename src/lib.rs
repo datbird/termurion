@@ -122,6 +122,8 @@ pub mod git_state;
 pub mod git_wrapper;
 pub mod ssh_transport;
 pub mod ssh_probe;
+pub mod ssh_handshake;
+pub mod ssh_session;
 #[cfg(windows)]
 pub mod ssh_probe_win;
 

@@ -325,6 +325,27 @@ impl Screen {
         }
     }
 
+    /// A system message on its own full-width line in the banner grays (iTerm2's
+    /// `appendBannerMessage:`, `SM:6720-6757`), ending with SGR reset (m8a precedent) where
+    /// iTerm2 restores the saved rendition. It may run inside OSC dispatch, where `feed` has
+    /// already scanned the read, so it goes through `feed_raw`: the text is inert and no
+    /// sequence in it needs the scan. Triggers skip its lines when nothing before them
+    /// waits to be checked.
+    pub fn append_banner(&mut self, text: &str) {
+        let mut b = String::new();
+        let mid_line = self.term.grid().cursor.point.column.0 != 0;
+        if mid_line {
+            b.push_str("\r\n");
+        }
+        let checked = self.triggers.next >= self.cursor_row() + mid_line as i64;
+        let (bg, fg) = crate::restore_state::banner_grays(self.palette.bg);
+        b += &format!("\x1b[48;2;{bg};{bg};{bg}m\x1b[38;2;{fg};{fg};{fg}m\x1b[2K{}\x1b[0m\r\n", crate::arrangement::inert_text(text).replace(['\r', '\n'], " "));
+        let _ = self.feed_raw(b.as_bytes());
+        if checked {
+            self.triggers.next = self.triggers.next.max(self.cursor_row());
+        }
+    }
+
     /// Output that is not the program's: no triggers see it, no request it makes is kept,
     /// and triggers never check its lines later.
     fn feed_quiet(&mut self, bytes: &[u8]) {
@@ -732,6 +753,46 @@ mod tests {
 
     fn alerts(s: &mut Screen) -> usize {
         s.take_requests().into_iter().filter(|r| matches!(r, Request::Trigger(TriggerRequest::Alert { .. }))).count()
+    }
+
+    #[test]
+    fn banner_follows_iterm2() {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+        let row = |s: &Screen, l: i32| -> String { (0..40).map(|c| s.term().grid()[Line(l)][Column(c)].c).collect::<String>().trim_end().to_string() };
+        let cursor = |s: &Screen| (s.term().grid().cursor.point.line.0, s.term().grid().cursor.point.column.0);
+        let mut s = Screen::new(40, 5);
+        s.feed(b"abc");
+        s.append_banner("ssh exited.");
+        assert_eq!((row(&s, 0), row(&s, 1)), ("abc".to_string(), "ssh exited.".to_string()));
+        assert_eq!(cursor(&s), (2, 0));
+        let (g, _) = crate::restore_state::banner_grays(s.palette.bg);
+        assert_eq!(s.term().grid()[Line(1)][Column(39)].bg, Color::Spec(Rgb { r: g, g, b: g }), "the bar spans the line");
+        assert_eq!(s.term().grid()[Line(2)][Column(0)].bg, Color::Named(NamedColor::Background), "the colors end with the line");
+        // At column 0: no blank line first.
+        s.append_banner("again");
+        assert_eq!((row(&s, 2), cursor(&s)), ("again".to_string(), (3, 0)));
+        // Escape sequences in the text do not act.
+        let mut s = Screen::new(40, 5);
+        s.append_banner("a\x1b[31mb");
+        assert_eq!(row(&s, 0), "a[31mb");
+        assert_ne!(s.term().grid()[Line(0)][Column(4)].fg, Color::Named(NamedColor::Red));
+        assert!(s.take_requests().is_empty());
+    }
+
+    #[test]
+    fn banner_lines_skip_triggers() {
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig("exited", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed(b"done\r\n");
+        s.append_banner("ssh exited.");
+        s.feed(b"next\r\n");
+        assert_eq!(alerts(&mut s), 0, "the banner is not the program's output");
+        // A banner inside dispatch: the read's lines before it are still checked.
+        let mut s = Screen::new(40, 5);
+        s.set_triggers(vec![trig("gone", "AlertTrigger", "x", false)], TriggerPrefs::default());
+        s.feed(b"it is gone\r\n\x1b]1337;it2ssh=a b c d\x07\x1b]1337;SendConductor=v=2\x07");
+        assert_eq!(alerts(&mut s), 1);
     }
 
     #[test]

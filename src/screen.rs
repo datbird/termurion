@@ -202,6 +202,8 @@ pub struct Screen {
     /// The program's `Env=report=all` environment as `(name, value)` tuples in its order,
     /// kept for the SSH integration (iTerm2's `exfiltratedEnvironment`).
     pub env: Option<Vec<(String, String)>>,
+    /// `it2ssh=`'s flags, until a `SendConductor=` takes them (iTerm2's `_sshIntegrationFlags`).
+    pub(crate) ssh_flags: Option<Vec<String>>,
     /// ExecFailed: the command could not start.
     pub exec_failed: bool,
     /// UnicodeVersion and the Touch Bar key labels.
@@ -289,6 +291,10 @@ pub enum Request {
     SetBadge(String),
     /// SetBadgeFormat with a function call: refused.
     BadgeRefused,
+    /// `it2ssh=`: the pane starts connecting (`screenWillBeginSSHIntegration`).
+    SshWillBegin,
+    /// A version 3 `SendConductor=`: type the conductor bootstrap.
+    SshSendConductor(crate::ssh_handshake::Handshake),
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.
@@ -385,6 +391,7 @@ impl Screen {
             porthole_wide_default: false,
             porthole_selection: None,
             env: None,
+            ssh_flags: None,
             exec_failed: false,
             unicode: crate::osc1337::Unicode::default(),
             key_labels: crate::osc1337::KeyLabels::default(),

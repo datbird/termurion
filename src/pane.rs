@@ -251,6 +251,8 @@ pub struct Pane {
     /// The Python API cookie this session's shell got in `ITERM2_COOKIE` (a Session cookie in
     /// the app's jar, removed when the pane is dropped for good). A secret: never logged.
     pub cookie: Option<String>,
+    /// SSH integration: the connecting queue (milestone 14).
+    pub ssh: crate::ssh_session::PaneSsh,
 }
 
 impl Pane {
@@ -356,7 +358,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None }
+        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -398,7 +400,7 @@ impl Pane {
                             Io::Tmux(_) => Vec::new(),
                             _ => reply,
                         };
-                        if !reply.is_empty() {
+                        if !reply.is_empty() && !self.ssh.queue(&reply) {
                             if let Err(e) = pty.write(&reply) {
                                 self.error = Some(e);
                             }
@@ -514,6 +516,11 @@ impl Pane {
     /// asked for): a replay view does not stop it, as the live session keeps running.
     pub fn live_input(&mut self, bytes: &[u8]) {
         if self.gateway {
+            return;
+        }
+        // While SSH integration connects, writes wait for the conductor, ahead of Buffer
+        // Input and before `writeTaskImpl`'s effects (`PS:4411-4430`).
+        if self.ssh.queue(bytes) {
             return;
         }
         // Any write cancels the composer's clear probe (`PS:4154-4158`), held by Buffer
@@ -635,8 +642,24 @@ impl Pane {
         self.pty.as_ref().and_then(|p| p.pid())
     }
 
-    /// What the terminal answers the program (reports): never held by Buffer Input.
+    /// What the terminal answers the program (reports): never held by Buffer Input, but
+    /// queued while SSH integration connects.
     pub fn reply(&mut self, bytes: &[u8]) {
+        if self.ssh.queue(bytes) {
+            return;
+        }
+        self.composer.probe = None;
+        if let Some(pty) = &self.pty {
+            if let Err(e) = pty.write(bytes) {
+                self.error = Some(e);
+            }
+        }
+    }
+
+    /// iTerm2's `writeTaskNoBroadcast:`: straight to the pty, past the connecting queue and
+    /// Buffer Input. Only the conductor's own bytes (its bootstrap, the `^C` line that ends
+    /// it) go this way.
+    pub fn write_no_broadcast(&mut self, bytes: &[u8]) {
         self.composer.probe = None;
         if let Some(pty) = &self.pty {
             if let Err(e) = pty.write(bytes) {
@@ -985,6 +1008,28 @@ mod tests {
     }
 
     #[test]
+    fn connecting_input_is_queued() {
+        let mut p = Pane::with(1, None, 80, 24);
+        p.ssh.begin(true);
+        p.live_input(b"ls\r");
+        p.reply(b"\x1b[0n");
+        assert_eq!(p.ssh.connecting, Some(b"ls\r\x1b[0n".to_vec()));
+        p.write_no_broadcast(b"x");
+        assert_eq!(p.ssh.connecting, Some(b"ls\r\x1b[0n".to_vec()), "the conductor's bytes pass the queue");
+        // A report the screen makes waits too.
+        p.feed_output(b"\x1b[5n");
+        assert_eq!(p.ssh.connecting, Some(b"ls\r\x1b[0n\x1b[0n".to_vec()));
+        // Buffer Input does not hold what connecting queues.
+        p.buffer.on = true;
+        p.live_input(b"z");
+        assert_eq!(p.ssh.connecting.as_ref().map(|q| q.ends_with(b"z")), Some(true));
+        p.buffer.on = false;
+        p.ssh.stop_queueing();
+        p.live_input(b"y");
+        assert_eq!(p.ssh.connecting, None);
+    }
+
+    #[test]
     fn tmux_panes_do_not_answer_queries() {
         let mut p = Pane::tmux(5, 1, 3, 20, 4);
         p.tmux_io().unwrap().push_output(b"\x1b[c\x1b[6n");
@@ -995,7 +1040,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -1008,7 +1053,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -1023,7 +1068,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, ssh: Default::default() };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

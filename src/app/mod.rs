@@ -116,6 +116,7 @@ mod scripts_alerts;
 mod scripts_app;
 mod script_console_app;
 mod builtin_ui;
+mod ssh_app;
 
 pub enum UserEvent {
     /// A pane has output, or its shell exited.

@@ -1042,6 +1042,18 @@ impl Screen {
                         self.env = v;
                     }
                 }
+                // Not trust-gated (`T:4524-4527`).
+                "it2ssh" => {
+                    if let Some(flags) = crate::ssh_handshake::parse_it2ssh(&value) {
+                        self.requests.push(Request::SshWillBegin);
+                        self.ssh_flags = Some(flags);
+                    }
+                }
+                "SendConductor" => match crate::ssh_handshake::send_conductor(&value, self.ssh_flags.take()) {
+                    crate::ssh_handshake::SendConductor::Ignore => {}
+                    crate::ssh_handshake::SendConductor::Banner(text) => self.append_banner(text),
+                    crate::ssh_handshake::SendConductor::Send(h) => self.requests.push(Request::SshSendConductor(h)),
+                },
                 "SetKeyLabel" => self.key_labels.set(&value),
                 "PushKeyLabels" => self.key_labels.push(&value),
                 "PopKeyLabels" => self.key_labels.pop(&value),
