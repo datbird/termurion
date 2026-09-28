@@ -358,6 +358,11 @@ pub enum Partial {
 pub fn unexpected_status(cmd: &Command, status: u8) -> String {
     let shown = match cmd {
         Command::Setenv { key, .. } => format!("setenv {key}"),
+        Command::ExecLoginShell(args) if !args.is_empty() => {
+            let mut args = args.clone();
+            args[0] = last_component(&args[0]).to_string();
+            Command::ExecLoginShell(args).string_value()
+        }
         cmd => cmd.string_value(),
     };
     format!("{shown}: Unepected status {status}")
@@ -2476,5 +2481,7 @@ mod tests {
         let login = Command::ExecLoginShell(s(&["/opt/secret/bin/bash", "--posix"]));
         assert_eq!(timeout_text(&login), "starting login shell with args bash --posix: No response after 30 seconds");
         assert_eq!(timeout_text(&Command::ExecLoginShell(vec![])), "starting login shell with args : No response after 30 seconds");
+        assert_eq!(unexpected_status(&login, 1), "exec_login_shell\nbash\n--posix: Unepected status 1", "the status text trims the shell too");
+        assert_eq!(unexpected_status(&Command::ExecLoginShell(vec![]), 1), "exec_login_shell: Unepected status 1");
     }
 }

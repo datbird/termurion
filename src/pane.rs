@@ -607,18 +607,25 @@ impl Pane {
     /// writes `END_WRITE` first.
     pub fn end_ssh(&mut self, unique_id: &str) -> Option<String> {
         let n = self.ssh.chain.count_to(unique_id);
+        // 14a's end_ssh ends connecting and drops its queue: typed keys must never vanish.
+        let connecting = self.ssh.connecting.take().unwrap_or_default();
         let banner = self.ssh.end_ssh(unique_id);
         for _ in 0..n {
             self.pop_conductor();
         }
         if banner.is_some() {
             self.write_no_broadcast(crate::ssh_session::END_WRITE);
-            // Controller ruling: what a conductor still setting up held goes out once nothing
-            // holds writes (iTerm2 keeps it for a later unhook), after END_WRITE's ^C.
-            if !self.conductor.as_ref().is_some_and(|c| c.queue_writes()) {
-                let held = self.take_ssh_held();
-                self.write_no_broadcast(&held);
-            }
+        }
+        // Controller ruling: what setup kept (the connecting queue, then the held writes, in
+        // the order typed) goes out once nothing holds writes, after END_WRITE's ^C; while a
+        // conductor still holds, it waits for that one's unhook (iTerm2 drops the queue and
+        // keeps the held writes for a later unhook).
+        let mut kept = connecting;
+        kept.append(&mut self.ssh_held);
+        if self.conductor.as_ref().is_some_and(|c| c.queue_writes()) {
+            self.ssh_held = kept;
+        } else {
+            self.write_no_broadcast(&kept);
         }
         banner
     }
@@ -634,10 +641,10 @@ impl Pane {
 
     /// conductorAbort (`PS:25587-25601`): the error, the reason and the end banner, then the
     /// conductor and its hop go. Then Tandem's part: the DCS hook lets go, so later output
-    /// shows (ruling 14b-3, iTerm2 bugs B4 and B13), and what setup held (the connecting
-    /// queue and the held writes, the raw `exec_login_shell` line among them) is dropped:
-    /// the remote is still conductor.sh, which would misread raw typing (iTerm2 strands it).
-    /// Typing after this goes straight to the pty.
+    /// shows (ruling 14b-3, iTerm2 bugs B4 and B13); the held writes (the raw
+    /// `exec_login_shell` line among them) are dropped (iTerm2 strands them); connecting ends
+    /// and what was typed meanwhile goes to the pty, since typed keys never vanish (controller
+    /// ruling). Typing after this goes straight to the pty.
     pub fn abort_ssh(&mut self, reason: &str) {
         let location = self.conductor.as_ref().and_then(|c| c.parent.as_ref()).map(|p| p.identity().compact(&crate::ssh_args::local_user()));
         let screen = self.own_mut();
@@ -646,8 +653,10 @@ impl Pane {
         screen.append_banner(&crate::ssh_handshake::end_banner(1, location.as_deref()));
         self.ssh_unhook_conductor();
         self.unhook_ssh();
-        self.ssh.stop_queueing();
         self.ssh_held.clear();
+        // Controller ruling: typing made while connecting is never lost; nothing holds now.
+        let queued = self.ssh.stop_queueing();
+        self.write_no_broadcast(&queued);
     }
 
     /// Applies what the pane's conductors asked for, until they ask nothing more. True when
@@ -680,8 +689,8 @@ impl Pane {
                         self.own_mut().append_banner(&text);
                         redraw = true;
                     }
-                    // A failed conductor's keys still pending (the connecting queue it was
-                    // handed) go with it, as its held writes do.
+                    // Keys already taken in this batch are applied after the abort, to the
+                    // pty; only effects left on the popped conductor go with it.
                     Effect::Abort(reason) => {
                         self.abort_ssh(&reason);
                         redraw = true;
@@ -1448,7 +1457,7 @@ mod tests {
         assert_eq!(p.ssh_deadline(), Some(t0 + secs(30)));
 
         assert!(p.tick_ssh(t0 + secs(31)));
-        assert!(p.tmux_io().unwrap().take_input().is_empty(), "neither the raw exec_login_shell nor the typing");
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"early", "typing made while connecting arrives; the raw exec_login_shell does not");
         assert_eq!(p.ssh.connecting, None, "connecting ended");
         assert!(p.ssh_held.is_empty());
         assert!(p.conductor.is_none());
@@ -1506,6 +1515,31 @@ mod tests {
         assert_eq!(p.end_ssh("zzz"), None);
         assert!(p.tmux_io().unwrap().take_input().is_empty());
         assert_eq!(p.ssh_held, b"ls\r");
+    }
+
+    #[test]
+    fn end_ssh_while_connecting_releases_typing() {
+        // Controller ruling (b): the connecting queue goes out too, ahead of held typing.
+        let mut p = hooked_setup(std::time::Instant::now(), false);
+        p.write_session(b"early");
+        assert_eq!(p.ssh.connecting.as_deref(), Some(&b"early"[..]));
+        p.ssh_held.extend_from_slice(b"held");
+        assert_eq!(p.end_ssh("a").as_deref(), Some("ssh exited."));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\nearlyheld", "after END_WRITE, the connecting queue first");
+        assert_eq!(p.ssh.connecting, None);
+        assert!(p.ssh_held.is_empty());
+
+        // A remaining conductor still holds writes: both wait for its unhook, in order.
+        let mut p = hooked_setup(std::time::Instant::now(), false);
+        let inner = crate::conductor::Conductor::new(crate::conductor::Setup { client_unique_id: "b".into(), ..Default::default() }, p.conductor.take(), "V");
+        p.conductor = Some(Box::new(inner));
+        p.ssh.chain.push(crate::ssh_session::Hop { unique_id: "b".into(), location: "b.example".into() });
+        p.write_session(b"early");
+        p.ssh_held.extend_from_slice(b"held");
+        assert_eq!(p.end_ssh("b").as_deref(), Some("ssh exited \u{2014} now at a.example."));
+        assert_eq!(p.tmux_io().unwrap().take_input(), b"\x03\n", "only END_WRITE");
+        assert_eq!(p.ssh.connecting, None);
+        assert_eq!(p.ssh_held, b"earlyheld");
     }
 
     #[test]
