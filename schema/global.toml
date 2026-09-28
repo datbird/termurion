@@ -1721,10 +1721,10 @@ help = "Custom header list (legacy)\nLegacy; copied once into each manual model.
 key = "AIZeroDataRetention"
 tab = "General"
 section = "AI"
-label = "Enable \u201Czero data retention\u201D (send whole conversation every time)"
+label = "Enable \u201czero data retention\u201d (send whole conversation every time)"
 type = "bool"
 default = false
-help = "Enable \u201Czero data retention\u201D (send whole conversation every time)\nSet by Settings > General > AI."
+help = "Enable \u201czero data retention\u201d (send whole conversation every time)\nSet by Settings > General > AI."
 
 [[setting]]
 key = "AIModelUpdatesEnabled"
