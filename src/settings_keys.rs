@@ -2520,4 +2520,15 @@ mod tests {
         assert_eq!(s.label, "Show window title when the tab bar is not visible?");
         assert_eq!(s.help, "Show window title when the tab bar is not visible?\nWhen disabled, the tab's title will be shown where the window title would normally go.");
     }
+
+    /// The window number's advanced settings (`AS:710-711`).
+    #[test]
+    fn number_rows_follow_iterm2() {
+        for (key, label) in [("UseShortcutAccessoryViewController", "Show window number in titlebar accessory?"), ("IncludeShortcutInWindowsMenu", "Include keyboard shortcut for windows in Window menu?")] {
+            let s = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "Windows", Kind::Bool), "{key}");
+            assert_eq!(s.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!((s.label.as_str(), s.help.as_str()), (label, label), "{key}");
+        }
+    }
 }

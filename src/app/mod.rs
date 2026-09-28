@@ -338,6 +338,9 @@ pub struct App {
     /// The current window's Lock Size and Lock Layout, and its Edit Window Title text.
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
+    /// The current window's Window menu texts as last drawn: its title as the OS shows it
+    /// without the label, and its title without the number (`caption_text`).
+    window_menu_text: (String, String),
     /// The current window's toolbelt.
     belt: toolbelt_ui::Belt,
     /// Bumped when something a toolbelt tool shows changes (`tools_changed`).
@@ -1140,6 +1143,7 @@ pub fn run() {
         slots: Default::default(),
         win_locks: Default::default(),
         win_title: None,
+        window_menu_text: Default::default(),
         belt: Default::default(),
         tool_gen: 0,
         belt_keys: Default::default(),
@@ -3952,19 +3956,11 @@ impl App {
         // A status bar field whose bar went away gives the keyboard back before drawing.
         self.check_composer_fields();
         let frame = self.build_frame();
-        let focused = self.tabs.get(self.active).map(|t| t.focused);
-        let custom = self.win_title.as_deref().map(|f| self.window_title_text(f, focused));
-        let title = crate::wintitle::window_title(
-            custom.as_deref(),
-            self.tab_bar_visible(),
-            self.globals.bool("ShowWindowTitleWhenTabBarInvisible"),
-            focused.map(|f| self.window_title(f)).as_deref(),
-            focused.map(|f| self.session_title(f)).as_deref(),
-        );
-        let show_number = self.globals.bool("WindowNumber");
-        let title = crate::winmodel::title(&title, self.window_number(), show_number);
-        let client = self.tabs.get(self.active).and_then(|t| self.tmux_client_of(t.focused));
-        let title = crate::tmux_windows::window_title(&title, show_number, self.globals.bool("tmuxIncludeClientNameInWindowTitle"), client.as_deref());
+        let (title, menu_text) = self.caption_text();
+        if self.window_menu_text != menu_text {
+            self.window_menu_text = menu_text;
+            self.refresh_window_list();
+        }
         // iTerm2 shows the Leader as sparkles on the cursor; Tandem says so in the title.
         let title = if self.leader_on { format!("[Leader] {title}") } else { title };
         let Some(gpu) = self.gpu.as_mut() else { return };
@@ -4537,6 +4533,8 @@ impl ApplicationHandler<UserEvent> for App {
                 if f {
                     self.last_window = Some(id);
                     self.stamp_focus();
+                    // The Window menu checks the focused window.
+                    self.refresh_window_list();
                 }
                 self.jobs.set_fast(f);
                 // Keys held while the window loses focus send no release to Tandem.

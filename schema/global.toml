@@ -953,6 +953,24 @@ default = true
 help = "Show window title when the tab bar is not visible?\nWhen disabled, the tab's title will be shown where the window title would normally go."
 
 [[setting]]
+key = "UseShortcutAccessoryViewController"
+tab = "Advanced"
+section = "Windows"
+label = "Show window number in titlebar accessory?"
+type = "bool"
+default = true
+help = "Show window number in titlebar accessory?"
+
+[[setting]]
+key = "IncludeShortcutInWindowsMenu"
+tab = "Advanced"
+section = "Windows"
+label = "Include keyboard shortcut for windows in Window menu?"
+type = "bool"
+default = true
+help = "Include keyboard shortcut for windows in Window menu?"
+
+[[setting]]
 key = "Hotkey"
 tab = "Keys"
 section = "Hotkey"

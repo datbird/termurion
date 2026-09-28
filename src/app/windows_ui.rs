@@ -67,6 +67,7 @@ pub(super) struct WinSlot {
     win_slot: Option<(String, u32)>,
     win_locks: crate::winmodel::Locks,
     win_title: Option<String>,
+    window_menu_text: (String, String),
     mru: Mru,
     mru_mods: Option<Mods>,
     laid_out: Option<crate::statusbar_layout::Room>,
@@ -134,6 +135,7 @@ impl WinSlot {
             win_slot: None,
             win_locks: Default::default(),
             win_title: None,
+            window_menu_text: Default::default(),
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,
@@ -216,6 +218,7 @@ impl App {
         swap(&mut self.win_slot, &mut s.win_slot);
         swap(&mut self.win_locks, &mut s.win_locks);
         swap(&mut self.win_title, &mut s.win_title);
+        swap(&mut self.window_menu_text, &mut s.window_menu_text);
         swap(&mut self.mru, &mut s.mru);
         swap(&mut self.mru_mods, &mut s.mru_mods);
         swap(&mut self.laid_out, &mut s.laid_out);
@@ -313,6 +316,26 @@ impl App {
     /// Every window's menu bar: the current window's and each parked window's.
     pub(super) fn menu_bars(&self) -> impl Iterator<Item = &menu::MenuBar> {
         self.menu_bar.iter().chain(self.windows.parked().filter_map(|(_, s)| s.menu_bar.as_ref()))
+    }
+
+    pub(super) fn menu_bars_mut(&mut self) -> impl Iterator<Item = &mut menu::MenuBar> {
+        self.menu_bar.iter_mut().chain(self.windows.parked_mut().filter_map(|(_, s)| s.menu_bar.as_mut()))
+    }
+
+    /// Every terminal window for the Window menu: (registry key, number, its title as the OS
+    /// shows it without the label, its title without the number), by number. A window not
+    /// drawn yet is "Untitled".
+    pub(super) fn window_menu_entries(&self) -> Vec<(u64, usize, String, String)> {
+        let current = self.windows.current();
+        self.registry
+            .order()
+            .into_iter()
+            .filter_map(|k| {
+                let texts = if current == Some(k) { Some(&self.window_menu_text) } else { self.windows.parked().find(|(kk, _)| **kk == k).map(|(_, s)| &s.window_menu_text) }?;
+                let (text, title) = if texts.0.is_empty() { (crate::wintitle::UNTITLED.to_string(), crate::wintitle::UNTITLED.to_string()) } else { texts.clone() };
+                Some((k, self.registry.number(k)?, text, title))
+            })
+            .collect()
     }
 
     /// The current window's id.
@@ -596,12 +619,67 @@ impl App {
         self.windows.current().and_then(|k| self.registry.number(k)).unwrap_or(0)
     }
 
+    /// The current window's title before its number: the title rules, then the tmux client's
+    /// name when the number shows (`PT:3105-3122`).
+    fn caption_base(&self) -> String {
+        let focused = self.tabs.get(self.active).map(|t| t.focused);
+        let custom = self.win_title.as_deref().map(|f| self.window_title_text(f, focused));
+        let title = crate::wintitle::window_title(
+            custom.as_deref(),
+            self.tab_bar_visible(),
+            self.globals.bool("ShowWindowTitleWhenTabBarInvisible"),
+            focused.map(|f| self.window_title(f)).as_deref(),
+            focused.map(|f| self.session_title(f)).as_deref(),
+        );
+        let client = focused.and_then(|f| self.tmux_client_of(f));
+        crate::tmux_windows::window_title(&title, self.globals.bool("WindowNumber"), self.globals.bool("tmuxIncludeClientNameInWindowTitle"), client.as_deref())
+    }
+
+    /// Whether the current window has a title bar to carry the number label: decorated, not
+    /// full screen, and not a Compact or Minimal window (whose own caption draws the label,
+    /// `compact_caption`).
+    fn window_titled(&self) -> bool {
+        let decorated = self.gpu.as_ref().is_some_and(|g| g.window.is_decorated() && g.window.fullscreen().is_none());
+        decorated && !self.compact_window()
+    }
+
+    /// Whether the current window is a Compact or Minimal window. 13e replaces this body;
+    /// until then no window is.
+    pub(super) fn compact_window(&self) -> bool {
+        false
+    }
+
+    /// The current window's OS caption (`PT setWindowTitle:subtitle:`): `caption_base` with the
+    /// "N. " prefix or the shortcut label (R11). Also its Window menu texts: the caption as
+    /// iTerm2's window title (the prefix, no label) and the title without the number.
+    pub(super) fn caption_text(&self) -> (String, (String, String)) {
+        use crate::wintitle::{caption, number_prefix};
+        let base = self.caption_base();
+        let show = self.globals.bool("WindowNumber");
+        let accessory = self.globals.bool("UseShortcutAccessoryViewController");
+        let titled = self.window_titled();
+        let number = self.window_number();
+        let shown = caption(&base, show, accessory, titled, self.globals.int("SwitchWindowModifier"), number);
+        let text = format!("{}{base}", number_prefix(show, accessory, titled, number).unwrap_or_default());
+        (shown, (text, base))
+    }
+
+    /// What a Compact or Minimal window's caption draws: its title, and the number label
+    /// right-aligned (R11).
+    #[allow(dead_code)] // 13e Task 6 draws it.
+    pub(super) fn compact_caption(&self) -> (String, Option<String>) {
+        let show = self.globals.bool("WindowNumber");
+        let accessory = self.globals.bool("UseShortcutAccessoryViewController");
+        crate::wintitle::compact_caption(&self.caption_base(), show, accessory, self.globals.int("SwitchWindowModifier"), self.window_number())
+    }
+
     /// A window closed: its number and id go, and so do its API variables.
     fn forget_window(&mut self, k: u64) {
         if let Some(g) = self.registry.guid(k) {
             self.api_vars.forget(crate::api_vars::Scope::Window, g);
         }
         self.registry.close(k);
+        self.refresh_window_list();
     }
 
     /// The window that shows `pane`, the current one or a parked one.
@@ -671,6 +749,7 @@ impl WinSlot {
             win_slot: None,
             win_locks: Default::default(),
             win_title: None,
+            window_menu_text: Default::default(),
             mru: Mru::default(),
             mru_mods: None,
             laid_out: None,

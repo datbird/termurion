@@ -85,6 +85,10 @@ pub(super) struct MenuBar {
     /// The Scripts menu and its fixed items (Manage and the line), then the scripts after them.
     pub(super) scripts: Option<(Submenu, usize)>,
     pub(super) script_entries: Vec<super::scripts_app::MenuEntry>,
+    /// The Window menu and its fixed items, then a line and the windows after them, and what
+    /// it lists: (registry key, text, checked).
+    pub(super) window_list: Option<(Submenu, usize)>,
+    pub(super) window_items: Vec<(u64, String, bool)>,
 }
 
 /// Menu ids of the Profiles menu's profile entries.
@@ -197,7 +201,11 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, suppressed, scripts, script_entries: Vec::new() });
+        let window_list = subs.get(&vec!["Window".to_string()]).cloned().map(|s| {
+            let fixed = s.items().len();
+            (s, fixed)
+        });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, suppressed, scripts, script_entries: Vec::new(), window_list, window_items: Vec::new() });
         self.runtime_menu_title();
         self.retitle_suppressed_menu();
         self.sync_checks();
@@ -230,6 +238,50 @@ impl App {
         unsafe { context.show_context_menu_for_hwnd(hwnd, None) };
         // The pick arrives after the menu closes, so the menu lives until the next one.
         self.popup_menu = Some(context);
+    }
+
+    /// The Window menu's window list, in every window's menu bar: a line after the fixed
+    /// items, then each terminal window by number, the focused one checked (`PT:3069-3084`,
+    /// `:6480-6485`).
+    pub(super) fn refresh_window_list(&mut self) {
+        let focused = self.last_window.map(super::windows_ui::key);
+        let items = window_list(&self.window_menu_entries(), focused, self.globals.bool("IncludeShortcutInWindowsMenu"), self.globals.int("SwitchWindowModifier"));
+        let mut failed = None;
+        for bar in self.menu_bars_mut() {
+            if bar.window_items == items {
+                continue;
+            }
+            let Some((sub, fixed)) = &bar.window_list else { continue };
+            while sub.remove_at(*fixed).is_some() {}
+            if !items.is_empty() {
+                let _ = sub.append(&PredefinedMenuItem::separator());
+            }
+            for (k, text, checked) in &items {
+                let entry = CheckMenuItem::with_id(format!("{}{k}", crate::wintitle::LIST_PREFIX), text.replace('&', "&&"), true, *checked, None);
+                if let Err(e) = sub.append(&entry) {
+                    failed = Some(e);
+                }
+            }
+            bar.window_items = items.clone();
+        }
+        if let Some(e) = failed {
+            self.banners.set("menu", format!("Window menu: {e}"));
+        }
+    }
+
+    /// A window picked from the Window menu comes forward (un-minimized; a hidden hotkey
+    /// window shows as its hotkey shows it). False for other ids.
+    fn window_list_picked(&mut self, id: &str) -> bool {
+        let Some(k) = id.strip_prefix(crate::wintitle::LIST_PREFIX).and_then(|k| k.parse::<u64>().ok()) else { return false };
+        if let Some(w) = self.window_id_of_key(k) {
+            self.focus_terminal_window(w);
+        }
+        // The pick toggled its item's check: every list is rebuilt from the windows.
+        for bar in self.menu_bars_mut() {
+            bar.window_items.clear();
+        }
+        self.refresh_window_list();
+        true
     }
 
     /// Edit Session for the session `pane` (`PT editSession:makeKey:`): Settings opened at the
@@ -431,6 +483,7 @@ impl App {
         self.refresh_buried_menu();
         self.refresh_snippet_menus();
         self.sync_toolbelt_checks();
+        self.refresh_window_list();
         self.menus_dirty = false;
         let Some(bar) = &self.menu_bar else { return };
         for selector in super::seltools_ui::CHECKED {
@@ -479,7 +532,7 @@ impl App {
         if self.buried_picked(id) || self.script_picked(id) {
             return;
         }
-        if self.arrangement_picked(id) {
+        if self.arrangement_picked(id) || self.window_list_picked(id) {
             return;
         }
         if let Some(guid) = id.strip_prefix(PROFILE_ID) {
@@ -1316,6 +1369,15 @@ pub(super) fn restart_asks(exited: bool) -> bool {
     !exited
 }
 
+/// The Window menu's window list (`PT:3069-3084`): (registry key, text, checked) for each
+/// window by number. `entries` are (registry key, window number, the window's title as the
+/// OS shows it without the label, its title without the number); `focused` is checked.
+pub(super) fn window_list(entries: &[(u64, usize, String, String)], focused: Option<u64>, include: bool, tag: i64) -> Vec<(u64, String, bool)> {
+    let mut sorted: Vec<&(u64, usize, String, String)> = entries.iter().collect();
+    sorted.sort_by_key(|e| e.1);
+    sorted.into_iter().map(|(k, n, text, title)| (*k, crate::wintitle::menu_entry(text, title, include, tag, *n), focused == Some(*k))).collect()
+}
+
 /// "Restart session?" (`PT:2855-2866`): the object API with no cancel label, so Cancel may be
 /// remembered, as in iTerm2.
 pub(super) fn restart_spec() -> crate::warnings::Spec {
@@ -1349,5 +1411,16 @@ mod tests {
         assert_eq!(checkbox_label(&s), Some("Remember my choice"));
         assert!(!super::restart_asks(true), "an exited session restarts at once");
         assert!(super::restart_asks(false));
+    }
+
+    /// The Window menu's window list (`PT:3069-3084`): by window number, the current one
+    /// checked.
+    #[test]
+    fn window_list_entries() {
+        let entries = [(7, 1, "b".to_string(), "b".to_string()), (3, 0, "a".to_string(), "a".to_string())];
+        let list = super::window_list(&entries, Some(3), true, 6);
+        assert_eq!(list, [(3, "a \u{2014} Alt+Win+1".to_string(), true), (7, "b \u{2014} Alt+Win+2".to_string(), false)]);
+        let list = super::window_list(&entries, Some(7), false, 6);
+        assert_eq!(list, [(3, "a".to_string(), false), (7, "b".to_string(), true)]);
     }
 }
