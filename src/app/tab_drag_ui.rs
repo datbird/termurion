@@ -40,6 +40,40 @@ impl App {
         }
     }
 
+    /// The size in pixels of the current window's edge strip that drags it (`caption::edge_strip`
+    /// of the theme's key, times the scale); 0 outside Minimal and Compact and while the window
+    /// is full screen or maximized.
+    pub(super) fn edge_strip_px(&self) -> f32 {
+        let number = |key: &str, default: f32| self.globals.number(key).map_or(default, |v| v as f32);
+        let draggable = !self.full_screen() && !self.gpu.as_ref().is_some_and(|g| g.window.is_maximized());
+        let strip = crate::caption::edge_strip(self.tab_style(), number("MinimalEdgeDragSize", 12.0), number("CompactEdgeDragSize", 10.0), draggable);
+        if self.compact_window() { strip.max(0.0) * self.scale() } else { 0.0 }
+    }
+
+    /// Whether a press that starts a drag at the window point `start` drags the window instead
+    /// (`caption::drag_to_window`): the window's theme, its No Title Bar type, its visible tabs and
+    /// the press's place in the edge strip decide it.
+    pub(super) fn drags_window(&self, alt: bool, start: (f32, f32)) -> bool {
+        use crate::frames;
+        let no_title_bar = matches!(frames::unthemed(self.win_style), frames::NO_TITLE_BAR | frames::CENTERED_NO_TITLE_BAR);
+        let visible = self.tabs.iter().filter(|t| !t.group.as_ref().is_some_and(|g| g.collapsed)).count();
+        let in_strip = self.tab_bar_rect().is_some_and(|b| crate::caption::in_edge_strip(b, self.tab_position(), self.edge_strip_px(), start.0, start.1));
+        let convert = self.globals.bool("ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme");
+        crate::caption::drag_to_window(alt, self.compact_window(), no_title_bar, visible, in_strip, convert)
+    }
+
+    /// Hands the pointer to the OS to move the window; the press that led here is forgotten (it
+    /// selects, closes or drops nothing after the OS loop returns), as `add_button_drag` does.
+    pub(super) fn begin_window_drag(&mut self) {
+        self.drag = Drag::None;
+        self.tab_press = None;
+        self.end_tab_drag();
+        if let Some(g) = &self.gpu {
+            let _ = g.window.drag_window();
+        }
+        self.redraw();
+    }
+
     /// A tab drag, or a group drag by its chip, has begun (the pointer moved far enough from
     /// the press).
     pub(super) fn tab_drag_began(&self) -> bool {
@@ -61,6 +95,11 @@ impl App {
         if !was {
             if !tab_drag::began(start, (x, y), self.min_tab_drag) {
                 return;
+            }
+            // Minimal and Compact windows (and No Title Bar ones) move instead of tearing off.
+            if self.drags_window(false, start) {
+                self.hide_tab_tip();
+                return self.begin_window_drag();
             }
             if let Drag::Tab { began, .. } | Drag::Chip { began, .. } = &mut self.drag {
                 *began = true;

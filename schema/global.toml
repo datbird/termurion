@@ -3011,6 +3011,33 @@ default = 75.0
 help = "Width (in points) reserved for the window buttons (close/minimize/zoom) before the inline tab bar.\nThe default is 75. Reduce it to move tab content closer to the buttons, or increase it for more breathing room. This only takes effect for the Compact and Minimal themes when the tab bar is visible and located at the top of the window. Setting it smaller than the buttons themselves will let tabs overlap them. On Windows the buttons are at the right and are 138 points wide with the default 75; the reserved room is their width plus this setting's difference from 75."
 
 [[setting]]
+key = "MinimalEdgeDragSize"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region."
+type = "float"
+default = 12.0
+help = "In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.\nThe size is in points. Only a tab bar at the top or bottom of the window has such a region."
+
+[[setting]]
+key = "CompactEdgeDragSize"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Compact theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region."
+type = "float"
+default = 10.0
+help = "In the Compact theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.\nThe size is in points. Only a tab bar at the top or bottom of the window has such a region."
+
+[[setting]]
+key = "ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?"
+type = "bool"
+default = true
+help = "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?\nWith this on, dragging the only tab moves the window instead of tearing the tab off into a new window."
+
+[[setting]]
 key = "MinimalTextLegibilityAdjustment"
 tab = "Advanced"
 section = "Tabs"

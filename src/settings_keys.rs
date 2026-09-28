@@ -2047,6 +2047,21 @@ mod tests {
     }
 
     #[test]
+    fn drag_region_rows_follow_iterm2() {
+        for (key, label, default) in [
+            ("MinimalEdgeDragSize", "In the Minimal theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.", Value::Float(12.0)),
+            ("CompactEdgeDragSize", "In the Compact theme, you can move the window by dragging starting in a region on the edge near the window border. This gives the size of that region.", Value::Float(10.0)),
+            ("ConvertTabDragToWindowDragForSolitaryTabInCompactOrMinimalTheme", "In the Minimal and Compact themes when there is a single tab and the tab bar is visible, should dragging the tab bar move the window?", Value::Boolean(true)),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, if matches!(default, Value::Boolean(_)) { Kind::Bool } else { Kind::Float }, "{key}");
+            assert_eq!(row.default, Some(default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+    }
+
+    #[test]
     fn minimal_rows_follow_iterm2() {
         for (key, label, default) in [
             ("MinimalTabStyleBackgroundColorDifference", "In the Minimal theme, how different should the background color of the selected tab be from the others?", Value::Float(0.05)),

@@ -236,7 +236,20 @@ impl App {
         let (setting, extra) = if top_bar { (number("CompactTabBarStoplightButtonsWidth", 75.0), number("ExtraSpaceBeforeCompactTopTabBar", 0.0)) } else { (75.0, 0.0) };
         let resize_top = self.hwnd().map_or((8.0 * scale).round(), frame_thickness);
         let maximized = g.window.is_maximized();
-        Some(caption::layout(g.config.width as f32, bar_h, scale, setting, extra, 0.0, self.caption_label_w, if maximized { 0.0 } else { resize_top }, maximized))
+        let mut l = caption::layout(g.config.width as f32, bar_h, scale, setting, extra, 0.0, self.caption_label_w, if maximized { 0.0 } else { resize_top }, maximized);
+        // The edge strip drags the window (Task 7, F10): filled in here so `layout` keeps its arguments.
+        l.drag_edge = self.edge_strip_px();
+        if let Some(bar) = self.tab_bar_rect() {
+            let position = self.tab_position();
+            let strip = l.drag_edge.min(bar.h);
+            if strip > 0.0 {
+                let y = if position == TabPosition::Bottom { bar.y + bar.h - strip } else { bar.y };
+                if matches!(position, TabPosition::Top | TabPosition::Bottom) {
+                    l.drag_regions.push(Rect { x: bar.x, y, w: bar.w, h: strip });
+                }
+            }
+        }
+        Some(l)
     }
 
     /// The width in pixels the window switch label's slot takes in the caption: its text in the

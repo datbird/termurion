@@ -4,6 +4,8 @@
 //! a point of the client answers to `WM_NCHITTEST`. Sizes are pixels.
 
 pub use crate::layout::Rect;
+use crate::tab_position::TabPosition;
+use crate::tab_theme::TabStyle;
 
 /// One window button's width in points (Windows 11).
 pub const BUTTON_W: f32 = 46.0;
@@ -127,8 +129,10 @@ pub enum Hit {
 /// The answer for the client point (`x`, `y`): the top resize border first, then a button, then
 /// the strip (`over_tab`: the point is over a tab or a button of the tab bar, which stay client).
 pub fn hit(l: &Layout, x: f32, y: f32, over_tab: bool) -> Hit {
+    let in_drag_region = l.drag_regions.iter().any(|r| r.contains(x, y));
     if !l.bar.contains(x, y) {
-        return Hit::Client;
+        // A bottom bar's edge strip lies outside the top strip.
+        return if in_drag_region { Hit::Caption } else { Hit::Client };
     }
     if !l.maximized && y < l.resize_top {
         return Hit::Top;
@@ -140,10 +144,57 @@ pub fn hit(l: &Layout, x: f32, y: f32, over_tab: bool) -> Hit {
             Button::Close => Hit::Close,
         };
     }
-    if over_tab {
+    // The edge strip moves the window even over a tab (the bar takes no mouse downs there).
+    if over_tab && !in_drag_region {
         Hit::Client
     } else {
         Hit::Caption
+    }
+}
+
+/// The size in pixels of the edge strip that drags the window (`PT:10124-10138`): the setting of
+/// the Minimal or Compact theme, 0 in other themes and when the window cannot be dragged (full
+/// screen or maximized). `minimal` and `compact` are `MinimalEdgeDragSize` and
+/// `CompactEdgeDragSize`.
+pub fn edge_strip(style: TabStyle, minimal: f32, compact: f32, draggable: bool) -> f32 {
+    if !draggable {
+        return 0.0;
+    }
+    match style {
+        TabStyle::Minimal => minimal,
+        TabStyle::Compact => compact,
+        _ => 0.0,
+    }
+}
+
+/// Whether the point (`x`, `y`) is in the bar's edge strip: the top `strip` of a top bar or the
+/// bottom `strip` of a bottom bar, never a side bar's.
+pub fn in_edge_strip(bar: Rect, position: TabPosition, strip: f32, x: f32, y: f32) -> bool {
+    if strip <= 0.0 || x < bar.x || x >= bar.x + bar.w {
+        return false;
+    }
+    match position {
+        TabPosition::Top => y >= bar.y && y < bar.y + strip.min(bar.h),
+        TabPosition::Bottom => y < bar.y + bar.h && y >= bar.y + bar.h - strip.min(bar.h),
+        TabPosition::Left | TabPosition::Right => false,
+    }
+}
+
+/// Whether a press that starts a drag on the tab bar drags the window instead
+/// (`tabViewShouldDragWindow:event:`, `PT:10222-10256`): always with Alt (Option); else only in a
+/// Minimal or Compact theme or a No Title Bar window; with several visible tabs only from the
+/// edge strip, with a solitary tab when `convert_solitary` is on.
+pub fn drag_to_window(alt: bool, compact_theme: bool, no_title_bar: bool, visible_tabs: usize, in_strip: bool, convert_solitary: bool) -> bool {
+    if alt {
+        return true;
+    }
+    if !compact_theme && !no_title_bar {
+        return false;
+    }
+    if visible_tabs > 1 {
+        in_strip
+    } else {
+        convert_solitary
     }
 }
 
@@ -167,7 +218,7 @@ mod tests {
         assert_eq!(l.buttons, [(Button::Minimize, r(862.0, 0.0, 46.0, 38.0)), (Button::Maximize, r(908.0, 0.0, 46.0, 38.0)), (Button::Close, r(954.0, 0.0, 46.0, 38.0))]);
         assert_eq!(l.tabs, r(0.0, 0.0, 862.0, 38.0));
         assert_eq!((l.shortcut, l.name, l.resize_top, l.maximized), (None, None, 8.0, false));
-        assert_eq!((l.drag_edge, l.drag_regions.len()), (0.0, 0), "Task 7 fills the drag edge");
+        assert_eq!((l.drag_edge, l.drag_regions.len()), (0.0, 0), "the app fills the drag edge in");
         // The extra space is left of the buttons' room.
         assert_eq!(layout(1000.0, 38.0, 1.0, 75.0, 20.0, 0.0, 0.0, 8.0, false).tabs, r(0.0, 0.0, 842.0, 38.0));
         // The shortcut label sits right-aligned directly left of the reserved room.
@@ -187,6 +238,47 @@ mod tests {
         assert_eq!(layout(1500.0, 57.0, 1.5, 100.0, 0.0, 0.0, 0.0, 12.0, false).tabs.w, 1500.0 - (207.0 + 37.5));
         // A setting smaller than the buttons lets the tabs overlap them.
         assert_eq!(layout(1000.0, 38.0, 1.0, 0.0, 0.0, 0.0, 0.0, 8.0, false).tabs.w, 1000.0 - 63.0);
+    }
+
+    #[test]
+    fn window_drag_follows_iterm2() {
+        use crate::tab_position::TabPosition::{Bottom, Left, Right, Top};
+        use crate::tab_theme::TabStyle::{Automatic, Compact, Minimal};
+        assert_eq!(edge_strip(Minimal, 12.0, 10.0, true), 12.0);
+        assert_eq!(edge_strip(Compact, 12.0, 10.0, true), 10.0);
+        assert_eq!(edge_strip(Automatic, 12.0, 10.0, true), 0.0);
+        assert_eq!(edge_strip(Minimal, 12.0, 10.0, false), 0.0);
+        let top = r(0.0, 0.0, 800.0, 38.0);
+        assert!(in_edge_strip(top, Top, 12.0, 100.0, 11.0));
+        assert!(!in_edge_strip(top, Top, 12.0, 100.0, 12.0));
+        let bottom = r(0.0, 562.0, 800.0, 38.0);
+        assert!(in_edge_strip(bottom, Bottom, 12.0, 100.0, 590.0));
+        assert!(!in_edge_strip(bottom, Bottom, 12.0, 100.0, 587.0));
+        assert!(!in_edge_strip(r(0.0, 0.0, 120.0, 600.0), Left, 12.0, 5.0, 5.0));
+        assert!(!in_edge_strip(r(680.0, 0.0, 120.0, 600.0), Right, 12.0, 790.0, 5.0));
+        assert!(!in_edge_strip(top, Top, 0.0, 100.0, 0.0), "no strip, no region");
+        assert!(drag_to_window(true, false, false, 3, false, true), "Alt always");
+        assert!(!drag_to_window(false, false, false, 1, false, true), "a regular theme never converts");
+        assert!(drag_to_window(false, false, true, 1, false, true), "a No Title Bar window converts in any theme");
+        assert!(drag_to_window(false, true, false, 3, true, true), "the edge strip with several tabs");
+        assert!(!drag_to_window(false, true, false, 3, false, true));
+        assert!(drag_to_window(false, true, false, 1, false, true), "a solitary tab");
+        assert!(!drag_to_window(false, true, false, 1, false, false), "the key off");
+    }
+
+    #[test]
+    fn caption_drag_edge_answers_caption() {
+        let mut l = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 0.0, 0.0, 8.0, false);
+        l.drag_edge = 12.0;
+        l.drag_regions = vec![r(0.0, 0.0, 862.0, 12.0)];
+        assert_eq!(hit(&l, 500.0, 10.0, true), Hit::Caption, "over a tab, in the strip");
+        assert_eq!(hit(&l, 500.0, 20.0, true), Hit::Client, "over a tab below the strip");
+        assert_eq!(hit(&l, 500.0, 3.0, true), Hit::Top, "the resize border wins");
+        assert_eq!(hit(&l, 990.0, 10.0, true), Hit::Close, "a button wins");
+        // A region outside the strip (a bottom bar's).
+        l.drag_regions = vec![r(0.0, 588.0, 800.0, 12.0)];
+        assert_eq!(hit(&l, 100.0, 590.0, true), Hit::Caption);
+        assert_eq!(hit(&l, 100.0, 570.0, true), Hit::Client);
     }
 
     #[test]

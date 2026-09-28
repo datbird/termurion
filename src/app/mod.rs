@@ -2030,6 +2030,9 @@ impl App {
                 self.tab_press = None;
                 self.redraw();
             }
+            // Option (Alt) drags the window from anywhere on the bar, in every theme
+            // (`tabViewShouldDragWindow:event:`): the press is forgotten first.
+            MouseButton::Left if alt && self.drags_window(true, self.cursor) => self.begin_window_drag(),
             MouseButton::Left => {
                 let clicks = self.count_tab_click(hit);
                 self.tab_press = Some((hit, clicks, alt, id));
