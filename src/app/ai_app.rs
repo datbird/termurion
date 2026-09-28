@@ -173,8 +173,8 @@ impl App {
     pub(super) fn open_ai_reveal(&mut self, event_loop: &ActiveEventLoop) {
         let Some(sub) = self.ai_reveal.take() else { return };
         self.open_settings_page(event_loop, crate::settings_ui::Page::General);
-        if let Some(s) = self.settings.as_mut() {
-            s.show_ai(sub);
+        if self.settings.as_mut().is_some_and(|s| s.show_ai(sub)) {
+            self.apply_edit(crate::settings_ui::Edit::GlobalsChanged);
         }
     }
 

@@ -115,6 +115,8 @@ mod script_runtime_ui;
 mod scripts_alerts;
 mod ai_app;
 mod scripts_app;
+mod script_console_app;
+mod script_deps_app;
 mod builtin_ui;
 
 pub enum UserEvent {
@@ -326,8 +328,11 @@ pub struct App {
     /// The folder the next pane starts in, for a restored arrangement's session.
     start_dir_override: Option<crate::arrangement::Folder>,
     /// The command the next pane runs instead of its profile's (a git menu command's
-    /// single-use window).
+    /// single-use window, the REPL's interpreter).
     start_command_override: Option<String>,
+    /// Variables the next pane gets over its session variables (the REPL's cookie and key; a
+    /// secret, never logged). Set and cleared around one `open_window`.
+    start_env_override: Option<Vec<String>>,
     /// The tab the next pane goes into once started (a split), for its `ITERM_SESSION_ID`;
     /// None is a new tab. Set and cleared around one start, so it is not per-window state.
     start_tab: Option<usize>,
@@ -551,6 +556,8 @@ pub struct App {
     focused: bool,
     tab_rects: Vec<Rect>,
     banners: Banners,
+    /// The `utilities` folder beside tandem.exe, when `utilities::ensure` made it at start.
+    utilities: Option<PathBuf>,
     clipboard: Option<arboard::Clipboard>,
     store: Store,
     settings: Option<SettingsWindow>,
@@ -641,10 +648,13 @@ pub struct App {
     /// The provisioning worker (started on first use), what each submitted job continues
     /// with, the install each job queued behind one needs (dependent id to install id), the
     /// installed-Python probes running off the UI thread, and whether Tandem's uv is installed
-    /// (the runtime menu item's title).
+    /// (the runtime menu item's title). Also the environment each submitted job makes, and the
+    /// requests waiting for an environment already being asked about or built.
     provisioner: Option<crate::script_provision::Provisioner>,
     provision_after: HashMap<u64, script_runtime_ui::After>,
     provision_needs: HashMap<u64, u64>,
+    provision_targets: HashMap<u64, crate::script_provision::Target>,
+    provision_waiting: Vec<script_runtime_ui::Waiting>,
     backend_probes: Vec<script_runtime_ui::Probe>,
     uv_installed: bool,
     /// The Scripts features' alerts waiting to show, and the one showing.
@@ -667,10 +677,40 @@ pub struct App {
     /// dropped when that ends (closing a job ends what is in it, so Tandem's quit ends them).
     script_jobs_left: Vec<crate::script_provision::KillJob>,
     script_after_enable: Vec<crate::script_launch::Request>,
+    /// Open Python REPL: the interpreter waiting for "Enable Python API?", and the one whose
+    /// window opens on the next loop pass (which has the event loop).
+    repl_after_enable: Option<PathBuf>,
+    repl_pending: Option<PathBuf>,
+    /// Panes that stay open with their output when their program ends (the REPL's), each
+    /// with whether its end was already reported (`scripts_app::on_exit`).
+    held_on_exit: HashMap<PaneId, bool>,
+    /// The import under way (one at a time, iTerm2's `sInstallingScript`) and the files
+    /// waiting behind it (iTerm2's serial install queue), each with whether it is an archive
+    /// found in the Scripts folder (recycled once installed).
+    importing: Option<scripts_app::Import>,
+    import_queue: VecDeque<(PathBuf, bool)>,
+    /// Archives the scan found that were already asked about (`didFindScriptArchive:`'s
+    /// `alreadyFound`).
+    archives_asked: std::collections::HashSet<PathBuf>,
+    /// Export's chooser (app-wide) and the exports running off the UI thread.
+    script_export: Option<crate::script_export_ui::ExportWindow>,
+    script_exports: Vec<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
     /// New Python Script's picker (app-wide), and the Python versions its popup is waiting
     /// for (a `Minors` job run off the UI thread).
     script_picker: Option<crate::script_new_ui::PickerWindow>,
     script_picker_minors: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+    /// Manage Dependencies (app-wide): its window, its state (kept while the window is
+    /// closed, so a command still finishes), and the pip command whose window's end it
+    /// waits for.
+    script_deps: Option<crate::script_deps_ui::DepsWindow>,
+    script_deps_state: script_deps_app::Deps,
+    script_deps_pending: Option<(PaneId, script_deps_app::Pending)>,
+    /// The Script Console and the Scripting Inspector (app-wide).
+    script_console: Option<crate::script_console_ui::ConsoleWindow>,
+    script_inspector: Option<crate::script_inspector_ui::InspectorWindow>,
+    /// An entry to reveal in the console on the next loop pass (asked where no event loop
+    /// was at hand).
+    script_console_reveal: Option<String>,
     last_notified_script: Option<String>,
     /// Status bar strings with function calls, by session and string: their shown values
     /// and running evaluations (app-wide; a pane's entries go with the pane).
@@ -756,6 +796,22 @@ pub fn run() {
             }
             Err(e2) => return message_box(&format!("No ConPTY: {e}; {e2}")),
         },
+    };
+    let utilities = match crate::utilities::ensure(&exe_dir) {
+        Ok(done) => {
+            let entry = crate::utilities::path_entry(&done.folder.to_string_lossy());
+            if let Some(text) = crate::utilities::refresh_banner(&done.failed) {
+                crate::host::log(&format!("tandem: {text}"));
+                banners.set("utilities", text);
+            } else if entry.is_none() {
+                banners.set("utilities", format!("The utilities folder {} has a \";\" in its path, so it is not put on PATH.", done.folder.display()));
+            }
+            Some(done.folder)
+        }
+        Err(e) => {
+            banners.set("utilities", format!("The utilities folder could not be made: {e}"));
+            None
+        }
     };
 
     let path = store::default_path();
@@ -901,6 +957,7 @@ pub fn run() {
         menus_dirty: false,
         start_dir_override: None,
         start_command_override: None,
+        start_env_override: None,
         start_tab: None,
         single_use: HashMap::new(),
         undo: Default::default(),
@@ -1019,6 +1076,7 @@ pub fn run() {
         focused: true,
         tab_rects: Vec::new(),
         banners,
+        utilities,
         clipboard: arboard::Clipboard::new().ok(),
         store,
         settings: None,
@@ -1066,6 +1124,8 @@ pub fn run() {
         provisioner: None,
         provision_after: HashMap::new(),
         provision_needs: HashMap::new(),
+        provision_targets: HashMap::new(),
+        provision_waiting: Vec::new(),
         backend_probes: Vec::new(),
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
@@ -1078,8 +1138,22 @@ pub fn run() {
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
+        repl_after_enable: None,
+        repl_pending: None,
+        held_on_exit: HashMap::new(),
+        importing: None,
+        import_queue: VecDeque::new(),
+        archives_asked: std::collections::HashSet::new(),
+        script_export: None,
+        script_exports: Vec::new(),
         script_picker: None,
         script_picker_minors: None,
+        script_deps: None,
+        script_deps_state: script_deps_app::Deps::new(),
+        script_deps_pending: None,
+        script_console: None,
+        script_inspector: None,
+        script_console_reveal: None,
         last_notified_script: None,
         unread_counts: HashMap::new(),
         unread_session_counts: HashMap::new(),
@@ -1198,12 +1272,38 @@ impl App {
         let counts: Vec<usize> = self.tabs.iter().map(|t| t.layout.panes().len()).collect();
         let holding = self.tabs.iter().position(|t| t.layout.panes().contains(&id));
         let (tab, pane) = crate::session_env::numbers(&counts, holding, self.start_tab);
-        let cookie = (self.globals.bool(api_ui::ENABLE_KEY) && self.globals.bool(api_ui::SET_COOKIE_KEY) && self.api_server.is_some())
-            .then(|| self.api_jar.lock().unwrap().mint(crate::api_auth::CookieUse::Session));
+        // The REPL's variables (`start_env_override`) carry its own cookie, which then is the
+        // pane's (it leaves the jar with the pane); no Session cookie is minted beside it.
+        let extra = self.start_env_override.clone().unwrap_or_default();
+        let given = extra.iter().find_map(|e| e.strip_prefix("ITERM2_COOKIE=")).map(str::to_string);
+        let cookie = given.or_else(|| {
+            (self.globals.bool(api_ui::ENABLE_KEY) && self.globals.bool(api_ui::SET_COOKIE_KEY) && self.api_server.is_some())
+                .then(|| self.api_jar.lock().unwrap().mint(crate::api_auth::CookieUse::Session))
+        });
         let name = p.name();
         let id = id.to_string();
-        let facts = crate::session_env::Facts { window, tab, pane, id: &id, profile_name: &name, cookie: cookie.as_deref() };
-        (crate::session_env::vars(&facts), cookie)
+        // The session starts with the profile's Unicode version, as its Capabilities reply does.
+        let version = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
+        let term_features = crate::osc1337::capabilities(crate::osc1337::session_features(self.globals.bool("AllowClipboardAccess"), 0, version));
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let path = self
+            .utilities
+            .as_ref()
+            .filter(|_| self.globals.bool("addUtilitiesToPATH"))
+            .and_then(|folder| crate::utilities::path_entry(&folder.to_string_lossy()))
+            .and_then(|entry| crate::utilities::session_path(std::env::var_os("PATH").as_deref(), &system_root, &entry));
+        let facts = crate::session_env::Facts {
+            window,
+            tab,
+            pane,
+            id: &id,
+            profile_name: &name,
+            cookie: cookie.as_deref(),
+            term_features: &term_features,
+            lc_terminal: self.globals.bool("shouldSetLCTerminal"),
+            path: path.as_deref(),
+        };
+        (crate::session_env::overlay(crate::session_env::vars(&facts), &extra), cookie)
     }
 
     /// A pane dropped for good takes its cookie out of the jar (a pane stashed for Undo Close
@@ -1217,6 +1317,7 @@ impl App {
     /// Every drop path calls this, so an app-wide map keyed by pane cannot leak.
     pub(super) fn pane_gone(&mut self, id: PaneId) {
         self.api_session_subs.forget_session(id);
+        self.held_on_exit.remove(&id);
         self.unread_session_counts.retain(|(p, _), _| *p != id);
         self.script_templates.retain(|(p, _), _| *p != id);
         self.script_components.retain(|(p, _), _| *p != id);
@@ -1282,10 +1383,7 @@ impl App {
     /// A started pane takes its profile's look, triggers, and input settings.
     fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
-        pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
-        pane.screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
-        let (list, prefs) = triggers_ui::triggers_of(p);
-        pane.screen.set_triggers(list, prefs);
+        screen_follows_profile(&mut pane.screen, p);
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
         // `IRMemory` is read once per session (`S:121-122`).
@@ -1356,8 +1454,8 @@ impl App {
     /// The Settings window on one page.
     pub(super) fn open_settings_page(&mut self, event_loop: &ActiveEventLoop, page: crate::settings_ui::Page) {
         self.open_settings(event_loop, Mode::Settings);
-        if let Some(s) = self.settings.as_mut() {
-            s.show_page(page);
+        if self.settings.as_mut().is_some_and(|s| s.show_page(page)) {
+            self.apply_edit(Edit::GlobalsChanged);
         }
     }
 
@@ -1462,6 +1560,11 @@ impl App {
     fn scripts_scan_start(&mut self) {
         let keys = (self.globals.bool("UseCustomScriptsFolder"), self.globals.string("CustomScriptsFolder"));
         let folder = self.scripts_folder();
+        // Reached through a link to a network path: the scanner refuses it (an empty tree,
+        // nothing made, watched or polled), and the app-wide entry says why once.
+        if !crate::scripts::ancestors_stay_local(&folder, &crate::scripts::read_link) {
+            self.script_log_app(crate::scripts::scripts_folder_not_local(&folder));
+        }
         // The old scanner's thread ends on its own; a scan it is in finishes first.
         let mut scanner = crate::scripts_scan::Scanner::start(folder, self.notify.clone());
         // A build under way keeps holding scans (its file events), as with the old scanner.
@@ -1490,8 +1593,8 @@ impl App {
     }
 
     /// Takes the scanner's results: the tree and the script names, and the slow-scan question
-    /// ("Performance Issue", Stop or Continue, `M:489-509`). Found archives are asked about in
-    /// a later task.
+    /// ("Performance Issue", Stop or Continue, `M:489-509`). Each archive found is asked about
+    /// once, whether or not the tree changed.
     fn scripts_scan_tick(&mut self) {
         while let Some((event, folder)) = self.scripts_scan.as_ref().and_then(|s| Some((s.try_event()?, s.folder().to_path_buf()))) {
             match event {
@@ -1502,11 +1605,13 @@ impl App {
                 }
                 // An unchanged tree is left alone, so nothing built from it is rebuilt.
                 crate::scripts_scan::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
+                    self.archives_found(&result.archives);
                     self.scripts_all = crate::scripts::all_scripts(&result.tree);
                     self.scripts_tree = result.tree;
                     self.refresh_scripts_menu();
+                    self.deps_tree_changed();
                 }
-                crate::scripts_scan::ScanEvent::Done(_) => {}
+                crate::scripts_scan::ScanEvent::Done(result) => self.archives_found(&result.archives),
             }
         }
     }
@@ -1520,10 +1625,7 @@ impl App {
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
-            pane.own_mut().place_prompt_first_column = p.bool("Place Prompt at First Column");
-            pane.own_mut().set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
-            let (list, prefs) = triggers_ui::triggers_of(p);
-            pane.own_mut().set_triggers(list, prefs);
+            screen_follows_profile(pane.own_mut(), p);
         }
         self.tmux_resend_colors();
         self.tmux_save_tab_colors();
@@ -1651,8 +1753,10 @@ impl App {
 
     /// Closes a pane. The last pane closes its tab, and the last tab exits.
     fn close_pane(&mut self, id: PaneId, event_loop: &ActiveEventLoop) {
-        // A git command's window closed any way ends its command.
+        // A git command's window closed any way ends its command, as does Manage
+        // Dependencies' pip command.
         self.single_use_ended(id);
+        self.deps_command_ended(id);
         // A buried session that ends leaves the Buried Sessions menu.
         if self.buried.take(id).is_some() {
             self.menus_dirty = true;
@@ -2767,6 +2871,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.registry.open(k);
                 // The Python API starts with the first window when it is on.
                 self.api_launch();
+                // Replaced scripts and installs an earlier run left are put right first.
+                self.recover_imports();
                 self.scripts_scan_start();
                 // With the API up (or not) and the Scripts folder made: AutoLaunch, once.
                 self.run_autolaunch();
@@ -2936,6 +3042,12 @@ impl ApplicationHandler<UserEvent> for App {
         let provision_due = self.provision_tick();
         self.scripts_tick();
         self.script_picker_tick();
+        self.deps_tick();
+        self.open_pending_deps_run(event_loop);
+        let console_due = self.script_console_tick(event_loop);
+        self.open_pending_repl(event_loop);
+        let import_due = self.import_tick();
+        self.script_export_tick();
         self.scripts_scan_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
@@ -2960,7 +3072,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -3028,7 +3140,8 @@ impl ApplicationHandler<UserEvent> for App {
                 outputs.push(*id);
             }
             changed |= got;
-            if p.exited.is_some() {
+            // A held pane's end is reported once.
+            if p.exited.is_some() && self.held_on_exit.get(id) != Some(&true) {
                 exited.push(*id);
             }
         }
@@ -3040,6 +3153,7 @@ impl ApplicationHandler<UserEvent> for App {
             // A git command's short-lived window ends without an alert.
             let short_lived = self.short_lived(id);
             self.single_use_ended(id);
+            self.deps_command_ended(id);
             if !short_lived {
                 self.session_ended(id);
             }
@@ -3047,7 +3161,14 @@ impl ApplicationHandler<UserEvent> for App {
                 p.own_mut().fire_event(crate::trigger_events::EventKind::SessionEnded, &Default::default(), &[]);
             }
             self.take_requests();
-            self.close_pane(id, event_loop);
+            match scripts_app::on_exit(self.held_on_exit.get(&id).copied()) {
+                scripts_app::OnExit::Close => self.close_pane(id, event_loop),
+                scripts_app::OnExit::Keep => {
+                    self.held_on_exit.insert(id, true);
+                    changed = true;
+                }
+                scripts_app::OnExit::Handled => {}
+            }
         }
         self.check_coprocesses();
         if changed {
@@ -3056,7 +3177,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -3279,9 +3400,40 @@ fn tab_hit(rects: &[Rect], tabs: usize, x: f32, y: f32) -> Option<usize> {
     rects.iter().position(|r| r.contains(x, y)).filter(|i| *i < tabs)
 }
 
+/// What a session's screen takes from its profile, at start (`install_pane`) and after every
+/// profile edit (`refresh_panes`), as iTerm2 re-applies them (`PTYSession.m:7013-7016`): the
+/// prompt column, the profile's Unicode version, scrollback with the status bar, the triggers.
+fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
+    screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+    screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
+    screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
+    let (list, prefs) = triggers_ui::triggers_of(p);
+    screen.set_triggers(list, prefs);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_edits_reach_the_screen() {
+        // A profile edit re-applies the Unicode version, as a new pane takes it (PS:7013-7016).
+        let mut s = crate::screen::Screen::new(10, 3);
+        let mut p = Profile::new("x");
+        p.values.insert("Unicode Version".into(), toml::Value::Integer(8));
+        p.values.insert("Place Prompt at First Column".into(), toml::Value::Boolean(false));
+        screen_follows_profile(&mut s, &p);
+        assert_eq!(s.profile_unicode, 8);
+        assert!(!s.place_prompt_first_column);
+        s.clipboard_allowed = true;
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(reply.contains("Uw8"), "{reply}");
+        p.values.insert("Unicode Version".into(), toml::Value::Integer(9));
+        screen_follows_profile(&mut s, &p);
+        assert_eq!(s.profile_unicode, 9);
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(reply.contains("Uw9"), "{reply}");
+    }
 
     #[test]
     fn steal_focus_asks_once() {

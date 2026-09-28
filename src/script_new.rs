@@ -68,20 +68,43 @@ pub struct Plan {
     pub chosen: PathBuf,
 }
 
-/// A path as compared by `under_scripts`: separators as `\`, no trailing one, letters folded
-/// (Windows paths ignore case).
-fn comparable(p: &Path) -> String {
-    let text = p.to_string_lossy().replace('/', "\\").to_lowercase();
-    match text.strip_suffix('\\') {
-        Some(t) if !t.ends_with(':') => t.to_string(),
+/// A path's components as `under_scripts` and `container` compare them: either separator, the
+/// local long-path prefix `\\?\` dropped (`\\?\D:\S` is `D:\S`, and the save dialog
+/// returns paths without it), `.` dropped and `..` taking back the component before it (never
+/// the drive). A network path keeps a leading `\\` of its own.
+fn parts(p: &Path) -> Vec<String> {
+    let text = p.to_string_lossy().replace('/', "\\");
+    let text = match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.len() >= 2 && rest.as_bytes()[0].is_ascii_alphabetic() && rest.as_bytes()[1] == b':' => rest.to_string(),
         _ => text,
+    };
+    let mut out: Vec<String> = Vec::new();
+    if text.starts_with(r"\\") {
+        out.push(r"\\".to_string());
     }
+    for part in text.split('\\') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if out.len() > 1 {
+                    out.pop();
+                }
+            }
+            _ => out.push(part.to_string()),
+        }
+    }
+    out
+}
+
+/// `parts` with letters folded (Windows paths ignore case).
+fn comparable(p: &Path) -> Vec<String> {
+    parts(p).into_iter().map(|c| c.to_lowercase()).collect()
 }
 
 /// `urlIsUnderScripts:` (`M:1682-1686`): the Scripts folder itself or anything inside it.
 pub fn under_scripts(path: &Path, scripts: &Path) -> bool {
     let (p, s) = (comparable(path), comparable(scripts));
-    p == s || p.starts_with(&format!("{}\\", s.trim_end_matches('\\')))
+    !s.is_empty() && p.len() >= s.len() && p[..s.len()] == s[..]
 }
 
 /// `folderForFullEnvironmentSavePanelURL:` (`M:1509-1524`): the chosen path when it is under
@@ -93,12 +116,12 @@ pub fn container(chosen: &Path, scripts: &Path) -> PathBuf {
         return scripts.join(name);
     }
     // The components past the Scripts folder's own.
-    let depth = scripts.components().count();
-    chosen.components().skip(depth).fold(scripts.to_path_buf(), |p, c| p.join(c))
+    let depth = parts(scripts).len();
+    parts(chosen).into_iter().skip(depth).fold(scripts.to_path_buf(), |p, c| p.join(c))
 }
 
 /// A full environment's main script, `<container>\<name>\<name>.py`.
-fn full_main(container: &Path, name: &str) -> PathBuf {
+pub fn full_main(container: &Path, name: &str) -> PathBuf {
     container.join(name).join(format!("{name}.py"))
 }
 
@@ -124,12 +147,19 @@ pub fn parse_dependencies(text: &str) -> Vec<String> {
     text.split_whitespace().map(str::to_string).collect()
 }
 
-/// A full environment's files besides its `.venv`: `setup.cfg` naming the script, its
-/// dependencies and Python version (`CFG:17-53`, as the provisioner writes it), and the main
-/// `<container>\<name>\<name>.py` holding `main` (`M:1526-1540`). The one helper for New
-/// Python Script, an export's staged basic script and the basic-to-full upgrade.
-pub fn full_environment_files(container: &Path, name: &str, dependencies: &[String], python: &str, main: &str) -> Vec<(PathBuf, String)> {
-    vec![(container.join(rt::SETUP_CFG), rt::setup_cfg_text(name, dependencies, true, python, 0)), (full_main(container, name), main.to_string())]
+/// A full environment's files besides its `.venv`: `setup.cfg` (`rt::setup_cfg_after_build`:
+/// an `existing` one's name and environment version kept, the version built, the accepted
+/// dependencies) and the main `<container>\<name>\<name>.py` holding `main`
+/// (`M:1526-1540`). The one helper for New Python Script, an export's staged basic script and
+/// the basic-to-full upgrade.
+pub fn full_environment_files(container: &Path, name: &str, dependencies: &[String], built: &str, main: &str, existing: Option<&str>) -> Vec<(PathBuf, String)> {
+    vec![(container.join(rt::SETUP_CFG), rt::setup_cfg_after_build(existing, name, dependencies, built)), (full_main(container, name), main.to_string())]
+}
+
+/// The Python version a built environment has: its marker's (`UV:683-689` records
+/// `marker.python`); the version asked for only when the marker cannot be read.
+pub fn built_python(marker: Option<&str>, requested: &str) -> String {
+    marker.and_then(rt::Marker::parse).map_or_else(|| requested.to_string(), |m| m.python)
 }
 
 /// Writes each file, making its folder first.
@@ -242,12 +272,33 @@ mod tests {
         assert!(under_scripts(&p("C:/S/a"), &s));
         assert!(under_scripts(&p(r"C:\S\"), &s));
         assert_eq!(container(&p(r"c:\s\Tool"), &s), p(r"C:\S\Tool"));
+        // A Scripts folder in the local long-path form matches the dialog's plain path, and
+        // the container is spelled from the Scripts folder.
+        let long = p(r"\\?\D:\S");
+        assert!(under_scripts(&p(r"D:\S\a"), &long));
+        assert!(under_scripts(&p(r"\\?\D:\S\a"), &p(r"D:\S")));
+        assert_eq!(container(&p(r"D:\S\sub\a"), &long), p(r"\\?\D:\S\sub\a"));
+        // `..` is resolved before comparing: out of Scripts is out, back in is in.
+        assert!(!under_scripts(&p(r"C:\S\..\x\a"), &s));
+        assert!(under_scripts(&p(r"C:\S\x\..\a"), &s));
+        assert_eq!(container(&p(r"C:\S\x\..\a"), &s), p(r"C:\S\a"));
+        assert!(!under_scripts(&p(r"C:\..\..\S\a"), &p(r"D:\S")));
+        // A share is never the local folder of the same name.
+        assert!(!under_scripts(&p(r"\\srv\S\a"), &p(r"\srv\S")));
 
-        let files = full_environment_files(&p(r"C:\S\tool"), "tool", &["requests".to_string()], "3.12", "print(1)\n");
+        let deps = ["requests".to_string(), "--index-url=https://h/simple".to_string()];
+        let files = full_environment_files(&p(r"C:\S\tool"), "tool", &deps, "3.12", "print(1)\n", None);
         assert_eq!(
             files,
-            vec![(p(r"C:\S\tool\setup.cfg"), rt::setup_cfg_text("tool", &["requests".to_string()], true, "3.12", 0)), (p(r"C:\S\tool\tool\tool.py"), "print(1)\n".to_string())]
+            vec![(p(r"C:\S\tool\setup.cfg"), rt::setup_cfg_text("tool", &["requests".to_string()], true, "3.12", 72)), (p(r"C:\S\tool\tool\tool.py"), "print(1)\n".to_string())]
         );
+        let old = rt::setup_cfg_text("kept", &[], true, "3.9", 3);
+        assert_eq!(full_environment_files(&p(r"C:\S\tool"), "tool", &[], "3.12", "", Some(&old))[0].1, rt::setup_cfg_text("kept", &[], true, "3.12", 3));
+        // setup.cfg records the version built (the marker's), not the one picked.
+        let marker = rt::Marker { schema: 1, backend: "venv".into(), uv_version: String::new(), python: "3.12".into(), remapped_from: Some("3.11".into()) };
+        assert_eq!(built_python(Some(&marker.json()), "3.11"), "3.12");
+        assert_eq!(built_python(None, "3.11"), "3.11");
+        assert_eq!(built_python(Some("{}"), "3.11"), "3.11");
     }
 
     #[test]

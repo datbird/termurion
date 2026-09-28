@@ -466,7 +466,7 @@ section = "General"
 label = "Write Automatic Profile Switching debug logs"
 type = "bool"
 default = false
-help = "Each Automatic Profile Switching decision goes to automatic-profile-switching.log beside Tandem's settings (iTerm2 writes them to its Script Console)."
+help = "Each Automatic Profile Switching decision goes to the Script Console's \"Automatic Profile Switching\" entry (Scripts > Manage > Console), as in iTerm2."
 
 [[setting]]
 key = "WindowNumber"
@@ -1355,6 +1355,33 @@ label = "Allow variable window sizes in tmux integration."
 type = "bool"
 default = true
 help = "Requres tmux version 2.9 or later."
+
+[[setting]]
+key = "accelerateUploads"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Make uploads with it2ul really fast."
+type = "bool"
+default = true
+help = "Make uploads with it2ul really fast."
+
+[[setting]]
+key = "shouldSetLCTerminal"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Set LC_TERMINAL=iTerm2."
+type = "bool"
+default = true
+help = "Set LC_TERMINAL=iTerm2.\nopenssh and mosh pass this to hosts you connect to. It communicates the current terminal emulator. This is useful for enabling terminal emulator-specific features."
+
+[[setting]]
+key = "addUtilitiesToPATH"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Add path to Tandem utilities to $PATH for new sessions?"
+type = "bool"
+default = true
+help = "Add path to Tandem utilities to $PATH for new sessions?"
 
 [[setting]]
 key = "smartLoggingWithAutoComposer"

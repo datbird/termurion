@@ -612,6 +612,15 @@ pub fn silenced(until: Option<f64>, now: f64) -> bool {
 }
 /// The error alert's second button when there is a traceback (`H:570`); 11d.
 pub const REVEAL_IN_CONSOLE: &str = "Reveal in Script Console";
+/// The error alert's buttons (`H:568-571`): OK, and "Reveal in Script Console" when the
+/// failure has a traceback.
+pub fn report_buttons(traceback: bool) -> Vec<&'static str> {
+    let mut out = vec![crate::api_auth::OK];
+    if traceback {
+        out.push(REVEAL_IN_CONSOLE);
+    }
+    out
+}
 /// The heading of an invocation's result shown by Open Quickly (`OQW:494`).
 pub const RESULT_HEADING: &str = "Function Call Result";
 
@@ -1054,6 +1063,9 @@ mod tests {
         assert_eq!(console_text("f()", "boom", "tb"), "An error occurred while running the function invocation \u{201c}f()\u{201d}:\nboom\n\nTraceback:\ntb");
         assert_eq!(object_not_found("pty-X"), "Object with identifier \u{201c}pty-X\u{201d} not found");
         assert_eq!((ERROR_ID, REVEAL_IN_CONSOLE, RESULT_HEADING), ("NoSyncFunctionCallError", "Reveal in Script Console", "Function Call Result"));
+        // The second button only with a traceback (`H:568-571`).
+        assert_eq!(report_buttons(false), ["OK"]);
+        assert_eq!(report_buttons(true), ["OK", "Reveal in Script Console"]);
         assert_eq!(invoke_response(&Ok(json!(3))), pb::InvokeFunctionResponse { disposition: Some(Disposition::Success(Success { json_result: Some("3".into()) })) });
         // A synchronous InvokeFunction's script call answers null: "null" (`H:4376-4394`).
         assert_eq!(invoke_response(&Ok(Value::Null)).disposition, Some(Disposition::Success(Success { json_result: Some("null".into()) })));

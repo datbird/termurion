@@ -227,6 +227,17 @@ pub struct Speed {
 pub const QUICK: Speed = Speed { units: 768, delay: 0.01 };
 pub const SLOW: Speed = Speed { units: 16, delay: 0.125 };
 
+/// The longest wait between writes a setting may ask for, in seconds.
+pub const MAX_DELAY: f64 = 60.0;
+
+/// The speed a paste setting pair gives (0 or less means iTerm2's default `d`).
+/// A delay that is not a finite positive number is the default; one above `MAX_DELAY` is
+/// capped, so it always converts to a `Duration`.
+pub fn speed_from(units: i64, delay: Option<f64>, d: Speed) -> Speed {
+    let delay = delay.filter(|t| t.is_finite() && *t > 0.0).map_or(d.delay, |t| t.min(MAX_DELAY));
+    Speed { units: if units > 0 { units as usize } else { d.units }, delay }
+}
+
 /// Paste Faster (1.5) and Paste Slower (0.66): more per write, less wait, within bounds.
 pub fn faster(s: Speed, factor: f64) -> Speed {
     let units = ((s.units as f64 * factor) as usize).clamp(1, 1_048_576);
@@ -590,6 +601,23 @@ impl Queue {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_speeds_stay_finite() {
+        use super::{QUICK, Speed, speed_from};
+        assert_eq!(speed_from(0, None, QUICK), QUICK);
+        assert_eq!(speed_from(100, Some(0.5), QUICK), Speed { units: 100, delay: 0.5 });
+        assert_eq!(speed_from(-3, Some(-1.0), QUICK), QUICK);
+        for bad in [f64::INFINITY, f64::NAN, f64::NEG_INFINITY] {
+            assert_eq!(speed_from(100, Some(bad), QUICK), Speed { units: 100, delay: QUICK.delay }, "{bad}");
+        }
+        assert_eq!(speed_from(100, Some(1e30), QUICK).delay, super::MAX_DELAY, "a huge delay is capped");
+        assert_eq!(super::MAX_DELAY, 60.0);
+        // Every speed converts to a Duration without a panic.
+        for t in [1e30, f64::INFINITY, 0.25] {
+            let _ = std::time::Duration::from_secs_f64(speed_from(1, Some(t), QUICK).delay);
+        }
+    }
+
     use super::*;
 
     fn run(text: &str, flags: u32) -> String {

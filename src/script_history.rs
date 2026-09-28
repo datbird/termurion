@@ -170,6 +170,8 @@ pub struct Entry {
     log_lines: Vec<String>,
     continues: bool,
     calls: Vec<String>,
+    /// The history generation of this entry's last change.
+    revision: u64,
 }
 
 impl Entry {
@@ -188,7 +190,14 @@ impl Entry {
             log_lines: Vec::new(),
             continues: false,
             calls: Vec::new(),
+            revision: 0,
         }
+    }
+
+    /// Moves on with every change to this entry only (the Script Console rebuilds an entry's
+    /// text when it moved, not when another entry changed).
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn log_lines(&self) -> &[String] {
@@ -316,6 +325,7 @@ impl History {
     pub fn find_mut(&mut self, id: &str) -> Option<&mut Entry> {
         let e = self.entries.iter_mut().find(|e| e.id == id)?;
         self.generation += 1;
+        e.revision = self.generation;
         Some(e)
     }
 
@@ -362,12 +372,13 @@ impl History {
     /// stops; the processes to end are those of entries with exactly one.
     pub fn api_stopped(&mut self) -> Vec<u32> {
         let mut pids = Vec::new();
+        self.generation += 1;
         for e in self.entries.iter_mut().filter(|e| e.running) {
             e.terminated_by_user = true;
             e.running = false;
+            e.revision = self.generation;
             pids.extend(e.only_pid());
         }
-        self.generation += 1;
         pids
     }
 

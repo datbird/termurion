@@ -146,7 +146,7 @@ impl App {
                 if let Some(text) = line {
                     self.script_log(Some(conn), text);
                 }
-                self.api_fns_changed(r, status);
+                self.api_fns_changed(conn, r, status);
                 reply(req, Resp::NotificationResponse(pb::NotificationResponse { status: Some(status as i32) }))
             }
             // A script's answer to a call; always acknowledged (`H:3490-3496`).
@@ -1335,12 +1335,23 @@ impl App {
     /// After a function registration request: the status bar's view of the live components
     /// follows, and a status bar component registered now makes that unique id's components
     /// evaluate again (`iTermAPIDidRegisterStatusBarComponentNotification`, `RPC:456-462`).
-    fn api_fns_changed(&mut self, r: &pb::NotificationRequest, status: pb::notification_response::Status) {
+    /// The script that registered it is remembered by its full path, for the failed
+    /// component's Launch Script (`didRegisterStatusBarComponent:onConnection:`,
+    /// `H:1880-1896`).
+    fn api_fns_changed(&mut self, conn: u64, r: &pb::NotificationRequest, status: pb::notification_response::Status) {
         self.script_registry_changed();
         let Some(pb::notification_request::Arguments::RpcRegistrationRequest(reg)) = &r.arguments else { return };
         if status == pb::notification_response::Status::Ok && r.subscribe == Some(true) {
             if let Some(id) = crate::script_statusbar::unique_id(reg).filter(|_| crate::script_statusbar::registration_is_component(reg)) {
-                self.script_component_registered(&id.to_string());
+                let id = id.to_string();
+                self.script_component_registered(&id);
+                let full = self.api_keys.get(&conn).and_then(|(key, _)| self.script_history.find(key)).and_then(|e| e.full_path.clone());
+                let key = crate::script_statusbar::script_path_key(&id);
+                let stored = self.globals.get(&key).and_then(|v| v.as_str().map(str::to_string));
+                if let Some(text) = crate::script_statusbar::path_to_store(full.as_deref(), stored.as_deref()) {
+                    self.globals.set(&key, toml::Value::String(text));
+                    self.save_globals();
+                }
             }
         }
     }

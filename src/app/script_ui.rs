@@ -362,10 +362,14 @@ pub(super) enum Alert {
         heading: String,
         invocation: String,
         text: String,
+        /// With a traceback, the Script Console entry "Reveal in Script Console" shows
+        /// (`H:568-571`; empty when the connection has no entry, which reveals nothing).
+        reveal: Option<String>,
     },
     Result(String),
-    /// A failed script status bar component's text (`RPC:533-555`): persistent, OK only.
-    Component(String),
+    /// A failed script status bar component's text and buttons (`RPC:533-555`): persistent;
+    /// with Launch Script and Reveal in Explorer, the script's path.
+    Component { text: String, buttons: Vec<&'static str>, path: Option<std::path::PathBuf> },
 }
 
 impl Alert {
@@ -374,7 +378,16 @@ impl Alert {
         match self {
             Alert::Failed { heading, text, .. } => (heading.as_str(), text.as_str()),
             Alert::Result(text) => (script_eval::RESULT_HEADING, text.as_str()),
-            Alert::Component(text) => (script_statusbar::ERROR_HEADING, text.as_str()),
+            Alert::Component { text, .. } => (script_statusbar::ERROR_HEADING, text.as_str()),
+        }
+    }
+
+    /// The alert's buttons.
+    fn buttons(&self) -> Vec<&'static str> {
+        match self {
+            Alert::Failed { reveal, .. } => script_eval::report_buttons(reveal.is_some()),
+            Alert::Result(_) => vec![crate::api_auth::OK],
+            Alert::Component { buttons, .. } => buttons.clone(),
         }
     }
 }
@@ -398,13 +411,14 @@ fn queue_alert(queue: &mut VecDeque<Alert>, showing: Option<&Alert>, alert: Aler
     if silenced {
         return;
     }
-    if let Alert::Failed { heading, invocation, text } = &alert {
+    if let Alert::Failed { heading, invocation, text, reveal } = &alert {
         let same = |a: &Alert| matches!(a, Alert::Failed { heading: h, invocation: i, .. } if h == heading && i == invocation);
         if showing.is_some_and(same) {
             return;
         }
-        if let Some(Alert::Failed { text: queued, .. }) = queue.iter_mut().find(|a| same(a)) {
+        if let Some(Alert::Failed { text: queued, reveal: queued_reveal, .. }) = queue.iter_mut().find(|a| same(a)) {
             queued.clone_from(text);
+            queued_reveal.clone_from(reveal);
             return;
         }
     } else if showing == Some(&alert) || queue.contains(&alert) {
@@ -908,11 +922,20 @@ impl App {
         self.invoke(&invocation, scope, timeout, true, Origin::Report(script_eval::menu_origin(title)));
     }
 
-    /// A failed script component's click: its error text under "Status Bar Script Error",
-    /// through the one alert queue (never silenced; the same one merged).
-    pub(super) fn script_component_error(&mut self, text: &str) {
+    /// A failed script component's click (`RPC:533-555`): its error text under "Status Bar
+    /// Script Error", through the one alert queue (never silenced; the same one merged). When
+    /// the script that registered the component is known (`script_path_key`), not running and
+    /// could launch, the alert offers Launch Script and Reveal in Explorer.
+    pub(super) fn script_component_error(&mut self, text: &str, unique_id: &str) {
+        let path = self.globals.get(&script_statusbar::script_path_key(unique_id)).and_then(|v| v.as_str().map(str::to_string)).filter(|s| !s.is_empty()).map(std::path::PathBuf::from);
+        let (running, could_launch) = match &path {
+            Some(p) => (self.script_history.running_with_full_path(p).is_some(), App::could_launch(p)),
+            None => (false, false),
+        };
+        let (text, buttons) = script_statusbar::recovery(text, path.is_some(), running, could_launch);
+        let path = path.filter(|_| buttons.len() > 1);
         let showing = self.script_alert.as_ref().map(|(_, a)| a);
-        queue_alert(&mut self.script_alerts, showing, Alert::Component(text.to_string()), false);
+        queue_alert(&mut self.script_alerts, showing, Alert::Component { text, buttons, path }, false);
     }
 
     /// A status bar component registration (`didRegisterStatusBarComponent:`, `RPC:456-462`):
@@ -1080,7 +1103,11 @@ impl App {
             let stamp = self.history_stamp();
             self.script_history.add_log(&key, &script_eval::console_text(invocation, &f.reason, f.detail.as_deref().unwrap_or_default()), &stamp);
         }
-        let alert = Alert::Failed { heading: script_eval::report_heading(origin), invocation: invocation.to_string(), text: script_eval::report_text(invocation, &f.reason) };
+        // With a traceback the alert can reveal the connection's entry; one with no entry
+        // opens the console with nothing selected, as iTerm2 reveals a nil entry.
+        let key = f.conn.and_then(|c| self.api_keys.get(&c)).map(|(k, _)| k.clone()).filter(|k| self.script_history.find(k).is_some());
+        let reveal = f.detail.as_ref().map(|_| key.unwrap_or_default());
+        let alert = Alert::Failed { heading: script_eval::report_heading(origin), invocation: invocation.to_string(), text: script_eval::report_text(invocation, &f.reason), reveal };
         let silenced = self.function_errors_silenced();
         let showing = self.script_alert.as_ref().map(|(_, a)| a);
         queue_alert(&mut self.script_alerts, showing, alert, silenced);
@@ -1115,7 +1142,8 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return };
         let (heading, text) = alert.form();
         let failed = matches!(alert, Alert::Failed { .. });
-        let opened = ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &[crate::api_auth::OK], false).map(|mut w| {
+        let buttons = alert.buttons();
+        let opened = ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, text, &buttons, false).map(|mut w| {
             if failed {
                 w.set_checkbox_label(ConfirmWindow::SUPPRESS_TEN_MINUTES);
             }
@@ -1139,18 +1167,31 @@ impl App {
                 ConfirmResult::Open
             }
         };
-        match answer {
-            ConfirmResult::Open => return true,
-            // "Suppress this message for ten minutes" checked on a failure's OK
-            // (`iTermWarning.m:577-593`): the silence and the remembered selection.
-            ConfirmResult::Action { suppress: true, .. } if matches!(self.script_alert, Some((_, Alert::Failed { .. }))) => {
-                self.globals.set(script_eval::SILENCE_UNTIL_KEY, toml::Value::Float(unix_now() + script_eval::TEMPORARY_SILENCE_SECS));
-                self.globals.set(script_eval::SELECTION_KEY, toml::Value::Integer(0));
-                self.save_globals();
+        if let ConfirmResult::Open = answer {
+            return true;
+        }
+        let Some((_, alert)) = self.script_alert.take() else { return true };
+        let index = match answer {
+            ConfirmResult::Action { index, suppress } => {
+                // "Suppress this message for ten minutes" checked on a failure's button
+                // (`iTermWarning.m:577-593`): the silence and the remembered selection.
+                if suppress && matches!(alert, Alert::Failed { .. }) {
+                    self.globals.set(script_eval::SILENCE_UNTIL_KEY, toml::Value::Float(unix_now() + script_eval::TEMPORARY_SILENCE_SECS));
+                    self.globals.set(script_eval::SELECTION_KEY, toml::Value::Integer(index as i64));
+                    self.save_globals();
+                }
+                Some(index)
             }
+            _ => None,
+        };
+        match (alert, index) {
+            // "Reveal in Script Console" (`H:588-590`).
+            (Alert::Failed { reveal: Some(id), .. }, Some(1)) => self.reveal_script_entry(&id),
+            // Launch Script, explicitly (`RPC:509-523`), and Reveal in Explorer (`RPC:525-531`).
+            (Alert::Component { path: Some(path), .. }, Some(1)) => self.launch_script(crate::script_launch::Request { path, args: Vec::new(), explicit: true }),
+            (Alert::Component { path: Some(path), .. }, Some(2)) => self.reveal_path(&path),
             _ => {}
         }
-        self.script_alert = None;
         true
     }
 }
@@ -1386,7 +1427,9 @@ mod tests {
         c.start(32);
         c.finish(32, Ok(vec!["new".into()]), None);
         assert!(c.texts.is_none());
-        assert_eq!(script_statusbar::ERROR_HEADING, Alert::Component("x".into()).form().0);
+        let component = Alert::Component { text: "x".into(), buttons: vec!["OK"], path: None };
+        assert_eq!(script_statusbar::ERROR_HEADING, component.form().0);
+        assert_eq!(component.buttons(), ["OK"]);
         assert_eq!(CLICK_TIMEOUT_SECS, 30.0);
     }
 
@@ -1457,7 +1500,7 @@ mod tests {
     /// the same one shows; another failure still queues.
     #[test]
     fn trigger_alerts_are_bounded() {
-        let failure = |sig: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), invocation: sig.to_string(), text: script_eval::report_text(sig, &script_fn::unregistered_text(sig, None)) };
+        let failure = |sig: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), invocation: sig.to_string(), text: script_eval::report_text(sig, &script_fn::unregistered_text(sig, None)), reveal: None };
         let mut queue = VecDeque::new();
         for _ in 0..1000 {
             queue_alert(&mut queue, None, failure("f()"), false);
@@ -1474,7 +1517,7 @@ mod tests {
         // Final review: a failure whose text varies per match (the reason echoes the match)
         // merges by origin and invocation, keeping the newest text; different invocations
         // stop at MAX_QUEUED, the oldest going first.
-        let varying = |inv: &str, reason: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), invocation: inv.to_string(), text: script_eval::report_text(inv, reason) };
+        let varying = |inv: &str, reason: &str| Alert::Failed { heading: script_eval::report_heading(TRIGGER), invocation: inv.to_string(), text: script_eval::report_text(inv, reason), reveal: None };
         let mut queue = VecDeque::new();
         for i in 0..1000 {
             queue_alert(&mut queue, None, varying("f(x: matches[1])", &format!("bad {i}")), false);
@@ -1504,8 +1547,15 @@ mod tests {
 
     #[test]
     fn script_alerts_follow_iterm2() {
-        let failed = Alert::Failed { heading: script_eval::report_heading("Trigger"), invocation: "f()".into(), text: script_eval::report_text("f()", "boom") };
+        let failed = Alert::Failed { heading: script_eval::report_heading("Trigger"), invocation: "f()".into(), text: script_eval::report_text("f()", "boom"), reveal: None };
         assert_eq!(failed.form(), ("Trigger Function Call Failed", "Error running \u{201c}f()\u{201d}:\nboom"));
+        // The second button only with a traceback; a merged repeat takes the newest reveal.
+        assert_eq!(failed.buttons(), ["OK"]);
+        let traced = Alert::Failed { heading: script_eval::report_heading("Trigger"), invocation: "f()".into(), text: script_eval::report_text("f()", "boom"), reveal: Some("k".into()) };
+        assert_eq!(traced.buttons(), ["OK", "Reveal in Script Console"]);
+        let mut queue = VecDeque::from([failed.clone()]);
+        queue_alert(&mut queue, None, traced.clone(), false);
+        assert_eq!(queue, VecDeque::from([traced]));
         assert_eq!(Alert::Result("f() returned:\n3".into()).form(), ("Function Call Result", "f() returned:\n3"));
     }
 }
