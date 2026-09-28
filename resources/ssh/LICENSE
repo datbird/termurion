@@ -1,0 +1,26 @@
+Tandem: every file in this folder was copied from iTerm2 (https://github.com/gnachman/iTerm2,
+commit 64791fc) and is used under iTerm2's license. COPYING-iTerm2 is iTerm2's COPYING (GPL v2
+or later) and LICENSE-iTerm2 is iTerm2's LICENSE, the full license text, both copied verbatim
+from iTerm2's tree.
+
+Which files are iTerm2's, and where they come from:
+
+  framer.py
+      iTerm2 OtherResources/framer.py, byte for byte.
+  shell_integration/bash-si-loader
+      iTerm2 OtherResources/bash-si-loader, byte for byte.
+  shell_integration/.zshenv
+      iTerm2 OtherResources/.zshenv, byte for byte.
+  shell_integration/iterm2-shell-integration-loader.fish
+      iTerm2 OtherResources/vendor_conf.d/iterm2-shell-integration-loader.fish, byte for byte.
+  conductor.sh
+      iTerm2 submodules/iTerm2-shell-integration/ssh-helpers/conductor.sh, byte for byte.
+  shell_integration/iterm2_shell_integration.bash, .zsh, .fish and .xonsh
+      iTerm2 submodules/iTerm2-shell-integration/shell_integration/bash, zsh, fish and
+      xonsh, byte for byte.
+
+submodules/iTerm2-shell-integration is iTerm2's own shell integration repository
+(https://github.com/gnachman/iTerm2-shell-integration, commit bbf5a33, the one iTerm2's commit
+64791fc pins). It is GPL v2 like iTerm2 (its LICENSE file is the GPL v2 text).
+
+Any file in this folder not listed above is Tandem's own.

@@ -1,0 +1,7 @@
+Tandem: it2api and it2tip in this folder were copied from iTerm2
+(https://github.com/gnachman/iTerm2, commit 64791fc, OtherResources/Utilities/it2api and
+OtherResources/Utilities/it2tip), byte for byte, and are used under iTerm2's license.
+COPYING-iTerm2 is iTerm2's COPYING (GPL v2 or later) and LICENSE-iTerm2 is iTerm2's LICENSE,
+the full license text, both copied verbatim from iTerm2's tree.
+
+Any file in this folder not listed above is Tandem's own.
