@@ -337,6 +337,8 @@ mod tests {
             ("NoSyncEnableAutomaticProfileSwitchingLogging", "Script Console", Kind::Bool, bool(false)),
             ("Use background pattern indicator", "Broadcast", Kind::Bool, bool(false)),
             ("NoSyncHideDefaultValuedSettings", "Settings", Kind::Bool, bool(false)),
+            ("NoSyncNeverRemindPrefsChangesLostForFile_selection", "Settings", Kind::Int, int(0)),
+            ("NoSyncPromptBeforeLoadingPrefsFromURL", "Settings", Kind::String, text("")),
             ("HotkeyMigratedFromSingleToMulti", "Hotkey", Kind::Bool, bool(false)),
         ];
         for (key, section, kind, default) in &expect {

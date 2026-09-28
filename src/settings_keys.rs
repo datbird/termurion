@@ -1187,6 +1187,52 @@ mod tests {
     }
 
     #[test]
+    fn prefs_rows_follow_iterm2() {
+        let row = |key: &str| schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+        for (key, tab, section, kind, default, label) in [
+            ("LoadPrefsFromCustomFolder", "General", "Settings", Kind::Bool, Value::Boolean(false), Some("Load settings from a custom folder or URL")),
+            ("PrefsCustomFolder", "General", "Settings", Kind::String, Value::String(String::new()), Some("Custom folder")),
+            ("NoSyncNeverRemindPrefsChangesLostForFile_selection", "Stored", "Settings", Kind::Int, Value::Integer(0), None),
+            ("NoSyncPromptBeforeLoadingPrefsFromURL", "Stored", "Settings", Kind::String, Value::String(String::new()), None),
+            (
+                "NoSyncNeverRemindPrefsChangesLostForFile",
+                "Advanced",
+                "Warnings",
+                Kind::Bool,
+                Value::Boolean(false),
+                Some("Suppress changed-setting warning when settings are loaded from a custom folder."),
+            ),
+            (
+                "NoSyncNeverRemindPrefsChangesLostForUrl",
+                "Advanced",
+                "Warnings",
+                Kind::Bool,
+                Value::Boolean(false),
+                Some("Suppress changed-setting warning when settings are loaded from a URL."),
+            ),
+            ("NoSyncDownloadPrefsTimeout", "Advanced", "General", Kind::Float, Value::Float(5.0), Some("Timeout for downloading settings")),
+        ] {
+            let s = row(key);
+            assert_eq!((s.tab.as_str(), s.section.as_str()), (tab, section), "{key}");
+            assert_eq!(s.kind, kind, "{key}");
+            assert_eq!(s.default, Some(default), "{key}");
+            if let Some(label) = label {
+                assert_eq!(s.label, label, "{key}");
+                if tab == "Advanced" {
+                    assert_eq!(s.help, label, "{key}");
+                }
+            }
+        }
+        assert_eq!(
+            row("PrefsCustomFolder").help,
+            "The folder (or http:// or https:// URL) holding tandem-settings.toml. Network paths are not supported."
+        );
+        // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
+        let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
+        assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+    }
+
+    #[test]
     fn scripts_folder_rows_follow_iterm2() {
         let use_custom = schema::find_global("UseCustomScriptsFolder").unwrap();
         assert_eq!((use_custom.tab.as_str(), use_custom.section.as_str(), use_custom.label.as_str()), ("General", "Python API", "Custom Python API Scripts Folder"));

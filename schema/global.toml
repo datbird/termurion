@@ -1058,6 +1058,24 @@ default = false
 help = "Suppress warning about pasting a single line ending in a newline when at the shell prompt.\nThis requires Shell Integration to be installed."
 
 [[setting]]
+key = "LoadPrefsFromCustomFolder"
+tab = "General"
+section = "Settings"
+label = "Load settings from a custom folder or URL"
+type = "bool"
+default = false
+help = "Load settings from a custom folder or URL"
+
+[[setting]]
+key = "PrefsCustomFolder"
+tab = "General"
+section = "Settings"
+label = "Custom folder"
+type = "string"
+default = ""
+help = "The folder (or http:// or https:// URL) holding tandem-settings.toml. Network paths are not supported."
+
+[[setting]]
 key = "SavePasteHistory"
 tab = "General"
 section = "Settings"
@@ -1769,6 +1787,51 @@ label = "Show indicators for non-default values"
 type = "bool"
 default = false
 help = "Settings marks each control whose value is not the default with a bar at its left."
+
+[[setting]]
+key = "NoSyncNeverRemindPrefsChangesLostForFile_selection"
+tab = "Stored"
+section = "Settings"
+label = "Save changes to the custom folder"
+type = "int"
+default = 0
+help = "The Save changes popup's choice (0 When Quitting, 1 Manually, 2 Automatically), and the answer to the silenced quit question."
+
+[[setting]]
+key = "NoSyncPromptBeforeLoadingPrefsFromURL"
+tab = "Stored"
+section = "Settings"
+label = "Ask before loading settings from this URL"
+type = "string"
+default = ""
+help = "Remembered at quit when local changes would be lost to the settings URL; the next load from it asks first."
+
+[[setting]]
+key = "NoSyncNeverRemindPrefsChangesLostForFile"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress changed-setting warning when settings are loaded from a custom folder."
+type = "bool"
+default = false
+help = "Suppress changed-setting warning when settings are loaded from a custom folder."
+
+[[setting]]
+key = "NoSyncNeverRemindPrefsChangesLostForUrl"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress changed-setting warning when settings are loaded from a URL."
+type = "bool"
+default = false
+help = "Suppress changed-setting warning when settings are loaded from a URL."
+
+[[setting]]
+key = "NoSyncDownloadPrefsTimeout"
+tab = "Advanced"
+section = "General"
+label = "Timeout for downloading settings"
+type = "float"
+default = 5.0
+help = "Timeout for downloading settings"
 
 [[setting]]
 key = "HotkeyMigratedFromSingleToMulti"
