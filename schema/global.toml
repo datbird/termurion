@@ -361,6 +361,45 @@ default = ""
 help = "Folder where Save in the Make Screenshot panel writes files (a ~ start means your user folder). Empty or not a folder: the Desktop."
 
 [[setting]]
+key = "HideTab"
+tab = "Appearance"
+section = "Tabs"
+label = "Show tab bar even when there is only one tab"
+type = "bool"
+default = true
+inverted = true
+help = "With one tab in a window the tab bar is still shown; off, it appears only when there are two or more tabs."
+
+[[setting]]
+key = "HideTabNumber"
+tab = "Appearance"
+section = "Tabs"
+label = "Show tab numbers"
+type = "bool"
+default = false
+inverted = true
+help = "Each tab shows the shortcut that selects it, such as Win+1, at its right end."
+
+[[setting]]
+key = "TabsHaveCloseButton"
+tab = "Appearance"
+section = "Tabs"
+label = "Tabs have close buttons"
+type = "bool"
+default = true
+help = "Each tab has a button that closes it."
+
+[[setting]]
+key = "HideActivityIndicator"
+tab = "Appearance"
+section = "Tabs"
+label = "Show activity indicator"
+type = "bool"
+default = false
+inverted = true
+help = "A background tab whose session is printing shows a spinner."
+
+[[setting]]
 key = "ShowNewOutputIndicator"
 tab = "Appearance"
 section = "Tabs"
@@ -404,6 +443,33 @@ label = "Show session status in tab"
 type = "bool"
 default = true
 help = "Shows the status text a program sets with OSC 21337 in its tab, in the status color."
+
+[[setting]]
+key = "StretchTabsToFillBar"
+tab = "Appearance"
+section = "Tabs"
+label = "Stretch tabs to fill bar"
+type = "bool"
+default = true
+help = "Tabs widen to share the whole tab bar; off, they keep their preferred width."
+
+[[setting]]
+key = "HTMLTabTitles"
+tab = "Appearance"
+section = "Tabs"
+label = "Support basic HTML tags in tab titles"
+type = "bool"
+default = false
+help = "Tab titles may use <b>, <i> and <u>, with &lt; and &amp; for < and &."
+
+[[setting]]
+key = "ScrollableSideTabBar"
+tab = "Appearance"
+section = "Tabs"
+label = "Tab bar scrolls when tabs don\u2019t fit"
+type = "bool"
+default = true
+help = "When the tabs do not fit, the tab bar scrolls; off, the tabs that do not fit go in a menu at the bar's end."
 
 [[setting]]
 key = "PerPaneBackgroundImage"
@@ -1743,3 +1809,174 @@ label = "Set IT2_APP_PATH environment variable on new sessions, pointing at this
 type = "bool"
 default = false
 help = "Set IT2_APP_PATH environment variable on new sessions, pointing at this Tandem build\u2019s app bundle?\nThis disambiguates the AppleScript target when multiple Tandem builds with the same bundle identifier are running, so that the \u201cit2\u201d CLI requests its cookie from this Tandem instance. Intended for Tandem developers. Only affects sessions created after changing this setting."
+
+[[setting]]
+key = "UseUnevenTabs"
+tab = "Advanced"
+section = "Tabs"
+label = "Uneven tab widths allowed."
+type = "bool"
+default = false
+help = "Uneven tab widths allowed."
+
+[[setting]]
+key = "MinTabWidth"
+tab = "Advanced"
+section = "Tabs"
+label = "Minimum tab width when using uneven tab widths."
+type = "int"
+default = 75
+help = "Minimum tab width when using uneven tab widths."
+
+[[setting]]
+key = "MinCompactTabWidth"
+tab = "Advanced"
+section = "Tabs"
+label = "Minimum tab width when using uneven tab widths for compact tabs."
+type = "int"
+default = 60
+help = "Minimum tab width when using uneven tab widths for compact tabs."
+
+[[setting]]
+key = "OptimumTabWidth"
+tab = "Advanced"
+section = "Tabs"
+label = "Preferred tab width when tabs are equally sized."
+type = "int"
+default = 175
+help = "Preferred tab width when tabs are equally sized."
+
+[[setting]]
+key = "ScrollableTabWidth"
+tab = "Advanced"
+section = "Tabs"
+label = "Tab width when the tab bar is scrollable."
+type = "int"
+default = 120
+help = "Tab width when the tab bar is scrollable.\nUsed as the fixed width when tabs are equally sized, and as the minimum width when uneven tab widths are allowed."
+
+[[setting]]
+key = "TabTitlesUseSmartTruncation"
+tab = "Advanced"
+section = "Tabs"
+label = "Use \u201csmart truncation\u201d for tab titles."
+type = "bool"
+default = true
+help = "Use \u201csmart truncation\u201d for tab titles.\nIf a tab\u2018s title is too long to fit, ellipsize the start of the title if more tabs have unique suffixes than prefixes in a given window."
+
+[[setting]]
+key = "MiddleClickClosesTab"
+tab = "Advanced"
+section = "Tabs"
+label = "Should middle-click on a tab in the tab bar close the tab?"
+type = "bool"
+default = true
+help = "Should middle-click on a tab in the tab bar close the tab?"
+
+[[setting]]
+key = "DefaultTabBarHeight"
+tab = "Advanced"
+section = "Tabs"
+label = "Default tab bar height"
+type = "float"
+default = 24.0
+help = "Default tab bar height\nThis does not affect the minimal or compact themes. On macOS 26 Tahoe-style tabs, the top (horizontal) tab bar uses the system height and ignores this setting; left/right (vertical) tabs use max(26, this value) for each tab\u2019s height."
+
+[[setting]]
+key = "DoubleClickTabToEdit"
+tab = "Advanced"
+section = "Tabs"
+label = "Should double-clicking a tab open a window to edit its title?"
+type = "bool"
+default = true
+help = "Should double-clicking a tab open a window to edit its title?"
+
+[[setting]]
+key = "MinimumTabLabelWidth"
+tab = "Advanced"
+section = "Tabs"
+label = "Minimum width for tab labels."
+type = "float"
+default = 35.0
+help = "Minimum width for tab labels.\nThe activity/bell icon will be hidden when the space for the label drops below this size (in points)"
+
+[[setting]]
+key = "DrawBottomLineForHorizontalTabBar"
+tab = "Advanced"
+section = "Tabs"
+label = "Draw bottom line for horizontal tabbar in Regular, Dark and Light theme?"
+type = "bool"
+default = true
+help = "Draw bottom line for horizontal tabbar in Regular, Dark and Light theme?"
+
+[[setting]]
+key = "DisableTabBarTooltips"
+tab = "Advanced"
+section = "Tabs"
+label = "Disable tab bar tooltips?"
+type = "bool"
+default = false
+help = "Disable tab bar tooltips?"
+
+[[setting]]
+key = "UseCustomTabBarFontSize"
+tab = "Advanced"
+section = "Tabs"
+label = "Use custom font size for tab labels?"
+type = "bool"
+default = false
+help = "Use custom font size for tab labels?\nSee also advanced setting \u201cCustom tab label font size\u201d."
+
+[[setting]]
+key = "CustomTabBarFontSize"
+tab = "Advanced"
+section = "Tabs"
+label = "Custom tab label font size"
+type = "float"
+default = 11.0
+help = "Custom tab label font size\nFor this to take effect, turn on \u201cUse custom font size for tab labels?\u201d."
+
+[[setting]]
+key = "SelectsTabsOnMouseDown"
+tab = "Advanced"
+section = "Tabs"
+label = "Select tabs on mouse-down?"
+type = "bool"
+default = true
+help = "Select tabs on mouse-down?\nChanging this setting will not affect existing windows."
+
+[[setting]]
+key = "TabColorMenuOptions"
+tab = "Advanced"
+section = "Tabs"
+label = "Colors for tab color menu item."
+type = "string"
+default = "#fb6b62 #f6ac47 #f0dc4f #b5d749 #5fa3f8 #c18ed9 #787878"
+help = "Colors for tab color menu item.\nSpace delimited strings like #rrggbb or #rgb in sRGB color space. If the P3 color space is available, you can use strings like: color(p3 1 0.5 0.25)"
+
+[[setting]]
+key = "RemoveAddTabButton"
+tab = "Advanced"
+section = "Tabs"
+label = "Remove the \u201cnew tab\u201d button from horizontal tab bars?"
+type = "bool"
+default = false
+help = "Remove the \u201cnew tab\u201d button from horizontal tab bars?"
+
+[[setting]]
+key = "AddTabButtonUsesCurrentProfile"
+tab = "Advanced"
+section = "Tabs"
+label = "Should the \u201cnew tab\u201d button in the tab bar use the current session\u2019s profile?"
+type = "bool"
+default = false
+help = "Should the \u201cnew tab\u201d button in the tab bar use the current session\u2019s profile?\nWhen enabled, clicking the \u201c+\u201d button opens a new tab with the current session\u2019s profile instead of the default profile."
+
+[[setting]]
+key = "TabCloseButtonsAlwaysVisible"
+tab = "Advanced"
+section = "Tabs"
+label = "Should tab close buttons always remain visible?"
+type = "bool"
+default = false
+help = "Should tab close buttons always remain visible?"

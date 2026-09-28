@@ -54,6 +54,10 @@ pub struct Setting {
     pub light_dark: bool,
     #[serde(default)]
     pub macos_only: bool,
+    /// The checkbox shows the opposite of the stored bool (iTerm2's
+    /// `kPreferenceInfoTypeInvertedCheckbox`, e.g. `HideTab` as "Show tab bar...").
+    #[serde(default)]
+    pub inverted: bool,
 }
 
 fn number(v: &toml::Value) -> Option<f64> {
