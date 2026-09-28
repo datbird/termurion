@@ -166,7 +166,8 @@ pub fn dialect_for(api: Api) -> Option<Box<dyn Dialect>> {
         Api::EarlyO1 => Some(Box::new(crate::ai_chat::EarlyO1)),
         Api::Completions => Some(Box::new(crate::ai_chat::Completions)),
         Api::Anthropic => Some(Box::new(crate::ai_anthropic::Anthropic)),
-        Api::Gemini | Api::Llama | Api::DeepSeek | Api::AppleIntelligence => None,
+        Api::Gemini => Some(Box::new(crate::ai_gemini::Gemini)),
+        Api::Llama | Api::DeepSeek | Api::AppleIntelligence => None,
     }
 }
 
@@ -443,6 +444,9 @@ impl Turn {
         };
         match built {
             Err(e) => vec![Out::Failed(e)],
+            // A dialect that builds its own URL (Gemini's "about:empty") can still make one that
+            // is not sent (`P:68-70`).
+            Ok(req) if ai_transport::parse_url(&req.url).is_err() => vec![Out::Failed(invalid_provider_url(&self.legacy_url_pref))],
             Ok(req) => {
                 self.streamed.clear();
                 self.state = State::Sent { messages, stream: self.stream.then(StreamState::new) };

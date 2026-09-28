@@ -295,6 +295,7 @@ pub mod ai_sse;
 pub mod ai_turn;
 pub mod ai_responses;
 pub mod ai_anthropic;
+pub mod ai_gemini;
 #[cfg(windows)]
 pub mod ai_winhttp;
 pub mod ai_wire_log;
