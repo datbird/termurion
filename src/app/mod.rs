@@ -114,6 +114,7 @@ mod script_ui;
 mod script_runtime_ui;
 mod scripts_alerts;
 mod prefs_ui;
+mod settings_export_ui;
 mod scripts_app;
 mod script_console_app;
 mod script_deps_app;
@@ -1502,6 +1503,9 @@ impl App {
                 self.prefs_offer_copy();
             }
             Edit::PrefsSaveNow => self.prefs_save_now(true),
+            Edit::ExportAll => self.export_all(),
+            // Import and Erase are built next (milestone 13a Task 10).
+            Edit::ImportAll | Edit::EraseAll => {}
             Edit::Changed(_) | Edit::Imported(_) => {
                 // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
                 for s in self.aps.values_mut() {

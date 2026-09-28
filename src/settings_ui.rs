@@ -53,6 +53,12 @@ pub enum Edit {
     PrefsCopyNow,
     /// General > Settings' Save Now.
     PrefsSaveNow,
+    /// General > Settings' Export All Settings and Data button.
+    ExportAll,
+    /// General > Settings' Import All Settings and Data button.
+    ImportAll,
+    /// General > Settings' Erase All Settings and Data button.
+    EraseAll,
 }
 
 /// The settings window's panes, as iTerm2's toolbar lists them.
@@ -345,6 +351,18 @@ impl SettingsWindow {
                                 }
                                 (_, settings_keys::PrefsAction::SaveNow) => {
                                     edit = Edit::PrefsSaveNow;
+                                    false
+                                }
+                                (_, settings_keys::PrefsAction::ExportAll) => {
+                                    edit = Edit::ExportAll;
+                                    false
+                                }
+                                (_, settings_keys::PrefsAction::ImportAll) => {
+                                    edit = Edit::ImportAll;
+                                    false
+                                }
+                                (_, settings_keys::PrefsAction::EraseAll) => {
+                                    edit = Edit::EraseAll;
                                     false
                                 }
                                 (c, _) => c,

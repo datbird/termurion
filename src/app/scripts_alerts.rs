@@ -83,6 +83,8 @@ pub(super) enum Then {
     PrefsQuit,
     /// "Copy local settings to custom folder now?": Copy (0) or Don't Copy (1).
     PrefsCopyNow,
+    /// "Problem Exporting" after Export All Settings and Data failed: OK (0).
+    ExportFailed,
 }
 
 impl Then {
@@ -194,7 +196,7 @@ impl App {
     /// Acts on an answer: the button's place in the alert's buttons.
     pub(super) fn scripts_answered(&mut self, then: Then, index: usize) {
         match then {
-            Then::Nothing | Then::ErrorRunning => {}
+            Then::Nothing | Then::ErrorRunning | Then::ExportFailed => {}
             Then::Malformed(path) => {
                 if index == 1 {
                     self.reveal_path(&path);

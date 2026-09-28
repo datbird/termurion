@@ -978,7 +978,7 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> (bool, Pref
                 // The custom settings folder's rows draw its text field with the checkbox.
                 if s.key == crate::remote_prefs::LOAD_KEY {
                     prefs = prefs_rows(ui, g, &home);
-                    changed |= prefs != PrefsAction::None;
+                    changed |= matches!(prefs, PrefsAction::Changed | PrefsAction::CopyNow | PrefsAction::SaveNow);
                     continue;
                 }
                 if s.key == crate::remote_prefs::FOLDER_KEY {
@@ -1002,15 +1002,19 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> (bool, Pref
     (changed, prefs)
 }
 
-/// What the custom settings folder's rows asked for: a setting changed; the folder was just
-/// picked with the checkbox turned on, so "Copy local settings to custom folder now?" asks
-/// (`GP:4262-4292`); or Save Now was pressed.
+/// What General > Settings' external settings, backup and reset rows asked for: a setting
+/// changed; the folder was just picked with the checkbox turned on, so "Copy local settings to
+/// custom folder now?" asks (`GP:4262-4292`); Save Now was pressed; or one of the Export All,
+/// Import All and Erase All buttons (`GP:4084-4096`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrefsAction {
     None,
     Changed,
     CopyNow,
     SaveNow,
+    ExportAll,
+    ImportAll,
+    EraseAll,
 }
 
 /// Where a window's egui memory keeps the last settings location checked and whether it was
@@ -1036,12 +1040,41 @@ fn choose_prefs_folder(g: &mut Globals) -> Option<String> {
     Some(text)
 }
 
-/// General > Settings' custom folder rows (`GP:2167-2218`, `GP:4221-4292`, `XIB:8360-8440`):
-/// the checkbox; the location field and Browse, both enabled with it, and the mark saying
-/// whether the location is usable; "Save changes:" with its popup and Save Now, enabled for an
-/// on, valid folder. Turning the checkbox on with no location opens the folder picker, and a
-/// usable pick offers to copy the local settings there.
+/// General > Settings' labeled rows (`XIB:8360-8480`): "External settings:" with the custom
+/// folder rows, "Backup & restore:" with Export All and Import All one above the other, and
+/// "Reset:" with Erase All.
 pub fn prefs_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> PrefsAction {
+    use crate::remote_prefs as rp;
+    let mut action = PrefsAction::None;
+    egui::Grid::new("tandem-prefs-rows").num_columns(2).show(ui, |ui| {
+        ui.label(rp::EXTERNAL_SETTINGS);
+        ui.vertical(|ui| action = custom_folder_rows(ui, g, home));
+        ui.end_row();
+        ui.label(rp::BACKUP_RESTORE);
+        ui.vertical(|ui| {
+            if ui.button(rp::EXPORT_ALL).clicked() {
+                action = PrefsAction::ExportAll;
+            }
+            if ui.button(rp::IMPORT_ALL).clicked() {
+                action = PrefsAction::ImportAll;
+            }
+        });
+        ui.end_row();
+        ui.label(rp::RESET);
+        if ui.button(rp::ERASE_ALL).clicked() {
+            action = PrefsAction::EraseAll;
+        }
+        ui.end_row();
+    });
+    action
+}
+
+/// The custom folder rows (`GP:2167-2218`, `GP:4221-4292`, `XIB:8360-8440`): the checkbox; the
+/// location field and Browse, both enabled with it, and the mark saying whether the location
+/// is usable; "Save changes:" with its popup and Save Now, enabled for an on, valid folder.
+/// Turning the checkbox on with no location opens the folder picker, and a usable pick offers
+/// to copy the local settings there.
+fn custom_folder_rows(ui: &mut egui::Ui, g: &mut Globals, home: &std::path::Path) -> PrefsAction {
     use crate::remote_prefs::{self as rp, SaveMode};
     let mut action = PrefsAction::None;
     let was_on = g.bool(rp::LOAD_KEY);
@@ -1372,6 +1405,15 @@ mod tests {
         // The rows sit before "Save copy/paste and command history to disk" (Task 8's order).
         let general: Vec<&str> = schema::global().iter().filter(|s| s.tab == "General" && s.section == "Settings").map(|s| s.key.as_str()).collect();
         assert_eq!(&general[..3], ["LoadPrefsFromCustomFolder", "PrefsCustomFolder", "SavePasteHistory"]);
+    }
+
+    #[test]
+    fn export_rows_follow_iterm2() {
+        let s = schema::find_global("RevealExportedSettingsAndData").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(true)));
+        let text = "Reveal file created by \u{201c}Export All Settings and Data\u{201d} in Explorer upon completion";
+        assert_eq!((s.label.as_str(), s.help.as_str()), (text, text));
     }
 
     #[test]

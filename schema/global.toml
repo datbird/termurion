@@ -1834,6 +1834,15 @@ default = 5.0
 help = "Timeout for downloading settings"
 
 [[setting]]
+key = "RevealExportedSettingsAndData"
+tab = "Advanced"
+section = "General"
+label = "Reveal file created by \u201cExport All Settings and Data\u201d in Explorer upon completion"
+type = "bool"
+default = true
+help = "Reveal file created by \u201cExport All Settings and Data\u201d in Explorer upon completion"
+
+[[setting]]
 key = "HotkeyMigratedFromSingleToMulti"
 tab = "Stored"
 section = "Hotkey"

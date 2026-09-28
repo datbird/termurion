@@ -796,7 +796,7 @@ pub(super) fn recycle(path: &Path) {
 }
 
 /// Runs tar.exe from System32 with `args` (never one from PATH).
-fn run_tar(args: Vec<String>) -> Result<(), String> {
+pub(super) fn run_tar(args: Vec<String>) -> Result<(), String> {
     let mut runner = RealRunner::new(std::sync::mpsc::channel().0);
     use crate::script_provision::Runner;
     runner.run(&crate::script_provision::Step { program: RealRunner::system_tool("tar.exe")?, args, env: Vec::new() }).map(|_| ())
@@ -885,37 +885,50 @@ fn export_kind(path: &Path) -> Option<bool> {
     (path.is_dir() && path.join(sa::SETUP_CFG).exists() && runtime && path.join(&name).join(format!("{name}.py")).exists()).then_some(true)
 }
 
-/// Writes the zip of `<parent>\<name>`'s `setup.cfg` and inner folder on the Desktop
-/// (`EX:102-150`).
-fn export_zip(desktop: &Path, parent: &Path, name: &str) -> Result<PathBuf, String> {
-    let out = sa::export_name(desktop, name, &|p: &Path| p.exists());
-    run_tar(sa::export_tar_args(&out, parent, name)).map_err(|_| {
-        remove_path(&out);
+/// Writes `zip` from `<parent>\<name>`'s `setup.cfg` and inner folder (`EX:102-150`); a
+/// partial zip is removed.
+fn zip_to(zip: &Path, parent: &Path, name: &str) -> Result<(), String> {
+    run_tar(sa::export_tar_args(zip, parent, name)).map_err(|_| {
+        remove_path(zip);
         sa::ZIP_FAILED.to_string()
-    })?;
+    })
+}
+
+/// The name a script's zip takes: a full environment's folder name, a basic script's stem.
+fn export_zip_name(path: &Path, full: bool) -> String {
+    let name = if full { path.file_name() } else { path.file_stem() };
+    name.map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Exports a script on the Desktop, as `<name>.zip` or the first free `<name> (n).zip`. The
+/// zip's path, or the error's text.
+fn export_one(path: &Path, autolaunch: bool, desktop: &Path) -> Result<PathBuf, String> {
+    let full = export_kind(path).ok_or_else(|| sa::NO_SCRIPT_FOUND.to_string())?;
+    let out = sa::export_name(desktop, &export_zip_name(path, full), &|p: &Path| p.exists());
+    export_script_to(path, &out, autolaunch)?;
     Ok(out)
 }
 
-/// `exportScriptAtURL:` (`EX:37-90`), unsigned: a basic script is staged as a full
-/// environment in a temporary folder (`setup.cfg` with the default version, the script in
-/// `<name>\<name>`, `metadata.json`); a full one gets `metadata.json` written into its own
-/// folder; then the zip. The zip's path, or the error's text.
-fn export_one(path: &Path, autolaunch: bool, desktop: &Path) -> Result<PathBuf, String> {
+/// `exportScriptAtURL:` (`EX:37-90`), unsigned, into `zip`: a basic script is staged as a
+/// full environment in a temporary folder (`setup.cfg` with the default version, the script
+/// in `<name>\<name>`, `metadata.json`); a full one gets `metadata.json` written into its own
+/// folder; then the zip. The error's text when it fails. Scripts > Manage > Export and Export
+/// All Settings and Data both export through it.
+pub(super) fn export_script_to(path: &Path, zip: &Path, autolaunch: bool) -> Result<(), String> {
     let full = export_kind(path).ok_or_else(|| sa::NO_SCRIPT_FOUND.to_string())?;
+    let name = export_zip_name(path, full);
     if full {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         // iTerm2 ignores a failure to write it.
         let _ = std::fs::write(path.join(sa::METADATA), sa::metadata_json(autolaunch));
         let parent = path.parent().unwrap_or(path);
-        return export_zip(desktop, parent, &name);
+        return zip_to(zip, parent, &name);
     }
-    let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let temp = std::env::temp_dir().join(format!("tandem-export-{}", crate::api_auth::fresh_key()));
-    let staged = temp.join(&stem);
+    let staged = temp.join(&name);
     // The one helper for a full environment's files: its `setup.cfg`, then the script copied
     // over the main it names (`<name>\<name>\<name>.py`, the script's own file name) byte for
     // byte.
-    let files = sn::full_environment_files(&staged, &stem, &[], rt::DEFAULT_PYTHON, "", None);
+    let files = sn::full_environment_files(&staged, &name, &[], rt::DEFAULT_PYTHON, "", None);
     let result = sn::write_files(&files)
         .and_then(|_| {
             let main = &files[1].0;
@@ -923,10 +936,15 @@ fn export_one(path: &Path, autolaunch: bool, desktop: &Path) -> Result<PathBuf, 
         })
         .and_then(|_| {
             let _ = std::fs::write(staged.join(sa::METADATA), sa::metadata_json(autolaunch));
-            export_zip(desktop, &temp, &stem)
+            zip_to(zip, &temp, &name)
         });
     remove_path(&temp);
     result
+}
+
+/// `urlIsScript:` (`EX:245-247`): what Export All Settings and Data exports.
+pub(super) fn is_exportable_script(path: &Path) -> bool {
+    export_kind(path).is_some()
 }
 
 /// Puts right what an import that did not finish left in the Scripts folder
