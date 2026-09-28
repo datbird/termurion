@@ -146,9 +146,11 @@ mod tests {
     fn file_text_needs_utf8() {
         let mut s = Screen::new(30, 10);
         s.feed(format!("\x1b]1337;File=inline=1;type=text/plain:{}\x07", b64(&[0xff, 0xfe, 0x00])).as_bytes());
+        s.allow_inline();
         assert!(s.portholes.is_empty(), "not UTF-8: no porthole");
         assert!(!s.images.by_id.is_empty(), "the broken image shows");
         s.feed(format!("\x1b]1337;File=inline=1;name={}:{}\x07", b64(b"notes.md"), b64(b"hello\nworld")).as_bytes());
+        s.allow_inline();
         assert_eq!(s.portholes.len(), 1);
         let p = s.portholes.values().next().unwrap();
         assert_eq!(p.text.trim_end(), "hello\nworld");

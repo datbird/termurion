@@ -148,6 +148,10 @@ pub struct Screen {
     pub downloads: Vec<crate::inline_file::Download>,
     /// A MultipartFile in progress.
     pub multipart: Option<crate::inline_file::Multipart>,
+    /// An inline file waiting for the person to allow its display; while it waits, the output
+    /// after it is held unread in `held_output` (iTerm2 pauses its parser for the question).
+    pub(crate) inline_hold: Option<crate::inline_file::InlineHold>,
+    pub(crate) held_output: Vec<u8>,
     /// Kitty graphics images and transfers.
     pub kitty: crate::kitty::Kitty,
     /// Answers the terminal owes the program (kitty graphics), sent with `feed`'s reply.
@@ -364,6 +368,8 @@ impl Screen {
             images: crate::images::Store::default(),
             downloads: Vec::new(),
             multipart: None,
+            inline_hold: None,
+            held_output: Vec::new(),
             kitty: crate::kitty::Kitty::default(),
             replies: Vec::new(),
             limits: Limits::default(),
@@ -561,6 +567,11 @@ impl Screen {
     }
 
     fn feed_chunk(&mut self, bytes: &[u8]) -> Vec<u8> {
+        // An inline file waits for the person: nothing after it is read until they answer.
+        if self.inline_hold.is_some() {
+            self.held_output.extend_from_slice(bytes);
+            return Vec::new();
+        }
         if self.keys.literal {
             let reply = self.feed_raw(&literal(bytes));
             self.run_triggers_after_feed();
@@ -569,9 +580,11 @@ impl Screen {
         // Shell-integration OSCs act where they appear in the stream, so the output is fed in
         // pieces that end at each one.
         let events = self.osc.scan_spans(bytes);
-        let pending = self.osc.pending;
+        let mut pending = self.osc.pending;
         let mut reply = Vec::new();
         let mut at = 0;
+        // Where this chunk's reading stops: its end, or just after an inline file that waits.
+        let mut stop = bytes.len();
         let mut still_held = false;
         if self.capture.is_some() && !self.capture_hold.is_empty() {
             if events.first().is_some_and(|e| e.0 == 0) {
@@ -610,6 +623,15 @@ impl Screen {
                 }
             }
             reply.append(&mut self.replies);
+            if self.inline_hold.is_some() {
+                // The rest of the chunk is read again when the person answers, by a scanner
+                // back where this sequence left it (between sequences).
+                self.held_output.extend_from_slice(&bytes[at..]);
+                self.osc = Default::default();
+                pending = None;
+                stop = at;
+                break;
+            }
         }
         if !still_held {
             match pending.filter(|p| *p >= at) {
@@ -617,10 +639,10 @@ impl Screen {
                     self.capture_bytes(&bytes[at..p]);
                     self.capture_hold = bytes[p..].to_vec();
                 }
-                _ => self.capture_bytes(&bytes[at..]),
+                _ => self.capture_bytes(&bytes[at..stop]),
             }
         }
-        reply.extend(self.feed_raw(&bytes[at..]));
+        reply.extend(self.feed_raw(&bytes[at..stop]));
         reply.extend(self.color_scheme_change());
         self.composer_accrue();
         self.run_triggers_after_feed();

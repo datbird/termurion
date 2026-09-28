@@ -155,6 +155,13 @@ pub(super) enum Then {
     Download(crate::inline_file::Download, bool),
     /// "Allow Large File Download?": Allow (0) saves it; Deny (1) drops it.
     BigDownload(crate::inline_file::Download),
+    /// "Allow Terminal-Initiated Display?" for the inline file the pane's output waits on, its
+    /// name and declared size, and whether the question was silenced when asked: Yes (0)
+    /// shows it, after the large file question when that follows; No (1) drops it.
+    Inline { pane: crate::layout::PaneId, name: String, size: usize, was_silenced: bool },
+    /// "Allow Large File Download?" for a waiting inline file: Allow (0) shows it; Deny (1)
+    /// drops it.
+    BigInline(crate::layout::PaneId),
     /// Clear Buffer (`clear`) or Reset with broadcast, asked from `me` with the broadcast
     /// sessions `targets`: Clear All (0), Current Session Only (1) or Cancel (2).
     Broadcast { clear: bool, me: crate::layout::PaneId, targets: Vec<crate::layout::PaneId> },
@@ -219,6 +226,8 @@ impl App {
             Then::Consent(jobs) => self.consent_declined(jobs),
             Then::AlreadyInstalled(_) => self.scripts_answered(then, 1),
             Then::Paste(pane) => self.paste_answered(pane, None),
+            // The pane's output waits on the answer: dropped, the file is not shown.
+            Then::Inline { pane, .. } | Then::BigInline(pane) => self.inline_released(pane, false),
             _ => {}
         }
     }
@@ -316,6 +325,8 @@ impl App {
                 }
             }
             Then::Download(d, was_silenced) => self.download_answered(d, was_silenced, index),
+            Then::Inline { pane, name, size, was_silenced } => self.inline_answered(pane, &name, size, was_silenced, index),
+            Then::BigInline(pane) => self.inline_released(pane, index == 0),
             Then::BigDownload(d) => {
                 if index == 0 {
                     self.save_download(d);

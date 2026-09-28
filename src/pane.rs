@@ -481,6 +481,19 @@ impl Pane {
         }
     }
 
+    /// The person answered the inline file this pane's output waits on: the screen shows it
+    /// or drops it and reads the output held after it; reading resumes unless another inline
+    /// file waits.
+    pub fn inline_answered(&mut self, allow: bool) {
+        let reply = self.own_mut().inline_answered(allow);
+        if !reply.is_empty() && self.tmux_io().is_none() {
+            self.reply(&reply);
+        }
+        if !self.own().holding_inline() {
+            self.set_paused(false);
+        }
+    }
+
     /// Ends tmux control mode here without an `%exit`.
     pub fn unhook_tmux(&mut self) {
         self.tmux_hook.unhook();

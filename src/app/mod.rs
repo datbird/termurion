@@ -672,6 +672,8 @@ pub struct App {
     suppressed: crate::warnings::Catalog,
     show_remembered: bool,
     catalog_due: Option<Instant>,
+    /// `take_inline_asks` is asking: a released pane's held output is taken by its loop.
+    inline_asking: bool,
     /// The Suppressed Alerts window (one per app) and when the menu title's "ago" is next
     /// refreshed (while something is suppressed).
     suppressed_window: Option<crate::suppressed_alerts_ui::SuppressedWindow>,
@@ -1200,6 +1202,7 @@ pub fn run() {
         suppressed,
         show_remembered: false,
         catalog_due: None,
+        inline_asking: false,
         suppressed_window: None,
         suppressed_retitle_due: None,
         ai_asks: VecDeque::new(),

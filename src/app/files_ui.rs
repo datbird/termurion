@@ -1,5 +1,6 @@
 //! Terminal-initiated downloads (OSC 1337 File without inline=1): asked about with iTerm2's
-//! warnings, then saved in the Downloads folder, as iTerm2 does.
+//! warnings, then saved in the Downloads folder, as iTerm2 does; and inline files (inline=1),
+//! asked about before they show while the pane's output waits.
 
 use super::*;
 
@@ -102,6 +103,52 @@ impl App {
             let spec = download_spec(&saved_name(&dir, &d.name), d.bytes.len(), false);
             self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Download(d, was_silenced)));
         }
+        self.take_inline_asks();
+    }
+
+    /// Asks about each inline file a pane's output waits on ("Allow Terminal-Initiated
+    /// Display?", `PS:19785-19820`), pausing the pane's reading until the answer. A remembered
+    /// answer releases the pane at once, and its held output may wait on the next inline file:
+    /// that one is asked here in turn, not by recursion.
+    fn take_inline_asks(&mut self) {
+        self.inline_asking = true;
+        loop {
+            let waiting: Vec<(PaneId, String, usize)> = self.panes.iter_mut().filter_map(|(id, p)| p.own_mut().inline_waiting().map(|(name, size)| (*id, name, size))).collect();
+            if waiting.is_empty() {
+                break;
+            }
+            for (pane, name, size) in waiting {
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    p.set_paused(true);
+                }
+                let was_silenced = crate::warnings::is_silenced(&self.globals, DOWNLOAD_ID, super::warnings_app::unix_now());
+                let spec = download_spec(&name, size, true);
+                self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Inline { pane, name, size, was_silenced }));
+            }
+        }
+        self.inline_asking = false;
+    }
+
+    /// The display question answered: Yes (0) shows the file, or first asks the large file
+    /// question when the answer was remembered and the file is large (`PS:19812-19817`).
+    pub(super) fn inline_answered(&mut self, pane: PaneId, name: &str, size: usize, was_silenced: bool, index: usize) {
+        let allowed = index == 0;
+        if needs_big_question(was_silenced, allowed, size) {
+            self.ask_scripts(super::scripts_alerts::Ask::new(big_download_spec(name), super::scripts_alerts::Then::BigInline(pane)));
+        } else {
+            self.inline_released(pane, allowed);
+        }
+    }
+
+    /// The pane's waiting inline file shows (`allow`) or is dropped, and its held output is
+    /// read; outside `take_inline_asks` what that output asked for is taken now.
+    pub(super) fn inline_released(&mut self, pane: PaneId, allow: bool) {
+        let Some(p) = self.panes.get_mut(&pane) else { return };
+        p.inline_answered(allow);
+        if !self.inline_asking {
+            self.after_output(&[pane], Instant::now());
+        }
+        self.redraw();
     }
 
     /// The download question answered: Yes (0) saves the file, or first asks the large file

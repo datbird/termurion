@@ -491,6 +491,7 @@ mod tests {
         s.feed(format!("\x1b_Gm=1;{chunk}\x1b\\").as_bytes());
         assert!(s.kitty.pending.is_none(), "dropped past the cap");
         s.feed(b"\x1b]1337;MultipartFile=inline=1\x07");
+        s.inline_answered(true);
         for _ in 0..3 {
             s.feed(format!("\x1b]1337;FilePart={chunk}\x07").as_bytes());
         }

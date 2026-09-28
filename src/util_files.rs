@@ -810,6 +810,7 @@ mod tests {
             assert_eq!(h.run("imgcat", args), 0);
             let mut s = Screen::new(80, 24);
             s.feed(&h.out);
+            s.allow_inline();
             assert_eq!(s.images.by_id.len(), 1, "{term:?} {args:?}");
             let img = s.images.by_id.values().next().unwrap();
             assert_eq!((img.width_px, img.height_px), (2, 2), "{term:?} {args:?}");

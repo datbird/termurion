@@ -34,6 +34,18 @@ pub struct Download {
 pub struct Multipart {
     pub args: Option<FileArgs>,
     pub data: String,
+    /// An inline file whose display was allowed when it began.
+    pub confirmed: bool,
+}
+
+/// An inline file waiting for the person to allow its display (`terminalWillReceiveInlineFileNamed:`,
+/// `VT100Terminal.m:4031-4056`): its arguments, its data (None for a MultipartFile, whose parts
+/// follow the answer), and whether the app has asked.
+#[derive(Clone, Debug)]
+pub struct InlineHold {
+    args: FileArgs,
+    data: Option<String>,
+    asked: bool,
 }
 
 /// iTerm2's guess at whether an inline file is a picture: no type means a picture unless the
@@ -137,7 +149,16 @@ impl Screen {
                 let (args, data) = value.split_once(':').unwrap_or((value, ""));
                 self.receive_file(parse_args(args), data);
             }
-            "MultipartFile" => self.multipart = Some(Multipart { args: Some(parse_args(value)), data: String::new() }),
+            "MultipartFile" => {
+                let args = parse_args(value);
+                self.multipart = None;
+                if args.inline {
+                    // Asked before its parts arrive, as iTerm2 asks at the header.
+                    self.inline_hold = Some(InlineHold { args, data: None, asked: false });
+                } else {
+                    self.multipart = Some(Multipart { args: Some(args), data: String::new(), confirmed: false });
+                }
+            }
             "FilePart" => {
                 if let Some(m) = &mut self.multipart {
                     m.data.push_str(value);
@@ -149,36 +170,83 @@ impl Screen {
             "FileEnd" => {
                 if let Some(m) = self.multipart.take() {
                     let args = m.args.unwrap_or_else(|| parse_args(""));
-                    self.receive_file(args, &m.data);
+                    if args.inline && m.confirmed {
+                        self.show_inline(&args, &m.data);
+                    } else {
+                        self.receive_file(args, &m.data);
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    /// An inline file is shown (a file that does not decode shows the broken image); any
-    /// other file waits in `downloads` for the app to ask.
+    /// An inline file waits for the person to allow its display (the output after it held);
+    /// any other file waits in `downloads` for the app to ask.
     fn receive_file(&mut self, args: FileArgs, data: &str) {
-        use alacritty_terminal::grid::Dimensions;
-        let bytes = decode_base64(data);
-        if !args.inline {
-            // One download waits at a time, so output cannot bury the window in questions.
-            if let (Some(bytes), true) = (bytes, self.downloads.is_empty()) {
-                self.downloads.push(Download { name: args.name, bytes });
-            }
+        if args.inline {
+            self.inline_hold = Some(InlineHold { args, data: Some(data.to_string()), asked: false });
             return;
         }
+        // One download waits at a time, so output cannot bury the window in questions.
+        if let (Some(bytes), true) = (decode_base64(data), self.downloads.is_empty()) {
+            self.downloads.push(Download { name: args.name, bytes });
+        }
+    }
+
+    /// The inline file waiting to be asked about, once: its name and declared size (iTerm2
+    /// asks with the `size` argument, before the data is read).
+    pub fn inline_waiting(&mut self) -> Option<(String, usize)> {
+        let hold = self.inline_hold.as_mut().filter(|h| !h.asked)?;
+        hold.asked = true;
+        Some((hold.args.name.clone(), hold.args.size.unwrap_or(0) as usize))
+    }
+
+    /// An inline file is waiting for the person.
+    pub fn holding_inline(&self) -> bool {
+        self.inline_hold.is_some()
+    }
+
+    /// The person answered the waiting inline file: allowed, it shows (a MultipartFile takes
+    /// its parts); denied, it is dropped. Then the output held after it is read. Gives the
+    /// bytes the terminal must send back, as `feed` does.
+    pub fn inline_answered(&mut self, allow: bool) -> Vec<u8> {
+        let Some(hold) = self.inline_hold.take() else { return Vec::new() };
+        if allow {
+            match hold.data {
+                Some(data) => self.show_inline(&hold.args, &data),
+                None => self.multipart = Some(Multipart { args: Some(hold.args), data: String::new(), confirmed: true }),
+            }
+        }
+        let held = std::mem::take(&mut self.held_output);
+        self.feed(&held)
+    }
+
+    /// Allows every waiting inline file, as a remembered Yes does (tests that feed files).
+    #[cfg(test)]
+    pub fn allow_inline(&mut self) -> Vec<u8> {
+        let mut reply = Vec::new();
+        while self.holding_inline() {
+            reply.extend(self.inline_answered(true));
+        }
+        reply
+    }
+
+    /// Shows an inline file (a file that does not decode shows the broken image).
+    fn show_inline(&mut self, args: &FileArgs, data: &str) {
+        use alacritty_terminal::grid::Dimensions;
+        let bytes = decode_base64(data);
         // Text (a type or name that says so, or a picture that does not decode but reads as
         // UTF-8) shows rendered in place.
         let text = bytes.as_deref().and_then(|b| std::str::from_utf8(b).ok()).map(str::to_string);
         let name = args.named.then(|| args.name.clone());
         if let (false, Some(t)) = (smells_like_image(args.kind.as_deref(), name.as_deref()), text.as_deref()) {
-            return self.write_text_document(t, &args);
+            return self.write_text_document(t, args);
         }
         let d = match bytes.as_deref().map(images::decode) {
             Some(Ok(d)) => d,
             _ => match text.as_deref() {
-                Some(t) => return self.write_text_document(t, &args),
+                Some(t) => return self.write_text_document(t, args),
                 None => images::broken(),
             },
         };
@@ -254,10 +322,12 @@ mod tests {
         let mut s = Screen::new(20, 6);
         s.set_cell_px(4, 4);
         s.feed(format!("\x1b]1337;File=inline=1:{}\x07", png_b64()).as_bytes());
+        s.inline_answered(true);
         assert!(s.term().grid()[Line(0)][Column(0)].image().is_some());
         assert!(s.term().grid()[Line(1)][Column(1)].image().is_some());
         assert_eq!(s.images.by_id.len(), 1);
         s.feed(b"\x1b]1337;File=inline=1:!!!notbase64\x07");
+        s.inline_answered(true);
         assert!(s.images.by_id.values().any(|i| i.broken));
     }
 
@@ -268,11 +338,54 @@ mod tests {
         let b = png_b64();
         let (x, y) = b.split_at(b.len() / 2);
         s.feed(b"\x1b]1337;MultipartFile=inline=1\x07");
+        s.inline_answered(true);
         s.feed(format!("\x1b]1337;FilePart={x}\x07\x1b]1337;FilePart={y}\x07").as_bytes());
         assert!(s.images.by_id.is_empty());
         s.feed(b"\x1b]1337;FileEnd\x07");
         assert_eq!(s.images.by_id.len(), 1);
         assert!(s.images.by_id.values().all(|i| !i.broken));
+    }
+
+    /// iTerm2 asks before every inline file (`File` or `MultipartFile` with inline=1,
+    /// `VT100Terminal.m:4031-4056`), pausing the output after it until the answer; a download
+    /// (no inline=1) is not held.
+    #[test]
+    fn inline_files_wait_for_the_person() {
+        let mut s = Screen::new(20, 6);
+        s.set_cell_px(4, 4);
+        let file = format!("\x1b]1337;File=name=YS5wbmc=;size=68;inline=1:{}\x07", png_b64());
+        s.feed(format!("{file}after").as_bytes());
+        assert!(s.holding_inline());
+        assert!(s.images.by_id.is_empty(), "not shown before the answer");
+        s.feed(b" more");
+        assert_eq!(s.term().grid()[Line(0)][Column(0)].c, ' ', "the output after it waits");
+        // Asked once, with the declared size.
+        assert_eq!(s.inline_waiting(), Some(("a.png".to_string(), 68)));
+        assert_eq!(s.inline_waiting(), None);
+        // Denied: not shown, and the held output is read.
+        s.inline_answered(false);
+        assert!(!s.holding_inline());
+        assert!(s.images.by_id.is_empty());
+        let row: String = (0..10).map(|c| s.term().grid()[Line(0)][Column(c)].c).collect();
+        assert_eq!(row, "after more");
+        // Allowed: shown where it came.
+        let mut s = Screen::new(20, 6);
+        s.set_cell_px(4, 4);
+        s.feed(format!("{file}{file}").as_bytes());
+        s.inline_answered(true);
+        assert_eq!(s.images.by_id.len(), 1);
+        assert!(s.holding_inline(), "the second waits in turn");
+        s.inline_answered(true);
+        assert_eq!(s.images.by_id.len(), 2);
+        // A MultipartFile asks at its header; denied, its parts are dropped.
+        s.feed(format!("\x1b]1337;MultipartFile=inline=1;size=9\x07\x1b]1337;FilePart={}\x07\x1b]1337;FileEnd\x07", png_b64()).as_bytes());
+        assert_eq!(s.inline_waiting(), Some(("Unnamed file".to_string(), 9)));
+        s.inline_answered(false);
+        assert_eq!(s.images.by_id.len(), 2);
+        // A download does not wait.
+        s.feed(b"\x1b]1337;File=name=eA==:eA==\x07");
+        assert!(!s.holding_inline());
+        assert_eq!(s.downloads.len(), 1);
     }
 
     #[test]
