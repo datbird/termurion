@@ -4,9 +4,8 @@ use std::collections::HashMap;
 
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{CharsetIndex, Handler, StandardCharset};
-use muda::{CheckMenuItem, ContextMenu, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, ContextMenu, Icon, IconMenuItem, IsMenuItem, Menu, MenuItem, MenuTheme, PredefinedMenuItem, Submenu};
 use winit::event_loop::ActiveEventLoop;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Fullscreen;
@@ -14,18 +13,8 @@ use winit::window::Fullscreen;
 use super::*;
 use crate::commands::{self, Status};
 use crate::layout::{Dir, visible_rects};
+use crate::marks::TOGGLES;
 use crate::menus::{self, Chord, Item};
-
-/// iTerm2's Session > Terminal State toggles: label, escape to turn on, escape to turn
-/// off, and the mode that shows the check mark.
-const TOGGLES: [(&str, &str, &str, TermMode); 6] = [
-    ("Alternate Screen", "\x1b[?1049h", "\x1b[?1049l", TermMode::ALT_SCREEN),
-    ("Focus Reporting", "\x1b[?1004h", "\x1b[?1004l", TermMode::FOCUS_IN_OUT),
-    ("Mouse Reporting", "\x1b[?1000h", "\x1b[?1000l\x1b[?1002l\x1b[?1003l", TermMode::MOUSE_MODE),
-    ("Paste Bracketing", "\x1b[?2004h", "\x1b[?2004l", TermMode::BRACKETED_PASTE),
-    ("Application Cursor", "\x1b[?1h", "\x1b[?1l", TermMode::APP_CURSOR),
-    ("Application Keypad", "\x1b=", "\x1b>", TermMode::APP_KEYPAD),
-];
 
 /// Session > Terminal State's key reporting radio group.
 const KEY_MODES: [(&str, crate::keyproto::KeyMode); 5] = [
@@ -91,6 +80,8 @@ pub(super) struct MenuBar {
     /// Scripts > Manage > Install Python Runtime, retitled "Check for Updated Runtime" once uv
     /// is installed.
     pub(super) install_runtime: Option<MenuItem>,
+    /// iTerm2 > Suppressed Alerts, retitled with the count and time (`retitle_suppressed_menu`).
+    pub(super) suppressed: Option<MenuItem>,
     /// The Scripts menu and its fixed items (Manage and the line), then the scripts after them.
     pub(super) scripts: Option<(Submenu, usize)>,
     pub(super) script_entries: Vec<super::scripts_app::MenuEntry>,
@@ -115,6 +106,7 @@ impl App {
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();
         let mut install_runtime = None;
+        let mut suppressed = None;
         for item in menus::items() {
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
@@ -135,6 +127,9 @@ impl App {
                     let m = MenuItem::with_id(item.id(), menu_text(item), enabled, None);
                     if item.selector == "installPythonRuntime:" {
                         install_runtime = Some(m.clone());
+                    }
+                    if item.selector == "showSuppressedAlerts:" {
+                        suppressed = Some(m.clone());
                     }
                     (parent, Box::new(m))
                 }
@@ -197,8 +192,9 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, scripts, script_entries: Vec::new() });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, suppressed, scripts, script_entries: Vec::new() });
         self.runtime_menu_title();
+        self.retitle_suppressed_menu();
         self.sync_checks();
     }
 
@@ -253,6 +249,101 @@ impl App {
         }
         unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
         self.popup_menu = Some(menu);
+    }
+
+    /// The tabs that do not fit the bar, as a popup from its overflow button: each tab's title
+    /// as plain text with its number, the selected tab checked (`PSM _setupCells:`). The picks
+    /// come back as `tab-overflow:<index>`.
+    pub(super) fn show_tab_overflow(&mut self) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let html = self.globals.bool("HTMLTabTitles");
+        let menu = Menu::new();
+        let mut results = Vec::new();
+        for &i in &self.tab_bar.hidden {
+            let Some(t) = self.tabs.get(i) else { continue };
+            let look = self.tab_look(t);
+            let mut title = crate::tab_layout::plain_title(&crate::tab_layout::limit_title(&look.title), html);
+            // The number is 0 with `HideTabNumber` (`TAB:1303-1305`).
+            if look.number > 0 && !self.globals.bool("HideTabNumber") {
+                title.push_str(&format!(" ({})", look.number));
+            }
+            results.push(menu.append(&CheckMenuItem::with_id(format!("tab-overflow:{i}"), title.replace('&', "&&"), true, i == self.active, None)));
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Tab menu: {e}"));
+        }
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        self.popup_menu = Some(menu);
+    }
+
+    /// The Tab Color picker as a popup at the pointer: for a tab "Default" (no color) first,
+    /// then a 16 by 16 swatch per color labeled "#rrggbb", then "Choose Color\u{2026}"; a group
+    /// always has a color, so it has no "Default". The picks come back as `color-pick:<n>`.
+    /// 13d's tab and tab group menus open it.
+    #[allow(dead_code)]
+    pub(super) fn open_color_picker(&mut self, target: ColorTarget, swatches: Vec<crate::palette::Rgb>) {
+        let Some(hwnd) = self.hwnd() else { return };
+        let menu = Menu::new();
+        let mut results = Vec::new();
+        for (n, (label, color, _)) in picker_items(&swatches, matches!(target, ColorTarget::Tab(_))).into_iter().enumerate() {
+            let id = format!("color-pick:{n}");
+            results.push(match color {
+                Some(c) => menu.append(&IconMenuItem::with_id(id, label, true, swatch_icon(c), None)),
+                None => menu.append(&MenuItem::with_id(id, label, true, None)),
+            });
+        }
+        if let Some(Err(e)) = results.into_iter().find(Result::is_err) {
+            self.banners.set("menu", format!("Tab Color menu: {e}"));
+        }
+        self.color_pick = Some((target, swatches));
+        unsafe { menu.show_context_menu_for_hwnd(hwnd, None) };
+        self.popup_menu = Some(menu);
+    }
+
+    /// A pick from the Tab Color picker: "Default" clears the color, a swatch sets it, and
+    /// "Choose Color\u{2026}" asks Windows' color dialog (the swatches as its custom colors;
+    /// Cancel changes nothing).
+    fn color_picked(&mut self, id: &str) -> bool {
+        let Some(n) = id.strip_prefix("color-pick:").and_then(|n| n.parse::<usize>().ok()) else { return false };
+        let Some((target, swatches)) = self.color_pick.take() else { return true };
+        let Some((_, color, kind)) = picker_items(&swatches, matches!(target, ColorTarget::Tab(_))).into_iter().nth(n) else { return true };
+        match kind {
+            PickKind::Default | PickKind::Swatch => self.apply_picked_color(target, color),
+            PickKind::Choose => {
+                let current = match &target {
+                    ColorTarget::Tab(id) => self.tabs.iter().find(|t| t.id == *id).and_then(|t| self.tab_look(t).color),
+                    ColorTarget::Group(_) => None,
+                };
+                if let Some(c) = self.hwnd().and_then(|h| choose_color(h, current, &swatches)) {
+                    self.apply_picked_color(target, Some(c));
+                }
+            }
+        }
+        true
+    }
+
+    /// Colors what the picker was opened for: a tab (nothing when it has closed since), or a
+    /// tab group.
+    pub(super) fn apply_picked_color(&mut self, target: ColorTarget, color: Option<crate::palette::Rgb>) {
+        match target {
+            ColorTarget::Tab(id) => {
+                if let Some(tab) = self.tabs.iter().position(|t| t.id == id) {
+                    self.set_tab_color_for(tab, color);
+                }
+            }
+            // Tab groups arrive in 13d, whose Task 9 calls its `set_group_color` here.
+            ColorTarget::Group(_) => {}
+        }
+    }
+
+    /// A tab picked from the overflow popup is selected.
+    fn tab_overflow_picked(&mut self, id: &str) -> bool {
+        let Some(i) = id.strip_prefix("tab-overflow:").and_then(|i| i.parse::<usize>().ok()) else { return false };
+        if i < self.tabs.len() {
+            self.active = i;
+            self.redraw();
+        }
+        true
     }
 
     /// Whether the menu bar's check item for this label is checked (false when the item has
@@ -356,7 +447,7 @@ impl App {
         if self.snippet_or_action_picked(id, event_loop) || self.toolbelt_picked(id, event_loop) {
             return;
         }
-        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.status_bar_picked(id, event_loop) {
+        if self.find_mode_picked(id) || self.context_picked(id) || self.named_mark_picked(id) || self.porthole_language_picked(id) || self.tab_overflow_picked(id) || self.color_picked(id) || self.status_bar_picked(id, event_loop) {
             return;
         }
         if let Some(item) = menus::by_id(id) {
@@ -421,6 +512,7 @@ impl App {
             "exportScript:" => self.export_scripts(event_loop),
             "openDependencyEditor:" => self.open_dependency_editor(event_loop),
             "openScriptConsole:" => self.open_script_console(event_loop),
+            "showSuppressedAlerts:" => self.show_suppressed_alerts(event_loop),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
                 let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));
@@ -539,20 +631,25 @@ impl App {
                     self.close_session_undoable(id, event_loop);
                 }
             }
-            "closeCurrentTab:" if self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) && self.tmux_close_tab(self.active) => {}
-            "closeCurrentTab:" => {
-                if self.tabs.get(self.active).is_some() && self.layout_allowed(crate::winmodel::LayoutOp::CloseTab) && self.confirm_close(close_ui::Closing::Tab(self.active)) {
-                    self.close_tab_now(self.active, event_loop);
-                }
-            }
+            "closeCurrentTab:" => self.close_tab_at(self.active, event_loop),
             "undoCloseSession:" => self.undo_close(),
             "saveWindowArrangement:" => self.open_save_arrangement(event_loop, true),
             "saveCurrentWindowAsArrangement:" => self.open_save_arrangement(event_loop, false),
             "importWindowArrangement:" => self.load_arrangement_file(),
             "changeProfileInArrangement:" => self.open_settings_page(event_loop, crate::settings_ui::Page::Arrangements),
+            // A session whose shell has exited restarts at once; a running one asks first
+            // (`restartSessionWithConfirmation:`), once: iTerm2's question is modal, so a
+            // second pick while the pane's question waits does nothing. The API's
+            // RestartSession never asks.
             "restartSession:" => {
                 if let Some(id) = self.focused_id() {
-                    self.restart_pane(id);
+                    if restart_asks(self.panes.get(&id).is_some_and(|p| p.exited.is_some())) {
+                        if !self.alert_waits(|then| *then == super::scripts_alerts::Then::Restart(id)) {
+                            self.ask_scripts(super::scripts_alerts::Ask::new(restart_spec(), super::scripts_alerts::Then::Restart(id)));
+                        }
+                    } else {
+                        self.restart_pane(id);
+                    }
                 }
             }
             "copy:" => {
@@ -561,6 +658,8 @@ impl App {
                 }
                 if let Some(id) = self.focused_id() {
                     self.copy_selection(id);
+                    // Copy after a drag a program took as mouse reports (iTerm2's Cmd-C).
+                    self.frustration_copy(id);
                 }
             }
             "print:" => {
@@ -809,6 +908,7 @@ impl App {
         self.panes.clear();
         self.focus_order.clear();
         if self.prefs_before_exit() {
+            self.catalog_flush();
             event_loop.exit();
         }
     }
@@ -854,6 +954,68 @@ pub(super) fn context_layout(extra: usize, providers: usize) -> Vec<Slot> {
     slots
 }
 
+/// What the Tab Color picker colors: a tab by its stable `Tab.id`, or a tab group by its id.
+/// 13d's menus build them.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ColorTarget {
+    Tab(u64),
+    Group(String),
+}
+
+/// What a Tab Color picker entry does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PickKind {
+    /// No color.
+    Default,
+    /// Its color.
+    Swatch,
+    /// Windows' color dialog.
+    Choose,
+}
+
+/// The Tab Color picker's entries in order, as (label, color, kind): "Default" first when
+/// `with_default`, a "#rrggbb" entry per swatch, then "Choose Color\u{2026}".
+pub(super) fn picker_items(swatches: &[crate::palette::Rgb], with_default: bool) -> Vec<(String, Option<crate::palette::Rgb>, PickKind)> {
+    let mut items = Vec::new();
+    if with_default {
+        items.push((requests_ui::NO_COLOR.to_string(), None, PickKind::Default));
+    }
+    items.extend(swatches.iter().map(|c| (format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b), Some(*c), PickKind::Swatch)));
+    items.push((requests_ui::CHOOSE_COLOR.to_string(), None, PickKind::Choose));
+    items
+}
+
+/// A 16 by 16 square of the color, for a picker entry.
+fn swatch_icon(c: crate::palette::Rgb) -> Option<Icon> {
+    Icon::from_rgba([c.r, c.g, c.b, 0xff].repeat(16 * 16), 16, 16).ok()
+}
+
+/// Windows' color dialog, fully open, starting at `initial` with `swatches` (the first 16)
+/// as its custom colors. None on Cancel.
+fn choose_color(hwnd: isize, initial: Option<crate::palette::Rgb>, swatches: &[crate::palette::Rgb]) -> Option<crate::palette::Rgb> {
+    use windows_sys::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
+    let colorref = |c: &crate::palette::Rgb| c.r as u32 | (c.g as u32) << 8 | (c.b as u32) << 16;
+    let mut custom = [0x00ff_ffffu32; 16];
+    for (slot, c) in custom.iter_mut().zip(swatches) {
+        *slot = colorref(c);
+    }
+    let mut cc: CHOOSECOLORW = unsafe { std::mem::zeroed() };
+    cc.lStructSize = std::mem::size_of::<CHOOSECOLORW>() as u32;
+    cc.hwndOwner = hwnd as _;
+    cc.lpCustColors = custom.as_mut_ptr();
+    cc.Flags = CC_FULLOPEN;
+    if let Some(c) = initial {
+        cc.rgbResult = colorref(&c);
+        cc.Flags |= CC_RGBINIT;
+    }
+    if unsafe { ChooseColorW(&mut cc) } == 0 {
+        return None;
+    }
+    let v = cc.rgbResult;
+    Some(crate::palette::rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8))
+}
+
 #[cfg(test)]
 mod context_tests {
     use super::*;
@@ -872,6 +1034,36 @@ mod context_tests {
         want.extend(today[3..].iter().cloned());
         assert_eq!(want[8], Command("Shell > Split Vertically with Current Profile"));
         assert_eq!(context_layout(1, 2), want);
+    }
+}
+
+#[cfg(test)]
+mod color_picker_tests {
+    use super::*;
+    use crate::palette::rgb;
+    use crate::tab_layout::DEFAULT_COLORS;
+
+    #[test]
+    fn picker_follows_iterm2() {
+        let swatches = [
+            ("#fb6b62", rgb(0xfb, 0x6b, 0x62)),
+            ("#f6ac47", rgb(0xf6, 0xac, 0x47)),
+            ("#f0dc4f", rgb(0xf0, 0xdc, 0x4f)),
+            ("#b5d749", rgb(0xb5, 0xd7, 0x49)),
+            ("#5fa3f8", rgb(0x5f, 0xa3, 0xf8)),
+            ("#c18ed9", rgb(0xc1, 0x8e, 0xd9)),
+            ("#787878", rgb(0x78, 0x78, 0x78)),
+        ];
+        let rows: Vec<(String, Option<crate::palette::Rgb>, PickKind)> = swatches.iter().map(|(l, c)| (l.to_string(), Some(*c), PickKind::Swatch)).collect();
+        // A tab: "Default" (no color) first, the swatches, then "Choose Color...".
+        let mut want = vec![("Default".to_string(), None, PickKind::Default)];
+        want.extend(rows.iter().cloned());
+        want.push(("Choose Color\u{2026}".to_string(), None, PickKind::Choose));
+        assert_eq!(picker_items(&DEFAULT_COLORS, true), want);
+        // A group always has a color: no "Default".
+        let mut want = rows.clone();
+        want.push(("Choose Color\u{2026}".to_string(), None, PickKind::Choose));
+        assert_eq!(picker_items(&DEFAULT_COLORS, false), want);
     }
 }
 
@@ -995,7 +1187,14 @@ fn ask(text: &str) -> bool {
 impl App {
     /// iTerm2 > Install Shell Integration, for the focused pane's shell.
     pub(super) fn install_shell_integration(&mut self) {
-        let Some(guid) = self.focused_guid() else { return };
+        if let Some(pane) = self.focused_id() {
+            self.install_shell_integration_in(pane);
+        }
+    }
+
+    /// Install Shell Integration for `pane`: types the installer for its profile's shell.
+    pub(super) fn install_shell_integration_in(&mut self, pane: PaneId) {
+        let Some(guid) = self.panes.get(&pane).map(|p| self.store.shared_guid(&p.profile)) else { return };
         let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell, None);
         let typed = match install_plan(&cmdline) {
             Plan::Unsupported => {
@@ -1020,9 +1219,9 @@ impl App {
                 pwsh_install_command(&path)
             }
         };
-        if let Some(pane) = self.focused_pane() {
-            pane.scroll(Scroll::Bottom);
-            pane.input(typed.as_bytes());
+        if let Some(p) = self.panes.get_mut(&pane) {
+            p.scroll(Scroll::Bottom);
+            p.input(typed.as_bytes());
         }
     }
 }
@@ -1037,4 +1236,45 @@ pub(super) fn info_box(text: &str) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONINFORMATION, MB_OK, MessageBoxW};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe { MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Tandem").as_ptr(), MB_OK | MB_ICONINFORMATION) };
+}
+
+/// Whether Restart Session asks first: only while the session's shell runs (`PT:2851`).
+pub(super) fn restart_asks(exited: bool) -> bool {
+    !exited
+}
+
+/// "Restart session?" (`PT:2855-2866`): the object API with no cancel label, so Cancel may be
+/// remembered, as in iTerm2.
+pub(super) fn restart_spec() -> crate::warnings::Spec {
+    use crate::api_auth::{CANCEL, OK};
+    crate::warnings::Spec {
+        id: Some("NoSyncSuppressRestartSessionConfirmationAlert".to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: "Restart session?".to_string(),
+        text: "Running jobs will be killed.".to_string(),
+        labels: vec![OK.to_string(), CANCEL.to_string()],
+        cancel: None,
+        never_remember: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::warnings::{Kind, checkbox_label};
+
+    /// `restartSessionWithConfirmation:` (`PT:2848-2870`): built with the object API, which
+    /// sets no cancel label, so Cancel may be remembered and two buttons count (Review Focus 2).
+    #[test]
+    fn restart_confirmation_follows_iterm2() {
+        let s = super::restart_spec();
+        assert_eq!((s.heading.as_str(), s.text.as_str()), ("Restart session?", "Running jobs will be killed."));
+        assert_eq!(s.labels, ["OK", "Cancel"]);
+        assert_eq!(s.id.as_deref(), Some("NoSyncSuppressRestartSessionConfirmationAlert"));
+        assert_eq!((s.kind, s.cancel), (Kind::Permanent, None));
+        assert!(s.never_remember.is_empty());
+        assert!(s.rememberable(1), "Cancel may be remembered");
+        assert_eq!(checkbox_label(&s), Some("Remember my choice"));
+        assert!(!super::restart_asks(true), "an exited session restarts at once");
+        assert!(super::restart_asks(false));
+    }
 }

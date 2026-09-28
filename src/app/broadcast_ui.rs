@@ -61,14 +61,17 @@ impl App {
 
 
     /// Shell > Broadcast Input's items. False for other selectors.
+    /// Turning broadcasting on asks the warning (`BroadcastInput`) first, whose OK
+    /// (`broadcast_granted`) turns it on.
     pub(super) fn broadcast_command(&mut self, selector: &str) -> bool {
         let mut v = self.broadcast_view();
         let current = v.current;
-        let suppressed = self.globals.bool("NoSyncSuppressBroadcastInputWarning");
-        let owner = self.hwnd();
-        // The warning (going from off to on). Windows' message box has no checkbox: the
-        // Advanced setting "Suppress warning about broadcasting input" silences it.
-        let mut confirm = |title: &str| suppressed || super::close_ui::confirm(owner, "Broadcast Input", title);
+        // The warning (going from off to on), whose text the model gives.
+        let mut asked = None;
+        let mut confirm = |title: &str| {
+            asked = Some(title.to_string());
+            false
+        };
         match selector {
             "disableBroadcasting:" => {
                 self.broadcast.disable(&mut v);
@@ -98,11 +101,34 @@ impl App {
             }
             _ => return false,
         }
-        self.keep_broadcast_flags(&v);
+        self.broadcast_changed(&v);
+        // After the state is kept: a silenced warning answers at once.
+        if let Some(text) = asked {
+            let selector = if selector == "enableSendInputToAllTabs:" { "enableSendInputToAllTabs:" } else { "enableSendInputToAllPanes:" };
+            self.ask_scripts(broadcast_input_ask(&text, current, selector));
+        }
+        true
+    }
+
+    /// The broadcast warning answered OK: the item `selector` turns broadcasting on in the
+    /// window and tab of `anchor`, the pane it was asked from (gone: nothing happens), while
+    /// broadcasting there is still off.
+    pub(super) fn broadcast_granted(&mut self, anchor: PaneId, selector: &str) {
+        if !self.enter_pane_window(anchor) {
+            return;
+        }
+        let Some(mut v) = self.broadcast_view().at(anchor) else { return };
+        if self.broadcast.grant(&mut v, selector == "enableSendInputToAllTabs:") {
+            self.broadcast_changed(&v);
+        }
+    }
+
+    /// The model's state kept, and the menus and window follow it.
+    fn broadcast_changed(&mut self, v: &View) {
+        self.keep_broadcast_flags(v);
         self.menus_dirty = true;
         self.sync_checks();
         self.redraw();
-        true
     }
 
     /// The context menu's Toggle Broadcasting Input, on the pane that was clicked.
@@ -128,27 +154,26 @@ impl App {
     }
 
     /// Clear Buffer (`clear`) or Reset (`!clear`): with two or more broadcast sessions, a
-    /// question (or the remembered answer) decides whether all of them or only this one.
+    /// question (or its remembered answer) decides whether all of them or only this one
+    /// (`PT:13675-13716`).
     pub(super) fn clear_or_reset(&mut self, clear: bool) {
         let Some(me) = self.focused_id() else { return };
         // The window's whole broadcast domain (iTerm2's broadcastSessions), sources or not.
         let targets = self.broadcast.domain_panes(&self.broadcast_view());
-        let all = if targets.len() < 2 || !targets.contains(&me) {
-            false
-        } else {
-            let key = if clear { "NoSyncClearAllBroadcast" } else { "NoSyncResetAllBroadcast" };
-            match self.globals.get(key).and_then(|v| v.as_bool()) {
-                Some(remembered) => remembered,
-                None => {
-                    let (heading, text, buttons) = if clear { broadcast::clear_question(targets.len()) } else { broadcast::reset_question(targets.len()) };
-                    match yes_no_cancel(self.hwnd(), heading, &format!("{text}\n\nYes: {}. No: {}.", buttons[0], buttons[1])) {
-                        Some(a) => a,
-                        None => return,
-                    }
-                }
-            }
-        };
-        for t in if all { targets } else { vec![me] } {
+        if targets.len() < 2 || !targets.contains(&me) {
+            return self.clear_or_reset_answered(clear, me, vec![me]);
+        }
+        let spec = broadcast_spec(clear, targets.len());
+        self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Broadcast { clear, me, targets }));
+    }
+
+    /// Clears (`clear`) or resets the panes `targets`, in the window of `me`, the pane it
+    /// was asked from.
+    pub(super) fn clear_or_reset_answered(&mut self, clear: bool, me: PaneId, targets: Vec<PaneId>) {
+        if targets.is_empty() || !self.enter_pane_window(me) {
+            return;
+        }
+        for t in targets {
             // A replaying pane's buffer is not touched (its replay view has no shell).
             if self.panes.get(&t).is_some_and(|p| p.replay.is_some()) {
                 continue;
@@ -169,14 +194,63 @@ impl App {
     }
 }
 
-/// Yes, No, or Cancel (None).
-pub(super) fn yes_no_cancel(owner: Option<isize>, title: &str, text: &str) -> Option<bool> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{IDNO, IDYES, MB_ICONQUESTION, MB_YESNOCANCEL, MessageBoxW};
-    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
-    let owner = owner.map_or(std::ptr::null_mut(), |h| h as *mut core::ffi::c_void);
-    match unsafe { MessageBoxW(owner, wide(text).as_ptr(), wide(title).as_ptr(), MB_YESNOCANCEL | MB_ICONQUESTION) } {
-        IDYES => Some(true),
-        IDNO => Some(false),
-        _ => None,
+/// The Clear (`clear`) or Reset question for `n` broadcast sessions: all, the current one only,
+/// or Cancel; permanently silenceable under `NoSyncClearAllBroadcast` or
+/// `NoSyncResetAllBroadcast` (the silence flag; the answer is in `_selection`).
+pub(super) fn broadcast_spec(clear: bool, n: usize) -> crate::warnings::Spec {
+    let (heading, text, buttons) = if clear { broadcast::clear_question(n) } else { broadcast::reset_question(n) };
+    let id = if clear { "NoSyncClearAllBroadcast" } else { "NoSyncResetAllBroadcast" };
+    super::scripts_alerts::ask(heading, &text, &buttons, Some(id), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::Nothing).spec
+}
+
+/// The panes a Clear or Reset answer acts on: every broadcast session (0), the one it was
+/// asked from (1), or none (Cancel).
+pub(super) fn broadcast_targets(index: usize, me: PaneId, targets: Vec<PaneId>) -> Vec<PaneId> {
+    match index {
+        0 => targets,
+        1 => vec![me],
+        _ => Vec::new(),
+    }
+}
+
+/// The warning before broadcasting input, `text` from the model (`warning_title`), asked from
+/// pane `anchor` for the menu item `selector`: no heading, OK and Cancel, permanently
+/// silenceable (`iTermBroadcastInputHelper.m:218-222`).
+pub(super) fn broadcast_input_ask(text: &str, anchor: PaneId, selector: &'static str) -> super::scripts_alerts::Ask {
+    use crate::api_auth::{CANCEL, OK};
+    super::scripts_alerts::ask("", text, &[OK, CANCEL], Some("NoSyncSuppressBroadcastInputWarning"), crate::warnings::Kind::Permanent, super::scripts_alerts::Then::BroadcastInput(anchor, selector))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::warnings::{Kind, Preempt, checkbox_label, preempt};
+
+    /// Clear and Reset with broadcast (`PT:13675-13716`): all, current only or Cancel,
+    /// permanently silenceable; `NoSyncClearAllBroadcast` is the silence flag (Corrections, R3).
+    #[test]
+    fn broadcast_questions_follow_iterm2() {
+        let c = broadcast_spec(true, 3);
+        let (heading, text, _) = broadcast::clear_question(3);
+        assert_eq!((c.heading.as_str(), c.text.as_str()), (heading, text.as_str()));
+        assert_eq!(c.id.as_deref(), Some("NoSyncClearAllBroadcast"));
+        assert_eq!(c.labels, ["Clear All", "Clear Current Session Only", "Cancel"]);
+        assert_eq!((c.kind, c.cancel), (Kind::Permanent, Some(2)));
+        assert_eq!(checkbox_label(&c), Some("Remember my choice"));
+        let r = broadcast_spec(false, 3);
+        let (heading, text, buttons) = broadcast::reset_question(3);
+        assert_eq!((r.heading.as_str(), r.text.as_str(), r.labels.clone()), (heading, text.as_str(), buttons.map(String::from).to_vec()));
+        assert_eq!(r.id.as_deref(), Some("NoSyncResetAllBroadcast"));
+        assert_eq!(broadcast_targets(0, 2, vec![1, 2, 3]), [1, 2, 3]);
+        assert_eq!(broadcast_targets(1, 2, vec![1, 2, 3]), [2]);
+        assert!(broadcast_targets(2, 2, vec![1, 2, 3]).is_empty());
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("broadcast-questions-test.toml"));
+        assert_eq!(preempt(&c, &g, 0.0, false), Preempt::Show);
+        g.set("NoSyncClearAllBroadcast", toml::Value::Boolean(false));
+        assert_eq!(preempt(&c, &g, 0.0, false), Preempt::Show, "false is not silenced, not current only");
+        g.set("NoSyncClearAllBroadcast", toml::Value::Boolean(true));
+        assert_eq!(preempt(&c, &g, 0.0, false), Preempt::Answer(0), "silenced with no selection: Clear All");
+        g.set("NoSyncClearAllBroadcast_selection", toml::Value::Integer(1));
+        assert_eq!(preempt(&c, &g, 0.0, false), Preempt::Answer(1));
     }
 }

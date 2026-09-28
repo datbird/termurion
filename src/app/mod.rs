@@ -23,6 +23,7 @@ use crate::input::{self, Clicks, Wheel};
 use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
 use crate::keystroke;
+use crate::tab_layout;
 use crate::mru::Mru;
 use crate::pointer::{self, Down, Up};
 use crate::layout::{Axis, Layout, PaneId, Rect};
@@ -43,6 +44,8 @@ const FONT_PX: f32 = 16.0;
 /// Space between a pane's edge and its text, and the divider width, in pixels at 100%.
 const PAD: f32 = 4.0;
 const GAP: f32 = 1.0;
+/// How far below the pointer a tab tooltip starts, in points (the arrow pointer's height).
+const TIP_POINTER_PT: f32 = 20.0;
 /// Lines scrolled per wheel notch.
 const WHEEL_LINES: f32 = 3.0;
 /// Half a cursor blink cycle.
@@ -113,6 +116,11 @@ mod api_requests;
 mod script_ui;
 mod script_runtime_ui;
 mod scripts_alerts;
+mod warnings_app;
+mod suppressed_app;
+mod host_offers_ui;
+mod frustration_ui;
+mod shell_version_ui;
 mod prefs_ui;
 mod settings_export_ui;
 mod ai_app;
@@ -161,7 +169,9 @@ enum Drag {
     None,
     Select { pane: PaneId },
     Divider { path: Vec<bool>, axis: Axis, parent: Rect },
-    App { pane: PaneId, button: Button },
+    /// A press the program took as a mouse report: its click count and when it came, for
+    /// the frustration detector's release.
+    App { pane: PaneId, button: Button, clicks: u8, at: Instant },
     /// Selecting text in a porthole (its frame when the drag began).
     Porthole { pane: PaneId, id: u32, frame: Rect },
     /// A Clippings panel's width or one of its rows.
@@ -247,6 +257,9 @@ pub struct App {
     shortcuts: Option<labels_ui::Shortcuts>,
     /// The last pop-up menu, kept until its pick arrives.
     popup_menu: Option<muda::Menu>,
+    /// The open Tab Color picker: what it colors and the swatches it was built from, kept
+    /// until its pick arrives. App-wide: the popup is modal, one at a time.
+    color_pick: Option<(menu::ColorTarget, Vec<crate::palette::Rgb>)>,
     /// What the right-click menu's own items act on.
     ctx_pending: Option<semantic_ui::CtxPending>,
     /// The Find Globally window.
@@ -484,10 +497,11 @@ pub struct App {
     jobs_tree_seen: u64,
     jobs_watch_at: Option<Instant>,
     /// Jobs' Inspect popover (and when it last closed), and the signal question with what it
-    /// will send (the window opens on the next loop turn).
+    /// will send (the window opens on the next loop turn) and, in the remembered mode, the
+    /// saved answer.
     jobs_popover: Option<crate::status_popover_ui::InfoPopover>,
     jobs_popover_closed: Option<Instant>,
-    jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest)>,
+    jobs_confirm: Option<(Option<crate::prompt_ui::ConfirmWindow>, toolbelt_more_ui::SignalRequest, Option<String>)>,
     /// Send Signal's console events on their way from a local pane (app-wide): each result is
     /// collected when its thread ends, so a close in progress never holds the window up.
     signal_waits: Vec<std::thread::JoinHandle<Result<(), String>>>,
@@ -557,7 +571,30 @@ pub struct App {
     clicks: Clicks,
     wheel_acc: f32,
     focused: bool,
-    tab_rects: Vec<Rect>,
+    /// The tab bar as last laid out, in points, not scrolled (`build_frame`).
+    tab_bar: tab_layout::Bar,
+    /// The tab bar's scroll offset in points.
+    tab_scroll: f32,
+    /// The tab under the pointer, and whether the pointer is on its close button.
+    tab_hover: Option<(usize, bool)>,
+    /// Every layout brings the selected tab into view, until the bar is scrolled by hand.
+    tab_keep_selected: bool,
+    /// The selected tab's id and the tab count at the last layout: a change selects anew.
+    tab_seen: Option<(u64, usize)>,
+    /// The press on the tab bar: what it hit, its click count (0 for the middle button),
+    /// whether Alt was held, and the id of the tab it hit.
+    tab_press: Option<TabPress>,
+    /// `SelectsTabsOnMouseDown` as it was when this window opened (iTerm2 copies it into each
+    /// tab bar it makes, `iTermTabBarControlView.m:58`; a change affects new windows only).
+    tab_selects_on_down: bool,
+    /// The tab whose tooltip the pointer is waiting on or showing, and when the pointer
+    /// settled on it; the tip shows `TIP_DELAY` later.
+    tab_tip: Option<(usize, Instant)>,
+    /// When a tab tooltip is next due to show, in any window (there is one pointer).
+    tab_tip_wake: Option<Instant>,
+    /// The last left press on a tab bar (any window): when, on which tab (None off the tabs)
+    /// and its click count.
+    tab_clicks: (Instant, Option<usize>, u8),
     banners: Banners,
     /// The `utilities` folder beside tandem.exe, when `utilities::ensure` made it at start.
     utilities: Option<PathBuf>,
@@ -650,9 +687,10 @@ pub struct App {
     script_runs: BTreeMap<u64, script_ui::Run>,
     script_next: u64,
     script_tokens: HashMap<u64, u64>,
-    /// "Function Call Failed" alerts (and results) waiting to show, and the one showing.
+    /// "Function Call Failed" alerts (and results) waiting to show, and the one showing (true:
+    /// in the remembered mode).
     script_alerts: VecDeque<script_ui::Alert>,
-    script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert)>,
+    script_alert: Option<(crate::prompt_ui::ConfirmWindow, script_ui::Alert, bool)>,
     /// The provisioning worker (started on first use), what each submitted job continues
     /// with, the install each job queued behind one needs (dependent id to install id), the
     /// installed-Python probes running off the UI thread, and whether Tandem's uv is installed
@@ -665,9 +703,21 @@ pub struct App {
     provision_waiting: Vec<script_runtime_ui::Waiting>,
     backend_probes: Vec<script_runtime_ui::Probe>,
     uv_installed: bool,
-    /// The Scripts features' alerts waiting to show, and the one showing.
+    /// The alerts (iTerm2's warnings shown as windows) waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// iTerm2's suppressed alerts (app-wide): the catalog of warnings answered automatically,
+    /// "Always show alerts with remembered selections" (not saved, as iTerm2's process global),
+    /// and when the catalog's write is due.
+    suppressed: crate::warnings::Catalog,
+    show_remembered: bool,
+    catalog_due: Option<Instant>,
+    /// `take_inline_asks` is asking: a released pane's held output is taken by its loop.
+    inline_asking: bool,
+    /// The Suppressed Alerts window (one per app) and when the menu title's "ago" is next
+    /// refreshed (while something is suppressed).
+    suppressed_window: Option<crate::suppressed_alerts_ui::SuppressedWindow>,
+    suppressed_retitle_due: Option<Instant>,
     /// The AI alert queue (ruling 12c-7), the alert showing, and the Settings > General > AI
     /// sub-tab an answer asked to reveal.
     ai_asks: VecDeque<crate::ai_gate::Alert>,
@@ -676,6 +726,11 @@ pub struct App {
     /// The one-vendor key prompts waiting to show (ruling 12e-1), and the one showing.
     ai_key_asks: VecDeque<(crate::ai_settings::Vendor, ai_app::KeyThen)>,
     ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
+    /// The discovered Ollama models (app-wide, never swapped), the transport AI requests go
+    /// through, and the refresh the settings window waits on.
+    ai_discovery: crate::ai_discovery::Cache,
+    ai_transport: Arc<dyn crate::ai_transport::Transport>,
+    ai_probe: Option<crate::ai_discovery::Ticket>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -883,6 +938,8 @@ pub fn run() {
     // ones before anything reads them; its questions and failures show with the first window.
     let (prefs_saved, prefs_startup) = prefs_ui::load_at_start(&mut globals, &mut store, &prefs_ui::curl_fetch);
     let prefs_launch_folder = Some(globals.string(crate::remote_prefs::FOLDER_KEY));
+    // The warnings answered automatically in earlier runs (iTerm2 reads its catalog at start).
+    let suppressed = crate::warnings::Catalog::from_value(globals.get(crate::warnings::CATALOG_KEY).as_ref());
     if prefs_saved.is_some() {
         if let Err(e) = globals.save() {
             banners.set("globals", format!("Could not save settings: {e}"));
@@ -901,6 +958,8 @@ pub fn run() {
     // The Script Console starts with the Automatic Profile Switching entry while its logging
     // is on (`SH:340-351`).
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
+    // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
+    let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
     // a change needs a restart, as in iTerm2).
     // A second Tandem (the host serves the first) neither restores nor saves windows: the
@@ -920,6 +979,9 @@ pub fn run() {
         (None, None)
     };
     let git_worker = git_ui::GitWorker::new(Arc::new(crate::git_run_win::WinGitRun), notify.clone());
+    // Discovered Ollama models from the last run resolve at once while a refresh runs.
+    let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
+    let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let mut app = App {
         host,
@@ -961,6 +1023,7 @@ pub fn run() {
         find_mode_rect: None,
         hover: None,
         popup_menu: None,
+        color_pick: None,
         shortcuts: None,
         copy_modes: HashMap::new(),
         show_stamps: HashMap::new(),
@@ -1131,7 +1194,16 @@ pub fn run() {
         clicks: Clicks::default(),
         wheel_acc: 0.0,
         focused: true,
-        tab_rects: Vec::new(),
+        tab_bar: tab_layout::Bar::default(),
+        tab_scroll: 0.0,
+        tab_hover: None,
+        tab_keep_selected: true,
+        tab_seen: None,
+        tab_press: None,
+        tab_selects_on_down,
+        tab_tip: None,
+        tab_tip_wake: None,
+        tab_clicks: (Instant::now(), None, 0),
         banners,
         utilities,
         clipboard: arboard::Clipboard::new().ok(),
@@ -1189,11 +1261,20 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        suppressed,
+        show_remembered: false,
+        catalog_due: None,
+        inline_asking: false,
+        suppressed_window: None,
+        suppressed_retitle_due: None,
         ai_asks: VecDeque::new(),
         ai_alert: None,
         ai_reveal: None,
         ai_key_asks: VecDeque::new(),
         ai_key_window: None,
+        ai_discovery,
+        ai_transport,
+        ai_probe: None,
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
@@ -1259,8 +1340,310 @@ impl App {
         self.gpu.as_ref().map_or((8.0, 16.0), |g| g.renderer.cell)
     }
 
+    /// The tab bar shows: more than one tab, or always with `HideTab` off.
+    fn tab_bar_shown(&self) -> bool {
+        tab_layout::bar_shown(self.tabs.len(), self.globals.bool("HideTab"))
+    }
+
+    /// The tab bar's height in pixels: `DefaultTabBarHeight` points while the bar shows.
     fn tab_height(&self) -> f32 {
-        if self.tabs.len() > 1 { (self.cell().1 * 1.6).round() } else { 0.0 }
+        if self.tab_bar_shown() {
+            (tab_layout::Settings::from_globals(&self.globals).height * self.scale()).round()
+        } else {
+            0.0
+        }
+    }
+
+    /// Lays out the tab bar `width` pixels wide, scrolled by `offset` points, measuring labels
+    /// in the prose font.
+    fn layout_tab_bar(&mut self, looks: &[scene::TabLook], width: f32, offset: f32) -> tab_layout::Bar {
+        let s = tab_layout::Settings::from_globals(&self.globals);
+        let inputs: Vec<tab_layout::TabInput> = looks
+            .iter()
+            .map(|l| tab_layout::TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number })
+            .collect();
+        let (scale, active, hovered) = (self.scale(), self.active, self.tab_hover.map(|(i, _)| i));
+        let renderer = self.gpu.as_mut().map(|g| std::cell::RefCell::new(&mut g.renderer));
+        // Points to pixels and back: a text of `pt` points is drawn at `pt * scale` pixels.
+        let measure = |text: &str, pt: f32| match &renderer {
+            Some(r) => {
+                let mut r = r.borrow_mut();
+                let row_scale = pt * scale / r.font_px().max(1.0);
+                r.text_width(text, true, row_scale) / scale
+            }
+            None => text.chars().count() as f32 * pt * 0.5,
+        };
+        tab_layout::build(&inputs, active, width / scale, offset, hovered, &s, &measure)
+    }
+
+    /// The part of the tab bar the tabs scroll in, in points: left of the right margin, where
+    /// the "+" is pinned (`PSM scrollViewportLength`).
+    fn tab_viewport(&self) -> f32 {
+        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
+        w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))
+    }
+
+    /// What the window point (`x`, `y`) in pixels is over on the tab bar; None off the bar.
+    pub(super) fn tab_bar_hit(&self, x: f32, y: f32) -> Option<tab_layout::Hit> {
+        if !self.tab_bar_shown() {
+            return None;
+        }
+        let scale = self.scale();
+        live_tab_hit(tab_layout::hit(&self.tab_bar, self.tab_scroll, x / scale, y / scale), self.tabs.len())
+    }
+
+    /// Brings the selected tab fully into view on a bar that scrolls, and keeps it there at
+    /// every layout until the bar is scrolled by hand (`PSM scrollSelectedTabIntoView`).
+    pub(super) fn scroll_active_tab_into_view(&mut self) {
+        self.tab_keep_selected = true;
+        let Some((_, _, r)) = self.tab_bar.cells.iter().find(|(i, _, _)| *i == self.active) else { return };
+        self.tab_scroll = tab_layout::scroll_into_view(self.tab_scroll, r.x, r.w, self.tab_viewport(), self.tab_bar.content);
+    }
+
+    /// At each layout: a newly selected tab, or a tab added or closed, is brought into view
+    /// again (`PSM tabView:didSelectTabViewItem:`, `tabViewDidChangeNumberOfTabViewItems:`),
+    /// and the offset stays within the tabs.
+    fn follow_active_tab(&mut self) {
+        let seen = self.tabs.get(self.active).map(|t| (t.id, self.tabs.len()));
+        if seen != self.tab_seen {
+            self.tab_seen = seen;
+            self.tab_keep_selected = true;
+        }
+        // A tab closed or moved under a held press: the press goes, so its release (or the
+        // held close button drawn) never lands on another tab.
+        if self.tab_press_moved() {
+            self.tab_press = None;
+        }
+        if self.tab_keep_selected {
+            self.scroll_active_tab_into_view();
+        }
+        self.tab_scroll = tab_layout::clamp_scroll(self.tab_scroll, self.tab_bar.content, self.tab_viewport());
+    }
+
+    /// The held press is on a tab that is no longer at the pressed index.
+    fn tab_press_moved(&self) -> bool {
+        press_on_moved_tab(self.tab_press, |i| self.tabs.get(i).map(|t| t.id))
+    }
+
+    /// The "+" button in pixels, window coordinates; None while the bar hides or with
+    /// `RemoveAddTabButton`. 13d drags the window by it.
+    #[allow(dead_code)]
+    pub(super) fn new_tab_button_rect(&self) -> Option<Rect> {
+        if !self.tab_bar_shown() {
+            return None;
+        }
+        tab_layout::add_rect_px(&self.tab_bar, self.tab_scroll, (0.0, 0.0), self.scale())
+    }
+
+    /// The tab under the pointer follows it; a change redraws (the close button shows on hover).
+    fn update_tab_hover(&mut self) {
+        let (x, y) = self.cursor;
+        let hover = match self.tab_bar_hit(x, y) {
+            Some(tab_layout::Hit::Tab(i)) => Some((i, false)),
+            Some(tab_layout::Hit::Close(i)) => Some((i, true)),
+            _ => None,
+        };
+        if hover != self.tab_hover {
+            self.tab_hover = hover;
+            self.redraw();
+        }
+        self.update_tab_tip();
+    }
+
+    /// The tab tooltip follows the pointer: resting on a tab (not its close button, with no
+    /// press on the bar) starts the wait again at each move until the tip shows; a shown tip
+    /// stays while the pointer is on its tab, under the pointer. Anything else hides it.
+    fn update_tab_tip(&mut self) {
+        let now = Instant::now();
+        let shown = self.tab_tip_shown().is_some();
+        self.tab_tip = match self.tab_hover {
+            Some((i, false)) if self.tab_press.is_none() => match self.tab_tip {
+                Some((j, since)) if j == i && shown => Some((i, since)),
+                _ => {
+                    self.tab_tip_wake = Some(now + requests_ui::TIP_DELAY);
+                    Some((i, now))
+                }
+            },
+            _ => None,
+        };
+        // A shown tip moves with the pointer or goes.
+        if shown {
+            self.redraw();
+        }
+    }
+
+    /// The tab whose tooltip shows now.
+    fn tab_tip_shown(&self) -> Option<usize> {
+        self.tab_tip.filter(|(_, since)| Instant::now() >= *since + requests_ui::TIP_DELAY).map(|(i, _)| i)
+    }
+
+    /// A press hides the tab tooltip until the pointer rests again.
+    fn hide_tab_tip(&mut self) {
+        if self.tab_tip_shown().is_some() {
+            self.redraw();
+        }
+        self.tab_tip = None;
+    }
+
+    /// The windows draw a tab tooltip that came due; says when the next one is due.
+    fn tick_tab_tip(&mut self) -> Option<Instant> {
+        let at = self.tab_tip_wake?;
+        if Instant::now() < at {
+            return Some(at);
+        }
+        self.tab_tip_wake = None;
+        self.redraw();
+        None
+    }
+
+    /// A press on the tab bar (`PSM mouseDown:`, `otherMouseDown:`): the left button keeps the
+    /// press and its click count, and selects the tab at once when `press_selects` says so (a
+    /// press on a close button shows it pressed instead); the middle button keeps its hit for
+    /// the release; other buttons do nothing on the bar.
+    fn tab_bar_press(&mut self, button: MouseButton, hit: tab_layout::Hit) {
+        use tab_layout::Hit;
+        let alt = self.mods.alt;
+        let id = match hit {
+            Hit::Tab(i) | Hit::Close(i) => self.tabs.get(i).map(|t| t.id),
+            _ => None,
+        };
+        match button {
+            // The button draws pressed while its menu is open: the menu's modal loop draws
+            // nothing, so the frame is drawn before it opens (`PSMOverflowPopUpButton mouseDown:`).
+            MouseButton::Left if hit == Hit::Overflow => {
+                self.tab_press = Some((hit, 1, alt, None));
+                self.render();
+                self.show_tab_overflow();
+                self.tab_press = None;
+                self.redraw();
+            }
+            MouseButton::Left => {
+                let clicks = self.count_tab_click(hit);
+                self.tab_press = Some((hit, clicks, alt, id));
+                if let Hit::Tab(i) = hit {
+                    if tab_layout::press_selects(self.tab_selects_on_down, alt, clicks) {
+                        self.active = i;
+                    }
+                }
+                self.redraw();
+            }
+            MouseButton::Middle => self.tab_press = Some((hit, 0, alt, id)),
+            _ => {}
+        }
+    }
+
+    /// The click count of a left press on the bar: one more than the last when it is on the
+    /// same tab (or again off the tabs) within the double-click time, else 1. A press on the
+    /// "+" counts 1 and starts the count over.
+    fn count_tab_click(&mut self, hit: tab_layout::Hit) -> u8 {
+        let (clicks, last) = tab_click_count(self.tab_clicks, Instant::now(), hit, clippings_ui::double_click_ms());
+        self.tab_clicks = last;
+        clicks
+    }
+
+    /// The release that ends a press on the tab bar (`PSM handleMouseUp:`, `otherMouseUp:`).
+    /// False when no press on the bar waits for this button.
+    fn tab_bar_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) -> bool {
+        use tab_layout::{Hit, Release};
+        let Some((down, clicks, _, _)) = self.tab_press else { return false };
+        let middle = clicks == 0;
+        let ours = match button {
+            MouseButton::Left => !middle,
+            MouseButton::Middle => middle,
+            _ => false,
+        };
+        if !ours {
+            return false;
+        }
+        let moved = self.tab_press_moved();
+        self.tab_press = None;
+        // The pressed tab is no longer where it was pressed: the release acts on no tab.
+        if moved {
+            self.redraw();
+            return true;
+        }
+        let (x, y) = self.cursor;
+        let up = self.tab_bar_hit(x, y);
+        let live = |i: usize, n: usize| i < n;
+        if middle {
+            if let Some(i) = tab_layout::middle_release(Some(down), up, self.globals.bool("MiddleClickClosesTab")) {
+                self.close_tab_at(i, event_loop);
+            }
+            self.redraw();
+            return true;
+        }
+        // The "+" is a button of its own: it acts when released where it was pressed.
+        if down == Hit::Add && up == Some(Hit::Add) {
+            self.add_tab_button();
+        }
+        let n = self.tabs.len();
+        match tab_layout::release(Some(down), up, clicks, self.globals.bool("DoubleClickTabToEdit"), self.globals.bool("TabCloseButtonsAlwaysVisible")) {
+            Release::Close(i) => self.close_tab_at(i, event_loop),
+            Release::Select(i) if live(i, n) => self.active = i,
+            Release::EditTitle(i) if live(i, n) => {
+                self.active = i;
+                self.open_title_prompt(event_loop, true);
+            }
+            // iTerm2's New Tab (`PT tabViewDoubleClickTabBar:`), a tmux tab when tmux makes it.
+            Release::NewTab => {
+                if self.tmux_new(false, true).is_none() {
+                    self.new_tab(None);
+                }
+            }
+            _ => {}
+        }
+        self.redraw();
+        true
+    }
+
+    /// The "+" button (`PT tabViewDidClickAddTabButton:`): a tmux tab for a tmux session, else
+    /// a tab with the default profile, or with `AddTabButtonUsesCurrentProfile` the current
+    /// session's (a fresh private copy when the session has one).
+    pub(super) fn add_tab_button(&mut self) {
+        let pane = self.focused_id();
+        let tmux = pane.is_some_and(|p| self.tmux_of(p).is_some());
+        match add_tab_choice(tmux, self.globals.bool("AddTabButtonUsesCurrentProfile")) {
+            AddTab::TmuxTab => {
+                self.tmux_new(false, false);
+            }
+            AddTab::Default => self.new_tab(None),
+            AddTab::CurrentProfile => {
+                let guid = pane.and_then(|p| self.profile_for_new_session(p));
+                let (tabs, windows) = (self.tabs.len(), self.pending_windows.len());
+                self.new_tab(guid.as_deref());
+                // Nothing opened: a copy made for it goes.
+                if let Some(g) = guid.filter(|_| self.tabs.len() == tabs && self.pending_windows.len() == windows) {
+                    self.forget_session_profile(&g);
+                }
+            }
+        }
+    }
+
+    /// The wheel over a tab bar that scrolls: a horizontal wheel, or Shift with the vertical
+    /// one, scrolls the tabs and stops keeping the selected tab in view (`PSM scrollWheel:`).
+    /// False when the wheel is not the bar's.
+    fn tab_bar_wheel(&mut self, delta: MouseScrollDelta) -> bool {
+        let (x, y) = self.cursor;
+        if self.tab_bar_hit(x, y).is_none() {
+            return false;
+        }
+        let optimum = tab_layout::Settings::from_globals(&self.globals).prefs.optimum;
+        // A notched wheel moves in lines; precise deltas are already a distance (pixels here).
+        let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x, y),
+            MouseScrollDelta::PixelDelta(p) => tab_layout::pixel_lines(p.x, p.y, optimum, self.scale()),
+        };
+        let Some(to) = tab_layout::wheel_scroll(self.tab_scroll, dx, dy, self.mods.shift, optimum, self.tab_bar.content, self.tab_viewport()) else {
+            return false;
+        };
+        if to != self.tab_scroll {
+            self.tab_scroll = to;
+            self.tab_keep_selected = false;
+            self.redraw();
+            // The tabs moved under a still pointer.
+            self.update_tab_hover();
+        }
+        true
     }
 
     /// The window's room below the tab bar and above any banner, the toolbelt's included.
@@ -1336,7 +1719,19 @@ impl App {
             // The old shell is gone for good; the new one gets its own cookie.
             self.forget_cookie(&old);
         }
+        // Its inline files went with its screen.
+        self.close_inline_questions_of(id);
         self.start_pane_as(id, rect, guid.as_deref());
+    }
+
+    /// "Restart session?" answered OK: the pane restarts in its own window (gone: nothing
+    /// happens).
+    pub(super) fn restart_answered(&mut self, id: PaneId) {
+        if !self.panes.contains_key(&id) {
+            return;
+        }
+        self.enter_pane_window(id);
+        self.restart_pane(id);
     }
 
     /// The session variables for pane `id`, about to start with profile `p` (`PS:3246-3350`),
@@ -1465,6 +1860,7 @@ impl App {
         match started {
             Ok(mut pane) => {
                 pane.cookie = cookie;
+                pane.command = cmd;
                 if self.start_command_override.is_none() {
                     pane.ssh.profile_ssh = profile::is_ssh(&p);
                     pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
@@ -1509,8 +1905,8 @@ impl App {
         pane.dvr = crate::dvr::Dvr::new(crate::pane::capacity_for(self.globals.int("IRMemory")));
         if let Some(pid) = pane.shell_pid() {
             self.jobs.watch(pid);
-            if pane.owns_console() {
-                self.jobs.watch_console(pid);
+            if let Some(paused) = pane.console_pause_flag() {
+                self.jobs.watch_console(pid, paused);
             }
         }
         self.panes.insert(id, pane);
@@ -1609,6 +2005,7 @@ impl App {
                 // Hotkeys that failed to register show in the sheet.
                 s.hotkeys.errors = self.hotkey_errors.clone();
                 s.title_providers = self.title_provider_items();
+                s.ai.found = self.ai_discovery.all();
                 match mode {
                     Mode::Settings => self.settings = Some(s),
                     Mode::Profiles => self.profiles_win = Some(s),
@@ -1727,8 +2124,8 @@ impl App {
             match event {
                 crate::scripts_scan::ScanEvent::Slow => {
                     let text = crate::scripts::slow_text(&folder);
-                    let buttons = vec![crate::scripts::STOP.to_string(), crate::scripts::CONTINUE.to_string()];
-                    self.ask_scripts(scripts_alerts::Ask { heading: crate::scripts::SLOW_HEADING.to_string(), text, buttons, silence: None, then: scripts_alerts::Then::SlowScan });
+                    let buttons = [crate::scripts::STOP, crate::scripts::CONTINUE];
+                    self.ask_scripts(scripts_alerts::ask(crate::scripts::SLOW_HEADING, &text, &buttons, None, crate::warnings::Kind::Persistent, scripts_alerts::Then::SlowScan));
                 }
                 // An unchanged tree is left alone, so nothing built from it is rebuilt.
                 crate::scripts_scan::ScanEvent::Done(result) if result.tree != self.scripts_tree => {
@@ -1987,6 +2384,7 @@ impl App {
                     self.save_now();
                 }
                 if self.prefs_before_exit() {
+                    self.catalog_flush();
                     event_loop.exit();
                 }
             } else {
@@ -2155,6 +2553,8 @@ impl App {
             Action::Copy => {
                 if let Some(id) = self.tabs.get(self.active).map(|t| t.focused) {
                     self.copy_selection(id);
+                    // Tandem's copy chord is iTerm2's Cmd-C to the frustration detector.
+                    self.frustration_copy(id);
                 }
             }
             Action::Paste => self.paste(),
@@ -2415,6 +2815,10 @@ impl App {
     }
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        self.hide_tab_tip();
+        // A press starts over on the tab bar too: a bar press whose release never came (focus
+        // went mid-press) must not take this press's release; a press on the bar stores itself.
+        self.tab_press = None;
         // A press starts over: a tmux drag whose release never came lets tmux go on.
         self.tmux_drag_cancel();
         let (x, y) = self.cursor;
@@ -2427,9 +2831,8 @@ impl App {
         if self.composer_press(button, x, y) {
             return;
         }
-        if let Some(i) = tab_hit(&self.tab_rects, self.tabs.len(), x, y) {
-            self.active = i;
-            return self.redraw();
+        if let Some(hit) = self.tab_bar_hit(x, y) {
+            return self.tab_bar_press(button, hit);
         }
         if self.status_press(button, x, y, event_loop) {
             return;
@@ -2494,6 +2897,12 @@ impl App {
             self.pointer_down = Some(PointerDown { button: b, clicks, pane: id, cell: (col, row) });
             return self.redraw();
         }
+        // The frustration detector watches left presses; other buttons end its episode.
+        if b == 0 {
+            self.frustration(id, |d| d.mouse_down(clicks, reportable));
+        } else {
+            self.frustration(id, |d| d.other_mouse());
+        }
         // Win-click opens the file or URL under the pointer (Semantic History). Windows
         // would open the Start menu when Win comes up, so that is masked.
         if b == 0 && mods.cmd && !mods.ctrl && self.globals.bool("CommandSelection") {
@@ -2509,7 +2918,7 @@ impl App {
             if let Some(bytes) = mouse::encode(modes, ev) {
                 self.panes.get_mut(&id).unwrap().input(&bytes);
             }
-            self.drag = Drag::App { pane: id, button: mb };
+            self.drag = Drag::App { pane: id, button: mb, clicks, at: Instant::now() };
             return self.redraw();
         }
         match b {
@@ -2572,6 +2981,9 @@ impl App {
     }
 
     fn mouse_release(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
+        if self.tab_bar_release(button, event_loop) {
+            return;
+        }
         let b = button_number(button);
         if let Some(pd) = self.pointer_down.take() {
             if pd.button == b {
@@ -2613,7 +3025,15 @@ impl App {
                     self.copy_selection(pane);
                 }
             }
-            Drag::App { pane, button } => {
+            Drag::App { pane, button, clicks, at } => {
+                // macOS counts a release as no click once the multi-click time has passed.
+                let reported = mouse::app_owns_mouse(self.modes(pane), self.mods);
+                if button == Button::Left {
+                    let clicks = if at.elapsed() > input::MULTI_CLICK { 0 } else { clicks };
+                    self.frustration(pane, |d| d.mouse_up(clicks, reported));
+                } else {
+                    self.frustration(pane, |d| d.other_mouse());
+                }
                 let (x, y) = self.cursor;
                 // Look the pane up by id: the button may come up outside it, and the app
                 // must still get the release (cell_at clamps to the pane's edge).
@@ -2634,6 +3054,7 @@ impl App {
 
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
+        self.update_tab_hover();
         self.toolbelt_move(x, y);
         self.composer_move(x, y);
         self.clip_move(x, y);
@@ -2670,8 +3091,16 @@ impl App {
                 self.tabs[self.active].layout.set_ratio(&path, ratio);
                 self.relayout();
             }
-            Drag::App { pane, button } => {
+            Drag::App { pane, button, .. } => {
                 let (pane, button) = (*pane, *button);
+                // A drag counts as reported where the program asked for any clicks (iTerm2's
+                // test for drag reports), even when only motion with a button is sent.
+                let reported = mouse::app_owns_mouse(self.modes(pane), self.mods);
+                if button == Button::Left {
+                    self.frustration(pane, |d| d.mouse_dragged(reported));
+                } else {
+                    self.frustration(pane, |d| d.other_mouse());
+                }
                 self.send_motion(pane, Some(button), x, y);
             }
             Drag::None => {
@@ -2706,7 +3135,7 @@ impl App {
             MouseScrollDelta::LineDelta(x, y) => (x * WHEEL_LINES, y * WHEEL_LINES),
             MouseScrollDelta::PixelDelta(p) => (p.x as f32 / cw, p.y as f32 / ch),
         };
-        if self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
+        if self.tab_bar_wheel(delta) || self.composer_wheel(dy) || self.toolbelt_wheel(dy) || self.clip_wheel(dy) || self.porthole_wheel(dx, dy) {
             return;
         }
         self.wheel_acc += dy;
@@ -2763,11 +3192,26 @@ impl App {
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
         let (w, _) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        self.tab_rects.clear();
-        if self.tabs.len() > 1 {
-            let titles: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
-            let bar = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
-            self.tab_rects = scene::tab_bar(&mut frame, &titles, self.active, bar, cell);
+        if self.tab_bar_shown() {
+            let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
+            if let Some(i) = held_close(self.tab_press) {
+                if let Some(l) = looks.get_mut(i) {
+                    l.close_pressed = true;
+                }
+            }
+            let area = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
+            // Kept unscrolled for hits; the scroll offset applies at each use.
+            self.tab_bar = self.layout_tab_bar(&looks, w, 0.0);
+            self.follow_active_tab();
+            let scrolled = (self.tab_scroll > 0.0).then(|| self.layout_tab_bar(&looks, w, self.tab_scroll));
+            let scale = self.scale();
+            let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
+            scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
+        } else {
+            self.tab_bar = tab_layout::Bar::default();
+            self.tab_scroll = 0.0;
+            self.tab_hover = None;
+            self.tab_tip = None;
         }
         let area = self.content_area();
         let backgrounds = self.pane_backgrounds();
@@ -2868,6 +3312,12 @@ impl App {
         self.draw_find_cursor(&mut frame, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         if let Some((text, _)) = self.toast.as_ref().filter(|(_, until)| Instant::now() < *until) {
             scene::toast(&mut frame, text, Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
+        }
+        // The tab tooltip over everything but the banner, under the pointer (a pointer's
+        // height below it).
+        if let Some(text) = self.tab_tip_shown().and_then(|i| self.tab_tip_text(i)) {
+            let (x, y) = self.cursor;
+            scene::tab_tooltip(&mut frame, &text, (x, y + TIP_POINTER_PT * self.scale()), Rect { x: 0.0, y: 0.0, w: ww, h: wh }, cell);
         }
         self.attention_due = attention;
         self.block_buttons = block_buttons;
@@ -3045,14 +3495,23 @@ impl ApplicationHandler<UserEvent> for App {
         let mut hotkey_saved: Vec<(String, crate::arrangement::Value)> = hotkey_saved.into_iter().filter_map(|w| crate::arrangement::hotkey_guid(&w).filter(|g| hotkey_profiles.contains(g)).map(|g| (g, w))).collect();
         let saved = (system_policy && !regular_saved.is_empty()).then_some(regular_saved);
         let has_saved = saved.is_some() || !hotkey_saved.is_empty();
-        let default_arrangement = self.globals.bool("OpenArrangementAtStartup").then(|| self.arrangements().default_name().and_then(|n| self.arrangements().get(n).cloned())).flatten().filter(|w| !w.is_empty());
+        // The default arrangement is restored by name (window restoration has none).
+        let default_arrangement = self
+            .globals
+            .bool("OpenArrangementAtStartup")
+            .then(|| {
+                let store = self.arrangements();
+                store.default_name().and_then(|n| store.get(n).cloned().map(|w| (Some(n.to_string()), w)))
+            })
+            .flatten()
+            .filter(|(_, w)| !w.is_empty());
         let has_arrangement = default_arrangement.is_some();
-        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.or(default_arrangement) };
+        let startup_arrangement = if startup_hotkey.is_some() { None } else { saved.map(|w| (None, w)).or(default_arrangement) };
         let mut arranged = false;
         match startup_arrangement {
-            Some(mut windows) => {
+            Some((name, mut windows)) => {
                 let first = windows.remove(0);
-                match self.apply_arrangement_window(&first) {
+                match self.apply_arrangement_window(&first, name.as_deref()) {
                     Ok(()) => arranged = !self.tabs.is_empty(),
                     Err(e) => self.banners.set("arrangement", e),
                 }
@@ -3060,14 +3519,14 @@ impl ApplicationHandler<UserEvent> for App {
                     self.new_tab(None);
                 }
                 for w in windows {
-                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w));
+                    self.pending_windows.push(windows_ui::NewWindow::Arrangement(w, name.clone()));
                 }
             }
             None => match &startup_hotkey {
                 Some(guid) => {
                     if let Some(i) = hotkey_saved.iter().position(|(g, _)| g == guid) {
                         let (_, w) = hotkey_saved.remove(i);
-                        match self.apply_arrangement_window(&w) {
+                        match self.apply_arrangement_window(&w, None) {
                             Ok(()) => arranged = !self.tabs.is_empty(),
                             Err(e) => self.banners.set("arrangement", e),
                         }
@@ -3197,11 +3656,15 @@ impl ApplicationHandler<UserEvent> for App {
             self.relaunch(event_loop);
         }
         self.prefs_tick(event_loop);
+        self.catalog_tick();
+        self.suppressed_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
         self.open_ai_alert(event_loop);
         self.open_ai_key_window(event_loop);
         self.open_ai_reveal(event_loop);
+        self.ai_discovery_tick();
+        let ai_due = self.ai_discovery_due();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -3222,8 +3685,9 @@ impl ApplicationHandler<UserEvent> for App {
         for (gw, events) in std::mem::take(&mut self.tmux_held_events) {
             self.tmux_events(gw, events, event_loop);
         }
+        let tip_due = self.tick_tab_tip();
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due].into_iter().flatten().min();
+        let wake = [self.save_due, self.prefs_save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, ssh_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, self.catalog_due, self.suppressed_retitle_due, tip_due, ai_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -3281,6 +3745,7 @@ impl ApplicationHandler<UserEvent> for App {
         let mut outputs = Vec::new();
         let now = Instant::now();
         self.sync_output_policy();
+        self.sync_host_policy();
         // The prompt state machine follows View > Auto Composer before it reads output (the
         // Task 3 contract: every pane, new ones included).
         let auto_composer = self.globals.bool("AutoComposer");
@@ -3329,7 +3794,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) || self.suppressed_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -3349,12 +3814,16 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
                 WindowEvent::RedrawRequested => {
-                    let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    let win = slot.as_mut().unwrap();
+                    win.show_remembered = self.show_remembered;
+                    let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    let answered = std::mem::take(&mut win.answered);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
                     // Configure SSH's help button opens its page in the browser.
                     let url = slot.as_mut().and_then(|s| s.open_url.take());
                     self.apply_edit(edit);
+                    self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
                     }
@@ -3363,6 +3832,8 @@ impl ApplicationHandler<UserEvent> for App {
                             self.banners.set("window", format!("Could not open {url}: {e}"));
                         }
                     }
+                    // Settings > General > AI's discovery requests (ruling R12ab-3).
+                    self.drain_ai_requests(event_loop);
                 }
                 other => {
                     slot.as_mut().unwrap().event(&other);
@@ -3411,6 +3882,12 @@ impl ApplicationHandler<UserEvent> for App {
                 // A divider drag loses its release when focus goes, and so do keys.
                 if !f {
                     self.tmux_drag_cancel();
+                    // So does a press on the tab bar (a held close button lets go).
+                    if self.tab_press.take().is_some() {
+                        self.redraw();
+                    }
+                    // And the tab tooltip goes, as a macOS tooltip does when the app deactivates.
+                    self.hide_tab_tip();
                     self.belt_keys.clear();
                     self.replay_keys.clear();
                     self.composer_keys.clear();
@@ -3469,12 +3946,21 @@ impl ApplicationHandler<UserEvent> for App {
                 // A key that ends find typing, a tool's focus, Copy Mode, the completion list
                 // or the labels gives the terminal the keyboard back (`notifyActive`).
                 let elsewhere = self.focused_keys_elsewhere();
+                let focused = self.focused_id();
                 self.key(&event, event_loop);
                 self.composer_take_back(elsewhere);
+                // Any key ends a drag-then-Copy episode; Copy itself has already looked at it
+                // (modifiers alone are no key press, as in iTerm2's keyDown:).
+                if let Some(id) = focused.filter(|_| event.state == ElementState::Pressed && !labels_ui::is_modifier_key(&event.logical_key)) {
+                    self.frustration(id, |d| d.key());
+                }
             }
             // The pointer left the window: no Help tooltip stays up.
             WindowEvent::CursorLeft { .. } => {
-                if self.composer_hover.take().is_some() {
+                let composer = self.composer_hover.take().is_some();
+                let tab = self.tab_hover.take().is_some();
+                self.tab_tip = None;
+                if composer || tab {
                     self.redraw();
                 }
             }
@@ -3559,9 +4045,72 @@ fn move_new_tab<T>(tabs: &mut Vec<T>, before: usize, active: usize) -> Option<us
     Some(at)
 }
 
-/// The tab under (x, y), if it still exists.
-fn tab_hit(rects: &[Rect], tabs: usize, x: f32, y: f32) -> Option<usize> {
-    rects.iter().position(|r| r.contains(x, y)).filter(|i| *i < tabs)
+/// What the "+" button opens (`PT tabViewDidClickAddTabButton:`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AddTab {
+    /// A tmux tab: the current session is a tmux client.
+    TmuxTab,
+    /// A tab with the default profile.
+    Default,
+    /// A tab with the current session's profile (`AddTabButtonUsesCurrentProfile`).
+    CurrentProfile,
+}
+
+fn add_tab_choice(tmux_client: bool, use_current: bool) -> AddTab {
+    if tmux_client {
+        AddTab::TmuxTab
+    } else if use_current {
+        AddTab::CurrentProfile
+    } else {
+        AddTab::Default
+    }
+}
+
+/// A hit on the tab bar, unless it names a tab that no longer exists.
+fn live_tab_hit(hit: Option<tab_layout::Hit>, tabs: usize) -> Option<tab_layout::Hit> {
+    use tab_layout::Hit;
+    hit.filter(|h| !matches!(h, Hit::Tab(i) | Hit::Close(i) if *i >= tabs))
+}
+
+/// A press on the tab bar: what it hit, its click count (0 for the middle button), whether Alt
+/// was held, and the id of the tab it hit (None off the tabs).
+pub(super) type TabPress = (tab_layout::Hit, u8, bool, Option<u64>);
+
+/// The press was on a tab (or its close button) that `id_at` no longer finds at the pressed
+/// index: a tab before it closed, or the tabs moved. iTerm2 holds the cell itself, so its
+/// release can never act on another tab.
+fn press_on_moved_tab(press: Option<TabPress>, id_at: impl Fn(usize) -> Option<u64>) -> bool {
+    match press {
+        Some((tab_layout::Hit::Tab(i) | tab_layout::Hit::Close(i), _, _, id)) => id_at(i) != id,
+        _ => false,
+    }
+}
+
+/// The close button a press holds down: a left press on it (the middle button's count is 0;
+/// iTerm2 marks it pressed in `mouseDown:` only).
+fn held_close(press: Option<TabPress>) -> Option<usize> {
+    match press {
+        Some((tab_layout::Hit::Close(i), clicks, _, _)) if clicks > 0 => Some(i),
+        _ => None,
+    }
+}
+
+/// The click count of a left press on the tab bar at `now`, and the new last press (when, on
+/// which tab, its count): one more than the last when it is on the same tab (or again off the
+/// tabs) within `double_ms`, else 1. A press on the "+" counts 1 and starts the count over.
+fn tab_click_count(last: (Instant, Option<usize>, u8), now: Instant, hit: tab_layout::Hit, double_ms: u128) -> (u8, (Instant, Option<usize>, u8)) {
+    use tab_layout::Hit;
+    if hit == Hit::Add {
+        return (1, (now, None, 0));
+    }
+    let on = match hit {
+        Hit::Tab(i) | Hit::Close(i) => Some(i),
+        _ => None,
+    };
+    let (then, prev, n) = last;
+    let again = n > 0 && prev == on && now.duration_since(then).as_millis() <= double_ms;
+    let clicks = if again { n.saturating_add(1) } else { 1 };
+    (clicks, (now, on, clicks))
 }
 
 /// What a session's screen takes from its profile, at start (`install_pane`) and after every
@@ -3578,6 +4127,14 @@ fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_button_follows_iterm2() {
+        assert_eq!(add_tab_choice(true, false), AddTab::TmuxTab);
+        assert_eq!(add_tab_choice(true, true), AddTab::TmuxTab);
+        assert_eq!(add_tab_choice(false, false), AddTab::Default);
+        assert_eq!(add_tab_choice(false, true), AddTab::CurrentProfile);
+    }
 
     #[test]
     fn profile_edits_reach_the_screen() {
@@ -3643,11 +4200,67 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_tab_rect_is_not_a_hit() {
-        let r = |x: f32| Rect { x, y: 0.0, w: 10.0, h: 10.0 };
-        let rects = [r(0.0), r(10.0), r(20.0)];
-        assert_eq!(tab_hit(&rects, 3, 25.0, 5.0), Some(2));
-        assert_eq!(tab_hit(&rects, 2, 25.0, 5.0), None);
+    fn only_a_left_press_holds_a_close_button() {
+        use tab_layout::Hit;
+        // iTerm2 sets `closeButtonPressed` in `mouseDown:` only, never for the middle button.
+        assert_eq!(held_close(Some((Hit::Close(2), 1, false, Some(7)))), Some(2));
+        assert_eq!(held_close(Some((Hit::Close(2), 2, true, Some(7)))), Some(2));
+        assert_eq!(held_close(Some((Hit::Close(2), 0, false, Some(7)))), None, "a middle press");
+        assert_eq!(held_close(Some((Hit::Tab(2), 1, false, Some(7)))), None);
+        assert_eq!(held_close(None), None);
+    }
+
+    #[test]
+    fn a_press_on_a_tab_that_moved_is_dropped() {
+        use tab_layout::Hit;
+        let ids = [10u64, 11, 12];
+        let at = |i: usize| ids.get(i).copied();
+        // The pressed tab is still where it was pressed.
+        assert!(!press_on_moved_tab(Some((Hit::Close(1), 1, false, Some(11))), at));
+        assert!(!press_on_moved_tab(Some((Hit::Tab(2), 0, false, Some(12))), at));
+        // A tab before it closed: index 1 now holds another tab, which must not close.
+        assert!(press_on_moved_tab(Some((Hit::Close(1), 1, false, Some(10))), at));
+        assert!(press_on_moved_tab(Some((Hit::Tab(1), 0, false, Some(10))), at), "a middle press");
+        // The pressed tab itself is gone off the end.
+        assert!(press_on_moved_tab(Some((Hit::Tab(3), 1, false, Some(13))), at));
+        // Presses off the tabs keep no tab.
+        assert!(!press_on_moved_tab(Some((Hit::Add, 1, false, None)), at));
+        assert!(!press_on_moved_tab(Some((Hit::Bar, 2, false, None)), at));
+        assert!(!press_on_moved_tab(None, at));
+    }
+
+    #[test]
+    fn tab_clicks_count_on_one_tab() {
+        use tab_layout::Hit;
+        let t0 = Instant::now();
+        let soon = t0 + std::time::Duration::from_millis(100);
+        let late = t0 + std::time::Duration::from_millis(900);
+        let start = (t0, None, 0);
+        // A first press counts 1; again on the same tab within the time 2; later 1 again.
+        let (n, last) = tab_click_count(start, t0, Hit::Tab(1), 500);
+        assert_eq!((n, last), (1, (t0, Some(1), 1)));
+        assert_eq!(tab_click_count(last, soon, Hit::Tab(1), 500).0, 2);
+        assert_eq!(tab_click_count(last, soon, Hit::Close(1), 500).0, 2, "the close button is on the tab");
+        assert_eq!(tab_click_count(last, soon, Hit::Tab(2), 500).0, 1, "another tab");
+        assert_eq!(tab_click_count(last, late, Hit::Tab(1), 500).0, 1, "too late");
+        // Twice on the empty bar counts 2 (a double click opens a tab).
+        let (_, bar) = tab_click_count(start, t0, Hit::Bar, 500);
+        assert_eq!(tab_click_count(bar, soon, Hit::Bar, 500).0, 2);
+        // The "+" counts 1, even right after a press on the empty bar, and starts the count over.
+        let (n, after) = tab_click_count(bar, soon, Hit::Add, 500);
+        assert_eq!(n, 1);
+        assert_eq!(after.2, 0);
+        assert_eq!(tab_click_count(after, soon, Hit::Bar, 500).0, 1);
+    }
+
+    #[test]
+    fn a_stale_tab_is_not_a_hit() {
+        use tab_layout::Hit;
+        assert_eq!(live_tab_hit(Some(Hit::Tab(2)), 3), Some(Hit::Tab(2)));
+        assert_eq!(live_tab_hit(Some(Hit::Tab(2)), 2), None);
+        assert_eq!(live_tab_hit(Some(Hit::Close(2)), 2), None);
+        assert_eq!(live_tab_hit(Some(Hit::Add), 0), Some(Hit::Add));
+        assert_eq!(live_tab_hit(None, 3), None);
     }
 }
 

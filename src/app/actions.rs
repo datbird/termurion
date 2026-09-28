@@ -395,7 +395,14 @@ impl App {
                     }
                 }
             }
-            69 => self.copy_or(|app| app.send_to_focused(fallback.as_deref().unwrap_or_default())),
+            69 => {
+                // A key bound to Copy or Send ^C is a copy key to the frustration detector,
+                // whichever it does: after a reported drag there is nothing selected.
+                if let Some(id) = self.focused_pane_id() {
+                    self.frustration_copy(id);
+                }
+                self.copy_or(|app| app.send_to_focused(fallback.as_deref().unwrap_or_default()));
+            }
             70 => {
                 if self.clipboard_has_text() {
                     self.paste();

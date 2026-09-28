@@ -6,10 +6,10 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
-| `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 336 | 84 | 403 |
-| `03-features-and-menus.md` | 644 | 518 | 47 | 79 |
-| Total | 1,781 | 1,027 | 253 | 501 |
+| `01-profile-settings.md` | 314 | 174 | 121 | 19 |
+| `02-global-settings.md` | 823 | 382 | 80 | 361 |
+| `03-features-and-menus.md` | 645 | 520 | 48 | 77 |
+| Total | 1,782 | 1,076 | 249 | 457 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -250,6 +250,22 @@ Enable, then a one-time consent per host that replaces iTerm2's plugin), wired i
 and Codecierge, whose AI answers still wait for 12b to 12f. Apple Intelligence and AI tab titles
 are n/a on Windows. Every kept quirk is listed in `docs/acceptance/m12a-checklist.md` and ruled on in
 `docs/superpowers/rulings/m12a-rulings.txt`.
+Milestone 12b brought the AI providers (03: Multi-provider support, Streaming responses, the wire
+half of Custom API headers and the request-time half of Withheld-key advice; 02: the model, URL, API,
+token, timeout and zero data retention settings as request inputs, and the Advanced `aiProxy`,
+`ollamaNumCtx`, `ollamaKeepAlive` and AI logging rows): OpenAI Responses and Chat Completions (with
+Early O1 and legacy Completions), Anthropic, Gemini, DeepSeek and Ollama's native API, each built as
+iTerm2 builds its request, sent over WinHTTP with the system proxy and TLS (no curl, no new crate),
+and streamed as the bytes arrive, with iTerm2's error texts and token arithmetic. A localhost or
+private host never gets the vendor key, the placeholder key "placeholder" contacts nothing, redirects
+are followed only to the host consent was given for, every answer is capped at 64 MiB, and the raw
+wire log replaces every key and every header value but known non-secret ones with a fingerprint.
+Ollama discovery fills the Regular and Budget pickers and expands auto-discover entries in the AI
+Model popup; Manage AI Models… gains Fetch Models, Refresh Models and Test Connection. OpenAI file
+uploads and vector stores are built for 12c, only for models at api.openai.com. The chat itself,
+which is the first to send a conversation, comes with 12c, so Streaming responses and the two AI
+logging rows read partial until then. Every kept quirk is listed in
+`docs/acceptance/m12b-checklist.md` and ruled on in `docs/superpowers/rulings/m12b-rulings.txt`.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited
@@ -286,6 +302,52 @@ seven SSH settings in 02 (sshSchemePath, alternateSSHIntegrationScript, unameCom
 validCharactersInSSHUserNames, sshURLsSupportPath, restoreKeyModeAutomaticallyOnHostChange,
 channelsEnabled) belong to milestone 14 (ruling 6). Every kept quirk is listed in
 `docs/acceptance/m14a-checklist.md` and ruled on in `docs/superpowers/rulings/m14a-rulings.txt`.
+Milestone 13c built iTerm2's tab bar (02: Appearance > Tabs and the Advanced tab rows; 01:
+Subtitle): 24 points tall (`defaultTabBarHeight`; Tandem's old 1.6 cells is gone) and hidden with
+one tab (`HideTab`); iTerm2's width rules (equal tabs stretched to fill in whole device pixels, 175
+points with stretching off, uneven widths only when every tab fits, a minimum of 75 points or 60
+with tab numbers hidden); a bar whose tabs do not fit scrolls at 120 points with Shift+wheel or a
+horizontal wheel and keeps the selected tab in view (`ScrollableSideTabBar`, which the horizontal
+bar reads too), else an overflow menu lists the hidden tabs. Inside a tab: a close button on the
+left shown on hover (or always), the title centered in Segoe UI at 11 points (or the custom size)
+and cut at its start or end by iTerm2's smart truncation, basic HTML (`<b>`, `<i>`, `<u>`), the
+profile's Subtitle on a second line at 28 points or more with the session status joined to it,
+the icon, the spinner of a background tab that is printing, and the tab's shortcut ("Win+1" to
+"Win+8", "Win+9" on the last tab). A plain press selects (or the release, with `selectsTabsOnMouseDown` off, read as a window opens), the close
+button and a middle click close through Close Tab, a double click on a tab opens Edit Tab Title and
+on the empty bar opens a tab, "+" opens a tab (a tmux tab in a tmux window; the current profile
+with `addTabButtonUsesCurrentProfile`), and a tooltip shows the tab's name, profile and command.
+Each window keeps its own scroll offset, hover and press. The Tab Color picker (Default, swatches
+from `tabColorMenuOptions`, Choose Color... with Windows' color dialog) is built; it opens from
+milestone 13d's tab menu, so `tabColorMenuOptions` stays partial until then, and the side tab bar
+is 13d's. `drawBottomLineForHorizontalTabBar` is stored and inert (no iTerm2 style reads it). The
+eight number and text Advanced > Tabs rows are edited in Settings > Advanced > Tabs with milestone
+13a's controls.
+Every kept quirk is listed in `docs/acceptance/m13c-checklist.md` and ruled on in
+`docs/superpowers/rulings/m13c-rulings.txt`.
+Milestone 13b put every question Tandem remembers an answer to on iTerm2's warning model (02:
+the Warnings rows, 03: Suppressed Alerts): one checkbox rule ("Suppress this message
+permanently" for one button that may be remembered, "Remember my choice" for several, with the
+ten-minute and 30-day forms), Cancel and the do-not-remember buttons never remembered, a
+persistent warning never silenced, and each button answering to Alt plus its letter (underlined
+with "Buttons in modal alerts indicate keyboard shortcuts"). Every answer given automatically is
+listed in Tandem > Suppressed Alerts, whose menu title counts them with the newest one's age;
+Un-suppress asks again, and "Always show alerts with remembered selections" shows them with the
+saved answer and "Permanently Forget Saved Selection". The paste and tmux close questions moved
+from pane bars to alert windows, the broadcast input warning got its checkbox, and Clear and
+Reset with broadcast ask iTerm2's three-button warning (a stored No no longer answers "current
+only"). New: iTerm2's Restart Session, download and inline display (with the 1 GiB follow-up),
+annotation removal, Meta and key override confirmations; the offers to turn focus reporting,
+mouse reporting and paste bracketing off after a host change (Always and Never write the
+Advanced pane's Unspecified/No/Yes rows); the offer to disable mouse reporting after a drag then
+Copy; the arrangement announcements (a missing profile restores from the arrangement's own copy
+with no banner, a broken copy offers Assign Profile, a missing folder starts in home with iTerm2's
+banner or, for an SSH profile, offers Repair); and the out-of-date shell integration notice, read
+from iTerm2's version tables (Tandem's PowerShell script is in none).
+noSyncSuppressMissingProfileInArrangementWarning and noSyncNeverAskAboutDEC2048Frustration are
+stored and shown with nothing reading them; the Replace Profile warning waits for 13t's Copy to
+Profile and DEC mode 2048 (a new 03 row) for 13o. Every kept quirk is listed in
+`docs/acceptance/m13b-checklist.md` and ruled on in `docs/superpowers/rulings/m13b-rulings.txt`.
 Milestone 14b added iTerm2's conductor, SSH integration level 1 (01, 03; no row changes status: the
 Configure SSH, Load shell integration automatically, it2ssh and handshake rows stay partial until
 milestone 14c's framer gives level 2). The `DCS 2000p` hook takes the remote's output while iTerm2's

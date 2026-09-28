@@ -116,12 +116,40 @@ pub struct HotkeyUi {
     pub sheet: Option<Sheet>,
     /// Registration failures by profile guid ("App Hotkey" for the app hotkey).
     pub errors: HashMap<String, String>,
-    /// Create a Dedicated Hotkey Window...: the question when hotkey profiles exist.
-    create_warning: Option<Vec<(String, String)>>,
     /// The name of the profile just made, for the success message.
     created: Option<String>,
     /// An Open Quickly hotkey that smells accidental, waiting for OK.
     quickly_confirm: Option<Shortcut>,
+}
+
+/// Create a Dedicated Hotkey Window...'s question when hotkey profiles named `names` exist
+/// (`KP:385-418`): persistent, so always asked; Cancel is the last button.
+pub fn create_warning_spec(names: &[String]) -> crate::warnings::Spec {
+    let (heading, text, labels) = hotkey::create_warning(names);
+    crate::warnings::Spec {
+        id: Some("NoSyncSuppressAddAnotherHotkeyProfileWarning".into()),
+        kind: crate::warnings::Kind::Persistent,
+        heading,
+        text,
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+        cancel: labels.iter().position(|l| *l == crate::api_auth::CANCEL),
+        never_remember: Vec::new(),
+    }
+}
+
+/// The question before another hotkey profile answered with button `index`: OK opens the
+/// sheet for a new profile, Configure Existing Profile (only with one hotkey profile) the
+/// sheet for it, Cancel nothing.
+pub fn create_answered(st: &mut HotkeyUi, store: &Store, existing: &[(String, String)], index: usize) {
+    match (index, existing) {
+        (0, _) => st.sheet = Some(Sheet::create()),
+        (1, [(guid, _)]) => {
+            if let Some(p) = store.get(guid) {
+                st.sheet = Some(Sheet::edit(guid, p));
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The Open Quickly hotkey's help (`PreferencePanel.xib:9797`).
@@ -384,7 +412,9 @@ pub enum KeysEdit {
     Profile(String),
 }
 
-/// Settings > Keys > Hotkey: Create a Dedicated Hotkey Window..., and App Hotkey.
+/// Settings > Keys > Hotkey: Create a Dedicated Hotkey Window..., and App Hotkey. The question
+/// before another hotkey profile goes to `keys.ask` (the settings window shows it and calls
+/// `create_answered`).
 pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &mut HotkeyUi, keys: &mut KeysState) -> KeysEdit {
     let mut edit = KeysEdit::None;
     let others: Vec<(String, Prefs)> = store.profiles.iter().map(|p| (p.guid(), Prefs::from_profile(p))).collect();
@@ -394,10 +424,12 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
         ui.label("Hotkey Window:");
         if ui.button("Create a Dedicated Hotkey Window...").clicked() {
             let existing: Vec<(String, String)> = store.profiles.iter().filter(|p| Prefs::from_profile(p).active()).map(|p| (p.guid(), p.name())).collect();
-            if existing.is_empty() || g.bool("NoSyncSuppressAddAnotherHotkeyProfileWarning") {
+            if existing.is_empty() {
                 st.sheet = Some(Sheet::create());
             } else {
-                st.create_warning = Some(existing);
+                let names: Vec<String> = existing.iter().map(|(_, n)| n.clone()).collect();
+                keys.ask = Some(crate::settings_keys::SheetWarning::new(create_warning_spec(&names), crate::settings_keys::SheetThen::CreateHotkey(existing)));
+                ui.ctx().request_repaint();
             }
         }
     });
@@ -494,35 +526,6 @@ pub fn keys_section(ui: &mut egui::Ui, g: &mut Globals, store: &mut Store, st: &
             });
         });
     }
-    // The question before another hotkey profile.
-    if let Some(existing) = st.create_warning.clone() {
-        let names: Vec<String> = existing.iter().map(|(_, n)| n.clone()).collect();
-        let (title, text, buttons) = hotkey::create_warning(&names);
-        egui::Window::new(title).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
-            ui.label(text);
-            let mut silence = g.bool("NoSyncSuppressAddAnotherHotkeyProfileWarning");
-            if ui.checkbox(&mut silence, "Do not ask again").changed() {
-                g.set("NoSyncSuppressAddAnotherHotkeyProfileWarning", Value::Boolean(silence));
-                edit = KeysEdit::Globals;
-            }
-            ui.horizontal(|ui| {
-                for b in buttons {
-                    if ui.button(b).clicked() {
-                        st.create_warning = None;
-                        match b {
-                            "OK" => st.sheet = Some(Sheet::create()),
-                            "Configure Existing Profile" => {
-                                if let Some(p) = store.get(&existing[0].0) {
-                                    st.sheet = Some(Sheet::edit(&existing[0].0, p));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            });
-        });
-    }
     // The sheet, for a new profile or an existing one opened from here.
     if st.sheet.is_some() {
         let guid = st.sheet.as_ref().and_then(|s| s.guid.clone());
@@ -585,5 +588,23 @@ mod tests {
         set_quickly_hotkey(&mut g, None);
         assert_eq!((g.int("OpenQuicklyHotkeyCode"), g.int("OpenQuicklyHotkeyChar"), g.int("OpenQuicklyHotkeyModifiers")), (0, 0, 0));
         assert_eq!(quickly_hotkey(&g), None);
+    }
+
+    /// The question before another hotkey profile (`KP:385-418`): persistent, so never
+    /// answered for the person and without a checkbox; Cancel is the last button.
+    #[test]
+    fn create_warning_follows_iterm2() {
+        let one = create_warning_spec(&["Quake".to_string()]);
+        assert_eq!((one.heading.as_str(), one.text.as_str()), ("Add Another Hotkey Window Profile?", "You already have a Profile with a Hotkey Window named \u{201c}Quake\u{201d}."));
+        assert_eq!((one.labels.clone(), one.cancel), (vec!["OK".to_string(), "Configure Existing Profile".into(), "Cancel".into()], Some(2)));
+        assert_eq!((one.id.as_deref(), one.kind), (Some("NoSyncSuppressAddAnotherHotkeyProfileWarning"), crate::warnings::Kind::Persistent));
+        assert_eq!(crate::warnings::checkbox_label(&one), None);
+        let two = create_warning_spec(&["A".to_string(), "B".into()]);
+        assert_eq!((two.labels.clone(), two.cancel), (vec!["OK".to_string(), "Cancel".into()], Some(1)));
+        // A stored flag (Tandem's old "Do not ask again") no longer skips it.
+        let mut g = Globals::empty(std::path::Path::new("hotkey-warning-test.toml"));
+        g.set("NoSyncSuppressAddAnotherHotkeyProfileWarning", Value::Boolean(true));
+        let w = crate::settings_keys::SheetWarning::new(one, crate::settings_keys::SheetThen::CreateHotkey(vec![("G".into(), "Quake".into())]));
+        assert_eq!(crate::settings_keys::sheet_preempt(&g, &w, false, 0.0), None);
     }
 }

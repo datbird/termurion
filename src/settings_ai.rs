@@ -4,12 +4,15 @@
 
 use toml::Value;
 
-use crate::ai_catalog::{self, Catalog};
+use crate::ai_catalog::{self, Catalog, Model};
+use crate::ai_discovery::{self as ad, Outcome, Probe};
 use crate::ai_gate;
+use crate::ai_model::{self, Discovered};
 use crate::ai_keys::{self, KeyStore, Keys};
 use crate::ai_models::{self as am, default_endpoint, manual_vendor, EditorForm, ManualModel};
 use crate::ai_policy::{self, KeyPolicy};
 use crate::ai_prompts::{self as ap, Prompt};
+use crate::ai_test_conn::{self as tc, Tester};
 use crate::ai_settings::{self as ai, Api, Vendor};
 use crate::globals::Globals;
 use crate::pwm::Secret;
@@ -23,7 +26,30 @@ pub enum SubTab {
     Features,
 }
 
-/// What the AI section keeps between frames. Tasks 8 and 9 add private fields.
+/// Work the settings window asks of the App, which alone holds the discovery cache, the
+/// transport, the loop's wake, the AI alert queue and the key prompt (ruling R12ab-3): the App
+/// takes it after the frame and answers in `State::probe`, `State::tester` or `State::test_key`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AiRequest {
+    /// Refresh one Ollama server's models now.
+    Discover { endpoint: String, headers: Vec<(String, String)>, force: bool },
+    /// Test Connection needs this vendor's key for this endpoint (`App::ask_ai_key`); the answer
+    /// arrives in `State::test_key`.
+    AskKey(Vendor, am::Endpoint),
+    /// Show this alert on the AI alert queue (Test Connection's consent, `App::ask_ai`).
+    Alert(ai_gate::Alert),
+    /// Build the tester for this probe into `State::tester`.
+    BuildTester(tc::Probe),
+}
+
+/// The Ollama probe sheet (`G:3055-3104`): the default in effect before Ollama was picked,
+/// restored when the probe fails or is cancelled, and the frame it opened in.
+struct ProbeSheet {
+    prior: DefaultSnapshot,
+    opened: u64,
+}
+
+/// What the AI section keeps between frames.
 #[derive(Default)]
 pub struct State {
     pub sub: SubTab,
@@ -45,12 +71,39 @@ pub struct State {
     prompt: Prompt,
     /// The prompt help, while it is open: the frame it opened in.
     help: Option<u64>,
+    /// A request for the App, taken after the frame (ruling R12ab-3).
+    pub pending: Option<AiRequest>,
+    /// The App's answer to a `Discover` request, read by the probe sheet or the editor's
+    /// Fetch/Refresh Models, then taken.
+    pub probe: Option<Outcome>,
+    /// The discovered Ollama models of every server asked, which the App copies in when they
+    /// change: the model popup's dynamic entries, the Regular and Budget pickers, and the
+    /// editor's popups read it.
+    pub found: Discovered,
+    /// The Ollama probe sheet while it is open.
+    probing: Option<ProbeSheet>,
+    /// "Could Not Reach Ollama" after a failed probe: its text and the frame it opened in.
+    tell: Option<(String, u64)>,
+    /// The editor's Test Connection once the App built it; the editor's frames drive it.
+    pub tester: Option<Tester>,
+    /// The key prompt's answer for the running test (None: refused), taken by the next frame.
+    pub test_key: Option<Option<Secret>>,
 }
 
 impl State {
     /// The last failed key write's text, clearing it.
     pub fn take_error(&mut self) -> Option<String> {
         self.error.take()
+    }
+
+    /// A probe, a model fetch or a connection test is running: the window keeps drawing so its
+    /// spinner turns and the answer shows at once.
+    /// A test waiting for the key prompt is not: the prompt's answer asks for a redraw.
+    pub fn busy(&self) -> bool {
+        let waits_for_key = self.tester.as_ref().is_some_and(|t| t.needs_key().is_some());
+        self.probing.is_some()
+            || (!waits_for_key && (self.tester.is_some() || self.editor.as_ref().is_some_and(|e| e.testing)))
+            || self.editor.as_ref().is_some_and(|e| e.fetching.is_some())
     }
 }
 
@@ -88,11 +141,61 @@ struct Editor {
     focus_header: Option<usize>,
     /// The frame it opened in, where Return and Escape do nothing.
     opened: u64,
+    /// Fetch or Refresh Models is waiting on the App: whether it was Refresh (auto-discovery),
+    /// and the URL and headers it asked.
+    fetching: Option<(bool, String, Vec<(String, String)>)>,
+    /// The request Fetch or Refresh Models made, for `State::pending`.
+    request: Option<AiRequest>,
+    /// Fetch Models' names, offered to fill the Model field.
+    menu: Option<Vec<String>>,
+    /// An alert over the editor (title, text) and the frame it opened in.
+    alert: Option<(String, String, u64)>,
+    /// The URL the auto-discovery Model popup was last built for; a change clears the choice.
+    popup_url: Option<String>,
+    /// Test Connection runs: the button reads "Testing\u{2026}" and is disabled.
+    testing: bool,
 }
 
 impl Editor {
     fn new(base: ManualModel, editing: Option<usize>, catalog: &Catalog, opened: u64) -> Editor {
-        Editor { form: EditorForm::from_model(&base, catalog), base, editing, header: None, failure: None, focus_name: true, focus_header: None, opened }
+        Editor {
+            form: EditorForm::from_model(&base, catalog),
+            base,
+            editing,
+            header: None,
+            failure: None,
+            focus_name: true,
+            focus_header: None,
+            opened,
+            fetching: None,
+            request: None,
+            menu: None,
+            alert: None,
+            popup_url: None,
+            testing: false,
+        }
+    }
+
+    /// Fetch or Refresh Models' answer (`G:1355-1425`): Refresh reports the count or that the
+    /// server was not reached; Fetch offers the names or says why there are none.
+    fn take_answer(&mut self, o: Outcome, found: &Discovered, now: u64) {
+        let Some((dynamic, url, headers)) = self.fetching.take() else { return };
+        let (title, text) = if dynamic {
+            if o.failed {
+                (ad::REACH_SERVER_TITLE.to_string(), ad::REACH_SERVER_BODY.to_string())
+            } else {
+                (ad::REFRESHED_TITLE.to_string(), ad::refreshed_body(o.count))
+            }
+        } else {
+            match ad::fetched_names(&o, &ad::names_at(found, &url, &headers)) {
+                Ok(names) => {
+                    self.menu = Some(names);
+                    return;
+                }
+                Err(msg) => (ad::FETCH_FAILED_TITLE.to_string(), msg),
+            }
+        };
+        self.alert = Some((title, text, now));
     }
 }
 
@@ -120,7 +223,6 @@ pub const KEYS_HEADING: &str = "Manage AI API Keys";
 pub const KEYS_TEXT: &str = "Keys are stored securely in the Windows Credential Manager.";
 pub const NO_KEY_USED: &str = "No API key is used.";
 pub const SELF_HOSTED: &str = "No API key is sent to a local endpoint. If it requires authentication, use a custom header.";
-const LATER: &str = "Comes in milestone 12.";
 pub const RESET: &str = "Reset";
 
 pub fn key_placeholder(provider: &str) -> String {
@@ -176,13 +278,11 @@ pub const PROVIDER_PREFIX: &str = "provider:";
 pub const MANUAL_PREFIX: &str = "manual:";
 
 /// The default-model popup's items as (identifier, title) (`G:2649-2661`, `G:2859-2890`): the
-/// providers, then the manual models, which the popup lists beneath a separator.
-pub fn model_items(g: &Globals, _catalog: &Catalog) -> (Vec<(String, String)>, Vec<(String, String)>) {
+/// providers, then the manual models as a request resolves them, a dynamic entry expanded to
+/// its discovered models (`MD:177-184`), which the popup lists beneath a separator.
+pub fn model_items(g: &Globals, catalog: &Catalog, found: &Discovered) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let providers = Vendor::POPUP_ORDER.iter().map(|v| (format!("{PROVIDER_PREFIX}{}", v.raw()), v.provider_name().to_string())).collect();
-    let manuals = am::settings_manual_models(g)
-        .iter()
-        .map(|m| (format!("{MANUAL_PREFIX}{}", m.name), manual_title(&m.name, manual_vendor(m.api(), &m.url, &m.name).provider_name())))
-        .collect();
+    let manuals = ai_model::manual_models(g, catalog, found).iter().map(|m| (format!("{MANUAL_PREFIX}{}", m.name), manual_title(&m.name, m.vendor.provider_name()))).collect();
     (providers, manuals)
 }
 
@@ -197,50 +297,135 @@ pub fn stored_identifier(g: &Globals) -> String {
 
 /// The item the popup shows: the stored default when an item matches it, else the first
 /// provider's. Nothing is written: only a person's pick changes the default (`G:2893-2907`).
-pub fn shown_identifier(g: &Globals, catalog: &Catalog) -> String {
+pub fn shown_identifier(g: &Globals, catalog: &Catalog, found: &Discovered) -> String {
     let stored = stored_identifier(g);
-    let (providers, manuals) = model_items(g, catalog);
+    let (providers, manuals) = model_items(g, catalog, found);
     if providers.iter().chain(&manuals).any(|(id, _)| *id == stored) {
         return stored;
     }
     providers.into_iter().next().map(|(id, _)| id).unwrap_or(stored)
 }
 
-/// The manual model an identifier names, among the popup's.
-fn manual_named(g: &Globals, identifier: &str) -> Option<ManualModel> {
+/// The resolved manual model an identifier names, among the popup's.
+fn manual_named(g: &Globals, identifier: &str, catalog: &Catalog, found: &Discovered) -> Option<Model> {
     let name = identifier.strip_prefix(MANUAL_PREFIX)?;
-    am::settings_manual_models(g).into_iter().find(|m| m.name == name)
+    ai_model::manual_models(g, catalog, found).into_iter().find(|m| m.name == name)
 }
 
 /// A person picked an item (`G:3129-3160`): a provider becomes the default with its
-/// recommended model, a manual model with its own settings. Choosing Ollama writes the vendor
-/// without probing the server (ruling 12a-4; the probe comes with 12b).
-pub fn pick(g: &mut Globals, identifier: &str, catalog: &Catalog) {
+/// recommended model; a dynamic entry's discovered model with its own settings, by its
+/// resolved name (`G:2944-2970`); another manual model with its configuration's.
+pub fn pick(g: &mut Globals, identifier: &str, catalog: &Catalog, found: &Discovered) {
     if let Some(raw) = identifier.strip_prefix(PROVIDER_PREFIX) {
         if let Some(v) = raw.parse().ok().and_then(Vendor::from_raw) {
             am::select_provider(g, v, catalog);
         }
-    } else if let Some(m) = manual_named(g, identifier) {
-        am::select_manual(g, &m);
+        return;
+    }
+    let Some(m) = manual_named(g, identifier, catalog, found) else { return };
+    if m.wire_model_name.is_some() {
+        am::select_model(g, &m);
+    } else if let Some(c) = am::settings_manual_models(g).into_iter().find(|c| c.name == m.name) {
+        am::select_manual(g, &c);
     }
 }
 
+/// A person picked an item in the popup: `pick`, and when that made the Ollama vendor the
+/// default, the probe of the local server with the default to restore if it fails or is
+/// cancelled (`G:3113-3127`). Only this interactive pick probes, never a load or a
+/// programmatic change.
+pub fn pick_interactive(g: &mut Globals, identifier: &str, catalog: &Catalog, found: &Discovered) -> Option<(AiRequest, DefaultSnapshot)> {
+    let prior = default_snapshot(g);
+    pick(g, identifier, catalog, found);
+    let ollama = identifier == format!("{PROVIDER_PREFIX}{}", Vendor::Llama.raw());
+    ollama.then(|| (AiRequest::Discover { endpoint: am::OLLAMA_ENDPOINT.to_string(), headers: Vec::new(), force: true }, prior))
+}
+
+/// The default-model settings a failed Ollama probe restores (`G:3167-3178`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DefaultSnapshot {
+    use_recommended: bool,
+    vendor: i64,
+    model: String,
+}
+
+pub fn default_snapshot(g: &Globals) -> DefaultSnapshot {
+    DefaultSnapshot { use_recommended: g.bool(ai::USE_RECOMMENDED), vendor: g.int(ai::VENDOR), model: g.string(ai::MODEL) }
+}
+
+/// Puts the snapshot back, then the model's settings follow it (`aiModelDidChange`).
+pub fn restore_default(g: &mut Globals, s: &DefaultSnapshot, catalog: &Catalog) {
+    g.set(ai::USE_RECOMMENDED, Value::Boolean(s.use_recommended));
+    g.set(ai::VENDOR, Value::Integer(s.vendor));
+    g.set(ai::MODEL, Value::String(s.model.clone()));
+    am::model_did_change(g, catalog);
+}
+
+/// The Ollama vendor's Regular and Budget pickers, in place of the key hint while it is the
+/// default (`G:2762-2833`): the default endpoint's discovered tags sorted, Budget's first item
+/// "Same as regular model"; with none, one disabled "No models found" item in each. The shown
+/// items are the stored picks, else the first item; showing writes nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OllamaPickers {
+    pub regular: Vec<String>,
+    pub budget: Vec<String>,
+    pub regular_at: usize,
+    pub budget_at: usize,
+    pub enabled: bool,
+}
+
+pub const REGULAR_LABEL: &str = "Regular:";
+pub const BUDGET_LABEL: &str = "Budget:";
+
+pub fn ollama_pickers(g: &Globals, found: &Discovered) -> OllamaPickers {
+    let mut names: Vec<String> = found.default_models().iter().map(|m| m.name.clone()).collect();
+    names.sort();
+    if names.is_empty() {
+        let none = vec![ad::NO_MODELS_FOUND.to_string()];
+        return OllamaPickers { regular: none.clone(), budget: none, regular_at: 0, budget_at: 0, enabled: false };
+    }
+    let at = |key: &str| {
+        let chosen = g.string(key);
+        names.iter().position(|n| !chosen.is_empty() && *n == chosen)
+    };
+    let regular_at = at(ai::OLLAMA_REGULAR).unwrap_or(0);
+    let budget_at = at(ai::OLLAMA_ECONOMY).map_or(0, |i| i + 1);
+    let budget = std::iter::once(ad::SAME_AS_REGULAR.to_string()).chain(names.iter().cloned()).collect();
+    OllamaPickers { regular: names, budget, regular_at, budget_at, enabled: true }
+}
+
+/// Regular's item `i` was picked (`G:2815-2818`).
+pub fn pick_regular(g: &mut Globals, p: &OllamaPickers, i: usize) {
+    if let Some(name) = p.regular.get(i).filter(|_| p.enabled) {
+        g.set(ai::OLLAMA_REGULAR, Value::String(name.clone()));
+    }
+}
+
+/// Budget's item `i` was picked: "Same as regular model" stores "" (`G:2820-2828`).
+pub fn pick_budget(g: &mut Globals, p: &OllamaPickers, i: usize) {
+    if !p.enabled {
+        return;
+    }
+    let name = if i == 0 { String::new() } else { p.budget.get(i).cloned().unwrap_or_default() };
+    g.set(ai::OLLAMA_ECONOMY, Value::String(name));
+}
+
 /// The line under the popup saying which key authorizes the shown model (`G:3306-3358`).
-/// None for the Ollama vendor, whose Regular and Budget pickers take the space (12b); a
-/// manual model at a local endpoint never receives a key; otherwise the vendor's key, set or
-/// not, or no key at all.
-pub fn key_hint(g: &Globals, shown: &str, _catalog: &Catalog, key_set: &dyn Fn(Vendor) -> bool) -> Option<String> {
-    let manual = manual_named(g, shown);
+/// None for the Ollama vendor, whose Regular and Budget pickers take the space; a manual model
+/// at a local endpoint never receives a key; otherwise the vendor's key, set or not, or no key
+/// at all.
+pub fn key_hint(g: &Globals, shown: &str, catalog: &Catalog, found: &Discovered, key_set: &dyn Fn(Vendor) -> bool) -> Option<String> {
+    let manual = manual_named(g, shown, catalog, found);
     let vendor = match (shown.strip_prefix(PROVIDER_PREFIX), &manual) {
         (Some(raw), _) => raw.parse().ok().and_then(Vendor::from_raw),
-        (None, Some(m)) => Some(manual_vendor(m.api(), &m.url, &m.name)),
+        (None, Some(m)) => Some(m.vendor),
         (None, None) => None,
     }
     .or_else(|| Vendor::from_raw(g.int(ai::VENDOR)));
     if manual.is_none() && vendor == Some(Vendor::Llama) {
         return None;
     }
-    if manual.as_ref().is_some_and(|m| ai_policy::key_policy(&m.url, m.api()) == KeyPolicy::LocalEndpoint) {
+    if manual.as_ref().is_some_and(|m| ai_policy::key_policy(&m.url, m.api) == KeyPolicy::LocalEndpoint) {
         return Some(SELF_HOSTED.to_string());
     }
     Some(match vendor.filter(|v| v.has_enterable_key()) {
@@ -263,15 +448,84 @@ pub fn enabled(g: &Globals) -> Enabled {
     Enabled { enable: g.bool(ai::ADMIN), rest: ai::allowed(g) }
 }
 
-/// Where the default model's requests go and whether the person allowed them (ruling 1).
-pub fn requests_text(g: &Globals, catalog: &Catalog) -> String {
-    let Some(e) = default_endpoint(g, catalog) else { return ai_gate::NO_ENDPOINT.to_string() };
+/// Where the default model's requests go and whether the person allowed them (ruling 1), with
+/// the discovered Ollama models, as the request resolves it.
+pub fn requests_text(g: &Globals, catalog: &Catalog, found: &Discovered) -> String {
+    let Some(e) = default_endpoint(g, catalog, found) else { return ai_gate::NO_ENDPOINT.to_string() };
     let Some(host) = ai_policy::host_of(&e.url) else { return ai_gate::NO_ENDPOINT.to_string() };
     let provider = e.vendor.provider_name();
     if ai_gate::consented(g, &host) {
         format!("Requests go to {host} ({provider}). You allowed them.")
     } else {
         format!("Requests go to {host} ({provider}). Tandem asks before the first one.")
+    }
+}
+
+/// Test Connection pressed (`G:1460-1510`): the form's trimmed URL and name (in auto-discovery
+/// mode the popup's choice, else the first discovered tag), `missing` first (Err is its text for
+/// a "Missing Information" alert), then the consent gate for the probe's own endpoint: anything
+/// but Pass asks the App to show the gate's alert, and the test does not start (after Allow the
+/// person presses again, Decision 16); otherwise the App builds the tester.
+pub fn test_click(g: &Globals, form: &EditorForm, found: &Discovered) -> Result<AiRequest, (&'static str, &'static str)> {
+    let url = form.url.trim().to_string();
+    let headers = form.named_headers();
+    let cached = if form.dynamic { ad::names_at(found, &url, &headers).into_iter().next() } else { None };
+    let chosen = if form.dynamic { form.selected.trim() } else { form.name.trim() };
+    if let Some(text) = tc::missing(chosen, &url, form.dynamic, cached.as_deref()) {
+        return Err((tc::MISSING_TITLE, text));
+    }
+    // A URL with no host sends nothing, so it needs no gate (whose refusal would name the
+    // default model): "The URL is not valid." at once, as iTerm2's test ends.
+    if crate::ai_policy::host_of(&url).is_none() {
+        return Err((tc::FAILED_TITLE, tc::BAD_URL));
+    }
+    let name = if chosen.is_empty() { cached.unwrap_or_default() } else { chosen.to_string() };
+    let probe = tc::Probe { name, url, api: Api::from_raw_or_chat(form.api), function_calling: form.function_calling, supports_temperature: form.temperature, headers };
+    Ok(match ai_gate::alert(&ai_gate::check_endpoint(g, Some(&tc::endpoint(&probe)))) {
+        Some(alert) => AiRequest::Alert(alert),
+        None => AiRequest::BuildTester(probe),
+    })
+}
+
+/// Drives the editor's Test Connection each frame (`G:1511-1540`): it starts with the vendor's
+/// stored key, asks the App for a key when one is needed, takes the prompt's answer, polls, and
+/// shows the outcome over the editor ("Connection Succeeded" or "Connection Failed"; nothing
+/// when the key prompt was refused). Closing the editor drops the test.
+fn drive_test(st: &mut State, now: u64) {
+    let Some(t) = st.tester.as_mut() else {
+        // A key answered after its test ended is never used by a later one.
+        st.test_key = None;
+        return;
+    };
+    let Some(e) = st.editor.as_mut() else {
+        st.tester = None;
+        st.test_key = None;
+        return;
+    };
+    let outcome = if !t.started() {
+        // One request for the App per frame: a start that needs a key waits for a free slot.
+        if st.pending.is_some() {
+            return;
+        }
+        let vendor = tc::endpoint(t.probe()).vendor;
+        let stored = keys().get(vendor, &mut *ai_keys::system_store());
+        let o = t.start(stored.as_ref());
+        if let Some(v) = t.needs_key() {
+            st.pending = Some(AiRequest::AskKey(v, tc::endpoint(t.probe())));
+        }
+        o
+    } else if t.needs_key().is_some() {
+        st.test_key.take().and_then(|k| t.key_given(k))
+    } else {
+        t.poll()
+    };
+    let Some(outcome) = outcome else { return };
+    st.tester = None;
+    e.testing = false;
+    match outcome {
+        tc::Outcome::Canceled => {}
+        tc::Outcome::Success(text) => e.alert = Some((tc::SUCCEEDED_TITLE.to_string(), text, now)),
+        tc::Outcome::Failure(text) => e.alert = Some((tc::FAILED_TITLE.to_string(), text, now)),
     }
 }
 
@@ -384,7 +638,7 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
     egui::Grid::new("ai-general").num_columns(2).spacing(egui::vec2(8.0, 10.0)).show(ui, |ui| {
         row_label(ui, REQUESTS_LABEL);
         ui.vertical(|ui| {
-            ui.label(requests_text(g, catalog));
+            ui.label(requests_text(g, catalog, &st.found));
             ui.weak(REQUESTS_NOTE);
             let any = matches!(g.values.get(ai::CONSENT), Some(Value::Array(a)) if !a.is_empty());
             if ui.add_enabled(any, egui::Button::new(FORGET_HOSTS)).clicked() {
@@ -416,8 +670,8 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
 
         row_label(ui, MODEL_LABEL);
         ui.vertical(|ui| {
-            let shown = shown_identifier(g, catalog);
-            let (providers, manuals) = model_items(g, catalog);
+            let shown = shown_identifier(g, catalog, &st.found);
+            let (providers, manuals) = model_items(g, catalog, &st.found);
             let title = providers.iter().chain(&manuals).find(|(id, _)| *id == shown).map_or(String::new(), |(_, t)| t.clone());
             let mut picked = None;
             ui.horizontal(|ui| {
@@ -446,14 +700,22 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
                 }
             });
             if let Some(id) = picked.filter(|id| *id != shown) {
-                pick(g, &id, catalog);
+                if let Some((request, prior)) = pick_interactive(g, &id, catalog, &st.found) {
+                    st.probe = None;
+                    st.pending = Some(request);
+                    st.probing = Some(ProbeSheet { prior, opened: ui.ctx().cumulative_frame_nr() });
+                }
                 changed = true;
             }
-            let shown = shown_identifier(g, catalog);
-            let store = std::cell::RefCell::new(ai_keys::system_store());
-            let key_set = |v: Vendor| keys().is_set(v, &mut **store.borrow_mut());
-            if let Some(hint) = key_hint(g, &shown, catalog, &key_set) {
-                ui.add(egui::Label::new(egui::RichText::new(hint.as_str()).weak()).truncate()).on_hover_text(hint);
+            if ai_model::ollama_vendor_is_default(g) {
+                changed |= ollama_picker_rows(ui, g, &st.found, on.rest);
+            } else {
+                let shown = shown_identifier(g, catalog, &st.found);
+                let store = std::cell::RefCell::new(ai_keys::system_store());
+                let key_set = |v: Vendor| keys().is_set(v, &mut **store.borrow_mut());
+                if let Some(hint) = key_hint(g, &shown, catalog, &st.found, &key_set) {
+                    ui.add(egui::Label::new(egui::RichText::new(hint.as_str()).weak()).truncate()).on_hover_text(hint);
+                }
             }
         });
         ui.end_row();
@@ -487,15 +749,105 @@ fn general(ui: &mut egui::Ui, g: &mut Globals, st: &mut State) -> bool {
             st.key_failure = st.error.clone();
         }
     }
+    // The App's answer goes to whoever asked: the probe sheet, else the editor's fetch.
+    let now = ui.ctx().cumulative_frame_nr();
+    if st.probing.is_none() {
+        if let Some(o) = st.probe.take() {
+            if let Some(e) = st.editor.as_mut() {
+                e.take_answer(o, &st.found, now);
+            }
+        }
+    }
     if let Some(sh) = st.sheet.as_mut() {
-        let (closed, sheet_changed) = sheet_modal(ui.ctx(), g, sh, &mut st.editor, catalog);
+        let (closed, sheet_changed) = sheet_modal(ui.ctx(), g, sh, &mut st.editor, catalog, &st.found);
         changed |= sheet_changed;
         if closed {
             st.sheet = None;
             st.editor = None;
         }
     }
+    if let Some(request) = st.editor.as_mut().and_then(|e| e.request.take()) {
+        if matches!(request, AiRequest::Discover { .. }) {
+            st.probe = None;
+        }
+        st.pending = Some(request);
+    }
+    drive_test(st, now);
+    if let Some(p) = &st.probing {
+        let canceled = probe_modal(ui.ctx(), p.opened);
+        let answer = if canceled { Some(Probe::Restore) } else { st.probe.take().map(|o| ad::probe_outcome(&o, false)) };
+        if let Some(answer) = answer {
+            let prior = st.probing.take().map(|p| p.prior);
+            match (answer, prior) {
+                (Probe::Keep, _) | (_, None) => {}
+                (Probe::Restore, Some(prior)) => restore_default(g, &prior, catalog),
+                (Probe::RestoreAndTell(text), Some(prior)) => {
+                    restore_default(g, &prior, catalog);
+                    st.tell = Some((text, now));
+                }
+            }
+            changed = true;
+        }
+    }
+    if let Some((text, opened)) = &st.tell {
+        if notice_modal(ui.ctx(), "ai-ollama-unreachable", ad::UNREACHABLE_TITLE, text, now != *opened) {
+            st.tell = None;
+        }
+    }
     changed
+}
+
+/// The Regular and Budget pickers under the model popup while the Ollama vendor is the default
+/// (`G:2762-2828`). True when a pick changed a setting.
+fn ollama_picker_rows(ui: &mut egui::Ui, g: &mut Globals, found: &Discovered, enabled: bool) -> bool {
+    let p = ollama_pickers(g, found);
+    let mut changed = false;
+    for (label, items, at, id) in [(REGULAR_LABEL, &p.regular, p.regular_at, "ai-ollama-regular"), (BUDGET_LABEL, &p.budget, p.budget_at, "ai-ollama-budget")] {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            let mut picked = None;
+            ui.add_enabled_ui(enabled && p.enabled, |ui| {
+                egui::ComboBox::from_id_salt(id).width(260.0).selected_text(items[at].as_str()).show_ui(ui, |ui| {
+                    for (i, item) in items.iter().enumerate() {
+                        if ui.selectable_label(i == at, item.as_str()).clicked() {
+                            picked = Some(i);
+                        }
+                    }
+                });
+            });
+            if let Some(i) = picked.filter(|i| *i != at) {
+                if id == "ai-ollama-regular" {
+                    pick_regular(g, &p, i);
+                } else {
+                    pick_budget(g, &p, i);
+                }
+                changed = true;
+            }
+        });
+    }
+    changed
+}
+
+/// The Ollama probe sheet (`G:3055-3104`): the title, the text, a spinner and Cancel (Return or
+/// Escape). True when cancelled.
+fn probe_modal(ctx: &egui::Context, opened: u64) -> bool {
+    let mut cancel = false;
+    egui::Modal::new(egui::Id::new("ai-ollama-probe")).show(ctx, |ui| {
+        ui.set_width(360.0);
+        ui.strong(ad::PROBE_TITLE);
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(ad::PROBE_BODY).wrap());
+        ui.add_space(8.0);
+        ui.add(egui::Spinner::new().size(18.0));
+        ui.add_space(8.0);
+        let (enter, escape) = modal_keys(ui, opened, &[]);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(egui::Button::new(am::CANCEL).min_size(egui::vec2(76.0, 24.0))).clicked() || enter || escape {
+                cancel = true;
+            }
+        });
+    });
+    cancel
 }
 
 /// "Manage AI Models\u{2026}" (`G:4032-4046`): the sheet over the configurations (else the
@@ -533,7 +885,7 @@ pub fn default_keys(opening: bool, enter: bool, escape: bool, focus_takes_return
 /// `default_keys` for a modal drawn in `ui` that opened in frame `opened`. `keeps` names the
 /// fields that keep the focus on Return (the key fields) and still let it act; egui's text
 /// fields give the focus up on Return, so they need no entry.
-fn modal_keys(ui: &egui::Ui, opened: u64, keeps: &[egui::Id]) -> (bool, bool) {
+pub fn modal_keys(ui: &egui::Ui, opened: u64, keeps: &[egui::Id]) -> (bool, bool) {
     let (enter, escape) = enter_escape(ui);
     let ctx = ui.ctx();
     let focus_takes_return = ctx.memory(|m| m.focused()).filter(|id| !keeps.contains(id)).and_then(|id| ctx.read_response(id)).is_some_and(|r| r.enabled() && r.sense.senses_click());
@@ -581,7 +933,7 @@ enum SheetAct {
 const COLUMNS: [f32; 3] = [260.0, 130.0, 150.0];
 
 /// The Manual AI Models sheet and, over it, the model editor. Answers (closed, changed).
-fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mut Option<Editor>, catalog: &Catalog) -> (bool, bool) {
+fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mut Option<Editor>, catalog: &Catalog, found: &Discovered) -> (bool, bool) {
     if sh.notice {
         if notice_modal(ctx, "ai-legacy-headers", am::LEGACY_HEADING, am::LEGACY_TEXT, ctx.cumulative_frame_nr() != sh.opened) {
             sh.notice = false;
@@ -683,7 +1035,7 @@ fn sheet_modal(ctx: &egui::Context, g: &mut Globals, sh: &mut Sheet, editor: &mu
         _ => {}
     }
     if let Some(e) = editor.as_mut() {
-        match editor_modal(ctx, e, &sh.models, catalog) {
+        match editor_modal(ctx, g, e, &sh.models, catalog, found) {
             Some(Some(m)) => {
                 sh.selected = Some(am::save_edit(g, &mut sh.models, e.editing, m, catalog));
                 *editor = None;
@@ -705,12 +1057,11 @@ fn editor_label(ui: &mut egui::Ui, text: &str) {
 const FIELD_WIDTH: f32 = 400.0;
 
 /// The model editor (`G:645-1640`). None while open; Some(None) on Cancel; Some(Some(model))
-/// when Save passed its checks. Fetch Models, discovery, Test Connection and saving a dynamic
-/// entry are 12b's, shown disabled.
-fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], catalog: &Catalog) -> Option<Option<ManualModel>> {
+/// when Save passed its checks. Test Connection hands its request to the App (`test_click`).
+fn editor_modal(ctx: &egui::Context, g: &Globals, e: &mut Editor, models: &[ManualModel], catalog: &Catalog, found: &Discovered) -> Option<Option<ManualModel>> {
     let mut out = None;
-    let blocked = e.failure.is_some();
-    let dynamic = e.form.dynamic;
+    let blocked = e.failure.is_some() || e.alert.is_some() || e.menu.is_some();
+    let now = ctx.cumulative_frame_nr();
     egui::Modal::new(egui::Id::new("ai-model-editor")).show(ctx, |ui| {
         ui.set_width(150.0 + 12.0 + FIELD_WIDTH);
         ui.strong(if e.editing.is_some() { am::EDIT_TITLE } else { am::ADD_TITLE });
@@ -752,12 +1103,59 @@ fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], cat
 
             editor_label(ui, am::EDITOR_MODEL_LABEL);
             ui.horizontal(|ui| {
-                let name = ui.add_enabled(!form.dynamic, egui::TextEdit::singleline(&mut form.name).hint_text(form.name_placeholder.as_str()).desired_width(FIELD_WIDTH - 136.0));
-                if std::mem::take(&mut e.focus_name) {
-                    name.request_focus();
+                if form.dynamic {
+                    // Auto-discovery replaces the Model field with the discovered models of the
+                    // URL; a new URL clears a choice made for the old server (`G:1026-1070`).
+                    let url = form.url.trim().to_string();
+                    if e.popup_url.as_ref().is_some_and(|u| *u != url) {
+                        form.selected.clear();
+                    }
+                    e.popup_url = Some(url.clone());
+                    let items = am::dynamic_popup(&ad::names_at(found, &url, &form.named_headers()), &form.selected);
+                    let title = items.iter().find(|(_, v)| v.as_deref() == Some(form.selected.as_str())).map_or(ad::ALL_INSTALLED, |(t, _)| t.as_str()).to_string();
+                    egui::ComboBox::from_id_salt("ai-model-dynamic").width(FIELD_WIDTH - 144.0).selected_text(title).show_ui(ui, |ui| {
+                        for (i, (t, v)) in items.iter().enumerate() {
+                            if i == 1 {
+                                ui.separator();
+                            }
+                            match v {
+                                Some(v) => {
+                                    if ui.selectable_label(*v == form.selected, t.as_str()).clicked() {
+                                        form.selected = v.clone();
+                                    }
+                                }
+                                None => {
+                                    ui.add_enabled(false, egui::Button::selectable(false, t.as_str()));
+                                }
+                            }
+                        }
+                    });
+                    e.focus_name = false;
+                } else {
+                    let name = ui.add(egui::TextEdit::singleline(&mut form.name).hint_text(form.name_placeholder.as_str()).desired_width(FIELD_WIDTH - 136.0));
+                    if std::mem::take(&mut e.focus_name) {
+                        name.request_focus();
+                    }
                 }
-                let fetch = if form.dynamic { am::REFRESH_MODELS } else { am::FETCH_MODELS };
-                ui.add_enabled(false, egui::Button::new(fetch).min_size(egui::vec2(130.0, 0.0))).on_disabled_hover_text(LATER);
+                let fetch = if e.fetching.is_some() {
+                    ad::FETCHING
+                } else if form.dynamic {
+                    am::REFRESH_MODELS
+                } else {
+                    am::FETCH_MODELS
+                };
+                if ui.add_enabled(e.fetching.is_none(), egui::Button::new(fetch).min_size(egui::vec2(130.0, 0.0))).clicked() {
+                    // `G:1347-1425`: the URL is required; the App asks the server, forced so a
+                    // background refresh cannot swallow this one.
+                    let url = form.url.trim().to_string();
+                    if url.is_empty() {
+                        e.alert = Some((ad::MISSING_URL_TITLE.to_string(), ad::MISSING_URL_BODY.to_string(), now));
+                    } else {
+                        let headers = form.named_headers();
+                        e.request = Some(AiRequest::Discover { endpoint: url.clone(), headers: headers.clone(), force: true });
+                        e.fetching = Some((form.dynamic, url, headers));
+                    }
+                }
             });
             ui.end_row();
 
@@ -778,7 +1176,9 @@ fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], cat
             ui.label("");
             ui.vertical(|ui| {
                 let mut discover = form.dynamic;
-                ui.add_enabled(false, egui::Checkbox::new(&mut discover, am::DISCOVER)).on_disabled_hover_text(LATER);
+                if ui.checkbox(&mut discover, am::DISCOVER).changed() {
+                    form.set_dynamic(discover);
+                }
                 let hint = editor_key_hint(form);
                 ui.add(egui::Label::new(egui::RichText::new(hint.as_str()).small().weak()).wrap()).on_hover_text(hint);
             });
@@ -850,15 +1250,28 @@ fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], cat
         ui.add_space(12.0);
         let (enter, escape) = modal_keys(ui, e.opened, &[]);
         ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new(am::TEST_CONNECTION).min_size(egui::vec2(150.0, 30.0))).on_disabled_hover_text(LATER);
+            // `G:1497-1510`: disabled with a spinner while the test runs.
+            let title = if e.testing { tc::TESTING } else { am::TEST_CONNECTION };
+            if ui.add_enabled(!e.testing, egui::Button::new(title).min_size(egui::vec2(150.0, 30.0))).clicked() {
+                match test_click(g, &e.form, found) {
+                    Err((title, text)) => e.alert = Some((title.to_string(), text.to_string(), now)),
+                    Ok(request) => {
+                        e.testing = matches!(request, AiRequest::BuildTester(_));
+                        e.request = Some(request);
+                    }
+                }
+            }
+            if e.testing {
+                ui.add(egui::Spinner::new().size(16.0));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // iTerm2 titles the button Add while adding (`G:927-929`).
                 let title = if e.editing.is_some() { am::SAVE } else { am::ADD };
-                let save = ui.add_enabled(!dynamic, egui::Button::new(title).min_size(egui::vec2(100.0, 30.0))).on_disabled_hover_text(LATER).clicked();
+                let save = ui.add(egui::Button::new(title).min_size(egui::vec2(100.0, 30.0))).clicked();
                 let cancel = ui.add(egui::Button::new(am::CANCEL).min_size(egui::vec2(100.0, 30.0))).clicked();
                 if cancel || (escape && !blocked) {
                     out = Some(None);
-                } else if save || (enter && !blocked && !dynamic) {
+                } else if save || (enter && !blocked) {
                     let taken = |name: &str| models.iter().enumerate().any(|(i, m)| Some(i) != e.editing && m.name == name);
                     match e.form.validate(&e.base, &taken) {
                         Ok(m) => out = Some(Some(m)),
@@ -872,6 +1285,40 @@ fn editor_modal(ctx: &egui::Context, e: &mut Editor, models: &[ManualModel], cat
         if notice_modal(ctx, "ai-model-invalid", am::INVALID_TITLE, &msg, blocked) {
             e.failure = None;
         }
+    }
+    if let Some((title, text, opened)) = e.alert.clone() {
+        if notice_modal(ctx, "ai-model-fetch", &title, &text, now != opened) {
+            e.alert = None;
+        }
+    }
+    if let Some(names) = e.menu.clone() {
+        if let Some(picked) = names_menu(ctx, &names) {
+            e.menu = None;
+            if let Some(name) = picked {
+                e.form.name = name;
+            }
+        }
+    }
+    out
+}
+
+/// Fetch Models' names (`G:1427-1445`): picking one fills the Model field. None while open;
+/// Some(None) when dismissed.
+fn names_menu(ctx: &egui::Context, names: &[String]) -> Option<Option<String>> {
+    let mut out = None;
+    let shown = egui::Modal::new(egui::Id::new("ai-model-names")).show(ctx, |ui| {
+        ui.set_width(300.0);
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for n in names {
+                if ui.selectable_label(false, n.as_str()).clicked() {
+                    out = Some(Some(n.clone()));
+                }
+            }
+        });
+    });
+    // A click outside or Escape dismisses it, as a menu.
+    if out.is_none() && shown.should_close() {
+        out = Some(None);
     }
     out
 }
@@ -1074,23 +1521,179 @@ mod tests {
         let mut dynamic = manual("everything", "http://server.example:11434/api/chat", 5);
         dynamic.dynamic_models = true;
         let mut g = with_models(&[manual("llama3", LLAMA3_URL, 5), manual("b", B_URL, 2), dynamic]);
-        let (providers, manuals) = model_items(&g, cat);
+        let none = Discovered::default();
+        let (providers, manuals) = model_items(&g, cat, &none);
         assert_eq!(providers, pairs(&[("provider:2", "OpenAI"), ("provider:4", "Anthropic"), ("provider:1", "Gemini"), ("provider:0", "DeepSeek"), ("provider:3", "Ollama")]));
-        assert_eq!(manuals, pairs(&[("manual:llama3", "Manual: llama3 \u{2014} Ollama"), ("manual:b", "Manual: b \u{2014} OpenAI")]), "a dynamic entry is not listed until 12b");
+        assert_eq!(manuals, pairs(&[("manual:llama3", "Manual: llama3 \u{2014} Ollama"), ("manual:b", "Manual: b \u{2014} OpenAI")]), "a dynamic entry lists nothing before discovery");
 
         assert_eq!(stored_identifier(&g), "provider:2");
-        pick(&mut g, "manual:b", cat);
+        pick(&mut g, "manual:b", cat, &none);
         assert_eq!(stored_identifier(&g), "manual:b");
         assert!(!g.bool(USE_RECOMMENDED), "select_manual ran");
         assert_eq!(g.string(URL), B_URL, "select_manual ran, not model_did_change");
         assert_eq!(g.int(crate::ai_settings::API), 2);
 
-        pick(&mut g, "provider:4", cat);
+        pick(&mut g, "provider:4", cat, &none);
         assert_eq!(stored_identifier(&g), "provider:4");
         assert!(g.bool(USE_RECOMMENDED));
         assert_eq!(g.int(VENDOR), Vendor::Anthropic.raw());
         let recommended = cat.recommended(Vendor::Anthropic).expect("Anthropic has a recommended model");
         assert_eq!(g.string(MODEL), recommended.name, "select_provider(Anthropic) ran");
+
+        // A dynamic entry lists the models discovered at its server, and picking one makes it
+        // the default by its resolved name, which the request resolves to the same server.
+        let server = "http://server.example:11434/api/chat";
+        let mut m = crate::ai_model::pending_ollama_model();
+        m.name = "qwen3".into();
+        m.url = server.into();
+        m.features.insert(crate::ai_catalog::Feature::FunctionCalling);
+        let found = Discovered { servers: vec![crate::ai_model::Server { endpoint: server.into(), headers: Vec::new(), models: vec![m] }] };
+        let (_, manuals) = model_items(&g, cat, &found);
+        assert_eq!(manuals.last(), Some(&("manual:qwen3".to_string(), "Manual: qwen3 \u{2014} Ollama".to_string())));
+        pick(&mut g, "manual:qwen3", cat, &found);
+        assert_eq!(stored_identifier(&g), "manual:qwen3");
+        assert_eq!(shown_identifier(&g, cat, &found), "manual:qwen3");
+        assert_eq!(shown_identifier(&g, cat, &none), "provider:2", "undiscovered, the default shows the first provider");
+        assert!(!g.bool(USE_RECOMMENDED));
+        assert_eq!((g.string(URL), g.int(crate::ai_settings::API)), (server.to_string(), Api::Llama.raw()));
+        assert!(g.bool(crate::ai_settings::FEATURE_FUNCTION_CALLING) && g.bool(crate::ai_settings::FEATURE_STREAMING));
+        let resolved = crate::ai_model::configured(&g, cat, &found).expect("a model");
+        assert_eq!((resolved.name.as_str(), resolved.url.as_str()), ("qwen3", server));
+        assert_eq!(key_hint(&g, "manual:qwen3", cat, &found, &|_| false).as_deref(), Some("No API key is used."));
+        // Settings, the gate and the request name the same host for a dynamic default, even with
+        // other usable entries ahead of it.
+        assert_eq!(requests_text(&g, cat, &found), "Requests go to server.example (Ollama). Tandem asks before the first one.");
+        g.set(crate::ai_settings::ENABLE_AI, Value::Boolean(true));
+        assert_eq!(crate::ai_gate::check(&g, cat, &found), crate::ai_gate::Check::NeedsConsent { provider: "Ollama".into(), host: "server.example".into() });
+        assert_eq!(crate::ai_gate::check_endpoint(&g, Some(&crate::ai_model::endpoint(&resolved))), crate::ai_gate::check(&g, cat, &found));
+    }
+
+    #[test]
+    fn ollama_pickers_follow_iterm2() {
+        let cat = bundled();
+        let none = Discovered::default();
+        let mut g = with_models(&[]);
+        let p = ollama_pickers(&g, &none);
+        assert_eq!(p, OllamaPickers { regular: vec![crate::ai_discovery::NO_MODELS_FOUND.into()], budget: vec![crate::ai_discovery::NO_MODELS_FOUND.into()], regular_at: 0, budget_at: 0, enabled: false });
+        pick_regular(&mut g, &p, 0);
+        pick_budget(&mut g, &p, 0);
+        assert_eq!((g.string(crate::ai_settings::OLLAMA_REGULAR), g.string(crate::ai_settings::OLLAMA_ECONOMY)), (String::new(), String::new()), "a disabled picker writes nothing");
+
+        let tags = |names: &[&str]| {
+            let models = names
+                .iter()
+                .map(|n| {
+                    let mut m = crate::ai_model::pending_ollama_model();
+                    m.name = n.to_string();
+                    m
+                })
+                .collect();
+            Discovered { servers: vec![crate::ai_model::Server { endpoint: crate::ai_models::OLLAMA_ENDPOINT.into(), headers: Vec::new(), models }] }
+        };
+        let found = tags(&["qwen3:8b", "llama3.3"]);
+        let p = ollama_pickers(&g, &found);
+        assert_eq!(p.regular, ["llama3.3", "qwen3:8b"], "sorted");
+        assert_eq!(p.budget, ["Same as regular model", "llama3.3", "qwen3:8b"]);
+        assert_eq!((p.regular_at, p.budget_at, p.enabled), (0, 0, true));
+        assert_eq!(g.string(crate::ai_settings::OLLAMA_REGULAR), "", "showing the first item writes nothing");
+        pick_regular(&mut g, &p, 1);
+        pick_budget(&mut g, &p, 1);
+        assert_eq!((g.string(crate::ai_settings::OLLAMA_REGULAR), g.string(crate::ai_settings::OLLAMA_ECONOMY)), ("qwen3:8b".to_string(), "llama3.3".to_string()));
+        let p = ollama_pickers(&g, &found);
+        assert_eq!((p.regular_at, p.budget_at), (1, 1));
+        pick_budget(&mut g, &p, 0);
+        assert_eq!(g.string(crate::ai_settings::OLLAMA_ECONOMY), "", "Same as regular model stores empty");
+        // A pick the server no longer has shows the first item.
+        g.set(crate::ai_settings::OLLAMA_REGULAR, Value::String("gone".into()));
+        assert_eq!(ollama_pickers(&g, &found).regular_at, 0);
+        // Tags of another server are not the vendor's.
+        let mut other = tags(&["a"]);
+        other.servers[0].endpoint = "http://gpu:11434/api/chat".into();
+        assert!(!ollama_pickers(&g, &other).enabled);
+        assert_eq!((REGULAR_LABEL, BUDGET_LABEL), ("Regular:", "Budget:"));
+        let _ = cat;
+    }
+
+    #[test]
+    fn ollama_probe_follows_iterm2() {
+        let cat = bundled();
+        let none = Discovered::default();
+        let mut g = with_models(&[manual("b", B_URL, 2)]);
+        assert_eq!(pick_interactive(&mut g, "provider:4", cat, &none), None, "only Ollama probes");
+        pick(&mut g, "manual:b", cat, &none);
+        let before = default_snapshot(&g);
+        let (request, prior) = pick_interactive(&mut g, "provider:3", cat, &none).expect("picking Ollama probes");
+        assert_eq!(request, AiRequest::Discover { endpoint: "http://localhost:11434/api/chat".into(), headers: Vec::new(), force: true });
+        assert_eq!(prior, before);
+        assert!(crate::ai_model::ollama_vendor_is_default(&g), "the pick is committed first");
+        restore_default(&mut g, &prior, cat);
+        assert_eq!(default_snapshot(&g), before);
+        assert_eq!(stored_identifier(&g), "manual:b");
+        assert!(!crate::ai_model::ollama_vendor_is_default(&g));
+    }
+
+    #[test]
+    fn editor_fetch_answers_follow_iterm2() {
+        let cat = bundled();
+        let url = "http://gpu.test:11434/api/chat";
+        let mut e = Editor::new(manual("m", url, 5), None, cat, 0);
+        let ok = |count| Outcome { count, failed: false, error: None };
+        e.fetching = Some((true, url.into(), Vec::new()));
+        e.take_answer(ok(3), &Discovered::default(), 7);
+        assert_eq!(e.alert, Some(("Models Refreshed".into(), crate::ai_discovery::refreshed_body(3), 7)));
+        e.fetching = Some((true, url.into(), Vec::new()));
+        e.take_answer(Outcome { count: 0, failed: true, error: None }, &Discovered::default(), 8);
+        assert_eq!(e.alert.as_ref().map(|a| a.0.as_str()), Some("Could Not Reach Server"));
+        // Fetch Models lists what the cache now holds for that server and headers.
+        let mut m = crate::ai_model::pending_ollama_model();
+        m.name = "phi4".into();
+        m.url = url.into();
+        let found = Discovered { servers: vec![crate::ai_model::Server { endpoint: url.into(), headers: Vec::new(), models: vec![m] }] };
+        e.alert = None;
+        e.fetching = Some((false, url.into(), Vec::new()));
+        e.take_answer(ok(1), &found, 9);
+        assert_eq!((e.menu.clone(), e.alert.clone()), (Some(vec!["phi4".to_string()]), None));
+        e.menu = None;
+        e.fetching = Some((false, url.into(), Vec::new()));
+        e.take_answer(ok(0), &Discovered::default(), 10);
+        assert_eq!(e.alert, Some(("Could Not Fetch Models".into(), crate::ai_discovery::NO_MODELS.into(), 10)));
+        e.fetching = Some((false, url.into(), Vec::new()));
+        e.take_answer(Outcome { count: 0, failed: true, error: Some("Could not reach Ollama at gpu.test: x".into()) }, &found, 11);
+        assert_eq!(e.alert.as_ref().map(|a| a.1.as_str()), Some("Could not reach Ollama at gpu.test: x"));
+        // An answer nobody waits for is dropped.
+        e.alert = None;
+        e.take_answer(ok(2), &found, 12);
+        assert_eq!((e.alert.clone(), e.menu.clone()), (None, None));
+        assert!(!State::default().busy());
+    }
+
+    /// Task 10 re-review: a running test keeps the window drawing, but not while it waits for
+    /// the key prompt, whose answer asks for a redraw.
+    #[test]
+    fn busy_while_a_test_runs_but_not_while_it_waits_for_a_key() {
+        use crate::ai_transport::{Options, Proxy, Recorded};
+        let probe = crate::ai_test_conn::Probe {
+            name: "gpt-5".into(),
+            url: "https://api.openai.com/v1/responses".into(),
+            api: Api::Responses,
+            function_calling: false,
+            supports_temperature: true,
+            headers: Vec::new(),
+        };
+        let wire = crate::ai_turn::Wire { token_limit: 128000, response_limit: 8192, zdr: false, ollama_num_ctx: 0, ollama_keep_alive: "30m".into() };
+        let options = Options { idle: std::time::Duration::from_secs(5), proxy: Proxy::Off };
+        let mut s = State::default();
+        s.tester = Some(Tester::new(probe, wire, std::sync::Arc::new(Recorded::new(Vec::new())), options, std::sync::Arc::new(|| {})));
+        assert!(s.busy(), "a built test draws until it answers");
+        assert_eq!(s.tester.as_mut().map(|t| t.start(None)), Some(None));
+        assert_eq!(s.tester.as_ref().and_then(Tester::needs_key), Some(Vendor::OpenAI));
+        assert!(!s.busy(), "waiting for the key does not repaint");
+        let mut e = Editor::new(manual("m", "https://api.openai.com/v1/responses", 0), None, bundled(), 0);
+        e.testing = true;
+        s.editor = Some(e);
+        assert!(!s.busy(), "the editor's testing flag waits for the key too");
+        s.tester = None;
+        assert!(s.busy(), "a test the App has not built yet draws");
     }
 
     #[test]
@@ -1101,20 +1704,20 @@ mod tests {
         g.set(MODEL, Value::String("gone".into()));
         let before = g.values.clone();
         assert_eq!(stored_identifier(&g), "manual:gone");
-        assert_eq!(shown_identifier(&g, cat), "provider:2");
+        assert_eq!(shown_identifier(&g, cat, &Discovered::default()), "provider:2");
         assert_eq!(g.values, before);
 
         for vendor in [5, 9] {
             let mut g = with_models(&[]);
             g.set(VENDOR, Value::Integer(vendor));
             let before = g.values.clone();
-            assert_eq!(shown_identifier(&g, cat), "provider:2", "AIVendor {vendor}");
+            assert_eq!(shown_identifier(&g, cat, &Discovered::default()), "provider:2", "AIVendor {vendor}");
             assert_eq!(g.values, before, "AIVendor {vendor}");
         }
 
         let mut g = with_models(&[manual("llama3", LLAMA3_URL, 5)]);
-        pick(&mut g, "manual:llama3", cat);
-        assert_eq!(shown_identifier(&g, cat), "manual:llama3", "a matching default shows itself");
+        pick(&mut g, "manual:llama3", cat, &Discovered::default());
+        assert_eq!(shown_identifier(&g, cat, &Discovered::default()), "manual:llama3", "a matching default shows itself");
     }
 
     #[test]
@@ -1123,12 +1726,12 @@ mod tests {
         let g = with_models(&[manual("llama3", LLAMA3_URL, 5), manual("b", B_URL, 2), manual("remote", "https://example.com/v1", 5)]);
         let anthropic_set = |v: Vendor| v == Vendor::Anthropic;
         let none_set = |_: Vendor| false;
-        assert_eq!(key_hint(&g, "provider:4", cat, &anthropic_set).as_deref(), Some("Authorizes with your Anthropic API key."));
-        assert_eq!(key_hint(&g, "provider:4", cat, &none_set).as_deref(), Some("No Anthropic API key is set yet."));
-        assert_eq!(key_hint(&g, "provider:3", cat, &none_set), None, "12b puts the Regular and Budget pickers there");
-        assert_eq!(key_hint(&g, "manual:llama3", cat, &none_set).as_deref(), Some("No API key is sent to a local endpoint. If it requires authentication, use a custom header."));
-        assert_eq!(key_hint(&g, "manual:b", cat, &anthropic_set).as_deref(), Some("No OpenAI API key is set yet."));
-        assert_eq!(key_hint(&g, "manual:remote", cat, &none_set).as_deref(), Some("No API key is used."));
+        assert_eq!(key_hint(&g, "provider:4", cat, &Discovered::default(), &anthropic_set).as_deref(), Some("Authorizes with your Anthropic API key."));
+        assert_eq!(key_hint(&g, "provider:4", cat, &Discovered::default(), &none_set).as_deref(), Some("No Anthropic API key is set yet."));
+        assert_eq!(key_hint(&g, "provider:3", cat, &Discovered::default(), &none_set), None, "12b puts the Regular and Budget pickers there");
+        assert_eq!(key_hint(&g, "manual:llama3", cat, &Discovered::default(), &none_set).as_deref(), Some("No API key is sent to a local endpoint. If it requires authentication, use a custom header."));
+        assert_eq!(key_hint(&g, "manual:b", cat, &Discovered::default(), &anthropic_set).as_deref(), Some("No OpenAI API key is set yet."));
+        assert_eq!(key_hint(&g, "manual:remote", cat, &Discovered::default(), &none_set).as_deref(), Some("No API key is used."));
     }
 
     #[test]
@@ -1281,11 +1884,11 @@ mod tests {
 
         let cat = bundled();
         let mut g = with_models(&[]);
-        assert_eq!(requests_text(&g, cat), "Requests go to api.openai.com (OpenAI). Tandem asks before the first one.");
+        assert_eq!(requests_text(&g, cat, &Discovered::default()), "Requests go to api.openai.com (OpenAI). Tandem asks before the first one.");
         crate::ai_gate::grant(&mut g, "api.openai.com");
-        assert_eq!(requests_text(&g, cat), "Requests go to api.openai.com (OpenAI). You allowed them.");
+        assert_eq!(requests_text(&g, cat, &Discovered::default()), "Requests go to api.openai.com (OpenAI). You allowed them.");
         g.set(VENDOR, Value::Integer(5));
-        assert_eq!(requests_text(&g, cat), crate::ai_gate::NO_ENDPOINT);
+        assert_eq!(requests_text(&g, cat, &Discovered::default()), crate::ai_gate::NO_ENDPOINT);
     }
 
     #[test]
@@ -1318,5 +1921,56 @@ mod tests {
         assert_eq!(key_prompt(Vendor::OpenAI).1, "OpenAI API key");
         let typed = Secret::new(" \t ".to_string());
         assert_eq!(crate::ai_keys::normalized(typed.expose()), None, "a blank key writes nothing and continues with None");
+    }
+
+    #[test]
+    fn test_click_follows_iterm2() {
+        let cat = bundled();
+        let mut g = with_models(&[]);
+        g.set(crate::ai_settings::ENABLE_AI, Value::Boolean(true));
+        let none = Discovered::default();
+        let mut form = EditorForm::from_model(&manual("m", " http://localhost:1234/v1/chat/completions ", 1), cat);
+        form.name = " ".into();
+        assert_eq!(test_click(&g, &form, &none), Err((tc::MISSING_TITLE, tc::MISSING_TEXT)));
+        form.name = "  qwen3 ".into();
+        form.headers = pairs(&[("X-Team", "blue"), ("  ", "dropped")]);
+        form.temperature = false;
+        form.function_calling = true;
+        // Consent first: the gate's alert for the probe's own host, and no test.
+        let Ok(AiRequest::Alert(alert)) = test_click(&g, &form, &none) else { panic!("the consent alert") };
+        assert_eq!(alert.then, crate::ai_gate::Then::Grant("localhost".into()));
+        crate::ai_gate::grant(&mut g, "localhost");
+        let probe = tc::Probe {
+            name: "qwen3".into(),
+            url: "http://localhost:1234/v1/chat/completions".into(),
+            api: Api::ChatCompletions,
+            function_calling: true,
+            supports_temperature: false,
+            headers: pairs(&[("X-Team", "blue")]),
+        };
+        assert_eq!(test_click(&g, &form, &none), Ok(AiRequest::BuildTester(probe)));
+
+        // Auto-discovery: the popup's choice, else the first discovered tag.
+        let url = "http://localhost:1234/v1/chat/completions";
+        form.set_dynamic(true);
+        assert_eq!(test_click(&g, &form, &none), Err((tc::MISSING_TITLE, tc::MISSING_DISCOVERED)));
+        let mut m = crate::ai_model::pending_ollama_model();
+        m.name = "llama3.3".into();
+        m.url = url.into();
+        let found = Discovered { servers: vec![crate::ai_model::Server { endpoint: url.into(), headers: pairs(&[("X-Team", "blue")]), models: vec![m] }] };
+        let Ok(AiRequest::BuildTester(p)) = test_click(&g, &form, &found) else { panic!("a test") };
+        assert_eq!((p.name.as_str(), p.api), ("llama3.3", Api::Llama));
+        form.selected = "qwen3:8b".into();
+        let Ok(AiRequest::BuildTester(p)) = test_click(&g, &form, &found) else { panic!("a test") };
+        assert_eq!(p.name, "qwen3:8b");
+        form.url = " ".into();
+        assert_eq!(test_click(&g, &form, &found), Err((tc::MISSING_TITLE, tc::MISSING_TEXT)));
+
+        // A URL with no host fails at once with "The URL is not valid.", before any gate.
+        form.set_dynamic(false);
+        for url in ["not a url", "http:///x"] {
+            form.url = url.into();
+            assert_eq!(test_click(&g, &form, &none), Err((tc::FAILED_TITLE, tc::BAD_URL)), "{url}");
+        }
     }
 }

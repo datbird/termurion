@@ -305,11 +305,89 @@ pub fn date_names(t: (u16, u16, u16, u16, u16, u16)) -> (String, String, String)
 }
 
 
-/// The profile to start a session with: by Guid, then by Name. None: the default profile
-/// (the caller says so).
-pub fn resolve_profile(session: &Value, profiles: &[(String, String)]) -> Option<String> {
-    let (guid, name, _) = profile_of(session)?;
-    profiles.iter().find(|(g, _)| *g == guid && !guid.is_empty()).or_else(|| profiles.iter().find(|(_, n)| *n == name && !name.is_empty())).map(|(g, _)| g.clone())
+/// The profile a restored session starts with (`PS:2013-2029`, `PS:1960-1969`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProfileChoice {
+    /// The saved profile with this Guid.
+    Saved(String),
+    /// The arrangement's own copy, restored as a session copy.
+    Embedded(Table),
+    /// A missing profile whose copy has no Name or no Guid (iTerm2 3.5.7's corruption).
+    Broken,
+    /// No profile in the arrangement: the default one.
+    Default,
+}
+
+/// The saved profile with the arrangement's Guid, else the arrangement's own copy. The
+/// copy's Original Guid decides only whether the profile counts as missing, and only a
+/// missing one whose copy lacks its Name or Guid is broken. `saved` is (Guid, Name) of
+/// every saved profile.
+pub fn choose_profile(session: &Value, saved: &[(String, String)]) -> ProfileChoice {
+    let Some(copy) = session.get("Bookmark").and_then(|b| b.as_table()) else { return ProfileChoice::Default };
+    let is_saved = |key: &str| copy.get(key).and_then(|v| v.as_str()).is_some_and(|g| saved.iter().any(|(s, _)| s == g));
+    if is_saved("Guid") {
+        return ProfileChoice::Saved(copy["Guid"].as_str().unwrap_or_default().to_string());
+    }
+    let missing = !is_saved(crate::session_profile::ORIGINAL_GUID);
+    if missing && (copy.get("Name").is_none() || copy.get("Guid").is_none()) {
+        return ProfileChoice::Broken;
+    }
+    ProfileChoice::Embedded(copy.clone())
+}
+
+/// A session's own id in the arrangement ("Session GUID").
+pub fn session_guid(session: &Value) -> Option<String> {
+    session.get("Session GUID").and_then(|v| v.as_str()).map(str::to_string)
+}
+
+/// Runs `f` on every session table in the windows.
+fn each_session(windows: &mut [Value], f: &mut dyn FnMut(&mut Table)) {
+    fn walk(node: &mut Value, f: &mut dyn FnMut(&mut Table)) {
+        let Some(t) = node.as_table_mut() else { return };
+        if let Some(Value::Table(s)) = t.get_mut("Session") {
+            f(s);
+        }
+        if let Some(Value::Array(kids)) = t.get_mut("Subviews") {
+            for k in kids {
+                walk(k, f);
+            }
+        }
+    }
+    for w in windows {
+        if let Some(Value::Array(tabs)) = w.as_table_mut().and_then(|t| t.get_mut("Tabs")) {
+            for tab in tabs {
+                if let Some(root) = tab.as_table_mut().and_then(|t| t.get_mut("Root")) {
+                    walk(root, f);
+                }
+            }
+        }
+    }
+}
+
+/// The windows with `change` applied to the session whose id is `session_guid`, wherever
+/// it is.
+fn repaired(windows: &[Value], session_guid: &str, change: &dyn Fn(&mut Table)) -> Vec<Value> {
+    let mut out = windows.to_vec();
+    each_session(&mut out, &mut |s| {
+        if s.get("Session GUID").and_then(|v| v.as_str()) == Some(session_guid) {
+            change(s);
+        }
+    });
+    out
+}
+
+/// Repair: the session's initial folder becomes `folder` (`iTermController.m:471-482`).
+pub fn replace_folder(windows: &[Value], session_guid: &str, folder: &str) -> Vec<Value> {
+    repaired(windows, session_guid, &|s| {
+        s.insert("Working Directory".into(), Value::String(folder.into()));
+    })
+}
+
+/// Assign Profile: the session's profile becomes `profile` (`PS:24104-24114`).
+pub fn replace_profile(windows: &[Value], session_guid: &str, profile: &Table) -> Vec<Value> {
+    repaired(windows, session_guid, &|s| {
+        s.insert("Bookmark".into(), Value::Table(profile.clone()));
+    })
 }
 
 /// A restored session's folder.
@@ -322,11 +400,18 @@ pub enum Folder {
     None,
 }
 
-pub fn folder_for(session: &Value) -> Folder {
-    match session.get("Working Directory").and_then(|v| v.as_str()) {
-        Some(d) if contents(session).is_some() || styled_contents(session).is_some() => Folder::Forced(d.into()),
-        Some(d) => Folder::Previous(d.into()),
-        None => Folder::None,
+/// A restored session's folder rule, with the folder as the Windows path it names (the OSC 7
+/// form "/D:/x" is D:\x, "~" the home folder: `profile::local_folder`). Contents force only
+/// such a path: another (WSL, MSYS, a remote host's) cannot be a Windows shell's folder, so
+/// the profile's rule decides. An `ssh` session's "~" is the remote host's home, so it is
+/// never this machine's.
+pub fn folder_for(session: &Value, ssh: bool) -> Folder {
+    let Some(d) = session.get("Working Directory").and_then(|v| v.as_str()) else { return Folder::None };
+    let local = if ssh { crate::profile::local_path(d) } else { crate::profile::local_folder(d) };
+    match local.map(|p| p.display().to_string()) {
+        Some(local) if contents(session).is_some() || styled_contents(session).is_some() => Folder::Forced(local),
+        Some(local) => Folder::Previous(local),
+        None => Folder::Previous(d.into()),
     }
 }
 
@@ -417,26 +502,9 @@ pub fn has_mark_of_the_web(path: &std::path::Path) -> bool {
 
 /// Change Profile in Arrangement: every session in every window gets this profile.
 pub fn change_profile(windows: &mut [Value], profile: &Table) {
-    fn walk(node: &mut Value, profile: &Table) {
-        let Some(t) = node.as_table_mut() else { return };
-        if let Some(Value::Table(s)) = t.get_mut("Session") {
-            s.insert("Bookmark".into(), Value::Table(profile.clone()));
-        }
-        if let Some(Value::Array(kids)) = t.get_mut("Subviews") {
-            for k in kids {
-                walk(k, profile);
-            }
-        }
-    }
-    for w in windows {
-        if let Some(Value::Array(tabs)) = w.as_table_mut().and_then(|t| t.get_mut("Tabs")) {
-            for tab in tabs {
-                if let Some(root) = tab.as_table_mut().and_then(|t| t.get_mut("Root")) {
-                    walk(root, profile);
-                }
-            }
-        }
-    }
+    each_session(windows, &mut |s| {
+        s.insert("Bookmark".into(), Value::Table(profile.clone()));
+    });
 }
 
 #[cfg(test)]
@@ -543,29 +611,98 @@ mod tests {
         assert_eq!(date_names((2026, 9, 27, 14, 5, 33)), ("Sep 27, 2026".to_string(), "2:05 PM".to_string(), "2:05:33 PM".to_string()));
     }
 
+    fn profile(pairs: &[(&str, &str)]) -> Table {
+        pairs.iter().map(|(k, v)| (k.to_string(), Value::String(v.to_string()))).collect()
+    }
+
+    /// Review Focus 6 (R3; `PS:2013-2029`, `PS:1960-1969`).
     #[test]
-    fn missing_profiles_fall_back() {
-        let mut p = Table::new();
-        p.insert("Guid".into(), Value::String("gone".into()));
-        p.insert("Name".into(), Value::String("Build".into()));
-        let v = session(80, 24, p, "s", None);
-        let profiles = vec![("G1".to_string(), "Default".to_string()), ("G2".to_string(), "Build".to_string())];
-        assert_eq!(resolve_profile(&v, &profiles), Some("G2".to_string()), "a profile found by name when its Guid is gone");
-        assert_eq!(resolve_profile(&v, &profiles[..1]), None, "neither: the caller uses the default profile and says so");
-        let mut q = Table::new();
-        q.insert("Guid".into(), Value::String("G1".into()));
-        assert_eq!(resolve_profile(&session(1, 1, q, "t", None), &profiles), Some("G1".to_string()));
+    fn arrangement_profile_follows_iterm2() {
+        let saved = vec![("G1".to_string(), "Default".to_string()), ("G2".to_string(), "Build".to_string())];
+        let with = |t: Table| session(80, 24, t, "S1", None);
+        assert_eq!(choose_profile(&with(profile(&[("Guid", "G2"), ("Name", "Build")])), &saved), ProfileChoice::Saved("G2".into()));
+        let copy = profile(&[("Guid", "SESSION"), ("Original Guid", "G2"), ("Name", "Build")]);
+        assert_eq!(choose_profile(&with(copy.clone()), &saved), ProfileChoice::Embedded(copy), "the Original Guid only decides whether it counts as missing");
+        let whole = profile(&[("Guid", "gone"), ("Name", "Elsewhere"), ("Command", "cmd")]);
+        assert_eq!(choose_profile(&with(whole.clone()), &saved), ProfileChoice::Embedded(whole), "a missing profile restores from the arrangement's own copy");
+        assert_eq!(choose_profile(&with(profile(&[("Guid", "gone")])), &saved), ProfileChoice::Broken, "no Name");
+        assert_eq!(choose_profile(&with(profile(&[("Name", "Build")])), &saved), ProfileChoice::Broken, "no Guid");
+        assert_eq!(choose_profile(&with(Table::new()), &saved), ProfileChoice::Broken, "an empty copy");
+        let mut bare = Table::new();
+        bare.insert("Session GUID".into(), Value::String("S1".into()));
+        assert_eq!(choose_profile(&Value::Table(bare), &saved), ProfileChoice::Default, "no Bookmark");
+        let named = profile(&[("Guid", "other"), ("Name", "Build")]);
+        assert_eq!(choose_profile(&with(named.clone()), &saved), ProfileChoice::Embedded(named), "a saved profile that only shares the Name is not used");
+        assert_eq!(session_guid(&with(Table::new())), Some("S1".to_string()));
+        assert_eq!(session_guid(&Value::Table(Table::new())), None);
+    }
+
+    /// Two windows: S1 beside S2, then S1 alone.
+    fn two_windows() -> Vec<Value> {
+        let facts = WindowFacts { x: 0.0, y: 0.0, w: 800.0, h: 600.0, style: 0, selected_tab: 0, title: None, size_locked: false, layout_locked: false, percent: (100.0, 100.0), cells: (80, 25) };
+        let s = |g: &str| session(80, 24, profile(&[("Guid", "P"), ("Name", "Plain")]), g, Some(r"C:\old"));
+        let split = Tree::Split { axis: Axis::Column, ratio: 0.5, a: Box::new(Tree::Leaf(s("S1"))), b: Box::new(Tree::Leaf(s("S2"))) };
+        vec![window(facts.clone(), vec![tab(node(&split, 800.0, 600.0), true, None)]), window(facts, vec![tab(node(&Tree::Leaf(s("S1")), 800.0, 600.0), true, None)])]
+    }
+
+    fn sessions_of(windows: &[Value]) -> Vec<Value> {
+        windows.iter().flat_map(|w| w.get("Tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default()).flat_map(|t| tree_of(t.get("Root").unwrap()).unwrap().leaves().into_iter().cloned().collect::<Vec<_>>()).collect()
+    }
+
+    /// Repair rewrites only that session (`iTermController.m:438-482`).
+    #[test]
+    fn repairs_follow_iterm2() {
+        let windows = two_windows();
+        let folder = |s: &Value| s.get("Working Directory").and_then(|v| v.as_str()).map(str::to_string);
+        let fixed = replace_folder(&windows, "S1", r"D:\w");
+        let got: Vec<(Option<String>, Option<String>)> = sessions_of(&fixed).iter().map(|s| (session_guid(s), folder(s))).collect();
+        assert_eq!(got, vec![(Some("S1".into()), Some(r"D:\w".into())), (Some("S2".into()), Some(r"C:\old".into())), (Some("S1".into()), Some(r"D:\w".into()))]);
+        let good = profile(&[("Guid", "G2"), ("Name", "Build")]);
+        let fixed = replace_profile(&windows, "S1", &good);
+        let got: Vec<Option<String>> = sessions_of(&fixed).iter().map(|s| profile_of(s).map(|p| p.0)).collect();
+        assert_eq!(got, vec![Some("G2".into()), Some("P".into()), Some("G2".into())]);
+        assert_eq!(sessions_of(&fixed).iter().map(folder).collect::<Vec<_>>(), vec![Some(r"C:\old".into()); 3], "only the profile changes");
+        assert_eq!(replace_folder(&windows, "nobody", r"D:\w"), windows, "an unknown session changes nothing");
+        assert_eq!(replace_profile(&windows, "nobody", &good), windows);
     }
 
     #[test]
     fn folders_follow_the_profile_rule() {
         let plain = session(80, 24, Table::new(), "s", Some(r"C:\src"));
-        assert_eq!(folder_for(&plain), Folder::Previous(r"C:\src".into()), "the profile's rule decides, with this as the previous folder");
+        assert_eq!(folder_for(&plain, false), Folder::Previous(r"C:\src".into()), "the profile's rule decides, with this as the previous folder");
         let mut with = plain.clone();
         with.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
-        assert_eq!(folder_for(&with), Folder::Forced(r"C:\src".into()), "contents force the folder");
-        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None)), Folder::None);
+        assert_eq!(folder_for(&with, false), Folder::Forced(r"C:\src".into()), "contents force the folder");
+        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", None), false), Folder::None);
+        // A folder that is not a Windows path (WSL, MSYS, a remote host's) cannot be a Windows
+        // shell's folder: contents never force it, so no "does not exist" banner follows.
+        let mut unix = session(80, 24, Table::new(), "s", Some("/home/rob/src"));
+        unix.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&unix, false), Folder::Previous("/home/rob/src".into()));
+        // The OSC 7 form and "~" are forced as the Windows paths they name, so an existing one
+        // is not reported as missing.
+        let mut osc7 = session(80, 24, Table::new(), "s", Some("/D:/x"));
+        osc7.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&osc7, false), Folder::Forced(r"D:\x".into()));
+        let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
+        tilde.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&tilde, false), Folder::Forced(crate::profile::home().join("www").display().to_string()));
+        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", Some("/D:/x")), false), Folder::Previous(r"D:\x".into()));
         assert_eq!(contents(&with), Some("x"));
+    }
+
+    /// An ssh session's "~" is the remote host's home: never this machine's, so it is not
+    /// forced (and checked) here.
+    #[test]
+    fn an_ssh_sessions_home_is_remote() {
+        let mut tilde = session(80, 24, Table::new(), "s", Some("~/www"));
+        tilde.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&tilde, true), Folder::Previous("~/www".into()));
+        assert_eq!(folder_for(&session(80, 24, Table::new(), "s", Some("~")), true), Folder::Previous("~".into()));
+        // A drive-letter folder is still this machine's.
+        let mut local = session(80, 24, Table::new(), "s", Some(r"C:\src"));
+        local.as_table_mut().unwrap().insert("Tandem Contents".into(), Value::String("x".into()));
+        assert_eq!(folder_for(&local, true), Folder::Forced(r"C:\src".into()));
     }
 
     fn one_window(profile: Table) -> Vec<Value> {

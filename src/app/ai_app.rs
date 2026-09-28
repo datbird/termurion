@@ -7,7 +7,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
-use super::scripts_alerts::silence_keys;
 use super::App;
 use crate::ai_gate::{self, Alert, Then};
 use crate::ai_key_ui::{KeyResult, KeyWindow};
@@ -15,15 +14,16 @@ use crate::ai_keys;
 use crate::ai_settings::Vendor;
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::Secret;
-use crate::settings_ai::SubTab;
+use crate::settings_ai::{AiRequest, SubTab};
 
-/// What a given or refused key continues (ruling 12e-1). 12b adds `TestConnection`, 12c
-/// `Turn(String)`, 12e `Run(u64)`, `Codecierge(String)` and `Explain`, each with its arm in
-/// `App::ai_key_given`.
-#[allow(dead_code)] // 12a asks for no key itself; 12b is the first caller.
+/// What a given or refused key continues (ruling 12e-1). 12c adds `Turn(String)`, 12e
+/// `Run(u64)`, `Codecierge(String)` and `Explain`, each with its arm in `App::ai_key_given`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum KeyThen {
+    #[allow(dead_code)] // Later callers that only store the key.
     Nothing,
+    /// The settings window's model editor runs Test Connection.
+    TestConnection,
 }
 
 impl App {
@@ -31,8 +31,8 @@ impl App {
     /// whose answer was remembered is answered at once without showing (`scripts_alerts`).
     pub(super) fn ask_ai(&mut self, alert: Alert) {
         if let Some(id) = alert.silence.as_deref() {
-            let (flag, selection) = silence_keys(id);
-            if self.globals.bool(&flag) {
+            let selection = crate::warnings::selection_key(id);
+            if self.globals.bool(id) {
                 let index = usize::try_from(self.globals.int(&selection)).unwrap_or(0);
                 return self.ai_answered(alert.then, index);
             }
@@ -44,7 +44,8 @@ impl App {
     /// `silent` or a gate alert is already queued or showing, it says why (`GK:23-99`), and
     /// the person repeats the action after answering (Decision).
     pub(super) fn ai_check(&mut self, silent: bool) -> bool {
-        let check = ai_gate::check(&self.globals, crate::ai_catalog::bundled());
+        let found = self.ai_found();
+        let check = ai_gate::check(&self.globals, crate::ai_catalog::bundled(), &found);
         self.ai_gate_answer(&check, silent)
     }
 
@@ -57,11 +58,27 @@ impl App {
 
     fn ai_gate_answer(&mut self, check: &ai_gate::Check, silent: bool) -> bool {
         let Some(alert) = ai_gate::alert(check) else { return true };
-        let pending = self.ai_asks.iter().chain(self.ai_alert.as_ref().map(|(_, a)| a)).any(ai_gate::is_gate);
-        if !silent && !pending {
-            self.ask_ai(alert);
+        if !silent {
+            self.ask_gate(alert);
         }
         false
+    }
+
+    /// Queues a gate alert, unless one is queued or showing: then the showing alert comes to
+    /// the front, so the action visibly waits on it (iTerm2's alert is modal, so the action
+    /// cannot be repeated behind it).
+    fn ask_gate(&mut self, alert: Alert) {
+        if !self.ai_gate_pending() {
+            return self.ask_ai(alert);
+        }
+        if let Some((w, _)) = &self.ai_alert {
+            w.focus();
+        }
+    }
+
+    /// Whether a gate alert is queued or showing (at most one at a time).
+    fn ai_gate_pending(&self) -> bool {
+        self.ai_asks.iter().chain(self.ai_alert.as_ref().map(|(_, a)| a)).any(ai_gate::is_gate)
     }
 
     /// Opens the next queued AI alert when none shows.
@@ -71,7 +88,7 @@ impl App {
         }
         let Some(g) = self.gpu.as_ref() else { return };
         let Some(alert) = self.ai_asks.pop_front() else { return };
-        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &alert.heading, &alert.text, &alert.buttons, alert.silence.is_some()) {
+        match ConfirmWindow::actions(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &alert.heading, &alert.text, &alert.buttons, alert.silence.is_some().then_some(ConfirmWindow::SUPPRESS), &[], false, false) {
             Ok(w) => self.ai_alert = Some((w, alert)),
             Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
         }
@@ -95,9 +112,8 @@ impl App {
         };
         let Some((_, alert)) = self.ai_alert.take() else { return true };
         if let (true, Some(id)) = (suppress, alert.silence.as_deref()) {
-            let (flag, selection) = silence_keys(id);
-            self.globals.set(&flag, toml::Value::Boolean(true));
-            self.globals.set(&selection, toml::Value::Integer(index as i64));
+            self.globals.set(id, toml::Value::Boolean(true));
+            self.globals.set(&crate::warnings::selection_key(id), toml::Value::Integer(index as i64));
             self.save_globals();
         }
         self.ai_answered(alert.then, index);
@@ -109,7 +125,6 @@ impl App {
     /// caller's own endpoint (ruling R12ab-2: never the default model's, so a caller going to
     /// another host is not shown the wrong consent). A closed gate or missing consent answers
     /// None at once, after the gate's alert; otherwise the prompt waits its turn.
-    #[allow(dead_code)] // 12b's Test Connection, 12c's chat turn and 12e's features call it.
     pub(crate) fn ask_ai_key(&mut self, vendor: Vendor, endpoint: Option<&crate::ai_models::Endpoint>, then: KeyThen) {
         if !self.ai_check_endpoint(endpoint, false) {
             return self.ai_key_given(then, None);
@@ -166,6 +181,13 @@ impl App {
     fn ai_key_given(&mut self, then: KeyThen, key: Option<Secret>) {
         match then {
             KeyThen::Nothing => drop(key),
+            // The editor's next frame hands it to its tester (`settings_ai::drive_test`).
+            KeyThen::TestConnection => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.ai.test_key = Some(key);
+                    s.request_redraw();
+                }
+            }
         }
     }
 
@@ -175,6 +197,90 @@ impl App {
         self.open_settings_page(event_loop, crate::settings_ui::Page::General);
         if self.settings.as_mut().is_some_and(|s| s.show_ai(sub)) {
             self.apply_edit(crate::settings_ui::Edit::GlobalsChanged);
+        }
+    }
+
+    /// Advances Ollama discovery (every loop pass; cheap when nothing is due) while AI features
+    /// are allowed: running refreshes are polled and the configured servers that are due are
+    /// asked. New models redraw every window, so open pickers rebuild, and are saved; the
+    /// settings window's refresh gets its answer (ruling R12ab-3).
+    pub(crate) fn ai_discovery_tick(&mut self) {
+        if !crate::ai_settings::allowed(&self.globals) {
+            return;
+        }
+        let configs = crate::ai_discovery::configs(&self.globals);
+        let changed = self.ai_discovery.tick(std::time::Instant::now(), &*self.ai_transport, &configs, self.notify.clone());
+        if changed {
+            self.ai_discovery.save();
+            self.redraw_all();
+            if let Some(s) = self.settings.as_mut() {
+                s.ai.found = self.ai_discovery.all();
+                s.request_redraw();
+            }
+        }
+        let Some(outcome) = self.ai_probe.and_then(|t| self.ai_discovery.finished(t)) else { return };
+        self.ai_probe = None;
+        if let Some(s) = self.settings.as_mut() {
+            s.ai.probe = Some(outcome);
+            s.request_redraw();
+        }
+    }
+
+    /// When discovery next needs a tick by itself (running refreshes wake the loop).
+    pub(super) fn ai_discovery_due(&self) -> Option<std::time::Instant> {
+        if !crate::ai_settings::allowed(&self.globals) {
+            return None;
+        }
+        self.ai_discovery.next_due(std::time::Instant::now())
+    }
+
+    /// The discovered Ollama models of the configured servers, for model resolution
+    /// (`ai_model::configured`, `named`, `economy`). Reading them asks stale servers again, as
+    /// iTerm2's reads do (`OC:158-170`).
+    pub(crate) fn ai_found(&mut self) -> crate::ai_model::Discovered {
+        self.ai_discovery_read();
+        self.ai_discovery.discovered(&crate::ai_discovery::configs(&self.globals))
+    }
+
+    /// A read of the discovered models: stale configured servers are asked again, even after
+    /// the automatic retries ran out, while AI features are allowed.
+    fn ai_discovery_read(&mut self) {
+        if !crate::ai_settings::allowed(&self.globals) {
+            return;
+        }
+        let configs = crate::ai_discovery::configs(&self.globals);
+        self.ai_discovery.wanted(std::time::Instant::now(), &*self.ai_transport, &configs, self.notify.clone());
+    }
+
+    /// Takes the settings window's AI request after its frame and acts on it (ruling R12ab-3): a
+    /// discovery answer reaches the same window through `ai_discovery_tick`, a tester and a key
+    /// prompt's answer through its `State`, and an alert goes on the AI alert queue (a gate
+    /// alert only when none is queued or showing). A frame of Settings > General > AI > General
+    /// read the discovered models (the model popup, the Regular and Budget pickers, Manage AI
+    /// Models), which asks stale servers again; other pages read none.
+    pub(crate) fn drain_ai_requests(&mut self, _event_loop: &ActiveEventLoop) {
+        if self.settings.as_ref().is_some_and(|s| s.shows_ai_models()) {
+            self.ai_discovery_read();
+        }
+        let Some(request) = self.settings.as_mut().and_then(|s| s.ai.pending.take()) else { return };
+        match request {
+            AiRequest::Discover { endpoint, headers, force } => {
+                let t = self.ai_discovery.refresh(&endpoint, &headers, force, &*self.ai_transport, self.notify.clone());
+                self.ai_probe = Some(t);
+            }
+            AiRequest::Alert(alert) if ai_gate::is_gate(&alert) => self.ask_gate(alert),
+            AiRequest::Alert(alert) => self.ask_ai(alert),
+            AiRequest::BuildTester(probe) => {
+                let wire = crate::ai_turn::Wire::from_globals(&self.globals);
+                let options = crate::ai_transport::options_from(&self.globals);
+                let tester = crate::ai_test_conn::Tester::new(probe, wire, self.ai_transport.clone(), options, self.notify.clone());
+                if let Some(s) = self.settings.as_mut() {
+                    s.ai.tester = Some(tester);
+                    s.request_redraw();
+                }
+            }
+            // Ruling R12ab-2: the gate and the prompt are for the probe's own endpoint.
+            AiRequest::AskKey(vendor, endpoint) => self.ask_ai_key(vendor, Some(&endpoint), KeyThen::TestConnection),
         }
     }
 

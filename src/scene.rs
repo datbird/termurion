@@ -788,16 +788,22 @@ pub fn inline_buttons(frame: &mut Frame, buttons: &[(Rect, ButtonFace, bool)], b
     }
 }
 
-/// One tab's look: its title, its OSC 21337 status text and color, the status dot, and
-/// the tab color a program chose.
+/// One tab's look: its title, its subtitle line (the OSC 21337 status joined in), the status
+/// dot, the tab color a program chose, the indicator, the spinner and the tab's number.
 #[derive(Clone, Debug, Default)]
 pub struct TabLook {
     pub title: String,
-    pub status: Option<(String, Rgb)>,
+    pub subtitle: String,
     pub dot: Option<Rgb>,
     pub color: Option<Rgb>,
     /// The one indicator a tab shows (when no status dot does).
     pub icon: Option<TabIcon>,
+    /// The activity spinner shows (`activity_ui::tab_processing`).
+    pub processing: bool,
+    /// The tab's number, from 1.
+    pub number: usize,
+    /// The close button is held down (`closeButtonPressed`).
+    pub close_pressed: bool,
 }
 
 /// A tab's indicator, in iTerm2's order after the status dot.
@@ -876,48 +882,174 @@ fn tab_icon_glyph(i: TabIcon) -> char {
     }
 }
 
-pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, cell: (f32, f32)) -> Vec<Rect> {
+/// Segoe Fluent Icons "ChromeClose": a tab's close button.
+pub const TAB_CLOSE_GLYPH: char = '\u{E8BB}';
+/// How far a held close button's shade goes from the tab's color toward its text color.
+const TAB_CLOSE_PRESSED: f32 = 0.3;
+/// Segoe Fluent Icons "Add": the new tab button.
+pub const TAB_ADD_GLYPH: char = '\u{E710}';
+/// Segoe Fluent Icons "ChevronRight", drawn twice for the overflow button (iTerm2's
+/// `overflowImage` is a right-pointing double chevron; the icon font has no double one).
+pub const TAB_OVERFLOW_GLYPH: char = '\u{E76C}';
+/// How far apart the overflow button's two chevrons are, in ems.
+const TAB_OVERFLOW_GAP: f32 = 0.25;
+/// Icon glyphs in a tab are drawn at this size in points (in the 16-point icon box).
+const TAB_GLYPH_PT: f32 = 12.0;
+/// The status dot's size in points.
+const TAB_DOT_PT: f32 = 8.0;
+
+/// Draws a laid-out tab bar (`tab_layout::build`) in `area`, `scale` pixels a point.
+/// `font_scale` is a text row's scale for one point of type (the window scale over the terminal
+/// font's pixel size) and `line` the terminal font's line height in pixels, so a label of `p`
+/// points is a row of scale `p * font_scale`, `line * p * font_scale` pixels high.
+/// `key` is the window being the key window of the active app (`windowIsMainAndAppIsActive`):
+/// otherwise close buttons draw at half alpha. The tabs are cut to the room left of the "+"
+/// pinned on a bar that scrolls (`tab_layout::tab_area_width`). `overflow_down`: the overflow
+/// button's menu is open, so it draws pressed.
+#[allow(clippy::too_many_arguments)]
+pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool, overflow_down: bool) {
+    use crate::tab_layout::{self, SUBTITLE_OFFSET, TITLE_OFFSET_WITH_SUBTITLE};
     frame.quads.push(Quad { rect: area, color: rgba(TAB_BAR, 1.0) });
-    let n = tabs.len().max(1) as f32;
-    let w = (area.w / n).floor();
-    let mut rects = Vec::new();
-    for (i, tab) in tabs.iter().enumerate() {
-        let title = &tab.title;
-        let r = Rect { x: area.x + i as f32 * w, y: area.y, w, h: area.h };
-        if i == active {
-            frame.quads.push(Quad { rect: r, color: rgba(TAB_ACTIVE, 1.0) });
+    let px = |r: Rect| Rect { x: area.x + r.x * scale, y: area.y + r.y * scale, w: r.w * scale, h: r.h * scale };
+    let tabs_area = Rect { w: (tab_layout::tab_area_width(bar, area.w / scale) * scale).min(area.w), ..area };
+    let first_quad = frame.quads.len();
+    let title_scale = bar.font * font_scale;
+    let sub_scale = tab_layout::subtitle_size(bar.font) * font_scale;
+    let (title_h, sub_h) = (line * title_scale, line * sub_scale);
+    let turn = spinner_turn();
+    let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false };
+    for (k, (i, c, r)) in bar.cells.iter().enumerate() {
+        let Some(tab) = tabs.get(*i) else { continue };
+        let cell = px(*r);
+        let clip = clip_rect(cell, tabs_area);
+        // Scrolled out of view.
+        if clip.w <= 0.0 {
+            continue;
         }
-        if let Some(c) = tab.color {
-            frame.quads.push(Quad { rect: Rect { y: r.y + r.h - 3.0, h: 3.0, ..r }, color: rgba(c, 1.0) });
+        let back = if *i == active { TAB_ACTIVE } else { TAB_BAR };
+        if *i == active {
+            frame.quads.push(Quad { rect: cell, color: rgba(TAB_ACTIVE, 1.0) });
         }
-        let mut x = r.x + cell.0;
-        if let Some(c) = tab.dot {
-            let d = (cell.1 / 2.0).floor();
-            frame.quads.push(Quad { rect: Rect { x, y: r.y + ((r.h - d) / 2.0).floor(), w: d, h: d }, color: rgba(c, 1.0) });
-            x += d + cell.0 / 2.0;
+        if let Some(col) = tab.color {
+            let h = (3.0 * scale).round();
+            frame.quads.push(Quad { rect: Rect { y: cell.y + cell.h - h, h, ..cell }, color: rgba(col, 1.0) });
         }
-        let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
-        if let Some(icon) = tab.icon {
-            let span = Span { text: tab_icon_glyph(icon).to_string(), color, bold: false, italic: false, alt_font: false, icon: true, prose: false, badge: false, toolbelt: false };
-            frame.rows.push(TextRow { x, y: r.y + ((r.h - cell.1) / 2.0).floor(), spans: vec![span], clip: r, scale: 1.0 });
-            x += cell.0 * 2.0;
+        let color = if *i == active { TAB_TEXT } else { TAB_TEXT_DIM };
+        // A glyph from the icon font centered in `box_`.
+        let glyph = |frame: &mut Frame, ch: char, box_: Rect, color: Rgb| {
+            let s = TAB_GLYPH_PT * font_scale;
+            let em = TAB_GLYPH_PT * scale;
+            let x = box_.x + ((box_.w - em) / 2.0).floor();
+            let y = box_.y + ((box_.h - line * s) / 2.0).floor();
+            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip, scale: s });
+        };
+        // `YS drawInteriorWithTabCell:`: the close button at its alpha, halved in a window that
+        // is not key.
+        if let Some(close) = c.close.filter(|_| c.close_alpha > 0.0) {
+            let alpha = if key { c.close_alpha } else { c.close_alpha / 2.0 };
+            let close = px(close);
+            // Held down: iTerm2's darker "down" image, here a shade behind the glyph.
+            if tab.close_pressed {
+                frame.quads.push(Quad { rect: close, color: rgba(blend(back, color, TAB_CLOSE_PRESSED * alpha), 1.0) });
+            }
+            glyph(frame, TAB_CLOSE_GLYPH, close, blend(back, color, alpha));
         }
-        let fit = ((r.x + w - x) / cell.0).max(0.0) as usize;
-        let fit = fit.saturating_sub(1);
-        let span = |text: String, color: Rgb| Span { text, color, bold: false, italic: false, alt_font: false, icon: false, prose: false, badge: false, toolbelt: false };
-        let mut spans = Vec::new();
-        let mut left = fit;
-        if let Some((status, c)) = &tab.status {
-            let s: String = format!("{status} ").chars().take(left).collect();
-            left -= s.chars().count();
-            spans.push(span(s, *c));
+        // The status dot is the tab's icon (`tabStatusDotImage`), else the indicator glyph.
+        if let Some(ir) = c.icon.map(px) {
+            if let Some(dot) = tab.dot {
+                let d = (TAB_DOT_PT * scale).round();
+                let rect = Rect { x: ir.x + ((ir.w - d) / 2.0).floor(), y: ir.y + ((ir.h - d) / 2.0).floor(), w: d, h: d };
+                frame.quads.push(Quad { rect, color: rgba(dot, 1.0) });
+            } else if let Some(icon) = tab.icon {
+                glyph(frame, tab_icon_glyph(icon), ir, color);
+            }
         }
-        spans.push(span(title.chars().take(left).collect(), color));
-        let y = r.y + ((r.h - cell.1) / 2.0).floor();
-        frame.rows.push(TextRow { x, y, spans, clip: r, scale: 1.0 });
-        rects.push(r);
+        if let Some(ind) = c.indicator.filter(|_| tab.processing) {
+            spinner(frame, px(ind), turn, color, scale);
+        }
+        let Some(text) = bar.texts.get(k) else { continue };
+        // The number, centered in its box (`YS drawInteriorWithTabCell:...`).
+        if let Some(cr) = c.counter.map(px).filter(|_| !text.counter.is_empty()) {
+            let x = cr.x + ((cr.w - text.counter_width * scale) / 2.0).floor();
+            let y = cr.y + ((cr.h - title_h) / 2.0).floor();
+            frame.rows.push(TextRow { x, y, spans: vec![span(text.counter.clone(), color, false, false, false)], clip, scale: title_scale });
+        }
+        let subtitle = bar.subtitles.get(k).filter(|s| !s.is_empty());
+        let offset = if subtitle.is_some() { TITLE_OFFSET_WITH_SUBTITLE * scale } else { 0.0 };
+        // The title: centered in its label, left-aligned when truncated.
+        let label = px(c.label);
+        let width = text.title_width() * scale;
+        let x = if c.truncate { label.x } else { label.x + (label.w - width) / 2.0 };
+        let y = cell.y + ((cell.h - title_h) / 2.0).floor() + offset;
+        let mut run_x = x;
+        let font_px = bar.font * scale;
+        for (run, w) in &text.runs {
+            if run.underline {
+                let under = (y + (title_h + font_px * 0.8) / 2.0).round();
+                frame.quads.push(Quad { rect: Rect { x: run_x, y: under, w: w * scale, h: 1.0 }, color: rgba(color, 1.0) });
+            }
+            run_x += w * scale;
+        }
+        let spans: Vec<Span> = text.runs.iter().map(|(r, _)| span(r.text.clone(), color, r.bold, r.italic, false)).collect();
+        if !spans.is_empty() {
+            frame.rows.push(TextRow { x, y, spans, clip, scale: title_scale });
+        }
+        if let Some(sub) = subtitle {
+            let sl = px(text.subtitle_label);
+            let sw = text.subtitle_width * scale;
+            let x = if text.subtitle_truncate { sl.x } else { sl.x + (sl.w - sw) / 2.0 };
+            let y = cell.y + ((cell.h - sub_h) / 2.0).floor() + offset + title_h + SUBTITLE_OFFSET * scale;
+            frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale });
+        }
     }
-    rects
+    // The tabs' quads (backgrounds, colors, dots, spinners, underlines) are cut like their text.
+    let mut k = first_quad;
+    while k < frame.quads.len() {
+        match cut(frame.quads[k].rect, tabs_area) {
+            Some(r) => {
+                frame.quads[k].rect = r;
+                k += 1;
+            }
+            None => {
+                frame.quads.remove(k);
+            }
+        }
+    }
+    // The "+" and the overflow button (`PSM setupButtons`), over the tabs' right margin. The
+    // overflow button is two chevrons a gap apart, in the text color while its menu is open
+    // (`PSMOverflowPopUpButton` `overflowImagePressed`).
+    let s = TAB_GLYPH_PT * font_scale;
+    let em = TAB_GLYPH_PT * scale;
+    let overflow_color = if overflow_down { TAB_TEXT } else { TAB_TEXT_DIM };
+    let buttons = [(bar.add, TAB_ADD_GLYPH, 0.0, TAB_TEXT_DIM), (bar.overflow, TAB_OVERFLOW_GLYPH, TAB_OVERFLOW_GAP * em, overflow_color)];
+    for (rect, ch, gap, color) in buttons.into_iter().filter_map(|(r, ch, gap, color)| r.map(|r| (px(r), ch, gap, color))) {
+        let x = rect.x + ((rect.w - em - gap) / 2.0).floor();
+        let y = rect.y + ((rect.h - line * s) / 2.0).floor();
+        let xs: &[f32] = if gap > 0.0 { &[x, x + gap] } else { &[x] };
+        for &x in xs {
+            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip: clip_rect(rect, area), scale: s });
+        }
+    }
+}
+
+/// The spinner's turn, 0 to 1: an eighth more at each half-second activity tick.
+fn spinner_turn() -> f32 {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    ((ms / 500) % 8) as f32 / 8.0
+}
+
+/// The activity spinner: a three-quarter arc of dots around `rect`'s center, fading toward its
+/// tail, turned by `turn` (0 to 1).
+pub fn spinner(frame: &mut Frame, rect: Rect, turn: f32, color: Rgb, scale: f32) {
+    const DOTS: usize = 9;
+    let d = (2.0 * scale).round().max(1.0);
+    let radius = rect.w.min(rect.h) / 2.0 - d;
+    let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+    for k in 0..DOTS {
+        let a = (turn + 0.75 * k as f32 / (DOTS - 1) as f32) * std::f32::consts::TAU;
+        let rect = Rect { x: cx + radius * a.cos() - d / 2.0, y: cy + radius * a.sin() - d / 2.0, w: d, h: d };
+        frame.quads.push(Quad { rect, color: rgba(color, 0.25 + 0.75 * k as f32 / (DOTS - 1) as f32) });
+    }
 }
 
 pub fn dividers(frame: &mut Frame, dividers: &[Divider]) {
@@ -1108,6 +1240,24 @@ pub fn completion_list(frame: &mut Frame, rows: &[String], selected: usize, foot
     }
     if let Some(f) = footer {
         frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + visible.len() as f32 * cell.1, spans: vec![span(f.to_string())], clip: r, scale: 1.0 });
+    }
+}
+
+/// A tab's tooltip (`PT tabView:toolTipForTabViewItem:`): a framed box at `at` (under the
+/// pointer) with one text row per line of `text`, moved left and up as far as it must to stay
+/// inside `area` (the window).
+pub fn tab_tooltip(frame: &mut Frame, text: &str, at: (f32, f32), area: Rect, cell: (f32, f32)) {
+    let lines: Vec<&str> = text.lines().collect();
+    let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let (w, h) = ((widest + 2) as f32 * cell.0, lines.len() as f32 * cell.1 + 4.0);
+    let x = at.0.min(area.x + area.w - w).max(area.x);
+    let y = at.1.min(area.y + area.h - h).max(area.y);
+    let r = Rect { x, y, w, h };
+    cut_out(frame, r, cell.1);
+    frame.popups.push(Quad { rect: r, color: rgba(FIND_BAR, 1.0) });
+    frame_lines(&mut frame.popups, r, rgba(DIVIDER, 1.0));
+    for (i, line) in lines.iter().enumerate() {
+        frame.rows.push(TextRow { x: x + cell.0, y: y + 2.0 + i as f32 * cell.1, spans: vec![plain_span(line.to_string(), TAB_TEXT, false)], clip: r, scale: 1.0 });
     }
 }
 
@@ -2131,6 +2281,37 @@ mod tests {
     }
 
     #[test]
+    fn tab_tooltip_stays_in_the_window() {
+        let window = Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 };
+        let cell = (8.0, 16.0);
+        // Terminal text under the tip is cut out; the tip is a popup box, not an overlay.
+        let mut f = Frame::default();
+        let span = plain_span("terminal".into(), LABEL_TEXT, false);
+        f.rows.push(TextRow { x: 0.0, y: 40.0, spans: vec![span], clip: Rect { x: 0.0, y: 40.0, w: 400.0, h: 16.0 }, scale: 1.0 });
+        tab_tooltip(&mut f, "Name: zsh\nProfile: Default\nCommand: None", (100.0, 40.0), window, cell);
+        assert!(f.overlay.is_empty() && f.quads.is_empty());
+        let b = f.popups[0].rect;
+        assert_eq!((b.x, b.y), (100.0, 40.0));
+        assert_eq!(f.rows[0].clip.w, b.x);
+        // Three lines, three text rows in the box, one per line.
+        let rows: Vec<&TextRow> = f.rows.iter().filter(|r| r.clip == b).collect();
+        assert_eq!(rows.iter().map(|r| r.spans[0].text.as_str()).collect::<Vec<_>>(), ["Name: zsh", "Profile: Default", "Command: None"]);
+        assert!(rows.windows(2).all(|w| w[1].y == w[0].y + cell.1));
+        // The widest line and a cell each side: "Profile: Default" is 16 characters.
+        assert_eq!(b.w, 18.0 * cell.0);
+        // A tip that would pass the right edge moves left to fit; past the bottom, up.
+        let mut f = Frame::default();
+        tab_tooltip(&mut f, "Name: zsh\nProfile: Default\nCommand: None", (390.0, 290.0), window, cell);
+        let b = f.popups[0].rect;
+        assert_eq!(b.x + b.w, window.w);
+        assert!(b.y + b.h <= window.h && b.y >= 0.0);
+        // A window too narrow for it keeps its left edge at the window's.
+        let mut f = Frame::default();
+        tab_tooltip(&mut f, "Name: a very long title indeed", (10.0, 0.0), Rect { w: 100.0, ..window }, cell);
+        assert_eq!(f.popups[0].rect.x, 0.0);
+    }
+
+    #[test]
     fn popups_cut_only_the_lines_behind_them() {
         // Terminal rows clip to the whole pane: only the lines the box covers lose text.
         let mut f = Frame::default();
@@ -2267,17 +2448,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_titles_are_cut_to_fit() {
-        let mut f = Frame::default();
-        let titles: Vec<TabLook> = ["a very long title that cannot fit", "b"].iter().map(|t| TabLook { title: t.to_string(), ..TabLook::default() }).collect();
-        let rects = tab_bar(&mut f, &titles, 0, Rect { x: 0.0, y: 0.0, w: 200.0, h: 30.0 }, CELL);
-        assert_eq!(rects.len(), 2);
-        assert_eq!(rects[1].x, 100.0);
-        let first: String = f.rows[0].spans.iter().map(|s| s.text.as_str()).collect();
-        assert!(first.chars().count() <= 8, "{first:?}");
-    }
-
-    #[test]
     fn block_rows_get_a_gutter_bar() {
         let inner = Rect { x: 10.0, y: 0.0, w: 100.0, h: 64.0 };
         let (fg, red) = (rgb(200, 200, 200), rgb(255, 0, 0));
@@ -2302,20 +2472,6 @@ mod tests {
         assert!(f.rows[..4].iter().all(|r| r.spans[0].color == bg), "the outline in the background color first");
         assert_eq!(f.rows[4].spans[0].color, rgb(128, 0, 0), "the fill at the badge color's alpha over the background");
         assert!(f.rows.iter().all(|r| r.spans[0].badge && r.scale == 2.0));
-    }
-
-    #[test]
-    fn tab_icons_in_iterm2_order() {
-        assert_eq!(tab_icon(true, true, true, true, true), None, "a status dot wins, and draws itself");
-        assert_eq!(tab_icon(false, true, true, true, true), Some(TabIcon::Dead));
-        assert_eq!(tab_icon(false, false, true, true, true), Some(TabIcon::Bell));
-        assert_eq!(tab_icon(false, false, false, true, true), Some(TabIcon::NewOutput));
-        assert_eq!(tab_icon(false, false, false, false, true), Some(TabIcon::Idle));
-        assert_eq!(tab_icon(false, false, false, false, false), None);
-        let mut f = Frame::default();
-        let tabs = vec![TabLook { title: "t".into(), icon: Some(TabIcon::Bell), ..TabLook::default() }, TabLook::default()];
-        tab_bar(&mut f, &tabs, 0, Rect { x: 0.0, y: 0.0, w: 200.0, h: 20.0 }, (8.0, 16.0));
-        assert!(f.rows.iter().any(|r| r.spans.iter().any(|s| s.icon && s.text == "\u{EA8F}")), "the bell glyph");
     }
 
     #[test]
@@ -2381,21 +2537,174 @@ mod tests {
     }
 
     #[test]
-    fn tab_shows_status_dot() {
-        let mut f = Frame::default();
+    fn tab_bar_draws_the_layout() {
+        use crate::tab_layout::{self, TabInput};
+        assert_eq!(tab_icon(true, true, true, true, true), None, "a status dot wins, and draws itself");
+        assert_eq!(tab_icon(false, true, true, true, true), Some(TabIcon::Dead));
+        assert_eq!(tab_icon(false, false, true, true, true), Some(TabIcon::Bell));
+        assert_eq!(tab_icon(false, false, false, true, true), Some(TabIcon::NewOutput));
+        assert_eq!(tab_icon(false, false, false, false, true), Some(TabIcon::Idle));
+        assert_eq!(tab_icon(false, false, false, false, false), None);
+
         let green = rgb(0, 0xff, 0);
-        let red = rgb(0xff, 0, 0);
-        let tabs = vec![
-            TabLook { title: "shell".into(), status: Some(("waiting".into(), red)), dot: Some(green), color: Some(rgb(0, 0, 0xff)), icon: None },
-            TabLook { title: "other".into(), ..TabLook::default() },
+        let looks = vec![
+            TabLook { title: "shell".into(), dot: Some(green), processing: true, number: 1, ..TabLook::default() },
+            TabLook { title: "two".into(), icon: Some(TabIcon::Bell), number: 2, ..TabLook::default() },
         ];
-        let rects = tab_bar(&mut f, &tabs, 1, Rect { x: 0.0, y: 0.0, w: 400.0, h: 30.0 }, CELL);
-        let inside = |q: &Quad| q.rect.x >= rects[0].x && q.rect.x + q.rect.w <= rects[0].x + rects[0].w;
-        assert!(f.quads.iter().any(|q| inside(q) && q.color == rgba(green, 1.0) && q.rect.w < 20.0), "a dot");
-        assert!(f.quads.iter().any(|q| inside(q) && q.color == rgba(rgb(0, 0, 0xff), 1.0)), "the tab color");
-        let spans: Vec<&Span> = f.rows.iter().filter(|r| r.clip.x < rects[1].x).flat_map(|r| &r.spans).collect();
-        assert_eq!(spans.first().map(|s| (s.text.as_str(), s.color)), Some(("waiting ", red)), "status before the title");
-        assert!(spans.iter().any(|s| s.text.contains("shell")));
+        let inputs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: l.dot.is_some() || l.icon.is_some(), processing: l.processing, number: l.number })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        // Tab 0 hovered, tab 1 active; 2 pixels a point, the bar 10 pixels down.
+        let bar = tab_layout::build(&inputs, 1, 400.0, 0.0, Some(0), &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 800.0, h: 48.0 };
+        let px = |r: Rect| Rect { x: area.x + r.x * 2.0, y: area.y + r.y * 2.0, w: r.w * 2.0, h: r.h * 2.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 1, &bar, area, 2.0, 0.1, 20.0, true, false);
+
+        assert!(f.quads.iter().any(|q| q.rect == px(bar.cells[1].2) && q.color == rgba(TAB_ACTIVE, 1.0)), "the active tab's background");
+        let glyph = |c: char| f.rows.iter().filter(move |r| r.spans.iter().any(|s| s.icon && s.text == c.to_string()));
+        let tab0 = px(bar.cells[0].2);
+        let inside = |r: Rect, outer: Rect| r.x >= outer.x && r.x + r.w <= outer.x + outer.w && r.y >= outer.y && r.y + r.h <= outer.y + outer.h;
+        let closes: Vec<&TextRow> = glyph(TAB_CLOSE_GLYPH).collect();
+        assert_eq!(closes.len(), 1, "only the hovered tab's close button");
+        assert!(tab0.contains(closes[0].x, closes[0].y + 1.0));
+
+        // "two" (18 points, 36 pixels) centered in its label.
+        let label = px(bar.cells[1].1.label);
+        let two = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "two")).expect("the title");
+        assert!(two.spans[0].prose);
+        assert_eq!(two.x, label.x + (label.w - 36.0) / 2.0);
+        assert_eq!(two.scale, 11.0 * 0.1, "11 points");
+        // Its line (20 x 1.1 pixels) centered in the bar.
+        assert_eq!(two.y, area.y + ((48.0 - 22.0_f32) / 2.0).floor());
+
+        // The number centered in its box, iTerm2's floor.
+        let counter = px(bar.cells[0].1.counter.unwrap());
+        let win1 = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "Win+1")).expect("the number");
+        assert_eq!(win1.x, counter.x + ((counter.w - 60.0) / 2.0).floor());
+
+        // The status dot is the tab's icon, in the icon rect.
+        let icon = px(bar.cells[0].1.icon.unwrap());
+        assert!(f.quads.iter().any(|q| q.color == rgba(green, 1.0) && inside(q.rect, icon)), "the dot");
+        // The bell of the other tab, in its icon rect.
+        let bell = glyph('\u{EA8F}').next().expect("the bell");
+        assert!(px(bar.cells[1].1.icon.unwrap()).contains(bell.x + 1.0, bell.y + 1.0));
+
+        // The spinner, in the indicator rect of the processing tab only.
+        let spin = px(bar.cells[0].1.indicator.unwrap());
+        let arcs: Vec<&Quad> = f.quads.iter().filter(|q| inside(q.rect, spin)).collect();
+        assert!(arcs.len() >= 6, "{arcs:?}");
+        assert!(bar.cells[1].1.indicator.is_none());
+
+        // HTML: an underlined run gets a one-pixel line under it.
+        let html = tab_layout::Settings { html: true, ..s.clone() };
+        let ul = vec![TabLook { title: "<u>ab</u>".into(), ..TabLook::default() }, TabLook::default()];
+        let uin: Vec<TabInput> = ul.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: 0 }).collect();
+        let bar = tab_layout::build(&uin, 0, 400.0, 0.0, None, &html, &six);
+        let mut f = Frame::default();
+        tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0, true, false);
+        let ab = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "ab")).expect("the run");
+        assert!(f.quads.iter().any(|q| q.rect.h == 1.0 && q.rect.w == 24.0 && q.rect.x == ab.x), "{:?}", f.quads);
+
+        // A subtitle line on a tall bar: the title 5 points up, the subtitle under it at 9 points.
+        let tall = tab_layout::Settings { height: 28.0, ..s.clone() };
+        let st = vec![TabLook { title: "t".into(), subtitle: "sub".into(), ..TabLook::default() }, TabLook::default()];
+        let sin: Vec<TabInput> = st.iter().map(|l| TabInput { title: l.title.clone(), subtitle: l.subtitle.clone(), icon: false, processing: false, number: 0 }).collect();
+        let bar = tab_layout::build(&sin, 0, 400.0, 0.0, None, &tall, &six);
+        let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 56.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &st, 0, &bar, area, 2.0, 0.1, 20.0, true, false);
+        let t = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "t")).unwrap();
+        let sub = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "sub")).unwrap();
+        assert_eq!(t.y, ((56.0 - 22.0_f32) / 2.0).floor() - 10.0);
+        assert_eq!(sub.scale, 9.0 * 0.1);
+        assert_eq!(sub.y, ((56.0 - 18.0_f32) / 2.0).floor() - 10.0 + 22.0 - 4.0);
+    }
+
+    #[test]
+    fn tab_bar_cuts_tabs_at_the_pinned_add_button() {
+        use crate::tab_layout::{self, TabInput};
+        let base = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let s = tab_layout::Settings { prefs: tab_layout::Prefs { stretch: false, scrollable: true, ..base.prefs }, ..base };
+        let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        // 120-point tabs scrolled by 100: tab 5 runs from 500 to 620, past the "+" at 576.
+        let bar = tab_layout::build(&inputs, 5, 600.0, 100.0, None, &s, &six);
+        assert_eq!(bar.cells[5].2.x, 500.0);
+        let area = Rect { x: 0.0, y: 0.0, w: 600.0, h: 24.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 5, &bar, area, 1.0, 0.1, 20.0, true, false);
+        let add = bar.add.unwrap();
+        assert_eq!(add.x, 576.0);
+        let active = f.quads.iter().find(|q| q.color == rgba(TAB_ACTIVE, 1.0)).expect("the active tab");
+        assert_eq!(active.rect, Rect { x: 500.0, y: 0.0, w: 76.0, h: 24.0 }, "cut at the pinned +");
+        let plus = TAB_ADD_GLYPH.to_string();
+        for r in f.rows.iter().filter(|r| r.spans.iter().all(|s| s.text != plus)) {
+            assert!(r.clip.x + r.clip.w <= 576.0, "{r:?}");
+            assert!(r.clip.x >= 0.0, "{r:?}");
+        }
+        let drawn = f.rows.iter().find(|r| r.spans.iter().any(|s| s.icon && s.text == plus)).expect("the + is drawn");
+        assert!(add.contains(drawn.x + 1.0, drawn.y + 1.0));
+    }
+
+    #[test]
+    fn tab_overflow_button_is_a_double_chevron() {
+        use crate::tab_layout::{self, TabInput};
+        let base = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let s = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..base.prefs }, ..base };
+        let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
+        let overflow = bar.overflow.expect("tabs overflow");
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
+        // iTerm2's `overflowImage` is a right-pointing double chevron, gray; `overflowImagePressed`
+        // while its menu is open is the same in the text color (`PSMOverflowPopUpButton`).
+        for (down, color) in [(false, TAB_TEXT_DIM), (true, TAB_TEXT)] {
+            let mut f = Frame::default();
+            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, down);
+            let chevrons: Vec<&TextRow> = f.rows.iter().filter(|r| r.spans.iter().any(|s| s.icon && s.text == TAB_OVERFLOW_GLYPH.to_string())).collect();
+            assert_eq!(chevrons.len(), 2, "two chevrons");
+            assert!(chevrons[0].x < chevrons[1].x);
+            assert!(chevrons.iter().all(|r| r.spans[0].color == color && overflow.contains(r.x + 1.0, r.y + 1.0)));
+            // Centered in the button: the pair's middle is the button's middle.
+            let mid = (chevrons[0].x + chevrons[1].x + TAB_GLYPH_PT) / 2.0;
+            assert!((mid - (overflow.x + overflow.w / 2.0)).abs() <= 1.0, "{mid} in {overflow:?}");
+        }
+    }
+
+    #[test]
+    fn tab_close_button_dims_in_an_inactive_window() {
+        use crate::tab_layout::{self, TabInput};
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let looks = vec![TabLook { title: "a".into(), number: 1, ..TabLook::default() }, TabLook { title: "b".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        // Tab 1 hovered and not active: its close button over the bar's color.
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, Some(1), &s, &six);
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
+        let close_color = |key: bool| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, key, false);
+            let row = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == TAB_CLOSE_GLYPH.to_string())).expect("the close button");
+            row.spans[0].color
+        };
+        assert_eq!(close_color(true), TAB_TEXT_DIM, "full alpha in the key window");
+        assert_eq!(close_color(false), blend(TAB_BAR, TAB_TEXT_DIM, 0.5), "half alpha otherwise (YS drawInteriorWithTabCell:)");
+        // Held down, a shade shows behind the glyph in its box.
+        let close = bar.cells[1].1.close.unwrap();
+        let shade = rgba(blend(TAB_BAR, TAB_TEXT_DIM, TAB_CLOSE_PRESSED), 1.0);
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
+        assert!(!f.quads.iter().any(|q| q.color == shade), "not held");
+        let held: Vec<TabLook> = looks.iter().cloned().enumerate().map(|(i, l)| TabLook { close_pressed: i == 1, ..l }).collect();
+        let mut f = Frame::default();
+        tab_bar(&mut f, &held, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
+        assert!(f.quads.iter().any(|q| q.color == shade && q.rect == close), "{:?}", f.quads);
     }
 
     #[test]

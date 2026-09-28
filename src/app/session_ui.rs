@@ -19,6 +19,20 @@ impl App {
         Some(new_guid)
     }
 
+    /// The profile a new session based on `pane` starts with (`ProfileModel
+    /// profileForCreatingNewSessionBasedOn:`): the pane's saved profile, or, when the pane has
+    /// a private copy, a new copy of it with a fresh Guid. Its Guid, or None for a pane that
+    /// is gone.
+    pub(super) fn profile_for_new_session(&mut self, pane: PaneId) -> Option<String> {
+        let guid = self.panes.get(&pane)?.profile.clone();
+        let Some(copy) = self.store.sessions.iter().find(|s| s.profile.guid() == guid) else { return Some(guid) };
+        let mut copy = copy.clone();
+        let fresh = uuid::Uuid::new_v4().to_string().to_uppercase();
+        copy.profile.set(crate::profile::GUID, toml::Value::String(fresh.clone()));
+        self.store.sessions.push(copy);
+        Some(fresh)
+    }
+
     /// Sets or removes (None) values on the pane's own copy of its profile, and redraws.
     pub(super) fn set_session_values(&mut self, pane: PaneId, values: &[(String, Option<toml::Value>)]) {
         let Some(guid) = self.divorce(pane) else { return };

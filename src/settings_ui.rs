@@ -133,6 +133,13 @@ pub struct SettingsWindow {
     advanced: crate::settings_advanced_pane::AdvancedState,
     /// Settings > General > AI: its sub-tab and whether it was just revealed.
     pub ai: crate::settings_ai::State,
+    /// The warning shown over the window (iTerm2's sheet), until it is answered.
+    sheet: Option<settings_keys::SheetWarning>,
+    /// "Always show alerts with remembered selections"; the app sets it before each redraw.
+    pub show_remembered: bool,
+    /// The warnings answered since the app last took them: it lists the automatic answers in
+    /// Suppressed Alerts and saves the settings a remembered answer changed.
+    pub answered: Vec<settings_keys::SheetAnswer>,
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -163,6 +170,12 @@ impl SettingsWindow {
         self.ai.reveal = true;
         self.host.window.request_redraw();
         apply
+    }
+
+    /// Whether Settings > General > AI > General shows, where the model popup, the Ollama
+    /// pickers and Manage AI Models read the discovered models.
+    pub fn shows_ai_models(&self) -> bool {
+        shows_ai_models_on(self.mode, self.page, self.ai.sub)
     }
 
     /// Whether a custom scripts folder was typed and not yet applied, clearing the note
@@ -239,6 +252,9 @@ impl SettingsWindow {
             title_providers: Vec::new(),
             advanced: Default::default(),
             ai: Default::default(),
+            sheet: None,
+            show_remembered: false,
+            answered: Vec::new(),
         })
     }
 
@@ -326,6 +342,11 @@ impl SettingsWindow {
         let title_providers = &self.title_providers;
         let advanced = &mut self.advanced;
         let ai = &mut self.ai;
+        let sheet = &mut self.sheet;
+        let show_remembered = self.show_remembered;
+        let answered = &mut self.answered;
+        let key_maps: Vec<toml::Table> = store.profiles.iter().map(|p| p.get("Keyboard Map").and_then(|v| v.as_table().cloned()).unwrap_or_default()).collect();
+        let global_keys = globals.table("GlobalKeyMap");
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -333,6 +354,28 @@ impl SettingsWindow {
             .map(|p| crate::aps::Candidate { guid: p.guid(), name: p.name(), rules: p.get("Bound Hosts").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())).unwrap_or_default() })
             .collect();
         self.host.paint(|ui| {
+            // A warning an editor raised on the last frame shows now, over everything.
+            if sheet.is_none() {
+                *sheet = keys.ask.take();
+            }
+            if let Some(w) = sheet.as_mut() {
+                if let Some(answer) = settings_keys::sheet_warning(ui.ctx(), globals, w, show_remembered) {
+                    // Forget shows the warning again; any other answer ends it.
+                    if answer.index < answer.spec.labels.len() {
+                        match sheet.take().map(|w| w.then) {
+                            Some(settings_keys::SheetThen::SaveKey) => match settings_keys::held_answered(keys, answer.index, globals, store) {
+                                settings_keys::Saved::Nothing => {}
+                                settings_keys::Saved::Global => edit = Edit::GlobalsChanged,
+                                settings_keys::Saved::Profile(g) => edit = Edit::Changed(g),
+                            },
+                            Some(settings_keys::SheetThen::CreateHotkey(existing)) => crate::settings_hotkey::create_answered(hk, store, &existing, answer.index),
+                            Some(settings_keys::SheetThen::Nothing) | None => {}
+                        }
+                    }
+                    answered.push(answer);
+                    ui.ctx().request_repaint();
+                }
+            }
             if mode == Mode::Settings {
                 egui::Panel::top("pages").show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -363,7 +406,7 @@ impl SettingsWindow {
                     egui::CentralPanel::default().show(ui, |ui| {
                         let changed = match page {
                             Page::Keys => {
-                                let mut c = settings_keys::keys_page(ui, globals, keys, &profiles);
+                                let mut c = settings_keys::keys_page(ui, globals, keys, &profiles, &key_maps);
                                 match crate::settings_hotkey::keys_section(ui, globals, store, hk, keys) {
                                     crate::settings_hotkey::KeysEdit::None => {}
                                     crate::settings_hotkey::KeysEdit::Globals => c = true,
@@ -535,7 +578,7 @@ impl SettingsWindow {
                                 continue;
                             }
                             if s.key == "Keyboard Map" {
-                                if settings_keys::profile_key_mappings(ui, profile, keys, &profiles) {
+                                if settings_keys::profile_key_mappings(ui, profile, keys, &profiles, &global_keys) {
                                     edit = Edit::Changed(selected.clone());
                                 }
                                 continue;
@@ -597,6 +640,11 @@ impl SettingsWindow {
                                 continue;
                             }
                             if control(ui, profile, s, dark, is_default) {
+                                // Choosing Meta for either Option key warns (`PK:554-559`).
+                                if chose_meta(&s.key, profile.get(&s.key).as_ref()) {
+                                    keys.ask = Some(settings_keys::SheetWarning::new(settings_keys::meta_spec(), settings_keys::SheetThen::Nothing));
+                                    ui.ctx().request_repaint();
+                                }
                                 edit = Edit::Changed(selected.clone());
                             }
                         }
@@ -618,7 +666,17 @@ impl SettingsWindow {
         if let Some(g) = pick {
             self.selected = Some(g);
         }
+        // A probe or a model fetch keeps drawing: its spinner turns and its answer shows at once.
+        if self.ai.busy() {
+            self.host.request_redraw();
+        }
         edit
+    }
+
+    /// Draw again: something the window shows changed outside it (discovered Ollama models, a
+    /// discovery answer).
+    pub fn request_redraw(&self) {
+        self.host.request_redraw();
     }
 }
 
@@ -755,6 +813,12 @@ pub fn working_directory_is_default(value: Option<&Value>, home: &str) -> bool {
     text.is_empty() || text == home
 }
 
+/// Whether a committed change of profile setting `key` to `value` chose Meta (1) for an
+/// Option key ("Option Key Sends" or "Right Option Key Sends").
+pub fn chose_meta(key: &str, value: Option<&Value>) -> bool {
+    matches!(key, "Option Key Sends" | "Right Option Key Sends") && value.and_then(Value::as_integer) == Some(1)
+}
+
 /// Font settings follow the default profile until each pane can have its own renderer.
 pub const FONT_KEYS: [&str; 5] = ["Normal Font", "Non Ascii Font", "Use Non-ASCII Font", "Horizontal Spacing", "Vertical Spacing"];
 
@@ -877,9 +941,35 @@ fn control(ui: &mut egui::Ui, profile: &mut Profile, s: &Setting, dark: bool, is
     commit
 }
 
+/// Whether this mode, page and AI sub-tab show the discovered models.
+fn shows_ai_models_on(mode: Mode, page: Page, sub: crate::settings_ai::SubTab) -> bool {
+    mode == Mode::Settings && page == Page::General && sub == crate::settings_ai::SubTab::General
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 10 re-review: stale Ollama servers are asked again only where the models show.
+    #[test]
+    fn discovery_reads_only_where_the_models_show() {
+        use crate::settings_ai::SubTab;
+        assert!(shows_ai_models_on(Mode::Settings, Page::General, SubTab::General));
+        assert!(!shows_ai_models_on(Mode::Settings, Page::General, SubTab::Prompts));
+        assert!(!shows_ai_models_on(Mode::Settings, Page::General, SubTab::Features));
+        assert!(!shows_ai_models_on(Mode::Settings, Page::Keys, SubTab::General));
+        assert!(!shows_ai_models_on(Mode::Profiles, Page::General, SubTab::General));
+    }
+
+    /// Choosing Meta (1) for either Option key is what warns (`PK:554-559`).
+    #[test]
+    fn meta_choice_warns() {
+        assert!(chose_meta("Option Key Sends", Some(&Value::Integer(1))));
+        assert!(chose_meta("Right Option Key Sends", Some(&Value::Integer(1))));
+        assert!(!chose_meta("Option Key Sends", Some(&Value::Integer(2))));
+        assert!(!chose_meta("Option Key Sends", None));
+        assert!(!chose_meta("Mouse Reporting", Some(&Value::Integer(1))));
+    }
 
     #[test]
     fn turning_the_page_applies_the_typed_folder() {

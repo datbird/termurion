@@ -11,7 +11,8 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use super::script_runtime_ui::{uv_dir, After};
-use super::scripts_alerts::{Ask, Then};
+use super::scripts_alerts::{ask, Then};
+use crate::warnings::Kind;
 use super::App;
 use crate::layout::PaneId;
 use crate::prompt_ui::{PromptResult, PromptWindow};
@@ -130,7 +131,7 @@ fn window_env(env: &[(String, String)]) -> Vec<(String, String)> {
 
 impl App {
     fn deps_alert(&mut self, heading: &str, text: String) {
-        self.ask_scripts(Ask { heading: heading.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::Nothing });
+        self.ask_scripts(ask(heading, &text, &[crate::api_auth::OK], None, Kind::Persistent, Then::Nothing));
     }
 
     /// Scripts > Manage > Manage Dependencies (`open`, `DE:79-90`): the window lists the
@@ -363,8 +364,8 @@ impl App {
                     VersionChange::Upgrade => (sd::UPGRADE_HEADING, sd::UPGRADE_TEXT),
                 };
                 // Persistent in iTerm2: never silenced.
-                let buttons = vec![crate::api_auth::OK.to_string(), crate::api_auth::CANCEL.to_string()];
-                self.ask_scripts(Ask { heading: heading.to_string(), text: text.to_string(), buttons, silence: None, then: Then::VersionChange(container, v) });
+                let buttons = [crate::api_auth::OK, crate::api_auth::CANCEL];
+                self.ask_scripts(ask(heading, text, &buttons, None, Kind::Persistent, Then::VersionChange(container, v)));
             }
             DepsEvent::Upgrade => {
                 if let Some((script, false)) = current {
@@ -412,10 +413,10 @@ impl App {
         let exists = |p: &Path| !crate::scripts::ancestors_stay_local(p, &crate::scripts::read_link) || p.is_file();
         let index = sd::configured_index(&backend, &venv, &window_env(&env), &exists);
         let text = sd::confirm_text(&program, &args, index.as_deref());
-        let buttons = vec![crate::api_auth::OK.to_string(), crate::api_auth::CANCEL.to_string()];
+        let buttons = [crate::api_auth::OK, crate::api_auth::CANCEL];
         // `RUN_ID` is persistent in iTerm2: never silenced.
         let then = Then::RunPip(Box::new(RunPip { program, args, env, pending }));
-        self.ask_scripts(Ask { heading: sd::RUN_HEADING.to_string(), text, buttons, silence: None, then });
+        self.ask_scripts(ask(sd::RUN_HEADING, &text, &buttons, None, Kind::Persistent, then));
     }
 
     /// "Run this Command?" answered OK: the window opens on the next loop pass.

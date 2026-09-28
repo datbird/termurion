@@ -1,6 +1,7 @@
 //! Tandem: an iTerm2-style terminal for Windows.
 
 pub mod mouse;
+pub mod mouse_frustration;
 pub mod globals;
 pub mod keystroke;
 pub mod keyaction;
@@ -22,6 +23,7 @@ pub mod smartsel;
 pub mod semantic;
 pub mod synthetic;
 pub mod tabstatus;
+pub mod tab_layout;
 pub mod status_tool;
 pub mod seltools;
 pub mod copymode;
@@ -49,6 +51,8 @@ pub mod expr;
 pub mod interp;
 pub mod script_fn;
 pub mod script_eval;
+pub mod warnings;
+pub mod shell_version;
 pub mod script_statusbar;
 pub mod script_provision;
 pub mod script_runtime;
@@ -60,6 +64,7 @@ pub mod script_deps;
 pub mod zip_check;
 #[cfg(windows)]
 pub mod script_deps_ui;
+pub mod suppressed_alerts_ui;
 #[cfg(windows)]
 pub mod script_export_ui;
 #[cfg(windows)]
@@ -305,8 +310,26 @@ pub mod session_env;
 pub mod api_server;
 pub mod ai_settings;
 pub mod ai_catalog;
+pub mod ai_chat;
 pub mod ai_policy;
 pub mod ai_models;
+pub mod ai_model;
+pub mod ai_transport;
+pub mod ai_msg;
+pub mod ai_json;
+pub mod ai_sse;
+pub mod ai_turn;
+pub mod ai_responses;
+pub mod ai_anthropic;
+pub mod ai_gemini;
+pub mod ai_deepseek;
+pub mod ai_ollama;
+pub mod ai_discovery;
+pub mod ai_files;
+pub mod ai_test_conn;
+#[cfg(windows)]
+pub mod ai_winhttp;
+pub mod ai_wire_log;
 pub mod ai_keys;
 pub mod ai_gate;
 pub mod ai_prompts;

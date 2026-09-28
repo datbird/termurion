@@ -8,6 +8,60 @@ use super::*;
 use crate::osc1337::{self, Attention};
 use crate::screen::Request;
 
+/// How long the pointer rests on a tab before its tooltip shows.
+pub(super) const TIP_DELAY: Duration = Duration::from_millis(500);
+
+/// The Tab Color picker's no-color entry (iTerm2's "Default" swatch, index 0 of
+/// `ColorsMenuItemView`).
+pub(super) const NO_COLOR: &str = "Default";
+
+/// The Tab Color picker's entry that opens Windows' color dialog.
+pub(super) const CHOOSE_COLOR: &str = "Choose Color\u{2026}";
+
+/// The session values a picked tab color writes (`PTYSession setTabColorByUI:`): "Use Tab
+/// Color" and "Tab Color", or "Use Tab Color" off for none. With `separate` (the profile's
+/// "Use Separate Colors for Light and Dark Mode") the Dark and Light variants are written
+/// too, so the pick shows in both modes (`allTabColorKeysForBaseKey:`).
+pub(super) fn tab_color_values(color: Option<crate::palette::Rgb>, separate: bool) -> Vec<(String, Option<toml::Value>)> {
+    let keys = |base: &str| -> Vec<String> {
+        if separate { vec![base.to_string(), format!("{base} (Dark)"), format!("{base} (Light)")] } else { vec![base.to_string()] }
+    };
+    let mut values: Vec<(String, Option<toml::Value>)> = keys("Use Tab Color").into_iter().map(|k| (k, Some(toml::Value::Boolean(color.is_some())))).collect();
+    if let Some(c) = color {
+        let v = crate::settings_ui::value_of_rgb([c.r, c.g, c.b]);
+        values.extend(keys("Tab Color").into_iter().map(|k| (k, Some(v.clone()))));
+    }
+    values
+}
+
+/// The tooltip of a tab (`PT:8701-8723`): "Name", "Profile" and "Command" lines, the name
+/// the tab's label (`tab_label`) without HTML when `html`, the profile the saved original's
+/// name for a session copy (`original_name`) else the profile's own, and "None" for no
+/// command. None when `disabled`.
+pub(super) fn tip_text(disabled: bool, label: &str, html: bool, profile_name: &str, original_name: Option<&str>, command: &str) -> Option<String> {
+    if disabled {
+        return None;
+    }
+    let name = crate::tab_layout::plain_title(label, html);
+    Some(crate::tab_layout::tooltip(&name, original_name.unwrap_or(profile_name), Some(command).filter(|c| !c.is_empty())))
+}
+
+/// A tab's label as iTerm2 keeps it (`PTYTab labelForActiveSession`, `TAB:735-751`): the
+/// title, a line break and the subtitle, the break kept when the subtitle is empty.
+pub(super) fn tab_label(title: &str, subtitle: &str) -> String {
+    format!("{title}\n{subtitle}")
+}
+
+/// A session profile's own name, and its saved original's name when it is a session copy
+/// whose original still exists (iTerm2 looks the Guid up in the saved profiles, then the
+/// copy's "Original Guid").
+fn tip_profile_names(store: &crate::store::Store, guid: &str) -> (String, Option<String>) {
+    let own = store.get(guid).map(|p| p.name()).unwrap_or_default();
+    let shared = store.shared_guid(guid);
+    let original = (shared != guid).then(|| store.get(&shared)).flatten().map(|p| p.name());
+    (own, original)
+}
+
 /// How long RequestAttention's pane flash and fireworks last.
 pub(super) const FLASH: Duration = Duration::from_millis(300);
 pub(super) const FIREWORKS: Duration = Duration::from_millis(1200);
@@ -20,6 +74,8 @@ impl App {
             Request::Notify { title, message } => self.terminal_alert(pane, title, message),
             Request::SetBadge(t) => self.set_badge(pane, Some(t)),
             Request::BadgeRefused => self.set_badge(pane, None),
+            Request::HostChanged(left_on) => self.host_changed(pane, left_on),
+            Request::ShellIntegrationReported { version, shell } => self.shell_integration_reported(pane, version, shell),
             // Progress Bar Changed event triggers arrive in task 5 of milestone 6b.
             Request::Progress(_) => {}
             Request::CursorGuide(on) => {
@@ -162,7 +218,8 @@ impl App {
         let _ = g.window.request_inner_size(PhysicalSize::new((w - dw).max(1.0).round() as u32, (h - dh).max(1.0).round() as u32));
     }
 
-    /// A tab's title, status, and colors for the tab bar.
+    /// A tab's title, subtitle (the status joined in), colors, icon, spinner and number for the
+    /// tab bar.
     pub(super) fn tab_look(&self, t: &Tab) -> scene::TabLook {
         use crate::tabstatus::{self, xterm_color};
         let title = self.tmux_tab_label(t.focused).or_else(|| t.title.clone()).unwrap_or_else(|| self.session_title(t.focused));
@@ -176,13 +233,10 @@ impl App {
             let patterns = self.status_patterns();
             panes.iter().filter_map(status_of).enumerate().min_by_key(|(i, s)| (crate::status_tool::priority(s.status.as_deref(), &patterns), *i)).map(|(_, s)| s)
         });
-        let show_text = self.globals.bool(crate::status_tool::SUBTITLE_KEY);
-        // Shown in its display form (`localizedStatusForDisplay`).
-        let status = st.filter(|_| show_text).and_then(|s| {
-            let text = crate::status_tool::display_status(s.status.as_deref().filter(|t| !t.is_empty())?);
-            let color = s.status_color.as_deref().and_then(xterm_color).unwrap_or(rgb_of(0xc7, 0xc7, 0xc7));
-            Some((text, color))
-        });
+        // The status text in its display form (`localizedStatusForDisplay`) joins the subtitle
+        // line (`TAB:740-751`); it no longer prefixes the title.
+        let status = st.and_then(|s| s.status.as_deref().filter(|t| !t.is_empty())).map(crate::status_tool::display_status);
+        let subtitle = crate::tab_layout::subtitle_text(&self.subtitle_text(t.focused), status.as_deref(), self.globals.bool(crate::status_tool::SUBTITLE_KEY));
         let dot = st.and_then(|s| s.indicator.as_deref()).and_then(xterm_color);
         // A program's (or tmux's saved) tab color, else the profile's.
         let color = self.tab_colors.get(&t.focused).copied().or_else(|| self.panes.get(&t.focused).and_then(|p| self.store.get(&p.profile)).and_then(|pr| pr.tab_color(self.dark())));
@@ -190,7 +244,41 @@ impl App {
         let bell = panes.iter().any(|id| self.bell_icons.contains(id));
         let (new_output, idle) = self.activity_icons(&panes);
         let icon = scene::tab_icon(dot.is_some(), dead, bell, new_output, idle);
-        scene::TabLook { title, status, dot, color, icon }
+        let index = self.tabs.iter().position(|x| x.id == t.id);
+        let foreground = index == Some(self.active);
+        let processing = activity_ui::tab_processing(self.any_processing(&panes), foreground, self.globals.bool("HideActivityIndicator"));
+        scene::TabLook { title, subtitle, dot, color, icon, processing, number: index.map_or(0, |i| i + 1), close_pressed: false }
+    }
+
+    /// Colors every pane of the tab (None: no color), as iTerm2's Tab Color does for each
+    /// session of the tab (`PT:14655-14674`). The pick replaces a program's tab color for
+    /// those panes, which would otherwise win over the profile's.
+    pub(super) fn set_tab_color_for(&mut self, tab: usize, color: Option<crate::palette::Rgb>) {
+        let Some(t) = self.tabs.get(tab) else { return };
+        for pane in t.layout.panes() {
+            self.tab_colors.remove(&pane);
+            let separate = self.panes.get(&pane).and_then(|p| self.store.get(&p.profile)).is_some_and(|p| p.bool("Use Separate Colors for Light and Dark Mode"));
+            self.set_session_values(pane, &tab_color_values(color, separate));
+        }
+    }
+
+    /// A tab's tooltip text (`PT tabView:toolTipForTabViewItem:`): its title without HTML, its
+    /// focused session's profile and the command it started with. None with
+    /// `DisableTabBarTooltips` or no such tab.
+    pub(super) fn tab_tip_text(&self, tab: usize) -> Option<String> {
+        let t = self.tabs.get(tab)?;
+        let pane = self.panes.get(&t.focused)?;
+        let (own, original) = tip_profile_names(&self.store, &pane.profile);
+        let look = self.tab_look(t);
+        tip_text(self.globals.bool("DisableTabBarTooltips"), &tab_label(&look.title, &look.subtitle), self.globals.bool("HTMLTabTitles"), &own, original.as_deref(), &pane.command)
+    }
+
+    /// A session's subtitle: its profile's Subtitle over the session's variables, as the badge.
+    fn subtitle_text(&self, pane: PaneId) -> String {
+        let Some(p) = self.panes.get(&pane) else { return String::new() };
+        let template = self.store.get(&p.profile).map(|pr| pr.string("Subtitle")).unwrap_or_default();
+        let s = p.own();
+        crate::badge::text(&template, &|n| s.trigger_var(n, 0))
     }
 
     /// Forgets pane flashes and fireworks that are over.
@@ -223,10 +311,6 @@ impl App {
     }
 }
 
-fn rgb_of(r: u8, g: u8, b: u8) -> alacritty_terminal::vte::ansi::Rgb {
-    alacritty_terminal::vte::ansi::Rgb { r, g, b }
-}
-
 /// The primary monitor's height in pixels (it sits at the virtual screen's origin).
 fn primary_height() -> f64 {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CYSCREEN};
@@ -250,4 +334,75 @@ pub(super) fn work_areas() -> Vec<(f64, f64, f64, f64)> {
     let mut out: Vec<(f64, f64, f64, f64)> = Vec::new();
     unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(each), &mut out as *mut _ as LPARAM) };
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tip_text;
+
+    #[test]
+    fn tab_color_follows_iterm2() {
+        use super::{CHOOSE_COLOR, NO_COLOR, tab_color_values};
+        use crate::settings_ui::value_of_rgb;
+        let c = crate::palette::rgb(0x5f, 0xa3, 0xf8);
+        let v = value_of_rgb([0x5f, 0xa3, 0xf8]);
+        assert_eq!(tab_color_values(Some(c), false), vec![("Use Tab Color".to_string(), Some(toml::Value::Boolean(true))), ("Tab Color".to_string(), Some(v.clone()))]);
+        assert_eq!(tab_color_values(None, false), vec![("Use Tab Color".to_string(), Some(toml::Value::Boolean(false)))]);
+        // With separate light and dark colors the pick goes to both modes too
+        // (`PTYSession setTabColorByUI:`, `allTabColorKeysForBaseKey:`).
+        let t = |k: &str| (k.to_string(), Some(toml::Value::Boolean(true)));
+        let col = |k: &str| (k.to_string(), Some(v.clone()));
+        assert_eq!(tab_color_values(Some(c), true), vec![t("Use Tab Color"), t("Use Tab Color (Dark)"), t("Use Tab Color (Light)"), col("Tab Color"), col("Tab Color (Dark)"), col("Tab Color (Light)")]);
+        let f = |k: &str| (k.to_string(), Some(toml::Value::Boolean(false)));
+        assert_eq!(tab_color_values(None, true), vec![f("Use Tab Color"), f("Use Tab Color (Dark)"), f("Use Tab Color (Light)")]);
+        assert_eq!(NO_COLOR, "Default");
+        assert_eq!(CHOOSE_COLOR, "Choose Color\u{2026}");
+    }
+
+    #[test]
+    fn tooltips_follow_iterm2() {
+        use super::tab_label;
+        // The name is the tab's label: the title, a line break and the subtitle, the line
+        // blank when there is no subtitle (`TAB:735-751`).
+        assert_eq!(tab_label("zsh", "~/src"), "zsh\n~/src");
+        assert_eq!(tab_label("zsh", ""), "zsh\n");
+        // `DisableTabBarTooltips` shows none (`PT:8701-8703`).
+        assert_eq!(tip_text(true, "zsh\n", false, "Default", None, "zsh -l"), None);
+        // The name, the profile and the command, one per line.
+        assert_eq!(tip_text(false, "zsh\n", false, "Default", None, "zsh -l").as_deref(), Some("Name: zsh\n\nProfile: Default\nCommand: zsh -l"));
+        assert_eq!(tip_text(false, "zsh\n~/src", false, "Default", None, "zsh -l").as_deref(), Some("Name: zsh\n~/src\nProfile: Default\nCommand: zsh -l"));
+        // The label's HTML is removed when HTML titles are on, kept as typed when off.
+        assert_eq!(tip_text(false, "<b>x</b>\n", true, "Default", None, "cmd").as_deref(), Some("Name: x\n\nProfile: Default\nCommand: cmd"));
+        assert_eq!(tip_text(false, "<b>x</b>\n", false, "Default", None, "cmd").as_deref(), Some("Name: <b>x</b>\n\nProfile: Default\nCommand: cmd"));
+        // A session copy names its saved original; a copy whose original is gone its own name.
+        assert_eq!(tip_text(false, "t\n", false, "Default (copy)", Some("Default"), "cmd").as_deref(), Some("Name: t\n\nProfile: Default\nCommand: cmd"));
+        assert_eq!(tip_text(false, "t\n", false, "Mine", None, "cmd").as_deref(), Some("Name: t\n\nProfile: Mine\nCommand: cmd"));
+        // No command reads "None".
+        assert_eq!(tip_text(false, "t\n", false, "Default", None, "").as_deref(), Some("Name: t\n\nProfile: Default\nCommand: None"));
+    }
+
+    #[test]
+    fn tooltip_profile_names_follow_iterm2() {
+        use crate::profile::Profile;
+        use crate::session_profile::{ORIGINAL_GUID, divorce};
+        let mut saved = Profile::default();
+        saved.set("Guid", toml::Value::String("saved".into()));
+        saved.set("Name", toml::Value::String("Work".into()));
+        let mut store = crate::store::Store::fresh(std::path::Path::new("profiles-test.toml"));
+        store.add(saved.clone());
+        // A saved profile: its own name.
+        assert_eq!(super::tip_profile_names(&store, "saved"), ("Work".to_string(), None));
+        // A session copy: its original's name.
+        let mut copy = divorce(&saved, "copy".into());
+        copy.profile.set("Name", toml::Value::String("Work edited".into()));
+        store.sessions.push(copy);
+        assert_eq!(super::tip_profile_names(&store, "copy"), ("Work edited".to_string(), Some("Work".to_string())));
+        // A copy whose original is gone: its own name.
+        let mut orphan = divorce(&saved, "orphan".into());
+        orphan.profile.set(ORIGINAL_GUID, toml::Value::String("gone".into()));
+        store.sessions.push(orphan);
+        assert_eq!(super::tip_profile_names(&store, "orphan"), ("Work".to_string(), None));
+        // An unknown Guid: no name.
+        assert_eq!(super::tip_profile_names(&store, "nothing"), (String::new(), None));
+    }
 }

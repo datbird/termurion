@@ -28,6 +28,7 @@ use crate::text_edit::{self, EditKey, EditOut};
 use crate::tool_list::{self, Focus};
 use crate::toolbelt::ToolId;
 use crate::toolbelt_tools::{self as tt, CodeciergeState, JobRow, SignalWay};
+use crate::warnings::Preempt;
 use winit::keyboard::{Key as WKey, NamedKey};
 
 /// The Capture Output trigger's two warnings' bar ids (`PS:25167-25233`).
@@ -76,6 +77,22 @@ pub(super) struct StatusShown {
     pub(super) items: Vec<StatusItem>,
     pub(super) separator: Option<usize>,
     pub(super) wraps: RefCell<Wraps>,
+}
+
+/// "Confirmation Needed" before sending a signal to `count` processes (`JT:425-432`): OK and
+/// Cancel, permanently silenceable.
+pub(super) fn signal_spec(count: usize, any_children: bool) -> crate::warnings::Spec {
+    let (heading, text) = tt::signal_question(count, any_children);
+    let labels = [crate::api_auth::OK, crate::api_auth::CANCEL];
+    crate::warnings::Spec {
+        id: Some(tt::SEND_SIGNAL_KEY.to_string()),
+        kind: crate::warnings::Kind::Permanent,
+        heading: heading.to_string(),
+        text,
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+        cancel: Some(1),
+        never_remember: Vec::new(),
+    }
 }
 
 /// What an OSC clear's empty view is keyed to: the mark's capture count and its last entry
@@ -1051,24 +1068,32 @@ impl App {
         let (Some(shell), false) = (shell, pids.is_empty()) else { return };
         let index = self.belt.tools.get(&ToolId::Jobs).map_or(0, |t| t.signal).min(tt::SIGNALS.len() - 1);
         let req = SignalRequest { shell, pids, way: tt::signal_way(tt::SIGNALS[index]), any_children };
-        if self.globals.bool(tt::SEND_SIGNAL_KEY) {
-            self.jobs_signal(req);
-        } else if self.jobs_confirm.is_none() {
-            // The question opens on the next turn of the loop (it needs the event loop).
-            self.jobs_confirm = Some((None, req));
-        } else if let Some((Some(w), _)) = &self.jobs_confirm {
-            w.focus();
+        if let Some((Some(w), ..)) = &self.jobs_confirm {
+            return w.focus();
         }
+        if self.jobs_confirm.is_some() {
+            return;
+        }
+        let remembered = match self.warning_preempt(&signal_spec(req.pids.len(), any_children)) {
+            // Only OK may be remembered.
+            Preempt::Answer(_) => return self.jobs_signal(req),
+            Preempt::Show => None,
+            Preempt::ShowRemembered { saved_label } => Some(saved_label),
+        };
+        // The question opens on the next turn of the loop (it needs the event loop).
+        self.jobs_confirm = Some((None, req, remembered));
     }
 
     /// Opens the pending "Confirmation Needed" question.
     pub(super) fn open_jobs_confirm(&mut self, event_loop: &ActiveEventLoop) {
-        let Some((None, req)) = &self.jobs_confirm else { return };
-        let (heading, text) = tt::signal_question(req.pids.len(), req.any_children);
-        let Some(g) = self.gpu.as_ref() else { return };
-        match crate::prompt_ui::ConfirmWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, heading, &text) {
+        let Some((None, req, remembered)) = &self.jobs_confirm else { return };
+        if self.gpu.is_none() {
+            return;
+        }
+        let spec = signal_spec(req.pids.len(), req.any_children);
+        match self.open_warning_window(event_loop, &spec, remembered.as_deref()) {
             Ok(w) => {
-                if let Some((slot, _)) = self.jobs_confirm.as_mut() {
+                if let Some((slot, ..)) = self.jobs_confirm.as_mut() {
                     *slot = Some(w);
                 }
             }
@@ -1104,11 +1129,14 @@ impl App {
                 continue;
             }
             // A hosted pane's console belongs to tandem-host, which sends the event: Tandem
-            // never attaches to it.
-            let hosted = if console { self.panes.values().find(|p| p.shell_pid() == Some(req.shell)).and_then(|p| p.hosted_signal(req.way == SignalWay::CtrlBreak)) } else { None };
+            // never attaches to it. A pane closed for Undo Close still has its console.
+            let pane = self.panes.values().chain(self.undo.iter().flat_map(|u| u.panes())).find(|p| p.shell_pid() == Some(req.shell));
+            let hosted = if console { pane.and_then(|p| p.hosted_signal(req.way == SignalWay::CtrlBreak)) } else { None };
+            // A local console paused for an inline file's question is never attached to.
+            let stop = pane.and_then(|p| p.console_pause_flag()).unwrap_or_default();
             let result = match hosted {
                 Some(r) => r,
-                None => crate::jobwatch::signal_process(pid, Some(created), req.way).map(|s| {
+                None => crate::jobwatch::signal_process(pid, Some(created), req.way, stop).map(|s| {
                     if let crate::jobwatch::Sent::Later(h) = s {
                         self.signal_waits.push(h);
                     }
@@ -1168,29 +1196,23 @@ impl App {
             }
             return true;
         }
-        let Some((Some(w), _)) = self.jobs_confirm.as_mut().filter(|(w, _)| w.as_ref().is_some_and(|w| w.id() == window)) else { return false };
+        let Some((Some(w), ..)) = self.jobs_confirm.as_mut().filter(|(w, ..)| w.as_ref().is_some_and(|w| w.id() == window)) else { return false };
         let answer = match event {
-            WindowEvent::CloseRequested => ConfirmResult::Cancel,
+            WindowEvent::CloseRequested => w.close_answer(),
             WindowEvent::RedrawRequested => w.redraw(),
             other => {
                 w.event(other);
                 ConfirmResult::Open
             }
         };
-        match answer {
-            ConfirmResult::Open => {}
-            // Only an `actions` window answers Action; this one never does.
-            ConfirmResult::Cancel | ConfirmResult::Action { .. } => self.jobs_confirm = None,
-            ConfirmResult::Ok { suppress } => {
-                // The checkbox is remembered only on OK (`iTermWarning.m:517-520`).
-                if suppress {
-                    self.globals.set(tt::SEND_SIGNAL_KEY, toml::Value::Boolean(true));
-                    self.save_globals();
-                }
-                if let Some((_, req)) = self.jobs_confirm.take() {
-                    self.jobs_signal(req);
-                }
-            }
+        let ConfirmResult::Action { index, suppress } = answer else { return true };
+        let Some((_, req, remembered)) = self.jobs_confirm.take() else { return true };
+        let spec = signal_spec(req.pids.len(), req.any_children);
+        if self.warning_window_answered(&spec, remembered.is_some(), index, suppress) {
+            // Forgotten: the question again, without the remembered mode.
+            self.jobs_confirm = Some((None, req, None));
+        } else if index == 0 {
+            self.jobs_signal(req);
         }
         true
     }
