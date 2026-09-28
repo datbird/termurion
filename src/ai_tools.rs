@@ -1,9 +1,13 @@
 //! The tools a chat's model can call (`RemoteCommand.Content`, `AITerm/RemoteCommand.swift`).
-//! Pure. This part holds the calls, their Swift JSON form and their status lines; Task 4 adds
-//! the registry (names, descriptions, schemas, argument parsing).
+//! Pure: the calls, their Swift JSON form, status lines and consent texts, and the registry the
+//! model sees (names, descriptions, schemas, argument parsing).
+
+use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
+use crate::ai_permissions::Category;
+use crate::ai_turn::ToolDecl;
 use crate::chat_message::{case, one_key};
 
 /// One tool call with its arguments (`RC:104-196`), in iTerm2's `allCases` order.
@@ -176,6 +180,354 @@ impl Call {
             Call::RestartSession => "Restarting this session".to_string(),
         }
     }
+
+    /// The call's place in `allCases` (and so in `TOOLS` and `ALL_NAMES`).
+    fn index(&self) -> usize {
+        match self {
+            Call::IsAtPrompt => 0,
+            Call::ExecuteCommand { .. } => 1,
+            Call::GetLastExitStatus => 2,
+            Call::GetCommandHistory { .. } => 3,
+            Call::GetLastCommand => 4,
+            Call::GetCommandBeforeCursor => 5,
+            Call::SearchCommandHistory { .. } => 6,
+            Call::GetCommandOutput { .. } => 7,
+            Call::GetScreenContents { .. } => 8,
+            Call::GetTerminalSize => 9,
+            Call::GetShellType => 10,
+            Call::DetectSshSession => 11,
+            Call::GetRemoteHostname => 12,
+            Call::GetUserIdentity => 13,
+            Call::GetCurrentDirectory => 14,
+            Call::SetClipboard { .. } => 15,
+            Call::InsertTextAtCursor { .. } => 16,
+            Call::DeleteCurrentLine => 17,
+            Call::GetManPage { .. } => 18,
+            Call::CreateFile { .. } => 19,
+            Call::FindOnPage { .. } => 20,
+            Call::LoadUrl { .. } => 21,
+            Call::WebSearch { .. } => 22,
+            Call::GetUrl => 23,
+            Call::ReadWebPage { .. } => 24,
+            Call::RestartSession => 25,
+        }
+    }
+
+    /// The function name the model calls (`functionName`).
+    pub fn name(&self) -> &'static str {
+        TOOLS[self.index()].name
+    }
+
+    /// The permission that governs the call (`permissionCategory`, `RC:124-145`).
+    pub fn category(&self) -> Category {
+        TOOLS[self.index()].category
+    }
+
+    /// Only `execute_command` goes through the safety check (`needsSafetyCheck`); iTerm2 leaves
+    /// `create_file` out on purpose, the person seeing it in the chat first.
+    pub fn needs_safety_check(&self) -> bool {
+        matches!(self, Call::ExecuteCommand { .. })
+    }
+
+    /// The text of a parked request (`permissionDescription`). Only the typed text is cut at 32;
+    /// a command or man page name is escaped and shown whole, a file name as given.
+    pub fn consent_description(&self) -> String {
+        let prefix = "The AI Agent would like to";
+        match self {
+            Call::IsAtPrompt => format!("{prefix} check if you\u{2019}re at a shell prompt"),
+            Call::ExecuteCommand { command } => format!("{prefix} execute `{}`", escape_code(command)),
+            Call::GetLastExitStatus => format!("{prefix} check the exit status of the last command"),
+            Call::GetCommandHistory { .. } => format!("{prefix} review the history of commands you have run in this session"),
+            Call::GetLastCommand => format!("{prefix} view the last command you ran in this session"),
+            Call::GetCommandBeforeCursor => format!("{prefix} read your current command prompt"),
+            Call::SearchCommandHistory { .. } => format!("{prefix} search the history of commands you have run in this session"),
+            Call::GetCommandOutput { .. } => format!("{prefix} fetch the output of a previously run command"),
+            Call::GetScreenContents { .. } => format!("{prefix} read the visible screen of your terminal session"),
+            Call::GetTerminalSize => format!("{prefix} query the size of your terminal window"),
+            Call::GetShellType => format!("{prefix} determine which shell you use"),
+            Call::DetectSshSession => format!("{prefix} check if you are using SSH"),
+            Call::GetRemoteHostname => format!("{prefix} get the current host name of this terminal session"),
+            Call::GetUserIdentity => format!("{prefix} check your username"),
+            Call::GetCurrentDirectory => format!("{prefix} know your current directory"),
+            Call::SetClipboard { .. } => format!("{prefix} paste to the clipboard"),
+            Call::InsertTextAtCursor { text } => format!("{prefix} type `{}` into the current session", truncate32(&escape_code(text))),
+            Call::DeleteCurrentLine => format!("{prefix} erase the current command line"),
+            Call::GetManPage { cmd } => format!("{prefix} check the manpage for `{}`", escape_code(cmd)),
+            Call::CreateFile { filename, .. } => format!("{prefix} create a file named `{filename}`"),
+            // The browser texts are iTerm2's as written, lower-case "agent" and "write to" included.
+            Call::FindOnPage { query } => format!("The AI agent would like to search the current web page for \u{201c}{query}\u{201d}"),
+            Call::LoadUrl { url } => format!("The AI agent would like to navigate to {url}"),
+            Call::WebSearch { query } => format!("The AI agent would like to write to search the web for \u{201c}{query}\u{201d}"),
+            Call::GetUrl => "The AI agent would like to write to get the current URL".to_string(),
+            Call::ReadWebPage { .. } => "The AI agent would like to write to view the current web page".to_string(),
+            Call::RestartSession => format!("{prefix} restart this session, which kills any running jobs"),
+        }
+    }
+
+    /// The notice published while the call runs (`performRemoteCommand`): the status line and an
+    /// ellipsis, for every tool but `execute_command` (`shouldPublishNotice`).
+    pub fn status_notice(&self) -> Option<String> {
+        match self {
+            Call::ExecuteCommand { .. } => None,
+            _ => Some(format!("{}\u{2026}", self.markdown_description())),
+        }
+    }
+}
+
+/// An argument's JSON type (`JSONSchema.extractFieldType`: Swift `Int` is "number").
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Text,
+    Number,
+}
+
+/// One argument: its Swift label (the JSON key), type and description (`argDescriptions`).
+struct Arg {
+    label: &'static str,
+    kind: Kind,
+    description: &'static str,
+}
+
+/// One tool as declared to the model (`RemoteCommandToolProvider.define`).
+struct Tool {
+    name: &'static str,
+    category: Category,
+    description: &'static str,
+    args: &'static [Arg],
+}
+
+const fn text(label: &'static str, description: &'static str) -> Arg {
+    Arg { label, kind: Kind::Text, description }
+}
+
+const fn number(label: &'static str, description: &'static str) -> Arg {
+    Arg { label, kind: Kind::Number, description }
+}
+
+/// Every tool in `allCases` order (`RC:141-168`), with `functionName`, `permissionCategory`,
+/// `functionDescription` and `argDescriptions` (`RemoteCommand.swift`), the arguments in their
+/// structs' declaration order. The texts are iTerm2's with "iTerm2" as "Tandem" and "Finder" as
+/// "Explorer".
+const TOOLS: [Tool; 26] = {
+    use Category::*;
+    [
+        Tool { name: "is_at_prompt", category: CheckTerminalState, description: "Returns true if the terminal is at the command prompt, allowing safe command injection.", args: &[] },
+        Tool {
+            name: "execute_command",
+            category: RunCommands,
+            description: concat!(
+                "Runs a shell command and returns its output once the command finishes. ",
+                "Do NOT use it for interactive or full-screen (TUI) programs (for example ",
+                "vim, less, top, an ssh session, a REPL, or claude): it blocks until the ",
+                "command exits, so an interactive or long-running program never returns. To ",
+                "launch or drive a TUI from the command line, use insert_text_at_cursor instead."
+            ),
+            args: &[text("command", "The command to run")],
+        },
+        Tool { name: "get_last_exit_status", category: CheckTerminalState, description: "Retrieves the exit status of the last executed command.", args: &[] },
+        Tool { name: "get_command_history", category: ViewContents, description: "Returns the recent command history.", args: &[number("limit", "Maximum number of history items to return.")] },
+        Tool { name: "get_last_command", category: ViewContents, description: "Retrieves the most recent command.", args: &[] },
+        Tool { name: "get_command_before_cursor", category: ViewContents, description: "Returns the current partially typed command before the cursor.", args: &[] },
+        Tool { name: "search_command_history", category: ViewContents, description: "Searches history for commands matching a query.", args: &[text("query", "Search query for filtering command history.")] },
+        Tool {
+            name: "get_command_output",
+            category: ViewContents,
+            description: "Returns the output of a previous command by its unique identifier.",
+            args: &[text("id", "Unique identifier of the command whose output is requested.")],
+        },
+        Tool {
+            name: "get_screen_contents",
+            category: ViewContents,
+            description: "Returns the visible contents of this terminal session. For a normal shell the text is linear scrollback (real history; ask for more `lines` to see further back). For a full-screen application (vim, less, htop, a REPL, etc.) the text is only the current rendered screen: there is no scrollback or history beyond what is displayed. The result reports a `kind` field and an `is_snapshot` flag (true means do not assume any history is present) alongside the raw `text`. The text uses a few markup tokens (the angle brackets are U+27E8/U+27E9 and effectively never occur in real terminal output): \u{27E8}dim\u{27E9}\u{2026}\u{27E8}/dim\u{27E9} wraps faint/dimmed text (how shells and TUIs render inline suggestions and ghost completions); \u{27E8}cursor\u{27E9} marks the text cursor's position; \u{27E8}image\u{27E9} stands in for an inline image. These tokens are inserted by Tandem and are not literally present on the screen.",
+            args: &[number(
+                "lines",
+                "Number of trailing lines to return when the visible screen is a normal shell (the primary screen). Use 0 for the default of 100. Ignored for a full-screen application, where only the current screen is available.",
+            )],
+        },
+        Tool { name: "get_terminal_size", category: CheckTerminalState, description: "Returns (columns, rows) of the terminal window.", args: &[] },
+        Tool { name: "get_shell_type", category: CheckTerminalState, description: "Detects the shell in use (e.g., bash, fish, xonsh, zsh).", args: &[] },
+        Tool { name: "detect_ssh_session", category: CheckTerminalState, description: "Returns true if the user is SSH\u{2019}ed into a remote host.", args: &[] },
+        Tool { name: "get_remote_hostname", category: CheckTerminalState, description: "Returns the remote hostname if in an SSH session.", args: &[] },
+        Tool { name: "get_user_identity", category: CheckTerminalState, description: "Returns the logged-in user\u{2019}s username.", args: &[] },
+        Tool { name: "get_current_directory", category: CheckTerminalState, description: "Returns the current directory.", args: &[] },
+        Tool { name: "set_clipboard", category: WriteToClipboard, description: "Copies text to the clipboard.", args: &[text("text", "The text to copy to the clipboard.")] },
+        Tool {
+            name: "insert_text_at_cursor",
+            category: ControlTerminal,
+            description: concat!(
+                "Inserts text into the terminal input at the cursor position, as if typed; ",
+                "end with a newline to submit it. Use this to launch and interact with ",
+                "interactive or full-screen (TUI) programs - start one from the command ",
+                "prompt (type the command plus a newline), choose a menu option, or send ",
+                "keystrokes to a running app - since unlike execute_command it does not wait ",
+                "for the program to finish."
+            ),
+            args: &[text(
+                "text",
+                "The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send control keys and special characters: \\\\ for a literal backslash, \\n for newline, \\r for carriage return, \\t for tab, and \\uXXXX (four hex digits, JSON-style) for any Unicode scalar. Examples: \\u0004 for Ctrl-D / EOF, \\u001a for Ctrl-Z, \\u000c for Ctrl-L, \\u001b for Escape. Consider whether execute_command would be a better choice, especially when running a command at the shell prompt since insert_text_at_cursor does not return the output to you.",
+            )],
+        },
+        Tool { name: "delete_current_line", category: ControlTerminal, description: "Clears the current command line input (only at the prompt).", args: &[] },
+        Tool { name: "get_man_page", category: ViewManpages, description: "Returns the content of a command's man page.", args: &[text("cmd", "The command whose man page content is requested.")] },
+        Tool {
+            name: "create_file",
+            category: WriteToFilesystem,
+            description: "Creates a file containing a specified string on the user's computer and then reveals it in Explorer.",
+            args: &[
+                text("filename", "The name of the file you wish to create. It will be replaced if it already exists."),
+                text("content", "The content that will be written to the file."),
+            ],
+        },
+        Tool {
+            name: "find_on_page",
+            category: ActInWebBrowser,
+            description: "Searches the current web page in the associated web browser (after converting to markdown format) for a substring.",
+            args: &[text("query", "The text to search for on the current page. Ensure you know which web page is currently loaded before using this.")],
+        },
+        Tool { name: "load_url", category: ActInWebBrowser, description: "Loads the specified URL in the associated web browser", args: &[text("url", "The URL to load. Must use https scheme.")] },
+        Tool {
+            name: "web_search_in_browser",
+            category: ActInWebBrowser,
+            description: "Performs a web search using the currently configured search engine in the associated web browser",
+            args: &[text("query", "The web search query")],
+        },
+        Tool { name: "get_current_url", category: ActInWebBrowser, description: "Returns the current URL of the associated web browser", args: &[] },
+        Tool {
+            name: "read_web_page_section",
+            category: ActInWebBrowser,
+            description: "Returns some of the content (in markdown format) of the page visible in the associated web browser.",
+            args: &[number("startingLineNumber", "The line number to start reading at."), number("numberOfLines", "The number of lines to return.")],
+        },
+        Tool {
+            name: "restart_session",
+            category: ControlTerminal,
+            description: "Restarts this terminal session: terminates any running jobs and relaunches the session\u{2019}s command, equivalent to the Session > Restart Session menu item. Use this to recover a hung or misconfigured session. This is disruptive - every running process in the session is killed - so only use it when the user has asked to restart or when the session is unusable.",
+            args: &[],
+        },
+    ]
+};
+
+/// Every function name in `allCases` order.
+pub const ALL_NAMES: [&str; 26] = {
+    let mut names = [""; 26];
+    let mut i = 0;
+    while i < TOOLS.len() {
+        names[i] = TOOLS[i].name;
+        i += 1;
+    }
+    names
+};
+
+fn tool(name: &str) -> Option<&'static Tool> {
+    TOOLS.iter().find(|t| t.name == name)
+}
+
+/// The tool's `functionDescription`.
+pub fn description(name: &str) -> Option<&'static str> {
+    tool(name).map(|t| t.description)
+}
+
+/// The tool's argument descriptions, in declaration order; empty for no arguments or no tool.
+pub fn arg_descriptions(name: &str) -> Vec<(&'static str, &'static str)> {
+    tool(name).map(|t| t.args.iter().map(|a| (a.label, a.description)).collect()).unwrap_or_default()
+}
+
+/// `JSONSchema(for:descriptions:)` (`AITerm/JSONSchema.swift`): an object whose properties are
+/// every argument (`{"type", "description"}`), each one required (strict mode), keys in the
+/// order Swift's encoder writes them.
+pub fn schema(name: &str) -> Option<Value> {
+    let tool = tool(name)?;
+    let mut properties = Map::new();
+    for arg in tool.args {
+        let kind = match arg.kind {
+            Kind::Text => "string",
+            Kind::Number => "number",
+        };
+        let mut property = Map::new();
+        property.insert("type".into(), kind.into());
+        property.insert("description".into(), arg.description.into());
+        properties.insert(arg.label.into(), Value::Object(property));
+    }
+    let mut out = Map::new();
+    out.insert("type".into(), "object".into());
+    out.insert("properties".into(), Value::Object(properties));
+    out.insert("required".into(), tool.args.iter().map(|a| Value::from(a.label)).collect());
+    Some(Value::Object(out))
+}
+
+/// The model's call to a `Call` (`LLM.Function.invoke`: Swift's `JSONDecoder` over the argument
+/// struct). Every key must be present with its type, as the synthesized `Decodable` requires
+/// (a struct's default values are not used); a number must be whole; unknown keys are ignored.
+/// Null arguments read as `{}` (iTerm2 turns Anthropic's empty argument text into `{}`).
+pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
+    let Some(tool) = tool(name) else {
+        return Err(crate::ai_turn::UNKNOWN_FUNCTION.to_string());
+    };
+    let invalid = |why: String| format!("Invalid arguments for {name}: {why}");
+    let empty = Map::new();
+    let object = match args {
+        Value::Null => &empty,
+        Value::Object(o) => o,
+        _ => return Err(invalid("the arguments must be an object".into())),
+    };
+    let mut values = Vec::new();
+    for arg in tool.args {
+        let Some(v) = object.get(arg.label) else {
+            return Err(invalid(format!("{} is required", arg.label)));
+        };
+        let checked = match arg.kind {
+            Kind::Text => v.as_str().map(Value::from).ok_or_else(|| format!("{} must be a string", arg.label)),
+            Kind::Number if !v.is_number() => Err(format!("{} must be a number", arg.label)),
+            Kind::Number => whole(v).map(Value::from).ok_or_else(|| format!("{} must be a whole number", arg.label)),
+        };
+        values.push(checked.map_err(invalid)?);
+    }
+    let s = |i: usize| values[i].as_str().unwrap_or_default().to_string();
+    let n = |i: usize| values[i].as_i64().unwrap_or_default();
+    Ok(match name {
+        "is_at_prompt" => Call::IsAtPrompt,
+        "execute_command" => Call::ExecuteCommand { command: s(0) },
+        "get_last_exit_status" => Call::GetLastExitStatus,
+        "get_command_history" => Call::GetCommandHistory { limit: n(0) },
+        "get_last_command" => Call::GetLastCommand,
+        "get_command_before_cursor" => Call::GetCommandBeforeCursor,
+        "search_command_history" => Call::SearchCommandHistory { query: s(0) },
+        "get_command_output" => Call::GetCommandOutput { id: s(0) },
+        "get_screen_contents" => Call::GetScreenContents { lines: n(0) },
+        "get_terminal_size" => Call::GetTerminalSize,
+        "get_shell_type" => Call::GetShellType,
+        "detect_ssh_session" => Call::DetectSshSession,
+        "get_remote_hostname" => Call::GetRemoteHostname,
+        "get_user_identity" => Call::GetUserIdentity,
+        "get_current_directory" => Call::GetCurrentDirectory,
+        "set_clipboard" => Call::SetClipboard { text: s(0) },
+        "insert_text_at_cursor" => Call::InsertTextAtCursor { text: s(0) },
+        "delete_current_line" => Call::DeleteCurrentLine,
+        "get_man_page" => Call::GetManPage { cmd: s(0) },
+        "create_file" => Call::CreateFile { filename: s(0), content: s(1) },
+        "find_on_page" => Call::FindOnPage { query: s(0) },
+        "load_url" => Call::LoadUrl { url: s(0) },
+        "web_search_in_browser" => Call::WebSearch { query: s(0) },
+        "get_current_url" => Call::GetUrl,
+        "read_web_page_section" => Call::ReadWebPage { starting_line_number: n(0), number_of_lines: n(1) },
+        _ => Call::RestartSession,
+    })
+}
+
+/// A JSON number as Swift's `Int` reads it: whole and in range (5.0 is 5, 5.5 fails).
+fn whole(v: &Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_f64().filter(|f| f.fract() == 0.0 && f.abs() < 9.0e15).map(|f| f as i64))
+}
+
+/// The declarations for the model: every tool whose category is allowed, in `allCases` order
+/// (`RemoteCommandToolProvider.registerTools`). A browser tool is declared whenever Act in Web
+/// Browser is allowed, which the allowed set grants only with a linked browser session.
+pub fn tool_defs(allowed: &BTreeSet<Category>) -> Vec<ToolDecl> {
+    TOOLS
+        .iter()
+        .filter(|t| allowed.contains(&t.category))
+        .map(|t| ToolDecl { name: t.name.to_string(), description: t.description.to_string(), parameters: schema(t.name).unwrap_or_default() })
+        .collect()
 }
 
 /// `truncatedWithTrailingEllipsis(to: 32)`.
@@ -228,5 +580,204 @@ mod tests {
         assert_eq!(escape_code("a`b``"), "a\\`b\\`\\`");
         assert_eq!(truncated("abcdef", 3), "ab\u{2026}");
         assert_eq!(truncated("abc", 3), "abc");
+    }
+
+    use serde_json::json;
+
+    /// One call of each tool, in `allCases` order, with its arguments' default values.
+    fn prototypes() -> Vec<Call> {
+        let s = String::new;
+        vec![
+            Call::IsAtPrompt,
+            Call::ExecuteCommand { command: s() },
+            Call::GetLastExitStatus,
+            Call::GetCommandHistory { limit: 100 },
+            Call::GetLastCommand,
+            Call::GetCommandBeforeCursor,
+            Call::SearchCommandHistory { query: s() },
+            Call::GetCommandOutput { id: s() },
+            Call::GetScreenContents { lines: 0 },
+            Call::GetTerminalSize,
+            Call::GetShellType,
+            Call::DetectSshSession,
+            Call::GetRemoteHostname,
+            Call::GetUserIdentity,
+            Call::GetCurrentDirectory,
+            Call::SetClipboard { text: s() },
+            Call::InsertTextAtCursor { text: s() },
+            Call::DeleteCurrentLine,
+            Call::GetManPage { cmd: s() },
+            Call::CreateFile { filename: s(), content: s() },
+            Call::FindOnPage { query: s() },
+            Call::LoadUrl { url: s() },
+            Call::WebSearch { query: s() },
+            Call::GetUrl,
+            Call::ReadWebPage { starting_line_number: 0, number_of_lines: 0 },
+            Call::RestartSession,
+        ]
+    }
+
+    const BROWSER: [&str; 5] = ["find_on_page", "load_url", "web_search_in_browser", "get_current_url", "read_web_page_section"];
+
+    #[test]
+    fn names_follow_iterm2() {
+        assert_eq!(
+            ALL_NAMES,
+            [
+                "is_at_prompt", "execute_command", "get_last_exit_status", "get_command_history", "get_last_command", "get_command_before_cursor",
+                "search_command_history", "get_command_output", "get_screen_contents", "get_terminal_size", "get_shell_type", "detect_ssh_session",
+                "get_remote_hostname", "get_user_identity", "get_current_directory", "set_clipboard", "insert_text_at_cursor", "delete_current_line",
+                "get_man_page", "create_file", "find_on_page", "load_url", "web_search_in_browser", "get_current_url", "read_web_page_section",
+                "restart_session",
+            ]
+        );
+        use Category::*;
+        let categories = [
+            CheckTerminalState, RunCommands, CheckTerminalState, ViewContents, ViewContents, ViewContents, ViewContents, ViewContents, ViewContents,
+            CheckTerminalState, CheckTerminalState, CheckTerminalState, CheckTerminalState, CheckTerminalState, CheckTerminalState, WriteToClipboard,
+            ControlTerminal, ControlTerminal, ViewManpages, WriteToFilesystem, ActInWebBrowser, ActInWebBrowser, ActInWebBrowser, ActInWebBrowser,
+            ActInWebBrowser, ControlTerminal,
+        ];
+        let calls = prototypes();
+        assert_eq!(calls.len(), 26);
+        for (i, call) in calls.iter().enumerate() {
+            assert_eq!(call.name(), ALL_NAMES[i]);
+            assert_eq!(call.category(), categories[i], "{}", ALL_NAMES[i]);
+            assert_eq!(call.needs_safety_check(), matches!(call, Call::ExecuteCommand { .. }), "{}", ALL_NAMES[i]);
+        }
+    }
+
+    #[test]
+    fn descriptions_follow_iterm2() {
+        assert_eq!(description("is_at_prompt"), Some("Returns true if the terminal is at the command prompt, allowing safe command injection."));
+        assert_eq!(
+            description("execute_command"),
+            Some(
+                "Runs a shell command and returns its output once the command finishes. Do NOT use it for interactive or full-screen (TUI) programs (for example vim, less, top, an ssh session, a REPL, or claude): it blocks until the command exits, so an interactive or long-running program never returns. To launch or drive a TUI from the command line, use insert_text_at_cursor instead."
+            )
+        );
+        assert_eq!(description("create_file"), Some("Creates a file containing a specified string on the user's computer and then reveals it in Explorer."));
+        let screen = description("get_screen_contents").unwrap();
+        assert!(screen.ends_with("These tokens are inserted by Tandem and are not literally present on the screen."));
+        assert!(screen.contains("\u{27E8}dim\u{27E9}\u{2026}\u{27E8}/dim\u{27E9}"));
+        assert!(description("restart_session").unwrap().starts_with("Restarts this terminal session: terminates any running jobs"));
+        assert_eq!(description("detect_ssh_session"), Some("Returns true if the user is SSH\u{2019}ed into a remote host."));
+        for name in ALL_NAMES {
+            assert!(description(name).is_some_and(|d| !d.contains("iTerm2") && !d.contains("Finder")), "{name}");
+        }
+        assert_eq!(description("nope"), None);
+        assert_eq!(
+            arg_descriptions("get_screen_contents"),
+            [("lines", "Number of trailing lines to return when the visible screen is a normal shell (the primary screen). Use 0 for the default of 100. Ignored for a full-screen application, where only the current screen is available.")]
+        );
+        assert_eq!(
+            arg_descriptions("create_file"),
+            [("filename", "The name of the file you wish to create. It will be replaced if it already exists."), ("content", "The content that will be written to the file.")]
+        );
+        assert_eq!(arg_descriptions("read_web_page_section"), [("startingLineNumber", "The line number to start reading at."), ("numberOfLines", "The number of lines to return.")]);
+        assert!(arg_descriptions("insert_text_at_cursor")[0].1.starts_with("The text to insert at the cursor position. Supports a small backslash-escape vocabulary so you can send control keys and special characters: \\\\ for a literal backslash, \\n for newline,"));
+        assert!(arg_descriptions("is_at_prompt").is_empty());
+        assert!(arg_descriptions("nope").is_empty());
+    }
+
+    #[test]
+    fn schemas_follow_iterm2() {
+        let history = schema("get_command_history").unwrap();
+        assert_eq!(history, json!({"type":"object","properties":{"limit":{"type":"number","description":"Maximum number of history items to return."}},"required":["limit"]}));
+        assert_eq!(serde_json::to_string(&history).unwrap(), r#"{"type":"object","properties":{"limit":{"type":"number","description":"Maximum number of history items to return."}},"required":["limit"]}"#);
+        assert_eq!(schema("is_at_prompt"), Some(json!({"type":"object","properties":{},"required":[]})));
+        let file = schema("create_file").unwrap();
+        assert_eq!(file["properties"]["filename"]["type"], "string");
+        assert_eq!(file["properties"]["content"]["type"], "string");
+        assert_eq!(file["required"], json!(["filename", "content"]));
+        let keys: Vec<&String> = file["properties"].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["filename", "content"]);
+        let page = schema("read_web_page_section").unwrap();
+        assert_eq!(page["properties"]["startingLineNumber"]["type"], "number");
+        assert_eq!(page["properties"]["numberOfLines"]["type"], "number");
+        assert_eq!(page["required"], json!(["startingLineNumber", "numberOfLines"]));
+        assert_eq!(schema("nope"), None);
+        for name in ALL_NAMES {
+            let s = schema(name).unwrap();
+            let args = arg_descriptions(name);
+            assert_eq!(s["properties"].as_object().unwrap().len(), args.len(), "{name}");
+            for (label, text) in args {
+                assert_eq!(s["properties"][label]["description"], text, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn registry_follows_the_allowed_set() {
+        let names = |set: &BTreeSet<Category>| tool_defs(set).into_iter().map(|d| d.name).collect::<Vec<_>>();
+        let run = tool_defs(&BTreeSet::from([Category::RunCommands]));
+        assert_eq!(run.len(), 1);
+        assert_eq!(run[0].name, "execute_command");
+        assert_eq!(run[0].description, description("execute_command").unwrap());
+        assert_eq!(run[0].parameters, schema("execute_command").unwrap());
+        let terminal: BTreeSet<Category> = Category::ALL.into_iter().filter(|c| *c != Category::ActInWebBrowser).collect();
+        let expected: Vec<&str> = ALL_NAMES.into_iter().filter(|n| !BROWSER.contains(n)).collect();
+        assert_eq!(expected.len(), 21);
+        assert_eq!(names(&terminal), expected);
+        assert_eq!(names(&BTreeSet::from([Category::ActInWebBrowser])), BROWSER);
+        assert_eq!(names(&BTreeSet::from(Category::ALL)), ALL_NAMES);
+        assert!(tool_defs(&BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn parse_follows_iterm2() {
+        assert_eq!(parse("execute_command", &json!({"command":"ls"})), Ok(Call::ExecuteCommand { command: "ls".into() }));
+        assert_eq!(parse("get_command_history", &json!({"limit": 5.0})), Ok(Call::GetCommandHistory { limit: 5 }));
+        assert_eq!(parse("get_command_history", &json!({"limit": 7})), Ok(Call::GetCommandHistory { limit: 7 }));
+        assert_eq!(parse("get_command_history", &json!({"limit": 5.5})), Err("Invalid arguments for get_command_history: limit must be a whole number".to_string()));
+        // Swift's synthesized Decodable needs every key, default values notwithstanding.
+        assert_eq!(parse("get_command_history", &json!({})), Err("Invalid arguments for get_command_history: limit is required".to_string()));
+        assert_eq!(parse("get_screen_contents", &json!({"lines": null})), Err("Invalid arguments for get_screen_contents: lines must be a number".to_string()));
+        assert_eq!(parse("get_screen_contents", &json!({"lines": 30})), Ok(Call::GetScreenContents { lines: 30 }));
+        assert_eq!(parse("execute_command", &json!({"command": 5})), Err("Invalid arguments for execute_command: command must be a string".to_string()));
+        assert_eq!(parse("execute_command", &json!(["ls"])), Err("Invalid arguments for execute_command: the arguments must be an object".to_string()));
+        assert_eq!(parse("nope", &json!({})), Err("There is no registered function by that name. Try again.".to_string()));
+        assert_eq!(parse("is_at_prompt", &json!({"extra": 1})), Ok(Call::IsAtPrompt));
+        assert_eq!(parse("is_at_prompt", &Value::Null), Ok(Call::IsAtPrompt));
+        assert_eq!(
+            parse("create_file", &json!({"filename": "a.txt", "content": "hi"})),
+            Ok(Call::CreateFile { filename: "a.txt".into(), content: "hi".into() })
+        );
+        assert_eq!(
+            parse("read_web_page_section", &json!({"startingLineNumber": 3, "numberOfLines": 4})),
+            Ok(Call::ReadWebPage { starting_line_number: 3, number_of_lines: 4 })
+        );
+        for (i, name) in ALL_NAMES.into_iter().enumerate() {
+            let args: Map<String, Value> = schema(name).unwrap()["properties"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, p)| (k.clone(), if p["type"] == "number" { json!(if k == "limit" { 100 } else { 0 }) } else { json!("") }))
+                .collect();
+            assert_eq!(parse(name, &Value::Object(args)), Ok(prototypes()[i].clone()), "{name}");
+        }
+    }
+
+    #[test]
+    fn consent_follows_iterm2() {
+        assert_eq!(Call::ExecuteCommand { command: "ls".into() }.consent_description(), "The AI Agent would like to execute `ls`");
+        // `permissionDescription` escapes the command but never truncates it (`RemoteCommand.swift`).
+        let long = "x".repeat(40);
+        assert_eq!(Call::ExecuteCommand { command: format!("{long}`") }.consent_description(), format!("The AI Agent would like to execute `{long}\\``"));
+        assert_eq!(Call::InsertTextAtCursor { text: long.clone() }.consent_description(), format!("The AI Agent would like to type `{}\u{2026}` into the current session", "x".repeat(31)));
+        assert_eq!(Call::RestartSession.consent_description(), "The AI Agent would like to restart this session, which kills any running jobs");
+        assert_eq!(Call::IsAtPrompt.consent_description(), "The AI Agent would like to check if you\u{2019}re at a shell prompt");
+        assert_eq!(Call::GetManPage { cmd: "a`b".into() }.consent_description(), "The AI Agent would like to check the manpage for `a\\`b`");
+        assert_eq!(Call::CreateFile { filename: "f`.txt".into(), content: String::new() }.consent_description(), "The AI Agent would like to create a file named `f`.txt`");
+        assert_eq!(Call::WebSearch { query: "q".into() }.consent_description(), "The AI agent would like to write to search the web for \u{201c}q\u{201d}");
+        assert_eq!(Call::GetUrl.consent_description(), "The AI agent would like to write to get the current URL");
+        assert_eq!(Call::GetCurrentDirectory.consent_description(), "The AI Agent would like to know your current directory");
+        assert_eq!(Call::ExecuteCommand { command: "ls".into() }.status_notice(), None);
+        assert_eq!(Call::GetScreenContents { lines: 0 }.status_notice(), Some("Reading the visible screen\u{2026}".to_string()));
+        assert_eq!(Call::CreateFile { filename: "f".into(), content: String::new() }.status_notice(), Some("Creating f\u{2026}".to_string()));
+        for call in prototypes() {
+            assert!(call.consent_description().starts_with("The AI "), "{}", call.name());
+            assert_eq!(call.status_notice().is_none(), matches!(call, Call::ExecuteCommand { .. }));
+        }
     }
 }
