@@ -3,6 +3,9 @@
 //! Logs or Calls, narrowed by the Filter; and the Inspector, Terminate, Restart and Clear
 //! Terminated buttons.
 
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
@@ -70,11 +73,57 @@ pub fn reveal_target(filtered: &[String], all: &[String], id: &str) -> (Option<u
     }
 }
 
+/// The console's choices once `id` is revealed (`SC:264-280`): the Running filter (switched
+/// to All when it hides the entry), the selected id and the Logs tab; None when the entry is
+/// gone (the console only comes forward).
+pub fn reveal_choices(filtered: &[String], all: &[String], id: &str, running_only: bool) -> Option<(bool, String, Tab)> {
+    let (index, to_all) = reveal_target(filtered, all, id);
+    let i = index?;
+    let ids = if to_all { all } else { filtered };
+    Some((running_only && !to_all, ids[i].clone(), Tab::Logs))
+}
+
 /// The tab over the text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Logs,
     Calls,
+}
+
+/// The console follows the history at most this often: a busy script writes on every pass of
+/// the loop, and its text is rebuilt only when it was due.
+pub const REFRESH_EVERY: Duration = Duration::from_millis(250);
+
+/// When the console may follow a history change after its last refresh at `last`: None when
+/// it may now, else the time it may.
+pub fn refresh_due(last: Option<Instant>, now: Instant) -> Option<Instant> {
+    let at = last? + REFRESH_EVERY;
+    (now < at).then_some(at)
+}
+
+/// What the shown text was built from: the selected entry and its revision, the tab that
+/// shows and the Filter. The text is built again only when this changed, so writes to other
+/// entries cost nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextKey {
+    pub id: String,
+    pub revision: u64,
+    pub tab: Tab,
+    pub filter: String,
+}
+
+/// The key of the text for `selected` among `h`'s entries (None: no text).
+pub fn text_key(h: &History, selected: Option<&str>, tab: Tab, filter: &str) -> Option<TextKey> {
+    let e = h.find(selected?)?;
+    Some(TextKey { id: e.id.clone(), revision: e.revision(), tab, filter: filter.to_string() })
+}
+
+/// The text jumps to its end when "Scroll to bottom on update" is on and the shown text
+/// changed, for another selected row, or for new lines with the same Filter and tab
+/// (`SC:315-399`); a changed Filter or tab keeps the place. The keys are the selection, the
+/// Filter and the tab before and after.
+pub fn should_scroll(on: bool, changed: bool, old: &(Option<String>, String, Tab), new: &(Option<String>, String, Tab)) -> bool {
+    on && changed && (old.0 != new.0 || (old.1 == new.1 && old.2 == new.2))
 }
 
 /// What the person did in the console.
@@ -95,10 +144,8 @@ pub enum ConsoleEvent {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConsoleData {
     pub rows: Vec<Row>,
-    /// The selected entry's log lines through the Filter.
-    pub logs: String,
-    /// The selected entry's calls through the Filter.
-    pub calls: String,
+    /// The selected entry's log lines or calls, as the tab shows, through the Filter.
+    pub text: String,
     /// Terminate, Restart and Clear Terminated enabled.
     pub buttons: (bool, bool, bool),
 }
@@ -114,15 +161,22 @@ pub struct ConsoleWindow {
     pub filter: String,
     /// "Scroll to bottom on update" (on at first, as the xib has it).
     pub scroll_to_bottom: bool,
-    /// The history generation the data was built from.
+    /// The history generation the data was built from, and when.
     pub seen: Option<u64>,
+    pub refreshed: Option<Instant>,
     /// The choices (`choices`) the data was built for.
-    pub built_for: Option<(bool, Option<String>, String)>,
-    /// The selection and filter the data was built for: new text with the same ones is new
-    /// lines, which scroll to the end.
-    shown_for: (Option<String>, String),
+    pub built_for: Option<(bool, Option<String>, String, Tab)>,
+    /// What the text was built from (`text_key`).
+    pub text_for: Option<TextKey>,
+    /// The selection, filter and tab the text was built for: new text with the same ones is
+    /// new lines, which scroll to the end.
+    shown_for: (Option<String>, String, Tab),
     /// Scroll the text to its end on the next paint.
     scroll_pending: bool,
+    /// The text's revision (moved on with each new text) and its laid out form for it and
+    /// the theme, so a paint does not copy and lay out megabytes again.
+    text_rev: u64,
+    galley: Option<((u64, bool), Arc<egui::Galley>)>,
 }
 
 impl ConsoleWindow {
@@ -138,9 +192,13 @@ impl ConsoleWindow {
             filter: String::new(),
             scroll_to_bottom: true,
             seen: None,
+            refreshed: None,
             built_for: None,
-            shown_for: (None, String::new()),
+            text_for: None,
+            shown_for: (None, String::new(), Tab::Logs),
             scroll_pending: false,
+            text_rev: 0,
+            galley: None,
         })
     }
 
@@ -156,29 +214,37 @@ impl ConsoleWindow {
         self.host.event(event)
     }
 
-    /// New data. A selected entry no longer listed is unselected. The text scrolls to its end
-    /// when "Scroll to bottom on update" is on and the tab that shows got new lines, or
-    /// another row was selected (`SC:315-399`); a changed Filter keeps the place.
-    pub fn set_data(&mut self, d: ConsoleData) {
-        if self.selected.as_ref().is_some_and(|s| !d.rows.iter().any(|r| r.id == *s)) {
+    /// New rows and buttons, and the text when it was built again (None: unchanged). A
+    /// selected entry no longer listed is unselected; the text scrolls as `should_scroll`
+    /// says. Redraws only when something changed.
+    pub fn set_data(&mut self, rows: Vec<Row>, buttons: (bool, bool, bool), text: Option<String>) {
+        if self.selected.as_ref().is_some_and(|s| !rows.iter().any(|r| r.id == *s)) {
             self.selected = None;
         }
-        let key = (self.selected.clone(), self.filter.clone());
-        let changed = match self.tab {
-            Tab::Logs => d.logs != self.data.logs,
-            Tab::Calls => d.calls != self.data.calls,
-        };
-        if self.scroll_to_bottom && changed && (self.shown_for.0 != key.0 || self.shown_for.1 == key.1) {
-            self.scroll_pending = true;
+        let mut changed = rows != self.data.rows || buttons != self.data.buttons;
+        self.data.rows = rows;
+        self.data.buttons = buttons;
+        if let Some(text) = text {
+            let key = (self.selected.clone(), self.filter.clone(), self.tab);
+            let new_text = text != self.data.text;
+            if should_scroll(self.scroll_to_bottom, new_text, &self.shown_for, &key) {
+                self.scroll_pending = true;
+            }
+            self.shown_for = key;
+            if new_text {
+                self.data.text = text;
+                self.text_rev += 1;
+                changed = true;
+            }
         }
-        self.shown_for = key;
-        self.data = d;
-        self.host.request_redraw();
+        if changed {
+            self.host.request_redraw();
+        }
     }
 
-    /// What the data depends on: Running, the selected row and the Filter.
-    pub fn choices(&self) -> (bool, Option<String>, String) {
-        (self.running_only, self.selected.clone(), self.filter.clone())
+    /// What the data depends on: Running, the selected row, the Filter and the tab.
+    pub fn choices(&self) -> (bool, Option<String>, String, Tab) {
+        (self.running_only, self.selected.clone(), self.filter.clone(), self.tab)
     }
 
     /// The text goes to its end on the next paint (a reveal, `scrollToEndOfDocument:`).
@@ -192,7 +258,8 @@ impl ConsoleWindow {
         // A jump to the end is clamped as it paints: the next paint shows it.
         let jumped = self.scroll_pending;
         let d = &self.data;
-        let (running_only, selected, tab, filter, scroll_to_bottom, scroll_pending) = (&mut self.running_only, &mut self.selected, &mut self.tab, &mut self.filter, &mut self.scroll_to_bottom, &mut self.scroll_pending);
+        let text_rev = self.text_rev;
+        let (running_only, selected, tab, filter, scroll_to_bottom, scroll_pending, galley) = (&mut self.running_only, &mut self.selected, &mut self.tab, &mut self.filter, &mut self.scroll_to_bottom, &mut self.scroll_pending, &mut self.galley);
         self.host.paint(|ui| {
             let icons = crate::settings_keys::has_icon_font(ui.ctx());
             if ui.input(|i| i.key_pressed(egui::Key::Escape) || (i.key_pressed(egui::Key::W) && i.modifiers.command)) {
@@ -256,20 +323,26 @@ impl ConsoleWindow {
                         ui.checkbox(scroll_to_bottom, SCROLL);
                     });
                 });
-                let text = match tab {
-                    Tab::Logs => d.logs.as_str(),
-                    Tab::Calls => d.calls.as_str(),
-                };
+                let text = d.text.as_str();
                 let mut area = egui::ScrollArea::both().id_salt(("text", *tab == Tab::Logs)).auto_shrink([false, false]);
                 if std::mem::take(scroll_pending) {
                     // Clamped to the end by the scroll area.
                     area = area.vertical_scroll_offset(f32::MAX);
                 }
                 area.show(ui, |ui| {
-                    // Lines are never wrapped: the text scrolls sideways (`SC:79-85`).
+                    // Lines are never wrapped: the text scrolls sideways (`SC:79-85`). The laid
+                    // out text is kept until the text or the theme changes.
                     let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+                        let key = (text_rev, ui.visuals().dark_mode);
+                        if let Some((k, g)) = galley.as_ref() {
+                            if *k == key {
+                                return g.clone();
+                            }
+                        }
                         let job = egui::text::LayoutJob::simple(buf.as_str().to_owned(), egui::FontId::monospace(12.0), ui.visuals().text_color(), f32::INFINITY);
-                        ui.fonts_mut(|f| f.layout_job(job))
+                        let g = ui.fonts_mut(|f| f.layout_job(job));
+                        *galley = Some((key, g.clone()));
+                        g
                     };
                     let mut shown = text;
                     ui.add(egui::TextEdit::multiline(&mut shown).font(egui::TextStyle::Monospace).frame(egui::Frame::NONE).desired_width(f32::INFINITY).layouter(&mut layouter));
@@ -339,10 +412,59 @@ mod tests {
     }
 
     #[test]
+    fn scroll_rule_follows_iterm2() {
+        let key = |sel: &str, filter: &str, tab: Tab| (Some(sel.to_string()), filter.to_string(), tab);
+        let a = key("a", "", Tab::Logs);
+        // New lines, same row, Filter and tab: to the end; not when off or nothing changed.
+        assert!(should_scroll(true, true, &a, &a));
+        assert!(!should_scroll(false, true, &a, &a));
+        assert!(!should_scroll(true, false, &a, &a));
+        // Another row: to the end, even with another Filter.
+        assert!(should_scroll(true, true, &a, &key("b", "x", Tab::Logs)));
+        // A changed Filter or tab keeps the place.
+        assert!(!should_scroll(true, true, &a, &key("a", "x", Tab::Logs)));
+        assert!(!should_scroll(true, true, &a, &key("a", "", Tab::Calls)));
+    }
+
+    #[test]
+    fn busy_entries_do_not_rebuild_the_text() {
+        let mut h = History::new(false, 10);
+        h.add(Entry::new("a", "shown", 0));
+        h.add(Entry::new("b", "busy", 0));
+        h.add_log("a", "one\n", "S");
+        let before = text_key(&h, Some("a"), Tab::Logs, "");
+        assert!(before.is_some());
+        for _ in 0..1000 {
+            h.add_log("b", "x\n", "S");
+            h.add_call("b", crate::script_history::Dir::In, "m", "S");
+        }
+        // 1000 writes to another entry: the shown text's key is the same, so no rebuild.
+        assert_eq!(text_key(&h, Some("a"), Tab::Logs, ""), before);
+        h.add_log("a", "two\n", "S");
+        assert_ne!(text_key(&h, Some("a"), Tab::Logs, ""), before);
+        assert_eq!(text_key(&h, None, Tab::Logs, ""), None);
+        assert_eq!(text_key(&h, Some("gone"), Tab::Logs, ""), None);
+    }
+
+    #[test]
+    fn refresh_is_bounded() {
+        let t = Instant::now();
+        assert_eq!(refresh_due(None, t), None);
+        assert_eq!(refresh_due(Some(t), t + Duration::from_millis(100)), Some(t + REFRESH_EVERY));
+        assert_eq!(refresh_due(Some(t), t + REFRESH_EVERY), None);
+        assert_eq!(REFRESH_EVERY, Duration::from_millis(250));
+    }
+
+    #[test]
     fn reveal_follows_iterm2() {
         assert_eq!(reveal_target(&v(&["a", "b"]), &v(&["a", "b", "c"]), "b"), (Some(1), false));
         // Hidden by Running: the filter switches to All (`SC:264-280`).
         assert_eq!(reveal_target(&v(&["a"]), &v(&["a", "c"]), "c"), (Some(1), true));
         assert_eq!(reveal_target(&v(&["a"]), &v(&["a", "c"]), "x"), (None, false));
+        // The steps: Running kept when it shows the entry, else All; the row; Logs.
+        assert_eq!(reveal_choices(&v(&["a", "b"]), &v(&["a", "b", "c"]), "b", true), Some((true, "b".to_string(), Tab::Logs)));
+        assert_eq!(reveal_choices(&v(&["a"]), &v(&["a", "c"]), "c", true), Some((false, "c".to_string(), Tab::Logs)));
+        assert_eq!(reveal_choices(&v(&["a", "c"]), &v(&["a", "c"]), "c", false), Some((false, "c".to_string(), Tab::Logs)));
+        assert_eq!(reveal_choices(&v(&["a"]), &v(&["a"]), "x", true), None);
     }
 }

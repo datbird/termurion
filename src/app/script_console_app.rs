@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::api_vars::{Objects, Scope};
-use crate::script_console_ui::{self as sc, ConsoleData, ConsoleEvent, ConsoleWindow, Tab};
+use crate::script_console_ui::{self as sc, ConsoleEvent, ConsoleWindow, Tab};
 use crate::script_history::{filter_lines, stamp_started};
 use crate::script_inspector_ui::{self as si, InspectorData, InspectorEvent, InspectorWindow, Object, OutlineInput};
 
@@ -32,57 +32,61 @@ impl App {
         let Some(w) = self.script_console.as_mut() else { return };
         let all: Vec<String> = h.entries().iter().map(|e| e.id.clone()).collect();
         let filtered: Vec<String> = h.filtered(w.running_only).iter().map(|e| e.id.clone()).collect();
-        let (index, to_all) = sc::reveal_target(&filtered, &all, id);
-        let Some(i) = index else { return };
-        if to_all {
-            w.running_only = false;
-        }
-        w.selected = Some(if to_all { &all } else { &filtered }[i].clone());
-        w.tab = Tab::Logs;
+        let Some((running_only, selected, tab)) = sc::reveal_choices(&filtered, &all, id, w.running_only) else { return };
+        w.running_only = running_only;
+        w.selected = Some(selected);
+        w.tab = tab;
         self.console_refresh();
         if let Some(w) = self.script_console.as_mut() {
             w.scroll_to_end();
         }
     }
 
-    /// What the console shows for its choices: the rows, the selected entry's logs and calls
-    /// through the Filter (`SC:414-445`), and the buttons' states.
-    pub(super) fn console_data(&self) -> ConsoleData {
-        let Some(w) = &self.script_console else { return ConsoleData::default() };
-        let h = &self.script_history;
-        let rows = sc::rows(h, w.running_only, &|s| stamp_started(&crate::stamps::local(s)));
-        let entry = w.selected.as_deref().filter(|id| rows.iter().any(|r| r.id == *id)).and_then(|id| h.find(id));
-        let (logs, calls) = match entry {
-            None => (String::new(), String::new()),
-            Some(e) if w.filter.is_empty() => (e.logs_text(), e.calls_text()),
-            Some(e) => (filter_lines(e.log_lines().iter(), &w.filter).join("\n"), filter_lines(e.calls(), &w.filter).join("\n")),
-        };
-        let any_stopped = h.entries().iter().any(|e| !e.running);
-        ConsoleData { rows, logs, calls, buttons: sc::buttons(entry, any_stopped) }
-    }
-
-    /// The console's data again, given to it only when it changed.
+    /// The console's data again: the rows and buttons, and the selected entry's text for the
+    /// tab that shows, through the Filter (`SC:414-445`), built only when that entry, the tab
+    /// or the Filter changed (`sc::text_key`).
     fn console_refresh(&mut self) {
-        let d = self.console_data();
-        let generation = self.script_history.generation();
+        let h = &self.script_history;
         let Some(w) = self.script_console.as_mut() else { return };
-        w.seen = Some(generation);
+        let rows = sc::rows(h, w.running_only, &|s| stamp_started(&crate::stamps::local(s)));
+        let listed = w.selected.as_deref().filter(|id| rows.iter().any(|r| r.id == *id));
+        let entry = listed.and_then(|id| h.find(id));
+        let key = sc::text_key(h, listed, w.tab, &w.filter);
+        let text = (w.text_for != key).then(|| match entry {
+            None => String::new(),
+            Some(e) => match (w.tab, w.filter.is_empty()) {
+                (Tab::Logs, true) => e.logs_text(),
+                (Tab::Calls, true) => e.calls_text(),
+                (Tab::Logs, false) => filter_lines(e.log_lines().iter(), &w.filter).join("\n"),
+                (Tab::Calls, false) => filter_lines(e.calls(), &w.filter).join("\n"),
+            },
+        });
+        let any_stopped = h.entries().iter().any(|e| !e.running);
+        let buttons = sc::buttons(entry, any_stopped);
+        w.seen = Some(h.generation());
+        w.refreshed = Some(Instant::now());
         w.built_for = Some(w.choices());
-        if w.data != d {
-            w.set_data(d);
-        }
+        w.text_for = key;
+        w.set_data(rows, buttons, text);
     }
 
     /// Once per loop pass: a reveal asked for where no event loop was at hand (a notification
-    /// click, the error alert's button) opens now, and the console follows the history.
-    pub(super) fn script_console_tick(&mut self, event_loop: &ActiveEventLoop) {
+    /// click, the error alert's button) opens now, and the console follows the history, at
+    /// most every `sc::REFRESH_EVERY` (the time it is due next is returned for the loop's
+    /// wake).
+    pub(super) fn script_console_tick(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
         if let Some(id) = self.script_console_reveal.take() {
             self.reveal_in_console(&id, event_loop);
         }
-        let generation = self.script_history.generation();
-        if self.script_console.as_ref().is_some_and(|w| w.seen != Some(generation)) {
+        let w = self.script_console.as_ref()?;
+        if w.seen == Some(self.script_history.generation()) {
+            return None;
+        }
+        let due = sc::refresh_due(w.refreshed, Instant::now());
+        if due.is_none() {
             self.console_refresh();
         }
+        due
     }
 
     /// Events for the console. False for other windows. Closing it forgets its choices, as
@@ -152,7 +156,7 @@ impl App {
     /// The windows by their number order, each with its title, tabs and sessions, and the
     /// buried sessions (`iTermOutlineRoot`). Each window is entered to read it.
     fn inspector_outline(&mut self) -> OutlineInput {
-        let back = self.current_window();
+        let back = self.windows.current();
         let mut windows = Vec::new();
         for k in self.registry.order() {
             let Some(id) = self.window_id_of_key(k) else { continue };
@@ -164,8 +168,12 @@ impl App {
             let tabs = self.tabs.iter().map(|t| (t.id, self.tab_look(t).title, t.layout.panes().into_iter().map(|p| (p, self.session_title(p))).collect())).collect();
             windows.push((guid, title, tabs));
         }
-        if let Some(b) = back {
-            self.enter(b);
+        // The window current before, or none again when none was.
+        match back.and_then(|k| self.window_id_of_key(k)) {
+            Some(b) => {
+                self.enter(b);
+            }
+            None => self.leave_windows(),
         }
         OutlineInput { windows, buried: self.buried.items() }
     }

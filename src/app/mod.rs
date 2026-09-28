@@ -2926,7 +2926,7 @@ impl ApplicationHandler<UserEvent> for App {
         let provision_due = self.provision_tick();
         self.scripts_tick();
         self.script_picker_tick();
-        self.script_console_tick(event_loop);
+        let console_due = self.script_console_tick(event_loop);
         self.scripts_scan_tick();
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
@@ -2948,7 +2948,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
