@@ -2939,6 +2939,24 @@ default = true
 help = "High Contrast modes maximize visibility.\nWhen enabled, the dark high-contrast theme emphasizes visibility over beauty."
 
 [[setting]]
+key = "ColoredSelectedTabOutlineStrength"
+tab = "Advanced"
+section = "Tabs"
+label = "How prominent should the outline around the selected tab be drawn when there are colored tabs in a window?"
+type = "float"
+default = 0.5
+help = "How prominent should the outline around the selected tab be drawn when there are colored tabs in a window?\nTakes a value in 0 to 3, where 0 means no outline and 3 means a very prominent outline."
+
+[[setting]]
+key = "ColoredUnselectedTabTextProminence"
+tab = "Advanced"
+section = "Tabs"
+label = "How prominent should the text in a non-selected tab be when there are colored tabs in a window?"
+type = "float"
+default = 0.5
+help = "How prominent should the text in a non-selected tab be when there are colored tabs in a window?\nTakes a value in 0 to 1, the alpha value."
+
+[[setting]]
 key = "DrawBottomLineForHorizontalTabBar"
 tab = "Advanced"
 section = "Tabs"

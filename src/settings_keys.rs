@@ -2008,6 +2008,20 @@ mod tests {
     }
 
     #[test]
+    fn colored_rows_follow_iterm2() {
+        for (key, label) in [
+            ("ColoredSelectedTabOutlineStrength", "How prominent should the outline around the selected tab be drawn when there are colored tabs in a window?"),
+            ("ColoredUnselectedTabTextProminence", "How prominent should the text in a non-selected tab be when there are colored tabs in a window?"),
+        ] {
+            let row = schema::find_global(key).unwrap();
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Float, "{key}");
+            assert_eq!(row.default, Some(Value::Float(0.5)), "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+    }
+
+    #[test]
     fn theme_row_follows_iterm2() {
         let row = schema::find_global("TabStyleWithAutomaticOption").unwrap();
         assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));

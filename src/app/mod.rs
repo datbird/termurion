@@ -2316,6 +2316,8 @@ impl App {
             session_bg,
             dimming: 0.0,
             minimal: MinimalKnobs::default(),
+            colored_outline: g.number("ColoredSelectedTabOutlineStrength").map_or(0.5, |v| v as f32),
+            colored_text_prominence: g.number("ColoredUnselectedTabTextProminence").map_or(0.5, |v| v as f32),
         };
         crate::tab_theme::palette(self.tab_style(), &inputs)
     }

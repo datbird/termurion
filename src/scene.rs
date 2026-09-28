@@ -1028,6 +1028,7 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
     let sub_scale = tab_layout::subtitle_size(bar.font) * font_scale;
     let (title_h, sub_h) = (line * title_scale, line * sub_scale);
     let turn = spinner_turn();
+    let any_colored = tabs.iter().any(|t| t.color.is_some());
     let span = |text: String, color: Rgb, bold: bool, italic: bool, icon: bool| Span { text, color, bold, italic, alt_font: false, icon, prose: !icon, badge: false, toolbelt: false };
     for (k, (i, c, r)) in bar.cells.iter().enumerate() {
         let Some(tab) = tabs.get(*i) else { continue };
@@ -1039,17 +1040,40 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
         if clip.w <= 0.0 || clip.h <= 0.0 {
             continue;
         }
-        let (tab_fill, text_fill) = if *i == active { (pal.selected, pal.text_selected) } else { (pal.unselected, pal.text_unselected) };
-        let back = over(pal.bar, tab_fill);
+        let selected = *i == active;
+        let (tab_fill, mut text_fill) = if selected { (pal.selected, pal.text_selected) } else { (pal.unselected, pal.text_unselected) };
+        let mut back = over(pal.bar, tab_fill);
+        // With any colored tab, a colored tab is filled with its color (`YOS:611-636`) and every
+        // tab's text follows the brightness of its effective fill (`YOS:466-509`).
+        let colored = tab.color.map(|col| crate::tab_theme::colored_fill(col, selected, key));
+        if any_colored {
+            text_fill = match colored {
+                Some(fill) => crate::tab_theme::colored_text(fill, selected, pal.colored_text_prominence),
+                None => crate::tab_theme::text_for_brightness(crate::tab_theme::fill_brightness(tab_fill, pal.dark_controls), selected, pal.colored_text_prominence),
+            };
+        }
+        if let Some(fill) = colored {
+            back = fill;
+        }
         // A dragged tab covers the tabs it passes, so it is opaque.
-        if tab.dragged {
+        if tab.dragged || colored.is_some() {
             frame.quads.push(Quad { rect: cell, color: rgba(back, 1.0) });
         } else {
             fill_quad(frame, cell, tab_fill);
         }
-        if let Some(col) = tab.color {
-            let h = (3.0 * scale).round();
-            frame.quads.push(Quad { rect: Rect { y: cell.y + cell.h - h, h, ..cell }, color: rgba(col, 1.0) });
+        // The selected tab's two strokes (`YOS:805-839`).
+        if selected && any_colored {
+            let o = crate::tab_theme::selected_outline(back, pal.colored_outline, key);
+            let width = (o.width * scale).round().max(1.0);
+            let stroke = scale.round().max(1.0);
+            for (inset, f) in [(width - stroke, o.outer), (width, o.inner)] {
+                let r = Rect { x: cell.x + inset, y: cell.y + inset, w: cell.w - 2.0 * inset, h: cell.h - 2.0 * inset };
+                if r.w > 2.0 * stroke && r.h > 2.0 * stroke {
+                    for e in [Rect { h: stroke, ..r }, Rect { y: r.y + r.h - stroke, h: stroke, ..r }, Rect { w: stroke, ..r }, Rect { x: r.x + r.w - stroke, w: stroke, ..r }] {
+                        fill_quad(frame, e, f);
+                    }
+                }
+            }
         }
         let color = over(back, text_fill);
         // A glyph from the icon font centered in `box_`.
@@ -2457,7 +2481,52 @@ mod tests {
             font_pt: 11.0,
             dark_controls: true,
             minimal: None,
+            colored_outline: 0.5,
+            colored_text_prominence: 0.5,
         }
+    }
+
+    /// A colored tab is filled with its color over its whole cell (no bottom strip), the selected
+    /// one is outlined by two strokes, and every tab's text follows the brightness of its own fill.
+    #[test]
+    fn colored_tab_draws_fill_and_outline() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Fill, Inputs, MinimalKnobs, TabStyle, colored_fill, colored_text, over, palette};
+        let red = rgb(255, 0, 0);
+        let pal = palette(
+            TabStyle::Light,
+            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5 },
+        );
+        let looks = vec![TabLook { title: "one".into(), number: 1, color: Some(red), ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let inputs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false, &pal);
+        let px = |r: Rect| Rect { x: area.x + r.x, y: area.y + r.y, w: r.w, h: r.h };
+        let (first, second) = (px(bar.cells[0].2), px(bar.cells[1].2));
+        let fill = colored_fill(red, true, true);
+        assert!(f.quads.iter().any(|q| q.rect == first && q.color == rgba(fill, 1.0)), "the fill over the whole cell");
+        assert!(!f.quads.iter().any(|q| q.rect.h == 3.0 && q.rect.y == first.y + first.h - 3.0), "no bottom strip");
+        // Light bar, red fill: HSP 0.49 is not above 0.5, so the outline is black outside, white inside.
+        let ring = |inset: f32, color: Rgb| {
+            let r = Rect { x: first.x + inset, y: first.y + inset, w: first.w - 2.0 * inset, h: first.h - 2.0 * inset };
+            let c = rgba(color, 0.5);
+            [Rect { h: 1.0, ..r }, Rect { y: r.y + r.h - 1.0, h: 1.0, ..r }, Rect { w: 1.0, ..r }, Rect { x: r.x + r.w - 1.0, w: 1.0, ..r }].into_iter().all(|e| f.quads.iter().any(|q| q.rect == e && q.color == c))
+        };
+        assert!(ring(0.0, rgb(0, 0, 0)), "the outer stroke");
+        assert!(ring(1.0, rgb(255, 255, 255)), "the inner stroke");
+        let text_color = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).map(|r| r.spans[0].color);
+        assert_eq!(text_color("one"), Some(over(fill, colored_text(fill, true, 0.5))), "the colored tab's text");
+        let back = over(pal.bar, pal.unselected);
+        let expect = over(back, Fill { color: rgb(0, 0, 0), alpha: 0.5 });
+        assert_eq!(text_color("two"), Some(expect), "an uncolored tab's text at the unselected prominence");
+        assert!(!f.quads.iter().any(|q| q.rect == second && q.color == rgba(fill, 1.0)));
     }
 
     /// The bar draws with its palette: the material, the unselected fill, no fill for a clear
@@ -2470,7 +2539,7 @@ mod tests {
         use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
         let pal = palette(
             TabStyle::Light,
-            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default() },
+            &Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5 },
         );
         let looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
         let inputs: Vec<TabInput> = looks
@@ -2508,7 +2577,7 @@ mod tests {
         let text = |t: &str| f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).unwrap().spans[0].color;
         assert_eq!((text("one"), text("two")), (rgb(0, 0, 0), rgb(0, 0, 0)), "black text for a focused window");
         let mut off = Frame::default();
-        let unfocused = palette(TabStyle::Light, &Inputs { focused: false, system_dark: false, system_high_contrast: false, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default() });
+        let unfocused = palette(TabStyle::Light, &Inputs { focused: false, system_dark: false, system_high_contrast: false, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5 });
         tab_bar(&mut off, &looks, 1, &bar, area, 1.0, 0.1, 20.0, false, false, &unfocused);
         let text = |t: &str| off.rows.iter().find(|r| r.spans.iter().any(|s| s.text == t)).unwrap().spans[0].color;
         assert_eq!((text("one"), text("two")), (rgb(164, 164, 164), rgb(189, 189, 189)), "unfocused: the two greys");

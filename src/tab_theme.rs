@@ -186,6 +186,10 @@ pub struct TabPalette {
     /// Light glyphs (the bar is dark).
     pub dark_controls: bool,
     pub minimal: Option<MinimalLook>,
+    /// `ColoredSelectedTabOutlineStrength`.
+    pub colored_outline: f32,
+    /// `ColoredUnselectedTabTextProminence`.
+    pub colored_text_prominence: f32,
 }
 
 /// What a palette depends on.
@@ -206,6 +210,10 @@ pub struct Inputs {
     /// The dimming amount of a background window (Minimal).
     pub dimming: f32,
     pub minimal: MinimalKnobs,
+    /// `ColoredSelectedTabOutlineStrength`.
+    pub colored_outline: f32,
+    /// `ColoredUnselectedTabTextProminence`.
+    pub colored_text_prominence: f32,
 }
 
 /// The label size in points a resolved style draws (`font_pt` of its palette): 12 for the High
@@ -259,6 +267,8 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
                 font_pt: REGULAR_FONT_PT,
                 dark_controls: true,
                 minimal: None,
+                colored_outline: i.colored_outline,
+                colored_text_prominence: i.colored_text_prominence,
             }
         }
         _ => {
@@ -278,6 +288,8 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
                 font_pt: REGULAR_FONT_PT,
                 dark_controls: false,
                 minimal: None,
+                colored_outline: i.colored_outline,
+                colored_text_prominence: i.colored_text_prominence,
             }
         }
     };
@@ -309,6 +321,65 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
     }
     p.font_pt = font_pt(resolved);
     p
+}
+
+/// The perceived brightness of a color in 0 to 1 (HSP: `sqrt(0.241 r^2 + 0.691 g^2 + 0.068 b^2)`,
+/// `PSMC:39-47`).
+pub fn hsp(c: Rgb) -> f32 {
+    let n = |v: u8| f32::from(v) / 255.0;
+    (0.241 * n(c.r) * n(c.r) + 0.691 * n(c.g) * n(c.g) + 0.068 * n(c.b) * n(c.b)).sqrt()
+}
+
+/// A colored tab's fill (`YOS:611-636`): each component of the tab color mixed toward 50% grey
+/// by alpha 1 (selected, key window), 0.4 (unselected, key), 0.6 (selected) or 0.3 (unselected)
+/// in a window that is not key. Rounded half up.
+pub fn colored_fill(tab: Rgb, selected: bool, focused: bool) -> Rgb {
+    let a: f64 = match (selected, focused) {
+        (true, true) => 1.0,
+        (false, true) => 0.4,
+        (true, false) => 0.6,
+        (false, false) => 0.3,
+    };
+    // The epsilon keeps a value that is exactly .5 in decimal from rounding down in binary.
+    let mix = |c: u8| (f64::from(c) * a + 127.5 * (1.0 - a) + 0.5 + 1e-6).floor() as u8;
+    rgb(mix(tab.r), mix(tab.g), mix(tab.b))
+}
+
+/// The text over a brightness (0 to 1) in a window with colored tabs (`YOS:466-509`): black
+/// above 0.5, else white; opaque when selected, else at `prominence`.
+pub fn text_for_brightness(brightness: f32, selected: bool, prominence: f32) -> Fill {
+    let color = if brightness > 0.5 { BLACK } else { WHITE };
+    Fill { color, alpha: if selected { 1.0 } else { prominence } }
+}
+
+/// The text over an opaque fill in a window with colored tabs.
+pub fn colored_text(fill: Rgb, selected: bool, prominence: f32) -> Fill {
+    text_for_brightness(hsp(fill), selected, prominence)
+}
+
+/// The brightness a translucent fill has over the material (`YOS:776-797`): the fill's HSP
+/// blended with the back (1 in a light bar, 0 in a dark one) by its alpha.
+pub fn fill_brightness(f: Fill, dark_back: bool) -> f32 {
+    let back = if dark_back { 0.0 } else { 1.0 };
+    let a = f.alpha.clamp(0.0, 1.0);
+    hsp(f.color) * a + back * (1.0 - a)
+}
+
+/// The two strokes around the selected tab of a window with colored tabs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Outline {
+    pub width: f32,
+    pub outer: Fill,
+    pub inner: Fill,
+}
+
+/// `YOS:805-839`: alpha `clamp(strength, 0, 1)` (times 0.6 when the window is not key), width
+/// `clamp(strength, 1, 3)`; over a bright fill the outer stroke is white and the inner black,
+/// else the reverse.
+pub fn selected_outline(fill: Rgb, strength: f32, focused: bool) -> Outline {
+    let alpha = strength.clamp(0.0, 1.0) * if focused { 1.0 } else { 0.6 };
+    let (outer, inner) = if hsp(fill) > 0.5 { (WHITE, BLACK) } else { (BLACK, WHITE) };
+    Outline { width: strength.clamp(1.0, 3.0), outer: Fill { color: outer, alpha }, inner: Fill { color: inner, alpha } }
 }
 
 #[cfg(test)]
@@ -380,6 +451,8 @@ mod tests {
             session_bg: rgb(0, 0, 0),
             dimming: 0.0,
             minimal: MinimalKnobs::default(),
+            colored_outline: 0.5,
+            colored_text_prominence: 0.5,
         }
     }
 
@@ -452,5 +525,25 @@ mod tests {
         }
         assert_eq!(font_pt(TabStyle::LightHighContrast), 12.0);
         assert_eq!(font_pt(TabStyle::Dark), 11.0);
+    }
+
+    #[test]
+    fn colored_tab_follows_iterm2() {
+        let red = rgb(255, 0, 0);
+        assert_eq!(colored_fill(red, true, true), rgb(255, 0, 0));
+        assert_eq!(colored_fill(red, false, true), rgb(179, 77, 77));
+        assert_eq!(colored_fill(red, true, false), rgb(204, 51, 51));
+        assert_eq!(colored_fill(red, false, false), rgb(166, 89, 89));
+        assert!((hsp(rgb(255, 255, 255)) - 1.0).abs() < 1e-4);
+        assert_eq!(hsp(rgb(0, 0, 0)), 0.0);
+        let black = |a: f32| Fill { color: rgb(0, 0, 0), alpha: a };
+        let white = |a: f32| Fill { color: rgb(255, 255, 255), alpha: a };
+        assert_eq!(colored_text(rgb(240, 240, 240), true, 0.5), black(1.0));
+        assert_eq!(colored_text(rgb(20, 20, 20), true, 0.5), white(1.0));
+        assert_eq!(colored_text(rgb(240, 240, 240), false, 0.5), black(0.5));
+        assert_eq!(colored_text(rgb(20, 20, 20), false, 0.3), white(0.3));
+        assert_eq!(selected_outline(rgb(240, 240, 240), 0.5, true), Outline { width: 1.0, outer: white(0.5), inner: black(0.5) });
+        assert_eq!(selected_outline(rgb(20, 20, 20), 2.0, false), Outline { width: 2.0, outer: black(0.6), inner: white(0.6) });
+        assert_eq!(selected_outline(rgb(20, 20, 20), 0.0, true).outer.alpha, 0.0);
     }
 }
