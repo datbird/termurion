@@ -103,6 +103,9 @@ pub enum Then {
     Grant(String),
     /// The first button turns on automatic sharing of terminal contents (Task 8).
     AutoProvide,
+    /// The first button turns on the command safety check, whose one-time question holds the
+    /// command that raised it (Task 10, ruling R12cd-3).
+    SafetyNag,
 }
 
 /// One AI alert for `App::ask_ai`. `silence` is a permanent-silence key (the `scripts_alerts`

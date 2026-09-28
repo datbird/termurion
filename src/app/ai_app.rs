@@ -304,6 +304,8 @@ impl App {
                 self.globals.set(crate::ai_context::CONSENT_KEY, toml::Value::Integer(consent.raw()));
                 self.save_globals();
             }
+            // OK turns the check on; either answer ends the question for good.
+            Then::SafetyNag => self.ai_nag_answered(index),
             Then::Grant(host) => {
                 if index == 0 {
                     ai_gate::grant(&mut self.globals, &host);

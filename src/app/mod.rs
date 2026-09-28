@@ -134,6 +134,7 @@ mod ai_app;
 mod chat_app;
 mod ai_tools_app;
 mod ai_exec_app;
+mod ai_safety_app;
 mod scripts_app;
 mod script_console_app;
 mod script_deps_app;
@@ -841,6 +842,11 @@ pub struct App {
     /// Each pane's Get-Help running on a worker; `ai_help_tick` collects the answer.
     #[allow(dead_code)] // Filled by `get_man_page`, which `ai_run_tool` (Task 11) reaches.
     ai_helps: HashMap<PaneId, std::sync::mpsc::Receiver<String>>,
+    /// The commands' safety checks by id (Task 10); `ai_check_tick` hands the finished ones on.
+    ai_checks: HashMap<u64, ai_safety_app::Check>,
+    ai_next_check: u64,
+    /// The commands held behind the one-time safety question (ruling R12cd-3).
+    ai_nag: crate::ai_classifier::NagGate,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -1414,6 +1420,9 @@ pub fn run() {
         ai_execs: HashMap::new(),
         ai_exec_canceled: Vec::new(),
         ai_helps: HashMap::new(),
+        ai_checks: HashMap::new(),
+        ai_next_check: 0,
+        ai_nag: crate::ai_classifier::NagGate::default(),
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
