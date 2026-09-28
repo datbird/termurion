@@ -1,9 +1,10 @@
 //! Export All Settings and Data (iTerm2's `ImportExport.swift`, `IE`): the save panel's
 //! texts, the entities and their folders in the archive, which entries of `%APPDATA%\Tandem`
 //! stay out, `PythonRuntimes.json`, the script zips' names, tar.exe's arguments and the
-//! failure texts. Pure.
+//! failure texts; Import All's staging and the marker naming it for the next start; Erase
+//! All's list and texts. Pure.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -169,6 +170,114 @@ impl ExportError {
     }
 }
 
+/// The file in `%APPDATA%\Tandem` naming the extracted export the next start applies (iTerm2's
+/// `iTermUserDefaults.importPath`, `IE:112-120`).
+pub const MARKER: &str = "import-pending";
+
+/// The staging folder's name before its UUID (iTerm2's `~/.<UUID>`, `IE:95`).
+const STAGING_PREFIX: &str = ".tandem-import-";
+
+/// Where an import is extracted: `<temp>\.tandem-import-<uuid>`.
+pub fn staging_dir(temp: &Path, uuid: &str) -> PathBuf {
+    temp.join(format!("{STAGING_PREFIX}{uuid}"))
+}
+
+/// tar.exe's arguments extracting the archive `file` into `to`.
+pub fn extract_args(file: &Path, to: &Path) -> Vec<String> {
+    vec!["-xzf".to_string(), file.to_string_lossy().into_owned(), "-C".to_string(), to.to_string_lossy().into_owned()]
+}
+
+/// What the marker asks of this start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pending {
+    /// No marker: nothing to do.
+    None,
+    /// Apply the export extracted here, then remove it and the marker.
+    Apply(PathBuf),
+    /// A marker naming nothing usable: it is removed and nothing is applied.
+    Stale,
+}
+
+/// The marker's text read (None: no marker). Only a folder named as `staging_dir` names, on a
+/// local path, is applied, since it is removed afterwards (iTerm2's precondition that the
+/// folder is hidden and named by a UUID, `IE:117`); a folder that is gone is stale.
+pub fn pending(marker_text: Option<&str>, is_dir: &dyn Fn(&Path) -> bool) -> Pending {
+    let Some(text) = marker_text else { return Pending::None };
+    let path = PathBuf::from(text.trim());
+    let named = path.file_name().map(|n| n.to_string_lossy()).is_some_and(|n| n.len() > STAGING_PREFIX.len() && n.starts_with(STAGING_PREFIX));
+    if !named || crate::scripts::is_network_path(text.trim()) || !is_dir(&path) {
+        return Pending::Stale;
+    }
+    Pending::Apply(path)
+}
+
+/// Logged in the app-wide console entry when a script from an imported archive could not be
+/// installed (Tandem's; iTerm2 writes the path and the error to its log, `IE:1082`).
+pub fn script_import_failed(zip: &Path, error: &str) -> String {
+    format!("Import of {} failed: {error}\n", zip.display())
+}
+
+/// Import texts (`IE:81-110`, `GP:4089`).
+pub const IMPORT_HEADING: &str = "Importing Settings and Data";
+pub const IMPORT_BODY: &str = "Any needed Python runtimes will be installed and secure settings will be updated, which may require you to enter your password. Then Tandem will restart and finish importing. This can take several minutes.";
+pub const PROBLEM_IMPORTING: &str = "Problem Importing";
+
+/// Erase texts (`IE:122-222`, `GP:4094`).
+pub const ERASE_HEADING: &str = "Erase All Settings and Data";
+pub const EXPORT_FIRST_BODY: &str = "Would you like to export your settings and data first? You will be able to re-import the exported file later if you change your mind.";
+pub const EXPORT_FIRST: &str = "Export First";
+pub const SKIP_EXPORT: &str = "Skip Export";
+pub const PROBLEM_EXPORTING_ERASE: &str = "Problem Exporting Settings and Data";
+pub const DRY_RUN_HEADING: &str = "Dry-Run Erase?";
+pub const DRY_RUN_BODY: &str = "Dry-run mode is enabled. Tandem will log to the debug output what it would erase and stay running. Nothing will actually be deleted.";
+pub const DRY_RUN_ACTION: &str = "Run Dry Run";
+pub const ERASE_CONFIRM_HEADING: &str = "Erase Everything?";
+pub const ERASE_ACTION: &str = "Erase Everything and Quit";
+pub const DRY_RUN_DONE_HEADING: &str = "Dry Run Complete";
+pub const DRY_RUN_DONE_BODY: &str = "Tandem logged what it would have erased to the debug output. Nothing was actually deleted because the \u{201c}Dry-run Erase All Settings and Data\u{201d} advanced setting is enabled.";
+pub const PROBLEM_ERASING: &str = "Problem Erasing Settings and Data";
+
+/// "Erase Everything?"'s body (`IE:170-181`): iTerm2's list for what Tandem keeps, and Windows
+/// Credential Manager for the Keychain.
+pub fn erase_confirm_body() -> String {
+    [
+        "The following will be erased and Tandem will quit immediately:",
+        "",
+        "\u{2022} Preferences (profiles, key bindings, arrangements, advanced settings)",
+        "\u{2022} Saved windows and sessions",
+        "\u{2022} Python API scripts and runtimes",
+        "\u{2022} The contents of %APPDATA%\\Tandem",
+        "",
+        "Items stored in Windows Credential Manager (such as the AI API key and Password Manager entries) are not erased and must be removed manually from Credential Manager if you want them gone too.",
+        "",
+        "This cannot be undone.",
+    ]
+    .join("\n")
+}
+
+/// The Scripts folder whose entries the erase removes (`Eraser.init`, `IE:246-250`), resolved
+/// before anything is removed, since the settings naming a custom folder go with the rest: the
+/// custom folder when it is on and named (an empty one is not used, as
+/// `scripts::scripts_folder` says), else the default. A network path is never erased (None).
+pub fn scripts_to_erase(use_custom: bool, custom: &str, default_folder: &Path) -> Option<PathBuf> {
+    if !use_custom || custom.is_empty() {
+        return Some(default_folder.to_path_buf());
+    }
+    (!crate::scripts::is_network_path(custom)).then(|| PathBuf::from(custom))
+}
+
+/// What the erase removes, in order (`IE:255-329`): every entry of `%APPDATA%\Tandem`, then
+/// every entry of the Scripts folder resolved first. Hidden entries are included and nothing
+/// is excluded (a clean slate).
+pub fn erase_list(appdata_tandem: &[PathBuf], scripts: Option<(&Path, Vec<PathBuf>)>) -> Vec<PathBuf> {
+    appdata_tandem.iter().cloned().chain(scripts.map(|(_, entries)| entries).unwrap_or_default()).collect()
+}
+
+/// The dry run's line for one path (`IE:228`).
+pub fn dry_run_line(path: &Path) -> String {
+    format!("[Erase dry-run] would remove {}", path.display())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +350,73 @@ mod tests {
         assert_eq!(PANEL_TITLE, "Export Tandem Settings and Data");
         assert_eq!(EXTENSION, "tandemexport");
         assert_eq!(FILTER_NAME, "Tandem Settings and Data");
+    }
+
+    #[test]
+    fn pending_import_follows_iterm2() {
+        let staged = PathBuf::from(r"C:\T\.tandem-import-U");
+        let that = |p: &Path| p == Path::new(r"C:\T\.tandem-import-U");
+        assert_eq!(pending(None, &that), Pending::None);
+        assert_eq!(pending(Some(r"C:\T\.tandem-import-U"), &that), Pending::Apply(staged.clone()));
+        assert_eq!(pending(Some(r"C:\T\.tandem-import-U"), &|_| false), Pending::Stale, "the folder is gone");
+        assert_eq!(pending(Some(""), &that), Pending::Stale);
+        assert_eq!(staging_dir(Path::new(r"C:\T"), "U"), staged);
+        assert_eq!(extract_args(Path::new(r"C:\a b.tandemexport"), Path::new(r"C:\T\x")), ["-xzf", r"C:\a b.tandemexport", "-C", r"C:\T\x"]);
+        // Beyond the plan: a trailing newline is ignored, and a marker naming a folder that is
+        // not a staging folder, or a network path, is never applied (the folder is removed
+        // afterwards).
+        assert_eq!(pending(Some("C:\\T\\.tandem-import-U\r\n"), &that), Pending::Apply(staged));
+        assert_eq!(pending(Some(r"C:\Users\u"), &|_| true), Pending::Stale);
+        assert_eq!(pending(Some(r"C:\T\.tandem-import-"), &|_| true), Pending::Stale);
+        assert_eq!(pending(Some(r"\\h\s\.tandem-import-U"), &|_| true), Pending::Stale);
+    }
+
+    #[test]
+    fn erase_plan_follows_iterm2() {
+        let d = Path::new(r"C:\A\Scripts");
+        assert_eq!(scripts_to_erase(false, "", d), Some(d.to_path_buf()));
+        assert_eq!(scripts_to_erase(true, r"E:\s", d), Some(PathBuf::from(r"E:\s")));
+        assert_eq!(scripts_to_erase(true, r"\\h\s", d), None);
+        assert_eq!(scripts_to_erase(true, "", d), Some(d.to_path_buf()));
+        // Beyond the plan: an off custom folder is not used, and `//host` is a network path too.
+        assert_eq!(scripts_to_erase(false, r"E:\s", d), Some(d.to_path_buf()));
+        assert_eq!(scripts_to_erase(true, "//h/s", d), None);
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(
+            erase_list(&[p(r"A\settings.toml"), p(r"A\Scripts")], Some((Path::new(r"E:\s"), vec![p(r"E:\s\a.py")]))),
+            [p(r"A\settings.toml"), p(r"A\Scripts"), p(r"E:\s\a.py")]
+        );
+        assert_eq!(erase_list(&[p(r"A\x")], None), [p(r"A\x")]);
+        assert_eq!(dry_run_line(Path::new("A\\x")), "[Erase dry-run] would remove A\\x");
+    }
+
+    #[test]
+    fn import_erase_texts_follow_iterm2() {
+        assert_eq!(MARKER, "import-pending");
+        assert_eq!(IMPORT_HEADING, "Importing Settings and Data");
+        assert_eq!(
+            IMPORT_BODY,
+            "Any needed Python runtimes will be installed and secure settings will be updated, which may require you to enter your password. Then Tandem will restart and finish importing. This can take several minutes."
+        );
+        assert_eq!(PROBLEM_IMPORTING, "Problem Importing");
+        assert_eq!(ERASE_HEADING, "Erase All Settings and Data");
+        assert_eq!(EXPORT_FIRST_BODY, "Would you like to export your settings and data first? You will be able to re-import the exported file later if you change your mind.");
+        assert_eq!((EXPORT_FIRST, SKIP_EXPORT), ("Export First", "Skip Export"));
+        assert_eq!(PROBLEM_EXPORTING_ERASE, "Problem Exporting Settings and Data");
+        assert_eq!(DRY_RUN_HEADING, "Dry-Run Erase?");
+        assert_eq!(DRY_RUN_BODY, "Dry-run mode is enabled. Tandem will log to the debug output what it would erase and stay running. Nothing will actually be deleted.");
+        assert_eq!(DRY_RUN_ACTION, "Run Dry Run");
+        assert_eq!((ERASE_CONFIRM_HEADING, ERASE_ACTION), ("Erase Everything?", "Erase Everything and Quit"));
+        assert_eq!(
+            erase_confirm_body(),
+            "The following will be erased and Tandem will quit immediately:\n\n\u{2022} Preferences (profiles, key bindings, arrangements, advanced settings)\n\u{2022} Saved windows and sessions\n\u{2022} Python API scripts and runtimes\n\u{2022} The contents of %APPDATA%\\Tandem\n\nItems stored in Windows Credential Manager (such as the AI API key and Password Manager entries) are not erased and must be removed manually from Credential Manager if you want them gone too.\n\nThis cannot be undone."
+        );
+        assert_eq!(DRY_RUN_DONE_HEADING, "Dry Run Complete");
+        assert_eq!(
+            DRY_RUN_DONE_BODY,
+            "Tandem logged what it would have erased to the debug output. Nothing was actually deleted because the \u{201c}Dry-run Erase All Settings and Data\u{201d} advanced setting is enabled."
+        );
+        assert_eq!(PROBLEM_ERASING, "Problem Erasing Settings and Data");
+        assert_eq!(script_import_failed(Path::new(r"C:\A\script U.zip"), "e"), "Import of C:\\A\\script U.zip failed: e\n");
     }
 }

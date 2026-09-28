@@ -677,9 +677,10 @@ pub struct App {
     held_on_exit: HashMap<PaneId, bool>,
     /// The import under way (one at a time, iTerm2's `sInstallingScript`) and the files
     /// waiting behind it (iTerm2's serial install queue), each with whether it is an archive
-    /// found in the Scripts folder (recycled once installed).
+    /// found in the Scripts folder (recycled once installed) and whether it is imported with
+    /// no UI (Some: into AutoLaunch or not; `import_quietly`).
     importing: Option<scripts_app::Import>,
-    import_queue: VecDeque<(PathBuf, bool)>,
+    import_queue: VecDeque<(PathBuf, bool, Option<bool>)>,
     /// Archives the scan found that were already asked about (`didFindScriptArchive:`'s
     /// `alreadyFound`).
     archives_asked: std::collections::HashSet<PathBuf>,
@@ -750,6 +751,13 @@ pub struct App {
     /// The custom folder's location as typed at launch; None once it was edited this session,
     /// which skips the quit step (`customFolderChanged`).
     prefs_launch_folder: Option<String>,
+    /// Import All Settings and Data (app-wide): Tandem starts again once the event loop ends
+    /// (`run()`), the quit that restart needs is due on the next loop pass, the script zips an
+    /// import left for this run to install, and their folder, removed once they are done.
+    relaunch_on_exit: bool,
+    relaunch_due: bool,
+    restored_scripts: Vec<PathBuf>,
+    restored_dir: Option<PathBuf>,
 }
 
 /// pwsh.exe when it is on the PATH, else Windows PowerShell.
@@ -773,6 +781,13 @@ pub fn run() {
         // SAFETY: the first thing Tandem does, before any thread (the event loop, tandem-host,
         // the API server) exists, so nothing reads the environment meanwhile.
         unsafe { std::env::remove_var(name) };
+    }
+    // Started again after Import All Settings and Data: the old Tandem ends first (`IE:898-911`).
+    let wait_pid = std::env::var(settings_export_ui::WAIT_PID_VAR).ok().and_then(|v| v.parse::<u32>().ok());
+    // SAFETY: as above, before any thread exists; no session or child inherits the variable.
+    unsafe { std::env::remove_var(settings_export_ui::WAIT_PID_VAR) };
+    if let Some(pid) = wait_pid {
+        settings_export_ui::wait_for_pid(pid);
     }
     let event_loop = match EventLoop::<UserEvent>::with_user_event().build() {
         Ok(l) => l,
@@ -805,6 +820,11 @@ pub fn run() {
         },
     };
 
+    // An import staged by the last run is applied to the files before anything reads them.
+    let restored_scripts = {
+        let settings = globals::default_path();
+        settings_export_ui::finish_import(settings.parent().unwrap_or(&settings))
+    };
     let path = store::default_path();
     let mut store = match Store::load(&path) {
         Ok(s) => s,
@@ -1165,9 +1185,20 @@ pub fn run() {
         prefs_reveal: false,
         prefs_gpu: None,
         prefs_launch_folder,
+        relaunch_on_exit: false,
+        relaunch_due: false,
+        restored_scripts,
+        restored_dir: None,
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         message_box(&format!("Tandem stopped: {e}"));
+    }
+    // The restart after Import All Settings and Data: the new Tandem finishes the import.
+    if app.relaunch_on_exit {
+        drop(app);
+        if let Err(e) = settings_export_ui::start_relaunched() {
+            message_box(&format!("Could not start Tandem again: {e}. Start it to finish the import."));
+        }
     }
 }
 
@@ -1504,8 +1535,8 @@ impl App {
             }
             Edit::PrefsSaveNow => self.prefs_save_now(true),
             Edit::ExportAll => self.export_all(),
-            // Import and Erase are built next (milestone 13a Task 10).
-            Edit::ImportAll | Edit::EraseAll => {}
+            Edit::ImportAll => self.import_all(),
+            Edit::EraseAll => self.erase_all(),
             Edit::Changed(_) | Edit::Imported(_) => {
                 // Rules may have changed: every session looks again (iTerm2's reloadAllProfiles).
                 for s in self.aps.values_mut() {
@@ -2881,6 +2912,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.scripts_scan_start();
                 // With the API up (or not) and the Scripts folder made: AutoLaunch, once.
                 self.run_autolaunch();
+                // Scripts from an Import All Settings and Data (installed for the next run's
+                // AutoLaunch, as iTerm2 relaunches after installing them).
+                self.import_restored_scripts();
             }
             Err(e) => {
                 message_box(&format!("Could not start the GPU renderer: {e}"));
@@ -3054,6 +3088,10 @@ impl ApplicationHandler<UserEvent> for App {
         let import_due = self.import_tick();
         self.script_export_tick();
         self.scripts_scan_tick();
+        // OK in "Importing Settings and Data": Tandem quits and starts again.
+        if std::mem::take(&mut self.relaunch_due) {
+            self.relaunch(event_loop);
+        }
         self.prefs_tick(event_loop);
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);

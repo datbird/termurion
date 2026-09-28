@@ -1,17 +1,28 @@
-//! Export All Settings and Data, the app side (`IE:19-69`, `IE:549-619`, `GP:4084-4086`): the
-//! save panel, one folder per entity in a temporary folder, the gzip tar, and the reveal or the
-//! failure alert. The model is `crate::settings_export`.
+//! Export, Import and Erase All Settings and Data, the app side (`IE:19-329`, `GP:4084-4108`).
+//! Export: the save panel, one folder per entity in a temporary folder, the gzip tar, and the
+//! reveal or the failure alert. Import: the open panel, the warning, the archive extracted and
+//! named by a marker, the restart, and at the next start (before anything loads) the settings,
+//! the files and the scripts applied. Erase: the offer to export first, the confirmation, and
+//! every file removed (or, in a dry run, logged). The model is `crate::settings_export`.
 
 use std::path::{Path, PathBuf};
 
+use winit::event_loop::ActiveEventLoop;
+
 use super::App;
 use super::scripts_alerts::{Ask, Then};
+use crate::globals::Globals;
 use crate::remote_prefs::Snapshot;
 use crate::script_runtime as rt;
-use crate::settings_export::{self as se, Entity, ExportError, Requirement};
+use crate::settings_export::{self as se, Entity, ExportError, Pending, Requirement};
+use crate::store::Store;
 
 /// `revealExportedSettingsAndData` (`ASM:558`).
 const REVEAL_KEY: &str = "RevealExportedSettingsAndData";
+/// `dryRunEraseAllSettingsAndData` (`ASM:559`).
+const DRY_RUN_KEY: &str = "DryRunEraseAllSettingsAndData";
+/// The variable naming the process a relaunched Tandem waits for (`IE:898-911`).
+pub(super) const WAIT_PID_VAR: &str = "TANDEM_WAIT_PID";
 
 /// Where the export reads from.
 struct Sources<'a> {
@@ -138,13 +149,146 @@ fn export_into(out: &Path, src: &Sources) -> Result<(), ExportError> {
     result
 }
 
+/// Where the staged script zips wait in `%APPDATA%\Tandem` for the app to import them.
+pub(super) const IMPORT_SCRIPTS_DIR: &str = ".import-scripts";
+
+/// `%APPDATA%\Tandem`, the folder holding the settings.
+fn appdata_tandem() -> PathBuf {
+    let settings = crate::globals::default_path();
+    settings.parent().unwrap_or(&settings).to_path_buf()
+}
+
+/// Import's first phase (`Importer.importEntities`, `IE:81-110`): `file` extracted into a fresh
+/// `<temp>\.tandem-import-<uuid>`, then the marker in `appdata` naming it. On a failure nothing
+/// is left behind.
+fn stage_import(file: &Path, temp: &Path, appdata: &Path) -> Result<(), String> {
+    let staging = se::staging_dir(temp, &uuid::Uuid::new_v4().to_string());
+    let staged = std::fs::create_dir_all(&staging)
+        .map_err(|e| format!("{}: {e}", staging.display()))
+        .and_then(|_| super::scripts_app::run_tar(se::extract_args(file, &staging)))
+        .and_then(|_| std::fs::create_dir_all(appdata).map_err(|e| format!("{}: {e}", appdata.display())))
+        .and_then(|_| std::fs::write(appdata.join(se::MARKER), staging.to_string_lossy().as_bytes()).map_err(|e| format!("{}: {e}", appdata.join(se::MARKER).display())));
+    if staged.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    staged
+}
+
+/// The staged User Defaults entity applied to the files on disk, as a custom folder's settings
+/// are at launch: the syncable settings replace the local ones in `settings.toml`, and the
+/// profiles and the default replace `profiles.toml`. A file that cannot be read is never
+/// overwritten (as at launch); an entity that is missing or empty changes nothing.
+fn apply_user_defaults(file: &Path, appdata: &Path) {
+    let Some(snap) = std::fs::read_to_string(file).ok().and_then(|t| Snapshot::parse(&t)) else { return };
+    let (Ok(mut g), Ok(mut store)) = (Globals::load(&appdata.join("settings.toml")), Store::load(&appdata.join("profiles.toml"))) else { return };
+    super::prefs_ui::apply_snapshot(&snap, &mut g, &mut store);
+    let _ = g.save();
+    let _ = store.save();
+}
+
+/// The staged script zips moved from `from` to `to`, in name order; where they are now.
+fn stage_scripts(from: &Path, to: &Path) -> Vec<PathBuf> {
+    let mut moved = Vec::new();
+    for (name, path) in entries(from) {
+        if name.starts_with('.') || !path.is_file() || std::fs::create_dir_all(to).is_err() {
+            continue;
+        }
+        let dest = to.join(&name);
+        let ok = std::fs::rename(&path, &dest).is_ok() || std::fs::copy(&path, &dest).is_ok();
+        if ok {
+            moved.push(dest);
+        }
+    }
+    moved
+}
+
+/// Import's final phase (`finishImporting`, `IE:112-120`), at start before the settings and
+/// profiles load, so it edits the files: with a marker naming a staged export, the marker goes
+/// first (an import that stops half way is never applied twice), then the settings and
+/// profiles, the Application Support files (hidden and excluded names kept out, links not
+/// followed: the Python API consent never comes from an archive), and the script zips moved to
+/// `.import-scripts`; the staging folder goes last. A stale marker is removed and nothing
+/// changes. Returns the zips for the app to import once it runs. The Python Runtimes entity
+/// installs nothing: each script is provisioned on its first launch (`IE:788-793`, under uv).
+pub(super) fn finish_import(appdata_tandem: &Path) -> Vec<PathBuf> {
+    let marker = appdata_tandem.join(se::MARKER);
+    let text = std::fs::read_to_string(&marker).ok();
+    let staging = match se::pending(text.as_deref(), &|p| p.is_dir()) {
+        Pending::None => return Vec::new(),
+        Pending::Stale => {
+            let _ = std::fs::remove_file(&marker);
+            return Vec::new();
+        }
+        Pending::Apply(staging) => staging,
+    };
+    if std::fs::remove_file(&marker).is_err() {
+        return Vec::new();
+    }
+    apply_user_defaults(&staging.join(Entity::UserDefaults.key()).join(se::USER_DEFAULTS_FILE), appdata_tandem);
+    let support = staging.join(Entity::AppSupport.key());
+    if support.is_dir() && !is_reparse(&support) {
+        let _ = copy_contents(&support, appdata_tandem, true);
+    }
+    let zips = stage_scripts(&staging.join(Entity::Scripts.key()), &appdata_tandem.join(IMPORT_SCRIPTS_DIR));
+    let _ = std::fs::remove_dir_all(&staging);
+    zips
+}
+
+/// Waits up to 30 seconds for the process `pid` to end (`IE:898-911`, the relaunch waiting for
+/// the old Tandem); at once when it cannot be opened (already gone).
+pub(super) fn wait_for_pid(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    // SAFETY: a handle opened here, waited on and closed here.
+    unsafe {
+        let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if h.is_null() {
+            return;
+        }
+        WaitForSingleObject(h, 30_000);
+        CloseHandle(h);
+    }
+}
+
+/// Starts Tandem again (the current executable) telling it to wait for this process to end.
+pub(super) fn start_relaunched() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::process::Command::new(exe).env(WAIT_PID_VAR, std::process::id().to_string()).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Every entry of `dir`, hidden ones included; empty when it does not exist.
+fn all_entries(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    match std::fs::read_dir(dir) {
+        Ok(rd) => {
+            let mut v = rd.map(|e| e.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>()?;
+            v.sort();
+            Ok(v)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// One line in the debug output (`OutputDebugStringW`, iTerm2's `NSLog`).
+fn debug_line(text: &str) {
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: a NUL-terminated wide string that outlives the call.
+    unsafe { windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW(wide.as_ptr()) };
+}
+
 impl App {
     /// General > Settings' Export All Settings and Data (`performExportFlow`, `IE:19-69`): the
     /// save panel (Cancel does nothing), the export, then the file revealed in Explorer or
     /// "Problem Exporting" with the reason (`GP:4084-4086`, persistent).
     pub(super) fn export_all(&mut self) {
+        self.export_flow(se::PROBLEM_EXPORTING);
+    }
+
+    /// `performExportFlow`: the save panel and the export. None: canceled. Some(false): failed,
+    /// and the reason is queued under `failed_heading`. Some(true): written (and revealed).
+    fn export_flow(&mut self, failed_heading: &str) -> Option<bool> {
         let dialog = rfd::FileDialog::new().set_title(se::PANEL_TITLE).set_file_name(se::DEFAULT_NAME).add_filter(se::FILTER_NAME, &[se::EXTENSION]);
-        let Some(mut out) = dialog.save_file() else { return };
+        let mut out = dialog.save_file()?;
         // A name typed without the extension gets it, as the save panel's content type does.
         if out.extension().is_none() {
             out.set_extension(se::EXTENSION);
@@ -154,12 +298,127 @@ impl App {
                 if self.globals.bool(REVEAL_KEY) {
                     self.reveal_path(&out);
                 }
+                Some(true)
             }
             Err(e) => {
-                let ask = Ask { heading: se::PROBLEM_EXPORTING.to_string(), text: e.message(), buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::ExportFailed };
-                self.ask_scripts(ask);
+                self.alert_ok(failed_heading, e.message(), Then::ExportFailed);
+                Some(false)
             }
         }
+    }
+
+    /// A persistent alert with OK alone.
+    fn alert_ok(&mut self, heading: &str, text: String, then: Then) {
+        self.ask_scripts(Ask { heading: heading.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then });
+    }
+
+    /// General > Settings' Import All Settings and Data (`importAll`, `IE:81-110`): the open
+    /// panel (Cancel does nothing), then "Importing Settings and Data" (OK, Cancel; persistent).
+    pub(super) fn import_all(&mut self) {
+        let Some(file) = rfd::FileDialog::new().add_filter(se::FILTER_NAME, &[se::EXTENSION]).pick_file() else { return };
+        let buttons = vec![crate::api_auth::OK.to_string(), crate::api_auth::CANCEL.to_string()];
+        self.ask_scripts(Ask { heading: se::IMPORT_HEADING.to_string(), text: se::IMPORT_BODY.to_string(), buttons, silence: None, then: Then::ImportConfirm(file) });
+    }
+
+    /// OK in "Importing Settings and Data": the archive is extracted and named for the next
+    /// start, then Tandem quits (no quit confirmation; sessions are kept as after any quit) and
+    /// starts again. A failure says "Problem Importing" with the reason.
+    pub(super) fn import_confirmed(&mut self, file: PathBuf) {
+        match stage_import(&file, &std::env::temp_dir(), &appdata_tandem()) {
+            Ok(()) => self.relaunch_due = true,
+            Err(e) => self.alert_ok(se::PROBLEM_IMPORTING, e, Then::Nothing),
+        }
+    }
+
+    /// The quit path without its confirmation, for the restart after an import (`NSApp
+    /// relaunch`); `run()` starts the new Tandem once the event loop has ended.
+    pub(super) fn relaunch(&mut self, event_loop: &ActiveEventLoop) {
+        self.relaunch_on_exit = true;
+        self.quit_confirmed(event_loop);
+    }
+
+    /// At start: the zips `finish_import` left are imported one by one as iTerm2's import does
+    /// with `avoidUI` (no questions, a script of the same name replaced, AutoLaunch from the
+    /// name), and `.import-scripts` goes once the last has finished.
+    pub(super) fn import_restored_scripts(&mut self) {
+        let zips = std::mem::take(&mut self.restored_scripts);
+        let Some(dir) = zips.first().and_then(|z| z.parent()).map(Path::to_path_buf) else { return };
+        self.restored_dir = Some(dir);
+        for zip in zips {
+            let autolaunch = zip.file_name().is_some_and(|n| n.to_string_lossy().starts_with("autolaunch"));
+            self.import_quietly(zip, autolaunch);
+        }
+    }
+
+    /// The import queue is empty: `.import-scripts` goes.
+    pub(super) fn restored_scripts_done(&mut self) {
+        if let Some(dir) = self.restored_dir.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    /// General > Settings' Erase All Settings and Data (`eraseAll`, `IE:122-222`): first the
+    /// offer to export (Export First, Skip Export, Cancel; persistent).
+    pub(super) fn erase_all(&mut self) {
+        let buttons = vec![se::EXPORT_FIRST.to_string(), se::SKIP_EXPORT.to_string(), crate::api_auth::CANCEL.to_string()];
+        self.ask_scripts(Ask { heading: se::ERASE_HEADING.to_string(), text: se::EXPORT_FIRST_BODY.to_string(), buttons, silence: None, then: Then::EraseExportFirst });
+    }
+
+    /// The answer to the offer to export: Export First runs the export (canceled: the erase
+    /// stops; failed: "Problem Exporting Settings and Data" and it stops); then, as after Skip
+    /// Export, the confirmation, with Cancel first so Enter cancels.
+    pub(super) fn erase_export_answered(&mut self, index: usize) {
+        match index {
+            0 if self.export_flow(se::PROBLEM_EXPORTING_ERASE) != Some(true) => return,
+            0 | 1 => {}
+            _ => return,
+        }
+        let dry_run = self.globals.bool(DRY_RUN_KEY);
+        let (heading, text, action) = if dry_run {
+            (se::DRY_RUN_HEADING, se::DRY_RUN_BODY.to_string(), se::DRY_RUN_ACTION)
+        } else {
+            (se::ERASE_CONFIRM_HEADING, se::erase_confirm_body(), se::ERASE_ACTION)
+        };
+        let buttons = vec![crate::api_auth::CANCEL.to_string(), action.to_string()];
+        self.ask_scripts(Ask { heading: heading.to_string(), text, buttons, silence: None, then: Then::EraseConfirm { dry_run } });
+    }
+
+    /// The second button of the confirmation (`Eraser`, `IE:224-329`): the Scripts folder is
+    /// resolved first (its settings are erased with the rest; one on, or reached through a link
+    /// to, a network path is left alone), then the list of every entry of `%APPDATA%\Tandem`
+    /// and of that folder. A dry run logs each path and says so; otherwise the host's shells
+    /// end, every path goes (links as links) and Tandem exits at once, saving nothing (iTerm2's
+    /// `_exit(0)`). Credential Manager entries are not touched.
+    pub(super) fn erase_confirmed(&mut self, dry_run: bool) {
+        let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+        let text = self.globals.string("CustomScriptsFolder");
+        let custom = if text.is_empty() { text } else { crate::scripts::expand_tilde(&text, &home).to_string_lossy().into_owned() };
+        let scripts = se::scripts_to_erase(self.globals.bool("UseCustomScriptsFolder"), &custom, &crate::scripts::default_folder(&appdata))
+            .filter(|s| crate::scripts::ancestors_stay_local(s, &crate::scripts::read_link));
+        let tandem = appdata_tandem();
+        let listed = all_entries(&tandem).map_err(|e| format!("{}: {e}", tandem.display())).and_then(|own| {
+            let scripts = match &scripts {
+                Some(s) => Some((s.as_path(), all_entries(s).map_err(|e| format!("{}: {e}", s.display()))?)),
+                None => None,
+            };
+            Ok(se::erase_list(&own, scripts))
+        });
+        let list = match listed {
+            Ok(list) => list,
+            Err(e) => return self.alert_ok(se::PROBLEM_ERASING, e, Then::Nothing),
+        };
+        if dry_run {
+            for path in &list {
+                debug_line(&se::dry_run_line(path));
+            }
+            return self.alert_ok(se::DRY_RUN_DONE_HEADING, se::DRY_RUN_DONE_BODY.to_string(), Then::Nothing);
+        }
+        self.leave_host(false);
+        for path in &list {
+            super::scripts_app::remove_path(path);
+        }
+        std::process::exit(0);
     }
 
     /// Writes the archive at `out`: the settings and profiles as they are now, `%APPDATA%\Tandem`
@@ -309,6 +568,116 @@ mod tests {
         assert_eq!(zips.len(), 1, "only kept.py: {zips:?}");
         assert!(zips[0].starts_with("script "), "{zips:?}");
         assert_eq!(std::fs::read_to_string(x.join(r"python-runtimes\PythonRuntimes.json")).unwrap(), r#"{"requirements":[],"haveAnyBasicScripts":true}"#);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn finish_import_applies_once() {
+        let root = temp("finish");
+        let tandem = root.join("Tandem");
+        std::fs::create_dir_all(&tandem).unwrap();
+        std::fs::write(tandem.join("settings.toml"), "[settings]\nFocusFollowsMouse = false\nNoSyncX = true\n").unwrap();
+        std::fs::write(tandem.join("snippets.json"), "old").unwrap();
+        let staging = se::staging_dir(&root, "U");
+        std::fs::create_dir_all(staging.join("user-defaults")).unwrap();
+        std::fs::create_dir_all(staging.join("app-support")).unwrap();
+        std::fs::create_dir_all(staging.join("scripts")).unwrap();
+        let profile: std::collections::BTreeMap<String, toml::Value> = [("Guid".to_string(), toml::Value::String("gi".into())), ("Name".to_string(), toml::Value::String("Imported".into()))].into();
+        let snap = Snapshot { settings: [("FocusFollowsMouse".to_string(), toml::Value::Boolean(true))].into(), default: "gi".into(), profiles: vec![profile] };
+        std::fs::write(staging.join(r"user-defaults\UserDefaults.toml"), snap.to_toml()).unwrap();
+        std::fs::write(staging.join(r"app-support\snippets.json"), "[]").unwrap();
+        std::fs::write(staging.join(r"scripts\script U.zip"), "zip").unwrap();
+        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+
+        let zips = finish_import(&tandem);
+        assert_eq!(zips, [tandem.join(IMPORT_SCRIPTS_DIR).join("script U.zip")]);
+        assert_eq!(std::fs::read_to_string(&zips[0]).unwrap(), "zip");
+        let g = crate::globals::Globals::load(&tandem.join("settings.toml")).unwrap();
+        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
+        assert_eq!(g.values.get("NoSyncX"), Some(&toml::Value::Boolean(true)), "a key that does not sync stays");
+        let store = crate::store::Store::load(&tandem.join("profiles.toml")).unwrap();
+        let names: Vec<String> = store.profiles.iter().map(|p| p.name()).collect();
+        assert_eq!(names, ["Imported"]);
+        assert_eq!(store.default_guid, "gi");
+        assert_eq!(std::fs::read_to_string(tandem.join("snippets.json")).unwrap(), "[]");
+        assert!(!tandem.join(se::MARKER).exists());
+        assert!(!staging.exists());
+
+        // A second start does nothing.
+        std::fs::write(tandem.join("snippets.json"), "later").unwrap();
+        assert!(finish_import(&tandem).is_empty());
+        assert_eq!(std::fs::read_to_string(tandem.join("snippets.json")).unwrap(), "later");
+
+        // A marker naming a folder that is gone is removed and nothing changes.
+        let before = std::fs::read_to_string(tandem.join("settings.toml")).unwrap();
+        std::fs::write(tandem.join(se::MARKER), se::staging_dir(&root, "gone").to_string_lossy().as_bytes()).unwrap();
+        assert!(finish_import(&tandem).is_empty());
+        assert!(!tandem.join(se::MARKER).exists());
+        assert_eq!(std::fs::read_to_string(tandem.join("settings.toml")).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(tandem.join("snippets.json")).unwrap(), "later");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Beyond the plan: the archive's app-support never replaces what Tandem keeps out of an
+    /// export (the settings files, the Python API consent, the marker), nor a hidden entry.
+    #[test]
+    fn finish_import_keeps_what_export_leaves_out() {
+        let root = temp("keep");
+        let tandem = root.join("Tandem");
+        std::fs::create_dir_all(&tandem).unwrap();
+        std::fs::write(tandem.join("profiles.toml"), "").unwrap();
+        let staging = se::staging_dir(&root, "K");
+        let support = staging.join("app-support");
+        std::fs::create_dir_all(support.join(r"state")).unwrap();
+        for name in ["python-api-consent", "settings.toml", "profiles.toml", ".hidden"] {
+            std::fs::write(support.join(name), "from the archive").unwrap();
+        }
+        std::fs::write(support.join(r"state\s.json"), "{}").unwrap();
+        std::fs::write(tandem.join(se::MARKER), staging.to_string_lossy().as_bytes()).unwrap();
+        assert!(finish_import(&tandem).is_empty());
+        assert!(!tandem.join("python-api-consent").exists());
+        assert!(!tandem.join("settings.toml").exists());
+        assert!(!tandem.join(".hidden").exists());
+        assert_eq!(std::fs::read_to_string(tandem.join("profiles.toml")).unwrap(), "");
+        assert!(tandem.join(r"state\s.json").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Beyond the plan: an export imported into another Tandem folder through the real tar.exe
+    /// (the first phase names the staging folder in the marker; the next start applies it),
+    /// and a file that is not an archive fails with nothing left behind.
+    #[test]
+    fn import_round_trips_an_export() {
+        let root = temp("round");
+        let from = root.join("From");
+        let scripts = from.join("Scripts");
+        std::fs::create_dir_all(scripts.join("AutoLaunch")).unwrap();
+        std::fs::write(from.join("settings.toml"), "[settings]\nFocusFollowsMouse = true\n").unwrap();
+        std::fs::write(from.join("snippets.json"), "[1]").unwrap();
+        std::fs::write(scripts.join(r"AutoLaunch\auto.py"), "print(1)\n").unwrap();
+        let snap = user_defaults(&from);
+        let out = root.join("x.tandemexport");
+        export_into(&out, &Sources { app_support: &from, scripts: Some(&scripts), user_defaults: &snap, local: &|_| true }).unwrap();
+
+        let (to, temp_dir) = (root.join("To"), root.join("Temp"));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        stage_import(&out, &temp_dir, &to).unwrap();
+        let marker = std::fs::read_to_string(to.join(se::MARKER)).unwrap();
+        assert!(matches!(se::pending(Some(&marker), &|p| p.is_dir()), Pending::Apply(p) if p.parent() == Some(temp_dir.as_path())));
+        let zips = finish_import(&to);
+        assert_eq!(zips.len(), 1, "{zips:?}");
+        assert!(zips[0].file_name().unwrap().to_string_lossy().starts_with("autolaunch "), "{zips:?}");
+        let g = Globals::load(&to.join("settings.toml")).unwrap();
+        assert_eq!(g.values.get("FocusFollowsMouse"), Some(&toml::Value::Boolean(true)));
+        assert_eq!(std::fs::read_to_string(to.join("snippets.json")).unwrap(), "[1]");
+        assert!(entries(&temp_dir).is_empty(), "the staging folder is gone");
+
+        let bad = root.join("bad.tandemexport");
+        std::fs::write(&bad, "not an archive").unwrap();
+        let other = root.join("Other");
+        assert!(stage_import(&bad, &temp_dir, &other).is_err());
+        assert!(!other.join(se::MARKER).exists());
+        assert!(entries(&temp_dir).is_empty(), "a failed extraction leaves nothing");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

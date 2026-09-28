@@ -152,7 +152,7 @@ fn start(g: &Globals, home: &Path, fetch: &dyn Fn(&str, Option<f64>) -> Fetched)
 /// `copyRemotePrefsToLocalUserDefaultsPreserving:` (`RP:1531-1551`): every local syncable
 /// setting goes and the snapshot's come; the profiles become the snapshot's (one new "Default"
 /// when it has none, as Tandem always has a profile).
-fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store) {
+pub(super) fn apply_snapshot(snap: &Snapshot, g: &mut Globals, store: &mut Store) {
     rp::apply(snap, &mut g.values);
     let mut profiles: Vec<Profile> = snap.profiles.iter().cloned().map(|values| Profile { values }).collect();
     if profiles.is_empty() {

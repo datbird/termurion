@@ -85,6 +85,13 @@ pub(super) enum Then {
     PrefsCopyNow,
     /// "Problem Exporting" after Export All Settings and Data failed: OK (0).
     ExportFailed,
+    /// "Importing Settings and Data" for the archive picked: OK (0) stages it and restarts
+    /// Tandem; Cancel (1) does nothing.
+    ImportConfirm(std::path::PathBuf),
+    /// "Erase All Settings and Data": Export First (0), Skip Export (1) or Cancel (2).
+    EraseExportFirst,
+    /// "Erase Everything?" or "Dry-Run Erase?": Cancel (0) or the action (1).
+    EraseConfirm { dry_run: bool },
 }
 
 impl Then {
@@ -261,6 +268,17 @@ impl App {
                     self.edit_new_script(&path);
                 } else {
                     self.reveal_path(&path);
+                }
+            }
+            Then::ImportConfirm(file) => {
+                if index == 0 {
+                    self.import_confirmed(file);
+                }
+            }
+            Then::EraseExportFirst => self.erase_export_answered(index),
+            Then::EraseConfirm { dry_run } => {
+                if index == 1 {
+                    self.erase_confirmed(dry_run);
                 }
             }
             Then::PrefsUrlPrompt(_) | Then::PrefsFailedUrl { .. } | Then::PrefsLocationNotSet | Then::PrefsOverwrite | Then::PrefsQuit | Then::PrefsCopyNow => self.prefs_answered(then, index),

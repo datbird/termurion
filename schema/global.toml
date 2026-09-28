@@ -1843,6 +1843,15 @@ default = true
 help = "Reveal file created by \u201cExport All Settings and Data\u201d in Explorer upon completion"
 
 [[setting]]
+key = "DryRunEraseAllSettingsAndData"
+tab = "Advanced"
+section = "General"
+label = "Dry-run \u201cErase All Settings and Data\u201d."
+type = "bool"
+default = false
+help = "Dry-run \u201cErase All Settings and Data\u201d.\nWhen enabled, the Erase All Settings and Data button logs what it would delete (to the debug output) instead of actually deleting anything, and does not quit. Intended for testing the feature."
+
+[[setting]]
 key = "HotkeyMigratedFromSingleToMulti"
 tab = "Stored"
 section = "Hotkey"

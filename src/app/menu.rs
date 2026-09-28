@@ -781,8 +781,15 @@ impl App {
     }
 
     fn quit(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.prefs_exit_pending && self.confirm_close(close_ui::Closing::App) {
+            self.quit_confirmed(event_loop);
+        }
+    }
+
+    /// Quit once confirmed (the restart after Import All asks nothing).
+    pub(super) fn quit_confirmed(&mut self, event_loop: &ActiveEventLoop) {
         // Already ending, waiting for the settings folder's quit question.
-        if self.prefs_exit_pending || !self.confirm_close(close_ui::Closing::App) {
+        if self.prefs_exit_pending {
             return;
         }
         self.save_pending_settings();

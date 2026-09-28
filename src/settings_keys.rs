@@ -1417,6 +1417,19 @@ mod tests {
     }
 
     #[test]
+    fn erase_row_follows_iterm2() {
+        let s = schema::find_global("DryRunEraseAllSettingsAndData").expect("row");
+        assert_eq!((s.tab.as_str(), s.section.as_str(), s.kind), ("Advanced", "General", Kind::Bool));
+        assert_eq!(s.default, Some(Value::Boolean(false)));
+        let label = "Dry-run \u{201c}Erase All Settings and Data\u{201d}.";
+        assert_eq!(s.label, label);
+        assert_eq!(
+            s.help,
+            format!("{label}\nWhen enabled, the Erase All Settings and Data button logs what it would delete (to the debug output) instead of actually deleting anything, and does not quit. Intended for testing the feature.")
+        );
+    }
+
+    #[test]
     fn prefs_row_enabling_follows_iterm2() {
         use crate::remote_prefs::{FOLDER_KEY, LOAD_KEY};
         let home = std::path::Path::new(r"C:\Users\u");
