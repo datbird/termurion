@@ -202,7 +202,6 @@ pub fn amended(message: &str, status_text: &str, url: &str, api: Api, custom: &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai_settings::Api;
 
     fn h(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect()
