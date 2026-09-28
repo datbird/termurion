@@ -16,7 +16,7 @@ use crate::layout::PaneId;
 pub(super) const NOT_AVAILABLE: &str = "This function is not available.";
 
 /// The answer of a writing tool whose session is gone. Tandem's text.
-const NO_SESSION: &str = "Error: that session is no longer open.";
+pub(super) const NO_SESSION: &str = "Error: that session is no longer open.";
 
 /// The chat's notice for a finished Get-Help (`PS:848`).
 const MANPAGE_NOTICE: &str = "manpage provided to AI.";

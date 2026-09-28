@@ -119,7 +119,13 @@ pub fn decode_escapes(s: &str) -> Result<String, String> {
 /// win32-input-mode Enter and shell Meta keys (all begin with ESC), a CSI (U+009B), history
 /// and yank keys (Ctrl+P, N, R, Y) that desync the staged line.
 pub fn has_line_end(s: &str) -> bool {
-    s.chars().any(|c| (c.is_ascii_control() && !matches!(c, '\t' | '\u{3}' | '\u{7f}')) || ('\u{80}'..='\u{9f}').contains(&c))
+    has_refused_control(s, false)
+}
+
+/// The one allow-list behind `has_line_end` and `execute_command`'s check (Task 7 finding 1):
+/// `line_breaks` also lets CR and LF through, for a command that is checked whole.
+pub fn has_refused_control(s: &str, line_breaks: bool) -> bool {
+    s.chars().any(|c| (c.is_ascii_control() && !matches!(c, '\t' | '\u{3}' | '\u{7f}') && !(line_breaks && matches!(c, '\n' | '\r'))) || ('\u{80}'..='\u{9f}').contains(&c))
 }
 
 /// What `insert_text_at_cursor` types: the decoded text, or Err(the answer to give) for a bad

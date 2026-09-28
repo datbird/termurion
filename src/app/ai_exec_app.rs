@@ -25,15 +25,30 @@ fn prompt_capture(screen: &Screen, running: &Running) -> Option<Option<String>> 
     Some(screen.abs_text(running.start_line, end).map(|t| t.trim_end().to_string()))
 }
 
-/// A Marker-path command's state: None while it waits, else the outcome.
+/// A Marker-path command's state: None while it waits, else the outcome. A start line that
+/// left the scrollback does not end the wait: the marker is still awaited and the text is read
+/// from the oldest line kept, which answers the lost-output notice (iTerm2).
 fn marker_capture(screen: &Screen, running: &Running, uuid: &str) -> Option<Outcome> {
-    let text = screen.abs_text(running.start_line, screen.abs_cursor_line() + 1);
-    let Some(text) = text else { return Some(ai_exec::unavailable_outcome(&running.command)) };
+    let from = running.start_line.max(screen.oldest_abs_line());
+    let Some(text) = screen.abs_text(from, screen.abs_cursor_line() + 1) else { return None };
     match ai_exec::marker_output(&text, uuid) {
         MarkerFound::Waiting => None,
         MarkerFound::Output(t) => Some(ai_exec::output_outcome(&running.command, t)),
         MarkerFound::Lost(t) => Some(ai_exec::lost_outcome(&running.command, t)),
         MarkerFound::Empty => Some(ai_exec::unavailable_outcome(&running.command)),
+    }
+}
+
+/// A running command's state on its pane's screen: None while it runs. A pane that is gone
+/// cancels it.
+fn capture(screen: Option<&Screen>, running: &Running) -> Option<Outcome> {
+    let Some(screen) = screen else { return Some(ai_exec::canceled_outcome()) };
+    match &running.path {
+        Path::Prompt => prompt_capture(screen, running).map(|c| match c {
+            Some(text) => ai_exec::output_outcome(&running.command, text),
+            None => ai_exec::unavailable_outcome(&running.command),
+        }),
+        Path::Marker { uuid } => marker_capture(screen, running, uuid),
     }
 }
 
@@ -49,11 +64,18 @@ impl App {
     /// Types `command` on `pane` and starts waiting for its end. `command` is what is typed:
     /// the model's own, never the staged prefix the check saw, which is already on the prompt
     /// (ruling R12cd-2). A command already running on the pane is cancelled first.
+    ///
+    /// Answers at once, typing nothing, when the command holds a refused control key
+    /// (`ai_exec::refusal`, checked again here so no caller can skip it) or the pane is gone
+    /// (`NO_SESSION`); None when it started.
     #[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
-    pub(super) fn ai_exec_start(&mut self, pane: PaneId, chat: &str, request_id: &str, command: &str) {
+    pub(super) fn ai_exec_start(&mut self, pane: PaneId, chat: &str, request_id: &str, command: &str) -> Option<Outcome> {
+        if let Some(refused) = ai_exec::refusal(command) {
+            return Some(refused);
+        }
         let (kind, ..) = self.ai_shell_of(pane);
         let ever_used = self.shell_history.as_ref().is_some_and(|h| h.ever_used());
-        let Some(p) = self.panes.get(&pane) else { return };
+        let Some(p) = self.panes.get(&pane) else { return Some(Outcome { model: super::ai_tools_app::NO_SESSION.to_string(), notice: None }) };
         let s = p.own();
         let uuid = uuid::Uuid::new_v4().to_string().to_uppercase();
         let plan = ai_exec::plan(command, kind, ever_used, s.at_prompt() == Some(true), &uuid);
@@ -62,6 +84,7 @@ impl App {
         self.user_write(pane, &plan.bytes, Write::Agent);
         // The line was submitted: nothing the AI typed earlier is staged any more.
         self.ai_staged.remove(&pane);
+        None
     }
 
     /// Cancels the command running on `pane`; its (chat, request id), answered
@@ -79,16 +102,7 @@ impl App {
         let mut out: Vec<Finished> = self.ai_exec_canceled.drain(..).map(|(c, r)| (c, r, ai_exec::canceled_outcome())).collect();
         for pane in self.ai_execs.keys().copied().collect::<Vec<_>>() {
             let Some(running) = self.ai_execs.get(&pane) else { continue };
-            let done = match self.panes.get(&pane) {
-                None => Some(ai_exec::canceled_outcome()),
-                Some(p) => match &running.path {
-                    Path::Prompt => prompt_capture(p.own(), running).map(|c| match c {
-                        Some(text) => ai_exec::output_outcome(&running.command, text),
-                        None => ai_exec::unavailable_outcome(&running.command),
-                    }),
-                    Path::Marker { uuid } => marker_capture(p.own(), running, uuid),
-                },
-            };
+            let done = capture(self.panes.get(&pane).map(|p| p.own()), running);
             if let Some(outcome) = done {
                 if let Some(r) = self.ai_execs.remove(&pane) {
                     out.push((r.chat, r.request_id, outcome));
@@ -158,5 +172,30 @@ mod tests {
         let o = ai_exec::canceled_outcome();
         assert_eq!(o.model, ai_exec::CANCELED_MODEL);
         assert_eq!(o.notice, None);
+        // A pane that closed cancels its running command, of either path.
+        for path in [Path::Prompt, Path::Marker { uuid: "U".into() }] {
+            let o = capture(None, &running(path, &s)).expect("a closed pane answers");
+            assert_eq!((o.model.as_str(), o.notice), (ai_exec::CANCELED_MODEL, None));
+        }
+    }
+
+    #[test]
+    fn marker_survives_scrollback_loss() {
+        let mut s = Screen::new(60, 3);
+        s.feed(b"C:\\> ");
+        let mut r = running(Path::Marker { uuid: "U".into() }, &s);
+        // The start line is long gone (a huge output): the command still runs.
+        r.start_line -= 100_000;
+        s.feed(b"out1\r\nout2\r\n");
+        assert!(capture(Some(&s), &r).is_none(), "the marker has not printed: keep waiting, never unavailable");
+        s.feed(b"-- FINISHED U\r\nC:\\> ");
+        let o = capture(Some(&s), &r).expect("the marker printed");
+        assert_eq!(o.notice.as_deref(), Some(ai_exec::lost_notice("dir").as_str()));
+        assert!(o.model.contains("out1") && !o.model.contains("FINISHED"), "{:?}", o.model);
+    }
+
+    #[test]
+    fn exec_start_answers_a_missing_session() {
+        assert_eq!(super::super::ai_tools_app::NO_SESSION, "Error: that session is no longer open.");
     }
 }

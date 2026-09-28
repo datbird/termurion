@@ -128,6 +128,11 @@ impl Screen {
         crate::api_buffer::above(self.term.primary_grid()) + grid as i64
     }
 
+    /// The absolute number of the oldest line the main screen still keeps.
+    pub fn oldest_abs_line(&self) -> i64 {
+        self.term.primary_grid().dropped() as i64
+    }
+
     /// The text of absolute lines `from` to `to_exclusive`, as `contentAfter` extracts it:
     /// trailing whitespace trimmed per line, lines joined with "\n", a soft-wrapped row joined
     /// to the next with nothing. None when `from` was dropped from the scrollback.

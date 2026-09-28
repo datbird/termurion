@@ -35,6 +35,17 @@ pub fn marker_suffix(kind: ShellKind, uuid: &str) -> String {
     }
 }
 
+/// The answer for an `execute_command` whose text holds a control key the allow-list refuses,
+/// None when it may go on to the check (Task 7 finding 1, ruling R12cd-2 widened). The same
+/// allow-list as `insert_text_at_cursor` (`ai_actions::has_refused_control`) plus CR and LF,
+/// so a multi-line command is checked whole; Ctrl+R, Ctrl+P, Ctrl+Y, Esc-prefixed keys and C1
+/// controls would make the shell run a history line the check never saw. Called before the
+/// check and again before any write (`App::ai_exec_start`).
+pub fn refusal(command: &str) -> Option<Outcome> {
+    crate::ai_actions::has_refused_control(command, true)
+        .then(|| Outcome { model: crate::ai_actions::LINE_END_REFUSED.to_string(), notice: Some(crate::ai_actions::LINE_END_NOTICE.to_string()) })
+}
+
 /// The bytes to type: the prompt path when shell integration was ever used and the session is
 /// at a prompt (`PS:511-516`), else the marker path.
 pub fn plan(command: &str, kind: ShellKind, ever_used: bool, at_prompt: bool, uuid: &str) -> Plan {
@@ -143,6 +154,17 @@ mod tests {
     use crate::screen::Screen;
 
     const U: &str = "U";
+
+    #[test]
+    fn exec_refuses_control_keys() {
+        for bad in ["echo\u{12}", "\u{10}", "\u{19}", "a\u{1b}.", "\u{1b}b", "x\u{9b}A", "\u{f}", "a\u{0}", "a\u{18}\u{5}"] {
+            let o = refusal(bad).unwrap_or_else(|| panic!("{bad:?} must be refused"));
+            assert_eq!((o.model.as_str(), o.notice.as_deref()), (crate::ai_actions::LINE_END_REFUSED, Some(crate::ai_actions::LINE_END_NOTICE)), "{bad:?}");
+        }
+        for ok in ["dir", "echo a\necho b", "echo a\r\necho b", "a\tb", "\u{3}", "echo \u{e9}\u{4e16}"] {
+            assert_eq!(refusal(ok), None, "{ok:?}");
+        }
+    }
 
     #[test]
     fn exec_plan_follows_shells() {
