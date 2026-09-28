@@ -9,7 +9,7 @@ use crate::ai_models::{self, ManualModel, OLLAMA_ENDPOINT, OLLAMA_PENDING};
 use crate::ai_policy;
 use crate::ai_settings::{self as ai, Api, Vendor};
 use crate::globals::Globals;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// The context window of an Ollama model that reports none (`OllamaModelDiscovery.defaultContextWindow`).
 pub const DEFAULT_CONTEXT: i64 = 32768;
@@ -130,15 +130,95 @@ impl Discovered {
     }
 }
 
-/// The manual models a request can use (`MD:163-174`): the usable configured entries in stored
-/// order, else (unless the recommended model is in use) the legacy model. 12a's `usable` drops a
-/// dynamic entry, so it yields nothing here yet; Task 9 expands it from `found`.
-pub fn manual_models(g: &Globals, catalog: &Catalog, _found: &Discovered) -> Vec<Model> {
-    let configured: Vec<Model> = ai_models::usable(&ai_models::read(g)).into_iter().map(|m| from_manual(m, catalog)).collect();
+/// The manual models a request can use (`MD:163-174`, `MD:261-289`): the configured entries in
+/// stored order, a dynamic entry expanded to the models discovered at its server, colliding
+/// dynamic names qualified; else (unless the recommended model is in use) the legacy model.
+pub fn manual_models(g: &Globals, catalog: &Catalog, found: &Discovered) -> Vec<Model> {
+    let configured: Vec<Model> = ai_models::read(g)
+        .iter()
+        .flat_map(|m| {
+            if m.dynamic_models {
+                expand_dynamic(m, found)
+            } else {
+                ai_models::usable(std::slice::from_ref(m)).into_iter().map(|m| from_manual(m, catalog)).collect()
+            }
+        })
+        .collect();
+    let built_in: Vec<String> = found.default_models().iter().map(|m| m.name.clone()).collect();
+    let configured = disambiguate(configured, &built_in);
     if !configured.is_empty() || g.bool(ai::USE_RECOMMENDED) {
         return configured;
     }
     legacy_model(g).into_iter().collect()
+}
+
+/// A dynamic Ollama entry's models (`MD:442-489`): those discovered at its URL with its headers,
+/// each carrying the headers and its tag as the wire name; only the chosen tag when the entry
+/// names one, and while that tag is not discovered a stand-in with streaming, vision and
+/// function calling so an attachment or a tool is never silently dropped.
+pub fn expand_dynamic(m: &ManualModel, found: &Discovered) -> Vec<Model> {
+    if m.url.trim().is_empty() {
+        return Vec::new();
+    }
+    let discovered: Vec<Model> = crate::ai_discovery::models_at(found, &m.url, &m.custom_headers)
+        .iter()
+        .map(|d| {
+            let mut d = d.clone();
+            d.custom_headers = m.custom_headers.clone();
+            d.wire_model_name = Some(d.name.clone());
+            d
+        })
+        .collect();
+    let selected = m.dynamic_selected_model.as_deref().unwrap_or("").trim();
+    if selected.is_empty() {
+        return discovered;
+    }
+    if let Some(d) = discovered.into_iter().find(|d| d.name == selected) {
+        return vec![d];
+    }
+    let mut stand_in = model(selected, &m.url, Api::Llama, Vendor::Llama, DEFAULT_CONTEXT, DEFAULT_CONTEXT, BTreeSet::from([Feature::Streaming, Feature::Vision, Feature::FunctionCalling]));
+    stand_in.custom_headers = m.custom_headers.clone();
+    stand_in.wire_model_name = Some(selected.to_string());
+    vec![stand_in]
+}
+
+/// Unique names for dynamic models (`MD:307-349`), which carry a wire name: one whose name
+/// clashes with another model or with a built-in default-endpoint tag (`built_in`) becomes
+/// "tag (scheme://host:port)"; one still clashing, "tag (url)", then "tag (url #2)" for a
+/// repeated URL. The wire name stays the tag; other models are never renamed.
+pub fn disambiguate(models: Vec<Model>, built_in: &[String]) -> Vec<Model> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for name in built_in.iter().collect::<BTreeSet<_>>() {
+        *counts.entry(name.clone()).or_default() += 1;
+    }
+    for m in &models {
+        *counts.entry(m.name.clone()).or_default() += 1;
+    }
+    let qualified: Vec<Model> = models
+        .into_iter()
+        .map(|mut m| {
+            if m.wire_model_name.is_some() && counts[&m.name] > 1 {
+                m.name = format!("{} ({})", effective_name(&m), crate::ai_discovery::server_label(&m.url));
+            }
+            m
+        })
+        .collect();
+    let mut again: HashMap<String, usize> = HashMap::new();
+    for m in &qualified {
+        *again.entry(m.name.clone()).or_default() += 1;
+    }
+    let mut occurrences: HashMap<String, usize> = HashMap::new();
+    qualified
+        .into_iter()
+        .map(|mut m| {
+            if m.wire_model_name.is_some() && again[&m.name] > 1 {
+                let n = occurrences.entry(m.url.clone()).or_default();
+                *n += 1;
+                m.name = if *n == 1 { format!("{} ({})", effective_name(&m), m.url) } else { format!("{} ({} #{})", effective_name(&m), m.url, n) };
+            }
+            m
+        })
+        .collect()
 }
 
 /// The stand-in while Ollama discovery is pending (`MD:399-407`), so the built-in Ollama
@@ -605,6 +685,82 @@ mod tests {
         let mut g = ollama_default();
         g.set(ai::USE_RECOMMENDED, Value::Boolean(false));
         assert!(!ollama_vendor_is_default(&g));
+    }
+
+    #[test]
+    fn dynamic_entries_follow_iterm2() {
+        let c = bundled();
+        let gpu = "http://gpu.test:11434/api/chat";
+        let auth = vec![("Authorization".to_string(), "Bearer t".to_string())];
+        let entry = |url: &str, extra: &str| format!(r#"{{name="Ollama (auto): x", url="{url}", dynamicModels=true, customHeaders=[{{name="Authorization", value="Bearer t"}}]{extra}}}"#);
+        let one = |extra: &str| ai_models::read(&globals_with(&format!("[{}]", entry(gpu, extra)))).remove(0);
+        let tags = found_at(gpu, auth.clone(), &["llama3.3", "phi4"]);
+        let all = expand_dynamic(&one(""), &tags);
+        assert_eq!(all.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["llama3.3", "phi4"]);
+        for m in &all {
+            assert_eq!(m.wire_model_name.as_deref(), Some(m.name.as_str()));
+            assert_eq!((m.url.as_str(), m.api, m.vendor, &m.custom_headers), (gpu, Api::Llama, Vendor::Llama, &auth));
+            // The gate checks the host the request goes to.
+            assert_eq!(endpoint(m).url, gpu);
+        }
+        assert_eq!(name_of(expand_dynamic(&one(r#", dynamicSelectedModel="phi4""#), &tags).pop()).as_deref(), Some("phi4"));
+        assert_eq!(expand_dynamic(&one(r#", dynamicSelectedModel="phi4""#), &tags).len(), 1);
+        let gone = expand_dynamic(&one(r#", dynamicSelectedModel=" gone ""#), &tags);
+        assert_eq!(gone.len(), 1);
+        let g0 = &gone[0];
+        assert_eq!((g0.name.as_str(), g0.url.as_str(), g0.wire_model_name.as_deref(), &g0.custom_headers), ("gone", gpu, Some("gone"), &auth));
+        assert_eq!((g0.context_window_tokens, g0.max_response_tokens, g0.api, g0.vendor), (DEFAULT_CONTEXT, DEFAULT_CONTEXT, Api::Llama, Vendor::Llama));
+        assert_eq!(g0.features, BTreeSet::from([Feature::Streaming, Feature::Vision, Feature::FunctionCalling]));
+        // Nothing discovered, or discovered with other headers: a whole-server entry has no models.
+        assert!(expand_dynamic(&one(""), &Discovered::default()).is_empty());
+        assert!(expand_dynamic(&one(""), &found_at(gpu, Vec::new(), &["llama3.3"])).is_empty());
+        let mut blank = one("");
+        blank.url = " ".into();
+        assert!(expand_dynamic(&blank, &tags).is_empty());
+
+        // Collisions are qualified by server, then by URL, then by occurrence; the wire name stays.
+        let names = |entries: &[String], found: Discovered| {
+            let g = globals_with(&format!("[{}]", entries.join(", ")));
+            manual_models(&g, c, &found).into_iter().map(|m| (m.name.clone(), effective_name(&m).to_string())).collect::<Vec<_>>()
+        };
+        let cpu = "http://cpu.test:11434/api/chat";
+        let two = |a: &str, b: &str, headers_b: Vec<(String, String)>, extra_b: &str| {
+            let mut f = found_at(a, auth.clone(), &["llama3.3", "phi4"]);
+            f.servers.extend(found_at(b, headers_b, &["llama3.3"]).servers);
+            names(&[entry(a, ""), entry(b, extra_b)], f)
+        };
+        let pair = |n: &str| (n.to_string(), "llama3.3".to_string());
+        let phi = ("phi4".to_string(), "phi4".to_string());
+        assert_eq!(two(gpu, cpu, auth.clone(), ""), [pair("llama3.3 (http://gpu.test:11434)"), phi.clone(), pair("llama3.3 (http://cpu.test:11434)")]);
+        let v1 = "http://gpu.test:11434/v1/chat/completions";
+        assert_eq!(two(gpu, v1, auth.clone(), ""), [pair(&format!("llama3.3 ({gpu})")), phi.clone(), pair(&format!("llama3.3 ({v1})"))]);
+        // The same URL with other headers is another bucket.
+        let other = vec![("Authorization".to_string(), "Bearer u".to_string())];
+        let same_url = {
+            let mut f = found_at(gpu, auth.clone(), &["llama3.3", "phi4"]);
+            f.servers.extend(found_at(gpu, other.clone(), &["llama3.3"]).servers);
+            let second = format!(r#"{{name="Ollama (auto): y", url="{gpu}", dynamicModels=true, customHeaders=[{{name="Authorization", value="Bearer u"}}]}}"#);
+            names(&[entry(gpu, ""), second], f)
+        };
+        assert_eq!(same_url, [pair(&format!("llama3.3 ({gpu})")), phi.clone(), pair(&format!("llama3.3 ({gpu} #2)"))]);
+        // A tag that clashes only with the built-in default endpoint's is qualified; the built-in
+        // keeps its clean name and resolves by it.
+        let mut f = found_at(gpu, auth.clone(), &["llama3.3", "phi4"]);
+        f.servers.extend(found(&["llama3.3"]).servers);
+        assert_eq!(names(&[entry(gpu, "")], f.clone()), [pair("llama3.3 (http://gpu.test:11434)"), phi.clone()]);
+        let g = globals_with(&format!("[{}]", entry(gpu, "")));
+        assert_eq!(named("llama3.3", &g, c, &f).map(|m| m.url), Some(OLLAMA_ENDPOINT.to_string()));
+        assert_eq!(named("llama3.3 (http://gpu.test:11434)", &g, c, &f).map(|m| m.url), Some(gpu.to_string()));
+        assert_eq!(disambiguate(Vec::new(), &["x".to_string()]), Vec::<Model>::new());
+        // A non-dynamic model is never renamed, even when it clashes.
+        let plain = fixture("llama3.3", "http://h/v1", Api::ChatCompletions);
+        assert_eq!(disambiguate(vec![plain.clone()], &["llama3.3".to_string()]), [plain]);
+
+        // `AiModel` naming an expanded model picks it, so the request and the gate see its host.
+        let mut g = manual_mode(&format!("[{}]", entry(gpu, "")));
+        g.set(ai::MODEL, Value::String("phi4".into()));
+        let m = configured(&g, c, &tags).expect("a model");
+        assert_eq!((m.name.as_str(), endpoint(&m).url.as_str()), ("phi4", gpu));
     }
 
     #[test]

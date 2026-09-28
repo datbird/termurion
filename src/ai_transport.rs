@@ -322,13 +322,14 @@ impl Reply {
 pub struct Recorded {
     replies: std::sync::Mutex<std::collections::VecDeque<Reply>>,
     requests: std::sync::Mutex<Vec<HttpRequest>>,
+    options: std::sync::Mutex<Vec<Options>>,
     cancels: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(test)]
 impl Recorded {
     pub fn new(replies: Vec<Reply>) -> Recorded {
-        Recorded { replies: std::sync::Mutex::new(replies.into()), requests: std::sync::Mutex::new(Vec::new()), cancels: Arc::default() }
+        Recorded { replies: std::sync::Mutex::new(replies.into()), requests: std::sync::Mutex::new(Vec::new()), options: std::sync::Mutex::new(Vec::new()), cancels: Arc::default() }
     }
 
     /// How many of its calls were cancelled.
@@ -339,6 +340,11 @@ impl Recorded {
     /// The requests sent so far, in order.
     pub fn requests(&self) -> Vec<HttpRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    /// The options each sent request was started with, in the same order.
+    pub fn options(&self) -> Vec<Options> {
+        self.options.lock().unwrap().clone()
     }
 }
 
@@ -366,7 +372,7 @@ impl Call for RecordedCall {
 
 #[cfg(test)]
 impl Transport for Recorded {
-    fn start(&self, request: HttpRequest, _options: Options, notify: Notify) -> Box<dyn Call> {
+    fn start(&self, request: HttpRequest, options: Options, notify: Notify) -> Box<dyn Call> {
         let events = if parse_url(&request.url).is_err() {
             invalid_url_events()
         } else {
@@ -376,6 +382,7 @@ impl Transport for Recorded {
                 body.push_str(&String::from_utf8_lossy(&reply.late));
             }
             self.requests.lock().unwrap().push(request);
+            self.options.lock().unwrap().push(options);
             events
         };
         notify();

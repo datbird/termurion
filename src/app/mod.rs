@@ -668,6 +668,11 @@ pub struct App {
     /// The one-vendor key prompts waiting to show (ruling 12e-1), and the one showing.
     ai_key_asks: VecDeque<(crate::ai_settings::Vendor, ai_app::KeyThen)>,
     ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
+    /// The discovered Ollama models (app-wide, never swapped), the transport AI requests go
+    /// through, and the refresh the settings window waits on.
+    ai_discovery: crate::ai_discovery::Cache,
+    ai_transport: Arc<dyn crate::ai_transport::Transport>,
+    ai_probe: Option<crate::ai_discovery::Ticket>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -863,6 +868,9 @@ pub fn run() {
         (None, None)
     };
     let git_worker = git_ui::GitWorker::new(Arc::new(crate::git_run_win::WinGitRun), notify.clone());
+    // Discovered Ollama models from the last run resolve at once while a refresh runs.
+    let ai_discovery = crate::ai_discovery::Cache::load(&crate::ai_discovery::default_path());
+    let ai_transport: Arc<dyn crate::ai_transport::Transport> = Arc::new(crate::ai_winhttp::WinHttp);
     let composer_worker = crate::composer_worker::Worker::new(notify.clone(), Arc::new(crate::composer_worker::RealFs));
     let mut app = App {
         host,
@@ -1135,6 +1143,9 @@ pub fn run() {
         ai_reveal: None,
         ai_key_asks: VecDeque::new(),
         ai_key_window: None,
+        ai_discovery,
+        ai_transport,
+        ai_probe: None,
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
@@ -1490,6 +1501,7 @@ impl App {
                 // Hotkeys that failed to register show in the sheet.
                 s.hotkeys.errors = self.hotkey_errors.clone();
                 s.title_providers = self.title_provider_items();
+                s.ai.found = self.ai_discovery.all();
                 match mode {
                     Mode::Settings => self.settings = Some(s),
                     Mode::Profiles => self.profiles_win = Some(s),
@@ -3054,6 +3066,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.open_ai_alert(event_loop);
         self.open_ai_key_window(event_loop);
         self.open_ai_reveal(event_loop);
+        self.ai_discovery_tick();
+        let ai_due = self.ai_discovery_due();
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -3072,7 +3086,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.tmux_events(gw, events, event_loop);
         }
         let tmux_due = [self.tick_tmux(), self.tmux_pause_tick(event_loop), self.tmux_dashboard_due()].into_iter().flatten().min();
-        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due].into_iter().flatten().min();
+        let wake = [self.save_due, find_due, spotlight, animation, sync, toast, self.attention_due, rotation, upload, paste_due, triggers, activity, idle_codes, undo_due, hotkey_due, tmux_due, status_bars, notes_due, jobs_due, quickly_due, composer_due, replay_due, pwm_due, script_due, provision_due, console_due, import_due, ai_due].into_iter().flatten().min();
         let blinks = self
             .tabs
             .get(self.active)
@@ -3204,6 +3218,8 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
                     }
+                    // Settings > General > AI's discovery requests (ruling R12ab-3).
+                    self.drain_ai_requests(event_loop);
                 }
                 other => {
                     slot.as_mut().unwrap().event(&other);

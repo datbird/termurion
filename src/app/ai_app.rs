@@ -15,7 +15,7 @@ use crate::ai_keys;
 use crate::ai_settings::Vendor;
 use crate::prompt_ui::{ConfirmResult, ConfirmWindow};
 use crate::pwm::Secret;
-use crate::settings_ai::SubTab;
+use crate::settings_ai::{AiRequest, SubTab};
 
 /// What a given or refused key continues (ruling 12e-1). 12b adds `TestConnection`, 12c
 /// `Turn(String)`, 12e `Run(u64)`, `Codecierge(String)` and `Explain`, each with its arm in
@@ -175,6 +175,59 @@ impl App {
         self.open_settings_page(event_loop, crate::settings_ui::Page::General);
         if self.settings.as_mut().is_some_and(|s| s.show_ai(sub)) {
             self.apply_edit(crate::settings_ui::Edit::GlobalsChanged);
+        }
+    }
+
+    /// Advances Ollama discovery (every loop pass; cheap when nothing is due) while AI features
+    /// are allowed: running refreshes are polled and the configured servers that are due are
+    /// asked. New models redraw every window, so open pickers rebuild, and are saved; the
+    /// settings window's refresh gets its answer (ruling R12ab-3).
+    pub(crate) fn ai_discovery_tick(&mut self) {
+        if !crate::ai_settings::allowed(&self.globals) {
+            return;
+        }
+        let configs = crate::ai_discovery::configs(&self.globals);
+        let changed = self.ai_discovery.tick(std::time::Instant::now(), &*self.ai_transport, &configs, self.notify.clone());
+        if changed {
+            self.ai_discovery.save();
+            self.redraw_all();
+            if let Some(s) = self.settings.as_mut() {
+                s.ai.found = self.ai_discovery.all();
+                s.request_redraw();
+            }
+        }
+        let Some(outcome) = self.ai_probe.and_then(|t| self.ai_discovery.finished(t)) else { return };
+        self.ai_probe = None;
+        if let Some(s) = self.settings.as_mut() {
+            s.ai.probe = Some(outcome);
+            s.request_redraw();
+        }
+    }
+
+    /// When discovery next needs a tick by itself (running refreshes wake the loop).
+    pub(super) fn ai_discovery_due(&self) -> Option<std::time::Instant> {
+        if !crate::ai_settings::allowed(&self.globals) {
+            return None;
+        }
+        self.ai_discovery.next_due(std::time::Instant::now())
+    }
+
+    /// The discovered Ollama models of the configured servers, for model resolution
+    /// (`ai_model::configured`, `named`, `economy`).
+    #[allow(dead_code)] // 12c's chat turn and 12e's features resolve models with it.
+    pub(crate) fn ai_found(&self) -> crate::ai_model::Discovered {
+        self.ai_discovery.discovered(&crate::ai_discovery::configs(&self.globals))
+    }
+
+    /// Takes the settings window's AI request after its frame and starts it (ruling R12ab-3);
+    /// the answer reaches the same window through `ai_discovery_tick`.
+    pub(crate) fn drain_ai_requests(&mut self, _event_loop: &ActiveEventLoop) {
+        let Some(request) = self.settings.as_mut().and_then(|s| s.ai.pending.take()) else { return };
+        match request {
+            AiRequest::Discover { endpoint, headers, force } => {
+                let t = self.ai_discovery.refresh(&endpoint, &headers, force, &*self.ai_transport, self.notify.clone());
+                self.ai_probe = Some(t);
+            }
         }
     }
 

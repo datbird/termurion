@@ -537,7 +537,17 @@ impl SettingsWindow {
         if let Some(g) = pick {
             self.selected = Some(g);
         }
+        // A probe or a model fetch keeps drawing: its spinner turns and its answer shows at once.
+        if self.ai.busy() {
+            self.host.request_redraw();
+        }
         edit
+    }
+
+    /// Draw again: something the window shows changed outside it (discovered Ollama models, a
+    /// discovery answer).
+    pub fn request_redraw(&self) {
+        self.host.request_redraw();
     }
 }
 

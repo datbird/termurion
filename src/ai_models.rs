@@ -290,9 +290,9 @@ pub fn sheet_models(g: &Globals) -> Vec<ManualModel> {
     legacy_model(g).into_iter().collect()
 }
 
-/// The default-model popup's manual models (`LM:163-184`, `settingsManualModels`): the usable
-/// configurations, else (when the recommended model is not in use) the legacy model. 12b adds
-/// the models a dynamic entry discovers.
+/// The usable configurations, else (when the recommended model is not in use) the legacy model:
+/// the configuration a manual default-model pick applies. The popup itself lists
+/// `ai_model::manual_models`, which also expands dynamic entries (`LM:163-184`).
 pub fn settings_manual_models(g: &Globals) -> Vec<ManualModel> {
     let configured: Vec<ManualModel> = usable(&read(g)).into_iter().cloned().collect();
     if !configured.is_empty() || g.bool(ai::USE_RECOMMENDED) {
@@ -459,6 +459,30 @@ pub fn select_manual(g: &mut Globals, m: &ManualModel) {
     g.set(ai::FEATURE_FUNCTION_CALLING, Value::Boolean(m.function_calling));
     g.set(ai::FEATURE_STREAMING, Value::Boolean(m.streaming));
     g.set(ai::VECTOR_STORE, Value::Integer(m.vector_store));
+}
+
+/// A dynamic entry's discovered model became the default (`G:2944-2970`): the model settings
+/// are copied from the resolved model, whose name is what resolution finds again.
+pub fn select_model(g: &mut Globals, m: &Model) {
+    if m.name == g.string(ai::ECONOMY_MODEL) {
+        g.set(ai::ECONOMY_MODEL, Value::String(String::new()));
+    }
+    g.set(ai::USE_RECOMMENDED, Value::Boolean(false));
+    g.set(ai::MODEL, Value::String(m.name.clone()));
+    g.set(ai::URL, Value::String(m.url.clone()));
+    g.set(ai::API, Value::Integer(m.api.raw()));
+    g.set(ai::TOKEN_LIMIT, Value::Integer(m.context_window_tokens));
+    g.set(ai::RESPONSE_TOKEN_LIMIT, Value::Integer(m.max_response_tokens));
+    for (key, feature) in [
+        (ai::FEATURE_CODE_INTERPRETER, Feature::HostedCodeInterpreter),
+        (ai::FEATURE_FILE_SEARCH, Feature::HostedFileSearch),
+        (ai::FEATURE_WEB_SEARCH, Feature::HostedWebSearch),
+        (ai::FEATURE_FUNCTION_CALLING, Feature::FunctionCalling),
+        (ai::FEATURE_STREAMING, Feature::Streaming),
+    ] {
+        g.set(key, Value::Boolean(m.features.contains(&feature)));
+    }
+    g.set(ai::VECTOR_STORE, Value::Integer(m.vector_store.raw()));
 }
 
 /// Copies the legacy global custom headers into every manual model whose own headers are
@@ -810,6 +834,10 @@ pub struct EditorForm {
     pub temperature: bool,
     pub dynamic: bool,
     pub headers: Vec<(String, String)>,
+    /// Auto-discovery's Model popup: the discovered tag chosen, "" for every installed model.
+    pub selected: String,
+    /// The Model name and API the Discover box set aside, restored when it is turned off.
+    stash: Option<(String, i64)>,
 }
 
 impl EditorForm {
@@ -821,7 +849,9 @@ impl EditorForm {
         let twin = catalog.named(&m.name);
         EditorForm {
             preset: CUSTOM_PRESET,
-            name: m.name.clone(),
+            // A dynamic entry's name is its label; the Model popup shows its choice instead
+            // (`G:1316-1325`).
+            name: if m.dynamic_models { String::new() } else { m.name.clone() },
             name_placeholder: String::new(),
             url: m.url.clone(),
             api: api.raw(),
@@ -838,6 +868,8 @@ impl EditorForm {
             temperature: m.supports_temperature.unwrap_or_else(|| twin.is_none_or(|t| t.supports_temperature)),
             dynamic: m.dynamic_models,
             headers: m.custom_headers.clone(),
+            selected: if m.dynamic_models { m.dynamic_selected_model.clone().unwrap_or_default() } else { String::new() },
+            stash: None,
         }
     }
 
@@ -853,29 +885,43 @@ impl EditorForm {
         }
     }
 
-    /// Save (`G:1545-1640`, the non-dynamic path; saving a dynamic entry is 12b's): the checks in
-    /// iTerm2's order, then the model with the base's id (a new one when it has none), the
-    /// trimmed name and URL, the boxes' values, and the headers with a name (trimmed). Keys
-    /// Settings does not know are not carried, as iTerm2 builds a new dictionary.
+    /// Save (`G:1545-1640`): the checks in iTerm2's order, then the model with the base's id (a
+    /// new one when it has none), the trimmed URL, the boxes' values, and the headers with a name
+    /// (trimmed). An auto-discovery entry needs only the URL; it is stored as "Ollama (auto):
+    /// <server>", or "<tag> (<server>)" when one discovered model is chosen, a name that must be
+    /// unique too. Other entries need a name and positive token counts, and store the trimmed
+    /// name. Keys Settings does not know are not carried, as iTerm2 builds a new dictionary.
     pub fn validate(&self, base: &ManualModel, taken: &dyn Fn(&str) -> bool) -> Result<ManualModel, String> {
-        let name = self.name.trim();
         let url = self.url.trim();
+        let dynamic = self.dynamic;
+        let name = if !dynamic {
+            self.name.trim().to_string()
+        } else if self.selected.is_empty() {
+            auto_label(url)
+        } else {
+            format!("{} ({})", self.selected, crate::ai_discovery::server_label(url))
+        };
         let context = ns_integer_value(&self.context);
         let response = ns_integer_value(&self.response);
         if url.is_empty() {
             return Err(URL_REQUIRED.to_string());
         }
-        if name.is_empty() {
+        if !dynamic && name.is_empty() {
             return Err(MODEL_REQUIRED.to_string());
         }
-        if context <= 0 {
+        if !dynamic && context <= 0 {
             return Err(CONTEXT_POSITIVE.to_string());
         }
-        if response <= 0 {
+        if !dynamic && response <= 0 {
             return Err(RESPONSE_POSITIVE.to_string());
         }
-        if taken(name) {
-            return Err(NAMES_UNIQUE.to_string());
+        if taken(&name) {
+            return Err(match (dynamic, self.selected.is_empty()) {
+                (false, _) => NAMES_UNIQUE,
+                (true, true) => AUTO_EXISTS,
+                (true, false) => MODEL_EXISTS,
+            }
+            .to_string());
         }
         let mut headers = Vec::new();
         for (n, v) in &self.headers {
@@ -893,7 +939,7 @@ impl EditorForm {
         }
         Ok(ManualModel {
             id: if base.id.is_empty() { new_id() } else { base.id.clone() },
-            name: name.to_string(),
+            name,
             url: url.to_string(),
             api: self.api,
             context_window_tokens: context,
@@ -907,11 +953,59 @@ impl EditorForm {
             vector_store: self.vector_store,
             supports_temperature: Some(self.temperature),
             configurable_thinking: Some(self.thinking),
-            dynamic_models: false,
-            dynamic_selected_model: None,
+            dynamic_models: dynamic,
+            dynamic_selected_model: dynamic.then(|| self.selected.clone()),
             custom_headers: headers,
             extra: Table::new(),
         })
+    }
+}
+
+pub const AUTO_EXISTS: &str = "There is already an auto-discover entry for this server.";
+pub const MODEL_EXISTS: &str = "There is already an entry for this model on this server.";
+
+/// A whole-server auto-discovery entry's stored name, one per server (`G:1447-1457`): a stable
+/// identity, never translated.
+pub fn auto_label(url: &str) -> String {
+    format!("Ollama (auto): {}", crate::ai_discovery::server_label(url))
+}
+
+/// The editor's Model popup in auto-discovery mode (`G:1026-1070`) as (title, value): "All
+/// installed models" (value "") then the discovered tags, a saved choice the server has not
+/// reported kept first among them; with none, one disabled item (value None).
+pub fn dynamic_popup(discovered: &[String], selected: &str) -> Vec<(String, Option<String>)> {
+    let mut names = discovered.to_vec();
+    if !selected.is_empty() && !names.iter().any(|n| n == selected) {
+        names.insert(0, selected.to_string());
+    }
+    let mut out = vec![(crate::ai_discovery::ALL_INSTALLED.to_string(), Some(String::new()))];
+    if names.is_empty() {
+        out.push((crate::ai_discovery::NO_MODELS_DISCOVERED.to_string(), None));
+    }
+    out.extend(names.into_iter().map(|n| (n.clone(), Some(n))));
+    out
+}
+
+impl EditorForm {
+    /// The person turned "Discover installed models automatically" on or off (`G:1288-1345`):
+    /// on sets the typed Model name and the API aside and pins the API to Ollama, whose native
+    /// dialect discovered models always use; off brings them back.
+    pub fn set_dynamic(&mut self, on: bool) {
+        if on && !self.dynamic {
+            self.stash = Some((std::mem::take(&mut self.name), self.api));
+            self.api = Api::Llama.raw();
+        } else if !on && self.dynamic {
+            if let Some((name, api)) = self.stash.take() {
+                self.name = name;
+                self.api = api;
+            }
+        }
+        self.dynamic = on;
+    }
+
+    /// The header rows with a name, trimmed, as Save keeps them and discovery sends them.
+    pub fn named_headers(&self) -> Vec<(String, String)> {
+        self.headers.iter().map(|(n, v)| (n.trim().to_string(), v.clone())).filter(|(n, _)| !n.is_empty()).collect()
     }
 }
 
@@ -1646,7 +1740,6 @@ mod tests {
         f.context = "12abc".into();
         f.thinking = true;
         f.temperature = false;
-        f.dynamic = true;
         f.vision = true;
         f.vector_store = 1;
         let m = f.validate(&base, &free).expect("valid");
@@ -1669,6 +1762,71 @@ mod tests {
         assert!(!copy.id.is_empty() && copy.id != b.id);
         assert_eq!((copy.url.as_str(), copy.api), (EXAMPLE, 2));
         assert_eq!(duplicate_base(&model("", "u", 1)).name, " copy", "an empty name is a string (G:3833)");
+    }
+
+    #[test]
+    fn dynamic_save_follows_iterm2() {
+        use crate::ai_discovery::{ALL_INSTALLED, NO_MODELS_DISCOVERED};
+        let cat = bundled();
+        let base = model("m", EXAMPLE, 2);
+        let free = |_: &str| false;
+        let gpu = "http://gpu.test:11434/api/chat";
+        let auto = || {
+            let mut f = EditorForm::from_model(&base, cat);
+            f.url = format!(" {gpu} ");
+            f.set_dynamic(true);
+            f
+        };
+        let f = auto();
+        assert_eq!((f.name.as_str(), f.api), ("", Api::Llama.raw()), "the Model field is set aside and the API pinned to Ollama");
+        let m = f.validate(&base, &free).expect("valid");
+        assert_eq!((m.name.as_str(), m.url.as_str()), ("Ollama (auto): http://gpu.test:11434", gpu));
+        assert_eq!((m.dynamic_models, m.dynamic_selected_model.as_deref(), m.api), (true, Some(""), Api::Llama.raw()));
+        let mut f = auto();
+        f.selected = "phi4".into();
+        let m = f.validate(&base, &free).expect("valid");
+        assert_eq!((m.name.as_str(), m.dynamic_selected_model.as_deref()), ("phi4 (http://gpu.test:11434)", Some("phi4")));
+
+        // Only the URL is required: the model, context and response checks are skipped.
+        let mut f = auto();
+        f.context = "0".into();
+        f.response = "x".into();
+        assert!(f.validate(&base, &free).is_ok());
+        let mut f = auto();
+        f.url = " \n".into();
+        assert_eq!(f.validate(&base, &free), Err(URL_REQUIRED.to_string()));
+        let taken = |n: &str| n == "Ollama (auto): http://gpu.test:11434" || n == "phi4 (http://gpu.test:11434)";
+        assert_eq!(auto().validate(&base, &taken), Err("There is already an auto-discover entry for this server.".to_string()));
+        let mut f = auto();
+        f.selected = "phi4".into();
+        assert_eq!(f.validate(&base, &taken), Err("There is already an entry for this model on this server.".to_string()));
+        let mut f = auto();
+        f.headers = vec![("Bad Name".into(), "v".into())];
+        assert_eq!(f.validate(&base, &free), Err(invalid_header_name("Bad Name")));
+
+        // Turning Discover off brings back the typed name and API.
+        let mut f = EditorForm::from_model(&base, cat);
+        f.name = "typed".into();
+        f.set_dynamic(true);
+        f.set_dynamic(false);
+        assert_eq!((f.name.as_str(), f.api, f.dynamic), ("typed", 2, false));
+        // A saved dynamic entry opens with its choice and an empty Model field.
+        let mut saved = base.clone();
+        saved.name = "phi4 (http://gpu.test:11434)".into();
+        saved.dynamic_models = true;
+        saved.dynamic_selected_model = Some("phi4".into());
+        let f = EditorForm::from_model(&saved, cat);
+        assert_eq!((f.name.as_str(), f.selected.as_str(), f.dynamic), ("", "phi4", true));
+
+        assert_eq!(auto_label("localhost:11434"), "Ollama (auto): http://localhost:11434");
+        let item = |t: &str, v: Option<&str>| (t.to_string(), v.map(str::to_string));
+        let tags = ["llama3.3".to_string(), "phi4".to_string()];
+        assert_eq!(dynamic_popup(&tags, ""), [item(ALL_INSTALLED, Some("")), item("llama3.3", Some("llama3.3")), item("phi4", Some("phi4"))]);
+        assert_eq!(dynamic_popup(&[], ""), [item(ALL_INSTALLED, Some("")), item(NO_MODELS_DISCOVERED, None)]);
+        assert_eq!(dynamic_popup(&tags[1..], "gone"), [item(ALL_INSTALLED, Some("")), item("gone", Some("gone")), item("phi4", Some("phi4"))], "a saved choice stays selectable");
+        let mut f = auto();
+        f.headers = vec![(" X-A ".into(), "1".into()), (" ".into(), "2".into())];
+        assert_eq!(f.named_headers(), [("X-A".to_string(), "1".to_string())]);
     }
 
     #[test]
