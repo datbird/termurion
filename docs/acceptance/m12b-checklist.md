@@ -8,13 +8,15 @@ Setup: AI enabled in Settings as 12a leaves it ("Enable generative AI features" 
 for at least one cloud vendor (OpenAI, Anthropic, Gemini or DeepSeek), stored with Set API Key…; mark
 a vendor's rows "not applicable" when no key for it is at hand. Ollama installed and running with at
 least one model pulled (for example `ollama pull llama3.2`) for the Ollama rows. Fiddler Classic
-listening on 127.0.0.1:8888 with "Decrypt HTTPS traffic" off (mitmproxy in regular mode on a port of
-your choice works too). The test server below, saved as `ai-test-server.ps1`, stands in for a local
+listening on 127.0.0.1:8888 with "Decrypt HTTPS traffic" off (a proxy that decrypts HTTPS fails every
+row through it, because WinHTTP rejects its certificate). The test server below, saved as `ai-test-server.ps1`, stands in for a local
 OpenAI-compatible server (stop LM Studio first if it uses port 1234); run it with
 `powershell -ExecutionPolicy Bypass -File ai-test-server.ps1 -Port 1234 -Mode ok` and close its
 window to stop it. Modes: `ok` answers at once, `auth` answers 401 unless the request carries
-`Authorization: Bearer sk-local-test`, `stall` never answers, `slow` sends the answer in ten pieces
-two seconds apart.
+`Authorization: Bearer sk-local-test`, `stall` waits 20 seconds before it answers (longer than row
+14's 5 second timeout; the server takes the next request only after that, so wait 20 seconds
+between two presses, or close and restart it), `slow` sends the answer in ten pieces two seconds
+apart, `huge` answers with 65 MiB.
 
 ```
 param([int]$Port = 1234, [string]$Mode = 'ok')
@@ -45,7 +47,8 @@ while ($true) {
       $body = '{"error":{"message":"Unauthorized"}}'
       $status = '401 Unauthorized'
     }
-    if ($Mode -eq 'stall') { Start-Sleep -Seconds 120 }
+    if ($Mode -eq 'huge') { $body = 'x' * 68157440 }
+    if ($Mode -eq 'stall') { Start-Sleep -Seconds 20 }
     $head = [System.Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $status`r`nContent-Type: application/json`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
     $stream.Write($head, 0, $head.Length)
     $stream.Flush()
@@ -76,7 +79,7 @@ line pass or fail.
 | # | Check | Result |
 |---|---|---|
 | 1 | In the editor choose the Preset `gpt-5-mini` (OpenAI Responses at `https://api.openai.com/v1/responses`) and press Test Connection. The first time: "Send AI Requests to OpenAI?" naming api.openai.com; Allow, then Test Connection again. The button reads "Testing…" with a spinner and is disabled, then "Connection Succeeded" with "The connection succeeded. The model responded normally." | |
-| 2 | With the consent not yet given for a host (for example after Forget Allowed Hosts), press Test Connection twice before answering the consent alert: the alert shows once, not twice in a row. | |
+| 2 | With the consent not yet given for a host (for example after Forget Allowed Hosts), press Test Connection twice before answering the consent alert: the alert shows once, not twice in a row, and the second press brings it to the front if another window covered it. | |
 | 3 | Preset Custom, URL `https://api.openai.com/v1/chat/completions`, API "Chat Completions", model `gpt-4o-mini`: Test Connection succeeds. | |
 | 4 | Preset `claude-haiku-4-5` (Anthropic): Test Connection succeeds after the consent for api.anthropic.com. | |
 | 5 | Preset `gemini-2.5-flash` (Google Gemini, URL `https://generativelanguage.googleapis.com/v1beta/models/{{MODEL}}`): Test Connection succeeds after the consent for generativelanguage.googleapis.com. | |
@@ -102,8 +105,8 @@ line pass or fail.
 | 20 | In the editor, Preset "Ollama (native)", then Fetch Models: a small list of the installed model names; click one and the Model field takes it. Press Escape on the list instead: it closes and nothing changes. Cancel the editor. | |
 | 21 | With Ollama stopped, Fetch Models: "Could Not Fetch Models" with "Could not reach Ollama at localhost: Could not connect to the server." Start Ollama again. | |
 | 22 | Preset "Ollama (auto-discover)": the button reads Refresh Models. Press it: "Models Refreshed" with "Found N installed models. Choose one from the Model popup, or “All installed models” to expose every one." (N the count). Choose "All installed models" and Save. With Ollama stopped, Refresh Models shows "Could Not Reach Server" with "Could not reach the Ollama server to list its models. Check that it is running and the URL is correct." | |
-| 23 | After the Save in row 22, the AI Model popup lists one item per installed model, `Manual: <tag> \u{2014} Ollama` (an em dash between the two). Saving a second auto-discover entry for the same server is refused with "There is already an auto-discover entry for this server." | |
-| 24 | Start a second Ollama server on another port (`$env:OLLAMA_HOST='127.0.0.1:11435'; ollama serve` in a separate PowerShell window) and add an auto-discover entry at `http://127.0.0.1:11435/api/chat`. The AI Model popup now names each shared tag with its server, for example `Manual: llama3.2 (http://localhost:11434) \u{2014} Ollama` and `Manual: llama3.2 (http://127.0.0.1:11435) \u{2014} Ollama`. | |
+| 23 | After the Save in row 22, the AI Model popup lists one item per installed model, `Manual: <tag> (em dash) Ollama`, with an em dash where "(em dash)" stands. Saving a second auto-discover entry for the same server is refused with "There is already an auto-discover entry for this server." | |
+| 24 | Start a second Ollama server on another port (`$env:OLLAMA_HOST='127.0.0.1:11435'; ollama serve` in a separate PowerShell window) and add an auto-discover entry at `http://127.0.0.1:11435/api/chat`. The AI Model popup now names each shared tag with its server, for example `Manual: llama3.2 (http://localhost:11434) (em dash) Ollama` and `Manual: llama3.2 (http://127.0.0.1:11435) (em dash) Ollama`. | |
 | 25 | Test Connection on the Ollama (native) entry, and on the auto-discover entry with a model chosen in its Model popup: each asks consent for its host once, then succeeds. | |
 
 ## Proxy and logging
@@ -136,3 +139,4 @@ line pass or fail.
 | 39 | The Fetch Models names list is a small list over the editor (Escape or a click outside closes it), where iTerm2 pops a menu under the button; the probe sheet's spinner is round. | |
 | 40 | Closing the Settings window while "Contacting Ollama…" shows keeps Ollama as the chosen model even if the server then turns out to be down (iTerm2's sheet cannot be left that way). | |
 | 41 | File jobs, when 12c runs them, go to OpenAI only for a model whose own host is api.openai.com; any other model fails with "Files can be sent to OpenAI only with a model at api.openai.com, so that another server’s key or headers never reach OpenAI." before any request, and the App Review key `placeholder` never uploads a file (iTerm2 sends both). | |
+| 42 | Test server in mode `huge` on port 1235 and the entry from row 14: Test Connection shows "Connection Failed" with "HTTP request failed with resource exceeds maximum size" (every answer is capped at 64 MiB; iTerm2 has no cap), and Tandem's memory in Task Manager does not keep growing. | |

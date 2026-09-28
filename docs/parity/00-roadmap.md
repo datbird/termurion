@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 324 | 76 | 423 |
-| `03-features-and-menus.md` | 644 | 518 | 44 | 82 |
-| Total | 1,781 | 1,015 | 242 | 524 |
+| `02-global-settings.md` | 823 | 322 | 78 | 423 |
+| `03-features-and-menus.md` | 644 | 517 | 45 | 82 |
+| Total | 1,781 | 1,012 | 245 | 524 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -258,11 +258,13 @@ Early O1 and legacy Completions), Anthropic, Gemini, DeepSeek and Ollama's nativ
 iTerm2 builds its request, sent over WinHTTP with the system proxy and TLS (no curl, no new crate),
 and streamed as the bytes arrive, with iTerm2's error texts and token arithmetic. A localhost or
 private host never gets the vendor key, the placeholder key "placeholder" contacts nothing, redirects
-are followed only to the host consent was given for, and the raw wire log replaces every key and every
-header value but known non-secret ones with a fingerprint. Ollama discovery fills the Regular and Budget pickers and expands auto-discover entries
-in the AI Model popup; Manage AI Models… gains Fetch Models, Refresh Models and Test Connection.
-OpenAI file uploads and vector stores are built for 12c, only for models at api.openai.com. The chat
-itself, which is the first to send a conversation, comes with 12c. Every kept quirk is listed in
+are followed only to the host consent was given for, every answer is capped at 64 MiB, and the raw
+wire log replaces every key and every header value but known non-secret ones with a fingerprint.
+Ollama discovery fills the Regular and Budget pickers and expands auto-discover entries in the AI
+Model popup; Manage AI Models… gains Fetch Models, Refresh Models and Test Connection. OpenAI file
+uploads and vector stores are built for 12c, only for models at api.openai.com. The chat itself,
+which is the first to send a conversation, comes with 12c, so Streaming responses and the two AI
+logging rows read partial until then. Every kept quirk is listed in
 `docs/acceptance/m12b-checklist.md` and ruled on in `docs/superpowers/rulings/m12b-rulings.txt`.
 
 ## Order
