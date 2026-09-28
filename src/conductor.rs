@@ -4,7 +4,8 @@
 //! `take_writes` pattern).
 
 use crate::ssh_args::{Identity, ParsedArgs};
-use crate::ssh_inject::Payload;
+use crate::ssh_inject::{expand_local_tilde, injection_payloads, last_component, modify_remote, shell_supports_injection, tarballs, tweak_destination, Payload, Source, INTEGRATION_SUBDIR};
+use std::path::Path;
 use base64::Engine;
 
 fn b64(bytes: &[u8]) -> String {
@@ -270,14 +271,16 @@ pub struct Setup {
     pub parsed: ParsedArgs,
 }
 
-/// How a command's results are handled (`CD:1205-1221`). Task 6 adds `GetShell` and
-/// `CheckForPython`; 14c adds handlers holding an `f64`, so no `Eq`.
+/// How a command's results are handled (`CD:1205-1221`). The reply lines a handler keeps
+/// are its own; 14c adds handlers holding an `f64`, so no `Eq`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Handler {
     FailIfNonzero,
     FireAndForget,
     NonFramerLogin,
     WriteOnSuccess(String),
+    GetShell(Vec<String>),
+    CheckForPython(Vec<String>),
 }
 
 /// A command with its handler (ExecutionContext, `CD:1159-1164`).
@@ -336,6 +339,25 @@ pub fn python_status(status: u8) -> String {
     format!("Status {status} when running python code")
 }
 
+/// The oldest remote python that runs framer.py (`CD:2077-2078`).
+pub const MIN_PYTHON: (u32, u32) = (3, 7);
+
+/// The version checkForPython reads from pythonversion's reply (`CD:2143-2151`): the regex
+/// `^Python ([0-9]\.[0-9][0-9]*)` at the start of the text, a minor too big to count as 0.
+pub fn python_version(output: &str) -> Option<(u32, u32)> {
+    let re = regex::Regex::new(r"^Python ([0-9])\.([0-9][0-9]*)").ok()?;
+    let groups = re.captures(output)?;
+    Some((groups[1].parse().unwrap_or(0), groups[2].parse().unwrap_or(0)))
+}
+
+/// Where getshell's reply starts (iTerm2 bug B15 guarded): conductor.sh's guess_login_shell
+/// can print a shell error ("sh: 160: using_passwd: not found") before the shell, so the
+/// first line that starts a pair of absolute paths (shell, then home) is taken; with no such
+/// pair, line 0 as iTerm2 (conductor.sh's fallback shell is the bare "sh").
+fn shell_line(parts: &[&str]) -> usize {
+    parts.windows(2).position(|pair| pair[0].starts_with('/') && pair[1].starts_with('/')).unwrap_or(0)
+}
+
 /// One conductor.sh (or framer.py) on the other side of an ssh (`CD`).
 pub struct Conductor {
     pub setup: Setup,
@@ -390,6 +412,96 @@ impl Conductor {
             transition: false,
             #[cfg(test)]
             updates: Vec::new(),
+        }
+    }
+
+    /// add(path:destination:) (`CD:1590-1604`): a Files to Copy entry, its local `~` being
+    /// `local_home`.
+    pub fn add_path(&mut self, path: &str, destination: &str, local_home: &Path) {
+        self.payloads.push(Payload { source: Source::Disk(expand_local_tilde(path, local_home)), destination: tweak_destination(destination) });
+    }
+
+    /// start (`CD:1606-1611`): the line prefix conductor.sh reads first, then getshell.
+    pub fn start(&mut self) {
+        if !self.line_prefix.is_empty() {
+            let prefix = self.line_prefix.clone();
+            self.write(&prefix);
+        }
+        self.send(Command::GetShell, Handler::GetShell(Vec::new()), false);
+    }
+
+    /// The end of getshell's reply (`CD:2303-2369` without the it2 proxy, ruling 3).
+    fn did_get_shell(&mut self, lines: &[String]) {
+        let joined = lines.concat();
+        let all: Vec<&str> = joined.split('\n').map(|p| p.trim_matches([' ', '\t'])).collect();
+        let parts = &all[shell_line(&all)..];
+        let command_args = self.setup.parsed.command_args.clone();
+        let shell = command_args.first().cloned().unwrap_or_else(|| parts[0].to_string());
+        let home = parts.get(1).copied().unwrap_or("");
+        let version = parts.get(2..).map(|v| v.join("\n")).unwrap_or_default();
+        if !shell.is_empty() && !home.is_empty() && self.setup.inject && shell_supports_injection(last_component(&shell), &version) {
+            let dir = format!("{home}/{INTEGRATION_SUBDIR}");
+            let argv = command_args.get(1..).unwrap_or_default();
+            let (vars, mut args) = modify_remote(&dir, home, &self.setup.vars_to_send, &shell, argv);
+            if let Some(first) = command_args.first() {
+                // An explicit command keeps its first word as argv[0].
+                args.insert(0, first.clone());
+            } else if !args.is_empty() {
+                // bash's --posix: the shell must be named for its arguments to count.
+                args.insert(0, shell.clone());
+            }
+            self.modified_vars = Some(vars);
+            self.modified_command_args = Some(args);
+            self.payloads.extend(injection_payloads());
+        }
+        self.shell = Some(shell);
+        self.effects.push(Effect::StateChanged);
+        self.did_finish_get_shell();
+    }
+
+    /// didFinishGetShell (`CD:1780-1787`, `CD:2014-2026`, `CD:1942-1951`): each setenv, each
+    /// tarball, the directory, then the python check. Inside a handler these only queue.
+    fn did_finish_get_shell(&mut self) {
+        let vars = self.modified_vars.clone().unwrap_or_else(|| self.setup.vars_to_send.clone());
+        for (key, value) in vars {
+            self.send(Command::Setenv { key, value }, Handler::FailIfNonzero, false);
+        }
+        for (data, dest) in tarballs(&self.payloads) {
+            self.send(Command::Write { data, dest }, Handler::FailIfNonzero, false);
+        }
+        if let Some(dir) = self.setup.initial_directory.clone() {
+            self.send(Command::Cd(dir), Handler::FailIfNonzero, false);
+        }
+        self.send(Command::PythonVersion, Handler::CheckForPython(Vec::new()), false);
+    }
+
+    /// The end of pythonversion's reply (`CD:2130-2161`): a usable python is ready; anything
+    /// else starts the login shell (a pending jump's eval is 14c).
+    fn did_check_for_python(&mut self, lines: &[String], status: u8) {
+        match python_version(&lines.join("\n")) {
+            Some(version) if status == 0 && version >= MIN_PYTHON => self.python_ready(),
+            _ => self.exec_login_shell(),
+        }
+    }
+
+    /// A remote python of `MIN_PYTHON` or later. 14c Task 1 replaces the login shell here
+    /// with execFramer (ruling 14b-6).
+    fn python_ready(&mut self) {
+        self.python_ok = true;
+        self.exec_login_shell();
+    }
+
+    /// execLoginShell (`CD:2028-2038`): input stops queueing in the connecting pane, then an
+    /// empty injected argv or no command starts the login shell, else the command runs. A
+    /// non-empty injected argv is dropped (iTerm2 bug B7, kept).
+    pub fn exec_login_shell(&mut self) {
+        self.effects.push(Effect::StopQueueingInput);
+        let command_args = &self.setup.parsed.command_args;
+        if self.modified_command_args.as_ref().is_some_and(Vec::is_empty) || command_args.is_empty() {
+            self.send(Command::ExecLoginShell(Vec::new()), Handler::NonFramerLogin, false);
+        } else {
+            let command = command_args.join(" ");
+            self.send(Command::Run(command), Handler::FailIfNonzero, false);
         }
     }
 
@@ -650,12 +762,32 @@ impl Conductor {
         self.effects.push(Effect::Abort(reason.to_string()));
     }
 
+    /// The in-flight command's reply lines, kept by its handler (iTerm2's StringArray is a
+    /// reference; the context the handler is given is a copy).
+    fn collect_line(&mut self, line: String) {
+        if let State::Executing(context, _) = &mut self.state {
+            if let Handler::GetShell(lines) | Handler::CheckForPython(lines) = &mut context.handler {
+                lines.push(line);
+            }
+        }
+    }
+
     /// update(executionContext:result:) (`CD:2106-2396`) for the 14b handlers.
     fn update(&mut self, context: &Context, result: Partial) {
         #[cfg(test)]
         self.updates.push((context.command.clone(), result.clone(), self.state.clone()));
-        let Partial::End(status) = result else {
-            return;
+        let status = match result {
+            Partial::End(status) => status,
+            Partial::Line(line) => {
+                self.collect_line(line);
+                return;
+            }
+            Partial::Abort | Partial::Canceled => {
+                if matches!(context.handler, Handler::CheckForPython(_)) {
+                    self.exec_login_shell();
+                }
+                return;
+            }
         };
         match &context.handler {
             Handler::FireAndForget => {}
@@ -678,6 +810,14 @@ impl Conductor {
                     self.fail(&python_status(status));
                 }
             }
+            // A non-zero status stalls setup with nothing queued (iTerm2 bug B6, kept;
+            // unreachable because conductor.sh always reports 0, B1).
+            Handler::GetShell(lines) => {
+                if status == 0 {
+                    self.did_get_shell(lines);
+                }
+            }
+            Handler::CheckForPython(lines) => self.did_check_for_python(lines, status),
         }
     }
 }
@@ -1299,5 +1439,324 @@ mod tests {
         let effects = c.take_effects();
         assert_eq!(effects.last(), Some(&Effect::Abort("setenv TOKEN: Unepected status 1".into())));
         assert!(!format!("{effects:?}").contains("s3cret"));
+    }
+
+    fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
+        v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    /// One reply: begin, each line, then the end with `status`.
+    fn reply(c: &mut Conductor, lines: &[&str], status: u8) {
+        c.handle_begin("1", 0);
+        for line in lines {
+            c.handle_line(line, 0);
+        }
+        c.handle_end("1", "r", status, 0);
+    }
+
+    /// A started conductor, its start writes taken.
+    fn started(setup: Setup) -> Conductor {
+        let mut c = Conductor::new(setup, None, "U");
+        c.start();
+        c.take_effects();
+        c
+    }
+
+    fn with_command(setup: Setup, command: &[&str]) -> Setup {
+        Setup { parsed: ParsedArgs { command_args: s(command), ..ParsedArgs::default() }, ..setup }
+    }
+
+    fn zsh_injected() -> Setup {
+        Setup { inject: true, ..setup("A") }
+    }
+
+    /// The remote home as the injection used it.
+    fn home_seen(c: &Conductor) -> Option<String> {
+        let vars = c.modified_vars.as_ref()?;
+        let (_, dir) = vars.iter().find(|(k, _)| k == "ZDOTDIR")?;
+        dir.strip_suffix("/.iterm2/shell-integration").map(str::to_string)
+    }
+
+    #[test]
+    fn start_follows_iterm2() {
+        let mut c = Conductor::new(setup("A"), None, "U");
+        c.start();
+        assert_eq!(c.take_effects(), [Effect::Write(b"\x03U\n".to_vec()), Effect::Write(sent(&Command::GetShell))]);
+        assert_eq!(c.in_flight(), Some(&Command::GetShell));
+    }
+
+    #[test]
+    fn getshell_follows_iterm2() {
+        let base = Setup { vars_to_send: pairs(&[("FOO", "bar"), ("BAZ", "x y")]), initial_directory: Some("/srv".into()), inject: false, ..setup("A") };
+        let mut c = started(base.clone());
+        reply(&mut c, &["/bin/bash\n/home/u\nGNU bash, version 5.2"], 0);
+        assert_eq!(c.shell.as_deref(), Some("/bin/bash"));
+        let foo = Command::Setenv { key: "FOO".into(), value: "bar".into() };
+        assert_eq!(c.take_effects(), [Effect::StateChanged, Effect::Write(sent(&foo))]);
+        // The rest were queued inside the handler; the guard sends them one at a time.
+        let baz = Command::Setenv { key: "BAZ".into(), value: "x y".into() };
+        assert_eq!(baz.string_value(), "setenv BAZ $'x y'");
+        for next in [baz, cd("/srv"), Command::PythonVersion] {
+            reply(&mut c, &[], 0);
+            assert_eq!(c.take_effects(), [Effect::Write(sent(&next))]);
+        }
+
+        // Lines are joined with nothing between them (CD:2323-2325).
+        let mut c = started(setup("A"));
+        reply(&mut c, &["/bin/sh\n/ho", "me/u\n"], 0);
+        assert_eq!(c.shell.as_deref(), Some("/bin/sh"));
+        let mut c = started(zsh_injected());
+        reply(&mut c, &["/bin/zsh\n/ho", "me/u\n"], 0);
+        assert_eq!(home_seen(&c).as_deref(), Some("/home/u"));
+
+        // Spaces and tabs are trimmed.
+        let mut c = started(setup("A"));
+        reply(&mut c, &[" /bin/sh \n/home/u"], 0);
+        assert_eq!(c.shell.as_deref(), Some("/bin/sh"));
+        let mut c = started(zsh_injected());
+        reply(&mut c, &[" /bin/zsh \n\t/home/u "], 0);
+        assert_eq!((c.shell.as_deref(), home_seen(&c).as_deref()), (Some("/bin/zsh"), Some("/home/u")));
+
+        // An explicit command names the shell whatever line 0 says (surprise 17).
+        let mut c = started(with_command(setup("A"), &["/usr/local/bin/zsh"]));
+        reply(&mut c, &["/bin/bash\n/home/u"], 0);
+        assert_eq!(c.shell.as_deref(), Some("/usr/local/bin/zsh"));
+
+        // A non-zero status sends nothing further (iTerm2 bug B6, unreachable because of B1).
+        let mut c = started(base);
+        reply(&mut c, &["/bin/bash\n/home/u"], 1);
+        assert!(c.take_effects().is_empty());
+        assert_eq!((c.state(), c.shell.as_deref()), (&State::Ground, None));
+    }
+
+    #[test]
+    fn getshell_skips_error_lines() {
+        // iTerm2 bug B15: conductor.sh calls an undefined using_passwd, and the shell's error
+        // comes first in getshell's reply; Tandem takes the first line that starts a shell and
+        // home pair of absolute paths.
+        let mut c = started(zsh_injected());
+        reply(&mut c, &["sh: 160: using_passwd: not found\n/bin/zsh\n/home/user\n"], 0);
+        assert_eq!((c.shell.as_deref(), home_seen(&c).as_deref()), (Some("/bin/zsh"), Some("/home/user")));
+
+        // conductor.sh's own fallback "sh" is not an error line.
+        let mut c = started(setup("A"));
+        reply(&mut c, &["sh\n/home/u\nGNU bash, version 5.2"], 0);
+        assert_eq!(c.shell.as_deref(), Some("sh"));
+        // With no pair, line 0 is the shell, as iTerm2.
+        let mut c = started(setup("A"));
+        reply(&mut c, &["sh: 160: using_passwd: not found\nsh\n/home/u"], 0);
+        assert_eq!(c.shell.as_deref(), Some("sh: 160: using_passwd: not found"));
+
+        // The real recording, through the parser.
+        let recorded = include_bytes!("../tests/fixtures/ssh/level1-nopython.bin");
+        let start = b"\x1bP2000p";
+        assert!(recorded.starts_with(start));
+        let mut parser = crate::conductor_parser::Parser::new("D");
+        let mut c = started(Setup { vars_to_send: pairs(&[("FOO", "bar")]), ..setup("A") });
+        for token in parser.feed(&recorded[start.len()..]).tokens {
+            use crate::conductor_parser::Token;
+            match token {
+                Token::Begin(id) => c.handle_begin(&id, 0),
+                Token::Line(line) => c.handle_line(&line, 0),
+                Token::End { id, status, kind } => {
+                    c.handle_end(&id, &kind, status, 0);
+                    break;
+                }
+                Token::Init(_) | Token::Unhook => {}
+            }
+        }
+        assert_eq!(c.shell.as_deref(), Some("/bin/sh"));
+        let foo = Command::Setenv { key: "FOO".into(), value: "bar".into() };
+        assert_eq!(c.take_effects(), [Effect::StateChanged, Effect::Write(sent(&foo))]);
+    }
+
+    #[test]
+    fn python_rule_follows_iterm2() {
+        assert_eq!(MIN_PYTHON, (3, 7));
+        assert_eq!(python_version("Python 3.6.9"), Some((3, 6)));
+        assert_eq!(python_version("Python 3.10.4"), Some((3, 10)));
+        assert_eq!(python_version("Python 4.0"), Some((4, 0)));
+        assert_eq!(python_version("Python 2.7.18"), Some((2, 7)));
+        assert_eq!(python_version(""), None);
+        assert_eq!(python_version("python 3.9"), None);
+        assert_eq!(python_version("x\nPython 3.9"), None, "^ is the start of the text");
+
+        let login = Command::ExecLoginShell(vec![]);
+        // Reaches pythonversion with nothing else queued.
+        let at_python = || {
+            let mut c = started(setup("A"));
+            reply(&mut c, &["/bin/sh\n/home/u"], 0);
+            c.take_effects();
+            assert_eq!(c.in_flight(), Some(&Command::PythonVersion));
+            c
+        };
+        let goes_to_login = |c: &mut Conductor, why: &str| {
+            assert_eq!(c.take_effects(), [Effect::StopQueueingInput, Effect::Write(sent(&login))], "{why}");
+            assert!(!c.python_ok, "{why}");
+        };
+
+        let mut c = at_python();
+        reply(&mut c, &["Python 3.6.9"], 0);
+        goes_to_login(&mut c, "3.6");
+        let mut c = at_python();
+        reply(&mut c, &["Python 3.12.1"], 1);
+        goes_to_login(&mut c, "status 1");
+        let mut c = at_python();
+        reply(&mut c, &[], 0);
+        goes_to_login(&mut c, "no line");
+
+        // Until 14c Task 1 adds execFramer, a usable python also goes to the login shell.
+        for ok in ["Python 3.12.1", "Python 3.7"] {
+            let mut c = at_python();
+            reply(&mut c, &[ok], 0);
+            assert!(c.python_ok, "{ok}");
+            assert_eq!(c.take_effects(), [Effect::StopQueueingInput, Effect::Write(sent(&login))], "{ok}");
+        }
+
+        // Lines are joined with "\n" before the regex (CD:2143-2145).
+        let mut c = at_python();
+        reply(&mut c, &["Python 3.", "9"], 0);
+        assert!(!c.python_ok, "\"Python 3.\\n9\" has no minor digit");
+        let mut c = at_python();
+        reply(&mut c, &["Python 3.9", "junk"], 0);
+        assert!(c.python_ok);
+
+        // An abort goes to the login shell too; unhooked, it stays queued.
+        let mut c = at_python();
+        c.handle_unhook();
+        assert_eq!(c.take_effects(), [Effect::StopQueueingInput]);
+        assert_eq!(c.queue.iter().map(|q| q.command.clone()).collect::<Vec<_>>(), [login.clone()]);
+    }
+
+    #[test]
+    fn exec_login_shell_follows_iterm2() {
+        let run = |setup: Setup, modified: Option<Vec<String>>| {
+            let mut c = Conductor::new(setup, None, "U");
+            c.modified_command_args = modified;
+            c.exec_login_shell();
+            let effects = c.take_effects();
+            let handler = c.in_flight().and_then(|_| match c.state() {
+                State::WillExecute(v) => Some(v[0].handler.clone()),
+                _ => None,
+            });
+            (effects, c.in_flight().cloned(), handler)
+        };
+        let login = Command::ExecLoginShell(vec![]);
+        for modified in [None, Some(vec![]), Some(s(&["/bin/bash", "--posix"]))] {
+            let (effects, cmd, handler) = run(setup("A"), modified.clone());
+            assert_eq!(effects, [Effect::StopQueueingInput, Effect::Write(sent(&login))], "{modified:?}");
+            assert_eq!((cmd, handler), (Some(login.clone()), Some(Handler::NonFramerLogin)), "{modified:?}");
+        }
+        let (effects, cmd, handler) = run(with_command(setup("A"), &["top"]), None);
+        let top = Command::Run("top".into());
+        assert_eq!(effects, [Effect::StopQueueingInput, Effect::Write(sent(&top))]);
+        assert_eq!((cmd, handler), (Some(top), Some(Handler::FailIfNonzero)));
+        let (_, cmd, _) = run(with_command(setup("A"), &["ls", "-l"]), None);
+        assert_eq!(cmd, Some(Command::Run("ls -l".into())));
+        // An empty injected argv wins over the command (CD:2030-2032).
+        let (_, cmd, _) = run(with_command(setup("A"), &["top"]), Some(vec![]));
+        assert_eq!(cmd, Some(login));
+    }
+
+    /// The commands written from now on, answering each with an empty reply and status 0
+    /// `replies` times; a write shows its destination only.
+    fn commands_sent(c: &mut Conductor, replies: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        for i in 0..=replies {
+            for e in c.take_effects() {
+                let Effect::Write(bytes) = e else { continue };
+                let text = String::from_utf8(bytes).unwrap();
+                let body: String = text.lines().filter_map(|l| l.strip_prefix("\u{3}U")).collect();
+                let decoded = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(body).unwrap()).unwrap();
+                out.push(match decoded.strip_prefix("write ") {
+                    Some(rest) => format!("write {}", rest.split(' ').nth(1).unwrap()),
+                    None => decoded,
+                });
+            }
+            if i < replies {
+                reply(c, &[], 0);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn injection_branch_follows_iterm2() {
+        let base = Setup { vars_to_send: pairs(&[("FOO", "bar")]), inject: true, ..setup("A") };
+        let mut c = started(base.clone());
+        reply(&mut c, &["/usr/bin/zsh\n/home/u\nzsh 5.9"], 0);
+        let want_vars = pairs(&[("FOO", "bar"), ("ZDOTDIR", "/home/u/.iterm2/shell-integration"), ("ITERM_INJECT_SHELL_INTEGRATION", "1")]);
+        assert_eq!(c.modified_vars.as_ref(), Some(&want_vars));
+        assert_eq!(c.modified_command_args, Some(vec![]));
+        assert!(!format!("{:?}", c.modified_vars).contains("IT2_SOCK") && !format!("{:?}", c.modified_vars).contains("IT2_NONCE"), "no it2 proxy (ruling 3)");
+        assert_eq!(
+            commands_sent(&mut c, 6),
+            [
+                "setenv FOO bar",
+                "setenv ZDOTDIR /home/u/.iterm2/shell-integration",
+                "setenv ITERM_INJECT_SHELL_INTEGRATION 1",
+                "write /$HOME/.iterm2/shell-integration",
+                "write /$HOME/.iterm2/shell-integration/fish/vendor_conf.d",
+                "pythonversion",
+                "exec_login_shell",
+            ]
+        );
+
+        // bash: --posix goes in and the shell becomes argv[0]; HISTFILE is the remote home's.
+        let bash = "GNU bash, version 5.1.16(1)-release (x86_64-pc-linux-gnu)";
+        let mut c = started(base.clone());
+        reply(&mut c, &[&format!("/bin/bash\n/home/u\n{bash}")], 0);
+        assert_eq!(c.modified_command_args, Some(s(&["/bin/bash", "--posix"])));
+        let vars = c.modified_vars.clone().unwrap();
+        assert!(vars.contains(&("HISTFILE".into(), "/home/u/.bash_history".into())), "{vars:?}");
+        assert_eq!(vars[0], ("FOO".into(), "bar".into()));
+        // With a command, its first word is put back as argv[0] (CD:2329-2333).
+        let mut c = started(with_command(base.clone(), &["/bin/bash", "-l"]));
+        reply(&mut c, &[&format!("/usr/bin/zsh\n/home/u\n{bash}")], 0);
+        assert_eq!(c.shell.as_deref(), Some("/bin/bash"));
+        assert_eq!(c.modified_command_args, Some(s(&["/bin/bash", "--posix", "-l"])));
+
+        // No injection: macOS bash, tcsh, no home, or injection off.
+        let cases = [
+            (base.clone(), "/bin/bash\n/Users/u\nGNU bash, version 3.2.57(1)-release (arm64-apple-darwin23)"),
+            (base.clone(), "/bin/tcsh\n/home/u\ntcsh 6.24"),
+            (base.clone(), "/usr/bin/zsh\n\nzsh 5.9"),
+            (Setup { inject: false, ..base.clone() }, "/usr/bin/zsh\n/home/u\nzsh 5.9"),
+        ];
+        for (setup, text) in cases {
+            let mut c = started(setup);
+            reply(&mut c, &[text], 0);
+            assert_eq!((&c.modified_vars, &c.modified_command_args), (&None, &None), "{text}");
+            assert!(c.payloads.is_empty(), "{text}");
+            let foo = Command::Setenv { key: "FOO".into(), value: "bar".into() };
+            assert_eq!(c.take_effects(), [Effect::StateChanged, Effect::Write(sent(&foo))], "{text}");
+        }
+    }
+
+    #[test]
+    fn payload_order_follows_iterm2() {
+        let home = std::env::temp_dir().join(format!("tandem-conductor-payloads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".vimrc"), b"set nu\n").unwrap();
+
+        let mut c = Conductor::new(Setup { inject: true, ..setup("A") }, None, "U");
+        c.add_path("~/.vimrc", "~/", &home);
+        c.add_path("~/.vimrc", "x/y/", &home);
+        assert_eq!(
+            c.payloads,
+            [
+                Payload { source: Source::Disk(home.join(".vimrc")), destination: "/$HOME".into() },
+                Payload { source: Source::Disk(home.join(".vimrc")), destination: "/$HOME/y".into() },
+            ],
+            "tweak_destination (iTerm2 bug B8 kept) and expand_local_tilde"
+        );
+        c.payloads.pop();
+        c.start();
+        c.take_effects();
+        reply(&mut c, &["/usr/bin/zsh\n/home/u\nzsh 5.9"], 0);
+        let order: Vec<String> = commands_sent(&mut c, 6).into_iter().filter(|w| w.starts_with("write ")).collect();
+        assert_eq!(order, ["write /$HOME", "write /$HOME/.iterm2/shell-integration", "write /$HOME/.iterm2/shell-integration/fish/vendor_conf.d"]);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

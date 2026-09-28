@@ -52,7 +52,7 @@ pub fn shell_supports_injection(shell_last: &str, version: &str) -> bool {
 }
 
 /// NSString's lastPathComponent for a `/` path: the last non-empty piece.
-fn last_component(path: &str) -> &str {
+pub fn last_component(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
         return path;
