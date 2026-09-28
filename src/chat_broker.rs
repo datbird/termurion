@@ -49,7 +49,9 @@ struct Sub {
     queue: Vec<(String, Update)>,
 }
 
-/// The broker and the service's per-chat queue.
+/// The broker and the service's per-chat queue. Its newest-id test for a streamed chunk is
+/// right only while every stored message passes through `publish`, `publish_with` or
+/// `preload`; code that writes rows itself (a fork's clones) calls `seed_newest` or `forget`.
 pub struct Broker {
     processors: Vec<Processor>,
     subs: Vec<Sub>,
@@ -92,7 +94,8 @@ impl Broker {
         self.processors.push(p);
     }
 
-    /// Subscribes to one chat, or to every chat with None.
+    /// Subscribes to one chat, or to every chat with None. The queue grows until drained, so
+    /// a subscriber that stops draining unsubscribes.
     pub fn subscribe(&mut self, chat: Option<&str>) -> SubId {
         let id = self.next_sub;
         self.next_sub += 1;
@@ -132,46 +135,75 @@ impl Broker {
         self.rewrite.get(chat).and_then(|t| t.get(uuid)).cloned().unwrap_or_else(|| uuid.to_string())
     }
 
-    /// `publish(message:toChatID:partial:)` (`ChatBroker.swift:117-133`): the processors, the
-    /// streaming rule and the list model's append (`ChatListModel.swift:264-345`), then the
-    /// fan-out. `target` is the stored row an `Append`, `AppendAttachment` or `Commit` resolves
+    /// `publish(message:toChatID:partial:)` (`ChatBroker.swift:117-133`) with the database writes
+    /// answered as effects: every effect in order, the writes first, then the hand-off to the
+    /// service. `target` is the stored row an `Append`, `AppendAttachment` or `Commit` resolves
     /// to through `append_target`, None for other contents or when that row is missing.
     pub fn publish(&mut self, chat: &str, message: Message, partial: bool, target: Option<&Message>) -> Vec<Effect> {
+        let mut written = Vec::new();
+        let after = self.publish_with(chat, message, partial, target, &mut |e: &Effect| {
+            written.push(e.clone());
+            Ok(())
+        });
+        written.extend(after.unwrap_or_default());
+        written
+    }
+
+    /// `publish` storing first, as iTerm2 does (`try listModel.append` before `fanOut`): the
+    /// processors and the streaming rule, then `write` for each database write in order. A
+    /// failed write ends the publish with its error: the message is neither delivered nor
+    /// queued nor handed to the service, and the chat's newest id stays. Otherwise the message
+    /// is delivered, and the answer is the hand-off to the service (`Effect::ToService`), if any.
+    pub fn publish_with(&mut self, chat: &str, message: Message, partial: bool, target: Option<&Message>, write: &mut dyn FnMut(&Effect) -> Result<(), String>) -> Result<Vec<Effect>, String> {
         let mut processed = message;
         for p in self.processors.iter_mut() {
             match p(processed, chat, partial) {
                 Some(m) => processed = m,
-                None => return Vec::new(),
+                None => return Ok(Vec::new()),
             }
         }
-        let (processed, effects) = self.append(chat, processed, target);
-        self.fan_out(chat, Update::Delivery { message: processed, partial });
-        effects
+        let decided = self.append(chat, processed, target);
+        for e in &decided.writes {
+            write(e)?;
+        }
+        let mut after = Vec::new();
+        if decided.stored {
+            self.newest.insert(chat.to_string(), Some(decided.message.unique_id.clone()));
+            if routes_to_service(&decided.message) {
+                if !bypasses_queue(&decided.message.content) {
+                    self.queues.entry(chat.to_string()).or_default().push_back(decided.message.clone());
+                }
+                after.push(Effect::ToService(decided.message.clone()));
+            }
+        }
+        self.fan_out(chat, Update::Delivery { message: decided.message, partial });
+        Ok(after)
     }
 
     /// The streaming rule (`ChatClient.processAppend`, `processCommit`) and the list model's
-    /// append; answers the message as delivered and the effects.
-    fn append(&mut self, chat: &str, mut m: Message, target: Option<&Message>) -> (Message, Vec<Effect>) {
+    /// append; answers the message as delivered and its database writes.
+    fn append(&mut self, chat: &str, mut m: Message, target: Option<&Message>) -> Decided {
+        let unstored = |message: Message, writes: Vec<Effect>| Decided { message, writes, stored: false };
         match m.content.clone() {
             Content::Append { text, uuid } => {
-                let Some(t) = target else { return (m, Vec::new()) };
+                let Some(t) = target else { return unstored(m, Vec::new()) };
                 if let Some(fresh) = self.restart_stream(chat, &m, &uuid, t, Some(&text)) {
-                    return self.store(chat, fresh);
+                    return stored(chat, fresh);
                 }
                 let resolved = t.unique_id.clone();
                 m.content = Content::Append { text: text.clone(), uuid: resolved.clone() };
-                let effects = appended_text(&t.content, &text).map(|content| Effect::Replace { unique_id: resolved, content }).into_iter().collect();
-                (m, effects)
+                let writes = appended_text(&t.content, &text).map(|content| Effect::Replace { unique_id: resolved, content }).into_iter().collect();
+                unstored(m, writes)
             }
             Content::AppendAttachment { attachment, uuid } => {
-                let Some(t) = target else { return (m, Vec::new()) };
+                let Some(t) = target else { return unstored(m, Vec::new()) };
                 if let Some(fresh) = self.restart_stream(chat, &m, &uuid, t, None) {
-                    return self.store(chat, fresh);
+                    return stored(chat, fresh);
                 }
                 let resolved = t.unique_id.clone();
                 m.content = Content::AppendAttachment { attachment: attachment.clone(), uuid: resolved.clone() };
-                let effects = appended_attachment(&t.content, &attachment).map(|content| Effect::Replace { unique_id: resolved, content }).into_iter().collect();
-                (m, effects)
+                let writes = appended_attachment(&t.content, &attachment).map(|content| Effect::Replace { unique_id: resolved, content }).into_iter().collect();
+                unstored(m, writes)
             }
             Content::Commit(uuid) => {
                 if m.author == Participant::Agent {
@@ -181,13 +213,13 @@ impl Broker {
                 }
                 // The commit is the settling point: status updates leave the body
                 // (`ChatListModel.swift:329-345`). The commit itself is not stored.
-                let effects = target
+                let writes = target
                     .and_then(|t| without_status(&t.content).filter(|c| *c != t.content).map(|content| Effect::Replace { unique_id: t.unique_id.clone(), content }))
                     .into_iter()
                     .collect();
-                (m, effects)
+                unstored(m, writes)
             }
-            _ => self.store(chat, m),
+            _ => stored(chat, m),
         }
     }
 
@@ -215,32 +247,11 @@ impl Broker {
         Some(fresh)
     }
 
-    /// The list model's append of a whole message (`ChatListModel.swift:264-287`): stored,
-    /// then a rename renames, a vector store changes nothing more, and anything else bumps
-    /// (`preload`); a user's message then goes to the service, and one that drives a turn
-    /// joins the queue.
-    fn store(&mut self, chat: &str, m: Message) -> (Message, Vec<Effect>) {
-        let mut effects = self.preload(chat, m.clone());
-        if routes_to_service(&m) {
-            if !bypasses_queue(&m.content) {
-                self.queues.entry(chat.to_string()).or_default().push_back(m.clone());
-            }
-            effects.push(Effect::ToService(m.clone()));
-        }
-        (m, effects)
-    }
-
     /// A message stored through the list model alone, without processors, fan-out or the
-    /// service: a new chat's preloaded messages (`ChatBroker.swift:102-110`), and the first
-    /// step of every stored publish.
+    /// service: a new chat's preloaded messages (`ChatBroker.swift:102-110`).
     pub fn preload(&mut self, chat: &str, m: Message) -> Vec<Effect> {
         self.newest.insert(chat.to_string(), Some(m.unique_id.clone()));
-        let follow = match &m.content {
-            Content::RenameChat(title) => Some(Effect::Rename { chat: chat.to_string(), title: title.clone() }),
-            Content::VectorStoreCreated(_) => None,
-            _ => Some(Effect::Bump(chat.to_string())),
-        };
-        std::iter::once(Effect::Store(m)).chain(follow).collect()
+        stored(chat, m).writes
     }
 
     /// `publish(typingStatus:of:toChatID:)` (`ChatBroker.swift:135-140`).
@@ -313,6 +324,28 @@ impl Broker {
         self.busy.remove(chat);
         self.queues.remove(chat);
     }
+}
+
+/// What the streaming rule and the list model decided for one published message.
+struct Decided {
+    /// The message as delivered.
+    message: Message,
+    /// The database writes, in order.
+    writes: Vec<Effect>,
+    /// A new row: it becomes the chat's newest and a user's goes to the service.
+    stored: bool,
+}
+
+/// The list model's append of a whole message (`ChatListModel.swift:264-287`): stored, then a
+/// rename renames, a vector store changes nothing more, and anything else bumps.
+fn stored(chat: &str, m: Message) -> Decided {
+    let follow = match &m.content {
+        Content::RenameChat(title) => Some(Effect::Rename { chat: chat.to_string(), title: title.clone() }),
+        Content::VectorStoreCreated(_) => None,
+        _ => Some(Effect::Bump(chat.to_string())),
+    };
+    let writes = std::iter::once(Effect::Store(m.clone())).chain(follow).collect();
+    Decided { message: m, writes, stored: true }
 }
 
 /// Messages that never drive a turn and skip the queue (`ChatService.swift:130-178`):
@@ -624,6 +657,35 @@ mod tests {
         assert_eq!(fresh.len(), 1, "an attachment for a message that is no longer newest starts a new one: {effects:?}");
         assert_eq!(fresh[0].content, Content::Multipart { parts: vec![Subpart::Attachment(code("k", "a"))], vector_store_id: None });
         assert_eq!(b.append_target("C", &md.unique_id), fresh[0].unique_id);
+    }
+
+    #[test]
+    fn store_comes_before_delivery() {
+        let mut b = Broker::new();
+        let s = b.subscribe(None);
+        let a = agent_md("a");
+        b.seed_newest("C", Some(a.unique_id.clone()));
+        let mut refuse = |_: &Effect| Err("full".to_string());
+        assert_eq!(b.publish_with("C", user("q"), false, None, &mut refuse), Err("full".to_string()));
+        assert_eq!(b.drain(s), vec![], "an unstored message is not delivered");
+        assert_eq!(b.next_turn("C"), None, "nor queued");
+        let effects = b.publish("C", append("b", &a.unique_id), true, Some(&a));
+        assert_eq!(effects, vec![Effect::Replace { unique_id: a.unique_id.clone(), content: Content::Markdown("ab".into()) }], "the newest id did not move");
+        b.drain(s);
+        assert!(b.publish_with("C", append("c", &a.unique_id), true, Some(&a), &mut refuse).is_err());
+        assert_eq!(b.drain(s), vec![], "a chunk that was not written is not delivered");
+
+        // Written in order, then delivered; the answer is the hand-off.
+        let mut seen = Vec::new();
+        let q = user("q2");
+        let after = b.publish_with("C", q.clone(), false, None, &mut |e: &Effect| {
+            seen.push(e.clone());
+            Ok(())
+        });
+        assert_eq!(seen, vec![Effect::Store(q.clone()), Effect::Bump("C".into())]);
+        assert_eq!(after, Ok(vec![Effect::ToService(q.clone())]));
+        assert_eq!(b.drain(s), vec![("C".to_string(), Update::Delivery { message: q.clone(), partial: false })]);
+        assert_eq!(b.next_turn("C"), Some(q));
     }
 
     #[test]

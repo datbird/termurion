@@ -413,6 +413,17 @@ impl Store {
         Ok(Store { conn, _lock: None })
     }
 
+    /// Makes every later Message insert or update fail, as a full disk would (tests only).
+    #[cfg(test)]
+    pub(crate) fn refuse_message_writes(&self) {
+        self.conn
+            .execute_batch(
+                "create temp trigger refuse_insert before insert on Message begin select raise(abort, 'refused'); end;
+                 create temp trigger refuse_update before update on Message begin select raise(abort, 'refused'); end;",
+            )
+            .unwrap();
+    }
+
     /// Every chat, most recently modified first.
     pub fn chats(&self) -> Result<Vec<Chat>, String> {
         rows(
@@ -594,9 +605,14 @@ impl Store {
     /// (`ChatBlobAssembler.forkBlobPrefix`), those blobs are copied into `to`, each with a
     /// fresh blob id, and `from`'s `blobProtocol` goes with them; any gap copies nothing.
     /// Answers the old-to-new blob id map (empty when nothing was copied), with which the
-    /// caller points the forked messages at their copies (`set_first_blob_ref`).
+    /// caller points the forked messages at their copies (`set_first_blob_ref`). The fork's
+    /// chat row must exist first, as iTerm2 creates the chat before copying; an error otherwise.
     pub fn copy_blobs(&mut self, from: &str, to: &str, retained_refs: &[String]) -> Result<HashMap<String, String>, String> {
         let tx = self.conn.transaction().map_err(err)?;
+        let fork_exists: bool = tx.query_row("select exists (select 1 from Chat where uuid = ?)", params![to], |r| r.get(0)).map_err(err)?;
+        if !fork_exists {
+            return Err("the fork's chat does not exist".to_string());
+        }
         let blobs = blobs_in(&tx, from).map_err(err)?;
         let mut map = HashMap::new();
         if retained_refs.is_empty() || retained_refs.len() > blobs.len() || blobs.iter().zip(retained_refs).any(|(b, r)| b.blob_id != *r) {
@@ -883,9 +899,14 @@ mod tests {
 
         // Nothing copies for no refs, more refs than blobs, a mismatch or a gap.
         for (to, retained) in [("n1", refs(&[])), ("n2", refs(&["X1", "X2", "X3", "X4"])), ("n3", refs(&["X2"])), ("n4", refs(&["X1", "X3"]))] {
+            store.add_chat(&Chat { id: to.into(), ..Chat::new(to, 1.0) }).unwrap();
             assert!(store.copy_blobs("a", to, &retained).unwrap().is_empty(), "{retained:?}");
             assert!(store.blobs(to).unwrap().is_empty(), "{retained:?}");
         }
+
+        // The fork's chat comes first.
+        assert!(store.copy_blobs("a", "none", &refs(&["X1"])).is_err());
+        assert!(store.blobs("none").unwrap().is_empty());
 
         // A fork of the first two rounds: fresh ids, everything else copied.
         let mut source = Chat::new("S", 1.0);
@@ -932,8 +953,8 @@ mod tests {
 
     #[test]
     fn corrupt_database_does_not_open() {
-        let dir = std::env::temp_dir().join(format!("tandem-chatdb-corrupt-{}", crate::chat_message::new_id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // Removed when dropped, a failed assertion included.
+        let dir = crate::util_cli::TempDir::new("tandem-chatdb-corrupt");
         let path = dir.join(FILE_NAME);
         let garbage: Vec<u8> = (0..8192u32).map(|i| (i * 7 % 251) as u8).collect();
         std::fs::write(&path, &garbage).unwrap();
@@ -961,7 +982,6 @@ mod tests {
         assert!(Store::open(&bad, &dir.join("bad-lock")).is_err());
         assert_eq!(std::fs::read(&bad).unwrap(), broken, "nothing is written to a database that fails the check");
         assert!(Store::open(&good, &dir.join("good-lock")).is_ok(), "an intact database opens");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -999,7 +1019,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn lock_follows_iterm2() {
-        let dir = std::env::temp_dir().join(format!("tandem-chatdb-test-{}", crate::chat_message::new_id()));
+        let dir = crate::util_cli::TempDir::new("tandem-chatdb-lock");
         let path = dir.join("sub").join(FILE_NAME);
         let lock = dir.join("sub").join(LOCK_NAME);
         let first = Store::open(&path, &lock).unwrap();
@@ -1012,6 +1032,5 @@ mod tests {
         assert_eq!(OPEN_FAILED_HEADING, "Error");
         assert_eq!(OPEN_FAILED, "AI Chat could not open because of a problem loading the database. Verify there is only one instance of Tandem running.");
         assert!(default_path().ends_with(std::path::Path::new("Tandem").join("chatdb.sqlite")));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -17,31 +17,50 @@ fn unix_now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// Writes what the broker decided. A write that fails leaves the row as it was; the message
-/// was already delivered, as iTerm2's model is updated before its database.
-fn apply_effects(db: &mut Store, effects: Vec<Effect>) {
-    for effect in effects {
-        let _ = match effect {
-            Effect::Store(m) => db.add_message(&m).map(|_| ()).and_then(|()| match &m.content {
-                // `setVectorStore` (`ChatListModel.swift:283-287`).
-                Content::VectorStoreCreated(id) => match db.chat(&m.chat_id) {
-                    Ok(Some(mut c)) => {
+/// One database write the broker decided (`ChatListModel.append` and its mutations).
+fn write_effect(db: &mut Store, effect: &Effect) -> Result<(), String> {
+    match effect {
+        Effect::Store(m) => {
+            db.add_message(m)?;
+            // `setVectorStore` (`ChatListModel.swift:283-287`).
+            match &m.content {
+                Content::VectorStoreCreated(id) => match db.chat(&m.chat_id)? {
+                    Some(mut c) => {
                         c.vector_store = Some(id.clone());
                         db.update_chat(&c)
                     }
-                    other => other.map(|_| ()),
+                    None => Ok(()),
                 },
                 _ => Ok(()),
-            }),
-            Effect::Replace { unique_id, content } => db.replace_content(&unique_id, &content).map(|_| ()),
-            // A removal also drops the chat's blobs (`ChatListModel.swift:245-264`).
-            Effect::Remove { chat, ids } => db.remove_messages(&chat, &ids).and_then(|()| db.clear_blobs(&chat)),
-            Effect::Bump(chat) => db.bump(&chat, unix_now()),
-            Effect::Rename { chat, title } => db.rename(&chat, &title).map(|_| ()),
-            // The chat's agent takes it (Task 11).
-            Effect::ToService(_) => Ok(()),
-        };
+            }
+        }
+        Effect::Replace { unique_id, content } => db.replace_content(unique_id, content).map(|_| ()),
+        // A removal also drops the chat's blobs (`ChatListModel.swift:245-264`).
+        Effect::Remove { chat, ids } => db.remove_messages(chat, ids).and_then(|()| db.clear_blobs(chat)),
+        Effect::Bump(chat) => db.bump(chat, unix_now()),
+        Effect::Rename { chat, title } => db.rename(chat, title).map(|_| ()),
+        // The chat's agent takes it (Task 11).
+        Effect::ToService(_) => Ok(()),
     }
+}
+
+/// `ChatBroker.publish` over the database without the App: the chat's newest id read once,
+/// the one row a chunk or commit targets (minor m6), then the broker, which stores before it
+/// delivers. A failed write is the error, and the message goes nowhere (`ChatBroker.swift:124-133`).
+/// Answers the hand-off to the chat's agent.
+pub(super) fn publish_in(db: &mut Store, broker: &mut Broker, chat: &str, message: Message, partial: bool) -> Result<Vec<Effect>, String> {
+    // Read once per chat; a failed read leaves the chat unknown, to be read again.
+    if !broker.knows(chat) {
+        if let Ok(id) = db.newest_id(chat) {
+            broker.seed_newest(chat, id);
+        }
+    }
+    let target = match &message.content {
+        // A row of another chat is never a target.
+        Content::Append { uuid, .. } | Content::AppendAttachment { uuid, .. } | Content::Commit(uuid) => db.message(&broker.append_target(chat, uuid)).ok().flatten().filter(|t| t.chat_id == chat),
+        _ => None,
+    };
+    broker.publish_with(chat, message, partial, target.as_ref(), &mut |e: &Effect| write_effect(db, e))
 }
 
 /// `create(chatWithTitle:terminalSessionGuid:browserSessionGuid:permissions:initialMessages:)`
@@ -77,13 +96,14 @@ pub(super) fn create_in(
     broker.seed_newest(&id, None);
     if !initial.iter().any(|m| matches!(m.content, Content::SetPermissions(_))) {
         let allowed = ai_permissions::allowed_of(&seeded).into_iter().collect();
-        let effects = broker.publish(&id, Message::new(&id, Participant::User, Content::SetPermissions(allowed), now), false, None);
-        apply_effects(store, effects);
+        publish_in(store, broker, &id, Message::new(&id, Participant::User, Content::SetPermissions(allowed), now), false)?;
     }
-    // Preloaded straight into the list model, not published (`ChatBroker.swift:102-110`).
+    // Preloaded straight into the list model, not published; a failure skips that message
+    // (`ChatBroker.swift:102-110`).
     for m in initial {
-        let effects = broker.preload(&id, Message { chat_id: id.clone(), ..m });
-        apply_effects(store, effects);
+        for effect in broker.preload(&id, Message { chat_id: id.clone(), ..m }) {
+            let _ = write_effect(store, &effect);
+        }
     }
     Ok(id)
 }
@@ -117,26 +137,16 @@ impl App {
         self.chat_db.as_mut()
     }
 
-    /// `ChatBroker.publish` with the list model behind it: the broker decides, then each
-    /// effect is written to the database. A chunk or commit reads only the one row it targets
-    /// (minor m6).
+    /// `ChatBroker.publish` with the list model behind it (`publish_in`). The error is a failed
+    /// open or write; the message was then not delivered.
     #[allow(dead_code)] // Called by the agent (Task 11) and the chat window (12d).
-    pub(crate) fn chat_publish(&mut self, chat: &str, message: Message, partial: bool) {
+    pub(crate) fn chat_publish(&mut self, chat: &str, message: Message, partial: bool) -> Result<(), String> {
         if self.chat_db().is_none() {
-            return;
+            return Err(OPEN_FAILED.to_string());
         }
-        let Some(db) = self.chat_db.as_mut() else { return };
-        // Read once per chat; a failed read leaves the chat unknown, to be read again.
-        let newest = if self.chat_broker.knows(chat) { None } else { db.newest_id(chat).ok() };
-        let target = match &message.content {
-            Content::Append { uuid, .. } | Content::AppendAttachment { uuid, .. } | Content::Commit(uuid) => db.message(&self.chat_broker.append_target(chat, uuid)).ok().flatten(),
-            _ => None,
-        };
-        if let Some(id) = newest {
-            self.chat_broker.seed_newest(chat, id);
-        }
-        let effects = self.chat_broker.publish(chat, message, partial, target.as_ref());
-        apply_effects(db, effects);
+        let Some(db) = self.chat_db.as_mut() else { return Err(OPEN_FAILED.to_string()) };
+        // The hand-off to the chat's agent is Task 11's.
+        publish_in(db, &mut self.chat_broker, chat, message, partial).map(|_| ())
     }
 
     /// A new chat pinned to the configured model (`ChatBroker.swift:78-112`, through
@@ -195,7 +205,8 @@ impl App {
             .filter(|g| g.parse::<crate::layout::PaneId>().is_ok_and(|id| id.to_string() == *g && self.panes.contains_key(&id)))
             .is_some_and(|g| self.ai_overrides.get(chat, g, Category::CheckTerminalState, &global) == Permission::Always);
         let set = ai_permissions::published_set(&allowed, check_state_always);
-        self.chat_publish(chat, Message::new(chat, Participant::User, Content::SetPermissions(set), unix_now()), false);
+        // iTerm2 logs a failure here (`ChatViewController.swift:1195-1203`).
+        let _ = self.chat_publish(chat, Message::new(chat, Participant::User, Content::SetPermissions(set), unix_now()), false);
     }
 
     /// The chats' part of the loop; answers when it next needs to run. The agents, their
@@ -216,6 +227,27 @@ mod tests {
     }
 
     const TERMINAL: [Category; 7] = [Category::CheckTerminalState, Category::RunCommands, Category::ViewContents, Category::WriteToClipboard, Category::ControlTerminal, Category::ViewManpages, Category::WriteToFilesystem];
+
+    #[test]
+    fn failed_writes_deliver_nothing() {
+        let (mut store, mut broker, mut overrides) = (Store::open_in_memory().unwrap(), Broker::new(), Overrides::default());
+        let id = create_in(&mut store, &mut broker, &mut overrides, "T", Some("7"), None, "", vec![], None, &ask, 1.0).unwrap();
+        let sub = broker.subscribe(Some(&id));
+        let q = Message::new(&id, Participant::User, Content::PlainText { text: "q".into(), context: None }, 2.0);
+        assert_eq!(publish_in(&mut store, &mut broker, &id, q.clone(), false).unwrap(), vec![Effect::ToService(q.clone())]);
+        assert_eq!(broker.drain(sub).len(), 1);
+        assert_eq!(broker.next_turn(&id), Some(q));
+        broker.turn_done(&id);
+
+        store.refuse_message_writes();
+        let r = Message::new(&id, Participant::User, Content::PlainText { text: "r".into(), context: None }, 3.0);
+        assert!(publish_in(&mut store, &mut broker, &id, r, false).is_err());
+        assert_eq!(broker.drain(sub), vec![], "not delivered");
+        assert_eq!(broker.next_turn(&id), None, "not queued for the agent");
+        assert_eq!(store.messages(&id).unwrap().len(), 2);
+        // A new chat whose permissions cannot be stored fails as iTerm2's `create` throws.
+        assert!(create_in(&mut store, &mut broker, &mut overrides, "U", Some("7"), None, "", vec![], None, &ask, 4.0).is_err());
+    }
 
     #[test]
     fn chat_create_seeds_permissions() {
