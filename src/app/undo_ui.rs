@@ -134,7 +134,8 @@ impl App {
                             t.layout.split(t.focused, Axis::Row, id);
                             t.focused = id;
                             t.zoomed = None;
-                            self.active = i;
+                            // The tab may be hidden in a group collapsed since.
+                            self.select_tab(i);
                         }
                     }
                     _ => {

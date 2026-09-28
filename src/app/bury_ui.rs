@@ -45,6 +45,8 @@ impl App {
             self.mru.forget(gone.id);
             self.api_vars.forget(crate::api_vars::Scope::Tab, &gone.id.to_string());
             self.active = crate::close_rules::active_after_close(self.active, t, self.tabs.len(), self.globals.bool("moveLeftAfterClosingTab"));
+            // The neighbor selected may be hidden in a collapsed group.
+            self.expand_selected_group();
         }
         self.buried.bury(Buried { pane: id, window, tab, name });
         self.menus_dirty = true;
@@ -72,7 +74,7 @@ impl App {
                     let f = t.focused;
                     t.layout.split(f, Axis::Row, id);
                     t.focused = id;
-                    self.active = i;
+                    self.select_tab(i);
                 }
                 self.relayout();
             }

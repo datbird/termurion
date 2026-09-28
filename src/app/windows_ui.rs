@@ -897,7 +897,7 @@ impl App {
         for other in self.registry.merge_order(k) {
             let Some(mut slot) = self.windows.remove(other) else { continue };
             let tabs = std::mem::take(&mut slot.tabs);
-            let (mut moved, kept, active) = split_for_merge(tabs, slot.active, |t| self.holds_recording(t));
+            let (mut moved, mut kept, active) = split_for_merge(tabs, slot.active, |t| self.holds_recording(t));
             for t in &moved {
                 leave_broadcast(&mut slot.broadcast, &mut slot.broadcast_tabs, t);
             }
@@ -918,6 +918,8 @@ impl App {
                     slot.replay_window = None;
                 }
                 slot.active = active.unwrap_or(0);
+                // A new selection there may be hidden in a collapsed group.
+                super::tab_groups_ui::expand_selected(&mut kept, slot.active);
                 slot.tabs = kept;
                 if let Some(g) = &slot.gpu {
                     g.window.request_redraw();

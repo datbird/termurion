@@ -158,9 +158,9 @@ impl App {
     /// The selected tab's group expands when it is collapsed, so the selected tab never hides
     /// (`PT expandTabGroupIfSelectedTabIsCollapsed`).
     pub(super) fn expand_selected_group(&mut self) {
-        let group = self.tabs.get(self.active).and_then(|t| t.group.as_ref()).filter(|g| g.collapsed).map(|g| g.id.clone());
-        if let Some(g) = group {
-            self.expand_group(&g);
+        if expand_selected(&mut self.tabs, self.active) {
+            self.relayout();
+            self.redraw();
         }
     }
 
@@ -700,6 +700,19 @@ pub(super) fn collapse_plan(order: &[Option<&str>], collapsed: &[bool], active: 
     Some((Some(hidden), order[hidden].map(str::to_string)))
 }
 
+/// `App::expand_selected_group`'s rule over a window's `tabs` with `active` selected: when
+/// the selected tab is hidden in a collapsed group, every member of that group expands
+/// (`PT expandTabGroupIfSelectedTabIsCollapsed`). True when a flag changed. Every path that
+/// changes the selected tab without settling ends here, as a selection does in iTerm2
+/// (`PT tabView:didSelectTabViewItem:`).
+pub(super) fn expand_selected(tabs: &mut [Tab], active: usize) -> bool {
+    let Some(group) = tabs.get(active).and_then(|t| t.group.as_ref()).filter(|g| g.collapsed).map(|g| g.id.clone()) else { return false };
+    for g in tabs.iter_mut().filter_map(|t| t.group.as_mut()).filter(|g| g.id == group) {
+        g.collapsed = false;
+    }
+    true
+}
+
 /// `App::settle_tabs`'s rule over a window's group ids, pinned and collapsed flags and
 /// selected tab `active`: the canonical order (input indices; `tab_groups::canonical_order`),
 /// each tab's collapsed flag in that order with every group one state and never the selected
@@ -950,6 +963,32 @@ mod tests {
         // A collapsed group holding the selected tab expands; another stays collapsed.
         let (_, flags, _) = settle_plan(&[A, A, B, B], &[false; 4], &[true, true, true, true], 0);
         assert_eq!(flags, vec![false, false, true, true]);
+    }
+
+    /// Paths that pick the selected tab without settling (Bury, a drag out or tear-off, the
+    /// kept tabs of Merge All Windows, Unbury and Undo Close into a tab through `select_tab`)
+    /// expand the group it is hidden in (`PT expandTabGroupIfSelectedTabIsCollapsed`).
+    #[test]
+    fn a_selected_tab_never_hides() {
+        let tab = |id: u64, group: Option<(&str, bool)>| {
+            let mut t = Tab::new(id, Layout::new(id), id);
+            t.group = group.map(|(g, collapsed)| TabGroup { id: g.into(), name: "Build".into(), color: tab_groups::PALETTE[0], collapsed });
+            t
+        };
+        let collapsed = |tabs: &[Tab]| tabs.iter().map(|t| t.group.as_ref().is_some_and(|g| g.collapsed)).collect::<Vec<_>>();
+        // [A, B | G1, G2 (collapsed)] with B selected; Bury takes B and its neighbor G1 is
+        // selected: the group expands.
+        let mut tabs = vec![tab(1, None), tab(2, None), tab(3, Some(("g", true))), tab(4, Some(("g", true))), tab(5, Some(("h", true))), tab(6, Some(("h", true)))];
+        tabs.remove(1);
+        let active = crate::close_rules::active_after_close(1, 1, tabs.len(), false);
+        assert_eq!(active, 1);
+        assert!(expand_selected(&mut tabs, active));
+        assert_eq!(collapsed(&tabs), vec![false, false, false, true, true], "only the selected tab's group expands");
+        // A selected tab already shown, or in no group, changes nothing.
+        assert!(!expand_selected(&mut tabs, 1));
+        assert!(!expand_selected(&mut tabs, 0));
+        assert!(!expand_selected(&mut tabs, 9));
+        assert_eq!(collapsed(&tabs), vec![false, false, false, true, true]);
     }
 
     #[test]
