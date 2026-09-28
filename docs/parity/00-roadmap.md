@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 272 | 72 | 479 |
+| `02-global-settings.md` | 823 | 292 | 72 | 459 |
 | `03-features-and-menus.md` | 643 | 486 | 43 | 114 |
-| Total | 1,780 | 931 | 237 | 612 |
+| Total | 1,780 | 951 | 237 | 592 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -219,6 +219,26 @@ the Script Console. pythonRuntimeUsesUV, the three runtime manifest URLs and set
 and inert (no macOS runtime, no AppleScript target); signed `.its` archives are refused. Every kept
 quirk is listed in `docs/acceptance/m11d-checklist.md` and ruled on in
 `docs/superpowers/rulings/m11d-rulings.txt`.
+Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
+categories in Finder order with bold, pinned headers; a search that matches every typed word in a
+row's description or category; "Show only non-default values", which keeps the row being edited
+until editing ends; and each kind edited as iTerm2 does (No/Yes, Unspecified/No/Yes where
+Unspecified removes the key, a list storing the index, integers and floats read as iTerm2's
+`integerValue` and `doubleValue`, text as typed). Twenty keys that are not iTerm2 Advanced
+settings moved to a "Stored" tab no pane draws, and the Advanced texts are iTerm2's descriptions
+with Tandem's Windows wording where it behaves differently. "Show indicators for non-default
+values" (a menu at the right of the Settings page bar) marks changed controls with iTerm2's bar,
+including its per-control rules; General > Experimental holds the right-to-left and ssh: URL
+checkboxes; a plist import consumes the legacy Control and single-hotkey-window keys. General >
+Settings loads settings from a custom folder (one `tandem-settings.toml`; network folders
+refused) or an `http(s)` URL (fetched with `curl.exe`), with Save Now, the Save changes popup and
+iTerm2's load, overwrite and quit questions; snippets, notes and icons do not sync. Export All
+writes `Tandem State.tandemexport` (a gzip tar of the Python runtimes list, the settings, the
+`%APPDATA%\Tandem` files and the scripts as unsigned zips; the Python API consent never leaves),
+Import All stages an export and applies it at one restart, and Erase All empties Tandem's folders
+and quits, or logs a dry run to the debug output. PreferredBaseDir and
+noSyncNeverRemindPrefsChangesLostForUrl are stored and inert. Every kept quirk is listed in
+`docs/acceptance/m13a-checklist.md` and ruled on in `docs/superpowers/rulings/m13a-rulings.txt`.
 
 ## Order
 
