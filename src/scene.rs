@@ -888,8 +888,11 @@ pub const TAB_CLOSE_GLYPH: char = '\u{E8BB}';
 const TAB_CLOSE_PRESSED: f32 = 0.3;
 /// Segoe Fluent Icons "Add": the new tab button.
 pub const TAB_ADD_GLYPH: char = '\u{E710}';
-/// Segoe Fluent Icons "ChevronDown": the overflow button, a popup of the hidden tabs.
-pub const TAB_OVERFLOW_GLYPH: char = '\u{E70D}';
+/// Segoe Fluent Icons "ChevronRight", drawn twice for the overflow button (iTerm2's
+/// `overflowImage` is a right-pointing double chevron; the icon font has no double one).
+pub const TAB_OVERFLOW_GLYPH: char = '\u{E76C}';
+/// How far apart the overflow button's two chevrons are, in ems.
+const TAB_OVERFLOW_GAP: f32 = 0.25;
 /// Icon glyphs in a tab are drawn at this size in points (in the 16-point icon box).
 const TAB_GLYPH_PT: f32 = 12.0;
 /// The status dot's size in points.
@@ -901,9 +904,10 @@ const TAB_DOT_PT: f32 = 8.0;
 /// points is a row of scale `p * font_scale`, `line * p * font_scale` pixels high.
 /// `key` is the window being the key window of the active app (`windowIsMainAndAppIsActive`):
 /// otherwise close buttons draw at half alpha. The tabs are cut to the room left of the "+"
-/// pinned on a bar that scrolls (`tab_layout::tab_area_width`).
+/// pinned on a bar that scrolls (`tab_layout::tab_area_width`). `overflow_down`: the overflow
+/// button's menu is open, so it draws pressed.
 #[allow(clippy::too_many_arguments)]
-pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool) {
+pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab_layout::Bar, area: Rect, scale: f32, font_scale: f32, line: f32, key: bool, overflow_down: bool) {
     use crate::tab_layout::{self, SUBTITLE_OFFSET, TITLE_OFFSET_WITH_SUBTITLE};
     frame.quads.push(Quad { rect: area, color: rgba(TAB_BAR, 1.0) });
     let px = |r: Rect| Rect { x: area.x + r.x * scale, y: area.y + r.y * scale, w: r.w * scale, h: r.h * scale };
@@ -1011,14 +1015,20 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
             }
         }
     }
-    // The "+" and the overflow button (`PSM setupButtons`), over the tabs' right margin.
-    let buttons = [(bar.add, TAB_ADD_GLYPH), (bar.overflow, TAB_OVERFLOW_GLYPH)];
-    for (rect, ch) in buttons.into_iter().filter_map(|(r, ch)| r.map(|r| (px(r), ch))) {
-        let s = TAB_GLYPH_PT * font_scale;
-        let em = TAB_GLYPH_PT * scale;
-        let x = rect.x + ((rect.w - em) / 2.0).floor();
+    // The "+" and the overflow button (`PSM setupButtons`), over the tabs' right margin. The
+    // overflow button is two chevrons a gap apart, in the text color while its menu is open
+    // (`PSMOverflowPopUpButton` `overflowImagePressed`).
+    let s = TAB_GLYPH_PT * font_scale;
+    let em = TAB_GLYPH_PT * scale;
+    let overflow_color = if overflow_down { TAB_TEXT } else { TAB_TEXT_DIM };
+    let buttons = [(bar.add, TAB_ADD_GLYPH, 0.0, TAB_TEXT_DIM), (bar.overflow, TAB_OVERFLOW_GLYPH, TAB_OVERFLOW_GAP * em, overflow_color)];
+    for (rect, ch, gap, color) in buttons.into_iter().filter_map(|(r, ch, gap, color)| r.map(|r| (px(r), ch, gap, color))) {
+        let x = rect.x + ((rect.w - em - gap) / 2.0).floor();
         let y = rect.y + ((rect.h - line * s) / 2.0).floor();
-        frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), TAB_TEXT_DIM, false, false, true)], clip: clip_rect(rect, area), scale: s });
+        let xs: &[f32] = if gap > 0.0 { &[x, x + gap] } else { &[x] };
+        for &x in xs {
+            frame.rows.push(TextRow { x, y, spans: vec![span(ch.to_string(), color, false, false, true)], clip: clip_rect(rect, area), scale: s });
+        }
     }
 }
 
@@ -2552,7 +2562,7 @@ mod tests {
         let area = Rect { x: 0.0, y: 10.0, w: 800.0, h: 48.0 };
         let px = |r: Rect| Rect { x: area.x + r.x * 2.0, y: area.y + r.y * 2.0, w: r.w * 2.0, h: r.h * 2.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 1, &bar, area, 2.0, 0.1, 20.0, true);
+        tab_bar(&mut f, &looks, 1, &bar, area, 2.0, 0.1, 20.0, true, false);
 
         assert!(f.quads.iter().any(|q| q.rect == px(bar.cells[1].2) && q.color == rgba(TAB_ACTIVE, 1.0)), "the active tab's background");
         let glyph = |c: char| f.rows.iter().filter(move |r| r.spans.iter().any(|s| s.icon && s.text == c.to_string()));
@@ -2595,7 +2605,7 @@ mod tests {
         let uin: Vec<TabInput> = ul.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: 0 }).collect();
         let bar = tab_layout::build(&uin, 0, 400.0, 0.0, None, &html, &six);
         let mut f = Frame::default();
-        tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0, true);
+        tab_bar(&mut f, &ul, 0, &bar, area, 2.0, 0.1, 20.0, true, false);
         let ab = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "ab")).expect("the run");
         assert!(f.quads.iter().any(|q| q.rect.h == 1.0 && q.rect.w == 24.0 && q.rect.x == ab.x), "{:?}", f.quads);
 
@@ -2606,7 +2616,7 @@ mod tests {
         let bar = tab_layout::build(&sin, 0, 400.0, 0.0, None, &tall, &six);
         let area = Rect { x: 0.0, y: 0.0, w: 800.0, h: 56.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &st, 0, &bar, area, 2.0, 0.1, 20.0, true);
+        tab_bar(&mut f, &st, 0, &bar, area, 2.0, 0.1, 20.0, true, false);
         let t = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "t")).unwrap();
         let sub = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "sub")).unwrap();
         assert_eq!(t.y, ((56.0 - 22.0_f32) / 2.0).floor() - 10.0);
@@ -2627,7 +2637,7 @@ mod tests {
         assert_eq!(bar.cells[5].2.x, 500.0);
         let area = Rect { x: 0.0, y: 0.0, w: 600.0, h: 24.0 };
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 5, &bar, area, 1.0, 0.1, 20.0, true);
+        tab_bar(&mut f, &looks, 5, &bar, area, 1.0, 0.1, 20.0, true, false);
         let add = bar.add.unwrap();
         assert_eq!(add.x, 576.0);
         let active = f.quads.iter().find(|q| q.color == rgba(TAB_ACTIVE, 1.0)).expect("the active tab");
@@ -2642,6 +2652,32 @@ mod tests {
     }
 
     #[test]
+    fn tab_overflow_button_is_a_double_chevron() {
+        use crate::tab_layout::{self, TabInput};
+        let base = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let s = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..base.prefs }, ..base };
+        let looks: Vec<TabLook> = (1..=10).map(|i| TabLook { title: format!("tab{i}"), number: i, ..TabLook::default() }).collect();
+        let inputs: Vec<TabInput> = looks.iter().map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number }).collect();
+        let six = |t: &str, _pt: f32| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&inputs, 0, 400.0, 0.0, None, &s, &six);
+        let overflow = bar.overflow.expect("tabs overflow");
+        let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
+        // iTerm2's `overflowImage` is a right-pointing double chevron, gray; `overflowImagePressed`
+        // while its menu is open is the same in the text color (`PSMOverflowPopUpButton`).
+        for (down, color) in [(false, TAB_TEXT_DIM), (true, TAB_TEXT)] {
+            let mut f = Frame::default();
+            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, down);
+            let chevrons: Vec<&TextRow> = f.rows.iter().filter(|r| r.spans.iter().any(|s| s.icon && s.text == TAB_OVERFLOW_GLYPH.to_string())).collect();
+            assert_eq!(chevrons.len(), 2, "two chevrons");
+            assert!(chevrons[0].x < chevrons[1].x);
+            assert!(chevrons.iter().all(|r| r.spans[0].color == color && overflow.contains(r.x + 1.0, r.y + 1.0)));
+            // Centered in the button: the pair's middle is the button's middle.
+            let mid = (chevrons[0].x + chevrons[1].x + TAB_GLYPH_PT) / 2.0;
+            assert!((mid - (overflow.x + overflow.w / 2.0)).abs() <= 1.0, "{mid} in {overflow:?}");
+        }
+    }
+
+    #[test]
     fn tab_close_button_dims_in_an_inactive_window() {
         use crate::tab_layout::{self, TabInput};
         let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
@@ -2653,7 +2689,7 @@ mod tests {
         let area = Rect { x: 0.0, y: 0.0, w: 400.0, h: 24.0 };
         let close_color = |key: bool| {
             let mut f = Frame::default();
-            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, key);
+            tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, key, false);
             let row = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == TAB_CLOSE_GLYPH.to_string())).expect("the close button");
             row.spans[0].color
         };
@@ -2663,11 +2699,11 @@ mod tests {
         let close = bar.cells[1].1.close.unwrap();
         let shade = rgba(blend(TAB_BAR, TAB_TEXT_DIM, TAB_CLOSE_PRESSED), 1.0);
         let mut f = Frame::default();
-        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true);
+        tab_bar(&mut f, &looks, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
         assert!(!f.quads.iter().any(|q| q.color == shade), "not held");
         let held: Vec<TabLook> = looks.iter().cloned().enumerate().map(|(i, l)| TabLook { close_pressed: i == 1, ..l }).collect();
         let mut f = Frame::default();
-        tab_bar(&mut f, &held, 0, &bar, area, 1.0, 0.1, 20.0, true);
+        tab_bar(&mut f, &held, 0, &bar, area, 1.0, 0.1, 20.0, true, false);
         assert!(f.quads.iter().any(|q| q.color == shade && q.rect == close), "{:?}", f.quads);
     }
 

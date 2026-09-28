@@ -1346,7 +1346,15 @@ impl App {
         use tab_layout::Hit;
         let alt = self.mods.alt;
         match button {
-            MouseButton::Left if hit == Hit::Overflow => self.show_tab_overflow(),
+            // The button draws pressed while its menu is open: the menu's modal loop draws
+            // nothing, so the frame is drawn before it opens (`PSMOverflowPopUpButton mouseDown:`).
+            MouseButton::Left if hit == Hit::Overflow => {
+                self.tab_press = Some((hit, 1, alt));
+                self.render();
+                self.show_tab_overflow();
+                self.tab_press = None;
+                self.redraw();
+            }
             MouseButton::Left => {
                 let clicks = self.count_tab_click(hit);
                 self.tab_press = Some((hit, clicks, alt));
@@ -1366,16 +1374,8 @@ impl App {
     /// same tab (or again off the tabs) within the double-click time, else 1. A press on the
     /// "+" counts 1 and starts the count over.
     fn count_tab_click(&mut self, hit: tab_layout::Hit) -> u8 {
-        use tab_layout::Hit;
-        let now = Instant::now();
-        let on = match hit {
-            Hit::Tab(i) | Hit::Close(i) => Some(i),
-            _ => None,
-        };
-        let (then, last, n) = self.tab_clicks;
-        let again = n > 0 && last == on && now.duration_since(then).as_millis() <= clippings_ui::double_click_ms();
-        let clicks = if again { n.saturating_add(1) } else { 1 };
-        self.tab_clicks = (now, on, if hit == Hit::Add { 0 } else { clicks });
+        let (clicks, last) = tab_click_count(self.tab_clicks, Instant::now(), hit, clippings_ui::double_click_ms());
+        self.tab_clicks = last;
         clicks
     }
 
@@ -2578,6 +2578,9 @@ impl App {
 
     fn mouse_press(&mut self, button: MouseButton, event_loop: &ActiveEventLoop) {
         self.hide_tab_tip();
+        // A press starts over on the tab bar too: a bar press whose release never came (focus
+        // went mid-press) must not take this press's release; a press on the bar stores itself.
+        self.tab_press = None;
         // A press starts over: a tmux drag whose release never came lets tmux go on.
         self.tmux_drag_cancel();
         let (x, y) = self.cursor;
@@ -2931,7 +2934,7 @@ impl App {
         let (w, _) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
         if self.tab_bar_shown() {
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
-            if let Some((tab_layout::Hit::Close(i), _, _)) = self.tab_press {
+            if let Some(i) = held_close(self.tab_press) {
                 if let Some(l) = looks.get_mut(i) {
                     l.close_pressed = true;
                 }
@@ -2943,7 +2946,7 @@ impl App {
             let scrolled = (self.tab_scroll > 0.0).then(|| self.layout_tab_bar(&looks, w, self.tab_scroll));
             let scale = self.scale();
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
-            scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active);
+            scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _))));
         } else {
             self.tab_bar = tab_layout::Bar::default();
             self.tab_scroll = 0.0;
@@ -3567,6 +3570,10 @@ impl ApplicationHandler<UserEvent> for App {
                 // A divider drag loses its release when focus goes, and so do keys.
                 if !f {
                     self.tmux_drag_cancel();
+                    // So does a press on the tab bar (a held close button lets go).
+                    if self.tab_press.take().is_some() {
+                        self.redraw();
+                    }
                     self.belt_keys.clear();
                     self.replay_keys.clear();
                     self.composer_keys.clear();
@@ -3745,6 +3752,33 @@ fn live_tab_hit(hit: Option<tab_layout::Hit>, tabs: usize) -> Option<tab_layout:
     hit.filter(|h| !matches!(h, Hit::Tab(i) | Hit::Close(i) if *i >= tabs))
 }
 
+/// The close button a press holds down: a left press on it (the middle button's count is 0;
+/// iTerm2 marks it pressed in `mouseDown:` only).
+fn held_close(press: Option<(tab_layout::Hit, u8, bool)>) -> Option<usize> {
+    match press {
+        Some((tab_layout::Hit::Close(i), clicks, _)) if clicks > 0 => Some(i),
+        _ => None,
+    }
+}
+
+/// The click count of a left press on the tab bar at `now`, and the new last press (when, on
+/// which tab, its count): one more than the last when it is on the same tab (or again off the
+/// tabs) within `double_ms`, else 1. A press on the "+" counts 1 and starts the count over.
+fn tab_click_count(last: (Instant, Option<usize>, u8), now: Instant, hit: tab_layout::Hit, double_ms: u128) -> (u8, (Instant, Option<usize>, u8)) {
+    use tab_layout::Hit;
+    if hit == Hit::Add {
+        return (1, (now, None, 0));
+    }
+    let on = match hit {
+        Hit::Tab(i) | Hit::Close(i) => Some(i),
+        _ => None,
+    };
+    let (then, prev, n) = last;
+    let again = n > 0 && prev == on && now.duration_since(then).as_millis() <= double_ms;
+    let clicks = if again { n.saturating_add(1) } else { 1 };
+    (clicks, (now, on, clicks))
+}
+
 /// What a session's screen takes from its profile, at start (`install_pane`) and after every
 /// profile edit (`refresh_panes`), as iTerm2 re-applies them (`PTYSession.m:7013-7016`): the
 /// prompt column, the profile's Unicode version, scrollback with the status bar, the triggers.
@@ -3829,6 +3863,41 @@ mod tests {
         assert_eq!(usable_size(0, 0), None);
         assert_eq!(usable_size(800, 0), None);
         assert_eq!(usable_size(800, 600), Some((800, 600)));
+    }
+
+    #[test]
+    fn only_a_left_press_holds_a_close_button() {
+        use tab_layout::Hit;
+        // iTerm2 sets `closeButtonPressed` in `mouseDown:` only, never for the middle button.
+        assert_eq!(held_close(Some((Hit::Close(2), 1, false))), Some(2));
+        assert_eq!(held_close(Some((Hit::Close(2), 2, true))), Some(2));
+        assert_eq!(held_close(Some((Hit::Close(2), 0, false))), None, "a middle press");
+        assert_eq!(held_close(Some((Hit::Tab(2), 1, false))), None);
+        assert_eq!(held_close(None), None);
+    }
+
+    #[test]
+    fn tab_clicks_count_on_one_tab() {
+        use tab_layout::Hit;
+        let t0 = Instant::now();
+        let soon = t0 + std::time::Duration::from_millis(100);
+        let late = t0 + std::time::Duration::from_millis(900);
+        let start = (t0, None, 0);
+        // A first press counts 1; again on the same tab within the time 2; later 1 again.
+        let (n, last) = tab_click_count(start, t0, Hit::Tab(1), 500);
+        assert_eq!((n, last), (1, (t0, Some(1), 1)));
+        assert_eq!(tab_click_count(last, soon, Hit::Tab(1), 500).0, 2);
+        assert_eq!(tab_click_count(last, soon, Hit::Close(1), 500).0, 2, "the close button is on the tab");
+        assert_eq!(tab_click_count(last, soon, Hit::Tab(2), 500).0, 1, "another tab");
+        assert_eq!(tab_click_count(last, late, Hit::Tab(1), 500).0, 1, "too late");
+        // Twice on the empty bar counts 2 (a double click opens a tab).
+        let (_, bar) = tab_click_count(start, t0, Hit::Bar, 500);
+        assert_eq!(tab_click_count(bar, soon, Hit::Bar, 500).0, 2);
+        // The "+" counts 1, even right after a press on the empty bar, and starts the count over.
+        let (n, after) = tab_click_count(bar, soon, Hit::Add, 500);
+        assert_eq!(n, 1);
+        assert_eq!(after.2, 0);
+        assert_eq!(tab_click_count(after, soon, Hit::Bar, 500).0, 1);
     }
 
     #[test]
