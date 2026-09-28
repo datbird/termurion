@@ -2340,6 +2340,27 @@ impl App {
         crate::tab_theme::palette(self.tab_style(), &inputs)
     }
 
+    /// The split pane divider color (`tab_theme::divider_color`). Minimal starts from the focused
+    /// pane's unprocessed background; at prominence 0 the divider takes the one background the
+    /// window's other panes share (`PT:1911-1950`). Inactive panes keep their own background
+    /// under the dimming overlay, and Dim only text has no key, so both conditions hold.
+    pub(super) fn divider_color(&self) -> crate::palette::Rgb {
+        let bg = |id: PaneId| self.panes.get(&id).map(|p| p.screen.palette.bg);
+        let current = self.tabs.get(self.active).map(|t| t.focused);
+        let decoration_bg = current.and_then(bg).unwrap_or_else(|| crate::palette::Palette::default().bg);
+        let prominence = self.globals.number("MinimalSplitPaneDividerProminence").map_or(0.15, |v| v as f32);
+        let mut others: Vec<crate::palette::Rgb> = Vec::new();
+        for id in self.tabs.iter().flat_map(|t| t.layout.panes()).filter(|id| Some(*id) != current) {
+            if let Some(c) = bg(id) {
+                if !others.contains(&c) {
+                    others.push(c);
+                }
+            }
+        }
+        let invisible = (others.len() == 1).then(|| others[0]);
+        crate::tab_theme::divider_color(self.tab_style(), self.resolved_style(), decoration_bg, prominence, invisible)
+    }
+
     /// Whether a pane is drawn undimmed: the focused pane of a window that is not key while Dim
     /// background windows is off, or (in the key window) a pane the broadcast input reaches.
     fn pane_undimmed(&self, id: PaneId, focused_pane: PaneId, receives: bool, bview: &crate::broadcast::View) -> bool {
@@ -4132,7 +4153,7 @@ impl App {
             }
             self.draw_clippings(&mut frame, cell);
             if tab.zoomed.is_none() {
-                scene::dividers(&mut frame, &tab.layout.dividers(area, GAP));
+                scene::dividers(&mut frame, &tab.layout.dividers(area, GAP), self.divider_color());
             }
             self.find_bar_rect = None;
             self.find_mode_rect = None;

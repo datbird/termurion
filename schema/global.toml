@@ -2975,6 +2975,15 @@ default = 0.2
 help = "In the Minimal theme, how prominent should the tab outline be?\nTakes a value in 0 to 1, where 0 is invisible and 1 is very prominent"
 
 [[setting]]
+key = "MinimalSplitPaneDividerProminence"
+tab = "Advanced"
+section = "Tabs"
+label = "In the Minimal theme, how prominent should split pane dividers be?"
+type = "float"
+default = 0.15
+help = "In the Minimal theme, how prominent should split pane dividers be?\nTakes a value in 0 to 1, where 0 is invisible and 1 is very prominent"
+
+[[setting]]
 key = "MinimalTextLegibilityAdjustment"
 tab = "Advanced"
 section = "Tabs"

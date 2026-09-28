@@ -2022,6 +2022,15 @@ mod tests {
     }
 
     #[test]
+    fn divider_row_follows_iterm2() {
+        let row = schema::find_global("MinimalSplitPaneDividerProminence").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Tabs"));
+        assert_eq!(row.kind, Kind::Float);
+        assert_eq!(row.default, Some(Value::Float(0.15)));
+        assert_eq!(row.label, "In the Minimal theme, how prominent should split pane dividers be?");
+    }
+
+    #[test]
     fn minimal_rows_follow_iterm2() {
         for (key, label, default) in [
             ("MinimalTabStyleBackgroundColorDifference", "In the Minimal theme, how different should the background color of the selected tab be from the others?", Value::Float(0.05)),

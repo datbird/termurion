@@ -478,6 +478,43 @@ pub fn minimal_underline(tab_dark: bool, bar_dark: bool, prominence: f32, focuse
     }
 }
 
+/// The perceived brightness of a color in 0 to 1 (`perceivedBrightness`, `NCI:23-40`):
+/// `0.30 r + 0.59 g + 0.11 b`. Not the HSP brightness of `hsp`.
+pub fn perceived(c: Rgb) -> f32 {
+    let n = |v: u8| f64::from(v) / 255.0;
+    (0.30 * n(c.r) + 0.59 * n(c.g) + 0.11 * n(c.b)) as f32
+}
+
+/// `colorDimmedBy:towardsGrayLevel:` (`NCI:756-778`): each component `(1 - amount) c + amount
+/// gray`, rounded half up.
+pub fn toward_gray(c: Rgb, amount: f32, gray: f32) -> Rgb {
+    let (a, g) = (f64::from(amount), f64::from(gray));
+    let mix = |v: u8| (((1.0 - a) * f64::from(v) / 255.0 + a * g) * 255.0 + 0.5 + 1e-6).floor().clamp(0.0, 255.0) as u8;
+    rgb(mix(c.r), mix(c.g), mix(c.b))
+}
+
+/// The split pane divider color (`terminalWindowDecorationControlColor`, `PT:1911-1950`). Minimal:
+/// `invisible` (the one background every other session has, offered by the caller only when the
+/// prominence is 0 and dimming is on) keeps the divider unseen; else the decoration background
+/// `decoration_bg` (the session's unprocessed background) moved by `prominence` toward white when
+/// its perceived brightness is under 0.5, toward black otherwise. Every other theme: light grey
+/// (2/3) for the light styles, dark grey (1/3) for the dark ones, by the `resolved` style.
+pub fn divider_color(style: TabStyle, resolved: TabStyle, decoration_bg: Rgb, prominence: f32, invisible: Option<Rgb>) -> Rgb {
+    if style == TabStyle::Minimal {
+        if prominence == 0.0 {
+            if let Some(c) = invisible {
+                return c;
+            }
+        }
+        let target = if perceived(decoration_bg) < 0.5 { 1.0 } else { 0.0 };
+        return toward_gray(decoration_bg, prominence, target);
+    }
+    match resolved {
+        TabStyle::Dark | TabStyle::DarkHighContrast => rgb(85, 85, 85),
+        _ => rgb(170, 170, 170),
+    }
+}
+
 /// The perceived brightness of a color in 0 to 1 (HSP: `sqrt(0.241 r^2 + 0.691 g^2 + 0.068 b^2)`,
 /// `PSMC:39-47`).
 pub fn hsp(c: Rgb) -> f32 {
@@ -784,5 +821,26 @@ mod tests {
         assert!(!theme_changed(Some(true), true));
         assert!(theme_changed(Some(true), false));
         assert!(theme_changed(Some(false), true));
+    }
+
+    #[test]
+    fn divider_color_follows_iterm2() {
+        use TabStyle::*;
+        let (black, white) = (rgb(0, 0, 0), rgb(255, 255, 255));
+        let light = rgb(170, 170, 170);
+        assert_eq!(divider_color(Automatic, Light, black, 0.15, None), light, "lightGrayColor, 2/3");
+        assert_eq!(divider_color(Light, Light, black, 0.15, None), light);
+        assert_eq!(divider_color(LightHighContrast, LightHighContrast, black, 0.15, None), light);
+        assert_eq!(divider_color(Dark, Dark, white, 0.15, None), rgb(85, 85, 85), "darkGrayColor, 1/3");
+        assert_eq!(divider_color(DarkHighContrast, DarkHighContrast, white, 0.15, None), rgb(85, 85, 85));
+        assert_eq!(divider_color(Compact, Dark, white, 0.15, None), rgb(85, 85, 85), "Compact resolves like Regular");
+        assert_eq!(divider_color(Minimal, Dark, black, 0.15, None), rgb(38, 38, 38), "dark background moves toward white");
+        assert_eq!(divider_color(Minimal, Light, white, 0.15, None), rgb(217, 217, 217), "light background moves toward black");
+        assert_eq!(divider_color(Minimal, Dark, black, 0.0, Some(rgb(20, 20, 20))), rgb(20, 20, 20), "invisible at prominence 0");
+        assert_eq!(divider_color(Minimal, Dark, black, 0.0, None), black);
+        assert_eq!(divider_color(Minimal, Dark, black, 0.15, Some(rgb(20, 20, 20))), rgb(38, 38, 38), "invisible only at prominence 0");
+        assert!((perceived(rgb(255, 0, 0)) - 0.30).abs() < 1e-6);
+        assert!((perceived(rgb(0, 255, 0)) - 0.59).abs() < 1e-6);
+        assert_eq!(toward_gray(rgb(100, 100, 100), 0.0, 1.0), rgb(100, 100, 100));
     }
 }

@@ -1531,9 +1531,10 @@ pub fn spinner(frame: &mut Frame, rect: Rect, turn: f32, color: Rgb, scale: f32)
     }
 }
 
-pub fn dividers(frame: &mut Frame, dividers: &[Divider]) {
+/// The split pane dividers, in the theme's `color` (`App::divider_color`).
+pub fn dividers(frame: &mut Frame, dividers: &[Divider], color: Rgb) {
     for d in dividers {
-        frame.overlay.push(Quad { rect: d.rect, color: rgba(DIVIDER, 1.0) });
+        frame.overlay.push(Quad { rect: d.rect, color: rgba(color, 1.0) });
     }
 }
 
