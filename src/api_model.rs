@@ -426,7 +426,7 @@ pub fn fixture_session(id: PaneId) -> ApiSession {
 /// broadcasting) and 6 (pane 4 in tmux window @2 of client "gw"), tab 5 selected; window
 /// "pty-B" number 1 with tab 9 (pane 7); pane 8 buried. "pty-A" is key and current.
 #[cfg(test)]
-pub fn fixture() -> Model {
+pub(crate) fn fixture() -> Model {
     let tree = Tree::Split {
         axis: Axis::Row,
         ratio: 0.5,

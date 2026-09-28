@@ -105,7 +105,8 @@ pub struct Cmd {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub stdin: Option<Vec<u8>>,
-    /// Standard streams shared with the utility; the output is not captured.
+    /// Standard streams shared with the utility; the output is not captured, and Ctrl+C is
+    /// left to the program (the utility waits for it and returns its code).
     pub inherit: bool,
     /// Standard error discarded (the scripts' `2>/dev/null`).
     pub quiet: bool,
@@ -187,6 +188,7 @@ pub fn run(name: &str, args: &[String], io: &mut Io) -> i32 {
         "it2getvar" => util_query::it2getvar(args, io),
         "it2profile" => util_query::it2profile(args, io),
         "it2ul" => util_query::it2ul(args, io),
+        "it2api" => crate::util_api::it2api(args, io),
         #[cfg(windows)]
         "imgls" => {
             let fs = crate::util_imgls::WinFs::new(io.cwd.clone());
@@ -353,6 +355,12 @@ pub(crate) struct Harness {
 #[cfg(test)]
 impl Harness {
     pub fn run(&mut self, name: &str, args: &[&str]) -> i32 {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        self.with_io(&mut |io| run(name, &args, io))
+    }
+
+    /// Calls `f` with an `Io` over the harness's fields (a utility's inner entry point).
+    pub fn with_io(&mut self, f: &mut dyn FnMut(&mut Io) -> i32) -> i32 {
         let Harness { out, err, input, stdin_tty, stdout_tty, env, cwd, tty, runs, answers, missing, randoms } = self;
         let mut input: &[u8] = input;
         let env_fn = |k: &str| env.get(k).cloned();
@@ -375,8 +383,7 @@ impl Harness {
             run: &mut run_fn,
             have: &have,
         };
-        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        run(name, &args, &mut io)
+        f(&mut io)
     }
 }
 

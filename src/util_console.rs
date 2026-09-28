@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{BOOL, CloseHandle, FALSE, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, TRUE, WAIT_OBJECT_0};
@@ -86,7 +87,14 @@ pub fn set_pending_st(s: Option<&'static str>) {
     *PENDING_ST.lock().unwrap_or_else(|e| e.into_inner()) = s;
 }
 
+/// A program sharing the utility's streams is running (`Cmd::inherit`): Ctrl+C is its to
+/// handle, and the utility keeps waiting for it.
+static CHILD_OWNS_CTRL_C: AtomicBool = AtomicBool::new(false);
+
 unsafe extern "system" fn ctrl_restore(_event: u32) -> BOOL {
+    if CHILD_OWNS_CTRL_C.load(Ordering::SeqCst) {
+        return TRUE;
+    }
     // The ST first, while VT output is still on, so it closes the OSC as a sequence.
     if let Some(st) = *PENDING_ST.lock().unwrap_or_else(|e| e.into_inner()) {
         write_handle(unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }, st.as_bytes());
@@ -266,7 +274,10 @@ pub fn run_command(c: &Cmd) -> Result<Output, String> {
         };
     }
     if c.inherit {
-        let status = cmd.status().map_err(|e| e.to_string())?;
+        CHILD_OWNS_CTRL_C.store(true, Ordering::SeqCst);
+        let status = cmd.status();
+        CHILD_OWNS_CTRL_C.store(false, Ordering::SeqCst);
+        let status = status.map_err(|e| e.to_string())?;
         return Ok(Output { code: status.code().unwrap_or(1), stdout: Vec::new() });
     }
     cmd.stdout(Stdio::piped()).stderr(if c.quiet { Stdio::null() } else { Stdio::inherit() });

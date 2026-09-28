@@ -12,7 +12,7 @@ pub const FOLDER: &str = "utilities";
 /// The multi-call program every utility name links to.
 pub const EXE: &str = "tandem-utils.exe";
 
-/// iTerm2's it2api script, written into the folder (Task 7).
+/// iTerm2's it2api script (`util_api::script`), written into the folder.
 pub const API_SCRIPT: &str = "it2api.py";
 
 /// A file's length and modified time (nanoseconds since 1970), enough to tell a link or copy
@@ -48,7 +48,8 @@ fn stamp(path: &Path) -> Option<Stamp> {
 /// Makes `exe_dir\utilities` and brings one `<name>.exe` per `util_cli::NAMES` entry up to
 /// date with `exe_dir\tandem-utils.exe`: a stale one is removed and hard linked again, or
 /// copied when a link cannot be made (another volume, a file system without links). A name
-/// that cannot be refreshed (a running utility locks its file) is skipped. Files Tandem does
+/// that cannot be refreshed (a running utility locks its file) is skipped. `it2api.py` is
+/// written when its bytes are not `util_api::script()`'s (a failed write is skipped too). Files Tandem does
 /// not make are never touched. Err when `tandem-utils.exe` is missing (no folder is made) or
 /// the folder cannot be made.
 #[cfg(windows)]
@@ -68,6 +69,11 @@ pub fn ensure(exe_dir: &Path) -> Result<PathBuf, String> {
         if std::fs::hard_link(&src, &dst).is_err() {
             let _ = std::fs::copy(&src, &dst);
         }
+    }
+    let api = folder.join(API_SCRIPT);
+    let script = crate::util_api::script();
+    if std::fs::read(&api).ok().as_deref() != Some(script.as_bytes()) {
+        let _ = std::fs::write(&api, script);
     }
     Ok(folder)
 }
@@ -114,6 +120,9 @@ mod tests {
         let mut names: Vec<String> = std::fs::read_dir(&folder).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         let want: Vec<String> = crate::util_cli::NAMES.iter().map(|n| format!("{n}.exe")).collect();
+        let api = folder.join(API_SCRIPT);
+        assert_eq!(std::fs::read_to_string(&api).unwrap(), crate::util_api::script(), "it2api.py is the script");
+        names.retain(|n| n != API_SCRIPT);
         assert_eq!(names, want, "one file per name");
         assert_eq!(want.first().map(String::as_str), Some("imgcat.exe"));
         assert_eq!(want.last().map(String::as_str), Some("it2universion.exe"));
@@ -128,8 +137,15 @@ mod tests {
 
         // An unrelated file survives; a second pass changes nothing.
         std::fs::write(folder.join("notes.txt"), "mine").unwrap();
+        let api_time = std::fs::metadata(&api).unwrap().modified().unwrap();
         ensure(&dir).unwrap();
         assert_eq!(times(&folder), first, "nothing refreshed");
+        assert_eq!(std::fs::metadata(&api).unwrap().modified().unwrap(), api_time, "it2api.py not rewritten");
+
+        // A changed it2api.py is written again.
+        std::fs::write(&api, "print('changed')\n").unwrap();
+        ensure(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(&api).unwrap(), crate::util_api::script(), "rewritten");
 
         // A new, longer tandem-utils.exe (a new file, so the old links keep the old bytes).
         std::fs::remove_file(&src).unwrap();
