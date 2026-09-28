@@ -561,6 +561,8 @@ pub struct Conductor {
     pub shell: Option<String>,
     pub saved: Option<SavedState>,
     pub python_ok: bool,
+    /// Set by `exec_framer` (14c, `conductor_framer.rs`).
+    pub(crate) framer_version: Option<u8>,
     line_prefix: String,
     depth: i32,
     effects: Vec<Effect>,
@@ -602,6 +604,7 @@ impl Conductor {
             shell: None,
             saved: None,
             python_ok: false,
+            framer_version: None,
             line_prefix: format!("\u{3}{prefix_uuid}"),
             depth,
             effects: Vec::new(),
@@ -692,11 +695,10 @@ impl Conductor {
         }
     }
 
-    /// A remote python of `MIN_PYTHON` or later. 14c Task 1 replaces the login shell here
-    /// with execFramer (ruling 14b-6).
+    /// A remote python of `MIN_PYTHON` or later starts the framer (ruling 14b-6).
     fn python_ready(&mut self) {
         self.python_ok = true;
-        self.exec_login_shell();
+        self.frame();
     }
 
     /// execLoginShell (`CD:2028-2038`): input stops queueing in the connecting pane, then an
@@ -1991,12 +1993,14 @@ mod tests {
         reply(&mut c, &[], 0);
         goes_to_login(&mut c, "no line");
 
-        // Until 14c Task 1 adds execFramer, a usable python also goes to the login shell.
+        // A usable python launches the framer (14c Task 1), not the login shell.
+        let runpython = |c: &Conductor| c.in_flight() == Some(&Command::RunPython(crate::framer_script::framer_code(0)));
         for ok in ["Python 3.12.1", "Python 3.7"] {
             let mut c = at_python();
             reply(&mut c, &[ok], 0);
             assert!(c.python_ok, "{ok}");
-            assert_eq!(c.take_effects(), [Effect::StopQueueingInput, Effect::Write(sent(&login))], "{ok}");
+            assert!(runpython(&c), "{ok}");
+            assert!(!c.take_effects().contains(&Effect::StopQueueingInput), "{ok}");
         }
 
         // Lines are joined with "\n" before the regex (CD:2143-2145).
