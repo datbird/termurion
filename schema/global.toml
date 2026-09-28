@@ -1494,12 +1494,407 @@ help = "Suppress the confirmation before the Jobs tool sends a signal.\nSet by t
 [[setting]]
 key = "GenerativeAIAllowed"
 tab = "Advanced"
-section = "AI"
+section = "General"
 label = "Allow the use of large language model APIs?"
 type = "bool"
 default = true
 help = "Allow the use of large language model APIs?\nThe purpose of this setting is to make it easy for managed environments to disable the use of LLMs. The user defaults key is `GenerativeAIAllowed`."
 
+
+[[setting]]
+key = "EnableAI"
+tab = "General"
+section = "AI"
+label = "Enable generative AI features"
+type = "bool"
+default = false
+help = "Enable generative AI features\nNo data is sent to third parties without your explicit permission. You will always be prompted before data is shared."
+
+[[setting]]
+key = "AICompletions"
+tab = "General"
+section = "AI"
+label = "Offer AI command suggestion in Composer & Auto Composer"
+type = "bool"
+default = false
+help = "Offer AI command suggestion in Composer & Auto Composer\nWhen enabled, everything you type in the Composer will be shared with your AI provider."
+
+[[setting]]
+key = "AIVendor"
+tab = "General"
+section = "AI"
+label = "AI vendor"
+type = "int"
+default = 2
+help = "AI vendor\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "UseRecommendedAIModel"
+tab = "General"
+section = "AI"
+label = "Use the vendor's recommended model"
+type = "bool"
+default = true
+help = "Use the vendor's recommended model\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AiModel"
+tab = "General"
+section = "AI"
+label = "AI model"
+type = "string"
+default = "gpt-4o-mini"
+help = "AI model\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AiMaxTokens"
+tab = "General"
+section = "AI"
+label = "Context tokens"
+type = "int"
+default = 128000
+help = "Context tokens\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AiResponseMaxTokens"
+tab = "General"
+section = "AI"
+label = "Max response tokens"
+type = "int"
+default = 8192
+help = "Max response tokens\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AI Timeout"
+tab = "General"
+section = "AI"
+label = "AI timeout"
+type = "int"
+default = 1200
+help = "AI timeout\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AitermURL"
+tab = "General"
+section = "AI"
+label = "AI endpoint URL"
+type = "string"
+default = ""
+help = "AI endpoint URL\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AitermUseLegacyAPI"
+tab = "General"
+section = "AI"
+label = "Use the legacy API (deprecated)"
+type = "bool"
+default = false
+help = "Use the legacy API (deprecated)\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AITermAPI"
+tab = "General"
+section = "AI"
+label = "AI API"
+type = "int"
+default = 2
+help = "AI API\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureHostedFileSearch"
+tab = "General"
+section = "AI"
+label = "Hosted file search"
+type = "bool"
+default = false
+help = "Hosted file search\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureHostedCodeInterpeter"
+tab = "General"
+section = "AI"
+label = "Hosted code interpreter"
+type = "bool"
+default = false
+help = "Hosted code interpreter\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureHostedWebSearch"
+tab = "General"
+section = "AI"
+label = "Hosted web search"
+type = "bool"
+default = false
+help = "Hosted web search\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureFunctionCalling"
+tab = "General"
+section = "AI"
+label = "Function calling"
+type = "bool"
+default = false
+help = "Function calling\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIFeatureStreamingResponses"
+tab = "General"
+section = "AI"
+label = "Streaming responses"
+type = "bool"
+default = false
+help = "Streaming responses\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIVectorStore"
+tab = "General"
+section = "AI"
+label = "Vector store"
+type = "int"
+default = 0
+help = "Vector store\nSet by the AI Model popup and the model editor."
+
+[[setting]]
+key = "AIManualModelConfigurations"
+tab = "General"
+section = "AI"
+label = "Manual AI Models"
+type = "list"
+default = []
+help = "Manual AI Models\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIEconomyModelName"
+tab = "General"
+section = "AI"
+label = "Economy model"
+type = "string"
+default = ""
+help = "Economy model\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIOllamaRegularModel"
+tab = "General"
+section = "AI"
+label = "Regular:"
+type = "string"
+default = ""
+help = "Regular:\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIOllamaEconomyModel"
+tab = "General"
+section = "AI"
+label = "Budget:"
+type = "string"
+default = ""
+help = "Budget:\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AI Safety Check"
+tab = "General"
+section = "AI"
+label = "Use AI to check safety of commands before running them"
+type = "bool"
+default = false
+help = "Use AI to check safety of commands before running them\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AICustomHeadersEnabled"
+tab = "General"
+section = "AI"
+label = "Custom headers (legacy)"
+type = "bool"
+default = false
+help = "Custom headers (legacy)\nLegacy; copied once into each manual model."
+
+[[setting]]
+key = "AICustomHeaders"
+tab = "General"
+section = "AI"
+label = "Custom header list (legacy)"
+type = "list"
+default = []
+help = "Custom header list (legacy)\nLegacy; copied once into each manual model."
+
+[[setting]]
+key = "AIZeroDataRetention"
+tab = "General"
+section = "AI"
+label = "Enable \u201Czero data retention\u201D (send whole conversation every time)"
+type = "bool"
+default = false
+help = "Enable \u201Czero data retention\u201D (send whole conversation every time)\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIModelUpdatesEnabled"
+tab = "General"
+section = "AI"
+label = "Automatically update available AI models from live online database"
+type = "bool"
+default = false
+help = "Automatically update available AI models from live online database\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionCheckTerminalState"
+tab = "General"
+section = "AI"
+label = "Check Terminal State"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Provide Automatically" }, { value = 2, label = "Never Allow" } ]
+help = "Check Terminal State\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionRunCommands"
+tab = "General"
+section = "AI"
+label = "Run Commands"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Run Commands\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionViewHistory"
+tab = "General"
+section = "AI"
+label = "View Contents"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "View Contents\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionWriteToClipboard"
+tab = "General"
+section = "AI"
+label = "Write to Clipboard"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Write to Clipboard\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionTypeForYou"
+tab = "General"
+section = "AI"
+label = "Control Terminal"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Control Terminal\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionViewManpages"
+tab = "General"
+section = "AI"
+label = "View Manpages"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "View Manpages\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionWriteToFilesystem"
+tab = "General"
+section = "AI"
+label = "Write to Filesystem"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Write to Filesystem\nSet by Settings > General > AI."
+
+[[setting]]
+key = "AIPermissionActInWebBrowser"
+tab = "General"
+section = "AI"
+label = "Act in Web Browser"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Ask Each Time" }, { value = 1, label = "Allow Without Asking" }, { value = 2, label = "Never Allow" } ]
+help = "Act in Web Browser\nSet by Settings > General > AI."
+
+[[setting]]
+key = "llmPlatform"
+tab = "Advanced"
+section = "General"
+label = "LLM Platform."
+type = "string"
+default = "OpenAI"
+help = "LLM Platform.\nLegal values are: OpenAI, Azure, Gemini. This determines the format of requests and responses."
+
+[[setting]]
+key = "aiModelCatalogURL"
+tab = "Advanced"
+section = "General"
+label = "URL to check for updates to the AI model catalog."
+type = "string"
+default = "https://iterm2.com/downloads/ai/manifest.json"
+help = "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Tandem ships its catalog with each release and never downloads a newer one, so this URL is not used."
+
+[[setting]]
+key = "aiChatVerboseConsoleLogging"
+tab = "Advanced"
+section = "Debugging"
+label = "Log AI chat traffic to the system console."
+type = "bool"
+default = false
+help = "Log AI chat traffic to the system console.\nEmits per-turn user / agent / tool entries so you can trace exactly what the agent received and produced. Useful for debugging tool dispatch and history translation. Off by default; turn on only while reproducing an issue."
+
+[[setting]]
+key = "aiChatRawWireLogging"
+tab = "Advanced"
+section = "Debugging"
+label = "Log raw AI API requests and responses to disk."
+type = "bool"
+default = false
+help = "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. API keys in Authorization, x-api-key, api-key and x-goog-api-key headers, and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished."
+
+[[setting]]
+key = "unameCommand"
+tab = "Advanced"
+section = "SSH Integration"
+label = "Command used to set the `uname` variable."
+type = "string"
+default = "uname -s"
+help = "Command used to set the `uname` variable.\nThe main use of this is to use in the AI prompt so the language model knows the operating system."
+
+[[setting]]
+key = "aiModernModelPrefixes"
+tab = "Advanced"
+section = "Experimental Features"
+label = "AI model name substrings that use the modern 'completions' API."
+type = "string"
+default = "gpt-"
+help = "AI model name substrings that use the modern 'completions' API.\nSubstrings should be space-delimited. This handles OpenRouter-style names like 'openai/gpt-4o'. Note that o1 models use a different API and have hard-coded behavior."
+
+[[setting]]
+key = "aiProxy"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Host and port for proxy for AI requests."
+type = "string"
+default = ""
+help = "Host and port for proxy for AI requests.\ni.e., example.com:8080"
+
+[[setting]]
+key = "ollamaNumCtx"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Ollama context window size (num_ctx) for native /api/chat requests."
+type = "int"
+default = 0
+help = "Ollama context window size (num_ctx) for native /api/chat requests.\nOllama defaults num_ctx to a small value (around 4096) regardless of the model, silently truncating long prompts. 0 means size it automatically per request, capped at the model\u2019s context window. A positive value overrides that and is sent verbatim (larger values use more memory)."
+
+[[setting]]
+key = "ollamaKeepAlive"
+tab = "Advanced"
+section = "Experimental Features"
+label = "Ollama keep_alive for native /api/chat requests."
+type = "string"
+default = "30m"
+help = "Ollama keep_alive for native /api/chat requests.\nHow long Ollama keeps the model resident after a request, e.g. 30m, 1h, or 0 to unload immediately. Empty means omit the field and use Ollama\u2019s own default."
 [[setting]]
 key = "noSyncDontWarnAboutTmuxPause"
 tab = "Advanced"

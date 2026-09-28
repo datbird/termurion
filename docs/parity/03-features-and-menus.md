@@ -189,7 +189,7 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Session > Open Command History... | Shift+Cmd+; | Opens the Toolbelt command history panel/popup. (milestone 9) | have, milestone 9c |
 | Session > Open Recent Directories... | Opt+Cmd+/ | Opens the Toolbelt recent directories panel/popup. (milestone 9) | have, milestone 9c |
 | Session > Open Paste History... | Shift+Cmd+H | Opens the paste history popup for re-pasting earlier clipboard entries. (milestone 9) | have, milestone 9b |
-| Session > Open AI Chat... | Ctrl+Cmd+Y | Opens an AI chat window scoped to the current session. (milestone 12) | missing |
+| Session > Open AI Chat... | Ctrl+Shift+Cmd+Y | Opens an AI chat window scoped to the current session. (milestone 12) | missing |
 | Session > Triggers > Add Trigger... | no shortcut | Adds a new trigger rule, a regex matched action on output, for the profile. (milestone 6) | have, milestone 6a |
 | Session > Triggers > Edit Triggers | no shortcut | Opens the trigger list editor for the current profile. (milestone 6) | have, milestone 6a |
 | Session > Triggers > Enable Triggers in Interactive Apps | no shortcut | Allows triggers to fire even while a full-screen interactive app such as vim is running. (milestone 6) | have, milestone 6a |
@@ -316,8 +316,8 @@ Sources used: `/home/tbird/gitrepos/iterm2-ref/sources/MainMenu/Base.lproj/MainM
 | Window > Resize Window > Decrease Width | no shortcut | Shrinks the window width by one column via keyboard. (milestone 7) | have, milestone 7a |
 | Window > Resize Window > Increase Width | no shortcut | Grows the window width by one column via keyboard. (milestone 7) | have, milestone 7a |
 | Window > Password Manager | Opt+Cmd+F | Opens the Password Manager window for storing and injecting credentials. (milestone 10) | have | Milestone 10b: Win+Alt+F, one window per terminal window, owned by it; opens for the focused (or given) session, unburying and revealing it first. |
-| Window > AI Chats | Cmd+Y | Opens the window listing all AI chat conversations. (milestone 12) | missing |
-| Window > Cockpit | Opt+Cmd+C | Opens the Cockpit window, a command and session overview dashboard. (milestone 12) | missing |
+| Window > AI Chats | Shift+Cmd+Y | Opens the window listing all AI chat conversations. (milestone 12) | missing |
+| Window > Cockpit | Opt+Shift+Cmd+C | Opens the Cockpit, a floating panel listing every session by status, window or workgroup, with a composer that types into chosen sessions; it has no LLM and is not gated on EnableAI. (milestone 12) | missing |
 | Window > Pin Hotkey Window | Shift+Cmd+- | Pins the hotkey (Quake-style dropdown) window so it stays open. (milestone 7) | have |
 | Window > Bring All To Front | no shortcut | Brings all of the app's windows to the front. | have |
 
@@ -686,6 +686,7 @@ Everything iTerm2 supports beyond baseline xterm compatibility. Tandem's VT engi
 | AI features | Withheld-key advice | Warns the user when no API key is configured and explains how to add one. | missing | |
 | AI features | Chat history persistence | Chats and messages are stored in a local database and browsable later. | missing | |
 | AI features | In-chat find | Search within AI chat transcripts. | missing | |
+| AI features | Orchestration mode | An AI chat that drives many sessions: the model asks to switch it on (request_orchestration_enable), then gets the orchestration prompt, 16 orchestration tools and session_* mirrors. | missing | Milestone 12f; the workgroup-only tools wait for the milestone 13 Workgroups sub-part. |
 
 ### Python API
 | Subsystem | Feature | What it does | Tandem status | Windows note |
