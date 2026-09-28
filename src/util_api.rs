@@ -25,18 +25,22 @@ pub fn script() -> String {
 
 /// The Pythons it2api may run, best first: the first `py.exe` on PATH as `py -3`, then each
 /// `python.exe` and `python3.exe` on PATH in PATH order, skipping the WindowsApps aliases
-/// (they open the Store instead of running Python).
+/// (they open the Store instead of running Python). Only absolute PATH folders that are not
+/// network paths, and have no link on the way to one (`util_cli::may_open`), are looked in:
+/// never the working folder, a relative, drive-relative or rooted one, or a share; `is_file`
+/// is never asked about any other.
 pub fn python_candidates(path_var: &str, is_file: &dyn Fn(&Path) -> bool) -> Vec<Vec<String>> {
-    let dirs: Vec<&str> = path_var.split(';').map(str::trim).filter(|d| !d.is_empty()).collect();
-    let alias = |p: &Path| p.to_string_lossy().to_ascii_lowercase().contains("\\windowsapps\\");
+    let dirs: Vec<&str> = path_var.split(';').map(str::trim).filter(|d| !d.is_empty() && Path::new(d).is_absolute()).collect();
+    let alias = |p: &Path| p.to_string_lossy().to_ascii_lowercase().replace('/', "\\").contains("\\windowsapps\\");
+    let usable = |p: &Path| !alias(p) && crate::util_cli::may_open(p) && is_file(p);
     let mut out = Vec::new();
-    if let Some(py) = dirs.iter().map(|d| Path::new(d).join("py.exe")).find(|p| !alias(p) && is_file(p)) {
+    if let Some(py) = dirs.iter().map(|d| Path::new(d).join("py.exe")).find(|p| usable(p)) {
         out.push(vec![py.to_string_lossy().into_owned(), "-3".to_string()]);
     }
     for dir in &dirs {
         for name in ["python.exe", "python3.exe"] {
             let exe = Path::new(dir).join(name);
-            if !alias(&exe) && is_file(&exe) {
+            if usable(&exe) {
                 out.push(vec![exe.to_string_lossy().into_owned()]);
             }
         }
@@ -135,6 +139,28 @@ mod tests {
         // A py.exe under WindowsApps is never a candidate either.
         let apps = r"C:\Users\u\AppData\Local\Microsoft\WindowsApps";
         assert!(python_candidates(apps, &|_: &Path| true).is_empty(), "nothing under WindowsApps");
+        // The alias is recognized with forward slashes and in any case too.
+        for apps in [r"C:/Users/u/AppData/Local/Microsoft/WindowsApps", r"C:/Users/u/AppData/Local/Microsoft/windowsapps/", r"C:\Users\u\AppData\Local\Microsoft\WINDOWSAPPS"] {
+            assert!(python_candidates(apps, &|_: &Path| true).is_empty(), "nothing under {apps}");
+        }
+        // Only absolute, local PATH folders are ever looked in: never the working folder, a
+        // relative, drive-relative or rooted folder, or a network one (the Script runtime's
+        // `find_backend` uses this list too).
+        let probed = std::cell::RefCell::new(Vec::new());
+        let every = |p: &Path| {
+            probed.borrow_mut().push(p.to_path_buf());
+            true
+        };
+        let unsafe_path = r".;bin;C:rel;\rooted;\\host\s\py;//host/s/py;\\?\UNC\host\s\py;\\?\GLOBALROOT\Device\Mup\host\s;C:\Py312";
+        assert_eq!(
+            python_candidates(unsafe_path, &every),
+            vec![
+                vec![r"C:\Py312\py.exe".to_string(), "-3".to_string()],
+                vec![r"C:\Py312\python.exe".to_string()],
+                vec![r"C:\Py312\python3.exe".to_string()],
+            ]
+        );
+        assert!(probed.borrow().iter().all(|p| p.starts_with(r"C:\Py312")), "probed {:?}", probed.borrow());
 
         assert_eq!(no_python(), "it2api needs Python 3. Install it, then run:\n\n    $ py -m pip install iterm2\n");
         let own = Path::new(r"C:\T\utilities");
@@ -170,6 +196,15 @@ mod tests {
         h.answers.push_back(Err("not found".into()));
         assert_eq!(h.with_io(&mut |io| launch(&args, io, own, &with_script)), 1);
         assert_eq!(String::from_utf8(h.err.clone()).unwrap(), "it2api: C:\\Windows\\py.exe: not found\n");
+    }
+
+    #[test]
+    fn it2api_entry_needs_python() {
+        // Through `util_cli::run`'s arm: no Python on PATH prints `no_python()`, exit 1.
+        let mut h = Harness { env: [("PATH".to_string(), r"C:\tandem-no-such-folder".to_string())].into(), ..Default::default() };
+        assert_eq!(h.run("it2api", &["list-sessions"]), 1);
+        assert_eq!(String::from_utf8(h.err.clone()).unwrap(), no_python());
+        assert!(h.out.is_empty() && h.runs.is_empty());
     }
 
     #[test]
@@ -216,6 +251,7 @@ mod tests {
     #[ignore]
     fn it2api_lists_sessions() {
         use crate::api_server::{CookieCheck, Event, Server};
+        use std::io::Read;
         use std::sync::{Arc, Mutex};
         use std::time::{Duration, Instant};
 
@@ -269,6 +305,18 @@ mod tests {
                 .unwrap();
             let mut process = Script(Some(child));
             let child = process.0.as_mut().unwrap();
+            // Both pipes are drained while the script runs, so a long output never blocks it.
+            let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+                std::thread::spawn(move || {
+                    let mut bytes = Vec::new();
+                    if let Some(mut p) = pipe {
+                        let _ = p.read_to_end(&mut bytes);
+                    }
+                    bytes
+                })
+            };
+            let stdout = drain(child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
+            let stderr = drain(child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read + Send>));
             let mut subs = crate::api_dispatch::Subscriptions::default();
             let deadline = Instant::now() + Duration::from_secs(60);
             while child.try_wait().unwrap().is_none() {
@@ -291,8 +339,9 @@ mod tests {
                     None => std::thread::sleep(Duration::from_millis(5)),
                 }
             }
-            let out = process.0.take().unwrap().wait_with_output().unwrap();
-            (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+            let status = process.0.take().unwrap().wait().unwrap();
+            let (out, err) = (stdout.join().unwrap(), stderr.join().unwrap());
+            (status.code(), String::from_utf8_lossy(&out).into_owned(), String::from_utf8_lossy(&err).into_owned())
         };
 
         let (code, out, err) = run("list-sessions");

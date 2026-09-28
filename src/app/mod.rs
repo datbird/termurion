@@ -1363,11 +1363,7 @@ impl App {
     /// A started pane takes its profile's look, triggers, and input settings.
     fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
-        pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
-        pane.screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
-        pane.screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
-        let (list, prefs) = triggers_ui::triggers_of(p);
-        pane.screen.set_triggers(list, prefs);
+        screen_follows_profile(&mut pane.screen, p);
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
         // `IRMemory` is read once per session (`S:121-122`).
@@ -1609,10 +1605,7 @@ impl App {
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
-            pane.own_mut().place_prompt_first_column = p.bool("Place Prompt at First Column");
-            pane.own_mut().set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
-            let (list, prefs) = triggers_ui::triggers_of(p);
-            pane.own_mut().set_triggers(list, prefs);
+            screen_follows_profile(pane.own_mut(), p);
         }
         self.tmux_resend_colors();
         self.tmux_save_tab_colors();
@@ -3384,9 +3377,40 @@ fn tab_hit(rects: &[Rect], tabs: usize, x: f32, y: f32) -> Option<usize> {
     rects.iter().position(|r| r.contains(x, y)).filter(|i| *i < tabs)
 }
 
+/// What a session's screen takes from its profile, at start (`install_pane`) and after every
+/// profile edit (`refresh_panes`), as iTerm2 re-applies them (`PTYSession.m:7013-7016`): the
+/// prompt column, the profile's Unicode version, scrollback with the status bar, the triggers.
+fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
+    screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+    screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
+    screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
+    let (list, prefs) = triggers_ui::triggers_of(p);
+    screen.set_triggers(list, prefs);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_edits_reach_the_screen() {
+        // A profile edit re-applies the Unicode version, as a new pane takes it (PS:7013-7016).
+        let mut s = crate::screen::Screen::new(10, 3);
+        let mut p = Profile::new("x");
+        p.values.insert("Unicode Version".into(), toml::Value::Integer(8));
+        p.values.insert("Place Prompt at First Column".into(), toml::Value::Boolean(false));
+        screen_follows_profile(&mut s, &p);
+        assert_eq!(s.profile_unicode, 8);
+        assert!(!s.place_prompt_first_column);
+        s.clipboard_allowed = true;
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(reply.contains("Uw8"), "{reply}");
+        p.values.insert("Unicode Version".into(), toml::Value::Integer(9));
+        screen_follows_profile(&mut s, &p);
+        assert_eq!(s.profile_unicode, 9);
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(reply.contains("Uw9"), "{reply}");
+    }
 
     #[test]
     fn steal_focus_asks_once() {
