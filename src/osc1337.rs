@@ -464,6 +464,21 @@ mod tests {
     }
 
     #[test]
+    fn end_ssh_request_follows_iterm2() {
+        let mut s = Screen::new(80, 24);
+        s.trusted = false;
+        s.feed(b"\x1b]1337;EndSSH=123\x07");
+        assert!(s.take_requests().is_empty(), "EndSSH needs trust");
+        s.trusted = true;
+        s.feed(b"\x1b]1337;EndSSH=123\x07");
+        assert_eq!(s.take_requests(), vec![Request::SshEnd("123".into())]);
+        s.feed(b"\x1b]1337;EndSSH=\x07");
+        assert!(s.take_requests().is_empty(), "an empty id is ignored");
+        s.feed(b"\x1b]1337;it2ssh=a b c d\x07\x1b]1337;EndSSH=1\x07\x1b]1337;SendConductor=v=3\x07");
+        assert_eq!(s.take_requests(), vec![Request::SshWillBegin, Request::SshEnd("1".into())], "EndSSH clears the flags");
+    }
+
+    #[test]
     fn banner_inside_dispatch_is_safe() {
         let mut s = Screen::new(80, 24);
         s.feed(b"\x1b]1337;it2ssh=a b c d\x07\x1b]1337;SendConductor=v=2\x07\x1b]1337;CurrentDir=/tm");

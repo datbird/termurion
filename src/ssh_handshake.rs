@@ -110,6 +110,16 @@ pub fn bootstrap(conductor: &str, h: &Handshake) -> Vec<u8> {
     out
 }
 
+/// The banner after EndSSH ended `count` hops (`SM:7473-7484`), naming where the session now
+/// is. More than one hop with no location ends in two periods, as iTerm2's.
+pub fn end_banner(count: usize, location: Option<&str>) -> String {
+    let preamble = if count == 1 { "ssh exited".to_string() } else { format!("{count} ssh sessions ended.") };
+    match location {
+        Some(at) => format!("{preamble} \u{2014} now at {at}."),
+        None => format!("{preamble}."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +192,13 @@ mod tests {
             assert_eq!(line.len(), 80);
         }
         assert!(!lines[lines.len() - 1].is_empty() && lines[lines.len() - 1].len() <= 80);
+    }
+
+    #[test]
+    fn end_banner_follows_iterm2() {
+        assert_eq!(end_banner(1, None), "ssh exited.");
+        assert_eq!(end_banner(1, Some("rob@web")), "ssh exited \u{2014} now at rob@web.");
+        assert_eq!(end_banner(2, None), "2 ssh sessions ended..");
+        assert_eq!(end_banner(3, Some("h")), "3 ssh sessions ended. \u{2014} now at h.");
     }
 }

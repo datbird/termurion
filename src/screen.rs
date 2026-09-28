@@ -295,6 +295,8 @@ pub enum Request {
     SshWillBegin,
     /// A version 3 `SendConductor=`: type the conductor bootstrap.
     SshSendConductor(crate::ssh_handshake::Handshake),
+    /// Trusted `EndSSH=`: end the pane's hops through this it2ssh unique id.
+    SshEnd(String),
 }
 
 /// Key reporting and emulation chosen in Session > Terminal State.

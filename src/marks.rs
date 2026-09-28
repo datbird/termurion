@@ -1054,6 +1054,11 @@ impl Screen {
                     crate::ssh_handshake::SendConductor::Banner(text) => self.append_banner(text),
                     crate::ssh_handshake::SendConductor::Send(h) => self.requests.push(Request::SshSendConductor(h)),
                 },
+                // Trusted and non-empty only (`T:4528-4531`); the flags go (`TD:4033`).
+                "EndSSH" if self.trusted && !value.is_empty() => {
+                    self.ssh_flags = None;
+                    self.requests.push(Request::SshEnd(value));
+                }
                 "SetKeyLabel" => self.key_labels.set(&value),
                 "PushKeyLabels" => self.key_labels.push(&value),
                 "PopKeyLabels" => self.key_labels.pop(&value),
