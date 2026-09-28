@@ -2,8 +2,10 @@
 //! in Windows words). Accounts are the current user's generic credentials whose target starts
 //! with `Tandem/` (`pwm_source::target_name` and `parse_target` hold the naming); the password is
 //! the credential's blob as UTF-8. A blob is copied straight into a `Secret` and the copy Windows
-//! handed back is zeroed before `CredFree`. No test calls Credential Manager; the milestone's
-//! checklist covers that by hand.
+//! handed back is zeroed before `CredFree`. The generic-target functions (`write_generic`,
+//! `read_generic`, `delete_generic`) also serve the AI keys under `TandemAI/` (`ai_keys`), and
+//! refuse any target outside Tandem's two prefixes before calling Windows. No test calls
+//! Credential Manager; the milestone's checklist covers that by hand.
 
 use crate::pwm::{Account, Secret};
 use crate::pwm_source::{self, Caps, Kind, Source};
@@ -75,16 +77,36 @@ fn target(a: &Account) -> Result<&str, String> {
     }
 }
 
+/// The prefixes of every target Tandem owns: the password manager's `Tandem/` and the AI keys'
+/// `TandemAI/` (compared case-sensitively).
+const OWNED_PREFIXES: [&str; 2] = ["Tandem/", "TandemAI/"];
+
+/// Whether a target is one of Tandem's. The generic functions below refuse any other target
+/// before calling Windows, so nothing here ever touches another program's credential.
+pub(crate) fn owned(target: &str) -> bool {
+    OWNED_PREFIXES.iter().any(|p| target.starts_with(p))
+}
+
+fn guard(target: &str) -> Result<(), String> {
+    if owned(target) {
+        Ok(())
+    } else {
+        Err("Not a Tandem credential.".to_string())
+    }
+}
+
 /// Writes (creates or replaces) a generic credential for the current user on this machine.
-fn write(target: &str, user: &str, p: &Secret) -> Result<(), String> {
-    let bytes = p.expose().as_bytes();
+/// `what` names the secret in the too-long text ("password", "API key").
+pub(crate) fn write_generic(target: &str, user: &str, secret: &Secret, comment: &str, what: &str) -> Result<(), String> {
+    guard(target)?;
+    let bytes = secret.expose().as_bytes();
     if bytes.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize {
         return Err(format!(
-            "The password is too long for Windows Credential Manager (at most {CRED_MAX_CREDENTIAL_BLOB_SIZE} bytes)."
+            "The {what} is too long for Windows Credential Manager (at most {CRED_MAX_CREDENTIAL_BLOB_SIZE} bytes)."
         ));
     }
     let mut target_w = wide(target);
-    let mut comment_w = wide(COMMENT);
+    let mut comment_w = wide(comment);
     let mut user_w = wide(user);
     // SAFETY: CREDENTIALW is plain data; all-zero is a valid empty credential (null pointers,
     // no attributes), and every field Windows reads is set below.
@@ -94,7 +116,7 @@ fn write(target: &str, user: &str, p: &Secret) -> Result<(), String> {
     c.Comment = comment_w.as_mut_ptr();
     c.CredentialBlobSize = bytes.len() as u32;
     // CredWriteW only reads the blob; the pointer is mutable in the struct's type alone. An
-    // empty password has no blob (null, not an empty slice's dangling pointer).
+    // empty secret has no blob (null, not an empty slice's dangling pointer).
     if !bytes.is_empty() {
         c.CredentialBlob = bytes.as_ptr() as *mut u8;
     }
@@ -107,6 +129,73 @@ fn write(target: &str, user: &str, p: &Secret) -> Result<(), String> {
         return Err(last_error());
     }
     Ok(())
+}
+
+/// Reads a generic credential's blob as UTF-8 text; `Ok(None)` when there is no such
+/// credential. `what` names the secret in the not-UTF-8 text ("password", "API key").
+pub(crate) fn read_generic(target: &str, what: &str) -> Result<Option<Secret>, String> {
+    guard(target)?;
+    let target_w = wide(target);
+    let mut c: *mut CREDENTIALW = std::ptr::null_mut();
+    // SAFETY: valid target and out-pointer; on success Windows owns `c` until CredFree.
+    if unsafe { CredReadW(target_w.as_ptr(), CRED_TYPE_GENERIC, 0, &mut c) } == 0 {
+        // SAFETY: plain thread-local read right after the failing call.
+        if unsafe { GetLastError() } == ERROR_NOT_FOUND {
+            return Ok(None);
+        }
+        return Err(last_error());
+    }
+    // SAFETY: `c` is a valid credential until CredFree; the blob is `CredentialBlobSize`
+    // bytes. The copy goes into a buffer the Secret then owns (from_utf8 does not copy), and
+    // a buffer that is not UTF-8 is wiped before it is dropped.
+    let decoded = unsafe {
+        let size = (*c).CredentialBlobSize as usize;
+        let mut bytes = Vec::with_capacity(size);
+        if size > 0 {
+            bytes.extend_from_slice(std::slice::from_raw_parts((*c).CredentialBlob, size));
+        }
+        zero_blob(c);
+        CredFree(c as *const _);
+        String::from_utf8(bytes)
+    };
+    match decoded {
+        Ok(s) => Ok(Some(Secret::new(s))),
+        Err(e) => {
+            let mut raw = e.into_bytes();
+            for b in raw.iter_mut() {
+                // SAFETY: a plain byte write into our own buffer.
+                unsafe { std::ptr::write_volatile(b, 0) };
+            }
+            Err(format!("The stored {what} is not UTF-8 text."))
+        }
+    }
+}
+
+/// Deletes a generic credential: `Ok(true)` when one was deleted, `Ok(false)` when there was
+/// none (still a success).
+pub(crate) fn delete_generic(target: &str) -> Result<bool, String> {
+    guard(target)?;
+    let target_w = wide(target);
+    // SAFETY: a valid NUL-terminated target.
+    if unsafe { CredDeleteW(target_w.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 {
+        // SAFETY: plain thread-local read right after the failing call.
+        if unsafe { GetLastError() } == ERROR_NOT_FOUND {
+            return Ok(false);
+        }
+        return Err(last_error());
+    }
+    Ok(true)
+}
+
+/// The text `last_error()` gives for `ERROR_NOT_FOUND`: the password manager still reports a
+/// missing credential as an error.
+fn not_found() -> String {
+    std::io::Error::from_raw_os_error(ERROR_NOT_FOUND as i32).to_string()
+}
+
+/// The password manager's write: its comment, and "password" in the too-long text.
+fn write(target: &str, user: &str, p: &Secret) -> Result<(), String> {
+    write_generic(target, user, p, COMMENT, "password")
 }
 
 /// Windows Credential Manager, always available, one account, no one-time codes.
@@ -168,35 +257,9 @@ impl Source for CredentialManager {
     }
 
     fn password(&mut self, a: &Account) -> Result<(Secret, Option<Secret>), String> {
-        let target_w = wide(target(a)?);
-        let mut c: *mut CREDENTIALW = std::ptr::null_mut();
-        // SAFETY: valid target and out-pointer; on success Windows owns `c` until CredFree.
-        if unsafe { CredReadW(target_w.as_ptr(), CRED_TYPE_GENERIC, 0, &mut c) } == 0 {
-            return Err(last_error());
-        }
-        // SAFETY: `c` is a valid credential until CredFree; the blob is `CredentialBlobSize`
-        // bytes. The copy goes into a buffer the Secret then owns (from_utf8 does not copy), and
-        // a buffer that is not UTF-8 is wrapped in a Secret too so it is zeroed on drop.
-        let decoded = unsafe {
-            let size = (*c).CredentialBlobSize as usize;
-            let mut bytes = Vec::with_capacity(size);
-            if size > 0 {
-                bytes.extend_from_slice(std::slice::from_raw_parts((*c).CredentialBlob, size));
-            }
-            zero_blob(c);
-            CredFree(c as *const _);
-            String::from_utf8(bytes)
-        };
-        match decoded {
-            Ok(s) => Ok((Secret::new(s), None)),
-            Err(e) => {
-                let mut raw = e.into_bytes();
-                for b in raw.iter_mut() {
-                    // SAFETY: a plain byte write into our own buffer.
-                    unsafe { std::ptr::write_volatile(b, 0) };
-                }
-                Err("The stored password is not UTF-8 text.".to_string())
-            }
+        match read_generic(target(a)?, "password")? {
+            Some(p) => Ok((p, None)),
+            None => Err(not_found()),
         }
     }
 
@@ -205,12 +268,11 @@ impl Source for CredentialManager {
     }
 
     fn delete(&mut self, a: &Account) -> Result<(), String> {
-        let target_w = wide(target(a)?);
-        // SAFETY: a valid NUL-terminated target.
-        if unsafe { CredDeleteW(target_w.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 {
-            return Err(last_error());
+        if delete_generic(target(a)?)? {
+            Ok(())
+        } else {
+            Err(not_found())
         }
-        Ok(())
     }
 
     fn add(&mut self, name: &str, user: &str, p: Secret, _flags: &[(String, bool)]) -> Result<Account, String> {
@@ -251,5 +313,19 @@ mod tests {
         // An unpaired surrogate: skipped, never shown as a row that names nothing.
         let bad = [0x54u16, 0xD800, 0x61, 0];
         assert_eq!(unsafe { from_wide(bad.as_ptr()) }, None);
+    }
+
+    #[test]
+    fn generic_targets_are_guarded() {
+        assert!(owned("TandemAI/OpenAI"));
+        assert!(owned("Tandem/site"));
+        assert!(!owned("TandemAIX/x"));
+        assert!(!owned("tandemai/x"));
+        assert!(!owned("Other/x"));
+        // Each refusal returns before any Win32 call.
+        let refused = Err("Not a Tandem credential.".to_string());
+        assert_eq!(write_generic("Other/x", "", &Secret::new("k".into()), "c", "API key"), refused);
+        assert!(matches!(read_generic("Other/x", "API key"), Err(e) if e == "Not a Tandem credential."));
+        assert_eq!(delete_generic("Other/x"), Err("Not a Tandem credential.".to_string()));
     }
 }

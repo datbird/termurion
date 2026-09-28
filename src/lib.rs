@@ -264,3 +264,4 @@ pub mod ai_settings;
 pub mod ai_catalog;
 pub mod ai_policy;
 pub mod ai_models;
+pub mod ai_keys;
