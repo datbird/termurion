@@ -586,7 +586,7 @@ section = "Windows"
 label = "Show window number"
 type = "bool"
 default = true
-help = "Window titles start with the window's number (1, 2, ...), which Alt+Win+number switches to."
+help = "A window with a title bar shows its number (1, 2, ...) as a label at the right of the title, with its Alt+Win+number shortcut. A window without a title bar, or in full screen, starts its title with \"N. \" instead."
 
 [[setting]]
 key = "openProfilesInNewWindow"
