@@ -2401,15 +2401,8 @@ impl App {
         let current = self.tabs.get(self.active).map(|t| t.focused);
         let decoration_bg = current.and_then(bg).unwrap_or_else(|| crate::palette::Palette::default().bg);
         let prominence = self.globals.number("MinimalSplitPaneDividerProminence").map_or(0.15, |v| v as f32);
-        let mut others: Vec<crate::palette::Rgb> = Vec::new();
-        for id in self.tabs.iter().flat_map(|t| t.layout.panes()).filter(|id| Some(*id) != current) {
-            if let Some(c) = bg(id) {
-                if !others.contains(&c) {
-                    others.push(c);
-                }
-            }
-        }
-        let invisible = (others.len() == 1).then(|| others[0]);
+        let panes: Vec<(PaneId, crate::palette::Rgb)> = self.tabs.iter().flat_map(|t| t.layout.panes()).filter_map(|id| bg(id).map(|c| (id, c))).collect();
+        let invisible = crate::tab_theme::single_other_background(&panes, current);
         crate::tab_theme::divider_color(self.tab_style(), self.resolved_style(), decoration_bg, prominence, invisible)
     }
 

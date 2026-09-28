@@ -1314,13 +1314,21 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
                     fill_quad(frame, r, m.outline);
                 }
             }
-        } else if !bar.vertical && bar.hidden.contains(&active) && tabs.len() > 1 {
-            // The selected tab is in the overflow menu: only the part before it is drawn, as if the
-            // tab were the buttons' margin at the bar's right end (`MIN:848-870`, `:759-770`).
-            let start = [bar.add, bar.overflow].iter().flatten().map(|r| area.x + r.x * scale).fold(area.x + area.w, f32::min);
-            let margin = Rect { x: start, w: area.x + area.w - start, ..area };
-            for r in minimal_notch(area, margin, bar.position, m.left_inset_is_first_tab, false) {
-                fill_quad(frame, r, m.outline);
+        } else if bar.hidden.contains(&active) && tabs.len() > 1 {
+            // The selected tab is in the overflow menu: only the part before it is drawn, with the
+            // right margin (24 points, `rightMarginForTabBarControlWithOverflow:`) standing in for
+            // the tab on a horizontal bar and the overflow row on a side bar (`MIN:848-870`,
+            // `:759-770`, `:890-911`, `:932-934`).
+            let stand_in = if bar.vertical {
+                bar.overflow.map(px)
+            } else {
+                let margin = crate::tab_layout::right_margin(true, bar.add.is_some()) * scale;
+                Some(Rect { x: area.x + area.w - margin, w: margin, ..area })
+            };
+            if let Some(stand_in) = stand_in {
+                for r in minimal_notch_parts(area, stand_in, bar.position, m.left_inset_is_first_tab, false).0 {
+                    fill_quad(frame, r, m.outline);
+                }
             }
         }
     }
@@ -1349,9 +1357,17 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
 /// counts as part of it (a bottom bar drops it whatever the setting says). In a side bar the
 /// lines run down the inner edge and across the selected row's first and last pixel rows.
 pub fn minimal_notch(bar: Rect, selected: Rect, position: crate::tab_position::TabPosition, left_inset_is_first_tab: bool, first_selected: bool) -> Vec<Rect> {
+    let (mut before, after) = minimal_notch_parts(bar, selected, position, left_inset_is_first_tab, first_selected);
+    before.extend(after);
+    before
+}
+
+/// `minimal_notch` as its two parts: the lines before the selected tab (and its near side) and the
+/// lines from its far side on. With the selected tab in the overflow menu only the first is drawn.
+pub fn minimal_notch_parts(bar: Rect, selected: Rect, position: crate::tab_position::TabPosition, left_inset_is_first_tab: bool, first_selected: bool) -> (Vec<Rect>, Vec<Rect>) {
     use crate::tab_position::TabPosition::{Bottom, Left, Right, Top};
-    let mut out = Vec::new();
-    let mut add = |r: Rect| {
+    let (mut before, mut after_parts) = (Vec::new(), Vec::new());
+    let add = |out: &mut Vec<Rect>, r: Rect| {
         if r.w > 0.0 && r.h > 0.0 {
             out.push(r);
         }
@@ -1362,29 +1378,29 @@ pub fn minimal_notch(bar: Rect, selected: Rect, position: crate::tab_position::T
             let (line_y, side_y) = if top { (bar.y + bar.h - 1.0, bar.y) } else { (bar.y, bar.y + 1.0) };
             let side_h = bar.h - 1.0;
             if !(first_selected && (!top || left_inset_is_first_tab)) {
-                add(Rect { x: bar.x, y: line_y, w: selected.x - bar.x, h: 1.0 });
+                add(&mut before, Rect { x: bar.x, y: line_y, w: selected.x - bar.x, h: 1.0 });
                 if selected.x - 1.0 >= bar.x {
-                    add(Rect { x: selected.x - 1.0, y: side_y, w: 1.0, h: side_h });
+                    add(&mut before, Rect { x: selected.x - 1.0, y: side_y, w: 1.0, h: side_h });
                 }
             }
             let after = selected.x + selected.w;
             if after < bar.x + bar.w {
-                add(Rect { x: after, y: side_y, w: 1.0, h: side_h });
-                add(Rect { x: after, y: line_y, w: bar.x + bar.w - after, h: 1.0 });
+                add(&mut after_parts, Rect { x: after, y: side_y, w: 1.0, h: side_h });
+                add(&mut after_parts, Rect { x: after, y: line_y, w: bar.x + bar.w - after, h: 1.0 });
             }
         }
         Left | Right => {
             let edge = if position == Left { bar.x + bar.w - 1.0 } else { bar.x };
             if !(first_selected && left_inset_is_first_tab) {
-                add(Rect { x: edge, y: bar.y, w: 1.0, h: selected.y - bar.y });
-                add(Rect { x: bar.x, y: selected.y, w: bar.w, h: 1.0 });
+                add(&mut before, Rect { x: edge, y: bar.y, w: 1.0, h: selected.y - bar.y });
+                add(&mut before, Rect { x: bar.x, y: selected.y, w: bar.w, h: 1.0 });
             }
             let below = selected.y + selected.h;
-            add(Rect { x: bar.x, y: below - 1.0, w: bar.w, h: 1.0 });
-            add(Rect { x: edge, y: below, w: 1.0, h: bar.y + bar.h - below });
+            add(&mut after_parts, Rect { x: bar.x, y: below - 1.0, w: bar.w, h: 1.0 });
+            add(&mut after_parts, Rect { x: edge, y: below, w: 1.0, h: bar.y + bar.h - below });
         }
     }
-    out
+    (before, after_parts)
 }
 
 /// A quad of `f` over what is behind it; nothing when it is clear.
@@ -3137,44 +3153,87 @@ mod tests {
         assert!(solo_top.quads.iter().any(|q| q.color == outline), "one tab in a top bar: the outline");
     }
 
-    #[test]
-    fn minimal_notch_with_the_selected_tab_in_overflow() {
-        use crate::tab_layout::{self, TabInput};
-        use crate::tab_position::TabPosition;
+    /// The setup the overflow notch tests share: three tabs, the Minimal palette, the light-on-dark
+    /// outline color.
+    fn overflow_setup() -> (Vec<TabLook>, Vec<crate::tab_layout::TabInput>, crate::tab_layout::Settings, crate::tab_theme::TabPalette, crate::tab_theme::Inputs) {
         use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
         let inputs = Inputs { system_dark: false, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5, tabs: 3 };
-        let pal = palette(TabStyle::Minimal, &inputs);
         let looks: Vec<TabLook> = (1..=3).map(|n| TabLook { title: format!("t{n}"), number: n, ..TabLook::default() }).collect();
-        let items: Vec<TabInput> = looks
+        let items = looks
             .iter()
-            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .map(|l| crate::tab_layout::TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
             .collect();
-        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let s = crate::tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        (looks, items, s, palette(TabStyle::Minimal, &inputs), inputs)
+    }
+
+    #[test]
+    fn minimal_notch_with_the_selected_tab_in_overflow() {
+        use crate::tab_layout;
+        use crate::tab_position::TabPosition;
+        use crate::tab_theme::{Inputs, TabStyle, palette};
+        let (looks, items, s, pal, inputs) = overflow_setup();
         let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
-        let built = tab_layout::build(&items, 0, 400.0, 0.0, None, &s, &six);
-        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
-        // Tabs one and two shown, the third (selected) in the overflow menu, the buttons at the right.
-        let mut bar = tab_layout::Bar { cells: built.cells[..2].to_vec(), hidden: vec![2], add: Some(Rect { x: 340.0, y: 0.0, w: 20.0, h: 24.0 }), overflow: Some(Rect { x: 360.0, y: 0.0, w: 20.0, h: 24.0 }), ..built.clone() };
+        // A real layout: 150 points hold one tab and the buttons' 24-point margin, and the selected
+        // third tab is in the overflow menu.
+        let fixed = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..s.prefs }, ..s.clone() };
+        let mut bar = tab_layout::build(&items, 2, 150.0, 0.0, None, &fixed, &six);
+        assert_eq!((bar.cells.len(), bar.hidden.clone()), (1, vec![1, 2]), "the layout the notch is drawn for");
         bar.position = TabPosition::Top;
+        let area = Rect { x: 0.0, y: 10.0, w: 150.0, h: 24.0 };
         let mut f = Frame::default();
         tab_bar(&mut f, &looks, 2, &bar, area, 1.0, 0.1, 20.0, true, true, &pal);
         let outline = rgba(rgb(255, 255, 255), 0.2);
-        // The part before the tab runs to the buttons' margin and up its side; nothing after.
-        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 0.0, y: 33.0, w: 340.0, h: 1.0 }), "the bar-side line up to the margin");
-        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 339.0, y: 10.0, w: 1.0, h: 23.0 }), "the side at the margin");
+        // The part before the tab runs to the right margin, 24 points wide as `rightMarginFor...`
+        // says (`MIN:848-870`), and up its side; nothing after.
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 0.0, y: 33.0, w: 126.0, h: 1.0 }), "the bar-side line up to the margin");
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 125.0, y: 10.0, w: 1.0, h: 23.0 }), "the side at the margin");
         assert_eq!(f.quads.iter().filter(|q| q.color == outline).count(), 2, "no part after");
         // The end inset is the bar color (the selected tab's), not the tinted unselected one.
-        let far = built.cells[1].2.x + built.cells[1].2.w;
-        assert!(f.quads.iter().any(|q| q.rect == Rect { x: far, y: 10.0, w: 400.0 - far, h: 24.0 } && q.color == rgba(rgb(0, 0, 0), 1.0)), "the end inset in the bar color");
-        assert!(!f.quads.iter().any(|q| q.rect.x == far && q.color == rgba(rgb(13, 13, 13), 1.0)), "not the unselected tint");
+        let far = bar.cells[0].2.x + bar.cells[0].2.w;
+        assert!(f.quads.iter().any(|q| q.rect == Rect { x: far, y: 10.0, w: 150.0 - far, h: 24.0 } && q.color == rgba(rgb(0, 0, 0), 1.0)), "the end inset in the bar color");
+        assert!(!f.quads.iter().any(|q| q.rect.x == far && q.color == rgba(rgb(13, 13, 13), 1.0)), "not the tinted unselected color");
+        // A bottom bar mirrors it along its top edge.
+        let mut f = Frame::default();
+        tab_bar(&mut f, &looks, 2, &tab_layout::Bar { position: TabPosition::Bottom, ..bar.clone() }, area, 1.0, 0.1, 20.0, true, true, &pal);
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 0.0, y: 10.0, w: 126.0, h: 1.0 }), "the bottom bar's top line up to the margin");
+        assert!(f.quads.iter().any(|q| q.color == outline && q.rect == Rect { x: 125.0, y: 11.0, w: 1.0, h: 23.0 }), "the bottom bar's side at the margin");
+        assert_eq!(f.quads.iter().filter(|q| q.color == outline).count(), 2, "no part after, in a bottom bar");
         // One tab in all (cells plus the overflow menu are all counted): never a notch when it is
         // the only tab, but a shown selected tab beside a collapsed one is not alone.
+        let built = tab_layout::build(&items, 0, 400.0, 0.0, None, &s, &six);
         let mut alone = Frame::default();
-        tab_bar(&mut alone, &looks[..1], 0, &tab_layout::Bar { cells: built.cells[..1].to_vec(), hidden: vec![], ..built.clone() }, area, 1.0, 0.1, 20.0, true, false, &palette(TabStyle::Minimal, &Inputs { tabs: 1, ..inputs }));
+        tab_bar(&mut alone, &looks[..1], 0, &tab_layout::Bar { cells: built.cells[..1].to_vec(), hidden: vec![], ..built.clone() }, Rect { w: 400.0, ..area }, 1.0, 0.1, 20.0, true, false, &palette(TabStyle::Minimal, &Inputs { tabs: 1, ..inputs }));
         assert!(alone.quads.iter().any(|q| q.color == outline), "one tab in a top bar: the outline");
         let mut beside = Frame::default();
-        tab_bar(&mut beside, &looks, 0, &tab_layout::Bar { cells: built.cells[..1].to_vec(), hidden: vec![], ..built.clone() }, area, 1.0, 0.1, 20.0, true, false, &pal);
+        tab_bar(&mut beside, &looks, 0, &tab_layout::Bar { cells: built.cells[..1].to_vec(), hidden: vec![], ..built.clone() }, Rect { w: 400.0, ..area }, 1.0, 0.1, 20.0, true, false, &pal);
         assert!(beside.quads.iter().any(|q| q.color == outline), "one shown tab of three: a notch");
+    }
+
+    /// A side bar with the selected tab in the overflow menu draws the "above" outline as
+    /// `drawOutlineAboveSelectedTabInVerticalTabBar` does with the overflow row as the tab
+    /// (`MIN:890-911`, `:932-934`): the inner-edge line down to the overflow row and the line across
+    /// it; nothing under it.
+    #[test]
+    fn minimal_notch_with_the_selected_row_in_overflow() {
+        use crate::tab_layout;
+        use crate::tab_position::TabPosition;
+        let (looks, items, s, pal, _) = overflow_setup();
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let fixed = tab_layout::Settings { prefs: tab_layout::Prefs { scrollable: false, ..s.prefs }, ..s.clone() };
+        let mut bar = tab_layout::build_vertical(&items, 120.0, 60.0, 0.0, None, &fixed, &six);
+        assert_eq!((bar.cells.len(), bar.hidden.clone()), (1, vec![1, 2]), "one row shows, the rest are in the menu");
+        let row = bar.overflow.expect("the overflow row");
+        assert_eq!(row.y, 36.0);
+        let area = Rect { x: 0.0, y: 10.0, w: 120.0, h: 60.0 };
+        let outline = rgba(rgb(255, 255, 255), 0.2);
+        for (position, edge_x) in [(TabPosition::Left, 119.0), (TabPosition::Right, 0.0)] {
+            bar.position = position;
+            let mut f = Frame::default();
+            tab_bar_vertical(&mut f, &looks, 2, &bar, area, 1.0, 0.1, 20.0, true, true, &pal);
+            let lines: Vec<Rect> = f.quads.iter().filter(|q| q.color == outline).map(|q| q.rect).collect();
+            assert_eq!(lines, vec![Rect { x: edge_x, y: 10.0, w: 1.0, h: 36.0 }, Rect { x: 0.0, y: 46.0, w: 120.0, h: 1.0 }], "{position:?}: the edge down to the overflow row and the line across it");
+        }
     }
 
     /// A flashing bar over the sessions: its boxes over theirs at the bar's alpha, its text

@@ -278,6 +278,19 @@ pub fn side_minimum(style: TabStyle) -> f32 {
     }
 }
 
+/// The one background the window's other panes share (`PT:1919-1924`): every pane's background but
+/// `current`'s own pane's, uniqued; Some only when exactly one distinct color remains. The divider
+/// hides against it at prominence 0.
+pub fn single_other_background<I: PartialEq + Copy>(panes: &[(I, Rgb)], current: Option<I>) -> Option<Rgb> {
+    let mut others: Vec<Rgb> = Vec::new();
+    for (_, c) in panes.iter().filter(|(id, _)| Some(*id) != current) {
+        if !others.contains(c) {
+            others.push(*c);
+        }
+    }
+    (others.len() == 1).then(|| others[0])
+}
+
 /// The label size in points a resolved style draws (`font_pt` of its palette): 12 for the High
 /// Contrast styles, else 11. Pure, so hot paths need no palette.
 pub fn font_pt(resolved: TabStyle) -> f32 {
@@ -889,5 +902,17 @@ mod tests {
         use TabStyle::*;
         assert_eq!((side_minimum(Minimal), side_minimum(Compact)), (114.0, 114.0));
         assert_eq!((side_minimum(Automatic), side_minimum(DarkHighContrast)), (50.0, 50.0));
+    }
+
+    #[test]
+    fn single_other_background_follows_iterm2() {
+        let (a, b) = (rgb(1, 1, 1), rgb(2, 2, 2));
+        // The window's other panes (every tab's, the focused one left out) sharing one background.
+        assert_eq!(single_other_background(&[(1, a), (2, b), (3, b)], Some(1)), Some(b));
+        assert_eq!(single_other_background(&[(1, a), (2, b), (3, a)], Some(1)), None, "a second distinct background");
+        assert_eq!(single_other_background(&[(1, a)], Some(1)), None, "only the focused pane");
+        assert_eq!(single_other_background::<u32>(&[], None), None, "no panes");
+        // The current pane's own background does not count, whatever it is.
+        assert_eq!(single_other_background(&[(1, b), (2, a), (3, a)], Some(1)), Some(a));
     }
 }
