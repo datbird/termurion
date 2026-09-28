@@ -132,6 +132,22 @@ pub fn ready_python(target: &Target, uv_dir: &Path, exists: &dyn Fn(&Path) -> bo
     }
 }
 
+/// The newest provisioned shared environment's interpreter
+/// (`newestProvisionedSharedVenvInterpreter`, `UV:1278-1293`, `UV:896-902`): among the venvs
+/// folder's entries (`names`), only `<minor>` folders holding an interpreter and a marker
+/// count (a `.building` or `.old` folder or `.remaps` never does), the highest version wins.
+pub fn newest_shared_python(uv_dir: &Path, names: &[String], exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf> {
+    names
+        .iter()
+        .filter(|n| numeric_version(n))
+        .filter(|n| {
+            let venv = shared_venv(uv_dir, n);
+            exists(&venv_python(&venv)) && exists(&venv.join(MARKER))
+        })
+        .max_by(|a, b| dotted(a, b))
+        .map(|n| venv_python(&shared_venv(uv_dir, n)))
+}
+
 /// Runs one job to its end.
 pub fn run_job(job: &Job, uv_dir: &Path, r: &mut dyn Runner) -> Result<Outcome, String> {
     match job {
@@ -507,7 +523,7 @@ impl RealRunner {
 
     /// A Windows tool from System32 (curl.exe, tar.exe), so a program of the same name on PATH
     /// is never run instead; the bare name when System32 is not found.
-    fn system_tool(name: &str) -> PathBuf {
+    pub(crate) fn system_tool(name: &str) -> PathBuf {
         std::env::var_os("SystemRoot").map(|root| PathBuf::from(root).join("System32").join(name)).filter(|p| p.is_file()).unwrap_or_else(|| PathBuf::from(name))
     }
 
@@ -889,6 +905,23 @@ mod tests {
     }
 
     const LIST: &str = r#"[{"version":"3.12.5","implementation":"cpython","variant":"default"},{"version":"3.9.20"}]"#;
+
+    #[test]
+    fn newest_shared_python_follows_iterm2() {
+        let u = Path::new(r"C:\u");
+        let ready: BTreeSet<PathBuf> = ["3.9", "3.12", "3.10", "3.13.building", "3.14"]
+            .iter()
+            .flat_map(|m| {
+                let venv = shared_venv(u, m);
+                [venv_python(&venv), venv.join(MARKER)]
+            })
+            .filter(|p| !p.starts_with(shared_venv(u, "3.14")) || p.ends_with(MARKER))
+            .collect();
+        let names: Vec<String> = ["3.9", "3.12", "3.10", "3.13.building", "3.14", ".remaps", "3.12.old"].iter().map(|s| s.to_string()).collect();
+        // 3.14 has a marker but no interpreter; 3.12 beats 3.10 by number, not by text.
+        assert_eq!(newest_shared_python(u, &names, &|p| ready.contains(p)), Some(venv_python(&shared_venv(u, "3.12"))));
+        assert_eq!(newest_shared_python(u, &[], &|_| true), None);
+    }
 
     #[test]
     fn install_uv_follows_iterm2() {

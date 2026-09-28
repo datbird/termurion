@@ -3,7 +3,9 @@
 //! off, and the script run hidden with a fresh cookie and key. Its output goes to its Script
 //! Console entry; Terminate and Restart end and relaunch it. The Scripts menu lists the
 //! scripts after its fixed items (`M:1559-1577`), AutoLaunch starts its folder's scripts
-//! once (`M:1587-1650`), and Open Quickly and MenuItemRequest reach the same items.
+//! once (`M:1587-1650`), and Open Quickly and MenuItemRequest reach the same items. Scripts >
+//! Manage also opens the Python REPL (`AD:3528-3595`), imports scripts and archives (`IM`,
+//! `AR`, `M:547-607`, `M:733-789`) and exports them (`EX`, `M:683-714`).
 
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
@@ -12,6 +14,8 @@ use super::api_ui::{self, Alert};
 use super::script_runtime_ui::After;
 use super::scripts_alerts::{Ask, Then};
 use super::App;
+use crate::script_archive as sa;
+use crate::script_export_ui::{ExportEvent, ExportWindow};
 use crate::script_history::{Entry, Relaunch};
 use crate::script_launch::{self as sl, Kind, LaunchGate, Request};
 use crate::script_proc::ScriptProcess;
@@ -707,6 +711,524 @@ impl App {
     }
 }
 
+/// Why an import's install did not finish.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Failure {
+    Error(String),
+    /// The person declined a download (iTerm2's cancelation error).
+    Canceled,
+}
+
+/// The import under way (`IM:69-155`).
+pub(super) struct Import {
+    /// The file picked (Try Again imports it again).
+    source: PathBuf,
+    /// An archive the scan found: moved to the Recycle Bin once installed.
+    trash: bool,
+    /// `<Scripts>\.installing-<UUID>`: the archive is extracted here, on the Scripts folder's
+    /// volume, so the install is a rename; removed at the end, and at the next start if Tandem
+    /// ended first.
+    staging: PathBuf,
+    /// The extraction's layout while tar.exe runs off the UI thread.
+    extracting: Option<std::sync::mpsc::Receiver<Result<sa::Layout, String>>>,
+    layout: Option<sa::Layout>,
+    /// The script's name, where it is installed, and where a replaced one was moved aside.
+    name: String,
+    dest: PathBuf,
+    backup: Option<PathBuf>,
+}
+
+/// A file or folder removed, a link without touching what it names; errors ignored (iTerm2
+/// passes `error:nil`).
+fn remove_path(p: &Path) {
+    let Ok(m) = p.symlink_metadata() else { return };
+    if m.file_type().is_symlink() {
+        let _ = std::fs::remove_file(p).or_else(|_| std::fs::remove_dir(p));
+    } else if m.is_dir() {
+        let _ = std::fs::remove_dir_all(p);
+    } else {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Moves `from` aside to `to`; right after a Terminate the script's files may still be held
+/// for a moment, so then it is tried for up to a second.
+fn move_aside(from: &Path, to: &Path, just_terminated: bool) -> std::io::Result<()> {
+    let tries = if just_terminated { 20 } else { 1 };
+    let mut last = Ok(());
+    for i in 0..tries {
+        last = std::fs::rename(from, to);
+        if last.is_ok() {
+            break;
+        }
+        if i + 1 < tries {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    last
+}
+
+/// The Recycle Bin (`trashItemAtURL:`): `SHFileOperationW` with undo allowed, no questions
+/// and no error window; a failure is ignored, as iTerm2 ignores it.
+pub(super) fn recycle(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW};
+    // The list of paths ends with two NULs.
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    from.extend([0, 0]);
+    let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
+    op.wFunc = FO_DELETE;
+    op.pFrom = from.as_ptr();
+    op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as u16;
+    unsafe { SHFileOperationW(&mut op) };
+}
+
+/// Runs tar.exe from System32 with `args` (never one from PATH).
+fn run_tar(args: Vec<String>) -> Result<(), String> {
+    let mut runner = RealRunner::new(std::sync::mpsc::channel().0);
+    use crate::script_provision::Runner;
+    runner.run(&crate::script_provision::Step { program: RealRunner::system_tool("tar.exe"), args, env: Vec::new() }).map(|_| ())
+}
+
+/// Extracts `zip` into `to` (`unzipURL:`) and reads its layout (off the UI thread).
+fn extract_archive(zip: &Path, to: &Path) -> Result<sa::Layout, String> {
+    std::fs::create_dir_all(to).map_err(|e| sa::unzip_failed(&e.to_string()))?;
+    run_tar(sa::extract_tar_args(zip, to)).map_err(|e| sa::unzip_failed(&e))?;
+    sa::layout(to, &crate::scripts::RealFs, &|p: &Path| std::fs::read_to_string(p).ok()).map_err(|e| match e {
+        sa::LayoutError::Legacy => sa::LEGACY_ARCHIVE.to_string(),
+        sa::LayoutError::NoValidScript => sa::NO_VALID_SCRIPT.to_string(),
+    })
+}
+
+/// `urlContainsScript:fullEnvironment:` (`EX:207-240`): a `.py` file (basic), or a folder
+/// with `setup.cfg`, an environment (the marker, or iTerm2's legacy `iterm2env`) and its
+/// `<name>\<name>.py` (full). None when neither.
+fn export_kind(path: &Path) -> Option<bool> {
+    if path.is_file() && path.extension().is_some_and(|e| e == "py") {
+        return Some(false);
+    }
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let runtime = path.join(rt::MARKER).exists() || path.join("iterm2env").exists();
+    (path.is_dir() && path.join(sa::SETUP_CFG).exists() && runtime && path.join(&name).join(format!("{name}.py")).exists()).then_some(true)
+}
+
+/// Writes the zip of `<parent>\<name>`'s `setup.cfg` and inner folder on the Desktop
+/// (`EX:102-150`).
+fn export_zip(desktop: &Path, parent: &Path, name: &str) -> Result<PathBuf, String> {
+    let out = sa::export_name(desktop, name, &|p: &Path| p.exists());
+    run_tar(sa::export_tar_args(&out, parent, name)).map_err(|_| {
+        remove_path(&out);
+        sa::ZIP_FAILED.to_string()
+    })?;
+    Ok(out)
+}
+
+/// `exportScriptAtURL:` (`EX:37-90`), unsigned: a basic script is staged as a full
+/// environment in a temporary folder (`setup.cfg` with the default version, the script in
+/// `<name>\<name>`, `metadata.json`); a full one gets `metadata.json` written into its own
+/// folder; then the zip. The zip's path, or the error's text.
+fn export_one(path: &Path, autolaunch: bool, desktop: &Path) -> Result<PathBuf, String> {
+    let full = export_kind(path).ok_or_else(|| sa::NO_SCRIPT_FOUND.to_string())?;
+    if full {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        // iTerm2 ignores a failure to write it.
+        let _ = std::fs::write(path.join(sa::METADATA), sa::metadata_json(autolaunch));
+        let parent = path.parent().unwrap_or(path);
+        return export_zip(desktop, parent, &name);
+    }
+    let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let temp = std::env::temp_dir().join(format!("tandem-export-{}", crate::api_auth::fresh_key()));
+    let staged = temp.join(&stem);
+    // The one helper for a full environment's files: its `setup.cfg`, then the script copied
+    // over the main it names (`<name>\<name>\<name>.py`, the script's own file name) byte for
+    // byte.
+    let files = sn::full_environment_files(&staged, &stem, &[], rt::DEFAULT_PYTHON, "", None);
+    let result = sn::write_files(&files)
+        .and_then(|_| {
+            let main = &files[1].0;
+            std::fs::copy(path, main).map(|_| ()).map_err(|e| format!("Could not copy {}: {e}", path.display()))
+        })
+        .and_then(|_| {
+            let _ = std::fs::write(staged.join(sa::METADATA), sa::metadata_json(autolaunch));
+            export_zip(desktop, &temp, &stem)
+        });
+    remove_path(&temp);
+    result
+}
+
+/// Puts right what an import that did not finish left in the Scripts folder
+/// (`recoverStaleReplaceBackupsInDirectory:`, `IM:476-525`): a staging folder is removed; a
+/// replaced script's backup is removed when its script is back as a real item (not a link),
+/// else it is restored.
+fn recover_in(folder: &Path) {
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let path = e.path();
+        if name.starts_with(sa::STAGING_PREFIX) {
+            remove_path(&path);
+            continue;
+        }
+        let Some(script) = sa::stale_backup(&name) else { continue };
+        let target = folder.join(&script);
+        if target.symlink_metadata().is_ok_and(|m| !m.file_type().is_symlink()) {
+            remove_path(&path);
+        } else {
+            remove_path(&target);
+            let _ = std::fs::rename(&path, &target);
+        }
+    }
+}
+
+impl App {
+    /// Scripts > Manage > Open Python REPL (`openREPL:`, `AD:3553-3595`): the default shared
+    /// environment is made ready (asking before any download), then the API is started as a
+    /// person's choice, then the window opens.
+    pub(super) fn open_repl(&mut self) {
+        self.ensure_environment(Target::Shared(rt::DEFAULT_PYTHON.to_string()), rt::DEFAULT_PYTHON, &[], true, After::Repl);
+    }
+
+    /// The REPL's interpreter is ready: with the API off, "Enable Python API?" first
+    /// (`sharedInstanceFromExplicitUserAction`); the window opens on the next loop pass.
+    pub(super) fn repl_ready(&mut self, python: PathBuf) {
+        if self.api_on {
+            self.repl_pending = Some(python);
+        } else {
+            self.repl_after_enable = Some(python);
+            self.queue_api_alert(Alert::Enable);
+        }
+    }
+
+    /// The default environment could not be made: the newest provisioned shared one is used
+    /// (they all carry iterm2), else "Python Environment Unavailable" (`AD:3562-3577`).
+    pub(super) fn repl_environment_failed(&mut self, e: &str) {
+        let uv = super::script_runtime_ui::uv_dir();
+        let names: Vec<String> = std::fs::read_dir(rt::venvs_dir(&uv)).map(|rd| rd.flatten().map(|d| d.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        match crate::script_provision::newest_shared_python(&uv, &names, &|p: &Path| p.is_file()) {
+            Some(python) => self.repl_ready(python),
+            None => {
+                let ask = Ask { heading: rt::ENV_UNAVAILABLE_HEADING.to_string(), text: rt::repl_prepare_failed(e), buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::Nothing };
+                self.ask_scripts(ask);
+            }
+        }
+    }
+
+    /// `launchREPLWithCommand:arguments:` (`AD:3528-3551`): a Single cookie and a fresh key,
+    /// the entry "REPL" (no path, no relaunch, no process: Terminate stays off and the
+    /// connection's close stops it), a window with the default profile running the
+    /// interpreter with `-m asyncio` and the cookie and key, and the banner shown first. The
+    /// window is not short-lived and stays open when the REPL ends. The cookie is the pane's,
+    /// so it leaves the jar with the pane.
+    pub(super) fn open_pending_repl(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(python) = self.repl_pending.take() else { return };
+        let key = crate::api_auth::fresh_key();
+        let cookie = self.api_jar.lock().unwrap().mint(crate::api_auth::CookieUse::Single);
+        self.script_history.add(Entry::new(&key, sa::REPL_NAME, api_ui::unix_secs()));
+        let [a, b] = sa::repl_args();
+        self.start_command_override = Some(format!("\"{}\" {a} {b}", python.display()));
+        self.start_env_override = Some(vec![format!("ITERM2_COOKIE={cookie}"), format!("ITERM2_KEY={key}")]);
+        let made = self.open_window(event_loop, None);
+        self.start_command_override = None;
+        self.start_env_override = None;
+        let pane = made.ok().and_then(|_| self.tabs.get(self.active).map(|t| t.focused));
+        match pane.and_then(|p| self.panes.get_mut(&p)) {
+            Some(p) => p.feed_output(sa::repl_banner().as_bytes()),
+            None => {
+                self.api_jar.lock().unwrap().remove(&cookie);
+                self.script_history.stop(&key);
+            }
+        }
+        self.redraw_all();
+    }
+
+    /// Scripts > Manage > Import (`chooseAndImportScript`, `M:733-751`): zip, its and py files,
+    /// several at once, each imported in turn.
+    pub(super) fn import_scripts(&mut self) {
+        let Some(files) = rfd::FileDialog::new().add_filter("Script archives and Python scripts", &["zip", "its", "py"]).pick_files() else { return };
+        for f in files {
+            self.import_path(f, false);
+        }
+    }
+
+    /// `importScriptFromURL:` (`IM:37-155`), one at a time: another waits behind the one under
+    /// way (iTerm2's serial install queue). A `.py` is copied into the Scripts folder; a
+    /// signed `.its` is refused; anything else is extracted off the UI thread.
+    pub(super) fn import_path(&mut self, path: PathBuf, trash: bool) {
+        if self.importing.is_some() {
+            return self.import_queue.push_back((path, trash));
+        }
+        let scripts = self.scripts_folder();
+        let _ = std::fs::create_dir_all(&scripts);
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("py") => {
+                let to = scripts.join(path.file_name().unwrap_or_default());
+                // `copyItemAtURL:` never overwrites: an existing script is an error.
+                let copied = std::fs::File::open(&path).and_then(|mut from| {
+                    let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&to)?;
+                    std::io::copy(&mut from, &mut out).map(|_| ())
+                });
+                self.import_result(path, trash, copied.map(|_| Some(to)).map_err(|e| e.to_string()));
+            }
+            Some("its") => self.import_result(path, trash, Err(sa::its_refused())),
+            _ => {
+                let staging = scripts.join(format!("{}{}", sa::STAGING_PREFIX, crate::api_auth::fresh_key()));
+                let (tx, rx) = std::sync::mpsc::channel();
+                let notify = self.notify.clone();
+                let (zip, to) = (path.clone(), staging.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send(extract_archive(&zip, &to));
+                    notify();
+                });
+                self.importing = Some(Import { source: path, trash, staging, extracting: Some(rx), layout: None, name: String::new(), dest: PathBuf::new(), backup: None });
+            }
+        }
+    }
+
+    /// The extraction finished: its layout goes on, or its error ends the import.
+    pub(super) fn import_tick(&mut self) {
+        let Some(rx) = self.importing.as_ref().and_then(|i| i.extracting.as_ref()) else { return };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(sa::unzip_failed("the extraction stopped")),
+        };
+        if let Some(i) = self.importing.as_mut() {
+            i.extracting = None;
+        }
+        match result {
+            Err(e) => self.import_finish(Err(e)),
+            Ok(layout) => self.import_layout(layout),
+        }
+    }
+
+    /// `didUnzipSuccessfullyTo:` (`IM:326-380`): a script of that name asks "Script Already
+    /// Exists" (persistent: never silenced); else it is installed.
+    fn import_layout(&mut self, layout: sa::Layout) {
+        let name = match &layout {
+            sa::Layout::Basic { file } => file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            sa::Layout::Full { name, .. } => name.clone(),
+        };
+        let dest = self.scripts_folder().join(&name);
+        let Some(i) = self.importing.as_mut() else { return };
+        i.layout = Some(layout);
+        i.name = name.clone();
+        i.dest = dest.clone();
+        if dest.exists() {
+            let buttons = vec![sa::REPLACE.to_string(), crate::api_auth::CANCEL.to_string()];
+            let ask = Ask { heading: sa::ALREADY_HEADING.to_string(), text: sa::already_installed(&name), buttons, silence: None, then: Then::AlreadyInstalled(name) };
+            return self.ask_scripts(ask);
+        }
+        self.import_install();
+    }
+
+    /// Replace Script (`moveAsideScriptNamed:`, `IM:442-458`): a running copy is terminated,
+    /// then the old script moved aside to `.replacing-<name>-<UUID>`; when it cannot be moved
+    /// it is left as it was and the import ends. (What a full environment's script started
+    /// and left running keeps its files; the move then fails the same way.)
+    pub(super) fn import_replace(&mut self, name: &str) {
+        let Some(dest) = self.importing.as_ref().map(|i| i.dest.clone()) else { return };
+        let running = self.script_history.running_with_full_path(&dest).map(|e| e.id.clone());
+        if let Some(id) = &running {
+            self.terminate_script(id);
+        }
+        let backup = dest.with_file_name(sa::backup_name(name, &crate::api_auth::fresh_key()));
+        if move_aside(&dest, &backup, running.is_some()).is_err() {
+            return self.import_finish(Err(sa::replace_failed(name)));
+        }
+        if let Some(i) = self.importing.as_mut() {
+            i.backup = Some(backup);
+        }
+        self.import_install();
+    }
+
+    /// `installTrusted:` (`AR:176-196`): a basic script is moved into the Scripts folder; a
+    /// full environment's `.venv` is built from its `setup.cfg` where it was extracted (asking
+    /// before any download), then moved into place.
+    fn import_install(&mut self) {
+        let Some(i) = self.importing.as_ref() else { return };
+        let dest = i.dest.clone();
+        match i.layout.clone() {
+            Some(sa::Layout::Basic { file }) => {
+                let moved = std::fs::rename(&file, &dest).map(|_| dest).map_err(|e| Failure::Error(e.to_string()));
+                self.import_install_done(moved);
+            }
+            Some(sa::Layout::Full { folder, .. }) => {
+                if std::fs::read_to_string(folder.join(sa::SETUP_CFG)).ok().and_then(|t| rt::SetupCfg::parse(&t)).is_none() {
+                    return self.import_install_done(Err(Failure::Error(sa::MISSING_SETUP_CFG.to_string())));
+                }
+                let (requested, mut dependencies) = container_inputs(&folder);
+                // The iterm2 package always comes; it is not asked for again (`AR:256-257`).
+                dependencies.retain(|d| d != "iterm2");
+                self.ensure_environment(Target::Container(folder.clone()), &requested, &dependencies, true, After::Import(folder));
+            }
+            None => {}
+        }
+    }
+
+    /// The imported full environment is built: it moves into place.
+    pub(super) fn import_environment_ready(&mut self, folder: &Path) {
+        let Some(dest) = self.importing.as_ref().filter(|i| matches!(&i.layout, Some(sa::Layout::Full { folder: f, .. }) if f == folder)).map(|i| i.dest.clone()) else { return };
+        let moved = std::fs::rename(folder, &dest).map(|_| dest).map_err(|e| Failure::Error(e.to_string()));
+        self.import_install_done(moved);
+    }
+
+    /// The install's end (`IM:381-415`): with a replaced script, a failure or a declined
+    /// download puts it back and says so; success removes its backup. A declined fresh
+    /// install ends quietly.
+    pub(super) fn import_install_done(&mut self, result: Result<PathBuf, Failure>) {
+        let Some(i) = self.importing.as_ref() else { return };
+        let (name, dest, backup) = (i.name.clone(), i.dest.clone(), i.backup.clone());
+        let outcome = match (result, backup) {
+            (Ok(location), backup) => {
+                if let Some(b) = backup {
+                    remove_path(&b);
+                }
+                Ok(Some(location))
+            }
+            (Err(f), Some(b)) => {
+                remove_path(&dest);
+                let _ = std::fs::rename(&b, &dest);
+                Err(match f {
+                    Failure::Canceled => sa::replace_canceled(&name),
+                    Failure::Error(e) if e.is_empty() => sa::COULD_NOT_INSTALL.to_string(),
+                    Failure::Error(e) => e,
+                })
+            }
+            (Err(Failure::Canceled), None) => Ok(None),
+            (Err(Failure::Error(e)), None) => Err(e),
+        };
+        self.import_finish(outcome);
+    }
+
+    /// The import under way ends: its staging folder goes (off the UI thread), then the
+    /// result shows.
+    pub(super) fn import_finish(&mut self, result: Result<Option<PathBuf>, String>) {
+        let Some(i) = self.importing.take() else { return };
+        let staging = i.staging;
+        std::thread::spawn(move || remove_path(&staging));
+        self.import_result(i.source, i.trash, result);
+    }
+
+    /// `importDidFinishWithErrorMessage:` (`M:761-789`): the Scripts folder is scanned again;
+    /// a failure asks "Could Not Install Script" (OK, Try Again), a success recycles a found
+    /// archive and asks "Script Imported Successfully" (OK, Launch); a quiet end shows
+    /// nothing. Then the next waiting import starts.
+    fn import_result(&mut self, source: PathBuf, trash: bool, result: Result<Option<PathBuf>, String>) {
+        if let Some(scanner) = &self.scripts_scan {
+            scanner.rescan();
+        }
+        let ok = crate::api_auth::OK.to_string();
+        match result {
+            Ok(None) => {}
+            Ok(Some(location)) => {
+                if trash {
+                    recycle(&source);
+                }
+                let ask = Ask { heading: sa::IMPORTED_TITLE.to_string(), text: String::new(), buttons: vec![ok, sa::LAUNCH.to_string()], silence: None, then: Then::ImportDone(location) };
+                self.ask_scripts(ask);
+            }
+            Err(message) => {
+                let ask = Ask { heading: sa::COULD_NOT_INSTALL_TITLE.to_string(), text: message, buttons: vec![ok, sa::TRY_AGAIN.to_string()], silence: None, then: Then::ImportFailed(source) };
+                self.ask_scripts(ask);
+            }
+        }
+        if self.importing.is_none() {
+            if let Some((path, trash)) = self.import_queue.pop_front() {
+                self.import_path(path, trash);
+            }
+        }
+    }
+
+    /// `didFindScriptArchive:autolaunch:` (`M:547-607`): each archive the scan finds asks
+    /// "Install Script Archive?" once per run (temporarily silenceable: no checkbox).
+    pub(super) fn archives_found(&mut self, archives: &[(PathBuf, bool)]) {
+        for (path, _) in archives {
+            if !self.archives_asked.insert(path.clone()) {
+                continue;
+            }
+            let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let buttons = vec![crate::api_auth::OK.to_string(), crate::api_auth::CANCEL.to_string(), crate::scripts::MOVE_TO_TRASH.to_string()];
+            let ask = Ask { heading: crate::scripts::ARCHIVE_HEADING.to_string(), text: crate::scripts::archive_text(&file), buttons, silence: None, then: Then::Archive(path.clone()) };
+            self.ask_scripts(ask);
+        }
+    }
+
+    /// At start, before the first scan: what an earlier run's import left is put right (off
+    /// the UI thread; the scan sees the result).
+    pub(super) fn recover_imports(&mut self) {
+        let folder = self.scripts_folder();
+        std::thread::spawn(move || recover_in(&folder));
+    }
+
+    /// Scripts > Manage > Export (`chooseAndExportScript`, `M:683-714`): the chooser.
+    pub(super) fn export_scripts(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(w) = &self.script_export {
+            return w.focus();
+        }
+        let Some(g) = self.gpu.as_ref() else { return };
+        let autolaunch = crate::scripts::autolaunch_folder(&self.scripts_folder());
+        match ExportWindow::open(event_loop, &g.instance, &g.adapter, &g.device, &g.queue, &self.scripts_tree, &autolaunch) {
+            Ok(w) => self.script_export = Some(w),
+            Err(e) => self.banners.set("window", format!("Could not open the window: {e}")),
+        }
+    }
+
+    /// Events for the chooser. False for other windows. Closing it is Cancel; OK exports each
+    /// chosen script off the UI thread.
+    pub(super) fn script_export_event(&mut self, window: WindowId, event: &WindowEvent) -> bool {
+        let Some(w) = self.script_export.as_mut().filter(|w| w.id() == window) else { return false };
+        let answer = match event {
+            WindowEvent::CloseRequested => ExportEvent::Cancel,
+            WindowEvent::RedrawRequested => w.redraw(),
+            other => {
+                w.event(other);
+                ExportEvent::None
+            }
+        };
+        match answer {
+            ExportEvent::None => {}
+            ExportEvent::Cancel => self.script_export = None,
+            ExportEvent::Export { paths, autolaunch } => {
+                self.script_export = None;
+                let home = std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default();
+                let desktop = super::screenshot_ui::desktop().unwrap_or_else(|| home.join("Desktop"));
+                let (tx, rx) = std::sync::mpsc::channel();
+                let notify = self.notify.clone();
+                std::thread::spawn(move || {
+                    for p in paths {
+                        let _ = tx.send(export_one(&p, autolaunch, &desktop));
+                        notify();
+                    }
+                });
+                self.script_exports.push(rx);
+            }
+        }
+        true
+    }
+
+    /// Finished exports: a zip is revealed in Explorer; a failure asks "Export Failed".
+    pub(super) fn script_export_tick(&mut self) {
+        let mut results = Vec::new();
+        self.script_exports.retain(|rx| loop {
+            match rx.try_recv() {
+                Ok(r) => results.push(r),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break true,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break false,
+            }
+        });
+        for r in results {
+            match r {
+                Ok(zip) => self.reveal_path(&zip),
+                Err(message) => {
+                    let text = if message.is_empty() { sa::FAILED_TO_CREATE.to_string() } else { message };
+                    let ask = Ask { heading: sa::EXPORT_FAILED.to_string(), text, buttons: vec![crate::api_auth::OK.to_string()], silence: None, then: Then::Nothing };
+                    self.ask_scripts(ask);
+                }
+            }
+        }
+    }
+}
+
 /// Appends `entries` to `sub`: folders as submenus, scripts as check items.
 fn fill_scripts(sub: &muda::Submenu, entries: &[MenuEntry], errors: &mut Vec<String>) {
     for e in entries {
@@ -823,6 +1345,71 @@ mod tests {
         );
         assert_eq!(script_item_id(&items[1].1), r"script:/Reveal/C:\S\zeta\z.py");
         assert_eq!(reveal_label("a.py"), "Reveal a.py");
+    }
+
+    /// A real round trip through tar.exe (nothing is downloaded): a basic script's export is
+    /// a full environment's zip without metadata, and importing it finds that layout; a full
+    /// environment's export writes metadata into its folder but not into the zip.
+    #[test]
+    fn export_round_trips_through_tar() {
+        let root = std::env::temp_dir().join(format!("tandem-archive-test-{}", crate::api_auth::fresh_key()));
+        let (scripts, desktop) = (root.join("Scripts"), root.join("Desktop"));
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::create_dir_all(&desktop).unwrap();
+        let body = b"#!/usr/bin/env python3\r\nprint('x')\n\xff\n";
+        std::fs::write(scripts.join("tool.py"), body).unwrap();
+        let zip = export_one(&scripts.join("tool.py"), true, &desktop).unwrap();
+        assert_eq!(zip, desktop.join("tool.zip"));
+        let again = export_one(&scripts.join("tool.py"), false, &desktop).unwrap();
+        assert_eq!(again, desktop.join("tool (2).zip"));
+        let out = root.join("out");
+        let layout = extract_archive(&zip, &out).unwrap();
+        assert_eq!(layout, sa::Layout::Full { folder: out.join("tool"), name: "tool".into(), autolaunch: false });
+        assert_eq!(std::fs::read(out.join(r"tool\tool\tool.py")).unwrap(), body, "copied byte for byte");
+        let cfg = rt::SetupCfg::parse(&std::fs::read_to_string(out.join(r"tool\setup.cfg")).unwrap()).unwrap();
+        assert_eq!((cfg.name.as_str(), cfg.dependencies.clone(), cfg.python_version.clone()), ("tool", vec!["iterm2".to_string()], Some(rt::DEFAULT_PYTHON.to_string())));
+        assert!(!out.join(r"tool\metadata.json").exists(), "an unsigned zip holds no metadata");
+
+        let full = scripts.join("Full");
+        std::fs::create_dir_all(full.join("Full")).unwrap();
+        std::fs::create_dir_all(full.join(".venv")).unwrap();
+        std::fs::write(full.join("setup.cfg"), rt::setup_cfg_text("Full", &[], true, "3.12", 0)).unwrap();
+        std::fs::write(full.join(rt::MARKER), "{}").unwrap();
+        std::fs::write(full.join(r"Full\Full.py"), "print(1)\n").unwrap();
+        let zip = export_one(&full, true, &desktop).unwrap();
+        assert_eq!(std::fs::read_to_string(full.join("metadata.json")).unwrap(), "{\"AutoLaunch\":true}");
+        let out2 = root.join("out2");
+        assert_eq!(extract_archive(&zip, &out2).unwrap(), sa::Layout::Full { folder: out2.join("Full"), name: "Full".into(), autolaunch: false });
+        assert!(!out2.join(r"Full\.venv").exists() && !out2.join(r"Full\python-runtime.json").exists(), "only setup.cfg and the inner folder");
+
+        // Not a script: a plain folder, and a missing path.
+        std::fs::create_dir_all(scripts.join("plain")).unwrap();
+        assert_eq!(export_one(&scripts.join("plain"), false, &desktop), Err(sa::NO_SCRIPT_FOUND.to_string()));
+        // An archive that is not a zip.
+        std::fs::write(root.join("bad.zip"), "not a zip").unwrap();
+        assert!(extract_archive(&root.join("bad.zip"), &root.join("out3")).unwrap_err().starts_with("Could not unzip archive: "));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recovery_follows_iterm2() {
+        let root = std::env::temp_dir().join(format!("tandem-recover-test-{}", crate::api_auth::fresh_key()));
+        std::fs::create_dir_all(root.join(".installing-X").join("tool")).unwrap();
+        let uuid = crate::api_auth::fresh_key();
+        // A backup whose script is back: removed. One whose script is gone: restored.
+        std::fs::write(root.join("done.py"), "new").unwrap();
+        std::fs::write(root.join(sa::backup_name("done.py", &uuid)), "old").unwrap();
+        std::fs::create_dir_all(root.join(sa::backup_name("lost", &uuid))).unwrap();
+        std::fs::write(root.join(sa::backup_name("lost", &uuid)).join("x"), "kept").unwrap();
+        // A user's file that only looks like one is left alone.
+        std::fs::write(root.join(".replacing-mine"), "mine").unwrap();
+        recover_in(&root);
+        let mut names: Vec<String> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, [".replacing-mine", "done.py", "lost"]);
+        assert_eq!(std::fs::read_to_string(root.join("done.py")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(root.join(r"lost\x")).unwrap(), "kept");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

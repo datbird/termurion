@@ -25,11 +25,13 @@ pub(super) enum After {
     /// "Rebuild Python Environment?" answered Rebuild: the script launches; a failure shows
     /// "Could Not Rebuild Environment".
     Rebuild(crate::script_launch::Request),
-    /// The REPL, an import and the dependency editor continue here (Tasks 9 and 10).
-    #[allow(dead_code)]
+    /// Open Python REPL: its window opens with the interpreter; a failure falls back to the
+    /// newest shared environment (`AD:3553-3595`); a declined download is silent.
     Repl,
-    #[allow(dead_code)]
+    /// An imported full environment (the folder being built) is moved into place; a failure
+    /// or a declined download ends the import (restoring what it replaced).
     Import(PathBuf),
+    /// The dependency editor continues here (Task 10).
     #[allow(dead_code)]
     Deps(PathBuf),
     /// New Python Script's full environment is built: its files are written; a failure shows
@@ -266,18 +268,25 @@ impl App {
                     After::InstallRuntime => {
                         // What was queued behind this install needs its uv; without it each
                         // would only fail again, so one alert says why. Other jobs report.
+                        let mut dropped = Vec::new();
                         if !self.uv_installed {
                             let needing: Vec<u64> = self.provision_needs.iter().filter(|(_, i)| **i == id).map(|(k, _)| *k).collect();
                             for k in needing {
                                 self.provision_needs.remove(&k);
-                                self.provision_after.remove(&k);
+                                dropped.extend(self.provision_after.remove(&k));
                             }
                         }
                         self.runtime_alert(rt::INSTALL_FAILED_HEADING, rt::install_failed(&e));
+                        // An import waiting on it ends (its replaced script comes back).
+                        if dropped.iter().any(|a| matches!(a, After::Import(_))) {
+                            self.import_install_done(Err(super::scripts_app::Failure::Error(crate::script_archive::runtime_install_failed(&e))));
+                        }
                     }
                     After::CheckRuntime => self.runtime_alert(rt::UPDATE_FAILED_HEADING, e),
                     After::Rebuild(_) => self.runtime_alert(crate::script_launch::COULD_NOT_REBUILD, e),
                     After::NewScript(_) => self.runtime_alert(crate::script_new::INSTALLATION_FAILED, crate::script_new::env_create_error(&e)),
+                    After::Repl => self.repl_environment_failed(&e),
+                    After::Import(_) => self.import_install_done(Err(super::scripts_app::Failure::Error(crate::script_archive::runtime_install_failed(&e)))),
                     _ => self.runtime_alert(rt::ENV_UNAVAILABLE_HEADING, rt::env_unavailable(&e)),
                 }
             }
@@ -309,8 +318,19 @@ impl App {
             After::Launch(req) => self.script_environment_ready(req, python),
             After::Rebuild(req) => self.launch_script(req),
             After::NewScript(plan) => self.finish_new_script(plan),
-            // Their tasks (9 and 10) continue these with the interpreter.
-            After::Repl | After::Import(_) | After::Deps(_) => {}
+            After::Repl => self.repl_ready(python),
+            After::Import(folder) => self.import_environment_ready(&folder),
+            // Task 10 continues this with the interpreter.
+            After::Deps(_) => {}
+        }
+    }
+
+    /// A download consent was declined (or never shown): nothing is built; an import waiting
+    /// on it ends, restoring what it replaced (`IM:387-406`). The REPL stays silent
+    /// (`AD:3558-3561`).
+    pub(super) fn consent_declined(&mut self, jobs: Vec<(Job, After)>) {
+        if jobs.iter().any(|(_, a)| matches!(a, After::Import(_))) {
+            self.import_install_done(Err(super::scripts_app::Failure::Canceled));
         }
     }
 

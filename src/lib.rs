@@ -55,6 +55,9 @@ pub mod script_runtime;
 pub mod script_history;
 pub mod script_launch;
 pub mod script_new;
+pub mod script_archive;
+#[cfg(windows)]
+pub mod script_export_ui;
 #[cfg(windows)]
 pub mod script_new_ui;
 #[cfg(windows)]
