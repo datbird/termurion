@@ -1,9 +1,16 @@
-//! iTerm2's tab bar without drawing (milestone 13c): the metrics, the width rules, scrolling
-//! and the overflow menu. Pure code in points; the app multiplies by the window scale once.
+//! iTerm2's tab bar without drawing (milestone 13c): the metrics, the width rules, scrolling,
+//! the overflow menu, one tab's inside and the title, number, tooltip and color texts. Pure code
+//! in points; the app multiplies by the window scale once.
 //!
 //! Citations: `PSM` = `ThirdParty/PSMTabBarControl/source/PSMTabBarControl.m`, `YS` =
-//! `.../PSMYosemiteTabStyle.m` under `~/gitrepos/iterm2-ref`; `RTV` =
-//! `sources/TerminalView/iTermRootTerminalView.m`.
+//! `.../PSMYosemiteTabStyle.m`, `NSA` = `.../NSAttributedString+PSM.m`, `CT` =
+//! `.../PSMCachedTitle.m` under `~/gitrepos/iterm2-ref`; `RTV` =
+//! `sources/TerminalView/iTermRootTerminalView.m`, `PT` = `sources/TerminalView/PseudoTerminal.m`,
+//! `TAB` = `sources/TerminalView/PTYTab.m`, `CMV` =
+//! `sources/Infrastructure/Views/ColorsMenuItemView.m`.
+
+use crate::layout::Rect;
+use crate::palette::{rgb, Rgb};
 
 /// `kSPMTabBarCellInternalXMargin` (`PSM:45`): the room at each end of a tab.
 pub const CELL_MARGIN: f32 = 6.0;
@@ -26,6 +33,12 @@ pub const MAX_WIDTH: f32 = 280.0;
 pub const RIGHT_MARGIN: f32 = 24.0;
 /// The add-tab button is 24 by 24, right after the last tab.
 pub const ADD_BUTTON: f32 = 24.0;
+/// `kPSMMetalObjectCounterRadius`: the tab number's box is twice this high.
+pub const COUNTER_RADIUS: f32 = 7.0;
+/// `kPSMMetalCounterMinWidth`.
+pub const COUNTER_MIN_WIDTH: f32 = 20.0;
+/// Titles longer than this many characters are cut (`CT:24`).
+pub const TITLE_LIMIT: usize = 255;
 
 /// The width preferences the bar is laid out with (`RTV:1984-1990`), in points.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -191,6 +204,399 @@ pub fn wheel_scroll(
     Some(clamp_scroll(offset - lines * optimum, content, viewport))
 }
 
+/// The tab number's modifier for `SwitchTabModifier` in Windows words, in iTerm2's glyph order
+/// (`PSM _modifierString`: Control, Option, Shift, then Cmd). Empty with no shortcut.
+pub fn modifier_string(switch_tab_modifier: i64) -> &'static str {
+    match switch_tab_modifier {
+        1 => "Ctrl+",
+        4 => "Win+",
+        5 => "Alt+",
+        6 => "Alt+Win+",
+        _ => "",
+    }
+}
+
+/// The tab number's text (`YS attributedObjectCountValueForTabCell:`): the modifier and the
+/// number for tabs 1 to 8, the modifier and "9" on the last tab, else empty. The counter keeps
+/// its room when the text is empty.
+pub fn counter_text(number: usize, is_last: bool, modifier: &str) -> String {
+    if modifier.is_empty() {
+        String::new()
+    } else if number < 9 {
+        format!("{modifier}{number}")
+    } else if is_last {
+        format!("{modifier}9")
+    } else {
+        String::new()
+    }
+}
+
+/// The tab number's box width for its text width (`YS objectCounterRectForTabCell:`).
+pub fn counter_width(text_width: f32) -> f32 {
+    COUNTER_MIN_WIDTH.max(text_width + 2.0 * COUNTER_RADIUS - 6.0)
+}
+
+/// A tab's desired width (`YS desiredWidthOfTabCell:`): the left matter (margin, the close
+/// button's room whether or not it is shown, the icon), the title, the right matter (the counter,
+/// or else the close button's room again, and the indicator) and the right margin. `counter` is
+/// the counter's box width.
+pub fn desired_width(title_width: f32, icon: bool, counter: Option<f32>, indicator: bool) -> f32 {
+    let mut left = CELL_MARGIN + CLOSE_SIZE + CELL_PADDING;
+    if icon {
+        left += ICON_WIDTH + ICON_PADDING;
+    }
+    // `YS widthOfRightMatterInCell:`.
+    let mut right = match counter {
+        Some(w) => w + CELL_PADDING,
+        None => CLOSE_SIZE + CELL_PADDING,
+    };
+    if indicator {
+        right += CELL_PADDING + INDICATOR_WIDTH;
+    }
+    right += CELL_MARGIN;
+    (left + title_width + right).ceil()
+}
+
+/// What one tab holds, in points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellInput {
+    pub x: f32,
+    pub width: f32,
+    pub height: f32,
+    /// `TabsHaveCloseButton`.
+    pub close_buttons: bool,
+    /// `TabCloseButtonsAlwaysVisible`; off, the button shows only on hover.
+    pub close_always: bool,
+    pub hovered: bool,
+    /// The counter's box width (`counter_width`); None when the tab has no number.
+    pub counter: Option<f32>,
+    /// The tab has an icon (new output, bell, dead, idle, the status dot).
+    pub icon: bool,
+    /// The activity spinner shows.
+    pub indicator: bool,
+    /// The title's measured width.
+    pub title_width: f32,
+    /// `MinimumTabLabelWidth`: the icon is dropped unless the label keeps more than this.
+    pub min_label: f32,
+}
+
+/// Where one tab's parts go (`YS drawInteriorWithTabCell:inView:highlightAmount:`), in points.
+/// Rectangles have y 0 at the tab's top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellLayout {
+    pub close: Option<Rect>,
+    /// 0 or 1 (iTerm2 fades by the hover amount); the drawer halves it in an inactive window.
+    pub close_alpha: f32,
+    pub icon: Option<Rect>,
+    pub indicator: Option<Rect>,
+    pub counter: Option<Rect>,
+    /// The label's box, the tab's full height: the drawer places the text line(s) in it.
+    pub label: Rect,
+    /// The label is too long to center: it is drawn left-aligned and truncated.
+    pub truncate: bool,
+    /// Room on the left kept for a close button that shows only on hover.
+    pub reserved: f32,
+}
+
+/// Lays out one tab's inside.
+pub fn cell(input: &CellInput) -> CellLayout {
+    let (x, w, h) = (input.x, input.width, input.height);
+    let centered = |size: f32| ((h - size) / 2.0).floor();
+    let mut label_x = x + CELL_MARGIN;
+    let mut reserved = 0.0;
+    let mut close = None;
+    let mut close_alpha = 0.0;
+    if input.close_buttons {
+        close = Some(Rect { x: x + CELL_MARGIN, y: centered(CLOSE_SIZE), w: CLOSE_SIZE, h: CLOSE_SIZE });
+        if input.close_always {
+            label_x += CLOSE_SIZE + CELL_PADDING;
+            close_alpha = 1.0;
+        } else {
+            // Suppressed: the label is centered as though this room were free, unless it would
+            // run into it.
+            reserved = CLOSE_SIZE + CELL_PADDING;
+            close_alpha = if input.hovered { 1.0 } else { 0.0 };
+        }
+    }
+    let counter = input.counter.map(|cw| Rect {
+        x: x + w - CELL_MARGIN - cw,
+        y: centered(2.0 * COUNTER_RADIUS),
+        w: cw,
+        h: 2.0 * COUNTER_RADIUS,
+    });
+    // `YS indicatorRectForTabCell:`.
+    let indicator = input.indicator.then(|| {
+        let min_x = counter.map_or(x + w - CELL_MARGIN, |c| c.x);
+        Rect { x: min_x - ICON_PADDING - INDICATOR_WIDTH, y: centered(INDICATOR_WIDTH), w: INDICATOR_WIDTH, h: INDICATOR_WIDTH }
+    });
+    // `YS widthForLabelInCell:...`: the label's width and whether it truncates, given the width
+    // of the icon's rect when an icon is drawn.
+    let label_width = |icon_w: Option<f32>| {
+        let mut lw = w - (label_x - x) - CELL_PADDING;
+        if let Some(iw) = icon_w {
+            lw -= iw + ICON_PADDING;
+        } else if input.indicator {
+            lw -= INDICATOR_WIDTH + ICON_PADDING;
+        }
+        if let Some(cw) = input.counter {
+            lw -= cw + CELL_PADDING;
+        }
+        if (lw - input.title_width) / 2.0 < reserved {
+            (lw - reserved, true)
+        } else {
+            (lw, false)
+        }
+    };
+    // `YS:951-979`: iTerm2 asks with the icon's rect still zero, so only its padding counts.
+    let icon = (input.icon && label_width(Some(0.0)).0 > input.min_label).then(|| {
+        // `YS iconRectForTabCell:`: one point above center.
+        let min_x = match (counter, indicator) {
+            (Some(c), _) => c.x,
+            (None, Some(i)) => i.x - CELL_MARGIN,
+            (None, None) => x + w - CELL_MARGIN,
+        };
+        Rect { x: min_x - ICON_PADDING - ICON_WIDTH, y: centered(ICON_WIDTH) - 1.0, w: ICON_WIDTH, h: ICON_WIDTH }
+    });
+    let (lw, truncate) = label_width(icon.map(|r| r.w));
+    // A truncated label is drawn after the reserved room.
+    let shift = if truncate { reserved } else { 0.0 };
+    let label = Rect { x: label_x + shift, y: 0.0, w: lw.max(0.0), h };
+    CellLayout { close, close_alpha, icon, indicator, counter, label, truncate, reserved }
+}
+
+/// Which end of a long title gives way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Truncation {
+    /// "\u{2026}end of the title"
+    Head,
+    /// "start of the title\u{2026}"
+    Tail,
+}
+
+/// Leading whitespace, symbols and punctuation (a spinner such as "\u{2810} ") are not
+/// part of a smart-truncation prefix. Private-use characters (Nerd Font icons) are text to
+/// Apple's character sets, so they are kept.
+fn is_decoration(c: char) -> bool {
+    let private = matches!(c, '\u{e000}'..='\u{f8ff}' | '\u{f0000}'..='\u{10ffff}');
+    c.is_whitespace() || !(c.is_alphanumeric() || c.is_control() || private)
+}
+
+/// The first `n` characters after the leading decoration, or the raw first `n` when the title is
+/// all decoration (`PSMSmartTruncationPrefix`, `PSM:759-787`).
+pub fn smart_prefix(title: &str, n: usize) -> String {
+    let chars: Vec<char> = title.chars().collect();
+    match chars.iter().position(|&c| !is_decoration(c)) {
+        Some(start) => chars[start..].iter().take(n).collect(),
+        None => chars.iter().take(n).collect(),
+    }
+}
+
+/// `PSM truncationStyle`: head truncation when more titles have unique 5-character suffixes
+/// than prefixes; suffixes are also counted before a trailing " (...)" (`TBV:47` turns that on)
+/// and the larger count is used. Titles under 5 characters are skipped.
+pub fn truncation(titles: &[&str], smart: bool) -> Truncation {
+    use std::collections::HashSet;
+    const LEN: usize = 5;
+    if titles.len() <= 1 || !smart {
+        return Truncation::Tail;
+    }
+    let mut prefixes = HashSet::new();
+    let mut suffixes = HashSet::new();
+    let mut before_parens = HashSet::new();
+    for title in titles {
+        let chars: Vec<char> = title.chars().collect();
+        if chars.len() < LEN {
+            continue;
+        }
+        prefixes.insert(smart_prefix(title, LEN));
+        suffixes.insert(chars[chars.len() - LEN..].iter().collect::<String>());
+        if title.ends_with(')') {
+            let open = chars.windows(2).rposition(|p| p == [' ', '(']);
+            if let Some(open) = open.filter(|&o| o > LEN) {
+                before_parens.insert(chars[open - LEN..open].iter().collect::<String>());
+            }
+        }
+    }
+    if prefixes.len() >= suffixes.len().max(before_parens.len()) {
+        Truncation::Tail
+    } else {
+        Truncation::Head
+    }
+}
+
+/// `text` cut to fit `width` with an ellipsis on the cut side, keeping whole characters;
+/// unchanged when it fits.
+pub fn truncate(text: &str, width: f32, how: Truncation, measure: &dyn Fn(&str) -> f32) -> String {
+    if width <= 0.0 {
+        return String::new();
+    }
+    if measure(text) <= width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let with = |keep: usize| -> String {
+        match how {
+            Truncation::Tail => chars[..keep].iter().chain(['\u{2026}'].iter()).collect(),
+            Truncation::Head => ['\u{2026}'].iter().chain(chars[chars.len() - keep..].iter()).collect(),
+        }
+    };
+    // The most characters that fit, by bisection (widths grow with the characters kept).
+    let (mut lo, mut hi) = (0, chars.len() - 1);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if measure(&with(mid)) <= width {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let best = with(lo);
+    if lo == 0 && measure(&best) > width {
+        String::new()
+    } else {
+        best
+    }
+}
+
+/// A stretch of title text in one style.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub text: String,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+}
+
+/// An HTML tab title's styled runs (`NSA newAttributedStringWithHTML:attributes:`). A title is
+/// HTML only when it holds "<b>", "<i>" or "<u>" (exactly, as iTerm2's `containsString:`);
+/// otherwise it is one plain run as written. In HTML, the six tags are found in any case, but
+/// only the lower-case ones toggle their style; "&lt;" and "&amp;" are decoded between tags.
+pub fn html_runs(title: &str) -> Vec<Run> {
+    const OPEN: [&str; 3] = ["<b>", "<i>", "<u>"];
+    const CLOSE: [&str; 3] = ["</b>", "</i>", "</u>"];
+    let plain = |text: &str| Run { text: text.to_string(), bold: false, italic: false, underline: false };
+    if !OPEN.iter().any(|t| title.contains(t)) {
+        return if title.is_empty() { Vec::new() } else { vec![plain(title)] };
+    }
+    let mut runs: Vec<Run> = Vec::new();
+    let mut style = [false; 3];
+    let mut push = |text: &str, style: [bool; 3]| {
+        let text = text.replace("&lt;", "<").replace("&amp;", "&");
+        if text.is_empty() {
+            return;
+        }
+        match runs.last_mut() {
+            Some(r) if [r.bold, r.italic, r.underline] == style => r.text.push_str(&text),
+            _ => runs.push(Run { text, bold: style[0], italic: style[1], underline: style[2] }),
+        }
+    };
+    let bytes = title.as_bytes();
+    let (mut cursor, mut i) = (0, 0);
+    while i < bytes.len() {
+        let tag = OPEN.iter().chain(CLOSE.iter()).find(|t| {
+            bytes.get(i..i + t.len()).is_some_and(|b| b.eq_ignore_ascii_case(t.as_bytes()))
+        });
+        let Some(tag) = tag else {
+            i += 1;
+            continue;
+        };
+        push(&title[cursor..i], style);
+        let found = &title[i..i + tag.len()];
+        if let Some(k) = OPEN.iter().position(|t| *t == found) {
+            style[k] = true;
+        } else if let Some(k) = CLOSE.iter().position(|t| *t == found) {
+            style[k] = false;
+        }
+        i += tag.len();
+        cursor = i;
+    }
+    push(&title[cursor..], style);
+    runs
+}
+
+/// The title's text without its HTML when HTML titles are on (`removingHTMLFromTabTitleIfNeeded`).
+pub fn plain_title(title: &str, html: bool) -> String {
+    if html {
+        html_runs(title).into_iter().map(|r| r.text).collect()
+    } else {
+        title.to_string()
+    }
+}
+
+/// Titles past `TITLE_LIMIT` characters keep that many and an ellipsis (`CT:24`).
+pub fn limit_title(title: &str) -> String {
+    if title.chars().count() <= TITLE_LIMIT {
+        title.to_string()
+    } else {
+        title.chars().take(TITLE_LIMIT).chain(['\u{2026}']).collect()
+    }
+}
+
+/// The tab's subtitle line (`TAB stringByAppendingSubtitleForActiveSession:`): the status text
+/// before the session's subtitle, when `ShowSessionStatusInTabSubtitle` is on.
+pub fn subtitle_text(subtitle: &str, status: Option<&str>, show_status: bool) -> String {
+    match status.filter(|s| !s.is_empty() && show_status) {
+        Some(s) if subtitle.is_empty() => s.to_string(),
+        Some(s) => format!("{s} \u{2013} {subtitle}"),
+        None => subtitle.to_string(),
+    }
+}
+
+/// The tab's tooltip (`PT tabView:toolTipForTabViewItem:`); `name` is already without HTML.
+pub fn tooltip(name: &str, profile: &str, command: Option<&str>) -> String {
+    format!("Name: {name}\nProfile: {profile}\nCommand: {}", command.unwrap_or("None"))
+}
+
+/// iTerm2's fallback tab colors (`CMV:488-498`), also `TabColorMenuOptions`' default.
+pub const DEFAULT_COLORS: [Rgb; 7] = [
+    rgb(0xfb, 0x6b, 0x62),
+    rgb(0xf6, 0xac, 0x47),
+    rgb(0xf0, 0xdc, 0x4f),
+    rgb(0xb5, 0xd7, 0x49),
+    rgb(0x5f, 0xa3, 0xf8),
+    rgb(0xc1, 0x8e, 0xd9),
+    rgb(0x78, 0x78, 0x78),
+];
+
+/// The tab color menu's colors from `TabColorMenuOptions` (`CMV colors`): the spec split on
+/// spaces, each word read by `NSColor colorFromHexString:`, words it cannot read skipped, and
+/// `DEFAULT_COLORS` when none is left.
+pub fn tab_colors(spec: &str) -> Vec<Rgb> {
+    let colors: Vec<Rgb> = spec.split(' ').filter_map(hex_color).collect();
+    if colors.is_empty() {
+        DEFAULT_COLORS.to_vec()
+    } else {
+        colors
+    }
+}
+
+/// `NSColor colorFromHexString:`: "#rgb", "#rrggbb" or "#rrrrggggbbbb", in sRGB, or after
+/// "p3" in Display P3 (so "p3#rrrrggggbbbb").
+fn hex_color(word: &str) -> Option<Rgb> {
+    let (p3, hash) = match word.strip_prefix("p3") {
+        Some(rest) if rest.starts_with('#') => (true, rest),
+        _ => (false, word),
+    };
+    let digits = hash.strip_prefix('#')?;
+    if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    // Components as fractions of the whole (`getHashColorRed:green:blue:` gives 16 bits).
+    let parse = |s: &str, max: f64| u32::from_str_radix(s, 16).ok().map(|v| v as f64 / max);
+    let (r, g, b) = match digits.len() {
+        3 => {
+            let d = |i: usize| parse(&digits[i..i + 1].repeat(2), 255.0);
+            (d(0)?, d(1)?, d(2)?)
+        }
+        6 => (parse(&digits[0..2], 255.0)?, parse(&digits[2..4], 255.0)?, parse(&digits[4..6], 255.0)?),
+        12 => (parse(&digits[0..4], 65535.0)?, parse(&digits[4..8], 65535.0)?, parse(&digits[8..12], 65535.0)?),
+        _ => return None,
+    };
+    let (r, g, b) = if p3 { crate::import::p3_to_srgb(r, g, b) } else { (r, g, b) };
+    let to8 = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    Some(rgb(to8(r), to8(g), to8(b)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +696,207 @@ mod tests {
         assert_eq!(wheel_scroll(600.0, -2.0, 0.0, false, 175.0, 1200.0, 576.0), Some(624.0));
         // Nothing scrolls.
         assert_eq!(wheel_scroll(0.0, -2.0, 0.0, false, 175.0, 0.0, 576.0), None);
+    }
+
+    #[test]
+    fn numbers_follow_iterm2() {
+        assert_eq!(modifier_string(4), "Win+");
+        assert_eq!(modifier_string(5), "Alt+");
+        assert_eq!(modifier_string(6), "Alt+Win+");
+        assert_eq!(modifier_string(1), "Ctrl+");
+        assert_eq!(modifier_string(9), "");
+        assert_eq!(counter_text(1, false, "Win+"), "Win+1");
+        assert_eq!(counter_text(8, false, "Win+"), "Win+8");
+        // Only the last tab past 8 shows "9".
+        assert_eq!(counter_text(9, false, "Win+"), "");
+        assert_eq!(counter_text(12, true, "Win+"), "Win+9");
+        assert_eq!(counter_text(3, false, ""), "");
+        // max(20, text + 2 * 7 - 6)
+        assert_eq!(counter_width(12.0), 20.0);
+        assert_eq!(counter_width(30.0), 38.0);
+    }
+
+    fn tab() -> CellInput {
+        CellInput {
+            x: 0.0,
+            width: 175.0,
+            height: 24.0,
+            close_buttons: true,
+            close_always: false,
+            hovered: false,
+            counter: Some(38.0),
+            icon: false,
+            indicator: false,
+            title_width: 40.0,
+            min_label: 35.0,
+        }
+    }
+
+    #[test]
+    fn cell_follows_iterm2() {
+        let c = cell(&tab());
+        assert_eq!(c.close, Some(Rect { x: 6.0, y: 4.0, w: 16.0, h: 16.0 }));
+        assert_eq!(c.close_alpha, 0.0);
+        assert_eq!(c.reserved, 20.0);
+        // The room is reserved, not moved: 175 - 6 - 4 - (38 + 4).
+        assert_eq!(c.label, Rect { x: 6.0, y: 0.0, w: 123.0, h: 24.0 });
+        assert!(!c.truncate);
+        assert_eq!(c.counter, Some(Rect { x: 131.0, y: 5.0, w: 38.0, h: 14.0 }));
+        assert_eq!(c.icon, None);
+        assert_eq!(c.indicator, None);
+
+        assert_eq!(cell(&CellInput { hovered: true, ..tab() }).close_alpha, 1.0);
+
+        let always = cell(&CellInput { close_always: true, ..tab() });
+        assert_eq!(always.label.x, 26.0);
+        assert_eq!(always.reserved, 0.0);
+        assert_eq!(always.close_alpha, 1.0);
+
+        // A 110 title in the 123 label is centered 6.5 from its left, under the reserved 20:
+        // left-aligned after the reserved room, 20 narrower.
+        let long = cell(&CellInput { title_width: 110.0, ..tab() });
+        assert!(long.truncate);
+        assert_eq!(long.label, Rect { x: 26.0, y: 0.0, w: 103.0, h: 24.0 });
+
+        // The icon sits 4 left of the counter, one point above center; the label loses it.
+        let icon = cell(&CellInput { icon: true, ..tab() });
+        assert_eq!(icon.icon, Some(Rect { x: 111.0, y: 3.0, w: 16.0, h: 16.0 }));
+        assert_eq!(icon.label.w, 103.0);
+        // The icon needs more than `min_label` of label room. iTerm2 asks with a zero-size icon
+        // rect, so only its 4 points of padding count: 49 - 6 - 4 - 4 = 35 is not enough.
+        let bare = CellInput { close_buttons: false, counter: None, icon: true, title_width: 0.0, ..tab() };
+        assert_eq!(cell(&CellInput { width: 49.0, ..bare }).icon, None);
+        assert!(cell(&CellInput { width: 50.0, ..bare }).icon.is_some());
+        // A narrow tab whose label would truncate: 100 - 10 - 4 - 42 = 44, less the reserved 20.
+        let narrow = cell(&CellInput { width: 100.0, icon: true, ..tab() });
+        assert_eq!(narrow.icon, None);
+        assert_eq!(narrow.label.w, 28.0);
+        // Without a counter the icon is left of the right margin, else of the indicator.
+        assert_eq!(cell(&CellInput { counter: None, ..icon_only() }).icon.unwrap().x, 175.0 - 6.0 - 4.0 - 16.0);
+        let both = cell(&CellInput { counter: None, indicator: true, ..icon_only() });
+        assert_eq!(both.indicator.unwrap().x, 149.0);
+        assert_eq!(both.icon.unwrap().x, 149.0 - 6.0 - 4.0 - 16.0);
+
+        // The indicator without a counter: right edge at 175 - 6 - 4; the label loses 16 + 4.
+        let spin = cell(&CellInput { indicator: true, counter: None, ..tab() });
+        let r = spin.indicator.unwrap();
+        assert_eq!(r.x + r.w, 175.0 - 6.0 - 4.0);
+        assert_eq!(r.y, 4.0);
+        assert_eq!(spin.label.w, 175.0 - 6.0 - 4.0 - 20.0);
+        // With a counter it is 4 left of it.
+        assert_eq!(cell(&CellInput { indicator: true, ..tab() }).indicator.unwrap().x, 131.0 - 4.0 - 16.0);
+
+        let none = cell(&CellInput { close_buttons: false, ..tab() });
+        assert_eq!(none.close, None);
+        assert_eq!(none.reserved, 0.0);
+        assert_eq!(none.label.x, 6.0);
+
+        // The tab sits at its own x.
+        let moved = cell(&CellInput { x: 100.0, ..tab() });
+        assert_eq!(moved.close.unwrap().x, 106.0);
+        assert_eq!(moved.counter.unwrap().x, 231.0);
+        assert_eq!(moved.label.x, 106.0);
+
+        assert_eq!(desired_width(40.0, false, Some(38.0), false), 114.0);
+        // Without a counter the close button's room is on the right too.
+        assert_eq!(desired_width(40.0, false, None, false), 92.0);
+        assert_eq!(desired_width(40.5, true, None, true), 133.0);
+    }
+
+    fn icon_only() -> CellInput {
+        CellInput { icon: true, ..tab() }
+    }
+
+    fn one_per_char(s: &str) -> f32 {
+        s.chars().count() as f32
+    }
+
+    #[test]
+    fn truncation_follows_iterm2() {
+        // One prefix, three suffixes.
+        assert_eq!(truncation(&["server-a: ~/src", "server-a: ~/doc", "server-a: ~/bin"], true), Truncation::Head);
+        // Three unique prefixes, three unique suffixes: a tie is Tail.
+        assert_eq!(truncation(&["alpha one", "bravo one", "charlie one"], true), Truncation::Tail);
+        assert_eq!(truncation(&["server-a: ~/src", "server-a: ~/doc", "server-a: ~/bin"], false), Truncation::Tail);
+        assert_eq!(truncation(&["server-a: ~/src"], true), Truncation::Tail);
+        assert_eq!(truncation(&[], true), Truncation::Tail);
+        // Titles under 5 characters are skipped: one prefix against one suffix.
+        assert_eq!(truncation(&["abc", "abd", "server-a: ~/src", "xy"], true), Truncation::Tail);
+        // Spinners and spaces before the text are not part of the prefix.
+        assert_eq!(smart_prefix("\u{2810} build", 5), "build");
+        assert_eq!(smart_prefix("\u{2733} build it", 5), "build");
+        assert_eq!(smart_prefix("***", 5), "***");
+        assert_eq!(smart_prefix("*****!", 5), "*****");
+        assert_eq!(
+            truncation(&["\u{2810} build: one", "\u{2802} build: two", "\u{2733} build: six"], true),
+            Truncation::Head
+        );
+        // " (n)" at the start (index 5) is not a trailing parenthetical past the first 5.
+        assert_eq!(truncation(&["x-app (1)", "x-app (2)", "y-app (3)"], true), Truncation::Head);
+        // One plain suffix " (12)", three before the parenthetical: the larger count wins.
+        assert_eq!(truncation(&["srv: aaaa (12)", "srv: bbbb (12)", "srv: cccc (12)"], true), Truncation::Head);
+
+        let m = &one_per_char;
+        assert_eq!(truncate("abcdefghij", 6.0, Truncation::Tail, m), "abcde\u{2026}");
+        assert_eq!(truncate("abcdefghij", 6.0, Truncation::Head, m), "\u{2026}fghij");
+        assert_eq!(truncate("abcdefghij", 10.0, Truncation::Tail, m), "abcdefghij");
+        assert_eq!(truncate("abcdefghij", 0.0, Truncation::Tail, m), "");
+        assert_eq!(truncate("abcdefghij", 1.0, Truncation::Head, m), "\u{2026}");
+        assert_eq!(truncate("\u{00e9}t\u{00e9} long", 4.0, Truncation::Tail, m), "\u{00e9}t\u{00e9}\u{2026}");
+    }
+
+    fn run(text: &str, bold: bool, italic: bool, underline: bool) -> Run {
+        Run { text: text.into(), bold, italic, underline }
+    }
+
+    #[test]
+    fn html_follows_iterm2() {
+        assert_eq!(
+            html_runs("a<b>b</b>c"),
+            vec![run("a", false, false, false), run("b", true, false, false), run("c", false, false, false)]
+        );
+        // iTerm2's `isHTML` check is case-sensitive: upper-case tags alone are not HTML.
+        assert_eq!(html_runs("<B>x</B>"), vec![run("<B>x</B>", false, false, false)]);
+        // In an HTML title an upper-case tag is dropped but toggles nothing (`indexOfObject:`
+        // compares exactly).
+        assert_eq!(html_runs("<b>a</b><I>c</I>"), vec![run("a", true, false, false), run("c", false, false, false)]);
+        assert_eq!(html_runs("<i><u>x</u></i>"), vec![run("x", false, true, true)]);
+        assert_eq!(html_runs("1 &lt; 2 &amp; 3"), vec![run("1 &lt; 2 &amp; 3", false, false, false)]);
+        assert_eq!(html_runs("<b>1 &lt; 2</b>"), vec![run("1 < 2", true, false, false)]);
+        assert_eq!(html_runs("<font>x</font>"), vec![run("<font>x</font>", false, false, false)]);
+        assert_eq!(html_runs("<b>x</b> <font>y"), vec![run("x", true, false, false), run(" <font>y", false, false, false)]);
+        assert_eq!(html_runs(""), vec![]);
+        assert_eq!(plain_title("<b>x</b>", true), "x");
+        assert_eq!(plain_title("<b>x</b>", false), "<b>x</b>");
+        assert_eq!(limit_title(&"a".repeat(300)), format!("{}\u{2026}", "a".repeat(255)));
+        assert_eq!(limit_title(&"a".repeat(255)), "a".repeat(255));
+    }
+
+    #[test]
+    fn texts_follow_iterm2() {
+        assert_eq!(subtitle_text("sub", Some("running"), true), "running \u{2013} sub");
+        assert_eq!(subtitle_text("", Some("running"), true), "running");
+        assert_eq!(subtitle_text("sub", Some("running"), false), "sub");
+        assert_eq!(subtitle_text("sub", Some(""), true), "sub");
+        assert_eq!(subtitle_text("sub", None, true), "sub");
+        assert_eq!(tooltip("zsh", "Default", Some("zsh -l")), "Name: zsh\nProfile: Default\nCommand: zsh -l");
+        assert_eq!(tooltip("zsh", "Default", None), "Name: zsh\nProfile: Default\nCommand: None");
+
+        assert_eq!(tab_colors("#fb6b62 #f6ac47 #f0dc4f #b5d749 #5fa3f8 #c18ed9 #787878"), DEFAULT_COLORS.to_vec());
+        assert_eq!(DEFAULT_COLORS[0], rgb(0xfb, 0x6b, 0x62));
+        assert_eq!(DEFAULT_COLORS[6], rgb(0x78, 0x78, 0x78));
+        assert_eq!(tab_colors("#abc"), vec![rgb(0xaa, 0xbb, 0xcc)]);
+        assert_eq!(tab_colors("#ffff80000000"), vec![rgb(0xff, 0x80, 0x00)]);
+        // `p3#` (the form iTerm2's parser reads) converts through `p3_to_srgb`.
+        let (r, g, b) = crate::import::p3_to_srgb(1.0, 0.0, 0.0);
+        let to8 = |c: f64| (c * 255.0).round() as u8;
+        assert_eq!(tab_colors("p3#ffff00000000"), vec![rgb(to8(r), to8(g), to8(b))]);
+        assert_eq!(tab_colors("p3#ff0000"), vec![rgb(to8(r), to8(g), to8(b))]);
+        // The help's "color(p3 1 0.5 0.25)" splits on spaces into words iTerm2's parser rejects.
+        assert_eq!(tab_colors("color(p3 1 0.5 0.25)"), DEFAULT_COLORS.to_vec());
+        // A broken spec falls back; bad words are skipped.
+        assert_eq!(tab_colors(""), DEFAULT_COLORS.to_vec());
+        assert_eq!(tab_colors("nope #12"), DEFAULT_COLORS.to_vec());
+        assert_eq!(tab_colors("nope  #123456 #zzzzzz #00ff00"), vec![rgb(0x12, 0x34, 0x56), rgb(0, 0xff, 0)]);
     }
 }
