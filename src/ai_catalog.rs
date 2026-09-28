@@ -493,7 +493,7 @@ mod tests {
         // Only skipped entries: a failed load.
         assert_eq!(parse(&catalog(vec![future_api, mistral])), None);
         // A missing required field fails the whole file.
-        for field in ["url", "features", "contextWindowTokens"] {
+        for field in ["name", "url", "features", "contextWindowTokens"] {
             let mut broken = entry("broken", "anthropic");
             broken.as_object_mut().unwrap().remove(field);
             assert_eq!(parse(&catalog(vec![valid.clone(), broken])), None, "{field}");
