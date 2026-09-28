@@ -171,10 +171,10 @@ impl Call {
             Call::InsertTextAtCursor { text } => format!("Typing `{}` into the current session", code(text)),
             Call::DeleteCurrentLine => "Erasing the current command line".to_string(),
             Call::GetManPage { cmd } => format!("Checking the manpage for `{}`", code(cmd)),
-            Call::CreateFile { filename, .. } => format!("Creating {filename}"),
-            Call::FindOnPage { query } => format!("Search in browser for {query}"),
-            Call::LoadUrl { url } => format!("Navigate to {url}"),
-            Call::WebSearch { query } => format!("Search the web for \u{201c}{query}\u{201d}"),
+            Call::CreateFile { filename, .. } => format!("Creating {}", shown(filename)),
+            Call::FindOnPage { query } => format!("Search in browser for {}", shown(query)),
+            Call::LoadUrl { url } => format!("Navigate to {}", shown(url)),
+            Call::WebSearch { query } => format!("Search the web for \u{201c}{}\u{201d}", shown(query)),
             Call::GetUrl => "Get the current URL".to_string(),
             Call::ReadWebPage { .. } => "View the current web page".to_string(),
             Call::RestartSession => "Restarting this session".to_string(),
@@ -856,6 +856,15 @@ mod tests {
         for call in prototypes() {
             assert!(call.consent_description().starts_with("The AI "), "{}", call.name());
             assert_eq!(call.status_notice().is_none(), matches!(call, Call::ExecuteCommand { .. }));
+        }
+    }
+
+    #[test]
+    fn status_lines_stay_on_one_line() {
+        for call in [Call::CreateFile { filename: "a\nb".into(), content: String::new() }, Call::FindOnPage { query: "a\nb".into() }, Call::LoadUrl { url: "a\r\nb".into() }, Call::WebSearch { query: "a\nb".into() }] {
+            let line = call.markdown_description();
+            assert!(!line.contains(['\n', '\r']), "{}", call.name());
+            assert!(line.contains("a\\n") || line.contains("a\\r"), "{line}");
         }
     }
 

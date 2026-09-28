@@ -52,6 +52,8 @@ mod tests {
         assert_eq!(shell_kind(Some("powershell"), true), ShellKind::PowerShell);
         assert_eq!(shell_kind(Some("cmd"), true), ShellKind::Cmd);
         assert_eq!(shell_kind(Some("zsh"), true), ShellKind::Posix);
+        assert_eq!(shell_kind(Some("wsl"), true), ShellKind::Posix, "a pane launched as wsl.exe");
+        assert_eq!(shell_kind(Some("ssh"), true), ShellKind::Posix, "a pane launched as ssh.exe");
         assert_eq!(shell_kind(Some("python"), true), ShellKind::Unknown);
         assert_eq!(shell_kind(None, false), ShellKind::Posix, "a remote host is a POSIX shell over ssh");
         assert_eq!(shell_kind(None, true), ShellKind::Unknown);

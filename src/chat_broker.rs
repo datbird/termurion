@@ -170,7 +170,8 @@ impl Broker {
         for p in self.processors.iter_mut() {
             match p(processed, chat, partial) {
                 Some(m) => processed = m,
-                None => return Ok(Vec::new()),
+                // Squelched: nothing to write, but the caller's unit is still settled.
+                None => return write(Step::Settle).map(|()| Vec::new()),
             }
         }
         // A chunk that restarts the stream records its rewrite first; a failed write takes the

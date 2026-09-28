@@ -288,6 +288,33 @@ mod tests {
     }
 
     #[test]
+    fn a_squelched_publish_settles_its_unit() {
+        let dir = crate::util_cli::TempDir::new("tandem-chatdb-squelch");
+        let (path, lock) = (dir.join(crate::chat_store::FILE_NAME), dir.join(crate::chat_store::LOCK_NAME));
+        let (mut broker, mut overrides) = (Broker::new(), Overrides::default());
+        broker.add_processor(Box::new(|m: Message, _: &str, _: bool| match &m.content {
+            Content::PlainText { text, .. } if text == "drop" => None,
+            _ => Some(m),
+        }));
+        let text = |t: &str, at: f64| Message::new("", Participant::User, Content::PlainText { text: t.into(), context: None }, at);
+        let id = {
+            let mut store = Store::open(&path, &lock).unwrap();
+            let id = create_in(&mut store, &mut broker, &mut overrides, "T", Some("7"), None, "", vec![], None, &ask, 1.0).unwrap();
+            let mut drop_me = text("drop", 2.0);
+            drop_me.chat_id = id.clone();
+            assert_eq!(publish_in(&mut store, &mut broker, &id, drop_me, false).unwrap(), vec![]);
+            let mut keep = text("keep", 3.0);
+            keep.chat_id = id.clone();
+            publish_in(&mut store, &mut broker, &id, keep, false).unwrap();
+            id
+        };
+        // Reopened: a write that was never committed is gone.
+        let store = Store::open(&path, &lock).unwrap();
+        let kept: Vec<String> = store.messages(&id).unwrap().into_iter().filter_map(|m| if let Content::PlainText { text, .. } = m.content { Some(text) } else { None }).collect();
+        assert_eq!(kept, vec!["keep".to_string()], "the squelched message is not stored and the next one is committed");
+    }
+
+    #[test]
     fn chat_create_seeds_permissions() {
         let (mut store, mut broker, mut overrides) = (Store::open_in_memory().unwrap(), Broker::new(), Overrides::default());
         let id = create_in(&mut store, &mut broker, &mut overrides, "T", Some("7"), None, "", vec![], None, &ask, 100.0).unwrap();

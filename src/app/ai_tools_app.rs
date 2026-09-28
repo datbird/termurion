@@ -95,6 +95,10 @@ impl App {
     /// arms. A call no arm handles answers `NOT_AVAILABLE` with no notice.
     #[allow(dead_code)] // Called by `ai_run_tool` (Task 11).
     pub(super) fn ai_tool_start(&mut self, pane: PaneId, call: &Call) -> ToolStart {
+        // A tool for a session that is gone answers its error, never invented facts.
+        if !self.panes.contains_key(&pane) {
+            return ToolStart::Done(Outcome { model: NO_SESSION.to_string(), notice: None });
+        }
         if let Some(started) = self.ai_write_tool(pane, call) {
             return started;
         }
@@ -118,9 +122,6 @@ impl App {
     fn ai_write_tool(&mut self, pane: PaneId, call: &Call) -> Option<ToolStart> {
         if !matches!(call, Call::SetClipboard { .. } | Call::InsertTextAtCursor { .. } | Call::DeleteCurrentLine | Call::RestartSession | Call::GetManPage { .. } | Call::CreateFile { .. }) {
             return None;
-        }
-        if !self.panes.contains_key(&pane) {
-            return Some(ToolStart::Done(Outcome { model: NO_SESSION.to_string(), notice: None }));
         }
         Some(match call {
             // The agent's write is permission-gated; "AllowClipboardAccess" governs OSC 52 (Decision).
