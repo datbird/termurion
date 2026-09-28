@@ -43,6 +43,7 @@ pub struct Multipart {
 /// follow the answer), and whether the app has asked.
 #[derive(Clone, Debug)]
 pub struct InlineHold {
+    serial: u64,
     args: FileArgs,
     data: Option<String>,
     asked: bool,
@@ -154,7 +155,7 @@ impl Screen {
                 self.multipart = None;
                 if args.inline {
                     // Asked before its parts arrive, as iTerm2 asks at the header.
-                    self.inline_hold = Some(InlineHold { args, data: None, asked: false });
+                    self.hold_inline(args, None);
                 } else {
                     self.multipart = Some(Multipart { args: Some(args), data: String::new(), confirmed: false });
                 }
@@ -185,13 +186,24 @@ impl Screen {
     /// any other file waits in `downloads` for the app to ask.
     fn receive_file(&mut self, args: FileArgs, data: &str) {
         if args.inline {
-            self.inline_hold = Some(InlineHold { args, data: Some(data.to_string()), asked: false });
+            self.hold_inline(args, Some(data.to_string()));
             return;
         }
         // One download waits at a time, so output cannot bury the window in questions.
         if let (Some(bytes), true) = (decode_base64(data), self.downloads.is_empty()) {
             self.downloads.push(Download { name: args.name, bytes });
         }
+    }
+
+    /// An inline file starts to wait, with the next number.
+    fn hold_inline(&mut self, args: FileArgs, data: Option<String>) {
+        self.inline_holds += 1;
+        self.inline_hold = Some(InlineHold { serial: self.inline_holds, args, data, asked: false });
+    }
+
+    /// The waiting inline file's number (`inline_answered` answers only that one).
+    pub fn inline_serial(&self) -> Option<u64> {
+        self.inline_hold.as_ref().map(|h| h.serial)
     }
 
     /// The inline file waiting to be asked about, once: its name and declared size (iTerm2
@@ -386,6 +398,28 @@ mod tests {
         s.feed(b"\x1b]1337;File=name=eA==:eA==\x07");
         assert!(!s.holding_inline());
         assert_eq!(s.downloads.len(), 1);
+    }
+
+    /// The output held behind a waiting inline file is capped (a tmux pane cannot pause):
+    /// past `limits.held` the file is dropped, as a No, and everything held is read; the next
+    /// inline file is a new question with its own number.
+    #[test]
+    fn held_output_past_the_cap_drops_the_file() {
+        let mut s = Screen::new(20, 6);
+        s.set_cell_px(4, 4);
+        s.limits.held = 8;
+        let file = format!("\x1b]1337;File=inline=1:{}\x07", png_b64());
+        s.feed(format!("{file}after").as_bytes());
+        let first = s.inline_serial().expect("waiting");
+        s.feed(b"123");
+        assert!(s.holding_inline(), "8 bytes held fit");
+        s.feed(b"4");
+        assert!(!s.holding_inline(), "the ninth drops the file");
+        assert!(s.images.by_id.is_empty());
+        let row: String = (0..9).map(|c| s.term().grid()[Line(0)][Column(c)].c).collect();
+        assert_eq!(row, "after1234");
+        s.feed(file.as_bytes());
+        assert!(s.inline_serial().is_some_and(|n| n != first), "a new question");
     }
 
     #[test]

@@ -153,7 +153,10 @@ impl Io {
 
     pub fn set_paused(&self, paused: bool) {
         match self {
-            Io::Local(p) => p.set_paused(paused),
+            // A pause waits out a console mode read in flight, so none runs on a paused console
+            // (the job watcher checks the pause under `CONSOLE`), as tandem-host does.
+            Io::Local(p) if paused => p.pause_after_reads(),
+            Io::Local(p) => p.set_paused(false),
             Io::Hosted(p) => p.set_paused(paused),
             Io::Tmux(_) => {}
         }
@@ -250,6 +253,8 @@ pub struct Pane {
     /// The Python API cookie this session's shell got in `ITERM2_COOKIE` (a Session cookie in
     /// the app's jar, removed when the pane is dropped for good). A secret: never logged.
     pub cookie: Option<String>,
+    /// Reading is paused while an inline file waits for the person to allow its display.
+    inline_paused: bool,
 }
 
 impl Pane {
@@ -342,7 +347,7 @@ impl Pane {
     fn with(id: PaneId, pty: Option<Io>, cols: u16, rows: u16) -> Pane {
         let mut screen = Screen::new(cols as usize, rows as usize);
         screen.pty_backed = pty.is_some();
-        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None }
+        Pane { id, screen, pty, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false }
     }
 
     /// Feeds all waiting output into the screen. Returns true if anything changed.
@@ -481,15 +486,31 @@ impl Pane {
         }
     }
 
-    /// The person answered the inline file this pane's output waits on: the screen shows it
-    /// or drops it and reads the output held after it; reading resumes unless another inline
-    /// file waits.
-    pub fn inline_answered(&mut self, allow: bool) {
-        let reply = self.own_mut().inline_answered(allow);
-        if !reply.is_empty() && self.tmux_io().is_none() {
-            self.reply(&reply);
+    /// Reading stops while an inline file waits for the person (a tmux pane cannot stop; its
+    /// held output is capped by the screen instead).
+    pub fn pause_for_inline(&mut self) {
+        self.inline_paused = true;
+        self.set_paused(true);
+    }
+
+    /// The person answered inline file number `serial` (`Screen::inline_serial`): if it still
+    /// waits, the screen shows it or drops it and reads the output held after it (an answer
+    /// to a file already dropped does nothing). Reading resumes unless another one waits.
+    pub fn inline_answered(&mut self, serial: u64, allow: bool) {
+        if self.own().inline_serial() == Some(serial) {
+            let reply = self.own_mut().inline_answered(allow);
+            if !reply.is_empty() && self.tmux_io().is_none() {
+                self.reply(&reply);
+            }
         }
-        if !self.own().holding_inline() {
+        self.resume_after_inline();
+    }
+
+    /// Reading resumes once no inline file waits: answered, or dropped by the screen when too
+    /// much output waited behind it.
+    pub fn resume_after_inline(&mut self) {
+        if self.inline_paused && !self.own().holding_inline() {
+            self.inline_paused = false;
             self.set_paused(false);
         }
     }
@@ -610,6 +631,15 @@ impl Pane {
     /// Tandem owns this pane's console (a local ConPTY): only then may it attach to read it.
     pub fn owns_console(&self) -> bool {
         matches!(self.pty, Some(Io::Local(_)))
+    }
+
+    /// A local pane's pause flag, which a console reader checks under `CONSOLE`
+    /// (`pty::console_mode_unless`); None for other panes.
+    pub fn console_pause_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
+        match &self.pty {
+            Some(Io::Local(p)) => Some(p.pause_flag()),
+            _ => None,
+        }
     }
 
     /// Send Signal's Ctrl+C (or Ctrl+Break) to a hosted pane's console, through tandem-host;
@@ -994,7 +1024,7 @@ mod tests {
 
     #[test]
     fn gateway_panes_take_no_input() {
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false };
         p.buffer.on = true;
         p.input(b"a");
         p.gateway = true;
@@ -1007,7 +1037,7 @@ mod tests {
         // During a replay iTerm2's tab shows the task-less synthetic session, so nothing
         // the user sends reaches the live shell; the live session's own writes (a
         // trigger's Send Text) still do.
-        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None };
+        let mut p = Pane { id: 1, screen: Screen::new(10, 4), pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false };
         p.buffer.on = true;
         p.input(b"a");
         p.replay = Some(replay::Replay { decoder: None, read_only: false });
@@ -1022,7 +1052,7 @@ mod tests {
     fn frozen_pane_keeps_its_copy() {
         let mut own = Screen::new(10, 4);
         own.feed(b"live");
-        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None };
+        let mut p = Pane { id: 1, screen: own, pty: None, exited: None, error: None, profile: String::new(), live: None, session_note: String::new(), buffer: InputBuffer::default(), frozen: false, suppress_output: false, got_output: false, coprocess: None, co_out: Default::default(), co_end: None, tmux_hook: Default::default(), tmux_q: Vec::new(), gateway: false, tmux_size: None, screen_filter: None, last_newline: None, composer: composer::Composer::default(), dvr: dvr::Dvr::new(capacity_for(4)), replay_at: None, throughput: Default::default(), replay: None, echo_probe: None, no_focus_reports: 0, password_input: false, cookie: None, inline_paused: false };
         let mut snap = Screen::new(10, 4);
         snap.feed(b"frozen");
         p.freeze(snap);

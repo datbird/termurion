@@ -221,11 +221,18 @@ struct Shared {
     /// `detectPasswordInputDebounce`): each local shell's console input mode is read at every
     /// look. None: off, nothing is attached to.
     read_debounce: Option<f64>,
-    /// The shells whose consoles Tandem owns (local panes; tandem-host reads its own).
-    consoles: HashSet<u32>,
+    /// The shells whose consoles Tandem owns (local panes; tandem-host reads its own), each
+    /// with its pane's pause flag: a paused console is never read.
+    consoles: HashMap<u32, Arc<std::sync::atomic::AtomicBool>>,
     /// Each local shell's samples, debounced. A console whose mode could not be read is not
     /// at a prompt.
     prompts: HashMap<u32, crate::pwm_prompt::Debounce>,
+}
+
+/// The consoles a look reads: those not paused (Undo Close, an inline file question), each
+/// with its flag for the check under `CONSOLE`.
+fn console_targets(consoles: &HashMap<u32, Arc<std::sync::atomic::AtomicBool>>) -> Vec<(u32, Arc<std::sync::atomic::AtomicBool>)> {
+    consoles.iter().filter(|(_, p)| !p.load(std::sync::atomic::Ordering::Acquire)).map(|(pid, p)| (*pid, p.clone())).collect()
 }
 
 /// The watcher: a thread that looks at the registered shells' trees and calls `notify`
@@ -247,21 +254,22 @@ impl JobWatch {
                     let s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     let trees: Vec<u32> = s.trees_wanted.iter().copied().collect();
                     let roots: Vec<u32> = s.roots.union(&s.trees_wanted).copied().collect();
-                    let shells: Vec<u32> = if s.read_debounce.is_some() { s.consoles.iter().copied().collect() } else { Vec::new() };
+                    let shells = if s.read_debounce.is_some() { console_targets(&s.consoles) } else { Vec::new() };
                     (roots, trees, s.fast, shells)
                 };
                 drop(shared);
                 if !shells.is_empty() {
                     // Each sample with its own time. Unknown (the mode could not be read) is
-                    // never a password prompt.
-                    let samples: Vec<(u32, bool, std::time::Instant)> = shells.iter().map(|&pid| (pid, crate::pty::console_mode(pid).is_ok_and(crate::pwm_prompt::at_prompt), std::time::Instant::now())).collect();
+                    // never a password prompt; nor is one paused since it was picked (refused
+                    // under `CONSOLE`, so no read runs on a paused console).
+                    let samples: Vec<(u32, bool, std::time::Instant)> = shells.iter().map(|(pid, paused)| (*pid, crate::pty::console_mode_unless(*pid, paused).is_ok_and(crate::pwm_prompt::at_prompt), std::time::Instant::now())).collect();
                     let Some(shared) = weak.upgrade() else { return };
                     let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                     let mut changed = false;
                     if let Some(debounce) = s.read_debounce {
                         for (pid, prompt, at) in samples {
                             // A shell forgotten while it was read stays forgotten.
-                            if s.consoles.contains(&pid) {
+                            if s.consoles.contains_key(&pid) {
                                 changed |= s.prompts.entry(pid).or_default().sample(prompt, at, debounce).is_some();
                             }
                         }
@@ -360,9 +368,10 @@ impl JobWatch {
     }
 
     /// A local pane's shell: Tandem owns its console (and every close of it), so the watcher
-    /// may read its input mode. A hosted shell's console is never attached to here.
-    pub fn watch_console(&self, shell: u32) {
-        self.lock().consoles.insert(shell);
+    /// may read its input mode while `paused` (its pane's pause flag) is clear. A hosted
+    /// shell's console is never attached to here.
+    pub fn watch_console(&self, shell: u32, paused: Arc<std::sync::atomic::AtomicBool>) {
+        self.lock().consoles.insert(shell, paused);
     }
 
     /// Password prompt detection on with its debounce (seconds), or off (None): off, no
@@ -486,6 +495,21 @@ mod tests {
         assert!(!got.is_ok_and(crate::pwm_prompt::at_prompt));
         let w = JobWatch::start(std::sync::Arc::new(|| {}));
         assert!(!w.password_input(0xFFFF_FFF0), "an unwatched shell is not at a prompt");
+    }
+
+    /// A paused local console (Undo Close, or output held for an inline file question) is
+    /// never read: it is left out of each look, and one paused after the look is refused under
+    /// `CONSOLE` by `console_mode_unless`.
+    #[test]
+    fn a_paused_console_is_not_read() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (running, paused) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)));
+        let consoles: HashMap<u32, Arc<AtomicBool>> = [(1, running.clone()), (2, paused)].into_iter().collect();
+        let ids = |c: &HashMap<u32, Arc<AtomicBool>>| console_targets(c).into_iter().map(|t| t.0).collect::<Vec<_>>();
+        assert_eq!(ids(&consoles), vec![1]);
+        let targets = console_targets(&consoles);
+        running.store(true, Ordering::Release);
+        assert_eq!(crate::pty::console_mode_unless(targets[0].0, &targets[0].1), Err("the console is paused".to_string()));
     }
 
     #[test]

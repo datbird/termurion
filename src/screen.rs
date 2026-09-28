@@ -117,11 +117,14 @@ pub struct Limits {
     pub transfer: usize,
     /// Bytes `CopyToClipboard` captures before it stops.
     pub copy: usize,
+    /// Bytes of output held unread behind an inline file that waits for the person (a tmux
+    /// pane cannot pause); past it the file is dropped, as a No.
+    pub held: usize,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { images: 768 << 20, transfer: 512 << 20, copy: 100 << 20 }
+        Limits { images: 768 << 20, transfer: 512 << 20, copy: 100 << 20, held: 16 << 20 }
     }
 }
 
@@ -152,6 +155,9 @@ pub struct Screen {
     /// after it is held unread in `held_output` (iTerm2 pauses its parser for the question).
     pub(crate) inline_hold: Option<crate::inline_file::InlineHold>,
     pub(crate) held_output: Vec<u8>,
+    /// How many inline files have waited: each one's number, so a late answer to a dropped
+    /// one never answers the next.
+    pub(crate) inline_holds: u64,
     /// Kitty graphics images and transfers.
     pub kitty: crate::kitty::Kitty,
     /// Answers the terminal owes the program (kitty graphics), sent with `feed`'s reply.
@@ -373,6 +379,7 @@ impl Screen {
             multipart: None,
             inline_hold: None,
             held_output: Vec::new(),
+            inline_holds: 0,
             kitty: crate::kitty::Kitty::default(),
             replies: Vec::new(),
             limits: Limits::default(),
@@ -572,8 +579,15 @@ impl Screen {
     fn feed_chunk(&mut self, bytes: &[u8]) -> Vec<u8> {
         // An inline file waits for the person: nothing after it is read until they answer.
         if self.inline_hold.is_some() {
-            self.held_output.extend_from_slice(bytes);
-            return Vec::new();
+            if self.held_output.len() + bytes.len() <= self.limits.held {
+                self.held_output.extend_from_slice(bytes);
+                return Vec::new();
+            }
+            // Too much waits on the person: the file is dropped, as a No, and all of it is read.
+            self.inline_hold = None;
+            let mut held = std::mem::take(&mut self.held_output);
+            held.extend_from_slice(bytes);
+            return self.feed(&held);
         }
         if self.keys.literal {
             let reply = self.feed_raw(&literal(bytes));

@@ -109,21 +109,33 @@ impl App {
     /// Asks about each inline file a pane's output waits on ("Allow Terminal-Initiated
     /// Display?", `PS:19785-19820`), pausing the pane's reading until the answer. A remembered
     /// answer releases the pane at once, and its held output may wait on the next inline file:
-    /// that one is asked here in turn, not by recursion.
+    /// that one is asked here in turn, not by recursion. A pane whose file the screen dropped
+    /// (too much output waited behind it) reads on.
     fn take_inline_asks(&mut self) {
         self.inline_asking = true;
+        for p in self.panes.values_mut() {
+            p.resume_after_inline();
+        }
         loop {
-            let waiting: Vec<(PaneId, String, usize)> = self.panes.iter_mut().filter_map(|(id, p)| p.own_mut().inline_waiting().map(|(name, size)| (*id, name, size))).collect();
+            let waiting: Vec<(PaneId, u64, String, usize)> = self
+                .panes
+                .iter_mut()
+                .filter_map(|(id, p)| {
+                    let s = p.own_mut();
+                    let (name, size) = s.inline_waiting()?;
+                    Some((*id, s.inline_serial()?, name, size))
+                })
+                .collect();
             if waiting.is_empty() {
                 break;
             }
-            for (pane, name, size) in waiting {
+            for (pane, serial, name, size) in waiting {
                 if let Some(p) = self.panes.get_mut(&pane) {
-                    p.set_paused(true);
+                    p.pause_for_inline();
                 }
                 let was_silenced = crate::warnings::is_silenced(&self.globals, DOWNLOAD_ID, super::warnings_app::unix_now());
                 let spec = download_spec(&name, size, true);
-                self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Inline { pane, name, size, was_silenced }));
+                self.ask_scripts(super::scripts_alerts::Ask::new(spec, super::scripts_alerts::Then::Inline { pane, serial, name, size, was_silenced }));
             }
         }
         self.inline_asking = false;
@@ -131,20 +143,20 @@ impl App {
 
     /// The display question answered: Yes (0) shows the file, or first asks the large file
     /// question when the answer was remembered and the file is large (`PS:19812-19817`).
-    pub(super) fn inline_answered(&mut self, pane: PaneId, name: &str, size: usize, was_silenced: bool, index: usize) {
+    pub(super) fn inline_answered(&mut self, pane: PaneId, serial: u64, name: &str, size: usize, was_silenced: bool, index: usize) {
         let allowed = index == 0;
         if needs_big_question(was_silenced, allowed, size) {
-            self.ask_scripts(super::scripts_alerts::Ask::new(big_download_spec(name), super::scripts_alerts::Then::BigInline(pane)));
+            self.ask_scripts(super::scripts_alerts::Ask::new(big_download_spec(name), super::scripts_alerts::Then::BigInline(pane, serial)));
         } else {
-            self.inline_released(pane, allowed);
+            self.inline_released(pane, serial, allowed);
         }
     }
 
-    /// The pane's waiting inline file shows (`allow`) or is dropped, and its held output is
-    /// read; outside `take_inline_asks` what that output asked for is taken now.
-    pub(super) fn inline_released(&mut self, pane: PaneId, allow: bool) {
+    /// The pane's waiting inline file number `serial` shows (`allow`) or is dropped, and its
+    /// held output is read; outside `take_inline_asks` what that output asked for is taken now.
+    pub(super) fn inline_released(&mut self, pane: PaneId, serial: u64, allow: bool) {
         let Some(p) = self.panes.get_mut(&pane) else { return };
-        p.inline_answered(allow);
+        p.inline_answered(serial, allow);
         if !self.inline_asking {
             self.after_output(&[pane], Instant::now());
         }
