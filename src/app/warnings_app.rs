@@ -101,15 +101,12 @@ impl App {
     }
 
     /// `persist`: lapsed entries go, the rest are saved; then the menu item follows.
-    fn catalog_write(&mut self) {
+    pub(super) fn catalog_write(&mut self) {
         self.suppressed.prune(&self.globals, unix_now());
         self.globals.set(warnings::CATALOG_KEY, self.suppressed.to_value());
         self.save_globals();
-        self.suppressed_changed();
+        self.retitle_suppressed_menu();
     }
-
-    /// The catalog changed. Task 4 retitles the Suppressed Alerts menu item here.
-    fn suppressed_changed(&mut self) {}
 }
 
 #[cfg(test)]

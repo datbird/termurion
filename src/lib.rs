@@ -61,6 +61,7 @@ pub mod script_deps;
 pub mod zip_check;
 #[cfg(windows)]
 pub mod script_deps_ui;
+pub mod suppressed_alerts_ui;
 #[cfg(windows)]
 pub mod script_export_ui;
 #[cfg(windows)]

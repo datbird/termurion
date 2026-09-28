@@ -91,6 +91,8 @@ pub(super) struct MenuBar {
     /// Scripts > Manage > Install Python Runtime, retitled "Check for Updated Runtime" once uv
     /// is installed.
     pub(super) install_runtime: Option<MenuItem>,
+    /// iTerm2 > Suppressed Alerts, retitled with the count and time (`retitle_suppressed_menu`).
+    pub(super) suppressed: Option<MenuItem>,
     /// The Scripts menu and its fixed items (Manage and the line), then the scripts after them.
     pub(super) scripts: Option<(Submenu, usize)>,
     pub(super) script_entries: Vec<super::scripts_app::MenuEntry>,
@@ -115,6 +117,7 @@ impl App {
         let mut subs: HashMap<Vec<String>, Submenu> = HashMap::new();
         let mut checks = HashMap::new();
         let mut install_runtime = None;
+        let mut suppressed = None;
         for item in menus::items() {
             let (parent, entry): (&[String], Box<dyn IsMenuItem>) = if item.separator {
                 (&item.path[..], Box::new(PredefinedMenuItem::separator()))
@@ -135,6 +138,9 @@ impl App {
                     let m = MenuItem::with_id(item.id(), menu_text(item), enabled, None);
                     if item.selector == "installPythonRuntime:" {
                         install_runtime = Some(m.clone());
+                    }
+                    if item.selector == "showSuppressedAlerts:" {
+                        suppressed = Some(m.clone());
                     }
                     (parent, Box::new(m))
                 }
@@ -197,8 +203,9 @@ impl App {
             let fixed = s.items().len();
             (s, fixed)
         });
-        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, scripts, script_entries: Vec::new() });
+        self.menu_bar = Some(MenuBar { _menu: menu, checks, named, named_items: Vec::new(), named_key: (None, vec![(0, None)]), profiles, profile_items: Vec::new(), restore: subs.get(&["Window", "Arrangements", "Restore Window Arrangement"].map(str::to_string).to_vec()).cloned(), restore_tabs: subs.get(&["Window", "Arrangements", "Restore Window Arrangement as Tabs"].map(str::to_string).to_vec()).cloned(), arrangement_items: Vec::new(), arrangements_filled: false, buried: subs.get(&["Session", "Buried Sessions"].map(str::to_string).to_vec()).cloned(), buried_items: vec![(String::from("-"), String::new())], snippets: subs.get(&["Edit", "Snippets"].map(str::to_string).to_vec()).cloned(), snippet_items: None, actions: subs.get(&["Edit", "Actions"].map(str::to_string).to_vec()).cloned(), action_items: vec![(String::from("-"), String::from("-"))], toolbelt, toolbelt_checks, install_runtime, suppressed, scripts, script_entries: Vec::new() });
         self.runtime_menu_title();
+        self.retitle_suppressed_menu();
         self.sync_checks();
     }
 
@@ -421,6 +428,7 @@ impl App {
             "exportScript:" => self.export_scripts(event_loop),
             "openDependencyEditor:" => self.open_dependency_editor(event_loop),
             "openScriptConsole:" => self.open_script_console(event_loop),
+            "showSuppressedAlerts:" => self.show_suppressed_alerts(event_loop),
             "editCurrentSession:" => {
                 let guid = self.focused_guid();
                 let tmux = self.focused_id().is_some_and(|id| self.panes.get(&id).is_some_and(|p| p.tmux_io().is_some()));

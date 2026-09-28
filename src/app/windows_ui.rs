@@ -235,6 +235,11 @@ impl App {
         id.is_some_and(|id| self.enter(id))
     }
 
+    /// Every window's menu bar: the current window's and each parked window's.
+    pub(super) fn menu_bars(&self) -> impl Iterator<Item = &menu::MenuBar> {
+        self.menu_bar.iter().chain(self.windows.parked().filter_map(|(_, s)| s.menu_bar.as_ref()))
+    }
+
     /// The current window's id.
     pub(super) fn current_window(&self) -> Option<WindowId> {
         self.gpu.as_ref().map(|g| g.window.id())
