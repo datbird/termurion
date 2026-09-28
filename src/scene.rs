@@ -1032,6 +1032,89 @@ pub fn tab_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::
     }
 }
 
+/// Draws a side tab bar (milestone 13d): one row per tab, `row_h` pixels high, stacked down
+/// `area` from its top and scrolled up by `scroll` pixels, cut to `area`. Each row is laid out
+/// by `tab_layout::cell` at the row's width (the icon, the spinner and the label); the title is
+/// in the terminal font (`cell` is its cell size) on one line, truncated to the label.
+/// Answers each tab's row in `tabs` order, a zero-size rect for a row wholly outside `area`.
+/// Provisional: Task 9 makes it answer `(Vec<Rect>, Vec<(Rect, String)>)`, the group chips too.
+pub fn tab_bar_vertical(frame: &mut Frame, tabs: &[TabLook], active: usize, area: Rect, cell: (f32, f32), row_h: f32, scroll: f32) -> Vec<Rect> {
+    use crate::tab_layout::{self, CellInput, Truncation};
+    frame.quads.push(Quad { rect: area, color: rgba(TAB_BAR, 1.0) });
+    let measure = |t: &str| t.chars().count() as f32 * cell.0;
+    let span = |text: String, color: Rgb, icon: bool| Span { text, color, bold: false, italic: false, alt_font: false, icon, prose: false, badge: false, toolbelt: false };
+    let turn = spinner_turn();
+    let mut rects = Vec::with_capacity(tabs.len());
+    for (i, tab) in tabs.iter().enumerate() {
+        let row = Rect { x: area.x, y: area.y + i as f32 * row_h - scroll, w: area.w, h: row_h };
+        let Some(clip) = cut(row, area) else {
+            rects.push(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+            continue;
+        };
+        rects.push(row);
+        let first_quad = frame.quads.len();
+        if i == active {
+            frame.quads.push(Quad { rect: row, color: rgba(TAB_ACTIVE, 1.0) });
+        }
+        if let Some(col) = tab.color {
+            frame.quads.push(Quad { rect: Rect { y: row.y + row.h - 3.0, h: 3.0, ..row }, color: rgba(col, 1.0) });
+        }
+        let color = if i == active { TAB_TEXT } else { TAB_TEXT_DIM };
+        let input = CellInput {
+            x: 0.0,
+            width: row.w,
+            height: row.h,
+            close_buttons: false,
+            close_always: false,
+            hovered: false,
+            counter: None,
+            icon: tab.dot.is_some() || tab.icon.is_some(),
+            indicator: tab.processing,
+            title_width: measure(&tab.title),
+            min_label: MIN_SIDE_LABEL,
+        };
+        let c = tab_layout::cell(&input);
+        let at = |r: Rect| Rect { x: row.x + r.x, y: row.y + r.y, ..r };
+        if let Some(ir) = c.icon.map(at) {
+            if let Some(dot) = tab.dot {
+                let d = (cell.1 / 2.0).floor();
+                frame.quads.push(Quad { rect: Rect { x: ir.x + ((ir.w - d) / 2.0).floor(), y: ir.y + ((ir.h - d) / 2.0).floor(), w: d, h: d }, color: rgba(dot, 1.0) });
+            } else if let Some(icon) = tab.icon {
+                let y = ir.y + ((ir.h - cell.1) / 2.0).floor();
+                frame.rows.push(TextRow { x: ir.x, y, spans: vec![span(tab_icon_glyph(icon).to_string(), color, true)], clip, scale: 1.0 });
+            }
+        }
+        if let Some(ind) = c.indicator.filter(|_| tab.processing) {
+            spinner(frame, at(ind), turn, color, 1.0);
+        }
+        let label = at(c.label);
+        let title = tab_layout::truncate(&tab.title, label.w, Truncation::Tail, &measure);
+        if !title.is_empty() {
+            let x = if c.truncate { label.x } else { label.x + ((label.w - measure(&title)) / 2.0).floor() };
+            let y = row.y + ((row.h - cell.1) / 2.0).floor();
+            frame.rows.push(TextRow { x, y, spans: vec![span(title, color, false)], clip, scale: 1.0 });
+        }
+        // The row's quads are cut to the bar like its text.
+        let mut k = first_quad;
+        while k < frame.quads.len() {
+            match cut(frame.quads[k].rect, clip) {
+                Some(r) => {
+                    frame.quads[k].rect = r;
+                    k += 1;
+                }
+                None => {
+                    frame.quads.remove(k);
+                }
+            }
+        }
+    }
+    rects
+}
+
+/// `MinimumTabLabelWidth`'s default in pixels: a side row drops its icon unless the label keeps
+/// more than this (this signature passes no settings).
+const MIN_SIDE_LABEL: f32 = 35.0;
+
 /// The spinner's turn, 0 to 1: an eighth more at each half-second activity tick.
 fn spinner_turn() -> f32 {
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
@@ -2534,6 +2617,43 @@ mod tests {
         let red = s.palette.ansi[1];
         assert!(f.quads.iter().any(|q| q.color == rgba(red, 1.0)), "a colored cell covers the image");
         assert_eq!(f.quads.len(), 2, "the default cell draws no background");
+    }
+
+    #[test]
+    fn vertical_tab_bar_draws_rows() {
+        let looks = vec![
+            TabLook { title: "one".into(), number: 1, ..TabLook::default() },
+            TabLook { title: "two".into(), number: 2, ..TabLook::default() },
+            TabLook { title: "a title far too long for the side bar".into(), number: 3, ..TabLook::default() },
+        ];
+        let area = Rect { x: 0.0, y: 0.0, w: 150.0, h: 100.0 };
+        let cell = (8.0, 16.0);
+        let mut f = Frame::default();
+        let rects = tab_bar_vertical(&mut f, &looks, 1, area, cell, 24.0, 0.0);
+        let row = |y: f32| Rect { x: 0.0, y, w: 150.0, h: 24.0 };
+        assert_eq!(rects, vec![row(0.0), row(24.0), row(48.0)]);
+        assert!(f.quads.iter().any(|q| q.rect == area && q.color == rgba(TAB_BAR, 1.0)), "the bar's background");
+        assert!(f.quads.iter().any(|q| q.rect == rects[1] && q.color == rgba(TAB_ACTIVE, 1.0)), "the active row's fill");
+        assert!(!f.quads.iter().any(|q| q.rect == rects[0] && q.color == rgba(TAB_ACTIVE, 1.0)));
+        // The long title stays on one line, cut to its label with an ellipsis.
+        let long: Vec<&TextRow> = f.rows.iter().filter(|r| r.y >= 48.0 && r.spans.iter().any(|s| s.text.contains('\u{2026}'))).collect();
+        assert_eq!(long.len(), 1, "one line");
+        let text: String = long[0].spans.iter().map(|s| s.text.as_str()).collect();
+        assert!(text.starts_with("a title"), "{text}");
+        assert!(long[0].x + text.chars().count() as f32 * cell.0 <= 150.0, "{text}");
+        let short = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "two")).expect("a title that fits");
+        assert!(rects[1].contains(short.x, short.y));
+
+        // Scrolled 30: the first row is wholly above the bar (a zero-size rect); the second
+        // shows its bottom 18 pixels, its text cut to the bar.
+        let mut f = Frame::default();
+        let rects = tab_bar_vertical(&mut f, &looks, 1, area, cell, 24.0, 30.0);
+        assert_eq!(rects[0], Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+        assert_eq!(rects[1], row(-6.0));
+        assert_eq!(rects[2], row(18.0));
+        let two = f.rows.iter().find(|r| r.spans.iter().any(|s| s.text == "two")).expect("the second title");
+        assert_eq!(two.clip, Rect { x: 0.0, y: 0.0, w: 150.0, h: 18.0 });
+        assert!(f.quads.iter().all(|q| q.rect.y >= 0.0), "the quads are cut to the bar");
     }
 
     #[test]

@@ -112,6 +112,49 @@ pub fn drag_handle(bar: Rect, p: TabPosition) -> Option<Rect> {
     }
 }
 
+/// How far a side bar of `rows` rows `row_h` high scrolls in a bar `bar_h` high: until the
+/// last row's bottom meets the bar's bottom, 0 when every row fits (`PSM maximumScrollOffset`).
+pub fn max_scroll(rows: usize, row_h: f32, bar_h: f32) -> f32 {
+    (rows as f32 * row_h - bar_h).max(0.0)
+}
+
+/// The scroll that shows row `active` whole: unchanged when it already shows, else the least
+/// move that brings its top or its bottom to the bar's edge (`PSM scrollSelectedTabIntoView`).
+pub fn scroll_to_show(active: usize, row_h: f32, bar_h: f32, scroll: f32) -> f32 {
+    let top = active as f32 * row_h;
+    if top < scroll {
+        top
+    } else if top + row_h > scroll + bar_h {
+        top + row_h - bar_h
+    } else {
+        scroll
+    }
+}
+
+/// A side bar's row height: `row_h` on a bar that scrolls (`ScrollableSideTabBar`), else the
+/// rows shrink so all of them fit, `min(row_h, bar_h / rows)`.
+pub fn fit_rows(rows: usize, row_h: f32, bar_h: f32, scrollable: bool) -> f32 {
+    if scrollable || rows == 0 {
+        return row_h;
+    }
+    row_h.min(bar_h / rows as f32)
+}
+
+/// Each tab's rect in pixels, window coordinates, from a horizontal bar's cells (tab index and
+/// rect in points from the bar's left): scrolled left by `scroll` points, scaled, and moved to
+/// the bar's `origin` in pixels. A tab without a cell (in the overflow menu, or collapsed)
+/// gets a zero-size rect, so the result has `tabs` rects in tab order.
+pub fn rects_from_cells(cells: &[(usize, Rect)], tabs: usize, origin: (f32, f32), scroll: f32, scale: f32) -> Vec<Rect> {
+    let mut out = vec![Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }; tabs];
+    for &(i, r) in cells {
+        if let Some(slot) = out.get_mut(i) {
+            let px = crate::tab_layout::to_px(Rect { x: r.x - scroll, ..r }, scale);
+            *slot = Rect { x: px.x + origin.0, y: px.y + origin.1, ..px };
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +228,32 @@ mod tests {
         // No toolbelt, no bar.
         assert_eq!(window_split(room, None, Some((Right, 150.0))), (Some(r(650.0, 0.0, 150.0, 600.0)), r(0.0, 0.0, 650.0, 600.0), None));
         assert_eq!(window_split(room, Some(200.0), None), (None, r(0.0, 0.0, 600.0, 600.0), belt));
+    }
+
+    #[test]
+    fn side_scroll_follows_iterm2() {
+        assert_eq!(max_scroll(10, 24.0, 100.0), 140.0);
+        assert_eq!(max_scroll(3, 24.0, 100.0), 0.0);
+        // The last row's bottom at the bar's bottom.
+        assert_eq!(scroll_to_show(9, 24.0, 100.0, 0.0), 140.0);
+        assert_eq!(scroll_to_show(0, 24.0, 100.0, 140.0), 0.0);
+        // Already shown.
+        assert_eq!(scroll_to_show(4, 24.0, 100.0, 50.0), 50.0);
+        assert_eq!(fit_rows(10, 24.0, 100.0, true), 24.0);
+        assert_eq!(fit_rows(10, 24.0, 100.0, false), 10.0);
+        // Rows that fit keep their height; no rows divide nothing.
+        assert_eq!(fit_rows(3, 24.0, 100.0, false), 24.0);
+        assert_eq!(fit_rows(0, 24.0, 100.0, false), 24.0);
+    }
+
+    #[test]
+    fn bar_tab_rects_follow_the_bar() {
+        let cells = [(0, r(0.0, 0.0, 100.0, 24.0)), (2, r(100.0, 0.0, 100.0, 24.0))];
+        assert_eq!(
+            rects_from_cells(&cells, 3, (0.0, 30.0), 20.0, 2.0),
+            vec![r(-40.0, 30.0, 200.0, 48.0), r(0.0, 0.0, 0.0, 0.0), r(160.0, 30.0, 200.0, 48.0)]
+        );
+        // A cell for a tab that is gone is dropped.
+        assert_eq!(rects_from_cells(&cells, 1, (0.0, 0.0), 0.0, 1.0), vec![r(0.0, 0.0, 100.0, 24.0)]);
     }
 }

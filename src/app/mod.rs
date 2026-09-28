@@ -185,6 +185,9 @@ enum Drag {
     Belt(toolbelt_ui::BeltDrag),
     /// A composer's text selection, drag handle, or border.
     Composer { pane: PaneId, kind: composer_ui::ComposerDrag },
+    /// A side tab bar's drag handle: where the press was (pixels) and the bar's width then
+    /// (points).
+    SideBar { start_x: f32, start_width: f32 },
 }
 
 struct Gpu {
@@ -594,6 +597,13 @@ pub struct App {
     /// A side tab bar's preferred width in points: `LeftTabBarWidth` when the window opened,
     /// then the width its drag handle sets.
     side_bar_preferred: f32,
+    /// A side tab bar's scroll offset in points (`PSM _scrollOffset` on the y axis).
+    side_bar_scroll: f32,
+    /// A side tab bar's rows as last drawn (`scene::tab_bar_vertical`), one per tab in pixels,
+    /// window coordinates; a row outside the bar is zero-size.
+    side_rects: Vec<Rect>,
+    /// The pointer is on a side bar's drag handle, so the resize pointer shows.
+    side_handle_hover: bool,
     /// The tab whose tooltip the pointer is waiting on or showing, and when the pointer
     /// settled on it; the tip shows `TIP_DELAY` later.
     tab_tip: Option<(usize, Instant)>,
@@ -1187,6 +1197,9 @@ pub fn run() {
         tab_press: None,
         tab_selects_on_down,
         side_bar_preferred,
+        side_bar_scroll: 0.0,
+        side_rects: Vec::new(),
+        side_handle_hover: false,
         tab_tip: None,
         tab_tip_wake: None,
         tab_clicks: (Instant::now(), None, 0),
@@ -1374,10 +1387,67 @@ impl App {
         self.window_layout().0
     }
 
-    /// The horizontal tab bar's rect: the bar's, on the top or bottom edge. The side bar's
-    /// tabs arrive with milestone 13d's Task 3.
+    /// The horizontal tab bar's rect: the bar's, on the top or bottom edge.
     fn horizontal_bar_rect(&self) -> Option<Rect> {
         self.tab_bar_rect().filter(|_| !tab_position::vertical(self.tab_position()))
+    }
+
+    /// A side tab bar's rect and its rows' height in pixels: the horizontal bar's height
+    /// (`PSM verticalCellHeight`), shrunk so every row fits when the bar does not scroll
+    /// (`tab_position::fit_rows`). None without a side bar.
+    fn side_rows(&self) -> Option<(Rect, f32)> {
+        let bar = self.tab_bar_rect().filter(|_| tab_position::vertical(self.tab_position()))?;
+        Some((bar, tab_position::fit_rows(self.tabs.len(), self.tab_height(), bar.h, self.side_bar_scrollable())))
+    }
+
+    /// `ScrollableSideTabBar`: rows that do not fit scroll (`PSM tabBarIsScrollable`).
+    fn side_bar_scrollable(&self) -> bool {
+        self.globals.bool("ScrollableSideTabBar")
+    }
+
+    /// A side bar's scroll offset brought within its rows (`PSM clampScrollOffset`), in points.
+    fn clamp_side_scroll(&mut self) {
+        let Some((bar, row)) = self.side_rows() else { return };
+        let scale = self.scale();
+        let max = if self.side_bar_scrollable() { tab_position::max_scroll(self.tabs.len(), row, bar.h) / scale } else { 0.0 };
+        self.side_bar_scroll = self.side_bar_scroll.clamp(0.0, max);
+    }
+
+    /// A side bar's drag handle in pixels, window coordinates (`tab_position::drag_handle`,
+    /// 3 points wide on the bar's inner edge); None without a side bar.
+    fn side_handle(&self) -> Option<Rect> {
+        let bar = self.tab_bar_rect()?;
+        let scale = self.scale();
+        let points = Rect { x: bar.x / scale, y: bar.y / scale, w: bar.w / scale, h: bar.h / scale };
+        tab_position::drag_handle(points, self.tab_position()).map(|r| tab_layout::to_px(r, scale))
+    }
+
+    /// Each tab's rect in pixels, window coordinates, in `tabs` order: on a horizontal bar its
+    /// cell scrolled and placed (`tab_position::rects_from_cells`), on a side bar its row as
+    /// last drawn. A tab not shown (in the overflow menu, collapsed, or with no bar) is
+    /// zero-size. 13d's drags and 13h's pane drop read the tabs' places here.
+    #[allow(dead_code)]
+    pub(super) fn bar_tab_rects(&self) -> Vec<Rect> {
+        let n = self.tabs.len();
+        let zero = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+        if tab_position::vertical(self.tab_position()) {
+            let mut rects = self.side_rects.clone();
+            rects.resize(n, zero);
+            return rects;
+        }
+        let Some(bar) = self.horizontal_bar_rect() else { return vec![zero; n] };
+        let cells: Vec<(usize, Rect)> = self.tab_bar.cells.iter().map(|(i, _, r)| (*i, *r)).collect();
+        tab_position::rects_from_cells(&cells, n, (bar.x, bar.y), self.tab_scroll, self.scale())
+    }
+
+    /// The tab under the window point (`x`, `y`) in pixels, on either bar (its close button
+    /// included); None off the tabs.
+    #[allow(dead_code)]
+    pub(super) fn bar_tab_at(&self, x: f32, y: f32) -> Option<usize> {
+        match self.tab_bar_hit(x, y)? {
+            tab_layout::Hit::Tab(i) | tab_layout::Hit::Close(i) => Some(i),
+            _ => None,
+        }
     }
 
     /// Lays out the tab bar `width` pixels wide, scrolled by `offset` points, measuring labels
@@ -1410,8 +1480,17 @@ impl App {
         w / self.scale() - tab_layout::right_margin(false, !self.globals.bool("RemoveAddTabButton"))
     }
 
-    /// What the window point (`x`, `y`) in pixels is over on the tab bar; None off the bar.
+    /// What the window point (`x`, `y`) in pixels is over on the tab bar; None off the bar. On
+    /// a side bar: the row under the point, else the bar.
     pub(super) fn tab_bar_hit(&self, x: f32, y: f32) -> Option<tab_layout::Hit> {
+        if let Some((bar, row)) = self.side_rows() {
+            if !bar.contains(x, y) {
+                return None;
+            }
+            // The rows as `tab_bar_vertical` places them, at the current scroll.
+            let i = ((y - bar.y + self.side_bar_scroll * self.scale()) / row).floor();
+            return Some(if i >= 0.0 && (i as usize) < self.tabs.len() { tab_layout::Hit::Tab(i as usize) } else { tab_layout::Hit::Bar });
+        }
         let bar = self.horizontal_bar_rect()?;
         let scale = self.scale();
         live_tab_hit(tab_layout::hit(&self.tab_bar, self.tab_scroll, (x - bar.x) / scale, (y - bar.y) / scale), self.tabs.len())
@@ -1421,6 +1500,14 @@ impl App {
     /// every layout until the bar is scrolled by hand (`PSM scrollSelectedTabIntoView`).
     pub(super) fn scroll_active_tab_into_view(&mut self) {
         self.tab_keep_selected = true;
+        if let Some((bar, row)) = self.side_rows() {
+            if self.side_bar_scrollable() {
+                let scale = self.scale();
+                self.side_bar_scroll = tab_position::scroll_to_show(self.active, row, bar.h, self.side_bar_scroll * scale) / scale;
+                self.clamp_side_scroll();
+            }
+            return;
+        }
         let Some((_, _, r)) = self.tab_bar.cells.iter().find(|(i, _, _)| *i == self.active) else { return };
         self.tab_scroll = tab_layout::scroll_into_view(self.tab_scroll, r.x, r.w, self.tab_viewport(), self.tab_bar.content);
     }
@@ -1442,7 +1529,11 @@ impl App {
         if self.tab_keep_selected {
             self.scroll_active_tab_into_view();
         }
-        self.tab_scroll = tab_layout::clamp_scroll(self.tab_scroll, self.tab_bar.content, self.tab_viewport());
+        if self.side_rows().is_some() {
+            self.clamp_side_scroll();
+        } else {
+            self.tab_scroll = tab_layout::clamp_scroll(self.tab_scroll, self.tab_bar.content, self.tab_viewport());
+        }
     }
 
     /// The held press is on a tab that is no longer at the pressed index.
@@ -1650,6 +1741,10 @@ impl App {
         if self.tab_bar_hit(x, y).is_none() {
             return false;
         }
+        if self.side_rows().is_some() {
+            self.side_bar_wheel(delta);
+            return true;
+        }
         let optimum = tab_layout::Settings::from_globals(&self.globals).prefs.optimum;
         // A notched wheel moves in lines; precise deltas are already a distance (pixels here).
         let (dx, dy) = match delta {
@@ -1667,6 +1762,66 @@ impl App {
             self.update_tab_hover();
         }
         true
+    }
+
+    /// The wheel over a side bar (`PSM scrollWheel:`): with `ScrollableSideTabBar` and rows
+    /// that do not fit, the vertical wheel scrolls the rows (a notched wheel a row a line),
+    /// within `max_scroll`, and stops keeping the selected tab in view. Otherwise nothing.
+    fn side_bar_wheel(&mut self, delta: MouseScrollDelta) {
+        let Some((bar, row)) = self.side_rows() else { return };
+        let max = tab_position::max_scroll(self.tabs.len(), row, bar.h);
+        if !self.side_bar_scrollable() || max <= 0.0 {
+            return;
+        }
+        let dy = match delta {
+            MouseScrollDelta::LineDelta(_, y) => y * row,
+            MouseScrollDelta::PixelDelta(p) => p.y as f32,
+        };
+        let scale = self.scale();
+        let to = (self.side_bar_scroll * scale - dy).clamp(0.0, max) / scale;
+        if to != self.side_bar_scroll {
+            self.side_bar_scroll = to;
+            self.tab_keep_selected = false;
+            self.redraw();
+            // The rows moved under a still pointer.
+            self.update_tab_hover();
+        }
+    }
+
+    /// Dragging a side bar's handle (`RTV:2264-2277`): the bar's width follows the pointer from
+    /// `start_width` points (a right bar grows leftward), clamped by `side_width` and rounded;
+    /// the sessions follow.
+    fn side_bar_drag(&mut self, start_x: f32, start_width: f32, x: f32) {
+        let scale = self.scale();
+        let dx = (x - start_x) / scale;
+        let dx = if self.tab_position() == TabPosition::Right { -dx } else { dx };
+        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32) / scale;
+        let preferred = tab_position::side_width(start_width + dx, w, PAD, self.side_bar_minimum()).round();
+        if preferred != self.side_bar_preferred {
+            self.side_bar_preferred = preferred;
+            self.relayout();
+        }
+    }
+
+    /// The horizontal resize pointer shows while the pointer is on a side bar's drag handle or
+    /// drags it (`RTV:1886`).
+    fn update_side_handle_hover(&mut self) {
+        let (x, y) = self.cursor;
+        let on = matches!(self.drag, Drag::SideBar { .. }) || self.side_handle().is_some_and(|h| h.contains(x, y));
+        if on == self.side_handle_hover {
+            return;
+        }
+        self.side_handle_hover = on;
+        if let Some(g) = &self.gpu {
+            use winit::window::CursorIcon;
+            g.window.set_cursor(if on {
+                CursorIcon::EwResize
+            } else if self.hover.is_some() {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            });
+        }
     }
 
     /// The window's room above any banner, which the toolbelt, the tab bar and the sessions
@@ -2838,6 +2993,11 @@ impl App {
         if self.composer_press(button, x, y) {
             return;
         }
+        // The side bar's drag handle, on its inner edge, before its rows (`RTV:1860-1895`).
+        if button == MouseButton::Left && self.side_handle().is_some_and(|h| h.contains(x, y)) {
+            self.drag = Drag::SideBar { start_x: x, start_width: self.side_bar_width() / self.scale() };
+            return;
+        }
         if let Some(hit) = self.tab_bar_hit(x, y) {
             return self.tab_bar_press(button, hit);
         }
@@ -3007,6 +3167,12 @@ impl App {
             Drag::Belt(d) => self.toolbelt_release(d),
             Drag::Composer { pane, kind } => self.composer_release(pane, kind),
             Drag::Divider { .. } => self.tmux_drag_end(event_loop),
+            // The width becomes every new window's (iTerm2 writes it at each move, `RTV:2264-2277`).
+            Drag::SideBar { .. } => {
+                self.globals.set("LeftTabBarWidth", toml::Value::Float(self.side_bar_preferred as f64));
+                self.save_globals();
+                self.update_side_handle_hover();
+            }
             Drag::Select { pane } => {
                 let empty = self.panes.get(&pane).and_then(|p| p.screen.term().selection_to_string()).map_or(true, |s| s.is_empty());
                 if empty {
@@ -3048,6 +3214,7 @@ impl App {
     fn mouse_move(&mut self, x: f32, y: f32) {
         self.cursor = (x, y);
         self.update_tab_hover();
+        self.update_side_handle_hover();
         self.toolbelt_move(x, y);
         self.composer_move(x, y);
         self.clip_move(x, y);
@@ -3065,6 +3232,10 @@ impl App {
                 self.porthole_drag(pane, id, frame, x, y);
             }
             Drag::Clip { .. } | Drag::Belt(_) | Drag::Composer { .. } => {}
+            Drag::SideBar { start_x, start_width } => {
+                let (start_x, start_width) = (*start_x, *start_width);
+                self.side_bar_drag(start_x, start_width, x);
+            }
             Drag::Select { pane } => {
                 let pane = *pane;
                 let Some(rect) = self.pane_rect(pane) else { return };
@@ -3191,13 +3362,18 @@ impl App {
             let scale = self.scale();
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
             scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
-        } else {
-            // A side bar: its tabs arrive with 13d's Task 3; until then its background only.
-            if let Some(area) = self.tab_bar_rect() {
-                frame.quads.push(scene::Quad { rect: area, color: rgba(scene::TAB_BAR, 1.0) });
-            }
+            self.side_rects.clear();
+        } else if let Some((area, row)) = self.side_rows() {
+            let looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
             self.tab_bar = tab_layout::Bar::default();
             self.tab_scroll = 0.0;
+            self.follow_active_tab();
+            let scroll = self.side_bar_scroll * self.scale();
+            self.side_rects = scene::tab_bar_vertical(&mut frame, &looks, self.active, area, cell, row, scroll);
+        } else {
+            self.tab_bar = tab_layout::Bar::default();
+            self.tab_scroll = 0.0;
+            self.side_rects.clear();
             self.tab_hover = None;
             self.tab_tip = None;
         }

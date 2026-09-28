@@ -35,6 +35,12 @@ pub(super) struct WinSlot {
     tab_selects_on_down: bool,
     /// A side tab bar's preferred width in points.
     side_bar_preferred: f32,
+    /// A side tab bar's scroll offset in points.
+    side_bar_scroll: f32,
+    /// A side tab bar's rows as last drawn, one per tab (pixels, window coordinates).
+    side_rects: Vec<Rect>,
+    /// The pointer is on a side bar's drag handle (the resize pointer shows).
+    side_handle_hover: bool,
     /// The tab whose tooltip the pointer is waiting on or showing, and when it settled there.
     tab_tip: Option<(usize, Instant)>,
     block_buttons: Vec<blocks_ui::BlockButton>,
@@ -89,6 +95,9 @@ impl WinSlot {
             tab_press: None,
             tab_selects_on_down: true,
             side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
+            side_bar_scroll: 0.0,
+            side_rects: Vec::new(),
+            side_handle_hover: false,
             tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
@@ -162,6 +171,9 @@ impl App {
         swap(&mut self.tab_press, &mut s.tab_press);
         swap(&mut self.tab_selects_on_down, &mut s.tab_selects_on_down);
         swap(&mut self.side_bar_preferred, &mut s.side_bar_preferred);
+        swap(&mut self.side_bar_scroll, &mut s.side_bar_scroll);
+        swap(&mut self.side_rects, &mut s.side_rects);
+        swap(&mut self.side_handle_hover, &mut s.side_handle_hover);
         swap(&mut self.tab_tip, &mut s.tab_tip);
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
@@ -573,6 +585,9 @@ impl WinSlot {
             tab_press: None,
             tab_selects_on_down: true,
             side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
+            side_bar_scroll: 0.0,
+            side_rects: Vec::new(),
+            side_handle_hover: false,
             tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
