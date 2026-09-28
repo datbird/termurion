@@ -124,8 +124,11 @@ pub mod ssh_transport;
 pub mod ssh_probe;
 pub mod ssh_handshake;
 pub mod ssh_session;
+pub mod ssh_secret;
 #[cfg(windows)]
 pub mod ssh_probe_win;
+#[cfg(windows)]
+pub mod ssh_secret_win;
 
 #[cfg(windows)]
 pub mod conpty;

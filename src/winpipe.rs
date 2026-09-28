@@ -259,6 +259,13 @@ pub fn host_pipe_name() -> Result<String, String> {
     Ok(format!(r"\\.\pipe\tandem-host-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
 }
 
+/// `\\.\pipe\tandem-ssh-secrets-<user SID>`, plus `-admin` when elevated: the origin secrets
+/// it2ssh fetches.
+pub fn secret_pipe_name() -> Result<String, String> {
+    // As the host pipe: an elevated Tandem's secrets are its own.
+    Ok(format!(r"\\.\pipe\tandem-ssh-secrets-{}{}", user_sid()?, if elevated()? { "-admin" } else { "" }))
+}
+
 /// A pipe instance whose DACL lets only this user connect; no remote clients.
 fn create_instance(name: &str, first: bool) -> Result<HANDLE, String> {
     unsafe {
@@ -593,6 +600,17 @@ pub(crate) mod tests {
         assert!(host_pipe_name().unwrap().starts_with(r"\\.\pipe\tandem-host-S-1-5-"));
         let (_server, client) = pair();
         client.server_is_this_user().unwrap();
+    }
+
+    #[test]
+    fn secret_pipe_name_follows_the_host_pipe() {
+        let name = secret_pipe_name().unwrap();
+        assert!(name.starts_with(r"\\.\pipe\tandem-ssh-secrets-S-1-"));
+        let sid = user_sid().unwrap();
+        let admin = elevated().unwrap();
+        let bare = name.strip_suffix("-admin").filter(|_| admin).unwrap_or(&name);
+        assert!(bare.ends_with(&sid), "the name ends with the user SID");
+        assert_eq!(name, format!(r"\\.\pipe\tandem-ssh-secrets-{sid}{}", if admin { "-admin" } else { "" }));
     }
 
     #[test]

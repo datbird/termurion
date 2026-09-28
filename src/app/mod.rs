@@ -573,6 +573,11 @@ pub struct App {
     api_server: Option<crate::api_server::Server>,
     /// The cookies handed to sessions, shared with the server's cookie check.
     api_jar: Arc<Mutex<crate::api_auth::Jar>>,
+    /// The origin secrets handed to it2ssh (app-wide, not in `swap_live`), shared with the
+    /// secret pipe's thread; 14b's conductor hook checks them.
+    pub(super) ssh_secrets: std::sync::Arc<std::sync::Mutex<crate::ssh_secret::Secrets>>,
+    /// The secret pipe's server, started with the first window; None when it could not start.
+    ssh_secret_server: Option<crate::ssh_secret_win::Server>,
     /// The Script Console's entries: scripts, connections and the app-wide logs.
     script_history: crate::script_history::History,
     /// The API's alerts, shown one at a time in order; each window opens on a pass (it needs
@@ -1025,6 +1030,8 @@ pub fn run() {
         last_blink: Instant::now(),
         api_server: None,
         api_jar: Default::default(),
+        ssh_secrets: Default::default(),
+        ssh_secret_server: None,
         script_history: crate::script_history::History::new(aps_logging, api_ui::unix_secs()),
         api_alerts: Vec::new(),
         api_on: false,
@@ -2761,6 +2768,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.scripts_scan_start();
                 // With the API up (or not) and the Scripts folder made: AutoLaunch, once.
                 self.run_autolaunch();
+                self.ssh_secrets_start();
             }
             Err(e) => {
                 message_box(&format!("Could not start the GPU renderer: {e}"));
