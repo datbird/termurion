@@ -206,8 +206,18 @@ pub fn spawn(api: &Api, cmdline: &str, cols: u16, rows: u16) -> Result<Pty, Stri
 /// Starts `cmdline` in a new pseudoconsole, in `cwd` when given. `env`'s `NAME=value` entries
 /// go over the inherited environment; with none the child inherits it unchanged.
 pub fn spawn_notify(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
+    spawn_with(api, cmdline, cwd, env, 0, cols, rows, notify)
+}
+
+/// `spawn` with these `CreatePseudoConsole` flags (`ssh_transport::conpty_flags`).
+pub fn spawn_flags(api: &Api, cmdline: &str, flags: u32, cols: u16, rows: u16) -> Result<Pty, String> {
+    spawn_with(api, cmdline, None, &[], flags, cols, rows, Arc::new(|| {}))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_with(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], flags: u32, cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
     check_size(cols, rows)?;
-    let (hpc, input, output, process) = unsafe { start(api, cmdline, cwd, env, cols, rows)? };
+    let (hpc, input, output, process) = unsafe { start(api, cmdline, cwd, env, flags, cols, rows)? };
     let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (rx, reader_done, reader) = start_reader(output, notify.clone(), paused.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -239,9 +249,9 @@ fn watch_exit(process: HANDLE, notify: Notify) -> Result<(), String> {
     Ok(())
 }
 
-/// Creates the pseudoconsole and the child. Returns (pseudoconsole, our input
-/// write end, our output read end, child process).
-unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16) -> Result<(HPCON, HANDLE, HANDLE, HANDLE), String> {
+/// Creates the pseudoconsole (with `flags`, 0 for every pane but an SSH transport) and the
+/// child. Returns (pseudoconsole, our input write end, our output read end, child process).
+unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], flags: u32, cols: u16, rows: u16) -> Result<(HPCON, HANDLE, HANDLE, HANDLE), String> {
     unsafe {
         let (mut in_read, mut in_write): (HANDLE, HANDLE) = (null_mut(), null_mut());
         let (mut out_read, mut out_write): (HANDLE, HANDLE) = (null_mut(), null_mut());
@@ -255,7 +265,7 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[
         }
 
         let mut hpc: HPCON = 0;
-        let hr = (api.create)(coord(cols, rows), in_read, out_write, 0, &mut hpc);
+        let hr = (api.create)(coord(cols, rows), in_read, out_write, flags, &mut hpc);
         // ConPTY keeps its own copies of these two ends.
         CloseHandle(in_read);
         CloseHandle(out_write);
@@ -308,14 +318,14 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[
             let ours = std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect();
             crate::session_env::block(&crate::session_env::merge(ours, env))
         });
-        let flags = if block.is_some() { EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT } else { EXTENDED_STARTUPINFO_PRESENT };
+        let creation = if block.is_some() { EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT } else { EXTENDED_STARTUPINFO_PRESENT };
         let ok = CreateProcessW(
             null(),
             cmd.as_mut_ptr(),
             null(),
             null(),
             0,
-            flags,
+            creation,
             block.as_ref().map_or(null(), |b| b.as_ptr() as *const core::ffi::c_void),
             dir.as_ref().map_or(null(), |d| d.as_ptr()),
             &si.StartupInfo,

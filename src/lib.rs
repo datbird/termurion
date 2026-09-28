@@ -120,6 +120,10 @@ pub mod statusbar_sparkline;
 pub mod statusbar_text;
 pub mod git_state;
 pub mod git_wrapper;
+pub mod ssh_transport;
+pub mod ssh_probe;
+#[cfg(windows)]
+pub mod ssh_probe_win;
 
 #[cfg(windows)]
 pub mod conpty;
