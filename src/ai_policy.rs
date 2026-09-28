@@ -13,10 +13,15 @@ fn normalized(host: &str) -> String {
 }
 
 /// The host of a URL as Foundation's `URL.host` reads it, normalized; None when the text has no
-/// `scheme://` authority or the authority names no host.
+/// `scheme://` authority, the authority names no host, or it holds a backslash, whitespace, a
+/// control character or `%`, which Foundation's `URL(string:)` rejects and other parsers read
+/// differently (`http://evil.example\@localhost/` must never name localhost).
 pub fn host_of(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("://")?;
     let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    if authority.chars().any(|c| c == '\\' || c == '%' || c.is_whitespace() || c.is_control()) {
+        return None;
+    }
     let hostport = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = if let Some(inner) = hostport.strip_prefix('[') {
         &inner[..inner.find(']')?]
@@ -220,6 +225,19 @@ mod tests {
         assert_eq!(host_of("localhost:11434"), None);
         assert_eq!(host_of(""), None);
         assert_eq!(host_of("https:///path"), None);
+        // Foundation's URL(string:) rejects these, so they name no host (the gate's NoEndpoint).
+        assert_eq!(host_of("http://evil.example\\@localhost/v1/chat/completions"), None);
+        assert_eq!(host_of("http://evil.example\\localhost/"), None);
+        assert_eq!(host_of("http://evil example@localhost/"), None);
+        assert_eq!(host_of("http://local host/"), None);
+        assert_eq!(host_of("http://localhost\t/"), None);
+        assert_eq!(host_of("http://localhost\n.evil.example/"), None);
+        assert_eq!(host_of("http://evil\u{7f}@localhost/"), None);
+        assert_eq!(host_of("http://evil.example%40@localhost/"), None);
+        assert_eq!(host_of("http://%6cocalhost/"), None);
+        // Only the authority is checked: a path, query or fragment may hold them.
+        assert_eq!(host_of("http://localhost:11434/a%20b\\c d").as_deref(), Some("localhost"));
+        assert_eq!(host_of("http://h?q=a b%20").as_deref(), Some("h"));
 
         assert!(host_is_openai("https://api.openai.com/v1/responses"));
         assert!(host_is_openai("https://API.OPENAI.COM/"));

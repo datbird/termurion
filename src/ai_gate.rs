@@ -111,6 +111,8 @@ pub struct Alert {
     pub buttons: Vec<&'static str>,
     pub silence: Option<String>,
     pub then: Then,
+    /// Set only by `alert`: this is one of the gate's alerts (`is_gate`), whatever its words.
+    pub gate: bool,
 }
 
 pub const FEATURE_UNAVAILABLE: &str = "Feature Unavailable";
@@ -134,7 +136,7 @@ pub fn consent_text(provider: &str, host: &str) -> String {
 
 /// The alert the gate shows for a refusal (`GK:23-99`); None for Pass.
 pub fn alert(c: &Check) -> Option<Alert> {
-    let plain = |text: &str, buttons: Vec<&'static str>, then| Alert { heading: FEATURE_UNAVAILABLE.to_string(), text: text.to_string(), buttons, silence: None, then };
+    let plain = |text: &str, buttons: Vec<&'static str>, then| Alert { heading: FEATURE_UNAVAILABLE.to_string(), text: text.to_string(), buttons, silence: None, then, gate: true };
     match c {
         Check::Pass => None,
         Check::AdminOff => Some(plain(ADMIN_OFF, vec![OK], Then::Nothing)),
@@ -146,17 +148,15 @@ pub fn alert(c: &Check) -> Option<Alert> {
             buttons: vec![ALLOW, CANCEL],
             silence: None,
             then: Then::Grant(host.clone()),
+            gate: true,
         }),
     }
 }
 
 /// Whether an alert is one of the gate's (so `App::ai_check` queues at most one at a time),
-/// not another AI feature's alert on the same queue.
+/// not another AI feature's alert on the same queue, even one with the same words.
 pub fn is_gate(a: &Alert) -> bool {
-    match &a.then {
-        Then::Grant(_) => true,
-        _ => a.heading == FEATURE_UNAVAILABLE && [ADMIN_OFF, MUST_ENABLE, NO_ENDPOINT].contains(&a.text.as_str()),
-    }
+    a.gate
 }
 
 #[cfg(test)]
@@ -246,7 +246,8 @@ mod tests {
                 text: "Generative AI features have been disabled. Check with your system administrator.".into(),
                 buttons: vec!["OK"],
                 silence: None,
-                then: Then::Nothing
+                then: Then::Nothing,
+                gate: true
             }
         );
         let a = alert(&Check::AiOff).expect("an alert");
@@ -257,7 +258,8 @@ mod tests {
                 text: "You must enable AI features in settings before you can use this feature.".into(),
                 buttons: vec!["Reveal", "Cancel"],
                 silence: None,
-                then: Then::Reveal
+                then: Then::Reveal,
+                gate: true
             }
         );
         let a = alert(&Check::NoEndpoint).expect("an alert");
@@ -268,7 +270,8 @@ mod tests {
                 text: "The selected AI model has no endpoint Tandem can reach. Choose another model in Settings > General > AI.".into(),
                 buttons: vec!["Reveal", "Cancel"],
                 silence: None,
-                then: Then::Reveal
+                then: Then::Reveal,
+                gate: true
             }
         );
         let a = alert(&needs("OpenAI", "api.openai.com")).expect("an alert");
@@ -279,7 +282,8 @@ mod tests {
                 text: "To use this feature, Tandem sends your request, and any terminal content you choose to share, to OpenAI at api.openai.com. You will always be prompted before terminal content is shared. Allow requests to api.openai.com?".into(),
                 buttons: vec!["Allow", "Cancel"],
                 silence: None,
-                then: Then::Grant("api.openai.com".into())
+                then: Then::Grant("api.openai.com".into()),
+                gate: true
             }
         );
         for c in [Check::AdminOff, Check::AiOff, Check::NoEndpoint, needs("Anthropic", "api.anthropic.com")] {
@@ -292,9 +296,16 @@ mod tests {
         for c in [Check::AdminOff, Check::AiOff, Check::NoEndpoint, needs("Anthropic", "api.anthropic.com")] {
             assert!(is_gate(&alert(&c).expect("an alert")), "{c:?}");
         }
-        let other = Alert { heading: "AI Error".into(), text: "x".into(), buttons: vec!["OK"], silence: None, then: Then::Nothing };
+        let other = Alert { heading: "AI Error".into(), text: "x".into(), buttons: vec!["OK"], silence: None, then: Then::Nothing, gate: false };
         assert!(!is_gate(&other));
-        let reveal_elsewhere = Alert { then: Then::Reveal, ..other };
+        let reveal_elsewhere = Alert { then: Then::Reveal, ..other.clone() };
         assert!(!is_gate(&reveal_elsewhere), "a later plan's alert may reveal Settings too");
+        // Only the gate's own alerts are tagged; the same words from another producer are not.
+        for c in [Check::AdminOff, Check::AiOff, Check::NoEndpoint] {
+            let same_words = Alert { gate: false, ..alert(&c).expect("an alert") };
+            assert!(!is_gate(&same_words), "{c:?}");
+        }
+        let grant_elsewhere = Alert { then: Then::Grant("h".into()), ..other };
+        assert!(!is_gate(&grant_elsewhere));
     }
 }

@@ -38,21 +38,22 @@ tab, the AI section. Mark each line pass or fail.
 | 23 | General: "Automatically update available AI models from live online database" and "Update Now" are shown disabled; hovering says "Tandem ships its AI model list with each release; online updates are not available." | |
 | 24 | Turn Enable off. Settings > Profiles > Import from iTerm2... with the plist from Setup: the AI Model popup shows the imported vendor (Anthropic) and Manage AI Models… lists the imported manual model, but "Enable generative AI features" stays off, "Offer AI command suggestion" stays off, and no host is allowed. | |
 | 25 | Add a key binding with the Toggle Setting action (Settings > Keys): its setting chooser does not offer "Enable generative AI features", "Offer AI command suggestion", the administrator switch, or the eight permissions. | |
+| 26 | With the Python API enabled, a script's `SetPreference("EnableAI", true)` (and the same for `NoSyncAIRequestConsent`, `GenerativeAIAllowed`, `AICompletions` or any `AIPermission...` key) answers INVALID_VALUE, and "Enable generative AI features" stays off. GetPreference still reads them. | |
 
 ## Kept quirks and rulings a person can see
 
 | # | Item | Result |
 |---|---|---|
-| 26 | iTerm2's plugin install step is replaced by a one-time consent per host (localhost included), asked after the Enable check; after Allow the person repeats the action. | |
-| 27 | The gate's warnings never offer a suppress checkbox, as iTerm2's persistent warnings. | |
-| 28 | A default model with no endpoint Tandem can reach (an imported Apple Intelligence vendor, a manual model without a URL) refuses with "The selected AI model has no endpoint Tandem can reach. Choose another model in Settings > General > AI." and Reveal. | |
-| 29 | After the gate passes, the Composer and Codecierge still answer "AI features come in milestone 12." (the features come in 12e). | |
-| 30 | Apple Intelligence is never offered in the AI Model popup, the key dialog, or the presets; the AI tab title settings are absent (n/a on Windows). | |
-| 31 | Ollama's Regular and Budget pickers, Fetch Models, Refresh Models, Test Connection and the "Ollama (auto-discover)" preset's Save are disabled with "Comes in milestone 12." (12b). Choosing Ollama in the AI Model popup stores the vendor without probing. | |
-| 32 | A failed key write (for example Credential Manager refusing it) shows "Could not save the <provider> API key: <error>" in the settings window and a warning mark beside Set API Key… (iTerm2 only logs it). | |
-| 33 | The sheet's toolbar uses Segoe Fluent Icons glyphs, and the economy toggle and row mark are the text "Economy" / "Economy model" (iTerm2 draws a leaf). | |
-| 34 | The editor's final button reads "Add" while adding and "Save" while editing, as iTerm2's source. An empty model name shows blank in the sheet and duplicates to " copy". | |
-| 35 | "Chat Permissons:" keeps iTerm2's typo. | |
-| 36 | The prompt help shows plain text (no rendered links). | |
-| 37 | Timeout accepts 0 and any positive number of seconds, with no range, as iTerm2's. | |
-| 38 | Advanced AI rows that hold text or numbers (`aiProxy`, `ollamaNumCtx`, `ollamaKeepAlive`, `unameCommand`, `llmPlatform`, `aiModernModelPrefixes`, `aiModelCatalogURL`) are stored but not editable in Settings until milestone 13; `GenerativeAIAllowed` sits under Advanced > General, as iTerm2's. | |
+| 27 | iTerm2's plugin install step is replaced by a one-time consent per host (localhost included), asked after the Enable check; after Allow the person repeats the action. | |
+| 28 | The gate's warnings never offer a suppress checkbox, as iTerm2's persistent warnings. | |
+| 29 | A default model with no endpoint Tandem can reach (an imported Apple Intelligence vendor, a manual model without a URL) refuses with "The selected AI model has no endpoint Tandem can reach. Choose another model in Settings > General > AI." and Reveal. | |
+| 30 | After the gate passes, the Composer and Codecierge still answer "AI features come in milestone 12." (the features come in 12e). | |
+| 31 | Apple Intelligence is never offered in the AI Model popup, the key dialog, or the presets; the AI tab title settings are absent (n/a on Windows). | |
+| 32 | Ollama's Regular and Budget pickers, Fetch Models, Refresh Models, Test Connection and the "Ollama (auto-discover)" preset's Save are disabled with "Comes in milestone 12." (12b). Choosing Ollama in the AI Model popup stores the vendor without probing. | |
+| 33 | A failed key write (for example Credential Manager refusing it) shows "Could not save the <provider> API key: <error>" in the settings window and a warning mark beside Set API Key… (iTerm2 only logs it). | |
+| 34 | The sheet's toolbar uses Segoe Fluent Icons glyphs, and the economy toggle and row mark are the text "Economy" / "Economy model" (iTerm2 draws a leaf). | |
+| 35 | The editor's final button reads "Add" while adding and "Save" while editing, as iTerm2's source. An empty model name shows blank in the sheet and duplicates to " copy". | |
+| 36 | "Chat Permissons:" keeps iTerm2's typo. | |
+| 37 | The prompt help shows plain text (no rendered links). | |
+| 38 | Timeout accepts 0 and any positive number of seconds, with no range, as iTerm2's. | |
+| 39 | Advanced AI rows that hold text or numbers (`aiProxy`, `ollamaNumCtx`, `ollamaKeepAlive`, `unameCommand`, `llmPlatform`, `aiModernModelPrefixes`, `aiModelCatalogURL`) are stored but not editable in Settings until milestone 13; `GenerativeAIAllowed` sits under Advanced > General, as iTerm2's. | |
