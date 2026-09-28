@@ -842,6 +842,7 @@ pub fn row_enabled(g: &Globals, key: &str) -> bool {
         crate::remote_prefs::FOLDER_KEY => g.bool(crate::remote_prefs::LOAD_KEY),
         // The bar can hide in full screen: Show off, or hidden with one tab (`APV:436-441`).
         "FlashTabBarInFullscreen" => !g.bool("ShowFullScreenTabBar") || g.bool("HideTab"),
+        "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges" => g.bool("PreserveWindowSizeWhenTabBarVisibilityChanges"),
         _ => true,
     }
 }
@@ -1775,6 +1776,27 @@ mod tests {
         g.set("ShowFullScreenTabBar", Value::Boolean(false));
         assert!(row_enabled(&g, "FlashTabBarInFullscreen"), "Show off");
         assert!(row_enabled(&g, "ShowFullScreenTabBar"));
+    }
+
+    #[test]
+    fn preserve_rows_follow_iterm2() {
+        for (key, label) in [
+            ("PreserveWindowSizeWhenTabBarVisibilityChanges", "Preserve window size when tab bar shows or hides"),
+            ("PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges", "\u{2026}but only if it would cause the window to go off-screen"),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Tabs"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(false)), "{key}");
+            assert!(!row.inverted, "{key}");
+            assert_eq!(row.label, label, "{key}");
+        }
+        // The second box is enabled by the first (`APV:184-192`).
+        let mut g = Globals::empty(std::path::Path::new("preserve-rows-test.toml"));
+        assert!(!row_enabled(&g, "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"));
+        g.set("PreserveWindowSizeWhenTabBarVisibilityChanges", Value::Boolean(true));
+        assert!(row_enabled(&g, "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"));
+        assert!(row_enabled(&g, "PreserveWindowSizeWhenTabBarVisibilityChanges"));
     }
 
     #[test]

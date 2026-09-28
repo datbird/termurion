@@ -499,6 +499,24 @@ default = false
 help = "With the tab bar hidden in full screen, switching tabs shows it briefly over the top of the sessions. Hold Win to keep it up."
 
 [[setting]]
+key = "PreserveWindowSizeWhenTabBarVisibilityChanges"
+tab = "Appearance"
+section = "Tabs"
+label = "Preserve window size when tab bar shows or hides"
+type = "bool"
+default = false
+help = "When the tab bar appears or goes away the window keeps its size and the sessions give up or take the room; off, the window grows or shrinks by the bar."
+
+[[setting]]
+key = "PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges"
+tab = "Appearance"
+section = "Tabs"
+label = "\u2026but only if it would cause the window to go off-screen"
+type = "bool"
+default = false
+help = "The window keeps its size only when growing for the tab bar would take it past the edge of the screen; it then also keeps its size when the bar goes away again."
+
+[[setting]]
 key = "PerPaneBackgroundImage"
 tab = "Appearance"
 section = "Panes"

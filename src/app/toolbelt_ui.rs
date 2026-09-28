@@ -208,15 +208,9 @@ impl App {
         self.toolbelt_panel().map(|panel| tbl::layout(panel, &self.belt.split, self.scale()))
     }
 
-    /// Whether showing the toolbelt may grow the window: a Normal or No Title Bar window that
-    /// is not maximized, full screen, minimized or size-locked. A hotkey window never grows.
+    /// Whether showing the toolbelt may grow the window (`window_can_fit`).
     fn belt_can_grow(&self) -> bool {
-        let Some(g) = self.gpu.as_ref() else { return false };
-        if self.hotkey.is_some() {
-            return false;
-        }
-        let style = crate::frames::unthemed(self.win_style);
-        (style == crate::frames::NORMAL || style == crate::frames::NO_TITLE_BAR) && !g.window.is_maximized() && g.window.fullscreen().is_none() && g.window.is_minimized() != Some(true) && !self.win_locks.size
+        self.window_can_fit()
     }
 
     /// The window's inner width grows (or shrinks, negative) by `points`. True when the size

@@ -155,6 +155,54 @@ pub fn rects_from_cells(cells: &[(usize, Rect)], tabs: usize, origin: (f32, f32)
     out
 }
 
+/// What the window does when the tab bar shows or hides (`PT tabViewDidChangeNumberOfTabViewItems`,
+/// `PT:8070-8145`): take a new outer frame, or keep its size and note whether it kept it
+/// to stay on screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Fit {
+    Resize(Rect),
+    Keep { excursion_prevented: bool },
+}
+
+/// The fit for a bar `delta` points (width, height) thick showing or hiding on a window whose
+/// outer frame is `outer` on a monitor whose work area is `work`. Showing grows the frame by
+/// the bar and hiding shrinks it, keeping the top-left corner; a grown frame stops at the
+/// work area's right and bottom edges (`PT windowFrameForTabSize:`, `PT:11764-11827`, clamps
+/// to the max frame), and never below the size it had. With `preserve`
+/// (`PreserveWindowSizeWhenTabBarVisibilityChanges`) the size is kept, with
+/// `only_if_off_screen` (`PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges`) only
+/// when growing would take a window that is inside the work area out of it
+/// (`PT fittingWindowToTabsWouldCauseExcursion`, `PT:8216-8244`); that keep is noted in
+/// `excursion_prevented`, and a noted window keeps its size when the bar hides again, which
+/// clears the note.
+pub fn bar_change_fit(outer: Rect, work: Rect, delta: (f32, f32), showing: bool, preserve: bool, only_if_off_screen: bool, excursion_prevented: bool) -> Fit {
+    let (dw, dh) = delta;
+    let grown = Rect { w: outer.w + dw, h: outer.h + dh, ..outer };
+    let excursion = showing && contains(work, outer) && !contains(work, grown);
+    let preserve_showing = preserve && (!only_if_off_screen || excursion);
+    let preserve_hiding = !showing && excursion_prevented;
+    if !(preserve_showing || preserve_hiding) {
+        if !showing {
+            return Fit::Resize(Rect { w: (outer.w - dw).max(1.0), h: (outer.h - dh).max(1.0), ..outer });
+        }
+        let right = (work.x + work.w - outer.x).max(outer.w);
+        let bottom = (work.y + work.h - outer.y).max(outer.h);
+        return Fit::Resize(Rect { w: grown.w.min(right), h: grown.h.min(bottom), ..outer });
+    }
+    if excursion && preserve_showing && only_if_off_screen {
+        Fit::Keep { excursion_prevented: true }
+    } else if preserve_hiding {
+        Fit::Keep { excursion_prevented: false }
+    } else {
+        Fit::Keep { excursion_prevented }
+    }
+}
+
+/// `inner` lies wholly inside `outer` (`NSContainsRect`).
+fn contains(outer: Rect, inner: Rect) -> bool {
+    inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.w <= outer.x + outer.w && inner.y + inner.h <= outer.y + outer.h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +303,35 @@ mod tests {
         );
         // A cell for a tab that is gone is dropped.
         assert_eq!(rects_from_cells(&cells, 1, (0.0, 0.0), 0.0, 1.0), vec![r(0.0, 0.0, 100.0, 24.0)]);
+    }
+
+    #[test]
+    fn bar_change_fit_follows_iterm2() {
+        let work = r(0.0, 0.0, 1920.0, 1040.0);
+        let outer = r(100.0, 100.0, 800.0, 600.0);
+        let top = (0.0, 26.0);
+        // Preserve off: the window grows or shrinks by the bar, keeping its top-left corner.
+        assert_eq!(bar_change_fit(outer, work, top, true, false, false, false), Fit::Resize(r(100.0, 100.0, 800.0, 626.0)));
+        assert_eq!(bar_change_fit(outer, work, top, false, false, false, false), Fit::Resize(r(100.0, 100.0, 800.0, 574.0)));
+        assert_eq!(bar_change_fit(outer, work, (150.0, 0.0), true, false, false, false), Fit::Resize(r(100.0, 100.0, 950.0, 600.0)));
+        // Never past the work area (`PT windowFrameForTabSize:`, the max frame clamp).
+        let low = r(100.0, 500.0, 800.0, 530.0);
+        assert_eq!(bar_change_fit(low, work, top, true, false, false, false), Fit::Resize(r(100.0, 500.0, 800.0, 540.0)));
+        // Preserve on keeps the size.
+        assert_eq!(bar_change_fit(outer, work, top, true, true, false, false), Fit::Keep { excursion_prevented: false });
+        // ...but only if it would go off-screen: with room it grows.
+        assert!(matches!(bar_change_fit(outer, work, top, true, true, true, false), Fit::Resize(_)));
+        // Growing would leave the work area: kept, and the excursion noted.
+        assert_eq!(bar_change_fit(low, work, top, true, true, true, false), Fit::Keep { excursion_prevented: true });
+        // A window that did not grow never shrinks when the bar hides; the note clears.
+        assert_eq!(bar_change_fit(outer, work, top, false, true, true, true), Fit::Keep { excursion_prevented: false });
+        assert_eq!(bar_change_fit(outer, work, top, false, false, false, true), Fit::Keep { excursion_prevented: false });
+        // Preserve on, nothing prevented: hiding keeps the size too.
+        assert_eq!(bar_change_fit(outer, work, top, false, true, false, false), Fit::Keep { excursion_prevented: false });
+        // Only if off-screen and nothing prevented: hiding shrinks.
+        assert_eq!(bar_change_fit(outer, work, top, false, true, true, false), Fit::Resize(r(100.0, 100.0, 800.0, 574.0)));
+        // A window that started off the work area is no excursion: it grows.
+        let off = r(100.0, 1000.0, 800.0, 600.0);
+        assert!(matches!(bar_change_fit(off, work, top, true, true, true, false), Fit::Resize(_)));
     }
 }

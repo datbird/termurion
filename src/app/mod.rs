@@ -604,6 +604,12 @@ pub struct App {
     side_bar_scroll: f32,
     /// The tab bar's flash in full screen (`tab_flash`).
     tab_flash: crate::tab_flash::Flash,
+    /// The window kept its size when the tab bar showed, to stay on screen, so it keeps it
+    /// when the bar hides again (`PT _excursionPrevented`).
+    excursion_prevented: bool,
+    /// The tab bar took room from the sessions at the last layout, full screen aside: a
+    /// change fits the window to the bar (`fit_window_to_bar`).
+    bar_was_visible: bool,
     /// A side tab bar's rows as last drawn (`scene::tab_bar_vertical`), one per tab in pixels,
     /// window coordinates; a row outside the bar is zero-size.
     side_rects: Vec<Rect>,
@@ -1204,6 +1210,8 @@ pub fn run() {
         side_bar_preferred,
         side_bar_scroll: 0.0,
         tab_flash: crate::tab_flash::Flash::new(),
+        excursion_prevented: false,
+        bar_was_visible: false,
         side_rects: Vec::new(),
         side_handle_hover: false,
         tab_tip: None,
@@ -1352,6 +1360,76 @@ impl App {
     /// bar lies over the sessions, `PT windowDecorationSize`, `PT:13214-13215`).
     fn tab_bar_takes_room(&self) -> bool {
         self.bar_visible_with(false)
+    }
+
+    /// Whether the window may change size to fit what it shows (the toolbelt, the tab bar):
+    /// a Normal or No Title Bar window that is not maximized, full screen, minimized or
+    /// size-locked. A hotkey window never changes.
+    pub(super) fn window_can_fit(&self) -> bool {
+        let Some(g) = self.gpu.as_ref() else { return false };
+        if self.hotkey.is_some() {
+            return false;
+        }
+        let style = crate::frames::unthemed(self.win_style);
+        (style == crate::frames::NORMAL || style == crate::frames::NO_TITLE_BAR) && !g.window.is_maximized() && g.window.fullscreen().is_none() && g.window.is_minimized() != Some(true) && !self.win_locks.size
+    }
+
+    /// The tab bar showed (`showing`) or hid: the window grows or shrinks by the bar's
+    /// thickness `delta` (points, width and height), or keeps its size, as
+    /// `tab_position::bar_change_fit` rules (R3, `PT:8070-8145`). The new size is requested
+    /// for the inner area (the fit is of the outer frame, less the borders) and its Resized
+    /// event lays the window out, so tmux hears the final size once. True when the size
+    /// changed (a size Windows refuses, or the same size, sends no Resized event).
+    fn fit_window_to_bar(&mut self, showing: bool, delta: (f32, f32)) -> bool {
+        if !self.window_can_fit() {
+            return false;
+        }
+        let Some((work, _)) = self.monitor_rects() else { return false };
+        let Some(g) = self.gpu.as_ref() else { return false };
+        let outer = Self::outer_rect(g);
+        let scale = self.scale();
+        let delta = ((delta.0 * scale).round(), (delta.1 * scale).round());
+        let preserve = self.globals.bool("PreserveWindowSizeWhenTabBarVisibilityChanges");
+        let only_if_off_screen = self.globals.bool("PreserveWindowSizeToKeepOnScreenWhenTabBarVisibilityChanges");
+        match tab_position::bar_change_fit(outer, work, delta, showing, preserve, only_if_off_screen, self.excursion_prevented) {
+            tab_position::Fit::Keep { excursion_prevented } => {
+                self.excursion_prevented = excursion_prevented;
+                false
+            }
+            tab_position::Fit::Resize(r) => {
+                let (outer_size, inner) = (g.window.outer_size(), g.window.inner_size());
+                let (dw, dh) = (outer_size.width.saturating_sub(inner.width), outer_size.height.saturating_sub(inner.height));
+                let size = winit::dpi::PhysicalSize::new((r.w.round() as u32).saturating_sub(dw).max(1), (r.h.round() as u32).saturating_sub(dh).max(1));
+                if size == inner {
+                    return false;
+                }
+                let _ = g.window.request_inner_size(size);
+                g.window.inner_size() != inner
+            }
+        }
+    }
+
+    /// When the tab bar starts or stops taking room (a tab opened or closed, `HideTab`
+    /// changed), the window fits it (`fit_window_to_bar`, with the bar's thickness then).
+    /// Full screen is left aside, so leaving it never refits, and a flashing bar takes no
+    /// room. A window's first layout only notes the bar. True when the window resized.
+    fn fit_bar_change(&mut self) -> bool {
+        let visible = self.bar_visible_ignoring_full_screen();
+        let first = self.laid_out.is_none() || self.gpu.is_none();
+        if visible == self.bar_was_visible || first {
+            self.bar_was_visible = visible;
+            return false;
+        }
+        self.bar_was_visible = visible;
+        let scale = self.scale();
+        let delta = if tab_position::vertical(self.tab_position()) { (self.side_bar_width() / scale, 0.0) } else { (0.0, self.tab_height() / scale) };
+        self.fit_window_to_bar(visible, delta)
+    }
+
+    /// `tab_bar_takes_room` as if the window were not full screen.
+    fn bar_visible_ignoring_full_screen(&self) -> bool {
+        let always = tab_position::always_visible(self.globals.bool("HideTab"));
+        tab_position::bar_visible(false, true, false, always, self.tabs.len())
     }
 
     fn bar_visible_with(&self, flashing: bool) -> bool {
@@ -2698,6 +2776,11 @@ impl App {
 
     fn relayout(&mut self) {
         self.mark_state_dirty();
+        if self.fit_bar_change() {
+            // The Resized event lays the window out at its new size.
+            self.redraw();
+            return;
+        }
         self.layout_toolbelt();
         self.laid_out = Some(self.room());
         if let Some(t) = self.tabs.get(self.active) {
