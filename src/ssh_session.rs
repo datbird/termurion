@@ -59,6 +59,12 @@ pub struct PaneSsh {
     pub connecting: Option<Vec<u8>>,
     /// The conductors running in this pane (14b keeps it in step with them).
     pub chain: Chain,
+    /// The pane was started from an SSH profile (iTerm2's `_sshState == iTermSSHStateProfile`);
+    /// 14b's conductor clears it once it hooks (`PS:20129-20132`).
+    pub profile_ssh: bool,
+    /// The SSH profile's remote initial directory (`profile::ssh_initial_directory`), used
+    /// only while `profile_ssh` and there is no conductor yet.
+    pub initial_directory: Option<String>,
 }
 
 impl PaneSsh {
@@ -96,6 +102,24 @@ impl PaneSsh {
     }
 }
 
+/// The pane banner of an SSH profile with SSH Integration on while the conductor hook does not
+/// exist (ruling 14a-1; 14b Task 7 deletes it).
+pub const PROFILE_NOT_READY: &str = "SSH integration arrives in a later Tandem build; this SSH profile runs plain ssh.";
+/// The pane banner of an SSH profile with SSH Integration on when `it2ssh.exe` is missing.
+pub const NO_IT2SSH: &str = "The utilities folder has no it2ssh.exe, so this SSH profile runs plain ssh.";
+
+/// Why an SSH profile with SSH Integration on runs plain ssh: the conductor hook does not exist
+/// yet (`PROFILE_NOT_READY`), or it does and `it2ssh.exe` is missing (`NO_IT2SSH`); None
+/// otherwise.
+pub fn profile_banner(ssh: bool, integration_on: bool, ready: bool, it2ssh_present: bool) -> Option<&'static str> {
+    match (ssh && integration_on, ready, it2ssh_present) {
+        (false, _, _) => None,
+        (true, false, _) => Some(PROFILE_NOT_READY),
+        (true, true, false) => Some(NO_IT2SSH),
+        (true, true, true) => None,
+    }
+}
+
 /// The bootstrap to type for a version 3 `SendConductor`, when the conductor hook exists.
 pub fn conductor_bytes(h: &Handshake, ready: bool) -> Option<Vec<u8>> {
     ready.then(|| bootstrap(CONDUCTOR_SH, h))
@@ -104,6 +128,17 @@ pub fn conductor_bytes(h: &Handshake, ready: bool) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_banner_follows_the_gate() {
+        assert_eq!(profile_banner(true, true, false, true), Some(PROFILE_NOT_READY));
+        assert_eq!(profile_banner(true, true, true, false), Some(NO_IT2SSH));
+        assert_eq!(profile_banner(true, true, true, true), None);
+        assert_eq!(profile_banner(true, false, false, true), None);
+        assert_eq!(profile_banner(false, true, false, true), None);
+        assert_eq!(PROFILE_NOT_READY, "SSH integration arrives in a later Tandem build; this SSH profile runs plain ssh.");
+        assert_eq!(NO_IT2SSH, "The utilities folder has no it2ssh.exe, so this SSH profile runs plain ssh.");
+    }
 
     #[test]
     fn handshake_waits_for_the_conductor_hook() {
@@ -153,7 +188,7 @@ mod tests {
 
     #[test]
     fn end_ssh_releases_the_local_side() {
-        let mut s = PaneSsh { connecting: Some(b"typed".to_vec()), chain: Chain { hops: vec![hop("u1", "A"), hop("u2", "B")] } };
+        let mut s = PaneSsh { connecting: Some(b"typed".to_vec()), chain: Chain { hops: vec![hop("u1", "A"), hop("u2", "B")] }, ..Default::default() };
         assert_eq!(s.end_ssh("u2").as_deref(), Some("ssh exited \u{2014} now at A."));
         assert_eq!(s.connecting, None);
         assert_eq!(s.chain.hops, vec![hop("u1", "A")]);

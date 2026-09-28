@@ -986,7 +986,7 @@ impl App {
     /// iTerm2 > Install Shell Integration, for the focused pane's shell.
     pub(super) fn install_shell_integration(&mut self) {
         let Some(guid) = self.focused_guid() else { return };
-        let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell);
+        let cmdline = crate::profile::command_line(&self.profile(Some(&guid)), &self.shell, None);
         let typed = match install_plan(&cmdline) {
             Plan::Unsupported => {
                 return info_box("This shell has no prompt hooks, so it cannot have shell integration. Use PowerShell (pwsh), or bash, zsh, or fish in WSL.");

@@ -1254,8 +1254,9 @@ impl App {
     /// API" and `setCookie` are both on and the server runs. The numbers are those at launch:
     /// the window's number, the tab it goes into, and iTerm2's pane number (the tab's session
     /// count less one once it is in the tab, `TAB:7435-7443`). The result holds a secret:
-    /// never log it.
-    fn session_env(&mut self, id: PaneId, p: &Profile) -> (Vec<String>, Option<String>) {
+    /// never log it. A pane started on SSH transport `t` other than ConPTY is told which
+    /// (`TANDEM_SSH_TRANSPORT`, for it2ssh).
+    fn session_env(&mut self, id: PaneId, p: &Profile, t: crate::ssh_transport::Transport) -> (Vec<String>, Option<String>) {
         let window = self.window_number();
         let counts: Vec<usize> = self.tabs.iter().map(|t| t.layout.panes().len()).collect();
         let holding = self.tabs.iter().position(|t| t.layout.panes().contains(&id));
@@ -1280,6 +1281,9 @@ impl App {
             .filter(|_| self.globals.bool("addUtilitiesToPATH"))
             .and_then(|folder| crate::utilities::path_entry(&folder.to_string_lossy()))
             .and_then(|entry| crate::utilities::session_path(std::env::var_os("PATH").as_deref(), &system_root, &entry));
+        // Every profile's Path to SSH is passed (`PS:3247-3252`, `PS:3548`).
+        let ssh_path = crate::ssh_config::from_profile(p).path_to_ssh;
+        let transport = (t != crate::ssh_transport::Transport::Conpty).then(|| crate::ssh_transport::label(t));
         let facts = crate::session_env::Facts {
             window,
             tab,
@@ -1290,6 +1294,8 @@ impl App {
             term_features: &term_features,
             lc_terminal: self.globals.bool("shouldSetLCTerminal"),
             path: path.as_deref(),
+            ssh_path: ssh_path.as_deref(),
+            ssh_transport: transport,
         };
         (crate::session_env::overlay(crate::session_env::vars(&facts), &extra), cookie)
     }
@@ -1325,7 +1331,11 @@ impl App {
     fn start_pane_as(&mut self, id: PaneId, rect: Rect, guid: Option<&str>) -> bool {
         let (cols, rows) = self.grid_size(rect);
         let p = self.profile(guid);
-        let cmd = self.start_command_override.clone().unwrap_or_else(|| profile::command_line(&p, &self.shell));
+        let (cmd, transport) = match self.start_command_override.clone() {
+            // The API's create command never takes the SSH path.
+            Some(cmd) => (cmd, crate::ssh_transport::Transport::Conpty),
+            None => self.profile_command(&p),
+        };
         // A restored arrangement names each session's folder.
         let (cwd, warning) = match &self.start_dir_override {
             Some(crate::arrangement::Folder::Forced(d)) if std::path::Path::new(d).is_dir() => (PathBuf::from(d), None),
@@ -1349,14 +1359,26 @@ impl App {
             self.host = None;
             self.banners.set("host", "The session host stopped. New shells run inside Tandem, so they end with it.");
         }
-        let (env, cookie) = self.session_env(id, &p);
+        let (env, cookie) = self.session_env(id, &p, transport);
         let started = match &self.host {
-            Some(h) => Pane::start_hosted(id, h, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
-            None => Pane::start(id, &self.api, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
+            Some(h) => match Pane::start_hosted_transport(id, h, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()) {
+                // A host below protocol 4 cannot run this transport: the session runs inside
+                // Tandem instead.
+                Err(e) if e == crate::host_client::HOST_TOO_OLD => {
+                    self.banners.set("host", "The session host is too old for this SSH session, so it runs inside Tandem.");
+                    Pane::start_transport(id, &self.api, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone())
+                }
+                other => other,
+            },
+            None => Pane::start_transport(id, &self.api, transport, &cmd, Some(&cwd), &env, cols, rows, self.notify.clone()),
         };
         match started {
             Ok(mut pane) => {
                 pane.cookie = cookie;
+                if self.start_command_override.is_none() {
+                    pane.ssh.profile_ssh = profile::is_ssh(&p);
+                    pane.ssh.initial_directory = profile::ssh_initial_directory(&p);
+                }
                 self.install_pane(id, pane, &p);
                 true
             }
@@ -1366,6 +1388,26 @@ impl App {
                 false
             }
         }
+    }
+
+    /// The command profile `p` starts and its transport. An SSH profile runs `it2ssh.exe` from
+    /// the utilities folder, on the chosen SSH transport, only with SSH Integration on, the
+    /// conductor hook in place and the file there; otherwise plain ssh on ConPTY, with the
+    /// `ssh` banner saying why when SSH Integration is on.
+    fn profile_command(&mut self, p: &Profile) -> (String, crate::ssh_transport::Transport) {
+        use crate::ssh_session::{profile_banner, CONDUCTOR_READY};
+        let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from)).unwrap_or_default();
+        let exe = exe_dir.join(crate::utilities::FOLDER).join("it2ssh.exe");
+        let present = exe.is_file();
+        let it2ssh = (CONDUCTOR_READY && present).then_some(exe.as_path());
+        // A blank Command runs the shell, not ssh, so it gets no banner.
+        let runs_ssh = profile::is_ssh(p) && !p.string("Command").trim().is_empty();
+        match profile_banner(runs_ssh, crate::ssh_config::from_profile(p).ssh_integration, CONDUCTOR_READY, present) {
+            Some(text) => self.banners.set("ssh", text),
+            None => self.banners.clear("ssh"),
+        }
+        let transport = if profile::ssh_integrated(p, it2ssh) { crate::ssh_transport::CHOSEN } else { crate::ssh_transport::Transport::Conpty };
+        (profile::command_line(p, &self.shell, it2ssh), transport)
     }
 
     /// A started pane takes its profile's look, triggers, and input settings.
