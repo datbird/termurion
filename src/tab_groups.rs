@@ -403,6 +403,27 @@ pub fn reconcile(tab: &mut Option<TabGroup>, pinned: &mut bool, others: &[(Optio
     }
 }
 
+/// A tab carrying `current` joins the group `id` (None: leaves any group), with its pinned
+/// state `pinned`, among the window's other tabs `others`: it starts from its own definition
+/// when it already carries that id (a new group's name and color, set before it joins), else
+/// from a blank one, then `reconcile`s. Answers its group and pinned state.
+pub fn join(current: Option<&TabGroup>, id: Option<String>, pinned: bool, others: &[(Option<&TabGroup>, bool)]) -> (Option<TabGroup>, bool) {
+    let mut group = id.map(|id| match current.filter(|g| g.id == id) {
+        Some(g) => g.clone(),
+        None => TabGroup { id, name: String::new(), color: PALETTE[0], collapsed: false },
+    });
+    let mut pinned = pinned;
+    reconcile(&mut group, &mut pinned, others);
+    (group, pinned)
+}
+
+/// `groupIDToInheritForNewTabAtIndex:` (`PT:14377-14390`): the group a new tab that landed at
+/// `landed` joins: the selected tab's (at `selected`, in `group`) when it landed right after
+/// it, so it extends that group's run; else none.
+pub fn inherited_group(selected: usize, group: Option<&str>, landed: usize) -> Option<String> {
+    group.filter(|g| !g.is_empty() && landed == selected + 1).map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,5 +570,30 @@ mod tests {
         let mut pinned = false;
         reconcile(&mut sole, &mut pinned, &[(Some(&other), true), (None, true)]);
         assert_eq!((sole, pinned), (Some(TabGroup { collapsed: true, ..group("s", "mine") }), false), "a sole member keeps its own definition");
+    }
+
+    #[test]
+    fn joining_keeps_a_new_groups_definition() {
+        // Add Tab to New Group: the tab already carries the new group's name and color, and
+        // no other tab has the id, so the definition stays.
+        let made = TabGroup { name: "Build".into(), color: PALETTE[2], ..group("n", "") };
+        assert_eq!(join(Some(&made), Some("n".into()), false, &[(None, false)]), (Some(made.clone()), false));
+        // Joining an existing group takes the members' definition and pin state.
+        let member = TabGroup { name: "Web".into(), color: PALETTE[4], collapsed: true, ..group("w", "") };
+        let (g, pinned) = join(Some(&made), Some("w".into()), false, &[(Some(&member), true)]);
+        assert_eq!((g, pinned), (Some(member.clone()), true));
+        // A tab in no group that joins an id nobody else has starts blank.
+        assert_eq!(join(None, Some("z".into()), false, &[]).0.map(|g| (g.id, g.name, g.color)), Some(("z".into(), String::new(), PALETTE[0])));
+        assert_eq!(join(Some(&made), None, true, &[]), (None, true), "leaving: no group");
+    }
+
+    #[test]
+    fn new_tab_inherits_the_group_it_lands_after() {
+        // `groupIDToInheritForNewTabAtIndex:` (`PT:14377-14390`): Win+T from a group's last
+        // tab (New Tab appends) lands right after it and joins.
+        assert_eq!(inherited_group(2, Some("g"), 3), Some("g".to_string()));
+        assert_eq!(inherited_group(1, Some("g"), 3), None, "not right after the selected tab");
+        assert_eq!(inherited_group(2, None, 3), None, "the selected tab is in no group");
+        assert_eq!(inherited_group(2, Some(""), 3), None);
     }
 }

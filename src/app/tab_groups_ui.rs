@@ -64,14 +64,12 @@ impl App {
     }
 
     /// The tab at `at` joins the group `id` (None: no group) and takes its definition and pin
-    /// state from the other members (`tab_groups::reconcile`, `PT reconcileTabGroupDefinitionForTab:`).
-    /// The order is left to the caller to settle.
+    /// state from the other members (`tab_groups::join`, `PT reconcileTabGroupDefinitionForTab:`);
+    /// the sole carrier of an id keeps its own. The order is left to the caller to settle.
     pub(super) fn set_tab_group(&mut self, at: usize, id: Option<String>) {
         let Some(tab) = self.tabs.get(at) else { return };
-        let mut group = id.map(|id| TabGroup { id, name: String::new(), color: tab_groups::PALETTE[0], collapsed: false });
-        let mut pinned = tab.pinned;
         let others: Vec<(Option<&TabGroup>, bool)> = self.tabs.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, t)| (t.group.as_ref(), t.pinned)).collect();
-        tab_groups::reconcile(&mut group, &mut pinned, &others);
+        let (group, pinned) = tab_groups::join(tab.group.as_ref(), id, tab.pinned, &others);
         let tab = &mut self.tabs[at];
         tab.group = group;
         tab.pinned = pinned;
@@ -448,6 +446,18 @@ impl App {
         self.active = at;
         self.set_tab_group(at, Some(group.to_string()));
         self.group_changed();
+    }
+
+    /// A New Tab just opened at `at` joins the group the selected tab `from` was in when it
+    /// landed right after it (`tab_groups::inherited_group`), then the order settles (beside
+    /// a pinned tab it goes after the pinned ones).
+    pub(super) fn new_tab_joins_group(&mut self, at: usize, from: usize, group: Option<String>) {
+        if let Some(g) = tab_groups::inherited_group(from, group.as_deref(), at) {
+            self.set_tab_group(at, Some(g));
+        }
+        if self.settle_tabs() {
+            self.tmux_reorder();
+        }
     }
 
     /// Duplicate Tab (`PT duplicateTab:`, `PT createDuplicateOfTab:`, `PT:14414-14535`): a

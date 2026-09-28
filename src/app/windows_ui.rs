@@ -371,6 +371,8 @@ impl App {
                     NewWindow::Tabs(tabs) => self.tabs.extend(tabs),
                     NewWindow::Profile(_) | NewWindow::Arrangement(_) | NewWindow::Orphans(_) | NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..) => {}
                 }
+                // Pinned or grouped tabs coming back keep the order's rules.
+                self.settle_tabs();
                 self.relayout();
                 return Err(e);
             }

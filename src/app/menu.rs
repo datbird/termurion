@@ -585,7 +585,15 @@ impl App {
                     w.focus_window();
                 }
             }
-            "newSession:" => self.new_tab(None),
+            // New Tab appends; from a group's last tab it joins that group (`AD newTabAtIndex:`).
+            "newSession:" => {
+                let (before, active) = (self.tabs.len(), self.active);
+                let group = self.tabs.get(active).and_then(|t| t.group.as_ref()).map(|g| g.id.clone());
+                self.new_tab(None);
+                if self.tabs.len() > before {
+                    self.new_tab_joins_group(self.tabs.len() - 1, active, group);
+                }
+            }
             "newWindow:" => {
                 if self.tmux_new(true, true).is_none() {
                     self.new_window(event_loop, None);
@@ -614,15 +622,7 @@ impl App {
                 self.new_tab(None);
                 if let Some(at) = super::move_new_tab(&mut self.tabs, before, active) {
                     self.active = at;
-                    // Landing just after a grouped tab, it joins the group
-                    // (`PT groupIDToInheritForNewTabAtIndex:`, `PT:14377-14390`).
-                    if group.is_some() {
-                        self.set_tab_group(at, group);
-                    }
-                    // Beside a pinned tab it goes after the pinned ones.
-                    if self.settle_tabs() {
-                        self.tmux_reorder();
-                    }
+                    self.new_tab_joins_group(at, active, group);
                 }
             }
             "newWindowWithSameProfile:" => {
