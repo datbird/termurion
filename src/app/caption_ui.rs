@@ -29,7 +29,7 @@ struct State {
     layout: Option<Layout>,
     /// The tab bar's tabs and buttons in the strip: the points that stay client.
     over: Vec<Rect>,
-    /// The tabs alone (no chips, no buttons of the bar): iTerm2's cells, for a double click.
+    /// The tabs and the bar's buttons (no chips): iTerm2's cells, for a double click.
     cells: Vec<Rect>,
     /// The button the pointer is over (the app is told when it changes).
     hover: HoverTrack,
@@ -430,7 +430,8 @@ impl App {
             let strip = l.drag_edge.min(bar.h);
             if strip > 0.0 && matches!(position, TabPosition::Top | TabPosition::Bottom) {
                 let y = if position == TabPosition::Bottom { bar.y + bar.h - strip } else { bar.y };
-                l.drag_regions.push(Rect { x: bar.x, y, w: bar.w, h: strip });
+                // The "+" and the overflow button keep their presses (`caption::edge_drag_regions`).
+                l.drag_regions = caption::edge_drag_regions(Rect { x: bar.x, y, w: bar.w, h: strip }, &self.bar_button_rects(bar));
             }
         }
         Some(l)
@@ -469,21 +470,28 @@ impl App {
         caption::name_beside_tabs(mode, self.compact_window(), self.full_screen(), top_bar, custom.as_deref(), &automatic)
     }
 
-    /// The rects in the strip that stay client for hit tests: each shown tab, group chip and the
-    /// bar's "+" and overflow buttons, window pixels; and the tabs' alone (the first `.1` of them).
-    /// Not the window name: its clicks are the strip's (`caption::strip_part`).
-    fn caption_client_rects(&self) -> (Vec<Rect>, usize) {
-        let Some(bar) = self.tab_bar_rect().filter(|_| self.tab_position() == TabPosition::Top) else { return (Vec::new(), 0) };
-        let mut rects: Vec<Rect> = self.bar_tab_rects().into_iter().filter(|r| r.w > 0.0).collect();
-        let cells = rects.len();
-        rects.extend(self.bar_pills(None).into_iter().map(|p| p.rect));
+    /// A horizontal bar's own buttons, the "+" and the overflow button, in window pixels for the
+    /// bar at `bar`. Its scroll is `tab_scroll` (`bar_offset` would ask for the caption's layout,
+    /// which calls this).
+    fn bar_button_rects(&self, bar: Rect) -> Vec<Rect> {
         let scale = self.scale();
-        rects.extend(tab_layout::add_rect_px(&self.tab_bar, self.bar_offset(), (bar.x, bar.y), scale));
-        rects.extend(self.tab_bar.overflow.map(|r| {
+        let add = tab_layout::add_rect_px(&self.tab_bar, self.tab_scroll, (bar.x, bar.y), scale);
+        let overflow = self.tab_bar.overflow.map(|r| {
             let px = tab_layout::to_px(r, scale);
             Rect { x: px.x + bar.x, y: px.y + bar.y, ..px }
-        }));
-        (rects, cells)
+        });
+        add.into_iter().chain(overflow).collect()
+    }
+
+    /// The rects in the strip that stay client for hit tests: each shown tab, group chip and the
+    /// bar's "+" and overflow buttons, window pixels; the first `.1` of them are iTerm2's cells
+    /// for a double click, every one but the chips (`caption::strip_items`). Not the window
+    /// name: its clicks are the strip's (`caption::strip_part`).
+    fn caption_client_rects(&self) -> (Vec<Rect>, usize) {
+        let Some(bar) = self.tab_bar_rect().filter(|_| self.tab_position() == TabPosition::Top) else { return (Vec::new(), 0) };
+        let tabs = self.bar_tab_rects().into_iter().filter(|r| r.w > 0.0).collect();
+        let chips = self.bar_pills(None).into_iter().map(|p| p.rect).collect();
+        caption::strip_items(tabs, chips, self.bar_button_rects(bar))
     }
 
     /// Hands the current window's strip to its subclass after a frame.
@@ -491,8 +499,8 @@ impl App {
         if let Some(hwnd) = self.hwnd() {
             let layout = self.caption_layout();
             let (over, cells) = if layout.is_some() { self.caption_client_rects() } else { (Vec::new(), 0) };
-            let tabs = over[..cells].to_vec();
-            publish(hwnd, layout, over, tabs);
+            let cells = over[..cells].to_vec();
+            publish(hwnd, layout, over, cells);
         }
     }
 

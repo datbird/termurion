@@ -165,14 +165,17 @@ pub enum StripDoubleClick {
     EditName,
     /// The title bar's own double click (maximize or restore).
     TitleBar,
-    /// Nothing: over a tab in the edge strip, where the press was the window's drag.
+    /// Nothing: over a tab in the edge strip, where the press was the window's drag, or over the
+    /// "+" or the overflow button there.
     Nothing,
 }
 
 /// A double click at the client point (`x`, `y`): on the window name it edits the window title;
-/// over a tab (`in_cell`, only in the edge strip) nothing happens, as iTerm2 runs the title bar's
-/// double click only where `clickedInCell:` is false (`iTermTabBarControlView.m:418-433`; chips
-/// and the bar's buttons are no cells, `PSM:4666-4692`); elsewhere it is the title bar's.
+/// over a tab, the "+" or the overflow button (`in_cell`, only in the edge strip) nothing
+/// happens, as iTerm2 runs the title bar's double click only where `clickedInCell:` is false
+/// (`iTermTabBarControlView.m:418-433`) and its buttons swallow the second click
+/// (`PSMRolloverButton.m:175-189`); over a chip (no cell, `PSM:4666-4692`) and elsewhere it is
+/// the title bar's.
 pub fn strip_double_click(l: &Layout, x: f32, y: f32, in_cell: bool) -> StripDoubleClick {
     match strip_part(l, x, y, in_cell) {
         Some(StripPart::Name) => StripDoubleClick::EditName,
@@ -501,6 +504,43 @@ pub fn in_edge_strip(bar: Rect, position: TabPosition, strip: f32, x: f32, y: f3
     }
 }
 
+/// The edge strip's drag regions: `strip` cut around the bar's own buttons (the "+" and the
+/// overflow button), which are views of their own that take every press on them
+/// (`iTermTabBarControlView.m:394-399`, `PSMRolloverButton.m:162-208`), edge strip or not.
+pub fn edge_drag_regions(strip: Rect, buttons: &[Rect]) -> Vec<Rect> {
+    let (left, right) = (strip.x, strip.x + strip.w);
+    let mut holes: Vec<(f32, f32)> = buttons
+        .iter()
+        .filter(|b| b.y < strip.y + strip.h && b.y + b.h > strip.y && b.x < right && b.x + b.w > left)
+        .map(|b| (b.x.max(left), (b.x + b.w).min(right)))
+        .collect();
+    holes.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut regions = Vec::new();
+    let mut x = left;
+    for (from, to) in holes {
+        if from > x {
+            regions.push(Rect { x, w: from - x, ..strip });
+        }
+        x = x.max(to);
+    }
+    if right > x {
+        regions.push(Rect { x, w: right - x, ..strip });
+    }
+    regions
+}
+
+/// The strip's items that stay client for hit tests, the first `.1` of them iTerm2's cells for a
+/// double click: the tabs and the bar's buttons ("+" and overflow, which swallow a double click's
+/// second click, `PSMRolloverButton.m:175-189`), then the group chips, which are no cells
+/// (`PSM:4666-4692`).
+pub fn strip_items(tabs: Vec<Rect>, chips: Vec<Rect>, buttons: Vec<Rect>) -> (Vec<Rect>, usize) {
+    let mut over = tabs;
+    over.extend(buttons);
+    let cells = over.len();
+    over.extend(chips);
+    (over, cells)
+}
+
 /// Whether a press that starts a drag on the tab bar drags the window instead
 /// (`tabViewShouldDragWindow:event:`, `PT:10222-10256`): always with Alt (Option); else only in a
 /// Minimal or Compact theme or a No Title Bar window; with several visible tabs only from the
@@ -600,6 +640,44 @@ mod tests {
         l.drag_regions = vec![r(0.0, 588.0, 800.0, 12.0)];
         assert_eq!(hit(&l, 100.0, 590.0, true), Hit::Caption);
         assert_eq!(hit(&l, 100.0, 570.0, true), Hit::Client);
+    }
+
+    /// The "+" and the overflow button are views of their own that take their whole rect
+    /// (`iTermTabBarControlView.m:394-399`, `PSMRolloverButton.m:162-208`): the edge strip's drag
+    /// region leaves them out, so a press there is theirs (a click opens a tab; the "+" drags the
+    /// window only through `AllowDragOnAddTabButton`, on the client side).
+    #[test]
+    fn caption_edge_strip_leaves_the_bar_buttons_out() {
+        let strip = r(0.0, 0.0, 800.0, 12.0);
+        let add = r(700.0, 4.0, 30.0, 30.0);
+        let overflow = r(760.0, 4.0, 20.0, 30.0);
+        let below = r(100.0, 20.0, 30.0, 18.0);
+        assert_eq!(edge_drag_regions(strip, &[add, overflow, below]), vec![r(0.0, 0.0, 700.0, 12.0), r(730.0, 0.0, 30.0, 12.0), r(780.0, 0.0, 20.0, 12.0)]);
+        assert_eq!(edge_drag_regions(strip, &[]), vec![strip]);
+        assert_eq!(edge_drag_regions(strip, &[r(-10.0, 0.0, 20.0, 12.0), r(790.0, 0.0, 30.0, 12.0)]), vec![r(10.0, 0.0, 780.0, 12.0)], "clipped at the strip's ends");
+        let mut l = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 0.0, 0.0, 8.0, false);
+        l.drag_edge = 12.0;
+        l.drag_regions = edge_drag_regions(r(0.0, 0.0, 862.0, 12.0), &[add]);
+        assert_eq!(hit(&l, 710.0, 10.0, true), Hit::Client, "the \"+\" in the strip is its own");
+        assert_eq!(hit(&l, 500.0, 10.0, true), Hit::Caption, "a tab in the strip still drags");
+    }
+
+    /// A double click in the edge strip runs the title bar's only off iTerm2's cells and buttons:
+    /// the tabs are cells, the "+" and the overflow button swallow the second click
+    /// (`PSMRolloverButton.m:175-189`), and only a group chip is neither (`PSM:4666-4692`).
+    #[test]
+    fn caption_strip_cells_are_every_item_but_chips() {
+        let (tab, chip, add, overflow) = (r(0.0, 0.0, 100.0, 38.0), r(100.0, 0.0, 40.0, 38.0), r(140.0, 0.0, 30.0, 38.0), r(170.0, 0.0, 20.0, 38.0));
+        let (over, cells) = strip_items(vec![tab], vec![chip], vec![add, overflow]);
+        assert_eq!(over.len(), 4, "every item stays client");
+        assert!(over.contains(&chip));
+        assert_eq!(&over[..cells], &[tab, add, overflow]);
+        let mut l = layout(1000.0, 38.0, 1.0, 75.0, 0.0, 0.0, 0.0, 8.0, false);
+        l.menu = None;
+        let in_cell = |x: f32| over[..cells].iter().any(|c| c.contains(x, 10.0));
+        assert_eq!(strip_double_click(&l, 150.0, 10.0, in_cell(150.0)), StripDoubleClick::Nothing, "over the \"+\"");
+        assert_eq!(strip_double_click(&l, 175.0, 10.0, in_cell(175.0)), StripDoubleClick::Nothing, "over the overflow button");
+        assert_eq!(strip_double_click(&l, 110.0, 10.0, in_cell(110.0)), StripDoubleClick::TitleBar, "over a chip");
     }
 
     /// winit sizes a window's outer frame for a style that still has its title bar, which the
