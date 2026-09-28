@@ -171,7 +171,7 @@ pub(super) fn load_at_start(g: &mut Globals, store: &mut Store, fetch: &dyn Fn(&
 pub(super) fn curl_fetch(url: &str, timeout: Option<f64>) -> Fetched {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new(crate::script_provision::RealRunner::system_tool("curl.exe"))
+    let out = std::process::Command::new(crate::script_provision::RealRunner::system_tool("curl.exe").map_err(|e| (-1, e))?)
         .args(rp::curl_args(url, timeout))
         .stdin(std::process::Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)

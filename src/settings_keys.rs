@@ -883,6 +883,11 @@ pub fn take_folder_pending(ctx: &egui::Context) -> bool {
     ctx.data_mut(|d| d.remove_temp::<bool>(folder_pending_id())).unwrap_or(false)
 }
 
+/// Notes the custom scripts folder's text as typed and not yet applied.
+pub fn note_folder_pending(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(folder_pending_id(), true));
+}
+
 /// `chooseCustomScriptsFolder`: the folder picker; a picked folder becomes the text, which is
 /// returned.
 fn choose_scripts_folder(g: &mut Globals) -> Option<String> {
@@ -925,7 +930,7 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
         if ended {
             ui.ctx().data_mut(|d| d.remove_temp::<bool>(folder_pending_id()));
         } else if changed {
-            ui.ctx().data_mut(|d| d.insert_temp(folder_pending_id(), true));
+            note_folder_pending(ui.ctx());
         }
         let cached = ui.ctx().data(|d| d.get_temp::<(String, bool)>(folder_valid_id()));
         let valid = match cached {

@@ -1127,6 +1127,7 @@ impl App {
                 }
                 if alert == Alert::Enable {
                     self.script_after_enable.clear();
+                    self.repl_after_enable = None;
                 }
                 self.banners.set("window", format!("Could not open the window: {e}"));
             }
@@ -1199,10 +1200,13 @@ impl App {
     /// server runs (OK), else they are dropped (Cancel, or a server that failed to start).
     fn enable_answered(&mut self, ok: bool) {
         let waiting = std::mem::take(&mut self.script_after_enable);
+        let repl = self.repl_after_enable.take();
         if ok && self.api_on {
             for req in waiting {
                 self.launch_script(req);
             }
+            // The REPL's window opens on the next loop pass (it needs the event loop).
+            self.repl_pending = repl.or(self.repl_pending.take());
         }
     }
 

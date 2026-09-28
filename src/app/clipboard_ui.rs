@@ -116,8 +116,8 @@ impl App {
         match (id, button) {
             (DENIED, Some("Open Settings")) => {
                 self.open_settings(event_loop, Mode::Settings);
-                if let Some(s) = self.settings.as_mut() {
-                    s.show_page(crate::settings_ui::Page::General);
+                if self.settings.as_mut().is_some_and(|s| s.show_page(crate::settings_ui::Page::General)) {
+                    self.apply_edit(crate::settings_ui::Edit::GlobalsChanged);
                 }
             }
             (DENIED, Some(_)) => {

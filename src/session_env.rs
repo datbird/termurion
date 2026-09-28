@@ -58,6 +58,21 @@ pub fn vars(f: &Facts) -> Vec<String> {
 /// one from Tandem's own environment (Tandem started from a Tandem shell) or a host's.
 pub const NEVER_INHERITED: [&str; 2] = ["ITERM2_COOKIE", "ITERM2_KEY"];
 
+/// The session's variables with `extra`'s `NAME=value` entries over them (the REPL's cookie
+/// and key): a name already there (compared ignoring case) is replaced where it is, so no
+/// name is given twice; others follow at the end.
+pub fn overlay(vars: Vec<String>, extra: &[String]) -> Vec<String> {
+    let name = |e: &str| e.split_once('=').map_or(e.to_uppercase(), |(n, _)| n.to_uppercase());
+    let mut out = vars;
+    for e in extra {
+        match out.iter_mut().find(|v| name(v) == name(e)) {
+            Some(v) => *v = e.clone(),
+            None => out.push(e.clone()),
+        }
+    }
+    out
+}
+
 /// `extra`'s `NAME=value` entries over `base`: a name already there (compared ignoring case,
 /// as Windows compares names) is replaced, with the extra's spelling; the result is sorted by
 /// the uppercase name, as Windows keeps an environment block. `NEVER_INHERITED` names in
@@ -101,6 +116,14 @@ mod tests {
 
     fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
         v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn overlay_replaces_same_names() {
+        let vars = vec!["ITERM2_COOKIE=session".to_string(), "ITERM_SESSION_ID=w0t0p0:x".to_string()];
+        let extra = ["iterm2_cookie=repl".to_string(), "ITERM2_KEY=K".to_string()];
+        assert_eq!(overlay(vars, &extra), ["iterm2_cookie=repl", "ITERM_SESSION_ID=w0t0p0:x", "ITERM2_KEY=K"]);
+        assert_eq!(overlay(vec!["A=1".to_string()], &[]), ["A=1"]);
     }
 
     #[test]

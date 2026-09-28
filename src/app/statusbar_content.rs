@@ -589,7 +589,7 @@ impl App {
     pub(super) fn script_content(&mut self, pane: PaneId, c: &Component) -> Option<Content> {
         let (id, variants, error) = self.script_component(pane, c, c.class == crate::script_statusbar::HTML_CLASS)?;
         let click = match error {
-            Some(text) => Click::ScriptError(text),
+            Some(text) => Click::ScriptError { text, id },
             None => Click::ScriptClick(id),
         };
         Some(Content { click, ..Content::text(variants) })

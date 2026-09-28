@@ -345,7 +345,7 @@ impl App {
 }
 
 /// The user's Desktop folder (where Windows keeps it, OneDrive included).
-fn desktop() -> Option<std::path::PathBuf> {
+pub(super) fn desktop() -> Option<std::path::PathBuf> {
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::UI::Shell::{FOLDERID_Desktop, SHGetKnownFolderPath};
     let mut out: windows_sys::core::PWSTR = std::ptr::null_mut();
