@@ -23,10 +23,18 @@ pub(super) fn unix_now() -> f64 {
 /// and the silence's episode (`recordSuppression`). A shown warning is never recorded.
 pub(super) fn preempt_and_record(spec: &Spec, store: &dyn Store, catalog: &mut Catalog, now: f64, show_remembered: bool) -> Preempt {
     let preempt = warnings::preempt(spec, store, now, show_remembered);
-    if let (Preempt::Answer(index), Some(id)) = (&preempt, spec.id.as_deref()) {
-        catalog.record(spec, &spec.labels[*index], warnings::episode(store, id, now), now);
+    if let Preempt::Answer(index) = preempt {
+        record_answer(spec, index, store, catalog, now);
     }
     preempt
+}
+
+/// `recordSuppression`: an automatic answer with button `index`, listed with its label and the
+/// silence's episode.
+pub(super) fn record_answer(spec: &Spec, index: usize, store: &dyn Store, catalog: &mut Catalog, now: f64) {
+    if let (Some(id), Some(label)) = (spec.id.as_deref(), spec.labels.get(index)) {
+        catalog.record(spec, label, warnings::episode(store, id, now), now);
+    }
 }
 
 /// `App::open_warning_window` with the GPU handles and "AlertsIndicateShortcuts" (`underline`)
@@ -34,7 +42,7 @@ pub(super) fn preempt_and_record(spec: &Spec, store: &dyn Store, catalog: &mut C
 pub(super) fn open_warning(event_loop: &ActiveEventLoop, gpu: (&wgpu::Instance, &wgpu::Adapter, &wgpu::Device, &wgpu::Queue), spec: &Spec, remembered: Option<&str>, underline: bool) -> Result<ConfirmWindow, String> {
     let (instance, adapter, device, queue) = gpu;
     let labels: Vec<&str> = spec.labels.iter().map(String::as_str).collect();
-    let heading = if spec.heading.is_empty() { warnings::DEFAULT_HEADING } else { spec.heading.as_str() };
+    let heading = spec.shown_heading();
     let text = remembered.map_or_else(|| spec.text.clone(), |saved| warnings::remembered_text(&spec.text, saved));
     ConfirmWindow::actions(event_loop, instance, adapter, device, queue, heading, &text, &labels, warnings::checkbox_label(spec), &warnings::shortcuts(&spec.labels), underline, remembered.is_some())
 }
@@ -44,11 +52,35 @@ impl App {
     /// answer is listed in Suppressed Alerts and the catalog's write is scheduled.
     pub(super) fn warning_preempt(&mut self, spec: &Spec) -> Preempt {
         let preempt = preempt_and_record(spec, &self.globals, &mut self.suppressed, unix_now(), self.show_remembered);
-        // As `scheduleFlush`: one write per burst, due after the first record.
-        if matches!(preempt, Preempt::Answer(_)) && self.catalog_due.is_none() {
-            self.catalog_due = Some(Instant::now() + FLUSH_DELAY);
+        if matches!(preempt, Preempt::Answer(_)) {
+            self.catalog_due_after_record();
         }
         preempt
+    }
+
+    /// As `scheduleFlush`: one catalog write per burst, due after the first record.
+    fn catalog_due_after_record(&mut self) {
+        if self.catalog_due.is_none() {
+            self.catalog_due = Some(Instant::now() + FLUSH_DELAY);
+        }
+    }
+
+    /// The settings window's warnings answered since the last redraw: an automatic answer is
+    /// listed in Suppressed Alerts as `warning_preempt` lists one; a shown one's remembered
+    /// (or forgotten) choice is saved.
+    pub(super) fn settings_warnings_answered(&mut self, answered: Vec<crate::settings_keys::SheetAnswer>) {
+        let mut shown = false;
+        for a in answered {
+            if !a.automatic {
+                shown = true;
+                continue;
+            }
+            record_answer(&a.spec, a.index, &self.globals, &mut self.suppressed, unix_now());
+            self.catalog_due_after_record();
+        }
+        if shown {
+            self.save_globals();
+        }
     }
 
     /// A shown warning answered with button `index`, the checkbox `checked`: the answer is
@@ -133,9 +165,7 @@ mod tests {
     const NOW: f64 = 1_000_000.0;
 
     /// Each site's identifier and kind (a later edit that drops a site's identifier fails).
-    /// The hotkey profile warning (`NoSyncSuppressAddAnotherHotkeyProfileWarning`) gets its spec
-    /// with Task 6's `sheet_warning`; the Capture Output keys are announcements, not warnings,
-    /// so they have none.
+    /// The Capture Output keys are announcements, not warnings, so they have none.
     #[test]
     fn sites_use_their_identifiers() {
         use crate::paste::Warning;
@@ -159,6 +189,7 @@ mod tests {
             (rebuild_spec(), "NoSyncRebuildMissingUvEnv", Persistent),
             (super::super::pwm_app::adapter_warning_spec("op", "t"), "NoSyncAdapterListWarning_op", Permanent),
             (super::super::api_ui::reset_spec(), "NoSyncAppSupportMoved", Permanent),
+            (crate::settings_hotkey::create_warning_spec(&["Quake".to_string()]), "NoSyncSuppressAddAnotherHotkeyProfileWarning", Persistent),
         ];
         for (spec, id, kind) in &sites {
             assert_eq!((spec.id.as_deref(), spec.kind), (Some(*id), *kind), "{id}");
@@ -175,6 +206,19 @@ mod tests {
         assert_eq!(warnings::preempt(&reset, &s, NOW, false), Preempt::Show);
         s.set("NoSyncAppSupportMoved_selection", Value::Integer(0));
         assert_eq!(warnings::preempt(&reset, &s, NOW, false), Preempt::Answer(0));
+    }
+
+    /// A settings warning answered from its remembered choice is listed like any other.
+    #[test]
+    fn sheet_answers_are_listed() {
+        let w = crate::settings_keys::SheetWarning::new(crate::settings_keys::override_spec(), crate::settings_keys::SheetThen::SaveKey);
+        let mut g = crate::globals::Globals::empty(std::path::Path::new("sheet-listed-test.toml"));
+        g.set("NeverWarnAboutOverrides", Value::Boolean(true));
+        let answer = crate::settings_keys::sheet_preempt(&g, &w, false, NOW).expect("answered");
+        let mut catalog = Catalog::default();
+        record_answer(&answer.spec, answer.index, &g, &mut catalog, NOW);
+        let entry = &catalog.entries["NeverWarnAboutOverrides"];
+        assert_eq!((entry.label.as_str(), entry.count, entry.episode.as_deref()), ("OK", 1, Some("permanent")));
     }
 
     /// `persistent_is_never_silenced`: a stored flag still shows a persistent warning.

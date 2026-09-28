@@ -124,6 +124,11 @@ impl Spec {
         i < self.labels.len() && self.cancel != Some(i) && !self.never_remember.contains(&i)
     }
 
+    /// The heading shown: its own, else `DEFAULT_HEADING` (`iTermWarning.m:328-331`).
+    pub fn shown_heading(&self) -> &str {
+        if self.heading.is_empty() { DEFAULT_HEADING } else { &self.heading }
+    }
+
     /// The buttons that are not the cancel button (`numNonCancelActions`).
     pub fn non_cancel(&self) -> usize {
         self.labels.len() - self.cancel.filter(|&c| c < self.labels.len()).map_or(0, |_| 1)

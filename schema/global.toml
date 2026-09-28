@@ -1291,6 +1291,42 @@ default = false
 help = "Suppress confirmation to remove annotation?"
 
 [[setting]]
+key = "NeverWarnAboutMeta"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress a warning when Alt Key Acts as Meta is enabled in Settings > Profiles > Keys."
+type = "bool"
+default = false
+help = "Suppress a warning when Alt Key Acts as Meta is enabled in Settings > Profiles > Keys."
+
+[[setting]]
+key = "NeverWarnAboutOverrides"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress a warning about a change to a Profile key setting that overrides a global setting."
+type = "bool"
+default = false
+help = "Suppress a warning about a change to a Profile key setting that overrides a global setting."
+
+[[setting]]
+key = "NeverWarnAboutPossibleOverrides"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress a warning about a change to a global key that's overridden by a Profile."
+type = "bool"
+default = false
+help = "Suppress a warning about a change to a global key that's overridden by a Profile."
+
+[[setting]]
+key = "NoSyncReplaceProfileWarning"
+tab = "Advanced"
+section = "Warnings"
+label = "Suppress warning about copying a session's settings over a Profile"
+type = "bool"
+default = false
+help = "Suppress warning about copying a session's settings over a Profile"
+
+[[setting]]
 key = "NoSyncSuppressDownloadConfirmation"
 tab = "Advanced"
 section = "General"

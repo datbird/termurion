@@ -235,7 +235,7 @@ impl App {
         let Some(ask) = self.scripts_alerts.pop_front() else { return };
         let spec = &ask.spec;
         let labels: Vec<&str> = spec.labels.iter().map(String::as_str).collect();
-        let heading = if spec.heading.is_empty() { warnings::DEFAULT_HEADING } else { spec.heading.as_str() };
+        let heading = spec.shown_heading();
         let text = match &ask.remembered {
             Some(saved) => warnings::remembered_text(&spec.text, saved),
             None => spec.text.clone(),

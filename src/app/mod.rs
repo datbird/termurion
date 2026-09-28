@@ -3329,10 +3329,14 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                 }
                 WindowEvent::RedrawRequested => {
-                    let edit = slot.as_mut().unwrap().redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    let win = slot.as_mut().unwrap();
+                    win.show_remembered = self.show_remembered;
+                    let edit = win.redraw(&mut self.store, &mut self.globals, &mut self.snippets);
+                    let answered = std::mem::take(&mut win.answered);
                     // Profiles > Session's "Configure Status Bar" opens the setup window.
                     let setup = slot.as_mut().and_then(|s| s.configure_status_bar.take());
                     self.apply_edit(edit);
+                    self.settings_warnings_answered(answered);
                     if let Some(guid) = setup {
                         self.open_status_setup(statusbar_ui::SetupTarget::Shared(guid), None, false, event_loop);
                     }
