@@ -792,11 +792,30 @@ impl Pane {
         screen.print_message(crate::conductor::SETUP_ERROR);
         screen.print_message(&crate::conductor::shown(reason));
         screen.append_banner(&crate::ssh_handshake::end_banner(1, location.as_deref()));
+        // Only the failed conductor's depth and below let go: a nested failure leaves its
+        // framing parent hooked (iTerm2 never force-unhooks the parser).
+        let depth = self.conductor.as_ref().map_or(0, |c| c.depth());
         self.ssh_unhook_conductor();
-        self.unhook_ssh();
+        self.ssh_hook.unhook_depth(depth);
         self.ssh_held.clear();
         // Connecting ends so later typing is not queued behind a dead conductor; its queue goes.
         self.ssh.stop_queueing();
+    }
+
+    /// A parser at `depth` lost the remote's output or was refused more of it: every conductor
+    /// at that depth or deeper fails, innermost first, each aborting through `abort_ssh`. With
+    /// none at that depth or below (the conductor is already gone) the error is dropped, so it
+    /// never fails a healthy shallower one. True when the pane must be redrawn.
+    pub fn ssh_error(&mut self, depth: i32, reason: &str) -> bool {
+        let mut redraw = false;
+        for _ in 0..=crate::ssh_hook::MAX_DEPTH + 1 {
+            match self.conductor.as_mut() {
+                Some(c) if c.depth() >= depth => c.fail(reason),
+                _ => break,
+            }
+            redraw |= self.apply_ssh_effects();
+        }
+        redraw
     }
 
     /// Applies what the pane's conductors asked for, until they ask nothing more. True when
@@ -1611,6 +1630,68 @@ mod tests {
         p.abort_ssh(&"r".repeat(1 << 20));
         let shown = p.screen.all_text().matches('r').count();
         assert!(shown <= crate::conductor::MAX_SHOWN + 16, "{shown}");
+    }
+
+    /// A pane whose root hook is hooked, in a framing session (conductor "o", depth 0) with a
+    /// nested framing conductor "a" inside it (depth 1), both with their hops.
+    fn nested_framing() -> Pane {
+        use crate::conductor::{Conductor, Setup};
+        use crate::ssh_session::Hop;
+        let at = |id: &str| Setup { client_unique_id: id.into(), parsed: crate::ssh_args::ParsedArgs { hostname: format!("{id}.example"), port: 22, ..Default::default() }, ..Setup::default() };
+        let mut p = Pane::tmux(5, 1, 3, 120, 10);
+        p.ssh.begin(true);
+        p.tmux_io().unwrap().push_output(b"\x1bP2000pnone o YQ== - Yg==\n");
+        p.pump();
+        p.take_ssh();
+        let mut outer = Conductor::new(at("o"), None, "O");
+        outer.framed_pid = Some(100);
+        p.ssh.chain.push(Hop { unique_id: "o".into(), location: "o.example".into() });
+        let mut inner = Conductor::new(at("a"), Some(Box::new(outer)), "U");
+        inner.framed_pid = Some(200);
+        assert_eq!(inner.depth(), 1);
+        p.ssh.chain.push(Hop { unique_id: "a".into(), location: "a.example".into() });
+        p.conductor = Some(Box::new(inner));
+        p
+    }
+
+    fn still_parses(p: &mut Pane) -> bool {
+        use crate::conductor_parser::Token;
+        p.tmux_io().unwrap().push_output(&crate::ssh_fixtures::reply("9.1", &["x"], 0, 'f'));
+        p.pump();
+        p.take_ssh().iter().any(|o| matches!(o, crate::ssh_hook::Out::Ssh(Token::Begin(id), 0) if id == "9.1"))
+    }
+
+    #[test]
+    fn a_nested_abort_keeps_the_parent_hooked() {
+        // A depth 1 conductor fails: only its depth is let go, the framing parent goes on.
+        let mut p = nested_framing();
+        p.abort_ssh("boom");
+        assert_eq!(p.conductor.as_ref().map(|c| c.setup.client_unique_id.as_str()), Some("o"));
+        assert!(p.ssh_hook.active(), "the depth 0 parser is still hooked");
+        assert!(still_parses(&mut p), "and still parses the parent's replies");
+        // The outermost conductor failing lets the whole hook go, as before.
+        p.abort_ssh("boom");
+        assert!(p.conductor.is_none() && !p.ssh_hook.active());
+    }
+
+    #[test]
+    fn errors_go_to_the_conductor_at_their_depth() {
+        let name = |p: &Pane| p.conductor.as_ref().map(|c| c.setup.client_unique_id.clone());
+        // A depth 1 error fails the depth 1 conductor only.
+        let mut p = nested_framing();
+        p.ssh_error(1, "boom");
+        assert_eq!(name(&p).as_deref(), Some("o"));
+        assert!(still_parses(&mut p));
+        // A depth 1 error with no conductor at depth 1 (it is gone) is dropped: the healthy
+        // depth 0 conductor is not failed by it.
+        p.ssh_error(1, "boom");
+        assert_eq!(name(&p).as_deref(), Some("o"));
+        assert!(still_parses(&mut p));
+        // A depth 0 error ends every conductor at or below depth 0, innermost first.
+        let mut p = nested_framing();
+        p.ssh_error(0, "boom");
+        assert!(p.conductor.is_none());
+        assert!(p.ssh.chain.hops.is_empty());
     }
 
     #[test]

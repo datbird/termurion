@@ -91,6 +91,13 @@ impl App {
                     }
                 }
                 Out::Ssh(Token::Init(init), _) => self.ssh_hooked(pane, init),
+                // By the depth of the parser that lost its output (a conductor that is gone
+                // leaves it dropped), not always the innermost conductor.
+                Out::Ssh(Token::Error(reason), depth) => {
+                    if self.panes.get_mut(&pane).is_some_and(|p| p.ssh_error(depth, &reason)) {
+                        self.redraw();
+                    }
+                }
                 Out::Ssh(token, depth) => {
                     // A token with no conductor (its setup was refused) is dropped.
                     let Some(p) = self.panes.get_mut(&pane) else { continue };
@@ -105,8 +112,8 @@ impl App {
                             let held = p.take_ssh_held();
                             p.write_no_broadcast(&held);
                         }
-                        // The parser already let go; the setup fails with the reason now.
-                        Token::Error(reason) => c.fail(&reason),
+                        // Routed above by its depth.
+                        Token::Error(_) => {}
                         Token::Terminate { pid, rc } => c.handle_terminate(pid, rc, depth),
                         Token::It2(text) => c.handle_it2(&text, depth),
                         // The hook turns output into `Out::Side` and `Out::Raw`.

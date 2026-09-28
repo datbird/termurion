@@ -373,6 +373,17 @@ impl Parser {
         self.state != State::Initial
     }
 
+    /// The bytes this parser holds unfinished: an unparsed init line or OSC, and the block it
+    /// is collecting. The hook counts them against its tree's budget.
+    pub fn pending_bytes(&self) -> usize {
+        self.held.len()
+            + match &self.state {
+                State::Output(b) => b.raw.len() + b.text.len() + b.identifier.len(),
+                State::Body(id) => id.len(),
+                _ => 0,
+            }
+    }
+
     pub fn dcs_id(&self) -> &str {
         &self.dcs_id
     }

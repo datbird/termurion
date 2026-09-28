@@ -5,6 +5,8 @@
 use crate::conductor_parser::{Parser, Token, AUTOPOLL_PID, NOTIF_PID};
 use crate::side_channel::Reducer;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 pub const START: &[u8] = b"\x1bP2000p";
 
@@ -24,9 +26,21 @@ pub enum Out {
     Raw(Vec<u8>),
 }
 
-/// How many remote processes one hook follows at once (F13). A remote can name any pid; past
-/// this the hook lets go rather than keep a parser for each.
+/// How many remote processes a whole hook tree follows at once (F13). A remote can name any
+/// pid, at every level; past this the hook lets go rather than keep a parser for each.
 pub const MAX_CHILDREN: usize = 256;
+
+/// The deepest a hook nests (Tandem's guard, iTerm2 has none): a remote's cat'd nested DCS
+/// 2000p and `%output` could otherwise recurse thousands of levels in one block and overflow
+/// the stack. A hook deeper than this never hooks: what it is given is plain output.
+pub const MAX_DEPTH: i32 = 8;
+
+/// The most bytes the parsers of one hook tree hold unfinished at once (an unfinished init
+/// line, OSC or `%output` block), all levels together.
+pub const MAX_PENDING: usize = 16 * 1024 * 1024;
+
+/// Why the hook let go past `MAX_PENDING` (Tandem's).
+pub const TOO_MUCH_PENDING: &str = "SSH integration stopped: the remote host sent too much unfinished output";
 
 /// Why the hook let go past `MAX_CHILDREN` (Tandem's).
 pub const TOO_MANY_PROCESSES: &str = "SSH integration stopped: the remote host started too many processes";
@@ -41,11 +55,56 @@ pub fn new_dcs_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase()
 }
 
-/// The parser of one remote process (`VP:181-275`), and its side channel's reducer.
+/// What a whole hook tree holds, shared by every hook in it (F13): child hooks and unfinished
+/// parser bytes.
 #[derive(Default)]
+struct Budget {
+    children: AtomicUsize,
+    pending: AtomicUsize,
+}
+
+/// One child hook's place in the tree's budget, given back when the child is dropped, however
+/// that happens.
+struct Slot(Arc<Budget>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.children.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// The unfinished bytes one hook's parser holds, counted in the tree's budget and given back
+/// when the hook is dropped.
+#[derive(Default)]
+struct Charge {
+    budget: Arc<Budget>,
+    bytes: usize,
+}
+
+impl Charge {
+    /// Sets what this hook holds; false when the tree now holds more than `MAX_PENDING`.
+    fn set(&mut self, bytes: usize) -> bool {
+        if bytes >= self.bytes {
+            self.budget.pending.fetch_add(bytes - self.bytes, Ordering::Relaxed);
+        } else {
+            self.budget.pending.fetch_sub(self.bytes - bytes, Ordering::Relaxed);
+        }
+        self.bytes = bytes;
+        self.budget.pending.load(Ordering::Relaxed) <= MAX_PENDING
+    }
+}
+
+impl Drop for Charge {
+    fn drop(&mut self) {
+        self.budget.pending.fetch_sub(self.bytes, Ordering::Relaxed);
+    }
+}
+
+/// The parser of one remote process (`VP:181-275`), and its side channel's reducer.
 struct Child {
     hook: Hook,
     reducer: Reducer,
+    _slot: Slot,
 }
 
 #[derive(Default)]
@@ -60,6 +119,8 @@ pub struct Hook {
     /// The end of the last read that may begin `ESC P 2000 p`.
     held: Vec<u8>,
     parser: Option<Parser>,
+    /// What the parser holds unfinished, in the tree's budget.
+    charge: Charge,
     /// Where parser ids come from (None: `new_dcs_id`).
     ids: Option<fn() -> String>,
 }
@@ -90,7 +151,33 @@ impl Hook {
     /// output again. The parser's unparsed bytes (a partial init line or OSC) go with it.
     pub fn unhook(&mut self) {
         self.parser = None;
+        self.charge.set(0);
         self.drop_children();
+    }
+
+    /// Lets go of the hooks at `depth` and every deeper one, leaving the ones above hooked: a
+    /// failed nested conductor must not end its parent's session (iTerm2 never force-unhooks
+    /// its parser). Depth 0 is the hook itself.
+    pub fn unhook_depth(&mut self, depth: i32) {
+        if depth <= self.depth {
+            self.unhook();
+        } else if depth == self.depth + 1 {
+            self.drop_children();
+        } else {
+            for child in self.children.values_mut() {
+                child.hook.unhook_depth(depth);
+            }
+        }
+    }
+
+    /// How many child hooks the whole tree holds (the F13 budget in use).
+    pub fn tree_children(&self) -> usize {
+        self.charge.budget.children.load(Ordering::Relaxed)
+    }
+
+    /// The unfinished parser bytes the whole tree holds.
+    pub fn tree_pending(&self) -> usize {
+        self.charge.budget.pending.load(Ordering::Relaxed)
     }
 
     fn drop_children(&mut self) {
@@ -108,14 +195,17 @@ impl Hook {
     /// on first use, at depth + 1), and what the child finds goes up. False past the cap.
     fn output(&mut self, pid: i32, channel: i32, data: Vec<u8>, out: &mut Vec<Out>) -> bool {
         if !self.children.contains_key(&pid) {
-            if self.children.len() >= MAX_CHILDREN {
+            let budget = &self.charge.budget;
+            if budget.children.load(Ordering::Relaxed) >= MAX_CHILDREN {
                 return false;
             }
             if self.children.is_empty() && channel == -1 {
                 self.main_pid = Some(pid);
             }
-            let hook = Hook { depth: self.depth + 1, ids: self.ids, ..Default::default() };
-            self.children.insert(pid, Box::new(Child { hook, reducer: Reducer::default() }));
+            budget.children.fetch_add(1, Ordering::Relaxed);
+            let slot = Slot(budget.clone());
+            let hook = Hook { depth: self.depth + 1, ids: self.ids, charge: Charge { budget: budget.clone(), bytes: 0 }, ..Default::default() };
+            self.children.insert(pid, Box::new(Child { hook, reducer: Reducer::default(), _slot: slot }));
         }
         let Some(child) = self.children.get_mut(&pid) else { return true };
         let mut pieces = Vec::new();
@@ -156,6 +246,7 @@ impl Hook {
                 // pane's existing one (a cat'd file can hold a broken DCS 2000p).
                 let owned = past_init || fed.tokens.iter().any(|t| matches!(t, Token::Init(_)));
                 let silent = owned && fed.rest.is_some() && !matches!(fed.tokens.last(), Some(Token::Unhook | Token::Error(_)));
+                let pending = if fed.rest.is_some() { 0 } else { parser.pending_bytes() };
                 let mut capped = false;
                 for token in fed.tokens {
                     match token {
@@ -184,6 +275,7 @@ impl Hook {
                     // nothing of it (it is a remote's flood).
                     out.push(Out::Ssh(Token::Error(TOO_MANY_PROCESSES.into()), self.depth));
                     self.parser = None;
+                    self.charge.set(0);
                     self.drop_children();
                     break;
                 }
@@ -191,16 +283,27 @@ impl Hook {
                     self.drop_children();
                     out.push(Out::Ssh(Token::Error(LOST_OUTPUT.into()), self.depth));
                 }
+                if !self.charge.set(pending) {
+                    // The tree holds too much unfinished output: this parser lets go.
+                    self.parser = None;
+                    self.charge.set(0);
+                    self.drop_children();
+                    out.push(Out::Ssh(Token::Error(TOO_MUCH_PENDING.into()), self.depth));
+                    break;
+                }
                 match fed.rest {
                     None => break,
                     Some(rest) => {
                         self.parser = None;
+                        self.charge.set(0);
                         data = rest;
                     }
                 }
                 continue;
             }
-            match data.windows(START.len()).position(|w| w == START) {
+            // Past the depth cap nothing hooks: the bytes are plain output.
+            let found = if self.depth > MAX_DEPTH { None } else { data.windows(START.len()).position(|w| w == START) };
+            match found {
                 Some(k) => {
                     screen(&mut out, &data[..k]);
                     let id = self.ids.map_or_else(new_dcs_id, |next| next());
@@ -209,7 +312,7 @@ impl Hook {
                 }
                 None => {
                     // A tail that may begin the start sequence waits for the next read.
-                    let keep = (1..START.len()).rev().find(|n| data.ends_with(&START[..*n])).unwrap_or(0);
+                    let keep = if self.depth > MAX_DEPTH { 0 } else { (1..START.len()).rev().find(|n| data.ends_with(&START[..*n])).unwrap_or(0) };
                     screen(&mut out, &data[..data.len() - keep]);
                     self.held = data[data.len() - keep..].to_vec();
                     break;
@@ -753,5 +856,113 @@ mod tests {
             h.feed(&crate::ssh_fixtures::autopoll("2", "r\n"));
         }
         assert_eq!(h.child_pids(), Vec::<i32>::new());
+    }
+
+    fn init_and_reply() -> Vec<u8> {
+        use crate::ssh_fixtures::{dcs_hook, pre_reply};
+        [dcs_hook("", "v", "YQ==", "Yg=="), pre_reply("1.1", &["sh"])].concat()
+    }
+
+    fn depths(outs: &[Out]) -> Vec<i32> {
+        outs.iter().filter_map(|o| if let Out::Ssh(_, d) = o { Some(*d) } else { None }).collect()
+    }
+
+    #[test]
+    fn nesting_depth_is_bounded() {
+        use crate::ssh_fixtures::{dcs_hook, output};
+        // One block that nests a DCS 2000p and an %output twenty levels deep (a cat'd file).
+        let mut h = hooked();
+        let mut inner = init_and_reply();
+        for i in 0..19 {
+            inner = [dcs_hook("", "v", "YQ==", "Yg=="), output(&i.to_string(), 5, -1, 0, &inner)].concat();
+        }
+        let got = h.feed(&output("o", 5, -1, 0, &inner));
+        let d = depths(&got);
+        assert!(!d.is_empty() && d.iter().all(|d| *d <= MAX_DEPTH), "{d:?}");
+        assert_eq!(got.iter().filter(|o| matches!(o, Out::Ssh(Token::Init(_), _))).count(), MAX_DEPTH as usize, "one conductor per allowed level");
+        // What is past the cap is plain output, and the depth 0 parser keeps working.
+        assert!(got.iter().any(|o| matches!(o, Out::Screen(_))));
+        assert!(h.active());
+        assert_eq!(h.feed(&output("z", 4242, -1, 0, b"ok")), vec![s(b"ok"), raw(b"ok")]);
+        // A hook past the cap does not even hold the start of a DCS 2000p back.
+        let mut deep = Hook::with_depth(MAX_DEPTH + 1);
+        assert_eq!(deep.feed(b"a\x1bP20"), vec![s(b"a\x1bP20")]);
+        assert_eq!(deep.feed(b"00pnone u YQ== - Yg==\n"), vec![s(b"00pnone u YQ== - Yg==\n")]);
+        assert!(!deep.active());
+    }
+
+    #[test]
+    fn children_are_capped_across_the_tree() {
+        use crate::ssh_fixtures::{dcs_hook, output};
+        // Twenty children at the root, each with twenty of its own: 420 in all.
+        let mut h = hooked();
+        let mut errors = 0;
+        for r in 1..=20 {
+            let mut block = dcs_hook("", "v", "YQ==", "Yg==");
+            for q in 1..=20 {
+                block.extend(output("q", q, -1, 1, b"x"));
+            }
+            for o in h.feed(&output("r", r, -1, 0, &block)) {
+                errors += usize::from(matches!(&o, Out::Ssh(Token::Error(e), _) if e == TOO_MANY_PROCESSES));
+            }
+            assert!(h.tree_children() <= MAX_CHILDREN, "{}", h.tree_children());
+        }
+        assert!(errors >= 1, "the tree budget refused a child");
+        assert!(h.active(), "the depth 0 parser is not the one that failed");
+        // Children given back leave room again.
+        let mut h = hooked();
+        for pid in 1..=200 {
+            h.feed(&output("1", pid, -1, 0, b"x"));
+        }
+        assert_eq!(h.tree_children(), 200);
+        h.unhook();
+        assert_eq!(h.tree_children(), 0);
+    }
+
+    #[test]
+    fn pending_bytes_are_capped_across_the_tree() {
+        use crate::ssh_fixtures::{dcs_hook, osc134, output};
+        // Twenty children each hold most of a 1 MiB %output block unfinished.
+        let mut h = hooked();
+        let mut errors = 0;
+        for r in 1..=20 {
+            let mut block = dcs_hook("", "v", "YQ==", "Yg==");
+            block.extend(osc134("%output x 9 1 1"));
+            block.extend(vec![b'a'; 900_000]);
+            for o in h.feed(&output("r", r, -1, 0, &block)) {
+                errors += usize::from(matches!(&o, Out::Ssh(Token::Error(e), _) if e == TOO_MUCH_PENDING));
+            }
+            assert!(h.tree_pending() <= MAX_PENDING, "{}", h.tree_pending());
+        }
+        assert_eq!(errors, 2, "the 19th and the 20th were refused");
+        assert!(h.active());
+        h.unhook();
+        assert_eq!(h.tree_pending(), 0, "given back");
+    }
+
+    #[test]
+    fn unhook_depth_leaves_the_parents_hooked() {
+        use crate::ssh_fixtures::{dcs_hook, output};
+        let build = || {
+            let mut h = hooked();
+            let middle = [dcs_hook("", "u", "YQ==", "Yg=="), output("3", 9, -1, 1, &init_and_reply())].concat();
+            h.feed(&output("4", 8, -1, 0, &middle));
+            h
+        };
+        // Depth 2 goes: the depth 1 parser still reads its %output, into a fresh child.
+        let mut h = build();
+        assert_eq!(h.tree_children(), 2);
+        h.unhook_depth(2);
+        assert_eq!((h.tree_children(), h.child_pids(), h.active()), (1, vec![8], true));
+        let got = h.feed(&output("5", 8, -1, 0, &output("6", 9, -1, 1, b"zz")));
+        assert_eq!(got, vec![s(b"zz"), raw(&output("6", 9, -1, 1, b"zz"))], "depth 1 still parses, its new child shows plain output");
+        // Depth 1 goes: the depth 0 parser reads on.
+        let mut h = build();
+        h.unhook_depth(1);
+        assert_eq!((h.tree_children(), h.child_pids(), h.active()), (0, vec![], true));
+        // Depth 0 is the whole hook.
+        let mut h = build();
+        h.unhook_depth(0);
+        assert_eq!((h.tree_children(), h.active()), (0, false));
     }
 }
