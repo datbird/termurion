@@ -464,14 +464,107 @@ fn put<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, data: Option<&[
     }
 }
 
+/// The most file data one tarball carries (controller ruling: the payload crosses the
+/// terminal in base64, so more is not practical).
+pub const MAX_JOB_BYTES: u64 = 64 << 20;
+/// The most entries (files and folders) one tarball carries.
+pub const MAX_JOB_ENTRIES: usize = 10_000;
+/// The most links followed while resolving one Files to Copy path.
+const MAX_LINK_HOPS: usize = 40;
+
+/// What a tarball may still take. Checked before anything is read, so a job over the cap
+/// fails without its data in memory.
+#[derive(Clone, Copy, Debug)]
+struct Budget {
+    bytes: u64,
+    entries: usize,
+}
+
+impl Budget {
+    fn take(&mut self, bytes: u64, what: &str) -> Result<(), String> {
+        if self.entries == 0 {
+            return Err(format!("{what}: more than {MAX_JOB_ENTRIES} entries"));
+        }
+        if bytes > self.bytes {
+            return Err(format!("{what}: more than 64 MiB of files"));
+        }
+        self.entries -= 1;
+        self.bytes -= bytes;
+        Ok(())
+    }
+}
+
+/// A junction's or link's target as a local path, or None for a network one. Windows
+/// reports a junction's target in the verbatim form (`\\?\C:\x`), which is local.
+fn local_link_target(target: &str) -> Option<&str> {
+    for verbatim in [r"\\?\", r"\??\"] {
+        if let Some(rest) = target.strip_prefix(verbatim) {
+            return crate::prompted::local_path_ok(rest).then_some(rest);
+        }
+    }
+    (!crate::prompted::network_path(target)).then_some(target)
+}
+
+/// `path` with every link in it replaced by its target, one component at a time from the
+/// drive down, so a link (at the top or in a parent folder, directly or through a chain)
+/// whose target is a network path is refused before anything on that path is touched.
+/// `link_target` gives a path's target when the path itself is a link.
+fn resolve_links(path: &Path, link_target: &mut dyn FnMut(&Path) -> Result<Option<PathBuf>, String>) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    let mut rest: Vec<PathBuf> = path.components().rev().map(|c| PathBuf::from(c.as_os_str())).collect();
+    let mut hops = 0;
+    while let Some(part) = rest.pop() {
+        match part.components().next() {
+            Some(Component::Normal(_)) => out.push(&part),
+            Some(Component::ParentDir) => {
+                out.pop();
+                continue;
+            }
+            Some(Component::Prefix(_)) | Some(Component::RootDir) => {
+                out.push(&part);
+                continue;
+            }
+            Some(Component::CurDir) | None => continue,
+        }
+        let Some(target) = link_target(&out)? else { continue };
+        hops += 1;
+        if hops > MAX_LINK_HOPS {
+            return Err(format!("{}: too many links", path.display()));
+        }
+        let target = target.to_string_lossy().into_owned();
+        let local = local_link_target(&target).ok_or_else(|| format!("{}: a link to a network path is never followed", out.display()))?;
+        out.pop();
+        rest.extend(Path::new(local).components().rev().map(|c| PathBuf::from(c.as_os_str())));
+    }
+    Ok(out)
+}
+
+/// The target of `path` when it is a symbolic link or a junction (neither is followed).
+fn disk_link_target(path: &Path) -> Result<Option<PathBuf>, String> {
+    let meta = std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.file_type().is_symlink() {
+        return Ok(None);
+    }
+    std::fs::read_link(path).map(Some).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// A local file, or a folder with everything under it (symbolic links inside a folder are
-/// skipped, Decision).
-fn put_disk<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, path: &Path) -> Result<(), String> {
+/// skipped, Decision). `path` holds no links (`resolve_links`).
+fn put_disk<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, path: &Path, budget: &mut Budget) -> Result<(), String> {
+    use std::io::Read;
     let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if !meta.is_dir() {
-        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        budget.take(meta.len(), &path.display().to_string())?;
+        // A file that grew since its size was read stops at the budget's edge.
+        let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        file.take(meta.len() + budget.bytes + 1).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        let grown = (bytes.len() as u64).saturating_sub(meta.len());
+        budget.bytes = budget.bytes.checked_sub(grown).ok_or_else(|| format!("{}: more than 64 MiB of files", path.display()))?;
         return put(tar, name, Some(&bytes));
     }
+    budget.take(0, &path.display().to_string())?;
     put(tar, name, None)?;
     let mut children: Vec<(String, PathBuf)> = Vec::new();
     for entry in std::fs::read_dir(path).map_err(|e| format!("{}: {e}", path.display()))? {
@@ -480,18 +573,26 @@ fn put_disk<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, path: &Pat
         if kind.is_symlink() {
             continue;
         }
+        if children.len() >= budget.entries {
+            return Err(format!("{}: more than {MAX_JOB_ENTRIES} entries", path.display()));
+        }
         children.push((entry.file_name().to_string_lossy().into_owned(), entry.path()));
     }
     children.sort();
     for (child, p) in children {
-        put_disk(tar, &format!("{name}/{child}"), &p)?;
+        put_disk(tar, &format!("{name}/{child}"), &p, budget)?;
     }
     Ok(())
 }
 
-/// The gzipped tar of a job's sources (`TJ:53-56`), named by `job.entries()`. A network
-/// path is never read (an error, so the job is skipped).
+/// The gzipped tar of a job's sources (`TJ:53-56`), named by `job.entries()`, within
+/// `MAX_JOB_BYTES` and `MAX_JOB_ENTRIES`. Only an absolute local path is read, and never
+/// through a link to a network path (an error, so the job is skipped).
 pub fn tarball(sources: &[Source], job: &TarJob) -> Result<Vec<u8>, String> {
+    tarball_within(sources, job, Budget { bytes: MAX_JOB_BYTES, entries: MAX_JOB_ENTRIES })
+}
+
+fn tarball_within(sources: &[Source], job: &TarJob, mut budget: Budget) -> Result<Vec<u8>, String> {
     let entries = job.entries();
     if entries.len() != sources.len() {
         return Err("sources do not match the job".into());
@@ -501,12 +602,17 @@ pub fn tarball(sources: &[Source], job: &TarJob) -> Result<Vec<u8>, String> {
     tar.follow_symlinks(false);
     for (source, name) in sources.iter().zip(&entries) {
         match source {
-            Source::Embedded(i) => put(&mut tar, name, Some(FILES.get(*i).ok_or("no such bundled file")?.bytes))?,
+            Source::Embedded(i) => {
+                let file = FILES.get(*i).ok_or("no such bundled file")?;
+                budget.take(file.bytes.len() as u64, file.name)?;
+                put(&mut tar, name, Some(file.bytes))?;
+            }
             Source::Disk(p) => {
-                if crate::prompted::network_path(&p.to_string_lossy()) {
-                    return Err("a network path is never read".into());
+                if !crate::prompted::local_path_ok(&p.to_string_lossy()) {
+                    return Err(format!("{}: only an absolute local path is read", p.display()));
                 }
-                put_disk(&mut tar, name, p)?;
+                let real = resolve_links(p, &mut disk_link_target)?;
+                put_disk(&mut tar, name, &real, &mut budget)?;
             }
         }
     }
@@ -517,7 +623,16 @@ pub fn tarball(sources: &[Source], job: &TarJob) -> Result<Vec<u8>, String> {
 /// Every job's tarball and its remote folder (enumeratePayloads,
 /// `ConductorPayloadBuilder.swift:20-26`): a job that fails to pack is skipped.
 pub fn tarballs(payloads: &[Payload]) -> Vec<(Vec<u8>, String)> {
-    group(payloads).into_iter().filter_map(|(job, sources)| tarball(&sources, &job).ok().map(|t| (t, job.destination))).collect()
+    group(payloads)
+        .into_iter()
+        .filter_map(|(job, sources)| match tarball(&sources, &job) {
+            Ok(t) => Some((t, job.destination)),
+            Err(e) => {
+                eprintln!("Tandem: a Files to Copy tarball for {} was skipped: {e}", job.destination);
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -641,6 +756,14 @@ mod tests {
             let given = pairs(&[("A", "b")]);
             assert_eq!(bash(argv, &[("A", "b")]), (given, s(argv)), "{argv:?}");
         }
+        // -s stops the walk, so what follows is not a file; -O and +O take the next word.
+        for argv in [&["-s", "x"][..], &["-O", "x"], &["+O", "x"]] {
+            let (env, args) = bash(argv, &[]);
+            assert_eq!(get(&env, "ENV"), Some(loader.as_str()), "{argv:?}");
+            assert_eq!(args[1..], s(argv)[..], "{argv:?}");
+        }
+        let given = pairs(&[("A", "b")]);
+        assert_eq!(bash(&["-O", "x", "script.sh"], &[("A", "b")]), (given, s(&["-O", "x", "script.sh"])));
         let (env, args) = bash(&["-i", "script.sh"], &[]);
         assert_eq!(get(&env, "ENV"), Some(loader.as_str()));
         assert_eq!(args, s(&["--posix", "-i", "script.sh"]));
@@ -759,6 +882,79 @@ mod tests {
         assert_eq!(out[0].1, "/$HOME");
 
         assert!(tarball(&[Source::Disk(PathBuf::from(r"\\host\share\x"))], &TarJob::new(components(r"\\host\share\x"), "/$HOME")).is_err(), "a network path is never read");
+        for relative in ["x", r"C:x", r"\x"] {
+            assert!(tarball(&[Source::Disk(PathBuf::from(relative))], &TarJob::new(components(relative), "/$HOME")).is_err(), "{relative}");
+        }
+
+        // A name of 100 bytes or more goes through the GNU long-name record.
+        let long = "d".repeat(120);
+        std::fs::create_dir_all(dir.join(&long)).unwrap();
+        std::fs::write(dir.join(&long).join("f"), b"deep").unwrap();
+        let out = tarballs(&[Payload { source: Source::Disk(dir.join(&long)), destination: "/$HOME".into() }]);
+        assert_eq!(untar(&out[0].0), vec![(long.clone(), 0o755, Vec::new()), (format!("{long}/f"), 0o644, b"deep".to_vec())]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tarball_caps_hold() {
+        assert_eq!((MAX_JOB_BYTES, MAX_JOB_ENTRIES), (64 << 20, 10_000));
+        let dir = std::env::temp_dir().join(format!("tandem-ssh-caps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        for name in ["a", "b", "c"] {
+            std::fs::write(dir.join("bin").join(name), b"12345").unwrap();
+        }
+        let bin = [Source::Disk(dir.join("bin"))];
+        let job = TarJob::new(components(&dir.join("bin").to_string_lossy()), "/$HOME");
+        let packed = |bytes, entries| tarball_within(&bin, &job, Budget { bytes, entries }).map(|t| untar(&t).len());
+        assert_eq!(packed(15, 4), Ok(4), "a folder and three files of 5 bytes fit exactly");
+        assert!(packed(14, 4).unwrap_err().contains("64 MiB"), "one byte over");
+        assert!(packed(15, 3).unwrap_err().contains("10000"), "one entry over");
+        let embedded = injection_payloads();
+        let jobs = group(&embedded);
+        assert!(tarball_within(&jobs[0].1, &jobs[0].0, Budget { bytes: 1 << 20, entries: 5 }).is_err(), "bundled files count too");
+
+        // Over the real cap the job is skipped like a missing file; its size is known before
+        // any byte is read.
+        let big = dir.join("big");
+        std::fs::File::create(&big).unwrap().set_len(MAX_JOB_BYTES + 1).unwrap();
+        let small = dir.join("small");
+        std::fs::write(&small, b"s").unwrap();
+        let to = |p: &Path, d: &str| Payload { source: Source::Disk(p.to_path_buf()), destination: d.into() };
+        let out = tarballs(&[to(&big, "/$HOME"), to(&small, "/opt")]);
+        assert_eq!(out.iter().map(|(_, d)| d.as_str()).collect::<Vec<_>>(), ["/opt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn links_to_network_paths_are_refused() {
+        use std::collections::HashMap;
+        let links: HashMap<&str, &str> = HashMap::from([
+            (r"C:\a\share", r"\\host\share"),
+            (r"C:\a\l1", "l2"),
+            (r"C:\a\l2", r"//host/x"),
+            (r"C:\a\j", r"\\?\C:\real"),
+            (r"C:\a\u", r"\\?\UNC\host\x"),
+            (r"C:\a\up", r"..\b"),
+            (r"C:\loop", r"C:\loop"),
+        ]);
+        let resolve = |path: &str| {
+            let mut seen: Vec<String> = Vec::new();
+            let mut lookup = |p: &Path| {
+                let p = p.to_string_lossy().into_owned();
+                assert!(!crate::prompted::network_path(&p), "looked at {p}");
+                seen.push(p.clone());
+                Ok(links.get(p.as_str()).map(PathBuf::from))
+            };
+            resolve_links(Path::new(path), &mut lookup).map(|p| p.to_string_lossy().into_owned())
+        };
+        assert_eq!(resolve(r"C:\a\x.txt"), Ok(r"C:\a\x.txt".to_string()));
+        assert!(resolve(r"C:\a\share\f").unwrap_err().contains("network"));
+        assert!(resolve(r"C:\a\l1").unwrap_err().contains("network"), "a chain of links");
+        assert!(resolve(r"C:\a\u").unwrap_err().contains("network"), "a verbatim UNC target");
+        assert_eq!(resolve(r"C:\a\j\f"), Ok(r"C:\real\f".to_string()), "a junction's verbatim local target");
+        assert_eq!(resolve(r"C:\a\up\f"), Ok(r"C:\b\f".to_string()), "a relative target");
+        assert!(resolve(r"C:\loop").is_err(), "a loop ends");
     }
 }
