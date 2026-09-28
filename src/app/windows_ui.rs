@@ -33,6 +33,8 @@ pub(super) struct WinSlot {
     tab_press: Option<super::TabPress>,
     /// `SelectsTabsOnMouseDown` as it was when the window opened.
     tab_selects_on_down: bool,
+    /// A side tab bar's preferred width in points.
+    side_bar_preferred: f32,
     /// The tab whose tooltip the pointer is waiting on or showing, and when it settled there.
     tab_tip: Option<(usize, Instant)>,
     block_buttons: Vec<blocks_ui::BlockButton>,
@@ -86,6 +88,7 @@ impl WinSlot {
             tab_seen: None,
             tab_press: None,
             tab_selects_on_down: true,
+            side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
             tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,
@@ -158,6 +161,7 @@ impl App {
         swap(&mut self.tab_seen, &mut s.tab_seen);
         swap(&mut self.tab_press, &mut s.tab_press);
         swap(&mut self.tab_selects_on_down, &mut s.tab_selects_on_down);
+        swap(&mut self.side_bar_preferred, &mut s.side_bar_preferred);
         swap(&mut self.tab_tip, &mut s.tab_tip);
         swap(&mut self.block_buttons, &mut s.block_buttons);
         swap(&mut self.block_hover, &mut s.block_hover);
@@ -335,6 +339,8 @@ impl App {
         self.swap_live(&mut slot);
         // iTerm2 reads it once per tab bar it makes: a change affects new windows only.
         self.tab_selects_on_down = self.globals.bool("SelectsTabsOnMouseDown");
+        // A new window's side bar starts at `LeftTabBarWidth`.
+        self.side_bar_preferred = super::side_bar_default(&self.globals);
         if let Some(old) = self.windows.current() {
             self.windows.park(old, slot);
         }
@@ -566,6 +572,7 @@ impl WinSlot {
             tab_seen: None,
             tab_press: None,
             tab_selects_on_down: true,
+            side_bar_preferred: crate::tab_position::DEFAULT_SIDE_WIDTH,
             tab_tip: None,
             block_buttons: Vec::new(),
             block_hover: None,

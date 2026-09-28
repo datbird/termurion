@@ -472,6 +472,15 @@ default = true
 help = "When the tabs do not fit, the tab bar scrolls; off, the tabs that do not fit go in a menu at the bar's end."
 
 [[setting]]
+key = "LeftTabBarWidth"
+tab = "Appearance"
+section = "Tabs"
+label = "Left (side) tab bar width"
+type = "float"
+default = 150.0
+help = "Width in points of a tab bar on the left or right side of the window. Dragging the bar's inner edge records the width."
+
+[[setting]]
 key = "PerPaneBackgroundImage"
 tab = "Appearance"
 section = "Panes"
@@ -2138,6 +2147,16 @@ label = "The \"Session Buried\" notification was shown"
 type = "bool"
 default = false
 help = "Set after the first automatic burial of a tmux gateway; the notification shows once."
+
+[[setting]]
+key = "TabViewType"
+tab = "Appearance"
+section = "General"
+label = "Tab bar location:"
+type = "enum"
+default = 0
+choices = [ { value = 0, label = "Top" }, { value = 1, label = "Bottom" }, { value = 2, label = "Left" }, { value = 3, label = "Right\u200b" } ]
+help = "The window edge the tab bar sits on: the top or bottom, or a column of tabs down the left or right side."
 
 [[setting]]
 key = "StatusBarPosition"

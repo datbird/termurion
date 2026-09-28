@@ -1715,6 +1715,23 @@ mod tests {
     }
 
     #[test]
+    fn tab_position_rows_follow_iterm2() {
+        let row = schema::find_global("TabViewType").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "General"));
+        assert_eq!(row.kind, Kind::Enum);
+        assert_eq!(row.default, Some(Value::Integer(0)));
+        assert_eq!(row.label, "Tab bar location:");
+        let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+        // iTerm2's "Right" carries a zero-width space (`PreferencePanel.xib`, tag 3).
+        assert_eq!(choices, [(Value::Integer(0), "Top"), (Value::Integer(1), "Bottom"), (Value::Integer(2), "Left"), (Value::Integer(3), "Right\u{200b}")]);
+        let row = schema::find_global("LeftTabBarWidth").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Appearance", "Tabs"));
+        assert_eq!(row.kind, Kind::Float);
+        assert_eq!(row.default, Some(Value::Float(150.0)));
+        assert_eq!(row.label, "Left (side) tab bar width");
+    }
+
+    #[test]
     fn tab_advanced_rows_follow_iterm2() {
         let b = Value::Boolean;
         let i = Value::Integer;

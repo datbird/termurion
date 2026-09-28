@@ -133,7 +133,7 @@ pub fn tile_quad(image: &crate::images::Image, tile: alacritty_terminal::term::c
     })
 }
 
-const TAB_BAR: Rgb = rgb(0x1e, 0x1e, 0x1e);
+pub const TAB_BAR: Rgb = rgb(0x1e, 0x1e, 0x1e);
 const TAB_ACTIVE: Rgb = rgb(0x3a, 0x3a, 0x3a);
 const TAB_TEXT: Rgb = rgb(0xc7, 0xc7, 0xc7);
 const TAB_TEXT_DIM: Rgb = rgb(0x8a, 0x8a, 0x8a);

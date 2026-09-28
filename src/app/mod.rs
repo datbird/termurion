@@ -24,6 +24,7 @@ use crate::keyroute::{self, Route};
 use crate::keys::{self, Action, AltSide, Key, KeyOptions};
 use crate::keystroke;
 use crate::tab_layout;
+use crate::tab_position::{self, TabPosition};
 use crate::mru::Mru;
 use crate::pointer::{self, Down, Up};
 use crate::layout::{Axis, Layout, PaneId, Rect};
@@ -590,6 +591,9 @@ pub struct App {
     /// `SelectsTabsOnMouseDown` as it was when this window opened (iTerm2 copies it into each
     /// tab bar it makes, `iTermTabBarControlView.m:58`; a change affects new windows only).
     tab_selects_on_down: bool,
+    /// A side tab bar's preferred width in points: `LeftTabBarWidth` when the window opened,
+    /// then the width its drag handle sets.
+    side_bar_preferred: f32,
     /// The tab whose tooltip the pointer is waiting on or showing, and when the pointer
     /// settled on it; the tip shows `TIP_DELAY` later.
     tab_tip: Option<(usize, Instant)>,
@@ -943,6 +947,7 @@ pub fn run() {
     let aps_logging = globals.bool(aps_ui::LOG_KEY);
     // The first window's tab bar takes SelectsTabsOnMouseDown now; later windows at opening.
     let tab_selects_on_down = globals.bool("SelectsTabsOnMouseDown");
+    let side_bar_preferred = side_bar_default(&globals);
     // Session restoration: shells run in tandem-host so they outlive Tandem (read once:
     // a change needs a restart, as in iTerm2).
     // A second Tandem (the host serves the first) neither restores nor saves windows: the
@@ -1181,6 +1186,7 @@ pub fn run() {
         tab_seen: None,
         tab_press: None,
         tab_selects_on_down,
+        side_bar_preferred,
         tab_tip: None,
         tab_tip_wake: None,
         tab_clicks: (Instant::now(), None, 0),
@@ -1311,18 +1317,67 @@ impl App {
         self.gpu.as_ref().map_or((8.0, 16.0), |g| g.renderer.cell)
     }
 
-    /// The tab bar shows: more than one tab, or always with `HideTab` off.
-    fn tab_bar_shown(&self) -> bool {
-        tab_layout::bar_shown(self.tabs.len(), self.globals.bool("HideTab"))
+    /// The edge the tab bar sits on (`TabViewType`).
+    pub(super) fn tab_position(&self) -> TabPosition {
+        tab_position::from_value(self.globals.int("TabViewType"))
     }
 
-    /// The tab bar's height in pixels: `DefaultTabBarHeight` points while the bar shows.
+    /// The tab bar shows (`tab_position::bar_visible`): in full screen only with Show tab bar
+    /// in fullscreen, then always with `HideTab` off, else with more than one tab. The one
+    /// place that decides it.
+    pub(super) fn tab_bar_visible(&self) -> bool {
+        let full_screen = self.gpu.as_ref().is_some_and(|g| g.window.fullscreen().is_some());
+        // Task 4 adds `ShowFullScreenTabBar` (default on) and the flash.
+        let (show_in_full_screen, flashing) = (true, false);
+        let always = tab_position::always_visible(self.globals.bool("HideTab"));
+        tab_position::bar_visible(full_screen, show_in_full_screen, flashing, always, self.tabs.len())
+    }
+
+    /// A horizontal tab bar's height in pixels (`DefaultTabBarHeight` points), whether or not
+    /// the bar shows; `tab_bar_rect` says whether there is a bar.
     fn tab_height(&self) -> f32 {
-        if self.tab_bar_shown() {
-            (tab_layout::Settings::from_globals(&self.globals).height * self.scale()).round()
-        } else {
-            0.0
+        (tab_layout::Settings::from_globals(&self.globals).height * self.scale()).round()
+    }
+
+    /// A side bar's narrowest width in points (`RTV minimumTabBarWidth`).
+    pub(super) fn side_bar_minimum(&self) -> f32 {
+        tab_position::MIN_SIDE_WIDTH
+    }
+
+    /// A side tab bar's width in pixels: the window's preferred width (`LeftTabBarWidth` when
+    /// it opened) clamped to the window (`tab_position::side_width`), with Tandem's side
+    /// padding as the side margin.
+    pub(super) fn side_bar_width(&self) -> f32 {
+        let scale = self.scale();
+        let w = self.gpu.as_ref().map_or(800.0, |g| g.config.width as f32);
+        (tab_position::side_width(self.side_bar_preferred, w / scale, PAD, self.side_bar_minimum()) * scale).round()
+    }
+
+    /// The tab bar's rect in pixels, window coordinates, and the window's room left for tabs:
+    /// the bar takes its thickness (`tab_height` on the top or bottom, `side_bar_width` on a
+    /// side) from its edge of the room above any banner. No rect while the bar hides.
+    fn tab_bar_split(&self) -> (Option<Rect>, Rect) {
+        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
+        let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
+        let room = Rect { x: 0.0, y: 0.0, w, h: (h - bottom).max(1.0) };
+        if !self.tab_bar_visible() {
+            return (None, room);
         }
+        let position = self.tab_position();
+        let thickness = if tab_position::vertical(position) { self.side_bar_width() } else { self.tab_height() };
+        let (bar, rest) = tab_position::split(room, position, thickness);
+        (Some(bar), rest)
+    }
+
+    /// The tab bar's rect in pixels, window coordinates; None while it hides.
+    pub(super) fn tab_bar_rect(&self) -> Option<Rect> {
+        self.tab_bar_split().0
+    }
+
+    /// The horizontal tab bar's rect: the bar's, on the top or bottom edge. The side bar's
+    /// tabs arrive with milestone 13d's Task 3.
+    fn horizontal_bar_rect(&self) -> Option<Rect> {
+        self.tab_bar_rect().filter(|_| !tab_position::vertical(self.tab_position()))
     }
 
     /// Lays out the tab bar `width` pixels wide, scrolled by `offset` points, measuring labels
@@ -1356,11 +1411,9 @@ impl App {
 
     /// What the window point (`x`, `y`) in pixels is over on the tab bar; None off the bar.
     pub(super) fn tab_bar_hit(&self, x: f32, y: f32) -> Option<tab_layout::Hit> {
-        if !self.tab_bar_shown() {
-            return None;
-        }
+        let bar = self.horizontal_bar_rect()?;
         let scale = self.scale();
-        live_tab_hit(tab_layout::hit(&self.tab_bar, self.tab_scroll, x / scale, y / scale), self.tabs.len())
+        live_tab_hit(tab_layout::hit(&self.tab_bar, self.tab_scroll, (x - bar.x) / scale, (y - bar.y) / scale), self.tabs.len())
     }
 
     /// Brings the selected tab fully into view on a bar that scrolls, and keeps it there at
@@ -1400,10 +1453,8 @@ impl App {
     /// `RemoveAddTabButton`. 13d drags the window by it.
     #[allow(dead_code)]
     pub(super) fn new_tab_button_rect(&self) -> Option<Rect> {
-        if !self.tab_bar_shown() {
-            return None;
-        }
-        tab_layout::add_rect_px(&self.tab_bar, self.tab_scroll, (0.0, 0.0), self.scale())
+        let bar = self.horizontal_bar_rect()?;
+        tab_layout::add_rect_px(&self.tab_bar, self.tab_scroll, (bar.x, bar.y), self.scale())
     }
 
     /// The tab under the pointer follows it; a change redraws (the close button shows on hover).
@@ -1617,15 +1668,13 @@ impl App {
         true
     }
 
-    /// The window's room below the tab bar and above any banner, the toolbelt's included.
+    /// The window's room beside the tab bar (on whichever edge) and above any banner, the
+    /// toolbelt's included.
     fn window_room(&self) -> Rect {
-        let (w, h) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        let top = self.tab_height();
-        let bottom = if self.banners.text().is_some() { self.cell().1 + 8.0 } else { 0.0 };
-        Rect { x: 0.0, y: top, w, h: (h - top - bottom).max(1.0) }
+        self.tab_bar_split().1
     }
 
-    /// The window's room for tabs: below the tab bar, above any banner, left of the toolbelt.
+    /// The window's room for tabs: beside the tab bar, above any banner, left of the toolbelt.
     /// Every pane rectangle and tmux's size report come from here, so tmux is told the size
     /// without the toolbelt.
     fn window_area(&self) -> Rect {
@@ -3124,15 +3173,14 @@ impl App {
         let cell = self.cell();
         let palette_bg = self.panes.values().next().map_or(crate::palette::Palette::default().bg, |p| p.screen.palette.bg);
         let mut frame = Frame { clear: rgba(palette_bg, 1.0), ..Default::default() };
-        let (w, _) = self.gpu.as_ref().map_or((800.0, 600.0), |g| (g.config.width as f32, g.config.height as f32));
-        if self.tab_bar_shown() {
+        if let Some(area) = self.horizontal_bar_rect() {
+            let w = area.w;
             let mut looks: Vec<scene::TabLook> = self.tabs.iter().map(|t| self.tab_look(t)).collect();
             if let Some(i) = held_close(self.tab_press) {
                 if let Some(l) = looks.get_mut(i) {
                     l.close_pressed = true;
                 }
             }
-            let area = Rect { x: 0.0, y: 0.0, w, h: self.tab_height() };
             // Kept unscrolled for hits; the scroll offset applies at each use.
             self.tab_bar = self.layout_tab_bar(&looks, w, 0.0);
             self.follow_active_tab();
@@ -3141,6 +3189,10 @@ impl App {
             let font_px = self.gpu.as_ref().map_or(cell.1, |g| g.renderer.font_px()).max(1.0);
             scene::tab_bar(&mut frame, &looks, self.active, scrolled.as_ref().unwrap_or(&self.tab_bar), area, scale, scale / font_px, cell.1, self.focused && self.app_active, matches!(self.tab_press, Some((tab_layout::Hit::Overflow, _, _, _))));
         } else {
+            // A side bar: its tabs arrive with 13d's Task 3; until then its background only.
+            if let Some(area) = self.tab_bar_rect() {
+                frame.quads.push(scene::Quad { rect: area, color: rgba(scene::TAB_BAR, 1.0) });
+            }
             self.tab_bar = tab_layout::Bar::default();
             self.tab_scroll = 0.0;
             self.tab_hover = None;
@@ -3934,6 +3986,11 @@ fn init_gpu(window: Arc<Window>, event_loop: &ActiveEventLoop) -> Result<Gpu, St
 /// The surface size to use, or None while the window is minimized (0 wide or high).
 fn usable_size(w: u32, h: u32) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
+}
+
+/// A new window's side tab bar width in points: `LeftTabBarWidth`.
+fn side_bar_default(globals: &Globals) -> f32 {
+    globals.number("LeftTabBarWidth").map_or(tab_position::DEFAULT_SIDE_WIDTH, |v| v as f32)
 }
 
 /// Moves the tab `new_tab` just added (the last one) to just after `active`, and returns

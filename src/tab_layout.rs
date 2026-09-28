@@ -619,12 +619,6 @@ pub fn bar_height(default_height: f32) -> f32 {
     default_height.max(0.0)
 }
 
-/// The tab bar shows with more than one tab, or always with `HideTab` off
-/// (`PT tabBarAlwaysVisible`).
-pub fn bar_shown(tab_count: usize, hide_tab: bool) -> bool {
-    tab_count > 1 || !hide_tab
-}
-
 /// The label font's size: `CustomTabBarFontSize` with `UseCustomTabBarFontSize`, else 11.
 pub fn font_size(custom: bool, size: f32) -> f32 {
     if custom {
@@ -1384,11 +1378,6 @@ mod tests {
     #[test]
     fn bar_metrics_follow_iterm2() {
         assert_eq!(bar_height(24.0), 24.0);
-        // One tab hides the bar by default (`HideTab` on); off, the bar always shows.
-        assert!(!bar_shown(1, true));
-        assert!(bar_shown(1, false));
-        assert!(bar_shown(2, true));
-        assert!(bar_shown(0, false));
         assert_eq!(font_size(false, 14.0), 11.0);
         assert_eq!(font_size(true, 14.0), 14.0);
         assert_eq!(subtitle_size(11.0), 9.0);
