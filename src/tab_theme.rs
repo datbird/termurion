@@ -90,9 +90,37 @@ pub fn mode_warning(style: TabStyle, separate_colors: bool) -> bool {
     separate_colors && forced_dark(style).is_some()
 }
 
-/// Whether Windows is in a high contrast theme (`SPI_GETHIGHCONTRAST`, flag `HCF_HIGHCONTRASTON`).
-#[cfg(windows)]
+/// Whether the mode a window follows changed since it was last applied: never on the first
+/// apply (a new window has nothing to refresh).
+pub fn theme_changed(applied: Option<bool>, now: bool) -> bool {
+    applied.is_some_and(|prev| prev != now)
+}
+
+/// What `system_high_contrast` remembered: 0 not read, 1 off, 2 on.
+static HIGH_CONTRAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Whether Windows is in a high contrast theme, read once and again after
+/// `forget_high_contrast` (every layout, hit test and frame asks).
 pub fn system_high_contrast() -> bool {
+    use std::sync::atomic::Ordering;
+    match HIGH_CONTRAST.load(Ordering::Relaxed) {
+        0 => {
+            let on = read_high_contrast();
+            HIGH_CONTRAST.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+        v => v == 2,
+    }
+}
+
+/// Drops what `system_high_contrast` remembered; the system settings changed.
+pub fn forget_high_contrast() {
+    HIGH_CONTRAST.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `SPI_GETHIGHCONTRAST`, flag `HCF_HIGHCONTRASTON`.
+#[cfg(windows)]
+fn read_high_contrast() -> bool {
     use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
     use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETHIGHCONTRAST, SystemParametersInfoW};
     let mut hc = HIGHCONTRASTW { cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32, dwFlags: 0, lpszDefaultScheme: std::ptr::null_mut() };
@@ -178,6 +206,13 @@ pub struct TabPalette {
     pub between: Fill,
     /// The line between the bar and the content.
     pub edge: Fill,
+    /// The line along the top of an unselected tab (`topLineColorSelected:NO`, `YOS:571`, `DRK:39`,
+    /// `LHC:40`) and of the selected one (which a top bar leaves out).
+    pub top: Fill,
+    pub top_selected: Fill,
+    /// The room a side bar's row line leaves at the left and right (`insetsForTabBarDividers`,
+    /// `YOS:760`, `DRK:99`), in points.
+    pub line_inset: (f32, f32),
     /// The Dark styles draw the content-side line as a solid black one (iTerm2's one-point
     /// gradient from black to black at 0.75, Decision).
     pub dark_edge_gradient: bool,
@@ -263,6 +298,9 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
                 text_unselected: if focused { fill(grey(0.65), 1.0) } else { fill(grey(0.37), 1.0) },
                 between: fill(WHITE, if focused { 0.18 } else { 0.15 }),
                 edge: fill(BLACK, 0.3),
+                top: fill(BLACK, 1.0),
+                top_selected: fill(WHITE, if focused { 0.20 } else { 0.16 }),
+                line_inset: (1.0, 1.0),
                 dark_edge_gradient: true,
                 font_pt: REGULAR_FONT_PT,
                 dark_controls: true,
@@ -284,6 +322,9 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
                 text_unselected: if focused { fill(BLACK, 1.0) } else { fill(grey(164.0 / 255.0), 1.0) },
                 between: fill(BLACK, 0.07),
                 edge: fill(rgb(230, 230, 230), 1.0),
+                top: fill(BLACK, 0.0),
+                top_selected: fill(BLACK, 0.0),
+                line_inset: (1.0, 2.0),
                 dark_edge_gradient: false,
                 font_pt: REGULAR_FONT_PT,
                 dark_controls: false,
@@ -301,8 +342,11 @@ pub fn palette(style: TabStyle, i: &Inputs) -> TabPalette {
             p.margin = p.unselected;
             p.text_selected = fill(BLACK, 1.0);
             p.text_unselected = fill(BLACK, 1.0);
-            p.between = line;
+            // The between lines stay Light's: `verticalLineColor` (`LHC:36`) is never called, PSM
+            // asks `verticalLineColorSelected:` (`YOS:738`). The bottom and unselected top lines
+            // are the grey (`LHC:40-50`).
             p.edge = line;
+            p.top = line;
         }
         TabStyle::DarkHighContrast => {
             // `HighVisibility` (Dark High Contrast only): a light selected tab with black text.
@@ -504,7 +548,8 @@ mod tests {
         let l = palette(TabStyle::LightHighContrast, &inputs(true));
         assert_eq!(l.selected, fill(236, 236, 236, 1.0));
         assert_eq!(l.unselected, fill(180, 180, 180, 1.0));
-        assert_eq!((l.between, l.edge), (fill(140, 140, 140, 1.0), fill(140, 140, 140, 1.0)));
+        // The between lines are Light's (`LHC:36` is never called); the edge and the top line are 140 grey.
+        assert_eq!((l.between, l.edge, l.top, l.top_selected), (fill(0, 0, 0, 0.07), fill(140, 140, 140, 1.0), fill(140, 140, 140, 1.0), fill(0, 0, 0, 0.0)));
         assert_eq!((l.text_selected, l.text_unselected), (fill(0, 0, 0, 1.0), fill(0, 0, 0, 1.0)));
         assert_eq!(l.font_pt, 12.0);
         let d = palette(TabStyle::DarkHighContrast, &inputs(true));
@@ -545,5 +590,15 @@ mod tests {
         assert_eq!(selected_outline(rgb(240, 240, 240), 0.5, true), Outline { width: 1.0, outer: white(0.5), inner: black(0.5) });
         assert_eq!(selected_outline(rgb(20, 20, 20), 2.0, false), Outline { width: 2.0, outer: black(0.6), inner: white(0.6) });
         assert_eq!(selected_outline(rgb(20, 20, 20), 0.0, true).outer.alpha, 0.0);
+    }
+
+    #[test]
+    fn theme_change_decision() {
+        // A new window has nothing to refresh, whatever mode it takes.
+        assert!(!theme_changed(None, true));
+        assert!(!theme_changed(None, false));
+        assert!(!theme_changed(Some(true), true));
+        assert!(theme_changed(Some(true), false));
+        assert!(theme_changed(Some(false), true));
     }
 }

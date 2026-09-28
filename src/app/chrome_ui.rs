@@ -12,6 +12,9 @@ const THEME_SUBCLASS_ID: usize = 0x7468_656D;
 thread_local! {
     /// The way back to the app from `theme_guard`, which never touches `App`.
     static WAKE: std::cell::RefCell<Option<EventLoopProxy<UserEvent>>> = const { std::cell::RefCell::new(None) };
+    /// A `ThemeReset` is queued and not yet handled: one `WM_SETTINGCHANGE` broadcast reaches every
+    /// terminal window, and the app needs to hear of it once.
+    static RESET_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The window's subclass proc: winit handles `WM_SETTINGCHANGE` (resetting the title bar to
@@ -22,11 +25,15 @@ unsafe extern "system" fn theme_guard(hwnd: windows_sys::Win32::Foundation::HWND
     // SAFETY: forwarding the message the system delivered, unchanged.
     let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
     if msg == WM_SETTINGCHANGE {
-        WAKE.with(|w| {
-            if let Some(proxy) = w.borrow().as_ref() {
-                let _ = proxy.send_event(UserEvent::ThemeReset);
-            }
-        });
+        // The high contrast state may have changed.
+        crate::tab_theme::forget_high_contrast();
+        if !RESET_PENDING.with(|p| p.replace(true)) {
+            WAKE.with(|w| {
+                if let Some(proxy) = w.borrow().as_ref() {
+                    let _ = proxy.send_event(UserEvent::ThemeReset);
+                }
+            });
+        }
     } else if msg == WM_NCDESTROY {
         // SAFETY: removing this proc from the window being destroyed.
         unsafe { RemoveWindowSubclass(hwnd, Some(theme_guard), THEME_SUBCLASS_ID) };
@@ -165,12 +172,8 @@ impl App {
         let Some(g) = self.gpu.as_ref() else { return false };
         g.window.set_theme(crate::tab_theme::window_theme(forced));
         let dark = self.dark();
-        let first = self.theme_applied.is_none();
-        let changed = !first && self.theme_applied != Some(dark);
+        let changed = crate::tab_theme::theme_changed(self.theme_applied, dark);
         self.theme_applied = Some(dark);
-        if first {
-            self.guard_theme();
-        }
         if let (Some(hwnd), Some(bar)) = (self.hwnd(), &self.menu_bar) {
             let theme = match forced {
                 Some(true) => muda::MenuTheme::Dark,
@@ -194,7 +197,7 @@ impl App {
     /// Keeps this window's forced title bar: winit resets a window with no preferred theme to
     /// Windows' mode at every `WM_SETTINGCHANGE` and sends nothing unless the mode changed, so a
     /// subclass asks the app to apply the Theme again after each one.
-    fn guard_theme(&self) {
+    pub(super) fn guard_theme(&self) {
         let Some(hwnd) = self.hwnd() else { return };
         WAKE.with(|w| *w.borrow_mut() = Some(self.proxy.lock().unwrap().clone()));
         // SAFETY: the HWND is this window's; the proc only forwards and posts an event.
@@ -204,6 +207,7 @@ impl App {
     /// After a system setting changed (`UserEvent::ThemeReset`): a fixed Theme's windows take
     /// its mode again. Nothing to do for Regular, Minimal and Compact, which follow Windows.
     pub(super) fn reapply_forced_theme(&mut self) {
+        RESET_PENDING.with(|p| p.set(false));
         if crate::tab_theme::forced_dark(self.tab_style()).is_some() {
             self.apply_theme_everywhere();
         }

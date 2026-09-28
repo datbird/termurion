@@ -4257,6 +4257,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.registry.open(k);
                 // Edge drags snap to the cell grid, and follow AllowLiveResize.
                 self.install_sizing();
+                // A forced Theme's title bar survives system setting changes.
+                self.guard_theme();
                 self.apply_corners();
                 // The settings folder's questions and failures from the launch.
                 for ask in std::mem::take(&mut self.prefs_startup) {

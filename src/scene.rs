@@ -1160,12 +1160,6 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             frame.rows.push(TextRow { x, y, spans: vec![span(sub.clone(), color, false, false, false)], clip, scale: sub_scale });
         }
     }
-    // The 1-pixel line after each tab but the last (a row's foot on a side bar).
-    for (_, _, r) in bar.cells.iter().take(bar.cells.len().saturating_sub(1)) {
-        let cell = px(*r);
-        let line = if bar.vertical { Rect { y: cell.y + cell.h - 1.0, h: 1.0, ..cell } } else { Rect { x: cell.x + cell.w - 1.0, w: 1.0, ..cell } };
-        fill_quad(frame, line, pal.between);
-    }
     group_runs(frame, tabs, bar, area, tabs_area, scale, font_scale, line);
     // The tabs' quads (backgrounds, colors, dots, spinners, underlines, group runs) are cut like
     // their text.
@@ -1179,6 +1173,46 @@ fn draw_bar(frame: &mut Frame, tabs: &[TabLook], active: usize, bar: &crate::tab
             None => {
                 frame.quads.remove(k);
             }
+        }
+    }
+    // The lines (`YOS:715-757`, `YOS:1313-1316`), clipped to the tabs' area grown by the pixel
+    // the last tab's right line sits beyond its cell.
+    {
+        let grown = Rect { w: tabs_area.w + 1.0, h: tabs_area.h + 1.0, ..tabs_area };
+        let line_quad = |frame: &mut Frame, r: Rect, f: crate::tab_theme::Fill| {
+            if let Some(r) = cut(r, grown) {
+                fill_quad(frame, r, f);
+            }
+        };
+        let last = bar.cells.len().saturating_sub(1);
+        let mut top_done = [false; 2];
+        for (k, (i, _, r)) in bar.cells.iter().enumerate() {
+            let cell = px(*r);
+            let selected = *i == active;
+            if bar.vertical {
+                // A row's foot, across the row less the style's insets.
+                let (l, rt) = pal.line_inset;
+                line_quad(frame, Rect { x: cell.x + l * scale, y: cell.y + cell.h - 1.0, w: cell.w - (l + rt) * scale + 1.0, h: 1.0 }, pal.between);
+            } else {
+                // A left line before the first tab when it starts past the edge, the right line
+                // inside every tab but the last and just past the last, from below the top pixel.
+                if k == 0 && cell.x - area.x > 1.0 {
+                    line_quad(frame, Rect { y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0, ..cell }, pal.between);
+                }
+                let x = if k == last { cell.x + cell.w } else { cell.x + cell.w - 1.0 };
+                line_quad(frame, Rect { x, y: cell.y + 1.0, w: 1.0, h: cell.h - 1.0, ..cell }, pal.between);
+            }
+            // The top line: a top bar (attached to the title bar) leaves it off the selected tab;
+            // the other positions draw it on every tab (a side bar once per kind).
+            let top = bar.position == crate::tab_position::TabPosition::Top;
+            if !(top && selected) && !(bar.vertical && std::mem::replace(&mut top_done[usize::from(selected)], true)) {
+                line_quad(frame, Rect { y: area.y, h: 1.0, ..cell }, if selected { pal.top_selected } else { pal.top });
+            }
+        }
+        // Past the "+" button the top line runs to the bar's end.
+        if let (Some(add), crate::tab_position::TabPosition::Top) = (bar.add, bar.position) {
+            let x = px(add).x;
+            line_quad(frame, Rect { x, y: area.y, w: area.x + area.w - x, h: 1.0 }, pal.top);
         }
     }
     // The line between the bar and the content, along the content's side of the bar.
@@ -2477,6 +2511,9 @@ mod tests {
             text_unselected: Fill { color: TAB_TEXT_DIM, alpha: 1.0 },
             between: clear,
             edge: clear,
+            top: clear,
+            top_selected: clear,
+            line_inset: (1.0, 2.0),
             dark_edge_gradient: false,
             font_pt: 11.0,
             dark_controls: true,
@@ -2529,6 +2566,37 @@ mod tests {
         assert!(!f.quads.iter().any(|q| q.rect == second && q.color == rgba(fill, 1.0)));
     }
 
+    /// A top bar draws the Dark style's black top line on the unselected tabs only, and past the
+    /// "+" button; the Light style draws none (`YOS:1313-1333`).
+    #[test]
+    fn top_lines_follow_iterm2() {
+        use crate::tab_layout::{self, TabInput};
+        use crate::tab_theme::{Inputs, MinimalKnobs, TabStyle, palette};
+        let inputs = Inputs { system_dark: true, system_high_contrast: false, focused: true, light_darkness: 0.07, dark_darkness: 0.5, high_visibility: true, session_bg: rgb(0, 0, 0), dimming: 0.0, minimal: MinimalKnobs::default(), colored_outline: 0.5, colored_text_prominence: 0.5 };
+        let looks = vec![TabLook { title: "one".into(), number: 1, ..TabLook::default() }, TabLook { title: "two".into(), number: 2, ..TabLook::default() }];
+        let tabs: Vec<TabInput> = looks
+            .iter()
+            .map(|l| TabInput { title: l.title.clone(), subtitle: String::new(), icon: false, processing: false, number: l.number, pinned: false, group: None, hidden: false, graphic: false, letter: String::new() })
+            .collect();
+        let s = tab_layout::Settings::from_globals(&crate::globals::Globals::empty(std::path::Path::new("unused.toml")));
+        let six = |t: &str, _pt: f32, _bold: bool| t.chars().count() as f32 * 6.0;
+        let bar = tab_layout::build(&tabs, 1, 400.0, 0.0, None, &s, &six);
+        let area = Rect { x: 0.0, y: 10.0, w: 400.0, h: 24.0 };
+        let draw = |style: TabStyle| {
+            let mut f = Frame::default();
+            tab_bar(&mut f, &looks, 1, &bar, area, 1.0, 0.1, 20.0, true, false, &palette(style, &inputs));
+            f
+        };
+        let top = |r: Rect| Rect { x: area.x + r.x, y: area.y, w: r.w, h: 1.0 };
+        let black = rgba(rgb(0, 0, 0), 1.0);
+        let f = draw(TabStyle::Dark);
+        assert!(f.quads.iter().any(|q| q.rect == top(bar.cells[0].2) && q.color == black), "the unselected tab's top line");
+        assert!(!f.quads.iter().any(|q| q.rect == top(bar.cells[1].2)), "none on the selected tab of a top bar");
+        assert!(bar.add.is_some_and(|a| f.quads.iter().any(|q| q.rect.x == area.x + a.x && q.rect.y == area.y && q.rect.h == 1.0 && q.color == black)), "past the add button");
+        let f = draw(TabStyle::Light);
+        assert!(!f.quads.iter().any(|q| q.rect.y == area.y && q.rect.h == 1.0 && q.rect.w < 400.0), "Light has no top line");
+    }
+
     /// The bar draws with its palette: the material, the unselected fill, no fill for a clear
     /// selected tab, the line between tabs but not after the last, the edge on the content's
     /// side of each bar position, and the two text colors.
@@ -2557,10 +2625,14 @@ mod tests {
         assert_eq!((f.quads[0].rect, f.quads[0].color), (area, rgba(pal.bar, 1.0)), "the bar's material");
         assert!(f.quads.iter().any(|q| q.rect == px(first) && q.color == rgba(rgb(0, 0, 0), 0.07)), "the unselected tab's fill");
         assert!(!f.quads.iter().any(|q| q.rect == px(second)), "a clear selected tab has no fill quad");
-        let line = |r: Rect| Rect { x: r.x + r.w - 1.0, y: r.y, w: 1.0, h: r.h };
+        // `YOS:715-757`: the right line inside every tab but the last, just past the last, and
+        // from below the top pixel.
+        let line = |r: Rect, x: f32| Rect { x, y: r.y + 1.0, w: 1.0, h: r.h - 1.0 };
         let between = rgba(rgb(0, 0, 0), 0.07);
-        assert!(f.quads.iter().any(|q| q.rect == px(line(first)) && q.color == between), "a line at the first tab's right");
-        assert!(!f.quads.iter().any(|q| q.rect == px(line(second)) && q.color == between), "none after the last");
+        assert!(f.quads.iter().any(|q| q.rect == line(px(first), px(first).x + first.w - 1.0) && q.color == between), "a line at the first tab's right");
+        assert!(f.quads.iter().any(|q| q.rect == line(px(second), px(second).x + second.w) && q.color == between), "the last tab's line past its cell");
+        assert!(!f.quads.iter().any(|q| q.rect == line(px(second), px(second).x + second.w - 1.0) && q.color == between), "none inside the last");
+        assert!(!f.quads.iter().any(|q| q.rect.x == px(first).x && q.rect.w == 1.0 && q.color == between), "no left line for a first tab at the edge");
         let edge = rgba(rgb(230, 230, 230), 1.0);
         let edge_rect = |p: TabPosition| {
             let mut f = Frame::default();
