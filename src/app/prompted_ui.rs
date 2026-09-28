@@ -13,10 +13,9 @@ pub(super) const ASK_VARIABLE: &str = "ShouldReportVariable";
 pub(super) const ASK_URL: &str = "NoSyncAllowOpenURL_host:";
 pub(super) const UPLOAD_FORMAT: &str = "UploadInUnsupportedFormatRequested";
 pub(super) const ASK_ABORT_UPLOAD: &str = "AbortUploadOnKeyPressAnnouncement";
+/// Windows cannot choose files and folders in one dialog, so RequestUpload asks which first.
+pub(super) const UPLOAD_KIND: &str = "UploadChooseFilesOrFolders";
 
-/// RequestUpload sends this much every tick, as iTerm2's fast paste does.
-const UPLOAD_CHUNK: usize = 768;
-const UPLOAD_TICK: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// An upload being sent to a pane.
 pub(super) struct Upload {
@@ -164,6 +163,13 @@ impl App {
             }
             (ASK_PROFILE, None) => {}
             (UPLOAD_FORMAT, _) => {}
+            (UPLOAD_KIND, Some(b @ ("Files" | "Folders"))) => self.upload_pick(pane, b == "Folders"),
+            (UPLOAD_KIND, _) => {
+                // Dismissed: the program waits for an answer, so it is cancelled.
+                if let Some(p) = self.panes.get_mut(&pane) {
+                    p.reply(prompted::UPLOAD_CANCEL);
+                }
+            }
             (ASK_ABORT_UPLOAD, answer) => {
                 if answer == Some("OK") {
                     self.uploads.remove(&pane);
@@ -419,13 +425,24 @@ impl App {
         self.tmux_of(pane).map(|(gateway, _, window)| (gateway, window))
     }
 
-    /// RequestUpload: pick files, answer, and send the archive.
+    /// RequestUpload: ask whether files or folders are chosen (`upload_pick` goes on).
     pub(super) fn upload_request(&mut self, pane: PaneId, params: String) {
         if !prompted::upload_format_ok(&params) {
             self.ask(pane, UPLOAD_FORMAT, "An upload with an unsupported archive format was requested. You may need a newer version of iTerm2.", &[], false);
             return;
         }
-        let picked = rfd::FileDialog::new().set_title("Choose files to upload").pick_files();
+        // A bar refused (too many waiting) cancels, so the program never waits for nothing.
+        if !self.ask(pane, UPLOAD_KIND, "Upload files or folders?", &["Files", "Folders"], false) {
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.reply(prompted::UPLOAD_CANCEL);
+            }
+        }
+    }
+
+    /// The Files/Folders answer: pick them, answer, and send the archive.
+    pub(super) fn upload_pick(&mut self, pane: PaneId, folders: bool) {
+        let dialog = rfd::FileDialog::new();
+        let picked = if folders { dialog.set_title("Choose folders to upload").pick_folders() } else { dialog.set_title("Choose files to upload").pick_files() };
         let Some(paths) = picked.filter(|p| !p.is_empty()) else {
             if let Some(p) = self.panes.get_mut(&pane) {
                 p.reply(prompted::UPLOAD_CANCEL);
@@ -458,10 +475,12 @@ impl App {
         if self.upload_due.is_some_and(|t| now < t) {
             return self.upload_due;
         }
+        let pace = prompted::upload_pace(self.globals.bool("accelerateUploads"), self.paste_speed(false));
+        let chunk = pace.units;
         let mut done = Vec::new();
         let mut progress = None;
         for (id, up) in self.uploads.iter_mut() {
-            let end = (up.sent + UPLOAD_CHUNK).min(up.data.len());
+            let end = (up.sent + chunk).min(up.data.len());
             if let Some(p) = self.panes.get_mut(id) {
                 // An upload is pasted text: unbracketed, and held by Buffer Input like typing.
                 // Its program asked for it, so a replay view does not stop it.
@@ -483,7 +502,7 @@ impl App {
         if let Some(text) = progress {
             self.show_toast(&text);
         }
-        self.upload_due = (!self.uploads.is_empty()).then(|| now + UPLOAD_TICK);
+        self.upload_due = (!self.uploads.is_empty()).then(|| now + std::time::Duration::from_secs_f64(pace.delay));
         self.upload_due
     }
 

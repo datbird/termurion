@@ -74,6 +74,17 @@ pub mod scripts;
 #[cfg(windows)]
 pub mod scripts_scan;
 pub mod util_api;
+pub mod util_osc;
+pub mod util_cli;
+pub mod util_files;
+pub mod util_imgls;
+pub mod util_simple;
+pub mod util_git;
+pub mod util_tip;
+pub mod util_query;
+#[cfg(windows)]
+pub mod util_console;
+pub mod utilities;
 pub mod builtin_fns;
 pub mod activity;
 pub mod alerts;
@@ -275,3 +286,14 @@ pub mod api_notify;
 pub mod session_env;
 #[cfg(windows)]
 pub mod api_server;
+pub mod ai_settings;
+pub mod ai_catalog;
+pub mod ai_policy;
+pub mod ai_models;
+pub mod ai_keys;
+pub mod ai_gate;
+pub mod ai_prompts;
+pub mod settings_ai;
+pub mod secret_field;
+#[cfg(windows)]
+pub mod ai_key_ui;

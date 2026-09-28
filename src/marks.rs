@@ -1031,8 +1031,7 @@ impl Screen {
                     }
                 }
                 "Capabilities" if self.trusted => {
-                    let version = if self.unicode.version == 0 { 9 } else { self.unicode.version };
-                    let f = crate::osc1337::Features { clipboard_writable: self.clipboard_allowed, ambiguous_wide: false, unicode_version: version };
+                    let f = crate::osc1337::session_features(self.clipboard_allowed, self.unicode.version, self.profile_unicode);
                     let reply = format!("\x1b]1337;Capabilities={}\x07", crate::osc1337::capabilities(f));
                     self.replies.extend(reply.into_bytes());
                 }

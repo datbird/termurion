@@ -142,6 +142,11 @@ pub fn defaults_key(key: &str) -> String {
 }
 
 /// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
+/// Settings that stand between a person and an AI request; a person opts in again on Windows,
+/// so import never brings them, even from a hand-edited plist (Review Focus 3).
+pub const NEVER_IMPORTED: [&str; 3] = ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"];
+
+/// The global settings (iTerm2 user defaults) in a com.googlecode.iterm2.plist, for the
 /// keys Tandem's global schema knows. Other keys are left out. A schema key spelled with a
 /// lower-case first letter is also found under iTerm2's capitalized defaults key; the exact
 /// spelling wins when a file holds both.
@@ -150,6 +155,7 @@ pub fn globals_from_file(path: &Path) -> Result<Vec<(String, Value)>, String> {
     let dict = root.as_dictionary().ok_or_else(|| format!("{}: not a settings plist", path.display()))?;
     Ok(crate::schema::global()
         .iter()
+        .filter(|s| !NEVER_IMPORTED.contains(&s.key.as_str()))
         .filter_map(|s| {
             let v = dict.get(&s.key).or_else(|| dict.get(&defaults_key(&s.key)))?;
             Some((s.key.clone(), from_plist(v)?))
@@ -438,6 +444,33 @@ mod tests {
         assert_eq!(got, [("tmuxTitlePrefix".to_string(), Value::String("exact".into()))]);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&both);
+    }
+
+    #[test]
+    fn ai_consent_is_never_imported() {
+        let path = std::env::temp_dir().join(format!("tandem-import-ai-{}.plist", std::process::id()));
+        std::fs::write(&path, r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>EnableAI</key><true/>
+  <key>AICompletions</key><true/>
+  <key>NoSyncAIRequestConsent</key><array><string>api.openai.com</string></array>
+  <key>Enable AI</key><true/>
+  <key>AIVendor</key><integer>4</integer>
+  <key>AIManualModelConfigurations</key><array><dict>
+    <key>name</key><string>m</string>
+    <key>url</key><string>https://my.host/v1/messages</string>
+    <key>api</key><integer>7</integer>
+    <key>streaming</key><true/>
+  </dict></array>
+</dict></plist>"#).unwrap();
+        let mut got = globals_from_file(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["AIManualModelConfigurations", "AIVendor"]);
+        let config = &got[0].1[0];
+        assert_eq!(config["api"].as_integer(), Some(7));
+        assert_eq!(config["streaming"].as_bool(), Some(true));
+        assert_eq!(NEVER_IMPORTED, ["EnableAI", "AICompletions", "NoSyncAIRequestConsent"]);
     }
 
     const PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

@@ -392,10 +392,13 @@ fn menu_combo(ui: &mut egui::Ui, salt: &str, text: &mut String, pointer: bool) -
     changed
 }
 
-/// Boolean settings Toggle Setting can flip: every global and profile checkbox.
+/// Boolean settings Toggle Setting can flip: every global and profile checkbox except the AI
+/// consent switches (`ai_settings::toggle_allowed`).
 fn toggle_choices() -> Vec<(String, bool, String)> {
     let bools = |list: &'static [Setting], is_profile: bool| {
-        list.iter().filter(|s| s.kind == Kind::Bool && !s.macos_only).map(move |s| (s.key.clone(), is_profile, s.label.clone()))
+        list.iter()
+            .filter(|s| s.kind == Kind::Bool && !s.macos_only && crate::ai_settings::toggle_allowed(&s.key))
+            .map(move |s| (s.key.clone(), is_profile, s.label.clone()))
     };
     bools(schema::global(), false).chain(bools(schema::profile(), true)).collect()
 }
@@ -840,7 +843,7 @@ fn icon_font_id() -> egui::Id {
     egui::Id::new("tandem-settings-icons")
 }
 
-fn icon_family() -> egui::FontFamily {
+pub(crate) fn icon_family() -> egui::FontFamily {
     egui::FontFamily::Name("icons".into())
 }
 
@@ -952,23 +955,42 @@ pub fn custom_scripts_folder_row(ui: &mut egui::Ui, g: &mut Globals, home: &std:
     (changed, ended)
 }
 
+/// Rows a schema page never draws: the Advanced rows that need Apple Intelligence, which is
+/// not available on Windows (ruling 7). Ruling 12e-4 also keeps them out of the schema.
+pub fn row_hidden(key: &str) -> bool {
+    matches!(key, "aiGeneratedTabTitles" | "logAITabTitleCorpus")
+}
+
+/// The global rows a schema page draws, in schema order: the tab's rows without the General
+/// tab's "AI" section (`settings_ai` draws it) and without hidden rows.
+pub fn page_rows(tab: &str) -> Vec<&'static Setting> {
+    schema::global().iter().filter(|s| s.tab == tab && !(tab == "General" && s.section == "AI") && !row_hidden(&s.key)).collect()
+}
+
 /// A pane that shows only the global settings the schema has for it so far, by section
 /// (General and Appearance). Returns whether a setting changed, and what the custom settings
 /// folder's rows asked for.
 pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> (bool, PrefsAction) {
+    schema_page_with(ui, g, tab, &mut |_, _| false)
+}
+
+/// `schema_page` with more drawn after its last section (General's AI section): `extra`
+/// gets the globals the scroll area already holds, and its answer joins the result.
+pub fn schema_page_with(ui: &mut egui::Ui, g: &mut Globals, tab: &str, extra: &mut dyn FnMut(&mut egui::Ui, &mut Globals) -> bool) -> (bool, PrefsAction) {
     let mut changed = false;
     let mut prefs = PrefsAction::None;
     let home = std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_default();
+    let rows = page_rows(tab);
     egui::ScrollArea::vertical().show(ui, |ui| {
         let mut sections: Vec<&str> = Vec::new();
-        for s in schema::global().iter().filter(|s| s.tab == tab) {
+        for s in &rows {
             if !sections.contains(&s.section.as_str()) {
                 sections.push(&s.section);
             }
         }
         for section in sections {
             ui.strong(section);
-            for s in schema::global().iter().filter(|s| s.tab == tab && s.section == section) {
+            for s in rows.iter().copied().filter(|s| s.section == section) {
                 if s.key == "CustomScriptsFolder" {
                     // The typed text is saved and applied when editing ends, not per key.
                     let (_, ended) = custom_scripts_folder_row(ui, g, &home);
@@ -998,6 +1020,7 @@ pub fn schema_page(ui: &mut egui::Ui, g: &mut Globals, tab: &str) -> (bool, Pref
             }
             ui.add_space(8.0);
         }
+        changed |= extra(ui, g);
     });
     (changed, prefs)
 }
@@ -1301,6 +1324,17 @@ mod tests {
         // A backspace binding stored in the legacy form counts too.
         let old: toml::Table = toml::from_str("\"0x7f-0x0\" = { Action = 16 }").unwrap();
         assert!(delete_sends_ctrl_h(&old));
+    }
+
+    #[test]
+    fn toggle_setting_never_offers_ai_consent() {
+        let keys: Vec<String> = toggle_choices().into_iter().map(|(k, _, _)| k).collect();
+        for key in ["GenerativeAIAllowed", "EnableAI", "AICompletions"] {
+            assert!(!keys.iter().any(|k| k == key), "{key}");
+        }
+        // Other AI checkboxes and ordinary settings are still offered.
+        assert!(keys.iter().any(|k| k == "AI Safety Check"));
+        assert!(keys.iter().any(|k| k == "FocusFollowsMouse"));
     }
 
     #[test]
@@ -1618,8 +1652,213 @@ mod tests {
     }
 
     #[test]
+    fn utilities_rows_follow_iterm2() {
+        let lc = "Set LC_TERMINAL=iTerm2.";
+        for (key, label, help) in [
+            ("addUtilitiesToPATH", "Add path to Tandem utilities to $PATH for new sessions?", "Add path to Tandem utilities to $PATH for new sessions?".to_string()),
+            ("shouldSetLCTerminal", lc, format!("{lc}\nopenssh and mosh pass this to hosts you connect to. It communicates the current terminal emulator. This is useful for enabling terminal emulator-specific features.")),
+        ] {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key}"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"), "{key}");
+            assert_eq!(row.kind, Kind::Bool, "{key}");
+            assert_eq!(row.default, Some(Value::Boolean(true)), "{key}");
+            assert_eq!((row.label.as_str(), row.help.as_str()), (label, help.as_str()), "{key}");
+            assert!(Globals::empty(std::path::Path::new("utilities-row-test.toml")).bool(key), "{key} on until turned off");
+        }
+    }
+
+    #[test]
+    fn upload_row_follows_iterm2() {
+        let row = schema::find_global("accelerateUploads").unwrap();
+        assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", "Experimental Features"));
+        assert_eq!(row.kind, Kind::Bool);
+        assert_eq!(row.default, Some(Value::Boolean(true)));
+        assert_eq!(row.label, "Make uploads with it2ul really fast.");
+        assert_eq!(row.help, "Make uploads with it2ul really fast.");
+        assert!(Globals::empty(std::path::Path::new("upload-row-test.toml")).bool("accelerateUploads"), "on until turned off");
+    }
+
+    #[test]
     fn pointer_rows_show_labels() {
         let rows = pointer_rows(crate::globals::keymaps::factory_pointer());
         assert!(rows.contains(&("Button,1,1,,".to_string(), "Right button, single click".to_string(), "Open Context Menu".to_string())));
+    }
+
+    /// Settings > General > AI rows: key, kind, default, label, help after the label.
+    fn ai_rows() -> Vec<(&'static str, Kind, Value, &'static str, &'static str)> {
+        const GENERAL: &str = "Set by Settings > General > AI.";
+        const MODEL: &str = "Set by the AI Model popup and the model editor.";
+        const LEGACY: &str = "Legacy; copied once into each manual model.";
+        let b = Value::Boolean;
+        let i = Value::Integer;
+        let s = |t: &str| Value::String(t.to_string());
+        vec![
+            (
+                "EnableAI",
+                Kind::Bool,
+                b(false),
+                "Enable generative AI features",
+                "No data is sent to third parties without your explicit permission. You will always be prompted before data is shared.",
+            ),
+            (
+                "AICompletions",
+                Kind::Bool,
+                b(false),
+                "Offer AI command suggestion in Composer & Auto Composer",
+                "When enabled, everything you type in the Composer will be shared with your AI provider.",
+            ),
+            ("AIVendor", Kind::Int, i(2), "AI vendor", MODEL),
+            ("UseRecommendedAIModel", Kind::Bool, b(true), "Use the vendor's recommended model", MODEL),
+            ("AiModel", Kind::String, s("gpt-4o-mini"), "AI model", MODEL),
+            ("AiMaxTokens", Kind::Int, i(128000), "Context tokens", MODEL),
+            ("AiResponseMaxTokens", Kind::Int, i(8192), "Max response tokens", MODEL),
+            ("AI Timeout", Kind::Int, i(1200), "AI timeout", GENERAL),
+            ("AitermURL", Kind::String, s(""), "AI endpoint URL", MODEL),
+            ("AitermUseLegacyAPI", Kind::Bool, b(false), "Use the legacy API (deprecated)", GENERAL),
+            ("AITermAPI", Kind::Int, i(2), "AI API", MODEL),
+            ("AIFeatureHostedFileSearch", Kind::Bool, b(false), "Hosted file search", MODEL),
+            ("AIFeatureHostedCodeInterpeter", Kind::Bool, b(false), "Hosted code interpreter", MODEL),
+            ("AIFeatureHostedWebSearch", Kind::Bool, b(false), "Hosted web search", MODEL),
+            ("AIFeatureFunctionCalling", Kind::Bool, b(false), "Function calling", MODEL),
+            ("AIFeatureStreamingResponses", Kind::Bool, b(false), "Streaming responses", MODEL),
+            ("AIVectorStore", Kind::Int, i(0), "Vector store", MODEL),
+            ("AIManualModelConfigurations", Kind::List, Value::Array(Vec::new()), "Manual AI Models", GENERAL),
+            ("AIEconomyModelName", Kind::String, s(""), "Economy model", GENERAL),
+            ("AIOllamaRegularModel", Kind::String, s(""), "Regular:", GENERAL),
+            ("AIOllamaEconomyModel", Kind::String, s(""), "Budget:", GENERAL),
+            ("AI Safety Check", Kind::Bool, b(false), "Use AI to check safety of commands before running them", GENERAL),
+            ("AICustomHeadersEnabled", Kind::Bool, b(false), "Custom headers (legacy)", LEGACY),
+            ("AICustomHeaders", Kind::List, Value::Array(Vec::new()), "Custom header list (legacy)", LEGACY),
+            ("AIZeroDataRetention", Kind::Bool, b(false), "Enable \u{201c}zero data retention\u{201d} (send whole conversation every time)", GENERAL),
+            ("AIModelUpdatesEnabled", Kind::Bool, b(false), "Automatically update available AI models from live online database", GENERAL),
+        ]
+    }
+
+    #[test]
+    fn ai_rows_follow_iterm2() {
+        for (key, kind, default, label, rest) in ai_rows() {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("General", "AI"), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default.as_ref(), Some(&default), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert_eq!(row.help, format!("{label}\n{rest}"), "{key}");
+        }
+        for (key, label) in crate::ai_settings::PERMISSIONS {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("General", "AI"), "{key}");
+            assert_eq!(row.kind, Kind::Enum, "{key}");
+            assert_eq!(row.default, Some(Value::Integer(0)), "{key}");
+            assert_eq!(row.label, label, "{key}");
+            assert_eq!(row.help, format!("{label}\nSet by Settings > General > AI."), "{key}");
+            let allow = if key == "AIPermissionCheckTerminalState" { "Provide Automatically" } else { "Allow Without Asking" };
+            let choices: Vec<(Value, &str)> = row.choices.iter().map(|c| (c.value.clone(), c.label.as_str())).collect();
+            assert_eq!(choices, [(Value::Integer(0), "Ask Each Time"), (Value::Integer(1), allow), (Value::Integer(2), "Never Allow")], "{key}");
+        }
+        let g = Globals::empty(std::path::Path::new("ai-rows-test.toml"));
+        assert_eq!(g.int("AIVendor"), 2);
+        assert!(g.bool("UseRecommendedAIModel"));
+        assert_eq!(g.string("AiModel"), "gpt-4o-mini");
+        assert_eq!(g.int("AI Timeout"), 1200);
+        assert_eq!(g.int("AITermAPI"), 2);
+        assert!(!g.bool("EnableAI"));
+    }
+
+    #[test]
+    fn advanced_ai_rows_follow_iterm2() {
+        let s = |t: &str| Value::String(t.to_string());
+        let rows: Vec<(&str, &str, Kind, Value, String)> = vec![
+            ("llmPlatform", "General", Kind::String, s("OpenAI"), "LLM Platform.\nLegal values are: OpenAI, Azure, Gemini. This determines the format of requests and responses.".into()),
+            (
+                "aiModelCatalogURL",
+                "General",
+                Kind::String,
+                s("https://iterm2.com/downloads/ai/manifest.json"),
+                "URL to check for updates to the AI model catalog.\nThe catalog defines the built-in AI models (context window, capabilities, and the recommended model per vendor). Tandem ships its catalog with each release and never downloads a newer one, so this URL is not used.".into(),
+            ),
+            (
+                "aiChatVerboseConsoleLogging",
+                "Debugging",
+                Kind::Bool,
+                Value::Boolean(false),
+                "Log AI chat traffic to the system console.\nEmits per-turn user / agent / tool entries so you can trace exactly what the agent received and produced. Useful for debugging tool dispatch and history translation. Off by default; turn on only while reproducing an issue.".into(),
+            ),
+            (
+                "aiChatRawWireLogging",
+                "Debugging",
+                Kind::Bool,
+                Value::Boolean(false),
+                "Log raw AI API requests and responses to disk.\nWrites every byte sent to and received from the AI vendor (request headers, body, streaming chunks, final response, errors, and timing) to %APPDATA%\\Tandem\\AIChatWire\\. One log file per app launch; rotate or delete it yourself when done. API keys in Authorization, x-api-key, api-key and x-goog-api-key headers, and keys that appear in URLs or bodies, are replaced by fingerprints (the first 8 and last 4 characters); prompt and response content is logged verbatim. Off by default; turn on only while reproducing an issue and delete the files when finished.".into(),
+            ),
+            (
+                "unameCommand",
+                "SSH Integration",
+                Kind::String,
+                s("uname -s"),
+                "Command used to set the `uname` variable.\nThe main use of this is to use in the AI prompt so the language model knows the operating system.".into(),
+            ),
+            (
+                "aiModernModelPrefixes",
+                "Experimental Features",
+                Kind::String,
+                s("gpt-"),
+                "AI model name substrings that use the modern 'completions' API.\nSubstrings should be space-delimited. This handles OpenRouter-style names like 'openai/gpt-4o'. Note that o1 models use a different API and have hard-coded behavior.".into(),
+            ),
+            ("aiProxy", "Experimental Features", Kind::String, s(""), "Host and port for proxy for AI requests.\ni.e., example.com:8080".into()),
+            (
+                "ollamaNumCtx",
+                "Experimental Features",
+                Kind::Int,
+                Value::Integer(0),
+                "Ollama context window size (num_ctx) for native /api/chat requests.\nOllama defaults num_ctx to a small value (around 4096) regardless of the model, silently truncating long prompts. 0 means size it automatically per request, capped at the model\u{2019}s context window. A positive value overrides that and is sent verbatim (larger values use more memory).".into(),
+            ),
+            (
+                "ollamaKeepAlive",
+                "Experimental Features",
+                Kind::String,
+                s("30m"),
+                "Ollama keep_alive for native /api/chat requests.\nHow long Ollama keeps the model resident after a request, e.g. 30m, 1h, or 0 to unload immediately. Empty means omit the field and use Ollama\u{2019}s own default.".into(),
+            ),
+        ];
+        for (key, section, kind, default, help) in rows {
+            let row = schema::find_global(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!((row.tab.as_str(), row.section.as_str()), ("Advanced", section), "{key}");
+            assert_eq!(row.kind, kind, "{key}");
+            assert_eq!(row.default.as_ref(), Some(&default), "{key}");
+            assert_eq!(row.label, help.split('\n').next().unwrap(), "{key}");
+            assert_eq!(row.help, help, "{key}");
+        }
+        // The Apple-only rows are left out of the schema (ruling 12e-4).
+        assert!(schema::find_global("aiGeneratedTabTitles").is_none());
+        assert!(schema::find_global("logAITabTitleCorpus").is_none());
+        let admin = schema::find_global("GenerativeAIAllowed").unwrap();
+        assert_eq!((admin.tab.as_str(), admin.section.as_str()), ("Advanced", "General"));
+        assert_eq!(admin.kind, Kind::Bool);
+        assert_eq!(admin.default, Some(Value::Boolean(true)));
+        assert_eq!(admin.label, "Allow the use of large language model APIs?");
+        assert_eq!(
+            admin.help,
+            "Allow the use of large language model APIs?\nThe purpose of this setting is to make it easy for managed environments to disable the use of LLMs. The user defaults key is `GenerativeAIAllowed`."
+        );
+    }
+
+    #[test]
+    fn page_rows_leave_ai_to_its_section() {
+        let general = page_rows("General");
+        assert!(general.iter().all(|s| s.section != "AI"));
+        assert!(general.iter().any(|s| s.key == "EnableAPIServer"));
+        assert!(general.iter().all(|s| s.tab == "General"));
+        let advanced = page_rows("Advanced");
+        let has = |key: &str| advanced.iter().any(|s| s.key == key);
+        assert!(has("GenerativeAIAllowed"));
+        assert!(has("unameCommand"));
+        assert!(!has("aiGeneratedTabTitles"));
+        assert!(!has("logAITabTitleCorpus"));
+        assert!(row_hidden("aiGeneratedTabTitles"));
+        assert!(row_hidden("logAITabTitleCorpus"));
+        assert!(!row_hidden("aiProxy"));
+        // Schema order is kept.
+        let order: Vec<&str> = schema::global().iter().filter(|s| s.tab == "Advanced" && !row_hidden(&s.key)).map(|s| s.key.as_str()).collect();
+        assert_eq!(advanced.iter().map(|s| s.key.as_str()).collect::<Vec<_>>(), order);
     }
 }

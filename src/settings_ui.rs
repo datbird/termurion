@@ -126,6 +126,8 @@ pub struct SettingsWindow {
     pub title_providers: Vec<(String, String)>,
     /// Settings > Advanced: the search, the non-default filter and the field being edited.
     advanced: crate::settings_advanced_pane::AdvancedState,
+    /// Settings > General > AI: its sub-tab and whether it was just revealed.
+    pub ai: crate::settings_ai::State,
 }
 
 /// Turning from page `from` to `to` applies a custom scripts folder typed and not yet applied
@@ -142,6 +144,19 @@ impl SettingsWindow {
     pub fn show_page(&mut self, page: Page) -> bool {
         let apply = page_turn_applies(self.host.ctx(), self.page, page);
         self.page = page;
+        apply
+    }
+
+    /// Shows Settings > General > AI on one of its sub-tabs (the gate's Reveal, Codecierge's
+    /// Reveal Setting; iTerm2 opens Settings at `Enable AI`, `GK:61-63`, `CC:741-743`). It turns
+    /// the page through `show_page`, so its answer is the same: true when a typed custom scripts
+    /// folder is to be applied.
+    #[must_use]
+    pub fn show_ai(&mut self, sub: crate::settings_ai::SubTab) -> bool {
+        let apply = self.show_page(Page::General);
+        self.ai.sub = sub;
+        self.ai.reveal = true;
+        self.host.window.request_redraw();
         apply
     }
 
@@ -216,6 +231,7 @@ impl SettingsWindow {
             open_editor: None,
             title_providers: Vec::new(),
             advanced: Default::default(),
+            ai: Default::default(),
         })
     }
 
@@ -299,6 +315,7 @@ impl SettingsWindow {
         let tmux_session = self.tmux_session;
         let title_providers = &self.title_providers;
         let advanced = &mut self.advanced;
+        let ai = &mut self.ai;
         let hotkey_prefs: Vec<(String, crate::hotkey::Prefs)> = store.profiles.iter().map(|p| (p.guid(), crate::hotkey::Prefs::from_profile(p))).collect();
         let rule_owners: Vec<crate::aps::Candidate> = store
             .profiles
@@ -344,7 +361,7 @@ impl SettingsWindow {
                                 }
                                 c
                             }
-                            Page::General => match settings_keys::schema_page(ui, globals, "General") {
+                            Page::General => match settings_keys::schema_page_with(ui, globals, "General", &mut |ui, g| crate::settings_ai::section(ui, g, ai)) {
                                 (_, settings_keys::PrefsAction::CopyNow) => {
                                     edit = Edit::PrefsCopyNow;
                                     false
@@ -465,6 +482,7 @@ impl SettingsWindow {
                                         for (k, v) in values {
                                             globals.set(&k, v);
                                         }
+                                        crate::ai_models::migrate_after_import(globals);
                                         Edit::Imported(n)
                                     }
                                     None => Edit::Imported(n),
@@ -570,6 +588,9 @@ impl SettingsWindow {
                 });
             });
         });
+        if let Some(e) = self.ai.take_error() {
+            edit = Edit::Error(e);
+        }
         self.tab = tab;
         // Leaving a page applies a custom scripts folder typed there (iTerm2's
         // `willDeselectTab`, `GP:3432-3434`); the field is no longer drawn to lose the focus.

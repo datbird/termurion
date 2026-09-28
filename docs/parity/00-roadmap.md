@@ -7,9 +7,9 @@ Windows cannot support them. Each milestone gets its own plan in `docs/superpowe
 | File | Rows | have | partial | missing |
 |---|---|---|---|---|
 | `01-profile-settings.md` | 314 | 173 | 122 | 19 |
-| `02-global-settings.md` | 823 | 292 | 72 | 459 |
-| `03-features-and-menus.md` | 643 | 486 | 43 | 114 |
-| Total | 1,780 | 951 | 237 | 592 |
+| `02-global-settings.md` | 823 | 336 | 84 | 403 |
+| `03-features-and-menus.md` | 644 | 516 | 44 | 84 |
+| Total | 1,781 | 1,025 | 250 | 506 |
 
 Done: milestone 0 (ConPTY and mouse probe), milestone 1 (terminal basics: tabs, splits,
 renderer, keys, selection, copy and paste), and milestone 2 (profiles: every profile setting is
@@ -219,6 +219,37 @@ the Script Console. pythonRuntimeUsesUV, the three runtime manifest URLs and set
 and inert (no macOS runtime, no AppleScript target); signed `.its` archives are refused. Every kept
 quirk is listed in `docs/acceptance/m11d-checklist.md` and ruled on in
 `docs/superpowers/rulings/m11d-rulings.txt`.
+Milestone 11e closed the utilities (03, 02): one console program, `tandem-utils.exe`, holds
+Windows builds of imgcat, imgls, it2cat, it2dl, it2ul, it2copy, it2setcolor, it2check,
+it2attention, it2universion, it2getvar, it2profile, it2setkeylabel, it2git, it2tip and it2api,
+each writing the bytes, texts and exit codes of iTerm2's script (tmux and screen wrapping exactly
+where each script wraps, macOS `base64`), with replies read from the console in raw or cbreak mode
+and every console mode restored on exit, Ctrl+C and panic. Tandem makes `utilities\` beside
+tandem.exe at every start (16 hard links plus iTerm2's own `it2api.py`, refreshed when stale,
+failures shown in a banner) and appends it to each new session's PATH (`addUtilitiesToPATH`);
+sessions get iTerm2's variables (`TERM_PROGRAM=iTerm.app`, `TERM_PROGRAM_VERSION`, `COLORTERM`,
+`TERM_FEATURES`, and `LC_TERMINAL=iTerm2` under `shouldSetLCTerminal`); `CSI 1337 n` answers
+`ITERM2 3.7.0`, so Tandem's it2check passes; RequestUpload takes files or folders (a Files/Folders bar
+first) at iTerm2's pace (`accelerateUploads`, else the quick-paste settings); and Install Shell
+Integration offers iTerm2 Utilities for bash-family shells. iTerm2's bash scripts still work in
+WSL, Git Bash and over ssh, except it2check: ConPTY takes its reply's leading `ESC [ I` for a
+focus report and drops it, so the script's check fails there (measured in WSL and Git Bash, inferred over ssh.exe from
+the same ConPTY input, a kept ConPTY limitation; the native it2check restores the prefix). it2setcolor's presets wait for milestone 13 and it2ssh for milestone
+14; the Swift `it2` CLI is not ported. Every kept quirk is listed in
+`docs/acceptance/m11e-checklist.md` and ruled on in `docs/superpowers/rulings/m11e-rulings.txt`.
+Milestone 12a opened milestone 12 (AI features) with its settings (02: AI, AI > Prompts, AI >
+Features, and the Advanced AI rows): Settings > General > AI with iTerm2's General, Prompts and
+Features sub-tabs; "Enable generative AI features" and "Offer AI command suggestion" as ordinary
+settings that Import from iTerm2 never brings across; one API key per vendor in Windows Credential
+Manager under `TandemAI/`, which the password manager never lists; the AI Model popup over iTerm2's
+bundled model catalog (never updated online, a documented gap) and Manage AI Models… with iTerm2's
+presets, per-model custom headers and the one-time migration of the legacy global headers; every
+prompt with iTerm2's default text, Reset, the missing-variable warning and the help; the eight
+default chat permissions; and the gate every AI entry point asks first (the administrator's switch,
+Enable, then a one-time consent per host that replaces iTerm2's plugin), wired into the Composer
+and Codecierge, whose AI answers still wait for 12b to 12f. Apple Intelligence and AI tab titles
+are n/a on Windows. Every kept quirk is listed in `docs/acceptance/m12a-checklist.md` and ruled on in
+`docs/superpowers/rulings/m12a-rulings.txt`.
 Milestone 13a built Settings > Advanced as iTerm2's pane (02): the rows under iTerm2's 19
 categories in Finder order with bold, pinned headers; a search that matches every typed word in a
 row's description or category; "Show only non-default values", which keeps the row being edited

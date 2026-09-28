@@ -6,8 +6,13 @@ use alacritty_terminal::grid::Dimensions;
 
 use crate::screen::Screen;
 
-/// Tandem's version, as XTVERSION and `CSI 1337 n` report it.
+/// Tandem's version, as XTVERSION reports it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The iTerm2 version `CSI 1337 n` reports: the iTerm2 line Tandem follows. iTerm2 answers
+/// with its version uppercased (`VT100Output.m:922-927`), so it holds no "n" and does not
+/// start with "0"; it2check compares it with the script's ASCII order.
+pub const ITERM2_VERSION: &str = "3.7.0";
 
 /// The terminfo name XTGETTCAP reports.
 const TERM_NAME: &str = "xterm-256color";
@@ -41,7 +46,7 @@ pub fn color_scheme(dark: bool) -> Vec<u8> {
 pub fn answer(screen: &Screen, q: &Query) -> Vec<u8> {
     match q {
         Query::XtVersion => format!("\x1bP>|Tandem {VERSION}\x1b\\"),
-        Query::ITerm2Version => format!("\x1b[ITERM2 {VERSION}n"),
+        Query::ITerm2Version => format!("\x1b[ITERM2 {ITERM2_VERSION}n"),
         Query::Decrqss(pt) => match decrqss(screen, pt) {
             Some(p) => format!("\x1bP1$r{p}\x1b\\"),
             None => "\x1bP0$r\x1b\\".to_string(),
@@ -193,10 +198,10 @@ mod tests {
         let v = super::VERSION;
         assert_eq!(ask(&mut s, b"\x1b[>q"), format!("\x1bP>|Tandem {v}\x1b\\"));
         assert_eq!(ask(&mut s, b"\x1b[>0q"), format!("\x1bP>|Tandem {v}\x1b\\"));
-        assert_eq!(ask(&mut s, b"\x1b[1337n"), format!("\x1b[ITERM2 {v}n"));
+        assert_eq!(ask(&mut s, b"\x1b[1337n"), "\x1b[ITERM2 3.7.0n");
         // Split across reads.
         assert_eq!(ask(&mut s, b"\x1b[13"), "");
-        assert_eq!(ask(&mut s, b"37n"), format!("\x1b[ITERM2 {v}n"));
+        assert_eq!(ask(&mut s, b"37n"), "\x1b[ITERM2 3.7.0n");
     }
 
     #[test]

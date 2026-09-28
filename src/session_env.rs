@@ -38,19 +38,46 @@ pub struct Facts<'a> {
     pub profile_name: &'a str,
     /// The session's API cookie, when it gets one.
     pub cookie: Option<&'a str>,
+    /// The `Capabilities` encoding for `TERM_FEATURES` (`VT100Output.m:1555-1560`).
+    pub term_features: &'a str,
+    /// `shouldSetLCTerminal`: `LC_TERMINAL` and `LC_TERMINAL_VERSION` are set.
+    pub lc_terminal: bool,
+    /// The PATH with the utilities folder appended (`utilities::path_with`), when the folder
+    /// was made and `addUtilitiesToPATH` is on.
+    pub path: Option<&'a str>,
 }
 
+/// iTerm2's `TERM_PROGRAM` (`PS:3357`).
+pub const TERM_PROGRAM: &str = "iTerm.app";
+
+/// iTerm2's `LC_TERMINAL` (`PS:3333`).
+pub const LC_TERMINAL: &str = "iTerm2";
+
 /// The session's variables as `NAME=value`, in iTerm2's order: `ITERM2_COOKIE` (only with a
-/// cookie), `ITERM_SESSION_ID`, `TERM_SESSION_ID`, `ITERM_PROFILE`.
+/// cookie), `ITERM_SESSION_ID`, `TERM_SESSION_ID`, `ITERM_PROFILE`, then iTerm2's own
+/// (`PS:3332-3359`): `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `COLORTERM`, `TERM_FEATURES`,
+/// `LC_TERMINAL` and `LC_TERMINAL_VERSION` with `lc_terminal`, and `PATH` when given.
 pub fn vars(f: &Facts) -> Vec<String> {
+    use crate::reports::ITERM2_VERSION;
     let id = session_id(f.window, f.tab, f.pane, f.id);
-    let mut v = Vec::with_capacity(4);
+    let mut v = Vec::with_capacity(11);
     if let Some(c) = f.cookie {
         v.push(format!("ITERM2_COOKIE={c}"));
     }
     v.push(format!("ITERM_SESSION_ID={id}"));
     v.push(format!("TERM_SESSION_ID={id}"));
     v.push(format!("ITERM_PROFILE={}", f.profile_name));
+    v.push(format!("TERM_PROGRAM={TERM_PROGRAM}"));
+    v.push(format!("TERM_PROGRAM_VERSION={ITERM2_VERSION}"));
+    v.push("COLORTERM=truecolor".to_string());
+    v.push(format!("TERM_FEATURES={}", f.term_features));
+    if f.lc_terminal {
+        v.push(format!("LC_TERMINAL={LC_TERMINAL}"));
+        v.push(format!("LC_TERMINAL_VERSION={ITERM2_VERSION}"));
+    }
+    if let Some(p) = f.path {
+        v.push(format!("PATH={p}"));
+    }
     v
 }
 
@@ -129,10 +156,28 @@ mod tests {
     #[test]
     fn session_env_follows_iterm2() {
         assert_eq!(session_id(0, 1, 2, "17"), "w0t1p2:17");
-        let with = Facts { window: 0, tab: 1, pane: 2, id: "17", profile_name: "Default", cookie: Some("c") };
-        assert_eq!(vars(&with), vec!["ITERM2_COOKIE=c", "ITERM_SESSION_ID=w0t1p2:17", "TERM_SESSION_ID=w0t1p2:17", "ITERM_PROFILE=Default"]);
-        let without = Facts { cookie: None, ..with };
-        assert_eq!(vars(&without), vec!["ITERM_SESSION_ID=w0t1p2:17", "TERM_SESSION_ID=w0t1p2:17", "ITERM_PROFILE=Default"]);
+        let features = crate::osc1337::capabilities(crate::osc1337::Features { clipboard_writable: false, ambiguous_wide: false, unicode_version: 9 });
+        assert_eq!(features, "T3MSc7UUw9Ts3BFGsSyHSxF");
+        let with = Facts { window: 0, tab: 1, pane: 2, id: "17", profile_name: "Default", cookie: Some("c"), term_features: &features, lc_terminal: true, path: Some("C:\\W;C:\\T\\utilities") };
+        let tail = [
+            "TERM_PROGRAM=iTerm.app",
+            "TERM_PROGRAM_VERSION=3.7.0",
+            "COLORTERM=truecolor",
+            "TERM_FEATURES=T3MSc7UUw9Ts3BFGsSyHSxF",
+            "LC_TERMINAL=iTerm2",
+            "LC_TERMINAL_VERSION=3.7.0",
+            "PATH=C:\\W;C:\\T\\utilities",
+        ];
+        let mut want = vec!["ITERM2_COOKIE=c", "ITERM_SESSION_ID=w0t1p2:17", "TERM_SESSION_ID=w0t1p2:17", "ITERM_PROFILE=Default"];
+        want.extend(tail);
+        assert_eq!(vars(&with), want);
+        let without = Facts { cookie: None, lc_terminal: false, path: None, ..with };
+        let mut want = vec!["ITERM_SESSION_ID=w0t1p2:17", "TERM_SESSION_ID=w0t1p2:17", "ITERM_PROFILE=Default"];
+        want.extend(&tail[..4]);
+        assert_eq!(vars(&without), want, "no LC_TERMINAL pair and no PATH");
+        let merged = merge(pairs(&[("Path", "C:\\W"), ("HOME", "h")]), &vars(&with));
+        let paths: Vec<&(String, String)> = merged.iter().filter(|(n, _)| n.eq_ignore_ascii_case("path")).collect();
+        assert_eq!(paths, vec![&("PATH".to_string(), "C:\\W;C:\\T\\utilities".to_string())], "one PATH entry, the session's");
         assert!(is_cookie(&crate::api_auth::cookie_text([0xab; 16])), "a minted cookie has the form");
         for bad in ["", "ABABABABABABABABABABABABABABABAB", "abab", "gbababababababababababababababab", &"a".repeat(33)] {
             assert!(!is_cookie(bad), "{bad:?}");

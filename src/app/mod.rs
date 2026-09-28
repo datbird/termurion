@@ -115,6 +115,7 @@ mod script_runtime_ui;
 mod scripts_alerts;
 mod prefs_ui;
 mod settings_export_ui;
+mod ai_app;
 mod scripts_app;
 mod script_console_app;
 mod script_deps_app;
@@ -557,6 +558,8 @@ pub struct App {
     focused: bool,
     tab_rects: Vec<Rect>,
     banners: Banners,
+    /// The `utilities` folder beside tandem.exe, when `utilities::ensure` made it at start.
+    utilities: Option<PathBuf>,
     clipboard: Option<arboard::Clipboard>,
     store: Store,
     settings: Option<SettingsWindow>,
@@ -659,6 +662,14 @@ pub struct App {
     /// The Scripts features' alerts waiting to show, and the one showing.
     scripts_alerts: VecDeque<scripts_alerts::Ask>,
     scripts_alert: Option<(crate::prompt_ui::ConfirmWindow, scripts_alerts::Ask)>,
+    /// The AI alert queue (ruling 12c-7), the alert showing, and the Settings > General > AI
+    /// sub-tab an answer asked to reveal.
+    ai_asks: VecDeque<crate::ai_gate::Alert>,
+    ai_alert: Option<(crate::prompt_ui::ConfirmWindow, crate::ai_gate::Alert)>,
+    ai_reveal: Option<crate::settings_ai::SubTab>,
+    /// The one-vendor key prompts waiting to show (ruling 12e-1), and the one showing.
+    ai_key_asks: VecDeque<(crate::ai_settings::Vendor, ai_app::KeyThen)>,
+    ai_key_window: Option<(crate::ai_key_ui::KeyWindow, crate::ai_settings::Vendor, ai_app::KeyThen)>,
     /// Launched scripts' processes by their Script Console entry's id (their key), the
     /// launches waiting for "Enable Python API?" to be answered, and the script whose
     /// failure notification was posted last (a click reveals its entry; a session's alert
@@ -819,6 +830,22 @@ pub fn run() {
             Err(e2) => return message_box(&format!("No ConPTY: {e}; {e2}")),
         },
     };
+    let utilities = match crate::utilities::ensure(&exe_dir) {
+        Ok(done) => {
+            let entry = crate::utilities::path_entry(&done.folder.to_string_lossy());
+            if let Some(text) = crate::utilities::refresh_banner(&done.failed) {
+                crate::host::log(&format!("tandem: {text}"));
+                banners.set("utilities", text);
+            } else if entry.is_none() {
+                banners.set("utilities", format!("The utilities folder {} has a \";\" in its path, so it is not put on PATH.", done.folder.display()));
+            }
+            Some(done.folder)
+        }
+        Err(e) => {
+            banners.set("utilities", format!("The utilities folder could not be made: {e}"));
+            None
+        }
+    };
 
     // An import staged by the last run is applied to the files before anything reads them.
     let restored_scripts = {
@@ -856,6 +883,13 @@ pub fn run() {
         }
         if let Err(e) = store.save() {
             banners.set("save", format!("Could not save settings: {e}"));
+        }
+    }
+    // The legacy global AI headers move into each manual model once (`iTermMigrationHelper.m:458`).
+    // After the custom settings folder or URL load, so headers arriving from there move too.
+    if crate::ai_models::migrate_legacy_headers(&mut globals) {
+        if let Err(e) = globals.save() {
+            banners.set("globals", format!("Could not save settings: {e}"));
         }
     }
     // The Script Console starts with the Automatic Profile Switching entry while its logging
@@ -1093,6 +1127,7 @@ pub fn run() {
         focused: true,
         tab_rects: Vec::new(),
         banners,
+        utilities,
         clipboard: arboard::Clipboard::new().ok(),
         store,
         settings: None,
@@ -1146,6 +1181,11 @@ pub fn run() {
         uv_installed: crate::script_runtime::uv_exe(&script_runtime_ui::uv_dir()).is_file(),
         scripts_alerts: VecDeque::new(),
         scripts_alert: None,
+        ai_asks: VecDeque::new(),
+        ai_alert: None,
+        ai_reveal: None,
+        ai_key_asks: VecDeque::new(),
+        ai_key_window: None,
         script_procs: HashMap::new(),
         script_jobs_left: Vec::new(),
         script_after_enable: Vec::new(),
@@ -1312,7 +1352,27 @@ impl App {
         });
         let name = p.name();
         let id = id.to_string();
-        let facts = crate::session_env::Facts { window, tab, pane, id: &id, profile_name: &name, cookie: cookie.as_deref() };
+        // The session starts with the profile's Unicode version, as its Capabilities reply does.
+        let version = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
+        let term_features = crate::osc1337::capabilities(crate::osc1337::session_features(self.globals.bool("AllowClipboardAccess"), 0, version));
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let path = self
+            .utilities
+            .as_ref()
+            .filter(|_| self.globals.bool("addUtilitiesToPATH"))
+            .and_then(|folder| crate::utilities::path_entry(&folder.to_string_lossy()))
+            .and_then(|entry| crate::utilities::session_path(std::env::var_os("PATH").as_deref(), &system_root, &entry));
+        let facts = crate::session_env::Facts {
+            window,
+            tab,
+            pane,
+            id: &id,
+            profile_name: &name,
+            cookie: cookie.as_deref(),
+            term_features: &term_features,
+            lc_terminal: self.globals.bool("shouldSetLCTerminal"),
+            path: path.as_deref(),
+        };
         (crate::session_env::overlay(crate::session_env::vars(&facts), &extra), cookie)
     }
 
@@ -1393,10 +1453,7 @@ impl App {
     /// A started pane takes its profile's look, triggers, and input settings.
     fn install_pane(&mut self, id: PaneId, mut pane: Pane, p: &Profile) {
         pane.restyle(Palette::from_profile(p, self.dark()), Look::from_profile(p));
-        pane.screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
-        pane.screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
-        let (list, prefs) = triggers_ui::triggers_of(p);
-        pane.screen.set_triggers(list, prefs);
+        screen_follows_profile(&mut pane.screen, p);
         pane.profile = p.guid();
         pane.set_buffering(p.bool("Buffer Input by Default"));
         // `IRMemory` is read once per session (`S:121-122`).
@@ -1646,10 +1703,7 @@ impl App {
         for pane in self.panes.values_mut() {
             let p = self.store.get(&pane.profile).unwrap_or_else(|| self.store.default_profile());
             pane.restyle(Palette::from_profile(p, dark), Look::from_profile(p));
-            pane.own_mut().place_prompt_first_column = p.bool("Place Prompt at First Column");
-            pane.own_mut().set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
-            let (list, prefs) = triggers_ui::triggers_of(p);
-            pane.own_mut().set_triggers(list, prefs);
+            screen_follows_profile(pane.own_mut(), p);
         }
         self.tmux_resend_colors();
         self.tmux_save_tab_colors();
@@ -3095,6 +3149,9 @@ impl ApplicationHandler<UserEvent> for App {
         self.prefs_tick(event_loop);
         self.open_script_alerts(event_loop);
         self.open_scripts_alerts(event_loop);
+        self.open_ai_alert(event_loop);
+        self.open_ai_key_window(event_loop);
+        self.open_ai_reveal(event_loop);
         self.open_script_dialogs(event_loop);
         if self.attention_due.is_some_and(|t| Instant::now() >= t) {
             self.prune_attention();
@@ -3218,7 +3275,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
+        if self.prompt_event(id, &event) || self.coprocess_prompt_event(id, &event) || self.tmux_prompt_event(id, &event) || self.tmux_dashboard_event(id, &event, event_loop) || self.title_prompt_event(id, &event) || self.arrange_prompt_event(id, &event) || self.global_find_event(id, &event) || self.paste_history_event(id, &event) || self.list_popup_event(id, &event) || self.advanced_paste_event(id, &event) || self.note_event(id, &event) || self.add_clip_event(id, &event) || self.shot_event(id, &event) || self.status_setup_event(id, &event) || self.git_log_event(id, &event) || self.status_popover_event(event_loop, id, &event) || self.jobs_window_event(id, &event) || self.composer_window_event(id, &event) || self.open_quickly_event(event_loop, id, &event) || self.replay_window_event(event_loop, id, &event) || self.recording_warning_event(id, &event) || self.pwm_window_event(id, &event) || self.pwm_confirm_event(id, &event) || self.api_alert_event(event_loop, id, &event) || self.script_alert_event(id, &event) || self.scripts_alert_event(id, &event) || self.ai_alert_event(id, &event) || self.ai_key_event(id, &event) || self.script_picker_event(id, &event) || self.script_export_event(id, &event) || self.script_deps_event(id, &event, event_loop) || self.script_console_event(id, &event, event_loop) || self.script_inspector_event(id, &event) || self.script_dialog_event(id, &event) || self.text_popover_event(id, &event) {
             return;
         }
         for profiles in [false, true] {
@@ -3446,9 +3503,40 @@ fn tab_hit(rects: &[Rect], tabs: usize, x: f32, y: f32) -> Option<usize> {
     rects.iter().position(|r| r.contains(x, y)).filter(|i| *i < tabs)
 }
 
+/// What a session's screen takes from its profile, at start (`install_pane`) and after every
+/// profile edit (`refresh_panes`), as iTerm2 re-applies them (`PTYSession.m:7013-7016`): the
+/// prompt column, the profile's Unicode version, scrollback with the status bar, the triggers.
+fn screen_follows_profile(screen: &mut crate::screen::Screen, p: &Profile) {
+    screen.place_prompt_first_column = p.bool("Place Prompt at First Column");
+    screen.profile_unicode = crate::osc1337::profile_unicode(p.values.get("Unicode Version").and_then(|v| v.as_integer()));
+    screen.set_scrollback_with_status_bar(p.bool("Scrollback With Status Bar"));
+    let (list, prefs) = triggers_ui::triggers_of(p);
+    screen.set_triggers(list, prefs);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_edits_reach_the_screen() {
+        // A profile edit re-applies the Unicode version, as a new pane takes it (PS:7013-7016).
+        let mut s = crate::screen::Screen::new(10, 3);
+        let mut p = Profile::new("x");
+        p.values.insert("Unicode Version".into(), toml::Value::Integer(8));
+        p.values.insert("Place Prompt at First Column".into(), toml::Value::Boolean(false));
+        screen_follows_profile(&mut s, &p);
+        assert_eq!(s.profile_unicode, 8);
+        assert!(!s.place_prompt_first_column);
+        s.clipboard_allowed = true;
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(reply.contains("Uw8"), "{reply}");
+        p.values.insert("Unicode Version".into(), toml::Value::Integer(9));
+        screen_follows_profile(&mut s, &p);
+        assert_eq!(s.profile_unicode, 9);
+        let reply = String::from_utf8(s.feed(b"\x1b]1337;Capabilities\x07")).unwrap();
+        assert!(reply.contains("Uw9"), "{reply}");
+    }
 
     #[test]
     fn steal_focus_asks_once() {

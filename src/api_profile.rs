@@ -284,9 +284,12 @@ const REFUSED: [&str; 12] = [
 /// The same, for keys made per profile key, host or password manager adapter.
 const REFUSED_PREFIXES: [&str; 4] = ["NoSyncSetProfileProperty_", "NoSyncAllowOpenURL_", "PathToExecutable_", "PathToDatabase_"];
 
-/// A setting SetPreference refuses to write.
+/// A setting SetPreference refuses to write. The AI consent switches Toggle Setting may not flip
+/// (`ai_settings::toggle_allowed`) are refused too, so a script cannot enable AI or answer its
+/// consent questions; in iTerm2 `EnableAI` and `AICompletions` are secure defaults no preference
+/// write reaches.
 pub fn refused(key: &str) -> bool {
-    REFUSED.contains(&key) || REFUSED_PREFIXES.iter().any(|p| key.starts_with(p))
+    REFUSED.contains(&key) || REFUSED_PREFIXES.iter().any(|p| key.starts_with(p)) || !crate::ai_settings::toggle_allowed(key)
 }
 
 /// What SetPreference does with `value` for `key` while `setCookie` is `cookie_on`. A
@@ -491,12 +494,34 @@ mod tests {
             "NoSyncPasswordManagerLastPassCLI",
             "PathToExecutable_KeePassXC",
             "PathToDatabase_KeePassXC",
+            // The AI consent switches, as Toggle Setting and import refuse them.
+            "GenerativeAIAllowed",
+            "EnableAI",
+            "AICompletions",
+            "NoSyncAIRequestConsent",
+            "AIPermissionCheckTerminalState",
+            "AIPermissionRunCommands",
+            "AIPermissionViewHistory",
+            "AIPermissionWriteToClipboard",
+            "AIPermissionTypeForYou",
+            "AIPermissionViewManpages",
+            "AIPermissionWriteToFilesystem",
+            "AIPermissionActInWebBrowser",
         ] {
             assert!(refused(k), "{k}");
             assert_eq!(preference_step(k, &Value::Boolean(true), false), Refuse, "{k}");
             assert_eq!(preference_step(k, &Value::String(String::new()), true), Refuse, "{k}");
+            assert_eq!(preference_step(k, &Value::Array(vec![Value::String("evil.example".into())]), false), Refuse, "{k}");
         }
-        for k in ["EnableAPIServer", "API Authentication Method", "NoSyncDoNotWarnBeforeMultilinePaste", "TmuxDashboardLimit", "NoSyncAllowPasteLater", "fileDropCoprocess"] {
+        // One list: every key Toggle Setting may not flip, SetPreference may not write.
+        for k in [crate::ai_settings::ADMIN, crate::ai_settings::ENABLE_AI, crate::ai_settings::AI_COMPLETIONS, crate::ai_settings::CONSENT]
+            .into_iter()
+            .chain(crate::ai_settings::PERMISSIONS.iter().map(|(k, _)| *k))
+        {
+            assert!(!crate::ai_settings::toggle_allowed(k), "{k}");
+            assert!(refused(k), "{k}");
+        }
+        for k in ["EnableAPIServer", "API Authentication Method", "NoSyncDoNotWarnBeforeMultilinePaste", "TmuxDashboardLimit", "NoSyncAllowPasteLater", "fileDropCoprocess", "AiModel", "AI Timeout"] {
             assert!(!refused(k), "{k}");
             assert_eq!(preference_step(k, &Value::Boolean(true), false), Store, "{k}");
         }
