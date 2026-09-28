@@ -306,6 +306,15 @@ impl App {
         self.open_window_with(event_loop, NewWindow::Profile(guid.map(str::to_string)))
     }
 
+    /// The current window's title from its first tab's profile (iTerm2 keeps the initial
+    /// profile's custom window title, `PT:486-491`, `:887-890`): that session's profile, else
+    /// `guid`'s, else the default profile.
+    pub(super) fn apply_custom_window_title(&mut self, guid: Option<&str>) {
+        let session = self.tabs.first().and_then(|t| self.panes.get(&t.focused)).and_then(|p| self.store.get(&p.profile));
+        let profile = session.or_else(|| guid.and_then(|g| self.store.get(g))).unwrap_or_else(|| self.store.default_profile());
+        self.win_title = crate::wintitle::custom_window_format(profile.bool("Use Custom Window Title"), &profile.string("Custom Window Title"));
+    }
+
     fn open_window_with(&mut self, event_loop: &ActiveEventLoop, first: NewWindow) -> Result<WindowId, String> {
         let hotkey = matches!(first, NewWindow::Hotkey(..) | NewWindow::HotkeyRestored(..));
         let mut attrs = Window::default_attributes().with_title("Tandem").with_inner_size(LogicalSize::new(1000.0, 650.0));
@@ -390,6 +399,11 @@ impl App {
                 }
                 self.hotkey = Some(super::hotkey_ui::HotkeyWin::new(guid));
             }
+        }
+        // The first tab's profile may give the window a title (`PT:887-890`); an arrangement's
+        // window keeps its own.
+        if !arranged {
+            self.apply_custom_window_title(first_guid.as_deref());
         }
         self.install_menus();
         // An arrangement's window has its own frame, style, and locks. A hotkey window's

@@ -101,6 +101,7 @@ impl App {
             .map(|(n, (_, t, tree))| {
                 let active = tree.leaves().iter().position(|p| **p == t.focused);
                 let tree = tree.clone().map(&mut |id| self.session_value(id, contents));
+                // "Title Override" is the format, unevaluated (`PTYTab.m:3916`).
                 arrangement::tab(arrangement::node_with_active(&tree, area.w as f64, area.h as f64, active), n == selected, t.title.as_deref())
             })
             .collect();
@@ -118,6 +119,7 @@ impl App {
             h,
             style: self.win_style,
             selected_tab: selected,
+            // The title format, unevaluated (`PT:4586`).
             title: self.win_title.clone(),
             size_locked: self.win_locks.size,
             layout_locked: self.win_locks.layout,

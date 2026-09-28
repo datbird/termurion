@@ -2243,7 +2243,12 @@ impl App {
         }
         let area = self.content_area();
         if let Some(id) = self.start_pane(area, guid) {
-            self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title: None });
+            // The new tab's profile may give it a title (`PT:15265-15269`).
+            let title = self.panes.get(&id).and_then(|p| {
+                let profile = self.store.get(&p.profile)?;
+                crate::wintitle::custom_tab_format(profile.bool("Use Custom Tab Title"), &profile.string("Custom Tab Title"), p.tmux_io().is_some())
+            });
+            self.tabs.push(Tab { id: self.next_tab_id, layout: Layout::new(id), focused: id, zoomed: None, title });
             self.next_tab_id += 1;
             self.active = self.tabs.len() - 1;
             self.relayout();
@@ -3340,8 +3345,9 @@ impl App {
         self.check_composer_fields();
         let frame = self.build_frame();
         let focused = self.tabs.get(self.active).map(|t| t.focused);
+        let custom = self.win_title.as_deref().map(|f| self.window_title_text(f, focused));
         let title = crate::wintitle::window_title(
-            self.win_title.as_deref(),
+            custom.as_deref(),
             self.tab_bar_visible(),
             self.globals.bool("ShowWindowTitleWhenTabBarInvisible"),
             focused.map(|f| self.window_title(f)).as_deref(),
@@ -3547,6 +3553,9 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 None => self.new_tab(None),
             },
+        }
+        if !arranged {
+            self.apply_custom_window_title(startup_hotkey.as_deref());
         }
         for (guid, w) in hotkey_saved {
             self.pending_windows.push(windows_ui::NewWindow::HotkeyRestored(guid, w));

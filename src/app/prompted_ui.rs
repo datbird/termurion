@@ -307,6 +307,12 @@ impl App {
     /// The session's variables; `selection` and `selectionLength` only with `selection`,
     /// since building them copies the whole selection.
     pub(super) fn variables_with(&self, pane: PaneId, selection: bool) -> prompted::Vars {
+        self.session_variables(pane, selection, true)
+    }
+
+    /// The session's variables; with `titles` off the tab's and window's title overrides are
+    /// their formats, unevaluated (what a title's own evaluation reads, so it never recurses).
+    fn session_variables(&self, pane: PaneId, selection: bool, titles: bool) -> prompted::Vars {
         let mut v = prompted::Vars::default();
         let Some(p) = self.panes.get(&pane) else { return v };
         let s = p.own();
@@ -316,7 +322,7 @@ impl App {
         v.session.insert("name", title.clone());
         v.session.insert("presentationName", title);
         v.session.insert("id", pane.to_string());
-        self.scope_variables(pane, &mut v);
+        self.scope_variables(pane, &mut v, titles);
         v.session.insert("columns", grid.columns().to_string());
         v.session.insert("rows", grid.screen_lines().to_string());
         v.session.insert("showingAlternateScreen", if s.term().mode().contains(TermMode::ALT_SCREEN) { "1" } else { "0" }.to_string());
@@ -383,8 +389,10 @@ impl App {
     }
 
     /// The tab and window variables of the pane's window (iTerm2's tab and window scopes),
-    /// and the session's `termid`. A buried pane has neither.
-    fn scope_variables(&self, pane: PaneId, v: &mut prompted::Vars) {
+    /// and the session's `termid`. A buried pane has neither. `titleOverrideFormat` is Edit
+    /// Tab Title's or Edit Window Title's format, `titleOverride` and `title` its evaluated
+    /// text (`titles`; else the format).
+    fn scope_variables(&self, pane: PaneId, v: &mut prompted::Vars, titles: bool) {
         use crate::api_vars::Scope;
         let Some(w) = self.pane_window(pane) else { return };
         let number = self.registry.number(w.key).unwrap_or(0);
@@ -394,30 +402,88 @@ impl App {
             let index = tab.layout.panes().iter().position(|x| *x == pane).unwrap_or(0);
             v.session.insert("termid", format!("w{number}t{t}p{index}"));
             v.tab.insert("id", tab.id.to_string());
-            v.tab.insert("title", self.tmux_tab_label(tab.focused).or_else(|| tab.title.clone()).unwrap_or_else(|| self.session_title(tab.focused)));
+            let own = if titles { self.tab_title_text(tab) } else { tab.title.clone() };
+            v.tab.insert("title", self.tmux_tab_label(tab.focused).or_else(|| own.clone().filter(|t| !t.is_empty())).unwrap_or_else(|| self.session_title(tab.focused)));
             // A tmux tab's Edit Tab Title text is kept by the gateway (its `title` holds the
             // tmux window's name).
             let tmux = self.tmux_window_of(tab.focused);
-            let over = match tmux {
-                Some((gw, win)) => self.tmux.get(&gw).and_then(|g| g.tab_overrides.get(&win)).cloned(),
-                None => tab.title.clone(),
+            let (over, format) = match tmux {
+                Some((gw, win)) => {
+                    let text = self.tmux.get(&gw).and_then(|g| g.tab_overrides.get(&win)).cloned();
+                    (text.clone(), text)
+                }
+                None => (own, tab.title.clone()),
             };
             v.tab.insert("titleOverride", over.unwrap_or_default());
+            v.tab.insert("titleOverrideFormat", format.unwrap_or_default());
             v.tab.insert("tmuxWindow", tmux.map_or_else(|| "-1".to_string(), |(_, win)| win.to_string()));
             v.tab.insert("window", guid.clone());
             v.tab_user = user_strings(self.api_vars.user(Scope::Tab, &tab.id.to_string()));
         }
-        let title = match w.title {
+        let front = w.front.map(|t| t.focused);
+        let over = match w.title {
+            Some(f) if titles => Some(self.window_title_text(f, front)),
+            other => other.map(str::to_string),
+        };
+        let title = match over.as_deref().filter(|t| !t.is_empty()) {
             Some(t) => t.to_string(),
-            None => w.front.map_or_else(|| "Tandem".to_string(), |t| self.window_title(t.focused)),
+            None => front.map_or_else(|| "Tandem".to_string(), |f| self.window_title(f)),
         };
         v.window.insert("id", guid.clone());
         // iTerm2's window number variable counts from 1 (`PseudoTerminal.m:866`).
         v.window.insert("number", (number + 1).to_string());
         v.window.insert("title", title);
-        v.window.insert("titleOverride", w.title.unwrap_or_default().to_string());
+        v.window.insert("titleOverride", over.unwrap_or_default());
+        v.window.insert("titleOverrideFormat", w.title.unwrap_or_default().to_string());
         v.window.insert("isHotkeyWindow", if w.hotkey { "1" } else { "0" }.to_string());
         v.window_user = user_strings(self.api_vars.user(Scope::Window, &guid));
+    }
+
+    /// The names a window's title format reads, for the window whose current tab's focused
+    /// session is `pane`: the window scope, and that session's names under
+    /// `currentTab.currentSession.` (`iTermVariableScope+Window.m`). Gathered on the first
+    /// lookup, with the titles unevaluated.
+    pub(super) fn window_title_lookup(&self, pane: PaneId) -> impl Fn(&str) -> Option<String> + '_ {
+        self.title_lookup(pane, crate::api_vars::Scope::Window, crate::wintitle::WINDOW_SESSION)
+    }
+
+    /// The names a tab's title format reads, for the tab whose focused session is `pane`: the
+    /// tab scope, and that session's names under `currentSession.` (`iTermVariableScope+Tab.m`).
+    pub(super) fn tab_title_lookup(&self, pane: PaneId) -> impl Fn(&str) -> Option<String> + '_ {
+        self.title_lookup(pane, crate::api_vars::Scope::Tab, crate::wintitle::TAB_SESSION)
+    }
+
+    fn title_lookup(&self, pane: PaneId, scope: crate::api_vars::Scope, session_prefix: &'static str) -> impl Fn(&str) -> Option<String> + '_ {
+        use crate::api_vars::{Scope, scope_values};
+        let values = std::cell::OnceCell::new();
+        move |name: &str| {
+            let (own, session) = values.get_or_init(|| {
+                let v = self.session_variables(pane, false, false);
+                (scope_values(&v, scope), scope_values(&v, Scope::Session))
+            });
+            crate::wintitle::scoped_value(name, own, session, session_prefix)
+        }
+    }
+
+    /// A window title format (Edit Window Title's or the profile's) evaluated in the window
+    /// whose current tab's focused session is `front`.
+    pub(super) fn window_title_text(&self, format: &str, front: Option<PaneId>) -> String {
+        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        match front {
+            Some(pane) => crate::wintitle::evaluate(format, &self.window_title_lookup(pane), lax),
+            None => crate::wintitle::evaluate(format, &|_: &str| None, lax),
+        }
+    }
+
+    /// A tab's title override (Edit Tab Title's or the profile's) as it shows: a format
+    /// evaluated in the tab's scope; a tmux tab's (the tmux window's name) as it is.
+    pub(super) fn tab_title_text(&self, t: &super::Tab) -> Option<String> {
+        let format = t.title.as_deref()?;
+        if self.tmux_window_of(t.focused).is_some() {
+            return Some(format.to_string());
+        }
+        let lax = self.globals.bool("laxNilPolicyInInterpolatedStrings");
+        Some(crate::wintitle::evaluate(format, &self.tab_title_lookup(t.focused), lax))
     }
 
     /// The tmux gateway and tmux window id of a tmux pane.

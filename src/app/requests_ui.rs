@@ -250,7 +250,8 @@ impl App {
     /// tab bar.
     pub(super) fn tab_look(&self, t: &Tab) -> scene::TabLook {
         use crate::tabstatus::{self, xterm_color};
-        let title = self.tmux_tab_label(t.focused).or_else(|| t.title.clone()).unwrap_or_else(|| self.session_title(t.focused));
+        // Edit Tab Title's (or the profile's) title evaluated; an empty one shows the session's.
+        let title = self.tmux_tab_label(t.focused).or_else(|| self.tab_title_text(t).filter(|t| !t.is_empty())).unwrap_or_else(|| self.session_title(t.focused));
         let panes = t.layout.panes();
         // The focused pane's status when it has one, else the best by the user's priority
         // patterns, the first on a tie (`PTYTab.m:7747-7801`).

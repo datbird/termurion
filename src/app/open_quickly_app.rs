@@ -278,8 +278,9 @@ impl App {
             current: Some(pane) == current,
             ordinal: self.focus_order.get(&pane).copied().unwrap_or(0),
             name: self.session_title(pane),
-            // An Edit Tab Title title, or the tmux window's name (both land in the tab's title).
-            tab_title: tab.title.clone(),
+            // An Edit Tab Title title as it shows, or the tmux window's name (both land in the tab's
+            // title).
+            tab_title: self.tab_title_text(tab),
             badge: self.badge_text(pane),
             commands: history.iter().map(|r| r.command.clone()).filter(|c| !c.is_empty()).collect(),
             dirs,
