@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::host_proto::{Decoder, Live, MIN_VERSION, Msg, VERSION, encode};
 use crate::pty::{Notify, Read};
+use crate::ssh_transport::Transport;
 use crate::winpipe::Pipe;
 
 /// What the host said at the handshake.
@@ -42,6 +43,10 @@ impl From<String> for HostError {
         HostError::Failed(s)
     }
 }
+
+/// `Client::launch_transport`'s answer when the host speaks a protocol older than
+/// `ssh_transport::HOST_VERSION`.
+pub const HOST_TOO_OLD: &str = "the session host is too old for this transport";
 
 /// How long a launch or an attach waits for the host's answer.
 const REPLY_WAIT: Duration = Duration::from_secs(10);
@@ -291,11 +296,27 @@ impl Client {
     /// Starts a session in the host. `env` goes over the host's environment; a host older than
     /// version 3 ignores it (the field was always on the wire).
     pub fn launch(&self, cmdline: &str, cwd: Option<&Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<HostedPty, String> {
+        self.launch_transport(Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
+    }
+
+    /// `launch` on transport `t`: Conpty sends `Launch`, any other `LaunchWith`, which only a
+    /// host speaking `ssh_transport::HOST_VERSION` or later understands; an older one gives
+    /// `Err(HOST_TOO_OLD)` and is sent nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn launch_transport(&self, t: Transport, cmdline: &str, cwd: Option<&Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<HostedPty, String> {
+        if t != Transport::Conpty && self.inner.version.load(Ordering::Acquire) < crate::ssh_transport::HOST_VERSION {
+            return Err(HOST_TOO_OLD.into());
+        }
         let tag = self.inner.next_tag.fetch_add(1, Ordering::Relaxed) as u64;
         let (tx, rx) = mpsc::channel();
         self.inner.launches.lock().unwrap().insert(tag, (tx, notify));
         let cwd = cwd.map(|d| d.display().to_string()).unwrap_or_default();
-        if let Err(e) = self.inner.send(&Msg::Launch { tag, cmdline: cmdline.into(), cwd, env: env.to_vec(), cols, rows }) {
+        let (cmdline, env) = (cmdline.to_string(), env.to_vec());
+        let m = match t {
+            Transport::Conpty => Msg::Launch { tag, cmdline, cwd, env, cols, rows },
+            _ => Msg::LaunchWith { tag, cmdline, cwd, env, cols, rows, transport: crate::ssh_transport::wire(t) },
+        };
+        if let Err(e) = self.inner.send(&m) {
             self.inner.launches.lock().unwrap().remove(&tag);
             return Err(e);
         }
@@ -596,6 +617,31 @@ mod tests {
         client.watch_prompts(Some(0.2));
         assert_eq!(old_host.join().unwrap(), Msg::WatchPrompts { debounce_ms: Some(200) }, "a version 2 message reaches it");
         client.close();
+    }
+
+    /// A version 3 host never sees LaunchWith: a transport launch is refused in Tandem, and a
+    /// ConPTY launch still goes out as Launch.
+    #[test]
+    fn a_version_three_host_is_too_old_for_a_transport() {
+        let name = crate::winpipe::tests::test_name("v3host");
+        let old_host = older_host(name.clone(), 3);
+        let (client, welcome) = Client::connect(&name, Duration::from_secs(5)).unwrap().expect("the version 3 host answers");
+        assert_eq!(welcome.version, 3);
+        let err = client.launch_transport(Transport::Passthrough, "ssh.exe host", None, &[], 80, 24, quiet()).err();
+        assert_eq!(err.as_deref(), Some(HOST_TOO_OLD));
+        client.kill_all();
+        assert_eq!(old_host.join().unwrap(), Msg::KillAll, "nothing reached the old host before KillAll");
+        client.close();
+    }
+
+    #[test]
+    fn a_transport_launch_runs_in_the_host() {
+        let (name, _host) = start_host(Duration::from_secs(1));
+        let (client, welcome) = connect(&name);
+        assert_eq!(welcome.version, crate::ssh_transport::HOST_VERSION);
+        let pty = client.launch_transport(Transport::Pipes, "cmd.exe /d /c echo client-pipes", None, &[], 80, 24, quiet()).unwrap();
+        read_until(&pty, "client-pipes");
+        client.kill_all();
     }
 
     fn connect(name: &str) -> (Client, Welcome) {

@@ -10,6 +10,7 @@ use crate::conpty::Api;
 use crate::dvr;
 use crate::layout::PaneId;
 use crate::pty::{self, Notify, Pty, Read};
+use crate::ssh_transport::Transport;
 use crate::replay;
 use crate::screen::Screen;
 
@@ -254,15 +255,28 @@ pub struct Pane {
 
 impl Pane {
     pub fn start(id: PaneId, api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
+        Pane::start_transport(id, api, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
+    }
+
+    /// `start` on an SSH transport (`ssh_transport`); `Transport::Conpty` is every other pane's.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_transport(id: PaneId, api: &Api, t: Transport, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         let (cols, rows) = (cols.max(2), rows.max(1));
-        let pty = pty::spawn_notify(api, cmdline, cwd, env, cols, rows, notify)?;
+        let pty = pty::spawn_transport(api, t, cmdline, cwd, env, cols, rows, notify)?;
         Ok(Pane::with_io(id, Io::Local(pty), cols, rows))
     }
 
     /// A pane whose shell the session host runs.
     pub fn start_hosted(id: PaneId, host: &crate::host_client::Client, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
+        Pane::start_hosted_transport(id, host, Transport::Conpty, cmdline, cwd, env, cols, rows, notify)
+    }
+
+    /// `start_hosted` on an SSH transport; a host too old for it gives
+    /// `Err(host_client::HOST_TOO_OLD)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_hosted_transport(id: PaneId, host: &crate::host_client::Client, t: Transport, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pane, String> {
         let (cols, rows) = (cols.max(2), rows.max(1));
-        let pty = host.launch(cmdline, cwd, env, cols, rows, notify)?;
+        let pty = host.launch_transport(t, cmdline, cwd, env, cols, rows, notify)?;
         Ok(Pane::with_io(id, Io::Hosted(pty), cols, rows))
     }
 

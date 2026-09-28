@@ -43,6 +43,28 @@ pub fn label(t: Transport) -> &'static str {
 /// with no resize, so they are not used.
 pub const CHOSEN: Transport = Transport::Passthrough;
 
+/// The session host protocol that carries a transport (`host_proto::Msg::LaunchWith`).
+pub const HOST_VERSION: u32 = 4;
+
+/// `t` on the session host's wire.
+pub fn wire(t: Transport) -> u8 {
+    match t {
+        Transport::Conpty => 0,
+        Transport::Passthrough => 1,
+        Transport::Pipes => 2,
+    }
+}
+
+/// The transport a wire byte names; None for one this build does not know.
+pub fn from_wire(b: u8) -> Option<Transport> {
+    match b {
+        0 => Some(Transport::Conpty),
+        1 => Some(Transport::Passthrough),
+        2 => Some(Transport::Pipes),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +75,16 @@ mod tests {
         assert_eq!(PASSTHROUGH_FLAG, 8);
         assert_eq!(ORDER.map(conpty_flags), [Some(8), Some(0), None]);
         assert_eq!(ORDER.map(label), ["passthrough", "conpty", "pipes"]);
+    }
+
+    #[test]
+    fn wire_round_trips() {
+        for t in ORDER {
+            assert_eq!(from_wire(wire(t)), Some(t), "{}", label(t));
+        }
+        assert_eq!(wire(Transport::Conpty), 0);
+        assert_eq!(ORDER.map(wire), [1, 0, 2]);
+        assert_eq!(from_wire(3), None);
+        assert_eq!(HOST_VERSION, 4);
     }
 }

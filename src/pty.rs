@@ -9,7 +9,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{BOOL, CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    BOOL, CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
+};
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{
     AttachConsole, COORD, CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, FreeConsole, GetConsoleMode, GetStdHandle, HPCON, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
@@ -18,13 +20,14 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
     GetCurrentProcess, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
     STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use crate::conpty::Api;
+use crate::ssh_transport::Transport;
 
 /// One console attach at a time (Send Signal's events, password prompt mode reads, the write
 /// side), and never across a pseudoconsole close: `Pty::drop` holds the read side, because
@@ -150,6 +153,7 @@ pub fn console_mode_unless(pid: u32, paused: &std::sync::atomic::AtomicBool) -> 
 
 pub struct Pty {
     api: Api,
+    /// 0 for a pipes-only child (`Transport::Pipes`): no pseudoconsole to resize, clear or close.
     hpc: HPCON,
     /// Input goes through a writer thread, so a child that is slow to read never
     /// blocks the caller. Dropping the sender ends the thread, which closes the pipe.
@@ -214,10 +218,30 @@ pub fn spawn_flags(api: &Api, cmdline: &str, flags: u32, cols: u16, rows: u16) -
     spawn_with(api, cmdline, None, &[], flags, cols, rows, Arc::new(|| {}))
 }
 
+/// Starts `cmdline` on transport `t`: Passthrough and Conpty in a pseudoconsole created with
+/// `ssh_transport::conpty_flags`, Pipes on two anonymous pipes with no console (a `Pty` with no
+/// pseudoconsole: resize and clear do nothing). `cwd` and `env` as `spawn_notify`.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_transport(api: &Api, t: Transport, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
+    match crate::ssh_transport::conpty_flags(t) {
+        Some(flags) => spawn_with(api, cmdline, cwd, env, flags, cols, rows, notify),
+        None => {
+            check_size(cols, rows)?;
+            let (input, output, process) = unsafe { start_pipes(cmdline, cwd, env)? };
+            assemble(api, 0, input, output, process, notify)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spawn_with(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[String], flags: u32, cols: u16, rows: u16, notify: Notify) -> Result<Pty, String> {
     check_size(cols, rows)?;
     let (hpc, input, output, process) = unsafe { start(api, cmdline, cwd, env, flags, cols, rows)? };
+    assemble(api, hpc, input, output, process, notify)
+}
+
+/// The `Pty` around a started child: its reader and writer threads and its exit watch.
+fn assemble(api: &Api, hpc: HPCON, input: HANDLE, output: HANDLE, process: HANDLE, notify: Notify) -> Result<Pty, String> {
     let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (rx, reader_done, reader) = start_reader(output, notify.clone(), paused.clone());
     let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -311,13 +335,8 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[
         si.lpAttributeList = attrs;
         let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
         let mut cmd: Vec<u16> = OsStr::new(cmdline).encode_wide().chain(Some(0)).collect();
-        let dir: Option<Vec<u16>> = cwd.map(|d| d.as_os_str().encode_wide().chain(Some(0)).collect());
-        // The null environment (inherit ours) unless there is something to add. Never logged:
-        // it can hold the session's API cookie.
-        let block: Option<Vec<u16>> = (!env.is_empty()).then(|| {
-            let ours = std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect();
-            crate::session_env::block(&crate::session_env::merge(ours, env))
-        });
+        let dir = wide_dir(cwd);
+        let block = env_block(env);
         let creation = if block.is_some() { EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT } else { EXTENDED_STARTUPINFO_PRESENT };
         let ok = CreateProcessW(
             null(),
@@ -337,6 +356,112 @@ unsafe fn start(api: &Api, cmdline: &str, cwd: Option<&std::path::Path>, env: &[
         }
         CloseHandle(pi.hThread);
         Ok((hpc, in_write, out_read, pi.hProcess))
+    }
+}
+
+/// `cwd` as a null-terminated wide string for CreateProcessW.
+fn wide_dir(cwd: Option<&std::path::Path>) -> Option<Vec<u16>> {
+    cwd.map(|d| d.as_os_str().encode_wide().chain(Some(0)).collect())
+}
+
+/// The null environment (inherit ours) unless there is something to add. Never logged: it can
+/// hold the session's API cookie.
+fn env_block(env: &[String]) -> Option<Vec<u16>> {
+    (!env.is_empty()).then(|| {
+        let ours = std::env::vars_os().map(|(k, v)| (k.to_string_lossy().into_owned(), v.to_string_lossy().into_owned())).collect();
+        crate::session_env::block(&crate::session_env::merge(ours, env))
+    })
+}
+
+/// Starts the child on two anonymous pipes with no console (`Transport::Pipes`): its stdin is
+/// the input pipe, its stdout and stderr the output pipe. Only those two ends are inherited
+/// (a handle list), and they are inheritable only until the child has them. Returns (our input
+/// write end, our output read end, child process).
+unsafe fn start_pipes(cmdline: &str, cwd: Option<&std::path::Path>, env: &[String]) -> Result<(HANDLE, HANDLE, HANDLE), String> {
+    unsafe {
+        let (mut in_read, mut in_write): (HANDLE, HANDLE) = (null_mut(), null_mut());
+        let (mut out_read, mut out_write): (HANDLE, HANDLE) = (null_mut(), null_mut());
+        if CreatePipe(&mut in_read, &mut in_write, null(), 0) == 0 {
+            return Err(os_err("CreatePipe (input)"));
+        }
+        if CreatePipe(&mut out_read, &mut out_write, null(), 0) == 0 {
+            CloseHandle(in_read);
+            CloseHandle(in_write);
+            return Err(os_err("CreatePipe (output)"));
+        }
+        // The child's ends are closed here whatever happens; ours only on a failure.
+        let fail = |msg: String| {
+            for h in [in_read, in_write, out_read, out_write] {
+                CloseHandle(h);
+            }
+            Err(msg)
+        };
+        let theirs = [in_read, out_write];
+        for h in theirs {
+            if SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
+                return fail(os_err("SetHandleInformation"));
+            }
+        }
+
+        let mut attr_size = 0usize;
+        // This first call fails on purpose. It only reports the size to allocate.
+        InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut attr_size);
+        let mut attr_buf = vec![0u8; attr_size];
+        let attrs = attr_buf.as_mut_ptr() as LPPROC_THREAD_ATTRIBUTE_LIST;
+        if InitializeProcThreadAttributeList(attrs, 1, 0, &mut attr_size) == 0 {
+            return fail(os_err("InitializeProcThreadAttributeList"));
+        }
+        // The value is the array of handles; it must outlive the attribute list.
+        if UpdateProcThreadAttribute(
+            attrs,
+            0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+            theirs.as_ptr() as *const core::ffi::c_void,
+            std::mem::size_of_val(&theirs),
+            null_mut(),
+            null(),
+        ) == 0
+        {
+            DeleteProcThreadAttributeList(attrs);
+            return fail(os_err("UpdateProcThreadAttribute"));
+        }
+
+        let mut si: STARTUPINFOEXW = std::mem::zeroed();
+        si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = in_read;
+        si.StartupInfo.hStdOutput = out_write;
+        si.StartupInfo.hStdError = out_write;
+        si.lpAttributeList = attrs;
+        let mut pi: PROCESS_INFORMATION = std::mem::zeroed();
+        let mut cmd: Vec<u16> = OsStr::new(cmdline).encode_wide().chain(Some(0)).collect();
+        let dir = wide_dir(cwd);
+        let block = env_block(env);
+        let mut creation = EXTENDED_STARTUPINFO_PRESENT | DETACHED_PROCESS;
+        if block.is_some() {
+            creation |= CREATE_UNICODE_ENVIRONMENT;
+        }
+        let ok = CreateProcessW(
+            null(),
+            cmd.as_mut_ptr(),
+            null(),
+            null(),
+            1,
+            creation,
+            block.as_ref().map_or(null(), |b| b.as_ptr() as *const core::ffi::c_void),
+            dir.as_ref().map_or(null(), |d| d.as_ptr()),
+            &si.StartupInfo,
+            &mut pi,
+        );
+        DeleteProcThreadAttributeList(attrs);
+        if ok == 0 {
+            return fail(os_err(&format!("CreateProcessW ({cmdline})")));
+        }
+        CloseHandle(pi.hThread);
+        // The child has its own copies now.
+        CloseHandle(in_read);
+        CloseHandle(out_write);
+        Ok((in_write, out_read, pi.hProcess))
     }
 }
 
@@ -418,6 +543,9 @@ impl Pty {
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<(), String> {
         check_size(cols, rows)?;
+        if self.hpc == 0 {
+            return Ok(());
+        }
         let hr = unsafe { (self.api.resize)(self.hpc, coord(cols, rows)) };
         if hr != 0 {
             return Err(format!("ResizePseudoConsole failed: HRESULT {hr:#010x}"));
@@ -427,6 +555,9 @@ impl Pty {
 
     /// Clears ConPTY's own buffer, keeping the cursor row, so it matches a cleared screen.
     pub fn clear(&self) -> Result<(), String> {
+        if self.hpc == 0 {
+            return Ok(());
+        }
         let Some(clear) = self.api.clear else {
             return Err("the Windows copy of ConPTY cannot clear its buffer".to_string());
         };
@@ -536,6 +667,11 @@ impl Pty {
     fn force_reader_stop(&self, reader: &JoinHandle<()>) -> bool {
         eprintln!("tandem: ConPTY ignored the close; ending the child");
         unsafe { TerminateProcess(self.process, 1) };
+        self.cancel_reader(reader)
+    }
+
+    /// Cancels the reader's blocked read until the reader exits. False if it never does.
+    fn cancel_reader(&self, reader: &JoinHandle<()>) -> bool {
         let thread = reader.as_raw_handle() as HANDLE;
         for _ in 0..50 {
             // A cancel only hits a read in progress, so repeat it until the reader is out.
@@ -548,8 +684,33 @@ impl Pty {
     }
 }
 
+impl Pty {
+    /// Drop for a pipes-only child: closing its stdin lets it end on its own; after
+    /// `CLOSE_WAIT` it is ended. A grandchild may still hold the output pipe, so the reader's
+    /// read is cancelled when it does not end.
+    fn drop_pipes(&mut self) {
+        self.set_paused(false);
+        self.writer.take();
+        if unsafe { WaitForSingleObject(self.process, CLOSE_WAIT.as_millis() as u32) } != WAIT_OBJECT_0 {
+            unsafe { TerminateProcess(self.process, 1) };
+        }
+        if let Some(reader) = self.reader.take() {
+            if self.reader_done.recv_timeout(CLOSE_WAIT).is_err() && !self.cancel_reader(&reader) {
+                eprintln!("tandem: the pipes reader did not stop; leaving it running");
+                unsafe { CloseHandle(self.process) };
+                return;
+            }
+            let _ = reader.join();
+        }
+        unsafe { CloseHandle(self.process) };
+    }
+}
+
 impl Drop for Pty {
     fn drop(&mut self) {
+        if self.hpc == 0 {
+            return self.drop_pipes();
+        }
         // No attach while the pseudoconsole closes (it would end this process), and the
         // messages below never land in an attached console.
         let _console = CONSOLE.read().unwrap_or_else(|e| e.into_inner());
@@ -958,5 +1119,68 @@ pub(crate) mod tests {
             assert!(start.elapsed() < secs(5), "{}: drop took {:?}", api.source.label(), start.elapsed());
         }
     }
-}
 
+    /// The flags the last `fake_create` was given.
+    static CREATE_FLAGS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    unsafe extern "system" fn fake_create(_: COORD, _: HANDLE, _: HANDLE, flags: u32, _: *mut HPCON) -> windows_sys::core::HRESULT {
+        CREATE_FLAGS.store(flags, Ordering::SeqCst);
+        0x80004005u32 as i32
+    }
+
+    unsafe extern "system" fn fake_resize(_: HPCON, _: COORD) -> windows_sys::core::HRESULT {
+        0
+    }
+
+    unsafe extern "system" fn fake_close(_: HPCON) {}
+
+    #[test]
+    fn flags_reach_create_pseudo_console() {
+        use crate::ssh_transport::Transport;
+        let fake = Api { source: Source::Inbox, create: fake_create, resize: fake_resize, close: fake_close, clear: None };
+        let quiet: Notify = Arc::new(|| {});
+        let err = spawn_transport(&fake, Transport::Passthrough, "cmd.exe", None, &[], 80, 24, quiet.clone()).err().unwrap();
+        assert!(err.contains("0x80004005"), "{err}");
+        assert_eq!(CREATE_FLAGS.load(Ordering::SeqCst), 8);
+        CREATE_FLAGS.store(u32::MAX, Ordering::SeqCst);
+        let err = spawn_transport(&fake, Transport::Conpty, "cmd.exe", None, &[], 80, 24, quiet).err().unwrap();
+        assert!(err.contains("0x80004005"), "{err}");
+        assert_eq!(CREATE_FLAGS.load(Ordering::SeqCst), 0);
+    }
+
+    fn pipes(cmdline: &str) -> Pty {
+        spawn_transport(&shipped(), crate::ssh_transport::Transport::Pipes, cmdline, None, &[], 80, 24, Arc::new(|| {})).unwrap()
+    }
+
+    #[test]
+    fn pipes_pty_runs_a_child() {
+        let p = pipes("cmd.exe /d /c echo tandem-pipes");
+        p.read_until(b"tandem-pipes", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+        assert_eq!(p.wait_exit(secs(10)), Some(0));
+        assert_eq!(p.resize(100, 30), Ok(()));
+        assert_eq!(p.clear(), Ok(()));
+        assert!(p.pid() > 0);
+    }
+
+    #[test]
+    fn pipes_pty_takes_input() {
+        let p = pipes("cmd.exe /d /v:on /c \"set /p x=&echo got!x!\"");
+        p.write(b"abc\r\n").unwrap();
+        p.read_until(b"gotabc", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+    }
+
+    #[test]
+    fn pipes_pty_drop_ends_a_child() {
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+        let p = pipes("cmd.exe /d /c pause");
+        p.read_until(b"Press any key", secs(10)).unwrap_or_else(|got| panic!("{:?}", text(&got)));
+        assert_eq!(p.exit_code(), None, "pause waits for its input");
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, p.pid()) };
+        assert!(!handle.is_null(), "{}", os_err("OpenProcess"));
+        let start = Instant::now();
+        drop(p);
+        let ended = unsafe { WaitForSingleObject(handle, 3000) } == WAIT_OBJECT_0;
+        unsafe { CloseHandle(handle) };
+        assert!(ended && start.elapsed() < secs(3), "the child still ran {:?} after the drop", start.elapsed());
+    }
+}
