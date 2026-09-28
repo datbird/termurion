@@ -1,15 +1,17 @@
-//! The AI transport on WinHTTP (ruling 4): one worker thread per call runs a synchronous WinHTTP
-//! request with the system proxy and TLS, posts each read as it arrives and ends with `Done`.
-//! Cancelling a call closes its request handle, which aborts the worker's blocking call; nothing
-//! is posted after a cancel. The idle timeout is kept by a watchdog that closes the handle the
-//! same way, because a synchronous `WinHttpQueryDataAvailable` waits for the next chunk past
-//! WinHTTP's own receive timeout. Ports `AITerm/JSFetch.swift` (`JF:35-173`).
+//! The AI transport on WinHTTP (ruling 4): one worker thread per call runs an asynchronous
+//! WinHTTP request with the system proxy and TLS, posts each read as it arrives and ends with
+//! `Done`. Every WinHTTP call on the request handle is made under the call's lock, and cancel
+//! closes the handle under the same lock, so no call ever receives a closed handle value (the
+//! calls return at once in asynchronous mode, so the lock is never held across a wait). The
+//! worker waits for WinHTTP's notifications with the idle time as its limit, which is iTerm2's
+//! idle timeout between bytes. A redirect is followed only to the host the consent gate checked.
+//! Ports `AITerm/JSFetch.swift` (`JF:35-173`).
 
 use crate::ai_transport::{invalid_url_events, parse_url, Call, Delivery, HttpEvent, HttpRequest, Notify, Options, Proxy, Target, Transport};
+use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::GetLastError;
@@ -20,55 +22,73 @@ use windows_sys::Win32::Networking::WinHttp::*;
 const DECOMPRESSION_ALL: u32 = WINHTTP_DECOMPRESSION_FLAG_GZIP | WINHTTP_DECOMPRESSION_FLAG_DEFLATE;
 /// Each read's buffer.
 const READ_SIZE: usize = 64 * 1024;
+/// The redirects one request follows (WinHTTP's own default limit).
+const MAX_REDIRECTS: usize = 10;
+/// How long the worker waits for WinHTTP to confirm a closed request handle before it closes the
+/// connection and the session anyway.
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
+/// The notifications the worker waits for; `HANDLE_CLOSING` releases the handle's context.
+const NOTIFICATIONS: u32 = WINHTTP_CALLBACK_FLAG_SENDREQUEST_COMPLETE
+    | WINHTTP_CALLBACK_FLAG_HEADERS_AVAILABLE
+    | WINHTTP_CALLBACK_FLAG_DATA_AVAILABLE
+    | WINHTTP_CALLBACK_FLAG_READ_COMPLETE
+    | WINHTTP_CALLBACK_FLAG_REQUEST_ERROR
+    | WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING;
+
+/// NSURLError's text for too many redirects.
+pub const TOO_MANY_REDIRECTS: &str = "too many HTTP redirects";
+
+/// A redirect the transport refuses to follow: the request would leave the host the consent gate
+/// checked, or go from https to plain http.
+pub fn redirect_refused(to: &str) -> String {
+    format!("A redirect to {to} was not followed.")
+}
 
 /// The WinHTTP transport.
 pub struct WinHttp;
 
-/// What a call and its worker share.
-struct Shared {
-    cancelled: AtomicBool,
-    /// The watchdog closed the request because no byte came within the idle time.
-    timed_out: AtomicBool,
-    /// The request handle while the worker has one; whoever takes it closes it, exactly once.
-    request: Mutex<Option<usize>>,
-    watch: Mutex<Watch>,
-    wake: Condvar,
+/// The open request handle and why the call stopped.
+struct Slot {
+    request: Option<usize>,
+    cancelled: bool,
+    timed_out: bool,
 }
 
-/// The idle clock: the last sign of progress, and whether the worker is done.
-struct Watch {
-    last: Instant,
-    done: bool,
-}
-
-impl Shared {
-    /// Takes and closes the request handle, if nobody has yet.
-    fn close_request(&self) {
-        if let Some(h) = self.request.lock().unwrap_or_else(|e| e.into_inner()).take() {
+impl Slot {
+    /// Closes and forgets the request handle, if it is open.
+    fn close(&mut self) {
+        if let Some(h) = self.request.take() {
             unsafe { WinHttpCloseHandle(h as *mut c_void) };
         }
     }
+}
 
-    /// Progress: the idle time starts again.
-    fn pet(&self) {
-        self.watch.lock().unwrap_or_else(|e| e.into_inner()).last = Instant::now();
+/// Called by the worker before each WinHTTP call on the request handle, with the step's index.
+#[cfg(test)]
+type Hook = Box<dyn Fn(usize, &Arc<Shared>) + Send + Sync>;
+
+/// What a call and its worker share.
+struct Shared {
+    slot: Mutex<Slot>,
+    #[cfg(test)]
+    hook: Option<Hook>,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, Slot> {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Closes the request once `idle` passes without progress (URLSession's
-    /// `timeoutIntervalForRequest`, `JF:131-140`); returns when the worker is done.
-    fn watchdog(&self, idle: Duration) {
-        let mut w = self.watch.lock().unwrap_or_else(|e| e.into_inner());
-        while !w.done {
-            let now = Instant::now();
-            let deadline = w.last + idle;
-            if now >= deadline {
-                self.timed_out.store(true, Ordering::SeqCst);
-                drop(w);
-                self.close_request();
-                return;
-            }
-            w = self.wake.wait_timeout(w, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
-        }
+    /// Stops the call: the request handle is closed at once, which ends WinHTTP's pending
+    /// operation, and nothing is posted afterwards.
+    fn cancel(&self) {
+        let mut s = self.lock();
+        s.cancelled = true;
+        s.close();
+    }
+
+    fn cancelled(&self) -> bool {
+        self.lock().cancelled
     }
 }
 
@@ -78,26 +98,18 @@ struct WinCall {
     /// Read only by the tests' `finished`: a dropped call never waits for its worker.
     #[cfg_attr(not(test), allow(dead_code))]
     thread: Option<JoinHandle<()>>,
-    cancelled: bool,
 }
 
 impl Call for WinCall {
     fn try_event(&mut self) -> Option<HttpEvent> {
-        if self.cancelled {
+        if self.shared.cancelled() {
             return None;
         }
         self.events.try_recv().ok()
     }
 
     fn cancel(&mut self) {
-        if self.cancelled {
-            return;
-        }
-        self.cancelled = true;
-        self.shared.cancelled.store(true, Ordering::SeqCst);
-        // Closing the handle from this thread aborts the worker's blocking call
-        // (ERROR_WINHTTP_OPERATION_CANCELLED).
-        self.shared.close_request();
+        self.shared.cancel();
     }
 
     #[cfg(test)]
@@ -109,35 +121,37 @@ impl Call for WinCall {
 impl Drop for WinCall {
     /// A call nobody reads any more stops.
     fn drop(&mut self) {
-        self.cancel();
+        self.shared.cancel();
     }
 }
 
 impl Transport for WinHttp {
     fn start(&self, request: HttpRequest, options: Options, notify: Notify) -> Box<dyn Call> {
-        let shared = Arc::new(Shared {
-            cancelled: AtomicBool::new(false),
-            timed_out: AtomicBool::new(false),
-            request: Mutex::new(None),
-            watch: Mutex::new(Watch { last: Instant::now(), done: false }),
-            wake: Condvar::new(),
-        });
-        let (tx, rx) = channel();
-        let thread = match parse_url(&request.url) {
-            Err(_) => {
-                for e in invalid_url_events() {
-                    let _ = tx.send(e);
-                }
-                notify();
-                None
-            }
-            Ok(target) => {
-                let worker = Worker { shared: shared.clone(), tx, notify };
-                Some(std::thread::spawn(move || worker.run(&request, &target, &options)))
-            }
-        };
-        Box::new(WinCall { events: rx, shared, thread, cancelled: false })
+        start_call(request, options, notify, Shared { slot: new_slot(), #[cfg(test)] hook: None })
     }
+}
+
+fn new_slot() -> Mutex<Slot> {
+    Mutex::new(Slot { request: None, cancelled: false, timed_out: false })
+}
+
+fn start_call(request: HttpRequest, options: Options, notify: Notify, shared: Shared) -> Box<dyn Call> {
+    let shared = Arc::new(shared);
+    let (tx, rx) = channel();
+    let thread = match parse_url(&request.url) {
+        Err(_) => {
+            for e in invalid_url_events() {
+                let _ = tx.send(e);
+            }
+            notify();
+            None
+        }
+        Ok(target) => {
+            let worker = Worker { shared: shared.clone(), tx, notify, idle: options.idle, step: std::cell::Cell::new(0) };
+            Some(std::thread::spawn(move || worker.run(&request, &target, &options)))
+        }
+    };
+    Box::new(WinCall { events: rx, shared, thread })
 }
 
 /// A NUL-terminated UTF-16 copy.
@@ -160,54 +174,212 @@ fn last_error() -> u32 {
     unsafe { GetLastError() }
 }
 
+/// A WinHTTP notification, as the worker sees it.
+enum Note {
+    Sent,
+    Headers,
+    Data(u32),
+    Read(u32),
+    Error(u32),
+    Closing,
+}
+
+/// What one request handle's notifications need; owned by WinHTTP (through the handle's context
+/// value) until `HANDLE_CLOSING`, so the body and the read buffer outlive every pending
+/// operation, even one a cancel abandons.
+struct Context {
+    notes: Mutex<Sender<Note>>,
+    body: Vec<u8>,
+    buf: UnsafeCell<Vec<u8>>,
+}
+
+// WinHTTP writes `buf` only while a read is pending, and the worker reads it only after that
+// read's `READ_COMPLETE`.
+unsafe impl Sync for Context {}
+
+/// WinHTTP's status callback, on WinHTTP's threads or inside a call on the worker's.
+unsafe extern "system" fn on_status(_h: *mut c_void, context: usize, status: u32, info: *mut c_void, len: u32) {
+    if context == 0 {
+        return;
+    }
+    // SAFETY: `context` is the `Arc<Context>` pointer `Worker::open` gave WinHTTP; it stays
+    // alive until the `HANDLE_CLOSING` below, WinHTTP's last notification for the handle, and
+    // `info` is the notification's documented payload.
+    let ctx = unsafe { &*(context as *const Context) };
+    let note = match status {
+        WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE => Note::Sent,
+        WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE => Note::Headers,
+        WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE => Note::Data(unsafe { *(info as *const u32) }),
+        WINHTTP_CALLBACK_STATUS_READ_COMPLETE => Note::Read(len),
+        WINHTTP_CALLBACK_STATUS_REQUEST_ERROR => Note::Error(unsafe { (*(info as *const WINHTTP_ASYNC_RESULT)).dwError }),
+        WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING => {
+            let _ = ctx.notes.lock().unwrap_or_else(|e| e.into_inner()).send(Note::Closing);
+            // The last notification for this handle: WinHTTP's reference goes.
+            drop(unsafe { Arc::from_raw(context as *const Context) });
+            return;
+        }
+        _ => return,
+    };
+    let _ = ctx.notes.lock().unwrap_or_else(|e| e.into_inner()).send(note);
+}
+
+/// One request handle: the worker's share of its context and its notifications.
+struct Hop {
+    ctx: Arc<Context>,
+    notes: Receiver<Note>,
+    /// Until `HANDLE_CLOSING` arrives.
+    open: bool,
+}
+
+/// Why an exchange stopped.
+enum Fail {
+    Code(u32),
+    Text(String),
+    Stopped,
+}
+
+/// How one request handle ended: the final response was read, or it redirects.
+enum HopEnd {
+    Done,
+    Redirect(u32, String),
+}
+
 struct Worker {
     shared: Arc<Shared>,
     tx: Sender<HttpEvent>,
     notify: Notify,
+    idle: Duration,
+    #[cfg_attr(not(test), allow(dead_code))]
+    step: std::cell::Cell<usize>,
 }
 
 impl Worker {
-    fn cancelled(&self) -> bool {
-        self.shared.cancelled.load(Ordering::SeqCst)
-    }
-
     fn post(&self, event: HttpEvent) {
-        if !self.cancelled() && self.tx.send(event).is_ok() {
+        if !self.shared.cancelled() && self.tx.send(event).is_ok() {
             (self.notify)();
         }
     }
 
     fn run(self, request: &HttpRequest, target: &Target, options: &Options) {
-        let watchdog = (!options.idle.is_zero()).then(|| {
-            let (shared, idle) = (self.shared.clone(), options.idle);
-            std::thread::spawn(move || shared.watchdog(idle))
-        });
         let mut delivery = Delivery::new(0, request.stream);
-        let mut failure = self.exchange(request, target, options, &mut delivery).err();
-        self.shared.watch.lock().unwrap_or_else(|e| e.into_inner()).done = true;
-        self.shared.wake.notify_all();
-        if let Some(w) = watchdog {
-            let _ = w.join();
-        }
-        // The worker closes the request handle unless a cancel or the watchdog already did.
-        self.shared.close_request();
-        if self.cancelled() {
+        let result = self.exchange(request, target, options, &mut delivery);
+        let slot = self.shared.lock();
+        if slot.cancelled {
             return;
         }
-        // The watchdog's close fails the blocking call with "cancelled"; a call that completed
-        // just before the watchdog fired keeps its success.
-        if failure.is_some() && self.shared.timed_out.load(Ordering::SeqCst) {
-            failure = Some(ERROR_WINHTTP_TIMEOUT);
-        }
-        let text = failure.map(error_text);
+        let text = match result {
+            Ok(()) => None,
+            Err(_) if slot.timed_out => Some(error_text(ERROR_WINHTTP_TIMEOUT)),
+            Err(Fail::Code(code)) => Some(error_text(code)),
+            Err(Fail::Text(text)) => Some(text),
+            Err(Fail::Stopped) => Some(error_text(ERROR_WINHTTP_OPERATION_CANCELLED)),
+        };
+        drop(slot);
         for event in delivery.done(text.as_deref()) {
             self.post(event);
         }
     }
 
-    /// The request from open to the last read; Err is the WinHTTP error code.
-    fn exchange(&self, request: &HttpRequest, target: &Target, options: &Options, delivery: &mut Delivery) -> Result<(), u32> {
-        let check = |ok: i32| if ok != 0 { Ok(()) } else { Err(last_error()) };
+    /// One WinHTTP call on the open request handle, made under the lock; `f` returns the call's
+    /// BOOL. Stopped once the call was cancelled or timed out, whose close took the handle.
+    fn call(&self, f: impl FnOnce(*mut c_void) -> i32) -> Result<(), Fail> {
+        #[cfg(test)]
+        {
+            let n = self.step.get();
+            self.step.set(n + 1);
+            if let Some(hook) = &self.shared.hook {
+                hook(n, &self.shared);
+            }
+        }
+        let slot = self.shared.lock();
+        let Some(h) = slot.request.filter(|_| !slot.cancelled) else {
+            return Err(Fail::Stopped);
+        };
+        if f(h as *mut c_void) != 0 {
+            Ok(())
+        } else {
+            Err(Fail::Code(last_error()))
+        }
+    }
+
+    /// The next notification `want` accepts; the idle time bounds each wait (`JF:131-140`).
+    fn wait(&self, hop: &mut Hop, want: impl Fn(&Note) -> Option<u32>) -> Result<u32, Fail> {
+        loop {
+            let note = if self.idle.is_zero() { hop.notes.recv().map_err(|_| RecvTimeoutError::Disconnected) } else { hop.notes.recv_timeout(self.idle) };
+            match note {
+                Err(RecvTimeoutError::Timeout) => {
+                    let mut s = self.shared.lock();
+                    s.timed_out = true;
+                    s.close();
+                    return Err(Fail::Code(ERROR_WINHTTP_TIMEOUT));
+                }
+                Err(RecvTimeoutError::Disconnected) => return Err(Fail::Stopped),
+                Ok(Note::Closing) => {
+                    hop.open = false;
+                    return Err(Fail::Stopped);
+                }
+                Ok(Note::Error(code)) => return Err(Fail::Code(code)),
+                Ok(note) => {
+                    if let Some(v) = want(&note) {
+                        return Ok(v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A request handle on `connect` with its callback and context, placed in the slot (or
+    /// closed at once when the call was already cancelled).
+    fn open(&self, connect: *mut c_void, method: &str, target: &Target, body: Vec<u8>) -> Result<Hop, Fail> {
+        let (tx, notes) = channel();
+        let ctx = Arc::new(Context { notes: Mutex::new(tx), body, buf: UnsafeCell::new(vec![0u8; READ_SIZE]) });
+        let (verb, path) = (wide(method), wide(&target.path));
+        let secure = if target.secure { WINHTTP_FLAG_SECURE } else { 0 };
+        let handle = unsafe { WinHttpOpenRequest(connect, verb.as_ptr(), path.as_ptr(), std::ptr::null(), std::ptr::null(), std::ptr::null(), secure) };
+        if handle.is_null() {
+            return Err(Fail::Code(last_error()));
+        }
+        let previous = unsafe { WinHttpSetStatusCallback(handle, Some(on_status), NOTIFICATIONS, 0) };
+        if previous.map_or(0, |f| f as usize) == usize::MAX {
+            let code = last_error();
+            unsafe { WinHttpCloseHandle(handle) };
+            return Err(Fail::Code(code));
+        }
+        let raw = Arc::into_raw(ctx.clone()) as usize;
+        if unsafe { WinHttpSetOption(handle, WINHTTP_OPTION_CONTEXT_VALUE, (&raw as *const usize).cast(), std::mem::size_of::<usize>() as u32) } == 0 {
+            let code = last_error();
+            // WinHTTP never took the context, so its closing notification carries none.
+            unsafe {
+                drop(Arc::from_raw(raw as *const Context));
+                WinHttpCloseHandle(handle);
+            }
+            return Err(Fail::Code(code));
+        }
+        let mut s = self.shared.lock();
+        if s.cancelled {
+            unsafe { WinHttpCloseHandle(handle) };
+        } else {
+            s.request = Some(handle as usize);
+        }
+        Ok(Hop { ctx, notes, open: true })
+    }
+
+    /// Closes the hop's request handle if it is still open and waits for WinHTTP to let go of
+    /// its context, so the connection and the session close after their child.
+    fn finish(&self, hop: &mut Hop) {
+        self.shared.lock().close();
+        let deadline = Instant::now() + CLOSE_WAIT;
+        while hop.open {
+            match hop.notes.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(Note::Closing) | Err(_) => hop.open = false,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    /// The request from open to the last read, following redirects to the gated host only.
+    fn exchange(&self, request: &HttpRequest, target: &Target, options: &Options, delivery: &mut Delivery) -> Result<(), Fail> {
+        let check = |ok: i32| if ok != 0 { Ok(()) } else { Err(Fail::Code(last_error())) };
         let agent = wide("Tandem");
         let proxy_name = match &options.proxy {
             Proxy::HttpsOnly { host, port } => Some(wide(&format!("https={host}:{port}"))),
@@ -219,37 +391,55 @@ impl Worker {
             Proxy::Off => WINHTTP_ACCESS_TYPE_NO_PROXY,
         };
         let proxy_ptr = proxy_name.as_ref().map_or(std::ptr::null(), |p| p.as_ptr());
-        let session = Owned(unsafe { WinHttpOpen(agent.as_ptr(), access, proxy_ptr, std::ptr::null(), 0) });
+        let session = Owned(unsafe { WinHttpOpen(agent.as_ptr(), access, proxy_ptr, std::ptr::null(), WINHTTP_FLAG_ASYNC) });
         if session.0.is_null() {
-            return Err(last_error());
+            return Err(Fail::Code(last_error()));
         }
-        // WinHTTP's own timeouts bound name resolution, connecting, sending and the wait for the
-        // headers; the watchdog bounds the wait for each chunk.
+        // WinHTTP's own timeouts bound name resolution, connecting, sending and receiving; the
+        // worker's wait bounds the time between notifications.
         let t = if options.idle.is_zero() { 0 } else { options.idle.as_millis().clamp(1, i32::MAX as u128) as i32 };
         check(unsafe { WinHttpSetTimeouts(session.0, t, t, t, t) })?;
+        // Optional: without it a compressed answer arrives as sent, which no AI server does
+        // unasked.
         let flags = DECOMPRESSION_ALL;
         unsafe { WinHttpSetOption(session.0, WINHTTP_OPTION_DECOMPRESSION, (&flags as *const u32).cast(), 4) };
+        // WinHTTP would follow a redirect to any host with the key headers; the worker follows
+        // them itself, to the gated host only.
+        let never = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+        check(unsafe { WinHttpSetOption(session.0, WINHTTP_OPTION_REDIRECT_POLICY, (&never as *const u32).cast(), 4) })?;
 
-        let host = wide(&target.host);
-        let connect = Owned(unsafe { WinHttpConnect(session.0, host.as_ptr(), target.port, 0) });
-        if connect.0.is_null() {
-            return Err(last_error());
-        }
-        let (verb, path) = (wide(request.method), wide(&target.path));
-        let secure = if target.secure { WINHTTP_FLAG_SECURE } else { 0 };
-        let handle = unsafe { WinHttpOpenRequest(connect.0, verb.as_ptr(), path.as_ptr(), std::ptr::null(), std::ptr::null(), std::ptr::null(), secure) };
-        if handle.is_null() {
-            return Err(last_error());
-        }
-        {
-            let mut slot = self.shared.request.lock().unwrap_or_else(|e| e.into_inner());
-            if self.cancelled() || self.shared.timed_out.load(Ordering::SeqCst) {
-                unsafe { WinHttpCloseHandle(handle) };
-                return Err(ERROR_WINHTTP_TIMEOUT);
+        let (mut target, mut method, mut body) = (target.clone(), request.method, request.body.clone());
+        let mut redirects = 0;
+        loop {
+            let host = wide(&target.host);
+            let connect = Owned(unsafe { WinHttpConnect(session.0, host.as_ptr(), target.port, 0) });
+            if connect.0.is_null() {
+                return Err(Fail::Code(last_error()));
             }
-            *slot = Some(handle as usize);
+            let mut hop = self.open(connect.0, method, &target, body.clone())?;
+            let end = self.hop(&mut hop, request, delivery);
+            self.finish(&mut hop);
+            drop(connect);
+            let (status, location) = match end? {
+                HopEnd::Done => return Ok(()),
+                HopEnd::Redirect(status, location) => (status, location),
+            };
+            if redirects == MAX_REDIRECTS {
+                return Err(Fail::Text(TOO_MANY_REDIRECTS.to_string()));
+            }
+            redirects += 1;
+            target = follow(&target, &location).map_err(Fail::Text)?;
+            // URLSession, as browsers: 303, and 301 or 302 after a POST, repeat as a GET without
+            // the body; 307 and 308 repeat the request as it was.
+            if status == 303 || (matches!(status, 301 | 302) && method == "POST") {
+                method = "GET";
+                body.clear();
+            }
         }
+    }
 
+    /// One request handle: send, read the status, and either follow a redirect or read the body.
+    fn hop(&self, hop: &mut Hop, request: &HttpRequest, delivery: &mut Delivery) -> Result<HopEnd, Fail> {
         let lines: String = request
             .headers
             .iter()
@@ -258,48 +448,92 @@ impl Worker {
             .collect();
         if !lines.is_empty() {
             let lines: Vec<u16> = lines.encode_utf16().collect();
-            check(unsafe { WinHttpAddRequestHeaders(handle, lines.as_ptr(), lines.len() as u32, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE) })?;
+            self.call(|h| unsafe { WinHttpAddRequestHeaders(h, lines.as_ptr(), lines.len() as u32, WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE) })?;
         }
-        let len = request.body.len() as u32;
-        let body = if request.body.is_empty() { std::ptr::null() } else { request.body.as_ptr().cast() };
+        let ctx = Arc::as_ptr(&hop.ctx) as usize;
+        let len = hop.ctx.body.len() as u32;
+        let body = if hop.ctx.body.is_empty() { std::ptr::null() } else { hop.ctx.body.as_ptr().cast() };
         // WinHTTP writes Content-Length.
-        check(unsafe { WinHttpSendRequest(handle, std::ptr::null(), 0, body, len, len, 0) })?;
-        self.shared.pet();
-        check(unsafe { WinHttpReceiveResponse(handle, std::ptr::null_mut()) })?;
-        self.shared.pet();
+        self.call(|h| unsafe { WinHttpSendRequest(h, std::ptr::null(), 0, body, len, len, ctx) })?;
+        self.wait(hop, |n| matches!(n, Note::Sent).then_some(0))?;
+        self.call(|h| unsafe { WinHttpReceiveResponse(h, std::ptr::null_mut()) })?;
+        self.wait(hop, |n| matches!(n, Note::Headers).then_some(0))?;
         let (mut status, mut size) = (0u32, 4u32);
-        check(unsafe {
-            WinHttpQueryHeaders(
-                handle,
-                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                std::ptr::null(),
-                (&mut status as *mut u32).cast(),
-                &mut size,
-                std::ptr::null_mut(),
-            )
+        self.call(|h| unsafe {
+            WinHttpQueryHeaders(h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, std::ptr::null(), (&mut status as *mut u32).cast(), &mut size, std::ptr::null_mut())
         })?;
+        if matches!(status, 301 | 302 | 303 | 307 | 308) {
+            if let Some(location) = self.location()? {
+                return Ok(HopEnd::Redirect(status, location));
+            }
+        }
         *delivery = Delivery::new(status, request.stream);
-
-        let mut buf = vec![0u8; READ_SIZE];
+        let buf = hop.ctx.buf.get();
         loop {
-            let mut available = 0u32;
-            check(unsafe { WinHttpQueryDataAvailable(handle, &mut available) })?;
+            self.call(|h| unsafe { WinHttpQueryDataAvailable(h, std::ptr::null_mut()) })?;
+            let available = self.wait(hop, |n| if let Note::Data(k) = n { Some(*k) } else { None })?;
             if available == 0 {
-                return Ok(());
+                return Ok(HopEnd::Done);
             }
             let want = (available as usize).min(READ_SIZE) as u32;
-            let mut read = 0u32;
-            check(unsafe { WinHttpReadData(handle, buf.as_mut_ptr().cast(), want, &mut read) })?;
+            self.call(|h| unsafe { WinHttpReadData(h, (*buf).as_mut_ptr().cast(), want, std::ptr::null_mut()) })?;
+            let read = self.wait(hop, |n| if let Note::Read(k) = n { Some(*k) } else { None })?;
             if read == 0 {
-                return Ok(());
+                return Ok(HopEnd::Done);
             }
-            self.shared.pet();
-            if let Some(event) = delivery.read(&buf[..read as usize]) {
+            let bytes = unsafe { &(&*buf)[..read as usize] };
+            if let Some(event) = delivery.read(bytes) {
                 self.post(event);
             }
         }
     }
+
+    /// The response's Location header, if it has one.
+    fn location(&self) -> Result<Option<String>, Fail> {
+        let mut size = 0u32;
+        match self.call(|h| unsafe { WinHttpQueryHeaders(h, WINHTTP_QUERY_LOCATION, std::ptr::null(), std::ptr::null_mut(), &mut size, std::ptr::null_mut()) }) {
+            Err(Fail::Code(ERROR_WINHTTP_HEADER_NOT_FOUND)) => return Ok(None),
+            Err(Fail::Code(ERROR_INSUFFICIENT_BUFFER)) | Ok(()) => {}
+            Err(other) => return Err(other),
+        }
+        let mut text = vec![0u16; (size as usize).div_ceil(2) + 1];
+        let mut bytes = (text.len() * 2) as u32;
+        self.call(|h| unsafe { WinHttpQueryHeaders(h, WINHTTP_QUERY_LOCATION, std::ptr::null(), text.as_mut_ptr().cast(), &mut bytes, std::ptr::null_mut()) })?;
+        Ok(Some(String::from_utf16_lossy(&text[..bytes as usize / 2])))
+    }
 }
+
+/// `ERROR_INSUFFICIENT_BUFFER`.
+const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+
+/// Where a redirect from `current` to `location` goes, resolved as a browser would, when it
+/// stays on the host the consent gate checked and does not drop https; else the refusal text.
+fn follow(current: &Target, location: &str) -> Result<Target, String> {
+    let scheme = if current.secure { "https" } else { "http" };
+    let host = if current.host.contains(':') { format!("[{}]", current.host) } else { current.host.clone() };
+    let origin = format!("{scheme}://{host}:{}", current.port);
+    let absolute = location.split_once("://").is_some_and(|(s, _)| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"+-.".contains(&b)));
+    let url = if absolute {
+        location.to_string()
+    } else if location.starts_with("//") {
+        format!("{scheme}:{location}")
+    } else if location.starts_with('/') {
+        format!("{origin}{location}")
+    } else {
+        let path = current.path.split(['?', '#']).next().unwrap_or("/");
+        let dir = &path[..path.rfind('/').map_or(0, |i| i + 1)];
+        format!("{origin}{dir}{location}")
+    };
+    let next = parse_url(&url).map_err(|_| redirect_refused("an address Tandem cannot read"))?;
+    if next.host != current.host {
+        return Err(redirect_refused(&format!("another host ({})", next.host)));
+    }
+    if current.secure && !next.secure {
+        return Err(redirect_refused("plain http"));
+    }
+    Ok(next)
+}
+
 
 /// A WinHTTP error as a person reads it: Apple's NSURLError texts for the five codes a person
 /// meets (so iTerm2's messages read the same), else the system's WinHTTP message (Decision 5).
@@ -338,6 +572,7 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
+    use std::sync::atomic::Ordering;
 
     fn off(idle: Duration) -> Options {
         Options { idle, proxy: Proxy::Off }
@@ -348,12 +583,22 @@ mod tests {
     }
 
     /// A one-connection server on loopback running `script`; the URL base is "http://127.0.0.1:port".
+    /// The server gives up when no client comes within 10 s (a cancelled call may never connect).
     fn serve(script: impl FnOnce(TcpStream) + Send + 'static) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
         std::thread::spawn(move || {
-            if let Ok((s, _)) = listener.accept() {
-                script(s);
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(10) {
+                match listener.accept() {
+                    Ok((s, _)) => {
+                        s.set_nonblocking(false).unwrap();
+                        script(s);
+                        return;
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
             }
         });
         format!("http://127.0.0.1:{port}")
@@ -593,6 +838,162 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(300));
         assert!(listener.accept().is_err(), "nothing connected");
+    }
+
+    fn hooked(hook: impl Fn(usize, &Arc<Shared>) + Send + Sync + 'static) -> Shared {
+        Shared { slot: new_slot(), hook: Some(Box::new(hook)) }
+    }
+
+    /// A server that streams three chunks and ends, ignoring a client that goes away.
+    fn three_chunks() -> String {
+        serve(|mut s| {
+            read_request(&mut s);
+            if s.write_all(STREAM_HEAD).is_err() {
+                return;
+            }
+            for i in 1..=3 {
+                std::thread::sleep(Duration::from_millis(20));
+                if send_chunk(&mut s, &format!("data: {i}\n\n")).is_err() {
+                    return;
+                }
+            }
+            end_chunks(&mut s);
+        })
+    }
+
+    fn whole_three() -> Vec<HttpEvent> {
+        vec![chunk("data: 1\n\n"), chunk("data: 2\n\n"), chunk("data: 3\n\n"), HttpEvent::Done { body: "data: 1\n\ndata: 2\n\ndata: 3\n\n".into(), error: None }]
+    }
+
+    fn wait_finished(call: &dyn Call, limit: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < limit {
+            if call.finished() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    /// Controller ruling: no WinHTTP call ever receives a closed handle. A cancel lands before
+    /// every call the worker makes on the request handle, and again just after it (while WinHTTP
+    /// works); each time the worker ends, nothing is delivered, and a request started right after
+    /// (which may be handed the freed handle value) arrives whole.
+    #[test]
+    fn winhttp_cancel_at_every_step() {
+        let steps = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = steps.clone();
+        let mut call = start_call(post(format!("{}/x", three_chunks()), true), off(Duration::from_secs(10)), no_notify(), hooked(move |n, _| {
+            counted.fetch_max(n + 1, Ordering::SeqCst);
+        }));
+        assert_eq!(collect(&mut call, Duration::from_secs(10)), whole_three());
+        let steps = steps.load(Ordering::SeqCst);
+        assert!(steps >= 8, "headers, send, receive, status, then queries and reads ({steps})");
+        for k in 0..steps {
+            for later in [false, true] {
+                let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = cancelled.clone();
+                let hook = move |n: usize, shared: &Arc<Shared>| {
+                    if n != k {
+                        return;
+                    }
+                    let (shared, flag) = (shared.clone(), flag.clone());
+                    let cancel = move || {
+                        shared.cancel();
+                        flag.store(true, Ordering::SeqCst);
+                    };
+                    if later {
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(1));
+                            cancel();
+                        });
+                    } else {
+                        cancel();
+                    }
+                };
+                let mut call = start_call(post(format!("{}/x", three_chunks()), true), off(Duration::from_secs(10)), no_notify(), hooked(hook));
+                let start = Instant::now();
+                while !cancelled.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(10) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert!(cancelled.load(Ordering::SeqCst), "step {k} later {later}: the cancel ran");
+                assert!(wait_finished(call.as_ref(), Duration::from_secs(10)), "step {k} later {later}: the worker ended");
+                assert_eq!(call.try_event(), None, "step {k} later {later}: nothing after the cancel");
+                let mut next = WinHttp.start(post(format!("{}/x", three_chunks()), true), off(Duration::from_secs(10)), no_notify());
+                assert_eq!(collect(&mut next, Duration::from_secs(10)), whole_three(), "step {k} later {later}: the next request is whole");
+            }
+        }
+    }
+
+    /// The idle timeout closes the handle the same safe way, before the response headers too.
+    #[test]
+    fn winhttp_timeout_leaves_the_next_call_whole() {
+        let base = serve(|mut s| {
+            read_request(&mut s);
+            std::thread::sleep(Duration::from_secs(2));
+        });
+        let start = Instant::now();
+        let mut call = WinHttp.start(post(format!("{base}/x"), true), off(Duration::from_millis(300)), no_notify());
+        let events = collect(&mut call, Duration::from_secs(10));
+        assert!(start.elapsed() < Duration::from_millis(1500), "{:?}", start.elapsed());
+        assert_eq!(events, [HttpEvent::Done { body: String::new(), error: Some("HTTP request failed with The request timed out.".into()) }]);
+        let mut next = WinHttp.start(post(format!("{}/x", three_chunks()), true), off(Duration::from_secs(10)), no_notify());
+        assert_eq!(collect(&mut next, Duration::from_secs(10)), whole_three());
+        assert!(wait_finished(call.as_ref(), Duration::from_secs(5)), "the timed-out worker ended");
+    }
+
+    /// Controller ruling: a redirect is followed only to the host the consent gate checked.
+    #[test]
+    fn redirects_stay_on_the_gated_host() {
+        let t = |url: &str| parse_url(url).unwrap();
+        let here = t("https://api.test:8443/v1/chat?x=1");
+        assert_eq!(follow(&here, "https://API.test/v2"), Ok(t("https://api.test/v2")));
+        assert_eq!(follow(&here, "/v3?y=1"), Ok(t("https://api.test:8443/v3?y=1")));
+        assert_eq!(follow(&here, "other"), Ok(t("https://api.test:8443/v1/other")));
+        assert_eq!(follow(&here, "//api.test/z"), Ok(t("https://api.test/z")));
+        assert_eq!(follow(&t("http://[::1]:8080/a/b"), "c"), Ok(t("http://[::1]:8080/a/c")));
+        assert_eq!(follow(&here, "https://evil.test/v1"), Err(redirect_refused("another host (evil.test)")));
+        assert_eq!(follow(&here, "//evil.test/"), Err(redirect_refused("another host (evil.test)")));
+        assert_eq!(follow(&here, "https://api.test.evil.test/"), Err(redirect_refused("another host (api.test.evil.test)")));
+        assert_eq!(follow(&here, "http://api.test/v1"), Err(redirect_refused("plain http")));
+        assert_eq!(follow(&here, "https://evil.test\\@api.test/"), Err(redirect_refused("an address Tandem cannot read")));
+        assert_eq!(follow(&here, "ftp://api.test/"), Err(redirect_refused("an address Tandem cannot read")));
+
+        // The same host on another port: followed, with the method, headers and body (307).
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let second = serve(move |mut s| {
+            seen_tx.send(read_request(&mut s)).unwrap();
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+        let to = format!("{second}/y");
+        let first = serve(move |mut s| {
+            read_request(&mut s);
+            let _ = s.write_all(format!("HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+        });
+        let request = HttpRequest { method: "POST", url: format!("{first}/x"), headers: vec![("X-Key".into(), "k".into())], body: br#"{"q":1}"#.to_vec(), stream: false };
+        let mut call = WinHttp.start(request, off(Duration::from_secs(10)), no_notify());
+        assert_eq!(collect(&mut call, Duration::from_secs(10)), [HttpEvent::Done { body: "ok".into(), error: None }]);
+        let (head, body) = seen_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(head.starts_with("POST /y HTTP/1.1\r\n"), "{head}");
+        assert!(head.to_ascii_lowercase().contains("\r\nx-key: k\r\n"), "{head}");
+        assert_eq!(body, br#"{"q":1}"#);
+
+        // Another host: not followed, and it sees no connection.
+        let other = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = other.local_addr().unwrap().port();
+        other.set_nonblocking(true).unwrap();
+        let first = serve(move |mut s| {
+            read_request(&mut s);
+            let _ = s.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://localhost:{port}/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+        });
+        let mut call = WinHttp.start(post(format!("{first}/x"), false), off(Duration::from_secs(10)), no_notify());
+        assert_eq!(
+            collect(&mut call, Duration::from_secs(10)),
+            [HttpEvent::Done { body: String::new(), error: Some(transport_error(&redirect_refused("another host (localhost)"))) }]
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(other.accept().is_err(), "the other host saw no connection");
     }
 
     #[test]

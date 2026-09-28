@@ -26,10 +26,7 @@ pub struct HttpRequest {
 impl fmt::Debug for HttpRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Gemini's key rides in the query.
-        let url = match self.url.split_once('?') {
-            Some((base, _)) => format!("{base}?<query hidden>"),
-            None => self.url.clone(),
-        };
+        let url = hide_query(&self.url);
         let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
         f.debug_struct("HttpRequest")
             .field("method", &self.method)
@@ -104,8 +101,8 @@ pub trait Transport: Send + Sync {
     fn start(&self, request: HttpRequest, options: Options, notify: Notify) -> Box<dyn Call>;
 }
 
-/// Where a request connects.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Where a request connects. `Debug` hides the query, where Gemini's key rides.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Target {
     pub secure: bool,
     /// Exactly `ai_policy::host_of(url)`: the host the consent gate checked.
@@ -113,6 +110,20 @@ pub struct Target {
     pub port: u16,
     /// The path and query, "/" when empty; the fragment is not sent.
     pub path: String,
+}
+
+impl fmt::Debug for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Target").field("secure", &self.secure).field("host", &self.host).field("port", &self.port).field("path", &hide_query(&self.path)).finish()
+    }
+}
+
+/// A URL or path with its query replaced by "<query hidden>".
+fn hide_query(url: &str) -> String {
+    match url.split_once('?') {
+        Some((base, _)) => format!("{base}?<query hidden>"),
+        None => url.to_string(),
+    }
 }
 
 pub const INVALID_URL: &str = "Invalid URL";
@@ -510,6 +521,9 @@ mod tests {
         assert!(text.contains("Authorization"), "the header name is shown");
         assert!(!text.contains("sk-secret"), "the Authorization value is hidden");
         assert!(!text.contains("AIzaSECRET"), "the query is hidden");
+        let target = format!("{:?}", parse_url(&r.url).expect("a Gemini URL parses"));
+        assert!(target.contains("streamGenerateContent"), "the path is shown");
+        assert!(!target.contains("AIzaSECRET"), "the target's query is hidden");
     }
 
     #[test]
