@@ -35,14 +35,21 @@ pub(super) fn tab_color_values(color: Option<crate::palette::Rgb>, separate: boo
 }
 
 /// The tooltip of a tab (`PT:8701-8723`): "Name", "Profile" and "Command" lines, the name
-/// without HTML when `html`, the profile the saved original's name for a session copy
-/// (`original_name`) else the profile's own, and "None" for no command. None when `disabled`.
-pub(super) fn tip_text(disabled: bool, title: &str, html: bool, profile_name: &str, original_name: Option<&str>, command: &str) -> Option<String> {
+/// the tab's label (`tab_label`) without HTML when `html`, the profile the saved original's
+/// name for a session copy (`original_name`) else the profile's own, and "None" for no
+/// command. None when `disabled`.
+pub(super) fn tip_text(disabled: bool, label: &str, html: bool, profile_name: &str, original_name: Option<&str>, command: &str) -> Option<String> {
     if disabled {
         return None;
     }
-    let name = crate::tab_layout::plain_title(title, html);
+    let name = crate::tab_layout::plain_title(label, html);
     Some(crate::tab_layout::tooltip(&name, original_name.unwrap_or(profile_name), Some(command).filter(|c| !c.is_empty())))
+}
+
+/// A tab's label as iTerm2 keeps it (`PTYTab labelForActiveSession`, `TAB:735-751`): the
+/// title, a line break and the subtitle, the break kept when the subtitle is empty.
+pub(super) fn tab_label(title: &str, subtitle: &str) -> String {
+    format!("{title}\n{subtitle}")
 }
 
 /// A session profile's own name, and its saved original's name when it is a session copy
@@ -259,8 +266,8 @@ impl App {
         let t = self.tabs.get(tab)?;
         let pane = self.panes.get(&t.focused)?;
         let (own, original) = tip_profile_names(&self.store, &pane.profile);
-        let title = self.tab_look(t).title;
-        tip_text(self.globals.bool("DisableTabBarTooltips"), &title, self.globals.bool("HTMLTabTitles"), &own, original.as_deref(), &pane.command)
+        let look = self.tab_look(t);
+        tip_text(self.globals.bool("DisableTabBarTooltips"), &tab_label(&look.title, &look.subtitle), self.globals.bool("HTMLTabTitles"), &own, original.as_deref(), &pane.command)
     }
 
     /// A session's subtitle: its profile's Subtitle over the session's variables, as the badge.
@@ -351,18 +358,24 @@ mod tests {
 
     #[test]
     fn tooltips_follow_iterm2() {
+        use super::tab_label;
+        // The name is the tab's label: the title, a line break and the subtitle, the line
+        // blank when there is no subtitle (`TAB:735-751`).
+        assert_eq!(tab_label("zsh", "~/src"), "zsh\n~/src");
+        assert_eq!(tab_label("zsh", ""), "zsh\n");
         // `DisableTabBarTooltips` shows none (`PT:8701-8703`).
-        assert_eq!(tip_text(true, "zsh", false, "Default", None, "zsh -l"), None);
+        assert_eq!(tip_text(true, "zsh\n", false, "Default", None, "zsh -l"), None);
         // The name, the profile and the command, one per line.
-        assert_eq!(tip_text(false, "zsh", false, "Default", None, "zsh -l").as_deref(), Some("Name: zsh\nProfile: Default\nCommand: zsh -l"));
+        assert_eq!(tip_text(false, "zsh\n", false, "Default", None, "zsh -l").as_deref(), Some("Name: zsh\n\nProfile: Default\nCommand: zsh -l"));
+        assert_eq!(tip_text(false, "zsh\n~/src", false, "Default", None, "zsh -l").as_deref(), Some("Name: zsh\n~/src\nProfile: Default\nCommand: zsh -l"));
         // The label's HTML is removed when HTML titles are on, kept as typed when off.
-        assert_eq!(tip_text(false, "Name: <b>x</b>", true, "Default", None, "cmd").as_deref(), Some("Name: Name: x\nProfile: Default\nCommand: cmd"));
-        assert_eq!(tip_text(false, "<b>x</b>", false, "Default", None, "cmd").as_deref(), Some("Name: <b>x</b>\nProfile: Default\nCommand: cmd"));
+        assert_eq!(tip_text(false, "<b>x</b>\n", true, "Default", None, "cmd").as_deref(), Some("Name: x\n\nProfile: Default\nCommand: cmd"));
+        assert_eq!(tip_text(false, "<b>x</b>\n", false, "Default", None, "cmd").as_deref(), Some("Name: <b>x</b>\n\nProfile: Default\nCommand: cmd"));
         // A session copy names its saved original; a copy whose original is gone its own name.
-        assert_eq!(tip_text(false, "t", false, "Default (copy)", Some("Default"), "cmd").as_deref(), Some("Name: t\nProfile: Default\nCommand: cmd"));
-        assert_eq!(tip_text(false, "t", false, "Mine", None, "cmd").as_deref(), Some("Name: t\nProfile: Mine\nCommand: cmd"));
+        assert_eq!(tip_text(false, "t\n", false, "Default (copy)", Some("Default"), "cmd").as_deref(), Some("Name: t\n\nProfile: Default\nCommand: cmd"));
+        assert_eq!(tip_text(false, "t\n", false, "Mine", None, "cmd").as_deref(), Some("Name: t\n\nProfile: Mine\nCommand: cmd"));
         // No command reads "None".
-        assert_eq!(tip_text(false, "t", false, "Default", None, "").as_deref(), Some("Name: t\nProfile: Default\nCommand: None"));
+        assert_eq!(tip_text(false, "t\n", false, "Default", None, "").as_deref(), Some("Name: t\n\nProfile: Default\nCommand: None"));
     }
 
     #[test]
